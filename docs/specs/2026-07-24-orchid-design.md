@@ -62,16 +62,21 @@ skills/
   orchid-test/SKILL.md      # archetype entry: test/eval generation run
   orchid-migrate/SKILL.md   # archetype entry: framework/API migration run
 bin/
-  orchid-doctor             # preflight validation (see Preflight)
-  orchid-pump               # LLM-free heartbeat: invokes one tick on the best
-                            # available orchestrator engine (see failover)
-  orchid-tick               # runs a single tick headless via claude -p or
-                            # codex exec, prompt generated from PROTOCOL.md
+  orchid                    # THE CLI: git-style dispatcher over libexec/
+libexec/
+  orchid-doctor             # `orchid doctor`  — preflight validation
+  orchid-pump               # `orchid pump`    — LLM-free heartbeat (see failover)
+  orchid-tick               # `orchid tick`    — one headless tick via claude -p
+                            #                    or codex exec, from PROTOCOL.md
+  orchid-task               # `orchid task ...` — validated state transitions
+                            #                    (advance/show/list), atomic writes
+  orchid-jobs               # `orchid jobs ...` — manifests, reconcile, stall check
+  orchid-status             # `orchid status`  — run summary from .orchid/ state
+  orchid-notify             # `orchid notify`  — user question/notification channel
   engine-codex              # wraps `codex exec` (implementer role)
   engine-codex-review       # wraps `codex exec review` (reviewer, fresh session)
   engine-agy                # wraps `agy -p` (reviewer role, inline-diff mode)
   engine-claude             # wraps `claude -p` (fallback implementer/orchestrator)
-  notify                    # user-facing question/notification channel
 templates/
   roadmap.md  task.md  review.md
 install.sh                  # symlinks skills into ~/.claude/skills
@@ -79,9 +84,23 @@ docs/specs/                 # this document and successors
 README.md  LICENSE          # public-facing docs (MIT)
 ```
 
-Wrappers encapsulate all engine flags (model, effort, sandbox, output capture,
-logging, single retry) so skills stay short and any engine can be swapped or
-later fronted by a CLI/daemon without touching skills or state formats.
+**The CLI boundary (a hard rule):** `orchid` is deterministic plumbing —
+verbs over files. It makes NO LLM calls of its own, runs no daemon, owns no
+database, and routes no messages; judgment lives in the engines it invokes.
+Any proposed CLI feature that fails this test is rejected. Skills are thin
+front-ends over the same verbs, and `PROTOCOL.md` is written in terms of CLI
+verbs so any orchestrating engine executes the identical, shell-verifiable
+procedure.
+
+**State mutations go through the CLI only:** engines and skills never
+hand-edit `.orchid/` files. `orchid task advance <id> <state>` validates the
+transition against the state machine, writes atomically, and refuses illegal
+moves — malformed state becomes impossible by construction, not detected
+after the fact.
+
+Engine wrappers encapsulate all engine flags (model, effort, sandbox, output
+capture, logging, single retry) so skills stay short and any engine can be
+swapped without touching skills or state formats.
 
 ### Run state: `<target-repo>/.orchid/` (committed to git)
 
@@ -500,6 +519,14 @@ design therefore treats "reach the user off-machine" as a first-class seam:
   7. **State files, guardrails, and how to intervene** (edit task files,
      `BLOCKERS.md`), then FAQ (rate limits, resuming after a crash, adding
      an engine via the envelope contract).
+  8. **Research & further reading:** attributed citations of the industry
+     and scholarly work whose ideas orchid builds on — Google's "The New
+     SDLC With Vibe Coding" whitepaper (factory model, harness engineering,
+     trajectory evaluation, intelligent model routing), the METR study on
+     AI-assisted developer productivity, Karpathy's vibe-coding /
+     agentic-engineering framing, and comparable sources as they inform
+     future changes. Concepts borrowed from published work are credited;
+     this is both honest and free credibility.
 - **Screenshots:** stored in `docs/assets/`; captured during the rollout
   runs. Minimum set: hero shot of the loop mid-run with background engine
   jobs, the roadmap + task files in an editor, an arbitration verdict, and a
