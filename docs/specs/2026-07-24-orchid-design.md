@@ -194,9 +194,11 @@ loop starts. No user gate.
      combinations — Claude Code required as orchestrator; Codex CLI required
      as implementer; Antigravity optional as second reviewer — with an
      explicit section "What if I have more than one subscription?" mapping
-     each combo (Claude+Codex, Claude+Codex+Antigravity, Claude-only
-     degraded mode) to which roles run where and what you gain from each
-     added subscription.
+     each supported combo (Claude+Codex minimum; Claude+Codex+Antigravity
+     full triangle) to which roles run where and what the added subscription
+     buys (an independent second reviewer). States plainly that a Codex
+     subscription is required in v1 and points to the engine-wrapper
+     contract for anyone wanting to substitute another implementer.
   5. **Install:** `git clone` + `./install.sh`, what it symlinks and where;
      uninstall note.
   6. **Quickstart:** existing-repo walkthrough (write `requirements.md`,
