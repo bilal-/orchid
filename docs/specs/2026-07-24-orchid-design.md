@@ -1,7 +1,8 @@
 # Orchid — Design Spec
 
 **Date:** 2026-07-24
-**Status:** Approved (design review complete; pending final spec review)
+**Status:** Approved (design review complete; revised after external design
+review by codex and agy critics; pending final user review)
 
 ## Purpose
 
@@ -15,7 +16,7 @@ the orchestrating session cheap enough to drive multi-day runs.
 Design principles: no daemon, no dashboard, no terminal emulation, no custom
 agentic loop. Every engine is driven through its first-party headless CLI
 mode, so billing stays on each vendor's subscription and there is no fragile
-glue to maintain. All orchestration state is markdown files in git — the
+glue to maintain. All orchestration state is markdown/JSON files in git — the
 session is disposable; the files are the truth.
 
 ## Requirements (from design session)
@@ -29,11 +30,12 @@ session is disposable; the files are the truth.
   session both review. Claude arbitrates all disagreements and makes final
   judgment. Plans are always critiqued by Codex before execution.
 - **Autonomy:** fully autonomous — no user approval gates. Only genuine
-  blockers are surfaced to the user.
+  blockers are surfaced to the user. Autonomy is bounded by the Execution
+  policy below.
 - **Distribution:** public GitHub repository for general benefit (see
   Distribution section).
 - **Non-goals (v1):** daemon/service, web UI, cost ledger, multi-user,
-  cross-machine operation, chat-style inter-agent messaging.
+  cross-machine operation, chat-style inter-agent messaging, native phone app.
 
 ## Architecture
 
@@ -48,9 +50,11 @@ skills/
   orchid-plan/SKILL.md      # requirements → roadmap, mandatory codex critique
   orchid-resume/SKILL.md    # re-enter a run after crash/restart/rate-limit
 bin/
+  orchid-doctor             # preflight validation (see Preflight)
   engine-codex              # wraps `codex exec` (implementer role)
   engine-codex-review       # wraps `codex exec review` (reviewer, fresh session)
   engine-agy                # wraps `agy -p` (reviewer role, inline-diff mode)
+  notify                    # user-facing question/notification channel
 templates/
   roadmap.md  task.md  review.md
 install.sh                  # symlinks skills into ~/.claude/skills
@@ -58,38 +62,83 @@ docs/specs/                 # this document and successors
 README.md  LICENSE          # public-facing docs (MIT)
 ```
 
-Wrappers encapsulate all engine flags (model, effort, sandbox,
-`--output-last-message`, logging, single retry) so skills stay short and any
-engine can be swapped or later fronted by a CLI/daemon without touching skills
-or state formats.
+Wrappers encapsulate all engine flags (model, effort, sandbox, output capture,
+logging, single retry) so skills stay short and any engine can be swapped or
+later fronted by a CLI/daemon without touching skills or state formats.
 
 ### Run state: `<target-repo>/.orchid/` (committed to git)
 
 ```
-requirements.md             # user's original brief, verbatim
-roadmap.md                  # milestones → tasks with statuses
+requirements.md             # user's original brief, verbatim, with requirement IDs
+roadmap.md                  # milestones → tasks with statuses + requirement coverage map
+baseline.md                 # pre-run test results (pre-existing failures recorded)
 tasks/T001.md ...           # one spec per task (frontmatter + body)
 reviews/T001-agy.md, T001-codex.md
+jobs/T001.json ...          # write-ahead job manifests (see Stuck-agent detection)
+answers/                    # user replies consumed by ticks (see Remote interaction)
 BLOCKERS.md                 # the only file the user is expected to read
+lock                        # run lock (flock) — one orchestrator per repo
 ```
 
-Greenfield: `orchid-plan` creates the repo, writes `.orchid/`, and makes
-scaffolding itself task T001 (stack choice justified in the plan). Everything
-after is identical to the existing-repo flow.
+**State ownership rule:** `.orchid/` is mutated ONLY by the orchestrator, only
+on the integration branch. Task branches never modify it; implementer prompts
+forbid it and wrappers revert any `.orchid/` changes found on a task branch
+before review. This eliminates state merge conflicts by construction.
+
+Greenfield: `orchid-plan` creates the repo and MUST make a root commit
+(`requirements.md`, `.orchid/`, `.gitignore`) on the default branch before any
+worktree is created — `git worktree add` requires an existing HEAD. Scaffolding
+is task T001. Everything after is identical to the existing-repo flow.
+
+## Preflight (`orchid-doctor`)
+
+Runs before `orchid-plan` and before `orchid-resume`; fails safely without
+modifying the repository when prerequisites are unresolved. Validates: git
+topology (repo, clean tree policy, no branch-name collisions, submodule/LFS
+presence noted), worktree support, engine binaries and versions, engine
+authentication (cheap no-op call per engine), configured models available,
+test command discovered or explicitly configured, integration branch
+creatable, platform supported. Existing user work is never touched: orchid
+operates only on branches it creates.
 
 ## Task lifecycle
 
 Task frontmatter is the state machine:
 
 ```
-pending → implementing → reviewing → arbitrating → merging → done
-                ↑                        │
-                └──── rework (≤3) ───────┤
-                                         └→ blocked
+pending → implementing → testing → reviewing → arbitrating → merging → done
+                ↑            │         │            │
+                └── rework (≤3) ───────┴────────────┤
+                                                    └→ blocked
 ```
 
-Frontmatter fields: `id, title, status, branch, depends_on, attempts,
-risk_threshold, stop_condition, engine, effort, created, updated`.
+- **testing:** the task's verification commands run in the task worktree.
+  Failures return to rework without spending reviewer tokens or attempts on
+  code that cannot pass its own tests.
+- **merging** is transactional: the candidate is validated one-at-a-time in a
+  temporary integration worktree (merge + full suite against the recorded
+  baseline). Only on pass does the real integration branch advance and the
+  task become `done`; on failure (`validation_failed`) that exact candidate
+  returns to rework with captured logs. Merges are serialized; test-failure
+  attribution is never ambiguous.
+
+Frontmatter fields: `id, title, status, branch, worktree, depends_on,
+attempts, session_id, base_sha, candidate_sha, risk_threshold,
+stop_condition, engine, effort, acceptance_criteria, verification_commands,
+created, updated`.
+
+**Review immutability:** both reviewers inspect exactly
+`base_sha..candidate_sha`. Any change to the candidate invalidates existing
+reviews. Dependencies must be `done` before a task starts, so its base is
+final. An incomplete or malformed review NEVER counts as approval
+(fail closed).
+
+**Acceptance:** requirements get IDs at plan time; `roadmap.md` maintains the
+requirement→task coverage map; every task carries observable acceptance
+criteria and verification commands. A final acceptance gate — coverage check
+plus end-to-end acceptance tests — runs before the run is declared complete.
+Passing tests and clean reviews prove absence of detected defects; the
+acceptance gate proves the requested product was delivered.
 
 `risk_threshold` and `stop_condition` are injected into every reviewer prompt,
 e.g. "report at most 8 findings at or above medium severity; no style nits;
@@ -100,53 +149,106 @@ Role rules:
 - Codex implements on branch `task/<id>` in its own git worktree.
 - Reviewers run in parallel: `agy -p` and a fresh `codex exec review` session
   (never the implementing session — nobody signs off on their own work; agy is
-  the fully independent party). The agy reviewer receives the diff and any
-  needed file context inline in the prompt (built by `engine-agy` from
-  `git show`/`git diff`), because headless agy auto-denies tool permissions
-  (see Verification findings). Inline-diff review is verified working and
-  needs no permission grants.
+  the fully independent party).
 - The orchestrator arbitrates: findings below the task's risk threshold never
   block; reviewer agreement is strong signal; on disagreement the orchestrator
   reads the diff and decides. The orchestrator does not implement, except
   arbitration-level trivia (≤ ~10 lines); anything larger returns to Codex as
   a rework spec with `attempts` incremented.
 
+### Review completeness (inline agy reviews)
+
+`engine-agy` builds the review prompt from `git diff base_sha..candidate_sha`
+plus selected file context under an explicit byte budget. It always includes
+an input manifest — every changed file, and anything omitted or truncated —
+and requires the reviewer to return `scope_complete: true/false`. Oversized
+diffs are chunked with an aggregation pass, or routed to `codex exec review`
+(which reads the worktree directly). `scope_complete: false` without a
+completed fallback blocks approval.
+
+## Engine result contract
+
+Every `bin/engine-*` wrapper writes a versioned JSON result envelope
+atomically (temp file + rename):
+
+```json
+{ "contract": 1, "task": "T001", "attempt": 2, "status": "ok|failed|rate_limited|timeout|auth|malformed",
+  "session_id": "...", "base_sha": "...", "candidate_sha": "...",
+  "started_at": "...", "ended_at": "...", "retry_after": null,
+  "scope_complete": true, "verdict": "approve|request-changes|n/a",
+  "findings": [ { "severity": "...", "title": "...", "detail": "..." } ] }
+```
+
+Codex output uses its output-schema support; `engine-agy` validates/normalizes
+agy's response in the wrapper. Schema violations → `malformed`, which fails
+closed. Free-form engine text is stored alongside for the orchestrator to
+read, never parsed for control flow. Contributors add engines by writing one
+wrapper honoring this envelope.
+
 ## The loop
 
 Interactive Claude Code session running `/loop` (self-paced). Each tick:
 
-1. Read `.orchid/` state.
+1. Read `.orchid/` state; reconcile job manifests against reality.
 2. Collect finished background engine jobs; advance their tasks.
 3. Launch new work up to the concurrency cap (default 2 implementers plus
-   their reviews).
-4. Merge approved tasks into the integration branch; run the test suite;
-   update `roadmap.md`.
+   their reviews), honoring scheduling rules below.
+4. Validate at most one approved candidate in the merge worktree; advance
+   integration on pass.
 5. Commit state changes.
-6. Sleep with a long fallback wakeup. Background job completions re-invoke the
-   session, so ticks are event-driven, not polling.
+6. Sleep with a long fallback wakeup. Background job completions re-invoke
+   the session (Claude Code background-task notifications), so ticks are
+   event-driven — but events are an optimization; the fallback tick plus
+   reconciliation is the guarantee (see Stuck-agent detection).
+
+**Scheduling rules:** tasks that modify dependency manifests (`package.json`,
+lockfiles, `Cargo.toml`, …) are serialized. When the test environment's
+parallel-safety is unknown, `testing`/`merging` phases run serially by
+default. Tasks may declare `exclusive: true` in frontmatter to demand solo
+execution. Worktrees isolate git state only — never assume they isolate
+caches, ports, databases, or servers.
 
 **Plan phase** (`orchid-plan`): the orchestrator drafts the roadmap from
 `requirements.md` → `engine-codex` in critic mode attacks it (missing
 requirements, sequencing risk, stack choice) → the orchestrator revises →
 loop starts. No user gate.
 
+## Execution policy (the autonomy boundary)
+
+"Fully autonomous" is bounded by what engines are permitted to do, defined
+per role and enforced by wrappers:
+
+- **Implementer (codex):** writes only inside its task worktree
+  (`workspace-write`), `approval_policy=never` so it can never stall waiting
+  for input, environment stripped to an allowlist, no secret-file reads,
+  network disabled except during declared dependency-install phases.
+- **Reviewers:** read-only (`codex exec review` sandboxed read-only; agy
+  receives inline context and needs no permissions at all).
+- **External mutations are prohibited in v1:** no `git push`, no deploys, no
+  package publishing, no production data changes — by any engine or by the
+  orchestrator. Any task requiring one raises a blocker for the user instead.
+- `orchid.config` is parsed as key=value data, never shell-sourced.
+
 ## Guardrails & failure handling
 
-- **Engine calls:** hard timeout (default 60 min), exit-code and output-file
-  checks, one automatic retry, then `attempts++`; three strikes → `blocked`.
-- **Rate limits:** wrappers detect quota errors distinctly from failures; the
-  task re-queues untouched and the loop lengthens its wakeup. Runs pause
-  across limit windows; they never die from them and never burn attempts.
-- **Runaway protection:** ≤3 rework cycles per task, concurrency cap, reviewer
-  stop-conditions.
-- **Blockers:** appended to `BLOCKERS.md` and surfaced in-session; everything
-  else self-heals.
-- **Isolation:** every task in its own worktree/branch; Codex runs at sandbox
-  `workspace-write`; agy needs no permissions in inline-diff mode. A poisoned
-  run is `git branch -D` plus an auditable `.orchid/` history.
-- **Crash/restart:** `orchid-resume` rebuilds reality from state files plus
-  `codex exec resume --last`, re-attaches or relaunches jobs, and continues.
-  State files are the only truth; the session is disposable.
+- **Engine calls:** hard timeout (default 60 min), envelope status checks,
+  one automatic retry, then `attempts++`; three strikes → `blocked`.
+- **Rate limits:** `rate_limited` status (with `retry_after` when known) is
+  distinct from failure; the task re-queues untouched and the loop lengthens
+  its wakeup. Runs pause across limit windows; they never die from them and
+  never burn attempts.
+- **Runaway protection:** ≤3 rework cycles per task, concurrency cap,
+  reviewer stop-conditions, per-task wall-clock budget.
+- **Blockers:** appended to `BLOCKERS.md` and pushed through `bin/notify`;
+  everything else self-heals.
+- **Isolation:** every task in its own worktree/branch under the Execution
+  policy. A poisoned run is `git branch -D` plus an auditable `.orchid/`
+  history.
+- **Crash/restart:** `orchid-resume` runs preflight, takes the run lock, and
+  rebuilds reality from state files and job manifests: live PIDs are
+  re-adopted; dead jobs are relaunched cleanly (session resume via recorded
+  `session_id` is an optimization, never required — task state always permits
+  clean relaunch). State files are the only truth; the session is disposable.
 
 ## Stuck-agent detection
 
@@ -157,26 +259,49 @@ stuck modes, each with its own defense:
 |---|---|---|
 | Dead | process crashed/killed | PID liveness check each tick |
 | Hung | alive but frozen | stall detector: log mtime unchanged ~10 min → kill, `attempts++` |
-| Blocked on prompt | waiting for input headless mode can't give | made impossible: wrappers must pass never-prompt flags; verified agy soft-denies and exits rather than hanging |
+| Blocked on prompt | waiting for input headless mode can't give | made impossible: `approval_policy=never` + never-prompt flags; verified agy soft-denies and exits rather than hanging |
 | Spinning | alive, output flowing, no progress | orchestrator judgment on log tail each tick (repetition, circular retries) → kill + rework spec naming the dead-end |
 
 Mechanisms:
 
-- **Job manifests:** every engine launch writes `.orchid/jobs/<task>.json`
-  (pid, started_at, log_path, engine, attempt). The orchestrator always knows
-  what *should* be running.
-- **Reconciliation ticks, never trust:** the loop treats background-completion
-  notifications as an optimization only. Every tick — including the
-  guaranteed fallback wakeup — re-derives job status from disk: PID alive?
-  log growing? worktree commits advancing? A lost notification costs minutes,
-  never days.
+- **Write-ahead job manifests:** `.orchid/jobs/<task>.json` (task, attempt,
+  engine, pid, session_id, worktree, base_sha, log_path, started_at) is
+  written BEFORE launch and updated after. A crash between write and launch
+  is detected on resume as a manifest with no live PID and no output — safe
+  to relaunch. The orchestrator always knows what *should* be running.
+- **Reconciliation ticks, never trust:** completion notifications are an
+  optimization only. Every tick — including the guaranteed fallback wakeup —
+  re-derives job status from disk: PID alive? log growing? worktree commits
+  advancing? A lost notification costs minutes, never days.
 - **Escalation ladder per job:** stall (~10 min silent) → kill and retry;
   hard timeout (60 min) → kill, `attempts++`; task wall-clock budget
-  exhausted or 3 attempts → `blocked`, surfaced in `BLOCKERS.md`. No task can
+  exhausted or 3 attempts → `blocked`, surfaced via `bin/notify`. No task can
   silently consume a day.
 - **Spinning is a judgment call, not a metric:** each tick the orchestrator
   reads only the log tail (cheap) and kills work that is circling; the rework
   spec for the next attempt documents the dead-end so it is not repeated.
+
+## Remote interaction (seam in v1, channel post-v1)
+
+Human answer latency is the throughput ceiling of a fully-autonomous run: a
+blocker raised at 2am and seen at 9am idles that task for seven hours. The
+design therefore treats "reach the user off-machine" as a first-class seam:
+
+- **v1 seam:** all user-facing questions flow through one wrapper,
+  `bin/notify` (default implementation: append to `BLOCKERS.md` + terminal).
+  Questions are phrased multiple-choice wherever possible so they can be
+  answered from a phone lock screen. Answers are consumed from
+  `.orchid/answers/` by the next reconciliation tick — the tick loop is the
+  message pump; no new moving parts.
+- **First post-v1 milestone:** two-way Telegram bot backend for `bin/notify`
+  (push question → user replies in Telegram → tick polls replies into
+  `.orchid/answers/`). Slack/Discord are equivalent alternates. An unanswered
+  question is just a blocked task: bounded, visible, and non-blocking for all
+  other tasks.
+- **Explicit non-goal:** a native phone app. Push + two-way Q&A comes free
+  with messaging platforms; run status can be a static page generated from
+  `.orchid/` state per tick. Session management from mobile is expected to
+  arrive via Claude Code's own web/mobile surface rather than orchid.
 
 ## Verification findings (2026-07-24, empirical)
 
@@ -199,16 +324,28 @@ Mechanisms:
   unrestricted shell — deliberately NOT configured; user decision.
 - **Verified workaround (v1 approach):** inline-diff review needs no tools at
   all — a diff embedded in the `-p` prompt returned a correct structured
-  VERDICT/REASON response. Constraint: review context is bounded by prompt
-  size, so `engine-agy` must select context (diff + key files), not offer
-  repo browsing.
+  VERDICT/REASON response. See Review completeness for size handling.
+  Implementation must also test whether `agy -p` accepts stdin, which would
+  lift ARG_MAX limits on inline prompts.
+- **Design review round:** the spec was critiqued by codex (10 findings) and
+  agy (8 findings) in headless critic sessions; accepted findings are
+  incorporated throughout (job identity, review immutability, test-first
+  sequencing, transactional merges, execution policy, engine envelope,
+  preflight, review completeness, greenfield root commit, rollout order).
+  Rejected: polling-only loop (background-task notifications verified working
+  in the Claude Code harness, with reconciliation as the guarantee).
 
 ## Distribution (public GitHub repo)
 
-- Public repository `orchid` under the author's personal GitHub account,
-  created with `gh repo create` at implementation start, once README and
-  LICENSE exist so the first public state is presentable.
+- Repository `orchid` under the author's personal GitHub account, created
+  **private** at implementation start; flipped **public** only after the
+  rollout sequence below proves the documented flows and produces real
+  screenshots. The first public state must be presentable AND true.
 - **License:** MIT.
+- **Rollout sequence (also the implementation order):** deterministic
+  single-task vertical slice → crash/recovery test → existing-repo dogfood
+  run (webBooks) → concurrency + agy review exercised → greenfield demo run
+  → README + screenshots from those runs → public release.
 - **README** is a first-class deliverable, written to sell the idea to a
   stranger in 30 seconds and get them running in 10 minutes. Required
   structure:
@@ -236,47 +373,19 @@ Mechanisms:
      the roadmap/tasks state and the loop ticking.
   7. **State files, guardrails, and how to intervene** (edit task files,
      `BLOCKERS.md`), then FAQ (rate limits, resuming after a crash, adding
-     an engine via the `bin/engine-*` contract).
+     an engine via the envelope contract).
 - **Screenshots:** stored in `docs/assets/`; captured during the rollout
-  runs (first webBooks feature run and the greenfield demo). Minimum set:
-  hero shot of the loop mid-run with background engine jobs, the roadmap +
-  task files in an editor, an arbitration verdict, and a finished-run diff
-  summary. Refreshed whenever UX-visible behavior changes.
-- **Commit hygiene:** history starts clean at publication (squashed); commits
-  carry no AI co-author trailers; no personal machine paths or secrets in any
+  runs. Minimum set: hero shot of the loop mid-run with background engine
+  jobs, the roadmap + task files in an editor, an arbitration verdict, and a
+  finished-run diff summary. Refreshed whenever UX-visible behavior changes.
+- **Commit hygiene:** history starts clean at publication; commits carry no
+  AI co-author trailers; no personal machine paths or secrets in any
   committed file — wrappers resolve engine binaries from `PATH` and
   user-specific config from env vars, never hardcoded paths.
 - **Generalization requirement:** nothing in skills/, bin/, or templates/ may
   assume this author's machine. Home-directory references use `$HOME`;
   engine model/effort defaults are overridable via an `orchid.config`
-  (simple env-style file) in the target repo.
-- **Not included in v1 distribution:** engine adapters beyond
-  codex/agy/claude; CI; package-manager publishing. Contributions can add
-  engines by writing a new `bin/engine-*` wrapper honoring the same contract
-  (prompt via arg or stdin, output file, exit codes: 0 ok / 75 rate-limited /
-  other fail).
-
-## Remote interaction (seam in v1, channel post-v1)
-
-Human answer latency is the throughput ceiling of a fully-autonomous run: a
-blocker raised at 2am and seen at 9am idles that task for seven hours. The
-design therefore treats "reach the user off-machine" as a first-class seam:
-
-- **v1 seam:** all user-facing questions flow through one wrapper,
-  `bin/notify` (default implementation: append to `BLOCKERS.md` + terminal).
-  Questions are phrased multiple-choice wherever possible so they can be
-  answered from a phone lock screen. Answers are consumed from
-  `.orchid/answers/` by the next reconciliation tick — the tick loop is the
-  message pump; no new moving parts.
-- **First post-v1 milestone:** two-way Telegram bot backend for `bin/notify`
-  (push question → user replies in Telegram → tick polls replies into
-  `.orchid/answers/`). Slack/Discord are equivalent alternates. An unanswered
-  question is just a blocked task: bounded, visible, and non-blocking for all
-  other tasks.
-- **Explicit non-goal:** a native phone app. Push + two-way Q&A comes free
-  with messaging platforms; run status can be a static page generated from
-  `.orchid/` state per tick. Session management from mobile is expected to
-  arrive via Claude Code's own web/mobile surface rather than orchid.
+  (key=value data file, never shell-sourced) in the target repo.
 
 ## Future (explicitly deferred)
 
@@ -285,5 +394,9 @@ design therefore treats "reach the user off-machine" as a first-class seam:
 - Two-way Telegram/Slack notify backend (see Remote interaction — first
   post-v1 milestone).
 - Static mobile-readable status page generated from `.orchid/` state.
+- Risk-tiered review routing (single reviewer for low-risk tasks) — pending
+  user decision; v1 keeps dual review for every task.
 - Companion CLI with usage/cost ledger, if observability outgrows `git log`.
 - Per-task engine routing beyond the fixed role split.
+- Task resource declarations beyond `exclusive` (ports, databases,
+  containers) with automatic allocation.
