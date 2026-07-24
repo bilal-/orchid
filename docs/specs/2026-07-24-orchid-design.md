@@ -22,16 +22,22 @@ session is disposable; the files are the truth.
 ## Requirements (from design session)
 
 - **Run model:** semi-attended. An interactive Claude Code session with a
-  self-paced `/loop`; the machine stays awake with the terminal open. State is
-  designed so a headless driver could be added later without redesign.
+  self-paced `/loop` is the primary surface; the machine stays awake. The
+  LLM-free pump plus headless `orchid-tick` keep the run advancing when the
+  interactive session is rate-limited or closed; only service packaging
+  (survive reboots) is deferred.
 - **Scope:** both existing repos (multi-day features/refactors) and greenfield
   products (scaffold from requirements) from day one.
-- **Engine roles:** Codex implements. Antigravity AND a fresh Codex review
-  session both review. Claude arbitrates all disagreements and makes final
-  judgment. Plans are always critiqued by Codex before execution.
+- **Engine roles (preference-ordered, not fixed):** default wiring is Codex
+  implements; Antigravity and a fresh Codex review session review; Claude
+  arbitrates and orchestrates; plans are always critiqued by a non-authoring
+  engine. Every role has an ordered fallback list (see Engine availability &
+  role failover) so a rate-limited engine degrades the run instead of
+  stopping it.
 - **Autonomy:** fully autonomous — no user approval gates. Only genuine
   blockers are surfaced to the user. Autonomy is bounded by the Execution
-  policy below.
+  policy below. A run must never block solely because one engine hit its
+  usage limit.
 - **Distribution:** public GitHub repository for general benefit (see
   Distribution section).
 - **Non-goals (v1):** daemon/service, web UI, cost ledger, multi-user,
@@ -45,15 +51,22 @@ Two locations; strict split between tooling (global, this repo) and run state
 ### Tool repo: `~/workspace/personal/orchid/`
 
 ```
+PROTOCOL.md                 # engine-neutral tick procedure — the single source
+                            # of orchestration truth, consumed by every runner
 skills/
-  orchid/SKILL.md           # main loop protocol the orchestrator follows each tick
-  orchid-plan/SKILL.md      # requirements → roadmap, mandatory codex critique
+  orchid/SKILL.md           # Claude runner: interactive loop following PROTOCOL.md
+  orchid-plan/SKILL.md      # requirements → roadmap, mandatory external critique
   orchid-resume/SKILL.md    # re-enter a run after crash/restart/rate-limit
 bin/
   orchid-doctor             # preflight validation (see Preflight)
+  orchid-pump               # LLM-free heartbeat: invokes one tick on the best
+                            # available orchestrator engine (see failover)
+  orchid-tick               # runs a single tick headless via claude -p or
+                            # codex exec, prompt generated from PROTOCOL.md
   engine-codex              # wraps `codex exec` (implementer role)
   engine-codex-review       # wraps `codex exec review` (reviewer, fresh session)
   engine-agy                # wraps `agy -p` (reviewer role, inline-diff mode)
+  engine-claude             # wraps `claude -p` (fallback implementer/orchestrator)
   notify                    # user-facing question/notification channel
 templates/
   roadmap.md  task.md  review.md
@@ -76,8 +89,9 @@ tasks/T001.md ...           # one spec per task (frontmatter + body)
 reviews/T001-agy.md, T001-codex.md
 jobs/T001.json ...          # write-ahead job manifests (see Stuck-agent detection)
 answers/                    # user replies consumed by ticks (see Remote interaction)
+engines.json                # per-engine availability ledger (see failover)
 BLOCKERS.md                 # the only file the user is expected to read
-lock                        # run lock (flock) — one orchestrator per repo
+lock                        # run lock (flock) — one orchestrator tick at a time
 ```
 
 **State ownership rule:** `.orchid/` is mutated ONLY by the orchestrator, only
@@ -204,7 +218,9 @@ Interactive Claude Code session running `/loop` (self-paced). Each tick:
 6. Sleep with a long fallback wakeup. Background job completions re-invoke
    the session (Claude Code background-task notifications), so ticks are
    event-driven — but events are an optimization; the fallback tick plus
-   reconciliation is the guarantee (see Stuck-agent detection).
+   reconciliation is the guarantee (see Stuck-agent detection), and the
+   pump guarantees ticks continue even if this session is rate-limited or
+   gone (see Engine availability & role failover).
 
 **Scheduling rules:** tasks that modify dependency manifests (`package.json`,
 lockfiles, `Cargo.toml`, …) are serialized. When the test environment's
@@ -217,6 +233,60 @@ caches, ports, databases, or servers.
 `requirements.md` → `engine-codex` in critic mode attacks it (missing
 requirements, sequencing risk, stack choice) → the orchestrator revises →
 loop starts. No user gate.
+
+## Engine availability & role failover
+
+The run must survive any single engine hitting its usage limit — including
+the orchestrator's. Three mechanisms:
+
+**1. Engine-neutral orchestration (`PROTOCOL.md`).** The tick procedure is
+written once, engine-neutrally, in `PROTOCOL.md`. The Claude skill follows it
+interactively; `bin/orchid-tick` renders it into a headless prompt for
+`claude -p` or `codex exec`. Orchestration by Claude and orchestration by
+Codex are the same program on different runtimes — a handoff moves nothing,
+because there is nothing to move but the files. The run lock serializes
+ticks, so interactive session and headless ticks can coexist safely.
+
+**2. Availability ledger + preference lists.** `.orchid/engines.json` records
+per engine: last status, `rate_limited_until` (from `retry_after` when known,
+else exponential backoff probe), consecutive failures. Every wrapper updates
+it on every call. Roles bind to ordered preference lists, overridable in
+`orchid.config`:
+
+```
+orchestrator:  claude → codex
+implementer:   codex  → claude
+reviewer:      agy + first available engine that did not implement the task
+plan-critic:   first available engine that did not author the plan
+```
+
+The scheduler picks the first available engine per role at dispatch time and
+records the choice in task frontmatter. When a preferred engine's window
+reopens, it simply wins the next dispatch — failback is automatic and
+stateless.
+
+**3. The pump (`bin/orchid-pump`).** A rate-limited orchestrator cannot
+notice its own outage, so liveness sits below the LLM layer: the pump is a
+small LLM-free shell heartbeat (run in a spare terminal in v1) that every few
+minutes takes the run lock and, if no tick has completed recently, invokes
+`orchid-tick` on the first available orchestrator engine. It uses no quota,
+cannot be rate-limited, and turns "Fable hit its weekly cap at 3am" from a
+dead run into ticks quietly running on codex until the window resets.
+
+**Independence under failover.** "Nobody signs off on their own work" is
+enforced dynamically against the task's recorded implementer engine — if
+Claude implemented a task (as fallback), Claude does not review or solely
+arbitrate it. When outages make independence temporarily unsatisfiable, the
+affected task QUEUES rather than violates; other tasks continue. One
+taste-guard, configurable: arbitration of high-risk tasks waits (bounded,
+default 4h) for the preferred arbiter rather than settling for whichever
+engine is awake; low/medium-risk arbitration proceeds on the fallback
+immediately.
+
+**Honest caveat:** orchestration quality is not engine-symmetric — the
+preference order exists because judgment differs. Failover trades some
+judgment quality for continuity, deliberately, and only while the outage
+lasts.
 
 ## Execution policy (the autonomy boundary)
 
@@ -239,9 +309,10 @@ per role and enforced by wrappers:
 - **Engine calls:** hard timeout (default 60 min), envelope status checks,
   one automatic retry, then `attempts++`; three strikes → `blocked`.
 - **Rate limits:** `rate_limited` status (with `retry_after` when known) is
-  distinct from failure; the task re-queues untouched and the loop lengthens
-  its wakeup. Runs pause across limit windows; they never die from them and
-  never burn attempts.
+  distinct from failure; the engine is marked in `engines.json`, the task
+  re-queues untouched, and dispatch falls through to the next engine in the
+  role's preference list. A limit window pauses an engine, never the run,
+  and never burns attempts.
 - **Runaway protection:** ≤3 rework cycles per task, concurrency cap,
   reviewer stop-conditions, per-task wall-clock budget.
 - **Blockers:** appended to `BLOCKERS.md` and pushed through `bin/notify`;
@@ -332,6 +403,11 @@ design therefore treats "reach the user off-machine" as a first-class seam:
   VERDICT/REASON response. See Review completeness for size handling.
   Implementation must also test whether `agy -p` accepts stdin, which would
   lift ARG_MAX limits on inline prompts.
+- **To verify in the vertical slice (not yet tested):** `claude -p` executing
+  one full tick headless; `codex exec` as orchestrator spawning engine
+  subprocesses and performing git operations under its sandbox (sandbox
+  policy may need explicit process/exec allowances for the orchestrator
+  role, distinct from the implementer profile).
 - **Design review round:** the spec was critiqued by codex (10 findings) and
   agy (8 findings) in headless critic sessions; accepted findings are
   incorporated throughout (job identity, review immutability, test-first
@@ -394,8 +470,10 @@ design therefore treats "reach the user off-machine" as a first-class seam:
 
 ## Future (explicitly deferred)
 
-- Headless driver (launchd/cron invoking `claude -p` ticks) for fully
-  unattended runs surviving reboots.
+- Fully unattended operation: installing `orchid-pump` as a launchd/cron
+  service so runs survive reboots and closed terminals (the pump and
+  headless `orchid-tick` already exist in v1; only the service packaging is
+  deferred).
 - Two-way Telegram/Slack notify backend (see Remote interaction — first
   post-v1 milestone).
 - Static mobile-readable status page generated from `.orchid/` state.
