@@ -57,6 +57,10 @@ skills/
   orchid/SKILL.md           # Claude runner: interactive loop following PROTOCOL.md
   orchid-plan/SKILL.md      # requirements → roadmap, mandatory external critique
   orchid-resume/SKILL.md    # re-enter a run after crash/restart/rate-limit
+  orchid-review/SKILL.md    # archetype entry: standalone multi-engine review
+  orchid-refactor/SKILL.md  # archetype entry: behavior-preserving refactor run
+  orchid-test/SKILL.md      # archetype entry: test/eval generation run
+  orchid-migrate/SKILL.md   # archetype entry: framework/API migration run
 bin/
   orchid-doctor             # preflight validation (see Preflight)
   orchid-pump               # LLM-free heartbeat: invokes one tick on the best
@@ -175,6 +179,24 @@ Role rules:
   arbitration-level trivia (≤ ~10 lines); anything larger returns to Codex as
   a rework spec with `attempts` incremented.
 
+## Run archetypes (the SDLC suite)
+
+Orchid covers the SDLC through archetypes — entry skills that configure the
+SAME factory (state machine, envelope, guardrails, failover are shared; only
+task defaults, acceptance shape, and reviewer lenses vary). One machine, five
+doors. New archetypes are template bundles, not code.
+
+| Archetype | Entry | What changes vs. the default pipeline |
+|---|---|---|
+| feature | `orchid-plan` | the default: full pipeline as specified above |
+| review | `orchid-review` | degenerate run with no implement phase: reviewers + arbitration over an existing branch/PR/diff (`base..head` passed in); output is a verdict report in `.orchid/reviews/`, not a merge |
+| refactor | `orchid-refactor` | precondition task: characterization tests exist (generated first if missing); acceptance = characterization suite passes UNCHANGED plus stated goal metric (size/complexity/duplication); reviewer lens: behavior preservation |
+| test | `orchid-test` | tasks generate tests/evals; acceptance = coverage delta reached AND new tests bite (they fail against a quick mutation of the code under test — a test that cannot fail is noise) |
+| migrate | `orchid-migrate` | inventory task first (enumerate call sites), then batched per-site tasks; acceptance = suite green AND a grep gate proving no deprecated API remains |
+
+Archetype tasks carry an `archetype` frontmatter field so reviewers receive
+the matching lens automatically.
+
 ### Review completeness (inline agy reviews)
 
 `engine-agy` builds the review prompt from `git diff base_sha..candidate_sha`
@@ -195,8 +217,15 @@ atomically (temp file + rename):
   "session_id": "...", "base_sha": "...", "candidate_sha": "...",
   "started_at": "...", "ended_at": "...", "retry_after": null,
   "scope_complete": true, "verdict": "approve|request-changes|n/a",
-  "findings": [ { "severity": "...", "title": "...", "detail": "..." } ] }
+  "findings": [ { "severity": "...", "title": "...", "detail": "..." } ],
+  "evidence": { "commands_run": ["..."], "test_output": "<captured log path>" } }
 ```
+
+**Trajectory evidence, not claims:** an implementer that says "tests pass"
+without `evidence.test_output` showing an actual run has NOT passed testing —
+a fluent output that skipped its verification steps is a worse failure than a
+visible error, because nothing downstream will catch it. Wrappers capture
+what actually executed; `testing` and acceptance gates check evidence.
 
 Codex output uses its output-schema support; `engine-agy` validates/normalizes
 agy's response in the wrapper. Schema violations → `malformed`, which fails
@@ -234,6 +263,14 @@ caches, ports, databases, or servers.
 requirements, sequencing risk, stack choice) → the orchestrator revises →
 loop starts. No user gate.
 
+**Context pack:** plan phase also creates/refreshes `.orchid/context.md` —
+a dense, engine-neutral brief on the target repo (stack, layout, conventions,
+hard rules, test/build commands), the AGENTS.md pattern. Wrappers inject it
+into every implementer and reviewer prompt so each fresh engine session
+starts with the context a new team member would need, instead of paying a
+rediscovery tax per session. It is versioned in git and updated when reality
+drifts (e.g. a rework caused by a convention the pack failed to state).
+
 ## Engine availability & role failover
 
 The run must survive any single engine hitting its usage limit — including
@@ -264,6 +301,14 @@ The scheduler picks the first available engine per role at dispatch time and
 records the choice in task frontmatter. When a preferred engine's window
 reopens, it simply wins the next dispatch — failback is automatic and
 stateless.
+
+**Cost-aware routing (second dimension):** availability decides WHICH engine;
+a role×risk matrix in `orchid.config` decides at what model/effort tier —
+low-risk reviews route to cheap fast models (agy exposes
+gemini-3.6-flash-low through gemini-3.1-pro-high; codex and claude expose
+effort levels), while planning, arbitration, and high-risk review keep the
+premium tiers. Spending frontier-model tokens to review a docs tweak is
+waste; the matrix makes the routing deliberate instead of habitual.
 
 **3. The pump (`bin/orchid-pump`).** A rate-limited orchestrator cannot
 notice its own outage, so liveness sits below the LLM layer: the pump is a
