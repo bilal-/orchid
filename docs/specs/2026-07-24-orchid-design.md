@@ -256,9 +256,34 @@ Mechanisms:
   (prompt via arg or stdin, output file, exit codes: 0 ok / 75 rate-limited /
   other fail).
 
+## Remote interaction (seam in v1, channel post-v1)
+
+Human answer latency is the throughput ceiling of a fully-autonomous run: a
+blocker raised at 2am and seen at 9am idles that task for seven hours. The
+design therefore treats "reach the user off-machine" as a first-class seam:
+
+- **v1 seam:** all user-facing questions flow through one wrapper,
+  `bin/notify` (default implementation: append to `BLOCKERS.md` + terminal).
+  Questions are phrased multiple-choice wherever possible so they can be
+  answered from a phone lock screen. Answers are consumed from
+  `.orchid/answers/` by the next reconciliation tick — the tick loop is the
+  message pump; no new moving parts.
+- **First post-v1 milestone:** two-way Telegram bot backend for `bin/notify`
+  (push question → user replies in Telegram → tick polls replies into
+  `.orchid/answers/`). Slack/Discord are equivalent alternates. An unanswered
+  question is just a blocked task: bounded, visible, and non-blocking for all
+  other tasks.
+- **Explicit non-goal:** a native phone app. Push + two-way Q&A comes free
+  with messaging platforms; run status can be a static page generated from
+  `.orchid/` state per tick. Session management from mobile is expected to
+  arrive via Claude Code's own web/mobile surface rather than orchid.
+
 ## Future (explicitly deferred)
 
 - Headless driver (launchd/cron invoking `claude -p` ticks) for fully
   unattended runs surviving reboots.
+- Two-way Telegram/Slack notify backend (see Remote interaction — first
+  post-v1 milestone).
+- Static mobile-readable status page generated from `.orchid/` state.
 - Companion CLI with usage/cost ledger, if observability outgrows `git log`.
 - Per-task engine routing beyond the fixed role split.
