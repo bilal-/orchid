@@ -147,9 +147,14 @@ one pass only." This prevents the infinite-diligence loop.
 Role rules:
 
 - Codex implements on branch `task/<id>` in its own git worktree.
-- Reviewers run in parallel: `agy -p` and a fresh `codex exec review` session
-  (never the implementing session — nobody signs off on their own work; agy is
-  the fully independent party).
+- **Review routing is risk-tiered:** tasks with `risk_threshold: low` (docs,
+  config tweaks, trivial changes — assigned at plan time, orchestrator may
+  upgrade but never downgrade after implementation) get a single reviewer:
+  agy inline (the party fully independent of the implementer), falling back
+  to `codex exec review` when agy is unavailable or the diff exceeds inline
+  budgets. Medium- and high-risk tasks get dual review in parallel:
+  `agy -p` and a fresh `codex exec review` session (never the implementing
+  session — nobody signs off on their own work).
 - The orchestrator arbitrates: findings below the task's risk threshold never
   block; reviewer agreement is strong signal; on disagreement the orchestrator
   reads the diff and decides. The orchestrator does not implement, except
@@ -394,8 +399,6 @@ design therefore treats "reach the user off-machine" as a first-class seam:
 - Two-way Telegram/Slack notify backend (see Remote interaction — first
   post-v1 milestone).
 - Static mobile-readable status page generated from `.orchid/` state.
-- Risk-tiered review routing (single reviewer for low-risk tasks) — pending
-  user decision; v1 keeps dual review for every task.
 - Companion CLI with usage/cost ledger, if observability outgrows `git log`.
 - Per-task engine routing beyond the fixed role split.
 - Task resource declarations beyond `exclusive` (ports, databases,
