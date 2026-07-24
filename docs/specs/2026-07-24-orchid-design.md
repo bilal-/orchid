@@ -433,11 +433,15 @@ design therefore treats "reach the user off-machine" as a first-class seam:
   answered from a phone lock screen. Answers are consumed from
   `.orchid/answers/` by the next reconciliation tick — the tick loop is the
   message pump; no new moving parts.
-- **First post-v1 milestone:** two-way Telegram bot backend for `bin/notify`
-  (push question → user replies in Telegram → tick polls replies into
-  `.orchid/answers/`). Slack/Discord are equivalent alternates. An unanswered
-  question is just a blocked task: bounded, visible, and non-blocking for all
-  other tasks.
+- **First post-v1 milestone:** a two-way messaging backend for
+  `orchid notify`. Preferred route: piggyback on OpenClaw (Steinberger's
+  open-source personal-assistant gateway) rather than writing our own bot —
+  it already bridges WhatsApp/Telegram/Discord locally; orchid posts
+  questions through it and ticks poll replies into `.orchid/answers/`. An
+  orchid AgentSkill for OpenClaw additionally enables "how's the run?" →
+  `orchid status` from the phone. A hand-rolled Telegram bot remains the
+  fallback for users not running OpenClaw. An unanswered question is just a
+  blocked task: bounded, visible, and non-blocking for all other tasks.
 - **Explicit non-goal:** a native phone app. Push + two-way Q&A comes free
   with messaging platforms; run status can be a static page generated from
   `.orchid/` state per tick. Session management from mobile is expected to
@@ -549,7 +553,12 @@ design therefore treats "reach the user off-machine" as a first-class seam:
 - Two-way Telegram/Slack notify backend (see Remote interaction — first
   post-v1 milestone).
 - Static mobile-readable status page generated from `.orchid/` state.
-- Companion CLI with usage/cost ledger, if observability outgrows `git log`.
+- Companion usage/cost ledger, if observability outgrows `git log`.
 - Per-task engine routing beyond the fixed role split.
+- `engine-hermes` adapter (Nous Research's MIT agent, per-token on user's
+  provider) — widens the subscription matrix for users without Codex or
+  Antigravity; only the envelope wrapper is needed. Orchid never builds ON
+  agent runtimes (Hermes, OpenClaw) — they plug in as engines or notify
+  channels; the deterministic core stays ours.
 - Task resource declarations beyond `exclusive` (ports, databases,
   containers) with automatic allocation.
