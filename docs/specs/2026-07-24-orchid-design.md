@@ -148,6 +148,36 @@ loop starts. No user gate.
   `codex exec resume --last`, re-attaches or relaunches jobs, and continues.
   State files are the only truth; the session is disposable.
 
+## Stuck-agent detection
+
+Silent stalls are the primary threat to multi-day autonomy. Four distinct
+stuck modes, each with its own defense:
+
+| Mode | Description | Defense |
+|---|---|---|
+| Dead | process crashed/killed | PID liveness check each tick |
+| Hung | alive but frozen | stall detector: log mtime unchanged ~10 min → kill, `attempts++` |
+| Blocked on prompt | waiting for input headless mode can't give | made impossible: wrappers must pass never-prompt flags; verified agy soft-denies and exits rather than hanging |
+| Spinning | alive, output flowing, no progress | orchestrator judgment on log tail each tick (repetition, circular retries) → kill + rework spec naming the dead-end |
+
+Mechanisms:
+
+- **Job manifests:** every engine launch writes `.orchid/jobs/<task>.json`
+  (pid, started_at, log_path, engine, attempt). The orchestrator always knows
+  what *should* be running.
+- **Reconciliation ticks, never trust:** the loop treats background-completion
+  notifications as an optimization only. Every tick — including the
+  guaranteed fallback wakeup — re-derives job status from disk: PID alive?
+  log growing? worktree commits advancing? A lost notification costs minutes,
+  never days.
+- **Escalation ladder per job:** stall (~10 min silent) → kill and retry;
+  hard timeout (60 min) → kill, `attempts++`; task wall-clock budget
+  exhausted or 3 attempts → `blocked`, surfaced in `BLOCKERS.md`. No task can
+  silently consume a day.
+- **Spinning is a judgment call, not a metric:** each tick the orchestrator
+  reads only the log tail (cheap) and kills work that is circling; the rework
+  spec for the next attempt documents the dead-end so it is not repeated.
+
 ## Verification findings (2026-07-24, empirical)
 
 - `codex exec --sandbox read-only "<prompt>"` works headless: 3.6 s
