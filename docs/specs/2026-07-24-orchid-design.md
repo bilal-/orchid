@@ -179,10 +179,37 @@ loop starts. No user gate.
   created with `gh repo create` at implementation start, once README and
   LICENSE exist so the first public state is presentable.
 - **License:** MIT.
-- **README** covers: what orchid is, the role triangle, prerequisites
-  (Claude Code + Codex CLI required; Antigravity optional), install
-  (`install.sh`), quickstart (point it at a repo, write `requirements.md`,
-  start the loop), the state-file format, and the guardrail model.
+- **README** is a first-class deliverable, written to sell the idea to a
+  stranger in 30 seconds and get them running in 10 minutes. Required
+  structure:
+  1. **Hero:** one-paragraph pitch — "you're paying for two or three AI
+     coding subscriptions; orchid makes them work as a team" — followed by a
+     hero screenshot of a live run.
+  2. **How it works:** the role triangle (orchestrator / implementer /
+     reviewers / arbiter) as a Mermaid diagram (renders natively on GitHub),
+     plus a short narrative of one task's journey through the state machine.
+  3. **Why this design:** subscription billing via first-party headless CLIs
+     (no API keys, no per-token metering), no daemon, git as the only state.
+  4. **Prerequisites & subscription matrix:** a table of supported
+     combinations — Claude Code required as orchestrator; Codex CLI required
+     as implementer; Antigravity optional as second reviewer — with an
+     explicit section "What if I have more than one subscription?" mapping
+     each combo (Claude+Codex, Claude+Codex+Antigravity, Claude-only
+     degraded mode) to which roles run where and what you gain from each
+     added subscription.
+  5. **Install:** `git clone` + `./install.sh`, what it symlinks and where;
+     uninstall note.
+  6. **Quickstart:** existing-repo walkthrough (write `requirements.md`,
+     start the loop) and greenfield walkthrough, each with a screenshot of
+     the roadmap/tasks state and the loop ticking.
+  7. **State files, guardrails, and how to intervene** (edit task files,
+     `BLOCKERS.md`), then FAQ (rate limits, resuming after a crash, adding
+     an engine via the `bin/engine-*` contract).
+- **Screenshots:** stored in `docs/assets/`; captured during the rollout
+  runs (first webBooks feature run and the greenfield demo). Minimum set:
+  hero shot of the loop mid-run with background engine jobs, the roadmap +
+  task files in an editor, an arbitration verdict, and a finished-run diff
+  summary. Refreshed whenever UX-visible behavior changes.
 - **Commit hygiene:** history starts clean at publication (squashed); commits
   carry no AI co-author trailers; no personal machine paths or secrets in any
   committed file — wrappers resolve engine binaries from `PATH` and
