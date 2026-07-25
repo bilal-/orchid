@@ -548,7 +548,11 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
 
 Private at implementation start; public at end of v1 after dogfooding
 produces real screenshots. MIT. README: hero + screenshot; how-it-works
-diagram + one task's journey; why this design; **any engine, any role**
+diagram + one task's journey — including an explicit **"who runs whom"**
+panel: engines never spawn engines; the deterministic kernel launches every
+engine and brokers all results as files; the orchestrating engine needs
+exactly one power — running a bash CLI — and every other role×engine combo
+is disabled until the capability suite proves it; why this design; **any engine, any role**
 matrix (capability table, tested defaults, degraded-independence labeling,
 worked `role.*` swap example); install/uninstall; quickstarts (existing +
 greenfield) with screenshots; state files, guardrails, operator verbs;
