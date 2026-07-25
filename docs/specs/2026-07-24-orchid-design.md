@@ -114,6 +114,7 @@ libexec/                    # TIER 1 — deterministic verbs. Never invoke an
   orchid-merge              #   transactional merge
   orchid-jobs               #   launch/check/reconcile (kernel launcher)
   orchid-plugins            #   full lifecycle verbs (v1-m2)
+  orchid-journal            #   append decision/lesson entries (see Memory)
   orchid-status             #   task + run-level status
   orchid-notify             #   user questions out
   orchid-answer             #   user answers in (idempotent)
@@ -145,6 +146,8 @@ unblock/retry/set`), never hand-edits.
 requirements.md  roadmap.md  baseline.md  context.md
 tasks/T001.md ...           # frontmatter + body; state machine lives here
 reviews/ ...                # envelopes (renamed from spool), verify/merge logs
+journal.md                  # v0: append-only decision journal (see Memory)
+lessons.md                  # v1: cross-run repo lessons (see Memory)
 plugins.lock                # v1: resolved plugin identities for this run
                             #   (id, version, digest, source, contract,
                             #   capability-test result) — a run's behavior
@@ -507,6 +510,38 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   allowlist, expiry; adapter gets NO shell/repo access); Telegram fallback.
 - Non-goal: native app. `orchid status` (later a static page) is the
   read surface.
+
+## Memory & resumption
+
+Orchid has memories, deliberately not thoughts. Durable files carry every
+fact needed to resume or hand off; in-flight LLM reasoning dies with its
+session BY DESIGN — stateless ticks re-derive judgment from durable facts,
+which is precisely what lets a different engine (or a fresh session) pick up
+mid-run: facts and decisions transfer between models; chains of thought do
+not.
+
+Memory layers (all in git, all consumed on resume):
+
+- **Working state:** task frontmatter + roadmap — where everything stands.
+- **Episodic:** rework specs in task bodies (failed approaches, named
+  dead-ends), review envelopes, verify/merge evidence.
+- **Decisions with their WHY (v0):** `journal.md`, append-only via
+  `orchid journal <task-id> "<entry>"`. PROTOCOL requires an entry for:
+  every arbitration verdict (one-paragraph rationale), risk upgrades,
+  spinning-kills (the dead-end named), blocker resolutions, and rebase
+  re-review outcomes. A successor orchestrator — after crash, failover, or
+  engine switch — reads the journal tail during `orchid-resume` and inherits
+  the judgment, not just the state, so settled questions stay settled.
+- **Semantic:** `context.md` — what the repo IS (static per plan).
+- **Cross-run lessons (v1):** `lessons.md`, appended via
+  `orchid journal --lesson` when the orchestrator identifies a durable
+  repo truth (flaky test, unstated convention, engine-specific weakness).
+  Injected alongside `context.md` into every request document; survives
+  across runs — run N+1 starts smarter than run N started.
+
+The journal and lessons are orchestrator-written prose for future
+orchestrators and humans; they are memory, never control flow — the state
+machine remains the only authority on what happens next.
 
 ## Operator walkthrough (the human's seat)
 
