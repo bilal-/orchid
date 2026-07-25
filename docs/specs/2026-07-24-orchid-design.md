@@ -1,8 +1,8 @@
-# Orchid — Design Spec (v4)
+# Orchid — Design Spec (v5)
 
 **Date:** 2026-07-25 (v1 2026-07-24)
 **Status:** Approved through three external review rounds (codex + agy) plus
-internal audits; v4 reconciles the round-3 three-way audit; pending user
+internal audits; v5 reconciles the round-4 three-way audit; pending user
 review. Plan redo follows user approval.
 
 ## Purpose
@@ -36,8 +36,8 @@ git — sessions are disposable; the files are the truth.
 
 - **Run model:** semi-attended. An interactive Claude Code session is the
   primary surface; the machine stays awake. The LLM-free pump plus headless
-  `orchid-tick` (v1) keep the run advancing when the interactive session is
-  rate-limited or closed; service packaging (survive reboots) is deferred.
+  `orchid-tick` (v1-m2) keep the run advancing when the interactive session
+  is rate-limited or closed; service packaging ships in v1-m4.
 - **Scope:** existing repos first (v0); greenfield products (v1).
 - **Engine roles:** fully configurable via `role.*` keys from v0; orchid
   never hard-codes an engine to a role and kernel code never branches on a
@@ -52,11 +52,13 @@ git — sessions are disposable; the files are the truth.
   orchestration itself continues on a fallback engine.
 - **Distribution:** public GitHub repository for general benefit; public
   only after dogfooding (see Distribution).
-- **Non-goals (all stages):** daemon/service, web UI, cost ledger,
-  multi-user, cross-machine operation, chat-style inter-agent messaging,
-  native phone app, central plugin registry (provenance and pinning are
-  required; a registry is not). Orchid never builds ON agent runtimes
-  (OpenClaw, Hermes) — they plug in as engines or notify channels only.
+- **Non-goals (all stages):** HOSTED or dynamic services (a locally
+  generated static status page and launchd/cron packaging of the pump are
+  in scope; a server is not), web app UI, usage/cost ledger, multi-user,
+  cross-machine operation, chat-style inter-agent messaging, native phone
+  app, central plugin registry (provenance and pinning are required; a
+  registry is not). Orchid never builds ON agent runtimes (OpenClaw,
+  Hermes) — they plug in as engines or notify channels only.
 
 ## Delivery stages
 
@@ -68,29 +70,34 @@ git — sessions are disposable; the files are the truth.
   jobs, and PROTOCOL alike, launch-by-role, and a fake non-default-binding
   test proving no engine name is hard-coded. Repo-local plugins DISABLED (no
   trust store yet). Manifest validation minimal (existence + executable).
-- **v1 — the full delivery**, built in four dependency-ordered milestones,
-  ending in public release:
-  - **v1-m1 (core autonomy):** pump + failover (capability-suite gated),
-    concurrency 2 with the rebase/re-review rules below, risk-tiered dual
-    review, greenfield mode, `review` archetype.
-  - **v1-m2 (plugin platform):** full manifest schema, `orchid plugins
-    list/validate/trust/install/update/remove/test/audit`, conformance kit,
-    plugin lockfile, kernel launcher hygiene.
-  - **v1-m3 (SDLC suite):** hooks + role registry;
-    `refactor`/`test`/`migrate` archetypes with their ecosystem tooling
-    adapters.
-  - **v1-m4 (ecosystem):** OpenClaw notify channel + orchid AgentSkill,
-    Hermes engine adapter (reviewer role first), API-backed Kimi reviewer,
-    Perplexity `researcher` role — each doubling as a `docs/extending/`
-    tutorial; cost/risk routing matrix; static status page; service
-    packaging (launchd/cron pump). Escape hatch: third-party upstream churn
-    can delay an individual adapter, never the launch.
-  - **Release gate:** the full docs suite (README + quickstart +
-    configuration reference + per-engine guides + extending guides +
-    troubleshooting + FAQ) passing the 15-minute clean-machine rehearsal
-    (see Installation & configuration), screenshots from real dogfood runs,
-    then **public release**. Extension guides reference plugins that
-    actually shipped (never promise unshipped references).
+- **v1 — the full delivery**, in four milestones whose order follows the
+  dependency graph (round-4 consensus fix: platform foundations BEFORE the
+  features gated on them):
+  - **v1-m1 (plugin & role foundation):** minimal manifest schema with
+    capability declarations, core role DESCRIPTORS (the five built-in roles
+    formalized — required in spirit since v0), the pinned resolver, plugin
+    lockfile, kernel launcher hygiene, the role×engine capability-suite
+    runner, `orchid plugins list/validate/trust`.
+  - **v1-m2 (core autonomy):** pump + failover (now actually gateable on
+    m1's capability suite), concurrency 2 with the rebase/re-review rules,
+    risk-tiered dual review, greenfield mode, `review` archetype.
+  - **v1-m3 (SDLC suite + custom extensibility):** hooks; CUSTOM role
+    registration opens (core registry existed since m1);
+    `refactor`/`test`/`migrate` archetypes with their tooling adapters;
+    third-party plugin lifecycle UX (`install/update/remove/test/audit`) +
+    distributable conformance kit.
+  - **v1-m4 (ecosystem + polish):** split into release-blocking core —
+    static status page, service packaging (launchd/cron pump), Homebrew
+    tap, full docs suite — and CONDITIONAL reference adapters (OpenClaw
+    channel + AgentSkill, Hermes, Kimi reviewer, Perplexity researcher):
+    upstream churn may drop an individual adapter from launch, and any
+    dropped adapter automatically disappears from the README headline,
+    compatibility matrix, and tutorial list. The escape hatch never waives
+    a core conformance gate.
+  - **Release checklist (binary, no judgment calls at the gate):** all
+    m1–m3 conformance suites green; m4 core complete; docs suite passes the
+    15-minute clean-machine rehearsal; screenshots from real dogfood runs;
+    works-with claims match actually-shipped adapters; THEN public release.
 
 ## Architecture
 
@@ -133,15 +140,52 @@ templates/  install.sh  docs/specs/  docs/extending/  README.md  LICENSE
 ```
 
 **The determinism boundary (hard rule, tier 1 only):** `libexec/` verbs are
-deterministic plumbing — verbs over files, no LLM calls, no daemon, no
-database, no message routing. Runners and engines are effectful and named as
-such; they hold no orchestration logic.
+deterministic plumbing — state transitions over files: no LLM calls, no
+daemon, no database, no message routing, and — round-4 fix — **no spawning
+of long-lived processes.** `orchid jobs launch` is therefore reclassified:
+the CLI keeps the ergonomic entry point, but it delegates to the tier-2
+launcher (`runners/orchid-launch`), and is documented as effectful. Tier-1
+`orchid jobs` retains only `prepare` (mint job_id, write manifest), `check`,
+and `reconcile`.
 
-**Single-writer rule:** durable state is mutated ONLY through tier-1 verbs,
-ONLY by the process holding the run lock. Engines, runners, hooks, and
-custom roles produce results exclusively as spool envelopes; the tick applies
-them through verbs. Human intervention also uses verbs (`orchid task
-unblock/retry/set`), never hand-edits.
+**The normative process model (who runs, who authorizes):**
+
+1. A run has a monotonic **epoch**. `orchid run start|resume` (tier 1)
+   increments the epoch, fences out stale processes, and records the
+   orchestrating front-end.
+2. The orchestrating engine is either operator-started (the interactive
+   session — the ONE process the kernel does not launch; this privilege
+   exception is explicit, and its authority derives from holding the
+   current lease, not from how it was started) or kernel-launched by the
+   pump (`orchid-tick`).
+3. The orchestrator holds the **lease** (identity + epoch, refreshed per
+   turn). Individual verb invocations are separate short-lived processes:
+   each takes the mkdir lock for its own transaction and validates
+   `ORCHID_EPOCH` (passed by the orchestrator, minted at `run
+   start/resume`). A verb bearing a stale epoch refuses to run — fencing,
+   so a zombie orchestrator from before a crash can never mutate state.
+4. Engines are launched ONLY by the tier-2 launcher, which writes the
+   manifest via tier-1 `jobs prepare` first. Engines never spawn engines.
+
+**Single-writer rule with a complete ownership table** — every durable file
+has exactly one writing verb; anything not listed is read-only for everyone:
+
+| File | Sole writer (verb) |
+|---|---|
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry` |
+| `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) |
+| `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
+| `context.md` | `orchid plan apply` / `orchid plan refresh-context` |
+| `journal.md` | `orchid journal add` (also auto-written by reason-bearing verbs) |
+| `lessons.md` | `orchid lessons add/update/retire/consolidate` |
+| `baseline.md` | `orchid init` |
+| `reviews/*` | `orchid jobs reconcile` (envelopes), `orchid verify`/`orchid merge` (evidence), `orchid run accept` (acceptance) |
+| `plugins.lock` | `orchid plugins lock` |
+| `BLOCKERS.md` | `orchid notify` |
+
+Task/run schemas are versioned (`schema: 1` in frontmatter) and include the
+scheduling and budget fields the loop relies on: `exclusive`, `resources`,
+`wallclock_budget_s`, `started_at`, `run_id`.
 
 ### Run state: `<target-repo>/.orchid/`
 
@@ -241,23 +285,38 @@ Front-ends (Claude skill, headless tick, a future TUI) are a documented
 CONVENTION — anything that executes PROTOCOL.md through verbs — not a
 discovered plugin kind.
 
-**Engine invocation — the request document.** `orchid jobs launch` invokes
-`<plugin>/run <request.json>` where the request contains:
+**Engine invocation — request document + input pack.** The tier-2 launcher
+invokes `<plugin>/run <request.json>`. Requests are a discriminated union on
+`operation` (`implement | review | critique | research | hook | orchestrate`
+— the headless tick itself uses the same contract). Common fields:
 
 ```json
-{ "request": 1, "job_id": "j-<nonce>", "task": "T001", "attempt": 3,
-  "role": "reviewer", "operation": "review",
+{ "request": 1, "job_id": "j-<nonce>", "run_id": "r-003", "epoch": 17,
+  "task": "T001", "attempt": 3, "role": "reviewer", "operation": "review",
   "base_sha": "...", "candidate_sha": "...",
-  "worktree": "<abs path>", "context": "<abs path to context.md>",
-  "task_file": "<abs path>", "output": "<abs path in spool>",
-  "deadline_s": 3600, "policy": "read-only|workspace-write",
-  "model": "...", "effort": "medium" }
+  "input_pack": "<abs dir>", "output": "<abs path in spool>",
+  "worktree": "<abs path|null>", "deadline_s": 3600,
+  "policy": "read-only|workspace-write", "model": "...", "effort": "medium" }
 ```
 
-One adapter can serve many roles by branching on `operation`
-(implement/review/critique/research) — no pseudo-engine identities. Adapters
-never guess paths, never choose their own output location, and exit nonzero
-on any failure they can detect.
+**The input pack** replaces path-guessing entirely: the kernel materializes
+a per-job directory containing exactly the memory that role receives (per
+the injection table), with a `pack.json` manifest listing every artifact,
+its byte count and digest, and everything OMITTED for budget. Budgets are
+concrete: 64 KB total default (per-role overridable); correctness-critical
+inputs (task body, acceptance criteria, the diff for reviews) are
+NON-TRUNCATABLE — if they alone exceed budget, the launch fails with
+`input_overflow` rather than silently truncating; journal/lessons/context
+trim in that order (journal tail-first, context head-first), and every trim
+is recorded in the manifest. **Visibility honesty:** worktree-capable
+engines can physically read the whole checkout, including committed
+`.orchid/` state — the pack defines what they are GIVEN, the execution
+policy defines what they may DO, and review independence never rests on
+secrecy.
+
+One adapter serves many roles by branching on `operation` — no pseudo-engine
+identities. Adapters never guess paths, never choose output locations, exit
+nonzero on detectable failure.
 
 **Result envelope (versioned; fail closed).** Written atomically to the
 request's `output` path:
@@ -273,15 +332,22 @@ request's `output` path:
   "diagnostics": { "trajectory_log": "<path>" } }
 ```
 
+**Envelopes are the same union:** per-operation required payloads on top of
+the common fields — `review` → `verdict`, `scope_complete`, `findings[]`;
+`critique` → `findings[]`; `research` → `citations[]` + `summary`;
+`implement` → `commits[]` (SHAs produced) + `summary`; `hook` → typed
+artifact per hook schema; `orchestrate` → `actions[]` (the verb invocations
+the tick performed, for audit). An `ok` missing its operation's required
+payload is `malformed`.
+
 **Binding rules (anti-forgery):** `job_id` is kernel-minted per launch
 (distinct from the logical rework `attempt`); reconciliation accepts an
 envelope ONLY if a live manifest matches its `job_id`, and takes engine
 identity, role, task, and SHAs from the MANIFEST, cross-checking the
 envelope; any mismatch, replay (already-reconciled job_id), oversize, or
-schema violation → quarantine, never acceptance. Status-specific
-requirements: a reviewer `ok` without `verdict` and `scope_complete` is
-malformed. "Tests pass" is established solely by `orchid verify`, never by
-envelope claims (engine trajectories are diagnostics).
+schema violation → quarantine, never acceptance. "Tests pass" is
+established solely by `orchid verify`, never by envelope claims (engine
+trajectories are diagnostics).
 
 **Manifest (`plugin.conf`, v1) — a real compatibility contract:**
 
@@ -428,46 +494,61 @@ pending → implementing → testing → reviewing → arbitrating → merging �
 - **testing** = `orchid verify <id>`: runs `verification_commands` in the
   task worktree; records evidence (command, cwd, SHA, timestamps, exit
   codes, log digest). Sole acceptance authority for tests.
-- **merging** = `orchid merge <id>`: serialized, transactional. **Rebase
-  rule (hardened, round 3):** if integration HEAD ≠ `base_sha`, the
-  candidate is rebased onto HEAD and then UNCONDITIONALLY re-verified — a
-  textually clean rebase is not semantically safe against parallel changes.
-  Reviews are invalidated and re-run as a delta review (reviewers receive
-  the range-diff and the new base) — full re-review if the delta is
-  non-trivial. Only then: merge in a temp worktree, run the suite, advance
-  the integration ref on pass; `validation_failed` returns that exact
-  candidate to rework with logs. **v0 baseline semantics:** the suite must
-  pass, full stop; `baseline.md` records pre-existing failures for humans.
-  Baseline-aware comparison is post-v1.
-- **Attempt fairness:** `attempts` increments on verify-FAIL or arbitration
-  rejection. If a rework's failure/finding signature is DISJOINT from the
-  previous attempt's (distinct forward progress, e.g. new review nits after
-  fixing prior ones), the orchestrator may decline to count it; the ≤3 cap
-  targets repeated identical failures. The per-task wall-clock budget is the
-  unconditional backstop. `infra_failures` (timeout/auth/rate_limited/crash)
-  NEVER consume attempts.
+- **merging** = `orchid merge <id>`: serialized, transactional, and — round-4
+  determinism fix — NEVER triggers reviews itself. If integration HEAD ≠
+  `base_sha`, the verb performs the rebase, then exits
+  `rebase_rereview_required` (code 5), resetting the task to `testing` with
+  updated SHAs. The TICK then relaunches verify and reviews (delta review:
+  reviewers receive the range-diff and new base; full re-review if
+  non-trivial — the classification is the orchestrator's, journaled with
+  kind `rebase_review`). A rebased candidate is UNCONDITIONALLY re-verified;
+  a textually clean rebase is not semantically safe against parallel
+  changes. On a current base: merge in a temp worktree, run the suite,
+  advance the integration ref on pass; `validation_failed` returns that
+  exact candidate to rework with logs. **v0 baseline semantics:** the suite
+  must pass, full stop; `baseline.md` records pre-existing failures for
+  humans. Baseline-aware comparison is post-v1.
+- **Attempt fairness (tier-boundary clean):** `orchid task advance` to
+  rework increments `attempts` BY DEFAULT — the deterministic verb never
+  judges semantics. The orchestrator may pass `--waive-attempt --reason`
+  when the failure signature is disjoint from the prior attempt's (distinct
+  forward progress); the waiver is a journaled decision (kind
+  `attempt_waiver`). The ≤3 cap targets repeated identical failures; the
+  per-task wall-clock budget is the unconditional backstop.
+  `infra_failures` NEVER consume attempts.
 
-Frontmatter: `id, title, status, archetype, scaffold, branch, worktree,
-depends_on, attempts, infra_failures, session_id, base_sha, candidate_sha,
-risk_threshold, stop_condition, engine, effort, acceptance_criteria,
-verification_commands, resources, created, updated`.
+Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
+worktree, run_id, depends_on, attempts, infra_failures, session_id,
+implementer_engine_id, base_sha, candidate_sha, risk_tier,
+blocking_severity, stop_condition, engine, effort, acceptance_criteria,
+verification_commands, resources, exclusive, wallclock_budget_s,
+started_at, created, updated`.
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or
 malformed review NEVER counts as approval.
 
+**Risk is two separate fields (round-4 fix — `risk_threshold` was doing
+contradictory double duty):** `risk_tier: low|medium|high` drives review
+ROUTING and independence requirements, monotonic (upgradable, never
+downgradable, `--reason` required); `blocking_severity` (default derived:
+low tier → high-severity findings block; medium/high tier → medium+ block)
+drives which findings block. High-risk tasks therefore block on MORE
+findings, never fewer.
+
 **Independence:** *session independence* (fresh session, same engine) vs
-*engine independence* (different vendor). Risk-tiered routing: `low` →
-single engine-independent reviewer (default agy inline; fallback
-codex-review when unavailable or over inline budget); `medium`/`high` → dual
-review (worktree-capable reviewer for depth + engine-independent reviewer
-for diversity). **Inline-review blind-spot guard:** inline prompts include
-an input manifest (all changed files + omissions) AND the changed-symbol
-list; the orchestrator upgrades routing to a worktree-capable reviewer when
-changed symbols are referenced in un-diffed files. Two-engine installs are
-labeled "degraded independence": medium accepts session independence; high
-queues for engine independence. Risk is assigned at plan time; upgradable,
-never downgradable.
+*engine independence* (different vendor), enforced by the resolver against
+the task's recorded `implementer_engine_id`. Routing: `low` → single
+engine-independent reviewer (default agy inline); if NO engine-independent
+reviewer is available, the resolver falls back to session independence
+LABELED AND JOURNALED as such — never silently. `medium`/`high` → dual
+review (worktree-capable for depth + engine-independent for diversity).
+Two-engine installs are "degraded independence": medium accepts labeled
+session independence; high queues for engine independence.
+**Inline-review blind-spot guard:** inline prompts include the pack
+manifest AND the changed-symbol list; routing upgrades to a
+worktree-capable reviewer when changed symbols are referenced in un-diffed
+files.
 
 **Arbitration:** findings below the task's risk threshold never block;
 reviewer agreement is strong signal; on disagreement the orchestrator reads
@@ -506,10 +587,12 @@ injected into every request document; static until explicit
 
 Ledger (`runtime/engines.json`: last status, `rate_limited_until`,
 consecutive failures — updated via spool events) + primary→secondary
-preference pairs per role in `orchid.config` + the capability gate: a
-fallback (engine, role) pair activates ONLY after passing the role×engine
-capability suite (filesystem scope, network policy, subprocess, git,
-structured output, recovery). The pump: LLM-free heartbeat that launches
+preference pairs per role in config (defaults: `role.orchestrator`
+claude→codex; `role.implementer` codex→claude; `role.arbiter` claude→codex;
+`role.plan_critic` any engine that did not author the plan; reviewers per
+risk-tier routing) + the capability gate: a fallback (engine, role) pair
+activates ONLY after passing the role×engine capability suite (filesystem
+scope, network policy, subprocess, git, structured output, recovery). The pump: LLM-free heartbeat that launches
 `orchid-tick` on the best available capable orchestrator engine when the
 lease is stale (>15 min); mutual exclusion via lease staleness, not flock.
 Independence rules above apply against the task's recorded implementer.
@@ -552,7 +635,7 @@ deploy, publish, prod-data) — blockers instead. `orchid.config` and
 | Dead | pgid + start-time liveness per `orchid jobs check` |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
 | Blocked on prompt | structurally impossible: launcher stdin `/dev/null` + `approval_policy=never` + never-prompt flags |
-| Spinning | deterministic FIRST: duplicate log lines, no new commits, keep-alive-only output (progress-marker check, not just mtime); LLM log-tail judgment is the ESCALATION tier |
+| Spinning | deterministic FIRST, with a false-positive guard: duplicate-line checks apply to the ADAPTER's own output, use a sliding window (≥5 min identical lines AND no CPU/disk delta AND no new commits) — build tools legitimately repeat progress lines and are never judged by line content alone; LLM log-tail judgment is the ESCALATION tier |
 
 Write-ahead manifests keyed by job_id (task, attempt, role, engine id +
 digest, pgid, start-time, session_id, worktree, base_sha, log) with child
@@ -564,9 +647,20 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
 - **v0/v1 seam:** `orchid notify` (question-id minted by the kernel,
   multiple-choice preferred) → `BLOCKERS.md` + terminal; `orchid answer
   <qid> <choice>` — idempotent, expiring, consumed by the next tick.
-- **v1-m4 channels:** OpenClaw preferred transport (outbound `openclaw
-  message`; inbound webhook → `orchid answer` with opaque nonce, sender
-  allowlist, expiry; adapter gets NO shell/repo access); Telegram fallback.
+- **v1-m4 channels — three explicit actors (round-4 topology fix):**
+  (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
+  access); (2) the **orchid AgentSkill inside OpenClaw** — an authenticated
+  external front-end authorized for exactly two verbs, `orchid status` and
+  `orchid answer` (this, not the channel plugin, answers "how's the run?"
+  from your phone); (3) a lock-safe kernel INBOX: `orchid answer` validates
+  nonce, sender allowlist, and expiry before recording — no listener
+  daemon; the tick polls the inbox. Telegram fallback uses the same
+  three-actor shape. An unanswered question is just a blocked task.
+- **API-billing exception, stated plainly:** API-backed engines (Kimi,
+  Perplexity researcher) are metered per call, unlike subscription CLIs;
+  their role descriptors carry call budgets and retry ceilings, and
+  research failure is OPTIONAL-degrading (a run continues without
+  citations), never blocking.
 - Non-goal: native app. `orchid status` (later a static page) is the
   read surface.
 
@@ -600,17 +694,21 @@ renders as:
 Approved over agy's request-changes: the flagged race is unreachable — ...
 ```
 
-- **Entry kinds (closed set, v0):** `arbitration`, `risk_change`, `kill`
-  (spinning/stall, dead-end named), `blocker`, `blocker_resolved`,
-  `rebase_review`, `plan_revision`, `intervention` (operator verbs log here
-  automatically), `lesson` (v1 — also mirrored to `lessons.md`).
-- **Enforcement is kernel-level, not model discipline:** transitions that
-  embody a judgment REFUSE to run without a reason —
-  `orchid task advance <id> merging|blocked` and
-  `orchid task set <id> risk_threshold` require `--reason "..."`, which the
-  verb writes to the journal atomically with the state change. A decision
-  without a recorded why is structurally impossible, not merely
-  discouraged.
+- **Entry kinds (closed set):** `arbitration` (BOTH outcomes), `risk_change`,
+  `attempt_waiver`, `kill` (spinning/stall, dead-end named), `blocker`,
+  `blocker_resolved`, `rebase_review` (delta-vs-full classification),
+  `plan_revision`, `acceptance`, `intervention` (operator verbs log
+  automatically), `lesson` (mirrored to `lessons.md`).
+- **Enforcement is a complete decision matrix, kernel-level:** every
+  judgment-bearing verb refuses to run without `--reason`, which it writes
+  atomically with the state change — `task advance` to `merging`, `blocked`,
+  and `rework`-from-`arbitrating` (both arbitration outcomes recorded);
+  `task set risk_tier` (monotonicity enforced separately from prose);
+  `--waive-attempt`; `task unblock/retry`; `run accept`;
+  `lessons retire`. Actor identity (`engine/role/session`), run, epoch,
+  job, and SHAs are derived from KERNEL context — never caller-supplied, so
+  the audit trail is not forgeable. A decision without a recorded why is
+  structurally impossible.
 - **Read surface:** `orchid journal tail [-n N]`,
   `orchid journal show --task T007` (that task's full decision history).
   Entries are prose for successors and humans; NEVER parsed for control
@@ -622,20 +720,28 @@ A lesson is a durable repo truth worth remembering across runs: a flaky
 test, an unstated convention, a build quirk, an engine-specific weakness
 ("codex ignores the barrel-file rule in this repo").
 
+- **Structure (round-4 fix — prose lines can't be safely maintained):**
+  each lesson has a stable ID and fields: `scope` (repo | plugin/model
+  identity for engine-specific lessons, which EXPIRE with the engine
+  version), statement, evidence pointers (task/journal refs),
+  first/last-confirmed dates, invalidation condition, and state
+  (`active | superseded | retired`).
 - **Birth:** PROTOCOL directs the orchestrator to consider a lesson at
   exactly three moments — a rework caused by something `context.md` failed
-  to state; the second occurrence of the same infra flake; an arbitration
-  that turned on repo knowledge no file contained. Written via
-  `orchid journal add --kind lesson`, which appends to `lessons.md` with
-  date + evidence pointer (task/journal ref).
-- **Hygiene:** before appending, the orchestrator checks for an existing
-  lesson covering the same truth and updates it instead (no duplicates).
-  `lessons.md` is capped (~100 lines); at each plan phase the orchestrator
-  prunes lessons whose evidence has been falsified and consolidates
-  overlaps. Stale memory is worse than no memory.
+  to state; a recurring REPO-behavior flake (test/build — vendor
+  infrastructure blips belong in the availability ledger, never in
+  lessons); an arbitration that turned on repo knowledge no file contained.
+- **Verbs:** `orchid lessons add/update/retire/consolidate` — deterministic,
+  journaled (retire requires `--reason`). Caps by bytes/items, not lines.
+  At plan phase: prune falsified, consolidate overlaps, and PROMOTE lessons
+  that have become encoded in code/docs into `context.md` (then retire them
+  — a truth the repo now states is context, not a lesson).
+- **Across runs:** `orchid run new` archives the previous run's tasks,
+  reviews, and journal under `runs/<run_id>/` and carries forward ONLY
+  `context.md` + ACTIVE lessons — the defined inheritance boundary.
 - **Distinct from `context.md`:** context is what the repo IS (regenerable
   from the code); lessons are what the code CANNOT tell you (learned the
-  hard way). Context is rewritten per plan; lessons persist across runs.
+  hard way).
 
 ### Per-role memory injection (what each engine call receives)
 
@@ -648,21 +754,27 @@ recipients get what their judgment needs, nothing more:
 | reviewer | context.md + lessons.md + diff/manifest + acceptance criteria + stop condition (never other tasks' state) |
 | arbiter | both review envelopes + this task's journal history + diff on demand |
 | plan_critic | requirements + draft roadmap + lessons.md |
-| orchestrator (tick) | status + active task files + journal tail + open answers |
+| orchestrator (tick) | status + active task files + decision capsules + journal tail + lessons.md (it owns lessons hygiene) + open answers |
 
-### Resumption procedure (bounded, O(recent) not O(run))
+### Resumption procedure (reconcile FIRST, then bounded snapshot)
 
-`orchid-resume` re-derives the world in a fixed order and a fixed budget:
-1. `orchid status` (run_status, task table, jobs, open questions);
-2. the active task file(s) in full;
-3. `orchid journal tail -n 20` plus `journal show --task` for each active
-   task — inheriting judgment, so settled questions stay settled;
-4. `context.md` + `lessons.md`;
-5. reconcile jobs/spool, then tick normally.
-Nothing else is re-read; the journal exists so resumption never requires
-replaying history. The same procedure serves crash recovery, engine
-failover (a codex tick inherits a claude tick's decisions with rationale),
-and cold-start weeks later.
+Round-4 ordering fix: reading memories before reconciling jobs lets a
+just-finished job invalidate the snapshot. `orchid-resume`:
+1. acquire lock, fence epoch (`orchid run resume`);
+2. `orchid jobs check` + `orchid jobs reconcile` (quarantine included);
+3. `orchid status` — NOW compute the active set from reconciled reality;
+4. per active task: task file (full, non-truncatable) + its **decision
+   capsule** — the kernel maintains `runtime/journal-index/<task>` (open
+   decisions + last N entries per task, updated on every journal write), so
+   task-scoped judgment is O(capsule), never a scan of the monolithic
+   journal;
+5. `journal tail -n 20` + `context.md` + active `lessons.md` — all under
+   the same explicit byte budgets as request packs;
+6. tick normally.
+The same procedure serves crash recovery, engine failover (a codex tick
+inherits a claude tick's decisions with rationale), and cold-start weeks
+later. The append-only journal remains the audit truth; the index is a
+derived cache, rebuildable from it.
 
 ## Operator walkthrough (the human's seat)
 
@@ -690,7 +802,17 @@ and cold-start weeks later.
   exec with review prompt); range-diff triviality detection.
 - **Review history:** round 1 (codex 10, agy 8), round 2 (codex 10, agy 9,
   internal 5), round 3 three-way (codex 10 incl. 3 critical, agy focused 9 +
-  agy comprehensive 10 incl. 1 critical, internal 10). v4 incorporates:
+  agy comprehensive 10 incl. 1 critical, internal 10), round 4 three-way on
+  the platform+memory spec (codex 10 incl. 2 critical — verdict "not yet
+  normative", agy 9 incl. 1 critical — verdict "conditional approve",
+  internal 6). v5 reconciles round 4: normative process model with epochs
+  and fencing, complete file→verb ownership table, operation-discriminated
+  request/envelope unions with materialized input packs, complete decision
+  matrix with kernel-derived actor identity, structured lessons with
+  lifecycle verbs and run rollover, reconcile-first bounded resume,
+  milestone reorder (foundation before failover), risk_tier /
+  blocking_severity split, three-actor remote topology, spinning
+  false-positive guard, research-grounding pillar map. v4 incorporates:
   plugin trust model, kernel launcher, request/envelope binding,
   capability-based role resolution, archetype meta-invariants, kernel-owned
   hooks, unconditional rebase re-verification, stale-lock recovery, worktree
@@ -714,10 +836,29 @@ worked `role.*` swap example); install/uninstall; quickstarts (existing +
 greenfield) with screenshots; state files, guardrails, operator verbs;
 **Extending orchid** (five extension points, patterns glossary, "first
 adapter in under an hour" against `docs/extending/` guides — referencing
-built-ins until the v1-m4 reference plugins ship); FAQ; **Research & further
-reading** (attributed: Google's "The New SDLC With Vibe Coding" whitepaper,
-METR study, Karpathy's framing, and successors). CONTRIBUTING.md + a
-community plugin listing section (awesome-orchid) at public launch. Commit
+built-ins until the v1-m4 reference plugins ship); FAQ; **Research grounding** (below). CONTRIBUTING.md + a
+community plugin listing section (awesome-orchid) at public launch.
+
+**Research grounding (`docs/research.md` + inline citations):** orchid's
+design pillars each cite the literature that genuinely supports them —
+citations appear NEXT TO the claim they support in README/docs, and
+`docs/research.md` is the annotated bibliography. The rule is relevance,
+not volume: padding with tangential papers reads as spam and inverts
+credibility. The pillar map:
+
+| Design pillar | Supporting work |
+|---|---|
+| multi-agent division of labor for software dev | MetaGPT (Hong et al.), ChatDev (Qian et al.), AutoGen (Wu et al.), CAMEL (Li et al.) |
+| nobody signs off on their own work / engine independence | LLM-as-judge (Zheng et al., MT-Bench); self-preference bias — LLM evaluators favor their own generations (Panickssery et al.) |
+| reviewer diversity & arbitration on disagreement | multi-agent debate (Du et al.), More Agents Is All You Need (Li et al.), Mixture-of-Agents (Wang et al.) |
+| rework specs, journal, lessons (memory design) | Reflexion (Shinn et al.), Self-Refine (Madaan et al.), Voyager skill library (Wang et al.), Generative Agents memory streams (Park et al.), MemGPT (Packer et al.) |
+| deterministic verification over model claims; agentic SE evaluation | SWE-bench (Jimenez et al.), SWE-agent (Yang et al.); trajectory evaluation per Google's "The New SDLC With Vibe Coding" whitepaper |
+| harness > model; factory model; model routing | Google whitepaper; Karpathy's agentic-engineering framing |
+| productivity claims (stated with nuance, both directions) | METR RCT (experienced devs can be SLOWER with AI — cited honestly), Peng et al. Copilot study |
+
+Exact citations (authors, venues, years, links) are verified against the
+published papers when `docs/research.md` is written — titles above are
+from design-time knowledge and MUST be link-checked before public release. Commit
 hygiene: clean history, no AI trailers, no personal paths, `$HOME`/`PATH`
 resolution only.
 
@@ -740,6 +881,7 @@ of adjacent popular projects rather than competing with them —
 
 ## Future (beyond v1)
 
-Service packaging (launchd/cron pump) · static status page · usage/cost
-ledger · per-task engine routing · resource auto-allocation ·
-chunk-and-aggregate inline reviews · OS-level plugin containment profiles.
+Usage/cost ledger · per-task engine routing · resource auto-allocation ·
+chunk-and-aggregate inline reviews · OS-level plugin containment profiles ·
+baseline-aware test comparison. (Status page and service packaging are v1-m4
+core — no longer future.)
