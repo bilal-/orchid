@@ -17,8 +17,7 @@ Codex implements, Antigravity and a fresh Codex session review), but nothing
 in the architecture privileges them.
 
 **Positioning:** orchid aims to be the standard way individuals turn a
-collection of AI subscriptions into an autonomous development team — via the
-strategy every category-winning developer tool used (git, VS Code, Neovim): a
+collection of AI subscriptions into an autonomous development team: a
 deliberately small kernel and a first-class plugin architecture.
 Extensiveness is a property of the ecosystem orchid enables — any
 subscription, any model, any role, any workflow — never of the core. Growth
