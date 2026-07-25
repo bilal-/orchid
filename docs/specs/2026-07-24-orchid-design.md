@@ -85,9 +85,12 @@ git — sessions are disposable; the files are the truth.
     tutorial; cost/risk routing matrix; static status page; service
     packaging (launchd/cron pump). Escape hatch: third-party upstream churn
     can delay an individual adapter, never the launch.
-  - **Release gate:** README + screenshots from real dogfood runs, then
-    **public release**. Extension guides reference plugins that actually
-    shipped (never promise unshipped references).
+  - **Release gate:** the full docs suite (README + quickstart +
+    configuration reference + per-engine guides + extending guides +
+    troubleshooting + FAQ) passing the 15-minute clean-machine rehearsal
+    (see Installation & configuration), screenshots from real dogfood runs,
+    then **public release**. Extension guides reference plugins that
+    actually shipped (never promise unshipped references).
 
 ## Architecture
 
@@ -115,6 +118,7 @@ libexec/                    # TIER 1 — deterministic verbs. Never invoke an
   orchid-jobs               #   launch/check/reconcile (kernel launcher)
   orchid-plugins            #   full lifecycle verbs (v1-m2)
   orchid-journal            #   append decision/lesson entries (see Memory)
+  orchid-config             #   list effective config with per-key provenance
   orchid-status             #   task + run-level status
   orchid-notify             #   user questions out
   orchid-answer             #   user answers in (idempotent)
@@ -333,6 +337,61 @@ itself is never edited by plugins.
 
 Verb kernel · Envelope · Adapter · Runner · Archetype · Ledger · Spool ·
 Lease · Request document · Trust record · Hook.
+
+## Installation & configuration
+
+### Install
+
+`git clone` + `./install.sh`, which does exactly and only: symlink `skills/`
+into `~/.claude/skills/`; link `bin/orchid` into `~/.local/bin` (or
+`$ORCHID_BIN_DIR`), warning if that dir is not on `PATH`; create
+`~/.orchid/{plugins,trust}` and a commented `~/.orchid/config`; finish by
+running `orchid doctor` so the user's first output is a readiness report.
+`./install.sh --uninstall` removes precisely those symlinks/dirs (config and
+trust are left with a note). At public launch additionally: a pinned
+`curl -fsSL … | bash` one-liner (fetching the same install.sh) and a
+Homebrew tap (v1-m4) — install must feel first-class on a Mac.
+
+### Connecting the CLIs (per-engine setup)
+
+Orchid never manages vendor auth — each CLI's own login is the source of
+truth. The flow is doctor-driven: `orchid doctor` names each configured
+engine's missing binary or failed auth probe and points at
+`docs/engines/<name>.md` — one guide per built-in engine covering: install
+command, subscription login command, the sandbox/approval flags orchid uses
+and why, verified CLI versions (from the capability suite), and known
+gotchas (e.g. agy's flags-before-`-p` rule, print-mode permission
+auto-denial). Adding a new engine = adapter + its `docs/engines/` guide;
+the conformance kit checks the guide exists.
+
+### Configuration (layered, with provenance)
+
+One key set, four layers, strict precedence (highest wins):
+
+```
+ORCHID_* env vars  >  <repo>/orchid.config  >  ~/.orchid/config  >  defaults
+```
+
+Per-user preferences (role bindings, model tiers, notify channel) belong in
+`~/.orchid/config` — set once, apply to every repo; per-repo facts
+(integration branch, verify command, resources) in `orchid.config`; env for
+one-off overrides. All layers are key=value, parsed never sourced.
+`orchid config list` (tier-1, read-only) prints the EFFECTIVE configuration
+with per-key provenance (which layer won) — no guessing why a setting
+applies. `docs/configuration.md` is the complete key reference (key,
+default, layer it belongs in, stage introduced) and is the single source of
+truth the README links to.
+
+### Docs as a v1 deliverable (the stellar bar, made testable)
+
+The docs suite — README, `docs/quickstart.md` (existing-repo and
+greenfield), `docs/configuration.md`, `docs/engines/*`, `docs/extending/*`,
+`docs/troubleshooting.md` (rate limits, resume, stale locks, blocked tasks),
+FAQ — ships INSIDE v1's release gate with a measurable acceptance
+criterion: **a new user with Claude+Codex subscriptions goes from clone to
+their first completed orchid task in under 15 minutes using only the
+quickstart** — rehearsed during dogfood on a clean machine profile. Docs
+that fail the rehearsal block the release the same way failing tests do.
 
 ## Threat model (consolidated)
 
