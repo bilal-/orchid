@@ -68,25 +68,26 @@ git — sessions are disposable; the files are the truth.
   jobs, and PROTOCOL alike, launch-by-role, and a fake non-default-binding
   test proving no engine name is hard-coded. Repo-local plugins DISABLED (no
   trust store yet). Manifest validation minimal (existence + executable).
-- **v1:** pump + failover (capability-suite gated), concurrency 2 (with the
-  rebase/re-review rules below), risk-tiered dual review, greenfield mode,
-  `review` archetype, full manifest schema + `orchid plugins
-  list/validate/trust`, plugin lockfile, kernel launcher hygiene, README +
-  screenshots, **public release**.
-- **v1 launch features (ecosystem piggyback — see Distribution):** the
-  OpenClaw notify channel + orchid AgentSkill, and a Hermes engine adapter
-  (reviewer role first — its minimal capability bar), are pulled INTO the
-  v1 launch as marketing-critical integrations. Escape hatch: if either
-  upstream churns before launch, orchid ships without it and the adapter
-  follows in v1.1 — launch is never hostage to a third party's release
-  cadence.
-- **v1.x:** `refactor`/`test`/`migrate` archetypes, hooks + role registry,
-  `orchid plugins install/update/remove/test/audit` + conformance kit,
-  cost/risk routing matrix, status page, service packaging, further
-  reference plugins (API-backed Kimi reviewer; Perplexity `researcher`
-  role) — each doubling as a `docs/extending/` tutorial. README extension
-  guides reference plugins that have actually shipped (never promise
-  unshipped references).
+- **v1 — the full delivery**, built in four dependency-ordered milestones,
+  ending in public release:
+  - **v1-m1 (core autonomy):** pump + failover (capability-suite gated),
+    concurrency 2 with the rebase/re-review rules below, risk-tiered dual
+    review, greenfield mode, `review` archetype.
+  - **v1-m2 (plugin platform):** full manifest schema, `orchid plugins
+    list/validate/trust/install/update/remove/test/audit`, conformance kit,
+    plugin lockfile, kernel launcher hygiene.
+  - **v1-m3 (SDLC suite):** hooks + role registry;
+    `refactor`/`test`/`migrate` archetypes with their ecosystem tooling
+    adapters.
+  - **v1-m4 (ecosystem):** OpenClaw notify channel + orchid AgentSkill,
+    Hermes engine adapter (reviewer role first), API-backed Kimi reviewer,
+    Perplexity `researcher` role — each doubling as a `docs/extending/`
+    tutorial; cost/risk routing matrix; static status page; service
+    packaging (launchd/cron pump). Escape hatch: third-party upstream churn
+    can delay an individual adapter, never the launch.
+  - **Release gate:** README + screenshots from real dogfood runs, then
+    **public release**. Extension guides reference plugins that actually
+    shipped (never promise unshipped references).
 
 ## Architecture
 
@@ -112,7 +113,7 @@ libexec/                    # TIER 1 — deterministic verbs. Never invoke an
   orchid-verify             #   deterministic verification + evidence
   orchid-merge              #   transactional merge
   orchid-jobs               #   launch/check/reconcile (kernel launcher)
-  orchid-plugins            #   list/validate/trust (v1); install/test (v1.x)
+  orchid-plugins            #   full lifecycle verbs (v1-m2)
   orchid-status             #   task + run-level status
   orchid-notify             #   user questions out
   orchid-answer             #   user answers in (idempotent)
@@ -194,7 +195,7 @@ differences are declared capabilities.
 - Executable plugins are **trusted code** — orchid v0/v1 does not sandbox
   them, and says so plainly rather than implying containment it doesn't
   have. Full containment (per-plugin sandbox profiles enforced by the
-  launcher) is v1.x roadmap.
+  launcher) is post-v1 roadmap.
 - Consequently: plugins load ONLY from user-controlled locations —
   `~/.orchid/plugins/` and the orchid installation's `plugins/` — plus
   explicit `$ORCHID_PLUGIN_PATH` entries (colon-delimited, each entry a
@@ -224,10 +225,10 @@ differences are declared capabilities.
 | Kind | Contract | Stage |
 |---|---|---|
 | **engine** | executable `run`; receives a request document; writes an envelope to the kernel-specified spool path; declares atomic capabilities | v0 (seam), v1 (manifests) |
-| **archetype** | data-only workflow declaration validated against kernel invariants (below) | feature v0; review v1; rest v1.x |
-| **notify channel** | `send <question-id> <text>`; inbound via `orchid answer` | v1.x |
-| **hook** | named lifecycle hook handlers with typed payloads (below) | v1.x |
-| **role** | descriptor: required/forbidden capabilities + hook bindings | v1.x |
+| **archetype** | data-only workflow declaration validated against kernel invariants (below) | feature v0; review v1-m1; rest v1-m3 |
+| **notify channel** | `send <question-id> <text>`; inbound via `orchid answer` | v1-m4 |
+| **hook** | named lifecycle hook handlers with typed payloads (below) | v1-m3 |
+| **role** | descriptor: required/forbidden capabilities + hook bindings | v1-m3 |
 
 Front-ends (Claude skill, headless tick, a future TUI) are a documented
 CONVENTION — anything that executes PROTOCOL.md through verbs — not a
@@ -315,7 +316,7 @@ bounds are mandatory; terminal states are `done` and `blocked`; declared
 implement/merge but can never advance the integration branch. Unreachable
 states are rejected.
 
-**Hooks (v1.x — one mechanism for custom roles AND middleware):** a finite,
+**Hooks (v1-m3 — one mechanism for custom roles AND middleware):** a finite,
 kernel-owned set of named extension points — `after_plan_draft`,
 `before_arbitration`, `on_verify_fail`, `before_merge`, `on_blocker` — each
 with a typed request payload, ordering, timeout, and required/optional
@@ -335,10 +336,10 @@ Lease · Request document · Trust record · Hook.
 | Untrusted input | Boundary | Mitigation |
 |---|---|---|
 | cloned repo content (incl. `.orchid/plugins/`) | plugin discovery | repo-local disabled by default; digest-pinned trust records outside the repo; no silent shadowing |
-| plugin executables | trust decision at install | trusted-code classification (stated plainly); launcher hygiene; containment roadmap v1.x |
+| plugin executables | trust decision at install | trusted-code classification (stated plainly); launcher hygiene; containment roadmap post-v1 |
 | engine output (envelopes) | reconciliation | job_id binding to manifests; schema fail-closed; quarantine on mismatch/replay |
 | task/diff content in prompts | reviewer/arbiter judgment | prompt injection is assumed possible; verdicts are advisory to the arbiter, which reads high-risk diffs itself; verification is deterministic and immune to prompt content (`orchid verify`) |
-| inbound answers | `orchid answer` | question-id + idempotency; channel adapters get no shell/repo access; nonce + sender allowlist when remote channels ship (v1.x) |
+| inbound answers | `orchid answer` | question-id + idempotency; channel adapters get no shell/repo access; nonce + sender allowlist when remote channels ship (v1-m4) |
 | implementer commits | merge path | worktree contamination guard; review immutability; transactional merge |
 
 ## Preflight (`orchid doctor`)
@@ -375,7 +376,7 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   the integration ref on pass; `validation_failed` returns that exact
   candidate to rework with logs. **v0 baseline semantics:** the suite must
   pass, full stop; `baseline.md` records pre-existing failures for humans.
-  Baseline-aware comparison is v1.x.
+  Baseline-aware comparison is post-v1.
 - **Attempt fairness:** `attempts` increments on verify-FAIL or arbitration
   rejection. If a rework's failure/finding signature is DISJOINT from the
   previous attempt's (distinct forward progress, e.g. new review nits after
@@ -451,7 +452,7 @@ structured output, recovery). The pump: LLM-free heartbeat that launches
 lease is stale (>15 min); mutual exclusion via lease staleness, not flock.
 Independence rules above apply against the task's recorded implementer.
 High-risk arbitration waits (bounded, default 4h) for the preferred arbiter.
-Model/effort: static per-role defaults in v1; risk×model matrix v1.x.
+Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
 
 ## Execution policy (the autonomy boundary)
 
@@ -501,7 +502,7 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
 - **v0/v1 seam:** `orchid notify` (question-id minted by the kernel,
   multiple-choice preferred) → `BLOCKERS.md` + terminal; `orchid answer
   <qid> <choice>` — idempotent, expiring, consumed by the next tick.
-- **v1.x channels:** OpenClaw preferred transport (outbound `openclaw
+- **v1-m4 channels:** OpenClaw preferred transport (outbound `openclaw
   message`; inbound webhook → `orchid answer` with opaque nonce, sender
   allowlist, expiry; adapter gets NO shell/repo access); Telegram fallback.
 - Non-goal: native app. `orchid status` (later a static page) is the
@@ -553,7 +554,7 @@ worked `role.*` swap example); install/uninstall; quickstarts (existing +
 greenfield) with screenshots; state files, guardrails, operator verbs;
 **Extending orchid** (five extension points, patterns glossary, "first
 adapter in under an hour" against `docs/extending/` guides — referencing
-built-ins until the v1.x reference plugins ship); FAQ; **Research & further
+built-ins until the v1-m4 reference plugins ship); FAQ; **Research & further
 reading** (attributed: Google's "The New SDLC With Vibe Coding" whitepaper,
 METR study, Karpathy's framing, and successors). CONTRIBUTING.md + a
 community plugin listing section (awesome-orchid) at public launch. Commit
@@ -577,7 +578,7 @@ of adjacent popular projects rather than competing with them —
 5. Rule: integrations are optional dependencies — upstream churn can delay
    an adapter, never the launch.
 
-## Future (beyond v1.x)
+## Future (beyond v1)
 
 Service packaging (launchd/cron pump) · static status page · usage/cost
 ledger · per-task engine routing · resource auto-allocation ·
