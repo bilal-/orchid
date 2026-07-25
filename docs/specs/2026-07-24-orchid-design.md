@@ -19,13 +19,21 @@ adapters behind one envelope contract. Heavy token usage lands on whichever
 subscriptions hold the implementer/reviewer roles, keeping the orchestrating
 session cheap enough to drive multi-day runs.
 
-Honestly stated, orchid is a deliberately small **file-based workflow
-scheduler**: deterministic CLI verbs plus stateless LLM ticks over git state.
-Design principles: no daemon, no dashboard, no terminal emulation, no
-persistent runtime process. Every engine is driven through its first-party
-headless CLI mode, so billing stays on each vendor's subscription. All
-durable state is files in git — sessions are disposable; the files are the
-truth.
+**Positioning:** orchid aims to be the standard way individuals turn a
+*collection of AI subscriptions* into an autonomous development team. The
+strategy for getting there is the one every category-winning developer tool
+used (git, VS Code, Neovim): a deliberately small kernel and a first-class
+plugin architecture. Extensiveness is a property of the ecosystem orchid
+enables — any subscription, any model, any role, any workflow — never of
+the core. Growth happens at the five extension points (see Plugin
+architecture), not in the kernel.
+
+Honestly stated, the kernel is a small **file-based workflow scheduler**:
+deterministic CLI verbs plus stateless LLM ticks over git state. Design
+principles: no daemon, no dashboard, no terminal emulation, no persistent
+runtime process. Engines are driven through their first-party headless
+modes, so billing stays on each vendor's subscription. All durable state is
+files in git — sessions are disposable; the files are the truth.
 
 ## Requirements (from design session)
 
@@ -75,7 +83,10 @@ flagged v1-in-one-bite as infeasible; staging preserves the vision.)
 
 - **v0 — vertical slice:** one existing repo, ONE active task at a time
   (serial), default role bindings (roles read from `role.*` config from day
-  one; only the defaults are tested), `feature` archetype only. CLI core verbs
+  one; only the defaults are tested), `feature` archetype only. The plugin
+  SEAM ships in v0 (engine resolution via the search path, so a dropped-in
+  adapter works day one); manifests, `orchid plugins list`, and doctor
+  validation arrive in v1. CLI core verbs
   (doctor/task/verify/merge/jobs/status/notify), deterministic verification
   and transactional merge, hard timeout + clean relaunch (no PID
   re-adoption), manual `orchid-resume`. Includes crash/recovery test and
@@ -86,7 +97,11 @@ flagged v1-in-one-bite as infeasible; staging preserves the vision.)
   mode, `review` archetype, README + screenshots, **public release**.
 - **v1.x:** `refactor`/`test`/`migrate` archetypes (need per-ecosystem
   tooling adapters), cost/risk routing matrix, OpenClaw two-way notify,
-  static status page, `engine-hermes`, launchd/cron service packaging.
+  static status page, launchd/cron service packaging, **role registry**
+  (custom roles with PROTOCOL extension points), and two REFERENCE
+  third-party plugins that prove the surface: an API-backed reviewer engine
+  (e.g. Kimi) and a `researcher` role (e.g. Perplexity) — each doubling as
+  the tutorial in `docs/extending/`.
 
 ## Architecture
 
@@ -117,9 +132,12 @@ libexec/                    # TIER 1 — deterministic verbs. Never invoke an LL
 runners/                    # TIER 2 — effectful: launch LLM sessions. Explicitly
   orchid-tick               #   OUTSIDE the deterministic core.
   orchid-pump               #   (v1)
-engines/                    # TIER 3 — adapters wrapping vendor CLIs. Write ONLY
-  codex  codex-review       #   to the runtime spool (envelopes, logs), never to
-  agy  claude               #   durable state.
+plugins/                    # TIER 3 — the BUILT-IN plugin set, discovered via
+  engines/codex/            #   the same search path and contracts as any
+  engines/codex-review/     #   third-party plugin (see Plugin architecture).
+  engines/agy/              #   Engine adapters write ONLY to the runtime
+  engines/claude/           #   spool (envelopes, logs), never durable state.
+  archetypes/feature/       #   Archetype = transition table + templates.
 templates/
   roadmap.md  task.md  review.md
 install.sh                  # symlinks skills into ~/.claude/skills AND links
@@ -186,6 +204,75 @@ scaffolding (e.g. test-command discovery).
   can. One orchestrator context at a time, guaranteed by staleness, not luck.
 - The pump itself never takes the run lock; it merely launches `orchid-tick`,
   which acquires the lock exactly once for its full transition.
+
+## Plugin architecture
+
+Everything outside the kernel is a plugin. The kernel is: the state machine
+(`orchid task`), jobs/spool/lock, verify/merge, and the envelope contract.
+**The built-ins are themselves plugins** — codex/agy/claude adapters and the
+feature archetype use the exact same discovery and contracts as third-party
+plugins. This is the proof the plugin surface is real: if the built-ins need
+a private API, the design has failed.
+
+### Five extension points
+
+| Kind | Contract | Example third-party plugin |
+|---|---|---|
+| **engine** | executable `run <task-id>`; reads task file + context; writes envelope (contract 1) to spool; honors `ORCHID_DRYRUN`; declares which roles it can hold (capability table) | `kimi-k3` (Moonshot CLI or API-backed), `hermes` |
+| **archetype** | manifest declaring its legal transition table + task/roadmap templates + reviewer lens text | `security-audit`, `docs-site` |
+| **notify channel** | executables `send <question-id> <text>` and (optional) inbound calls to `orchid answer` | OpenClaw bridge, Telegram bot, ntfy |
+| **orchestrator front-end** | anything that executes PROTOCOL.md via CLI verbs | Claude skill (built-in), `orchid-tick` headless (built-in), a future TUI |
+| **role** *(v1.x)* | named role + capability requirements + PROTOCOL extension point where it is consulted | `researcher` (Perplexity: consulted at plan time and on arbitration disagreements, returns cited findings into the task file) |
+
+### Discovery & manifests
+
+Plugins are directories found on a search path (first match wins):
+
+```
+$ORCHID_PLUGIN_PATH → <target-repo>/.orchid/plugins/ → ~/.orchid/plugins/ → <orchid>/plugins/ (built-ins)
+```
+
+Each plugin directory contains `plugin.conf` (key=value, parsed never
+sourced) plus its executables/templates:
+
+```
+~/.orchid/plugins/engines/kimi-k3/
+  plugin.conf     # kind=engine  name=kimi-k3  contract=1
+                  # roles=reviewer,plan-critic  (what it is capable of)
+  run             # the adapter executable
+```
+
+`orchid plugins list` shows everything discovered with kind, version, and
+contract; `orchid doctor` validates that every configured `role.*` binding
+resolves to a discovered plugin whose declared roles include it.
+
+### Contract rules
+
+- Every contract is versioned; the kernel rejects (fails closed) a plugin
+  declaring a contract version it does not support.
+- Contracts only ever gain optional fields within a major version.
+- An engine plugin needs no orchid code changes — drop the directory, add a
+  `role.*` line, done. Target: **a working third-party engine adapter in
+  under an hour, under 60 lines** (the reviewer role's minimal capability —
+  text in, text out — makes API-only models like Perplexity or a Kimi API
+  key first-class citizens, not second-class to CLI subscriptions).
+- Kernel code never branches on a plugin's name. If a feature needs
+  `if engine == codex`, it becomes a capability flag in `plugin.conf`.
+
+### Named patterns (the vocabulary of the codebase and docs)
+
+- **Verb kernel** — deterministic tier-1 CLI; sole mutator of durable state.
+- **Envelope** — the versioned JSON result contract between engines and the
+  kernel.
+- **Adapter** — an engine plugin translating one vendor's CLI/API into the
+  envelope.
+- **Runner** — effectful launcher of LLM sessions (tick, pump); outside the
+  determinism boundary.
+- **Archetype** — a declared transition table + templates configuring the
+  one state machine for an SDLC workflow.
+- **Ledger** — runtime availability records driving failover dispatch.
+- **Spool** — the write-only channel from engines to the kernel.
+- **Lease** — staleness-based orchestrator ownership.
 
 ## Preflight (`orchid doctor`)
 
@@ -523,8 +610,11 @@ seam ships early; the channels later:
   contract for wiring in ANY other CLI or API-only model, with a worked
   example of swapping `role.orchestrator`; install (`git clone` + `./install.sh`, PATH setup, uninstall);
   quickstart walkthroughs (existing-repo and greenfield) with screenshots;
-  state files, guardrails, and intervention (via CLI verbs); FAQ; **Research
-  & further reading** — attributed citations: Google's "The New SDLC With
+  state files, guardrails, and intervention (via CLI verbs);
+  **Extending orchid** — the five extension points, the named patterns
+  glossary, and "write your first engine adapter in under an hour" pointing
+  at `docs/extending/` (one guide per plugin kind, each built around a real
+  reference plugin); FAQ; **Research & further reading** — attributed citations: Google's "The New SDLC With
   Vibe Coding" whitepaper (factory model, harness engineering, trajectory
   evaluation, model routing), the METR productivity study, Karpathy's
   vibe-coding/agentic-engineering framing, and future sources as they inform

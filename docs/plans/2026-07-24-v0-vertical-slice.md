@@ -4,7 +4,7 @@
 
 **Goal:** Build orchid v0 — the deterministic CLI core plus engine adapters that drive ONE task at a time through `pending → implementing → testing → reviewing → arbitrating → merging → done` in an existing repo, with crash recovery, proven by an end-to-end fixture test.
 
-**Architecture:** Three tiers per the spec (`docs/specs/2026-07-24-orchid-design.md`): tier-1 deterministic bash verbs under `libexec/` (sole mutators of durable state, never invoke an LLM), tier-3 engine adapters under `engines/` (write ONLY JSON envelopes to a runtime spool), and thin Claude skills + `PROTOCOL.md` on top. Durable state is committed `.orchid/`; volatile state is gitignored `.orchid/runtime/`. Serial execution, fixed roles, mkdir-based locking.
+**Architecture:** Three tiers per the spec (`docs/specs/2026-07-24-orchid-design.md`): tier-1 deterministic bash verbs under `libexec/` (sole mutators of durable state, never invoke an LLM), tier-3 engine adapters under `plugins/engines/<name>/run` (write ONLY JSON envelopes to a runtime spool), and thin Claude skills + `PROTOCOL.md` on top. Durable state is committed `.orchid/`; volatile state is gitignored `.orchid/runtime/`. Serial execution, config-bound roles, mkdir-based locking, plugin search path for engines.
 
 **Tech Stack:** bash (3.2-compatible — macOS default), `jq` (required, checked by doctor), git worktrees, plain-bash test harness (zero test dependencies).
 
@@ -13,7 +13,7 @@
 - All commit messages in this repo: NO AI co-author trailers (repo convention).
 - No personal machine paths in any committed file; resolve binaries from `PATH`, use `$HOME`, config via `orchid.config` (key=value, parsed — NEVER sourced).
 - `libexec/` scripts must never invoke an LLM CLI and never block on the network.
-- `engines/` scripts must never write durable state — spool + logs only.
+- `plugins/engines/` scripts must never write durable state — spool + logs only.
 - All state writes are atomic (temp file + `mv`).
 - No `flock` (absent on macOS): the run lock is `mkdir .orchid/runtime/lock`.
 - Every script starts with `#!/usr/bin/env bash` and `set -euo pipefail`.
@@ -635,7 +635,7 @@ git add lib/envelope.sh tests/test_envelope.sh && git commit -m "v0: envelope va
 - Create: `libexec/orchid-jobs`, `tests/test_jobs.sh`
 
 **Interfaces:**
-- Consumes: `lib/common.sh`, `lib/envelope.sh`, engine adapters at `$ORCHID_ROOT/engines/<name>` (invoked as `engines/<name> <task-id>`, with `ORCHID_REPO` exported).
+- Consumes: `lib/common.sh`, `lib/envelope.sh`, engine adapters resolved via the plugin search path (invoked as `<plugin>/run <task-id>`, with `ORCHID_REPO` exported).
 - Produces:
   - `orchid jobs launch <task-id> <engine-name>` — writes write-ahead manifest `runtime/jobs/<task>.json` `{task, attempt, engine, pid, pgid, started_at, log}` BEFORE spawning; spawns adapter detached with stdout/err → `runtime/logs/<task>-<attempt>.log`; updates manifest with pid/pgid after spawn.
   - `orchid jobs check` — per manifest prints `<task>\trunning|stalled|dead|timeout`; stall = log mtime older than `stall_minutes` (config, default 10); timeout = started_at older than `timeout_minutes` (default 60). Kills stalled/timeout process groups.
@@ -707,11 +707,25 @@ source "$ORCHID_ROOT/lib/envelope.sh"
 repo="${ORCHID_REPO:-$PWD}"
 state="$(orchid_state "$repo")"
 rt="$(orchid_runtime "$repo")"
-engines_dir="${ORCHID_ENGINES_DIR:-$ORCHID_ROOT/engines}"
 mkdir -p "$rt/jobs" "$rt/logs" "$rt/spool"
 sub="${1:-}"; shift || true
 
 now_epoch() { date +%s; }
+
+# Plugin seam (v0): engines resolve via a search path; a dropped-in adapter
+# works with zero kernel changes. Kernel never branches on an engine's name.
+resolve_engine() {
+  local name="$1" d
+  for d in "${ORCHID_ENGINES_DIR:-}" \
+           "$state/plugins/engines" \
+           "$HOME/.orchid/plugins/engines" \
+           "$ORCHID_ROOT/plugins/engines"; do
+    [ -n "$d" ] || continue
+    [ -x "$d/$name/run" ] && { echo "$d/$name/run"; return 0; }
+    [ -x "$d/$name" ]     && { echo "$d/$name"; return 0; }
+  done
+  return 1
+}
 
 case "$sub" in
   launch)
@@ -723,8 +737,9 @@ case "$sub" in
       --arg s "$(now_epoch)" \
       '{task:$t, attempt:$a, engine:$e, pid:0, pgid:0, started_at:($s|tonumber), log:$l}' \
       | atomic_write "$rt/jobs/$task.json"
+    exe="$(resolve_engine "$engine")" || orchid_die "no engine plugin '$engine' on search path"
     ORCHID_REPO="$repo" ORCHID_ATTEMPT="$attempt" \
-      "$engines_dir/$engine" "$task" >> "$log" 2>&1 &
+      "$exe" "$task" >> "$log" 2>&1 &
     pid=$!
     pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)"
     jq --arg p "$pid" --arg g "$pgid" '.pid=($p|tonumber) | .pgid=($g|tonumber)' \
@@ -789,7 +804,7 @@ git add libexec/orchid-jobs tests/test_jobs.sh && git commit -m "v0: orchid jobs
 ### Task 8: Codex implementer adapter
 
 **Files:**
-- Create: `engines/codex`, `lib/engine-common.sh`, `tests/test_engine_codex.sh`
+- Create: `plugins/engines/codex/run`, `lib/engine-common.sh`, `tests/test_engine_codex.sh`
 
 **Interfaces:**
 - Consumes: task file frontmatter (`branch`, `worktree`, `effort`), `.orchid/context.md` (optional), `ORCHID_ATTEMPT` env (set by `orchid jobs launch`).
@@ -807,7 +822,7 @@ export ORCHID_REPO="$WORK" ORCHID_ATTEMPT="T001-a1"
 "$ORCHID_BIN" task create T001 "demo"
 
 # DRYRUN emits an ok envelope without invoking codex
-ORCHID_DRYRUN=1 "$REPO_ROOT/engines/codex" T001
+ORCHID_DRYRUN=1 "$REPO_ROOT/plugins/engines/codex/run" T001
 env_file=".orchid/runtime/spool/T001-T001-a1-codex.json"
 [ -f "$env_file" ] || fail "dryrun envelope written"
 source "$REPO_ROOT/lib/envelope.sh"
@@ -821,7 +836,7 @@ mkdir -p "$WORK/stub"; cat > "$WORK/stub/codex" <<'EOF'
 echo "429 usage limit reached" >&2; exit 1
 EOF
 chmod +x "$WORK/stub/codex"
-PATH="$WORK/stub:$PATH" "$REPO_ROOT/engines/codex" T001 || true
+PATH="$WORK/stub:$PATH" "$REPO_ROOT/plugins/engines/codex/run" T001 || true
 assert_eq "rate_limited" "$(envelope_field "$env_file" .status)" "rate limit classified"
 ```
 
@@ -861,7 +876,7 @@ engine_classify() {  # stderr-text -> status
 ```
 
 ```bash
-# engines/codex
+# plugins/engines/codex/run
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/frontmatter.sh"
@@ -900,14 +915,14 @@ else
 fi
 ```
 
-Run: `chmod +x engines/codex`
+Run: `chmod +x plugins/engines/codex/run`
 
 - [ ] **Step 4: Run to verify pass** — PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add engines/codex lib/engine-common.sh tests/test_engine_codex.sh
+git add plugins/engines/codex/run lib/engine-common.sh tests/test_engine_codex.sh
 git commit -m "v0: codex implementer adapter with dryrun and failure classification"
 ```
 
@@ -916,7 +931,7 @@ git commit -m "v0: codex implementer adapter with dryrun and failure classificat
 ### Task 9: agy inline reviewer adapter
 
 **Files:**
-- Create: `engines/agy`, `tests/test_engine_agy.sh`
+- Create: `plugins/engines/agy/run`, `tests/test_engine_agy.sh`
 
 **Interfaces:**
 - Consumes: task frontmatter `base_sha`, `candidate_sha`, `risk_threshold`, `stop_condition`; git diff.
@@ -946,7 +961,7 @@ echo "VERDICT: approve"
 echo "REASON: fine"
 EOF
 chmod +x "$WORK/stub/agy"
-PATH="$WORK/stub:$PATH" "$REPO_ROOT/engines/agy" T001
+PATH="$WORK/stub:$PATH" "$REPO_ROOT/plugins/engines/agy/run" T001
 env_file=".orchid/runtime/spool/T001-T001-a1-agy.json"
 source "$REPO_ROOT/lib/envelope.sh"
 envelope_validate "$env_file" || fail "agy envelope valid"
@@ -955,7 +970,7 @@ assert_eq "approve" "$(envelope_field "$env_file" .verdict)" "verdict parsed"
 # oversized diff fails closed
 printf 'agy_max_bytes=1\n' > orchid.config
 rm -f "$env_file"
-PATH="$WORK/stub:$PATH" "$REPO_ROOT/engines/agy" T001 || true
+PATH="$WORK/stub:$PATH" "$REPO_ROOT/plugins/engines/agy/run" T001 || true
 assert_eq "failed" "$(envelope_field "$env_file" .status)" "oversized diff fails closed"
 ```
 
@@ -964,7 +979,7 @@ assert_eq "failed" "$(envelope_field "$env_file" .status)" "oversized diff fails
 - [ ] **Step 3: Implement**
 
 ```bash
-# engines/agy
+# plugins/engines/agy/run
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
@@ -1015,14 +1030,14 @@ case "$verdict" in
 esac
 ```
 
-Run: `chmod +x engines/agy`
+Run: `chmod +x plugins/engines/agy/run`
 
 - [ ] **Step 4: Run to verify pass** — PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add engines/agy tests/test_engine_agy.sh && git commit -m "v0: agy inline reviewer adapter (fail-closed, byte budget)"
+git add plugins/engines/agy/run tests/test_engine_agy.sh && git commit -m "v0: agy inline reviewer adapter (fail-closed, byte budget)"
 ```
 
 ---
@@ -1030,7 +1045,7 @@ git add engines/agy tests/test_engine_agy.sh && git commit -m "v0: agy inline re
 ### Task 10: codex-review adapter
 
 **Files:**
-- Create: `engines/codex-review`, `tests/test_engine_codex_review.sh`
+- Create: `plugins/engines/codex-review/run`, `tests/test_engine_codex_review.sh`
 
 **Interfaces:**
 - Consumes: same frontmatter as agy adapter; runs in the task worktree read-only.
@@ -1057,7 +1072,7 @@ mkdir -p "$WORK/stub"; cat > "$WORK/stub/codex" <<'EOF'
 echo "VERDICT: request-changes"
 EOF
 chmod +x "$WORK/stub/codex"
-PATH="$WORK/stub:$PATH" "$REPO_ROOT/engines/codex-review" T001
+PATH="$WORK/stub:$PATH" "$REPO_ROOT/plugins/engines/codex-review/run" T001
 env_file=".orchid/runtime/spool/T001-T001-a1-codex-review.json"
 source "$REPO_ROOT/lib/envelope.sh"
 envelope_validate "$env_file" || fail "envelope valid"
@@ -1069,7 +1084,7 @@ assert_eq "request-changes" "$(envelope_field "$env_file" .verdict)" "verdict pa
 - [ ] **Step 3: Implement**
 
 ```bash
-# engines/codex-review
+# plugins/engines/codex-review/run
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
@@ -1103,7 +1118,7 @@ case "$verdict" in
 esac
 ```
 
-Run: `chmod +x engines/codex-review`
+Run: `chmod +x plugins/engines/codex-review/run`
 
 - [ ] **Step 4: Run to verify pass** — PASS.
 
@@ -1115,7 +1130,7 @@ Record in the task file for the dogfood run whether a `base..head` argument exis
 - [ ] **Step 6: Commit**
 
 ```bash
-git add engines/codex-review tests/test_engine_codex_review.sh
+git add plugins/engines/codex-review/run tests/test_engine_codex_review.sh
 git commit -m "v0: codex-review adapter (read-only, range-pinned prompt)"
 ```
 
