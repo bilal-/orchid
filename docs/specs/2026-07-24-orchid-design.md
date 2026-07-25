@@ -518,30 +518,92 @@ fact needed to resume or hand off; in-flight LLM reasoning dies with its
 session BY DESIGN — stateless ticks re-derive judgment from durable facts,
 which is precisely what lets a different engine (or a fresh session) pick up
 mid-run: facts and decisions transfer between models; chains of thought do
-not.
+not. (A session MAY keep scratch notes under `runtime/scratch/<session>/`;
+they are garbage on resume — no successor ever reads them. Engine trajectory
+logs are retained as diagnostics for humans, never re-fed to models.)
 
-Memory layers (all in git, all consumed on resume):
+### The decision journal (`journal.md`, v0)
 
-- **Working state:** task frontmatter + roadmap — where everything stands.
-- **Episodic:** rework specs in task bodies (failed approaches, named
-  dead-ends), review envelopes, verify/merge evidence.
-- **Decisions with their WHY (v0):** `journal.md`, append-only via
-  `orchid journal <task-id> "<entry>"`. PROTOCOL requires an entry for:
-  every arbitration verdict (one-paragraph rationale), risk upgrades,
-  spinning-kills (the dead-end named), blocker resolutions, and rebase
-  re-review outcomes. A successor orchestrator — after crash, failover, or
-  engine switch — reads the journal tail during `orchid-resume` and inherits
-  the judgment, not just the state, so settled questions stay settled.
-- **Semantic:** `context.md` — what the repo IS (static per plan).
-- **Cross-run lessons (v1):** `lessons.md`, appended via
-  `orchid journal --lesson` when the orchestrator identifies a durable
-  repo truth (flaky test, unstated convention, engine-specific weakness).
-  Injected alongside `context.md` into every request document; survives
-  across runs — run N+1 starts smarter than run N started.
+Append-only, one entry per decision, written ONLY via the verb:
 
-The journal and lessons are orchestrator-written prose for future
-orchestrators and humans; they are memory, never control flow — the state
-machine remains the only authority on what happens next.
+```
+orchid journal add --task T007 --kind arbitration \
+  --by "claude/orchestrator s-9f2" \
+  "Approved over agy's request-changes: the flagged race is unreachable —
+   writes serialize on the run lock (libexec/orchid-task:41). Codex-review
+   concurred. Findings below medium ignored per risk_threshold."
+```
+
+renders as:
+
+```markdown
+## 2026-07-25T14:02:11Z T007 arbitration (claude/orchestrator s-9f2)
+Approved over agy's request-changes: the flagged race is unreachable — ...
+```
+
+- **Entry kinds (closed set, v0):** `arbitration`, `risk_change`, `kill`
+  (spinning/stall, dead-end named), `blocker`, `blocker_resolved`,
+  `rebase_review`, `plan_revision`, `intervention` (operator verbs log here
+  automatically), `lesson` (v1 — also mirrored to `lessons.md`).
+- **Enforcement is kernel-level, not model discipline:** transitions that
+  embody a judgment REFUSE to run without a reason —
+  `orchid task advance <id> merging|blocked` and
+  `orchid task set <id> risk_threshold` require `--reason "..."`, which the
+  verb writes to the journal atomically with the state change. A decision
+  without a recorded why is structurally impossible, not merely
+  discouraged.
+- **Read surface:** `orchid journal tail [-n N]`,
+  `orchid journal show --task T007` (that task's full decision history).
+  Entries are prose for successors and humans; NEVER parsed for control
+  flow — the state machine remains the only authority.
+
+### Cross-run lessons (`lessons.md`, v1)
+
+A lesson is a durable repo truth worth remembering across runs: a flaky
+test, an unstated convention, a build quirk, an engine-specific weakness
+("codex ignores the barrel-file rule in this repo").
+
+- **Birth:** PROTOCOL directs the orchestrator to consider a lesson at
+  exactly three moments — a rework caused by something `context.md` failed
+  to state; the second occurrence of the same infra flake; an arbitration
+  that turned on repo knowledge no file contained. Written via
+  `orchid journal add --kind lesson`, which appends to `lessons.md` with
+  date + evidence pointer (task/journal ref).
+- **Hygiene:** before appending, the orchestrator checks for an existing
+  lesson covering the same truth and updates it instead (no duplicates).
+  `lessons.md` is capped (~100 lines); at each plan phase the orchestrator
+  prunes lessons whose evidence has been falsified and consolidates
+  overlaps. Stale memory is worse than no memory.
+- **Distinct from `context.md`:** context is what the repo IS (regenerable
+  from the code); lessons are what the code CANNOT tell you (learned the
+  hard way). Context is rewritten per plan; lessons persist across runs.
+
+### Per-role memory injection (what each engine call receives)
+
+Assembled by the kernel into every request document, under a byte budget —
+recipients get what their judgment needs, nothing more:
+
+| Role | Receives |
+|---|---|
+| implementer | context.md + lessons.md + task body (incl. its OWN rework history and named dead-ends) |
+| reviewer | context.md + lessons.md + diff/manifest + acceptance criteria + stop condition (never other tasks' state) |
+| arbiter | both review envelopes + this task's journal history + diff on demand |
+| plan_critic | requirements + draft roadmap + lessons.md |
+| orchestrator (tick) | status + active task files + journal tail + open answers |
+
+### Resumption procedure (bounded, O(recent) not O(run))
+
+`orchid-resume` re-derives the world in a fixed order and a fixed budget:
+1. `orchid status` (run_status, task table, jobs, open questions);
+2. the active task file(s) in full;
+3. `orchid journal tail -n 20` plus `journal show --task` for each active
+   task — inheriting judgment, so settled questions stay settled;
+4. `context.md` + `lessons.md`;
+5. reconcile jobs/spool, then tick normally.
+Nothing else is re-read; the journal exists so resumption never requires
+replaying history. The same procedure serves crash recovery, engine
+failover (a codex tick inherits a claude tick's decisions with rationale),
+and cold-start weeks later.
 
 ## Operator walkthrough (the human's seat)
 
