@@ -116,21 +116,26 @@ skills/                     # the CLAUDE front-end for the orchestrator role —
   orchid-review/SKILL.md    #   discovered plugin kind. (review skill: v1)
 bin/
   orchid                    # THE CLI: git-style dispatcher
-libexec/                    # TIER 1 — deterministic verbs. Never invoke an
-  orchid-doctor             #   LLM, never block on the network. Sole mutators
-  orchid-init               #   of durable state.
+libexec/                    # TIER 1 — deterministic verbs: state transitions
+  orchid-doctor             #   only. Never invoke an LLM, never block on the
+  orchid-init               #   network, never spawn long-lived processes.
+  orchid-run                #   start/resume/advance/accept/new — epochs, runs
   orchid-task               #   create/show/list/set/advance/unblock/retry
+  orchid-requirements       #   import (operator-owned exception)
+  orchid-plan               #   apply/refresh-context (atomic transactions)
   orchid-verify             #   deterministic verification + evidence
-  orchid-merge              #   transactional merge
-  orchid-jobs               #   launch/check/reconcile (kernel launcher)
-  orchid-plugins            #   full lifecycle verbs (v1-m2)
-  orchid-journal            #   append decision/lesson entries (see Memory)
+  orchid-merge              #   transactional merge (never triggers reviews)
+  orchid-jobs               #   prepare/check/reconcile (NOT launch — tier 2)
+  orchid-plugins            #   list/validate/trust (v1-m1); lifecycle (v1-m3)
+  orchid-journal            #   add/tail/show — decision journal
+  orchid-lessons            #   add/update/retire/consolidate (v1)
   orchid-config             #   list effective config with per-key provenance
   orchid-status             #   task + run-level status
   orchid-notify             #   user questions out
-  orchid-answer             #   user answers in (idempotent)
-runners/                    # TIER 2 — effectful: launch LLM sessions.
-  orchid-tick  orchid-pump  #   Outside the determinism boundary. (pump: v1)
+  orchid-answer             #   user answers in (idempotent inbox)
+runners/                    # TIER 2 — effectful: launch processes.
+  orchid-launch             #   the kernel launcher: spawns engine adapters
+  orchid-tick  orchid-pump  #   headless tick; LLM-free heartbeat (v1-m2)
 plugins/                    # TIER 3 — the BUILT-IN plugin set, discovered via
   engines/codex/            #   the same path and contracts as third-party
   engines/agy/              #   plugins. Engine adapters write ONLY to the
