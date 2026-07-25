@@ -74,14 +74,20 @@ git — sessions are disposable; the files are the truth.
   `review` archetype, full manifest schema + `orchid plugins
   list/validate/trust`, plugin lockfile, kernel launcher hygiene, README +
   screenshots, **public release**.
+- **v1 launch features (ecosystem piggyback — see Distribution):** the
+  OpenClaw notify channel + orchid AgentSkill, and a Hermes engine adapter
+  (reviewer role first — its minimal capability bar), are pulled INTO the
+  v1 launch as marketing-critical integrations. Escape hatch: if either
+  upstream churns before launch, orchid ships without it and the adapter
+  follows in v1.1 — launch is never hostage to a third party's release
+  cadence.
 - **v1.x:** `refactor`/`test`/`migrate` archetypes, hooks + role registry,
   `orchid plugins install/update/remove/test/audit` + conformance kit,
-  cost/risk routing matrix, OpenClaw two-way notify, status page, service
-  packaging, and two REFERENCE third-party plugins proving the surface (an
-  API-backed reviewer engine, e.g. Kimi; a `researcher` role, e.g.
-  Perplexity) — each doubling as a `docs/extending/` tutorial. README
-  extension guides reference the BUILT-IN plugins until these ship (never
-  promise unshipped references).
+  cost/risk routing matrix, status page, service packaging, further
+  reference plugins (API-backed Kimi reviewer; Perplexity `researcher`
+  role) — each doubling as a `docs/extending/` tutorial. README extension
+  guides reference plugins that have actually shipped (never promise
+  unshipped references).
 
 ## Architecture
 
@@ -554,6 +560,23 @@ METR study, Karpathy's framing, and successors). CONTRIBUTING.md + a
 community plugin listing section (awesome-orchid) at public launch. Commit
 hygiene: clean history, no AI trailers, no personal paths, `$HOME`/`PATH`
 resolution only.
+
+**Ecosystem piggyback strategy (launch checklist):** ride the distribution
+of adjacent popular projects rather than competing with them —
+1. Launch README headline: "Works with OpenClaw · Hermes · Claude Code ·
+   Codex · Antigravity" (compatibility wording only; never imply
+   endorsement or partnership).
+2. Publish the **orchid AgentSkill into OpenClaw's skill ecosystem** —
+   status queries and blocker answers from WhatsApp/Telegram — so orchid is
+   discoverable where OpenClaw's own users browse; hero demo:
+   "requirements sent from your phone in the morning; OpenClaw pings you
+   the finished diff summary by evening."
+3. Hermes-side listing: an example integration contributed to their
+   community docs; Hermes ships as the first non-default engine adapter.
+4. GitHub topics (`openclaw`, `hermes-agent`, `multi-agent`,
+   `ai-orchestration`) + PRs to the relevant awesome-lists.
+5. Rule: integrations are optional dependencies — upstream churn can delay
+   an adapter, never the launch.
 
 ## Future (beyond v1.x)
 
