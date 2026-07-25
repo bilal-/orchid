@@ -382,7 +382,7 @@ base_sha:
 candidate_sha:
 risk_threshold: medium
 stop_condition: report at most 8 findings at or above medium severity; no style nits; one pass only
-engine: codex
+engine: __ENGINE__
 effort: medium
 acceptance_criteria:
 verification_commands:
@@ -421,6 +421,7 @@ case "$sub" in
     id="$1"; title="$2"; mkdir -p "$tasks"
     [ ! -f "$(task_file "$id")" ] || orchid_die "task $id exists"
     sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
+        -e "s|__ENGINE__|$(config_get "$repo" role.implementer codex)|g" \
         -e "s|__DATE__|$(date -u +%Y-%m-%dT%H:%M:%SZ)|g" \
       "$ORCHID_ROOT/templates/task.md" | atomic_write "$(task_file "$id")"
     ;;
@@ -543,8 +544,15 @@ echo "initialized: state on $integ"
 ```
 # orchid.config.example
 integration_branch=orchid/integration
-engines=codex,agy
 verify=npm test
+# Roles are configuration — any engine adapter can hold any role it is
+# capable of. These are the tested defaults:
+role.orchestrator=claude
+role.implementer=codex
+role.reviewer.low=agy
+role.reviewer.high=codex-review,agy
+role.plan_critic=codex
+engines=codex,agy
 ```
 
 Run: `chmod +x libexec/orchid-init libexec/orchid-doctor`
@@ -1422,11 +1430,13 @@ trivia ≤10 lines). Mutate state ONLY via `orchid` verbs. One tick:
    - `pending` → create worktree (`git worktree add <path> -b task/<id>
      <integration-sha>`), `orchid task set <id> worktree <path>`, set
      `base_sha`, `orchid task advance <id> implementing`,
-     `orchid jobs launch <id> codex`.
+     `orchid jobs launch <id> <task's engine field>` (set at creation from
+     `role.implementer` config — never hard-code an engine name).
    - implementer envelope `ok` → set `candidate_sha` (worktree HEAD),
      `orchid task advance <id> testing`, run `orchid verify <id>`:
-     PASS → `advance reviewing` + launch reviewers per risk tier
-     (low: agy; medium/high: codex-review AND agy);
+     PASS → `advance reviewing` + launch reviewers per risk tier from
+     config (`role.reviewer.low`, `role.reviewer.high` — defaults: low agy;
+     medium/high codex-review AND agy);
      FAIL → `advance rework`, write a rework spec into the task body
      naming the failure, `attempts` incremented, `advance implementing`,
      relaunch codex.

@@ -8,10 +8,16 @@ an internal review incorporated; pending final user review)
 
 Orchid is a lean multi-agent orchestrator for people who hold subscriptions to
 several AI coding CLIs and want them working together on large, long-running
-tasks. Claude Code orchestrates, plans, arbitrates, and merges; Codex CLI
-implements; Antigravity (`agy`) and a separate Codex session review. Heavy
-token usage is offloaded to the implementer/reviewer subscriptions, keeping
-the orchestrating session cheap enough to drive multi-day runs.
+tasks. **Roles — orchestrator, implementer, reviewers, arbiter — are pure
+configuration** (`role.*` keys in `orchid.config`); any engine meeting a
+role's capability requirements can hold it. The shipped defaults reflect the
+author's subscriptions — Claude Code orchestrates/arbitrates, Codex CLI
+implements, Antigravity (`agy`) and a fresh Codex session review — but
+nothing in the architecture privileges them: the orchestration procedure
+lives in engine-neutral `PROTOCOL.md`, state lives in files, and engines are
+adapters behind one envelope contract. Heavy token usage lands on whichever
+subscriptions hold the implementer/reviewer roles, keeping the orchestrating
+session cheap enough to drive multi-day runs.
 
 Honestly stated, orchid is a deliberately small **file-based workflow
 scheduler**: deterministic CLI verbs plus stateless LLM ticks over git state.
@@ -29,9 +35,25 @@ truth.
   session is rate-limited or closed; service packaging (survive reboots) is
   deferred.
 - **Scope:** existing repos first (stage v0); greenfield products (stage v1).
-- **Engine roles:** fixed in stage v0 (Claude orchestrates/arbitrates, Codex
-  implements, reviewers per risk tier). Preference-ordered failover per role
-  arrives in stage v1, gated by a capability suite (see failover).
+- **Engine roles:** fully configurable via `role.*` keys from v0 — orchid
+  never hard-codes an engine to a role. v0 ships and TESTS only the default
+  bindings (Claude orchestrates/arbitrates, Codex implements, reviewers per
+  risk tier); non-default bindings are supported-but-unverified until the
+  capability suite (v1) passes them. Preference-ordered failover per role
+  arrives in v1.
+
+  Role capability requirements (what a candidate engine must provide):
+
+  | Role | Needs |
+  |---|---|
+  | orchestrator | headless mode + shell/git/subprocess execution (to run `orchid` verbs and launch adapters) |
+  | implementer | headless mode + file writes and shell inside a worktree |
+  | reviewer | text in, text out — nothing else (inline mode); worktree read access optional for depth |
+  | plan-critic | text in, text out |
+
+  The reviewer/critic rows are deliberately minimal: ANY model — including
+  API-only models with no CLI tooling — can review via inline mode with a
+  ~40-line adapter.
 - **Autonomy:** fully autonomous — no user approval gates; only genuine
   blockers are surfaced, bounded by the Execution policy. **Continuity
   promise (stated precisely):** a single engine outage never loses state and
@@ -52,7 +74,8 @@ proven before the next depends on it. (Both external reviewers independently
 flagged v1-in-one-bite as infeasible; staging preserves the vision.)
 
 - **v0 — vertical slice:** one existing repo, ONE active task at a time
-  (serial), fixed roles, `feature` archetype only. CLI core verbs
+  (serial), default role bindings (roles read from `role.*` config from day
+  one; only the defaults are tested), `feature` archetype only. CLI core verbs
   (doctor/task/verify/merge/jobs/status/notify), deterministic verification
   and transactional merge, hard timeout + clean relaunch (no PID
   re-adoption), manual `orchid-resume`. Includes crash/recovery test and
@@ -75,11 +98,12 @@ Two locations; strict split between tooling (global, this repo) and run state
 ```
 PROTOCOL.md                 # engine-neutral tick procedure — the single source
                             # of orchestration truth, written in CLI verbs
-skills/                     # thin Claude front-ends; no procedure text of
-  orchid/SKILL.md           #   their own — they load PROTOCOL.md and call verbs
-  orchid-plan/SKILL.md
-  orchid-resume/SKILL.md
-  orchid-review/SKILL.md    # v1; refactor/test/migrate skills arrive in v1.x
+skills/                     # the CLAUDE front-end for the orchestrator role —
+  orchid/SKILL.md           #   one of several possible front-ends, not the
+  orchid-plan/SKILL.md      #   architecture. Thin shims: they load PROTOCOL.md
+  orchid-resume/SKILL.md    #   and call verbs. Other engines orchestrate via
+  orchid-review/SKILL.md    #   runners/orchid-tick rendering the same PROTOCOL.
+                            #   (orchid-review skill: v1; others v1.x)
 bin/
   orchid                    # THE CLI: git-style dispatcher
 libexec/                    # TIER 1 — deterministic verbs. Never invoke an LLM,
@@ -493,9 +517,11 @@ seam ships early; the channels later:
 - **README** is a first-class deliverable (written at end of v1): hero pitch
   + screenshot; how-it-works Mermaid diagram + one task's journey; why this
   design (subscription billing, no daemon, git as truth); prerequisites &
-  subscription matrix (Claude+Codex minimum — labeled "degraded
-  independence"; Claude+Codex+Antigravity full triangle; engine contract for
-  substitutes); install (`git clone` + `./install.sh`, PATH setup, uninstall);
+  subscription matrix — framed as "any engine, any role": the role
+  capability table, the tested default combo (Claude+Codex+Antigravity full
+  triangle; Claude+Codex labeled "degraded independence"), and the adapter
+  contract for wiring in ANY other CLI or API-only model, with a worked
+  example of swapping `role.orchestrator`; install (`git clone` + `./install.sh`, PATH setup, uninstall);
   quickstart walkthroughs (existing-repo and greenfield) with screenshots;
   state files, guardrails, and intervention (via CLI verbs); FAQ; **Research
   & further reading** — attributed citations: Google's "The New SDLC With
