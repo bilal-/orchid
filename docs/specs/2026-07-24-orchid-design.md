@@ -34,10 +34,13 @@ git — sessions are disposable; the files are the truth.
 
 ## Requirements (from design sessions)
 
-- **Run model:** semi-attended. An interactive Claude Code session is the
-  primary surface; the machine stays awake. The LLM-free pump plus headless
-  `orchid-tick` (v1-m2) keep the run advancing when the interactive session
-  is rate-limited or closed; service packaging ships in v1-m4.
+- **Run model:** semi-attended. The primary surface is an interactive
+  session of WHICHEVER front-end holds the orchestrator role (a Claude Code
+  session with the orchid skill in the author's default configuration — but
+  any front-end executing PROTOCOL.md qualifies); the machine stays awake.
+  The LLM-free pump plus headless `orchid-tick` (v1-m2) keep the run
+  advancing when the interactive session is rate-limited or closed; service
+  packaging ships in v1-m4.
 - **Scope:** existing repos first (v0); greenfield products (v1).
 - **Engine roles:** fully configurable via `role.*` keys from v0; orchid
   never hard-codes an engine to a role and kernel code never branches on a
@@ -786,8 +789,10 @@ derived cache, rebuildable from it.
 1. `orchid doctor` — readiness + plugin/trust report.
 2. Write `.orchid/requirements.md`; set `orchid.config` (verify command,
    role bindings if non-default). `orchid init`.
-3. Start the orchestrator front-end (Claude session → `/orchid-plan`,
-   or any front-end executing PROTOCOL.md).
+3. Start your configured orchestrator front-end — any front-end executing
+   PROTOCOL.md via verbs (with the default bindings: a Claude Code session
+   → `/orchid-plan`; with codex as orchestrator: `orchid run start &&
+   runners/orchid-tick`).
 4. Walk away. Check `orchid status` anytime; answer questions via
    `orchid answer`; intervene via `orchid task unblock/retry/set`.
 5. Run ends at `run_status: complete` (acceptance evidence in
