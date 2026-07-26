@@ -40,3 +40,5 @@ scratch2="$WORK/scratch2"; git init -q "$scratch2"
 rc=0; (cd "$scratch2" && ORCHID_REPO="$scratch2" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init) >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "init must fail when commit fails"
 [ "$(git -C "$scratch2" rev-parse --abbrev-ref HEAD)" != "orchid/integration" ] || fail "prior branch must be restored on failure"
+[ -z "$(git -C "$scratch2" status --porcelain)" ] || fail "failed init must leave tree and index clean"
+git -C "$scratch2" rev-parse --verify -q orchid/integration >/dev/null && fail "failed init must not leave stray integration branch" || true
