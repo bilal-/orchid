@@ -31,6 +31,10 @@ case "$sub" in
         printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
   set)
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
+    case "$key" in
+      status|attempts|infra_failures|id|created)
+        orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
+    esac
     if [ "$key" = risk_tier ]; then
       reason=""; [ "${1:-}" = "--reason" ] && reason="$2"
       [ -n "$reason" ] || orchid_die "risk_tier requires --reason (INV-08)"
@@ -76,16 +80,23 @@ case "$sub" in
   unblock)
     epoch_require "$repo"; id="$1"; shift
     [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "unblock requires --reason"
-    [ "$(fm_get "$(tf "$id")" status)" = blocked ] || orchid_die "$id is not blocked"
-    printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason" >> "$(tf "$id")"
+    f="$(tf "$id")"
+    [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
     journal --task "$id" --kind intervention "unblock: $reason"
-    fm_set "$(tf "$id")" status rework; fm_set "$(tf "$id")" updated "$(now)"
+    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework" ;;
   retry)
     epoch_require "$repo"; id="$1"; shift
     [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "retry requires --reason"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    from="$(fm_get "$f" status)"
+    case "$from" in
+      blocked|rework) ;;
+      *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
+    esac
     journal --task "$id" --kind intervention "retry: $reason"
-    fm_set "$(tf "$id")" status rework; fm_set "$(tf "$id")" updated "$(now)"
-    echo "$id: -> rework" ;;
+    fm_set "$f" status rework; fm_set "$f" updated "$(now)"
+    echo "$id: $from -> rework" ;;
   *) orchid_die "usage: orchid task create|show|list|set|advance|unblock|retry" ;;
 esac

@@ -92,11 +92,17 @@ and `reconcile`.
    current lease, not from how it was started) or kernel-launched by the
    pump (`orchid-tick`).
 3. The orchestrator holds the **lease** (identity + epoch, refreshed per
-   turn). Individual verb invocations are separate short-lived processes:
-   each takes the mkdir lock for its own transaction and validates
-   `ORCHID_EPOCH` (passed by the orchestrator, minted at `run
-   start/resume`). A verb bearing a stale epoch refuses to run — fencing,
-   so a zombie orchestrator from before a crash can never mutate state.
+   turn). `orchid run start|resume` takes the mkdir lock only transiently —
+   just long enough to fence a new epoch and refresh the lease — it does
+   not hold the lock for the run's duration. Individual verb invocations
+   are separate short-lived processes: each validates `ORCHID_EPOCH`
+   (passed by the orchestrator, minted at `run start/resume`). In v0,
+   mutating verbs are fenced by epoch, not serialized by a lock, and rely
+   on a single orchestrator running at a time; a verb bearing a stale
+   epoch refuses to run — fencing, so a zombie orchestrator from before a
+   crash can never mutate state. Per-verb transactional locking (each verb
+   taking its own lock for its own transaction) is a Plan B deliverable,
+   arriving alongside the tick loop.
 4. Engines are launched ONLY by the tier-2 launcher, which writes the
    manifest via tier-1 `jobs prepare` first. Engines never spawn engines.
 

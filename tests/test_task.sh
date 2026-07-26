@@ -22,3 +22,14 @@ assert_eq rework "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' 
 "$ORCHID_BIN" task set T001 risk_tier high --reason "touches auth"
 rc=0; "$ORCHID_BIN" task set T001 risk_tier low --reason x 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "risk downgrade must be refused"
+
+# Fix 3: retry is only legal from blocked or rework
+"$ORCHID_BIN" task create T002 "retry-guard"
+rc=0; "$ORCHID_BIN" task retry T002 --reason "not allowed" 2>/dev/null || rc=$?
+assert_eq 3 "$rc" "retry from pending must exit 3"
+
+"$ORCHID_BIN" task create T003 "retry-ok"
+"$ORCHID_BIN" task advance T003 implementing
+"$ORCHID_BIN" task advance T003 blocked --reason "demo blocker"
+"$ORCHID_BIN" task retry T003 --reason "guidance given"
+assert_eq rework "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "retry from blocked -> rework"
