@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+repo="${ORCHID_REPO:-$PWD}"
+integ="$(config_get "$repo" integration_branch orchid/integration)"
+state="$(orchid_state "$repo")"; orchid_runtime "$repo" >/dev/null
+cur="$(git -C "$repo" rev-parse --abbrev-ref HEAD)"
+git -C "$repo" rev-parse --verify -q "$integ" >/dev/null && orchid_die "branch $integ exists"
+git -C "$repo" branch "$integ" HEAD
+mkdir -p "$state/tasks" "$state/reviews"
+printf -- '---\nrun_status: planning\nrun_id: r-001\n---\n# Roadmap\n' > "$state/roadmap.md"
+echo "# Requirements (author by hand, then: orchid requirements import <file>)" > "$state/requirements.md"
+echo "# Blockers" > "$state/BLOCKERS.md"
+echo "# Baseline" > "$state/baseline.md"
+echo "# Journal" > "$state/journal.md"
+grep -q '^\.orchid/runtime/$' "$repo/.gitignore" 2>/dev/null || echo ".orchid/runtime/" >> "$repo/.gitignore"
+git -C "$repo" checkout -q "$integ"
+git -C "$repo" add .orchid .gitignore && git -C "$repo" commit -q -m "orchid: initialize run state" || true
+git -C "$repo" checkout -q "$cur"
+echo "initialized: $integ"

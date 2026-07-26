@@ -15,7 +15,12 @@ with_timeout() {
 }
 
 _cfg_env_name() { echo "ORCHID_$(echo "$1" | tr 'a-z.' 'A-Z_')"; }
-_cfg_file_get() { [ -f "$1" ] && grep -E "^$2=" "$1" | head -n1 | cut -d= -f2- || true; }
+# Last matching `key=value` line in the file wins (append-to-override, as in
+# a typical shell/config file); this was a `head -n1` (first-wins) bug that
+# silently made appended config overrides no-ops. Found while writing Task 8's
+# doctor test, which appends a second `role.implementer=` line expecting it
+# to take effect.
+_cfg_file_get() { [ -f "$1" ] && grep -E "^$2=" "$1" | tail -n1 | cut -d= -f2- || true; }
 config_get() {
   local repo="$1" key="$2" def="${3:-}" v env
   env="$(_cfg_env_name "$key")"
