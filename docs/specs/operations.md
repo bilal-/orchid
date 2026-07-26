@@ -1,0 +1,100 @@
+# Orchid — Operations Guide
+
+*Normative. One of four documents split from the design spec; see [2026-07-24-orchid-design.md](./2026-07-24-orchid-design.md) for the index and orientation.*
+
+## Installation & configuration
+
+### Install
+
+`git clone` + `./install.sh`, which does exactly and only: symlink `skills/`
+into `~/.claude/skills/`; link `bin/orchid` into `~/.local/bin` (or
+`$ORCHID_BIN_DIR`), warning if that dir is not on `PATH`; create
+`~/.orchid/{plugins,trust}` and a commented `~/.orchid/config`; finish by
+running `orchid doctor` so the user's first output is a readiness report.
+`./install.sh --uninstall` removes precisely those symlinks/dirs (config and
+trust are left with a note). At public launch additionally: a pinned
+`curl -fsSL … | bash` one-liner (fetching the same install.sh) and a
+Homebrew tap (v1-m4) — install must feel first-class on a Mac.
+
+### Connecting the CLIs (per-engine setup)
+
+Orchid never manages vendor auth — each CLI's own login is the source of
+truth. The flow is doctor-driven: `orchid doctor` names each configured
+engine's missing binary or failed auth probe and points at
+`docs/engines/<name>.md` — one guide per built-in engine covering: install
+command, subscription login command, the sandbox/approval flags orchid uses
+and why, verified CLI versions (from the capability suite), and known
+gotchas (e.g. agy's flags-before-`-p` rule, print-mode permission
+auto-denial). Adding a new engine = adapter + its `docs/engines/` guide;
+the conformance kit checks the guide exists.
+
+### Configuration (layered, with provenance)
+
+One key set, four layers, strict precedence (highest wins):
+
+```
+ORCHID_* env vars  >  <repo>/orchid.config  >  ~/.orchid/config  >  defaults
+```
+
+Per-user preferences (role bindings, model tiers, notify channel) belong in
+`~/.orchid/config` — set once, apply to every repo; per-repo facts
+(integration branch, verify command, resources) in `orchid.config`; env for
+one-off overrides. All layers are key=value, parsed never sourced.
+`orchid config list` (tier-1, read-only) prints the EFFECTIVE configuration
+with per-key provenance (which layer won) — no guessing why a setting
+applies. `docs/configuration.md` is the complete key reference (key,
+default, layer it belongs in, stage introduced) and is the single source of
+truth the README links to.
+
+### Docs as a v1 deliverable (the stellar bar, made testable)
+
+The docs suite — README, `docs/quickstart.md` (existing-repo and
+greenfield), `docs/configuration.md`, `docs/engines/*`, `docs/extending/*`,
+`docs/troubleshooting.md` (rate limits, resume, stale locks, blocked tasks),
+FAQ — ships INSIDE v1's release gate with a measurable acceptance
+criterion: **a new user with Claude+Codex subscriptions goes from clone to
+their first completed orchid task in under 15 minutes using only the
+quickstart** — rehearsed during dogfood on a clean machine profile. Docs
+that fail the rehearsal block the release the same way failing tests do.
+
+## Operator walkthrough (the human's seat)
+
+1. `orchid doctor` — readiness + plugin/trust report.
+2. Write `.orchid/requirements.md`; set `orchid.config` (verify command,
+   role bindings if non-default). `orchid init`.
+3. Start your configured orchestrator front-end — any front-end executing
+   PROTOCOL.md via verbs (with the default bindings: a Claude Code session
+   → `/orchid-plan`; with codex as orchestrator: `orchid run start &&
+   runners/orchid-tick`).
+4. Walk away. Check `orchid status` anytime; answer questions via
+   `orchid answer`; intervene via `orchid task unblock/retry/set`.
+5. Run ends at `run_status: complete` (acceptance evidence in
+   `reviews/acceptance.log`) or surfaces a blocker. Integration branch holds
+   the product; pushing/deploying is yours.
+
+## Remote interaction
+
+- **v0/v1 seam:** `orchid notify` (question-id minted by the kernel,
+  multiple-choice preferred) → `BLOCKERS.md` + terminal; `orchid answer
+  <qid> <choice>` — idempotent, expiring, consumed by the next tick.
+- **v1-m4 channels — three explicit actors (round-4 topology fix):**
+  (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
+  access); (2) the **orchid AgentSkill inside OpenClaw** — an authenticated
+  external front-end authorized for exactly two verbs, `orchid status` and
+  `orchid answer` (this, not the channel plugin, answers "how's the run?"
+  from your phone); (3) a lock-safe kernel INBOX: `orchid answer` validates
+  nonce, sender allowlist, and expiry before recording — no listener
+  daemon; the tick polls the inbox. Telegram fallback uses the same
+  three-actor shape. An unanswered question is just a blocked task.
+- **API-billing exception, stated plainly:** API-backed engines (Kimi,
+  Perplexity researcher) are metered per call, unlike subscription CLIs;
+  their role BINDINGS carry call budgets and retry ceilings. **Optionality
+  is binding policy, not role identity** (Perplexity's own fix): any role
+  binding may declare `blocking: false` — the run continues without that
+  role's output when it fails — so future non-blocking roles need no
+  special-casing; `role.researcher` merely defaults to `blocking: false`.
+- **The entire remote stack is post-core:** no kernel behavior may assume a
+  channel, AgentSkill, or inbox exists — `BLOCKERS.md` + terminal is always
+  a complete interaction surface.
+- Non-goal: native app. `orchid status` (later a static page) is the
+  read surface.

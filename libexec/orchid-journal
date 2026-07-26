@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+sub="${1:-}"; shift || true
+case "$sub" in
+  add)
+    epoch_require "$repo"
+    task=""; kind="note"
+    while [ $# -gt 0 ]; do case "$1" in
+      --task) task="$2"; shift 2;; --kind) kind="$2"; shift 2;; *) break;; esac; done
+    text="$*"
+    actor="${ORCHID_ACTOR:-operator}"; e="$ORCHID_EPOCH"
+    entry="## $(date -u +%Y-%m-%dT%H:%M:%SZ) ${task:-run} $kind ($actor e$e)"
+    { [ -f "$state/journal.md" ] && cat "$state/journal.md"; echo; echo "$entry"; echo "$text"; } \
+      | atomic_write "$state/journal.md"
+    if [ -n "$task" ]; then
+      mkdir -p "$rt/journal-index"
+      { [ -f "$rt/journal-index/$task" ] && tail -n 40 "$rt/journal-index/$task"; echo "$entry"; echo "$text"; } \
+        | atomic_write "$rt/journal-index/$task"
+    fi ;;
+  tail) n=20; [ "${1:-}" = "-n" ] && n="$2"; tail -n $(( n * 4 )) "$state/journal.md" 2>/dev/null || true ;;
+  show)
+    [ "${1:-}" = "--task" ] || orchid_die "usage: journal show --task <id>"
+    cat "$rt/journal-index/$2" 2>/dev/null || grep -A2 " $2 " "$state/journal.md" 2>/dev/null || true ;;
+  *) orchid_die "usage: orchid journal add|tail|show" ;;
+esac

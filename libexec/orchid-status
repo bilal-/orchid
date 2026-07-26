@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
+explain=0; [ "${1:-}" = "--explain" ] && explain=1
+echo "run_status: $(fm_get "$state/roadmap.md" run_status)"
+echo "== tasks"
+for f in "$state/tasks"/*.md; do
+  [ -e "$f" ] || continue
+  id="$(fm_get "$f" id)"; st="$(fm_get "$f" status)"
+  line="$(printf '%s\t%s\t%s' "$id" "$st" "$(fm_get "$f" title)")"
+  if [ "$explain" -eq 1 ]; then
+    why=""
+    case "$st" in
+      pending)
+        deps="$(fm_get "$f" depends_on)"; unmet=""
+        for d in $deps; do
+          [ "$(fm_get "$state/tasks/$d.md" status 2>/dev/null)" = done ] || unmet="$unmet $d"
+        done
+        if [ -n "$unmet" ]; then why="waiting-deps$unmet"; else why="ready-to-dispatch"; fi ;;
+      implementing) why="awaiting-implementer-envelope" ;;
+      testing)      why="awaiting-verify (or rebase-pending)" ;;
+      reviewing)    why="awaiting-review-envelopes" ;;
+      arbitrating)  why="awaiting-arbitration" ;;
+      merging)      why="awaiting-merge" ;;
+      blocked)      why="blocked (see: orchid journal show --task $id)" ;;
+      done)         why="-" ;;
+      rework)       why="awaiting-rework-dispatch" ;;
+    esac
+    line="$line	$why"
+  fi
+  echo "$line"
+done
+echo "== jobs"
+"$ORCHID_ROOT/bin/orchid" jobs check 2>/dev/null || echo "(jobs: plan B)"

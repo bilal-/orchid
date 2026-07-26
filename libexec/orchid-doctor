@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
+repo="${ORCHID_REPO:-$PWD}"; fails=0
+ok()   { echo "ok: $*"; }
+bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
+git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
+command -v jq >/dev/null && ok jq || bad "jq missing"
+git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
+[ -n "$(config_get "$repo" verify)" ] && ok "verify command configured" || bad "verify command (set 'verify=' in orchid.config)"
+for role in orchestrator implementer reviewer arbiter plan_critic; do
+  eng="$(resolve_role "$repo" "$role")"
+  if exe="$(resolve_engine_exe "$eng" 2>/dev/null)"; then
+    tag=""; [ "$(config_provenance "$repo" "role.$role")" != default ] && tag=" [unverified]"
+    ok "role $role -> $eng ($exe)$tag"
+  else
+    bad "role $role -> $eng: no engine plugin on search path (see docs/engines/$eng.md)"
+  fi
+done
+[ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins present but disabled (no trust store in v0)"
+[ "$fails" -eq 0 ] || exit 1

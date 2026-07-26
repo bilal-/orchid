@@ -1,0 +1,12 @@
+integration_branch
+verify
+role.orchestrator
+role.implementer
+role.reviewer
+role.arbiter
+role.plan_critic
+lock_break_s
+stall_minutes
+timeout_minutes
+agy_max_bytes
+pack_budget_bytes
