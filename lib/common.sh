@@ -56,10 +56,13 @@ lock_acquire() {
       echo "orchid: lock held by pid $pid on $host" >&2; return 1
     fi
   fi
-  jq -n --arg p "$$" --arg s "$(_pid_start "$$")" --arg h "$(hostname)" \
+  if ! jq -n --arg p "$$" --arg s "$(_pid_start "$$")" --arg h "$(hostname)" \
     --arg e "$(epoch_current "$repo")" \
     '{pid:($p|tonumber), pid_start:$s, hostname:$h, epoch:($e|tonumber? // 0)}' \
-    > "$lock/owner.json"
+    > "$lock/owner.json" 2>/dev/null; then
+    rm -rf "$lock"
+    return 1
+  fi
 }
 lock_release() { rm -rf "$(orchid_runtime "$1")/lock"; }
 

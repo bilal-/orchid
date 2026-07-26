@@ -6,11 +6,11 @@ sub="${1:-}"; shift || true
 case "$sub" in
   start|resume)
     lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
+    trap "lock_release '$repo'" EXIT
     e=$(( $(epoch_current "$repo") + 1 ))
     echo "$e" | atomic_write "$rt/epoch"
     jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{epoch:($e|tonumber), refreshed_at:$t}' | atomic_write "$rt/lease.json"
-    lock_release "$repo"
     echo "epoch: $e"
     ;;
   refresh-lease)
