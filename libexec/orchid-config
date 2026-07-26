@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+repo="${ORCHID_REPO:-$PWD}"
+[ "${1:-list}" = list ] || orchid_die "usage: orchid config list"
+while IFS= read -r key; do
+  [ -n "$key" ] || continue
+  printf '%s\t%s\t%s\n' "$key" "$(config_get "$repo" "$key")" "$(config_provenance "$repo" "$key")"
+done < "$ORCHID_ROOT/lib/config-keys.txt"
