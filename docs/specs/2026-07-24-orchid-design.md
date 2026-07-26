@@ -1,9 +1,15 @@
 # Orchid — Design Spec (v5)
 
 **Date:** 2026-07-25 (v1 2026-07-24)
-**Status:** Approved through three external review rounds (codex + agy) plus
-internal audits; v5 reconciles the round-4 three-way audit; pending user
-review. Plan redo follows user approval.
+**Status:** v5 + round-5 (Perplexity deep-dive) incorporated; pending user
+review. Plan redo follows user approval. **Restructuring note (accepted
+from round 5, executed as the plan's first task):** this monolith splits
+into four documents — `kernel.md` (normative: verbs, schemas, state table,
+invariants, guarantees, two sequence diagrams: happy path +
+crash-resume-reconcile-fence), `plugins.md` (contracts), `operations.md`
+(operator manual), `roadmap.md` (milestones, distribution, ecosystem,
+research grounding) — rule: if removing a section would not change
+conformance, it leaves the kernel spec.
 
 ## Purpose
 
@@ -68,7 +74,11 @@ git — sessions are disposable; the files are the truth.
 - **v0 — vertical slice:** one existing repo, ONE active task at a time,
   default role bindings, `feature` archetype only, CLI kernel verbs,
   deterministic verify/merge, crash recovery (no PID re-adoption), manual
-  resume. The plugin seam ships FINAL-SHAPED in v0: the real
+  resume. **One reviewer policy in v0** (round-5 simplification): exactly
+  one reviewer per task — engine-independent when available, else labeled
+  session-independent fallback; dual review and full risk-tier routing
+  arrive with v1-m2, after baseline data exists. Alternate role bindings
+  resolve but are UNSUPPORTED until v1-m1's capability suite. The plugin seam ships FINAL-SHAPED in v0: the real
   `ORCHID_PLUGIN_PATH` layout, one role→engine resolver used by doctor,
   jobs, and PROTOCOL alike, launch-by-role, and a fake non-default-binding
   test proving no engine name is hard-coded. Repo-local plugins DISABLED (no
@@ -133,7 +143,12 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
   orchid-journal            #   add/tail/show — decision journal
   orchid-lessons            #   add/update/retire/consolidate (v1)
   orchid-config             #   list effective config with per-key provenance
-  orchid-status             #   task + run-level status
+  orchid-status             #   task + run-level status; --explain prints WHY
+                            #   the scheduler did/didn't act (blocked
+                            #   predicates by name: waiting-for-independent-
+                            #   reviewer, exclusive-overlap, rebase-pending,
+                            #   lease-not-stale…) — the "why did nothing
+                            #   happen?" surface
   orchid-notify             #   user questions out
   orchid-answer             #   user answers in (idempotent inbox)
 runners/                    # TIER 2 — effectful: launch processes.
@@ -211,11 +226,15 @@ plugins.lock                # v1: resolved plugin identities for this run
 BLOCKERS.md
 
 # runtime/ (gitignored — machine-local, volatile):
-lock/                       # mkdir lock; contains owner.json (pid, hostname,
-                            #   created_at). Tier-1 verbs BREAK a lock whose
-                            #   pid is dead or whose age exceeds 60s past
-                            #   lease staleness — no permanent deadlock after
-                            #   SIGKILL.
+lock/                       # mkdir lock; owner.json (pid, pid_start_time,
+                            #   epoch, hostname, created_at). Breaking a lock
+                            #   requires BOTH: owner not verifiably alive
+                            #   (pid dead, OR pid_start_time mismatch — pid
+                            #   reuse guard, OR foreign hostname) AND age >
+                            #   60s past lease staleness measured from file
+                            #   mtime (single clock; host-sleep gaps only
+                            #   ever delay breaking, never hasten it).
+                            #   Breaking is itself journaled.
 lease.json                  # orchestrator heartbeat lease
 jobs/<job_id>.json          # write-ahead manifests, keyed by JOB (not task):
                             #   parallel reviewers never collide
@@ -316,7 +335,11 @@ inputs (task body, acceptance criteria, the diff for reviews) are
 NON-TRUNCATABLE — if they alone exceed budget, the launch fails with
 `input_overflow` rather than silently truncating; journal/lessons/context
 trim in that order (journal tail-first, context head-first), and every trim
-is recorded in the manifest. **Visibility honesty:** worktree-capable
+is recorded in the manifest. **Overflow classification:** `input_overflow`
+is first a TASK-SHAPING signal — the orchestrator's prescribed response is
+to split the task (journaled `plan_revision`), not raise the budget;
+chunked review is a post-v1 fallback, and a raised budget is an operator
+decision in config. **Visibility honesty:** worktree-capable
 engines can physically read the whole checkout, including committed
 `.orchid/` state — the pack defines what they are GIVEN, the execution
 policy defines what they may DO, and review independence never rests on
@@ -490,7 +513,28 @@ not a separate `engines=` list), explicit verification commands (or
 
 ## Task lifecycle
 
-Feature-archetype table (others declare subsets within kernel invariants):
+**Canonical transition table (the single source of state truth — also the
+test oracle; per-round-Perplexity fix, all state logic previously spread
+across prose sections is normative HERE):**
+
+| From | Trigger verb | Preconditions | Writes | Next |
+|---|---|---|---|---|
+| pending | `task advance` | deps done; worktree created; base_sha set | frontmatter | implementing |
+| implementing | `task advance` | implementer envelope `ok`; candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
+| testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
+| testing | `verify` FAIL → `task advance` | — (attempts++ unless `--waive-attempt --reason`) | frontmatter, journal | rework |
+| reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
+| arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
+| arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
+| merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite green | integration ref, evidence, frontmatter | done |
+| merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
+| merging | `merge` exit 5 (`rebase_rereview_required`) | rebase done, SHAs updated; reviews invalidated | frontmatter, journal(`rebase_review`) | testing |
+| rework | `task advance` | rework spec written into task body | frontmatter | implementing |
+| any | `task advance --reason` | ≤3 attempts exhausted / budget / operator | frontmatter, journal | blocked |
+| blocked | `task unblock --reason` | guidance recorded | frontmatter, journal | rework |
+
+Feature-archetype diagram (other archetypes declare row subsets within
+kernel invariants):
 
 ```
 pending → implementing → testing → reviewing → arbitrating → merging → done
@@ -666,9 +710,14 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   three-actor shape. An unanswered question is just a blocked task.
 - **API-billing exception, stated plainly:** API-backed engines (Kimi,
   Perplexity researcher) are metered per call, unlike subscription CLIs;
-  their role descriptors carry call budgets and retry ceilings, and
-  research failure is OPTIONAL-degrading (a run continues without
-  citations), never blocking.
+  their role BINDINGS carry call budgets and retry ceilings. **Optionality
+  is binding policy, not role identity** (Perplexity's own fix): any role
+  binding may declare `blocking: false` — the run continues without that
+  role's output when it fails — so future non-blocking roles need no
+  special-casing; `role.researcher` merely defaults to `blocking: false`.
+- **The entire remote stack is post-core:** no kernel behavior may assume a
+  channel, AgentSkill, or inbox exists — `BLOCKERS.md` + terminal is always
+  a complete interaction surface.
 - Non-goal: native app. `orchid status` (later a static page) is the
   read surface.
 
@@ -750,6 +799,16 @@ test, an unstated convention, a build quirk, an engine-specific weakness
 - **Distinct from `context.md`:** context is what the repo IS (regenerable
   from the code); lessons are what the code CANNOT tell you (learned the
   hard way).
+
+### The prose firewall (stated sharply, per Perplexity round 5)
+
+No control decision may depend on free-form text unless a deterministic verb
+has first translated it into structured state — memory artifacts inform
+judgment; only frontmatter, envelopes, and manifests drive the machine.
+Artifact purposes, exclusively: `context.md` = stable repo facts;
+`lessons.md` = cross-run heuristics; `journal.md` = irreversible decisions +
+rationale; task body = current execution instructions only. A memory file
+drifting toward a second scheduling system is a design bug.
 
 ### Per-role memory injection (what each engine call receives)
 
@@ -888,6 +947,59 @@ of adjacent popular projects rather than competing with them —
    `ai-orchestration`) + PRs to the relevant awesome-lists.
 5. Rule: integrations are optional dependencies — upstream churn can delay
    an adapter, never the launch.
+
+## Glossary (one sentence each; forbidden confusions marked ✗)
+
+- **Engine** — a vendor AI accessed through an adapter plugin. ✗ not a role.
+- **Role** — a named job (orchestrator/implementer/reviewer/arbiter/
+  plan_critic/custom) bound to engines by config. ✗ not an engine.
+- **Adapter** — the executable translating one engine into the
+  request/envelope contract.
+- **Front-end** — whatever drives the orchestrator role interactively
+  (Claude skill, tick, future TUI). ✗ not a discovered plugin kind.
+- **Runner** — tier-2 effectful launcher (launch/tick/pump). ✗ not a verb.
+- **Verb** — a tier-1 deterministic state transition. ✗ never spawns
+  long-lived processes.
+- **Tick** — ONE bounded execution of PROTOCOL.md. ✗ not a durable process.
+- **Job** — one kernel-minted engine invocation (job_id). ✗ not an attempt.
+- **Attempt** — the logical rework counter on a task.
+- **Envelope / Request / Input pack** — result contract / invocation
+  contract / materialized per-job memory.
+- **Archetype** — a declared workflow shape (transition-table subset +
+  templates). ✗ not code.
+- **Run / Epoch / Lease** — one requirements-to-acceptance cycle / fencing
+  counter / orchestrator ownership heartbeat.
+
+## Kernel guarantees / non-guarantees
+
+**Guaranteed:** single writer per durable file; validated transitions only;
+epoch-fenced mutation; envelopes bound to launches (quarantine otherwise);
+tests pass only via `orchid verify`; unreviewed trees never merge; engines
+never spawn engines; a decision without a journaled reason cannot occur on
+reason-bearing verbs; crash loses at most the current uncommitted tick.
+**NOT guaranteed:** plugin containment (plugins are trusted code);
+engine output quality (reviews/arbitration mitigate, never prove);
+wall-clock progress when required engines are unavailable (work queues);
+semantic correctness beyond declared verification commands.
+
+## Conformance invariants (the executable contract; tests carry these IDs)
+
+- INV-01 no tier-1 verb spawns a long-lived process
+- INV-02 a stale epoch cannot mutate durable state
+- INV-03 envelope mismatch/replay/oversize → quarantine, never acceptance
+- INV-04 a commit touching `.orchid/` blocks entry to `testing`
+- INV-05 kernel code never branches on a plugin's name
+- INV-06 no engine process is spawned except by the tier-2 launcher
+- INV-07 a candidate whose SHA changed cannot merge without re-verify +
+  re-review (rebase included)
+- INV-08 reason-bearing transitions fail without `--reason`; actor identity
+  is kernel-derived
+- INV-09 repo-local plugins never execute without an out-of-repo trust
+  record
+- INV-10 duplicate plugin IDs are an error, never a shadow
+- INV-11 `verify` evidence is the only path to a passing `testing` state
+- INV-12 non-truncatable inputs over budget fail with `input_overflow`,
+  never silently truncate
 
 ## Future (beyond v1)
 
