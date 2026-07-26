@@ -26,3 +26,10 @@ cand="$(git rev-parse HEAD)"; git checkout -q -
 "$ORCHID_BIN" task advance T001 implementing >/dev/null
 rc=0; "$ORCHID_BIN" task advance T001 testing 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-04: commit touching .orchid/ must block testing"
+
+# Plan-A backlog step 9: entry to `testing` now REQUIRES non-empty
+# base_sha/candidate_sha, making the INV-04 guard non-vacuous.
+"$ORCHID_BIN" task create T002 "no-shas"
+"$ORCHID_BIN" task advance T002 implementing >/dev/null
+rc=0; "$ORCHID_BIN" task advance T002 testing 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "INV-04: entry to testing with unset base_sha/candidate_sha must be refused"

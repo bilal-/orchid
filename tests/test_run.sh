@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
-mkdir -p .orchid; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+# Fixture correction (Plan-A backlog step 2): `run start` now refuses an
+# uninitialized repo (neither .orchid/tasks/ nor .orchid/roadmap.md present).
+# This fixture predates that guard and only created the bare .orchid/ dir —
+# widen it to .orchid/tasks so the happy-path `run start` below still passes.
+mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 e1="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 e2="$("$ORCHID_BIN" run resume | sed 's/epoch: //')"
 [ "$e2" -gt "$e1" ] || fail "resume increments epoch ($e1 -> $e2)"
@@ -21,3 +25,9 @@ rc=0; PATH="$WORK/stub:$PATH" "$ORCHID_BIN" run start >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "acquire against held lock should fail"
 [ -d .orchid/runtime/lock ] || fail "holder's lock must survive a failed acquire"
 lock_release "$WORK"
+
+# run start refuses an uninitialized repo (no .orchid/tasks and no roadmap.md)
+scratch="$WORK/scratch-uninit"; mkdir -p "$scratch"
+(cd "$scratch" && git init -q . && git commit -q --allow-empty -m root)
+rc=0; ORCHID_REPO="$scratch" HOME="$WORK/home" "$ORCHID_BIN" run start >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "run start must refuse an uninitialized repo"

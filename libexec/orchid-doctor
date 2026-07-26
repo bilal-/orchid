@@ -17,5 +17,12 @@ for role in orchestrator implementer reviewer arbiter plan_critic; do
     bad "role $role -> $eng: no engine plugin on search path (see docs/engines/$eng.md)"
   fi
 done
+integ="$(config_get "$repo" integration_branch orchid/integration)"
+if git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 || \
+   git -C "$repo" rev-parse --verify -q HEAD >/dev/null 2>&1; then
+  ok "integration branch exists or creatable"
+else
+  bad "integration branch exists or creatable: no HEAD to branch from and $integ absent"
+fi
 [ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins present but disabled (no trust store in v0)"
 [ "$fails" -eq 0 ] || exit 1

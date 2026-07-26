@@ -6,7 +6,8 @@ printf 'verify=true\n' > orchid.config
 mkdir -p "$WORK/eng/fake"; printf '#!/usr/bin/env bash\n' > "$WORK/eng/fake/run"; chmod +x "$WORK/eng/fake/run"
 printf 'role.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' >> orchid.config
 
-ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor || fail "doctor passes with resolvable fake engines"
+out0="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes with resolvable fake engines"
+assert_match "integration branch exists or creatable" "$out0" "doctor pre-init: integration branch creatable from HEAD"
 mkdir -p .orchid/plugins/engines/evil
 out="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || true
 assert_match "repo-local plugins.*disabled" "$out" "repo-local plugin warning"
@@ -17,6 +18,8 @@ git add -A && git commit -q -m "fixture: engines + config"
 "$ORCHID_BIN" init
 git rev-parse --verify -q orchid/integration >/dev/null || fail "integration branch"
 git show orchid/integration:.orchid/roadmap.md | grep -q "run_status: planning" || fail "roadmap committed with run_status"
+out1="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes post-init"
+assert_match "integration branch exists or creatable" "$out1" "doctor post-init: integration branch exists"
 rc=0; printf 'role.implementer=missing-engine\n' >> orchid.config
 ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "doctor fails on unresolvable role"

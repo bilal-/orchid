@@ -17,6 +17,13 @@ assert_eq repo "$(config_provenance "$WORK/repo" role.implementer)" "provenance"
 printf 'evil=$(touch %s/pwned)\n' "$WORK" >> "$WORK/repo/orchid.config"
 config_get "$WORK/repo" evil >/dev/null; [ ! -e "$WORK/pwned" ] || fail "never sourced"
 
+# key must be ERE-escaped before grep: dotted key `a.b` must not match `axb=1`
+# (unescaped `.` in an ERE matches any char)
+printf 'axb=1\n' > "$WORK/repo/orchid.config.dots"
+[ -z "$(_cfg_file_get "$WORK/repo/orchid.config.dots" a.b)" ] || fail "unescaped '.' in key a.b must not match axb=1"
+printf 'a.b=2\n' >> "$WORK/repo/orchid.config.dots"
+assert_eq 2 "$(_cfg_file_get "$WORK/repo/orchid.config.dots" a.b)" "escaped key a.b still matches literal a.b=2"
+
 # lock: acquire, contend, identity-guarded break
 mkdir -p "$WORK/repo/.orchid"
 lock_acquire "$WORK/repo" || fail "first acquire"

@@ -32,11 +32,15 @@ case "$sub" in
   set)
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     case "$key" in
-      status|attempts|infra_failures|id|created)
+      status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
     esac
     if [ "$key" = risk_tier ]; then
-      reason=""; [ "${1:-}" = "--reason" ] && reason="$2"
+      reason=""
+      if [ "${1:-}" = "--reason" ]; then
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"
+      fi
       [ -n "$reason" ] || orchid_die "risk_tier requires --reason (INV-08)"
       old="$(fm_get "$(tf "$id")" risk_tier)"
       [ "$(rank "$val")" -ge "$(rank "$old")" ] || orchid_die "risk_tier is monotonic ($old -> $val refused)"
@@ -56,8 +60,8 @@ case "$sub" in
     fi
     if [ "$to" = testing ]; then
       b="$(fm_get "$f" base_sha)"; c="$(fm_get "$f" candidate_sha)"
-      if [ -n "$b" ] && [ -n "$c" ] && \
-         git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
+      [ -n "$b" ] && [ -n "$c" ] || orchid_die "testing requires base_sha and candidate_sha set"
+      if git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
         orchid_die "commits touch .orchid/ — entry to testing refused (INV-04)"
       fi
     fi
