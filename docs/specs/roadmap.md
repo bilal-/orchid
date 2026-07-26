@@ -18,7 +18,7 @@
   bindings are supported-but-unverified (labeled by doctor) until the
   capability suite (v1) passes them.
 - **Autonomy:** fully autonomous — no user approval gates; only genuine
-  blockers surface, bounded by the Execution policy. **Continuity promise
+  blockers surface, bounded by the Execution policy (see kernel.md). **Continuity promise
   (precise):** a single engine outage never loses state and never stops
   eligible work; work whose policy requires an unavailable engine queues
   until that engine's window reopens. With failover enabled (v1),
