@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
+sub="${1:-}"; shift || true
+tf() { echo "$tasks/$1.md"; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
+
+legal() { case "$1:$2" in
+  pending:implementing|implementing:testing|testing:reviewing|testing:rework|\
+  reviewing:arbitrating|arbitrating:merging|arbitrating:rework|\
+  merging:done|merging:rework|merging:testing|rework:implementing) return 0;;
+  *:blocked) return 0;; *) return 1;; esac; }
+
+needs_reason() { case "$1:$2" in
+  *:merging|*:blocked|arbitrating:rework) return 0;; *) return 1;; esac; }
+
+rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
+
+case "$sub" in
+  create)
+    epoch_require "$repo"; id="$1"; title="$2"; mkdir -p "$tasks"
+    [ ! -f "$(tf "$id")" ] || orchid_die "task $id exists"
+    sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
+        -e "s|__ENGINE__|$(config_get "$repo" role.implementer codex)|g" \
+        -e "s|__DATE__|$(now)|g" \
+      "$ORCHID_ROOT/templates/task.md" | atomic_write "$(tf "$id")" ;;
+  show) cat "$(tf "$1")" ;;
+  list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
+        printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
+  set)
+    epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
+    if [ "$key" = risk_tier ]; then
+      reason=""; [ "${1:-}" = "--reason" ] && reason="$2"
+      [ -n "$reason" ] || orchid_die "risk_tier requires --reason (INV-08)"
+      old="$(fm_get "$(tf "$id")" risk_tier)"
+      [ "$(rank "$val")" -ge "$(rank "$old")" ] || orchid_die "risk_tier is monotonic ($old -> $val refused)"
+      journal --task "$id" --kind risk_change "$old -> $val: $reason"
+    fi
+    fm_set "$(tf "$id")" "$key" "$val"; fm_set "$(tf "$id")" updated "$(now)" ;;
+  advance)
+    epoch_require "$repo"; id="$1"; to="$2"; shift 2
+    reason=""; waive=0
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason) reason="$2"; shift 2;; --waive-attempt) waive=1; shift;; *) shift;; esac; done
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    from="$(fm_get "$f" status)"
+    legal "$from" "$to" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    if needs_reason "$from" "$to"; then
+      [ -n "$reason" ] || orchid_die "$from -> $to requires --reason (INV-08)"
+    fi
+    if [ "$to" = testing ]; then
+      b="$(fm_get "$f" base_sha)"; c="$(fm_get "$f" candidate_sha)"
+      if [ -n "$b" ] && [ -n "$c" ] && \
+         git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
+        orchid_die "commits touch .orchid/ — entry to testing refused (INV-04)"
+      fi
+    fi
+    if [ "$to" = rework ] && [ "$from" != merging ]; then
+      if [ "$waive" -eq 1 ]; then
+        [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"
+        journal --task "$id" --kind attempt_waiver "$reason"
+      else
+        fm_set "$f" attempts "$(( $(fm_get "$f" attempts) + 1 ))"
+      fi
+    fi
+    if [ -n "$reason" ]; then
+      kind=intervention
+      [ "$from" = arbitrating ] && kind=arbitration
+      [ "$to" = blocked ] && kind=blocker
+      journal --task "$id" --kind "$kind" "$from -> $to: $reason"
+    fi
+    fm_set "$f" status "$to"; fm_set "$f" updated "$(now)"
+    echo "$id: $from -> $to" ;;
+  unblock)
+    epoch_require "$repo"; id="$1"; shift
+    [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "unblock requires --reason"
+    [ "$(fm_get "$(tf "$id")" status)" = blocked ] || orchid_die "$id is not blocked"
+    printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason" >> "$(tf "$id")"
+    journal --task "$id" --kind intervention "unblock: $reason"
+    fm_set "$(tf "$id")" status rework; fm_set "$(tf "$id")" updated "$(now)"
+    echo "$id: blocked -> rework" ;;
+  retry)
+    epoch_require "$repo"; id="$1"; shift
+    [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "retry requires --reason"
+    journal --task "$id" --kind intervention "retry: $reason"
+    fm_set "$(tf "$id")" status rework; fm_set "$(tf "$id")" updated "$(now)"
+    echo "$id: -> rework" ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|unblock|retry" ;;
+esac
