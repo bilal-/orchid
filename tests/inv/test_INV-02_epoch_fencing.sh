@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
-source "$REPO_ROOT/lib/common.sh"
-
-# Stub: full INV-02 (epoch fencing across kernel operations) lands in Task 5.
-# For now, just assert the epoch_require primitive this invariant depends on exists.
-type epoch_require >/dev/null 2>&1 || fail "epoch_require helper missing (INV-02 depends on it)"
-type epoch_current >/dev/null 2>&1 || fail "epoch_current helper missing (INV-02 depends on it)"
+[ -x "$REPO_ROOT/libexec/orchid-task" ] || { echo "  SKIP: orchid-task not yet implemented (activates in Task 6)"; exit 0; }
+cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+cur="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$cur"
+"$ORCHID_BIN" task create T001 demo || fail "current epoch mutates"
+"$ORCHID_BIN" run resume >/dev/null      # epoch moves on; we are now stale
+rc=0; "$ORCHID_BIN" task set T001 title X 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "INV-02: stale epoch must not mutate durable state"
