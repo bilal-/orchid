@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -euo pipefail
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"; export ORCHID_ROOT
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+if [ "$cmd" = help ] || [ "$cmd" = -h ] || [ "$cmd" = --help ]; then
+  echo "usage: orchid <command> [args]"; echo "commands:"
+  for f in "$ORCHID_ROOT"/libexec/orchid-*; do [ -e "$f" ] && echo "  ${f##*/orchid-}"; done
+  exit 0
+fi
+exe="$ORCHID_ROOT/libexec/orchid-$cmd"
+[ -x "$exe" ] || { echo "orchid: unknown command '$cmd'" >&2; exit 2; }
+exec "$exe" "$@"
