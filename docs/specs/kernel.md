@@ -376,15 +376,18 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   `plan_revision`, `acceptance`, `intervention` (operator verbs log
   automatically), `lesson` (mirrored to `lessons.md`).
 - **Enforcement is a complete decision matrix, kernel-level:** every
-  judgment-bearing verb refuses to run without `--reason`, which it writes
-  atomically with the state change — `task advance` to `merging`, `blocked`,
+  judgment-bearing verb refuses to run without `--reason`, which it journals
+  BEFORE writing the state change — `task advance` to `merging`, `blocked`,
   and `rework`-from-`arbitrating` (both arbitration outcomes recorded);
   `task set risk_tier` (monotonicity enforced separately from prose);
   `--waive-attempt`; `task unblock/retry`; `run accept`;
-  `lessons retire`. Actor identity (`engine/role/session`), run, epoch,
-  job, and SHAs are derived from KERNEL context — never caller-supplied, so
-  the audit trail is not forgeable. A decision without a recorded why is
-  structurally impossible.
+  `lessons retire`. Sequential atomic writes (journal first, state second) mean
+  crashes leave at most orphan journal entries (benign, re-runnable), never
+  unjournaled state changes. This is INV-08's guarantee: no state change occurs
+  without an already-journaled reason. Actor identity (`engine/role/session`),
+  run, epoch, job, and SHAs are derived from KERNEL context — never
+  caller-supplied, so the audit trail is not forgeable. A decision without a
+  recorded why is structurally impossible.
 - **Read surface:** `orchid journal tail [-n N]`,
   `orchid journal show --task T007` (that task's full decision history).
   Entries are prose for successors and humans; NEVER parsed for control
