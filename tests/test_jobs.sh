@@ -63,11 +63,11 @@ old_started=$(( now - 90000 ))   # > default 86400s threshold
 # Dead + old: must be fully reaped (manifest quarantined, pack/request/log gone).
 ( exit 0 ) & dead_pid=$!
 wait "$dead_pid" 2>/dev/null || true
-mkdir -p "$rt/packs/j-dead"
-echo '{}' > "$rt/requests/j-dead.json"
+mkdir -p "$rt/packs/j-e1-TDEAD-a1-dead0001"
+echo '{}' > "$rt/requests/j-e1-TDEAD-a1-dead0001.json"
 echo dead-log > "$rt/logs/j-dead.log"
 jq -n --argjson pid "$dead_pid" --argjson started "$old_started" --arg log "$rt/logs/j-dead.log" \
-  '{job_id:"j-dead", task:"TDEAD", attempt:1, role:"implementer", operation:"implement",
+  '{job_id:"j-e1-TDEAD-a1-dead0001", task:"TDEAD", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-dead.json"
 
@@ -98,7 +98,7 @@ mkdir -p "$rt/packs/j-pending"
 echo '{"job_id":"j-pending"}' > "$rt/spool/j-pending.json"
 
 gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
-assert_match "^gc j-dead$" "$gc_out" "gc reaps the dead+old job"
+assert_match "^gc j-e1-TDEAD-a1-dead0001$" "$gc_out" "gc reaps the dead+old job"
 assert_match "gc-orphan .*j-orphan" "$gc_out" "gc reaps orphan pack dir"
 assert_match "gc-orphan .*j-orphan2" "$gc_out" "gc reaps orphan request file"
 echo "$gc_out" | grep -q "j-young-dead" && fail "gc must not touch the dead-but-young manifest"
@@ -107,8 +107,8 @@ echo "$gc_out" | grep -q "j-pending" && fail "gc must not touch a pack with a pe
 
 [ ! -f "$rt/jobs/j-dead.json" ] || fail "gc: dead manifest removed from jobs dir"
 [ -f "$rt/quarantine/j-dead.json.reason-gc-dead" ] || fail "gc: dead manifest quarantined as .reason-gc-dead"
-[ ! -d "$rt/packs/j-dead" ] || fail "gc: dead job's pack dir removed"
-[ ! -f "$rt/requests/j-dead.json" ] || fail "gc: dead job's request file removed"
+[ ! -d "$rt/packs/j-e1-TDEAD-a1-dead0001" ] || fail "gc: dead job's pack dir removed"
+[ ! -f "$rt/requests/j-e1-TDEAD-a1-dead0001.json" ] || fail "gc: dead job's request file removed"
 [ ! -f "$rt/logs/j-dead.log" ] || fail "gc: dead job's log removed"
 
 [ -f "$rt/jobs/j-young-dead.json" ] || fail "gc: dead-but-young manifest must survive"
@@ -120,3 +120,32 @@ kill -0 "$live_pid" 2>/dev/null || fail "sanity: live pid still alive during ass
 [ -d "$rt/packs/j-pending" ] || fail "gc: pack with pending spool envelope must survive"
 
 kill "$live_pid" 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# v0b2: gc must validate manifest-derived paths before removal. job_id and
+# log come straight from manifest JSON content with no validation — a
+# corrupted or hand-edited manifest could carry a job_id with `../` or a log
+# path pointing outside runtime/, steering gc's rm -rf at an arbitrary file.
+# A suspect manifest must be left alone (quarantined as `.reason-gc-suspect`
+# so it surfaces) rather than reaped, and nothing it points at may be
+# touched.
+# ---------------------------------------------------------------------------
+decoy="$WORK/decoy-outside-runtime.txt"
+echo decoy-contents > "$decoy"
+
+hostile_started=$(( now - 90000 ))
+( exit 0 ) & hostile_pid=$!
+wait "$hostile_pid" 2>/dev/null || true
+jq -n --argjson pid "$hostile_pid" --argjson started "$hostile_started" --arg log "$decoy" \
+  '{job_id:"../../../../etc/j-evil", task:"THOSTILE", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-hostile.json"
+
+hostile_out="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
+assert_match "^gc-skip j-hostile\.json \(suspect fields\)$" "$hostile_out" "gc skips the hostile manifest"
+echo "$hostile_out" | grep -Eq "^gc (\.\.|/)" && fail "gc must never echo a reaped path-traversal job_id"
+
+[ -f "$decoy" ] || fail "gc: decoy file outside runtime must survive"
+[ "$(cat "$decoy")" = "decoy-contents" ] || fail "gc: decoy file contents must be untouched"
+[ ! -f "$rt/jobs/j-hostile.json" ] || fail "gc: hostile manifest removed from jobs dir (quarantined)"
+[ -f "$rt/quarantine/j-hostile.json.reason-gc-suspect" ] || fail "gc: hostile manifest quarantined as .reason-gc-suspect"

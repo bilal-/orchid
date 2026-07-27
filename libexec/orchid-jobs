@@ -198,6 +198,29 @@ case "$sub" in
       [ "$age" -gt "$older_than_s" ] || continue         # dead but too young: untouched
       job_id="$(jq -r .job_id "$f")"
       log_f="$(jq -r .log "$f")"
+      # v0b2: job_id/log are read straight from manifest JSON content, which
+      # could be corrupted or hand-edited — they must be validated before
+      # being used to build rm -rf targets, or a bad manifest could steer a
+      # delete anywhere on disk. job_id must match the exact shape `prepare`
+      # generates (no slashes, no ..); log must resolve under $rt/logs/ (no
+      # ..). Anything else is suspect: leave every runtime file in place and
+      # just quarantine the manifest itself as gc-suspect so it surfaces,
+      # instead of silently reaping it.
+      suspect=0
+      echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
+      case "$log_f" in
+        *..*) suspect=1 ;;
+      esac
+      case "$log_f" in
+        "$rt"/logs/*) ;;
+        *) suspect=1 ;;
+      esac
+      if [ "$suspect" -eq 1 ]; then
+        base="$(basename "$f")"
+        quarantine_file "$f" gc-suspect
+        echo "gc-skip $base (suspect fields)"
+        continue
+      fi
       quarantine_file "$f" gc-dead
       rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$log_f"
       echo "gc $job_id"
@@ -210,6 +233,11 @@ case "$sub" in
     # genuine litter — most commonly from a crash between launch and
     # reconcile. The dead-manifest loop above already removed its own
     # pack/request, so those never reach this loop as orphans too.
+    # job_id here is a basename taken from directory enumeration of $p
+    # itself (an entry gc just observed on disk under $rt/packs or
+    # $rt/requests), never from manifest JSON content — so, unlike the
+    # dead-reap loop above, there is no manifest-controlled string here to
+    # validate; $p is already a real path rooted under runtime/.
     for p in "$rt/packs"/* "$rt/requests"/*; do
       [ -e "$p" ] || continue
       job_id="$(basename "$p")"; job_id="${job_id%.json}"
