@@ -24,3 +24,16 @@ printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","statu
 assert_match "T001	ok" "$("$ORCHID_BIN" jobs reconcile)" "good envelope accepted"
 printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","status":"ok","summary":"replay"}' "$jid" > "$sp/$jid-replay.json"
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: replay quarantined"
+
+# quarantine must never clobber prior evidence: dropping the SAME forged
+# filename twice across two reconciles must leave BOTH copies on disk.
+qd="$WORK/.orchid/runtime/quarantine"
+printf '{"contract":1,"job_id":"j-forged-repeat","task":"T001","operation":"implement","status":"ok","summary":"evil-1"}' > "$sp/j-repeat.json"
+"$ORCHID_BIN" jobs reconcile >/dev/null
+printf '{"contract":1,"job_id":"j-forged-repeat","task":"T001","operation":"implement","status":"ok","summary":"evil-2"}' > "$sp/j-repeat.json"
+"$ORCHID_BIN" jobs reconcile >/dev/null
+count="$(ls "$qd" | grep -c '^j-repeat\.json\.reason-unknown-job')"
+assert_eq "2" "$count" "quarantine: repeat forged filename preserves both copies"
+c1="$(cat "$qd/j-repeat.json.reason-unknown-job" 2>/dev/null)"
+c2="$(cat "$qd/j-repeat.json.reason-unknown-job.2" 2>/dev/null)"
+[ -n "$c1" ] && [ -n "$c2" ] && [ "$c1" != "$c2" ] || fail "quarantine: repeat copies must have distinct contents"

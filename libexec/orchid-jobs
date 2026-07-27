@@ -6,6 +6,36 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runti
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 sub="${1:-}"; shift || true
 
+# Moves $src into quarantine as <basename>.reason-<reason>, never clobbering
+# a prior drop of the same basename: on collision, appends .2, .3, ... until
+# a free path is found. A same-named forged/replayed file must never destroy
+# earlier forensic evidence.
+quarantine_file() {
+  local src="$1" reason="$2" base dest n
+  base="$(basename "$src")"
+  dest="$quarantine_dir/$base.reason-$reason"
+  n=2
+  while [ -e "$dest" ]; do
+    dest="$quarantine_dir/$base.reason-$reason.$n"
+    n=$((n + 1))
+  done
+  mv "$src" "$dest"
+}
+
+# Kills a stuck job: prefers the process-group signal (so the whole engine
+# tree dies), but only when pgid is a real positive group id. pgid can be
+# 0/invalid (e.g. a manifest written before an engine actually started, or
+# corrupt data); `kill -- -0` in that case would signal OUR OWN process
+# group, not the job's — so guard it and fall back to killing pid directly.
+kill_stuck() {
+  local pgid="$1" pid="$2"
+  if [ "$pgid" -gt 0 ] 2>/dev/null; then
+    kill -- "-$pgid" 2>/dev/null || true
+  elif [ "$pid" -gt 0 ] 2>/dev/null; then
+    kill "$pid" 2>/dev/null || true
+  fi
+}
+
 case "$sub" in
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
@@ -42,10 +72,10 @@ case "$sub" in
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"
       log_mtime="$(stat -f %m "$log" 2>/dev/null || stat -c %Y "$log" 2>/dev/null || echo 0)"
       if [ "$log_mtime" -gt 0 ] && [ $(( now - log_mtime )) -gt "$stall_s" ]; then
-        kill -- "-$pgid" 2>/dev/null || true
+        kill_stuck "$pgid" "$pid"
         printf '%s\tstalled\n' "$task"
       elif [ $(( now - started_at )) -gt "$timeout_s" ]; then
-        kill -- "-$pgid" 2>/dev/null || true
+        kill_stuck "$pgid" "$pid"
         printf '%s\ttimeout\n' "$task"
       else
         printf '%s\trunning\n' "$task"
@@ -61,7 +91,7 @@ case "$sub" in
       [ -e "$f" ] || continue
       base="$(basename "$f")"
       if ! envelope_validate "$f" 2>/dev/null; then
-        mv "$f" "$quarantine_dir/$base.reason-malformed"
+        quarantine_file "$f" malformed
         echo "quarantined: $base (malformed)"
         continue
       fi
@@ -73,7 +103,7 @@ case "$sub" in
         manifest="$mf"; break
       done
       if [ -z "$manifest" ]; then
-        mv "$f" "$quarantine_dir/$base.reason-unknown-job"
+        quarantine_file "$f" unknown-job
         echo "quarantined: $base (unknown-job)"
         continue
       fi
@@ -86,7 +116,7 @@ case "$sub" in
       [ -z "$e_base" ] || [ "$e_base" = "$m_base" ] || mismatch=1
       [ -z "$e_cand" ] || [ "$e_cand" = "$m_cand" ] || mismatch=1
       if [ "$mismatch" -eq 1 ]; then
-        mv "$f" "$quarantine_dir/$base.reason-mismatch"
+        quarantine_file "$f" mismatch
         echo "quarantined: $base (mismatch)"
         continue
       fi
