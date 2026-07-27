@@ -5,12 +5,22 @@ repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_sta
 
 # run_status transition table (kernel.md's normative table, v0b2 ownership
 # verbs): every edge below is legal for `run advance`; anything else,
-# including reversed/skipped edges (e.g. running->complete, which must go
-# through accepting first), is refused with exit 3 — the same
+# including reversed/skipped edges, is refused with exit 3 — the same
 # illegal-transition contract `orchid task advance` uses.
+#
+# ->complete is deliberately ABSENT from this table, full stop — not just
+# reachable-only-from-accepting. `accepting:complete` used to be a legal
+# advance-table edge, which made `run advance complete --reason x` a
+# complete bypass of the acceptance evidence gate (no --evidence, no
+# reviews/acceptance.log write, just a bare state flip). `run advance`
+# below now special-cases `$to = complete` and refuses it unconditionally,
+# from ANY state, before this table is even consulted. `orchid run accept
+# --reason --evidence` is the ONLY path to `complete`; it sets run_status
+# directly with its own from=accepting + evidence-file guard and never
+# calls legal_run, so it is untouched by this table either way.
 legal_run() { case "$1:$2" in
   planning:running|running:accepting|running:blocked|\
-  accepting:complete|accepting:running) return 0 ;;
+  accepting:running) return 0 ;;
   *:blocked) return 0 ;;
   *) return 1 ;;
 esac; }
@@ -54,6 +64,11 @@ case "$sub" in
     esac; done
     [ -n "$to" ] || orchid_die "usage: orchid run advance <status> --reason \"...\""
     [ -n "$reason" ] || orchid_die "run advance requires --reason (INV-08)"
+
+    # Evidence-gate bypass, closed: `advance` may never grant `complete`,
+    # from any run_status, regardless of what legal_run's table says —
+    # refused before the roadmap is even read, so nothing is mutated.
+    [ "$to" = complete ] && { echo "orchid: use: orchid run accept --evidence" >&2; exit 3; }
 
     roadmap="$state/roadmap.md"
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"

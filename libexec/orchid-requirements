@@ -25,9 +25,15 @@ case "$sub" in
     # in-flight run would silently invalidate that plan.
     [ "$status" = planning ] || orchid_die "requirements are immutable after plan (run_status: $status)"
 
-    cat "$src" | atomic_write "$state/requirements.md"
+    # Journal-first (INV-08): the reason the requirements snapshot changed
+    # is durable before the snapshot itself changes, so a crash between the
+    # two writes leaves at most an orphan journal entry (benign,
+    # re-runnable) rather than a silently-replaced requirements.md with no
+    # record of why — the same ordering orchid-run's `advance`/`accept` and
+    # orchid-plan's `apply` use.
     ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind plan_revision \
       "requirements imported from $(basename "$src")"
+    cat "$src" | atomic_write "$state/requirements.md"
     echo "imported: $(basename "$src") -> requirements.md"
     ;;
   *) orchid_die "usage: orchid requirements import <file>" ;;

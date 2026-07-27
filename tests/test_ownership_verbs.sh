@@ -65,10 +65,28 @@ git show "$integ:.orchid/requirements.md" | grep -q "REQ-1" \
 git show "$integ:.orchid/journal.md" | grep -q "initial plan" \
   || fail "plan apply's journal entry (with reason) rides in the commit"
 
-# The reason is journaled locally too (journal-first, before the commit).
+# Fix 3 (CAS discipline): both mutations are built into the temp
+# worktree's commit FIRST; the local working copy only receives them via
+# sync-back AFTER the CAS (update-ref) above has already succeeded. Assert
+# that structurally: local journal.md/roadmap.md are byte-identical to
+# what's committed on $integ, i.e. copied from the commit rather than
+# composed locally and independently written (which is what the pre-fix
+# code did, and which is exactly what let a CAS failure leave local
+# claiming a transition the integration branch never received).
 grep -q "initial plan" .orchid/journal.md || fail "plan apply journals the reason in the working copy"
 fm_get .orchid/roadmap.md run_status | grep -q '^running$' \
   || fail "plan apply transitions the WORKING copy's run_status too"
+assert_eq "$(git show "$integ:.orchid/journal.md")" "$(cat .orchid/journal.md)" \
+  "plan apply's local journal.md is byte-identical to the committed one (synced back post-CAS)"
+assert_eq "$(git show "$integ:.orchid/roadmap.md")" "$(cat .orchid/roadmap.md)" \
+  "plan apply's local roadmap.md is byte-identical to the committed one (synced back post-CAS)"
+# Fix 3(c), CAS-failure path: deliberately not exercised here via a live
+# race (would need a test-only hook inside orchid-plan to pause it between
+# reading integ_head and update-ref — judged too intrusive for this fix;
+# see the commit message / report for that choice). Covered by inspection:
+# the CAS-failure branch in orchid-plan only ever runs `journal add --kind
+# intervention` against $repo (never touches $wt_roadmap or $state's
+# roadmap.md), so it cannot mutate local run_status by construction.
 
 # ---------------------------------------------------------------------------
 # requirements import: refused once run_status has left `planning`
@@ -139,6 +157,23 @@ rc=0
 
 # Happy path: accepting -> complete.
 "$ORCHID_BIN" run advance accepting --reason "ready for acceptance" >/dev/null
+
+# ---------------------------------------------------------------------------
+# Fix 1 regression: the evidence-gate bypass. `accepting:complete` used to
+# be a legal `run advance` edge, so `run advance complete --reason x` could
+# reach `complete` without ever supplying --evidence or writing
+# reviews/acceptance.log. `run advance` must refuse ->complete
+# unconditionally now, from ANY state — `orchid run accept --evidence` is
+# the only path to complete.
+# ---------------------------------------------------------------------------
+rc=0
+out_bypass="$("$ORCHID_BIN" run advance complete --reason "skip via advance" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "advance ->complete is refused even from accepting (exit 3)"
+assert_match "use: orchid run accept --evidence" "$out_bypass" "advance ->complete points the operator at run accept"
+fm_get .orchid/roadmap.md run_status | grep -q '^accepting$' \
+  || fail "refused advance->complete must leave run_status at accepting"
+
+# The legitimate path — run accept — still works from this same state.
 out_accept="$("$ORCHID_BIN" run accept --reason "all requirements covered" --evidence "$WORK/evidence.log")"
 assert_match "accepting -> complete" "$out_accept" "run accept prints the transition"
 fm_get .orchid/roadmap.md run_status | grep -q '^complete$' || fail "run_status now complete"
