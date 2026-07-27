@@ -36,6 +36,24 @@ touch -t 202001010000 "$rt/lock" "$rt/lock/owner.json"
 out="$(ORCHID_LOCK_BREAK_S=1 lock_acquire "$WORK/repo")" || fail "break stale dead lock"
 assert_match "lock-broken" "$out" "break reported"
 lock_release "$WORK/repo"
+# live-owner break attempt must fail: age alone is not enough. Craft
+# owner.json around a genuinely live process (real pid, real pid_start via
+# the same `ps -o lstart=` recipe lib/common.sh uses, current hostname),
+# backdate the lock dir AND owner.json mtime far beyond lock_break_s, then
+# confirm ORCHID_LOCK_BREAK_S=1 still refuses to break it: liveness must
+# win over age, or a live owner's lock could be stolen out from under it.
+lock_acquire "$WORK/repo"
+sleep 60 & live_pid=$!
+live_pstart="$(ps -o lstart= -p "$live_pid" 2>/dev/null | tr -d ' ')"
+jq -n --arg p "$live_pid" --arg s "$live_pstart" --arg h "$(hostname)" \
+  '{pid: ($p|tonumber), pid_start: $s, epoch: 1, hostname: $h}' > "$rt/lock/owner.json"
+touch -t 202001010000 "$rt/lock" "$rt/lock/owner.json"
+if out="$(ORCHID_LOCK_BREAK_S=1 lock_acquire "$WORK/repo" 2>&1)"; then
+  fail "live owner's lock must not break on stale age alone (got: $out)"
+fi
+[ -d "$rt/lock" ] || fail "live owner's lock dir must survive a failed break attempt"
+kill "$live_pid" 2>/dev/null; wait "$live_pid" 2>/dev/null
+lock_release "$WORK/repo"
 
 # epochs
 echo 3 > "$rt/epoch"
