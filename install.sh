@@ -23,10 +23,20 @@ SKILLS="orchid orchid-plan orchid-resume"
 
 # link_one src dest: creates dest as a symlink to src, refusing to clobber
 # anything at dest that isn't already a symlink (a real file/dir there is
-# someone else's — leave it alone and say so, rather than destroying it).
+# someone else's — leave it alone and say so, rather than destroying it) —
+# and, mirroring unlink_one's exactness the other direction, refusing to
+# clobber a FOREIGN symlink too: one that already exists at dest but points
+# somewhere other than src (some other tool's doing, or a previous install
+# of something else at this path). `-L` is checked before `-e` on purpose,
+# since `-e` is false for a dangling symlink — this must catch that case too.
 link_one() {
   local src="$1" dest="$2"
-  if [ -e "$dest" ] && [ ! -L "$dest" ]; then
+  if [ -L "$dest" ]; then
+    if [ "$(readlink "$dest")" != "$src" ]; then
+      echo "orchid: skip (foreign symlink, left alone): $dest -> $(readlink "$dest")" >&2
+      return 0
+    fi
+  elif [ -e "$dest" ]; then
     echo "orchid: skip (not a symlink, left alone): $dest" >&2
     return 0
   fi
@@ -85,12 +95,20 @@ else
   echo "exists (left untouched): $HOME/.orchid/config"
 fi
 
-if git rev-parse --git-dir >/dev/null 2>&1; then
-  "$ORCHID_BIN_DIR/orchid" doctor
+# Run `orchid doctor` at the end only when cwd is actually a repo meant to
+# BE orchestrated — i.e. a git repo whose toplevel isn't this install's own
+# source checkout. Running from inside the orchid source repo itself (e.g.
+# `./install.sh` from a clone) is not "a repo to orchestrate"; treat it the
+# same as the no-repo case below instead of running doctor against it.
+# doctor's own exit code must never fail the installer itself — install
+# already completed by this point regardless of what doctor finds.
+if git rev-parse --git-dir >/dev/null 2>&1 && [ "$(git rev-parse --show-toplevel)" != "$ROOT" ]; then
+  "$ORCHID_BIN_DIR/orchid" doctor || { echo "orchid: doctor reported issues above (install itself still completed)" >&2; true; }
 else
   cat <<EOF
-install complete — not currently inside a git repository, so nothing further
-to check here. Next steps, from the repo you want to orchestrate:
+install complete — not currently inside a repository to orchestrate, so
+nothing further to check here. Next steps, from the repo you want to
+orchestrate:
   cd /path/to/your/repo
   orchid doctor
   orchid init

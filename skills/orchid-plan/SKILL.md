@@ -30,10 +30,8 @@ restate it.
 
 ## 3. Execute PLANNING
 
-With `ORCHID_REPO` set to the target repo, run PLANNING's three steps
-exactly as PROTOCOL.md specifies them: `orchid requirements import` →
-draft tasks (`orchid task create`/`task set`) with the `role.plan_critic`
-engine critiquing the draft → `orchid plan apply --reason "..."` to commit.
+With `ORCHID_REPO` set to the target repo, run that section's steps in
+order, exactly as PROTOCOL.md specifies them.
 
 Once `orchid plan apply` reports `run_status: planning → running`, planning
 is over for this run — hand off to the `orchid` skill (THE TICK) or

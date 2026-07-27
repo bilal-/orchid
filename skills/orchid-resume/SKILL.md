@@ -30,12 +30,9 @@ restate it.
 
 ## 3. Execute RESUME
 
-With `ORCHID_REPO` set to the target repo, run RESUME's six steps exactly as
-PROTOCOL.md specifies them: `orchid run resume` → `orchid jobs check` →
-`orchid jobs reconcile` → `orchid status --explain` → load each active
-task's capsule (`orchid task show`, `orchid journal show --task`,
-`orchid journal tail`) → then continue into THE TICK's state-machine walk
-(step 3 onward) using the now-reconciled state.
+With `ORCHID_REPO` set to the target repo, run that section's steps in
+order, exactly as PROTOCOL.md specifies them, then continue into THE TICK's
+state-machine walk using the now-reconciled state.
 
 Once RESUME has handed off into THE TICK, subsequent passes are ordinary
 ticks — use the `orchid` skill for those; this skill's job ends once the

@@ -56,6 +56,18 @@ assert_match "skip" "$out2" "install.sh warns instead of clobbering a non-symlin
 [ "$(cat "$HOME/.local/bin/orchid")" = "not orchid" ] || fail "install.sh clobbered a pre-existing real file at the bin path"
 rm -f "$HOME/.local/bin/orchid"; ln -sfn "$REPO_ROOT/bin/orchid" "$HOME/.local/bin/orchid"  # restore for the uninstall check below
 
+# A FOREIGN symlink (already a symlink, but pointing somewhere other than
+# this install's own source) already occupying a link path must also be left
+# alone — mirrors unlink_one's exactness (readlink-checked before removal)
+# in the other direction: link_one must readlink-check before ln -sfn too,
+# rather than force-overwriting any symlink it finds there.
+rm -f "$HOME/.local/bin/orchid"
+ln -sfn "$WORK/somewhere-else-bin" "$HOME/.local/bin/orchid"
+out3="$(cd "$nogit" && "$INSTALL" 2>&1)" || fail "install.sh must not hard-fail when a foreign symlink occupies the bin path"
+assert_match "skip.*foreign symlink" "$out3" "install.sh warns instead of clobbering a foreign symlink at the bin path"
+[ "$(readlink "$HOME/.local/bin/orchid")" = "$WORK/somewhere-else-bin" ] || fail "install.sh clobbered a foreign symlink at the bin path"
+rm -f "$HOME/.local/bin/orchid"; ln -sfn "$REPO_ROOT/bin/orchid" "$HOME/.local/bin/orchid"  # restore for the uninstall check below
+
 # --- Uninstall: removes exactly the symlinks it created; leaves config/trust.
 "$INSTALL" --uninstall >/dev/null 2>&1 || fail "install.sh --uninstall failed"
 for name in orchid orchid-plan orchid-resume; do
@@ -75,6 +87,13 @@ ln -sfn "$WORK/somewhere-else" "$HOME/.claude/skills/orchid"
 # first word after `orchid `, anywhere in the file, backtick-wrapped or not)
 # must map to an existing, executable libexec/orchid-<word>; every
 # `runners/orchid-launch` mention must map to an existing, executable runner.
+# Note: this only covers TOP-LEVEL verbs (e.g. `task`, `jobs`, `run` ->
+# libexec/orchid-task, orchid-jobs, orchid-run) — it does not, and cannot,
+# validate that a subcommand named alongside one (e.g. `task infra-fail`,
+# `jobs gc`) is actually implemented inside that dispatcher; the regex only
+# ever captures the single word right after `orchid `. Subcommand coverage
+# comes from the functional tests for each verb instead (tests/test_task.sh,
+# tests/test_jobs.sh, ...).
 PROTOCOL="$REPO_ROOT/PROTOCOL.md"
 [ -f "$PROTOCOL" ] || fail "PROTOCOL.md missing"
 

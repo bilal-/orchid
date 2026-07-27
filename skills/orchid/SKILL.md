@@ -30,12 +30,8 @@ this file does not restate them.
 
 ## 3. Execute THE TICK
 
-With `ORCHID_REPO` set to the target repo (default: current directory),
-run THE TICK's five steps exactly as PROTOCOL.md specifies them — refresh
-the lease, reconcile-then-check, walk the state machine for the one active
-task, raise/resolve blockers via `orchid notify`/reading
-`.orchid/runtime/answers/`, then `orchid status --explain` +
-`orchid run refresh-lease` before yielding.
+With `ORCHID_REPO` set to the target repo (default: current directory), run
+that section's steps in order, exactly as PROTOCOL.md specifies them.
 
 Repeat until `orchid status --explain` shows nothing left to dispatch this
 pass, a blocker is raised, or every task is `done` — in the last case, hand

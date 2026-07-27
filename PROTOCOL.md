@@ -27,15 +27,16 @@ part of the architecture; this file never changes to suit one.*
   `arbitrating`, or `merging` — at a time. Everything else is queued
   (`pending`/`rework`), waiting on a human (`blocked`), or finished (`done`).
 - **Single-reviewer policy.** Exactly one reviewer launch per attempt.
-  Prefer an *engine-independent* reviewer: compare the task's recorded
-  `implementer_engine_id` (`orchid task show <id>`) against the resolved
-  `role.reviewer` binding (`orchid config list`). When they differ, dispatch
+  Prefer an *engine-independent* reviewer: compare the resolved
+  `role.implementer` binding (`orchid config list`) — or, if the task itself
+  overrides it, its recorded `engine` field (`orchid task show <id>`) —
+  against the resolved `role.reviewer` binding. When they differ, dispatch
   as-is. When the resolver can only offer the same engine, the review is
   *session-independent only* (fresh session, same vendor) — label this
   explicitly and journal it (`orchid journal add --task <id> "reviewer is
   session-independent only: role.reviewer resolves to <engine>, same as
-  implementer_engine_id"`) **before** dispatch. Never let a degraded
-  independence pass silently.
+  role.implementer"`) **before** dispatch. Never let a degraded independence
+  pass silently.
 - **Launch by role only.** Every spawn is `runners/orchid-launch <task-id>
   <role> <operation>`, where `<role>` is one of the roles bound in config
   (`role.implementer`, `role.reviewer`, ...). Never invoke an engine binary
@@ -73,42 +74,55 @@ procedure that touches task state from here on.
 `orchid run refresh-lease` — first thing, every pass, so nothing watching
 this run ever mistakes an in-progress tick for a stalled one.
 
-**2. Reconcile, then check (reconcile-first ordering).**
+**2. Reconcile, gc, then check (reconcile-first ordering).**
 `orchid jobs reconcile` drains everything already finished or quarantinable
 into `.orchid/reviews/` *before* anything gets judged as stuck — a job that
 completed since the last pass must never be mistaken for a dead one. Then
-`orchid jobs check` reports `prepared|running|dead|stalled|timeout` for
-whatever is left outstanding (`stalled`/`timeout` jobs are killed by `jobs
-check` itself as it reports them).
+`orchid jobs gc --older-than-s 0` — reaps only manifests whose pid is
+*already* dead (never kills anything live; the `0` just drops gc's normal
+age floor) — clears out any already-dead manifest that reconcile didn't turn
+into a reviews/ entry (e.g. it died before ever producing a spool envelope),
+so `jobs check` below never re-reports the *same* already-dead job as `dead`
+on a later pass and triggers a second, false escalation for a failure this
+run already handled. Then `orchid jobs check` reports
+`prepared|running|dead|stalled|timeout|budget-exceeded` for whatever is left
+outstanding (`stalled`/`timeout` jobs are killed by `jobs check` itself as it
+reports them; `budget-exceeded` is report-only, see below).
 
 Escalation ladder for a job `jobs check` reports `dead`, `stalled`, or
-`timeout` that reconcile did **not** just turn into a reviews/ entry:
+`timeout` that reconcile/gc above did **not** just resolve:
 
 - *First occurrence for this attempt:* relaunch — re-run `runners/orchid-launch
   <task-id> <role> <operation>` for the same task/role/operation. This is the
   kernel's "one auto-retry"; it mints a fresh job identity and does not touch
-  the task's `attempts` counter at all.
-- *Second consecutive occurrence:* `orchid task set` denies writing
-  `status|attempts|infra_failures|id|created|updated|schema` directly
-  (kernel-owned — see `libexec/orchid-task`'s `set` case), so there is no
-  verb that increments `infra_failures`; and neither `implementing` nor
-  `reviewing` has a legal `rework` edge (see the state table below), so
-  `task advance ... rework` is not available from either status either. The
-  only kernel-legal escalation is: `orchid notify --task <task-id> "infra
-  failure: job <job_id> <status> after one retry"` then `orchid task advance
-  <task-id> blocked --reason "infra failure: <job_id> <status> x2"`. An
-  operator resolves it with `orchid task retry <task-id> --reason "..."`
-  once the underlying infra issue is fixed — `retry` moves `blocked→rework`
-  without consuming an attempt.
-- **Discrepancy, documented rather than papered over:** `docs/specs/kernel.md`
-  ("Guardrails & failure handling") calls for `infra_failures++` as a
-  separate counter from rework's `attempts`, with "repeated infra failures →
-  engine marked unavailable" as a further escalation. No verb implements
-  either today. The blocked+notify path above is the closest available
-  approximation using only verbs that exist; it correctly avoids consuming
-  an attempt (matching "infra_failures NEVER consume attempts"), but nothing
-  currently counts *how many* infra failures a task or engine has
-  accumulated.
+  the task's `attempts` counter, nor `infra_failures`, at all.
+- *Second consecutive occurrence:* `orchid task infra-fail <task-id>
+  --reason "job <job_id> <status> after one retry"` — the dedicated
+  kernel-owned path that increments `infra_failures` (the general `task set`
+  deny-list blocks writing it any other way) and journals its own
+  `intervention` entry, so no separate `notify`/`journal add` call is needed
+  for this step. When the resulting count reaches `infra_max` (config,
+  default 3), the verb auto-advances the task to `blocked` itself (reason
+  "infra_failures cap reached", printed) — `blocked` is legal from any
+  status, which matters here since neither `implementing` nor `reviewing`
+  has a legal `rework` edge. An operator resolves it with `orchid task retry
+  <task-id> --reason "..."` once the underlying infra issue is fixed —
+  `retry` moves `blocked→rework` without consuming an attempt.
+- *`budget-exceeded`* (independent of the ladder above — it can fire
+  alongside `running`, not just `dead`/`stalled`/`timeout`): the task's
+  `wallclock_budget_s`, anchored at `started_at` (stamped by `task advance
+  ... implementing`), has been exceeded. `jobs check` only reports this, it
+  never kills on its own. `orchid notify --task <task-id> "task wallclock
+  budget exceeded"` then `orchid task advance <task-id> blocked --reason
+  "wallclock budget exceeded"`.
+
+`docs/specs/kernel.md` ("Guardrails & failure handling") also calls for
+"repeated infra failures → engine marked unavailable" as a further
+escalation beyond the counter itself. `orchid task infra-fail` above closes
+the counter half of that gap (kernel-owned, journaled, auto-blocking at the
+cap); marking an *engine* itself unavailable (as opposed to blocking the
+*task*) is not implemented by any verb yet — that part of kernel.md's
+guardrail remains aspirational.
 
 **3. State-machine walk.**
 Operate on the one active task, or the next one to dispatch. `orchid status
@@ -189,20 +203,30 @@ pending → implementing → testing → reviewing → arbitrating → merging �
     `--waive-attempt` when the rejection reflects an infra/tooling gap
     rather than an actual defect in the candidate).
 
-- **merging** (`awaiting-merge`): `orchid merge <id>` and branch on its exit
-  code — the verb already performs the resulting `task advance` internally
-  in every case, so there is no separate advance call to make here:
-  - `0`: merged; task is now `done`.
-  - `1` (`validation_failed` / merge or rebase conflict): task is now
-    `rework` (verb already journaled and advanced it). Continue the walk's
+- **merging** (`awaiting-merge`): `orchid merge <id>`, then branch on the
+  task's **post-merge status** (`orchid task show <id>`) — never on the exit
+  code alone: exit `1` is ambiguous between two different outcomes below, so
+  the status is the only reliable signal. The verb already performs the
+  resulting `task advance` internally in every case that actually changes
+  status, so there is no separate advance call to make here:
+  - status `done` (exit was `0`): merged.
+  - status `rework` (exit was `1`, `validation_failed` / merge or rebase
+    conflict; verb already journaled and advanced it): continue the walk's
     rework handling on the next pass.
-  - `5` (`rebase_rereview_required`): task is now back at `testing` with a
-    fresh `base_sha`/`candidate_sha` and invalidated evidence (verb already
-    journaled this with kind `rebase_review`). Classifying the coming
+  - status `testing`, with a fresh `base_sha`/`candidate_sha` and invalidated
+    evidence (exit was `5`, `rebase_rereview_required`; verb already
+    journaled this with kind `rebase_review`): classifying the coming
     re-review as delta vs. full is the orchestrator's call (kernel.md);
     record it if it isn't obvious from the diff size — `orchid journal add
     --task <id> "re-review scope: delta|full — <why>"` — then resume the
     `testing` branch of this walk on the next pass over the task.
+  - status still `merging` despite a nonzero exit (e.g. the update-ref
+    compare-and-swap lost to a concurrent merge): a persistent config/CAS
+    problem, not a candidate defect — the verb journaled it but could not
+    advance the task out of `merging` on its own. `orchid notify --task <id>
+    "merge left task in merging: see .orchid/reviews/<id>-merge.log"` and
+    leave the task in `merging` for a retry; never assume `rework` just
+    because the exit code was nonzero.
 
 **4. Blockers.**
 Raise one with `orchid notify [--task <id>] "<text>"` (prints a `qid`).
@@ -226,7 +250,11 @@ one).
    held by a dead or foreign owner past `lock_break_s`, this call breaks it
    and journals the break itself.
 2. `orchid jobs check`.
-3. `orchid jobs reconcile`.
+3. `orchid jobs reconcile`. (Note: this is check-*then*-reconcile, the
+   reverse of THE TICK's reconcile-first ordering in step 2 there — at
+   resume there is no in-progress tick a stray "dead" report could
+   falsely escalate against, so `check` killing anything genuinely
+   stalled/timed-out from before the crash, first, is safe here.)
 4. `orchid status --explain`.
 5. Capsules: for every task not `done`, load its bounded context before
    judging anything — `orchid task show <id>` (full frontmatter and body),
@@ -255,12 +283,22 @@ Once `orchid status --explain` shows every task `done`:
 
 ## Known documentation discrepancies surfaced while writing this file
 
-- **`infra_failures`** — kernel-owned per `orchid task set`'s deny-list, but
-  no verb anywhere increments it, and nothing marks an engine unavailable
-  after repeated infra failures, despite both being called for in
-  `docs/specs/kernel.md`'s guardrails table. See THE TICK, step 2.
-- **`orchid task unblock`** — `docs/specs/operations.md` documents it as
-  `orchid task unblock <id> [--guidance "..."]`; the actual verb
-  (`libexec/orchid-task`) only accepts `--reason`, and dies with "unblock
-  requires --reason" if given anything else in that position. This protocol
-  uses the real flag, `--reason`, throughout.
+- **`infra_failures`** — kernel-owned per `orchid task set`'s deny-list;
+  `orchid task infra-fail` (see THE TICK, step 2) now increments it and
+  auto-blocks at `infra_max`, closing the counter half of
+  `docs/specs/kernel.md`'s guardrails table. Marking an *engine* unavailable
+  after repeated infra failures — the other half that same table calls for
+  — is still not implemented by any verb.
+- **`implementer_engine_id`** — present in the task schema/template
+  (`templates/task.md`), but no verb anywhere populates it in v0. This
+  protocol's single-reviewer independence check therefore compares the
+  resolved `role.implementer` binding (or the task's own `engine` field)
+  against `role.reviewer` instead of relying on this field.
+- **`orchid task unblock`** — `docs/specs/kernel.md:517` documents it as
+  `orchid task unblock <id> [--guidance "..."]`, drifted from its own state
+  table two hundred-odd lines earlier (`docs/specs/kernel.md:231`), which
+  already gives the real flag: kernel.md self-contradicts itself on this
+  point. The actual verb (`libexec/orchid-task`) only accepts `--reason`,
+  and dies with "unblock requires --reason" if given anything else in that
+  position. This protocol uses the real flag, `--reason`, throughout;
+  kernel.md:517 itself has also been corrected to say `--reason`.
