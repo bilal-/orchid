@@ -94,6 +94,13 @@ case "$sub" in
       [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] && [ "$fcand" != none ] && [ "$vcand" = "$fcand" ] || \
         orchid_die "reviewing requires passing verify evidence bound to the current candidate_sha (run: orchid verify $id)"
     fi
+    if [ "$to" = implementing ]; then
+      # v0b2: the task wall-clock anchor. Stamped only the FIRST time a task
+      # ever enters `implementing` (rework re-entries leave it alone) — it
+      # marks when the clock on `wallclock_budget_s` started, not when the
+      # current attempt happened to (re)start.
+      [ -n "$(fm_get "$f" started_at)" ] || fm_set "$f" started_at "$(now)"
+    fi
     if [ "$to" = rework ]; then
       if [ "$from" != merging ]; then
         if [ "$waive" -eq 1 ]; then
@@ -163,5 +170,36 @@ case "$sub" in
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework" ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|unblock|retry" ;;
+  infra-fail)
+    # v0b2: the ONE owned path that may bump `infra_failures` — `task set`
+    # denies it directly (see the `set` case's deny-list above) because this
+    # counter needs its own journal-first discipline and its own auto-block
+    # threshold, not a bare frontmatter write. Epoch-fenced like every other
+    # mutating verb here.
+    epoch_require "$repo"; id="$1"; shift
+    if [ "${1:-}" = "--reason" ]; then
+      [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+      reason="$2"
+    else
+      orchid_die "infra-fail requires --reason"
+    fi
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    n=$(( $(fm_get "$f" infra_failures) + 1 ))
+    # Journal-first (INV-08 discipline): the reason is recorded before the
+    # counter it justifies is written.
+    journal --task "$id" --kind intervention "infra failure #$n: $reason"
+    fm_set "$f" infra_failures "$n"; fm_set "$f" updated "$(now)"
+    max="$(config_get "$repo" infra_max 3)"
+    if [ "$n" -ge "$max" ]; then
+      from="$(fm_get "$f" status)"
+      # `blocked` is legal from any status (see `legal`'s `*:blocked`
+      # catch-all) — including implementing/reviewing, which have no legal
+      # `rework` edge, so this is the only escalation available from there.
+      journal --task "$id" --kind intervention "$from -> blocked: infra_failures cap reached"
+      fm_set "$f" status blocked; fm_set "$f" updated "$(now)"
+      echo "$id: infra_failures $n/$max — $from -> blocked: infra_failures cap reached"
+    else
+      echo "$id: infra_failures $n/$max"
+    fi ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|unblock|retry|infra-fail" ;;
 esac

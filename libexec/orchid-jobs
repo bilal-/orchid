@@ -36,6 +36,19 @@ kill_stuck() {
   fi
 }
 
+# Parses an ISO-8601 UTC timestamp (the exact shape `orchid-task`'s now()
+# emits, e.g. 2026-07-24T12:00:00Z) to epoch seconds; portable across GNU
+# date (-d) and BSD/macOS date (-j -f), since jobs check runs on both. Empty
+# or unparseable input yields 0, so callers can treat that as "no anchor"
+# rather than crashing the tick.
+iso_to_epoch() {
+  local iso="$1"
+  [ -n "$iso" ] || { echo 0; return; }
+  date -u -d "$iso" +%s 2>/dev/null && return
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null && return
+  echo 0
+}
+
 case "$sub" in
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
@@ -67,6 +80,22 @@ case "$sub" in
     for f in "$jobs_dir"/*.json; do
       [ -e "$f" ] || continue
       task="$(jq -r .task "$f")"; pid="$(jq -r .pid "$f")"
+      # v0b2: task wall-clock backstop — independent of this job's own
+      # liveness/status, so checked (and printed) regardless of which of the
+      # arms below the same manifest also falls into. Report-only: `jobs
+      # check` never kills for a budget overrun, the orchestrator escalates
+      # it via protocol (`task advance ... blocked`).
+      tf_budget="$state/tasks/$task.md"
+      if [ -f "$tf_budget" ]; then
+        t_started="$(fm_get "$tf_budget" started_at)"
+        t_budget="$(fm_get "$tf_budget" wallclock_budget_s)"
+        if [ -n "$t_started" ] && [ -n "$t_budget" ]; then
+          t_started_epoch="$(iso_to_epoch "$t_started")"
+          if [ "$t_started_epoch" -gt 0 ] && [ $(( now - t_started_epoch )) -gt "$t_budget" ]; then
+            printf '%s\tbudget-exceeded\n' "$task"
+          fi
+        fi
+      fi
       if [ "$pid" = 0 ]; then printf '%s\tprepared\n' "$task"; continue; fi
       if ! kill -0 "$pid" 2>/dev/null; then printf '%s\tdead\n' "$task"; continue; fi
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"

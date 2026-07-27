@@ -149,3 +149,26 @@ echo "$hostile_out" | grep -Eq "^gc (\.\.|/)" && fail "gc must never echo a reap
 [ "$(cat "$decoy")" = "decoy-contents" ] || fail "gc: decoy file contents must be untouched"
 [ ! -f "$rt/jobs/j-hostile.json" ] || fail "gc: hostile manifest removed from jobs dir (quarantined)"
 [ -f "$rt/quarantine/j-hostile.json.reason-gc-suspect" ] || fail "gc: hostile manifest quarantined as .reason-gc-suspect"
+
+# ---------------------------------------------------------------------------
+# v0b2: `jobs check` ALSO reads the task's `started_at` + `wallclock_budget_s`
+# from frontmatter, independent of the job/pid's own liveness, and prints
+# `<task>\tbudget-exceeded` once exceeded. This is a report only — `jobs
+# check` never kills for a wall-clock overrun; the orchestrator escalates it
+# via protocol (`task advance ... blocked`).
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TBUDGET "budget-demo"
+"$ORCHID_BIN" task advance TBUDGET implementing
+"$ORCHID_BIN" task set TBUDGET started_at "2000-01-01T00:00:00Z"
+"$ORCHID_BIN" task set TBUDGET wallclock_budget_s 1
+"$ORCHID_BIN" jobs prepare TBUDGET implementer implement >/dev/null
+budget_out="$("$ORCHID_BIN" jobs check)"
+assert_match "TBUDGET	budget-exceeded" "$budget_out" "jobs check reports budget-exceeded for an over-budget task"
+
+# A task well within budget must never be reported over.
+"$ORCHID_BIN" task create TOKBUDGET "budget-ok-demo"
+"$ORCHID_BIN" task advance TOKBUDGET implementing
+"$ORCHID_BIN" task set TOKBUDGET wallclock_budget_s 28800
+"$ORCHID_BIN" jobs prepare TOKBUDGET implementer implement >/dev/null
+ok_out="$("$ORCHID_BIN" jobs check)"
+echo "$ok_out" | grep -q "TOKBUDGET	budget-exceeded" && fail "jobs check must not report budget-exceeded for a task within budget"
