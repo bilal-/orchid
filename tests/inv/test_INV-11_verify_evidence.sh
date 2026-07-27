@@ -83,3 +83,48 @@ assert_eq 0 "$rc" "fixture: real verify PASS for T003"
 tail -n1 .orchid/reviews/T003-verify.log | grep -q "^exit: 0$" || fail "sanity: fixture evidence should record exit 0"
 "$ORCHID_BIN" task advance T003 reviewing >/dev/null || fail "INV-11: reviewing after a passing verify run must be permitted"
 assert_eq reviewing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "INV-11: T003 advanced to reviewing"
+
+# v0b1 fix: rework-loop stale-evidence symmetry. `orchid merge`'s rebase-reset
+# invalidates verify/merge evidence on exit-5 (INV-07); the same must be true
+# of every OTHER path back into rework (advance:rework, unblock, retry) — a
+# reworked task gets a new candidate, so evidence about the old one must not
+# survive to satisfy the INV-11 gate above. Walk:
+# verify-PASS -> reviewing -> arbitrating -> rework --reason x -> implementing
+# -> (new candidate_sha) -> testing -> advance reviewing must DIE until re-verify.
+"$ORCHID_BIN" task create T004 "rework-symmetry"
+"$ORCHID_BIN" task set T004 base_sha "$head_sha"
+"$ORCHID_BIN" task set T004 candidate_sha "$head_sha"
+"$ORCHID_BIN" task set T004 verification_commands "true"
+"$ORCHID_BIN" task advance T004 implementing >/dev/null
+"$ORCHID_BIN" task advance T004 testing >/dev/null
+rc=0; "$ORCHID_BIN" verify T004 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: real verify PASS for T004"
+"$ORCHID_BIN" task advance T004 reviewing >/dev/null
+"$ORCHID_BIN" task advance T004 arbitrating --reason "single reviewer approved" >/dev/null
+
+[ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before rework"
+
+"$ORCHID_BIN" task advance T004 rework --reason "found an issue in review" >/dev/null
+
+[ ! -f .orchid/reviews/T004-verify.log ] || fail "rework: stale verify evidence must be invalidated on entry to rework (INV-07 symmetry)"
+[ ! -f .orchid/reviews/T004-merge.log ] || fail "rework: stale merge evidence must be invalidated on entry to rework (INV-07 symmetry)"
+
+"$ORCHID_BIN" task advance T004 implementing >/dev/null
+
+# New candidate: an actual new commit (child of head_sha, not on any branch),
+# so the base..candidate range is real and the testing-entry .orchid/ guard
+# (INV-04) is satisfied honestly rather than faked.
+new_cand="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "rework fix")"
+[ -n "$new_cand" ] || fail "sanity: could not mint a new candidate commit for T004"
+"$ORCHID_BIN" task set T004 candidate_sha "$new_cand"
+"$ORCHID_BIN" task advance T004 testing >/dev/null
+
+rc=0; err="$("$ORCHID_BIN" task advance T004 reviewing 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "rework: reviewing must be refused before re-verify of the new candidate (stale evidence invalidated -> INV-11 gate)"
+echo "$err" | grep -qi "verify" || fail "rework: die message must mention verify (got: $err)"
+assert_eq testing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "rework: refused advance leaves status at testing"
+
+rc=0; "$ORCHID_BIN" verify T004 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "re-verify passes on the new candidate"
+"$ORCHID_BIN" task advance T004 reviewing >/dev/null || fail "rework: reviewing permitted after honest re-verify"
+assert_eq reviewing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "rework: T004 advanced to reviewing after re-verify"

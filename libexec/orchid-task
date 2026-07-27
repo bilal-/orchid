@@ -84,6 +84,17 @@ case "$sub" in
       else
         fm_set "$f" attempts "$(( $(fm_get "$f" attempts) + 1 ))"
       fi
+      # Entry to rework (from testing or arbitrating) invalidates prior
+      # verify/merge evidence — the candidate is about to change, so evidence
+      # about the old candidate must not survive to satisfy INV-11's gate
+      # later. Same invalidation `orchid merge`'s rebase-reset does on
+      # exit-5; closes the rework-loop stale-evidence walk (INV-07 symmetry).
+      # `from = merging` is exempt here: that arm is `orchid-merge`'s own
+      # domain, which already manages reviews/*-merge.log directly (e.g. the
+      # validation-fail path writes it to document the very failure that
+      # is about to be journaled, and the rebase-reset path invalidates
+      # both logs itself when it mints a new candidate).
+      rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     fi
     if [ -n "$reason" ]; then
       kind=intervention
@@ -105,6 +116,9 @@ case "$sub" in
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
     journal --task "$id" --kind intervention "unblock: $reason"
     { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
+    # with the advance:rework arm and orchid-merge's rebase-reset).
+    rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework" ;;
   retry)
@@ -122,6 +136,9 @@ case "$sub" in
       *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
     esac
     journal --task "$id" --kind intervention "retry: $reason"
+    # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
+    # with the advance:rework arm and orchid-merge's rebase-reset).
+    rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework" ;;
   *) orchid_die "usage: orchid task create|show|list|set|advance|unblock|retry" ;;

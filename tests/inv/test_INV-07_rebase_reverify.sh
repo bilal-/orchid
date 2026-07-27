@@ -54,6 +54,9 @@ assert_eq "$pre_integ" "$post_integ" "integration ref untouched by rebase-reveri
 new_status="$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)"
 assert_eq testing "$new_status" "task lands back in testing after rebase"
 
+grep -q "rebase_review" .orchid/journal.md || fail "merge exit-5 must journal a rebase_review entry (kernel.md's normative table)"
+grep -q "evidence invalidated" .orchid/journal.md || fail "rebase_review entry must record that evidence was invalidated"
+
 new_base="$("$ORCHID_BIN" task show T001 | grep '^base_sha: ' | cut -d' ' -f2)"
 new_cand="$("$ORCHID_BIN" task show T001 | grep '^candidate_sha: ' | cut -d' ' -f2)"
 assert_eq "$integ_after_parallel" "$new_base" "base_sha updated to the new integration HEAD"

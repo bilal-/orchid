@@ -72,6 +72,12 @@ if [ "$integ_head" != "$base_sha" ]; then
   # makes INV-07 kernel-enforced via the INV-11 gate (no log => advance to
   # reviewing dies, forcing an unconditional re-verify).
   rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+  # Normative per kernel.md's decision-journal table: the rebase-reset is a
+  # judgment-bearing event (evidence invalidated, re-review now mandatory) —
+  # journal it as `rebase_review` so the decision trail shows why re-verify
+  # was forced, not just that it was.
+  ORCHID_ACTOR="${ORCHID_ACTOR:-orchestrator}" "$ORCHID_ROOT/bin/orchid" journal add --task "$id" --kind rebase_review \
+    "base $base_sha -> $integ_head, candidate $candidate_sha -> $new_candidate; evidence invalidated"
   "$ORCHID_ROOT/bin/orchid" task advance "$id" testing
   echo "rebase_rereview_required $id: base $base_sha -> $integ_head, candidate $candidate_sha -> $new_candidate"
   exit 5
