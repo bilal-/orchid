@@ -83,3 +83,5 @@ concrete evidence (raw usage line, CLI reply, or `git log` output) that
 produced it, on a single `PROBE-RESULT:` line. All three exit 0
 regardless of outcome; a probe's job is to report a finding, not to pass
 or fail.
+
+**Containment caveat:** the claude probe sets cwd to a scratch repo, but containment is instruction-level, not enforced — review the probe's aftermath (`git status` in unexpected places) before trusting results.
