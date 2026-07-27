@@ -17,7 +17,7 @@ text="$*"
 
 epoch="$(epoch_current "$repo")"
 suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
-qid="q-${epoch}-${suffix}"
+qid="q-${epoch}-${suffix}"  # collision within one epoch is improbable (16 bits) and not currently guarded against
 
 # Journal first (same INV-08 discipline as `task advance`/`run advance`):
 # the blocker is durably recorded in journal.md BEFORE BLOCKERS.md (also
@@ -36,8 +36,11 @@ header="## $qid"
   | atomic_write "$state/BLOCKERS.md"
 
 # Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
-# existence is what makes a qid "known" to `orchid answer`.
+# existence is what makes a qid "known" to `orchid answer`. First line
+# records the originating task (or "none"), so `orchid answer` can resolve
+# blocker_resolved back into the same task's journal view; this is an
+# internal file format, not a public contract.
 mkdir -p "$rt/answers"
-printf '%s\n' "$text" | atomic_write "$rt/answers/$qid.question"
+{ printf 'task: %s\n' "${task:-none}"; printf '%s\n' "$text"; } | atomic_write "$rt/answers/$qid.question"
 
 echo "$qid"

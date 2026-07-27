@@ -10,6 +10,8 @@ qf="$rt/answers/$qid.question"
 [ -f "$qf" ] || orchid_die "unknown question $qid (no .question file — orchid notify never minted it, or runtime was wiped)"
 
 af="$rt/answers/$qid.answer"
+# v0 TOCTOU: this existence check and the write below are not atomic together,
+# so two concurrent `answer` calls for the same qid can both pass this check.
 if [ -f "$af" ]; then
   prev="$(cat "$af")"
   if [ "$prev" = "$choice" ]; then
@@ -24,32 +26,33 @@ fi
 #
 # gc's exception (see libexec/orchid-jobs) holds because gc only ever
 # touches runtime/ litter, nothing durable, so there is nothing for the
-# epoch fence to protect. `answer` is not that: the journal.md append two
-# lines down IS durable state. The exception here is deliberate anyway,
-# because of *when* an answer arrives: per docs/specs/operations.md's
-# remote-interaction seam, `orchid answer <qid> <choice>` is invoked by an
-# operator/channel/AgentSkill from OUTSIDE any run turn — there is often no
-# active epoch at all (no run currently started/resumed), and even when one
-# exists, the human answering has no reason to know or carry it. Gating
-# this verb on `ORCHID_EPOCH` would make a blocker's answer unrecordable
-# for as long as no run happens to be active, which defeats the entire
-# point of an async inbox: the answer must be capturable the moment it
-# arrives, then merely consumed by the next tick. So: the runtime-only
-# `.answer` file write is un-fenced exactly like gc's runtime writes, AND
-# the durable journal.md append below is *also* un-fenced (never gated on
-# epoch) — but it is never skipped or made non-durable; the append itself
-# stays a normal durable write via atomic_write, same file/format
-# `orchid journal add` produces. (This is why the append is done inline
-# here rather than by shelling out to `orchid journal add`: that
-# subcommand always calls `epoch_require` internally, which would
-# reintroduce exactly the gate this verb must not have.)
+# epoch fence to protect. `answer` is not that: the journal append below
+# IS durable state. The exception here is deliberate anyway, because of
+# *when* an answer arrives: per docs/specs/operations.md's remote-interaction
+# seam, `orchid answer <qid> <choice>` is invoked by an operator/channel/
+# AgentSkill from OUTSIDE any run turn — there is often no active epoch at
+# all (no run currently started/resumed), and even when one exists, the
+# human answering has no reason to know or carry it. Gating this verb on
+# `ORCHID_EPOCH` would make a blocker's answer unrecordable for as long as
+# no run happens to be active, which defeats the entire point of an async
+# inbox: the answer must be capturable the moment it arrives, then merely
+# consumed by the next tick. So: the runtime-only `.answer` file write is
+# un-fenced exactly like gc's runtime writes, AND the durable journal append
+# below is *also* un-fenced (never gated on epoch) — but it is never skipped
+# or made non-durable; it goes through `orchid journal add --unfenced`,
+# which stamps the entry `e-` (epoch-unknown) instead of skipping the write.
 mkdir -p "$rt/answers"
 printf '%s\n' "$choice" | atomic_write "$af"
 
-e="$(epoch_current "$repo")"
-actor="${ORCHID_ACTOR:-operator}"
-entry="## $(date -u +%Y-%m-%dT%H:%M:%SZ) run blocker_resolved ($actor e$e)"
-{ [ -f "$state/journal.md" ] && cat "$state/journal.md"; echo; echo "$entry"; echo "$qid: $choice"; } \
-  | atomic_write "$state/journal.md"
+# Recover the originating task from the question file's first line
+# ("task: <id|none>", written by `orchid notify`) so the resolution lands
+# in the same task-scoped journal view as the original blocker.
+task_line="$(head -n1 "$qf")"; task_id="${task_line#task: }"
+[ "$task_id" = "none" ] && task_id=""
+if [ -n "$task_id" ]; then
+  ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --task "$task_id" --kind blocker_resolved "$qid: $choice"
+else
+  ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --kind blocker_resolved "$qid: $choice"
+fi
 
 echo "$qid: $choice"

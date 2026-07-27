@@ -72,3 +72,29 @@ assert_eq "yes" "$(cat ".orchid/runtime/answers/$qid2.answer")" "stale-epoch ans
 qid3="$("$ORCHID_BIN" notify "third question?")"
 ( unset ORCHID_EPOCH; "$ORCHID_BIN" answer "$qid3" no ) || fail "answer works with ORCHID_EPOCH entirely absent"
 assert_eq "no" "$(cat ".orchid/runtime/answers/$qid3.answer")" "absent-epoch answer file written"
+
+# --- answer: task-scoped resolution must reach the task's journal view ------
+# (regression: `orchid answer` used to append blocker_resolved straight to
+# journal.md, bypassing runtime/journal-index/<task>, so a task-scoped
+# `journal show --task <id>` only ever showed the original blocker, never
+# its resolution)
+qid_t2="$("$ORCHID_BIN" notify --task T001 "second task blocker?")"
+out_t="$("$ORCHID_BIN" answer "$qid_t2" ship-it)"
+assert_match "ship-it" "$out_t" "task-scoped answer echoes choice"
+task_show="$("$ORCHID_BIN" journal show --task T001)"
+assert_match "blocker" "$task_show" "task journal show has the original blocker entry"
+assert_match "blocker_resolved" "$task_show" "task journal show has the blocker_resolved entry too"
+assert_match "$qid_t2: ship-it" "$task_show" "task journal show carries qid+choice"
+assert_match "e-\)" "$task_show" "blocker_resolved entry is stamped the epoch-unknown marker e-"
+
+# --- answer: unfenced journal write still works with stale/absent epoch ----
+# and always stamps e- (epoch-unknown), regardless of ORCHID_EPOCH's value.
+qid4="$("$ORCHID_BIN" notify "fourth question?")"
+out4="$(ORCHID_EPOCH=999999 "$ORCHID_BIN" answer "$qid4" maybe)"
+assert_match "maybe" "$out4" "unfenced answer works with a stale epoch"
+assert_match "$qid4: maybe" "$(cat .orchid/journal.md)" "unfenced answer journaled with qid+choice"
+assert_match "e-\)" "$(cat .orchid/journal.md)" "unfenced answer entry stamped e- even with a stale ORCHID_EPOCH"
+
+qid5="$("$ORCHID_BIN" notify "fifth question?")"
+( unset ORCHID_EPOCH; "$ORCHID_BIN" answer "$qid5" sure ) || fail "unfenced answer works with ORCHID_EPOCH entirely absent"
+assert_match "$qid5: sure" "$(cat .orchid/journal.md)" "absent-epoch answer journaled with qid+choice"
