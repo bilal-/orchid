@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-2, effectful: the ONLY engine spawner (INV-06). Everything upstream of
+# the spawn line (jobs prepare, pack_build, the request document) is
+# read/write-only; only the line marked below ever launches a plugin.
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/pack.sh"
+
+task="${1:-}"; role="${2:-}"; operation="${3:-}"
+[ -n "$task" ] && [ -n "$role" ] && [ -n "$operation" ] \
+  || orchid_die "usage: orchid-launch <task-id> <role> <operation>"
+
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+
+# tier-1 mints the job identity + manifest; never spawns (INV-01).
+manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "$task" "$role" "$operation")"
+job_id="$(jq -r .job_id "$manifest")"; engine="$(jq -r .engine "$manifest")"
+attempt="$(jq -r .attempt "$manifest")"; output="$(jq -r .output "$manifest")"
+log="$(jq -r .log "$manifest")"
+base_sha="$(jq -r .base_sha "$manifest")"; candidate_sha="$(jq -r .candidate_sha "$manifest")"
+
+pack_dir="$rt/packs/$job_id"
+pack_build "$repo" "$task" "$operation" "$pack_dir"
+
+worktree="$(fm_get "$state/tasks/$task.md" worktree)"
+[ -n "$worktree" ] || worktree="$repo"
+
+deadline_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
+case "$operation" in implement) policy=workspace-write ;; *) policy=read-only ;; esac
+model="$(config_get "$repo" model "")"
+effort="$(config_get "$repo" effort medium)"
+
+mkdir -p "$rt/requests"; req_file="$rt/requests/$job_id.json"
+jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
+  --arg role "$role" --arg operation "$operation" \
+  --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
+  --arg worktree "$worktree" --arg input_pack "$pack_dir" --arg output "$output" \
+  --argjson deadline_s "$deadline_s" --arg policy "$policy" \
+  --arg model "$model" --arg effort "$effort" \
+  '{request:1, job_id:$job_id, task:$task, attempt:$attempt, role:$role,
+    operation:$operation, base_sha:$base_sha, candidate_sha:$candidate_sha,
+    worktree:$worktree, input_pack:$input_pack, output:$output,
+    deadline_s:$deadline_s, policy:$policy, model:$model, effort:$effort}' \
+  | atomic_write "$req_file"
+
+exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"
+mkdir -p "$(dirname "$log")"
+
+ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1 &
+pid=$!
+pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)"
+[ -n "$pgid" ] || pgid=0
+
+jq --argjson pid "$pid" --argjson pgid "$pgid" --argjson started_at "$(date +%s)" \
+  '.pid=$pid | .pgid=$pgid | .started_at=$started_at' "$manifest" | atomic_write "$manifest"
+
+echo "launched $job_id pid $pid"
