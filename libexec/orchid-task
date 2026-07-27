@@ -74,10 +74,16 @@ case "$sub" in
       # `candidate:` header line (written by `orchid verify` from frontmatter
       # at run time) must equal the task's CURRENT candidate_sha, not merely
       # exist with a passing exit code. This closes the stale-evidence class
-      # permanently: any path that changes candidate_sha WITHOUT going
-      # through one of the rm-based invalidations below (a bare `task set
-      # candidate_sha`, a future code path that forgets to invalidate) is
-      # caught here instead of silently trusting an old PASS. The rm-based
+      # for any path that changes candidate_sha WITHOUT going through one of
+      # the rm-based invalidations below (a bare `task set candidate_sha`, a
+      # future code path that forgets to invalidate) — caught here instead
+      # of silently trusting an old PASS. One case the sha compare alone
+      # cannot close: `fcand` is excluded from the match whenever it is
+      # `none` (candidate_sha unset), because verify's own log writes a
+      # literal `candidate: none` when it ran with no candidate_sha either —
+      # two vacuous sentinels agreeing is not proof of anything, so that
+      # side of the compare must never be allowed to pass on its own. The
+      # rm-based
       # invalidations (rework entry, unblock, retry, merge's rebase-reset)
       # remain as belt-and-braces — they fail fast with "no evidence at all"
       # on the common paths, rather than relying solely on this SHA compare.
@@ -85,7 +91,7 @@ case "$sub" in
       vcand=""
       [ -f "$vlog" ] && vcand="$(grep '^candidate: ' "$vlog" | tail -n1 | cut -d' ' -f2-)"
       fcand="$(fm_get "$f" candidate_sha)"; [ -n "$fcand" ] || fcand=none
-      [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] && [ "$vcand" = "$fcand" ] || \
+      [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] && [ "$fcand" != none ] && [ "$vcand" = "$fcand" ] || \
         orchid_die "reviewing requires passing verify evidence bound to the current candidate_sha (run: orchid verify $id)"
     fi
     if [ "$to" = rework ]; then

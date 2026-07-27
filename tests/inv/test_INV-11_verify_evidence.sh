@@ -214,3 +214,35 @@ rc=0; "$ORCHID_BIN" verify T005 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "re-verify passes and binds evidence to the new candidate"
 "$ORCHID_BIN" task advance T005 reviewing >/dev/null || fail "sha-binding: reviewing permitted after re-verify binds to the new candidate"
 assert_eq reviewing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "sha-binding: T005 advanced to reviewing after re-verify"
+
+# v0b2 fix: vacuous none-candidate evidence must never satisfy the gate.
+# `orchid verify` writes a literal `candidate: none` header line when
+# candidate_sha is empty at verify time (see orchid-verify). The sha-binding
+# compare defaults an empty frontmatter candidate_sha to the same "none"
+# sentinel, so a genuinely vacuous evidence log (never bound to any real
+# sha) previously matched a genuinely vacuous frontmatter (candidate_sha
+# cleared) — a string equality on a placeholder, not proof of anything.
+# The gate must refuse whenever either side is none/empty; only a real
+# sha == sha match may pass. Recipe: verify while candidate_sha is empty
+# (bakes `candidate: none`, exit: 0 into the log), THEN set real
+# base_sha/candidate_sha and walk the task to testing, THEN clear
+# candidate_sha back to empty (frontmatter fcand becomes "none" again,
+# same as vcand, same stale log) -> advance reviewing must DIE.
+"$ORCHID_BIN" task create T006 "vacuous-none-candidate"
+"$ORCHID_BIN" task set T006 verification_commands "true"
+
+rc=0; "$ORCHID_BIN" verify T006 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: verify PASS for T006 with no candidate_sha set"
+assert_match "^candidate: none$" "$(cat .orchid/reviews/T006-verify.log)" "sanity: T006 evidence records literal candidate: none"
+
+"$ORCHID_BIN" task set T006 base_sha "$head_sha"
+"$ORCHID_BIN" task set T006 candidate_sha "$head_sha"
+"$ORCHID_BIN" task advance T006 implementing >/dev/null
+"$ORCHID_BIN" task advance T006 testing >/dev/null
+
+"$ORCHID_BIN" task set T006 candidate_sha ""
+
+rc=0; err="$("$ORCHID_BIN" task advance T006 reviewing 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "vacuous-none: reviewing must be refused when both evidence and frontmatter candidate are none — a vacuous match, never a real sha"
+echo "$err" | grep -qi "candidate\|verify" || fail "vacuous-none: die message must mention candidate/verify (got: $err)"
+assert_eq testing "$("$ORCHID_BIN" task show T006 | grep '^status: ' | cut -d' ' -f2)" "vacuous-none: refused advance leaves status at testing"
