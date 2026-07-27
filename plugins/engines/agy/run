@@ -36,11 +36,6 @@ classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
   fi
 }
 
-if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
-  write_envelope ok '{"verdict":"approve","scope_complete":true}'
-  exit 0
-fi
-
 case "$operation" in
   review|critique) ;;
   *)
@@ -48,6 +43,11 @@ case "$operation" in
     write_envelope failed '{}'
     exit 1 ;;
 esac
+
+if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
+  write_envelope ok '{"verdict":"approve","scope_complete":true}'
+  exit 0
+fi
 
 diff_file="$input_pack/diff.patch"
 diff_bytes="$(wc -c <"$diff_file" 2>/dev/null | tr -d ' ')"; diff_bytes="${diff_bytes:-0}"

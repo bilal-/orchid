@@ -120,3 +120,13 @@ envelope_validate "$d/out/envelope.json" || fail "dryrun review: envelope invali
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status ok"
 assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "dryrun review: verdict approve"
 assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "dryrun review: scope_complete true"
+
+# --- 9. DRYRUN + unsupported operation: fails identically, no spawn --------
+d="$(build_request dryimplement implement '#!/usr/bin/env bash
+printf "%s\n" "$@" > "'"$WORK"'/dryimplement.argv"
+echo "VERDICT: approve"')"
+rc=0; ORCHID_DRYRUN=1 run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "dryrun implement: adapter should exit nonzero"
+envelope_validate "$d/out/envelope.json" || fail "dryrun implement: envelope invalid"
+assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "dryrun implement: status failed"
+[ ! -e "$WORK/dryimplement.argv" ] || fail "dryrun implement: agy must never be invoked (no spawn)"
