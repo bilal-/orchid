@@ -40,6 +40,7 @@ pack_build() {  # repo task op dest ; exit 12 = input_overflow
       # of the file, which is exactly this head-first trim.
       tail -c "$room" "$state/context.md" > "$dest/context.md"; trunc=true
     fi
+    used=$(( used + $(wc -c < "$dest/context.md") ))
     items="$items,{\"name\":\"context.md\",\"bytes\":$(wc -c < "$dest/context.md"),\"truncated\":$trunc}"
   else
     omitted="\"context.md\""

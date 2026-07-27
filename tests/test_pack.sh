@@ -21,3 +21,6 @@ printf 'pack_budget_bytes=%s\n' "$tight" > orchid.config
 pack_build "$WORK" T001 review "$WORK/p2" || fail "pack build with trim"
 assert_eq "true" "$(jq -r '.items[] | select(.name=="context.md") | .truncated' "$WORK/p2/pack.json")" "context trimmed"
 [ "$(wc -c < "$WORK/p2/context.md")" -lt 5000 ] || fail "context actually smaller"
+
+# manifest honesty: total_bytes must equal the sum of all packed items' bytes
+assert_eq "true" "$(jq -r '.total_bytes == ([.items[].bytes] | add)' "$WORK/p1/pack.json")" "total_bytes sums all items (context present)"
