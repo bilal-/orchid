@@ -49,7 +49,7 @@ esac
 if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
   case "$operation" in
     implement)       write_envelope ok '{"summary":"dryrun"}' ;;
-    review|critique) write_envelope ok '{"verdict":"approve","scope_complete":true}' ;;
+    review|critique) write_envelope ok '{"verdict":"approve","scope_complete":true,"findings":[]}' ;;
   esac
   exit 0
 fi
@@ -70,7 +70,16 @@ if [ "$operation" = implement ]; then
   if [ "$rc" -eq 0 ]; then
     last_line="$(printf '%s\n' "$stdout" | awk 'NF{l=$0} END{print l}')"
     summary="${last_line:0:200}"; [ -n "$summary" ] || summary="implemented"
-    write_envelope ok "$(jq -n --arg s "$summary" '{summary:$s}')"
+
+    # Commits are the ground truth of what the implementer actually did:
+    # walk the worktree's history from base_sha to HEAD (empty when the
+    # implementer made no commits — still `ok` since the CLI itself
+    # succeeded, but the summary notes it so a reviewer isn't misled).
+    commits_raw="$(cd "$worktree" && git rev-list "${base_sha}..HEAD" 2>/dev/null || true)"
+    commits_json="$(printf '%s' "$commits_raw" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+    [ "$(printf '%s' "$commits_json" | jq 'length')" -eq 0 ] && summary="$summary (no commits produced)"
+
+    write_envelope ok "$(jq -n --arg s "$summary" --argjson c "$commits_json" '{summary:$s, commits:$c}')"
     exit 0
   fi
   printf '%s\n' "$stderr" >&2
@@ -119,5 +128,5 @@ fi
 
 any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
 scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
-write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc}')"
+write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc, findings:[]}')"
 exit 0

@@ -21,9 +21,17 @@ build_request() {
     chmod +x "$d/bin/claude"
   fi
 
+  # worktree is a real git repo (as it always is in production — either the
+  # main repo or a task worktree) so the implement path's `git rev-list
+  # base_sha..HEAD` commit capture has something real to walk.
+  (cd "$d/worktree" && git init -q . \
+    && git -c user.email=test@orchid.local -c user.name="Orchid Test" \
+         commit -q --allow-empty -m root) >/dev/null 2>&1
+  local base_sha; base_sha="$(git -C "$d/worktree" rev-parse HEAD)"
+
   jq -n --arg job_id "j-$name" --arg task T001 --arg op "$op" \
     --arg worktree "$d/worktree" --arg input_pack "$d/pack" --arg output "$d/out/envelope.json" \
-    --arg base_sha aaa --arg candidate_sha bbb \
+    --arg base_sha "$base_sha" --arg candidate_sha bbb \
     '{request:1, job_id:$job_id, task:$task, attempt:1, role:"x", operation:$op,
       base_sha:$base_sha, candidate_sha:$candidate_sha, worktree:$worktree,
       input_pack:$input_pack, output:$output, deadline_s:3600,
@@ -53,6 +61,7 @@ assert_eq "2" "$argc" "approve stub: review is read-only prompting, exactly two 
 assert_eq "-p" "$(cat "$WORK/approve.argv.1")" "approve stub: -p precedes the prompt"
 last_argv="$(cat "$WORK/approve.argv.2")"
 assert_match "VERDICT: approve" "$last_argv" "approve stub: prompt carries the reply contract"
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "approve stub: findings placeholder empty array"
 
 # --- 2. failing stub: rate limit on stderr ----------------------------------
 d="$(build_request ratelimit review '#!/usr/bin/env bash
@@ -91,12 +100,28 @@ echo "Implemented the feature end to end."')"
 run_adapter "$d" || fail "implement stub: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "implement stub: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "implement stub: status ok"
-assert_eq "Implemented the feature end to end." "$(jq -r .summary "$d/out/envelope.json")" "implement stub: summary from last non-empty line"
+assert_eq "Implemented the feature end to end. (no commits produced)" "$(jq -r .summary "$d/out/envelope.json")" "implement stub: summary from last non-empty line, no-commits noted"
+assert_eq "[]" "$(jq -c .commits "$d/out/envelope.json")" "implement stub: empty commits array when no commits made"
 argc="$(cat "$WORK/implsuccess.argc")"
 assert_eq "4" "$argc" "implement stub: acceptEdits permission mode, exactly four argv"
 assert_eq "-p" "$(cat "$WORK/implsuccess.argv.1")" "implement stub: -p precedes the prompt"
 assert_eq "--permission-mode" "$(cat "$WORK/implsuccess.argv.3")" "implement stub: --permission-mode follows the prompt"
 assert_eq "acceptEdits" "$(cat "$WORK/implsuccess.argv.4")" "implement stub: acceptEdits value"
+
+# --- 5b. implement success: stub actually commits in the worktree -> the
+# envelope's commits[] contains that real sha, and the summary is untouched
+# (no "no commits produced" note) -------------------------------------------
+d="$(build_request implcommit implement '#!/usr/bin/env bash
+echo "did the work" > done.txt
+git add done.txt
+git -c user.email=test@orchid.local -c user.name="Orchid Test" commit -q -m "stub commit"
+echo "Implemented and committed."')"
+run_adapter "$d" || fail "implement+commit stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "implement+commit stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "implement+commit stub: status ok"
+new_sha="$(git -C "$d/worktree" rev-parse HEAD)"
+assert_eq "[\"$new_sha\"]" "$(jq -c .commits "$d/out/envelope.json")" "implement+commit stub: commits array contains the new sha"
+assert_eq "Implemented and committed." "$(jq -r .summary "$d/out/envelope.json")" "implement+commit stub: summary unchanged when commits present"
 
 # --- 6. DRYRUN: implement, no spawn (no claude on PATH at all) -------------
 d="$(build_request dryimpl implement "")"
@@ -114,6 +139,7 @@ envelope_validate "$d/out/envelope.json" || fail "dryrun review: envelope invali
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status ok"
 assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "dryrun review: verdict approve"
 assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "dryrun review: scope_complete true"
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "dryrun review: findings placeholder empty array"
 
 # --- 8b. exact-match guard: last VERDICT line is the ECHOED instruction ----
 # ("VERDICT: approve OR request-changes") — never actually chose a verdict.

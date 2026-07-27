@@ -29,6 +29,37 @@ bad <<'EOF' || fail "ok status with absent operation rejected (null-operation es
 {"contract":1,"job_id":"j-7","task":"T001","status":"ok"}
 EOF
 
+good <<'EOF' || fail "findings array with valid objects accepted"
+{"contract":1,"job_id":"j-8","task":"T001","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"findings":[{"severity":"minor","title":"nit"}]}
+EOF
+good <<'EOF' || fail "empty findings array accepted"
+{"contract":1,"job_id":"j-9","task":"T001","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"findings":[]}
+EOF
+bad <<'EOF' || fail "findings not an array rejected"
+{"contract":1,"job_id":"j-10","task":"T001","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"findings":{"severity":"minor","title":"nit"}}
+EOF
+bad <<'EOF' || fail "findings item missing title rejected"
+{"contract":1,"job_id":"j-11","task":"T001","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"findings":[{"severity":"minor"}]}
+EOF
+bad <<'EOF' || fail "findings item severity wrong type rejected"
+{"contract":1,"job_id":"j-12","task":"T001","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"findings":[{"severity":1,"title":"nit"}]}
+EOF
+good <<'EOF' || fail "commits array of strings accepted"
+{"contract":1,"job_id":"j-13","task":"T001","operation":"implement","status":"ok","summary":"did work","commits":["abc123","def456"]}
+EOF
+good <<'EOF' || fail "empty commits array accepted"
+{"contract":1,"job_id":"j-14","task":"T001","operation":"implement","status":"ok","summary":"did work (no commits produced)","commits":[]}
+EOF
+bad <<'EOF' || fail "commits not an array rejected"
+{"contract":1,"job_id":"j-15","task":"T001","operation":"implement","status":"ok","summary":"did work","commits":"abc123"}
+EOF
+bad <<'EOF' || fail "commits item non-string rejected"
+{"contract":1,"job_id":"j-16","task":"T001","operation":"implement","status":"ok","summary":"did work","commits":[123]}
+EOF
+good <<'EOF' || fail "findings and commits optional together on non-ok status too"
+{"contract":1,"job_id":"j-17","task":"T001","operation":"review","status":"failed","findings":[],"commits":[]}
+EOF
+
 echo 'not json' > "$WORK/e.json"
 envelope_validate "$WORK/e.json" 2>/dev/null && fail "non-JSON rejected"
 printf '{"status":"ok","value":"test"}' > "$WORK/f.json"
