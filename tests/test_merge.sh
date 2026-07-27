@@ -154,3 +154,91 @@ post_integ4="$(git rev-parse "$integ")"
 assert_eq "$concurrent_integ" "$post_integ4" "concurrent commit is NOT clobbered by the losing CAS"
 grep -q "intervention" .orchid/journal.md || fail "CAS failure journals an intervention"
 grep -qi "update-ref\|CAS" .orchid/journal.md || fail "CAS failure journal entry names the cause"
+
+# ---------------------------------------------------------------------------
+# v0b2: stale-base rebase IN the recorded frontmatter worktree. When a task's
+# frontmatter `worktree` already has the task branch checked out (a live
+# implementer checkout — not merge's own temp worktree), the stale-base path
+# must rebase directly IN that worktree instead of trying to mint a temp
+# worktree for a branch that's already checked out (which would otherwise
+# hit the explicit-die-with-path branch). This is the INV-07 rebase-reverify
+# path exercised through that recorded-worktree layout: same "exits 5,
+# candidate/base rewritten, evidence invalidated" contract, PLUS the
+# recorded worktree itself must survive healthy (merge_cleanup only tears
+# down ITS OWN temp worktrees, never the recorded one).
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T005 "rebase in recorded worktree"
+git checkout -q -b task/T005 "$integ"
+echo five > feature5.txt && git add feature5.txt && git commit -q -m "feature 5"
+cand5="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base5="$(git rev-parse "$integ")"
+
+# The task branch is checked out in its own registered worktree (simulating
+# a live implementer checkout), recorded on the task via frontmatter.
+wt5="$WORK/wt5"
+git worktree add -q "$wt5" task/T005
+"$ORCHID_BIN" task set T005 worktree "$wt5"
+
+"$ORCHID_BIN" task set T005 base_sha "$base5"
+"$ORCHID_BIN" task set T005 candidate_sha "$cand5"
+"$ORCHID_BIN" task set T005 verification_commands "test -f feature5.txt"
+"$ORCHID_BIN" task advance T005 implementing
+"$ORCHID_BIN" task advance T005 testing
+"$ORCHID_BIN" verify T005 >/dev/null   # runs in $wt5 (frontmatter worktree)
+"$ORCHID_BIN" task advance T005 reviewing
+"$ORCHID_BIN" task advance T005 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task advance T005 merging --reason "approved for merge"
+
+# Parallel commit lands on integration BEFORE T005 merges -> stale base.
+echo other5 > parallel5.txt && git add parallel5.txt && git commit -q -m "parallel task landed first (T005)"
+integ_after5="$(git rev-parse "$integ")"
+
+pre_integ5="$(git rev-parse "$integ")"
+rc=0; out5="$WORK/merge5.out"
+"$ORCHID_BIN" merge T005 >"$out5" 2>&1 || rc=$?
+assert_eq 5 "$rc" "stale base (recorded worktree) -> merge exits 5"
+post_integ5="$(git rev-parse "$integ")"
+assert_eq "$pre_integ5" "$post_integ5" "integration ref untouched by rebase-reverify (recorded worktree)"
+
+new_status5="$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)"
+assert_eq testing "$new_status5" "task lands back in testing after in-worktree rebase"
+
+new_base5="$("$ORCHID_BIN" task show T005 | grep '^base_sha: ' | cut -d' ' -f2)"
+new_cand5="$("$ORCHID_BIN" task show T005 | grep '^candidate_sha: ' | cut -d' ' -f2)"
+assert_eq "$integ_after5" "$new_base5" "base_sha updated to new integ HEAD (recorded-worktree path)"
+[ "$new_cand5" != "$cand5" ] || fail "candidate_sha must change after in-worktree rebase"
+[ -n "$new_cand5" ] || fail "candidate_sha must be set after in-worktree rebase"
+
+branch_tip5="$(git rev-parse task/T005)"
+assert_eq "$new_cand5" "$branch_tip5" "task branch reflects the in-place-rebased tip"
+merge_base5="$(git merge-base task/T005 "$integ")"
+assert_eq "$integ_after5" "$merge_base5" "rebased branch sits directly on the new integration HEAD"
+
+# The recorded worktree is never merge's own temp worktree: it must remain a
+# healthy, usable checkout with the task branch still checked out and clean.
+[ -e "$wt5/.git" ] || fail "recorded worktree still exists after in-place rebase"
+wt5_status="$(git -C "$wt5" status --porcelain)"
+[ -z "$wt5_status" ] || fail "recorded worktree is not clean after in-place rebase: $wt5_status"
+wt5_branch="$(git -C "$wt5" rev-parse --abbrev-ref HEAD)"
+assert_eq "task/T005" "$wt5_branch" "recorded worktree still has task branch checked out"
+wt5_head="$(git -C "$wt5" rev-parse HEAD)"
+assert_eq "$new_cand5" "$wt5_head" "recorded worktree HEAD reflects the rebased tip"
+
+# No leaked temp worktree: only the main checkout + the recorded worktree
+# remain registered.
+n_wt5="$(git worktree list | wc -l | tr -d ' ')"
+assert_eq 2 "$n_wt5" "only the recorded worktree remains registered (no leaked temp worktree)"
+
+# Re-verify + re-review + merge succeeds on the rebased candidate (mirrors
+# INV-07's second-attempt walk, confirming the recorded-worktree path leaves
+# the task in a normal, mergeable state afterward).
+rc=0; "$ORCHID_BIN" verify T005 >/dev/null || rc=$?
+assert_eq 0 "$rc" "re-verify passes on the rebased candidate (recorded worktree)"
+"$ORCHID_BIN" task advance T005 reviewing
+"$ORCHID_BIN" task advance T005 arbitrating --reason "re-reviewed after rebase, approved"
+"$ORCHID_BIN" task advance T005 merging --reason "approved for merge"
+rc=0; out5b="$WORK/merge5b.out"
+"$ORCHID_BIN" merge T005 >"$out5b" 2>&1 || rc=$?
+assert_eq 0 "$rc" "merge succeeds on the new base (recorded worktree)"
+assert_eq done "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "task reaches done (recorded worktree path)"

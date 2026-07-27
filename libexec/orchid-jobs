@@ -165,5 +165,59 @@ case "$sub" in
       printf '%s\t%s\t%s\n' "$m_task" "$status" "$verdict"
     done
     ;;
-  *) orchid_die "usage: orchid jobs prepare|check|reconcile" ;;
+  gc)
+    # Runtime-only cleanup: reaps DEAD jobs' litter (manifest -> quarantine,
+    # plus its pack dir/request file/log) once past --older-than-s, and
+    # separately sweeps orphaned pack/request entries that have no manifest
+    # and no pending spool envelope. Unlike prepare/reconcile (which mutate
+    # durable state under .orchid/tasks or .orchid/reviews), gc only ever
+    # touches runtime/ — manifests, packs, requests, logs, quarantine — so
+    # there is nothing here for INV-02's epoch fence to protect; it is
+    # deliberately un-fenced (no epoch_require call in this arm). It also
+    # never kills anything: it only reaps pids that are ALREADY dead
+    # (`kill -0` already failing), so INV-01's tier-1 "no spawn/kill" posture
+    # holds trivially — there is no kill call to guard here at all.
+    older_than_s="$(config_get "$repo" gc_older_than_s 86400)"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --older-than-s)
+          [ -n "${2:-}" ] || orchid_die "--older-than-s requires a value"
+          older_than_s="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs gc [--older-than-s N]" ;;
+      esac
+    done
+    mkdir -p "$quarantine_dir"
+    now="$(date +%s)"
+    for f in "$jobs_dir"/*.json; do
+      [ -e "$f" ] || continue
+      pid="$(jq -r .pid "$f")"
+      [ "$pid" != 0 ] || continue          # never started: not "dead", just prepared
+      if kill -0 "$pid" 2>/dev/null; then continue; fi   # still alive: untouched
+      started_at="$(jq -r .started_at "$f")"
+      age=$(( now - started_at ))
+      [ "$age" -gt "$older_than_s" ] || continue         # dead but too young: untouched
+      job_id="$(jq -r .job_id "$f")"
+      log_f="$(jq -r .log "$f")"
+      quarantine_file "$f" gc-dead
+      rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$log_f"
+      echo "gc $job_id"
+    done
+    # Orphan sweep: a pack dir or request file with no manifest AND no
+    # pending spool envelope waiting on it. A job that finished normally
+    # (reconcile already deleted its manifest and moved its spool envelope
+    # to reviews/) leaves neither pack nor request litter behind on its own,
+    # so any pack/request found here with truly nothing referencing it is
+    # genuine litter — most commonly from a crash between launch and
+    # reconcile. The dead-manifest loop above already removed its own
+    # pack/request, so those never reach this loop as orphans too.
+    for p in "$rt/packs"/* "$rt/requests"/*; do
+      [ -e "$p" ] || continue
+      job_id="$(basename "$p")"; job_id="${job_id%.json}"
+      [ -e "$jobs_dir/$job_id.json" ] && continue
+      [ -e "$spool_dir/$job_id.json" ] && continue
+      rm -rf "$p"
+      echo "gc-orphan $p"
+    done
+    ;;
+  *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc" ;;
 esac

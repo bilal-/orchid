@@ -59,34 +59,66 @@ trap merge_cleanup EXIT
 integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 
 if [ "$integ_head" != "$base_sha" ]; then
-  # Stale base: rebase the task branch onto integ HEAD in a temp worktree of
-  # that branch — the user's own checkout is never touched. On a clean
-  # rebase this always mints a new commit SHA (new parent), which is exactly
-  # what makes the old candidate's reviews detectably stale (INV-07).
-  wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-merge.XXXXXX")"
-  if ! wt_err="$(git -C "$repo" worktree add -q "$wt" "$task_branch" 2>&1)"; then
-    # Make the failure diagnosable: the common cause is the branch already
-    # being checked out elsewhere (e.g. the operator's own working copy), in
-    # which case name both the branch and the exact checkout path (parsed
-    # from `git worktree list`) instead of a bare "cannot create" message.
-    # Full detached-rebase fix (rebasing without ever needing the branch
-    # checked out) is tracked for B2; this only makes today's failure clear.
-    if printf '%s' "$wt_err" | grep -qiE "already (checked out|used by worktree)"; then
-      # git's own message conventions differ by version ("already checked
-      # out at '<path>'" vs "already used by worktree at '<path>'") but both
-      # end in "at '<path>'" — extract directly; fall back to parsing
-      # `git worktree list` if that ever fails to match.
-      checkout_path="$(printf '%s' "$wt_err" | sed -nE "s/.*at '(.*)'.*/\1/p" | head -n1)"
-      [ -n "$checkout_path" ] || checkout_path="$(git -C "$repo" worktree list 2>/dev/null \
-        | awk -v b="[$task_branch]" '$NF == b { print $1; exit }')"
-      orchid_die "cannot create temp worktree for $task_branch: branch is already checked out at '${checkout_path:-<see: git worktree list>}'"
-    fi
-    orchid_die "cannot create temp worktree for $task_branch: $wt_err"
+  # Stale base: rebase the task branch onto integ HEAD. On a clean rebase
+  # this always mints a new commit SHA (new parent), which is exactly what
+  # makes the old candidate's reviews detectably stale (INV-07).
+  #
+  # Where the rebase runs depends on where task_branch is (or isn't)
+  # currently checked out:
+  #   1. Frontmatter records a `worktree`, and task_branch is ALREADY checked
+  #      out there (a live implementer checkout, verified directly via `git
+  #      -C <wt> rev-parse --abbrev-ref HEAD` — not merge's own bookkeeping):
+  #      rebase IN PLACE in that worktree. No temp worktree is created, so
+  #      there is no "branch already checked out" conflict to hit, and the
+  #      worktree is never at risk from merge_cleanup's `wt` teardown — this
+  #      path never assigns to `wt`, only to `rebase_wt`.
+  #   2. task_branch is not checked out anywhere: unchanged — mint a temp
+  #      worktree (`wt`) of that branch, rebase there, discard it after.
+  #   3. task_branch IS checked out somewhere, but that somewhere is not the
+  #      recorded frontmatter worktree (or none was recorded): the temp
+  #      `worktree add` below fails and the explicit-die-with-path branch
+  #      fires, naming the actual checkout path. Full detached-rebase fix
+  #      (rebasing without ever needing the branch checked out at all) is
+  #      tracked for B2 beyond this; this only makes today's failure clear.
+  fm_worktree="$(fm_get "$tf" worktree)"
+  rebase_wt=""
+  if [ -n "$fm_worktree" ] && [ -e "$fm_worktree" ]; then
+    fm_wt_branch="$(git -C "$fm_worktree" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    [ "$fm_wt_branch" = "$task_branch" ] && rebase_wt="$fm_worktree"
   fi
-  if ! git -C "$wt" rebase "$integ_head" >/dev/null 2>&1; then
-    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
-    "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "rebase conflict"
-    exit 1
+
+  if [ -n "$rebase_wt" ]; then
+    if ! git -C "$rebase_wt" rebase "$integ_head" >/dev/null 2>&1; then
+      git -C "$rebase_wt" rebase --abort >/dev/null 2>&1 || true
+      "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "rebase conflict"
+      exit 1
+    fi
+    new_candidate="$(git -C "$rebase_wt" rev-parse HEAD)"
+  else
+    wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-merge.XXXXXX")"
+    if ! wt_err="$(git -C "$repo" worktree add -q "$wt" "$task_branch" 2>&1)"; then
+      # Make the failure diagnosable: the common cause is the branch already
+      # being checked out elsewhere (e.g. the operator's own working copy), in
+      # which case name both the branch and the exact checkout path (parsed
+      # from `git worktree list`) instead of a bare "cannot create" message.
+      if printf '%s' "$wt_err" | grep -qiE "already (checked out|used by worktree)"; then
+        # git's own message conventions differ by version ("already checked
+        # out at '<path>'" vs "already used by worktree at '<path>'") but both
+        # end in "at '<path>'" — extract directly; fall back to parsing
+        # `git worktree list` if that ever fails to match.
+        checkout_path="$(printf '%s' "$wt_err" | sed -nE "s/.*at '(.*)'.*/\1/p" | head -n1)"
+        [ -n "$checkout_path" ] || checkout_path="$(git -C "$repo" worktree list 2>/dev/null \
+          | awk -v b="[$task_branch]" '$NF == b { print $1; exit }')"
+        orchid_die "cannot create temp worktree for $task_branch: branch is already checked out at '${checkout_path:-<see: git worktree list>}'"
+      fi
+      orchid_die "cannot create temp worktree for $task_branch: $wt_err"
+    fi
+    if ! git -C "$wt" rebase "$integ_head" >/dev/null 2>&1; then
+      git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+      "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "rebase conflict"
+      exit 1
+    fi
+    new_candidate="$(git -C "$wt" rev-parse HEAD)"
   fi
   # Edge case: if this rebase turns out to be a no-op — the candidate's
   # commits were already reachable from integ_head (e.g. an empty replay) —
@@ -96,7 +128,6 @@ if [ "$integ_head" != "$base_sha" ]; then
   # unconditional `rm -f` two lines down invalidates prior evidence
   # regardless, so the INV-11 sha-binding gate still forces a re-verify even
   # when the candidate identity happened not to move.
-  new_candidate="$(git -C "$wt" rev-parse HEAD)"
   "$ORCHID_ROOT/bin/orchid" task set "$id" base_sha "$integ_head"
   "$ORCHID_ROOT/bin/orchid" task set "$id" candidate_sha "$new_candidate"
   # Rebase minted a new candidate SHA, so any prior verify/merge evidence is
