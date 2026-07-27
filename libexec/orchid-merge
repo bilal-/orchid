@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
+epoch_require "$repo"
+# task set/advance below run as child processes of THIS verb; ORCHID_EPOCH
+# must already be exported for epoch_require (above) to have succeeded, so
+# it is already present in the environment and propagates automatically —
+# exported here again, explicitly, so that fact is not accidental.
+export ORCHID_EPOCH
+
+id="${1:-}"
+[ -n "$id" ] || orchid_die "usage: orchid merge <task-id>"
+tf="$state/tasks/$id.md"
+[ -f "$tf" ] || orchid_die "no task $id"
+
+status="$(fm_get "$tf" status)"
+[ "$status" = merging ] || orchid_die "task $id is not in merging (status: $status)"
+
+base_sha="$(fm_get "$tf" base_sha)"
+candidate_sha="$(fm_get "$tf" candidate_sha)"
+[ -n "$base_sha" ] && [ -n "$candidate_sha" ] || orchid_die "task $id missing base_sha/candidate_sha"
+
+task_branch="$(fm_get "$tf" branch)"
+[ -n "$task_branch" ] || orchid_die "task $id has no branch recorded"
+
+integ="$(config_get "$repo" integration_branch orchid/integration)"
+git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
+  || orchid_die "integration branch '$integ' does not exist"
+
+# Whole verb runs under the run lock (serializes concurrent merges); trap is
+# installed only AFTER a successful acquire, mirroring orchid-run's pattern.
+lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
+wt=""
+merge_cleanup() {
+  if [ -n "$wt" ]; then
+    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    rm -rf "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+  fi
+  lock_release "$repo"
+}
+trap merge_cleanup EXIT
+
+integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
+
+if [ "$integ_head" != "$base_sha" ]; then
+  # Stale base: rebase the task branch onto integ HEAD in a temp worktree of
+  # that branch — the user's own checkout is never touched. On a clean
+  # rebase this always mints a new commit SHA (new parent), which is exactly
+  # what makes the old candidate's reviews detectably stale (INV-07).
+  wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-merge.XXXXXX")"
+  git -C "$repo" worktree add -q "$wt" "$task_branch" >/dev/null 2>&1 \
+    || orchid_die "cannot create temp worktree for $task_branch"
+  if ! git -C "$wt" rebase "$integ_head" >/dev/null 2>&1; then
+    git -C "$wt" rebase --abort >/dev/null 2>&1 || true
+    "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "rebase conflict"
+    exit 1
+  fi
+  new_candidate="$(git -C "$wt" rev-parse HEAD)"
+  "$ORCHID_ROOT/bin/orchid" task set "$id" base_sha "$integ_head"
+  "$ORCHID_ROOT/bin/orchid" task set "$id" candidate_sha "$new_candidate"
+  "$ORCHID_ROOT/bin/orchid" task advance "$id" testing
+  echo "rebase_rereview_required $id: base $base_sha -> $integ_head, candidate $candidate_sha -> $new_candidate"
+  exit 5
+fi
+
+# Base current: merge the candidate in a detached temp worktree — never the
+# user's checkout — then run the verification suite there before touching
+# the integration ref.
+wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-merge.XXXXXX")"
+git -C "$repo" worktree add -q --detach "$wt" "$integ_head" >/dev/null 2>&1 \
+  || orchid_die "cannot create temp worktree at $integ_head"
+
+if ! git -C "$wt" merge --no-ff -q -m "orchid: merge $id" "$candidate_sha" >/dev/null 2>&1; then
+  git -C "$wt" merge --abort >/dev/null 2>&1 || true
+  "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "merge conflict"
+  exit 1
+fi
+merged_sha="$(git -C "$wt" rev-parse HEAD)"
+
+# Command source: task frontmatter first, config fallback second — same
+# resolution order as `orchid verify`.
+cmd="$(fm_get "$tf" verification_commands)"
+[ -n "$cmd" ] || cmd="$(config_get "$repo" verify)"
+[ -n "$cmd" ] || orchid_die "no verification_commands on task $id and no config 'verify' set — nothing to run"
+
+mkdir -p "$state/reviews"
+log="$state/reviews/$id-merge.log"
+out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-merge-verify.XXXXXX")"
+
+rc=0
+( cd "$wt" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || rc=$?
+
+{
+  echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "sha: $merged_sha"
+  echo "cwd: $wt"
+  echo "command: $cmd"
+  echo "---"
+  cat "$out_tmp"
+  echo "exit: $rc"
+} | atomic_write "$log"
+rm -f "$out_tmp"
+
+if [ "$rc" -eq 0 ]; then
+  git -C "$repo" update-ref "refs/heads/$integ" "$merged_sha" "$integ_head"
+  "$ORCHID_ROOT/bin/orchid" task advance "$id" done
+  echo "merged $id: $integ -> $merged_sha"
+  exit 0
+fi
+
+"$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "validation_failed: see reviews/$id-merge.log"
+exit 1
