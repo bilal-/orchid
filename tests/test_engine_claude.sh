@@ -115,7 +115,17 @@ assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status 
 assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "dryrun review: verdict approve"
 assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "dryrun review: scope_complete true"
 
-# --- 8. unsupported operation ------------------------------------------------
+# --- 8b. exact-match guard: last VERDICT line is the ECHOED instruction ----
+# ("VERDICT: approve OR request-changes") — never actually chose a verdict.
+# Must be MALFORMED, never approve.
+d="$(build_request echoedinstruction review '#!/usr/bin/env bash
+echo "thinking it over..."
+echo "VERDICT: approve OR request-changes"')"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "echoed-instruction stub: adapter should exit nonzero"
+assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruction stub: status malformed (not approve)"
+
+# --- 9. unsupported operation ------------------------------------------------
 d="$(build_request badop research "")"
 rm -rf "$d/bin"
 rc=0; run_adapter "$d" || rc=$?

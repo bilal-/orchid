@@ -105,6 +105,16 @@ rc=0; ORCHID_AGY_MAX_BYTES=100 run_adapter "$d" || rc=$?
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "customcap: status failed"
 [ ! -e "$WORK/customcap.argv" ] || fail "customcap: agy must never be invoked when override cap trips"
 
+# --- 6c. exact-match guard: last VERDICT line is the ECHOED instruction ----
+# ("VERDICT: approve OR request-changes") — never actually chose a verdict.
+# Must be MALFORMED, never approve.
+d="$(build_request echoedinstruction review '#!/usr/bin/env bash
+echo "thinking it over..."
+echo "VERDICT: approve OR request-changes"')"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "echoed-instruction stub: adapter should exit nonzero"
+assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruction stub: status malformed (not approve)"
+
 # --- 7. unsupported operation -----------------------------------------------
 d="$(build_request badop implement "")"
 rm -rf "$d/bin"

@@ -22,6 +22,13 @@ EOF
 bad <<'EOF' || fail "missing job_id rejected"
 {"contract":1,"task":"T001","operation":"implement","status":"ok","summary":"x"}
 EOF
+bad <<'EOF' || fail "ok status with unknown operation rejected (null-operation escape closed)"
+{"contract":1,"job_id":"j-6","task":"T001","operation":"research","status":"ok"}
+EOF
+bad <<'EOF' || fail "ok status with absent operation rejected (null-operation escape closed)"
+{"contract":1,"job_id":"j-7","task":"T001","status":"ok"}
+EOF
+
 echo 'not json' > "$WORK/e.json"
 envelope_validate "$WORK/e.json" 2>/dev/null && fail "non-JSON rejected"
 printf '{"status":"ok","value":"test"}' > "$WORK/f.json"

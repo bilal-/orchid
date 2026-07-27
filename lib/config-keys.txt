@@ -10,3 +10,5 @@ stall_minutes
 timeout_minutes
 agy_max_bytes
 pack_budget_bytes
+model
+effort

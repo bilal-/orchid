@@ -56,8 +56,25 @@ if [ "$integ_head" != "$base_sha" ]; then
   # rebase this always mints a new commit SHA (new parent), which is exactly
   # what makes the old candidate's reviews detectably stale (INV-07).
   wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-merge.XXXXXX")"
-  git -C "$repo" worktree add -q "$wt" "$task_branch" >/dev/null 2>&1 \
-    || orchid_die "cannot create temp worktree for $task_branch"
+  if ! wt_err="$(git -C "$repo" worktree add -q "$wt" "$task_branch" 2>&1)"; then
+    # Make the failure diagnosable: the common cause is the branch already
+    # being checked out elsewhere (e.g. the operator's own working copy), in
+    # which case name both the branch and the exact checkout path (parsed
+    # from `git worktree list`) instead of a bare "cannot create" message.
+    # Full detached-rebase fix (rebasing without ever needing the branch
+    # checked out) is tracked for B2; this only makes today's failure clear.
+    if printf '%s' "$wt_err" | grep -qiE "already (checked out|used by worktree)"; then
+      # git's own message conventions differ by version ("already checked
+      # out at '<path>'" vs "already used by worktree at '<path>'") but both
+      # end in "at '<path>'" — extract directly; fall back to parsing
+      # `git worktree list` if that ever fails to match.
+      checkout_path="$(printf '%s' "$wt_err" | sed -nE "s/.*at '(.*)'.*/\1/p" | head -n1)"
+      [ -n "$checkout_path" ] || checkout_path="$(git -C "$repo" worktree list 2>/dev/null \
+        | awk -v b="[$task_branch]" '$NF == b { print $1; exit }')"
+      orchid_die "cannot create temp worktree for $task_branch: branch is already checked out at '${checkout_path:-<see: git worktree list>}'"
+    fi
+    orchid_die "cannot create temp worktree for $task_branch: $wt_err"
+  fi
   if ! git -C "$wt" rebase "$integ_head" >/dev/null 2>&1; then
     git -C "$wt" rebase --abort >/dev/null 2>&1 || true
     "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "rebase conflict"

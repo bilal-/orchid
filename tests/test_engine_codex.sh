@@ -97,9 +97,31 @@ assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status 
 assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "dryrun review: verdict approve"
 assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "dryrun review: scope_complete true"
 
-# --- 8. unsupported operation ------------------------------------------------
+# --- 8b. exact-match guard: last VERDICT line is the ECHOED instruction -----
+# ("VERDICT: approve OR request-changes") — the reply never actually chose a
+# verdict, just repeated the prompt's own reply-contract line. Must be
+# MALFORMED, never approve (the substring "approve" is present but the line
+# is not an exact verdict).
+d="$(build_request echoedinstruction review '#!/usr/bin/env bash
+echo "thinking it over..."
+echo "VERDICT: approve OR request-changes"')"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "echoed-instruction stub: adapter should exit nonzero"
+assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruction stub: status malformed (not approve)"
+
+# --- 9. unsupported operation ------------------------------------------------
 d="$(build_request badop research "")"
 rm -rf "$d/bin"
 rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "badop: adapter should exit nonzero"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status failed"
+
+# --- 10. DRYRUN + unsupported operation: operation gate precedes DRYRUN, so
+# this still fails (no dryrun short-circuit for unknown operations, mirroring
+# agy/claude symmetry) --------------------------------------------------------
+d="$(build_request dryimplbadop research "")"
+rm -rf "$d/bin"
+rc=0; ORCHID_DRYRUN=1 run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "dryrun badop: adapter should exit nonzero"
+envelope_validate "$d/out/envelope.json" || fail "dryrun badop: envelope invalid"
+assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "dryrun badop: status failed (operation gate precedes dryrun)"

@@ -11,7 +11,6 @@ envelope_validate() {
         or ((.operation | IN("review","critique"))
             and (.verdict | IN("approve","request-changes"))
             and (.scope_complete | type == "boolean"))
-        or (.operation | IN("review","critique","implement") | not)
       )
     )
   ' "$1" >/dev/null

@@ -102,10 +102,14 @@ if [ "$rc" -ne 0 ]; then
   exit 1
 fi
 
-verdict_line="$(printf '%s\n' "$stdout" | grep -E 'VERDICT:' | tail -n1 || true)"
+# Exact-match only: the last line that IS (not merely contains) a verdict
+# line, so a reply that only echoes back the reply-contract instruction
+# ("VERDICT: approve OR request-changes") never satisfies this — it must
+# fall through to malformed rather than being read as an approval.
+verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
 verdict=""
-if printf '%s' "$verdict_line" | grep -qi 'approve'; then verdict=approve
-elif printf '%s' "$verdict_line" | grep -qi 'request-changes'; then verdict=request-changes
+if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
+elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
 fi
 if [ -z "$verdict" ]; then
   write_envelope malformed '{}'
