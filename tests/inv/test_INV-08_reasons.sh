@@ -12,7 +12,13 @@ export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 head_sha="$(git -C "$WORK" rev-parse HEAD)"
 "$ORCHID_BIN" task set T001 base_sha "$head_sha"
 "$ORCHID_BIN" task set T001 candidate_sha "$head_sha"
-for s in implementing testing reviewing arbitrating; do "$ORCHID_BIN" task advance T001 "$s" >/dev/null; done
+for s in implementing testing; do "$ORCHID_BIN" task advance T001 "$s" >/dev/null; done
+# INV-11 fixture note: testing -> reviewing now kernel-requires a passing
+# verify evidence log, so this walk needs a real `orchid verify` PASS here
+# (honest fixture, not a hand-written log) before it can reach reviewing.
+"$ORCHID_BIN" task set T001 verification_commands "true"
+"$ORCHID_BIN" verify T001 >/dev/null
+for s in reviewing arbitrating; do "$ORCHID_BIN" task advance T001 "$s" >/dev/null; done
 rc=0; "$ORCHID_BIN" task advance T001 merging 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-08: merging without --reason"
 "$ORCHID_BIN" task advance T001 merging --reason "both reviewers approve"

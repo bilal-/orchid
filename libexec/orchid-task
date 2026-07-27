@@ -67,6 +67,16 @@ case "$sub" in
         orchid_die "commits touch .orchid/ — entry to testing refused (INV-04)"
       fi
     fi
+    if [ "$from" = testing ] && [ "$to" = reviewing ]; then
+      # INV-11: verify evidence is the only path to a passing testing state —
+      # kernel-enforced so `reviewing` can never be reached without a real
+      # `orchid verify` PASS. v0 scope: existence + passing exit only; binding
+      # the evidence to the task's current candidate_sha (so a stale log from
+      # an earlier candidate can't be reused) is a known v1 refinement.
+      vlog="$state/reviews/$id-verify.log"
+      [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] || \
+        orchid_die "reviewing requires passing verify evidence (run: orchid verify $id)"
+    fi
     if [ "$to" = rework ] && [ "$from" != merging ]; then
       if [ "$waive" -eq 1 ]; then
         [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"

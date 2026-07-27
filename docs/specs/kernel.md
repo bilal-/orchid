@@ -235,8 +235,9 @@ deps/worktree/SHAs (deps done, worktree created, base_sha/candidate_sha set)
 are ORCHESTRATOR-enforced in v0 — the orchestrator decides when they hold and
 supplies the values; the kernel itself enforces legality of the transition
 graph, `--reason` presence on reason-bearing edges, risk-tier monotonicity,
-the `.orchid/` worktree-contamination guard, and — closing the last
-conditional gap — refuses entry to `testing` outright when `base_sha` or
+the `.orchid/` worktree-contamination guard, evidence recorded (passing
+verify log) as the sole gate on `testing` → `reviewing`, and — closing the
+last conditional gap — refuses entry to `testing` outright when `base_sha` or
 `candidate_sha` is unset, rather than silently skipping the `.orchid/` check.
 
 Feature-archetype diagram (other archetypes declare row subsets within
