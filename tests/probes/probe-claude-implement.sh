@@ -8,20 +8,40 @@ set -euo pipefail
 # create a file and commit it to git, unattended? Builds a scratch repo,
 # asks claude to create a marker file and commit it, then inspects
 # `git log` for the result.
+#
+# Caveat: containing claude to $scratch (so it only touches the throwaway
+# repo, not your real cwd/tree) is instruction-level only — the prompt asks
+# it to, but nothing here sandboxes or enforces it. Review the probe's
+# aftermath (git status/log in $scratch, and your working tree) before
+# trusting a YES/PARTIAL result at face value.
 
 if ! command -v claude >/dev/null 2>&1; then
   echo "PROBE-RESULT: SKIP (claude not installed)"
   exit 0
 fi
 
-# Inline with_timeout (same pattern as lib/common.sh, copied so this probe
-# has no dependency on repo-internal libs): run "$@" in the background,
-# race a killer against it, return the real command's exit code, or 124 on
-# timeout.
+# Inline with_timeout (same process-group trick runners/orchid-launch uses,
+# copied so this probe has no dependency on repo-internal libs): runs "$@"
+# directly in the background — never through a wrapper function/subshell —
+# so $! is the real command's own pid, then races a killer against it.
+# `set -m` around the spawn puts the backgrounded job in its OWN process
+# group (pgid == its own pid, same trick as orchid-launch's launch line),
+# so on timeout the watcher can `kill -- -$pid` and reach the whole group
+# instead of only an immediate child.
+#
+# This replaces a version that backgrounded a shell function doing
+# `cd "$scratch" && claude ...`: killing that function's wrapper-subshell
+# pid on timeout left the real `claude` process — a distinct child of the
+# now-dead subshell, never itself placed in its own group — running and
+# billing quota, orphaned under init once the trap's scratch-dir deletion
+# raced past it. Empirically reproduced; fixed by never interposing that
+# layer (the caller now does the `cd` itself, before calling with_timeout).
 with_timeout() {
   local secs="$1"; shift
+  set -m
   "$@" & local pid=$!
-  ( sleep "$secs"; kill "$pid" 2>/dev/null ) & local w=$!
+  set +m
+  ( sleep "$secs"; kill -- "-$pid" 2>/dev/null ) & local w=$!
   local rc=0; wait "$pid" 2>/dev/null || rc=$?
   if kill -0 "$w" 2>/dev/null; then kill "$w" 2>/dev/null; wait "$w" 2>/dev/null; return "$rc"; fi
   return 124
@@ -36,20 +56,27 @@ err_file="$(mktemp)"
 cleanup() { rm -rf "$scratch"; rm -f "$err_file"; }
 trap cleanup EXIT
 
-git -C "$scratch" init -q .
-git -C "$scratch" -c user.email=probe@orchid.local -c user.name="Orchid Probe" \
-  commit -q --allow-empty -m root
+# Guarded so a git fixture failure (e.g. no git on PATH, no write access to
+# TMPDIR) reports a clean PROBE-RESULT instead of aborting under `set -e`
+# with no PROBE-RESULT line at all.
+if ! git -C "$scratch" init -q . 2>/dev/null || \
+   ! git -C "$scratch" -c user.email=probe@orchid.local -c user.name="Orchid Probe" \
+       commit -q --allow-empty -m root 2>/dev/null; then
+  echo "PROBE-RESULT: ENV-UNAVAILABLE (git fixture failed)"
+  exit 0
+fi
 
 PROMPT='Create a file named probe-marker.txt containing exactly one line: probe. Then commit it to git in this repository with the commit message "probe commit". Do this now; do not ask questions.'
 
-_run_claude() {
-  cd "$scratch" && claude -p "$PROMPT" --permission-mode acceptEdits
-}
-
+# cd here, in the parent — NOT inside with_timeout/a wrapper function — so
+# the thing with_timeout backgrounds is the bare `claude ...` invocation
+# itself (see the with_timeout comment above for why that matters).
+cd "$scratch"
 set +e
-stdout="$(with_timeout 120 _run_claude 2>"$err_file")"
+stdout="$(with_timeout 120 claude -p "$PROMPT" --permission-mode acceptEdits 2>"$err_file")"
 rc=$?
 set -e
+cd - >/dev/null
 stderr="$(cat "$err_file")"
 combined="$stdout"$'\n'"$stderr"
 
