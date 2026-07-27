@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/helpers.sh"
+source "$REPO_ROOT/lib/envelope.sh"
+ADAPTER="$REPO_ROOT/plugins/engines/claude/run"
+
+# --- shared fixture builder -------------------------------------------------
+# build_request <name> <operation> [stub-body] -> prints path to request.json
+build_request() {
+  local name="$1" op="$2" stub="$3"
+  local d="$WORK/$name"
+  mkdir -p "$d/pack" "$d/worktree" "$d/out" "$d/bin"
+  printf -- '---\nschema: 1\nid: T001\nacceptance_criteria: does the thing\nstop_condition: one pass only\n---\nDo the thing.\n' \
+    > "$d/pack/task.md"
+  echo "some repo context" > "$d/pack/context.md"
+  printf 'diff --git a/f b/f\n+changed\n' > "$d/pack/diff.patch"
+  printf '{"budget":65536,"total_bytes":10,"items":[{"name":"task.md","bytes":5,"truncated":false}],"omitted":[]}\n' \
+    > "$d/pack/pack.json"
+
+  if [ -n "$stub" ]; then
+    printf '%s\n' "$stub" > "$d/bin/claude"
+    chmod +x "$d/bin/claude"
+  fi
+
+  jq -n --arg job_id "j-$name" --arg task T001 --arg op "$op" \
+    --arg worktree "$d/worktree" --arg input_pack "$d/pack" --arg output "$d/out/envelope.json" \
+    --arg base_sha aaa --arg candidate_sha bbb \
+    '{request:1, job_id:$job_id, task:$task, attempt:1, role:"x", operation:$op,
+      base_sha:$base_sha, candidate_sha:$candidate_sha, worktree:$worktree,
+      input_pack:$input_pack, output:$output, deadline_s:3600,
+      policy:"workspace-write", model:"", effort:"medium"}' > "$d/request.json"
+  echo "$d"
+}
+
+run_adapter() {  # dir
+  PATH="$1/bin:$PATH" "$ADAPTER" "$1/request.json"
+}
+
+# --- 1. review stub that approves; argv shape asserted (read-only prompting,
+# no --permission-mode flag: exactly two argv, -p then the prompt) ----------
+d="$(build_request approve review '#!/usr/bin/env bash
+printf "%s" "$#" > "'"$WORK"'/approve.argc"
+i=0
+for a in "$@"; do i=$((i+1)); printf "%s" "$a" > "'"$WORK"'/approve.argv.$i"; done
+echo "looks fine"
+echo "VERDICT: approve"')"
+run_adapter "$d" || fail "approve stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "approve stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "approve stub: status ok"
+assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "approve stub: verdict approve"
+assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "approve stub: scope_complete true (no truncation in pack.json)"
+argc="$(cat "$WORK/approve.argc")"
+assert_eq "2" "$argc" "approve stub: review is read-only prompting, exactly two argv"
+assert_eq "-p" "$(cat "$WORK/approve.argv.1")" "approve stub: -p precedes the prompt"
+last_argv="$(cat "$WORK/approve.argv.2")"
+assert_match "VERDICT: approve" "$last_argv" "approve stub: prompt carries the reply contract"
+
+# --- 2. failing stub: rate limit on stderr ----------------------------------
+d="$(build_request ratelimit review '#!/usr/bin/env bash
+echo "429 usage limit exceeded" >&2
+exit 1')"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "ratelimit stub: adapter should exit nonzero"
+envelope_validate "$d/out/envelope.json" || fail "ratelimit stub: envelope invalid"
+assert_eq "rate_limited" "$(jq -r .status "$d/out/envelope.json")" "ratelimit stub: status rate_limited"
+
+# --- 3. failing stub: auth error --------------------------------------------
+d="$(build_request authfail review '#!/usr/bin/env bash
+echo "Unauthorized: please login" >&2
+exit 1')"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "authfail stub: adapter should exit nonzero"
+envelope_validate "$d/out/envelope.json" || fail "authfail stub: envelope invalid"
+assert_eq "auth" "$(jq -r .status "$d/out/envelope.json")" "authfail stub: status auth"
+
+# --- 4. malformed: stub prints no VERDICT line ------------------------------
+d="$(build_request noverdict review '#!/usr/bin/env bash
+echo "some rambling output with no reply contract"')"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "noverdict stub: adapter should exit nonzero"
+assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "noverdict stub: status malformed"
+
+# --- 5. implement success: summary from last non-empty stdout line; argv
+# shape asserted (acceptEdits: four argv, -p prompt --permission-mode acceptEdits)
+d="$(build_request implsuccess implement '#!/usr/bin/env bash
+printf "%s" "$#" > "'"$WORK"'/implsuccess.argc"
+i=0
+for a in "$@"; do i=$((i+1)); printf "%s" "$a" > "'"$WORK"'/implsuccess.argv.$i"; done
+echo "working..."
+echo ""
+echo "Implemented the feature end to end."')"
+run_adapter "$d" || fail "implement stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "implement stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "implement stub: status ok"
+assert_eq "Implemented the feature end to end." "$(jq -r .summary "$d/out/envelope.json")" "implement stub: summary from last non-empty line"
+argc="$(cat "$WORK/implsuccess.argc")"
+assert_eq "4" "$argc" "implement stub: acceptEdits permission mode, exactly four argv"
+assert_eq "-p" "$(cat "$WORK/implsuccess.argv.1")" "implement stub: -p precedes the prompt"
+assert_eq "--permission-mode" "$(cat "$WORK/implsuccess.argv.3")" "implement stub: --permission-mode follows the prompt"
+assert_eq "acceptEdits" "$(cat "$WORK/implsuccess.argv.4")" "implement stub: acceptEdits value"
+
+# --- 6. DRYRUN: implement, no spawn (no claude on PATH at all) -------------
+d="$(build_request dryimpl implement "")"
+rm -rf "$d/bin"
+ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun implement: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "dryrun implement: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun implement: status ok"
+assert_eq "dryrun" "$(jq -r .summary "$d/out/envelope.json")" "dryrun implement: summary dryrun"
+
+# --- 7. DRYRUN: review, no spawn --------------------------------------------
+d="$(build_request dryreview review "")"
+rm -rf "$d/bin"
+ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun review: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "dryrun review: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status ok"
+assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "dryrun review: verdict approve"
+assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "dryrun review: scope_complete true"
+
+# --- 8. unsupported operation ------------------------------------------------
+d="$(build_request badop research "")"
+rm -rf "$d/bin"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "badop: adapter should exit nonzero"
+assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status failed"
+
+# --- 9. DRYRUN + unsupported operation: operation gate precedes DRYRUN, so
+# this still fails (no dryrun short-circuit for unknown operations) --------
+d="$(build_request dryimplbadop research "")"
+rm -rf "$d/bin"
+rc=0; ORCHID_DRYRUN=1 run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "dryrun badop: adapter should exit nonzero"
+envelope_validate "$d/out/envelope.json" || fail "dryrun badop: envelope invalid"
+assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "dryrun badop: status failed (operation gate precedes dryrun)"
