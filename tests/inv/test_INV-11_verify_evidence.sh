@@ -128,3 +128,53 @@ rc=0; "$ORCHID_BIN" verify T004 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "re-verify passes on the new candidate"
 "$ORCHID_BIN" task advance T004 reviewing >/dev/null || fail "rework: reviewing permitted after honest re-verify"
 assert_eq reviewing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "rework: T004 advanced to reviewing after re-verify"
+
+# v0b1 fix: merging->rework (validation-fail) symmetry. The advance:rework
+# arm's `from != merging` guard was written to protect $id-merge.log (which
+# documents the very validation failure `orchid-merge` is about to report),
+# but it accidentally shielded $id-verify.log too — so the MOST common rework
+# loop (reviewer approves, merge's own independent re-verification then fails
+# in its detached temp worktree) left the old candidate's stale PASS verify
+# evidence in place, ready to wrongly satisfy INV-11's gate for a candidate
+# that was never actually re-verified. Continue T004 on into `merging` to
+# exercise exactly that path.
+integ=orchid/integration
+git -C "$WORK" branch "$integ" "$head_sha"
+
+"$ORCHID_BIN" task advance T004 arbitrating --reason "single reviewer approved" >/dev/null
+
+# A command that passes on a NAMED branch checkout (here, $WORK's own
+# checkout, used for the testing->reviewing verify gate above) but fails on a
+# DETACHED HEAD (merge's own temp worktree) — forces merge's independent
+# re-run of the suite to fail deterministically, without needing a
+# semantically-differing merged tree.
+vcmd_merge='test "$(git rev-parse --abbrev-ref HEAD)" != HEAD'
+"$ORCHID_BIN" task set T004 verification_commands "$vcmd_merge"
+"$ORCHID_BIN" task advance T004 merging --reason "approved for merge" >/dev/null
+
+[ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before the merge attempt"
+
+rc=0; "$ORCHID_BIN" merge T004 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "fixture: merge validation fails in its detached temp worktree"
+assert_eq rework "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "sanity: T004 back in rework after merge validation-fail"
+
+[ ! -f .orchid/reviews/T004-verify.log ] || fail "merging->rework: stale verify evidence must be invalidated too (validation-fail is the MOST common rework loop)"
+[ -f .orchid/reviews/T004-merge.log ] || fail "merging->rework: merge.log must SURVIVE — it documents the failure just journaled"
+
+"$ORCHID_BIN" task advance T004 implementing >/dev/null
+
+# Another new candidate, same honest commit-tree mint as above.
+new_cand2="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "second rework fix")"
+[ -n "$new_cand2" ] || fail "sanity: could not mint a second new candidate commit for T004"
+"$ORCHID_BIN" task set T004 candidate_sha "$new_cand2"
+"$ORCHID_BIN" task advance T004 testing >/dev/null
+
+rc=0; err="$("$ORCHID_BIN" task advance T004 reviewing 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "merging->rework: reviewing must be refused before re-verify of the newest candidate (stale evidence invalidated -> INV-11 gate)"
+echo "$err" | grep -qi "verify" || fail "merging->rework: die message must mention verify (got: $err)"
+assert_eq testing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "merging->rework: refused advance leaves status at testing"
+
+rc=0; "$ORCHID_BIN" verify T004 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "re-verify passes on the newest candidate"
+"$ORCHID_BIN" task advance T004 reviewing >/dev/null || fail "merging->rework: reviewing permitted after honest re-verify"
+assert_eq reviewing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "merging->rework: T004 advanced to reviewing after re-verify"

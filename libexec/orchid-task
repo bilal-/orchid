@@ -77,24 +77,29 @@ case "$sub" in
       [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] || \
         orchid_die "reviewing requires passing verify evidence (run: orchid verify $id)"
     fi
-    if [ "$to" = rework ] && [ "$from" != merging ]; then
-      if [ "$waive" -eq 1 ]; then
-        [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"
-        journal --task "$id" --kind attempt_waiver "$reason"
-      else
-        fm_set "$f" attempts "$(( $(fm_get "$f" attempts) + 1 ))"
+    if [ "$to" = rework ]; then
+      if [ "$from" != merging ]; then
+        if [ "$waive" -eq 1 ]; then
+          [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"
+          journal --task "$id" --kind attempt_waiver "$reason"
+        else
+          fm_set "$f" attempts "$(( $(fm_get "$f" attempts) + 1 ))"
+        fi
       fi
-      # Entry to rework (from testing or arbitrating) invalidates prior
-      # verify/merge evidence — the candidate is about to change, so evidence
-      # about the old candidate must not survive to satisfy INV-11's gate
-      # later. Same invalidation `orchid merge`'s rebase-reset does on
-      # exit-5; closes the rework-loop stale-evidence walk (INV-07 symmetry).
-      # `from = merging` is exempt here: that arm is `orchid-merge`'s own
-      # domain, which already manages reviews/*-merge.log directly (e.g. the
-      # validation-fail path writes it to document the very failure that
-      # is about to be journaled, and the rebase-reset path invalidates
-      # both logs itself when it mints a new candidate).
-      rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+      # Entry to rework invalidates prior verify evidence, unconditionally —
+      # the candidate is about to change (or, on the merging->rework
+      # validation-fail path, was already independently re-verified and
+      # found wanting), so a stale PASS must never survive to satisfy
+      # INV-11's gate later. This is the MOST common rework loop (validation
+      # failure during merge), so it cannot be exempted the way merge.log is.
+      # merge.log itself IS exempted when `from = merging`: that arm is
+      # `orchid-merge`'s own domain, which just wrote reviews/*-merge.log to
+      # document the very failure it is about to journal via this advance —
+      # deleting it here would destroy that diagnostic evidence. The
+      # rebase-reset path (exit-5) invalidates both logs itself when it
+      # mints a new candidate, so it never reaches this arm at all.
+      rm -f "$state/reviews/$id-verify.log"
+      [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
     fi
     if [ -n "$reason" ]; then
       kind=intervention
