@@ -52,8 +52,14 @@ jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
 exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"
 mkdir -p "$(dirname "$log")"
 
+# set -m (job control) around the spawn so bash puts the engine in its OWN
+# process group (pgid == child pid) instead of inheriting the orchestrator's
+# — without this, `jobs check`'s stall/timeout group-kill (kill -- -$pgid)
+# would kill the orchestrator itself, since the manifest pgid would be ours.
+set -m
 ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1 &
 pid=$!
+set +m
 pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)"
 [ -n "$pgid" ] || pgid=0
 
