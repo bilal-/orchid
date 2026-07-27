@@ -1,0 +1,122 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-3 engine adapter: `run <request.json>`. Invoked ONLY by runners/orchid-launch
+# (INV-06) — never directly. Writes ONLY to the request's `output` path (plus its
+# own stdout/stderr, captured into the launcher's log) — no other durable state.
+# Fallback implementer and reviewer: same request/envelope contracts as
+# plugins/engines/codex/run. See docs/specs/plugins.md.
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/../../.." && pwd)"
+source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/frontmatter.sh"
+
+req="${1:?usage: run <request.json>}"
+job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
+operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
+input_pack="$(jq -r .input_pack "$req")"; output="$(jq -r .output "$req")"
+base_sha="$(jq -r .base_sha "$req")";     candidate_sha="$(jq -r .candidate_sha "$req")"
+
+write_envelope() {  # status extra-json
+  local extra="${2:-}"; [ -n "$extra" ] || extra='{}'
+  jq -n --arg job_id "$job_id" --arg task "$task" --arg operation "$operation" \
+        --arg status "$1" --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
+        --argjson extra "$extra" \
+        '{contract:1, job_id:$job_id, task:$task, operation:$operation, status:$status,
+          engine:"orchid/claude", base_sha:$base_sha, candidate_sha:$candidate_sha} + $extra' \
+    | atomic_write "$output"
+}
+classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
+  if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
+  elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
+  else echo failed
+  fi
+}
+
+# Operation gate precedes DRYRUN: an unsupported operation fails the same way
+# whether or not ORCHID_DRYRUN is set (no dryrun short-circuit for unknowns).
+case "$operation" in implement|review|critique) ;;
+  *)
+    echo "orchid/claude: unsupported operation '$operation'" >&2
+    write_envelope failed '{}'
+    exit 1 ;;
+esac
+
+if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
+  case "$operation" in
+    implement)       write_envelope ok '{"summary":"dryrun"}' ;;
+    review|critique) write_envelope ok '{"verdict":"approve","scope_complete":true}' ;;
+  esac
+  exit 0
+fi
+
+err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
+
+if [ "$operation" = implement ]; then
+  prompt=""
+  [ -f "$input_pack/context.md" ] && prompt="$(cat "$input_pack/context.md")"$'\n\n'
+  prompt="$prompt$(cat "$input_pack/task.md")"$'\n\n'
+  prompt="${prompt}Rules: work only in this directory; commit your work with clear messages; never touch any .orchid/ path."
+
+  set +e
+  stdout="$(cd "$worktree" && claude -p "$prompt" --permission-mode acceptEdits 2>"$err_file")"
+  rc=$?; set -e
+  stderr="$(cat "$err_file")"
+
+  if [ "$rc" -eq 0 ]; then
+    last_line="$(printf '%s\n' "$stdout" | awk 'NF{l=$0} END{print l}')"
+    summary="${last_line:0:200}"; [ -n "$summary" ] || summary="implemented"
+    write_envelope ok "$(jq -n --arg s "$summary" '{summary:$s}')"
+    exit 0
+  fi
+  printf '%s\n' "$stderr" >&2
+  write_envelope "$(classify "$stdout"$'\n'"$stderr")" '{}'
+  exit 1
+fi
+
+# review | critique
+ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
+stop="$(fm_get "$input_pack/task.md" stop_condition)"
+manifest_line="$(jq -r '"pack manifest: items=" + ([.items[].name] | join(",")) + " omitted=" + ([.omitted[]] | join(","))' "$input_pack/pack.json")"
+diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
+prompt="Acceptance criteria: $ac
+Stop condition: $stop
+$manifest_line
+
+Diff:
+$diff
+
+End your reply with exactly: VERDICT: approve OR request-changes"
+
+set +e
+stdout="$(cd "$worktree" && claude -p "$prompt" 2>"$err_file")"
+rc=$?; set -e
+stderr="$(cat "$err_file")"
+
+if [ "$rc" -ne 0 ]; then
+  printf '%s\n' "$stderr" >&2
+  write_envelope "$(classify "$stdout"$'\n'"$stderr")" '{}'
+  exit 1
+fi
+
+# Exact-match only: the last line that IS (not merely contains) a verdict
+# line, so a reply that only echoes back the reply-contract instruction
+# ("VERDICT: approve OR request-changes") never satisfies this — it must
+# fall through to malformed rather than being read as an approval.
+verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
+verdict=""
+if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
+elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
+fi
+if [ -z "$verdict" ]; then
+  write_envelope malformed '{}'
+  exit 1
+fi
+
+any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
+scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
+write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc}')"
+exit 0

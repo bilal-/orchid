@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
+epoch_require "$repo"
+
+id="${1:-}"
+[ -n "$id" ] || orchid_die "usage: orchid verify <task-id>"
+tf="$state/tasks/$id.md"
+[ -f "$tf" ] || orchid_die "no task $id"
+
+# Command source: task frontmatter first, config fallback second; neither
+# present is a hard error (there is nothing deterministic to run).
+cmd="$(fm_get "$tf" verification_commands)"
+[ -n "$cmd" ] || cmd="$(config_get "$repo" verify)"
+[ -n "$cmd" ] || orchid_die "no verification_commands on task $id and no config 'verify' set — nothing to run"
+
+# Working dir: the task's worktree when set, else the repo root.
+wt="$(fm_get "$tf" worktree)"
+cwd="$repo"; [ -z "$wt" ] || cwd="$wt"
+
+sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
+
+mkdir -p "$state/reviews"
+log="$state/reviews/$id-verify.log"
+out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-verify.XXXXXX")"
+trap 'rm -f "$out_tmp"' EXIT
+
+# Run the verification command exactly as configured, in the working dir,
+# combining stdout+stderr. This is the test command itself, executed via
+# bash -c in the foreground — not an engine spawn (INV-01 only forbids
+# backgrounding/detaching and invoking engine CLIs from tier-1 verbs).
+rc=0
+( cd "$cwd" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || rc=$?
+
+{
+  echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "sha: $sha"
+  echo "cwd: $cwd"
+  echo "command: $cmd"
+  echo "---"
+  cat "$out_tmp"
+  echo "exit: $rc"
+} | atomic_write "$log"
+
+if [ "$rc" -eq 0 ]; then
+  echo "PASS"
+  exit 0
+fi
+echo "FAIL"
+exit 1

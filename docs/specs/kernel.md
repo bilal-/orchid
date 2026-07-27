@@ -230,6 +230,16 @@ across prose sections is normative HERE):**
 | any | `task advance --reason` | ≤3 attempts exhausted / budget / operator | frontmatter, journal | blocked |
 | blocked | `task unblock --reason` | guidance recorded | frontmatter, journal | rework |
 
+**Enforcement ownership of the preconditions above:** preconditions marked
+deps/worktree/SHAs (deps done, worktree created, base_sha/candidate_sha set)
+are ORCHESTRATOR-enforced in v0 — the orchestrator decides when they hold and
+supplies the values; the kernel itself enforces legality of the transition
+graph, `--reason` presence on reason-bearing edges, risk-tier monotonicity,
+the `.orchid/` worktree-contamination guard, evidence recorded (passing
+verify log) as the sole gate on `testing` → `reviewing`, and — closing the
+last conditional gap — refuses entry to `testing` outright when `base_sha` or
+`candidate_sha` is unset, rather than silently skipping the `.orchid/` check.
+
 Feature-archetype diagram (other archetypes declare row subsets within
 kernel invariants):
 
@@ -380,7 +390,9 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   `attempt_waiver`, `kill` (spinning/stall, dead-end named), `blocker`,
   `blocker_resolved`, `rebase_review` (delta-vs-full classification),
   `plan_revision`, `acceptance`, `intervention` (operator verbs log
-  automatically), `lesson` (mirrored to `lessons.md`).
+  automatically; also the kind used for a lock-break entry written by
+  `orchid run start|resume` when it breaks a stale lock), `lesson` (mirrored
+  to `lessons.md`).
 - **Enforcement is a complete decision matrix, kernel-level:** every
   judgment-bearing verb refuses to run without `--reason`, which it journals
   BEFORE writing the state change — `task advance` to `merging`, `blocked`,
@@ -392,7 +404,13 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   unjournaled state changes. This is INV-08's guarantee: no state change occurs
   without an already-journaled reason. Actor identity (`engine/role/session`),
   run, epoch, job, and SHAs are derived from KERNEL context — never
-  caller-supplied, so the audit trail is not forgeable. A decision without a
+  caller-supplied, so the audit trail is not forgeable. **Exception, stated
+  plainly:** the lock-break `intervention` entry is written AFTER the new
+  epoch is minted (it must journal under a valid fenced epoch, per the epoch
+  write ordering in `orchid run start|resume`), not before any state
+  change — it is informational (no state mutation depends on it), so this is
+  the one journal write that follows epoch-mint rather than preceding a state
+  change. A decision without a
   recorded why is structurally impossible.
 - **Read surface:** `orchid journal tail [-n N]`,
   `orchid journal show --task T007` (that task's full decision history).

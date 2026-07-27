@@ -32,11 +32,15 @@ case "$sub" in
   set)
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     case "$key" in
-      status|attempts|infra_failures|id|created)
+      status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
     esac
     if [ "$key" = risk_tier ]; then
-      reason=""; [ "${1:-}" = "--reason" ] && reason="$2"
+      reason=""
+      if [ "${1:-}" = "--reason" ]; then
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"
+      fi
       [ -n "$reason" ] || orchid_die "risk_tier requires --reason (INV-08)"
       old="$(fm_get "$(tf "$id")" risk_tier)"
       [ "$(rank "$val")" -ge "$(rank "$old")" ] || orchid_die "risk_tier is monotonic ($old -> $val refused)"
@@ -47,7 +51,9 @@ case "$sub" in
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
     reason=""; waive=0
     while [ $# -gt 0 ]; do case "$1" in
-      --reason) reason="$2"; shift 2;; --waive-attempt) waive=1; shift;; *) shift;; esac; done
+      --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2;;
+      --waive-attempt) waive=1; shift;; *) shift;; esac; done
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     legal "$from" "$to" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
@@ -56,18 +62,44 @@ case "$sub" in
     fi
     if [ "$to" = testing ]; then
       b="$(fm_get "$f" base_sha)"; c="$(fm_get "$f" candidate_sha)"
-      if [ -n "$b" ] && [ -n "$c" ] && \
-         git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
+      [ -n "$b" ] && [ -n "$c" ] || orchid_die "testing requires base_sha and candidate_sha set"
+      if git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
         orchid_die "commits touch .orchid/ — entry to testing refused (INV-04)"
       fi
     fi
-    if [ "$to" = rework ] && [ "$from" != merging ]; then
-      if [ "$waive" -eq 1 ]; then
-        [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"
-        journal --task "$id" --kind attempt_waiver "$reason"
-      else
-        fm_set "$f" attempts "$(( $(fm_get "$f" attempts) + 1 ))"
+    if [ "$from" = testing ] && [ "$to" = reviewing ]; then
+      # INV-11: verify evidence is the only path to a passing testing state —
+      # kernel-enforced so `reviewing` can never be reached without a real
+      # `orchid verify` PASS. v0 scope: existence + passing exit only; binding
+      # the evidence to the task's current candidate_sha (so a stale log from
+      # an earlier candidate can't be reused) is a known v1 refinement.
+      vlog="$state/reviews/$id-verify.log"
+      [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] || \
+        orchid_die "reviewing requires passing verify evidence (run: orchid verify $id)"
+    fi
+    if [ "$to" = rework ]; then
+      if [ "$from" != merging ]; then
+        if [ "$waive" -eq 1 ]; then
+          [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"
+          journal --task "$id" --kind attempt_waiver "$reason"
+        else
+          fm_set "$f" attempts "$(( $(fm_get "$f" attempts) + 1 ))"
+        fi
       fi
+      # Entry to rework invalidates prior verify evidence, unconditionally —
+      # the candidate is about to change (or, on the merging->rework
+      # validation-fail path, was already independently re-verified and
+      # found wanting), so a stale PASS must never survive to satisfy
+      # INV-11's gate later. This is the MOST common rework loop (validation
+      # failure during merge), so it cannot be exempted the way merge.log is.
+      # merge.log itself IS exempted when `from = merging`: that arm is
+      # `orchid-merge`'s own domain, which just wrote reviews/*-merge.log to
+      # document the very failure it is about to journal via this advance —
+      # deleting it here would destroy that diagnostic evidence. The
+      # rebase-reset path (exit-5) invalidates both logs itself when it
+      # mints a new candidate, so it never reaches this arm at all.
+      rm -f "$state/reviews/$id-verify.log"
+      [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
     fi
     if [ -n "$reason" ]; then
       kind=intervention
@@ -79,16 +111,29 @@ case "$sub" in
     echo "$id: $from -> $to" ;;
   unblock)
     epoch_require "$repo"; id="$1"; shift
-    [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "unblock requires --reason"
+    if [ "${1:-}" = "--reason" ]; then
+      [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+      reason="$2"
+    else
+      orchid_die "unblock requires --reason"
+    fi
     f="$(tf "$id")"
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
     journal --task "$id" --kind intervention "unblock: $reason"
     { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
+    # with the advance:rework arm and orchid-merge's rebase-reset).
+    rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework" ;;
   retry)
     epoch_require "$repo"; id="$1"; shift
-    [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "retry requires --reason"
+    if [ "${1:-}" = "--reason" ]; then
+      [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+      reason="$2"
+    else
+      orchid_die "retry requires --reason"
+    fi
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     case "$from" in
@@ -96,6 +141,9 @@ case "$sub" in
       *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
     esac
     journal --task "$id" --kind intervention "retry: $reason"
+    # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
+    # with the advance:rework arm and orchid-merge's rebase-reset).
+    rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework" ;;
   *) orchid_die "usage: orchid task create|show|list|set|advance|unblock|retry" ;;

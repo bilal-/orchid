@@ -6,7 +6,8 @@ printf 'verify=true\n' > orchid.config
 mkdir -p "$WORK/eng/fake"; printf '#!/usr/bin/env bash\n' > "$WORK/eng/fake/run"; chmod +x "$WORK/eng/fake/run"
 printf 'role.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' >> orchid.config
 
-ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor || fail "doctor passes with resolvable fake engines"
+out0="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes with resolvable fake engines"
+assert_match "integration branch exists or creatable" "$out0" "doctor pre-init: integration branch creatable from HEAD"
 mkdir -p .orchid/plugins/engines/evil
 out="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || true
 assert_match "repo-local plugins.*disabled" "$out" "repo-local plugin warning"
@@ -17,6 +18,8 @@ git add -A && git commit -q -m "fixture: engines + config"
 "$ORCHID_BIN" init
 git rev-parse --verify -q orchid/integration >/dev/null || fail "integration branch"
 git show orchid/integration:.orchid/roadmap.md | grep -q "run_status: planning" || fail "roadmap committed with run_status"
+out1="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes post-init"
+assert_match "integration branch exists or creatable" "$out1" "doctor post-init: integration branch exists"
 rc=0; printf 'role.implementer=missing-engine\n' >> orchid.config
 ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "doctor fails on unresolvable role"
@@ -42,3 +45,26 @@ rc=0; (cd "$scratch2" && ORCHID_REPO="$scratch2" ORCHID_ENGINES_DIR="$WORK/eng" 
 [ "$(git -C "$scratch2" rev-parse --abbrev-ref HEAD)" != "orchid/integration" ] || fail "prior branch must be restored on failure"
 [ -z "$(git -C "$scratch2" status --porcelain)" ] || fail "failed init must leave tree and index clean"
 git -C "$scratch2" rev-parse --verify -q orchid/integration >/dev/null && fail "failed init must not leave stray integration branch" || true
+
+# init must not destroy an existing-but-unreadable .gitignore (regression:
+# `cat "$repo/.gitignore" 2>/dev/null || true` silently swallowed a
+# permission-denied read and replaced the file with just the orchid line).
+if [ "$(id -u)" = 0 ]; then
+  echo "SKIP: running as root — file permissions are not enforced, unreadable-.gitignore test skipped"
+else
+  scratch3="$WORK/scratch3"; mkdir -p "$scratch3"
+  git init -q "$scratch3"
+  echo "precious/" > "$scratch3/.gitignore"
+  (cd "$scratch3" && git add .gitignore && git commit -q -m "fixture: gitignore"
+   # `git status` treats a chmod-only change (ctime differs from the index's
+   # cached stat info) as a real modification even though the content is
+   # untouched, which would trip the *unrelated* dirty-tree guard before this
+   # test ever reaches the unreadable-.gitignore rewrite path it targets.
+   # `--assume-unchanged` tells git to skip that stat comparison entirely.
+   git update-index --assume-unchanged .gitignore)
+  chmod 000 "$scratch3/.gitignore"
+  rc=0; ORCHID_REPO="$scratch3" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init 2>/dev/null || rc=$?
+  chmod 644 "$scratch3/.gitignore"
+  [ "$rc" -ne 0 ] || fail "init must refuse to touch an unreadable .gitignore"
+  grep -q '^precious/$' "$scratch3/.gitignore" || fail "unreadable .gitignore content must survive a failed init"
+fi
