@@ -1,7 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"
-repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_state "$repo")"
+
+# run_status transition table (kernel.md's normative table, v0b2 ownership
+# verbs): every edge below is legal for `run advance`; anything else,
+# including reversed/skipped edges (e.g. running->complete, which must go
+# through accepting first), is refused with exit 3 — the same
+# illegal-transition contract `orchid task advance` uses.
+legal_run() { case "$1:$2" in
+  planning:running|running:accepting|running:blocked|\
+  accepting:complete|accepting:running) return 0 ;;
+  *:blocked) return 0 ;;
+  *) return 1 ;;
+esac; }
+
 sub="${1:-}"; shift || true
 case "$sub" in
   start|resume)
@@ -29,5 +42,62 @@ case "$sub" in
     jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{epoch:($e|tonumber), refreshed_at:$t}' | atomic_write "$rt/lease.json"
     ;;
-  *) orchid_die "usage: orchid run start|resume|refresh-lease" ;;
+  advance)
+    epoch_require "$repo"; export ORCHID_EPOCH
+    to="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    [ -n "$to" ] || orchid_die "usage: orchid run advance <status> --reason \"...\""
+    [ -n "$reason" ] || orchid_die "run advance requires --reason (INV-08)"
+
+    roadmap="$state/roadmap.md"
+    [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
+    from="$(fm_get "$roadmap" run_status)"
+    legal_run "$from" "$to" || { echo "orchid: illegal run_status $from -> $to" >&2; exit 3; }
+
+    # `->complete` is the acceptance gate closing; every other edge is a
+    # plain operator intervention (kernel.md's journal-kind table).
+    kind=intervention
+    [ "$to" = complete ] && kind=acceptance
+    # Journal first (INV-08): the reason is recorded before the state
+    # change it justifies.
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind "$kind" "run_status $from -> $to: $reason"
+    fm_set "$roadmap" run_status "$to"
+    echo "run_status: $from -> $to"
+    ;;
+  accept)
+    epoch_require "$repo"; export ORCHID_EPOCH
+    reason=""; evidence=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      --evidence)
+        [ -n "${2:-}" ] || orchid_die "--evidence requires a value"
+        evidence="$2"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    [ -n "$reason" ] || orchid_die "run accept requires --reason (INV-08)"
+    [ -n "$evidence" ] || orchid_die "run accept requires --evidence <path>"
+    [ -f "$evidence" ] || orchid_die "no such evidence file: $evidence"
+
+    roadmap="$state/roadmap.md"
+    [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
+    from="$(fm_get "$roadmap" run_status)"
+    # Shorthand for accepting->complete only: requires an acceptance evidence
+    # file, unlike the bare `run advance complete` escape hatch above.
+    [ "$from" = accepting ] || orchid_die "run accept requires run_status accepting (current: $from)"
+
+    mkdir -p "$state/reviews"
+    cat "$evidence" | atomic_write "$state/reviews/acceptance.log"
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind acceptance "run_status accepting -> complete: $reason"
+    fm_set "$roadmap" run_status complete
+    echo "run_status: accepting -> complete"
+    ;;
+  *) orchid_die "usage: orchid run start|resume|refresh-lease|advance|accept" ;;
 esac

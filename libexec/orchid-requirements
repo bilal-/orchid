@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
+epoch_require "$repo"
+# Re-exported explicitly (already present from the caller, since
+# epoch_require only validates it) so the fact that `journal add` below
+# depends on it is not accidental — mirrors orchid-merge's convention.
+export ORCHID_EPOCH
+
+sub="${1:-}"; shift || true
+case "$sub" in
+  import)
+    src="${1:-}"
+    [ -n "$src" ] || orchid_die "usage: orchid requirements import <file>"
+    [ -f "$src" ] || orchid_die "no such file: $src"
+
+    roadmap="$state/roadmap.md"
+    [ -f "$roadmap" ] || orchid_die "no roadmap — run orchid init first"
+    status="$(fm_get "$roadmap" run_status)"
+    # requirements.md is the operator-owned EXCEPTION (kernel.md's ownership
+    # table): authored by hand anywhere, imported by this verb, but
+    # immutable once the run has left `planning` — a plan was drafted
+    # against a requirements snapshot; changing it out from under an
+    # in-flight run would silently invalidate that plan.
+    [ "$status" = planning ] || orchid_die "requirements are immutable after plan (run_status: $status)"
+
+    cat "$src" | atomic_write "$state/requirements.md"
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind plan_revision \
+      "requirements imported from $(basename "$src")"
+    echo "imported: $(basename "$src") -> requirements.md"
+    ;;
+  *) orchid_die "usage: orchid requirements import <file>" ;;
+esac
