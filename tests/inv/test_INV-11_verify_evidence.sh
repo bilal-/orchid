@@ -178,3 +178,39 @@ rc=0; "$ORCHID_BIN" verify T004 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "re-verify passes on the newest candidate"
 "$ORCHID_BIN" task advance T004 reviewing >/dev/null || fail "merging->rework: reviewing permitted after honest re-verify"
 assert_eq reviewing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "merging->rework: T004 advanced to reviewing after re-verify"
+
+# v0b2: sha-binding regression. The rm-based invalidations above only fire on
+# SPECIFIC transitions (rework entry, unblock, retry, merge's rebase-reset).
+# A bare `task set candidate_sha` (out-of-band bump — e.g. an operator
+# correcting a mis-recorded SHA, or a future code path that doesn't yet know
+# it needs to invalidate evidence) bypasses every one of them: the old
+# verify log is still sitting on disk with `exit: 0`. Pre-sha-binding, that
+# stale PASS would wrongly satisfy INV-11's gate for a candidate that was
+# NEVER actually verified. Sha-binding closes this permanently by requiring
+# the evidence's own `candidate:` line to match the task's current
+# candidate_sha, not merely existing with a passing exit code.
+"$ORCHID_BIN" task create T005 "sha-binding"
+"$ORCHID_BIN" task set T005 base_sha "$head_sha"
+"$ORCHID_BIN" task set T005 candidate_sha "$head_sha"
+"$ORCHID_BIN" task set T005 verification_commands "true"
+"$ORCHID_BIN" task advance T005 implementing >/dev/null
+"$ORCHID_BIN" task advance T005 testing >/dev/null
+rc=0; "$ORCHID_BIN" verify T005 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "fixture: real verify PASS for T005"
+tail -n1 .orchid/reviews/T005-verify.log | grep -q "^exit: 0$" || fail "sanity: T005 evidence records exit 0"
+assert_match "^candidate: $head_sha$" "$(cat .orchid/reviews/T005-verify.log)" "sanity: T005 evidence bound to the pre-bump candidate"
+
+new_cand5="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "out-of-band bump")"
+[ -n "$new_cand5" ] || fail "sanity: could not mint a new candidate commit for T005"
+"$ORCHID_BIN" task set T005 candidate_sha "$new_cand5"
+
+[ -f .orchid/reviews/T005-verify.log ] || fail "sanity: stale evidence log still present (rm-based invalidation does not fire on a bare task set)"
+rc=0; err="$("$ORCHID_BIN" task advance T005 reviewing 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "sha-binding: reviewing must be refused when evidence's candidate != task's current candidate_sha, despite a passing exit code"
+echo "$err" | grep -qi "candidate\|verify" || fail "sha-binding: die message must mention candidate/verify (got: $err)"
+assert_eq testing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "sha-binding: refused advance leaves status at testing"
+
+rc=0; "$ORCHID_BIN" verify T005 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "re-verify passes and binds evidence to the new candidate"
+"$ORCHID_BIN" task advance T005 reviewing >/dev/null || fail "sha-binding: reviewing permitted after re-verify binds to the new candidate"
+assert_eq reviewing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "sha-binding: T005 advanced to reviewing after re-verify"

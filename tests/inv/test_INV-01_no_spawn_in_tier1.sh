@@ -14,6 +14,14 @@ if ! printf 'foo &\n' | grep -Eq "$bg_re"; then
 fi
 
 # Tier-1 verbs must not background/detach processes or invoke engine CLIs.
+# Scope limitation: these two greps only scan libexec/* (the tier-1 verb
+# dispatchers themselves) — lib/*.sh helper functions (lock_acquire,
+# config_get, etc.) are shared library code invoked BY tier-1 verbs, not
+# verbs in their own right, so they are intentionally out of scope here. If
+# a helper ever backgrounded/detached internally, this check would only
+# catch it indirectly (via a libexec/* caller that itself matches one of
+# these patterns) — a helper that hides it behind its own abstraction would
+# slip through. Known v0 gap; tracked, not closed by this test.
 if grep -nE "($bg_re|nohup|setsid|disown)" "$REPO_ROOT"/libexec/*; then
   fail "INV-01: tier-1 verb spawns/detaches a process"
 fi

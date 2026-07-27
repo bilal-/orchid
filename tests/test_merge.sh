@@ -117,3 +117,40 @@ post_integ3="$(git rev-parse "$integ")"
 assert_eq "$pre_integ3" "$post_integ3" "integration ref untouched on merge conflict"
 n_wt3="$(git worktree list | wc -l | tr -d ' ')"
 assert_eq 1 "$n_wt3" "temp worktree removed after merge conflict"
+
+# ---------------------------------------------------------------------------
+# v0b2: CAS update-ref failure path. `merge` reads integ_head once, up front;
+# its final `git update-ref refs/heads/<integ> <new> <old>` is a
+# compare-and-swap that only succeeds if the ref STILL points at that old
+# value. If a concurrent commit lands on integration in the window between
+# that read and the write (a race the rebase-reverify path doesn't cover,
+# since base_sha == integ_head here at the start), the CAS must refuse: no
+# clobbering the concurrent commit, no silently reporting success, task
+# stays in `merging` for retry, and the failure is journaled.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T004 "cas race"
+git checkout -q -b task/T004 "$integ"
+echo raced > feature4.txt && git add feature4.txt && git commit -q -m "feature 4"
+cand4="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base4="$(git rev-parse "$integ")"
+
+# Slow verification command opens a real window between merge's integ_head
+# read (at script top) and its update-ref (after the merge + verify steps).
+walk_to_merging T004 task/T004 "$base4" "$cand4" "sleep 1 && test -f feature4.txt"
+
+"$ORCHID_BIN" merge T004 >"$WORK/merge4.out" 2>&1 &
+merge_pid=$!
+sleep 0.3
+# Race: land a concurrent commit on integ WHILE merge's slow verification is
+# still running in its own detached temp worktree.
+echo concurrent > concurrent4.txt && git add concurrent4.txt && git commit -q -m "concurrent landing"
+concurrent_integ="$(git rev-parse "$integ")"
+rc=0; wait "$merge_pid" || rc=$?
+
+assert_eq 1 "$rc" "CAS update-ref failure -> merge exits nonzero"
+assert_eq merging "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d' ' -f2)" "task remains in merging after CAS failure (safe to retry)"
+post_integ4="$(git rev-parse "$integ")"
+assert_eq "$concurrent_integ" "$post_integ4" "concurrent commit is NOT clobbered by the losing CAS"
+grep -q "intervention" .orchid/journal.md || fail "CAS failure journals an intervention"
+grep -qi "update-ref\|CAS" .orchid/journal.md || fail "CAS failure journal entry names the cause"

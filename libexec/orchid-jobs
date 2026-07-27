@@ -87,9 +87,19 @@ case "$sub" in
     # being otherwise read-and-runtime-only like `check` — this is fenced too.
     epoch_require "$repo"
     mkdir -p "$quarantine_dir" "$state/reviews"
+    # v0b2: a spool file bigger than this is quarantined on size alone,
+    # before any JSON parsing — a cheap, early defense against a runaway or
+    # forged tier-3 adapter dumping an oversized payload into the spool dir.
+    spool_max="$(config_get "$repo" spool_max_bytes 262144)"
     for f in "$spool_dir"/*.json; do
       [ -e "$f" ] || continue
       base="$(basename "$f")"
+      sz="$(wc -c < "$f" | tr -d ' ')"
+      if [ "$sz" -gt "$spool_max" ]; then
+        quarantine_file "$f" oversize
+        echo "quarantined: $base (oversize)"
+        continue
+      fi
       if ! envelope_validate "$f" 2>/dev/null; then
         quarantine_file "$f" malformed
         echo "quarantined: $base (malformed)"
@@ -109,12 +119,28 @@ case "$sub" in
       fi
       m_task="$(jq -r .task "$manifest")"; e_task="$(envelope_field "$f" .task)"
       m_base="$(jq -r .base_sha "$manifest")"; m_cand="$(jq -r .candidate_sha "$manifest")"
+      m_op="$(jq -r .operation "$manifest")"
+      m_role="$(jq -r .role "$manifest")"; m_engine="$(jq -r .engine "$manifest")"
       e_base="$(envelope_field "$f" '.base_sha // empty')"
       e_cand="$(envelope_field "$f" '.candidate_sha // empty')"
+      # operation/role/engine: cross-checked against the manifest whenever the
+      # envelope carries them. Today's real adapters always carry `operation`
+      # (required by envelope_validate whenever status is "ok") and `engine`
+      # (as "orchid/<name>", vs. the manifest's bare resolved name); `role` is
+      # not currently emitted by any adapter, so this arm is forward-looking
+      # (v1 adapters or forged envelopes could add it) — the `// empty`
+      # pattern makes all three optional the same way base_sha/candidate_sha
+      # already were, so fixtures that omit them are unaffected.
+      e_op="$(envelope_field "$f" '.operation // empty')"
+      e_role="$(envelope_field "$f" '.role // empty')"
+      e_engine="$(envelope_field "$f" '.engine // empty')"
       mismatch=0
       [ "$m_task" = "$e_task" ] || mismatch=1
       [ -z "$e_base" ] || [ "$e_base" = "$m_base" ] || mismatch=1
       [ -z "$e_cand" ] || [ "$e_cand" = "$m_cand" ] || mismatch=1
+      [ -z "$e_op" ] || [ "$e_op" = "$m_op" ] || mismatch=1
+      [ -z "$e_role" ] || [ "$e_role" = "$m_role" ] || mismatch=1
+      [ -z "$e_engine" ] || [ "$e_engine" = "orchid/$m_engine" ] || mismatch=1
       if [ "$mismatch" -eq 1 ]; then
         quarantine_file "$f" mismatch
         echo "quarantined: $base (mismatch)"
@@ -123,7 +149,18 @@ case "$sub" in
       attempt="$(jq -r .attempt "$manifest")"; role="$(jq -r .role "$manifest")"
       status="$(envelope_field "$f" .status)"
       verdict="$(envelope_field "$f" '.verdict // "n/a"')"
-      mv "$f" "$state/reviews/$m_task-a$attempt-$role.json"
+      # A durable reviews/<task>-a<attempt>-<role>.json that already exists
+      # (a relaunch of the same attempt landed a second accepted envelope —
+      # e.g. a crash-recovery relaunch before `attempts` was bumped) must
+      # never be silently overwritten: both are forensic evidence. Keep both
+      # via a counter suffix, same pattern as quarantine_file above.
+      dest="$state/reviews/$m_task-a$attempt-$role.json"
+      n=2
+      while [ -e "$dest" ]; do
+        dest="$state/reviews/$m_task-a$attempt-$role.$n.json"
+        n=$((n + 1))
+      done
+      mv "$f" "$dest"
       rm -f "$manifest"
       printf '%s\t%s\t%s\n' "$m_task" "$status" "$verdict"
     done

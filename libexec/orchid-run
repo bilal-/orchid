@@ -5,10 +5,12 @@ repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"
 sub="${1:-}"; shift || true
 case "$sub" in
   start|resume)
-    if [ "$sub" = start ]; then
-      [ -d "$(orchid_state "$repo")/tasks" ] || [ -f "$(orchid_state "$repo")/roadmap.md" ] || \
-        orchid_die "not initialized — run orchid init"
-    fi
+    # v0b2: both start and resume require initialized state. resume exists to
+    # recover an existing run after a crash/restart, not to bootstrap one —
+    # letting it proceed against an uninitialized repo would mint a fresh
+    # epoch/lease for state that was never created (same guard as start).
+    [ -d "$(orchid_state "$repo")/tasks" ] || [ -f "$(orchid_state "$repo")/roadmap.md" ] || \
+      orchid_die "not initialized — run orchid init"
     lock_msg="$(lock_acquire "$repo")" || orchid_die "cannot acquire lock"
     trap 'lock_release "$repo"' EXIT
     e=$(( $(epoch_current "$repo") + 1 ))

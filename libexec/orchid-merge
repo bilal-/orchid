@@ -34,6 +34,14 @@ lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
 wt=""
 out_tmp=""
 merge_cleanup() {
+  # Note: this is an EXIT trap — it does not run on SIGKILL (-9). An
+  # operator (or an OOM-killer) that SIGKILLs the orchestrator process while
+  # this script is mid-merge leaves the temp worktree directory AND its
+  # `git worktree` registration behind: nothing can run to clean either up.
+  # The registration is reclaimed the same way a normal stale worktree would
+  # be — `git worktree prune` (here, and available to an operator directly,
+  # or via `orchid doctor` once it grows a check for this) — and the leaked
+  # directory under $TMPDIR is ordinary temp-file litter.
   if [ -n "$wt" ]; then
     git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
     rm -rf "$wt" 2>/dev/null || true
@@ -80,6 +88,14 @@ if [ "$integ_head" != "$base_sha" ]; then
     "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "rebase conflict"
     exit 1
   fi
+  # Edge case: if this rebase turns out to be a no-op — the candidate's
+  # commits were already reachable from integ_head (e.g. an empty replay) —
+  # `new_candidate` can end up EQUAL to the pre-rebase candidate_sha. The
+  # "always mints a new SHA" framing above is the common case, not a
+  # guarantee. Safety does not depend on the SHA actually changing here: the
+  # unconditional `rm -f` two lines down invalidates prior evidence
+  # regardless, so the INV-11 sha-binding gate still forces a re-verify even
+  # when the candidate identity happened not to move.
   new_candidate="$(git -C "$wt" rev-parse HEAD)"
   "$ORCHID_ROOT/bin/orchid" task set "$id" base_sha "$integ_head"
   "$ORCHID_ROOT/bin/orchid" task set "$id" candidate_sha "$new_candidate"
@@ -139,7 +155,17 @@ rc=0
 rm -f "$out_tmp"
 
 if [ "$rc" -eq 0 ]; then
-  git -C "$repo" update-ref "refs/heads/$integ" "$merged_sha" "$integ_head"
+  # Compare-and-swap: `update-ref <ref> <new> <old>` only succeeds if <ref>
+  # STILL points at <old> (integ_head, read at the top of this script). If a
+  # concurrent merge landed on integration in the window between that read
+  # and this write, the CAS refuses — the task stays in `merging` (safe to
+  # retry) rather than silently clobbering the concurrent commit or
+  # reporting a success that didn't happen.
+  if ! git -C "$repo" update-ref "refs/heads/$integ" "$merged_sha" "$integ_head"; then
+    ORCHID_ACTOR="${ORCHID_ACTOR:-orchestrator}" "$ORCHID_ROOT/bin/orchid" journal add --task "$id" --kind intervention \
+      "merge CAS failed: update-ref refs/heads/$integ expected $integ_head but it moved concurrently; task remains in merging for retry"
+    orchid_die "update-ref CAS failed: integration branch '$integ' changed concurrently (expected $integ_head) — retry orchid merge $id"
+  fi
   "$ORCHID_ROOT/bin/orchid" task advance "$id" done
   echo "merged $id: $integ -> $merged_sha"
   exit 0
