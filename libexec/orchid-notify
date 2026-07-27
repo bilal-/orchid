@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+
+# `orchid notify` is a plain mutating verb (INV-02): it writes durable
+# BLOCKERS.md, so it is epoch-fenced like every other durable-writing verb.
+epoch_require "$repo"
+
+task=""
+if [ "${1:-}" = "--task" ]; then
+  [ -n "${2:-}" ] || orchid_die "--task requires a value"
+  task="$2"; shift 2
+fi
+[ $# -gt 0 ] || orchid_die "usage: orchid notify [--task <id>] <text>"
+text="$*"
+
+epoch="$(epoch_current "$repo")"
+suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
+qid="q-${epoch}-${suffix}"
+
+# Journal first (same INV-08 discipline as `task advance`/`run advance`):
+# the blocker is durably recorded in journal.md BEFORE BLOCKERS.md (also
+# durable, sole-writer `orchid notify` per kernel.md's ownership table) is
+# mutated, so a crash between the two calls still leaves a journal trail
+# even if BLOCKERS.md never gets its entry.
+if [ -n "$task" ]; then
+  ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --task "$task" --kind blocker "$qid: $text"
+else
+  ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind blocker "$qid: $text"
+fi
+
+header="## $qid"
+[ -n "$task" ] && header="## $qid (task: $task)"
+{ [ -f "$state/BLOCKERS.md" ] && cat "$state/BLOCKERS.md"; echo; echo "$header"; echo "$text"; } \
+  | atomic_write "$state/BLOCKERS.md"
+
+# Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
+# existence is what makes a qid "known" to `orchid answer`.
+mkdir -p "$rt/answers"
+printf '%s\n' "$text" | atomic_write "$rt/answers/$qid.question"
+
+echo "$qid"
