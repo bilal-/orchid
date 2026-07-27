@@ -43,3 +43,31 @@ out="$("$ORCHID_BIN" task set T001 risk_tier high --reason 2>&1 1>/dev/null)"; r
 [ "$rc" -ne 0 ] || fail "risk_tier --reason with no value must fail"
 echo "$out" | grep -q "unbound variable" && fail "--reason with no value must not crash with an unbound-variable error"
 echo "$out" | grep -q "reason requires a value" || fail "--reason with no value must die with a clear message (got: $out)"
+
+# v0b1 fix: the same valueless-`--reason` guard must apply on every
+# reason-bearing verb (advance/unblock/retry), not just `set risk_tier`.
+# Fresh, minimal fixtures per verb so each is exercised in isolation.
+
+# advance: `*:blocked` is always a legal transition, so a freshly created
+# (pending) task can advance straight to blocked.
+"$ORCHID_BIN" task create T010 reason-guard-advance >/dev/null
+out="$("$ORCHID_BIN" task advance T010 blocked --reason 2>&1 1>/dev/null)"; rc=$?
+[ "$rc" -ne 0 ] || fail "advance --reason with no value must fail"
+echo "$out" | grep -q "unbound variable" && fail "advance --reason with no value must not crash with an unbound-variable error"
+echo "$out" | grep -q "requires a value" || fail "advance --reason with no value must die with a clear message (got: $out)"
+
+# unblock: needs a task actually in `blocked` status first.
+"$ORCHID_BIN" task create T011 reason-guard-unblock >/dev/null
+"$ORCHID_BIN" task advance T011 blocked --reason "fixture blocker" >/dev/null
+out="$("$ORCHID_BIN" task unblock T011 --reason 2>&1 1>/dev/null)"; rc=$?
+[ "$rc" -ne 0 ] || fail "unblock --reason with no value must fail"
+echo "$out" | grep -q "unbound variable" && fail "unblock --reason with no value must not crash with an unbound-variable error"
+echo "$out" | grep -q "requires a value" || fail "unblock --reason with no value must die with a clear message (got: $out)"
+
+# retry: legal from blocked or rework; use a blocked fixture.
+"$ORCHID_BIN" task create T012 reason-guard-retry >/dev/null
+"$ORCHID_BIN" task advance T012 blocked --reason "fixture blocker" >/dev/null
+out="$("$ORCHID_BIN" task retry T012 --reason 2>&1 1>/dev/null)"; rc=$?
+[ "$rc" -ne 0 ] || fail "retry --reason with no value must fail"
+echo "$out" | grep -q "unbound variable" && fail "retry --reason with no value must not crash with an unbound-variable error"
+echo "$out" | grep -q "requires a value" || fail "retry --reason with no value must die with a clear message (got: $out)"

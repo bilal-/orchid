@@ -31,8 +31,12 @@ echo "# Requirements (author by hand, then: orchid requirements import <file>)" 
 echo "# Blockers" > "$state/BLOCKERS.md"
 echo "# Baseline" > "$state/baseline.md"
 echo "# Journal" > "$state/journal.md"
-grep -q '^\.orchid/runtime/$' "$repo/.gitignore" 2>/dev/null || \
-  { cat "$repo/.gitignore" 2>/dev/null || true; echo ".orchid/runtime/"; } | atomic_write "$repo/.gitignore"
+if ! grep -q '^\.orchid/runtime/$' "$repo/.gitignore" 2>/dev/null; then
+  if [ -f "$repo/.gitignore" ] && [ ! -r "$repo/.gitignore" ]; then
+    orchid_die "cannot read .gitignore"
+  fi
+  { if [ -f "$repo/.gitignore" ]; then cat "$repo/.gitignore"; fi; echo ".orchid/runtime/"; } | atomic_write "$repo/.gitignore"
+fi
 git -C "$repo" checkout -q "$integ"
 git -C "$repo" add .orchid .gitignore && git -C "$repo" commit -q -m "orchid: initialize run state"
 echo "initialized: $integ"

@@ -45,3 +45,26 @@ rc=0; (cd "$scratch2" && ORCHID_REPO="$scratch2" ORCHID_ENGINES_DIR="$WORK/eng" 
 [ "$(git -C "$scratch2" rev-parse --abbrev-ref HEAD)" != "orchid/integration" ] || fail "prior branch must be restored on failure"
 [ -z "$(git -C "$scratch2" status --porcelain)" ] || fail "failed init must leave tree and index clean"
 git -C "$scratch2" rev-parse --verify -q orchid/integration >/dev/null && fail "failed init must not leave stray integration branch" || true
+
+# init must not destroy an existing-but-unreadable .gitignore (regression:
+# `cat "$repo/.gitignore" 2>/dev/null || true` silently swallowed a
+# permission-denied read and replaced the file with just the orchid line).
+if [ "$(id -u)" = 0 ]; then
+  echo "SKIP: running as root — file permissions are not enforced, unreadable-.gitignore test skipped"
+else
+  scratch3="$WORK/scratch3"; mkdir -p "$scratch3"
+  git init -q "$scratch3"
+  echo "precious/" > "$scratch3/.gitignore"
+  (cd "$scratch3" && git add .gitignore && git commit -q -m "fixture: gitignore"
+   # `git status` treats a chmod-only change (ctime differs from the index's
+   # cached stat info) as a real modification even though the content is
+   # untouched, which would trip the *unrelated* dirty-tree guard before this
+   # test ever reaches the unreadable-.gitignore rewrite path it targets.
+   # `--assume-unchanged` tells git to skip that stat comparison entirely.
+   git update-index --assume-unchanged .gitignore)
+  chmod 000 "$scratch3/.gitignore"
+  rc=0; ORCHID_REPO="$scratch3" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init 2>/dev/null || rc=$?
+  chmod 644 "$scratch3/.gitignore"
+  [ "$rc" -ne 0 ] || fail "init must refuse to touch an unreadable .gitignore"
+  grep -q '^precious/$' "$scratch3/.gitignore" || fail "unreadable .gitignore content must survive a failed init"
+fi

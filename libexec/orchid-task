@@ -51,7 +51,9 @@ case "$sub" in
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
     reason=""; waive=0
     while [ $# -gt 0 ]; do case "$1" in
-      --reason) reason="$2"; shift 2;; --waive-attempt) waive=1; shift;; *) shift;; esac; done
+      --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2;;
+      --waive-attempt) waive=1; shift;; *) shift;; esac; done
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     legal "$from" "$to" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
@@ -83,7 +85,12 @@ case "$sub" in
     echo "$id: $from -> $to" ;;
   unblock)
     epoch_require "$repo"; id="$1"; shift
-    [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "unblock requires --reason"
+    if [ "${1:-}" = "--reason" ]; then
+      [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+      reason="$2"
+    else
+      orchid_die "unblock requires --reason"
+    fi
     f="$(tf "$id")"
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
     journal --task "$id" --kind intervention "unblock: $reason"
@@ -92,7 +99,12 @@ case "$sub" in
     echo "$id: blocked -> rework" ;;
   retry)
     epoch_require "$repo"; id="$1"; shift
-    [ "${1:-}" = "--reason" ] && reason="$2" || orchid_die "retry requires --reason"
+    if [ "${1:-}" = "--reason" ]; then
+      [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+      reason="$2"
+    else
+      orchid_die "retry requires --reason"
+    fi
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     case "$from" in
