@@ -32,11 +32,17 @@ git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
 # installed only AFTER a successful acquire, mirroring orchid-run's pattern.
 lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
 wt=""
+out_tmp=""
 merge_cleanup() {
   if [ -n "$wt" ]; then
     git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
     rm -rf "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
+  fi
+  # Merge-evidence temp file: guard against leaking it on a mid-path failure
+  # between its creation and its normal removal below.
+  if [ -n "$out_tmp" ]; then
+    rm -f "$out_tmp" 2>/dev/null || true
   fi
   lock_release "$repo"
 }
@@ -60,6 +66,12 @@ if [ "$integ_head" != "$base_sha" ]; then
   new_candidate="$(git -C "$wt" rev-parse HEAD)"
   "$ORCHID_ROOT/bin/orchid" task set "$id" base_sha "$integ_head"
   "$ORCHID_ROOT/bin/orchid" task set "$id" candidate_sha "$new_candidate"
+  # Rebase minted a new candidate SHA, so any prior verify/merge evidence is
+  # now evidence about a candidate that no longer exists. merge is the one
+  # actor that invalidates it this way, so merge must delete it here — this
+  # makes INV-07 kernel-enforced via the INV-11 gate (no log => advance to
+  # reviewing dies, forcing an unconditional re-verify).
+  rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
   "$ORCHID_ROOT/bin/orchid" task advance "$id" testing
   echo "rebase_rereview_required $id: base $base_sha -> $integ_head, candidate $candidate_sha -> $new_candidate"
   exit 5

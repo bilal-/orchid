@@ -73,6 +73,17 @@ assert_eq "$new_cand" "$branch_tip" "task branch ref reflects the rebased tip"
 merge_base="$(git merge-base task/T001 "$integ")"
 assert_eq "$integ_after_parallel" "$merge_base" "rebased branch now sits directly on the new integration HEAD"
 
+# INV-07 kernel enforcement: the PRE-rebase verify evidence must not survive
+# the rebase-reset — otherwise its stale "exit: 0" would satisfy the INV-11
+# gate and let the task reach `reviewing` without ever re-verifying the new
+# candidate. Attempting the advance now, before any re-verify, must DIE.
+[ ! -f "$old_verify_log" ] || fail "INV-07: stale verify evidence must not survive the rebase-reset"
+[ ! -f ".orchid/reviews/T001-merge.log" ] || fail "INV-07: stale merge evidence must not survive the rebase-reset"
+rc=0; err="$("$ORCHID_BIN" task advance T001 reviewing 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "INV-07: reviewing must be refused before re-verify (stale evidence gone -> INV-11 gate)"
+echo "$err" | grep -qi "verify" || fail "INV-07: die message must mention verify (got: $err)"
+assert_eq testing "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "INV-07: refused advance leaves status at testing"
+
 # --- Walk the rebased candidate through verify + review again; merge must
 # now succeed on the new base (that's the point of INV-07: re-verify is
 # mandatory, not optional, before the second merge attempt can proceed).
