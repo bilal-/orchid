@@ -38,3 +38,4 @@ pack_budget_bytes=65536
 # effort=medium
 # rate_limit_backoff_s=3600
 # engine_fail_threshold=3
+# pump_stale_s=900
