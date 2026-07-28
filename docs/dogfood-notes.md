@@ -70,3 +70,21 @@ symmetrically.
 The stub-based suite (30+ files, all green) could not catch F1 or F2 —
 both are real-engine/real-verb integration bugs surfaced only by driving
 the actual pipeline. This is the dogfood's entire purpose, delivered.
+
+### F3 (design refinement, HIGH) — engines can't commit inside a worktree sandbox
+After F2's fix codex runs, edits files, but its `git commit` fails:
+"index.lock: Operation not permitted — the linked Git index is outside the
+writable sandbox." Root cause: orchid isolates tasks in git WORKTREES, whose
+index/gitdir live under the MAIN repo's `.git/worktrees/<name>/` — OUTSIDE
+the worktree dir that `--sandbox workspace-write` makes writable. Codex
+edits land but can't be committed. (This is the same class as the probe's
+claude-can't-commit finding — no engine commits reliably headless.)
+
+**Fix (implemented): engines edit, the ADAPTER commits.** The adapter script
+runs UNSANDBOXED, so after the engine CLI exits with edits, the adapter does
+`git -C <worktree> add -A && git commit -m "<task>: <summary>"` itself and
+captures the resulting sha into `commits[]`. This makes the implement
+contract engine-agnostic (no engine needs commit capability — which the
+probes showed is fragile/unavailable anyway) and resolves F3 + the claude
+probe finding together. Empty-diff after an engine run → `status: failed`
+(the engine produced nothing to commit).
