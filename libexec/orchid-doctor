@@ -50,6 +50,19 @@ for role in orchestrator implementer reviewer arbiter plan_critic; do
     bad "role $role -> $eng: no engine plugin on search path (see docs/engines/$eng.md)"
   fi
 done
+# Plugin lockfile drift (Task 7) -- only runs when a lock already exists
+# (orchid-init writes one best-effort; a repo that never locked simply has
+# no opinion here). Drift is a WARNING, not a FAIL, in v1-m1 -- it surfaces
+# what changed for the operator to judge but never flips doctor's exit code.
+lockfile="$repo/.orchid/plugins.lock"
+if [ -f "$lockfile" ]; then
+  if lock_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins verify-lock 2>&1)"; then
+    ok "plugin lock: no drift ($lockfile)"
+  else
+    echo "WARN: plugin lock drift detected ($lockfile):"
+    echo "$lock_out" | sed 's/^/  /'
+  fi
+fi
 integ="$(config_get "$repo" integration_branch orchid/integration)"
 if git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 || \
    git -C "$repo" rev-parse --verify -q HEAD >/dev/null 2>&1; then
