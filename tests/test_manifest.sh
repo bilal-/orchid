@@ -211,3 +211,52 @@ for d in engines/codex engines/codex-review engines/agy engines/claude archetype
   [ "$rc" -eq 0 ] || fail "built-in $d must validate clean (rc=$rc): $out"
   assert_match "^ok" "$out" "built-in $d prints ok"
 done
+
+# -- comma-list trimming (permissions AND capabilities) ----------------------
+# A space after the comma must not leak into the emitted token (regression:
+# untrimmed " B" defeats the launcher's `${!perm}` indirect expansion,
+# silently failing to forward the permission and printing a misleading
+# "permission  B requested, not set" -- two spaces, unreadable).
+mk_conf "$WORK/p14" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=1
+capabilities=structured_text
+entrypoint=run
+permissions=FOO_A, FOO_B
+'
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p14/run"; chmod +x "$WORK/p14/run"
+perms="$(manifest_permissions "$WORK/p14")"
+assert_eq "$(printf 'FOO_A\nFOO_B')" "$perms" "manifest_permissions trims a space after the comma"
+
+mk_conf "$WORK/p15" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=1
+capabilities=structured_text, git
+entrypoint=run
+'
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p15/run"; chmod +x "$WORK/p15/run"
+caps="$(manifest_capabilities "$WORK/p15")"
+assert_eq "$(printf 'structured_text\ngit')" "$caps" "manifest_capabilities trims a space after the comma"
+out="$(manifest_validate "$WORK/p15" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "a spaced capability list must still validate clean (rc=$rc): $out"
+assert_match "^ok" "$out" "spaced capability list prints ok, not a false unknown-atom FAIL"
+
+# role_eligible must still work against a spaced capability list (own,
+# independent split in lib/roles.sh -- a regression here would mean the
+# trimming fix broke the accidental padding role_eligible relied on).
+source "$REPO_ROOT/lib/roles.sh"
+export ORCHID_ROOT="$REPO_ROOT"
+mk_conf "$WORK/p16" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=1
+capabilities=workspace_write, shell, git
+entrypoint=run
+'
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p16/run"; chmod +x "$WORK/p16/run"
+role_eligible implementer "$WORK/p16" || fail "role_eligible must still recognize a spaced capability list (implementer requires workspace_write,shell,git)"

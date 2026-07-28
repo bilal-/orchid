@@ -114,3 +114,26 @@ rc=0; out="$(HOME="$homeJ" ORCHID_REPO="$repoI" ORCHID_ENGINES_DIR="$repoI/eng" 
 [ "$rc" -ne 0 ] || fail "doctor must FAIL when plugin discovery reports a collision"
 assert_match "FAIL.*collision" "$out" "doctor reports the collision as a FAIL"
 assert_match "COLLISION: acme/dupdoctor" "$out" "doctor's plugins: section shows the COLLISION line"
+
+# -- doctor surfaces a permission-requested-but-not-set WARNING -------------
+# The brief requires BOTH `orchid plugins validate` and `orchid doctor` to
+# warn "permission X requested but not set" (previously only `plugins
+# validate` did, since doctor only ever shelled to `plugins list`, never
+# `plugins validate`). UNSET_VAR is deliberately never exported anywhere in
+# this test.
+homeK="$WORK/homeK"
+mk_plugin "$homeK/.orchid/plugins/engines/permcheck" acme/permcheck engine 0.1.0
+printf 'permissions=UNSET_VAR\n' >> "$homeK/.orchid/plugins/engines/permcheck/plugin.conf"
+out="$(HOME="$homeK" ORCHID_REPO="$repoI" ORCHID_ENGINES_DIR="$repoI/eng" "$ORCHID_BIN" doctor)"; rc=$?
+assert_eq 0 "$rc" "doctor still passes cleanly (a permission-not-set is a WARNING, not a FAIL)"
+assert_match "permission UNSET_VAR requested, not set" "$out" "doctor surfaces the permission-not-set warning naming UNSET_VAR"
+
+# -- doctor FAILs (exit 1) on a malformed plugin manifest --------------------
+homeL="$WORK/homeL"
+mkdir -p "$homeL/.orchid/plugins/engines/malformed"
+printf 'id=acme/malformed\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\nmanifest_version=2\n' \
+  > "$homeL/.orchid/plugins/engines/malformed/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$homeL/.orchid/plugins/engines/malformed/run"; chmod +x "$homeL/.orchid/plugins/engines/malformed/run"
+rc=0; out="$(HOME="$homeL" ORCHID_REPO="$repoI" ORCHID_ENGINES_DIR="$repoI/eng" "$ORCHID_BIN" doctor)" || rc=$?
+assert_eq 1 "$rc" "doctor FAILs (exit 1) when a discovered plugin manifest is malformed"
+assert_match "FAIL.*validat" "$out" "doctor reports the malformed manifest as a validate FAIL"

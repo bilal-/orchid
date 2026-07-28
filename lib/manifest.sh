@@ -20,21 +20,44 @@ manifest_get() {  # plugin-dir key [default]
   echo "$def"
 }
 
+# _manifest_split_csv <string> -- splits a comma list and prints each token
+# TRIMMED of leading/trailing whitespace, one per line, skipping empty
+# tokens. Shared by manifest_capabilities, manifest_permissions, and
+# manifest_validate's capability-atom check so `permissions=A, B` or
+# `capabilities=structured_text, git` (a space after the comma -- easy to
+# type, common in hand-edited plugin.conf files) never leaks a leading-space
+# token. An untrimmed " B" previously defeated the launcher's `${!perm}`
+# indirect expansion (always-unset, since no variable is literally named
+# " B") and produced a misleading "permission  B requested, not set" warning
+# (two spaces, unreadable) -- same house-style bug in both call sites, one
+# helper fixes both.
+_manifest_split_csv() {  # string -> trimmed non-empty tokens, one per line
+  local s="$1" tokens tok
+  IFS=',' read -ra tokens <<< "$s"
+  for tok in "${tokens[@]}"; do
+    tok="${tok#"${tok%%[![:space:]]*}"}"   # trim leading whitespace
+    tok="${tok%"${tok##*[![:space:]]}"}"   # trim trailing whitespace
+    [ -n "$tok" ] && echo "$tok"
+  done
+}
+
 manifest_capabilities() {  # plugin-dir -> capability atoms, one per line
   local caps; caps="$(manifest_get "$1" capabilities)"
   [ -n "$caps" ] || return 0
-  echo "$caps" | tr ',' '\n'
+  _manifest_split_csv "$caps"
 }
 
 # manifest_permissions <plugin-dir> -- prints the env var NAMES this
 # plugin's plugin.conf `permissions=` (comma list) opts into, one per line.
 # These are the ONLY non-base-allowlisted env vars the kernel launcher
 # (runners/orchid-launch) will forward into the child's stripped environment
-# (Task 5, env hygiene).
+# (Task 5, env hygiene). The launcher consumes this function's output
+# directly rather than re-splitting `permissions=` itself, so it always sees
+# already-trimmed names.
 manifest_permissions() {  # plugin-dir -> permission env var names, one per line
   local perms; perms="$(manifest_get "$1" permissions)"
   [ -n "$perms" ] || return 0
-  echo "$perms" | tr ',' '\n'
+  _manifest_split_csv "$perms"
 }
 
 _manifest_known_capability() {  # atom
@@ -122,15 +145,15 @@ manifest_validate() {  # plugin-dir
   esac
 
   if [ "$kind" = engine ]; then
-    local caps atom atoms
+    local caps atom
     caps="$(manifest_get "$dir" capabilities)"
     if [ -n "$caps" ]; then
-      IFS=',' read -ra atoms <<< "$caps"
-      for atom in "${atoms[@]}"; do
+      while IFS= read -r atom; do
+        [ -n "$atom" ] || continue
         if ! _manifest_known_capability "$atom"; then
           echo "FAIL: $dir: unknown capability atom '$atom'"; ok=0
         fi
-      done
+      done < <(_manifest_split_csv "$caps")
     fi
   fi
 

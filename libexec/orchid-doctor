@@ -19,6 +19,24 @@ else
 fi
 echo "$plugins_out" | sed 's/^/  /'
 [ "$plugins_rc" -eq 0 ] && ok "plugin discovery: no collisions" || bad "plugin discovery: collision(s) detected (see plugins: section above)"
+
+# Plugin manifest validation -- shells to `orchid plugins validate --all`
+# (same short-lived-subprocess pattern as `plugins list` above, INV-01 fine)
+# so doctor and `orchid plugins validate` can never disagree about what's
+# malformed. A permission opted into via `permissions=` but not actually set
+# anywhere the launcher will run from is a WARNING here (the plugin is still
+# runnable; the adapter reports its own auth failure at runtime, per
+# lib/manifest.sh's manifest_validate) -- it must never fail the exit code.
+# A genuinely malformed manifest (validate's aggregate exit 13) IS a doctor
+# FAIL, exit 1.
+if validate_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins validate --all 2>&1)"; then
+  validate_rc=0
+else
+  validate_rc=$?
+fi
+perm_warnings="$(echo "$validate_out" | grep -E '^warn:.*permission .* requested, not set' || true)"
+[ -z "$perm_warnings" ] || echo "$perm_warnings" | sed 's/^/  /'
+[ "$validate_rc" -eq 0 ] && ok "plugin manifests: validate clean" || bad "plugin manifests: validate failed (see above)"
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
 command -v jq >/dev/null && ok jq || bad "jq missing"
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
