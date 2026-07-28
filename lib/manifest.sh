@@ -26,6 +26,17 @@ manifest_capabilities() {  # plugin-dir -> capability atoms, one per line
   echo "$caps" | tr ',' '\n'
 }
 
+# manifest_permissions <plugin-dir> -- prints the env var NAMES this
+# plugin's plugin.conf `permissions=` (comma list) opts into, one per line.
+# These are the ONLY non-base-allowlisted env vars the kernel launcher
+# (runners/orchid-launch) will forward into the child's stripped environment
+# (Task 5, env hygiene).
+manifest_permissions() {  # plugin-dir -> permission env var names, one per line
+  local perms; perms="$(manifest_get "$1" permissions)"
+  [ -n "$perms" ] || return 0
+  echo "$perms" | tr ',' '\n'
+}
+
 _manifest_known_capability() {  # atom
   grep -qxF "$1" "$(_manifest_lib_dir)/capabilities.txt"
 }
@@ -122,6 +133,17 @@ manifest_validate() {  # plugin-dir
       done
     fi
   fi
+
+  # permissions=: opting into an env var name that isn't actually set
+  # anywhere the launcher will run from is never a hard failure (the plugin
+  # is still runnable -- the adapter itself reports the auth failure at
+  # runtime, per Task 5's launcher env-hygiene design) -- just a warn so an
+  # operator notices a likely-missing credential before dispatch.
+  local perm
+  while IFS= read -r perm; do
+    [ -n "$perm" ] || continue
+    [ -n "${!perm:-}" ] || echo "warn: $dir: permission $perm requested, not set" >&2
+  done < <(manifest_permissions "$dir")
 
   _manifest_warn_unknown_keys "$dir" "$conf"
 

@@ -11,6 +11,7 @@ done
 ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/pack.sh"
+source "$ORCHID_ROOT/lib/manifest.sh"
 
 task="${1:-}"; role="${2:-}"; operation="${3:-}"
 [ -n "$task" ] && [ -n "$role" ] && [ -n "$operation" ] \
@@ -50,14 +51,54 @@ jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
   | atomic_write "$req_file"
 
 exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"
+plugin_dir="$(dirname "$exe")"
 mkdir -p "$(dirname "$log")"
+
+# Env hygiene (v1-m1 Task 5): the child NEVER inherits the parent's full
+# environment. It only ever sees a fixed base allowlist (PATH HOME USER
+# LANG TERM TMPDIR, any LC_*, any ORCHID_* -- existing launch/e2e tests
+# depend on ORCHID_* + PATH reaching the child) PLUS exactly the env var
+# NAMES this plugin's plugin.conf `permissions=` opts into (e.g.
+# permissions=OPENAI_API_KEY). Everything else -- including a name like
+# SECRET_LEAK that happens to be set in the orchestrator's own environment
+# -- is stripped before spawn. A requested permission absent from the
+# parent env is simply not forwarded (nothing to forward); the plugin still
+# runs and reports its own auth failure (see lib/manifest.sh's
+# manifest_validate warn for the "requested but not set" diagnostic).
+#
+# Built from `compgen -e` (exported-variable NAMES only, no values) rather
+# than scraping `env`'s NAME=value output -- a value containing an embedded
+# newline could otherwise corrupt a naive line-based parse (bash 3.2 has no
+# NUL-delimited env enumeration built in).
+_launch_base_allowed() {  # name -> 0 if base-allowlisted
+  case "$1" in
+    PATH|HOME|USER|LANG|TERM|TMPDIR) return 0 ;;
+    LC_*|ORCHID_*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+child_env=()
+while IFS= read -r _name; do
+  [ -n "$_name" ] || continue
+  _launch_base_allowed "$_name" && child_env+=("$_name=${!_name}")
+done < <(compgen -e || true)
+while IFS= read -r _perm; do
+  [ -n "$_perm" ] || continue
+  _launch_base_allowed "$_perm" && continue   # already forwarded above
+  [ -n "${!_perm+x}" ] || continue            # not set in parent: nothing to forward
+  child_env+=("$_perm=${!_perm}")
+done < <(manifest_permissions "$plugin_dir")
 
 # set -m (job control) around the spawn so bash puts the engine in its OWN
 # process group (pgid == child pid) instead of inheriting the orchestrator's
 # — without this, `jobs check`'s stall/timeout group-kill (kill -- -$pgid)
 # would kill the orchestrator itself, since the manifest pgid would be ours.
 set -m
-ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1 &
+if [ "${#child_env[@]}" -gt 0 ]; then
+  env -i "${child_env[@]}" ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1 &
+else
+  env -i ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1 &
+fi
 pid=$!
 set +m
 pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)"
