@@ -10,6 +10,7 @@ review.low
 review.medium
 review.high
 lock_break_s
+verb_lock_wait_s
 stall_minutes
 timeout_minutes
 agy_max_bytes

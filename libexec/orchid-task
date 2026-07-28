@@ -43,6 +43,7 @@ rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;;
 
 case "$sub" in
   create)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; title="$2"; shift 2 || true
     # --archetype <name> (default: feature) -- the ONLY new flag; a bare
     # `task create <id> <title>` behaves exactly as before this arm gained
@@ -74,6 +75,7 @@ case "$sub" in
   list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
         printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
   set)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
@@ -103,6 +105,7 @@ case "$sub" in
     fi
     fm_set "$(tf "$id")" "$key" "$val"; fm_set "$(tf "$id")" updated "$(now)" ;;
   advance)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
     reason=""; waive=0
     while [ $# -gt 0 ]; do case "$1" in
@@ -306,6 +309,7 @@ case "$sub" in
     fm_set "$f" status "$to"; fm_set "$f" updated "$(now)"
     echo "$id: $from -> $to" ;;
   unblock)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
       [ -n "${2:-}" ] || orchid_die "--reason requires a value"
@@ -323,6 +327,7 @@ case "$sub" in
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework" ;;
   retry)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
       [ -n "${2:-}" ] || orchid_die "--reason requires a value"
@@ -348,6 +353,7 @@ case "$sub" in
     # counter needs its own journal-first discipline and its own auto-block
     # threshold, not a bare frontmatter write. Epoch-fenced like every other
     # mutating verb here.
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
       [ -n "${2:-}" ] || orchid_die "--reason requires a value"

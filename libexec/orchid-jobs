@@ -55,6 +55,7 @@ iso_to_epoch() {
 case "$sub" in
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
+    verb_lock_guard "$repo"
     epoch_require "$repo"
     task="$1"; role="$2"; operation="$3"; shift 3
     override_engine=""
@@ -146,6 +147,7 @@ case "$sub" in
   reconcile)
     # Moves durable state into reviews/ (and deletes manifests), so — despite
     # being otherwise read-and-runtime-only like `check` — this is fenced too.
+    verb_lock_guard "$repo"
     epoch_require "$repo"
     mkdir -p "$quarantine_dir" "$state/reviews"
     # v0b2: a spool file bigger than this is quarantined on size alone,

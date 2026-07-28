@@ -28,6 +28,7 @@ pack_budget_bytes=65536
 # every key, live).
 # concurrency=2
 # lock_break_s=900
+# verb_lock_wait_s=10
 # stall_minutes=10
 # timeout_minutes=60
 # agy_max_bytes=100000

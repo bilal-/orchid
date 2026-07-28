@@ -8,6 +8,14 @@ export ORCHID_EPOCH
 sub="${1:-}"; shift || true
 case "$sub" in
   apply)
+    verb_lock_acquire "$repo"
+    # Provisional release-on-EXIT, set IMMEDIATELY after acquire so nothing
+    # between here and the temp-worktree trap below (--reason validation,
+    # roadmap/integration-branch checks, each an `orchid_die` exit point) can
+    # leak the lock. Superseded a few lines down once `wt` exists and
+    # `plan_cleanup` takes over EXIT -- that later trap folds this same
+    # verb_lock_release call into its own string, composed by hand.
+    trap 'verb_lock_release "$repo"' EXIT
     reason=""
     while [ $# -gt 0 ]; do case "$1" in
       --reason)
@@ -59,7 +67,11 @@ case "$sub" in
         git -C "$repo" worktree prune >/dev/null 2>&1 || true
       fi
     }
-    trap plan_cleanup EXIT
+    # Composed by hand (not verb_lock_guard): this arm already owns the EXIT
+    # trap for temp-worktree cleanup, so the verb lock's release is folded
+    # into the SAME trap string rather than installed as a second, competing
+    # `trap ... EXIT` that would just clobber this one.
+    trap 'plan_cleanup; verb_lock_release "$repo"' EXIT
     wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-plan.XXXXXX")"
     git -C "$repo" worktree add -q --detach "$wt" "$integ_head" >/dev/null 2>&1 \
       || orchid_die "cannot create temp worktree at $integ_head"

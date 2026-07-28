@@ -82,6 +82,161 @@ lock_acquire() {
 }
 lock_release() { rm -rf "$(orchid_runtime "$1")/lock"; }
 
+# -- Per-verb transactional lock (runtime/verb-lock) -------------------------
+# kernel.md: "Per-verb transactional locking ... is a Plan B deliverable,
+# arriving alongside the tick loop." With a pump-launched tick and an
+# interactive session both alive, epoch fencing alone still leaves a
+# torn-write window between a verb's fence check and its write — this is a
+# SEPARATE lock dir from the RUN lock above (`runtime/lock`, held only across
+# `run start|resume`, above): every DURABLE-mutating verb wraps its own
+# transaction in THIS lock instead, for its own (sub-second) duration.
+#
+# Reentrant BY DESIGN: `ORCHID_VERB_LOCK_HELD=1`, once exported, makes any
+# NESTED acquisition (task advance -> journal add; plan apply -> journal add
+# against its temp worktree's own runtime -- note a DIFFERENT repo; run
+# advance/accept -> journal add; notify/answer -> journal add; orchid-launch
+# -> jobs prepare) a no-op regardless of which repo the nested call names --
+# acceptable for v1 (single-operator; the OUTER transaction already
+# serializes the whole nested sequence). `_verb_lock_owned` is a plain shell
+# variable (never re-derived from the env) precisely so a nested/reentrant
+# call can never release its parent's lock out from under it at its own exit.
+_verb_lock_owned=0
+verb_lock_acquire() {
+  local repo="$1" rt lock wait_s max_tries tries=0 pid host pstart alive owner_json myhost self_json
+  [ "${ORCHID_VERB_LOCK_HELD:-0}" = 1 ] && return 0
+  rt="$(orchid_runtime "$repo")"; lock="$rt/verb-lock"
+  wait_s="$(config_get "$repo" verb_lock_wait_s 10)"
+  max_tries=$(( wait_s * 5 ))   # retried every 0.2s (bounded; not a spawn -- INV-01 scopes to libexec/*)
+  myhost="$(hostname)"          # cached once -- not re-forked every retry iteration
+  # Outer loop: a full acquire attempt is "win the mkdir race, then prove the
+  # claim actually landed" (see the self-verification below) -- on ANY
+  # failure to prove that, the whole attempt is abandoned and retried from
+  # scratch here, never patched up by re-writing in place (see why below).
+  while true; do
+    while ! mkdir "$lock" 2>/dev/null; do
+      # Read owner.json ONCE into a variable and parse every field from that
+      # SAME snapshot -- not three separate `jq -r .field "$lock/owner.json"`
+      # calls. Under real contention the file can be atomically REPLACED
+      # (mv, below) between two separate reads: a naive per-field read could
+      # straddle two different owners' records and misjudge a genuinely live
+      # new owner as dead. A single `cat` either returns one complete
+      # generation's content or none at all (mv is atomic on one filesystem)
+      # -- an empty read (dir claimed but its owner.json not written yet, the
+      # few-ms window right after ITS mkdir) is treated the same as "still
+      # being claimed", never "dead/foreign": that misread would rm -rf a
+      # brand-new legitimate owner's lock out from under it. Just wait it out,
+      # uncounted against the wait budget below (a benign micro-race, not real
+      # contention).
+      owner_json="$(cat "$lock/owner.json" 2>/dev/null)"
+      if [ -z "$owner_json" ]; then
+        sleep 0.05
+        continue
+      fi
+      pid=0; host='?'; pstart='?'
+      eval "$(printf '%s' "$owner_json" | jq -r \
+        '"pid=" + (.pid|tostring) + "; host=" + (.hostname|@sh) + "; pstart=" + (.pid_start|@sh)' \
+        2>/dev/null)"
+      alive=1
+      if [ "$host" != "$myhost" ]; then alive=0
+      elif ! kill -0 "$pid" 2>/dev/null; then alive=0
+      elif [ "$(_pid_start "$pid")" != "$pstart" ]; then alive=0; fi
+      if [ "$alive" -eq 0 ]; then
+        # Dead/foreign owner: broken IMMEDIATELY, no age floor (unlike the
+        # RUN lock's lock_break_s) -- verb transactions are sub-second, so a
+        # dead owner's lock is never a legitimate long-running holder to
+        # wait out.
+        #
+        # Re-confirmed against a FRESH read, immediately before the
+        # destructive rm -rf: the liveness check above takes a few
+        # subprocess forks' worth of wall time, and under heavy contention
+        # (many verbs racing the same repo) that is enough time for the
+        # truly-dead owner this decision was based on to have ALREADY been
+        # reaped and the slot re-claimed by a brand-new, genuinely live
+        # owner. Acting on stale information at that point would tear down
+        # the new owner's lock mid-transaction -- exactly the torn-write
+        # window this whole lock exists to close. Only break it if the
+        # content is still identical to what was just judged dead;
+        # otherwise the world has already moved on (someone else's problem
+        # now, or already resolved) -- loop back and re-evaluate current
+        # reality instead.
+        #
+        # This narrows, but cannot fully close, the window: `rm -rf` itself
+        # is not atomic (fork+exec, then unlink-then-rmdir), so a THIRD
+        # process can still win a fresh `mkdir` in the instant between this
+        # recheck passing and the `rm -rf` line actually executing -- that
+        # new owner's claim would then be destroyed by OUR rm -rf, which
+        # decided "dead" against a generation that, by execution time, no
+        # longer exists. That residual sliver is what the claim-side
+        # self-verification below exists to catch: it is the OTHER half of
+        # this same double-owner risk, closed from the victim's side rather
+        # than the breaker's.
+        if [ "$(cat "$lock/owner.json" 2>/dev/null)" = "$owner_json" ]; then
+          rm -rf "$lock" 2>/dev/null
+        fi
+        continue
+      fi
+      tries=$((tries + 1))
+      [ "$tries" -lt "$max_tries" ] || \
+        orchid_die "verb lock held by pid $pid — another verb is mid-transaction (waited ${wait_s}s)"
+      sleep 0.2
+    done
+    # mkdir won: we hold what SHOULD be a fresh, empty generation of
+    # "$lock". Claim it -- but the exit condition for "I hold the lock" is
+    # "owner.json exists AND names me", never "I successfully wrote it".
+    # Those are NOT the same thing: a breaker elsewhere can have verified
+    # some PRIOR occupant dead and be mid-flight on its own `rm -rf` (the
+    # residual sliver noted above) that lands anywhere from just before our
+    # mkdir to just after our write below. If it lands AFTER our write, our
+    # directory -- the one we're using RIGHT NOW -- is gone or has since
+    # been re-claimed by a third process. Blindly re-writing owner.json in
+    # that case (the previous version of this code did exactly that, in a
+    # retry loop) would stomp on that third process's legitimate claim:
+    # TWO processes would then both believe they hold the lock -- the exact
+    # double-owner failure this whole mechanism exists to prevent. So:
+    # write, then RE-READ, and only trust the claim if the file we see now
+    # is still exactly the one we just wrote. Any mismatch (vanished, or
+    # naming someone else) means our claim on THIS generation was lost --
+    # abandon it and retry the WHOLE acquire from scratch (the outer loop
+    # above), rather than overwriting whatever is there now.
+    self_json="$(jq -n --arg p "$$" --arg s "$(_pid_start "$$")" --arg h "$myhost" \
+      '{pid:($p|tonumber), pid_start:$s, hostname:$h}')"
+    # atomic_write (mktemp+mv), NOT a direct `jq -n > owner.json`: a direct
+    # write leaves a window where the file exists but is only partially
+    # written -- a concurrent reader could jq-parse a truncated JSON body,
+    # fail, and fall back to pid=0/host='?', misreading a legitimate
+    # brand-new owner as dead/foreign. mv is atomic on the same filesystem:
+    # readers see either no file or a complete one, never a partial one.
+    printf '%s' "$self_json" | atomic_write "$lock/owner.json" 2>/dev/null
+    [ "$(cat "$lock/owner.json" 2>/dev/null)" = "$self_json" ] && break
+    # Lost the race for this generation -- do NOT retry the write in place;
+    # someone else may legitimately own this path now. Loop back to the top.
+  done
+  _verb_lock_owned=1
+  export ORCHID_VERB_LOCK_HELD=1
+}
+# verb_lock_release <repo> -- removes the dir iff THIS process is the one
+# that acquired it (guarded on `_verb_lock_owned`, a shell flag, NOT the env
+# -- a nested/reentrant call must never release its parent's lock).
+verb_lock_release() {
+  [ "$_verb_lock_owned" = 1 ] || return 0
+  rm -rf "$(orchid_runtime "$1")/verb-lock"
+  _verb_lock_owned=0
+  unset ORCHID_VERB_LOCK_HELD
+}
+# verb_lock_guard <repo> -- convenience: acquire + release-on-EXIT. Only for
+# verbs with NO pre-existing EXIT trap of their own (task/journal/notify/
+# answer/requirements/jobs prepare+reconcile/run advance+accept); orchid-
+# plan's `apply` arm already owns an EXIT trap (temp-worktree cleanup) and
+# composes by hand instead (calls verb_lock_acquire directly, then extends
+# its own trap string to also call verb_lock_release) -- a second, competing
+# `trap ... EXIT` here would simply clobber it rather than compose with it.
+verb_lock_guard() {
+  local repo="$1" q
+  verb_lock_acquire "$repo" || return 1
+  printf -v q '%q' "$repo"
+  trap "verb_lock_release $q" EXIT
+}
+
 epoch_current() { cat "$(orchid_runtime "$1")/epoch" 2>/dev/null || echo 0; }
 epoch_require() {
   local cur; cur="$(epoch_current "$1")"
