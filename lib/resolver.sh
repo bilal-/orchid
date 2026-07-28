@@ -44,47 +44,18 @@ resolve_engine_dir() {  # name -> plugin dir (dirname of resolve_engine_exe)
 # Existing resolve_role/resolve_engine_exe are left unchanged above for
 # back-compat with v0 callers/tests.
 resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
-  local repo="$1" role="$2" engine dir have atom atoms req
+  local repo="$1" role="$2" engine dir reason
 
   engine="$(resolve_role "$repo" "$role")"
   dir="$(resolve_engine_dir "$engine")" \
     || { echo "orchid: engine '$engine' for role '$role' not found on search path" >&2; return 1; }
 
-  if role_eligible "$role" "$dir"; then
-    echo "$engine"
-    return 0
-  fi
+  # role_eligibility_reason is the single requires/forbids walk shared with
+  # role_eligible, so the gate and its human-readable reason can never drift
+  # apart the way they used to (a forbids violation used to be misreported
+  # as "lacks capability").
+  reason="$(role_eligibility_reason "$role" "$dir")" \
+    || { echo "orchid: engine $engine $reason for role $role" >&2; return 1; }
 
-  # role_eligible only says pass/fail; walk requires/forbids again here to
-  # name the specific capability gap for the error message.
-  have=" "
-  IFS=',' read -ra atoms <<< "$(manifest_get "$dir" capabilities)"
-  for atom in "${atoms[@]}"; do
-    [ -n "$atom" ] && have="$have$atom "
-  done
-
-  req="$(role_get "$role" requires)"
-  IFS=',' read -ra atoms <<< "$req"
-  for atom in "${atoms[@]}"; do
-    [ -n "$atom" ] || continue
-    case "$have" in *" $atom "*) ;; *)
-      echo "orchid: engine $engine lacks capability $atom for role $role" >&2
-      return 1
-      ;;
-    esac
-  done
-
-  local forb; forb="$(role_get "$role" forbids)"
-  IFS=',' read -ra atoms <<< "$forb"
-  for atom in "${atoms[@]}"; do
-    [ -n "$atom" ] || continue
-    case "$have" in *" $atom "*)
-      echo "orchid: engine $engine lacks capability $atom for role $role" >&2
-      return 1
-      ;;
-    esac
-  done
-
-  echo "orchid: engine $engine is not eligible for role $role" >&2
-  return 1
+  echo "$engine"
 }

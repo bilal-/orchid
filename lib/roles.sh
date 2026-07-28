@@ -30,11 +30,16 @@ role_forbids() {  # role -> forbidden capability atoms, one per line
   echo "$caps" | tr ',' '\n'
 }
 
-# role_eligible <role> <plugin-dir> -- exit 0 iff the plugin's manifest
-# capabilities are a superset of role.requires AND disjoint from
-# role.forbids. Purely capability-driven: never branches on an engine name
-# (INV-05) -- eligibility only ever looks at manifest_capabilities atoms.
-role_eligible() {
+# role_eligibility_reason <role> <plugin-dir> -- exit 0 with no output iff the
+# plugin's manifest capabilities are a superset of role.requires AND disjoint
+# from role.forbids. Otherwise prints ONE line naming the specific failure
+# (first one found, requires checked before forbids) and exits 1. Purely
+# capability-driven: never branches on an engine name (INV-05) -- eligibility
+# only ever looks at manifest_capabilities atoms. This is the single walk of
+# requires/forbids; role_eligible and resolve_role_checked both build on it
+# so the pass/fail decision and the human-readable reason can never drift
+# apart again.
+role_eligibility_reason() {
   local role="$1" dir="$2" have=" " atom atoms req forb
 
   IFS=',' read -ra atoms <<< "$(manifest_get "$dir" capabilities)"
@@ -47,7 +52,7 @@ role_eligible() {
     IFS=',' read -ra atoms <<< "$req"
     for atom in "${atoms[@]}"; do
       [ -n "$atom" ] || continue
-      case "$have" in *" $atom "*) ;; *) return 1 ;; esac
+      case "$have" in *" $atom "*) ;; *) echo "missing required capability $atom"; return 1 ;; esac
     done
   fi
 
@@ -56,9 +61,17 @@ role_eligible() {
     IFS=',' read -ra atoms <<< "$forb"
     for atom in "${atoms[@]}"; do
       [ -n "$atom" ] || continue
-      case "$have" in *" $atom "*) return 1 ;; esac
+      case "$have" in *" $atom "*) echo "has forbidden capability $atom"; return 1 ;; esac
     done
   fi
 
   return 0
+}
+
+# role_eligible <role> <plugin-dir> -- exit 0 iff the plugin's manifest
+# capabilities are a superset of role.requires AND disjoint from
+# role.forbids. Thin wrapper around role_eligibility_reason: discards the
+# reason text and keeps only the exit code.
+role_eligible() {
+  role_eligibility_reason "$@" >/dev/null
 }

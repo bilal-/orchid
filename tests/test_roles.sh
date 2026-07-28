@@ -42,7 +42,35 @@ assert_eq codex "$out" "resolve_role_checked returns codex for implementer"
 printf 'role.implementer=agy\n' > orchid.config
 err="$(resolve_role_checked "$WORK" implementer 2>&1 1>/dev/null)"; rc=$?
 assert_eq 1 "$rc" "resolve_role_checked rejects agy for implementer (lacks workspace_write)"
-assert_match "engine agy lacks capability .* for role implementer" "$err" "clear capability-gap message"
+assert_match "engine agy missing required capability workspace_write for role implementer" "$err" "clear missing-required-capability message"
+rm -f orchid.config
+
+# -- resolve_role_checked reports the correct (non-backwards) message for a
+# forbids violation: the engine HAS the forbidden capability, not "lacks" it.
+mkdir -p "$WORK/roles" "$WORK/plugins/engines/netty"
+cat > "$WORK/roles/nettest.role" <<'EOF'
+id=nettest
+forbids=network
+description=test role forbidding network
+EOF
+cat > "$WORK/plugins/engines/netty/plugin.conf" <<'EOF'
+manifest_version=1
+id=orchid/netty
+version=0.1.0
+kind=engine
+api_version=1
+capabilities=structured_text,network
+entrypoint=run
+EOF
+: > "$WORK/plugins/engines/netty/run"; chmod +x "$WORK/plugins/engines/netty/run"
+
+ORCHID_ROOT="$WORK" role_eligible nettest "$WORK/plugins/engines/netty" \
+  && fail "netty (has network) should NOT be eligible for nettest (forbids network)"
+
+printf 'role.nettest=netty\n' > orchid.config
+err="$(ORCHID_ROOT="$WORK" resolve_role_checked "$WORK" nettest 2>&1 1>/dev/null)"; rc=$?
+assert_eq 1 "$rc" "resolve_role_checked rejects netty for nettest (has forbidden network)"
+assert_match "engine netty has forbidden capability network for role nettest" "$err" "clear forbidden-capability message"
 rm -f orchid.config
 
 # existing resolve_role/resolve_engine_exe stay unchanged (back-compat)
