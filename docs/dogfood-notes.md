@@ -35,3 +35,38 @@ the design flagged as unverified:
 ## First real run
 
 (pending — awaiting scope confirmation: which repo, which task)
+
+## First real run — scratch repo (orchid-dogfood-1), task: add slugify
+
+Existing-repo run: a `shout` util + `test.sh`; task R1 adds `slugify`.
+Drove PROTOCOL by hand with real codex (implement) + agy (review). Findings:
+
+### F1 (design bug, medium) — risk_tier `low` is unreachable
+Task template defaults `risk_tier: medium`; `task set risk_tier` is
+monotonic-upward-only, so `set risk_tier low` is refused as a downgrade.
+Net: a task can NEVER be single-reviewer (`low`) — the whole low-risk
+routing path is dead on arrival. Fix (v1): default the template to `low`,
+OR let planning set the initial tier before the monotonic rule engages
+(the rule should guard post-implementation changes, not the plan-time
+assignment). Logged; dogfood proceeded at medium (dual review).
+
+### F2 (adapter bug, HIGH — blocking) — codex invocation fails on real engine
+`codex exec … "$prompt"` fails two ways the stub tests can't see:
+  (a) when `$prompt` begins with `---` (task.md frontmatter), codex's clap
+      parser treats it as a flag → "Usage: codex exec …" error, exit non-2
+      captured as `failed`.
+  (b) codex refuses a git worktree it doesn't trust: "Not inside a trusted
+      directory and --skip-git-repo-check was not specified."
+Root cause confirmed by minimal repro. FIX (both codex paths, implement +
+review): pipe the prompt via stdin with `-` as the prompt arg AND add
+`--skip-git-repo-check`:
+  `printf '%s' "$prompt" | codex exec <flags> --skip-git-repo-check -`
+Verified working in isolation (short prompt → clean `DONE`). This also
+lifts the ARG_MAX ceiling on large prompts for free. The claude adapter
+shares the leading-dash risk (same `"$prompt"` argv shape) — fix
+symmetrically.
+
+### Value proven
+The stub-based suite (30+ files, all green) could not catch F1 or F2 —
+both are real-engine/real-verb integration bugs surfaced only by driving
+the actual pipeline. This is the dogfood's entire purpose, delivered.
