@@ -26,6 +26,9 @@ resolve_engine_exe() {  # name -> executable path (search path; dup = error)
   # has a record for this exact directory whose digest matches the directory
   # right now (INV-09). Absent or mismatched (e.g. after a pull mutated a
   # file) -> skipped + warned to stderr, never executed.
+  # TOCTOU: the digest is checked here, at resolve time, but the resolved
+  # path is only exec'd later by the caller -- a single-operator v1 accepts
+  # that gap rather than closing it (e.g. no re-check-then-exec atomicity).
   if [ -n "${ORCHID_REPO:-}" ]; then
     repo_dir="$ORCHID_REPO/.orchid/plugins/engines/$name"
     if [ -x "$repo_dir/run" ]; then

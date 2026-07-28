@@ -6,6 +6,15 @@ source "$(dirname "$0")/helpers.sh"
 # test file owns its fixtures).
 row_re() { printf '^%s\t%s\t%s\t%s\t%s$' "$1" "$2" "$3" "$4" "$5"; }
 
+# path_count <trust-file> <path> -- number of records naming exactly <path>.
+# Records are `<digest> <path>` (digest is the first whitespace-delimited
+# field; the path is everything after the first space, so paths containing
+# spaces are still matched whole rather than truncated at their first space).
+path_count() {
+  [ -f "$1" ] || { echo 0; return; }
+  awk -v d="$2" '{p=$0; sub(/^[^ ]+ /, "", p); if (p==d) c++} END{print c+0}' "$1"
+}
+
 mk_engine() {  # dir id version -- a minimal valid engine plugin
   mkdir -p "$1"
   printf 'manifest_version=1\nid=%s\nversion=%s\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\n' \
@@ -55,8 +64,10 @@ assert_match "INV-09" "$err" "warning names INV-09"
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins trust "$plugin_dir")"; rc=$?
 assert_eq 0 "$rc" "plugins trust succeeds on a valid dir"
 assert_match "^trusted: " "$out" "trust prints a confirmation line"
+digest1="$(echo "$out" | awk '{print $NF}')"
 [ -f "$home/.orchid/trust" ] || fail "trust record must be written to \$HOME/.orchid/trust"
-grep -q "^$canon_dir " "$home/.orchid/trust" || fail "trust record names the plugin's absolute path"
+assert_eq "$digest1 $canon_dir" "$(cat "$home/.orchid/trust")" \
+  "trust record is '<digest> <path>' (digest first field, so a path with spaces still parses)"
 [ ! -e "$repo/.orchid/trust" ] || fail "trust record must never be written under the repo (post-trust)"
 
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins list)"; rc=$?
@@ -70,7 +81,7 @@ assert_match "repoeng/run$" "$exe" "resolved path points at the repo-local run s
 # re-trusting at the SAME digest is idempotent (no duplicate record, no error)
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins trust "$plugin_dir")"; rc=$?
 assert_eq 0 "$rc" "re-trusting at an unchanged digest is idempotent"
-lines="$(grep -c "^$canon_dir " "$home/.orchid/trust")"
+lines="$(path_count "$home/.orchid/trust" "$canon_dir")"
 assert_eq 1 "$lines" "no duplicate record after re-trusting at the same digest"
 
 # -- mutating a file in the dir changes the digest -> de-trusted ------------
@@ -97,7 +108,7 @@ assert_match "trust --update" "$out" "refusal message points at 'trust --update'
 # -- trust --update re-pins ---------------------------------------------
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins trust --update "$plugin_dir")"; rc=$?
 assert_eq 0 "$rc" "trust --update re-pins the new digest"
-lines="$(grep -c "^$canon_dir " "$home/.orchid/trust")"
+lines="$(path_count "$home/.orchid/trust" "$canon_dir")"
 assert_eq 1 "$lines" "trust --update rewrites the record in place (no duplicate)"
 
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins list)"; rc=$?
@@ -109,7 +120,7 @@ assert_match "repoeng/run$" "$exe" "resolved path after re-pin"
 # -- untrust removes the record -------------------------------------------
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins untrust "$plugin_dir")"; rc=$?
 assert_eq 0 "$rc" "plugins untrust succeeds"
-grep -q "^$canon_dir " "$home/.orchid/trust" && fail "untrust must remove the record"
+[ "$(path_count "$home/.orchid/trust" "$canon_dir")" -eq 0 ] || fail "untrust must remove the record"
 
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_match "$(row_re acme/repoeng engine 0.1.0 repo 'DISABLED \(untrusted\)')" "$out" \
@@ -124,3 +135,19 @@ assert_eq 0 "$rc" "untrust on an already-untrusted dir is a harmless no-op"
 # -- trust refuses a non-existent directory --------------------------------
 rc=0; HOME="$home" "$ORCHID_BIN" plugins trust "$WORK/no-such-dir" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "trust must refuse a non-existent directory"
+
+# -- trust refuses a plugin whose entrypoint is a symlink (Fix 1b) ----------
+# A digest that hashes symlink targets (Fix 1a) still can't help if the
+# plugin was pinned while `run` was already a symlink: the pinned digest
+# would cover whatever it pointed at, so trust must never accept a
+# symlinked entrypoint in the first place.
+symdir="$WORK/symeng"; mkdir -p "$symdir"
+printf 'manifest_version=1\nid=acme/symeng\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\n' \
+  > "$symdir/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$symdir/real-run"; chmod +x "$symdir/real-run"
+ln -s real-run "$symdir/run"
+rc=0; out="$(HOME="$home" "$ORCHID_BIN" plugins trust "$symdir" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "trust must refuse a plugin whose entrypoint is a symlink"
+assert_match "entrypoint.*symlink" "$out" "refusal message names the entrypoint as a symlink"
+[ "$(path_count "$home/.orchid/trust" "$(cd "$symdir" && pwd -P)")" -eq 0 ] \
+  || fail "a refused symlink-entrypoint plugin must not end up recorded as trusted"

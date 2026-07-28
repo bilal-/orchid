@@ -70,3 +70,22 @@ exe="$(resolve "$userhome" "$repo" usereng)"; rc=$?
 echo "$exe" | grep -q "usereng/run$" || fail "user-plugin resolution returned the wrong path"
 exe="$(resolve "$userhome" "$repo" claude)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09 must not spill over: a built-in engine needs no trust record"
+
+# 8) Repointing a symlink inside an already-trusted repo-local plugin must
+# also de-trust it (digest mismatch), exactly like mutating a regular file
+# does -- plugin_digest must hash symlink targets, not just regular files,
+# or a trusted plugin's executed code could be swapped by retargeting a
+# symlink without the digest ever changing.
+symrepo="$WORK/sym-repo"
+symplugin="$symrepo/.orchid/plugins/engines/symeng"
+mk_engine "$symplugin" acme/symeng 0.1.0
+mkdir -p "$symplugin/targets/a" "$symplugin/targets/b"
+ln -s targets/a "$symplugin/link"
+HOME="$home" ORCHID_REPO="$symrepo" "$ORCHID_BIN" plugins trust "$symplugin" >/dev/null \
+  || fail "setup: trust of the symlink-bearing plugin dir failed"
+exe="$(resolve "$home" "$symrepo" symeng)"; rc=$?
+[ "$rc" -eq 0 ] || fail "INV-09: freshly trusted symlink-bearing engine must resolve"
+rm "$symplugin/link"; ln -s targets/b "$symplugin/link"
+rc=0; exe="$(resolve "$home" "$symrepo" symeng)" || rc=$?
+[ "$rc" -ne 0 ] || fail "INV-09: repointing a symlink inside a trusted repo-local plugin must de-trust it (digest must cover symlinks)"
+[ -z "$exe" ] || fail "INV-09: resolve_engine_exe must not print a path after a symlink repoint de-trusts the plugin"

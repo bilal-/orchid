@@ -148,6 +148,13 @@ case "$sub" in
     dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins trust [--update] <plugin-dir>"
     [ -d "$dir" ] || orchid_die "no such directory: $dir"
     abs="$(_trust_canon_path "$dir")" || orchid_die "cannot resolve path: $dir"
+    # A digest that hashes symlink targets (lib/common.sh's plugin_digest)
+    # still can't protect a plugin that was pinned while its entrypoint was
+    # ALREADY a symlink -- the pinned digest would simply cover whatever it
+    # pointed at that day. So trust is refused outright for a symlinked
+    # entrypoint; only a regular-file entrypoint may ever be pinned.
+    ep="$(manifest_get "$abs" entrypoint run)"
+    [ -L "$abs/$ep" ] && orchid_die "refusing to trust: entrypoint $ep is a symlink; trust requires a regular-file entrypoint"
     digest="$(plugin_digest "$abs")" || orchid_die "failed to compute digest for $abs"
     existing="$(trust_lookup "$abs")"
     if [ "$mode" = trust ] && [ -n "$existing" ] && [ "$existing" != "$digest" ]; then

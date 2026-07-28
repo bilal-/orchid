@@ -60,3 +60,30 @@ echo 3 > "$rt/epoch"
 assert_eq 3 "$(epoch_current "$WORK/repo")" "epoch read"
 ( export ORCHID_EPOCH=2; if ( epoch_require "$WORK/repo" ) 2>/dev/null; then exit 1; fi ) || fail "stale epoch refused"
 ( export ORCHID_EPOCH=3; epoch_require "$WORK/repo" ) || fail "current epoch accepted"
+
+# -- plugin_digest covers symlinks (Fix 1: a symlinked entrypoint must not be
+# swappable without changing the digest) -----------------------------------
+mkdir -p "$WORK/plugin" "$WORK/link-target-a" "$WORK/link-target-b"
+echo body > "$WORK/plugin/file"
+ln -s "$WORK/link-target-a" "$WORK/plugin/link"
+d1="$(plugin_digest "$WORK/plugin")"
+# repointing the symlink -- no regular file touched at all -- must still
+# change the digest; a `find -type f` digest would miss this entirely.
+rm "$WORK/plugin/link"; ln -s "$WORK/link-target-b" "$WORK/plugin/link"
+d2="$(plugin_digest "$WORK/plugin")"
+[ -n "$d1" ] && [ -n "$d2" ] || fail "plugin_digest must produce a nonempty digest"
+[ "$d1" != "$d2" ] || fail "plugin_digest must change when a symlink inside the dir is repointed"
+
+# -- trust store record format: `<digest> <path>`, so paths with spaces
+# resolve correctly (Fix 2) --------------------------------------------------
+spaced="$WORK/plugin dir with spaces"
+mkdir -p "$spaced"
+trust_store_set "$spaced" "deadbeef"
+assert_eq "deadbeef $spaced" "$(cat "$HOME/.orchid/trust")" "trust record is '<digest> <path>' (digest first field)"
+assert_eq deadbeef "$(trust_lookup "$spaced")" "trust_lookup resolves a path containing spaces"
+trust_store_set "$spaced" "deadbeef"
+lines="$(wc -l < "$HOME/.orchid/trust" | tr -d ' ')"
+assert_eq 1 "$lines" "re-setting the same spaced path does not duplicate the record"
+trust_store_remove "$spaced"
+[ -z "$(trust_lookup "$spaced")" ] || fail "trust_store_remove clears a spaced-path record"
+[ ! -s "$HOME/.orchid/trust" ] || fail "trust file is empty after removing its only (spaced-path) record"

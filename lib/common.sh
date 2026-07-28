@@ -84,7 +84,12 @@ epoch_require() {
 # -- Digest-pinned trust store (docs/specs/plugins.md, Trust model; INV-09) --
 # Records live in `~/.orchid/trust` — OUTSIDE any repo, so cloning a repo can
 # never itself grant code execution to a repo-local plugin. One line per
-# trusted path: `<canonical-abs-path> <sha256-digest>`.
+# trusted path: `<sha256-digest> <canonical-abs-path>` -- digest FIRST,
+# because it's a fixed-width, space-free 64-hex token, so the path (which may
+# itself contain spaces) can safely be "everything after the first space"
+# rather than a single awk field. The reverse order (`<path> <digest>`)
+# silently truncated any spaced path at its first space and could never
+# match, which fails closed (trust never resolves) but is still wrong.
 
 _trust_canon_path() {  # dir -> canonical absolute path (no trailing slash,
   # symlinks resolved), or nonzero if it doesn't exist / isn't a directory.
@@ -101,6 +106,17 @@ _orchid_file_sha256() {  # file -> a line binding this file's path to its
     printf '%s %s\n' "$(openssl dgst -sha256 "$1" | awk '{print $NF}')" "$1"
   fi
 }
+_orchid_symlink_sha256() {  # symlink -> a line binding this symlink's path to
+  # its TARGET STRING (not the target's content -- retargeting a symlink is
+  # itself a change worth catching, whether or not the new target's bytes
+  # happen to match the old one's), fed into plugin_digest below.
+  if command -v shasum >/dev/null 2>&1; then
+    printf '%s -> %s\n' "$1" "$(readlink "$1")" | shasum -a 256
+  else
+    printf '%s %s\n' \
+      "$(printf '%s -> %s\n' "$1" "$(readlink "$1")" | openssl dgst -sha256 | awk '{print $NF}')" "$1"
+  fi
+}
 _orchid_stream_sha256() {  # stdin -> hex digest of the whole stream
   if command -v shasum >/dev/null 2>&1; then
     shasum -a 256 | awk '{print $1}'
@@ -110,14 +126,24 @@ _orchid_stream_sha256() {  # stdin -> hex digest of the whole stream
 }
 
 # plugin_digest <dir> -- SHA-256 over a stable sorted listing of the plugin
-# dir's file hashes (task-4-brief's algorithm): `find <dir> -type f | sort |
-# while read f; do shasum -a 256 "$f"; done | shasum -a 256` (portable;
-# openssl dgst -sha256 fallback when shasum is absent). Any file added,
-# removed, renamed, or changed inside the dir changes this digest.
+# dir's file AND symlink entries: `find <dir> \( -type f -o -type l \) |
+# LC_ALL=C sort`, then per entry a regular file contributes `shasum -a 256
+# <path>` while a symlink contributes a hash of "<path> -> <target>" (its
+# target string, not the target's content), and the whole per-entry listing
+# is rolled up with one final `shasum -a 256` (openssl dgst -sha256 fallback
+# when shasum is absent). Symlinks must be covered, not just regular files:
+# `find -type f` alone never sees a symlink, so a trusted plugin whose
+# entrypoint is a symlink could have its executed target swapped without
+# ever moving the digest (see also orchid-plugins' `trust`, which refuses to
+# trust a symlinked entrypoint in the first place). With that covered, any
+# file OR symlink added, removed, renamed, changed, or repointed inside the
+# dir changes this digest.
 plugin_digest() {
   local dir; dir="$(_trust_canon_path "$1")" || return 1
   [ -d "$dir" ] || return 1
-  find "$dir" -type f | sort | while IFS= read -r f; do _orchid_file_sha256 "$f"; done | _orchid_stream_sha256
+  find "$dir" \( -type f -o -type l \) | LC_ALL=C sort | while IFS= read -r f; do
+    if [ -L "$f" ]; then _orchid_symlink_sha256 "$f"; else _orchid_file_sha256 "$f"; fi
+  done | _orchid_stream_sha256
 }
 
 _orchid_trust_dir()  { echo "$HOME/.orchid"; }
@@ -125,10 +151,13 @@ _orchid_trust_file() { echo "$(_orchid_trust_dir)/trust"; }
 
 trust_lookup() {  # abs-dir -> the recorded digest for that exact path, or
   # empty if there is no record. Last matching line wins (append-to-override,
-  # consistent with _cfg_file_get's convention elsewhere in this file).
+  # consistent with _cfg_file_get's convention elsewhere in this file). Path
+  # comparison strips only the leading `<digest> ` token off each line (see
+  # the record-format note above), so a path containing spaces still matches
+  # whole.
   local dir="$1" f; f="$(_orchid_trust_file)"
   [ -f "$f" ] || return 0
-  awk -v d="$dir" '$1==d{v=$2} END{if (v!="") print v}' "$f"
+  awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p); if (p==d) v=$1} END{if (v!="") print v}' "$f"
 }
 
 trust_status_for() {  # abs-dir -> trusted|untrusted|mismatch
@@ -142,12 +171,12 @@ trust_status_for() {  # abs-dir -> trusted|untrusted|mismatch
 trust_store_set() {  # abs-dir digest -- atomic upsert (one record per path)
   local dir="$1" digest="$2" f; f="$(_orchid_trust_file)"
   mkdir -p "$(_orchid_trust_dir)"
-  { [ -f "$f" ] && awk -v d="$dir" '$1!=d' "$f"; printf '%s %s\n' "$dir" "$digest"; } | atomic_write "$f"
+  { [ -f "$f" ] && awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f"; printf '%s %s\n' "$digest" "$dir"; } | atomic_write "$f"
 }
 
 trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
   local dir="$1" f; f="$(_orchid_trust_file)"
   [ -f "$f" ] || return 0
   mkdir -p "$(_orchid_trust_dir)"
-  awk -v d="$dir" '$1!=d' "$f" | atomic_write "$f"
+  awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f" | atomic_write "$f"
 }
