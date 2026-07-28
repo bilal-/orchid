@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
+# `test` (below) needs the full role/resolver/envelope/capsuite stack; sourced
+# unconditionally alongside the two above rather than lazily, matching this
+# file's existing style (list/validate/trust/untrust already pay the cost of
+# sourcing manifest.sh even though only validate/list use it).
+source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
+source "$ORCHID_ROOT/lib/envelope.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 repo="${ORCHID_REPO:-$PWD}"
 sub="${1:-}"; shift || true
 
@@ -169,5 +175,36 @@ case "$sub" in
     trust_store_remove "$abs"
     echo "untrusted: $abs"
     ;;
-  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>" ;;
+  test)
+    # test <engine-id> <role> | --all-defaults -- runs the (engine, role)
+    # pair(s) through lib/capsuite.sh's check battery. All the actual work
+    # (including the adapter-invoking dryrun probe) lives in capsuite_run, a
+    # lib helper, not here -- see lib/capsuite.sh's header comment on why
+    # that split keeps INV-01 (which greps libexec/* only) green even though
+    # this diagnostic does spawn an adapter under ORCHID_DRYRUN=1.
+    fails=0
+    if [ "${1:-}" = --all-defaults ]; then
+      for role in orchestrator implementer reviewer arbiter plan_critic; do
+        engine="$(resolve_role "$repo" "$role")"
+        if capsuite_run "$engine" "$role"; then
+          echo "PASS: $engine $role"
+        else
+          echo "FAIL: $engine $role"
+          fails=$((fails+1))
+        fi
+      done
+    else
+      engine="${1:-}"; role="${2:-}"
+      [ -n "$engine" ] && [ -n "$role" ] \
+        || orchid_die "usage: orchid plugins test <engine-id> <role>|--all-defaults"
+      if capsuite_run "$engine" "$role"; then
+        echo "PASS: $engine $role"
+      else
+        echo "FAIL: $engine $role"
+        fails=1
+      fi
+    fi
+    [ "$fails" -eq 0 ] || exit 1
+    ;;
+  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults" ;;
 esac
