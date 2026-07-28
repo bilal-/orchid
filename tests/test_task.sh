@@ -18,10 +18,24 @@ assert_match "demo blocker" "$(cat .orchid/journal.md)" "reason journaled atomic
 "$ORCHID_BIN" task unblock T001 --reason "guidance given"
 assert_eq rework "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "unblock -> rework"
 
-# risk monotonicity
-"$ORCHID_BIN" task set T001 risk_tier high --reason "touches auth"
+# v0b2 F1 fix: risk_tier's monotonic-upward-only rule previously combined
+# with a `medium` template default meant `low` could NEVER be reached (a
+# downgrade is always refused) -- the whole single-reviewer low-risk
+# routing path was dead on arrival. Fix: the template now defaults to
+# `low`; plan time may leave it there or upgrade to medium/high, and the
+# monotonic rule still guards every upgrade from being walked back down.
+assert_eq low "$("$ORCHID_BIN" task show T001 | grep '^risk_tier: ' | cut -d' ' -f2)" "fresh task defaults risk_tier to low"
+
+# risk monotonicity: low -> medium -> high all legal upgrades; any downgrade
+# attempt, at any rung, is refused.
+"$ORCHID_BIN" task set T001 risk_tier medium --reason "touches shared util"
+assert_eq medium "$("$ORCHID_BIN" task show T001 | grep '^risk_tier: ' | cut -d' ' -f2)" "risk_tier low -> medium upgrade allowed"
 rc=0; "$ORCHID_BIN" task set T001 risk_tier low --reason x 2>/dev/null || rc=$?
-[ "$rc" -ne 0 ] || fail "risk downgrade must be refused"
+[ "$rc" -ne 0 ] || fail "risk downgrade (medium -> low) must be refused"
+"$ORCHID_BIN" task set T001 risk_tier high --reason "touches auth"
+assert_eq high "$("$ORCHID_BIN" task show T001 | grep '^risk_tier: ' | cut -d' ' -f2)" "risk_tier medium -> high upgrade allowed"
+rc=0; "$ORCHID_BIN" task set T001 risk_tier low --reason x 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "risk downgrade (high -> low) must be refused"
 
 # Fix 3: retry is only legal from blocked or rework
 "$ORCHID_BIN" task create T002 "retry-guard"
