@@ -33,6 +33,20 @@
 # spawn pattern in libexec/*, so it stays green. `orchid plugins test` is
 # operator-invoked diagnostics, never part of the tick's own dispatch path,
 # so this split is also the right shape semantically, not just a grep dodge.
+#
+# INV-06 carve-out (launcher-only engine spawning, tests/inv/
+# test_INV-06_launcher_only.sh): that test's grep only scans for `plugins/
+# engines`/`orchid-launch` references in libexec/ and lib/ (excluding
+# resolve_engine_exe/resolver.sh, its own resolution helper) -- it does not
+# forbid lib/*.sh from spawning a process outright, and this dryrun adapter
+# spawn isn't a match for either pattern in the first place. The semantic
+# argument is the same one INV-01 already makes: `orchid plugins test` is an
+# operator-invoked diagnostic probe, not the tick's dispatch path that
+# runners/orchid-launch exists to gate -- so this spawn is a deliberate,
+# out-of-band carve-out from "engines are only ever spawned by the launcher,"
+# not an oversight. Like any subprocess spawn that can block on a terminal,
+# it closes stdin (`</dev/null`) below so an interactive adapter can never
+# hang this diagnostic waiting on input that will never arrive.
 
 _capsuite_dir() { echo "$HOME/.orchid/capsuite"; }
 
@@ -122,7 +136,7 @@ capsuite_run() {
       '{job_id:$job_id, task:$task, operation:$operation, worktree:"",
         input_pack:"", output:$output, base_sha:"", candidate_sha:""}' \
       > "$reqfile"
-    if ORCHID_DRYRUN=1 "$dir/run" "$reqfile" >/dev/null 2>&1 \
+    if ORCHID_DRYRUN=1 "$dir/run" "$reqfile" </dev/null >/dev/null 2>&1 \
       && [ -f "$outfile" ] && envelope_validate "$outfile"; then
       dryrun_ok=1
       _capsuite_note "$checks_file" dryrun_envelope_valid true
