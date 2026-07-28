@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
+repo="${ORCHID_REPO:-$PWD}"
+sub="${1:-}"; shift || true
+
+# Discovery search path (docs/specs/plugins.md, Trust model): $ORCHID_PLUGIN_PATH
+# (colon-delimited; each entry is a root laid out exactly like the two below,
+# i.e. <entry>/<kind>s/<name>/ -- origin=path) -> ~/.orchid/plugins/<kind>s/
+# (origin=user) -> $ORCHID_ROOT/plugins/<kind>s/ (origin=builtin). All three
+# are "user-controlled locations" per the spec's threat model, so trust=user
+# for both user and path origins (only builtin gets its own tag); a real
+# `trusted` tier for repo-local plugins arrives with the digest-pinned trust
+# store in Task 4. Repo-local <repo>/.orchid/plugins/<kind>s/ is discovered
+# (origin=repo) but ALWAYS trust=DISABLED here -- no trust store yet, so it
+# never counts toward collision detection below (INV-10 concerns the
+# discovered-and-usable set, not everything sitting on disk unexecuted).
+_plugins_roots() {
+  local p parts
+  if [ -n "${ORCHID_PLUGIN_PATH:-}" ]; then
+    local IFS=':'
+    read -ra parts <<< "$ORCHID_PLUGIN_PATH"
+    for p in "${parts[@]}"; do
+      [ -n "$p" ] && printf 'path\t%s\n' "$p"
+    done
+  fi
+  printf 'user\t%s\n' "$HOME/.orchid/plugins"
+  printf 'builtin\t%s\n' "$ORCHID_ROOT/plugins"
+}
+
+_plugins_trust_for() {  # origin -> trust tag
+  case "$1" in
+    builtin) echo builtin ;;
+    user|path) echo user ;;
+    *) echo DISABLED ;;
+  esac
+}
+
+# _plugins_scan_root <origin> <root> -- prints one row per discovered plugin:
+# id\tkind\tversion\torigin\ttrust\tdir. A plugin dir is any <root>/<kind-dir>/
+# <name>/ containing a plugin.conf; kind/version come from the manifest
+# itself (not guessed from the directory name), same source manifest_validate
+# uses, so list/validate can never disagree about what a plugin claims to be.
+_plugins_scan_root() {
+  local origin="$1" root="$2" trust kdir pdir id kind ver
+  [ -d "$root" ] || return 0
+  trust="$(_plugins_trust_for "$origin")"
+  for kdir in "$root"/*/; do
+    [ -d "$kdir" ] || continue
+    for pdir in "$kdir"*/; do
+      [ -f "${pdir}plugin.conf" ] || continue
+      pdir="${pdir%/}"
+      id="$(manifest_get "$pdir" id)"; [ -n "$id" ] || continue
+      kind="$(manifest_get "$pdir" kind)"
+      ver="$(manifest_get "$pdir" version)"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$kind" "$ver" "$origin" "$trust" "$pdir"
+    done
+  done
+}
+
+# _plugins_discover -- the full discovered set: search-path roots in order,
+# then repo-local last (always DISABLED, see above).
+_plugins_discover() {
+  local origin root
+  while IFS=$'\t' read -r origin root; do
+    _plugins_scan_root "$origin" "$root"
+  done < <(_plugins_roots)
+  _plugins_scan_root repo "$repo/.orchid/plugins"
+}
+
+# _plugins_collisions <entries-tsv> -- prints "COLLISION: <id> at <p1>, <p2>"
+# for every id shared by 2+ non-DISABLED entries (INV-10: no silent shadow --
+# a duplicate id is an error, never a precedence win). Sets
+# _plugins_had_collision=1 on the caller's behalf if any were found.
+_plugins_collisions() {
+  local entries="$1" dup_ids did paths
+  _plugins_had_collision=0
+  dup_ids="$(printf '%s\n' "$entries" | awk -F'\t' '$1!="" && $5!="DISABLED"{print $1}' | sort | uniq -d)"
+  [ -n "$dup_ids" ] || return 0
+  while IFS= read -r did; do
+    [ -n "$did" ] || continue
+    paths="$(printf '%s\n' "$entries" | awk -F'\t' -v id="$did" '$1==id && $5!="DISABLED"{print $6}' | paste -sd', ' -)"
+    echo "COLLISION: $did at $paths"
+    _plugins_had_collision=1
+  done <<< "$dup_ids"
+}
+
+case "$sub" in
+  list)
+    entries="$(_plugins_discover)"
+    _plugins_collisions "$entries"
+    printf '%s\n' "$entries" | awk -F'\t' '$1!=""{printf "%s\t%s\t%s\t%s\t%s\n",$1,$2,$3,$4,$5}'
+    [ "$_plugins_had_collision" -eq 0 ] || exit 1
+    ;;
+  validate)
+    target="${1:---all}"
+    entries="$(_plugins_discover)"
+    fails=0
+    if [ "$target" = --all ]; then
+      while IFS=$'\t' read -r id kind ver origin trust dir; do
+        [ -n "$id" ] || continue
+        manifest_validate "$dir" || fails=$((fails+1))
+      done <<< "$entries"
+    else
+      # Validate every dir claiming this id (plural on purpose: a colliding
+      # id should still have each of its manifests checked, not just one
+      # picked arbitrarily).
+      dirs="$(printf '%s\n' "$entries" | awk -F'\t' -v id="$target" '$1==id{print $6}')"
+      [ -n "$dirs" ] || orchid_die "no such plugin id: $target"
+      while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        manifest_validate "$dir" || fails=$((fails+1))
+      done <<< "$dirs"
+    fi
+    [ "$fails" -eq 0 ] || exit 13
+    ;;
+  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]" ;;
+esac

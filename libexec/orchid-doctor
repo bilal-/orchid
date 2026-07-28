@@ -4,6 +4,21 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
+# Plugin discovery report -- printed BEFORE role checks (role resolution
+# depends on which plugins exist at all, so an operator should see the full
+# discovery picture, including any collision, before the per-role verdicts
+# below). Shells out to `orchid plugins list` rather than re-implementing
+# discovery here so the two can never drift apart; a nonzero exit from it
+# means INV-10 tripped (a duplicate id somewhere in the discovered set),
+# which is a doctor FAIL, not a warning.
+echo "plugins:"
+if plugins_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins list 2>&1)"; then
+  plugins_rc=0
+else
+  plugins_rc=$?
+fi
+echo "$plugins_out" | sed 's/^/  /'
+[ "$plugins_rc" -eq 0 ] && ok "plugin discovery: no collisions" || bad "plugin discovery: collision(s) detected (see plugins: section above)"
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
 command -v jq >/dev/null && ok jq || bad "jq missing"
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
