@@ -18,9 +18,16 @@ repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_sta
 # --reason --evidence` is the ONLY path to `complete`; it sets run_status
 # directly with its own from=accepting + evidence-file guard and never
 # calls legal_run, so it is untouched by this table either way.
+#
+# blocked:running is the recoverable-block edge: kernel.md requires "no
+# hand-editing, ever", so a run parked in `blocked` must be resumable by an
+# operator through a legal verb call, not by hand-editing roadmap.md.
+# `run advance` already hard-requires --reason on every edge (INV-08, see
+# below), so this is a fenced, journaled `intervention` like any other
+# operator judgment call.
 legal_run() { case "$1:$2" in
   planning:running|running:accepting|running:blocked|\
-  accepting:running) return 0 ;;
+  accepting:running|blocked:running) return 0 ;;
   *:blocked) return 0 ;;
   *) return 1 ;;
 esac; }

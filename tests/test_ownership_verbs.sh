@@ -135,11 +135,29 @@ fm_get .orchid/roadmap.md run_status | grep -q '^blocked$' || fail "run_status n
 grep -q "run_status running -> blocked" .orchid/journal.md || fail "blocked transition journaled"
 
 # ---------------------------------------------------------------------------
+# blocked is not a permanent trap: kernel.md requires "no hand-editing,
+# ever", so a blocked run must be recoverable through a legal verb, not by
+# hand-editing roadmap.md. blocked->running is that recoverable edge.
+# ---------------------------------------------------------------------------
+# Illegal edges out of blocked (other than the new recoverable one) still
+# exit 3 and leave run_status untouched.
+rc=0
+"$ORCHID_BIN" run advance complete --reason "illegal from blocked" >/dev/null 2>&1 || rc=$?
+assert_eq 3 "$rc" "blocked->complete is illegal (exit 3)"
+fm_get .orchid/roadmap.md run_status | grep -q '^blocked$' || fail "illegal transition leaves run_status at blocked"
+
+# blocked->running is legal: an operator can resume a blocked run.
+"$ORCHID_BIN" run advance running --reason "operator resumed the run" >/dev/null \
+  || fail "blocked->running must be legal (recoverable block)"
+fm_get .orchid/roadmap.md run_status | grep -q '^running$' || fail "run_status recovered from blocked to running"
+grep -q "run_status blocked -> running" .orchid/journal.md || fail "blocked->running transition journaled"
+
+# ---------------------------------------------------------------------------
 # run accept: shorthand for accepting->complete; requires accepting status
 # AND an evidence file, copied atomically to reviews/acceptance.log.
 # ---------------------------------------------------------------------------
-# Get back to `running`, then `accepting`, to exercise accept legitimately.
-fm_set .orchid/roadmap.md run_status running
+# Already back at `running` (via the legal blocked->running recovery above);
+# advance to `accepting` to exercise accept legitimately.
 "$ORCHID_BIN" run advance accepting --reason "re-entering acceptance" >/dev/null
 
 # accept refuses without --evidence.
