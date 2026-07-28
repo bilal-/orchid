@@ -44,11 +44,13 @@ run_adapter() {  # dir
 }
 
 # --- 1. review stub that approves; argv shape asserted (read-only prompting,
-# no --permission-mode flag: exactly two argv, -p then the prompt) ----------
+# no --permission-mode flag: exactly one argv, -p; the prompt itself now
+# arrives on STDIN -- v0b2 F2, same stdin fix as the codex adapter) --------
 d="$(build_request approve review '#!/usr/bin/env bash
 printf "%s" "$#" > "'"$WORK"'/approve.argc"
 i=0
 for a in "$@"; do i=$((i+1)); printf "%s" "$a" > "'"$WORK"'/approve.argv.$i"; done
+cat > "'"$WORK"'/approve.stdin"
 echo "looks fine"
 echo "VERDICT: approve"')"
 run_adapter "$d" || fail "approve stub: adapter should exit 0"
@@ -57,10 +59,10 @@ assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "approve stub: status o
 assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "approve stub: verdict approve"
 assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "approve stub: scope_complete true (no truncation in pack.json)"
 argc="$(cat "$WORK/approve.argc")"
-assert_eq "2" "$argc" "approve stub: review is read-only prompting, exactly two argv"
-assert_eq "-p" "$(cat "$WORK/approve.argv.1")" "approve stub: -p precedes the prompt"
-last_argv="$(cat "$WORK/approve.argv.2")"
-assert_match "VERDICT: approve" "$last_argv" "approve stub: prompt carries the reply contract"
+assert_eq "1" "$argc" "approve stub: review is read-only prompting, exactly one argv (-p only)"
+assert_eq "-p" "$(cat "$WORK/approve.argv.1")" "approve stub: -p is the only argv"
+stdin_content="$(cat "$WORK/approve.stdin")"
+assert_match "VERDICT: approve" "$stdin_content" "approve stub: prompt (carrying the reply contract) arrives on stdin"
 assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "approve stub: findings placeholder empty array"
 
 # --- 2. failing stub: rate limit on stderr ----------------------------------
@@ -89,11 +91,15 @@ rc=0; run_adapter "$d" || rc=$?
 assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "noverdict stub: status malformed"
 
 # --- 5. implement success: summary from last non-empty stdout line; argv
-# shape asserted (acceptEdits: four argv, -p prompt --permission-mode acceptEdits)
+# shape asserted (acceptEdits: three argv, -p --permission-mode acceptEdits;
+# the prompt itself now arrives on STDIN -- v0b2 F2, same stdin fix as the
+# codex adapter, removing the leading-dash argv risk since task.md
+# frontmatter starts with "---") --------------------------------------------
 d="$(build_request implsuccess implement '#!/usr/bin/env bash
 printf "%s" "$#" > "'"$WORK"'/implsuccess.argc"
 i=0
 for a in "$@"; do i=$((i+1)); printf "%s" "$a" > "'"$WORK"'/implsuccess.argv.$i"; done
+cat > "'"$WORK"'/implsuccess.stdin"
 echo "working..."
 echo ""
 echo "Implemented the feature end to end."')"
@@ -103,10 +109,12 @@ assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "implement stub: status
 assert_eq "Implemented the feature end to end. (no commits produced)" "$(jq -r .summary "$d/out/envelope.json")" "implement stub: summary from last non-empty line, no-commits noted"
 assert_eq "[]" "$(jq -c .commits "$d/out/envelope.json")" "implement stub: empty commits array when no commits made"
 argc="$(cat "$WORK/implsuccess.argc")"
-assert_eq "4" "$argc" "implement stub: acceptEdits permission mode, exactly four argv"
-assert_eq "-p" "$(cat "$WORK/implsuccess.argv.1")" "implement stub: -p precedes the prompt"
-assert_eq "--permission-mode" "$(cat "$WORK/implsuccess.argv.3")" "implement stub: --permission-mode follows the prompt"
-assert_eq "acceptEdits" "$(cat "$WORK/implsuccess.argv.4")" "implement stub: acceptEdits value"
+assert_eq "3" "$argc" "implement stub: acceptEdits permission mode, exactly three argv (no prompt argv)"
+assert_eq "-p" "$(cat "$WORK/implsuccess.argv.1")" "implement stub: -p is first argv"
+assert_eq "--permission-mode" "$(cat "$WORK/implsuccess.argv.2")" "implement stub: --permission-mode is second argv"
+assert_eq "acceptEdits" "$(cat "$WORK/implsuccess.argv.3")" "implement stub: acceptEdits is third argv"
+stdin_content="$(cat "$WORK/implsuccess.stdin")"
+assert_match "Do the thing." "$stdin_content" "implement stub: full task body arrives on stdin, not argv"
 
 # --- 5b. implement success: stub actually commits in the worktree -> the
 # envelope's commits[] contains that real sha, and the summary is untouched

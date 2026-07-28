@@ -6,12 +6,12 @@ ADAPTER="$REPO_ROOT/plugins/engines/codex/run"
 # --- shared fixture builder -------------------------------------------------
 # build_request <name> <operation> [stub-body] -> prints path to request.json
 build_request() {
-  local name="$1" op="$2" stub="$3"
+  local name="$1" op="$2" stub="$3" nocontext="${4:-}"
   local d="$WORK/$name"
   mkdir -p "$d/pack" "$d/worktree" "$d/out" "$d/bin"
   printf -- '---\nschema: 1\nid: T001\nacceptance_criteria: does the thing\nstop_condition: one pass only\n---\nDo the thing.\n' \
     > "$d/pack/task.md"
-  echo "some repo context" > "$d/pack/context.md"
+  [ -n "$nocontext" ] || echo "some repo context" > "$d/pack/context.md"
   printf 'diff --git a/f b/f\n+changed\n' > "$d/pack/diff.patch"
   printf '{"budget":65536,"total_bytes":10,"items":[{"name":"task.md","bytes":5,"truncated":false}],"omitted":[]}\n' \
     > "$d/pack/pack.json"
@@ -135,6 +135,44 @@ echo "VERDICT: approve OR request-changes"')"
 rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "echoed-instruction stub: adapter should exit nonzero"
 assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruction stub: status malformed (not approve)"
+
+# --- 11. F2 regression: prompt delivered on STDIN (not argv), with `-` as the
+# prompt arg and --skip-git-repo-check present. The real codex CLI's clap
+# parser reads an argv prompt starting with "-"/"--" as a flag (dogfood F2a),
+# and separately refuses an untrusted worktree without --skip-git-repo-check
+# (F2b). Fixture has NO context.md, so the whole prompt is exactly the
+# task.md body -- which (per templates/task.md) begins with the frontmatter
+# "---" delimiter: the real repro shape, not a synthetic one. The stub
+# codex reads stdin itself, writes what it received to a file so the test
+# can inspect it, and asserts the required argv shape before doing so.
+codex_stdin_stub='#!/usr/bin/env bash
+set -euo pipefail
+argv=" $* "
+case "$argv" in
+  *" --skip-git-repo-check "*) ;;
+  *) echo "codex-stub: --skip-git-repo-check missing from argv: $*" >&2; exit 9 ;;
+esac
+last="${@: -1}"
+[ "$last" = "-" ] || { echo "codex-stub: last arg is not the literal - (argv: $*)" >&2; exit 9; }
+stdin_content="$(cat)"
+[ -n "$stdin_content" ] || { echo "codex-stub: stdin was empty" >&2; exit 9; }
+printf %s "$stdin_content" > ../out/stdin_capture.txt'
+
+d="$(build_request stdinimpl implement "$codex_stdin_stub"$'\necho "Implemented via stdin."' nocontext)"
+run_adapter "$d" || fail "stdin implement: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "stdin implement: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "stdin implement: status ok"
+captured="$(cat "$d/out/stdin_capture.txt")"
+assert_match "^---" "$captured" "stdin implement: prompt begins with the real --- frontmatter shape (leading-dash repro)"
+assert_match "Do the thing." "$captured" "stdin implement: full task body present in stdin"
+
+d="$(build_request stdinreview review "$codex_stdin_stub"$'\necho "VERDICT: approve"' nocontext)"
+run_adapter "$d" || fail "stdin review: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "stdin review: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "stdin review: status ok"
+assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "stdin review: verdict approve"
+captured="$(cat "$d/out/stdin_capture.txt")"
+[ -n "$captured" ] || fail "stdin review: prompt captured from stdin must be non-empty"
 
 # --- 9. unsupported operation ------------------------------------------------
 d="$(build_request badop research "")"
