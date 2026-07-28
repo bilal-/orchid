@@ -1,0 +1,341 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
+# `test` (below) needs the full role/resolver/envelope/capsuite stack; sourced
+# unconditionally alongside the two above rather than lazily, matching this
+# file's existing style (list/validate/trust/untrust already pay the cost of
+# sourcing manifest.sh even though only validate/list use it).
+source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
+source "$ORCHID_ROOT/lib/envelope.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
+repo="${ORCHID_REPO:-$PWD}"
+sub="${1:-}"; shift || true
+
+# Discovery search path (docs/specs/plugins.md, Trust model): $ORCHID_PLUGIN_PATH
+# (colon-delimited; each entry is a root laid out exactly like the two below,
+# i.e. <entry>/<kind>s/<name>/ -- origin=path) -> ~/.orchid/plugins/<kind>s/
+# (origin=user) -> $ORCHID_ROOT/plugins/<kind>s/ (origin=builtin). All three
+# are "user-controlled locations" per the spec's threat model, so trust=user
+# for both user and path origins (only builtin gets its own tag). Repo-local
+# <repo>/.orchid/plugins/<kind>s/ is discovered (origin=repo) with a real
+# digest-pinned trust tier (INV-09, lib/common.sh's trust_status_for):
+# trust=`trusted` when `~/.orchid/trust` has a matching-path record whose
+# digest equals the directory's current digest, else `DISABLED (untrusted)`
+# (no record) or `DISABLED (digest mismatch)` (record present, digest
+# changed -- e.g. a repo pull mutated a file). Only `DISABLED *` entries are
+# excluded from collision detection below -- a `trusted` repo-local plugin is
+# a live, executable member of the discovered set and must collide like any
+# other (INV-10 concerns the discovered-and-usable set, not everything
+# sitting on disk unexecuted).
+_plugins_roots() {
+  local p parts
+  if [ -n "${ORCHID_PLUGIN_PATH:-}" ]; then
+    local IFS=':'
+    read -ra parts <<< "$ORCHID_PLUGIN_PATH"
+    for p in "${parts[@]}"; do
+      [ -n "$p" ] && printf 'path\t%s\n' "$p"
+    done
+  fi
+  printf 'user\t%s\n' "$HOME/.orchid/plugins"
+  printf 'builtin\t%s\n' "$ORCHID_ROOT/plugins"
+}
+
+_plugins_trust_for() {  # origin -> trust tag (repo origin is handled per-dir
+  # by _plugins_repo_trust_label instead, since it depends on the trust store)
+  case "$1" in
+    builtin) echo builtin ;;
+    *) echo user ;;
+  esac
+}
+
+# _plugins_repo_trust_label <dir> -- trusted|DISABLED (untrusted)|DISABLED
+# (digest mismatch), per lib/common.sh's trust_status_for (INV-09).
+_plugins_repo_trust_label() {
+  local dir="$1" abs stat
+  abs="$(_trust_canon_path "$dir" 2>/dev/null || echo "$dir")"
+  stat="$(trust_status_for "$abs")"
+  case "$stat" in
+    trusted) echo trusted ;;
+    mismatch) echo "DISABLED (digest mismatch)" ;;
+    *) echo "DISABLED (untrusted)" ;;
+  esac
+}
+
+# _plugins_scan_root <origin> <root> -- prints one row per discovered plugin:
+# id\tkind\tversion\torigin\ttrust\tdir. A plugin dir is any <root>/<kind-dir>/
+# <name>/ containing a plugin.conf; kind/version come from the manifest
+# itself (not guessed from the directory name), same source manifest_validate
+# uses, so list/validate can never disagree about what a plugin claims to be.
+_plugins_scan_root() {
+  local origin="$1" root="$2" trust kdir pdir id kind ver
+  [ -d "$root" ] || return 0
+  for kdir in "$root"/*/; do
+    [ -d "$kdir" ] || continue
+    for pdir in "$kdir"*/; do
+      [ -f "${pdir}plugin.conf" ] || continue
+      pdir="${pdir%/}"
+      id="$(manifest_get "$pdir" id)"; [ -n "$id" ] || continue
+      kind="$(manifest_get "$pdir" kind)"
+      ver="$(manifest_get "$pdir" version)"
+      if [ "$origin" = repo ]; then
+        trust="$(_plugins_repo_trust_label "$pdir")"
+      else
+        trust="$(_plugins_trust_for "$origin")"
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$kind" "$ver" "$origin" "$trust" "$pdir"
+    done
+  done
+}
+
+# _plugins_discover -- the full discovered set: search-path roots in order,
+# then repo-local last (always DISABLED, see above).
+_plugins_discover() {
+  local origin root
+  while IFS=$'\t' read -r origin root; do
+    _plugins_scan_root "$origin" "$root"
+  done < <(_plugins_roots)
+  _plugins_scan_root repo "$repo/.orchid/plugins"
+}
+
+# _plugins_collisions <entries-tsv> -- prints "COLLISION: <id> at <p1>, <p2>"
+# for every id shared by 2+ non-DISABLED entries (INV-10: no silent shadow --
+# a duplicate id is an error, never a precedence win). Sets
+# _plugins_had_collision=1 on the caller's behalf if any were found.
+_plugins_collisions() {
+  local entries="$1" dup_ids did paths
+  _plugins_had_collision=0
+  dup_ids="$(printf '%s\n' "$entries" | awk -F'\t' '$1!="" && $5!~/^DISABLED/{print $1}' | sort | uniq -d)"
+  [ -n "$dup_ids" ] || return 0
+  while IFS= read -r did; do
+    [ -n "$did" ] || continue
+    paths="$(printf '%s\n' "$entries" | awk -F'\t' -v id="$did" '$1==id && $5!~/^DISABLED/{print $6}' | paste -sd', ' -)"
+    echo "COLLISION: $did at $paths"
+    _plugins_had_collision=1
+  done <<< "$dup_ids"
+}
+
+# -- Plugin lockfile (Task 7, docs/specs/plugins.md) -------------------------
+# `.orchid/plugins.lock` pins, for every plugin a resolved role CURRENTLY
+# binds to, {id, version, digest, source_origin, api_version,
+# capsuite_passed} -- "the run's plugin reality" at lock time, so a mid-run
+# plugin change (a pull, a swapped symlink, an edited adapter) is later
+# detectable via `verify-lock` instead of silently changing behavior
+# underneath an in-flight run.
+
+# _plugins_origin_for_dir <plugin-dir> -- the record's source_origin tag
+# (builtin|user|path|repo|external), reusing the exact same root list
+# _plugins_roots/_plugins_discover already classify origin from, so this can
+# never disagree with `plugins list`'s origin column for the same directory.
+# "external" is the fallback for a resolver-only test hook (ORCHID_ENGINES_DIR,
+# lib/resolver.sh) that discovery itself never walks -- never produced by any
+# of this repo's actual built-in/user/path/repo roots.
+_plugins_origin_for_dir() {
+  local dir="$1" origin root
+  case "$dir" in
+    "$repo/.orchid/plugins/"*) echo repo; return ;;
+  esac
+  while IFS=$'\t' read -r origin root; do
+    case "$dir" in "$root/"*) echo "$origin"; return ;; esac
+  done < <(_plugins_roots)
+  echo external
+}
+
+# _plugins_lock_records -- one pretty-printed (multi-line) JSON object per
+# PLUGIN (deduped by manifest id) that a resolved role currently binds to,
+# across all 5 built-in roles -- not just non-default overrides: the brief is explicit
+# that default bindings must be recorded too, or drift on a stock built-in
+# adapter would never be catchable at all. A plugin bound by more than one
+# role (e.g. claude via both orchestrator and arbiter, by default) gets
+# exactly ONE record, keyed off whichever of its roles is encountered first
+# in iteration order -- the record shape the brief specifies has no per-role
+# field, so any dedup key other than plugin id would invent one. Shared
+# verbatim between `lock` (writes it) and `verify-lock` (recomputes it fresh
+# and diffs against what was written), so the two can never disagree about
+# what "current" means.
+_plugins_lock_records() {
+  local role engine dir id ver av digest origin passed seen=" "
+  for role in orchestrator implementer reviewer arbiter plan_critic; do
+    engine="$(resolve_role "$repo" "$role")"
+    dir="$(resolve_engine_dir "$engine" 2>/dev/null)" || {
+      echo "orchid: plugins lock: engine '$engine' for role '$role' not found on search path (skipped)" >&2
+      continue
+    }
+    id="$(manifest_get "$dir" id)"; [ -n "$id" ] || continue
+    case "$seen" in *" $id "*) continue ;; esac
+    seen="$seen$id "
+    ver="$(manifest_get "$dir" version)"
+    av="$(manifest_get "$dir" api_version)"
+    digest="$(plugin_digest "$dir" 2>/dev/null)" || digest=""
+    origin="$(_plugins_origin_for_dir "$dir")"
+    passed=false
+    if capsuite_passed "$engine" "$role" 2>/dev/null; then passed=true; fi
+    jq -n --arg id "$id" --arg version "$ver" --arg digest "$digest" \
+          --arg source_origin "$origin" --arg api_version "$av" \
+          --argjson capsuite_passed "$passed" \
+      '{id:$id, version:$version, digest:$digest, source_origin:$source_origin,
+        api_version:$api_version, capsuite_passed:$capsuite_passed}'
+  done
+}
+
+case "$sub" in
+  list)
+    entries="$(_plugins_discover)"
+    _plugins_collisions "$entries"
+    printf '%s\n' "$entries" | awk -F'\t' '$1!=""{printf "%s\t%s\t%s\t%s\t%s\n",$1,$2,$3,$4,$5}'
+    [ "$_plugins_had_collision" -eq 0 ] || exit 1
+    ;;
+  validate)
+    target="${1:---all}"
+    entries="$(_plugins_discover)"
+    fails=0
+    if [ "$target" = --all ]; then
+      while IFS=$'\t' read -r id kind ver origin trust dir; do
+        [ -n "$id" ] || continue
+        manifest_validate "$dir" || fails=$((fails+1))
+      done <<< "$entries"
+    else
+      # Validate every dir claiming this id (plural on purpose: a colliding
+      # id should still have each of its manifests checked, not just one
+      # picked arbitrarily).
+      dirs="$(printf '%s\n' "$entries" | awk -F'\t' -v id="$target" '$1==id{print $6}')"
+      [ -n "$dirs" ] || orchid_die "no such plugin id: $target"
+      while IFS= read -r dir; do
+        [ -n "$dir" ] || continue
+        manifest_validate "$dir" || fails=$((fails+1))
+      done <<< "$dirs"
+    fi
+    [ "$fails" -eq 0 ] || exit 13
+    ;;
+  trust)
+    # trust [--update] <plugin-dir> -- pins (or, with --update, re-pins) the
+    # dir's current content digest into ~/.orchid/trust (OUTSIDE the repo --
+    # INV-09). Plain `trust` on a path already trusted at a DIFFERENT digest
+    # is refused (fail closed): a stale local pin silently sliding to a new
+    # digest would defeat the whole point of digest-pinning, so re-pinning is
+    # always an explicit `--update`.
+    mode=trust
+    if [ "${1:-}" = --update ]; then mode=update; shift; fi
+    dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins trust [--update] <plugin-dir>"
+    [ -d "$dir" ] || orchid_die "no such directory: $dir"
+    abs="$(_trust_canon_path "$dir")" || orchid_die "cannot resolve path: $dir"
+    # A plugin whose manifest fails validation (unknown api_version, an
+    # unsatisfied requires_orchid, etc. -- manifest_validate's own fail-
+    # closed rejections) must never be pinned: trust exists to let a
+    # digest-pinned plugin resolve and run, and doing that for a plugin the
+    # kernel itself has declared incompatible would defeat fail-closed
+    # validation entirely. Checked before anything else below (including the
+    # symlink-entrypoint refusal), and its own FAIL output is surfaced so an
+    # operator sees exactly why without a separate `plugins validate` run.
+    validate_out="$(manifest_validate "$abs" 2>&1)" \
+      || orchid_die "refusing to trust: manifest invalid — run: orchid plugins validate <id>
+$validate_out"
+    # A digest that hashes symlink targets (lib/common.sh's plugin_digest)
+    # still can't protect a plugin that was pinned while its entrypoint was
+    # ALREADY a symlink -- the pinned digest would simply cover whatever it
+    # pointed at that day. So trust is refused outright for a symlinked
+    # entrypoint; only a regular-file entrypoint may ever be pinned.
+    ep="$(manifest_get "$abs" entrypoint run)"
+    [ -L "$abs/$ep" ] && orchid_die "refusing to trust: entrypoint $ep is a symlink; trust requires a regular-file entrypoint"
+    digest="$(plugin_digest "$abs")" || orchid_die "failed to compute digest for $abs"
+    existing="$(trust_lookup "$abs")"
+    if [ "$mode" = trust ] && [ -n "$existing" ] && [ "$existing" != "$digest" ]; then
+      orchid_die "$abs is already trusted at a different digest -- run 'orchid plugins trust --update $dir' to re-pin"
+    fi
+    trust_store_set "$abs" "$digest"
+    echo "trusted: $abs $digest"
+    ;;
+  untrust)
+    dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins untrust <plugin-dir>"
+    abs="$(_trust_canon_path "$dir" 2>/dev/null || true)"; [ -n "$abs" ] || abs="$dir"
+    trust_store_remove "$abs"
+    echo "untrusted: $abs"
+    ;;
+  test)
+    # test <engine-id> <role> | --all-defaults -- runs the (engine, role)
+    # pair(s) through lib/capsuite.sh's check battery. All the actual work
+    # (including the adapter-invoking dryrun probe) lives in capsuite_run, a
+    # lib helper, not here -- see lib/capsuite.sh's header comment on why
+    # that split keeps INV-01 (which greps libexec/* only) green even though
+    # this diagnostic does spawn an adapter under ORCHID_DRYRUN=1.
+    fails=0
+    if [ "${1:-}" = --all-defaults ]; then
+      for role in orchestrator implementer reviewer arbiter plan_critic; do
+        engine="$(resolve_role "$repo" "$role")"
+        if capsuite_run "$engine" "$role"; then
+          echo "PASS: $engine $role"
+        else
+          echo "FAIL: $engine $role"
+          fails=$((fails+1))
+        fi
+      done
+    else
+      engine="${1:-}"; role="${2:-}"
+      [ -n "$engine" ] && [ -n "$role" ] \
+        || orchid_die "usage: orchid plugins test <engine-id> <role>|--all-defaults"
+      if capsuite_run "$engine" "$role"; then
+        echo "PASS: $engine $role"
+      else
+        echo "FAIL: $engine $role"
+        fails=1
+      fi
+    fi
+    [ "$fails" -eq 0 ] || exit 1
+    ;;
+  lock)
+    # Writes .orchid/plugins.lock: an atomic snapshot of _plugins_lock_records
+    # (see above) -- meant to be committed on the integration branch
+    # (orchid-init writes an initial one for exactly that reason).
+    state="$(orchid_state "$repo")"; mkdir -p "$state"
+    recs="$(_plugins_lock_records)"
+    if [ -n "$recs" ]; then
+      printf '%s\n' "$recs" | jq -s '.' | atomic_write "$state/plugins.lock"
+    else
+      echo '[]' | atomic_write "$state/plugins.lock"
+    fi
+    echo "locked: $state/plugins.lock ($(jq 'length' "$state/plugins.lock") plugin(s))"
+    ;;
+  verify-lock)
+    # Recomputes the SAME per-role-binding records `lock` would write right
+    # now (_plugins_lock_records) and diffs them against the stored
+    # .orchid/plugins.lock id-by-id: a version or digest change is CHANGED, a
+    # locked id no longer resolvable via its bound role at all is MISSING.
+    # Either is drift -> nonzero exit + a report naming what changed; no
+    # drift -> exit 0 (`orchid doctor` runs this when a lock exists, per the
+    # brief downgrading drift to a WARNING rather than a doctor FAIL in
+    # v1-m1).
+    state="$(orchid_state "$repo")"; lockfile="$state/plugins.lock"
+    [ -f "$lockfile" ] || orchid_die "no plugins.lock found at $lockfile -- run 'orchid plugins lock' first"
+    # Guard against a corrupt/truncated/merge-conflict-markered lockfile
+    # BEFORE the drift loop below: that loop reads ids via
+    # `done < <(jq -r '.[].id' "$lockfile")`, and a jq failure inside a
+    # process substitution is invisible to set -e/pipefail -- the loop
+    # would simply iterate zero times and this command would print "clean"
+    # + exit 0 on a lockfile that never parsed at all. Fail loudly instead.
+    jq -e 'type == "array"' "$lockfile" >/dev/null 2>&1 \
+      || orchid_die "plugins.lock is corrupt or not a JSON array (merge conflict?) -- regenerate with: orchid plugins lock"
+    cur="$(_plugins_lock_records)"
+    curjson="[]"; [ -z "$cur" ] || curjson="$(printf '%s\n' "$cur" | jq -s '.')"
+    drift=0
+    while IFS= read -r id; do
+      [ -n "$id" ] || continue
+      lrec="$(jq -c --arg id "$id" '.[] | select(.id==$id)' "$lockfile")"
+      crec="$(printf '%s' "$curjson" | jq -c --arg id "$id" '.[] | select(.id==$id)')"
+      if [ -z "$crec" ]; then
+        echo "MISSING: $id (locked but no longer resolvable via its bound role)"
+        drift=1
+        continue
+      fi
+      lver="$(printf '%s' "$lrec" | jq -r .version)"; cver="$(printf '%s' "$crec" | jq -r .version)"
+      ldig="$(printf '%s' "$lrec" | jq -r .digest)"; cdig="$(printf '%s' "$crec" | jq -r .digest)"
+      if [ "$lver" != "$cver" ] || [ "$ldig" != "$cdig" ]; then
+        echo "CHANGED: $id version $lver->$cver digest ${ldig:0:12}->${cdig:0:12}"
+        drift=1
+      fi
+    done < <(jq -r '.[].id' "$lockfile")
+    if [ "$drift" -ne 0 ]; then
+      echo "drift detected against $lockfile"
+      exit 1
+    fi
+    echo "clean: current plugin bindings match $lockfile"
+    ;;
+  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|lock|verify-lock" ;;
+esac

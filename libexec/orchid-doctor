@@ -4,6 +4,39 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
+# Plugin discovery report -- printed BEFORE role checks (role resolution
+# depends on which plugins exist at all, so an operator should see the full
+# discovery picture, including any collision, before the per-role verdicts
+# below). Shells out to `orchid plugins list` rather than re-implementing
+# discovery here so the two can never drift apart; a nonzero exit from it
+# means INV-10 tripped (a duplicate id somewhere in the discovered set),
+# which is a doctor FAIL, not a warning.
+echo "plugins:"
+if plugins_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins list 2>&1)"; then
+  plugins_rc=0
+else
+  plugins_rc=$?
+fi
+echo "$plugins_out" | sed 's/^/  /'
+[ "$plugins_rc" -eq 0 ] && ok "plugin discovery: no collisions" || bad "plugin discovery: collision(s) detected (see plugins: section above)"
+
+# Plugin manifest validation -- shells to `orchid plugins validate --all`
+# (same short-lived-subprocess pattern as `plugins list` above, INV-01 fine)
+# so doctor and `orchid plugins validate` can never disagree about what's
+# malformed. A permission opted into via `permissions=` but not actually set
+# anywhere the launcher will run from is a WARNING here (the plugin is still
+# runnable; the adapter reports its own auth failure at runtime, per
+# lib/manifest.sh's manifest_validate) -- it must never fail the exit code.
+# A genuinely malformed manifest (validate's aggregate exit 13) IS a doctor
+# FAIL, exit 1.
+if validate_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins validate --all 2>&1)"; then
+  validate_rc=0
+else
+  validate_rc=$?
+fi
+perm_warnings="$(echo "$validate_out" | grep -E '^warn:.*permission .* requested, not set' || true)"
+[ -z "$perm_warnings" ] || echo "$perm_warnings" | sed 's/^/  /'
+[ "$validate_rc" -eq 0 ] && ok "plugin manifests: validate clean" || bad "plugin manifests: validate failed (see above)"
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
 command -v jq >/dev/null && ok jq || bad "jq missing"
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
@@ -17,6 +50,27 @@ for role in orchestrator implementer reviewer arbiter plan_critic; do
     bad "role $role -> $eng: no engine plugin on search path (see docs/engines/$eng.md)"
   fi
 done
+# Plugin lockfile drift (Task 7) -- only runs when a lock already exists
+# (orchid-init writes one best-effort; a repo that never locked simply has
+# no opinion here). Drift is a WARNING, not a FAIL, in v1-m1 -- it surfaces
+# what changed for the operator to judge but never flips doctor's exit code.
+lockfile="$repo/.orchid/plugins.lock"
+if [ -f "$lockfile" ]; then
+  if lock_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins verify-lock 2>&1)"; then
+    ok "plugin lock: no drift ($lockfile)"
+  elif echo "$lock_out" | grep -qi "corrupt"; then
+    # A corrupt/unparsable lockfile (merge conflict, truncation, ...) is a
+    # distinct condition from drift -- the message must say "corrupt", not
+    # "drift", so an operator doesn't mistake "the file won't even parse"
+    # for "a plugin changed". Still non-fatal in v1-m1 (same policy as
+    # drift): this only WARNs, never flips doctor's exit code.
+    echo "WARN: plugin lock is corrupt ($lockfile):"
+    echo "$lock_out" | sed 's/^/  /'
+  else
+    echo "WARN: plugin lock drift detected ($lockfile):"
+    echo "$lock_out" | sed 's/^/  /'
+  fi
+fi
 integ="$(config_get "$repo" integration_branch orchid/integration)"
 if git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 || \
    git -C "$repo" rev-parse --verify -q HEAD >/dev/null 2>&1; then
@@ -24,5 +78,5 @@ if git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 || \
 else
   bad "integration branch exists or creatable: no HEAD to branch from and $integ absent"
 fi
-[ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins present but disabled (no trust store in v0)"
+[ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins require 'orchid plugins trust <dir>' to execute (see plugins: section above for current trust status, INV-09)"
 [ "$fails" -eq 0 ] || exit 1

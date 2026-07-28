@@ -1,0 +1,3 @@
+id=implementer
+requires=workspace_write,shell,git
+description=Edits the workspace and commits; executes task implementation work.

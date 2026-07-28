@@ -1,0 +1,7 @@
+structured_text
+workspace_read
+workspace_write
+shell
+git
+network
+citations

@@ -47,3 +47,48 @@ assert_match "T001	ok" "$line" "stub engine envelope reconciled end-to-end"
 req="$(ls "$WORK/.orchid/runtime/requests/"*.json | head -n1)"
 assert_eq "implement" "$(jq -r .operation "$req")" "request operation"
 assert_eq "workspace-write" "$(jq -r .policy "$req")" "implement policy"
+
+# -- env hygiene (Task 5): the child only sees the base allowlist (PATH,
+# HOME, USER, LANG, LC_*, TERM, TMPDIR, ORCHID_*) plus exactly the env var
+# names a plugin's manifest opts into via `permissions=`. SECRET_LEAK is set
+# in the PARENT but neither base-allowlisted nor opted into by the first
+# stub's manifest (it has no plugin.conf at all) -- it must not reach the
+# child. ORCHID_MARKER (ORCHID_*) and PATH must always reach the child.
+export SECRET_LEAK="topsecret-value"
+export ORCHID_MARKER="marker-should-pass"
+mkdir -p "$WORK/eng/leaky"
+cat > "$WORK/eng/leaky/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
+printf '{"contract":1,"job_id":"%s","task":"%s","operation":"implement","status":"ok","summary":"SECRET_LEAK=<%s> ORCHID_MARKER=<%s> PATH_SET=<%s>"}' \
+  "$jid" "$task" "${SECRET_LEAK:-}" "${ORCHID_MARKER:-}" "${PATH:+yes}" > "$out"
+EOF
+chmod +x "$WORK/eng/leaky/run"
+printf 'role.leaktest=leaky\n' >> "$WORK/orchid.config"
+
+"$ORCHID_BIN" task create T002 demo2 >/dev/null
+"$REPO_ROOT/runners/orchid-launch" T002 leaktest implement >/dev/null
+sleep 1
+"$ORCHID_BIN" jobs reconcile >/dev/null
+summary="$(jq -r .summary "$WORK/.orchid/reviews/T002-a1-leaktest.json")"
+assert_match "SECRET_LEAK=<>" "$summary" "child does NOT see SECRET_LEAK (not allowlisted, not opted into)"
+assert_match "ORCHID_MARKER=<marker-should-pass>" "$summary" "child sees ORCHID_MARKER (ORCHID_* always allowed)"
+assert_match "PATH_SET=<yes>" "$summary" "child sees PATH (always allowed)"
+
+# -- opting into SECRET_LEAK via plugin.conf permissions= makes it reach the
+# child (the ONLY way a non-base name may cross the boundary).
+mkdir -p "$WORK/eng/leaky2"
+cp "$WORK/eng/leaky/run" "$WORK/eng/leaky2/run"; chmod +x "$WORK/eng/leaky2/run"
+printf 'manifest_version=1\nid=orchid/leaky2\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\npermissions=SECRET_LEAK\n' \
+  > "$WORK/eng/leaky2/plugin.conf"
+printf 'role.leaktest2=leaky2\n' >> "$WORK/orchid.config"
+
+"$ORCHID_BIN" task create T003 demo3 >/dev/null
+"$REPO_ROOT/runners/orchid-launch" T003 leaktest2 implement >/dev/null
+sleep 1
+"$ORCHID_BIN" jobs reconcile >/dev/null
+summary2="$(jq -r .summary "$WORK/.orchid/reviews/T003-a1-leaktest2.json")"
+assert_match "SECRET_LEAK=<topsecret-value>" "$summary2" "child DOES see SECRET_LEAK once plugin.conf opts in via permissions="

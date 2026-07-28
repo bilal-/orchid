@@ -117,3 +117,21 @@ override arg or a `reviewer.secondary` binding. Logged for v1; the
 engine-independent reviewer (agy) is the load-bearing one and ran fine.
 
 ### F1 — FIXED earlier this branch (template default risk_tier now `low`).
+
+## v1-m1 dogfood: plugin machinery (2026-07-28)
+Proved the plugin/role foundation with real `orchid plugins` commands on a
+sandbox repo (no app — that's m2). All properties held:
+- `plugins list` → the 5 built-ins as `builtin`.
+- **Trust lifecycle:** a repo-local engine lists `DISABLED (untrusted)` →
+  `plugins trust` → `trusted` → tamper a file → `DISABLED (digest mismatch)`.
+  The INV-09 boundary works end-to-end on real commands.
+- **Capability suite:** `plugins test agy implementer` → `FAIL` (agy lacks
+  workspace_write); `plugins test agy reviewer` → pass. The gate that m2's
+  failover will consume is correct.
+- **Lockfile:** `plugins lock` → 3 records; `verify-lock` clean; a
+  corrupt/merge-markered lock → loud nonzero (not false-clean).
+No orchid bugs surfaced (unlike the v0 dogfood's 5) — the plugin layer is
+pure deterministic bash with no real-engine integration surface, so the
+stub-tested behavior matched real behavior. v1-m1 foundation is solid.
+Note (ledgered m2): plugin_digest embeds absolute paths → lockfiles are
+machine-specific; fine for single-operator v1.

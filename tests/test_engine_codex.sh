@@ -217,3 +217,43 @@ rc=0; ORCHID_DRYRUN=1 run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "dryrun badop: adapter should exit nonzero"
 envelope_validate "$d/out/envelope.json" || fail "dryrun badop: envelope invalid"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "dryrun badop: status failed (operation gate precedes dryrun)"
+
+# --- 12. codex-review engine identity: `codex-review/run` stamps its own
+# engine id (orchid/codex-review), not the shared codex/run's default id.
+# codex-review wraps the shared codex/run via ORCHID_ENGINE_ID (v1m1: engine
+# id becomes real, not just an envelope-hardcoded string). ------------------
+CODEX_REVIEW_ADAPTER="$REPO_ROOT/plugins/engines/codex-review/run"
+run_codex_review() { PATH="$1/bin:$PATH" "$CODEX_REVIEW_ADAPTER" "$1/request.json"; }
+
+d="$(build_request reviewengineid review '#!/usr/bin/env bash
+echo "looks fine"
+echo "VERDICT: approve"')"
+run_codex_review "$d" || fail "codex-review approve: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "codex-review approve: envelope invalid"
+assert_eq "orchid/codex-review" "$(jq -r .engine "$d/out/envelope.json")" "codex-review run stamps its own engine id"
+
+# --- 13. codex-review operation gating: implement is NOT in its allowed ops
+# (review,critique only, matching its manifest's no-workspace_write
+# capability set) -- must fail closed with status failed, and the underlying
+# codex stub must never even run. -------------------------------------------
+d="$(build_request reviewnoimplement implement '#!/usr/bin/env bash
+echo "should never run" > should_not_exist.txt
+echo "Implemented."')"
+rc=0; run_codex_review "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "codex-review implement: adapter should exit nonzero (operation not permitted)"
+assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "codex-review implement: status failed"
+assert_match "not permitted" "$(jq -r .summary "$d/out/envelope.json")" "codex-review implement: summary explains operation not permitted"
+[ ! -f "$d/worktree/should_not_exist.txt" ] || fail "codex-review implement: engine must never have been invoked (file should not exist)"
+
+# --- 14. codex/run itself (no ORCHID_ENGINE_ID / ORCHID_ALLOWED_OPS override)
+# stays exactly as before: still stamps orchid/codex and still permits
+# implement -- the shared adapter's back-compat default is unchanged. -------
+d="$(build_request plaincodeximplement implement '#!/usr/bin/env bash
+echo "did the work" > done2.txt
+git add done2.txt
+git -c user.email=test@orchid.local -c user.name="Orchid Test" commit -q -m "stub commit"
+echo "Implemented via plain codex."')"
+run_adapter "$d" || fail "plain codex implement: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "plain codex implement: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "plain codex implement: status ok"
+assert_eq "orchid/codex" "$(jq -r .engine "$d/out/envelope.json")" "plain codex/run still stamps orchid/codex"

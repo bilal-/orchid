@@ -19,13 +19,20 @@ operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
 input_pack="$(jq -r .input_pack "$req")"; output="$(jq -r .output "$req")"
 base_sha="$(jq -r .base_sha "$req")";     candidate_sha="$(jq -r .candidate_sha "$req")"
 
+# Engine id is overridable so a reduced-capability wrapper (e.g. codex-review)
+# can stamp its OWN id in envelopes instead of borrowing this shared adapter's
+# default -- see plugins/engines/codex-review/run. Unset = back-compat: plain
+# codex/run is unaffected.
+ENGINE_ID="${ORCHID_ENGINE_ID:-orchid/codex}"
+
 write_envelope() {  # status extra-json
   local extra="${2:-}"; [ -n "$extra" ] || extra='{}'
   jq -n --arg job_id "$job_id" --arg task "$task" --arg operation "$operation" \
         --arg status "$1" --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
+        --arg engine "$ENGINE_ID" \
         --argjson extra "$extra" \
         '{contract:1, job_id:$job_id, task:$task, operation:$operation, status:$status,
-          engine:"orchid/codex", base_sha:$base_sha, candidate_sha:$candidate_sha} + $extra' \
+          engine:$engine, base_sha:$base_sha, candidate_sha:$candidate_sha} + $extra' \
     | atomic_write "$output"
 }
 classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
@@ -34,6 +41,25 @@ classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
   else echo failed
   fi
 }
+
+# Allowed-ops gate precedes the operation gate AND DRYRUN: a wrapper adapter
+# (e.g. codex-review) can restrict which operations it permits via
+# ORCHID_ALLOWED_OPS (comma list) so it fails closed on anything outside its
+# manifest's declared capabilities -- e.g. codex-review has no
+# workspace_write, so it must refuse `implement` even though the shared
+# codex/run underneath supports it. Unset = permit all (back-compat: plain
+# codex/run is unaffected). Mirrors the agy operation-gate-before-dryrun
+# ordering below.
+if [ -n "${ORCHID_ALLOWED_OPS:-}" ]; then
+  _allowed_ops=",${ORCHID_ALLOWED_OPS},"
+  case "$_allowed_ops" in
+    *",$operation,"*) ;;
+    *)
+      echo "$ENGINE_ID: operation '$operation' not permitted for $ENGINE_ID" >&2
+      write_envelope failed "$(jq -n --arg s "operation $operation not permitted for $ENGINE_ID" '{summary:$s}')"
+      exit 1 ;;
+  esac
+fi
 
 # Operation gate precedes DRYRUN: an unsupported operation fails the same way
 # whether or not ORCHID_DRYRUN is set (no dryrun short-circuit for unknowns) —

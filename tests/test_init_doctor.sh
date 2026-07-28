@@ -10,7 +10,7 @@ out0="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor pa
 assert_match "integration branch exists or creatable" "$out0" "doctor pre-init: integration branch creatable from HEAD"
 mkdir -p .orchid/plugins/engines/evil
 out="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || true
-assert_match "repo-local plugins.*disabled" "$out" "repo-local plugin warning"
+assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"
 
 # init now refuses a dirty tree, so commit the fixture's config/engine
 # scaffolding first (a real user would already have these committed).

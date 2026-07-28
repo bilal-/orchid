@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+exec env ORCHID_ENGINE_ID=orchid/codex-review ORCHID_ALLOWED_OPS=review,critique "$here/../codex/run" "$@"
