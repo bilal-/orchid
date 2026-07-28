@@ -4,6 +4,7 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+source "$ORCHID_ROOT/lib/review.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 sub="${1:-}"; shift || true
@@ -55,15 +56,39 @@ case "$sub" in
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
     epoch_require "$repo"
-    task="$1"; role="$2"; operation="$3"
+    task="$1"; role="$2"; operation="$3"; shift 3
+    override_engine=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --engine)
+          [ -n "${2:-}" ] || orchid_die "--engine requires a value"
+          override_engine="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs prepare <task> <role> <op> [--engine <name>]" ;;
+      esac
+    done
     tf="$state/tasks/$task.md"
     [ -f "$tf" ] || orchid_die "no task $task"
-    # resolve_role_available (v1-m2): walks the role's failover chain and
-    # already prints its own "orchid: no eligible engine available for role
-    # ..." diagnostic to stderr on failure -- propagate its exit 14 verbatim
-    # rather than re-wrapping it (prepare is tier-1: mint-manifest-only, so
-    # there is nothing else to clean up here before exiting).
-    engine="$(resolve_role_available "$repo" "$role")" || exit 14
+    if [ -n "$override_engine" ]; then
+      # F5: --engine names ANY discovered engine, not just one the role's own
+      # failover chain would have picked -- this is how the SECOND dual-
+      # review slot (lib/review.sh's review_routing) actually gets launched.
+      # Validated exactly like resolve_role_checked/resolve_role_available
+      # already validate a chain entry: discovered, then role-eligible
+      # (role_eligibility_reason, the single requires/forbids walk) -- never
+      # an engine-name branch (INV-05), and never silently accepted.
+      dir="$(resolve_engine_dir "$override_engine")" \
+        || { echo "orchid: engine '$override_engine' for role '$role' not found on search path" >&2; exit 14; }
+      reason="$(role_eligibility_reason "$role" "$dir")" \
+        || { echo "orchid: engine $override_engine $reason for role $role" >&2; exit 14; }
+      engine="$override_engine"
+    else
+      # resolve_role_available (v1-m2): walks the role's failover chain and
+      # already prints its own "orchid: no eligible engine available for role
+      # ..." diagnostic to stderr on failure -- propagate its exit 14 verbatim
+      # rather than re-wrapping it (prepare is tier-1: mint-manifest-only, so
+      # there is nothing else to clean up here before exiting).
+      engine="$(resolve_role_available "$repo" "$role")" || exit 14
+    fi
     attempt=$(( $(fm_get "$tf" attempts) + 1 ))
     epoch="$(epoch_current "$repo")"
     suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
@@ -301,5 +326,15 @@ case "$sub" in
       echo "gc-orphan $p"
     done
     ;;
-  *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc" ;;
+  review-plan)
+    # tier-1, read-only: pure routing diagnostics over durable state + config
+    # + engine discovery -- no mutation anywhere, so (unlike prepare/
+    # reconcile) this is deliberately NOT epoch-fenced. Consulted by the
+    # orchestrator before dispatching each reviewer slot (PROTOCOL, Task 10).
+    task="$1"
+    tf="$state/tasks/$task.md"
+    [ -f "$tf" ] || orchid_die "no task $task"
+    review_routing "$repo" "$task"
+    ;;
+  *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc|review-plan" ;;
 esac

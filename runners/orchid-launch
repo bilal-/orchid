@@ -15,12 +15,28 @@ source "$ORCHID_ROOT/lib/manifest.sh"
 
 task="${1:-}"; role="${2:-}"; operation="${3:-}"
 [ -n "$task" ] && [ -n "$role" ] && [ -n "$operation" ] \
-  || orchid_die "usage: orchid-launch <task-id> <role> <operation>"
+  || orchid_die "usage: orchid-launch <task-id> <role> <operation> [--engine <name>]"
+shift 3
+override_engine=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --engine)
+      [ -n "${2:-}" ] || orchid_die "--engine requires a value"
+      override_engine="$2"; shift 2 ;;
+    *) orchid_die "usage: orchid-launch <task-id> <role> <operation> [--engine <name>]" ;;
+  esac
+done
 
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 
-# tier-1 mints the job identity + manifest; never spawns (INV-01).
-manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "$task" "$role" "$operation")"
+# tier-1 mints the job identity + manifest; never spawns (INV-01). --engine
+# is forwarded to prepare VERBATIM -- prepare owns the only validation
+# (discovered + role-eligible), this launcher never re-validates it (F5).
+if [ -n "$override_engine" ]; then
+  manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "$task" "$role" "$operation" --engine "$override_engine")"
+else
+  manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "$task" "$role" "$operation")"
+fi
 job_id="$(jq -r .job_id "$manifest")"; engine="$(jq -r .engine "$manifest")"
 attempt="$(jq -r .attempt "$manifest")"; output="$(jq -r .output "$manifest")"
 log="$(jq -r .log "$manifest")"

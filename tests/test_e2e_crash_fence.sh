@@ -97,10 +97,11 @@ out="$(jq -r .output "$req")"
 jid="$(jq -r .job_id "$req")"
 task="$(jq -r .task "$req")"
 op="$(jq -r .operation "$req")"
+cand="$(jq -r .candidate_sha "$req")"
 [ "$op" = review ] || exit 1
-jq -n --arg jid "$jid" --arg task "$task" \
+jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
   '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
-    verdict:"approve", scope_complete:true, summary:"stub review: approved"}' > "$out"
+    verdict:"approve", scope_complete:true, summary:"stub review: approved", candidate_sha:$cand}' > "$out"
 EOF
 chmod +x "$WORK/eng/stubreview/run"
 

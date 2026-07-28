@@ -3,7 +3,7 @@
 
 pack_build() {  # repo task op dest ; exit 12 = input_overflow
   local repo="$1" task="$2" op="$3" dest="$4"
-  local state tf budget used=0 items="" omitted=""
+  local state tf budget used=0 items="" omitted="" symbols_tmp=""
   state="$(orchid_state "$repo")"; tf="$state/tasks/$task.md"
   [ -f "$tf" ] || { echo "orchid: no task $task" >&2; return 1; }
   budget="$(config_get "$repo" pack_budget_bytes 65536)"
@@ -20,10 +20,20 @@ pack_build() {  # repo task op dest ; exit 12 = input_overflow
     git -C "$repo" diff "$b".."$c" > "$dest/diff.patch"
     used=$(( used + $(wc -c < "$dest/diff.patch") ))
     items="$items,{\"name\":\"diff.patch\",\"bytes\":$(wc -c < "$dest/diff.patch"),\"truncated\":false}"
+
+    # symbols.txt: the inline blind-spot guard's data (changed-file list +
+    # every hunk header) -- the changed-symbol list PROTOCOL's routing-
+    # upgrade judgment (Task 10) reads to decide whether to upgrade to a
+    # worktree-capable reviewer. Built now but only written into the pack
+    # (further down) AFTER context.md has taken its share of the budget: it
+    # is truncatable, and trimmed strictly after the higher-priority repo
+    # context, never before it.
+    symbols_tmp="$(mktemp)"
+    git -C "$repo" diff --unified=0 "$b".."$c" 2>/dev/null | grep -E '^(\+\+\+|@@)' > "$symbols_tmp" || true
   fi
 
   if [ "$used" -gt "$budget" ]; then
-    rm -rf "$dest"
+    rm -rf "$dest"; [ -z "$symbols_tmp" ] || rm -f "$symbols_tmp"
     echo "orchid: input_overflow — non-truncatable inputs ($used bytes) exceed pack budget ($budget)" >&2
     return 12
   fi
@@ -44,6 +54,24 @@ pack_build() {  # repo task op dest ; exit 12 = input_overflow
     items="$items,{\"name\":\"context.md\",\"bytes\":$(wc -c < "$dest/context.md"),\"truncated\":$trunc}"
   else
     omitted="\"context.md\""
+  fi
+
+  if [ -n "$symbols_tmp" ]; then
+    local room2 sym_bytes strunc=false
+    room2=$(( budget - used ))
+    if [ "$room2" -le 0 ]; then
+      omitted="${omitted:+$omitted,}\"symbols.txt\""
+    else
+      sym_bytes="$(wc -c < "$symbols_tmp")"
+      if [ "$sym_bytes" -le "$room2" ]; then
+        cp "$symbols_tmp" "$dest/symbols.txt"
+      else
+        head -c "$room2" "$symbols_tmp" > "$dest/symbols.txt"; strunc=true
+      fi
+      used=$(( used + $(wc -c < "$dest/symbols.txt") ))
+      items="$items,{\"name\":\"symbols.txt\",\"bytes\":$(wc -c < "$dest/symbols.txt"),\"truncated\":$strunc}"
+    fi
+    rm -f "$symbols_tmp"
   fi
 
   printf '{"budget":%s,"total_bytes":%s,"items":[%s],"omitted":[%s]}\n' \

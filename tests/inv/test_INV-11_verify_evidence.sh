@@ -100,6 +100,7 @@ assert_eq reviewing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d'
 rc=0; "$ORCHID_BIN" verify T004 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "fixture: real verify PASS for T004"
 "$ORCHID_BIN" task advance T004 reviewing >/dev/null
+plant_reviewer_envelope T004
 "$ORCHID_BIN" task advance T004 arbitrating --reason "single reviewer approved" >/dev/null
 
 [ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before rework"
@@ -141,6 +142,7 @@ assert_eq reviewing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d'
 integ=orchid/integration
 git -C "$WORK" branch "$integ" "$head_sha"
 
+plant_reviewer_envelope T004
 "$ORCHID_BIN" task advance T004 arbitrating --reason "single reviewer approved" >/dev/null
 
 # A command that passes on a NAMED branch checkout (here, $WORK's own
@@ -153,6 +155,7 @@ vcmd_merge='test "$(git rev-parse --abbrev-ref HEAD)" != HEAD'
 "$ORCHID_BIN" task advance T004 merging --reason "approved for merge" >/dev/null
 
 [ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before the merge attempt"
+
 
 rc=0; "$ORCHID_BIN" merge T004 >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "fixture: merge validation fails in its detached temp worktree"

@@ -13,6 +13,15 @@ role.arbiter=claude
 role.plan_critic=codex
 pack_budget_bytes=65536
 
+# Dual review routing (v1-m2): review.<tier> is a comma-separated failover
+# chain of engine names consulted for the risk-tiered reviewer slots (see
+# docs/specs/kernel.md's Independence section) — low tier wants one
+# engine-independent reviewer; medium/high want two (worktree-capable for
+# depth + engine-independent for diversity). Built-in defaults shown here:
+# review.low=agy
+# review.medium=codex-review,agy
+# review.high=codex-review,agy
+
 # Everything below is commented with its built-in default — uncomment and
 # change only what this repo needs. Full key reference: lib/config-keys.txt
 # (also: `orchid config list` prints the EFFECTIVE value + provenance for

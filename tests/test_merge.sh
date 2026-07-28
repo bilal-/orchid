@@ -24,6 +24,7 @@ walk_to_merging() {
   "$ORCHID_BIN" verify "$id" >/dev/null
   git checkout -q "$integ"
   "$ORCHID_BIN" task advance "$id" reviewing
+  plant_reviewer_envelope "$id"
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved"
   "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
 }
@@ -187,6 +188,7 @@ git worktree add -q "$wt5" task/T005
 "$ORCHID_BIN" task advance T005 testing
 "$ORCHID_BIN" verify T005 >/dev/null   # runs in $wt5 (frontmatter worktree)
 "$ORCHID_BIN" task advance T005 reviewing
+plant_reviewer_envelope T005
 "$ORCHID_BIN" task advance T005 arbitrating --reason "single reviewer approved"
 "$ORCHID_BIN" task advance T005 merging --reason "approved for merge"
 
@@ -236,6 +238,7 @@ assert_eq 2 "$n_wt5" "only the recorded worktree remains registered (no leaked t
 rc=0; "$ORCHID_BIN" verify T005 >/dev/null || rc=$?
 assert_eq 0 "$rc" "re-verify passes on the rebased candidate (recorded worktree)"
 "$ORCHID_BIN" task advance T005 reviewing
+plant_reviewer_envelope T005
 "$ORCHID_BIN" task advance T005 arbitrating --reason "re-reviewed after rebase, approved"
 "$ORCHID_BIN" task advance T005 merging --reason "approved for merge"
 rc=0; out5b="$WORK/merge5b.out"
