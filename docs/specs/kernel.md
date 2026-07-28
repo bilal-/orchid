@@ -161,8 +161,8 @@ answers/  logs/
 
 **Bootstrap (existing repo):** `orchid doctor` → `orchid init` creates the
 integration branch from the default-branch HEAD and commits `.orchid/` there.
-User branches are never touched. **Greenfield (v1):** `orchid-plan` makes a
-root commit before any worktree exists (`git worktree add` needs a HEAD);
+User branches are never touched. **Greenfield (v1):** `orchid init --greenfield`
+makes a root commit before any worktree exists (`git worktree add` needs a HEAD);
 scaffolding is T001; `orchid doctor --greenfield` skips checks that cannot
 apply pre-scaffold. **Scaffold verification:** tasks flagged
 `archetype: feature, scaffold: true` may use structural assertions (files

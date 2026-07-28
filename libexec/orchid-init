@@ -2,6 +2,42 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
 repo="${ORCHID_REPO:-$PWD}"
+
+# --greenfield (v1-m2 Task 9): the ONLY new flag. On a repo with an unborn
+# HEAD (no commits yet -- `git rev-parse -q --verify HEAD` fails), init is
+# where the integration branch first needs a real HEAD to branch from
+# (`git branch $integ HEAD` cannot resolve HEAD otherwise), so init mints the
+# root commit itself before falling through into the rest of this script
+# completely unchanged. On a repo that already has commits, --greenfield is
+# a no-op modifier -- the block below never runs (unborn_head=0), and the
+# flag is otherwise ignored.
+greenfield=0
+while [ $# -gt 0 ]; do case "$1" in
+  --greenfield) greenfield=1; shift ;;
+  *) shift ;;
+esac; done
+
+if git -C "$repo" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+  unborn_head=0
+else
+  unborn_head=1
+fi
+
+if [ "$unborn_head" -eq 1 ]; then
+  [ "$greenfield" -eq 1 ] || \
+    orchid_die "no commits yet (unborn HEAD) — run 'orchid init --greenfield' to create a root commit first"
+  # Greenfield never adopts a pre-existing pile silently: the directory must
+  # be empty apart from .git itself before the root commit is minted. This is
+  # a raw directory-listing check, deliberately stronger than `git status
+  # --porcelain` below (which would miss a stray file the user's own
+  # not-yet-committed .gitignore happens to exclude).
+  stray="$(cd "$repo" && ls -A | grep -vx '\.git' || true)"
+  if [ -n "$stray" ]; then
+    orchid_die "orchid init --greenfield requires an empty directory (found: $(printf '%s' "$stray" | tr '\n' ' ' | sed 's/ *$//')) — greenfield never adopts a pre-existing pile silently"
+  fi
+  git -C "$repo" commit --allow-empty -m "orchid: root"
+fi
+
 [ -z "$(git -C "$repo" status --porcelain)" ] || orchid_die "working tree not clean — commit or stash first (orchid never touches user work)"
 integ="$(config_get "$repo" integration_branch orchid/integration)"
 state="$(orchid_state "$repo")"; orchid_runtime "$repo" >/dev/null

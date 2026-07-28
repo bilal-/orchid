@@ -68,3 +68,84 @@ else
   [ "$rc" -ne 0 ] || fail "init must refuse to touch an unreadable .gitignore"
   grep -q '^precious/$' "$scratch3/.gitignore" || fail "unreadable .gitignore content must survive a failed init"
 fi
+
+# ---------------------------------------------------------------------------
+# v1-m2 Task 9: doctor --greenfield / init --greenfield (focused unit
+# coverage; the full pending->done walk lives in tests/test_greenfield.sh).
+# ---------------------------------------------------------------------------
+
+# doctor --greenfield is a modifier, applicable regardless of whether the
+# root commit is already landed: on the already-initialized $WORK repo, it
+# still skips the verify check with the greenfield note. role.implementer is
+# overridden back to the resolvable "fake" engine via env var (highest
+# config_get precedence) -- an earlier test above deliberately left
+# role.implementer=missing-engine in orchid.config to prove the unresolvable-
+# role FAIL case, which is unrelated to what this block is checking.
+out_gf="$(ORCHID_ENGINES_DIR="$WORK/eng" ORCHID_ROLE_IMPLEMENTER=fake "$ORCHID_BIN" doctor --greenfield)" || fail "doctor --greenfield passes on an already-initialized repo"
+assert_match "greenfield: verify command deferred to scaffold task" "$out_gf" \
+  "doctor --greenfield: verify check skipped with the greenfield note"
+echo "$out_gf" | grep -q "FAIL: verify command" && fail "doctor --greenfield must never FAIL the verify command check"
+
+# doctor --greenfield rejects an unknown flag.
+rc=0; ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor --bogus >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "doctor must reject an unknown flag"
+
+# doctor --greenfield on an unborn-HEAD repo: the integration-branch check
+# accepts it (creatable once init lands the root commit), and plain doctor
+# (no --greenfield) still fails that same check -- the skip is opt-in only.
+scratch4="$WORK/scratch4"; mkdir -p "$scratch4"
+git init -q "$scratch4"
+out_unborn="$(ORCHID_REPO="$scratch4" ORCHID_ENGINES_DIR="$WORK/eng" \
+  ORCHID_ROLE_ORCHESTRATOR=fake ORCHID_ROLE_IMPLEMENTER=fake ORCHID_ROLE_REVIEWER=fake \
+  ORCHID_ROLE_ARBITER=fake ORCHID_ROLE_PLAN_CRITIC=fake \
+  "$ORCHID_BIN" doctor --greenfield)" || fail "doctor --greenfield passes on an unborn-HEAD repo"
+assert_match "greenfield: root commit pending" "$out_unborn" \
+  "doctor --greenfield: integration-branch check accepts unborn HEAD"
+
+rc=0
+ORCHID_REPO="$scratch4" ORCHID_ENGINES_DIR="$WORK/eng" \
+  ORCHID_ROLE_ORCHESTRATOR=fake ORCHID_ROLE_IMPLEMENTER=fake ORCHID_ROLE_REVIEWER=fake \
+  ORCHID_ROLE_ARBITER=fake ORCHID_ROLE_PLAN_CRITIC=fake \
+  "$ORCHID_BIN" doctor >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "plain doctor (no --greenfield) still fails on unborn HEAD's integration-branch check"
+
+# init --greenfield: refused on a dir with stray uncommitted files (never
+# adopts a pre-existing pile silently), and never mints a root commit when
+# refused.
+scratch5="$WORK/scratch5"; mkdir -p "$scratch5"
+git init -q "$scratch5"
+echo "stray" > "$scratch5/stray.txt"
+rc=0; ORCHID_REPO="$scratch5" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init --greenfield 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "init --greenfield must refuse a dir with stray uncommitted files"
+git -C "$scratch5" rev-parse -q --verify HEAD >/dev/null 2>&1 && fail "refused init --greenfield must not create a root commit"
+
+# plain init on an unborn-HEAD repo dies with a hint to use --greenfield
+# (regression: used to surface a raw `git branch ... HEAD` failure instead).
+scratch6="$WORK/scratch6"; mkdir -p "$scratch6"
+git init -q "$scratch6"
+rc=0; err6="$(ORCHID_REPO="$scratch6" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "plain init on an unborn-HEAD repo must die"
+assert_match "greenfield" "$err6" "plain init on unborn HEAD hints at --greenfield"
+git -C "$scratch6" rev-parse -q --verify HEAD >/dev/null 2>&1 && fail "plain init must not create a root commit on an unborn-HEAD repo"
+
+# init --greenfield on a genuinely empty dir: mints the root commit, then
+# proceeds through the normal init flow.
+scratch7="$WORK/scratch7"; mkdir -p "$scratch7"
+git init -q "$scratch7"
+ORCHID_REPO="$scratch7" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init --greenfield >/dev/null \
+  || fail "init --greenfield must succeed on a genuinely empty dir"
+git -C "$scratch7" rev-parse -q --verify HEAD >/dev/null 2>&1 || fail "init --greenfield must leave a root commit behind"
+assert_eq "orchid: root" "$(git -C "$scratch7" log -1 --format=%s HEAD)" "init --greenfield root commit subject"
+git -C "$scratch7" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
+  || fail "init --greenfield must still create the integration branch"
+
+# On a repo WITH commits already, --greenfield is a no-op modifier: behaves
+# exactly like plain init.
+scratch8="$WORK/scratch8"; mkdir -p "$scratch8"
+git init -q "$scratch8"; (cd "$scratch8" && git commit -q --allow-empty -m root)
+ORCHID_REPO="$scratch8" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init --greenfield >/dev/null \
+  || fail "init --greenfield on a repo with commits must succeed (no-op modifier)"
+git -C "$scratch8" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
+  || fail "init --greenfield (no-op modifier) still creates the integration branch"
+[ "$(git -C "$scratch8" log --oneline HEAD | wc -l | tr -d ' ')" = 1 ] \
+  || fail "init --greenfield on a repo with commits must NOT mint an extra root commit"
