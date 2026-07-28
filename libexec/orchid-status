@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/ledger.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 explain=0; [ "${1:-}" = "--explain" ] && explain=1
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
@@ -34,3 +35,6 @@ for f in "$state/tasks"/*.md; do
 done
 echo "== jobs"
 "$ORCHID_ROOT/bin/orchid" jobs check 2>/dev/null || echo "(jobs: plan B)"
+echo "== engines"
+engines_out="$(ledger_show "$repo" 2>/dev/null || true)"
+[ -n "$engines_out" ] && echo "$engines_out" || echo "(no engine events yet)"

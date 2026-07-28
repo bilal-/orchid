@@ -20,3 +20,5 @@ pack_budget_bytes=65536
 # gc_older_than_s=86400
 # model=
 # effort=medium
+# rate_limit_backoff_s=3600
+# engine_fail_threshold=3

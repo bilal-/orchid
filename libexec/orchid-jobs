@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
+source "$ORCHID_ROOT/lib/ledger.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 sub="${1:-}"; shift || true
@@ -190,6 +191,7 @@ case "$sub" in
       attempt="$(jq -r .attempt "$manifest")"; role="$(jq -r .role "$manifest")"
       status="$(envelope_field "$f" .status)"
       verdict="$(envelope_field "$f" '.verdict // "n/a"')"
+      retry_after="$(envelope_field "$f" '.retry_after // empty')"
       # A durable reviews/<task>-a<attempt>-<role>.json that already exists
       # (a relaunch of the same attempt landed a second accepted envelope —
       # e.g. a crash-recovery relaunch before `attempts` was bumped) must
@@ -203,6 +205,11 @@ case "$sub" in
       done
       mv "$f" "$dest"
       rm -f "$manifest"
+      # Ledger-mark from the MANIFEST's engine (never the envelope's
+      # self-reported one, even when present -- the cross-check above
+      # already quarantined any envelope whose reported engine disagreed,
+      # but this is our own durable record, not forgeable input).
+      ledger_mark "$repo" "$m_engine" "$status" "$retry_after"
       printf '%s\t%s\t%s\n' "$m_task" "$status" "$verdict"
     done
     ;;
