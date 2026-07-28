@@ -12,12 +12,43 @@ atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv 
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
 
+# with_timeout <secs> cmd... -- runs cmd (any command form, including a
+# shell function name) with a wall-clock deadline; returns cmd's own exit
+# status, or 124 on timeout. Both the timed command AND the watcher are
+# backgrounded under `set -m` (job control) so each lands in its OWN process
+# group (pgid == its own pid) -- same trick runners/orchid-launch's spawn
+# line already uses. Two DISTINCT bugs this closes, both stemming from a
+# bare `kill "$pid"`/`kill "$w"` only ever reaching one process, never a
+# group:
+#   (a) on timeout, `cmd` may itself be a wrapper (a shell function, or a
+#       script) whose real work is a DISTINCT child process -- killing only
+#       the wrapper's pid orphans that child, which keeps running (and, for
+#       a real CLI, billing quota) under init. `kill -- "-$pid"` (negative
+#       PGID) reaches the wrapper's whole group instead.
+#   (b) on the (common) early-finish path, the watcher's own `sleep "$secs"`
+#       is a real forked child of the watcher subshell by the time this
+#       function gets around to cancelling it -- a bare `kill "$w"` (no
+#       leading dash) terminates only the subshell itself, orphaning the
+#       already-forked `sleep` under init for the REST of its full "$secs",
+#       silently holding open any stdout/stderr pipe it inherited (e.g. a
+#       caller capturing this function's output via `$(...)`) -- discovered
+#       the hard way: runners/orchid-tick's `$(...)`-captured invocation
+#       hung for the full deadline on every otherwise-successful run, and
+#       `ps`/`lsof` after the fact showed the orphaned `sleep` still holding
+#       an inherited pipe fd, reparented to pid 1. `kill -- "-$w"` reaches
+#       the watcher's own group -- the subshell AND the sleep it forked
+#       (same group, inherited across fork) -- so no orphan survives either
+#       branch below.
 with_timeout() {
   local secs="$1"; shift
+  set -m
   "$@" & local pid=$!
-  ( sleep "$secs"; kill "$pid" 2>/dev/null ) & local w=$!
+  set +m
+  set -m
+  ( sleep "$secs"; kill -- "-$pid" 2>/dev/null ) & local w=$!
+  set +m
   local rc=0; wait "$pid" 2>/dev/null || rc=$?
-  if kill -0 "$w" 2>/dev/null; then kill "$w" 2>/dev/null; wait "$w" 2>/dev/null; return "$rc"; fi
+  if kill -0 "$w" 2>/dev/null; then kill -- "-$w" 2>/dev/null; wait "$w" 2>/dev/null; return "$rc"; fi
   return 124
 }
 

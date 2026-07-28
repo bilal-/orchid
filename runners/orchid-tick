@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-2, effectful: the headless tick. Fences a fresh epoch, resolves the
+# orchestrator role's available engine, builds a one-shot `orchestrate`
+# request, and spawns the adapter SYNCHRONOUSLY (foreground `with_timeout`
+# wait, unlike runners/orchid-launch's background `&` spawn -- there is no
+# job to poll later; the tick either produced an envelope by the time this
+# script returns, or it didn't).
+#
+# Deliberately NOT routed through `orchid jobs prepare`/spool (lib/spawn.sh's
+# header aside, this is the other reason orchid-tick is its own runner
+# rather than a jobs-prepare call): a tick is not a task job, and its
+# envelope must never enter `jobs reconcile`'s manifest-matching path --
+# ledger_mark below is this runner's own, private disposal of the envelope.
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
+source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
+source "$ORCHID_ROOT/lib/spawn.sh"
+
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+
+# Never spend quota on a finished run: no roadmap (uninitialized) reads as
+# "" here, which also just falls through to the resume step below and lets
+# `orchid run resume` itself refuse with its own "not initialized" message.
+rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
+if [ "$rs" = complete ]; then
+  echo "tick: run_status complete, nothing to do"
+  exit 0
+fi
+
+# `orchid run resume` fences a fresh epoch (breaking a stale lock per
+# policy) and requires initialized state -- its own guard, not re-checked
+# here. ORCHID_EPOCH/ORCHID_REPO are exported for two reasons: (a)
+# resolve_engine_exe below consults $ORCHID_REPO for repo-local trusted
+# engines, and (b) both cross into the spawned adapter's stripped
+# environment via spawn_child_env's ORCHID_* allowlist, so the orchestrator
+# engine's real `orchid` verb calls (task advance, journal add, ...) see the
+# same epoch/repo this tick just fenced -- without this export the child's
+# every verb call would fail epoch_require against a stale/unset epoch.
+resume_out="$("$ORCHID_ROOT/bin/orchid" run resume)"
+epoch="${resume_out#epoch: }"
+export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
+
+# Exit 14 (no eligible engine) propagates verbatim: `resolve_role_available`
+# prints its own per-entry disqualifier to stderr; under `set -e` this bare
+# assignment aborts the script with that same code, not a rewritten 1
+# (the pump's next pass retries once ledger/capsuite state has moved on).
+engine="$(resolve_role_available "$repo" orchestrator)"
+
+job_id="tick-e${epoch}"
+mkdir -p "$rt/requests" "$rt/logs"
+req_file="$rt/requests/$job_id.json"
+log="$rt/logs/$job_id.log"
+out_envelope="$rt/logs/$job_id.envelope.json"
+
+deadline_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
+model="$(config_get "$repo" model "")"
+effort="$(config_get "$repo" effort medium)"
+
+jq -n --arg job_id "$job_id" --arg worktree "$repo" --arg output "$out_envelope" \
+  --argjson deadline_s "$deadline_s" --arg model "$model" --arg effort "$effort" \
+  '{request:1, job_id:$job_id, task:"run", role:"orchestrator", operation:"orchestrate",
+    deadline_s:$deadline_s, policy:"workspace-write", output:$output,
+    worktree:$worktree, input_pack:"", model:$model, effort:$effort}' \
+  | atomic_write "$req_file"
+
+exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"
+plugin_dir="$(dirname "$exe")"
+
+child_env=()
+while IFS= read -r _line; do
+  [ -n "$_line" ] || continue
+  child_env+=("$_line")
+done < <(spawn_child_env "$plugin_dir")
+
+# Synchronous spawn: no `set -m`/background `&` (unlike orchid-launch) --
+# there is no manifest/pgid to record and nothing else to do while this
+# process runs, so the tick simply waits for it (bounded by with_timeout).
+_tick_spawn_adapter() {
+  if [ "${#child_env[@]}" -gt 0 ]; then
+    env -i "${child_env[@]}" ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1
+  else
+    env -i ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1
+  fi
+}
+set +e
+with_timeout "$deadline_s" _tick_spawn_adapter
+set -e
+
+# A missing/invalid envelope (adapter crashed, was killed on timeout before
+# writing, or wrote something that doesn't parse/validate) is treated as a
+# plain `failed` mark -- ledger_mark's own switch buckets failed/timeout/
+# auth/malformed identically (consecutive-failure counting), so nothing is
+# lost by collapsing "no envelope at all" into that same bucket rather than
+# inventing a seventh status.
+if [ -f "$out_envelope" ] && envelope_validate "$out_envelope" 2>/dev/null; then
+  status="$(jq -r .status "$out_envelope")"
+  actions_n="$(jq -r '(.actions // []) | length' "$out_envelope")"
+else
+  status=failed
+  actions_n=0
+fi
+
+ledger_mark "$repo" "$engine" "$status"
+echo "tick: $engine $status actions=$actions_n"
+[ "$status" = ok ]
