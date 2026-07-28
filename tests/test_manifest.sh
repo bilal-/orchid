@@ -162,6 +162,41 @@ assert_eq "$(printf 'structured_text\nworkspace_read\ngit')" "$caps" "manifest_c
 
 # manifest_get returns default when key absent
 assert_eq default "$(manifest_get "$WORK/p11" no_such_key default)" "manifest_get default fallback"
+
+# unknown api_version WITH an unknown key present -> the unknown-key warn
+# loop still runs (diagnostics complete) before the reject-with-13
+# short-circuit fires. Before this fix, the early `return 13` on unknown
+# api_version skipped the warn loop entirely, silently dropping the
+# mystery_key diagnostic.
+mk_conf "$WORK/p12" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=2
+capabilities=structured_text
+entrypoint=run
+mystery_key=1
+'
+printf '#!/usr/bin/env bash\n' > "$WORK/p12/run"; chmod +x "$WORK/p12/run"
+err="$(manifest_validate "$WORK/p12" 2>&1 >/dev/null)"; rc=$?
+assert_eq 13 "$rc" "unknown api_version still rejects with exit 13 even when an unknown key is present"
+assert_match "warn.*mystery_key" "$err" "unknown-key warn loop still runs before the unknown-api_version reject"
+
+# non-integer api_version -> plain FAIL, exit 1 (not the fail-closed 13 --
+# that reject is reserved for a known-but-unsupported api_version, not a
+# malformed one).
+mk_conf "$WORK/p13" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=abc
+capabilities=structured_text
+entrypoint=run
+'
+printf '#!/usr/bin/env bash\n' > "$WORK/p13/run"; chmod +x "$WORK/p13/run"
+out="$(manifest_validate "$WORK/p13" 2>&1)"; rc=$?
+assert_eq 1 "$rc" "non-integer api_version is a plain FAIL (exit 1), not the unknown-version reject (13)"
+assert_match "FAIL" "$out" "FAIL printed for non-integer api_version"
 assert_eq run "$(manifest_get "$WORK/p11" entrypoint)" "manifest_get reads a present key"
 
 # known capability atoms constant file

@@ -30,6 +30,22 @@ _manifest_known_capability() {  # atom
   grep -qxF "$1" "$(_manifest_lib_dir)/capabilities.txt"
 }
 
+# Unknown KEYS (in a known manifest_version) warn but never invalidate. Split
+# out so a fail-closed reject path (e.g. unknown api_version) can still run
+# this diagnostic before returning -- collect warnings, then fail, so an
+# operator sees ALL of a manifest's problems in one pass instead of only the
+# first one found.
+_manifest_warn_unknown_keys() {  # plugin-dir conf-file
+  local dir="$1" conf="$2" key
+  while IFS='=' read -r key _; do
+    case "$key" in ''|'#'*) continue ;; esac
+    case "$_MANIFEST_KNOWN_KEYS" in
+      *" $key "*) ;;
+      *) echo "warn: $dir: unknown key '$key' in plugin.conf" >&2 ;;
+    esac
+  done < "$conf"
+}
+
 manifest_validate() {  # plugin-dir
   local dir="$1" conf="$1/plugin.conf" ok=1
 
@@ -71,6 +87,7 @@ manifest_validate() {  # plugin-dir
   elif ! printf '%s' "$av" | grep -Eq '^[0-9]+$'; then
     echo "FAIL: $dir: api_version '$av' is not an integer"; ok=0
   elif [ "$av" != 1 ]; then
+    _manifest_warn_unknown_keys "$dir" "$conf"
     echo "FAIL: $dir: unknown api_version '$av' (rejected, fail closed)"
     return 13
   fi
@@ -106,15 +123,7 @@ manifest_validate() {  # plugin-dir
     fi
   fi
 
-  # Unknown KEYS (in a known manifest_version) warn but never invalidate.
-  local key
-  while IFS='=' read -r key _; do
-    case "$key" in ''|'#'*) continue ;; esac
-    case "$_MANIFEST_KNOWN_KEYS" in
-      *" $key "*) ;;
-      *) echo "warn: $dir: unknown key '$key' in plugin.conf" >&2 ;;
-    esac
-  done < "$conf"
+  _manifest_warn_unknown_keys "$dir" "$conf"
 
   if [ "$ok" -eq 1 ]; then
     echo "ok: $dir"
