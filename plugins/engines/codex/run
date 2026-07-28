@@ -60,7 +60,7 @@ if [ "$operation" = implement ]; then
   prompt=""
   [ -f "$input_pack/context.md" ] && prompt="$(cat "$input_pack/context.md")"$'\n\n'
   prompt="$prompt$(cat "$input_pack/task.md")"$'\n\n'
-  prompt="${prompt}Rules: work only in this directory; commit your work with clear messages; never touch any .orchid/ path."
+  prompt="${prompt}Rules: work only in this directory; edit files to satisfy the task; never touch any .orchid/ path."
 
   # v0b2 F2: prompt piped via stdin with `-` as the prompt arg, not a bare
   # argv string -- codex's clap parser reads a leading "-"/"--" argv prompt
@@ -77,13 +77,43 @@ if [ "$operation" = implement ]; then
     last_line="$(printf '%s\n' "$stdout" | awk 'NF{l=$0} END{print l}')"
     summary="${last_line:0:200}"; [ -n "$summary" ] || summary="implemented"
 
-    # Commits are the ground truth of what the implementer actually did:
-    # walk the worktree's history from base_sha to HEAD (empty when the
-    # implementer made no commits — still `ok` since the CLI itself
-    # succeeded, but the summary notes it so a reviewer isn't misled).
-    commits_raw="$(cd "$worktree" && git rev-list "${base_sha}..HEAD" 2>/dev/null || true)"
-    commits_json="$(printf '%s' "$commits_raw" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
-    [ "$(printf '%s' "$commits_json" | jq 'length')" -eq 0 ] && summary="$summary (no commits produced)"
+    # v0b2 F3: engines edit, the ADAPTER commits. The adapter runs
+    # UNSANDBOXED (unlike codex under --sandbox workspace-write, which can't
+    # write a linked worktree's git index/lock — see docs/dogfood-notes.md),
+    # so it stages and commits the engine's edits itself after the CLI exits.
+    set +e
+    add_err="$(cd "$worktree" && git add -A 2>&1)"
+    add_rc=$?; set -e
+    if [ "$add_rc" -ne 0 ]; then
+      write_envelope failed "$(jq -n --arg s "git add -A failed: $add_err" '{summary:$s}')"
+      exit 1
+    fi
+
+    if ! (cd "$worktree" && git diff --cached --quiet); then
+      # Engine left staged-worthy edits uncommitted: the adapter makes
+      # exactly one commit for them.
+      msg="${task}: ${summary:0:60}"
+      set +e
+      commit_err="$(cd "$worktree" && git commit -q -m "$msg" 2>&1)"
+      commit_rc=$?; set -e
+      if [ "$commit_rc" -ne 0 ]; then
+        write_envelope failed "$(jq -n --arg s "git commit failed: $commit_err" '{summary:$s}')"
+        exit 1
+      fi
+      candidate_sha="$(cd "$worktree" && git rev-parse HEAD)"
+      commits_json="$(jq -n --arg s "$candidate_sha" '[$s]')"
+    else
+      # Nothing new to stage. The engine may ALSO have committed on its own
+      # (e.g. a full-access codex run) -- accept those commits idempotently
+      # instead of double-committing. Only truly empty history is a failure.
+      commits_raw="$(cd "$worktree" && git rev-list "${base_sha}..HEAD" 2>/dev/null || true)"
+      commits_json="$(printf '%s' "$commits_raw" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+      if [ "$(printf '%s' "$commits_json" | jq 'length')" -eq 0 ]; then
+        write_envelope failed '{"summary":"engine produced no changes"}'
+        exit 1
+      fi
+      candidate_sha="$(cd "$worktree" && git rev-parse HEAD)"
+    fi
 
     write_envelope ok "$(jq -n --arg s "$summary" --argjson c "$commits_json" '{summary:$s, commits:$c}')"
     exit 0

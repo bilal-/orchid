@@ -100,14 +100,16 @@ printf "%s" "$#" > "'"$WORK"'/implsuccess.argc"
 i=0
 for a in "$@"; do i=$((i+1)); printf "%s" "$a" > "'"$WORK"'/implsuccess.argv.$i"; done
 cat > "'"$WORK"'/implsuccess.stdin"
+echo "engine edit" > implsuccess_edit.txt
 echo "working..."
 echo ""
 echo "Implemented the feature end to end."')"
 run_adapter "$d" || fail "implement stub: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "implement stub: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "implement stub: status ok"
-assert_eq "Implemented the feature end to end. (no commits produced)" "$(jq -r .summary "$d/out/envelope.json")" "implement stub: summary from last non-empty line, no-commits noted"
-assert_eq "[]" "$(jq -c .commits "$d/out/envelope.json")" "implement stub: empty commits array when no commits made"
+assert_eq "Implemented the feature end to end." "$(jq -r .summary "$d/out/envelope.json")" "implement stub: summary from last non-empty line"
+new_sha="$(git -C "$d/worktree" rev-parse HEAD)"
+assert_eq "[\"$new_sha\"]" "$(jq -c .commits "$d/out/envelope.json")" "implement stub: commits array has the adapter's own commit (v0b2 F3: engine edits, adapter commits)"
 argc="$(cat "$WORK/implsuccess.argc")"
 assert_eq "3" "$argc" "implement stub: acceptEdits permission mode, exactly three argv (no prompt argv)"
 assert_eq "-p" "$(cat "$WORK/implsuccess.argv.1")" "implement stub: -p is first argv"
@@ -116,20 +118,37 @@ assert_eq "acceptEdits" "$(cat "$WORK/implsuccess.argv.3")" "implement stub: acc
 stdin_content="$(cat "$WORK/implsuccess.stdin")"
 assert_match "Do the thing." "$stdin_content" "implement stub: full task body arrives on stdin, not argv"
 
-# --- 5b. implement success: stub actually commits in the worktree -> the
-# envelope's commits[] contains that real sha, and the summary is untouched
-# (no "no commits produced" note) -------------------------------------------
-d="$(build_request implcommit implement '#!/usr/bin/env bash
-echo "did the work" > done.txt
-git add done.txt
-git -c user.email=test@orchid.local -c user.name="Orchid Test" commit -q -m "stub commit"
-echo "Implemented and committed."')"
-run_adapter "$d" || fail "implement+commit stub: adapter should exit 0"
-envelope_validate "$d/out/envelope.json" || fail "implement+commit stub: envelope invalid"
-assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "implement+commit stub: status ok"
+# --- 5b. v0b2 F3: engine EDITS a file but does NOT commit -> the adapter
+# (unsandboxed) stages and commits the edit itself. commits[] must contain
+# exactly one real sha == the worktree's new HEAD, candidate_sha in the
+# envelope must equal that sha, and `git log` must show the adapter's own
+# commit (message "<task>: <first 60 chars of summary>") on top of base_sha.
+d="$(build_request editnocommit implement '#!/usr/bin/env bash
+echo "engine edit, no commit" > edited.txt
+echo "working..."
+echo ""
+echo "Implemented the feature end to end."')"
+base_sha="$(git -C "$d/worktree" rev-parse HEAD)"
+run_adapter "$d" || fail "edit-no-commit stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "edit-no-commit stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "edit-no-commit stub: status ok"
 new_sha="$(git -C "$d/worktree" rev-parse HEAD)"
-assert_eq "[\"$new_sha\"]" "$(jq -c .commits "$d/out/envelope.json")" "implement+commit stub: commits array contains the new sha"
-assert_eq "Implemented and committed." "$(jq -r .summary "$d/out/envelope.json")" "implement+commit stub: summary unchanged when commits present"
+[ "$new_sha" != "$base_sha" ] || fail "edit-no-commit stub: adapter must create a new commit in the worktree"
+assert_eq "[\"$new_sha\"]" "$(jq -c .commits "$d/out/envelope.json")" "edit-no-commit stub: commits array is exactly the adapter's new sha"
+assert_eq "$new_sha" "$(jq -r .candidate_sha "$d/out/envelope.json")" "edit-no-commit stub: candidate_sha == adapter's new HEAD"
+assert_eq "T001: Implemented the feature end to end." "$(git -C "$d/worktree" log -1 --format=%s)" "edit-no-commit stub: adapter's commit message is '<task>: <summary>'"
+
+# --- 5c. implement: engine produces NO changes at all (no edit, no commit)
+# -> the adapter must NOT emit ok with an empty commits[] -- an implement
+# that changed nothing is a failure. ----------------------------------------
+d="$(build_request nochanges implement '#!/usr/bin/env bash
+echo "working..."
+echo "Nothing to do here."')"
+rc=0; run_adapter "$d" || rc=$?
+[ "$rc" -ne 0 ] || fail "no-changes stub: adapter should exit nonzero"
+envelope_validate "$d/out/envelope.json" || fail "no-changes stub: envelope invalid"
+assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "no-changes stub: status failed"
+assert_eq "engine produced no changes" "$(jq -r .summary "$d/out/envelope.json")" "no-changes stub: summary explains why"
 
 # --- 6. DRYRUN: implement, no spawn (no claude on PATH at all) -------------
 d="$(build_request dryimpl implement "")"
