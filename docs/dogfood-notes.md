@@ -88,3 +88,32 @@ contract engine-agnostic (no engine needs commit capability — which the
 probes showed is fragile/unavailable anyway) and resolves F3 + the claude
 probe finding together. Empty-diff after an engine run → `status: failed`
 (the engine produced nothing to commit).
+
+## RESULT: first real run SUCCEEDED end-to-end
+After F1/F2/F3 fixes, task T001 ran the full pipeline with REAL engines:
+codex implemented `slugify` (lowercase + hyphenate + trim) and a test →
+adapter committed b61f02b → `orchid verify` ran real `bash test.sh` (PASS,
+candidate-bound evidence) → real `agy` reviewed the diff and APPROVED
+(scope_complete) → arbitration approve → transactional `orchid merge`
+re-ran the suite in a temp worktree and advanced orchid/integration →
+`run accept` → run_status COMPLETE. The merged function works:
+`slugify 'Hello, Shell World!'` => `hello-shell-world`. Journal carries the
+full decision trail with kernel-derived actors. **v0 proven on real code.**
+
+### F4 (reconcile bug, medium) — implement envelopes falsely quarantined
+`jobs reconcile` cross-checks the envelope's candidate_sha against the
+manifest; but for an IMPLEMENT op the candidate is an OUTPUT the engine
+creates, so the manifest's pre-launch value (empty) never matches → the
+implement envelope is quarantined `.reason-mismatch` (durable filing lost;
+the walk only continued because candidate was set by hand). Fix: skip the
+candidate_sha cross-check for `operation=implement` (base_sha still checked);
+keep it for review/critique where candidate is an input. Fixed this commit.
+
+### F5 (protocol gap, minor) — no way to launch the 2nd dual-review engine
+`orchid-launch <task> <role> <op>` resolves engine from role only, so the
+medium/high dual-review's second (session-independent codex) reviewer can't
+be launched by hand — only the role's primary engine. Needs an engine
+override arg or a `reviewer.secondary` binding. Logged for v1; the
+engine-independent reviewer (agy) is the load-bearing one and ran fine.
+
+### F1 — FIXED earlier this branch (template default risk_tier now `low`).
