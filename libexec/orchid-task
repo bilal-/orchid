@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
@@ -22,8 +23,12 @@ case "$sub" in
   create)
     epoch_require "$repo"; id="$1"; title="$2"; mkdir -p "$tasks"
     [ ! -f "$(tf "$id")" ] || orchid_die "task $id exists"
+    # resolve_role (first-of-chain), NEVER raw config_get: role.implementer
+    # is a v1-m2 comma-separated failover chain (e.g. "codex,claude") --
+    # seeding the template with the raw config value would land a comma
+    # chain verbatim in frontmatter, which no consumer of `engine:` expects.
     sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
-        -e "s|__ENGINE__|$(config_get "$repo" role.implementer codex)|g" \
+        -e "s|__ENGINE__|$(resolve_role "$repo" implementer)|g" \
         -e "s|__DATE__|$(now)|g" \
       "$ORCHID_ROOT/templates/task.md" | atomic_write "$(tf "$id")" ;;
   show) cat "$(tf "$1")" ;;

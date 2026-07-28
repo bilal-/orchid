@@ -85,6 +85,15 @@ mkdir -p "$full"; (cd "$full" && git init -q . && git commit -q --allow-empty -m
 mkdir -p "$full/.orchid/tasks" "$full/.orchid/reviews"
 export ORCHID_REPO="$full"
 printf 'verify=true\nrole.implementer=acme\n' > "$full/orchid.config"
+# v1-m2: `jobs prepare` resolves via resolve_role_available, gated on
+# discoverability + role eligibility -- "acme" must actually exist on the
+# real search path ($HOME/.orchid/plugins/engines, already exported above)
+# and declare the implementer role's required capabilities.
+mkdir -p "$HOME/.orchid/plugins/engines/acme"
+printf 'manifest_version=1\nid=test/acme\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$HOME/.orchid/plugins/engines/acme/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$HOME/.orchid/plugins/engines/acme/run"
+chmod +x "$HOME/.orchid/plugins/engines/acme/run"
 export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 "$ORCHID_BIN" task create T001 demo
 
@@ -102,6 +111,15 @@ assert_eq acme "$(jq -r 'keys[0]' "$flf")" "reconcile ledger-marks the MANIFEST'
 assert_eq rate_limited "$(jq -r '.acme.status' "$flf")" "reconcile marks rate_limited"
 d=$(( $(jq -r '.acme.rate_limited_until' "$flf") - $(date +%s) ))
 [ "$d" -ge 110 ] && [ "$d" -le 130 ] || fail "reconcile passes the envelope's retry_after (120) through to ledger_mark (got ${d}s)"
+
+# Reset acme to 'ok' before the next prepare call below: the rate_limited
+# mark just asserted above would otherwise make acme -- implementer's ONLY
+# configured engine here, no fallback configured -- ledger-unavailable, and
+# `jobs prepare` would (correctly, per v1-m2's resolve_role_available gate)
+# refuse with "no eligible engine available". That refusal is working as
+# designed; it's just orthogonal to what this section actually tests (the
+# mismatched-engine-field quarantine path), so give it a healthy engine.
+ledger_mark "$full" acme ok
 before="$(jq -c . "$flf")"
 
 # a mismatched self-reported `engine` field is quarantined -- must never
@@ -113,6 +131,10 @@ printf '{"contract":1,"job_id":"%s","task":"T001","status":"rate_limited","retry
 line2="$("$ORCHID_BIN" jobs reconcile)"
 assert_match "quarantined:.*\(mismatch\)" "$line2" "envelope with a mismatched engine field is quarantined"
 assert_eq "$before" "$(jq -c . "$flf")" "quarantined mismatch envelope must leave the ledger byte-for-byte untouched"
+
+# Restore a rate_limited mark for the `status` assertion below (reset to
+# 'ok' above so the mismatch-envelope prepare call could proceed).
+ledger_mark "$full" acme rate_limited 120
 
 status_out="$("$ORCHID_BIN" status)"
 assert_match "== engines" "$status_out" "status prints the engines section"

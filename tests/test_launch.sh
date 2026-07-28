@@ -4,6 +4,12 @@ cd "$WORK"; git init -q .; echo a > f.txt; git add f.txt; git commit -q -m base
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'verify=true\nrole.implementer=fake\n' > orchid.config
 mkdir -p "$WORK/eng/fake"
+# v1-m2: `jobs prepare` (via runners/orchid-launch) now resolves through
+# resolve_role_available, gated on role_eligibility_reason -- "fake" must
+# declare the implementer role's required capabilities to remain
+# discoverable+eligible, or the launch below would now (correctly) refuse.
+printf 'manifest_version=1\nid=test/fake\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/fake/plugin.conf"
 cat > "$WORK/eng/fake/run" <<'EOF'
 #!/usr/bin/env bash
 set -eu

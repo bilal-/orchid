@@ -1,10 +1,33 @@
 #!/usr/bin/env bash
-resolve_role() {  # repo role -> primary engine name
+
+# _role_default_chain <role> -- the built-in preference chain (config-shaped
+# data, keyed by ROLE name, never by engine name -- INV-05) for a role with
+# no `role.<role>=` config value at all. Single source of truth shared by
+# resolve_role (which only ever wants the chain's first element) and
+# resolve_role_chain (the full ordered chain) so the two can never disagree
+# about what "the default" is.
+_role_default_chain() {
+  local role="$1" v=""
+  case "$role" in
+    orchestrator) v=claude,codex;; implementer) v=codex,claude;; reviewer) v=agy;;
+    arbiter) v=claude,codex;; plan_critic) v=codex,claude;; esac
+  echo "$v"
+}
+
+resolve_role() {  # repo role -> primary engine name (first entry of the chain)
   local v; v="$(config_get "$1" "role.$2")"
-  [ -n "$v" ] || case "$2" in
-    orchestrator) v=claude;; implementer) v=codex;; reviewer) v=agy;;
-    arbiter) v=claude;; plan_critic) v=codex;; esac
+  [ -n "$v" ] || v="$(_role_default_chain "$2")"
   echo "${v%%,*}"
+}
+
+# resolve_role_chain <repo> <role> -- prints the role's preference chain, one
+# engine name per line: the configured `role.<role>=` value split on comma,
+# or (absent config) the built-in default chain. A scalar (no-comma) config
+# value is a one-entry chain, same as before v1-m2.
+resolve_role_chain() {
+  local v; v="$(config_get "$1" "role.$2")"
+  [ -n "$v" ] || v="$(_role_default_chain "$2")"
+  echo "$v" | tr ',' '\n'
 }
 resolve_engine_exe() {  # name -> executable path (search path; dup = error)
   local name="$1" d found="" repo_dir abs trust_stat p
@@ -97,4 +120,63 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
     || { echo "orchid: engine $engine $reason for role $role" >&2; return 1; }
 
   echo "$engine"
+}
+
+# resolve_role_available <repo> <role> -- walks resolve_role_chain and prints
+# the first entry that is (a) discovered (resolve_engine_dir), (b)
+# role-eligible (role_eligibility_reason), (c) ledger_available, and (d) --
+# for every entry AFTER the first -- capsuite_passed for this exact (engine,
+# role) pair: a fallback may activate ONLY once it has actually been proven
+# to work for this role (v1-m1's capability suite gate); the primary is the
+# tested default and needs no capsuite record. `plan_critic` additionally
+# skips any chain entry that equals `resolve_role <repo> orchestrator`'s
+# engine -- the engine that drafted a plan never critiques its own draft --
+# regardless of that entry's chain position.
+#
+# No survivor -> nothing on stdout, exit 14, and one line on stderr naming
+# the role, the full chain, and EACH entry's specific disqualifier (so an
+# operator never has to go spelunking in the ledger/capsuite dirs to see
+# why). Callers must source, in order: lib/common.sh, lib/manifest.sh,
+# lib/roles.sh, lib/resolver.sh (this file), lib/capsuite.sh, lib/ledger.sh.
+resolve_role_available() {
+  local repo="$1" role="$2" chain engine dir reason skip_engine="" idx=0 disq=""
+
+  [ "$role" = plan_critic ] && skip_engine="$(resolve_role "$repo" orchestrator)"
+  chain="$(resolve_role_chain "$repo" "$role")"
+
+  while IFS= read -r engine; do
+    [ -n "$engine" ] || continue
+    idx=$((idx + 1))
+
+    if [ -n "$skip_engine" ] && [ "$engine" = "$skip_engine" ]; then
+      disq="$disq$engine: same engine as orchestrator (plan_critic cannot critique its own plan); "
+      continue
+    fi
+
+    if ! dir="$(resolve_engine_dir "$engine")"; then
+      disq="$disq$engine: not found on search path; "
+      continue
+    fi
+
+    if ! reason="$(role_eligibility_reason "$role" "$dir")"; then
+      disq="$disq$engine: $reason; "
+      continue
+    fi
+
+    if ! ledger_available "$repo" "$engine"; then
+      disq="$disq$engine: rate-limited or failing (ledger); "
+      continue
+    fi
+
+    if [ "$idx" -gt 1 ] && ! capsuite_passed "$engine" "$role"; then
+      disq="$disq$engine: capsuite not passed -- run: orchid plugins test $engine $role; "
+      continue
+    fi
+
+    echo "$engine"
+    return 0
+  done <<< "$chain"
+
+  echo "orchid: no eligible engine available for role $role (chain: ${disq%; })" >&2
+  return 14
 }

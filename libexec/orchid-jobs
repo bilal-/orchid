@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
-source "$ORCHID_ROOT/lib/ledger.sh"
+source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 sub="${1:-}"; shift || true
@@ -57,7 +58,12 @@ case "$sub" in
     task="$1"; role="$2"; operation="$3"
     tf="$state/tasks/$task.md"
     [ -f "$tf" ] || orchid_die "no task $task"
-    engine="$(resolve_role "$repo" "$role")"
+    # resolve_role_available (v1-m2): walks the role's failover chain and
+    # already prints its own "orchid: no eligible engine available for role
+    # ..." diagnostic to stderr on failure -- propagate its exit 14 verbatim
+    # rather than re-wrapping it (prepare is tier-1: mint-manifest-only, so
+    # there is nothing else to clean up here before exiting).
+    engine="$(resolve_role_available "$repo" "$role")" || exit 14
     attempt=$(( $(fm_get "$tf" attempts) + 1 ))
     epoch="$(epoch_current "$repo")"
     suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"

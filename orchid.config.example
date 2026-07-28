@@ -1,6 +1,11 @@
 integration_branch=orchid/integration
 verify=npm test
-# Roles are configuration — see docs/configuration.md. Tested defaults:
+# Roles are configuration — see docs/configuration.md. Each role.* value is a
+# comma-separated failover chain, primary first (e.g.
+# role.implementer=codex,claude): a fallback engine only ever activates once
+# it has passed `orchid plugins test <engine> <role>` (the capability
+# suite) -- see `orchid doctor`'s per-role chain lines. Tested defaults
+# (single entries here; add a fallback with a comma once it's been tested):
 role.orchestrator=claude
 role.implementer=codex
 role.reviewer=agy
