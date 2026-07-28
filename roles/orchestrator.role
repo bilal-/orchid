@@ -1,0 +1,3 @@
+id=orchestrator
+requires=shell,git
+description=Drives verbs and launches adapters; the tick's primary engine.

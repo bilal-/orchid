@@ -1,0 +1,3 @@
+id=reviewer
+requires=structured_text
+description=Reads structured input and returns structured output only; the minimum needed to judge a diff.

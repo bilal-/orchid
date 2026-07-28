@@ -1,0 +1,3 @@
+id=arbiter
+requires=structured_text
+description=Resolves conflicting reviews with a text-in/text-out verdict.
