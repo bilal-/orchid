@@ -89,3 +89,112 @@ assert_match "infra_failures cap reached" "$(cat .orchid/journal.md)" "infra-fai
 
 rc=0; "$ORCHID_BIN" task infra-fail T006 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "infra-fail without --reason must fail"
+
+# ============================================================================
+# v1-m2 Task 4: `legal()` is now archetype-driven -- it reads
+# plugins/archetypes/feature/plugin.conf's `transitions=` instead of a
+# hardcoded case table. This walk drives EVERY edge that table declares
+# through one real feature task (T007), proving the archetype-driven path
+# reproduces today's exact legality, edge for edge. base_sha/candidate_sha
+# are fixed placeholder (non-existent) shas throughout: the `to=testing`
+# .orchid/-scan runs `git log <base>..<candidate>`, which prints nothing at
+# all for an invalid range, so a placeholder never trips INV-04's guard; and
+# `verification_commands=true` makes `orchid verify` always PASS.
+# ============================================================================
+"$ORCHID_BIN" task create T007 "archetype edge walk"
+edge_sha="deadbeefcafebabe0000000000000000000000"
+"$ORCHID_BIN" task set T007 base_sha "$edge_sha"
+"$ORCHID_BIN" task set T007 candidate_sha "$edge_sha"
+"$ORCHID_BIN" task set T007 verification_commands true
+t007_status() { "$ORCHID_BIN" task show T007 | grep '^status: ' | cut -d' ' -f2; }
+
+# edge: pending:implementing
+"$ORCHID_BIN" task advance T007 implementing
+assert_eq implementing "$(t007_status)" "archetype edge pending:implementing"
+
+# edge: implementing:testing
+"$ORCHID_BIN" task advance T007 testing
+assert_eq testing "$(t007_status)" "archetype edge implementing:testing"
+
+# edge: testing:rework (bumps attempts 0 -> 1; invalidates verify evidence,
+# neither of which is set yet, so this is a no-op beyond the state move)
+"$ORCHID_BIN" task advance T007 rework
+assert_eq rework "$(t007_status)" "archetype edge testing:rework"
+assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "testing:rework bumped attempts to 1"
+
+# edge: rework:implementing
+"$ORCHID_BIN" task advance T007 implementing
+assert_eq implementing "$(t007_status)" "archetype edge rework:implementing"
+
+# edge: implementing:testing (again) -> real verify evidence -> reviewing
+"$ORCHID_BIN" task advance T007 testing
+"$ORCHID_BIN" verify T007 >/dev/null
+
+# edge: testing:reviewing
+"$ORCHID_BIN" task advance T007 reviewing
+assert_eq reviewing "$(t007_status)" "archetype edge testing:reviewing"
+plant_reviewer_envelope T007
+
+# edge: reviewing:arbitrating
+"$ORCHID_BIN" task advance T007 arbitrating --reason "single reviewer approved"
+assert_eq arbitrating "$(t007_status)" "archetype edge reviewing:arbitrating"
+
+# edge: arbitrating:rework (--waive-attempt: attempts stays at 1, so the
+# reviewer envelope already planted -- bound to attempts+1 -- stays valid
+# for every subsequent reviewing:arbitrating below without replanting)
+"$ORCHID_BIN" task advance T007 rework --waive-attempt --reason "sent back for rework"
+assert_eq rework "$(t007_status)" "archetype edge arbitrating:rework"
+assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "--waive-attempt left attempts at 1"
+
+# rework:implementing -> implementing:testing -> re-verify (arbitrating:rework
+# invalidated the prior evidence) -> testing:reviewing -> reviewing:arbitrating
+"$ORCHID_BIN" task advance T007 implementing
+"$ORCHID_BIN" task advance T007 testing
+"$ORCHID_BIN" verify T007 >/dev/null
+"$ORCHID_BIN" task advance T007 reviewing
+"$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
+
+# edge: arbitrating:merging
+"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+assert_eq merging "$(t007_status)" "archetype edge arbitrating:merging"
+
+# edge: merging:testing (does NOT invalidate verify evidence -- only a
+# to=rework transition does -- so the existing PASS, still bound to the
+# unchanged candidate_sha, survives)
+"$ORCHID_BIN" task advance T007 testing
+assert_eq testing "$(t007_status)" "archetype edge merging:testing"
+
+# testing:reviewing (again, reusing the still-valid verify evidence and the
+# still-bound reviewer envelope) -> reviewing:arbitrating -> arbitrating:merging
+"$ORCHID_BIN" task advance T007 reviewing
+"$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed after merging:testing, approved"
+"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+
+# edge: merging:rework
+"$ORCHID_BIN" task advance T007 rework --reason "validation_failed: see reviews/T007-merge.log"
+assert_eq rework "$(t007_status)" "archetype edge merging:rework"
+assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "merging:rework never bumps attempts (from=merging)"
+
+"$ORCHID_BIN" task advance T007 implementing
+"$ORCHID_BIN" task advance T007 testing
+"$ORCHID_BIN" verify T007 >/dev/null
+"$ORCHID_BIN" task advance T007 reviewing
+"$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
+"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+
+# edge: merging:done
+"$ORCHID_BIN" task advance T007 done
+assert_eq done "$(t007_status)" "archetype edge merging:done"
+
+# -- every edge in feature's declared transition table has now been driven
+# through T007 (pending:implementing, implementing:testing, testing:reviewing,
+# testing:rework, reviewing:arbitrating, arbitrating:merging,
+# arbitrating:rework, merging:done, merging:rework, merging:testing,
+# rework:implementing) -- plus *:blocked, already covered above via T001.
+
+# -- one edge that was NEVER legal under the old hardcoded table stays
+# illegal (exit 3) under the archetype-driven path too --------------------
+"$ORCHID_BIN" task create T008 "still illegal"
+rc=0; "$ORCHID_BIN" task advance T008 merging 2>/dev/null || rc=$?
+assert_eq 3 "$rc" "pending -> merging is (and was always) illegal, exit 3"
+assert_eq pending "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' ' -f2)" "T008 stays in pending after the refused illegal edge"

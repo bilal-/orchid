@@ -3,7 +3,7 @@ schema: 1
 id: __ID__
 title: __TITLE__
 status: pending
-archetype: feature
+archetype: __ARCHETYPE__
 scaffold: false
 branch: task/__ID__
 worktree:
