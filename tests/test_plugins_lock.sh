@@ -118,3 +118,41 @@ for id in orchid/claude orchid/codex orchid/agy; do
   echo "$lockOnBranch" | jq -e --arg id "$id" '.[] | select(.id==$id)' >/dev/null \
     || fail "init's plugins.lock is missing the default builtin binding $id"
 done
+
+# -- a corrupt plugins.lock must fail LOUDLY, never report a false "clean" --
+# (jq failing inside `done < <(jq -r '.[].id' "$lockfile")` is invisible to
+# set -e/pipefail; the loop just iterates zero times and verify-lock used to
+# print "clean" + exit 0 on a corrupt committed file.)
+repoCorrupt="$WORK/repoCorrupt"; mkdir -p "$repoCorrupt"
+(cd "$repoCorrupt" && git init -q . && git commit -q --allow-empty -m root)
+homeCorrupt="$WORK/homeCorrupt"; mkdir -p "$homeCorrupt/.orchid"
+runC() { HOME="$homeCorrupt" ORCHID_REPO="$repoCorrupt" "$bin2" "$@"; }
+runC plugins lock >/dev/null
+lockfileC="$repoCorrupt/.orchid/plugins.lock"
+
+# merge-conflict markers left in the committed lockfile
+cat > "$lockfileC" <<'EOF'
+<<<<<<< HEAD
+[{"id":"orchid/claude"}]
+=======
+[{"id":"orchid/claude","version":"0.2.0"}]
+>>>>>>> feature
+EOF
+rc=0; out="$(runC plugins verify-lock 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "verify-lock must fail on a merge-conflict-markered lockfile, not report clean"
+assert_match "corrupt" "$out" "verify-lock names a merge-conflict-markered lock as corrupt"
+( echo "$out" | grep -qi "^clean" ) && fail "a corrupt lockfile must never be reported clean"
+
+# truncated JSON
+printf '[{"id":"orchid/claude","version":"0.1.0"' > "$lockfileC"
+rc=0; out="$(runC plugins verify-lock 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "verify-lock must fail on truncated-JSON lockfile, not report clean"
+assert_match "corrupt" "$out" "verify-lock names truncated JSON as corrupt"
+( echo "$out" | grep -qi "^clean" ) && fail "truncated JSON must never be reported clean"
+
+# doctor treats a corrupt lock as a non-fatal WARNING naming it "corrupt", not "drift"
+printf 'verify=true\n' > "$repoCorrupt/orchid.config"
+docout="$(runC doctor 2>&1)"; rc=$?
+assert_eq 0 "$rc" "doctor stays exit 0 on a corrupt lock (v1-m1: non-fatal, like drift)"
+assert_match "WARN.*corrupt" "$docout" "doctor surfaces a corrupt lock as a distinct WARNing (not 'drift')"
+( echo "$docout" | grep -qi "WARN.*drift" ) && fail "doctor must not call a corrupt lock 'drift'"

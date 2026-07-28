@@ -58,6 +58,14 @@ lockfile="$repo/.orchid/plugins.lock"
 if [ -f "$lockfile" ]; then
   if lock_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins verify-lock 2>&1)"; then
     ok "plugin lock: no drift ($lockfile)"
+  elif echo "$lock_out" | grep -qi "corrupt"; then
+    # A corrupt/unparsable lockfile (merge conflict, truncation, ...) is a
+    # distinct condition from drift -- the message must say "corrupt", not
+    # "drift", so an operator doesn't mistake "the file won't even parse"
+    # for "a plugin changed". Still non-fatal in v1-m1 (same policy as
+    # drift): this only WARNs, never flips doctor's exit code.
+    echo "WARN: plugin lock is corrupt ($lockfile):"
+    echo "$lock_out" | sed 's/^/  /'
   else
     echo "WARN: plugin lock drift detected ($lockfile):"
     echo "$lock_out" | sed 's/^/  /'

@@ -139,9 +139,9 @@ _plugins_origin_for_dir() {
   echo external
 }
 
-# _plugins_lock_records -- one JSON object per line, one per PLUGIN (deduped
-# by manifest id) that a resolved role currently binds to, across all 5
-# built-in roles -- not just non-default overrides: the brief is explicit
+# _plugins_lock_records -- one pretty-printed (multi-line) JSON object per
+# PLUGIN (deduped by manifest id) that a resolved role currently binds to,
+# across all 5 built-in roles -- not just non-default overrides: the brief is explicit
 # that default bindings must be recorded too, or drift on a stock built-in
 # adapter would never be catchable at all. A plugin bound by more than one
 # role (e.g. claude via both orchestrator and arbiter, by default) gets
@@ -293,6 +293,14 @@ case "$sub" in
     # v1-m1).
     state="$(orchid_state "$repo")"; lockfile="$state/plugins.lock"
     [ -f "$lockfile" ] || orchid_die "no plugins.lock found at $lockfile -- run 'orchid plugins lock' first"
+    # Guard against a corrupt/truncated/merge-conflict-markered lockfile
+    # BEFORE the drift loop below: that loop reads ids via
+    # `done < <(jq -r '.[].id' "$lockfile")`, and a jq failure inside a
+    # process substitution is invisible to set -e/pipefail -- the loop
+    # would simply iterate zero times and this command would print "clean"
+    # + exit 0 on a lockfile that never parsed at all. Fail loudly instead.
+    jq -e 'type == "array"' "$lockfile" >/dev/null 2>&1 \
+      || orchid_die "plugins.lock is corrupt or not a JSON array (merge conflict?) -- regenerate with: orchid plugins lock"
     cur="$(_plugins_lock_records)"
     curjson="[]"; [ -z "$cur" ] || curjson="$(printf '%s\n' "$cur" | jq -s '.')"
     drift=0
