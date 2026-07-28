@@ -294,3 +294,36 @@ entrypoint=run
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p18/run"; chmod +x "$WORK/p18/run"
 out="$(manifest_validate "$WORK/p18" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] || fail "no requires_orchid key at all must still validate clean (rc=$rc): $out"
+
+# -- requires_orchid: numeric (not lexical) minor-version compare -----------
+# p17 above only exercised a major-version bump (>=2.0 vs 1.0.0-m1), which
+# rejects the same way under numeric OR naive string comparison. Cover a
+# two-digit minor version too: requires_orchid=>=1.10 against the running
+# ORCHID_VERSION 1.0.0-m1 (minor 0) must still reject (0 < 10 numerically).
+mk_conf "$WORK/p19" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=1
+requires_orchid=>=1.10
+capabilities=structured_text
+entrypoint=run
+'
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p19/run"; chmod +x "$WORK/p19/run"
+out="$(manifest_validate "$WORK/p19" 2>&1)"
+assert_eq 13 "$?" "requires_orchid '>=1.10' unmet by orchid 1.0.0-m1 rejects with exit 13"
+assert_match "FAIL.*requires_orchid" "$out" "FAIL printed naming requires_orchid for '>=1.10'"
+
+# -- _manifest_orchid_satisfies: prove the compare is NUMERIC, not lexical ---
+# ORCHID_VERSION is fixed at 1.0.0-m1 for the rest of this suite, so its
+# minor (0) can't distinguish numeric from string ordering (both agree "0" <
+# "10"). Call the compare helper directly in a subshell with ORCHID_VERSION
+# overridden, using a minor-version pair where lexical and numeric ordering
+# diverge: string-wise "9" > "10" (first char '9' > '1'), but numerically
+# 9 < 10. A lexical-comparison bug would flip both of the assertions below.
+if ( ORCHID_VERSION="1.9.0"; _manifest_orchid_satisfies ">=1.10" ); then
+  fail "_manifest_orchid_satisfies: orchid 1.9 must NOT satisfy '>=1.10' (numeric 9 < 10; a lexical bug would wrongly pass since string '9' > '10')"
+fi
+if ! ( ORCHID_VERSION="1.10.0"; _manifest_orchid_satisfies ">=1.9" ); then
+  fail "_manifest_orchid_satisfies: orchid 1.10 must satisfy '>=1.9' (numeric 10 >= 9; a lexical bug would wrongly reject since string '10' < '9')"
+fi
