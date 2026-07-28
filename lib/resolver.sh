@@ -7,13 +7,38 @@ resolve_role() {  # repo role -> primary engine name
   echo "${v%%,*}"
 }
 resolve_engine_exe() {  # name -> executable path (search path; dup = error)
-  local name="$1" d found="" repo_dir abs trust_stat
+  local name="$1" d found="" repo_dir abs trust_stat p
+  local -a search_dirs=()
   # ORCHID_ROOT is guarded with :- (brief had it bare): resolve_engine_exe is
   # unit-tested by sourcing this file directly, without going through
   # bin/orchid, so ORCHID_ROOT is unset in that context; under the tests'
   # `set -u` a bare "$ORCHID_ROOT" would abort with "unbound variable"
   # before the loop body ever runs.
-  for d in "${ORCHID_ENGINES_DIR:-}" "$HOME/.orchid/plugins/engines" "${ORCHID_ROOT:-}/plugins/engines"; do
+  #
+  # ORCHID_ENGINES_DIR is a resolver-only test hook (see lib/capsuite.sh's
+  # header comment on "external" origin) that real discovery
+  # (_plugins_roots/_plugins_discover, libexec/orchid-plugins) never walks --
+  # kept first/highest here purely so tests can inject a private engines dir
+  # without disturbing the real search roots below.
+  #
+  # $ORCHID_PLUGIN_PATH (colon-delimited; each entry laid out like
+  # _plugins_roots' path roots, i.e. <entry>/engines/<name>/run) is highest
+  # REAL precedence per docs/specs/plugins.md's search order -- ahead of
+  # ~/.orchid and $ORCHID_ROOT -- and, like ~/.orchid, is a user-controlled
+  # location (Trust model) so a path-root engine needs no trust record, same
+  # as `plugins list` already treats it (origin=path, trust=user). Without
+  # this, a path-root plugin discovers/lists healthy but could never
+  # actually execute.
+  search_dirs+=("${ORCHID_ENGINES_DIR:-}")
+  if [ -n "${ORCHID_PLUGIN_PATH:-}" ]; then
+    local IFS=':' parts=()
+    read -ra parts <<< "$ORCHID_PLUGIN_PATH"
+    for p in "${parts[@]}"; do
+      [ -n "$p" ] && search_dirs+=("$p/engines")
+    done
+  fi
+  search_dirs+=("$HOME/.orchid/plugins/engines" "${ORCHID_ROOT:-}/plugins/engines")
+  for d in "${search_dirs[@]}"; do
     [ -n "$d" ] || continue
     if [ -x "$d/$name/run" ]; then
       [ -z "$found" ] || { echo "orchid: duplicate engine '$name' ($found vs $d) (INV-10)" >&2; return 1; }
