@@ -88,3 +88,33 @@ sz="$(wc -c < "$sp/$jid5.json" | tr -d ' ')"
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: oversize spool file quarantined"
 [ -e "$qd/$jid5.json.reason-oversize" ] || fail "INV-03: oversize envelope quarantined with reason-oversize"
 [ -f "$m5" ] || fail "INV-03: manifest survives oversize spool file"
+
+# reset spool_max_bytes (raised above for the oversize case) back up so the
+# candidate_sha fixtures below aren't spuriously quarantined as oversize.
+printf 'spool_max_bytes=8192\n' >> orchid.config
+
+# v0b2: F4 — candidate_sha is an OUTPUT of an IMPLEMENT operation, not an
+# input: `jobs prepare` mints the manifest before any candidate exists, so
+# its candidate_sha is the task's pre-launch (empty) value. The engine then
+# produces a real candidate and the adapter's envelope carries it — that can
+# never equal the manifest's empty value, so cross-checking it would
+# quarantine every legitimate implement envelope. Confirm it is accepted.
+m6="$("$ORCHID_BIN" jobs prepare T001 implementer implement)"
+jid6="$(jq -r .job_id "$m6")"
+m6_cand="$(jq -r .candidate_sha "$m6")"
+[ -z "$m6_cand" ] || fail "sanity: fresh task has empty candidate_sha in manifest"
+printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","status":"ok","summary":"impl","candidate_sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}' "$jid6" > "$sp/$jid6.json"
+out6="$("$ORCHID_BIN" jobs reconcile)"
+echo "$out6" | grep -q quarantined && fail "INV-03/F4: implement envelope with an output candidate_sha must NOT be quarantined ($out6)"
+assert_match "T001	ok" "$out6" "INV-03/F4: implement envelope with differing candidate_sha accepted"
+[ -f "$m6" ] && fail "INV-03/F4: manifest must be gone after an accepted implement envelope"
+
+# v0b2: F4 — for review/critique, candidate_sha IS an input (it pins what's
+# being reviewed), so the cross-check must still apply there: a mismatched
+# candidate_sha on a review envelope is still quarantined.
+m7="$("$ORCHID_BIN" jobs prepare T001 reviewer review)"
+jid7="$(jq -r .job_id "$m7")"
+printf '{"contract":1,"job_id":"%s","task":"T001","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"candidate_sha":"cafebabecafebabecafebabecafebabecafebabe"}' "$jid7" > "$sp/$jid7.json"
+assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03/F4: review envelope with mismatched candidate_sha still quarantined"
+[ -e "$qd/$jid7.json.reason-mismatch" ] || fail "INV-03/F4: review candidate_sha mismatch quarantined with reason-mismatch"
+[ -f "$m7" ] || fail "INV-03/F4: manifest survives review candidate_sha mismatch"

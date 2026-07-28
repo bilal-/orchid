@@ -166,7 +166,19 @@ case "$sub" in
       mismatch=0
       [ "$m_task" = "$e_task" ] || mismatch=1
       [ -z "$e_base" ] || [ "$e_base" = "$m_base" ] || mismatch=1
-      [ -z "$e_cand" ] || [ "$e_cand" = "$m_cand" ] || mismatch=1
+      # candidate_sha cross-check: skipped for IMPLEMENT. For review/critique,
+      # candidate_sha is an INPUT (it pins the candidate under review), minted
+      # into the manifest at `jobs prepare` time and echoed back by the
+      # adapter — so it must still match. For implement, candidate_sha is an
+      # OUTPUT the engine produces; the manifest was prepared before any
+      # candidate existed (it holds the task's pre-launch, typically empty,
+      # value), so it can never equal the real candidate the envelope
+      # reports. Cross-checking it here would quarantine every legitimate
+      # implement envelope (real dogfood F4). base_sha (the input the engine
+      # started from) is still checked above regardless of operation.
+      if [ "$m_op" != "implement" ]; then
+        [ -z "$e_cand" ] || [ "$e_cand" = "$m_cand" ] || mismatch=1
+      fi
       [ -z "$e_op" ] || [ "$e_op" = "$m_op" ] || mismatch=1
       [ -z "$e_role" ] || [ "$e_role" = "$m_role" ] || mismatch=1
       [ -z "$e_engine" ] || [ "$e_engine" = "orchid/$m_engine" ] || mismatch=1
