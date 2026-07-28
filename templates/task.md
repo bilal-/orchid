@@ -15,8 +15,8 @@ session_id:
 implementer_engine_id:
 base_sha:
 candidate_sha:
-risk_tier: medium
-blocking_severity: medium
+risk_tier: low
+blocking_severity: high
 stop_condition: report at most 8 findings at or above medium severity; no style nits; one pass only
 engine: __ENGINE__
 effort: medium

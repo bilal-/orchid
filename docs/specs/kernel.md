@@ -514,7 +514,7 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
 - Runaway: rework cap, concurrency cap, reviewer stop-conditions, per-task
   wall-clock budget.
 - Blockers: `BLOCKERS.md` + `orchid notify`. **Operator verbs:** `orchid
-  task unblock <id> [--guidance "..."]` and `orchid task retry <id>` —
+  task unblock <id> [--reason "..."]` and `orchid task retry <id>` —
   validated transitions, guidance recorded into the task body, intervention
   logged in the audit trail. No hand-editing needed, ever.
 - Crash/restart: `orchid-resume` = doctor → break stale lock if owner dead →

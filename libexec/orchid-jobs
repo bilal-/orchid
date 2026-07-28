@@ -36,6 +36,19 @@ kill_stuck() {
   fi
 }
 
+# Parses an ISO-8601 UTC timestamp (the exact shape `orchid-task`'s now()
+# emits, e.g. 2026-07-24T12:00:00Z) to epoch seconds; portable across GNU
+# date (-d) and BSD/macOS date (-j -f), since jobs check runs on both. Empty
+# or unparseable input yields 0, so callers can treat that as "no anchor"
+# rather than crashing the tick.
+iso_to_epoch() {
+  local iso="$1"
+  [ -n "$iso" ] || { echo 0; return; }
+  date -u -d "$iso" +%s 2>/dev/null && return
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null && return
+  echo 0
+}
+
 case "$sub" in
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
@@ -67,6 +80,22 @@ case "$sub" in
     for f in "$jobs_dir"/*.json; do
       [ -e "$f" ] || continue
       task="$(jq -r .task "$f")"; pid="$(jq -r .pid "$f")"
+      # v0b2: task wall-clock backstop — independent of this job's own
+      # liveness/status, so checked (and printed) regardless of which of the
+      # arms below the same manifest also falls into. Report-only: `jobs
+      # check` never kills for a budget overrun, the orchestrator escalates
+      # it via protocol (`task advance ... blocked`).
+      tf_budget="$state/tasks/$task.md"
+      if [ -f "$tf_budget" ]; then
+        t_started="$(fm_get "$tf_budget" started_at)"
+        t_budget="$(fm_get "$tf_budget" wallclock_budget_s)"
+        if [ -n "$t_started" ] && [ -n "$t_budget" ]; then
+          t_started_epoch="$(iso_to_epoch "$t_started")"
+          if [ "$t_started_epoch" -gt 0 ] && [ $(( now - t_started_epoch )) -gt "$t_budget" ]; then
+            printf '%s\tbudget-exceeded\n' "$task"
+          fi
+        fi
+      fi
       if [ "$pid" = 0 ]; then printf '%s\tprepared\n' "$task"; continue; fi
       if ! kill -0 "$pid" 2>/dev/null; then printf '%s\tdead\n' "$task"; continue; fi
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"
@@ -87,9 +116,19 @@ case "$sub" in
     # being otherwise read-and-runtime-only like `check` — this is fenced too.
     epoch_require "$repo"
     mkdir -p "$quarantine_dir" "$state/reviews"
+    # v0b2: a spool file bigger than this is quarantined on size alone,
+    # before any JSON parsing — a cheap, early defense against a runaway or
+    # forged tier-3 adapter dumping an oversized payload into the spool dir.
+    spool_max="$(config_get "$repo" spool_max_bytes 262144)"
     for f in "$spool_dir"/*.json; do
       [ -e "$f" ] || continue
       base="$(basename "$f")"
+      sz="$(wc -c < "$f" | tr -d ' ')"
+      if [ "$sz" -gt "$spool_max" ]; then
+        quarantine_file "$f" oversize
+        echo "quarantined: $base (oversize)"
+        continue
+      fi
       if ! envelope_validate "$f" 2>/dev/null; then
         quarantine_file "$f" malformed
         echo "quarantined: $base (malformed)"
@@ -109,12 +148,40 @@ case "$sub" in
       fi
       m_task="$(jq -r .task "$manifest")"; e_task="$(envelope_field "$f" .task)"
       m_base="$(jq -r .base_sha "$manifest")"; m_cand="$(jq -r .candidate_sha "$manifest")"
+      m_op="$(jq -r .operation "$manifest")"
+      m_role="$(jq -r .role "$manifest")"; m_engine="$(jq -r .engine "$manifest")"
       e_base="$(envelope_field "$f" '.base_sha // empty')"
       e_cand="$(envelope_field "$f" '.candidate_sha // empty')"
+      # operation/role/engine: cross-checked against the manifest whenever the
+      # envelope carries them. Today's real adapters always carry `operation`
+      # (required by envelope_validate whenever status is "ok") and `engine`
+      # (as "orchid/<name>", vs. the manifest's bare resolved name); `role` is
+      # not currently emitted by any adapter, so this arm is forward-looking
+      # (v1 adapters or forged envelopes could add it) — the `// empty`
+      # pattern makes all three optional the same way base_sha/candidate_sha
+      # already were, so fixtures that omit them are unaffected.
+      e_op="$(envelope_field "$f" '.operation // empty')"
+      e_role="$(envelope_field "$f" '.role // empty')"
+      e_engine="$(envelope_field "$f" '.engine // empty')"
       mismatch=0
       [ "$m_task" = "$e_task" ] || mismatch=1
       [ -z "$e_base" ] || [ "$e_base" = "$m_base" ] || mismatch=1
-      [ -z "$e_cand" ] || [ "$e_cand" = "$m_cand" ] || mismatch=1
+      # candidate_sha cross-check: skipped for IMPLEMENT. For review/critique,
+      # candidate_sha is an INPUT (it pins the candidate under review), minted
+      # into the manifest at `jobs prepare` time and echoed back by the
+      # adapter — so it must still match. For implement, candidate_sha is an
+      # OUTPUT the engine produces; the manifest was prepared before any
+      # candidate existed (it holds the task's pre-launch, typically empty,
+      # value), so it can never equal the real candidate the envelope
+      # reports. Cross-checking it here would quarantine every legitimate
+      # implement envelope (real dogfood F4). base_sha (the input the engine
+      # started from) is still checked above regardless of operation.
+      if [ "$m_op" != "implement" ]; then
+        [ -z "$e_cand" ] || [ "$e_cand" = "$m_cand" ] || mismatch=1
+      fi
+      [ -z "$e_op" ] || [ "$e_op" = "$m_op" ] || mismatch=1
+      [ -z "$e_role" ] || [ "$e_role" = "$m_role" ] || mismatch=1
+      [ -z "$e_engine" ] || [ "$e_engine" = "orchid/$m_engine" ] || mismatch=1
       if [ "$mismatch" -eq 1 ]; then
         quarantine_file "$f" mismatch
         echo "quarantined: $base (mismatch)"
@@ -123,10 +190,103 @@ case "$sub" in
       attempt="$(jq -r .attempt "$manifest")"; role="$(jq -r .role "$manifest")"
       status="$(envelope_field "$f" .status)"
       verdict="$(envelope_field "$f" '.verdict // "n/a"')"
-      mv "$f" "$state/reviews/$m_task-a$attempt-$role.json"
+      # A durable reviews/<task>-a<attempt>-<role>.json that already exists
+      # (a relaunch of the same attempt landed a second accepted envelope —
+      # e.g. a crash-recovery relaunch before `attempts` was bumped) must
+      # never be silently overwritten: both are forensic evidence. Keep both
+      # via a counter suffix, same pattern as quarantine_file above.
+      dest="$state/reviews/$m_task-a$attempt-$role.json"
+      n=2
+      while [ -e "$dest" ]; do
+        dest="$state/reviews/$m_task-a$attempt-$role.$n.json"
+        n=$((n + 1))
+      done
+      mv "$f" "$dest"
       rm -f "$manifest"
       printf '%s\t%s\t%s\n' "$m_task" "$status" "$verdict"
     done
     ;;
-  *) orchid_die "usage: orchid jobs prepare|check|reconcile" ;;
+  gc)
+    # Runtime-only cleanup: reaps DEAD jobs' litter (manifest -> quarantine,
+    # plus its pack dir/request file/log) once past --older-than-s, and
+    # separately sweeps orphaned pack/request entries that have no manifest
+    # and no pending spool envelope. Unlike prepare/reconcile (which mutate
+    # durable state under .orchid/tasks or .orchid/reviews), gc only ever
+    # touches runtime/ — manifests, packs, requests, logs, quarantine — so
+    # there is nothing here for INV-02's epoch fence to protect; it is
+    # deliberately un-fenced (no epoch_require call in this arm). It also
+    # never kills anything: it only reaps pids that are ALREADY dead
+    # (`kill -0` already failing), so INV-01's tier-1 "no spawn/kill" posture
+    # holds trivially — there is no kill call to guard here at all.
+    older_than_s="$(config_get "$repo" gc_older_than_s 86400)"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --older-than-s)
+          [ -n "${2:-}" ] || orchid_die "--older-than-s requires a value"
+          older_than_s="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs gc [--older-than-s N]" ;;
+      esac
+    done
+    mkdir -p "$quarantine_dir"
+    now="$(date +%s)"
+    for f in "$jobs_dir"/*.json; do
+      [ -e "$f" ] || continue
+      pid="$(jq -r .pid "$f")"
+      [ "$pid" != 0 ] || continue          # never started: not "dead", just prepared
+      if kill -0 "$pid" 2>/dev/null; then continue; fi   # still alive: untouched
+      started_at="$(jq -r .started_at "$f")"
+      age=$(( now - started_at ))
+      [ "$age" -gt "$older_than_s" ] || continue         # dead but too young: untouched
+      job_id="$(jq -r .job_id "$f")"
+      log_f="$(jq -r .log "$f")"
+      # v0b2: job_id/log are read straight from manifest JSON content, which
+      # could be corrupted or hand-edited — they must be validated before
+      # being used to build rm -rf targets, or a bad manifest could steer a
+      # delete anywhere on disk. job_id must match the exact shape `prepare`
+      # generates (no slashes, no ..); log must resolve under $rt/logs/ (no
+      # ..). Anything else is suspect: leave every runtime file in place and
+      # just quarantine the manifest itself as gc-suspect so it surfaces,
+      # instead of silently reaping it.
+      suspect=0
+      echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
+      case "$log_f" in
+        *..*) suspect=1 ;;
+      esac
+      case "$log_f" in
+        "$rt"/logs/*) ;;
+        *) suspect=1 ;;
+      esac
+      if [ "$suspect" -eq 1 ]; then
+        base="$(basename "$f")"
+        quarantine_file "$f" gc-suspect
+        echo "gc-skip $base (suspect fields)"
+        continue
+      fi
+      quarantine_file "$f" gc-dead
+      rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$log_f"
+      echo "gc $job_id"
+    done
+    # Orphan sweep: a pack dir or request file with no manifest AND no
+    # pending spool envelope waiting on it. A job that finished normally
+    # (reconcile already deleted its manifest and moved its spool envelope
+    # to reviews/) leaves neither pack nor request litter behind on its own,
+    # so any pack/request found here with truly nothing referencing it is
+    # genuine litter — most commonly from a crash between launch and
+    # reconcile. The dead-manifest loop above already removed its own
+    # pack/request, so those never reach this loop as orphans too.
+    # job_id here is a basename taken from directory enumeration of $p
+    # itself (an entry gc just observed on disk under $rt/packs or
+    # $rt/requests), never from manifest JSON content — so, unlike the
+    # dead-reap loop above, there is no manifest-controlled string here to
+    # validate; $p is already a real path rooted under runtime/.
+    for p in "$rt/packs"/* "$rt/requests"/*; do
+      [ -e "$p" ] || continue
+      job_id="$(basename "$p")"; job_id="${job_id%.json}"
+      [ -e "$jobs_dir/$job_id.json" ] && continue
+      [ -e "$spool_dir/$job_id.json" ] && continue
+      rm -rf "$p"
+      echo "gc-orphan $p"
+    done
+    ;;
+  *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc" ;;
 esac

@@ -48,7 +48,7 @@ esac
 if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
   case "$operation" in
     implement)       write_envelope ok '{"summary":"dryrun"}' ;;
-    review|critique) write_envelope ok '{"verdict":"approve","scope_complete":true}' ;;
+    review|critique) write_envelope ok '{"verdict":"approve","scope_complete":true,"findings":[]}' ;;
   esac
   exit 0
 fi
@@ -59,17 +59,68 @@ if [ "$operation" = implement ]; then
   prompt=""
   [ -f "$input_pack/context.md" ] && prompt="$(cat "$input_pack/context.md")"$'\n\n'
   prompt="$prompt$(cat "$input_pack/task.md")"$'\n\n'
-  prompt="${prompt}Rules: work only in this directory; commit your work with clear messages; never touch any .orchid/ path."
+  prompt="${prompt}Rules: work only in this directory; edit files to satisfy the task; never touch any .orchid/ path."
 
+  # v0b2 F2, judgment call: apply the same stdin fix as codex's adapter to
+  # remove the leading-dash argv risk (task.md frontmatter starts with
+  # "---"). Unlike codex, `claude -p` has no `-`-as-prompt-arg convention;
+  # its own --help documents `-p, --print` as "useful for pipes" and it
+  # reads the prompt from stdin whenever no positional prompt argument is
+  # given, so simply omitting the argv prompt (rather than passing `-`)
+  # is the fix here. Verified against the installed `claude --help` text
+  # during this fix, not by spending real quota on a live round trip (the
+  # probes/ directory's real-CLI tests are manual/operator-run only, see
+  # tests/probes/README.md). Lower stakes than the codex fix either way:
+  # per docs/dogfood-notes.md, this adapter's implement path can't self-
+  # commit under acceptEdits, so claude is already review-only in practice.
   set +e
-  stdout="$(cd "$worktree" && claude -p "$prompt" --permission-mode acceptEdits 2>"$err_file")"
+  stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p --permission-mode acceptEdits 2>"$err_file")"
   rc=$?; set -e
   stderr="$(cat "$err_file")"
 
   if [ "$rc" -eq 0 ]; then
     last_line="$(printf '%s\n' "$stdout" | awk 'NF{l=$0} END{print l}')"
     summary="${last_line:0:200}"; [ -n "$summary" ] || summary="implemented"
-    write_envelope ok "$(jq -n --arg s "$summary" '{summary:$s}')"
+
+    # v0b2 F3: engines edit, the ADAPTER commits. claude headless won't
+    # commit at all (probe finding, see docs/dogfood-notes.md), so the
+    # adapter -- which runs UNSANDBOXED -- stages and commits the engine's
+    # edits itself after the CLI exits.
+    set +e
+    add_err="$(cd "$worktree" && git add -A 2>&1)"
+    add_rc=$?; set -e
+    if [ "$add_rc" -ne 0 ]; then
+      write_envelope failed "$(jq -n --arg s "git add -A failed: $add_err" '{summary:$s}')"
+      exit 1
+    fi
+
+    if ! (cd "$worktree" && git diff --cached --quiet); then
+      # Engine left staged-worthy edits uncommitted: the adapter makes
+      # exactly one commit for them.
+      msg="${task}: ${summary:0:60}"
+      set +e
+      commit_err="$(cd "$worktree" && git commit -q -m "$msg" 2>&1)"
+      commit_rc=$?; set -e
+      if [ "$commit_rc" -ne 0 ]; then
+        write_envelope failed "$(jq -n --arg s "git commit failed: $commit_err" '{summary:$s}')"
+        exit 1
+      fi
+      candidate_sha="$(cd "$worktree" && git rev-parse HEAD)"
+      commits_json="$(jq -n --arg s "$candidate_sha" '[$s]')"
+    else
+      # Nothing new to stage. The engine may ALSO have committed on its own
+      # -- accept those commits idempotently instead of double-committing.
+      # Only truly empty history is a failure.
+      commits_raw="$(cd "$worktree" && git rev-list "${base_sha}..HEAD" 2>/dev/null || true)"
+      commits_json="$(printf '%s' "$commits_raw" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+      if [ "$(printf '%s' "$commits_json" | jq 'length')" -eq 0 ]; then
+        write_envelope failed '{"summary":"engine produced no changes"}'
+        exit 1
+      fi
+      candidate_sha="$(cd "$worktree" && git rev-parse HEAD)"
+    fi
+
+    write_envelope ok "$(jq -n --arg s "$summary" --argjson c "$commits_json" '{summary:$s, commits:$c}')"
     exit 0
   fi
   printf '%s\n' "$stderr" >&2
@@ -91,8 +142,9 @@ $diff
 
 End your reply with exactly: VERDICT: approve OR request-changes"
 
+# Same F2 stdin fix as the implement path above (line ~65).
 set +e
-stdout="$(cd "$worktree" && claude -p "$prompt" 2>"$err_file")"
+stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p 2>"$err_file")"
 rc=$?; set -e
 stderr="$(cat "$err_file")"
 
@@ -118,5 +170,5 @@ fi
 
 any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
 scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
-write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc}')"
+write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc, findings:[]}')"
 exit 0

@@ -5,12 +5,16 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runti
 sub="${1:-}"; shift || true
 case "$sub" in
   add)
-    epoch_require "$repo"
-    task=""; kind="note"
+    task=""; kind="note"; unfenced=0
     while [ $# -gt 0 ]; do case "$1" in
-      --task) task="$2"; shift 2;; --kind) kind="$2"; shift 2;; *) break;; esac; done
+      --task) task="$2"; shift 2;; --kind) kind="$2"; shift 2;;
+      # For out-of-run writers only (currently just orchid-answer); deliberately
+      # undocumented — not a general-purpose epoch bypass. Left out of usage/help.
+      --unfenced) unfenced=1; shift;;
+      *) break;; esac; done
     text="$*"
-    actor="${ORCHID_ACTOR:-operator}"; e="$ORCHID_EPOCH"
+    if [ "$unfenced" -eq 1 ]; then e="-"; else epoch_require "$repo"; e="$ORCHID_EPOCH"; fi
+    actor="${ORCHID_ACTOR:-operator}"
     entry="## $(date -u +%Y-%m-%dT%H:%M:%SZ) ${task:-run} $kind ($actor e$e)"
     { [ -f "$state/journal.md" ] && cat "$state/journal.md"; echo; echo "$entry"; echo "$text"; } \
       | atomic_write "$state/journal.md"

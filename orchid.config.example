@@ -7,3 +7,16 @@ role.reviewer=agy
 role.arbiter=claude
 role.plan_critic=codex
 pack_budget_bytes=65536
+
+# Everything below is commented with its built-in default — uncomment and
+# change only what this repo needs. Full key reference: lib/config-keys.txt
+# (also: `orchid config list` prints the EFFECTIVE value + provenance for
+# every key, live).
+# lock_break_s=900
+# stall_minutes=10
+# timeout_minutes=60
+# agy_max_bytes=100000
+# spool_max_bytes=262144
+# gc_older_than_s=86400
+# model=
+# effort=medium

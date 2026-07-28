@@ -13,6 +13,18 @@ envelope_validate() {
             and (.scope_complete | type == "boolean"))
       )
     )
+    and (
+      (has("findings") | not) or
+      (.findings | type == "array" and
+        all(.[];
+          type == "object"
+          and (.severity | type == "string" and length > 0)
+          and (.title    | type == "string" and length > 0)))
+    )
+    and (
+      (has("commits") | not) or
+      (.commits | type == "array" and all(.[]; type == "string"))
+    )
   ' "$1" >/dev/null
 }
 envelope_field() { jq -r "$2" "$1"; }

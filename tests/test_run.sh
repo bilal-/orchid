@@ -31,3 +31,10 @@ scratch="$WORK/scratch-uninit"; mkdir -p "$scratch"
 (cd "$scratch" && git init -q . && git commit -q --allow-empty -m root)
 rc=0; ORCHID_REPO="$scratch" HOME="$WORK/home" "$ORCHID_BIN" run start >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "run start must refuse an uninitialized repo"
+
+# v0b2: `run resume` requires initialized state too (same guard as start) —
+# resume recovers an existing run after a crash/restart, it does not
+# bootstrap one; letting it proceed against an uninitialized repo would mint
+# an epoch/lease for state that was never created.
+rc=0; ORCHID_REPO="$scratch" HOME="$WORK/home" "$ORCHID_BIN" run resume >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "run resume must refuse an uninitialized repo"

@@ -1,14 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"
-repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_state "$repo")"
+
+# run_status transition table (kernel.md's normative table, v0b2 ownership
+# verbs): every edge below is legal for `run advance`; anything else,
+# including reversed/skipped edges, is refused with exit 3 — the same
+# illegal-transition contract `orchid task advance` uses.
+#
+# ->complete is deliberately ABSENT from this table, full stop — not just
+# reachable-only-from-accepting. `accepting:complete` used to be a legal
+# advance-table edge, which made `run advance complete --reason x` a
+# complete bypass of the acceptance evidence gate (no --evidence, no
+# reviews/acceptance.log write, just a bare state flip). `run advance`
+# below now special-cases `$to = complete` and refuses it unconditionally,
+# from ANY state, before this table is even consulted. `orchid run accept
+# --reason --evidence` is the ONLY path to `complete`; it sets run_status
+# directly with its own from=accepting + evidence-file guard and never
+# calls legal_run, so it is untouched by this table either way.
+#
+# blocked:running is the recoverable-block edge: kernel.md requires "no
+# hand-editing, ever", so a run parked in `blocked` must be resumable by an
+# operator through a legal verb call, not by hand-editing roadmap.md.
+# `run advance` already hard-requires --reason on every edge (INV-08, see
+# below), so this is a fenced, journaled `intervention` like any other
+# operator judgment call.
+legal_run() { case "$1:$2" in
+  planning:running|running:accepting|running:blocked|\
+  accepting:running|blocked:running) return 0 ;;
+  *:blocked) return 0 ;;
+  *) return 1 ;;
+esac; }
+
 sub="${1:-}"; shift || true
 case "$sub" in
   start|resume)
-    if [ "$sub" = start ]; then
-      [ -d "$(orchid_state "$repo")/tasks" ] || [ -f "$(orchid_state "$repo")/roadmap.md" ] || \
-        orchid_die "not initialized — run orchid init"
-    fi
+    # v0b2: both start and resume require initialized state. resume exists to
+    # recover an existing run after a crash/restart, not to bootstrap one —
+    # letting it proceed against an uninitialized repo would mint a fresh
+    # epoch/lease for state that was never created (same guard as start).
+    [ -d "$(orchid_state "$repo")/tasks" ] || [ -f "$(orchid_state "$repo")/roadmap.md" ] || \
+      orchid_die "not initialized — run orchid init"
     lock_msg="$(lock_acquire "$repo")" || orchid_die "cannot acquire lock"
     trap 'lock_release "$repo"' EXIT
     e=$(( $(epoch_current "$repo") + 1 ))
@@ -27,5 +59,67 @@ case "$sub" in
     jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{epoch:($e|tonumber), refreshed_at:$t}' | atomic_write "$rt/lease.json"
     ;;
-  *) orchid_die "usage: orchid run start|resume|refresh-lease" ;;
+  advance)
+    epoch_require "$repo"; export ORCHID_EPOCH
+    to="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    [ -n "$to" ] || orchid_die "usage: orchid run advance <status> --reason \"...\""
+    [ -n "$reason" ] || orchid_die "run advance requires --reason (INV-08)"
+
+    # Evidence-gate bypass, closed: `advance` may never grant `complete`,
+    # from any run_status, regardless of what legal_run's table says —
+    # refused before the roadmap is even read, so nothing is mutated.
+    [ "$to" = complete ] && { echo "orchid: use: orchid run accept --evidence" >&2; exit 3; }
+
+    roadmap="$state/roadmap.md"
+    [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
+    from="$(fm_get "$roadmap" run_status)"
+    legal_run "$from" "$to" || { echo "orchid: illegal run_status $from -> $to" >&2; exit 3; }
+
+    # `->complete` is the acceptance gate closing; every other edge is a
+    # plain operator intervention (kernel.md's journal-kind table).
+    kind=intervention
+    [ "$to" = complete ] && kind=acceptance
+    # Journal first (INV-08): the reason is recorded before the state
+    # change it justifies.
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind "$kind" "run_status $from -> $to: $reason"
+    fm_set "$roadmap" run_status "$to"
+    echo "run_status: $from -> $to"
+    ;;
+  accept)
+    epoch_require "$repo"; export ORCHID_EPOCH
+    reason=""; evidence=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      --evidence)
+        [ -n "${2:-}" ] || orchid_die "--evidence requires a value"
+        evidence="$2"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    [ -n "$reason" ] || orchid_die "run accept requires --reason (INV-08)"
+    [ -n "$evidence" ] || orchid_die "run accept requires --evidence <path>"
+    [ -f "$evidence" ] || orchid_die "no such evidence file: $evidence"
+
+    roadmap="$state/roadmap.md"
+    [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
+    from="$(fm_get "$roadmap" run_status)"
+    # Shorthand for accepting->complete only: requires an acceptance evidence
+    # file, unlike the bare `run advance complete` escape hatch above.
+    [ "$from" = accepting ] || orchid_die "run accept requires run_status accepting (current: $from)"
+
+    mkdir -p "$state/reviews"
+    cat "$evidence" | atomic_write "$state/reviews/acceptance.log"
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind acceptance "run_status accepting -> complete: $reason"
+    fm_set "$roadmap" run_status complete
+    echo "run_status: accepting -> complete"
+    ;;
+  *) orchid_die "usage: orchid run start|resume|refresh-lease|advance|accept" ;;
 esac
