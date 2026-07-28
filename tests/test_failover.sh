@@ -149,10 +149,10 @@ printf 'verify=true\nrole.orchestrator=orchg\nrole.implementer=implg,implg2\nrol
   > "$crepo/orchid.config"
 
 out="$(ORCHID_REPO="$crepo" "$ORCHID_BIN" doctor)" || true
-assert_match "role implementer -> implg \(primary\), implg2 \(fallback: capsuite UNVERIFIED" "$out" \
-  "doctor shows the chain with an unverified fallback note before it has been tested"
+assert_match "role implementer -> implg \(primary: [^)]+\), implg2 \(fallback: capsuite UNVERIFIED" "$out" \
+  "doctor shows the chain with an unverified fallback note before it has been tested, primary annotated with its resolved exe path"
 
 capsuite_run implg2 implementer >/dev/null
 out2="$(ORCHID_REPO="$crepo" "$ORCHID_BIN" doctor)" || true
-assert_match "role implementer -> implg \(primary\), implg2 \(fallback: capsuite passed\)" "$out2" \
-  "doctor shows 'capsuite passed' for a fallback once it has passed the capability suite"
+assert_match "role implementer -> implg \(primary: [^)]+\), implg2 \(fallback: capsuite passed\)" "$out2" \
+  "doctor shows 'capsuite passed' for a fallback once it has passed the capability suite, primary still annotated with its resolved exe path"

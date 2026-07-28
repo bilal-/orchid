@@ -27,6 +27,19 @@ _schedule_active_status() {  # status -> 0 iff it counts as "active"
   esac
 }
 
+# schedule_is_active_status <status> -- public wrapper over
+# _schedule_active_status for callers outside this file. libexec/orchid-
+# task's dispatch gate keys off this (rather than a literal `to =
+# implementing` check) so a report-archetype task dispatching straight into
+# an active status OTHER than implementing (e.g. the `review` archetype's
+# pending:reviewing / rework:reviewing) is gated by
+# schedule_dispatch_blockers exactly like a feature task's pending/rework ->
+# implementing edge -- no archetype-name branching (INV-05), just "is the
+# destination status one that counts as active".
+schedule_is_active_status() {
+  _schedule_active_status "$1"
+}
+
 # schedule_active_tasks <repo> -- ids whose status is currently active
 # (implementing, testing, reviewing, arbitrating, merging), one per line, in
 # task-file glob order. Empty output (no active tasks) is not an error.

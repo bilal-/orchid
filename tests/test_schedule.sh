@@ -180,3 +180,94 @@ assert_match "H001.*implementing" "$explain2" "H001 back in implementing after r
 rc=0; err3="$("$ORCHID_BIN" task advance H002 implementing 2>&1 1>/dev/null)" || rc=$?
 assert_eq 3 "$rc" "H002 dispatch still refused at cap after H001's rework re-dispatch"
 assert_match "concurrency-cap \(1/1\)" "$err3" "second refusal also names concurrency-cap"
+
+# ============================================================================
+# Integration level (final-review Finding 1): a REPORT-archetype task's
+# pending/rework -> reviewing edge is a real dispatch too -- `reviewing` is
+# an active status (_SCHEDULE_ACTIVE_STATUSES above) -- and must be gated by
+# the exact same predicates as pending/rework -> implementing. Before this
+# fix, libexec/orchid-task's gate was keyed on a literal `to = implementing`
+# check, so a review-archetype task dispatching straight into `reviewing`
+# skipped concurrency-cap/exclusive/resource/waiting-deps entirely, even
+# though `orchid status --explain` (above) already shows those same
+# predicates for its pending/rework row. No archetype-name branching here
+# (INV-05) -- the gate keys on "to is an active status", read via
+# lib/schedule.sh, never on the archetype's name.
+# ============================================================================
+repo3="$WORK/integ3"; mkdir -p "$repo3/.orchid/tasks"
+(cd "$repo3" && git init -q . && git commit -q --allow-empty -m root)
+export ORCHID_REPO="$repo3" HOME="$WORK/home3"; mkdir -p "$HOME"
+export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+repo3_sha="$(git -C "$repo3" rev-parse HEAD)"
+
+"$ORCHID_BIN" task create K001 "occupies the cap" >/dev/null
+"$ORCHID_BIN" task advance K001 implementing >/dev/null   # feature, active
+
+"$ORCHID_BIN" task create K002 "review task" --archetype review >/dev/null
+"$ORCHID_BIN" task set K002 base_sha "$repo3_sha" >/dev/null
+"$ORCHID_BIN" task set K002 candidate_sha "$repo3_sha" >/dev/null
+
+# (a) concurrency-cap: cap=1, K001 already active -> K002's review-archetype
+# pending -> reviewing dispatch is refused, exit 3, naming concurrency-cap.
+printf 'concurrency=1\n' > "$repo3/orchid.config"
+rc=0; errA="$("$ORCHID_BIN" task advance K002 reviewing 2>&1 1>/dev/null)" || rc=$?
+assert_eq 3 "$rc" "review-archetype pending -> reviewing refused at cap exits 3"
+assert_match "concurrency-cap \(1/1\)" "$errA" "refusal names concurrency-cap for a review-archetype dispatch into reviewing"
+assert_eq pending "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 stays pending after the refused reviewing dispatch"
+
+# back to default cap (2): K001 alone (1 active) no longer trips the cap.
+rm -f "$repo3/orchid.config"
+
+# (b) waiting-deps: K002 depends on K003, which never leaves pending (not
+# done) -> refused, exit 3, naming waiting-deps, cap/exclusive/resources
+# all clear.
+"$ORCHID_BIN" task create K003 "dep source, left pending" >/dev/null
+"$ORCHID_BIN" task set K002 depends_on K003 >/dev/null
+rc=0; errB="$("$ORCHID_BIN" task advance K002 reviewing 2>&1 1>/dev/null)" || rc=$?
+assert_eq 3 "$rc" "review-archetype pending -> reviewing refused on an unmet dep exits 3"
+assert_match "waiting-deps \(K003\)" "$errB" "refusal names waiting-deps for a review-archetype dispatch into reviewing"
+assert_eq pending "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 stays pending after the refused reviewing dispatch"
+
+# drive a fresh review-archetype task, K004, all the way to `done` (review's
+# shortest path: pending -> reviewing -> arbitrating -> done) so it can
+# stand in as a MET dependency for K002 below.
+"$ORCHID_BIN" task create K004 "dep source, will finish" --archetype review >/dev/null
+"$ORCHID_BIN" task set K004 base_sha "$repo3_sha" >/dev/null
+"$ORCHID_BIN" task set K004 candidate_sha "$repo3_sha" >/dev/null
+"$ORCHID_BIN" task advance K004 reviewing >/dev/null \
+  || fail "K004 (0 active besides K001, cap 2, no deps) must dispatch into reviewing cleanly"
+mkdir -p "$repo3/.orchid/reviews"
+jq -n --arg jid "j-fixture-K004-a1" --arg cand "$repo3_sha" \
+  '{contract:1, job_id:$jid, task:"K004", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
+  > "$repo3/.orchid/reviews/K004-a1-reviewer.json"
+"$ORCHID_BIN" task advance K004 arbitrating --reason "single reviewer approved" >/dev/null
+"$ORCHID_BIN" task advance K004 done --reason "accepted" >/dev/null
+assert_eq done "$("$ORCHID_BIN" task show K004 | grep '^status: ' | cut -d' ' -f2)" "K004 reached done"
+
+# (c) cap free + deps met -> K002's pending -> reviewing now proceeds.
+"$ORCHID_BIN" task set K002 depends_on K004 >/dev/null
+"$ORCHID_BIN" task advance K002 reviewing >/dev/null \
+  || fail "K002 (cap free, dep K004 done) must dispatch into reviewing cleanly"
+assert_eq reviewing "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 reached reviewing once its dep was done and the cap was free"
+
+# drive K002 on to `rework` (reviewing -> arbitrating -> rework) so the next
+# check can exercise rework -> reviewing, review-archetype's rework
+# re-entry edge.
+mkdir -p "$repo3/.orchid/reviews"
+jq -n --arg jid "j-fixture-K002-a1" --arg cand "$repo3_sha" \
+  '{contract:1, job_id:$jid, task:"K002", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
+  > "$repo3/.orchid/reviews/K002-a1-reviewer.json"
+"$ORCHID_BIN" task advance K002 arbitrating --reason "single reviewer approved" >/dev/null
+"$ORCHID_BIN" task advance K002 rework --reason "needs another pass" >/dev/null
+assert_eq rework "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 is rework"
+
+# (e) rework -> reviewing is gated identically: cap=1 with K001 still active
+# refuses K002's rework -> reviewing re-entry the same way it refused its
+# very first pending -> reviewing dispatch.
+printf 'concurrency=1\n' > "$repo3/orchid.config"
+rc=0; errE="$("$ORCHID_BIN" task advance K002 reviewing 2>&1 1>/dev/null)" || rc=$?
+assert_eq 3 "$rc" "review-archetype rework -> reviewing refused at cap exits 3"
+assert_match "concurrency-cap \(1/1\)" "$errE" "refusal names concurrency-cap for a review-archetype rework -> reviewing re-entry"
+assert_eq rework "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 stays rework after the refused reviewing re-entry"

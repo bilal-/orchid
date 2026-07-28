@@ -69,8 +69,8 @@ for role in orchestrator implementer reviewer arbiter plan_critic; do
     idx=$((idx + 1))
     if [ "$idx" -eq 1 ]; then
       primary="$eng"
-      if resolve_engine_exe "$eng" >/dev/null 2>&1; then
-        line="$eng (primary)"
+      if exe="$(resolve_engine_exe "$eng" 2>/dev/null)"; then
+        line="$eng (primary: $exe)"
       else
         primary_ok=0
       fi

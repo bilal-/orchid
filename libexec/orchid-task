@@ -123,18 +123,25 @@ case "$sub" in
       exit 13
     fi
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
-    # v1-m2 Task 5: the kernel-side dispatch gate. Applies on BOTH edges that
-    # actually dispatch a task into implementing (pending-> and rework->) --
-    # anything else moving to `implementing` is not a fresh dispatch (there
-    # is no such other edge in any shipped archetype today, but the check is
-    # from-scoped rather than a bare `to=implementing` so it can never
-    # accidentally gate some future non-dispatch edge). schedule.sh is the
-    # single home for the predicate set; this call is its only kernel-side
-    # enforcement point (orchid-status's --explain is the other, read-only,
-    # caller). Deps stay orchestrator-supplied facts for worktree/base_sha
-    # (unchanged, set before this call) -- only the schedule predicates
-    # (cap/exclusive/resources/deps) are enforced HERE, fail-closed.
-    if [ "$to" = implementing ] && { [ "$from" = pending ] || [ "$from" = rework ]; }; then
+    # v1-m2 Task 5 (keyed on active-status, not literally on `to=implementing`,
+    # per final-review Finding 1): the kernel-side dispatch gate. Applies on
+    # BOTH edges that actually dispatch a task (pending-> and rework->) INTO
+    # an active status -- a feature task's pending/rework -> implementing,
+    # but also e.g. a `review`-archetype task's pending/rework -> reviewing
+    # (`reviewing` is itself an active status per lib/schedule.sh's
+    # _SCHEDULE_ACTIVE_STATUSES). Keying on schedule_is_active_status rather
+    # than a literal `to=implementing` string means this can never silently
+    # exempt some other archetype's active-status entry edge from the same
+    # predicates orchid-status's --explain already assumes are enforced here
+    # -- and it does so without ever branching on the archetype's NAME
+    # (INV-05): only the declared `to` status's membership in the active set
+    # matters. schedule.sh is the single home for the predicate set; this
+    # call is its only kernel-side enforcement point (orchid-status's
+    # --explain is the other, read-only, caller). Deps stay orchestrator-
+    # supplied facts for worktree/base_sha (unchanged, set before this call)
+    # -- only the schedule predicates (cap/exclusive/resources/deps) are
+    # enforced HERE, fail-closed.
+    if { [ "$from" = pending ] || [ "$from" = rework ]; } && schedule_is_active_status "$to"; then
       blockers="$(schedule_dispatch_blockers "$repo" "$id")"
       if [ -n "$blockers" ]; then
         echo "orchid: dispatch refused for $id ($from -> $to):" >&2
