@@ -217,6 +217,17 @@ case "$sub" in
     dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins trust [--update] <plugin-dir>"
     [ -d "$dir" ] || orchid_die "no such directory: $dir"
     abs="$(_trust_canon_path "$dir")" || orchid_die "cannot resolve path: $dir"
+    # A plugin whose manifest fails validation (unknown api_version, an
+    # unsatisfied requires_orchid, etc. -- manifest_validate's own fail-
+    # closed rejections) must never be pinned: trust exists to let a
+    # digest-pinned plugin resolve and run, and doing that for a plugin the
+    # kernel itself has declared incompatible would defeat fail-closed
+    # validation entirely. Checked before anything else below (including the
+    # symlink-entrypoint refusal), and its own FAIL output is surfaced so an
+    # operator sees exactly why without a separate `plugins validate` run.
+    validate_out="$(manifest_validate "$abs" 2>&1)" \
+      || orchid_die "refusing to trust: manifest invalid — run: orchid plugins validate <id>
+$validate_out"
     # A digest that hashes symlink targets (lib/common.sh's plugin_digest)
     # still can't protect a plugin that was pinned while its entrypoint was
     # ALREADY a symlink -- the pinned digest would simply cover whatever it

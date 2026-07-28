@@ -151,3 +151,29 @@ rc=0; out="$(HOME="$home" "$ORCHID_BIN" plugins trust "$symdir" 2>&1)" || rc=$?
 assert_match "entrypoint.*symlink" "$out" "refusal message names the entrypoint as a symlink"
 [ "$(path_count "$home/.orchid/trust" "$(cd "$symdir" && pwd -P)")" -eq 0 ] \
   || fail "a refused symlink-entrypoint plugin must not end up recorded as trusted"
+
+# -- trust refuses a manifest that fails validation (Must-fix 1) ------------
+# A kernel-declared-incompatible plugin (unknown api_version, fail-closed
+# rejected by manifest_validate) must never be pinned into the trust store --
+# trusting it would let it later resolve and run despite the incompatibility.
+badrepo="$WORK/badrepo"
+baddir="$badrepo/.orchid/plugins/engines/badeng"
+mkdir -p "$baddir"
+printf 'manifest_version=1\nid=acme/badeng\nversion=0.1.0\nkind=engine\napi_version=2\nrequires_orchid=>=1.0\ncapabilities=structured_text\nentrypoint=run\n' \
+  > "$baddir/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$baddir/run"; chmod +x "$baddir/run"
+rc=0; out="$(HOME="$home" ORCHID_REPO="$badrepo" "$ORCHID_BIN" plugins trust "$baddir" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "trust must refuse a plugin whose manifest fails validation (api_version=2)"
+assert_match "refusing to trust: manifest invalid" "$out" "refusal message names the manifest as invalid"
+assert_match "orchid plugins validate" "$out" "refusal message points at 'orchid plugins validate <id>'"
+assert_match "unknown api_version" "$out" "refusal message surfaces manifest_validate's own FAIL output"
+[ "$(path_count "$home/.orchid/trust" "$(cd "$baddir" && pwd -P)")" -eq 0 ] \
+  || fail "a refused invalid-manifest plugin must not end up recorded as trusted"
+
+# -- a validly-manifested plugin still trusts normally ----------------------
+goodrepo="$WORK/goodrepo"
+gooddir="$goodrepo/.orchid/plugins/engines/goodeng"
+mk_engine "$gooddir" acme/goodeng 0.1.0
+out="$(HOME="$home" ORCHID_REPO="$goodrepo" "$ORCHID_BIN" plugins trust "$gooddir")"; rc=$?
+assert_eq 0 "$rc" "trust still succeeds for a plugin whose manifest validates"
+assert_match "^trusted: " "$out" "trust of a valid manifest still prints a confirmation line"
