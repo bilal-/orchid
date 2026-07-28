@@ -190,20 +190,34 @@ itself is never edited by plugins.
 Verb kernel · Envelope · Adapter · Runner · Archetype · Ledger · Spool ·
 Lease · Request document · Trust record · Hook.
 
-## Engine availability & role failover (v1)
+## Engine availability & role failover (v1-m2 — SHIPPED)
 
-Ledger (`runtime/engines.json`: last status, `rate_limited_until`,
-consecutive failures — updated via spool events) + primary→secondary
-preference pairs per role in config (defaults: `role.orchestrator`
-claude→codex; `role.implementer` codex→claude; `role.arbiter` claude→codex;
-`role.plan_critic` any engine that did not author the plan; reviewers per
-risk-tier routing) + the capability gate: a fallback (engine, role) pair
-activates ONLY after passing the role×engine capability suite (filesystem
-scope, network policy, subprocess, git, structured output, recovery). The pump: LLM-free heartbeat that launches
-`orchid-tick` on the best available capable orchestrator engine when the
-lease is stale (>15 min); mutual exclusion via lease staleness, not flock.
-Independence rules (kernel.md, Task lifecycle) apply against the task's recorded implementer.
-High-risk arbitration waits (bounded, default 4h) for the preferred arbiter.
+Ledger (`lib/ledger.sh`, `runtime/engines.json`: last status,
+`rate_limited_until`, consecutive failures — updated by `orchid jobs
+reconcile`'s `ledger_mark` from every accepted/quarantined envelope, and by
+`runners/orchid-tick` for the tick's own orchestrator pick; `rate_limited`
+opens a window sized by `rate_limit_backoff_s`, config, default 3600s, or
+the envelope's own `retry_after`; `engine_fail_threshold`, config, default
+3, is the consecutive-failure count that flips an engine to `failing`;
+`orchid status`'s `== engines` section reads it back) + primary→secondary
+preference pairs per role in config (`role.<role>=<primary>,<fallback>,...`
+— defaults: `role.orchestrator` claude→codex; `role.implementer`
+codex→claude; `role.arbiter` claude→codex; `role.plan_critic` any engine
+that did not author the plan; reviewers per risk-tier routing) + the
+capability gate: `lib/resolver.sh`'s `resolve_role_available` walks the
+chain and admits a fallback (engine, role) pair ONLY after it has passed the
+role×engine capability suite (filesystem scope, network policy, subprocess,
+git, structured output, recovery) — no survivor anywhere in the chain exits
+14. The pump (`runners/orchid-pump`): LLM-free heartbeat that launches the
+headless tick (`runners/orchid-tick`) on the best available capable
+orchestrator engine when the lease is stale (`pump_stale_s`, config,
+default 900s = 15 min); mutual exclusion via lease staleness plus epoch
+fencing, not flock. Independence rules (kernel.md, Task lifecycle) apply
+against the task's recorded `implementer_engine_id` (populated by `orchid
+task advance ... testing`). High-risk arbitration waits (bounded by
+`arbiter_wait_s`, config, default 14400s = 4h) for the preferred arbiter —
+PROTOCOL.md's HEADLESS OPERATION section is normative on the wait/fallback
+mechanics; this is orchestrator-followed policy, not a kernel-verb gate.
 Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
 
 ## Threat model (consolidated)

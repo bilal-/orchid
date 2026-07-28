@@ -34,8 +34,13 @@ pack_budget_bytes=65536
 # agy_max_bytes=100000
 # spool_max_bytes=262144
 # gc_older_than_s=86400
+# infra_max=3
 # model=
 # effort=medium
 # rate_limit_backoff_s=3600
 # engine_fail_threshold=3
 # pump_stale_s=900
+# v1-m2: high-risk arbitration's wait (seconds) for the preferred
+# role.arbiter engine before a fallback arbiter may decide (PROTOCOL.md,
+# HEADLESS OPERATION).
+# arbiter_wait_s=14400

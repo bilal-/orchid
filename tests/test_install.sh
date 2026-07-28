@@ -109,3 +109,38 @@ done < <(grep -oE 'orchid [A-Za-z_-]+' "$PROTOCOL" | awk '{print $2}' | sort -u)
 runner_count="$(grep -c 'runners/orchid-launch' "$PROTOCOL")"
 [ "$runner_count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/orchid-launch"
 [ -x "$REPO_ROOT/runners/orchid-launch" ] || fail "runners/orchid-launch named in PROTOCOL.md but missing/not executable"
+
+# v1-m2 (Task 10): PROTOCOL.md's HEADLESS OPERATION section names the other
+# two runners by their full `runners/orchid-<name>` path (never bare, unlike
+# libexec verbs, which is why the top-level regex above can't already catch
+# these) — same existence check as orchid-launch just above, one per runner.
+for runner in orchid-tick orchid-pump; do
+  count="$(grep -c "runners/$runner" "$PROTOCOL")"
+  [ "$count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/$runner"
+  [ -x "$REPO_ROOT/runners/$runner" ] || fail "runners/$runner named in PROTOCOL.md but missing/not executable"
+done
+
+# `orchid jobs review-plan <id>` is a JOBS SUBCOMMAND, not a top-level verb --
+# the top-level regex above only ever captures "jobs" (already checked), so
+# this is a targeted second check: PROTOCOL.md must name the full subcommand,
+# and libexec/orchid-jobs must actually implement a `review-plan)` case arm
+# (not just claim to support it in its own usage string).
+review_plan_count="$(grep -c 'jobs review-plan' "$PROTOCOL")"
+[ "$review_plan_count" -gt 0 ] || fail "PROTOCOL.md never mentions 'orchid jobs review-plan'"
+grep -qE '^\s*review-plan\)' "$REPO_ROOT/libexec/orchid-jobs" \
+  || fail "PROTOCOL.md names 'orchid jobs review-plan' but libexec/orchid-jobs has no review-plan) case arm"
+
+# v1-m2 (Task 10): the v0-era aspirational note ("marking an engine
+# unavailable ... is not implemented by any verb [yet]") must be gone from
+# PROTOCOL.md now that lib/ledger.sh + `orchid jobs reconcile` actually close
+# that gap automatically -- a lingering copy would misdocument shipped
+# behavior as still-missing. Both of PROTOCOL.md's own historical copies of
+# this claim (THE TICK step 2's paragraph, and the discrepancies-list
+# `infra_failures` bullet) used one of these two phrasings; neither may
+# survive.
+if grep -q 'remains aspirational' "$PROTOCOL"; then
+  fail "PROTOCOL.md still calls engine-unavailable marking 'aspirational' -- lib/ledger.sh + jobs reconcile ship it now"
+fi
+if grep -qE 'engine.*unavailable.*not implemented by any verb' "$PROTOCOL"; then
+  fail "PROTOCOL.md still claims marking an engine unavailable 'is not implemented by any verb' -- lib/ledger.sh + jobs reconcile ship it now"
+fi

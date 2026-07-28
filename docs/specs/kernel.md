@@ -63,7 +63,8 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
   orchid-answer             #   user answers in (idempotent inbox)
 runners/                    # TIER 2 — effectful: launch processes.
   orchid-launch             #   the kernel launcher: spawns engine adapters
-  orchid-tick  orchid-pump  #   headless tick; LLM-free heartbeat (v1-m2)
+  orchid-tick  orchid-pump  #   headless tick; LLM-free heartbeat
+                            #   (v1-m2 — SHIPPED)
 plugins/                    # TIER 3 — the BUILT-IN plugin set, discovered via
   engines/codex/            #   the same path and contracts as third-party
   engines/agy/              #   plugins. Engine adapters write ONLY to the
@@ -181,16 +182,23 @@ structurally impossible.
 
 The orchestrating session executes PROTOCOL.md under the run lock each tick:
 reconcile spool → advance tasks → launch by ROLE via the resolver (never by
-engine name) up to the concurrency cap (v0: 1; v1: 2 + scheduling rules) →
-`orchid merge` at most one candidate → commit durable state → refresh lease
-→ sleep with fallback wakeup. Events (background-task notifications) are an
-optimization; reconciliation is the guarantee; the pump (v1) guarantees
+engine name) up to the concurrency cap (v0: 1; v1-m2 — SHIPPED: 2 +
+scheduling rules, `lib/schedule.sh`) → `orchid merge` at most one candidate →
+commit durable state → refresh lease → sleep with fallback wakeup. Events
+(background-task notifications) are an optimization; reconciliation is the
+guarantee; the pump (`runners/orchid-pump`, v1-m2 — SHIPPED) guarantees
 ticks outlive the session.
 
-**Scheduling rules (v1):** dependency-manifest tasks serialize; unknown test
-environments run `testing`/`merging` serially; `exclusive: true` and
-`resources:` declarations (ports, dbs) gate parallelism — worktrees isolate
-git state only, never caches/ports/servers.
+**Scheduling rules (v1-m2 — SHIPPED):** `lib/schedule.sh`'s
+`schedule_dispatch_blockers`, the single home for the predicate set,
+enforced by `orchid task advance` on dispatch and surfaced read-only by
+`orchid status --explain`: dependency-manifest tasks serialize
+(`waiting-deps`); the concurrency cap gates how many tasks may be active at
+once (`concurrency-cap`); `exclusive: true` and `resources:` declarations
+(ports, dbs) gate parallelism (`exclusive-overlap`, `resource-conflict`) —
+worktrees isolate git state only, never caches/ports/servers; unknown test
+environments still run `testing`/`merging` serially within a single tick
+regardless of the cap (PROTOCOL.md's Preamble).
 
 **Plan phase** (`orchid-plan`): draft roadmap from requirements → the
 resolved `role.plan_critic` engine critiques (never the drafting engine) →
