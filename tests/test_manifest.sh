@@ -260,3 +260,37 @@ entrypoint=run
 '
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p16/run"; chmod +x "$WORK/p16/run"
 role_eligible implementer "$WORK/p16" || fail "role_eligible must still recognize a spaced capability list (implementer requires workspace_write,shell,git)"
+
+# -- requires_orchid (Task 8) -------------------------------------------
+# `requires_orchid=>=X.Y` is checked against the running kernel's
+# ORCHID_VERSION (lib/common.sh), major.minor only. p1's mk_valid already
+# carries `requires_orchid=>=1.0` and passes (ORCHID_VERSION=1.0.0-m1
+# satisfies it) -- covered implicitly above. Here: an unsatisfiable
+# requirement must reject fail-closed, same exit code (13) as an unknown
+# manifest_version/api_version.
+mk_conf "$WORK/p17" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=1
+requires_orchid=>=2.0
+capabilities=structured_text
+entrypoint=run
+'
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p17/run"; chmod +x "$WORK/p17/run"
+out="$(manifest_validate "$WORK/p17" 2>&1)"
+assert_eq 13 "$?" "requires_orchid '>=2.0' unmet by orchid 1.0.0-m1 rejects with exit 13"
+assert_match "FAIL.*requires_orchid" "$out" "FAIL printed naming requires_orchid"
+
+# a manifest with no requires_orchid key at all is unaffected (optional key)
+mk_conf "$WORK/p18" 'manifest_version=1
+id=orchid/sample
+version=0.1.0
+kind=engine
+api_version=1
+capabilities=structured_text
+entrypoint=run
+'
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p18/run"; chmod +x "$WORK/p18/run"
+out="$(manifest_validate "$WORK/p18" 2>&1)"; rc=$?
+[ "$rc" -eq 0 ] || fail "no requires_orchid key at all must still validate clean (rc=$rc): $out"

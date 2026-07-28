@@ -138,8 +138,22 @@ entrypoint=run
 ```
 
 Unknown keys in a known `manifest_version`: warn. Unknown
-`manifest_version`/`api_version`: reject (fail closed). `orchid plugins
-validate` checks all of this; `orchid version` exposes the kernel version.
+`manifest_version`/`api_version`: reject (fail closed). `requires_orchid`
+(semver-ish `>=`, compared on major.minor only) is checked against the
+running kernel's version: unsatisfied → reject (fail closed), same as an
+unknown `manifest_version`/`api_version`. `orchid plugins validate` checks
+all of this; `orchid version` prints the kernel version (`ORCHID_VERSION`)
+that `requires_orchid` checks compare against.
+
+**SHIPPED in v1-m1:** the manifest schema + validation above (including the
+`requires_orchid` check), the capability model and role descriptors, the
+digest-pinned trust store (INV-09), kernel launcher hygiene, the
+capability-suite runner, the plugin lockfile, and the full `orchid plugins
+list/validate/trust/test/lock/verify-lock` verb set plus `orchid version` —
+all implemented and tested, not merely specified. Deferred to later
+milestones: a real filesystem-write capability probe (m1's
+`workspace_write_probe` is dryrun-only; a real-write probe is post-m1), and
+hooks + custom-role registration (v1-m3, per the Hooks section above).
 
 **Role & capability model (breaks the circularity):** engines declare atomic
 capabilities (`structured_text`, `workspace_read`, `workspace_write`,

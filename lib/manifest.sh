@@ -41,6 +41,34 @@ _manifest_split_csv() {  # string -> trimmed non-empty tokens, one per line
   done
 }
 
+# _manifest_version_mm <version-string> -> "<major> <minor>" -- strips any
+# trailing `-suffix` (ORCHID_VERSION is `1.0.0-m1`) and keeps only the first
+# two dot-separated components. requires_orchid is documented (docs/specs/
+# plugins.md, Manifest section) as semver-ish `>=` compared on major.minor
+# ONLY -- not full semver ordering (patch/prerelease never gate compatibility).
+_manifest_version_mm() {
+  local v="${1%%-*}" major minor
+  major="${v%%.*}"
+  minor="${v#*.}"; minor="${minor%%.*}"
+  printf '%s %s\n' "${major:-0}" "${minor:-0}"
+}
+
+# _manifest_orchid_satisfies <requires_orchid-value, e.g. ">=1.0"> -- exit 0
+# iff the running kernel's $ORCHID_VERSION (lib/common.sh; caller must have
+# sourced it) is >= the required major.minor. Caller strips/validates the
+# `>=` operator prefix before calling -- this only compares the two
+# major.minor pairs.
+_manifest_orchid_satisfies() {
+  local reqver="${1#>=}" reqmm curmm reqmaj reqmin curmaj curmin
+  reqmm="$(_manifest_version_mm "$reqver")"
+  curmm="$(_manifest_version_mm "$ORCHID_VERSION")"
+  reqmaj="${reqmm%% *}"; reqmin="${reqmm#* }"
+  curmaj="${curmm%% *}"; curmin="${curmm#* }"
+  [ "$curmaj" -gt "$reqmaj" ] && return 0
+  [ "$curmaj" -eq "$reqmaj" ] && [ "$curmin" -ge "$reqmin" ] && return 0
+  return 1
+}
+
 manifest_capabilities() {  # plugin-dir -> capability atoms, one per line
   local caps; caps="$(manifest_get "$1" capabilities)"
   [ -n "$caps" ] || return 0
@@ -131,6 +159,32 @@ manifest_validate() {  # plugin-dir
     echo "FAIL: $dir: version missing"; ok=0
   elif ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+'; then
     echo "FAIL: $dir: version '$ver' is not semver-ish (expected N.N...)"; ok=0
+  fi
+
+  # requires_orchid=>=X.Y (optional): the plugin's declared minimum kernel
+  # version, checked against $ORCHID_VERSION (lib/common.sh) major.minor.
+  # Unsatisfied -> reject fail-closed, same exit code (13) as an unknown
+  # manifest_version/api_version -- same reasoning: an incompatible-version
+  # plugin must never be treated as merely "invalid" (ok=0, still runnable
+  # elsewhere) since running it against a kernel it declares itself
+  # incompatible with is the exact failure mode fail-closed exists to
+  # prevent. Only `>=` is understood (the only operator docs/specs/
+  # plugins.md's Manifest section documents); any other operator warns
+  # (unrecognized) but never fails the manifest on its own.
+  local reqorc; reqorc="$(manifest_get "$dir" requires_orchid)"
+  if [ -n "$reqorc" ]; then
+    case "$reqorc" in
+      '>='*)
+        if ! _manifest_orchid_satisfies "$reqorc"; then
+          _manifest_warn_unknown_keys "$dir" "$conf"
+          echo "FAIL: $dir: requires_orchid '$reqorc' not satisfied by orchid $ORCHID_VERSION (rejected, fail closed)"
+          return 13
+        fi
+        ;;
+      *)
+        echo "warn: $dir: requires_orchid '$reqorc' has an unrecognized operator (only >= is supported)" >&2
+        ;;
+    esac
   fi
 
   case "$kind" in

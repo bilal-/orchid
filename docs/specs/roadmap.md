@@ -50,11 +50,16 @@
 - **v1 — the full delivery**, in four milestones whose order follows the
   dependency graph (round-4 consensus fix: platform foundations BEFORE the
   features gated on them):
-  - **v1-m1 (plugin & role foundation):** minimal manifest schema with
-    capability declarations, core role DESCRIPTORS (the five built-in roles
-    formalized — required in spirit since v0), the pinned resolver, plugin
+  - **v1-m1 (plugin & role foundation) — SHIPPED:** minimal manifest schema
+    with capability declarations (incl. `requires_orchid` version-compatibility
+    checks against `orchid version`), core role DESCRIPTORS (the five
+    built-in roles formalized — required in spirit since v0), the pinned
+    capability-aware resolver, the digest-pinned trust store (INV-09), plugin
     lockfile, kernel launcher hygiene, the role×engine capability-suite
-    runner, `orchid plugins list/validate/trust`.
+    runner, and the full `orchid plugins list/validate/trust/test/lock/
+    verify-lock` verb set. Deferred to later milestones: a real
+    filesystem-write capability probe (m1 ships dryrun-only) and hooks +
+    custom-role registration (both v1-m3, per plugins.md's Hooks section).
   - **v1-m2 (core autonomy):** pump + failover (now actually gateable on
     m1's capability suite), concurrency 2 with the rebase/re-review rules,
     risk-tiered dual review, greenfield mode, `review` archetype.
