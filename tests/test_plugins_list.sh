@@ -60,7 +60,7 @@ mk_plugin "$reposE/.orchid/plugins/engines/codex" orchid/codex engine 9.9.9
 homeE="$WORK/homeE"; mkdir -p "$homeE/.orchid"
 out="$(HOME="$homeE" ORCHID_REPO="$reposE" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "a repo-local plugin sharing a built-in's id must NOT trigger a collision (excluded, DISABLED)"
-assert_match "$(row_re orchid/codex engine 9.9.9 repo DISABLED)" "$out" "repo-local plugin: origin=repo trust=DISABLED"
+assert_match "$(row_re orchid/codex engine 9.9.9 repo 'DISABLED \(untrusted\)')" "$out" "repo-local plugin: origin=repo trust=DISABLED (untrusted), untrusted by default (INV-09, Task 4)"
 
 # -- validate --all: clean (built-ins only) ----------------------------------
 out="$(HOME="$homeA" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate --all)"; rc=$?

@@ -7,16 +7,7 @@ resolve_role() {  # repo role -> primary engine name
   echo "${v%%,*}"
 }
 resolve_engine_exe() {  # name -> executable path (search path; dup = error)
-  local name="$1" d found=""
-  # <repo>/.orchid/plugins/engines is repo-local and thus attacker-controlled
-  # by anything that can land a commit; v0 has no trust mechanism yet, so it
-  # is never added to the search path below (this is the "SKIPPED unless
-  # trusted" rule from PROTOCOL — INV-10 seed). We still warn when something
-  # is sitting there so an operator who just dropped in a plugin isn't left
-  # wondering why it's silently ignored.
-  if [ -x "${ORCHID_REPO:-}/.orchid/plugins/engines/$name/run" ]; then
-    echo "orchid: engine '$name' found in <repo>/.orchid/plugins/engines but repo-local engines are untrusted in v0 (skipped)" >&2
-  fi
+  local name="$1" d found="" repo_dir abs trust_stat
   # ORCHID_ROOT is guarded with :- (brief had it bare): resolve_engine_exe is
   # unit-tested by sourcing this file directly, without going through
   # bin/orchid, so ORCHID_ROOT is unset in that context; under the tests'
@@ -29,6 +20,26 @@ resolve_engine_exe() {  # name -> executable path (search path; dup = error)
       found="$d/$name/run"
     fi
   done
+  # <repo>/.orchid/plugins/engines is repo-local and thus attacker-controlled
+  # by anything that can land a commit; it is resolvable ONLY when
+  # `~/.orchid/trust` (digest-pinned, outside the repo -- see lib/common.sh)
+  # has a record for this exact directory whose digest matches the directory
+  # right now (INV-09). Absent or mismatched (e.g. after a pull mutated a
+  # file) -> skipped + warned to stderr, never executed.
+  if [ -n "${ORCHID_REPO:-}" ]; then
+    repo_dir="$ORCHID_REPO/.orchid/plugins/engines/$name"
+    if [ -x "$repo_dir/run" ]; then
+      abs="$(_trust_canon_path "$repo_dir" 2>/dev/null || true)"
+      trust_stat="untrusted"; [ -z "$abs" ] || trust_stat="$(trust_status_for "$abs")"
+      if [ "$trust_stat" = trusted ]; then
+        [ -z "$found" ] || { echo "orchid: duplicate engine '$name' ($found vs $repo_dir/run) (INV-10)" >&2; return 1; }
+        found="$repo_dir/run"
+      else
+        local trust_cmd="trust"; [ "$trust_stat" = mismatch ] && trust_cmd="trust --update"
+        echo "orchid: engine '$name' found in <repo>/.orchid/plugins/engines but is $trust_stat -- run 'orchid plugins $trust_cmd $repo_dir' to enable it (skipped, INV-09)" >&2
+      fi
+    fi
+  fi
   [ -n "$found" ] || return 1
   echo "$found"
 }

@@ -39,5 +39,5 @@ if git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 || \
 else
   bad "integration branch exists or creatable: no HEAD to branch from and $integ absent"
 fi
-[ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins present but disabled (no trust store in v0)"
+[ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins require 'orchid plugins trust <dir>' to execute (see plugins: section above for current trust status, INV-09)"
 [ "$fails" -eq 0 ] || exit 1

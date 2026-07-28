@@ -9,12 +9,17 @@ sub="${1:-}"; shift || true
 # i.e. <entry>/<kind>s/<name>/ -- origin=path) -> ~/.orchid/plugins/<kind>s/
 # (origin=user) -> $ORCHID_ROOT/plugins/<kind>s/ (origin=builtin). All three
 # are "user-controlled locations" per the spec's threat model, so trust=user
-# for both user and path origins (only builtin gets its own tag); a real
-# `trusted` tier for repo-local plugins arrives with the digest-pinned trust
-# store in Task 4. Repo-local <repo>/.orchid/plugins/<kind>s/ is discovered
-# (origin=repo) but ALWAYS trust=DISABLED here -- no trust store yet, so it
-# never counts toward collision detection below (INV-10 concerns the
-# discovered-and-usable set, not everything sitting on disk unexecuted).
+# for both user and path origins (only builtin gets its own tag). Repo-local
+# <repo>/.orchid/plugins/<kind>s/ is discovered (origin=repo) with a real
+# digest-pinned trust tier (INV-09, lib/common.sh's trust_status_for):
+# trust=`trusted` when `~/.orchid/trust` has a matching-path record whose
+# digest equals the directory's current digest, else `DISABLED (untrusted)`
+# (no record) or `DISABLED (digest mismatch)` (record present, digest
+# changed -- e.g. a repo pull mutated a file). Only `DISABLED *` entries are
+# excluded from collision detection below -- a `trusted` repo-local plugin is
+# a live, executable member of the discovered set and must collide like any
+# other (INV-10 concerns the discovered-and-usable set, not everything
+# sitting on disk unexecuted).
 _plugins_roots() {
   local p parts
   if [ -n "${ORCHID_PLUGIN_PATH:-}" ]; then
@@ -28,11 +33,24 @@ _plugins_roots() {
   printf 'builtin\t%s\n' "$ORCHID_ROOT/plugins"
 }
 
-_plugins_trust_for() {  # origin -> trust tag
+_plugins_trust_for() {  # origin -> trust tag (repo origin is handled per-dir
+  # by _plugins_repo_trust_label instead, since it depends on the trust store)
   case "$1" in
     builtin) echo builtin ;;
-    user|path) echo user ;;
-    *) echo DISABLED ;;
+    *) echo user ;;
+  esac
+}
+
+# _plugins_repo_trust_label <dir> -- trusted|DISABLED (untrusted)|DISABLED
+# (digest mismatch), per lib/common.sh's trust_status_for (INV-09).
+_plugins_repo_trust_label() {
+  local dir="$1" abs stat
+  abs="$(_trust_canon_path "$dir" 2>/dev/null || echo "$dir")"
+  stat="$(trust_status_for "$abs")"
+  case "$stat" in
+    trusted) echo trusted ;;
+    mismatch) echo "DISABLED (digest mismatch)" ;;
+    *) echo "DISABLED (untrusted)" ;;
   esac
 }
 
@@ -44,7 +62,6 @@ _plugins_trust_for() {  # origin -> trust tag
 _plugins_scan_root() {
   local origin="$1" root="$2" trust kdir pdir id kind ver
   [ -d "$root" ] || return 0
-  trust="$(_plugins_trust_for "$origin")"
   for kdir in "$root"/*/; do
     [ -d "$kdir" ] || continue
     for pdir in "$kdir"*/; do
@@ -53,6 +70,11 @@ _plugins_scan_root() {
       id="$(manifest_get "$pdir" id)"; [ -n "$id" ] || continue
       kind="$(manifest_get "$pdir" kind)"
       ver="$(manifest_get "$pdir" version)"
+      if [ "$origin" = repo ]; then
+        trust="$(_plugins_repo_trust_label "$pdir")"
+      else
+        trust="$(_plugins_trust_for "$origin")"
+      fi
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$kind" "$ver" "$origin" "$trust" "$pdir"
     done
   done
@@ -75,11 +97,11 @@ _plugins_discover() {
 _plugins_collisions() {
   local entries="$1" dup_ids did paths
   _plugins_had_collision=0
-  dup_ids="$(printf '%s\n' "$entries" | awk -F'\t' '$1!="" && $5!="DISABLED"{print $1}' | sort | uniq -d)"
+  dup_ids="$(printf '%s\n' "$entries" | awk -F'\t' '$1!="" && $5!~/^DISABLED/{print $1}' | sort | uniq -d)"
   [ -n "$dup_ids" ] || return 0
   while IFS= read -r did; do
     [ -n "$did" ] || continue
-    paths="$(printf '%s\n' "$entries" | awk -F'\t' -v id="$did" '$1==id && $5!="DISABLED"{print $6}' | paste -sd', ' -)"
+    paths="$(printf '%s\n' "$entries" | awk -F'\t' -v id="$did" '$1==id && $5!~/^DISABLED/{print $6}' | paste -sd', ' -)"
     echo "COLLISION: $did at $paths"
     _plugins_had_collision=1
   done <<< "$dup_ids"
@@ -114,5 +136,31 @@ case "$sub" in
     fi
     [ "$fails" -eq 0 ] || exit 13
     ;;
-  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]" ;;
+  trust)
+    # trust [--update] <plugin-dir> -- pins (or, with --update, re-pins) the
+    # dir's current content digest into ~/.orchid/trust (OUTSIDE the repo --
+    # INV-09). Plain `trust` on a path already trusted at a DIFFERENT digest
+    # is refused (fail closed): a stale local pin silently sliding to a new
+    # digest would defeat the whole point of digest-pinning, so re-pinning is
+    # always an explicit `--update`.
+    mode=trust
+    if [ "${1:-}" = --update ]; then mode=update; shift; fi
+    dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins trust [--update] <plugin-dir>"
+    [ -d "$dir" ] || orchid_die "no such directory: $dir"
+    abs="$(_trust_canon_path "$dir")" || orchid_die "cannot resolve path: $dir"
+    digest="$(plugin_digest "$abs")" || orchid_die "failed to compute digest for $abs"
+    existing="$(trust_lookup "$abs")"
+    if [ "$mode" = trust ] && [ -n "$existing" ] && [ "$existing" != "$digest" ]; then
+      orchid_die "$abs is already trusted at a different digest -- run 'orchid plugins trust --update $dir' to re-pin"
+    fi
+    trust_store_set "$abs" "$digest"
+    echo "trusted: $abs $digest"
+    ;;
+  untrust)
+    dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins untrust <plugin-dir>"
+    abs="$(_trust_canon_path "$dir" 2>/dev/null || true)"; [ -n "$abs" ] || abs="$dir"
+    trust_store_remove "$abs"
+    echo "untrusted: $abs"
+    ;;
+  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>" ;;
 esac

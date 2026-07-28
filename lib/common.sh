@@ -80,3 +80,74 @@ epoch_require() {
   local cur; cur="$(epoch_current "$1")"
   [ "${ORCHID_EPOCH:-}" = "$cur" ] || orchid_die "stale epoch '${ORCHID_EPOCH:-unset}' (current $cur) — refused (INV-02)"
 }
+
+# -- Digest-pinned trust store (docs/specs/plugins.md, Trust model; INV-09) --
+# Records live in `~/.orchid/trust` — OUTSIDE any repo, so cloning a repo can
+# never itself grant code execution to a repo-local plugin. One line per
+# trusted path: `<canonical-abs-path> <sha256-digest>`.
+
+_trust_canon_path() {  # dir -> canonical absolute path (no trailing slash,
+  # symlinks resolved), or nonzero if it doesn't exist / isn't a directory.
+  ( cd "$1" 2>/dev/null && pwd -P )
+}
+
+_orchid_file_sha256() {  # file -> a line binding this file's path to its
+  # content hash (exact format doesn't matter -- only that it's deterministic
+  # and changes with either the path or the content -- since it is never
+  # compared across machines/tools, only fed into plugin_digest below).
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1"
+  else
+    printf '%s %s\n' "$(openssl dgst -sha256 "$1" | awk '{print $NF}')" "$1"
+  fi
+}
+_orchid_stream_sha256() {  # stdin -> hex digest of the whole stream
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    openssl dgst -sha256 | awk '{print $NF}'
+  fi
+}
+
+# plugin_digest <dir> -- SHA-256 over a stable sorted listing of the plugin
+# dir's file hashes (task-4-brief's algorithm): `find <dir> -type f | sort |
+# while read f; do shasum -a 256 "$f"; done | shasum -a 256` (portable;
+# openssl dgst -sha256 fallback when shasum is absent). Any file added,
+# removed, renamed, or changed inside the dir changes this digest.
+plugin_digest() {
+  local dir; dir="$(_trust_canon_path "$1")" || return 1
+  [ -d "$dir" ] || return 1
+  find "$dir" -type f | sort | while IFS= read -r f; do _orchid_file_sha256 "$f"; done | _orchid_stream_sha256
+}
+
+_orchid_trust_dir()  { echo "$HOME/.orchid"; }
+_orchid_trust_file() { echo "$(_orchid_trust_dir)/trust"; }
+
+trust_lookup() {  # abs-dir -> the recorded digest for that exact path, or
+  # empty if there is no record. Last matching line wins (append-to-override,
+  # consistent with _cfg_file_get's convention elsewhere in this file).
+  local dir="$1" f; f="$(_orchid_trust_file)"
+  [ -f "$f" ] || return 0
+  awk -v d="$dir" '$1==d{v=$2} END{if (v!="") print v}' "$f"
+}
+
+trust_status_for() {  # abs-dir -> trusted|untrusted|mismatch
+  local dir="$1" rec cur
+  rec="$(trust_lookup "$dir")"
+  [ -n "$rec" ] || { echo untrusted; return 0; }
+  cur="$(plugin_digest "$dir" 2>/dev/null)" || { echo mismatch; return 0; }
+  [ "$rec" = "$cur" ] && echo trusted || echo mismatch
+}
+
+trust_store_set() {  # abs-dir digest -- atomic upsert (one record per path)
+  local dir="$1" digest="$2" f; f="$(_orchid_trust_file)"
+  mkdir -p "$(_orchid_trust_dir)"
+  { [ -f "$f" ] && awk -v d="$dir" '$1!=d' "$f"; printf '%s %s\n' "$dir" "$digest"; } | atomic_write "$f"
+}
+
+trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
+  local dir="$1" f; f="$(_orchid_trust_file)"
+  [ -f "$f" ] || return 0
+  mkdir -p "$(_orchid_trust_dir)"
+  awk -v d="$dir" '$1!=d' "$f" | atomic_write "$f"
+}
