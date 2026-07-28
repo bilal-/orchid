@@ -226,7 +226,10 @@ pack_build "$packrepo" TP implement "$packrepo/p2" || fail "pack_build (implemen
 # ===========================================================================
 repoW="$WORK/repoW"; mkdir -p "$repoW/.orchid/tasks"
 (cd "$repoW" && git init -q . && git commit -q --allow-empty -m root)
-printf 'verify=true\n' > "$repoW/orchid.config"
+# v1-m2 Task 5: TW1/TW2/TW3 sit active (arbitrating/testing) at once by this
+# section's design (unrelated to concurrency) -- raise the cap so the new
+# dispatch gate never interferes with these waived-rework assertions.
+printf 'verify=true\nconcurrency=10\n' > "$repoW/orchid.config"
 export ORCHID_REPO="$repoW"
 export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 head_w="$(git -C "$repoW" rev-parse HEAD)"

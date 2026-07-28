@@ -5,6 +5,7 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
@@ -119,6 +120,25 @@ case "$sub" in
       exit 13
     fi
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    # v1-m2 Task 5: the kernel-side dispatch gate. Applies on BOTH edges that
+    # actually dispatch a task into implementing (pending-> and rework->) --
+    # anything else moving to `implementing` is not a fresh dispatch (there
+    # is no such other edge in any shipped archetype today, but the check is
+    # from-scoped rather than a bare `to=implementing` so it can never
+    # accidentally gate some future non-dispatch edge). schedule.sh is the
+    # single home for the predicate set; this call is its only kernel-side
+    # enforcement point (orchid-status's --explain is the other, read-only,
+    # caller). Deps stay orchestrator-supplied facts for worktree/base_sha
+    # (unchanged, set before this call) -- only the schedule predicates
+    # (cap/exclusive/resources/deps) are enforced HERE, fail-closed.
+    if [ "$to" = implementing ] && { [ "$from" = pending ] || [ "$from" = rework ]; }; then
+      blockers="$(schedule_dispatch_blockers "$repo" "$id")"
+      if [ -n "$blockers" ]; then
+        echo "orchid: dispatch refused for $id ($from -> $to):" >&2
+        printf '%s\n' "$blockers" >&2
+        exit 3
+      fi
+    fi
     if needs_reason "$from" "$to"; then
       [ -n "$reason" ] || orchid_die "$from -> $to requires --reason (INV-08)"
     fi

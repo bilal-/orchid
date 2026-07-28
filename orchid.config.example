@@ -26,6 +26,7 @@ pack_budget_bytes=65536
 # change only what this repo needs. Full key reference: lib/config-keys.txt
 # (also: `orchid config list` prints the EFFECTIVE value + provenance for
 # every key, live).
+# concurrency=2
 # lock_break_s=900
 # stall_minutes=10
 # timeout_minutes=60

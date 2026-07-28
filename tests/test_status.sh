@@ -19,7 +19,7 @@ export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 "$ORCHID_BIN" task set T002 depends_on T001
 assert_match "run_status: planning" "$("$ORCHID_BIN" status)" "run status shown"
 assert_match "T001	pending" "$("$ORCHID_BIN" status)" "task table"
-assert_match "T002.*waiting-deps T001" "$("$ORCHID_BIN" status --explain)" "explain names predicate"
+assert_match "T002.*waiting-deps \(T001\)" "$("$ORCHID_BIN" status --explain)" "explain names predicate"
 assert_match "T001.*ready-to-dispatch" "$("$ORCHID_BIN" status --explain)" "explain ready"
 
 # status in an uninitialized repo (no .orchid/roadmap.md) must not leak awk's

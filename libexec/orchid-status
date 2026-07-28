@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
-source "$ORCHID_ROOT/lib/ledger.sh"
+source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 explain=0; [ "${1:-}" = "--explain" ] && explain=1
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
@@ -14,12 +15,19 @@ for f in "$state/tasks"/*.md; do
   if [ "$explain" -eq 1 ]; then
     why=""
     case "$st" in
-      pending)
-        deps="$(fm_get "$f" depends_on)"; unmet=""
-        for d in $deps; do
-          [ "$(fm_get "$state/tasks/$d.md" status 2>/dev/null)" = done ] || unmet="$unmet $d"
-        done
-        if [ -n "$unmet" ]; then why="waiting-deps$unmet"; else why="ready-to-dispatch"; fi ;;
+      pending|rework)
+        # v1-m2 Task 5: schedule.sh is the ONE home for the dispatch-blocker
+        # predicate set -- pending AND rework rows both print it (rework
+        # dispatches through the exact same kernel gate as pending; see
+        # libexec/orchid-task's advance arm). Multiple predicate lines are
+        # joined with "; " for the single-line status table.
+        blockers="$(schedule_dispatch_blockers "$repo" "$id")"
+        why=""
+        while IFS= read -r bl; do
+          [ -n "$bl" ] || continue
+          if [ -z "$why" ]; then why="$bl"; else why="$why; $bl"; fi
+        done <<< "$blockers"
+        [ -n "$why" ] || why="ready-to-dispatch" ;;
       implementing) why="awaiting-implementer-envelope" ;;
       testing)      why="awaiting-verify (or rebase-pending)" ;;
       reviewing)    why="awaiting-review-envelopes" ;;
@@ -27,7 +35,6 @@ for f in "$state/tasks"/*.md; do
       merging)      why="awaiting-merge" ;;
       blocked)      why="blocked (see: orchid journal show --task $id)" ;;
       done)         why="-" ;;
-      rework)       why="awaiting-rework-dispatch" ;;
     esac
     line="$line	$why"
   fi

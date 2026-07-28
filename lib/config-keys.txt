@@ -1,5 +1,6 @@
 integration_branch
 verify
+concurrency
 role.orchestrator
 role.implementer
 role.reviewer

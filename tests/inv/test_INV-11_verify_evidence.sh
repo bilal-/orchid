@@ -2,6 +2,13 @@
 source "$(dirname "$0")/../helpers.sh"
 cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+# v1-m2 Task 5: this fixture runs T001..T006 through several overlapping
+# lifecycle walks in the SAME repo (several sit in an active status —
+# reviewing/testing/arbitrating — at once by design, unrelated to
+# concurrency itself); raise the cap well above the v1 default (2) so the
+# new dispatch gate never interferes with this file's INV-11 evidence
+# assertions.
+printf 'concurrency=10\n' > orchid.config
 export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 
 # INV-11: evidence is the sole authority — the log must exist, must record
