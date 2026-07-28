@@ -74,23 +74,32 @@ procedure that touches task state from here on.
 `orchid run refresh-lease` — first thing, every pass, so nothing watching
 this run ever mistakes an in-progress tick for a stalled one.
 
-**2. Reconcile, gc, then check (reconcile-first ordering).**
+**2. Reconcile, check, then gc (reconcile-first, check-before-reap ordering).**
 `orchid jobs reconcile` drains everything already finished or quarantinable
 into `.orchid/reviews/` *before* anything gets judged as stuck — a job that
 completed since the last pass must never be mistaken for a dead one. Then
-`orchid jobs gc --older-than-s 0` — reaps only manifests whose pid is
-*already* dead (never kills anything live; the `0` just drops gc's normal
-age floor) — clears out any already-dead manifest that reconcile didn't turn
-into a reviews/ entry (e.g. it died before ever producing a spool envelope),
-so `jobs check` below never re-reports the *same* already-dead job as `dead`
-on a later pass and triggers a second, false escalation for a failure this
-run already handled. Then `orchid jobs check` reports
-`prepared|running|dead|stalled|timeout|budget-exceeded` for whatever is left
-outstanding (`stalled`/`timeout` jobs are killed by `jobs check` itself as it
-reports them; `budget-exceeded` is report-only, see below).
+`orchid jobs check` reports `prepared|running|dead|stalled|timeout|budget-exceeded`
+for whatever reconcile left outstanding (`stalled`/`timeout` jobs are killed
+by `jobs check` itself as it reports them; `budget-exceeded` is report-only,
+see below) — running `check` here, before anything reaps a manifest, is what
+lets a job that died envelope-less between ticks (SIGKILL/OOM/adapter crash
+before it ever wrote a spool envelope) still get reported `dead` and walk the
+escalation ladder below, instead of being reaped silently before `check` ever
+sees it. Only THEN `orchid jobs gc --older-than-s 0` — reaps only manifests
+whose pid is *already* dead (never kills anything live; the `0` just drops
+gc's normal age floor) — clears out whatever `check` just finished handling
+(including the envelope-less case above), so a *later* pass never re-reports
+the *same* already-dead job as `dead` and triggers a second, false escalation
+for a failure this run already handled. gc runs strictly AFTER check has had
+its pass over the same manifests, precisely so a dead job is reported and
+escalated before it is ever reaped — reversing this order (gc before check)
+lets gc silently vanish a job before `check` can ever call it `dead`, so the
+escalation ladder's "first occurrence → relaunch" never fires and the
+wallclock backstop (which only runs inside the manifest loop) goes silent
+too — the task simply waits forever.
 
 Escalation ladder for a job `jobs check` reports `dead`, `stalled`, or
-`timeout` that reconcile/gc above did **not** just resolve:
+`timeout` that reconcile above did **not** just resolve:
 
 - *First occurrence for this attempt:* relaunch — re-run `runners/orchid-launch
   <task-id> <role> <operation>` for the same task/role/operation. This is the
@@ -115,6 +124,14 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, or
   never kills on its own. `orchid notify --task <task-id> "task wallclock
   budget exceeded"` then `orchid task advance <task-id> blocked --reason
   "wallclock budget exceeded"`.
+- A `gc <job_id>` reap line printed this pass for a job whose task is still
+  mid-flight (not `done`/`blocked`) is itself a signal to re-examine that
+  task, not something to scroll past: with gc now running strictly after
+  `check`, every legitimately-handled dead job was already reported and
+  escalated above in this same pass — a reap line next to a task that is
+  still mid-flight and was *not* just escalated means something reaped a
+  manifest `check` didn't account for, which is worth a manual look before
+  the next tick.
 
 `docs/specs/kernel.md` ("Guardrails & failure handling") also calls for
 "repeated infra failures → engine marked unavailable" as a further
