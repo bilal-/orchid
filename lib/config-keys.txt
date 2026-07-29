@@ -24,3 +24,9 @@ rate_limit_backoff_s
 engine_fail_threshold
 pump_stale_s
 arbiter_wait_s
+hook.after_plan_draft
+hook.before_arbitration
+hook.on_verify_fail
+hook.before_merge
+hook.on_blocker
+hook_timeout_s

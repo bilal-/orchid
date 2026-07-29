@@ -14,6 +14,9 @@ envelope_validate() {
         or (.operation == "orchestrate"
             and (.actions | type == "array" and all(.[]; type == "string"))
             and (.summary | type == "string" and length > 0))
+        or (.operation == "hook"
+            and (.artifact | type == "object")
+            and (.summary | type == "string" and length > 0))
       )
     )
     and (

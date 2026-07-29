@@ -210,7 +210,7 @@ manifest_validate() {  # plugin-dir
   fi
 
   case "$kind" in
-    engine|notify)
+    engine|notify|hook)
       local ep; ep="$(manifest_get "$dir" entrypoint)"
       if [ -z "$ep" ]; then
         echo "FAIL: $dir: entrypoint missing (required for kind=$kind)"; ok=0
@@ -220,7 +220,11 @@ manifest_validate() {  # plugin-dir
       ;;
   esac
 
-  if [ "$kind" = engine ]; then
+  # kind=hook (v1-m3): validated with the SAME fields as kind=engine (entry-
+  # point above, capabilities here) -- hook handlers are engine-kind plugins
+  # invoked with operation=hook (docs/specs/plugins.md, Hooks section), not a
+  # distinct executable contract.
+  if [ "$kind" = engine ] || [ "$kind" = hook ]; then
     local caps atom
     caps="$(manifest_get "$dir" capabilities)"
     if [ -n "$caps" ]; then

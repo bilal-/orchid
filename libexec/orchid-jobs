@@ -4,7 +4,7 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
-source "$ORCHID_ROOT/lib/review.sh"
+source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 sub="${1:-}"; shift || true
@@ -58,15 +58,28 @@ case "$sub" in
     verb_lock_guard "$repo"
     epoch_require "$repo"
     task="$1"; role="$2"; operation="$3"; shift 3
-    override_engine=""
+    override_engine=""; hook_point=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --engine)
           [ -n "${2:-}" ] || orchid_die "--engine requires a value"
           override_engine="$2"; shift 2 ;;
-        *) orchid_die "usage: orchid jobs prepare <task> <role> <op> [--engine <name>]" ;;
+        --hook)
+          [ -n "${2:-}" ] || orchid_die "--hook requires a value"
+          hook_point="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs prepare <task> <role> <op> [--engine <name>] [--hook <point>]" ;;
       esac
     done
+    # `hook` op (v1-m3): --hook <point> is mandatory for it and meaningless
+    # for anything else -- caught here, before any manifest/engine work, so
+    # a mis-typed op or a stray --hook on a non-hook job never mints a
+    # half-configured job.
+    if [ "$operation" = hook ]; then
+      [ -n "$hook_point" ] || orchid_die "operation 'hook' requires --hook <point>"
+      hook_point_valid "$hook_point" || orchid_die "unknown hook point '$hook_point'"
+    elif [ -n "$hook_point" ]; then
+      orchid_die "--hook is only valid with operation 'hook'"
+    fi
     # `plan` (v1-m3): the reserved task id for a plan-scoped critique job
     # (`orchid task create` refuses it as a real task id -- libexec/orchid-
     # task). There is no `.orchid/tasks/plan.md` to read attempts/base/
@@ -88,7 +101,47 @@ case "$sub" in
       attempt=$(( $(fm_get "$tf" attempts) + 1 ))
       base_sha="$(fm_get "$tf" base_sha)"; candidate_sha="$(fm_get "$tf" candidate_sha)"
     fi
-    if [ -n "$override_engine" ]; then
+    if [ "$operation" = hook ]; then
+      # Hook engine resolution (v1-m3): NAME comes from the `hook.<point>=`
+      # config binding, never from the role chain -- resolve_role_available
+      # is deliberately not consulted here (hooks are name-bound by config,
+      # not role-eligibility-bound; this is config-is-policy, INV-05-
+      # compatible since the kernel only ever branches on the CONTENTS of a
+      # config value, never on a hardcoded plugin name). `--engine`, when
+      # given, still must name one of THIS point's bound plugin-ids -- it
+      # selects among an already-configured set, it does not add to it (F5's
+      # --engine is deliberately more permissive for role dual-review; hook
+      # bindings are not).
+      hook_bindings="$(hooks_for "$repo" "$hook_point")"
+      [ -n "$hook_bindings" ] || \
+        { echo "orchid: no hook bound for point '$hook_point' (set hook.$hook_point=<plugin-id>[:required])" >&2; exit 14; }
+      # Captured into a plain variable, then matched via herestring -- NOT
+      # `hooks_for ... | grep -qxF ...` piped straight off a live producer.
+      # Same SIGPIPE-under-pipefail hazard orchid-task's legal() documents
+      # (a `grep -q` early-exit can kill a still-writing producer and
+      # pipefail then reports ITS signal-kill status instead of grep's own
+      # match) -- moot here since hook_bindings is already fully
+      # materialized, but the herestring form sidesteps the question
+      # entirely rather than relying on that timing.
+      bound_ids="$(printf '%s\n' "$hook_bindings" | cut -f1)"
+      if [ -n "$override_engine" ]; then
+        if ! grep -qxF "$override_engine" <<< "$bound_ids"; then
+          bound_list="$(printf '%s' "$bound_ids" | tr '\n' ',')"; bound_list="${bound_list%,}"
+          echo "orchid: engine '$override_engine' is not bound to hook point '$hook_point' (bound: $bound_list)" >&2
+          exit 14
+        fi
+        engine="$override_engine"
+      else
+        engine="$(head -n1 <<< "$bound_ids")"
+      fi
+      dir="$(resolve_engine_dir "$engine")" \
+        || { echo "orchid: engine '$engine' for hook point '$hook_point' not found on search path" >&2; exit 14; }
+      hook_kind="$(manifest_get "$dir" kind)"
+      case "$hook_kind" in
+        engine|hook) ;;
+        *) echo "orchid: engine '$engine' is kind=$hook_kind; hook point '$hook_point' requires kind=engine or hook" >&2; exit 14 ;;
+      esac
+    elif [ -n "$override_engine" ]; then
       # F5: --engine names ANY discovered engine, not just one the role's own
       # failover chain would have picked -- this is how the SECOND dual-
       # review slot (lib/review.sh's review_routing) actually gets launched.
@@ -118,9 +171,10 @@ case "$sub" in
       --arg role "$role" --arg operation "$operation" --arg engine "$engine" \
       --arg log "$rt/logs/$job_id.log" --arg output "$output" \
       --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
+      --arg hook_point "$hook_point" \
       '{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
         engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,
-        base_sha:$base_sha, candidate_sha:$candidate_sha}' | atomic_write "$manifest"
+        base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point}' | atomic_write "$manifest"
     echo "$manifest"
     ;;
   check)
@@ -248,10 +302,25 @@ case "$sub" in
       # e.g. a crash-recovery relaunch before `attempts` was bumped) must
       # never be silently overwritten: both are forensic evidence. Keep both
       # via a counter suffix, same pattern as quarantine_file above.
-      dest="$state/reviews/$m_task-a$attempt-$role.json"
+      #
+      # `hook` op (v1-m3): filed under `hook-<point>` instead of `<role>` --
+      # the role positional carries no meaning for a hook job (engine
+      # resolution above never consulted it; it's the config binding by
+      # point that named the engine), so it must never appear in the durable
+      # filename. `hook_point` rides on the manifest (recorded at prepare
+      # time), never the envelope, so this is trustworthy even though the
+      # cross-check above never validated a `hook_point` field one way or
+      # the other.
+      if [ "$m_op" = hook ]; then
+        m_hook_point="$(jq -r '.hook_point // empty' "$manifest")"
+        dest_base="$state/reviews/$m_task-a$attempt-hook-$m_hook_point"
+      else
+        dest_base="$state/reviews/$m_task-a$attempt-$role"
+      fi
+      dest="$dest_base.json"
       n=2
       while [ -e "$dest" ]; do
-        dest="$state/reviews/$m_task-a$attempt-$role.$n.json"
+        dest="$dest_base.$n.json"
         n=$((n + 1))
       done
       mv "$f" "$dest"
