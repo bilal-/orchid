@@ -7,6 +7,10 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 # sourcing manifest.sh even though only validate/list use it).
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/envelope.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
+# `conform` (below) needs lib/spawn.sh's spawn_child_env (env_survives_
+# hygiene check) and lib/conform.sh itself; sourced alongside the rest
+# rather than lazily, same rationale as the capsuite sourcing above.
+source "$ORCHID_ROOT/lib/spawn.sh"; source "$ORCHID_ROOT/lib/conform.sh"
 repo="${ORCHID_REPO:-$PWD}"
 sub="${1:-}"; shift || true
 
@@ -399,6 +403,19 @@ $validate_out"
     fi
     [ "$fails" -eq 0 ] || exit 1
     ;;
+  conform)
+    # conform <plugin-dir> -- the CONTRACT gate (v1-m3 Task 10), distinct
+    # from `test` above (the ROLE-pairing gate): runs WITHOUT any repo
+    # state at all -- no `.orchid`, no resolver/role lookups, no durable
+    # result file -- against a plugin dir directly, so a third-party author
+    # can run it as a pre-flight before ever installing or binding the
+    # plugin to anything. All seven checks (and the actual entrypoint
+    # spawn, same carve-out class as `test`/capsuite_run) live in lib/
+    # conform.sh's conform_run; see that file's header for the INV-01 note.
+    dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins conform <plugin-dir>"
+    [ -d "$dir" ] || orchid_die "no such directory: $dir"
+    conform_run "$dir" || exit 1
+    ;;
   lock)
     # Writes .orchid/plugins.lock: an atomic snapshot of _plugins_lock_records
     # (see above) -- meant to be committed on the integration branch
@@ -743,5 +760,5 @@ $validate_out"
     fi
     [ "$fails" -eq 0 ] || exit 13
     ;;
-  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|lock|verify-lock|install <src> [--kind <k>]|update <name>|remove <name>|audit [<name>|--all]" ;;
+  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|conform <plugin-dir>|lock|verify-lock|install <src> [--kind <k>]|update <name>|remove <name>|audit [<name>|--all]" ;;
 esac
