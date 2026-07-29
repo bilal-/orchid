@@ -253,3 +253,27 @@ rc=0; out5b="$WORK/merge5b.out"
 "$ORCHID_BIN" merge T005 >"$out5b" 2>&1 || rc=$?
 assert_eq 0 "$rc" "merge succeeds on the new base (recorded worktree)"
 assert_eq done "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "task reaches done (recorded worktree path)"
+
+# ---------------------------------------------------------------------------
+# v1-m3 (Task 6) regression: no `hook.before_merge` binding at all -> the
+# new gate is a total no-op, merge behaves exactly as it always did. Every
+# scenario above already exercises this implicitly (none of them ever set a
+# hook.before_merge key), but this makes the "unbound point never gates"
+# contract an explicit, named assertion of its own rather than an incidental
+# side effect of other coverage.
+# ---------------------------------------------------------------------------
+! grep -q '^hook\.before_merge=' orchid.config 2>/dev/null \
+  || fail "test setup: hook.before_merge must be unbound for the regression check"
+
+"$ORCHID_BIN" task create T006 "no hook binding at all"
+git checkout -q -b task/T006 "$integ"
+echo six > feature6.txt && git add feature6.txt && git commit -q -m "feature 6"
+cand6="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base6="$(git rev-parse "$integ")"
+
+walk_to_merging T006 task/T006 "$base6" "$cand6" "test -f feature6.txt"
+
+rc=0; "$ORCHID_BIN" merge T006 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "no hook.before_merge binding -> merge proceeds unchanged (exit 0)"
+assert_eq done "$("$ORCHID_BIN" task show T006 | grep '^status: ' | cut -d' ' -f2)" "no hook.before_merge binding -> task still reaches done"

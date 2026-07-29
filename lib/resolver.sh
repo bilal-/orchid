@@ -99,6 +99,33 @@ resolve_engine_dir() {  # name -> plugin dir (dirname of resolve_engine_exe)
   dirname "$exe"
 }
 
+# resolve_engine_qualified_id <name> -- the qualified manifest id (e.g.
+# "orchid/claude", or a third-party publisher's own "acme/foo") a plugin's
+# OWN plugin.conf claims for itself, for comparing against an envelope's
+# self-reported `.engine` field -- real adapters echo that field back in
+# exactly this qualified form (docs/specs/plugins.md). Resolves the bound
+# NAME to its plugin dir (resolve_engine_dir) and reads THAT dir's manifest
+# `id=` directly -- this must never assume the "orchid/<name>" shape, which
+# only happens to hold for first-party plugins; hardcoding it would make any
+# `:required`-bound third-party engine permanently unsatisfiable at every
+# call site that compares against it (INV-05: this is manifest-derived data
+# being compared, not a branch on a hardcoded name). When the name cannot be
+# resolved to an installed dir at all (unbound, or not currently discoverable
+# at gate/reconcile time), falls back to the literal "orchid/<name>" string
+# -- preserves every fixture/test that predates third-party publishers
+# rather than refusing to compare at all.
+# Callers must additionally source lib/manifest.sh (manifest_get).
+resolve_engine_qualified_id() {
+  local name="$1" dir qid
+  if dir="$(resolve_engine_dir "$name" 2>/dev/null)"; then
+    qid="$(manifest_get "$dir" id)"
+    [ -n "$qid" ] || qid="orchid/$name"
+  else
+    qid="orchid/$name"
+  fi
+  echo "$qid"
+}
+
 # resolve_role_checked <repo> <role> -- resolves the role's engine (same
 # lookup as resolve_role) then gates it on capability eligibility (lib/
 # roles.sh's role_eligible against the engine's manifest capabilities).

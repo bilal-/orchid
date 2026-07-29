@@ -261,14 +261,18 @@ case "$sub" in
       # operation/role/engine: cross-checked against the manifest whenever the
       # envelope carries them. Today's real adapters always carry `operation`
       # (required by envelope_validate whenever status is "ok") and `engine`
-      # (as "orchid/<name>", vs. the manifest's bare resolved name); `role` is
-      # not currently emitted by any adapter, so this arm is forward-looking
-      # (v1 adapters or forged envelopes could add it) — the `// empty`
-      # pattern makes all three optional the same way base_sha/candidate_sha
-      # already were, so fixtures that omit them are unaffected.
+      # (its OWN manifest's qualified `id=`, e.g. "orchid/<name>" for a
+      # first-party plugin or a third-party publisher's own "acme/<name>" --
+      # resolved below via resolve_engine_qualified_id, never assumed); `role`
+      # is not currently emitted by any adapter, so this arm is forward-
+      # looking (v1 adapters or forged envelopes could add it) — the
+      # `// empty` pattern makes all three optional the same way
+      # base_sha/candidate_sha already were, so fixtures that omit them are
+      # unaffected.
       e_op="$(envelope_field "$f" '.operation // empty')"
       e_role="$(envelope_field "$f" '.role // empty')"
       e_engine="$(envelope_field "$f" '.engine // empty')"
+      m_engine_qid="$(resolve_engine_qualified_id "$m_engine")"
       mismatch=0
       [ "$m_task" = "$e_task" ] || mismatch=1
       [ -z "$e_base" ] || [ "$e_base" = "$m_base" ] || mismatch=1
@@ -287,7 +291,7 @@ case "$sub" in
       fi
       [ -z "$e_op" ] || [ "$e_op" = "$m_op" ] || mismatch=1
       [ -z "$e_role" ] || [ "$e_role" = "$m_role" ] || mismatch=1
-      [ -z "$e_engine" ] || [ "$e_engine" = "orchid/$m_engine" ] || mismatch=1
+      [ -z "$e_engine" ] || [ "$e_engine" = "$m_engine_qid" ] || mismatch=1
       if [ "$mismatch" -eq 1 ]; then
         quarantine_file "$f" mismatch
         echo "quarantined: $base (mismatch)"

@@ -144,3 +144,25 @@ fi
 if grep -qE 'engine.*unavailable.*not implemented by any verb' "$PROTOCOL"; then
   fail "PROTOCOL.md still claims marking an engine unavailable 'is not implemented by any verb' -- lib/ledger.sh + jobs reconcile ship it now"
 fi
+
+# v1-m3 (Task 6): `orchid-launch ... hook --hook <point>` is a NEW invocation
+# form the top-level verb regex above can't validate on its own (it only
+# ever captures the bare word after "orchid " -- here that word is "notify"/
+# "task"/"jobs"/"merge", all already-existing verbs; the `--hook` flag and
+# the `hook` operation are what's actually new). Same targeted-check pattern
+# as the `jobs review-plan` check above: PROTOCOL.md must name the form, and
+# runners/orchid-launch + libexec/orchid-jobs must actually implement it.
+hook_flag_count="$(grep -c -- '--hook' "$PROTOCOL")"
+[ "$hook_flag_count" -gt 0 ] || fail "PROTOCOL.md never mentions the --hook flag"
+grep -qE -- '--hook' "$REPO_ROOT/runners/orchid-launch" \
+  || fail "PROTOCOL.md names '--hook' but runners/orchid-launch has no --hook handling"
+grep -qE -- '--hook' "$REPO_ROOT/libexec/orchid-jobs" \
+  || fail "PROTOCOL.md names '--hook' but libexec/orchid-jobs has no --hook handling"
+
+# `orchid task set <id> hook_guidance ...` (PROTOCOL's on_verify_fail step):
+# hook_guidance must actually be settable -- i.e. absent from orchid-task's
+# `set` deny-list -- not just mentioned in prose.
+grep -qF 'hook_guidance' "$PROTOCOL" || fail "PROTOCOL.md never mentions hook_guidance"
+deny_line="$(grep -nE '^\s*status\|attempts\|infra_failures\|id\|created\|updated\|schema\)' "$REPO_ROOT/libexec/orchid-task")"
+[ -n "$deny_line" ] || fail "orchid-task's set deny-list case arm not found -- update this check"
+printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must never land in orchid-task's set deny-list"

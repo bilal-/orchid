@@ -2,6 +2,8 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
+source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 # task set/advance below run as child processes of THIS verb; ORCHID_EPOCH
@@ -41,6 +43,63 @@ task_branch="$(fm_get "$tf" branch)"
 integ="$(config_get "$repo" integration_branch orchid/integration)"
 git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
   || orchid_die "integration branch '$integ' does not exist"
+
+# --- before_merge kernel gate (v1-m3 Task 6; exit-code registry: 2 unknown
+# verb, 3 illegal transition, 5 rebase_rereview_required, 12 input_overflow,
+# 13 plugin validation failure, 14 no eligible engine, 15 hook handler
+# failure -- new here) -----------------------------------------------------
+# The ONE hook point the kernel itself enforces (PROTOCOL.md's other four
+# hook points are enforced only by the orchestrator actually invoking them,
+# never here). Required-ness and the binding itself are RE-DERIVED from
+# hooks_for + whatever has actually reconciled to disk by gate time --
+# nothing about a binding is ever stashed on a manifest or the task's own
+# frontmatter (Task 5's reviewer note). An `optional` entry NEVER gates,
+# envelope or not; only a `:required` entry can refuse this verb, and every
+# required entry must pass on its own -- one entry's ok envelope never
+# satisfies a different required entry.
+#
+# Binding resolution: a filed hook envelope carries no field naming which
+# binding entry produced it, so a required entry <id> is satisfied only by
+# an envelope whose OWN `.engine` matches <id>'s qualified manifest id --
+# resolved via resolve_engine_qualified_id (resolve_engine_dir + that dir's
+# own `id=`), NEVER assumed to be the literal "orchid/<id>" string: that
+# shape only holds for first-party plugins, and hardcoding it here would
+# make any `:required`-bound third-party engine (a real "acme/<name>"
+# manifest id) permanently unsatisfiable -- a hard merge deadlock for
+# exactly the kind of plugin this milestone's third-party lifecycle ships.
+# The "orchid/<id>" fallback inside resolve_engine_qualified_id only fires
+# when <id> cannot be resolved to an installed dir at all, which keeps
+# older/simpler fixtures working without assuming every real engine follows
+# that shape. This is the documented v1 contract for disambiguating
+# multiple required bindings on the same point -- not an incidental detail,
+# the deliberate resolution.
+#
+# attempt mirrors the reviewer gate's own formula (attempts+1, libexec/
+# orchid-task's reviewing->arbitrating gate); the base filename AND its
+# `.N.json` collision siblings (a relaunch landing a second accepted
+# envelope for the same slot) are both considered, same as that gate.
+hook_bindings="$(hooks_for "$repo" before_merge)"
+if [ -n "$hook_bindings" ]; then
+  gate_attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+  while IFS= read -r hb_line; do
+    [ -n "$hb_line" ] || continue
+    hb_id="$(cut -f1 <<< "$hb_line")"; hb_req="$(cut -f2 <<< "$hb_line")"
+    [ "$hb_req" = required ] || continue
+    hb_qid="$(resolve_engine_qualified_id "$hb_id")"
+    hb_ok=0
+    for hb_ef in "$state/reviews/$id-a$gate_attempt-hook-before_merge"*.json; do
+      [ -e "$hb_ef" ] || continue
+      [ "$(envelope_field "$hb_ef" '.status // empty' 2>/dev/null || true)" = ok ] || continue
+      [ "$(envelope_field "$hb_ef" '.candidate_sha // empty' 2>/dev/null || true)" = "$candidate_sha" ] || continue
+      [ "$(envelope_field "$hb_ef" '.engine // empty' 2>/dev/null || true)" = "$hb_qid" ] || continue
+      hb_ok=1; break
+    done
+    if [ "$hb_ok" -ne 1 ]; then
+      echo "merge blocked: required before_merge hook '$hb_id' has no ok envelope for this candidate" >&2
+      exit 15
+    fi
+  done <<< "$hook_bindings"
+fi
 
 # Whole verb runs under the run lock (serializes concurrent merges); trap is
 # installed only AFTER a successful acquire, mirroring orchid-run's pattern.

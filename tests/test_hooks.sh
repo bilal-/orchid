@@ -216,6 +216,54 @@ ls "$WORK/.orchid/runtime/quarantine/" 2>/dev/null | grep -q "j-bad-hook.json.re
   || fail "malformed hook envelope (missing artifact) quarantined"
 
 # ---------------------------------------------------------------------------
+# Third-party publisher: `jobs reconcile`'s engine cross-check must compare
+# against the BOUND plugin's own manifest id, never an assumed
+# "orchid/<name>" shape -- a third-party engine (dir name "foo", manifest
+# `id=acme/foo`) whose adapter echoes its OWN qualified id back must
+# reconcile cleanly, not be quarantined as a mismatch (critical fix,
+# post-review: the pre-existing cross-check hardcoded "orchid/$m_engine").
+# ---------------------------------------------------------------------------
+mkdir -p "$WORK/eng/foo"
+printf 'manifest_version=1\nid=acme/foo\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\n' \
+  > "$WORK/eng/foo/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/eng/foo/run"; chmod +x "$WORK/eng/foo/run"
+
+mkdir -p "$WORK/.orchid/runtime/jobs" "$WORK/.orchid/runtime/spool" "$WORK/.orchid/runtime/quarantine"
+jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
+  '{job_id:"j-thirdparty", task:"T001", attempt:9, role:"reviewer", operation:"review",
+    engine:"foo", pid:0, pgid:0, started_at:0, log:"/dev/null", output:"/dev/null",
+    base_sha:$base, candidate_sha:$cand, hook_point:""}' \
+  > "$WORK/.orchid/runtime/jobs/j-thirdparty.json"
+jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
+  '{contract:1, job_id:"j-thirdparty", task:"T001", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, engine:"acme/foo",
+    base_sha:$base, candidate_sha:$cand}' \
+  > "$WORK/.orchid/runtime/spool/j-thirdparty.json"
+
+"$ORCHID_BIN" jobs reconcile >/dev/null
+[ -f "$WORK/.orchid/reviews/T001-a9-reviewer.json" ] \
+  || fail "a third-party publisher envelope (.engine=acme/foo, dir=foo) reconciles cleanly, not quarantined"
+ls "$WORK/.orchid/runtime/quarantine/" 2>/dev/null | grep -q "j-thirdparty.json.reason-mismatch" \
+  && fail "a third-party publisher envelope (.engine=acme/foo) must NOT be quarantined as a mismatch"
+
+# Existing first-party fixtures stay green: a plain-name engine (no manifest
+# dir discoverable under this name at all) still cross-checks against the
+# "orchid/<name>" fallback shape, unchanged from before this fix.
+jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
+  '{job_id:"j-firstparty", task:"T001", attempt:9, role:"reviewer", operation:"review",
+    engine:"nosuchengine", pid:0, pgid:0, started_at:0, log:"/dev/null", output:"/dev/null",
+    base_sha:$base, candidate_sha:$cand, hook_point:""}' \
+  > "$WORK/.orchid/runtime/jobs/j-firstparty.json"
+jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
+  '{contract:1, job_id:"j-firstparty", task:"T001", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, engine:"orchid/nosuchengine",
+    base_sha:$base, candidate_sha:$cand}' \
+  > "$WORK/.orchid/runtime/spool/j-firstparty.json"
+"$ORCHID_BIN" jobs reconcile >/dev/null
+[ -f "$WORK/.orchid/reviews/T001-a9-reviewer.2.json" ] \
+  || fail "an unresolvable engine name still falls back to the orchid/<name> cross-check shape"
+
+# ---------------------------------------------------------------------------
 # Config-keys coverage: every hook.<point> key + hook_timeout_s registered.
 # ---------------------------------------------------------------------------
 for k in hook.after_plan_draft hook.before_arbitration hook.on_verify_fail \
@@ -271,3 +319,239 @@ assert_eq "true" "$(jq -r '.items[] | select(.name=="roadmap.md") | .truncated' 
 # earlier in the real launch path).
 rc=0; pack_build "$WORK" T001 hook "$WORK/phook_bad" not_a_real_point 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "pack_build hook branch must refuse an unknown point"
+
+# ===========================================================================
+# hook_guidance: template default (empty, settable) + orchid-task actually
+# allows setting it (it is deliberately absent from the `set` deny-list --
+# tested directly here, not trusted by omission).
+# ===========================================================================
+grep -q '^hook_guidance:$' "$REPO_ROOT/templates/task.md" \
+  || fail "templates/task.md missing an empty 'hook_guidance:' frontmatter line"
+grep -q '^hook_guidance:$' "$WORK/.orchid/tasks/T001.md" \
+  || fail "a freshly created task carries an empty hook_guidance: line"
+"$ORCHID_BIN" task set T001 hook_guidance "retry with a smaller diff" >/dev/null \
+  || fail "hook_guidance must be settable via 'orchid task set'"
+assert_eq "retry with a smaller diff" \
+  "$("$ORCHID_BIN" task show T001 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "hook_guidance round-trips through task set/show"
+
+# ===========================================================================
+# before_merge kernel gate (v1-m3 Task 6): the ONE hook point orchid-merge
+# itself enforces. A `:required` binding with no sha-bound ok envelope for
+# the task's CURRENT candidate_sha refuses the merge outright (exit 15); a
+# matching ok envelope lets it proceed; an `optional` binding never gates,
+# envelope or not; a stale-sha envelope is treated exactly like a missing
+# one; multiple required bindings each need their OWN matching envelope,
+# disambiguated by the filed envelope's own `.engine` field against that
+# binding's OWN manifest id (resolve_engine_qualified_id) -- "orchid/<id>"
+# for a first-party plugin (or any unresolvable name, as a fallback), but a
+# third-party publisher's real "acme/<id>"-shaped id works exactly the same
+# way (HG6 below).
+# A fresh repo (separate from $WORK above) -- this needs a real integration
+# branch + a full pending->merging walk, which nothing earlier in this file
+# set up.
+# ===========================================================================
+MWORK="$(mktemp -d)"
+cd "$MWORK"; git init -q .; git commit -q --allow-empty -m root
+mkdir -p .orchid/tasks .orchid/reviews
+export ORCHID_REPO="$MWORK" HOME="$MWORK/home"; mkdir -p "$HOME"
+# unset: ORCHID_ENGINES_DIR is a resolver-only test hook (lib/resolver.sh)
+# left exported ("$WORK/eng") from the CLI-level fixture above -- it is
+# checked FIRST regardless of ORCHID_REPO/HOME, so left set here it would
+# collide with HG6's own $HOME-rooted third-party plugin dir below (same
+# engine name resolvable from two roots -> resolve_engine_dir's own
+# duplicate-engine guard, INV-10, would refuse it). This section resolves
+# engines purely via $HOME, same as a real installed plugin would.
+unset ORCHID_ENGINES_DIR
+
+hg_integ=orchid/integration
+git branch "$hg_integ"
+printf 'integration_branch=%s\nverify=true\nconcurrency=10\n' "$hg_integ" > orchid.config
+export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+
+# Local walk-to-merging helper -- same shape as tests/test_merge.sh's own
+# (not importable across test files; duplicated under a distinct name).
+_hg_walk_to_merging() {
+  local id="$1" branch="$2" base="$3" cand="$4"
+  "$ORCHID_BIN" task set "$id" base_sha "$base" >/dev/null
+  "$ORCHID_BIN" task set "$id" candidate_sha "$cand" >/dev/null
+  "$ORCHID_BIN" task set "$id" verification_commands "true" >/dev/null
+  "$ORCHID_BIN" task advance "$id" implementing >/dev/null
+  "$ORCHID_BIN" task advance "$id" testing >/dev/null
+  git checkout -q "$branch"
+  "$ORCHID_BIN" verify "$id" >/dev/null
+  git checkout -q "$hg_integ"
+  "$ORCHID_BIN" task advance "$id" reviewing >/dev/null
+  plant_reviewer_envelope "$id"
+  "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved" >/dev/null
+  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge" >/dev/null
+}
+
+# _hg_new_candidate <id> -- creates the task + a one-commit branch off
+# hg_integ, prints "<base-sha> <candidate-sha>", leaves cwd on hg_integ.
+_hg_new_candidate() {
+  local id="$1"
+  "$ORCHID_BIN" task create "$id" "hook gate $id" >/dev/null
+  git checkout -q -b "task/$id" "$hg_integ"
+  echo "$id" > "$id.txt" && git add "$id.txt" && git commit -q -m "$id"
+  local cand; cand="$(git rev-parse HEAD)"
+  git checkout -q "$hg_integ"
+  local base; base="$(git rev-parse "$hg_integ")"
+  printf '%s %s\n' "$base" "$cand"
+}
+
+# plant_hook_envelope <id> <attempt> <status> <engine> <candidate_sha> [suffix]
+# -- writes a hook-op envelope straight to reviews/, the same shape `jobs
+# reconcile` would have filed, bypassing an actual job/engine launch (this
+# gate is tested directly, not through the full launch/reconcile pipeline --
+# that round trip is already covered above).
+_hg_plant_hook_envelope() {
+  local id="$1" attempt="$2" status="$3" engine="$4" cand="$5" suffix="${6:-}"
+  local dest=".orchid/reviews/$id-a$attempt-hook-before_merge${suffix}.json"
+  jq -n --arg jid "j-fixture-$id-hook-bm$suffix" --arg task "$id" \
+        --arg status "$status" --arg engine "$engine" --arg cand "$cand" \
+    '{contract:1, job_id:$jid, task:$task, operation:"hook", status:$status,
+      engine:$engine, candidate_sha:$cand,
+      artifact:{guidance:"fixture"}, summary:"fixture hook"}' \
+    > "$dest"
+}
+
+# --- HG1: a required binding, no envelope at all -> exit 15. ---
+read -r hg1_base hg1_cand <<< "$(_hg_new_candidate HG1)"
+_hg_walk_to_merging HG1 task/HG1 "$hg1_base" "$hg1_cand"
+printf 'integration_branch=%s\nverify=true\nconcurrency=10\nhook.before_merge=stubmerge:required\n' "$hg_integ" > orchid.config
+rc=0; hg1_out="$("$ORCHID_BIN" merge HG1 2>&1)" || rc=$?
+assert_eq 15 "$rc" "before_merge required binding with no envelope -> merge exits 15"
+assert_match "merge blocked: required before_merge hook 'stubmerge' has no ok envelope for this candidate" \
+  "$hg1_out" "exit-15 message names the required hook id verbatim"
+assert_eq merging "$("$ORCHID_BIN" task show HG1 | grep '^status: ' | cut -d' ' -f2)" \
+  "task remains in merging after the before_merge gate refuses (never attempted the merge)"
+
+# --- HG2: same required binding, a sha-matched ok envelope -> proceeds. ---
+read -r hg2_base hg2_cand <<< "$(_hg_new_candidate HG2)"
+_hg_walk_to_merging HG2 task/HG2 "$hg2_base" "$hg2_cand"
+_hg_plant_hook_envelope HG2 1 ok "orchid/stubmerge" "$hg2_cand"
+rc=0; "$ORCHID_BIN" merge HG2 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "before_merge required binding with a matching ok envelope -> merge proceeds"
+assert_eq done "$("$ORCHID_BIN" task show HG2 | grep '^status: ' | cut -d' ' -f2)" "HG2 reaches done"
+
+# --- HG3: an optional binding (no :required), no envelope at all -> proceeds. ---
+read -r hg3_base hg3_cand <<< "$(_hg_new_candidate HG3)"
+_hg_walk_to_merging HG3 task/HG3 "$hg3_base" "$hg3_cand"
+printf 'integration_branch=%s\nverify=true\nconcurrency=10\nhook.before_merge=stubmerge\n' "$hg_integ" > orchid.config
+rc=0; "$ORCHID_BIN" merge HG3 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "an optional before_merge binding never gates merge, envelope or not"
+assert_eq done "$("$ORCHID_BIN" task show HG3 | grep '^status: ' | cut -d' ' -f2)" "HG3 reaches done"
+
+# --- HG4: required binding, an envelope bound to the WRONG candidate (a
+# stale envelope) -> treated the same as missing, exit 15. ---
+read -r hg4_base hg4_cand <<< "$(_hg_new_candidate HG4)"
+_hg_walk_to_merging HG4 task/HG4 "$hg4_base" "$hg4_cand"
+printf 'integration_branch=%s\nverify=true\nconcurrency=10\nhook.before_merge=stubmerge:required\n' "$hg_integ" > orchid.config
+_hg_plant_hook_envelope HG4 1 ok "orchid/stubmerge" "0000000000000000000000000000000000dead"
+rc=0; hg4_out="$("$ORCHID_BIN" merge HG4 2>&1)" || rc=$?
+assert_eq 15 "$rc" "a stale-sha before_merge envelope is treated as missing -> exit 15"
+assert_match "merge blocked: required before_merge hook 'stubmerge'" "$hg4_out" "stale-sha exit-15 names the hook id"
+assert_eq merging "$("$ORCHID_BIN" task show HG4 | grep '^status: ' | cut -d' ' -f2)" \
+  "HG4 remains in merging (stale envelope never satisfies the gate)"
+
+# --- HG5: TWO required bindings -- ALL must pass; one entry's ok envelope
+# never satisfies a DIFFERENT required entry (disambiguated by .engine). ---
+read -r hg5_base hg5_cand <<< "$(_hg_new_candidate HG5)"
+_hg_walk_to_merging HG5 task/HG5 "$hg5_base" "$hg5_cand"
+printf 'integration_branch=%s\nverify=true\nconcurrency=10\nhook.before_merge=alpha:required,beta:required\n' "$hg_integ" > orchid.config
+_hg_plant_hook_envelope HG5 1 ok "orchid/alpha" "$hg5_cand"
+rc=0; hg5_out="$("$ORCHID_BIN" merge HG5 2>&1)" || rc=$?
+assert_eq 15 "$rc" "only one of two required bindings satisfied -> merge still exits 15"
+assert_match "merge blocked: required before_merge hook 'beta'" "$hg5_out" \
+  "the UNSATISFIED binding id ('beta') is the one named, not the already-satisfied 'alpha'"
+assert_eq merging "$("$ORCHID_BIN" task show HG5 | grep '^status: ' | cut -d' ' -f2)" "HG5 remains in merging"
+
+_hg_plant_hook_envelope HG5 1 ok "orchid/beta" "$hg5_cand" ".2"
+rc=0; "$ORCHID_BIN" merge HG5 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "once BOTH required bindings have their own matching ok envelope, merge proceeds"
+assert_eq done "$("$ORCHID_BIN" task show HG5 | grep '^status: ' | cut -d' ' -f2)" "HG5 reaches done"
+
+# --- HG6: a THIRD-PARTY publisher's engine bound `:required` -- dir name
+# "foo", manifest `id=acme/foo`, adapter echoes its OWN qualified id back
+# ("acme/foo", never "orchid/foo"). The gate must derive the expected engine
+# string from foo's own manifest (resolve_engine_qualified_id), not assume
+# every bound name is a first-party "orchid/<name>" plugin -- hardcoding
+# that shape would make this binding permanently unsatisfiable (critical
+# fix, post-review). ---
+mkdir -p "$HOME/.orchid/plugins/engines/foo"
+printf 'manifest_version=1\nid=acme/foo\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\n' \
+  > "$HOME/.orchid/plugins/engines/foo/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$HOME/.orchid/plugins/engines/foo/run"
+chmod +x "$HOME/.orchid/plugins/engines/foo/run"
+
+read -r hg6_base hg6_cand <<< "$(_hg_new_candidate HG6)"
+_hg_walk_to_merging HG6 task/HG6 "$hg6_base" "$hg6_cand"
+printf 'integration_branch=%s\nverify=true\nconcurrency=10\nhook.before_merge=foo:required\n' "$hg_integ" > orchid.config
+_hg_plant_hook_envelope HG6 1 ok "acme/foo" "$hg6_cand"
+rc=0; hg6_out="$("$ORCHID_BIN" merge HG6 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a required binding to a third-party engine (manifest id=acme/foo) is satisfied by its OWN qualified id"
+assert_eq done "$("$ORCHID_BIN" task show HG6 | grep '^status: ' | cut -d' ' -f2)" "HG6 reaches done"
+
+cd "$WORK"; rm -rf "$MWORK"
+
+# ===========================================================================
+# Stub-driven tick-walk: on_verify_fail guidance attach. Simulates the
+# orchestrator driving THE TICK's own verbs exactly as PROTOCOL.md prescribes
+# for a FAIL verify -- launch+reconcile the hook (here: an envelope planted
+# directly, standing in for a real job round trip already covered above),
+# read its artifact's `guidance`, `task set hook_guidance` BEFORE the rework
+# advance, then the rework advance itself -- and confirms hook_guidance
+# survives (is "carried") across that advance rather than being reset by it.
+# ===========================================================================
+TWORK="$(mktemp -d)"
+cd "$TWORK"; git init -q .; git commit -q --allow-empty -m root
+base_tw="$(git rev-parse HEAD)"
+echo x > x.txt && git add x.txt && git commit -q -m "candidate"
+cand_tw="$(git rev-parse HEAD)"
+mkdir -p .orchid/tasks .orchid/reviews
+export ORCHID_REPO="$TWORK" HOME="$TWORK/home"; mkdir -p "$HOME"
+printf 'hook.on_verify_fail=stubguide:required\n' > orchid.config
+export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+
+"$ORCHID_BIN" task create TW1 "on_verify_fail tick-walk" >/dev/null
+"$ORCHID_BIN" task set TW1 base_sha "$base_tw" >/dev/null
+"$ORCHID_BIN" task set TW1 candidate_sha "$cand_tw" >/dev/null
+"$ORCHID_BIN" task set TW1 verification_commands "false" >/dev/null
+"$ORCHID_BIN" task advance TW1 implementing >/dev/null
+"$ORCHID_BIN" task advance TW1 testing >/dev/null
+
+# testing (awaiting-verify): `orchid verify <id>` -- FAIL.
+rc=0; verify_out="$("$ORCHID_BIN" verify TW1)" || rc=$?
+assert_eq 1 "$rc" "orchid verify exits 1 on a failing verification_commands"
+assert_match "FAIL" "$verify_out" "orchid verify prints FAIL"
+
+# FAIL branch, hook.on_verify_fail bound: launch+reconcile the hook (stub:
+# the envelope reconcile would have filed at this exact path -- attempt
+# mirrors attempts+1, same as jobs prepare's own formula; attempts is still
+# 0 here, so attempt 1), then read its artifact and attach hook_guidance
+# BEFORE the rework advance, per PROTOCOL.md's testing/FAIL step.
+attempt_tw=$(( $("$ORCHID_BIN" task show TW1 | grep '^attempts: ' | cut -d' ' -f2) + 1 ))
+hook_env=".orchid/reviews/TW1-a$attempt_tw-hook-on_verify_fail.json"
+jq -n --arg jid "j-fixture-tw1-hook-ovf" \
+  '{contract:1, job_id:$jid, task:"TW1", operation:"hook", status:"ok",
+    artifact:{guidance:"shrink the diff and retry"}, summary:"fixture hook ran"}' \
+  > "$hook_env"
+guidance_tw="$(jq -r '.artifact.guidance' "$hook_env")"
+"$ORCHID_BIN" task set TW1 hook_guidance "$guidance_tw" >/dev/null
+
+assert_eq "shrink the diff and retry" \
+  "$("$ORCHID_BIN" task show TW1 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "hook_guidance attached BEFORE the rework advance"
+
+"$ORCHID_BIN" task advance TW1 rework --reason "verify failed: see .orchid/reviews/TW1-verify.log" >/dev/null
+
+assert_eq rework "$("$ORCHID_BIN" task show TW1 | grep '^status: ' | cut -d' ' -f2)" \
+  "TW1 lands in rework after the FAIL branch's advance"
+assert_eq "shrink the diff and retry" \
+  "$("$ORCHID_BIN" task show TW1 | grep '^hook_guidance: ' | cut -d' ' -f2-)" \
+  "the rework advance CARRIES hook_guidance -- it is not reset by the transition"
+assert_eq 1 "$("$ORCHID_BIN" task show TW1 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "the (non-waived) rework advance consumed an attempt, same as any other rework entry"
+
+cd "$WORK"; rm -rf "$TWORK"

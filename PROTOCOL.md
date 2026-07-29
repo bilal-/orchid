@@ -69,6 +69,27 @@ part of the architecture; this file never changes to suit one.*
   <role> <operation>`, where `<role>` is one of the roles bound in config
   (`role.implementer`, `role.reviewer`, ...). Never invoke an engine binary
   directly, and never invent a role that isn't a config key.
+- **Hook points.** Five kernel-owned edges — `after_plan_draft`,
+  `before_arbitration`, `on_verify_fail`, `before_merge`, `on_blocker` — may
+  each carry zero or more plugin-ids bound via `hook.<point>` config
+  (`orchid config list` shows the current binding; an empty value means
+  unbound — skip the point, there is nothing to launch). Invoking a bound
+  point is always the same shape: launch its first bound entry with
+  `runners/orchid-launch <task-id> hook hook --hook <point>` (the role
+  positional carries no meaning for a hook job — pass the literal `hook`; a
+  hook job's real identity for engine-resolution purposes comes entirely
+  from the point's config binding, never the role chain), launch every
+  additional bound entry the same way but with `--engine <plugin-id>` naming
+  it explicitly (mirrors a second reviewer slot), then `orchid jobs
+  reconcile` before reading any of their envelopes. A binding entry marked
+  `:required` whose reconciled envelope is missing, stale, or not `status:
+  ok` is a real failure of that dependency — for `before_merge` specifically
+  the kernel itself refuses the merge over it (see that step below); for the
+  other four points, this protocol's own read of the artifact is the only
+  enforcement, so treat a required failure like any other unmet dependency
+  (`orchid notify` and let a human decide) rather than silently proceeding
+  as if it had passed. An `optional` entry's failure is never blocking, on
+  any of the five points — read it if it reconciled, move on if it didn't.
 
 ## PLANNING (pre-run, before THE TICK ever runs)
 
@@ -101,6 +122,13 @@ task after it drafts normally.
    `planning` — it is only *committed* by step 3 below, so drafting it
    (unlike every mutation THE TICK makes) is not yet a fenced, journaled
    transition.
+
+   If `hook.after_plan_draft` is bound, invoke it now — before the critique
+   loop below ever runs — using the shape from the Preamble:
+   `runners/orchid-launch plan hook hook --hook after_plan_draft`, then
+   `orchid jobs reconcile`. Its artifact is a supplementary signal only; it
+   never substitutes for `role.plan_critic`'s own judgment in the loop that
+   follows.
 
    Then actually run the critique loop — the resolved `role.plan_critic`
    engine (never the drafting engine) judges the draft, it is never rubber-
@@ -287,8 +315,13 @@ ones its archetype never declares.
     kernel's own INV-11 gate independently re-checks that the evidence's
     `candidate:` line matches the task's current `candidate_sha` before
     allowing the transition).
-  - FAIL: `orchid task advance <id> rework --reason "verify failed: see
-    .orchid/reviews/<id>-verify.log"` (consumes an attempt unless
+  - FAIL: if `hook.on_verify_fail` is bound, invoke it first (Preamble
+    shape: `runners/orchid-launch <id> hook hook --hook on_verify_fail`,
+    then `orchid jobs reconcile`) — an ok envelope's `.artifact.guidance`
+    string gets attached to the task BEFORE the rework advance below:
+    `orchid task set <id> hook_guidance "<the guidance text>"`. Then,
+    whether or not a hook fired: `orchid task advance <id> rework --reason
+    "verify failed: see .orchid/reviews/<id>-verify.log"` (consumes an attempt unless
     `--waive-attempt` is also given — reserve that for a failure clearly
     unrelated to the candidate itself). After 3 non-waived rework attempts
     (`orchid task show <id>`'s `attempts` field), stop retrying
@@ -319,9 +352,14 @@ ones its archetype never declares.
   beyond ≤~10-line arbitration trivia" here. For a `high` risk_tier task,
   see HEADLESS OPERATION's arbitration-wait note below before judging: the
   preferred `role.arbiter` engine gets first refusal, bounded by
-  `arbiter_wait_s`. Read the task's review envelope(s) under
-  `.orchid/reviews/<id>-a<attempt>-reviewer*.json` (and `orchid task show
-  <id>` for `blocking_severity`), weigh the findings, then:
+  `arbiter_wait_s`. If `hook.before_arbitration` is bound, invoke it first
+  (same Preamble shape: `runners/orchid-launch <id> hook hook --hook
+  before_arbitration`, then `orchid jobs reconcile`) — read its artifact
+  alongside the review envelopes below, as one more input to the same
+  weighing, never a separate verb call of its own. Read the task's review
+  envelope(s) under `.orchid/reviews/<id>-a<attempt>-reviewer*.json` (and
+  `orchid task show <id>` for `blocking_severity`), weigh the findings,
+  then:
   - approve: `orchid task advance <id> merging --reason "..."`.
   - reject: `orchid task advance <id> rework --reason "..."` (add
     `--waive-attempt` when the rejection reflects an infra/tooling gap
@@ -333,12 +371,22 @@ ones its archetype never declares.
   deterministic order (e.g. lowest task id) — and leave the rest for the
   next pass. This is a throughput choice, not a safety one: the verb's own
   compare-and-swap against the integration ref (below) would simply refuse
-  a second concurrent merge anyway. `orchid merge <id>`, then branch on the
-  task's **post-merge status** (`orchid task show <id>`) — never on the exit
-  code alone: exit `1` is ambiguous between two different outcomes below, so
-  the status is the only reliable signal. The verb already performs the
-  resulting `task advance` internally in every case that actually changes
-  status, so there is no separate advance call to make here:
+  a second concurrent merge anyway. Before that one call, if
+  `hook.before_merge` is bound (`orchid config list`), invoke every bound
+  entry first — the Preamble's shape, `runners/orchid-launch <id> hook hook
+  --hook before_merge` for the first bound entry, `--engine <plugin-id>`
+  naming each additional one — then `orchid jobs reconcile`. This is the ONE
+  hook point the kernel itself also enforces: a `:required` entry with no
+  fresh ok envelope for the task's CURRENT `candidate_sha` makes the verb
+  below refuse outright (exit 15, `merge blocked: required before_merge hook
+  '<id>' has no ok envelope for this candidate`) rather than running the
+  merge at all; an `optional` entry never gates it either way, invoked or
+  not. `orchid merge <id>`, then branch on the task's **post-merge status**
+  (`orchid task show <id>`) — never on the exit code alone: exit `1` is
+  ambiguous between two different outcomes below, so the status is the only
+  reliable signal. The verb already performs the resulting `task advance`
+  internally in every case that actually changes status, so there is no
+  separate advance call to make here:
   - status `done` (exit was `0`): merged.
   - status `rework` (exit was `1`, `validation_failed` / merge or rebase
     conflict; verb already journaled and advanced it): continue the walk's
@@ -357,10 +405,21 @@ ones its archetype never declares.
     "merge left task in merging: see .orchid/reviews/<id>-merge.log"` and
     leave the task in `merging` for a retry; never assume `rework` just
     because the exit code was nonzero.
+  - status still `merging` with exit `15` (`merge blocked: required
+    before_merge hook '<id>' has no ok envelope for this candidate`): the
+    verb never even attempted the merge, so there is nothing to invalidate —
+    fix the missing/failing required hook (rerun it, or fix its handler)
+    and retry `orchid merge <id>`; this is a hook-handler gap, never a
+    candidate defect the way exit `1`'s `rework` is.
 
 **4. Blockers.**
-Raise one with `orchid notify [--task <id>] "<text>"` (prints a `qid`).
-Consume an answer by reading `.orchid/runtime/answers/<qid>.answer` directly
+Raise one with `orchid notify [--task <id>] "<text>"` (prints a `qid`). If
+`hook.on_blocker` is bound, invoke it now (Preamble shape:
+`runners/orchid-launch <id> hook hook --hook on_blocker`, then `orchid jobs
+reconcile`) — its artifact is read the same way `on_verify_fail`'s is,
+folded into whatever `unblock`/`retry` call eventually resolves the
+blocker, at your discretion. Consume an answer by reading
+`.orchid/runtime/answers/<qid>.answer` directly
 once it exists — there is no verb that reads an answer back; `orchid answer`
 only ever writes one, for the human/channel side. Then resolve the task:
 `orchid task unblock <id> --reason "<qid>: <answer text>"` when the answer
