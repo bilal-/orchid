@@ -223,3 +223,53 @@ were caught by exactly the layers built for it (malformed envelope, ledger,
 epoch fencing), and were fixed and re-proven live. **v1-m2 autonomy is
 real: a pump-launched, headless claude tick drove a run to
 `run_status: complete` unattended.**
+
+## v1-m3 dogfood: extensibility surface (2026-07-29)
+
+Scratch project + sandbox/real HOME split; REAL engines for critique,
+implement, review. All m3 surfaces exercised end-to-end:
+
+- **Third-party author journey (the "under an hour" claim):** executed
+  `docs/extending/first-engine.md`'s literal code blocks — skeleton passed
+  `plugins conform` 7/7 on the first try, `plugins install` recorded signed
+  provenance, a `kind=role` plugin (researcher) discovered via the
+  descriptor search path, `plugins test` passed the pair, `plugins audit`
+  reported coherently (digest unchanged, capsuite fresh). Minutes, not an
+  hour.
+- **Plan-critique loop (REAL codex):** round 1 returned four substantive
+  findings (missing acceptance criteria/verification); the operator's fold
+  introduced a task overlap that round 2 CAUGHT (high: T001/T002 scope
+  collision) — the loop demonstrably improves plans. Bonus: a sandbox-HOME
+  auth failure was classified `auth` in the envelope, exactly per contract.
+- **Hooks live:** `hook.before_merge=<name>:required` — `orchid merge`
+  refused with exit 15 and the verbatim gate message until the hook launch
+  reconciled a sha-bound ok envelope; then merged. Exercised on two tasks.
+- **Archetypes:** `test` archetype walked pending→done with real engines
+  (tests-only lens); `migrate` template defaults verified
+  (medium/medium/exclusive:true).
+- **Lessons + rollover:** add/retire/list; `run new` archived r-001 →
+  `runs/r-001/`, minted r-002 with a fresh journal naming the archive,
+  carried ACTIVE lessons only (retired L001 correctly dropped); next-run
+  `requirements import` worked immediately.
+- **Fix-wave features self-verified live:** the new lease-freshness guard
+  refused `run new` while this session's own lease was fresh (by-design
+  friction; the parked m4 `run release-lease` verb is the affordance).
+  The init worktree hint printed. The stale-checkout detector's fixture
+  behavior was covered in-suite.
+
+### Findings
+- F-m3-1 (minor, ledgered m4): sandbox-HOME auth classification worked, but
+  nothing in doctor warns that a HOME override hides engine credentials —
+  a one-line doctor note would save the next operator the puzzle.
+- F-m3-2 (observation): `plugins install` printing next-steps that name
+  `plugins test <name> <role>` proved exactly right as UX — followed it
+  verbatim during the walk.
+- No orchid defects surfaced that the task-review/fix-wave cycle had not
+  already caught; the m3 surface behaved as documented on first real use.
+
+### Live-run cross-check (Pathway, running on main/m2 throughout)
+m3 development coexisted with the live m2 run all day; the run's incidents
+(stall false-positives, pack overflows, stale-checkout corruption, tick
+pushes to origin) were folded into m3 as the log-streaming/heartbeat work,
+worktree-read reviewer prototype, stale-checkout detection, and the
+PROTOCOL no-push policy — the milestone was shaped by production evidence.
