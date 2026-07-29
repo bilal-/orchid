@@ -67,8 +67,27 @@ case "$sub" in
         *) orchid_die "usage: orchid jobs prepare <task> <role> <op> [--engine <name>]" ;;
       esac
     done
-    tf="$state/tasks/$task.md"
-    [ -f "$tf" ] || orchid_die "no task $task"
+    # `plan` (v1-m3): the reserved task id for a plan-scoped critique job
+    # (`orchid task create` refuses it as a real task id -- libexec/orchid-
+    # task). There is no `.orchid/tasks/plan.md` to read attempts/base/
+    # candidate from: attempt instead counts prior critique rounds via the
+    # durable `reviews/plan-a*-<role>.json` files reconcile has already
+    # landed (same counter this attempt itself will file under), and base/
+    # candidate stay empty -- a plan pack has no diff to bind to. Every
+    # other task keeps reading its task file exactly as before.
+    if [ "$task" = plan ]; then
+      attempt=1
+      for rf in "$state/reviews/plan-a"*"-$role.json"; do
+        [ -e "$rf" ] || continue
+        attempt=$((attempt + 1))
+      done
+      base_sha=""; candidate_sha=""
+    else
+      tf="$state/tasks/$task.md"
+      [ -f "$tf" ] || orchid_die "no task $task"
+      attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+      base_sha="$(fm_get "$tf" base_sha)"; candidate_sha="$(fm_get "$tf" candidate_sha)"
+    fi
     if [ -n "$override_engine" ]; then
       # F5: --engine names ANY discovered engine, not just one the role's own
       # failover chain would have picked -- this is how the SECOND dual-
@@ -90,7 +109,6 @@ case "$sub" in
       # there is nothing else to clean up here before exiting).
       engine="$(resolve_role_available "$repo" "$role")" || exit 14
     fi
-    attempt=$(( $(fm_get "$tf" attempts) + 1 ))
     epoch="$(epoch_current "$repo")"
     suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
     job_id="j-e${epoch}-${task}-a${attempt}-${suffix}"
@@ -99,7 +117,7 @@ case "$sub" in
     jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
       --arg role "$role" --arg operation "$operation" --arg engine "$engine" \
       --arg log "$rt/logs/$job_id.log" --arg output "$output" \
-      --arg base_sha "$(fm_get "$tf" base_sha)" --arg candidate_sha "$(fm_get "$tf" candidate_sha)" \
+      --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
       '{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
         engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,
         base_sha:$base_sha, candidate_sha:$candidate_sha}' | atomic_write "$manifest"

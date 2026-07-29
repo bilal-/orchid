@@ -227,3 +227,28 @@ assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "heartbeat stub: status
 assert_match "heartbeat test reply" "$(jq -r .summary "$d/out/envelope.json")" "heartbeat stub: summary carries the real REASON text, unaffected by interleaved heartbeat lines"
 summary_val="$(jq -r .summary "$d/out/envelope.json")"
 case "$summary_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope summary" ;; esac
+
+# --- v1-m3: a PLAN pack (task id `plan`, role.plan_critic; no task.md/
+# diff.patch at all -- see lib/pack.sh's _pack_build_plan) must fail with a
+# clean `failed` envelope and a stderr note, never a silent crash (F6-class:
+# no envelope at all would leave reconcile never seeing the job). Built by
+# hand rather than via build_request, which always creates task.md/
+# diff.patch.
+d="$WORK/planpack"
+mkdir -p "$d/pack" "$d/worktree" "$d/out" "$d/bin"
+printf '# Requirements\nShip the widget.\n' > "$d/pack/requirements.md"
+printf -- '---\nrun_status: planning\n---\n# Roadmap\n' > "$d/pack/roadmap.md"
+printf -- '---\nid: T001\n---\nBuild the widget.\n' > "$d/pack/tasks.md"
+printf '{"budget":65536,"total_bytes":10,"items":[{"name":"requirements.md","bytes":5,"truncated":false}],"omitted":[]}\n' \
+  > "$d/pack/pack.json"
+jq -n --arg job_id "j-planpack" \
+  --arg worktree "$d/worktree" --arg input_pack "$d/pack" --arg output "$d/out/envelope.json" \
+  '{request:1, job_id:$job_id, task:"plan", attempt:1, role:"plan_critic", operation:"critique",
+    base_sha:"", candidate_sha:"", worktree:$worktree,
+    input_pack:$input_pack, output:$output, deadline_s:3600,
+    policy:"read-only", model:"", effort:"medium"}' > "$d/request.json"
+rc=0; stderr_out="$(run_adapter "$d" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "plan pack: adapter must exit nonzero, never silently succeed"
+assert_match "cannot critique plan packs" "$stderr_out" "plan pack: stderr note explains why"
+envelope_validate "$d/out/envelope.json" || fail "plan pack: a failed envelope must still be written and valid"
+assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "plan pack: status failed (never a silent crash with no envelope at all)"

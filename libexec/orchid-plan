@@ -8,6 +8,16 @@ export ORCHID_EPOCH
 sub="${1:-}"; shift || true
 case "$sub" in
   apply)
+    # v1-m3: `apply` is the LAST step of PROTOCOL PLANNING, run only once the
+    # plan-critique loop has settled -- draft, `runners/orchid-launch plan
+    # plan_critic critique`, `orchid jobs reconcile`, fold `findings[]` from
+    # `.orchid/reviews/plan-a<n>-plan_critic.json` back into the draft,
+    # repeat until nothing left is at/above `medium` severity. No verb
+    # change here: that loop only ever edits `.orchid/roadmap.md`/tasks/
+    # directly (this verb's own doc-comment below already covers why that's
+    # permitted pre-commit), and this verb still just commits whatever
+    # currently sits in `.orchid/` -- it has no opinion on whether a
+    # critique loop preceded it.
     verb_lock_acquire "$repo"
     # Provisional release-on-EXIT, set IMMEDIATELY after acquire so nothing
     # between here and the temp-worktree trap below (--reason validation,

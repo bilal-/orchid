@@ -225,11 +225,12 @@ if [ "$operation" = implement ]; then
 fi
 
 # review | critique
-ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
-stop="$(fm_get "$input_pack/task.md" stop_condition)"
 manifest_line="$(jq -r '"pack manifest: items=" + ([.items[].name] | join(",")) + " omitted=" + ([.omitted[]] | join(","))' "$input_pack/pack.json")"
-diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
-prompt="Acceptance criteria: $ac
+if [ -f "$input_pack/task.md" ]; then
+  ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
+  stop="$(fm_get "$input_pack/task.md" stop_condition)"
+  diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
+  prompt="Acceptance criteria: $ac
 Stop condition: $stop
 $manifest_line
 
@@ -239,6 +240,44 @@ $diff
 Reply with exactly two lines:
 VERDICT: approve OR request-changes
 REASON: one sentence"
+else
+  # v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
+  # diff.patch at all -- lib/pack.sh's _pack_build_plan builds
+  # requirements.md + the draft roadmap.md (non-truncatable) plus tasks.md
+  # (every current tasks/*.md concatenated) and lessons.md when present.
+  # Judge the DRAFT PLAN, not a diff -- and the reply contract gains a
+  # third line shape (`FINDING:`) alongside VERDICT, since a plan critique's
+  # whole point is surfacing findings[] the operator folds back into the
+  # draft (see lib/envelope.sh's review/critique union + PROTOCOL PLANNING
+  # step 2), not a single approve/request-changes verdict alone.
+  reqs="$(cat "$input_pack/requirements.md" 2>/dev/null || true)"
+  roadmap_body="$(cat "$input_pack/roadmap.md" 2>/dev/null || true)"
+  tasks_body="$(cat "$input_pack/tasks.md" 2>/dev/null || true)"
+  lessons_body=""
+  [ -f "$input_pack/lessons.md" ] && lessons_body="$(cat "$input_pack/lessons.md")"
+  prompt="Requirements:
+$reqs
+
+Draft roadmap:
+$roadmap_body
+
+Tasks:
+$tasks_body"
+  [ -n "$lessons_body" ] && prompt="$prompt
+
+Lessons:
+$lessons_body"
+  prompt="$prompt
+
+$manifest_line
+
+Critique this draft plan against the requirements: is every requirement
+covered, are tasks correctly scoped and sequenced, are acceptance criteria
+and verification commands concrete? Reply with:
+VERDICT: approve OR request-changes
+One line per issue found, exactly: FINDING: <low|medium|high>: <title>
+(omit FINDING lines entirely when there are none)."
+fi
 
 # Same F2 stdin fix as the implement path above (line ~66).
 #
@@ -290,6 +329,28 @@ fi
 any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
 scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
 
+# findings[] (v1-m3): only `critique` replies are asked for `FINDING:` lines
+# (see the prompt above) -- `review` keeps its existing verdict-only
+# contract, findings stays the literal empty array it always was. Each
+# matched line is `FINDING: <low|medium|high>: <title>`; cut -f2- (not a
+# second split on ":") so a title containing its own colon is kept intact.
+# A line whose severity token doesn't match exactly one of the three, or
+# whose title is empty, is silently dropped rather than failing the whole
+# reply -- this is a best-effort scrape of free text, not a strict parser.
+findings_json='[]'
+if [ "$operation" = critique ]; then
+  findings_ndjson=""
+  while IFS= read -r rest; do
+    [ -n "$rest" ] || continue
+    sev="$(printf '%s' "$rest" | cut -d: -f1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    title="$(printf '%s' "$rest" | cut -d: -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$sev" in low|medium|high) ;; *) continue ;; esac
+    [ -n "$title" ] || continue
+    findings_ndjson="$findings_ndjson$(jq -n --arg s "$sev" --arg t "$title" '{severity:$s, title:$t}')"$'\n'
+  done < <(printf '%s\n' "$stdout" | grep '^FINDING:' | sed 's/^FINDING:[[:space:]]*//')
+  [ -z "$findings_ndjson" ] || findings_json="$(printf '%s' "$findings_ndjson" | jq -s -c '.')"
+fi
+
 # Optional REASON line (last one wins, same idiom as the VERDICT line above)
 # carried into the envelope's `summary` -- mirrors plugins/engines/agy/run's
 # post-m2 idiom, but stays absent rather than falling back to placeholder
@@ -299,8 +360,8 @@ reason_line="$(printf '%s\n' "$stdout" | grep '^REASON:' | tail -n1 || true)"
 reason="$(printf '%s' "$reason_line" | sed 's/^REASON:[[:space:]]*//')"
 reason="${reason:0:200}"
 if [ -n "$reason" ]; then
-  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --arg s "$reason" '{verdict:$v, scope_complete:$sc, findings:[], summary:$s}')"
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" --arg s "$reason" '{verdict:$v, scope_complete:$sc, findings:$f, summary:$s}')"
 else
-  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc, findings:[]}')"
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
 fi
 exit 0

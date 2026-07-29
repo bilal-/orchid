@@ -98,3 +98,51 @@ sleep 1
 "$ORCHID_BIN" jobs reconcile >/dev/null
 summary2="$(jq -r .summary "$WORK/.orchid/reviews/T003-a1-leaktest2.json")"
 assert_match "SECRET_LEAK=<topsecret-value>" "$summary2" "child DOES see SECRET_LEAK once plugin.conf opts in via permissions="
+
+# ---------------------------------------------------------------------------
+# v1-m3: `runners/orchid-launch plan plan_critic critique` -- the reserved
+# task id `plan` has no `.orchid/tasks/plan.md` at all, so the launcher must
+# (a) resolve a worktree WITHOUT crashing on the missing task file (defaults
+# to the repo itself) and (b) hand the stub engine a plan-scoped pack
+# (requirements.md + roadmap.md + tasks.md; no task.md/diff.patch) built by
+# lib/pack.sh's plan branch, not the ordinary per-task pack.
+# ---------------------------------------------------------------------------
+echo "# Requirements" > "$WORK/.orchid/requirements.md"
+printf -- '---\nrun_status: planning\n---\n# Roadmap\nDraft body.\n' > "$WORK/.orchid/roadmap.md"
+
+mkdir -p "$WORK/eng/critic"
+printf 'manifest_version=1\nid=test/critic\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/critic/plugin.conf"
+cat > "$WORK/eng/critic/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
+pack="$(jq -r .input_pack "$req")"
+[ -f "$pack/requirements.md" ] || exit 1
+[ -f "$pack/roadmap.md" ] || exit 1
+[ -f "$pack/tasks.md" ] || exit 1
+[ ! -f "$pack/task.md" ] || exit 1
+[ ! -f "$pack/diff.patch" ] || exit 1
+[ "$(jq -r .operation "$req")" = critique ] || exit 1
+printf '{"contract":1,"job_id":"%s","task":"%s","operation":"critique","status":"ok","verdict":"request-changes","scope_complete":true,"findings":[{"severity":"medium","title":"stub finding"}]}' \
+  "$jid" "$task" > "$out"
+EOF
+chmod +x "$WORK/eng/critic/run"
+printf 'role.plan_critic=critic\n' >> "$WORK/orchid.config"
+
+plan_launch_out="$("$REPO_ROOT/runners/orchid-launch" plan plan_critic critique)"
+assert_match "launched j-" "$plan_launch_out" "plan critique launch reports job id"
+sleep 1
+plan_reconcile_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "plan	ok" "$plan_reconcile_line" "plan critique job reconciled end-to-end"
+[ -f "$WORK/.orchid/reviews/plan-a1-plan_critic.json" ] || fail "plan critique envelope filed at plan-a1-plan_critic.json"
+assert_eq "1" "$(jq '.findings | length' "$WORK/.orchid/reviews/plan-a1-plan_critic.json")" "plan critique envelope carries the stub finding"
+
+plan_req=""
+for rf in "$WORK/.orchid/runtime/requests/"*.json; do
+  [ "$(jq -r .task "$rf" 2>/dev/null)" = "plan" ] && plan_req="$rf" && break
+done
+[ -n "$plan_req" ] || fail "plan critique request document not found under runtime/requests"
+assert_eq "$WORK" "$(jq -r .worktree "$plan_req")" "plan critique request worktree defaults to the repo (no task file to read one from)"

@@ -96,12 +96,25 @@ task after it drafts normally.
 2. Draft the roadmap: create each task with `orchid task create <id>
    <title>`, then fill in its spec via `orchid task set <id> <key> <value>`
    (acceptance criteria, `verification_commands`, `depends_on`, `risk_tier`
-   with `--reason`, ...) — the resolved `role.plan_critic` engine (never the
-   drafting engine) critiques the draft; revise and repeat until settled.
-   `.orchid/roadmap.md` itself is the one piece of durable state this
-   protocol permits editing directly while still in `planning` — it is only
-   *committed* by the verb below, so drafting it (unlike every mutation
-   THE TICK makes) is not yet a fenced, journaled transition.
+   with `--reason`, ...). `.orchid/roadmap.md` itself is the one piece of
+   durable state this protocol permits editing directly while still in
+   `planning` — it is only *committed* by step 3 below, so drafting it
+   (unlike every mutation THE TICK makes) is not yet a fenced, journaled
+   transition.
+
+   Then actually run the critique loop — the resolved `role.plan_critic`
+   engine (never the drafting engine) judges the draft, it is never rubber-
+   stamped: `runners/orchid-launch plan plan_critic critique` (the literal
+   task id `plan` is reserved for exactly this job — no task file to read,
+   no diff to bind, `orchid task create` refuses it as a real id), then
+   `orchid jobs reconcile` to land its envelope at
+   `.orchid/reviews/plan-a<n>-plan_critic.json`. Read that envelope's
+   `findings[]` and fold each one back into the draft (add/adjust tasks,
+   specs, sequencing, requirements coverage), then relaunch the same
+   critique — a fresh attempt lands at `plan-a<n+1>-plan_critic.json`, the
+   same counter-suffix convention any other review uses. Repeat until an
+   attempt comes back with nothing left in `findings[]` at or above
+   `medium` severity before moving on to step 3.
 3. `orchid plan apply --reason "..."` — commits every current `.orchid/`
    change (roadmap, tasks, requirements) onto the integration branch in one
    transaction, from whatever checkout you're in, without ever switching the

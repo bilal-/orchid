@@ -331,3 +331,58 @@ summary_val="$(jq -r .summary "$d/out/envelope.json")"
 case "$summary_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope summary" ;; esac
 actions_val="$(jq -c .actions "$d/out/envelope.json")"
 case "$actions_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope actions[]" ;; esac
+
+# --- 19. v1-m3: plan-scoped critique pack (task id `plan`, no task.md/
+# diff.patch at all -- lib/pack.sh's _pack_build_plan builds requirements.md
+# + roadmap.md + tasks.md instead). The prompt must be built from those
+# files, not the diff-based review prompt, and a critique reply's `FINDING:
+# <severity>: <title>` lines must parse into findings[] (review's contract
+# stays verdict-only, unaffected -- see the approve-review test above).
+build_plan_request() {  # name stub -> prints path to request.json's dir
+  local name="$1" stub="$2"
+  local d="$WORK/$name"
+  mkdir -p "$d/pack" "$d/worktree" "$d/out" "$d/bin"
+  printf '# Requirements\nShip the widget end to end.\n' > "$d/pack/requirements.md"
+  printf -- '---\nrun_status: planning\n---\n# Roadmap\n- T001: build the widget\n' > "$d/pack/roadmap.md"
+  printf -- '---\nid: T001\n---\nBuild the widget.\n' > "$d/pack/tasks.md"
+  printf '{"budget":65536,"total_bytes":10,"items":[{"name":"requirements.md","bytes":5,"truncated":false}],"omitted":[]}\n' \
+    > "$d/pack/pack.json"
+  [ -n "$stub" ] && { printf '%s\n' "$stub" > "$d/bin/claude"; chmod +x "$d/bin/claude"; }
+  (cd "$d/worktree" && git init -q . \
+    && git -c user.email=test@orchid.local -c user.name="Orchid Test" \
+         commit -q --allow-empty -m root) >/dev/null 2>&1
+  jq -n --arg job_id "j-$name" \
+    --arg worktree "$d/worktree" --arg input_pack "$d/pack" --arg output "$d/out/envelope.json" \
+    '{request:1, job_id:$job_id, task:"plan", attempt:1, role:"plan_critic", operation:"critique",
+      base_sha:"", candidate_sha:"", worktree:$worktree,
+      input_pack:$input_pack, output:$output, deadline_s:3600,
+      policy:"read-only", model:"", effort:"medium"}' > "$d/request.json"
+  echo "$d"
+}
+
+d="$(build_plan_request plancritique '#!/usr/bin/env bash
+echo "VERDICT: request-changes"
+echo "FINDING: medium: missing rollback plan for T002"
+echo "FINDING: low: acceptance criteria too vague on T003"')"
+run_adapter "$d" || fail "plan critique stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "plan critique stub: envelope invalid"
+assert_eq "request-changes" "$(jq -r .verdict "$d/out/envelope.json")" "plan critique stub: verdict parsed"
+assert_eq "2" "$(jq '.findings | length' "$d/out/envelope.json")" "plan critique stub: FINDING lines parsed into findings[]"
+assert_eq "medium" "$(jq -r '.findings[0].severity' "$d/out/envelope.json")" "plan critique stub: first finding severity"
+assert_eq "missing rollback plan for T002" "$(jq -r '.findings[0].title' "$d/out/envelope.json")" "plan critique stub: first finding title"
+assert_eq "low" "$(jq -r '.findings[1].severity' "$d/out/envelope.json")" "plan critique stub: second finding severity"
+
+# Prompt content sanity: the plan pack's requirements/roadmap/tasks reach the
+# CLI, and the diff-based review prompt shape never does.
+d="$(build_plan_request planprompt '#!/usr/bin/env bash
+content="$(cat)"
+printf %s "$content" > ../out/stdin_capture.txt
+echo "VERDICT: approve"')"
+run_adapter "$d" || fail "plan prompt stub: adapter should exit 0"
+captured="$(cat "$d/out/stdin_capture.txt")"
+assert_match "Requirements:" "$captured" "plan prompt: requirements section present"
+assert_match "Ship the widget end to end." "$captured" "plan prompt: requirements body present"
+assert_match "Draft roadmap:" "$captured" "plan prompt: roadmap section present"
+assert_match "Build the widget." "$captured" "plan prompt: tasks.md body present"
+case "$captured" in *"Diff:"*) fail "plan prompt: must never contain the diff-based review prompt shape" ;; esac
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "plan prompt stub: approve-only reply still yields empty findings[]"

@@ -181,3 +181,41 @@ assert_match "TBUDGET	budget-exceeded" "$budget_out" "jobs check reports budget-
 "$ORCHID_BIN" jobs prepare TOKBUDGET implementer implement >/dev/null
 ok_out="$("$ORCHID_BIN" jobs check)"
 echo "$ok_out" | grep -q "TOKBUDGET	budget-exceeded" && fail "jobs check must not report budget-exceeded for a task within budget"
+
+# ---------------------------------------------------------------------------
+# v1-m3: plan-scoped critique jobs -- `orchid jobs prepare plan <role>
+# critique` mints a manifest with NO task file read at all (`plan` is a
+# reserved task id; `orchid task create` refuses it -- tests/test_task.sh).
+# attempt is 1 + however many `reviews/plan-a*-<role>.json` already exist;
+# base/candidate stay empty (a plan pack has no diff to bind to). A stub
+# plan_critic engine's envelope reconciles to `reviews/plan-a1-
+# plan_critic.json` via the exact same counter-suffix naming any other
+# task's review uses.
+# ---------------------------------------------------------------------------
+mkdir -p "$WORK/eng/critic"
+printf 'manifest_version=1\nid=test/critic\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/critic/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/eng/critic/run"; chmod +x "$WORK/eng/critic/run"
+printf 'role.plan_critic=critic\n' >> orchid.config
+
+mp="$("$ORCHID_BIN" jobs prepare plan plan_critic critique)"
+[ -f "$mp" ] || fail "plan-scoped manifest written at printed path"
+assert_eq "plan" "$(jq -r .task "$mp")" "plan job task is the literal reserved id"
+assert_eq "1" "$(jq -r .attempt "$mp")" "plan job first attempt is 1 (no prior reviews)"
+assert_eq "" "$(jq -r .base_sha "$mp")" "plan job base_sha empty"
+assert_eq "" "$(jq -r .candidate_sha "$mp")" "plan job candidate_sha empty"
+plan_jid="$(jq -r .job_id "$mp")"
+assert_match "^j-e[0-9]+-plan-a1-" "$plan_jid" "plan job id shape"
+
+plan_out="$(jq -r .output "$mp")"
+printf '{"contract":1,"job_id":"%s","task":"plan","operation":"critique","status":"ok","verdict":"request-changes","scope_complete":true,"findings":[{"severity":"medium","title":"missing rollback plan"}]}' "$plan_jid" > "$plan_out"
+plan_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "plan	ok" "$plan_line" "plan critique envelope reconciled"
+[ -f ".orchid/reviews/plan-a1-plan_critic.json" ] || fail "plan critique envelope filed at plan-a1-plan_critic.json"
+[ ! -f "$mp" ] || fail "plan manifest deleted after reconcile"
+assert_eq "1" "$(jq '.findings | length' ".orchid/reviews/plan-a1-plan_critic.json")" "plan critique envelope keeps its findings[]"
+
+# A second prepare call after the first attempt's envelope has landed counts
+# the existing reviews/plan-a1-plan_critic.json and bumps to attempt 2.
+mp2="$("$ORCHID_BIN" jobs prepare plan plan_critic critique)"
+assert_eq "2" "$(jq -r .attempt "$mp2")" "plan job second attempt counts the prior reconciled envelope"

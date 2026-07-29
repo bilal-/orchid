@@ -50,6 +50,23 @@ if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
   exit 0
 fi
 
+# v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
+# diff.patch at all -- lib/pack.sh's _pack_build_plan builds requirements.md
+# + roadmap.md + tasks.md instead (see plugins/engines/codex/run and
+# plugins/engines/claude/run's own plan-pack branches). agy is an INLINE,
+# diff-only reviewer (its whole design is "judge from the diff text alone,
+# no tools, no worktree") and has no equivalent plan-critique prompt --
+# without this guard, the `fm_get "$input_pack/task.md" ...` below would
+# awk-error on a nonexistent file and the adapter would exit having written
+# NO envelope at all (an F6-class silent failure: reconcile would never see
+# this job, so it would just sit `prepared`/`running` forever instead of
+# failing loudly). Fail closed with a real envelope instead.
+if [ ! -f "$input_pack/task.md" ] || [ ! -f "$input_pack/diff.patch" ]; then
+  echo "orchid/agy: cannot critique plan packs -- bind a workspace-capable engine" >&2
+  write_envelope failed '{}'
+  exit 1
+fi
+
 diff_file="$input_pack/diff.patch"
 diff_bytes="$(wc -c <"$diff_file" 2>/dev/null | tr -d ' ')"; diff_bytes="${diff_bytes:-0}"
 max_bytes="$(config_get "$worktree" agy_max_bytes 100000)"

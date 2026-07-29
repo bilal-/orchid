@@ -45,7 +45,17 @@ base_sha="$(jq -r .base_sha "$manifest")"; candidate_sha="$(jq -r .candidate_sha
 pack_dir="$rt/packs/$job_id"
 pack_build "$repo" "$task" "$operation" "$pack_dir"
 
-worktree="$(fm_get "$state/tasks/$task.md" worktree)"
+# `plan` (v1-m3): the reserved task id has no `.orchid/tasks/plan.md` to
+# read at all -- `fm_get` on a nonexistent file is an awk open-failure, not
+# an empty read, which under `set -e` would abort this launch outright.
+# Guarded the same way pack_build/jobs prepare special-case the id: skip the
+# read entirely and fall through to the repo default below.
+task_file="$state/tasks/$task.md"
+if [ -f "$task_file" ]; then
+  worktree="$(fm_get "$task_file" worktree)"
+else
+  worktree=""
+fi
 [ -n "$worktree" ] || worktree="$repo"
 
 deadline_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))

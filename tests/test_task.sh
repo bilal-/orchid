@@ -6,6 +6,50 @@ export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 
 "$ORCHID_BIN" task create T001 "demo"
 assert_eq pending "$(fm() { "$ORCHID_BIN" task show T001 | grep "^status: " | cut -d' ' -f2; }; fm)" "created pending"
+
+# v1-m3: `plan` is a reserved task id (plan-scoped critique jobs -- `orchid
+# jobs prepare plan <role> critique`, PROTOCOL PLANNING step 2). `task
+# create` must refuse it outright, before any file is written.
+rc=0; plan_refuse_out="$("$ORCHID_BIN" task create plan "should be refused" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task create plan must be refused (reserved id)"
+assert_match "reserved" "$plan_refuse_out" "task create plan names it reserved"
+[ ! -f ".orchid/tasks/plan.md" ] || fail "task create plan must not write a task file"
+
+# v1-m3 fix (Important 1, post-review): `task set`/`task unblock` on a
+# NONEXISTENT id (including the reserved `plan`) must die cleanly, before
+# any read/write of the task file -- previously `set` could crash via
+# `fm_set`'s `awk ... | atomic_write` pipe (atomic_write writes an EMPTY
+# file before awk's can't-open-file failure aborts the script), leaving a
+# stray empty tasks/<id>.md behind, and `unblock` leaked a raw awk error to
+# stderr before falling through to a misleading "not blocked" die. Both
+# arms now check existence (and refuse `plan` by name) before touching the
+# file at all.
+before_count="$(ls .orchid/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
+
+rc=0; set_nope_out="$("$ORCHID_BIN" task set NOPE somekey someval 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set on a nonexistent id must be refused"
+assert_match "no task NOPE" "$set_nope_out" "task set on a nonexistent id names it (clean die, not a raw awk error)"
+echo "$set_nope_out" | grep -qi "awk" && fail "task set on a nonexistent id must never leak a raw awk error"
+
+rc=0; set_plan_out="$("$ORCHID_BIN" task set plan somekey someval 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set plan must be refused (reserved id)"
+assert_match "reserved" "$set_plan_out" "task set plan names it reserved"
+
+rc=0; unblock_nope_out="$("$ORCHID_BIN" task unblock NOPE2 --reason x 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task unblock on a nonexistent id must be refused"
+assert_match "no task NOPE2" "$unblock_nope_out" "task unblock on a nonexistent id names it (clean die, not a raw awk error)"
+echo "$unblock_nope_out" | grep -qi "awk" && fail "task unblock on a nonexistent id must never leak a raw awk error"
+
+rc=0; unblock_plan_out="$("$ORCHID_BIN" task unblock plan --reason x 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task unblock plan must be refused (reserved id)"
+assert_match "reserved" "$unblock_plan_out" "task unblock plan names it reserved"
+
+after_count="$(ls .orchid/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$before_count" "$after_count" "no stray task file left behind by any of the four refused calls above"
+[ ! -f ".orchid/tasks/NOPE.md" ] || fail "task set NOPE must not have written a stray task file"
+[ ! -f ".orchid/tasks/NOPE2.md" ] || fail "task unblock NOPE2 must not have written a stray task file"
+[ ! -f ".orchid/tasks/plan.md" ] || fail "task set/unblock plan must not have written a task file"
+
 "$ORCHID_BIN" task advance T001 implementing
 rc=0; "$ORCHID_BIN" task advance T001 done 2>/dev/null || rc=$?
 assert_eq 3 "$rc" "illegal transition exits 3"
