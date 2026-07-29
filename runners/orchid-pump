@@ -26,34 +26,55 @@ source "$ORCHID_ROOT/lib/ledger.sh"
 repo="${ORCHID_REPO:-$PWD}"
 state="$(orchid_state "$repo")"
 
-# 1. Not initialized (neither `.orchid/tasks` nor `.orchid/roadmap.md`
-# exists) -- deliberately checked with `orchid_state` alone, BEFORE calling
-# `orchid_runtime` (which `mkdir -p`s `.orchid/runtime` as a side effect):
-# an uninitialized directory should be left untouched, not seeded with a
-# runtime dir it never asked for. This is also the reason the pump cannot
-# simply `exec` the tick unconditionally -- the tick's own uninitialized
-# guard (via `orchid run resume`) DIES with exit 1, whereas a cron-invoked
-# pump polling a not-yet-`orchid init`'d directory is a normal, silent
-# no-op, not a failure.
-if [ ! -d "$state/tasks" ] && [ ! -f "$state/roadmap.md" ]; then
+# 1. Not initialized (none of `.orchid/tasks`, `.orchid/journal.md`, or
+# `.orchid/roadmap.md` exist) -- deliberately checked with `orchid_state`
+# alone, BEFORE calling `orchid_runtime` (which `mkdir -p`s
+# `.orchid/runtime` as a side effect): an uninitialized directory should be
+# left untouched, not seeded with a runtime dir it never asked for. This is
+# also the reason the pump cannot simply `exec` the tick unconditionally --
+# the tick's own uninitialized guard (via `orchid run resume`) DIES with
+# exit 1, whereas a cron-invoked pump polling a not-yet-`orchid init`'d
+# directory is a normal, silent no-op, not a failure.
+#
+# This condition is deliberately the exact complement of orchid_split_brain
+# (lib/common.sh): that helper is true when (tasks OR journal) exist
+# without roadmap -- so "genuinely uninitialized" must be false on ALL
+# THREE, not just tasks/roadmap. v1-m3 Task 2 review finding: the original
+# two-file check let a journal.md-only checkout (a task verb wrote a
+# journal entry against the wrong checkout, but no task was ever created)
+# fall through here as "not an orchid repo" instead of reaching the
+# split-brain arm below -- inconsistent with doctor/status, which both use
+# the shared helper and flag that same state.
+if [ ! -d "$state/tasks" ] && [ ! -f "$state/journal.md" ] && [ ! -f "$state/roadmap.md" ]; then
   echo "pump: not an orchid repo"
   exit 0
 fi
 
-# 2. run_status complete, or roadmap.md absent (a partially-initialized repo
-# that cleared step 1 via a bare `.orchid/tasks` dir but has no roadmap yet)
-# -- never spend quota / spawn anything for a run that has nothing left to
-# do.
-rs=""
-[ -f "$state/roadmap.md" ] && rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
-if [ ! -f "$state/roadmap.md" ] || [ "$rs" = complete ]; then
+# 2. Split-brain checkout (v1-m3 Task 2, F7): step 1 already ruled out
+# BOTH tasks/ and roadmap.md being absent, so reaching here with
+# roadmap.md still absent means task-verb-built state (tasks/ or
+# journal.md) exists without it -- `orchid init` restores the user's own
+# branch on exit, and durable .orchid state lives only on the integration
+# branch, so this checkout is neither uninitialized (step 1) nor a healthy
+# run (step 3, below) -- it's the wrong checkout. Distinct message, never
+# spawns.
+if orchid_split_brain "$repo"; then
+  echo "pump: no roadmap in this checkout (split-brain — run from the integration branch)"
+  exit 0
+fi
+
+# 3. run_status complete -- never spend quota / spawn anything for a run
+# that has nothing left to do. roadmap.md is guaranteed present here (step
+# 2 above already exited on its absence).
+rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
+if [ "$rs" = complete ]; then
   echo "pump: run complete"
   exit 0
 fi
 
 rt="$(orchid_runtime "$repo")"
 
-# 3. Lease staleness. `iso_to_epoch` is replicated here (not shared via
+# 4. Lease staleness. `iso_to_epoch` is replicated here (not shared via
 # lib/) rather than sourced from libexec/orchid-jobs: runners can't source
 # libexec (that's tier-1 verb-dispatch code, not a library), and this
 # five-line portable GNU/BSD `date` idiom is small enough that duplicating
@@ -105,7 +126,7 @@ if [ "$age" -lt "$stale_s" ]; then
   exit 0
 fi
 
-# 4. Dry-check only: is an orchestrator engine currently resolvable at all?
+# 5. Dry-check only: is an orchestrator engine currently resolvable at all?
 # The engine name itself is discarded -- the tick performs its own
 # `resolve_role_available` call once it actually runs, so this is purely a
 # GO/NO-GO probe against the exact same ledger/capsuite state the tick will
@@ -120,7 +141,7 @@ else
   exit 0
 fi
 
-# 5. Hand off. The tick does its own `run resume` (fencing a fresh epoch and
+# 6. Hand off. The tick does its own `run resume` (fencing a fresh epoch and
 # refreshing the lease), engine pick, adapter spawn, and ledger marking --
 # the pump's job ends here. `exec`, not a plain call: no pump-side work
 # remains afterward, so the tick simply replaces this process and its exit

@@ -5,6 +5,12 @@ source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 explain=0; [ "${1:-}" = "--explain" ] && explain=1
+# Split-brain checkout (v1-m3 Task 2, F7): printed FIRST, above run_status
+# -- an operator staring at a stale/missing run_status needs to know
+# they're on the wrong checkout before anything else on this page.
+if orchid_split_brain "$repo"; then
+  echo "WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)"
+fi
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
 echo "run_status: ${rs:-(uninitialized)}"
 echo "== tasks"

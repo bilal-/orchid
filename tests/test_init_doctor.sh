@@ -15,9 +15,11 @@ assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"
 # init now refuses a dirty tree, so commit the fixture's config/engine
 # scaffolding first (a real user would already have these committed).
 git add -A && git commit -q -m "fixture: engines + config"
-"$ORCHID_BIN" init
+init_out="$("$ORCHID_BIN" init)"
 git rev-parse --verify -q orchid/integration >/dev/null || fail "integration branch"
 git show orchid/integration:.orchid/roadmap.md | grep -q "run_status: planning" || fail "roadmap committed with run_status"
+assert_match "integration branch: orchid/integration" "$init_out" "init prints the integration branch name"
+assert_match "git worktree add \.\./$(basename "$WORK")-orchid orchid/integration && cd \.\./$(basename "$WORK")-orchid" "$init_out" "init prints the exact worktree hint command"
 out1="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes post-init"
 assert_match "integration branch exists or creatable" "$out1" "doctor post-init: integration branch exists"
 rc=0; printf 'role.implementer=missing-engine\n' >> orchid.config
@@ -149,3 +151,28 @@ git -C "$scratch8" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
   || fail "init --greenfield (no-op modifier) still creates the integration branch"
 [ "$(git -C "$scratch8" log --oneline HEAD | wc -l | tr -d ' ')" = 1 ] \
   || fail "init --greenfield on a repo with commits must NOT mint an extra root commit"
+
+# ---------------------------------------------------------------------------
+# v1-m3 Task 2: split-brain checkout detection (F7) -- `orchid init` restores
+# the user's own branch; durable .orchid state lives only on the integration
+# branch. A checkout with task-verb-built state (.orchid/tasks/) but no
+# roadmap.md is neither "uninitialized" nor a healthy run -- doctor must FAIL
+# it by name, distinct from every other check.
+# ---------------------------------------------------------------------------
+scratch9="$WORK/scratch9"; mkdir -p "$scratch9"
+git init -q "$scratch9"
+(cd "$scratch9" && git commit -q --allow-empty -m root)
+mkdir -p "$scratch9/.orchid/tasks"
+rc=0
+sb_out="$(ORCHID_REPO="$scratch9" ORCHID_ENGINES_DIR="$WORK/eng" \
+  ORCHID_ROLE_ORCHESTRATOR=fake ORCHID_ROLE_IMPLEMENTER=fake ORCHID_ROLE_REVIEWER=fake \
+  ORCHID_ROLE_ARBITER=fake ORCHID_ROLE_PLAN_CRITIC=fake \
+  "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+assert_eq 1 "$rc" "doctor fails on a split-brain checkout (.orchid/tasks without roadmap.md)"
+assert_match "FAIL: split-brain checkout: work from the integration branch or a worktree of it — see 'orchid init' output" "$sb_out" \
+  "doctor names the split-brain fix"
+
+# healthy fixture (the main $WORK repo, already initialized with a roadmap on
+# orchid/integration) must be unaffected by the new check.
+echo "$out1" | grep -q "FAIL: split-brain" && fail "doctor must not flag split-brain on a healthy post-init repo"
+assert_match "ok: no split-brain checkout state" "$out1" "doctor's split-brain check passes on a healthy post-init repo"

@@ -122,5 +122,16 @@ elif [ "$greenfield" -eq 1 ]; then
 else
   bad "integration branch exists or creatable: no HEAD to branch from and $integ absent"
 fi
+# Split-brain checkout (v1-m3 Task 2, F7): `orchid init` restores the
+# user's own branch on exit -- durable .orchid state lives only on the
+# integration branch. A checkout with task-verb-built state (tasks/ or
+# journal.md) but no roadmap.md is neither uninitialized nor healthy; FAIL
+# it by name so the operator switches checkouts rather than debug a
+# missing roadmap.
+if orchid_split_brain "$repo"; then
+  bad "split-brain checkout: work from the integration branch or a worktree of it — see 'orchid init' output"
+else
+  ok "no split-brain checkout state"
+fi
 [ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins require 'orchid plugins trust <dir>' to execute (see plugins: section above for current trust status, INV-09)"
 [ "$fails" -eq 0 ] || exit 1

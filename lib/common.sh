@@ -12,6 +12,22 @@ atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv 
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
 
+# orchid_split_brain <repo> -- v1-m3 Task 2 (F7, docs/dogfood-notes.md
+# v1-m2 section): `orchid init` restores the user's OWN branch when it
+# exits; the durable .orchid state (roadmap.md and everything gated on it)
+# lives only on the integration branch. A task verb run against the wrong
+# checkout happily builds untracked .orchid state there anyway (tasks/,
+# journal.md), and nothing else on disk distinguishes that from a healthy
+# repo -- except the one file only the integration branch ever carries:
+# roadmap.md. True (exit 0) when EITHER tasks/ or journal.md exists but
+# roadmap.md does NOT. A repo with none of the three is simply
+# uninitialized (not split-brain); a repo with roadmap.md present is
+# healthy regardless of what else exists alongside it.
+orchid_split_brain() {
+  local state; state="$(orchid_state "$1")"
+  { [ -d "$state/tasks" ] || [ -f "$state/journal.md" ]; } && [ ! -f "$state/roadmap.md" ]
+}
+
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a
 # shell function name) with a wall-clock deadline; returns cmd's own exit
 # status, or 124 on timeout. Both the timed command AND the watcher are

@@ -56,15 +56,66 @@ write_lease() {
 cur_epoch() { cat .orchid/runtime/epoch 2>/dev/null || echo 0; }
 
 # ===========================================================================
-# A -- uninitialized dir (no .orchid/tasks, no roadmap.md): exit 0, and the
-# pump must say so plainly rather than let the tick's "not initialized" die
-# (exit 1) leak through.
+# A -- uninitialized dir (no .orchid/tasks, no journal.md, no roadmap.md):
+# exit 0, and the pump must say so plainly rather than let the tick's "not
+# initialized" die (exit 1) leak through.
 # ===========================================================================
 out="$("$PUMP" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "pump exits 0 on an uninitialized repo"
 assert_eq "pump: not an orchid repo" "$out" "pump names an uninitialized repo plainly"
 
+# ===========================================================================
+# A1 -- split-brain checkout, journal-only variant (v1-m3 Task 2 review
+# fix): ONLY .orchid/journal.md exists (no tasks dir, no roadmap.md) -- a
+# task verb wrote a journal entry against the wrong checkout without ever
+# creating a task. Arm 1's uninitialized condition must be the exact
+# complement of orchid_split_brain (tasks OR journal, roadmap absent), so
+# this must reach the split-brain arm below, not be swallowed as "not an
+# orchid repo".
+# ===========================================================================
+mk_stub_engine stubjournal
+printf 'role.orchestrator=stubjournal\n' > orchid.config
+mkdir -p .orchid
+echo "# Journal" > .orchid/journal.md
+rm -f "$WORK/marker-stubjournal"
+
+out="$("$PUMP" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "pump exits 0 on a journal-only split-brain checkout"
+assert_eq "pump: no roadmap in this checkout (split-brain — run from the integration branch)" "$out" \
+  "pump treats a journal-only checkout as split-brain, not as uninitialized"
+[ -f "$WORK/marker-stubjournal" ] && fail "pump must not spawn anything on a journal-only split-brain checkout"
+rm -f .orchid/journal.md
+
+# ===========================================================================
+# A1b -- a genuinely empty .orchid/ dir (the directory itself exists on
+# disk, but none of tasks/, journal.md, or roadmap.md exist inside it) is
+# still "not an orchid repo" -- confirms the arm-1 fix widened the check to
+# journal.md without broadening it any further than that.
+# ===========================================================================
+mkdir -p .orchid
+out="$("$PUMP" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "pump exits 0 on a truly empty .orchid dir"
+assert_eq "pump: not an orchid repo" "$out" "an empty .orchid dir (no tasks/journal/roadmap) is still not an orchid repo"
+
 mkdir -p .orchid/tasks
+
+# ===========================================================================
+# A2 -- split-brain checkout (v1-m3 Task 2, F7): .orchid/tasks/ exists (a
+# task verb built untracked state against this checkout) but roadmap.md is
+# absent (durable state lives only on the integration branch). Distinct
+# from BOTH "not an orchid repo" (arm 1, above -- that requires tasks AND
+# roadmap both absent) and "run complete" (arm 3, below -- that requires a
+# roadmap to even read run_status from). Never spawns.
+# ===========================================================================
+mk_stub_engine stubsplit
+printf 'role.orchestrator=stubsplit\n' > orchid.config
+rm -f .orchid/roadmap.md "$WORK/marker-stubsplit"
+
+out="$("$PUMP" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "pump exits 0 on a split-brain checkout"
+assert_eq "pump: no roadmap in this checkout (split-brain — run from the integration branch)" "$out" \
+  "pump names the split-brain condition distinctly from run complete"
+[ -f "$WORK/marker-stubsplit" ] && fail "pump must not spawn anything on a split-brain checkout"
 
 # ===========================================================================
 # B -- run_status complete: nothing spawned, regardless of lease/engine
