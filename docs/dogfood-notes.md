@@ -135,3 +135,91 @@ pure deterministic bash with no real-engine integration surface, so the
 stub-tested behavior matched real behavior. v1-m1 foundation is solid.
 Note (ledgered m2): plugin_digest embeds absolute paths → lockfiles are
 machine-specific; fine for single-operator v1.
+
+## v1-m2 dogfood: core autonomy (2026-07-28)
+
+Scratch repos (existing-repo `dogfood-m2` + empty-dir `dogfood-gf`), REAL
+engines throughout (codex implement, agy + codex-review review, claude
+orchestrate). All five m2 surfaces exercised end-to-end:
+
+- **(a) Failover:** `plugins test claude implementer` (capsuite pass) →
+  ledger-marked codex `rate_limited` → `jobs prepare` resolved **claude**
+  (capsuite-gated fallback). `status`'s engines section explained why.
+- **(b) Dual review (medium):** `jobs review-plan` produced 2
+  engine-independent slots (agy, codex-review); the second slot launched via
+  `orchid-launch … --engine codex-review` (F5 closed for real); sha-bound
+  count gate held; disagreement arbitrated (approve — request-changes
+  carried zero findings ≥ blocking_severity); transactional merge landed.
+  Bonus: verify caught a genuine bug in the hand-written candidate first.
+- **(c) Pump + headless tick:** stale lease → `orchid-pump` → REAL
+  `claude -p` tick. After F8's fix the tick ran the full COMPLETION
+  procedure autonomously: reconcile → status → `run advance accepting` →
+  wrote acceptance evidence → `run accept` → `run_status: complete`, all
+  epoch-fenced (1→2→3) and journaled. The autonomy loop is real.
+- **(d) Greenfield:** `doctor --greenfield` + `init --greenfield` (root
+  commit on unborn HEAD) → scaffold T001 (`scaffold: true`, structural
+  verification_commands) implemented by REAL codex → verify → real agy
+  approve → merge → `run accept` → complete.
+- **(e) Review archetype:** R001 over the merged range: pending→reviewing
+  (real agy approve with reason) → arbitrating → done; `orchid merge R001`
+  refused (`outcome=report`), exactly as specified.
+
+### F6 (adapter bug, HIGH — FIXED this branch) — agy headless replies die on tool use
+Real `agy -p` review produced EMPTY stdout (rc 0): the model reached for a
+command tool, headless print-mode auto-denied it, and agy emitted nothing →
+adapter wrote `malformed` with zero diagnostics (job log empty — the
+adapter swallowed stdout). The v0-era assumption ("print-mode auto-denial
+is harmless for inline review") no longer holds when the model votes to use
+a tool. Fix (commit `agy adapter forbids tool use…`): prompt now forbids
+tools/commands ("judge from the diff text alone"), malformed replies dump
+the raw reply into the job log, and the REASON line is captured into the
+envelope summary. Re-launch after the fix: `ok approve` with rationale.
+
+### F7 (UX trap, ledgered m3) — split-brain checkout after init
+`orchid init` restores the user's branch; durable `.orchid/` lives only on
+the integration branch. Task verbs happily build UNTRACKED state on the
+wrong checkout (everything "works"), then the pump reads the absent
+roadmap as "run complete" and refuses to tick. Operator rule (now
+followed here): after init, work from the integration branch or a worktree
+of it. m3: doctor/status should detect the split-brain checkout
+(tasks/ present, roadmap absent) and say so; pump message should
+distinguish "no roadmap in this checkout" from "run complete".
+
+### F8 (adapter bug, HIGH — FIXED this branch) — claude tick couldn't run verbs
+First real tick: `claude -p --permission-mode acceptEdits` authorizes file
+edits, NOT Bash — claude explained which permissions it lacked and exited 0
+(envelope ok, actions=0, nothing executed). Also bare `orchid` verbs are
+not on PATH in dev checkouts. Fix (commit `claude tick allowlists Bash…`):
+orchestrate branch passes `--allowedTools Bash` and the instruction block
+mandates the absolute `$ORCHID_ROOT/bin/orchid` path. Second real tick
+completed the run autonomously (see (c)).
+
+### F9 (pre-existing since v0, cosmetic, ledgered m3) — fm_set duplicate keys
+`fm_set` on a key whose template line has an empty value (`worktree:` — no
+trailing space) APPENDS a new `key: value` line after `updated:` instead of
+replacing, leaving both. Every reader matches `key: ` (with space/value) so
+behavior is consistent; the file is just ugly and a first-match reader
+would break. m3: fm_set should replace empty-valued keys in place.
+
+### Smaller notes (m3 ledger)
+- Tick envelopes report `actions=0` even when verbs ran — the model narrates
+  instead of printing `ORCHID-ACTION:` lines; journal (kernel-derived) is
+  the real audit trail, but the marker discipline needs reinforcement.
+- The reviewing→arbitrating count gate counts a `malformed` envelope toward
+  N (sha-bound but status-blind); arbitration handles it, still m3 should
+  count only `status: ok` envelopes.
+- Journal actor for headless-tick verbs reads `operator eN`; should derive
+  the engine/role identity for tick sessions.
+- codex-review's single-line verdict contract drops its reasoning (empty
+  summary/findings on request-changes) — capture a reason like agy now does.
+- The tick, sandbox-denied from /tmp, wrote its acceptance evidence to the
+  repo root (untracked) — harmless, but a kernel-designated scratch path
+  for tick-authored evidence files would be tidier.
+
+### Verdict
+Every m2 deliverable held up against real engines; the two HIGH findings
+were both in tier-3 adapters (the deterministic kernel needed zero fixes),
+were caught by exactly the layers built for it (malformed envelope, ledger,
+epoch fencing), and were fixed and re-proven live. **v1-m2 autonomy is
+real: a pump-launched, headless claude tick drove a run to
+`run_status: complete` unattended.**
