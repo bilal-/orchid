@@ -176,6 +176,125 @@ _plugins_lock_records() {
   done
 }
 
+# -- Plugin lifecycle: install/update/remove/audit (v1-m3 Task 9) -----------
+# install/update/remove mutate ONLY $HOME/.orchid/plugins -- machine-local
+# state, never repo-durable state -- so unlike `lock`/task/journal/etc. none
+# of the three takes the repo verb-lock (lib/common.sh's verb_lock_guard):
+# there is no repo transaction here to protect, and a single-operator v1
+# workstation has no concurrent-writer story for its own $HOME either. Each
+# mutation is instead made atomic on its own terms: install/update build the
+# new plugin dir fully (including .provenance) in a temp location before
+# ever touching the real destination, and remove is a single rm -rf.
+
+# _plugins_find_installed <name> -- the ONE dir under $HOME/.orchid/plugins
+# whose basename is <name> and which has a plugin.conf, or nonzero if none.
+# Scoped to $HOME/.orchid/plugins specifically (not the full discovery
+# search path) because update/remove only ever operate on plugins THIS
+# lifecycle installed -- a builtin or an $ORCHID_PLUGIN_PATH entry was never
+# put there by `install` and has no `update`/`remove` story.
+_plugins_find_installed() {
+  local name="$1" kdir
+  for kdir in "$HOME/.orchid/plugins"/*/; do
+    [ -d "$kdir" ] || continue
+    [ -f "${kdir}${name}/plugin.conf" ] || continue
+    echo "${kdir}${name}"
+    return 0
+  done
+  return 1
+}
+
+# _plugins_provenance_get <dir> <key> -- reads one `.provenance` key=value
+# line. PARSED, NEVER SOURCED (reuses _cfg_file_get, lib/common.sh) -- a
+# plugin dir is attacker-adjacent content, same reasoning as orchid.config/
+# plugin.conf.
+_plugins_provenance_get() { _cfg_file_get "$1/.provenance" "$2"; }
+
+# _plugins_git_ref <dir> -- `git rev-parse HEAD` if <dir> is a git working
+# copy, else the literal `-` placeholder (brief: `ref=<git rev-parse HEAD ||
+# ->`). Used uniformly for both a git-URL install/update (the temp clone
+# always has a HEAD) and a local-dir one (the source directory may or may
+# not itself happen to be a git checkout).
+_plugins_git_ref() {
+  git -C "$1" rev-parse HEAD 2>/dev/null || echo -
+}
+
+# _plugins_fetch_src <src> -- resolves <src> into a ready-to-copy source
+# directory: a local directory is used (canonicalized) directly; anything
+# else is treated as a git URL and `git clone --depth 1`'d into a fresh
+# mktemp -d -- THE ONLY network use anywhere in this tier-1 verb dispatcher
+# (kernel.md: tier-1 verbs "never block on the network"; this is the one
+# explicit, documented exception, confined to install/update). Sets three
+# globals rather than printing+capturing (a `$(...)` capture would swallow
+# this function's own `orchid_die` exit, silently continuing the script on
+# a failed clone): `_fetch_dir` (the resolved source dir), `_fetch_prov_source`
+# (the value to record in `.provenance`'s `source=` -- the canonical local
+# path, or the URL verbatim), `_fetch_cleanup` (a temp dir the CALLER must
+# rm -rf when done, empty string if nothing was cloned).
+_plugins_fetch_src() {
+  local src="$1" tmp
+  if [ -d "$src" ]; then
+    _fetch_dir="$(cd "$src" && pwd -P)"
+    _fetch_prov_source="$_fetch_dir"
+    _fetch_cleanup=""
+  else
+    tmp="$(mktemp -d)"
+    if ! git clone --depth 1 "$src" "$tmp" >/dev/null 2>&1; then
+      rm -rf "$tmp"
+      orchid_die "git clone failed for '$src'"
+    fi
+    _fetch_dir="$tmp"
+    _fetch_prov_source="$src"
+    _fetch_cleanup="$tmp"
+  fi
+}
+
+# _plugins_provenance_sig <source> <ref> -- a hash binding the EXACT
+# `source=`/`ref=` lines `_plugins_write_provenance` writes, so a later
+# hand-edit of either is detectable WITHOUT covering the whole
+# `.provenance` file (which would reintroduce the self-reference
+# `plugin_digest_content` is built to avoid -- see its header comment).
+# Reuses `_orchid_stream_sha256` (lib/common.sh), the same primitive
+# `plugin_digest`/`plugin_digest_content` roll their per-entry hashes up
+# with.
+_plugins_provenance_sig() {
+  printf 'source=%s\nref=%s\n' "$1" "$2" | _orchid_stream_sha256
+}
+
+# _plugins_provenance_valid <dir> -- exit 0 iff <dir>/.provenance's
+# source=/ref= lines still match their recorded sig= line, OR there is no
+# sig= on record to check against at all (nothing to contradict -- a
+# `.provenance` predating this signature, if one ever existed, is not
+# itself proof of tampering). Nonzero iff a sig= IS on record and no
+# longer matches what source=/ref= currently say: someone hand-edited one
+# or both after install/update wrote them (review finding: source=/ref=
+# were otherwise invisible to audit, since the content digest deliberately
+# excludes .provenance -- a poisoned source= would sit silently live until
+# the next `update` fetched from it).
+_plugins_provenance_valid() {
+  local dir="$1" source ref sig expect
+  sig="$(_plugins_provenance_get "$dir" sig)"
+  [ -n "$sig" ] || return 0
+  source="$(_plugins_provenance_get "$dir" source)"
+  ref="$(_plugins_provenance_get "$dir" ref)"
+  expect="$(_plugins_provenance_sig "$source" "$ref")"
+  [ "$sig" = "$expect" ]
+}
+
+# _plugins_write_provenance <dest> <source> <ref> -- writes `.provenance`
+# (source=/ref=/sig= first -- sig= binds the two lines above it, see
+# _plugins_provenance_sig), THEN computes `installed_digest` over <dest>'s
+# CONTENT (plugin_digest_content, lib/common.sh -- excludes .provenance
+# itself, see that function's header comment for why this ordering can
+# never be self-referential), THEN appends the installed_digest line.
+# Shared by install and update so the two can never disagree on the format.
+_plugins_write_provenance() {
+  local dest="$1" source="$2" ref="$3" digest sig
+  sig="$(_plugins_provenance_sig "$source" "$ref")"
+  { printf 'source=%s\n' "$source"; printf 'ref=%s\n' "$ref"; printf 'sig=%s\n' "$sig"; } > "$dest/.provenance"
+  digest="$(plugin_digest_content "$dest")" || orchid_die "failed to compute digest for $dest"
+  printf 'installed_digest=%s\n' "$digest" >> "$dest/.provenance"
+}
+
 case "$sub" in
   list)
     entries="$(_plugins_discover)"
@@ -337,5 +456,292 @@ $validate_out"
     fi
     echo "clean: current plugin bindings match $lockfile"
     ;;
-  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|lock|verify-lock" ;;
+  install)
+    # install <src> [--kind <k>] -- see the helpers above for the fetch/
+    # provenance machinery. <src> is a local dir or a git URL; --kind is an
+    # optional sanity guard (refuse if the manifest's OWN kind= disagrees
+    # with what the operator expected), never a way to override the
+    # manifest's declared kind -- kind and name are always DERIVED from the
+    # manifest (kind=, and the name-part of id=publisher/name), the same
+    # convention every built-in and discovered plugin dir already follows
+    # (docs/specs/plugins.md; e.g. plugins/engines/claude/plugin.conf's
+    # id=orchid/claude lives in a dir literally named "claude").
+    src=""; want_kind=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --kind)
+          [ $# -ge 2 ] || orchid_die "usage: orchid plugins install <src> [--kind <k>]"
+          want_kind="$2"; shift 2 ;;
+        -*) orchid_die "usage: orchid plugins install <src> [--kind <k>]" ;;
+        *)
+          [ -z "$src" ] || orchid_die "usage: orchid plugins install <src> [--kind <k>]"
+          src="$1"; shift ;;
+      esac
+    done
+    [ -n "$src" ] || orchid_die "usage: orchid plugins install <src> [--kind <k>]"
+
+    _plugins_fetch_src "$src"
+    srcdir="$_fetch_dir"; prov_source="$_fetch_prov_source"; cleanup="$_fetch_cleanup"
+    ref="$(_plugins_git_ref "$srcdir")"
+
+    if ! manifest_validate "$srcdir"; then
+      [ -z "$cleanup" ] || rm -rf "$cleanup"
+      exit 13
+    fi
+
+    kind="$(manifest_get "$srcdir" kind)"
+    id="$(manifest_get "$srcdir" id)"
+    name="${id#*/}"
+
+    if [ -n "$want_kind" ] && [ "$want_kind" != "$kind" ]; then
+      [ -z "$cleanup" ] || rm -rf "$cleanup"
+      orchid_die "install: manifest declares kind '$kind', which does not match --kind $want_kind"
+    fi
+
+    dest="$HOME/.orchid/plugins/${kind}s/$name"
+    if [ -e "$dest" ]; then
+      [ -z "$cleanup" ] || rm -rf "$cleanup"
+      orchid_die "install: $dest already exists -- run 'orchid plugins update $name' instead"
+    fi
+
+    # INV-10: refuse a collision against the WHOLE discovery search path,
+    # not just this destination -- installing a second copy of an id
+    # already served from a builtin/path/repo root would be exactly the
+    # silent-shadow risk INV-10 exists to prevent, even though the
+    # destination itself is still free.
+    entries="$(_plugins_discover)"
+    collisions="$(printf '%s\n' "$entries" | awk -F'\t' -v id="$id" '$1==id && $5!~/^DISABLED/{print $6}')"
+    if [ -n "$collisions" ]; then
+      [ -z "$cleanup" ] || rm -rf "$cleanup"
+      orchid_die "install: id '$id' collides with an existing discovered plugin (INV-10) at: $(printf '%s' "$collisions" | paste -sd', ' -)"
+    fi
+
+    mkdir -p "$(dirname "$dest")"
+    cp -R "$srcdir" "$dest"
+    # $dest doesn't pre-exist at this point (checked above) -- so from here
+    # until .provenance is fully written, ANY failure (e.g. a digest
+    # computation error inside _plugins_write_provenance) must not leave a
+    # half-installed plugin dir on disk. Cleared right before this arm's
+    # normal successful completion, below.
+    trap 'rm -rf "$dest"' EXIT
+    rm -rf "$dest/.git"   # VCS metadata from a git-URL clone is noise in an installed plugin dir, never part of its content
+    [ -z "$cleanup" ] || rm -rf "$cleanup"
+
+    _plugins_write_provenance "$dest" "$prov_source" "$ref"
+    trap - EXIT
+
+    echo "installed: $id ($kind) -> $dest"
+    echo "next steps:"
+    echo "  orchid plugins test $name <role>"
+    echo "  orchid plugins lock   (if you're inside a repo that pins plugin versions)"
+    ;;
+  update)
+    # update <name> -- re-fetches from the recorded `.provenance` source,
+    # re-validates, and swaps the installed dir atomically (temp-build +
+    # mv, never an in-place overwrite -- see the swap comment below).
+    name="${1:-}"; [ -n "$name" ] || orchid_die "usage: orchid plugins update <name>"
+    dest="$(_plugins_find_installed "$name")" \
+      || orchid_die "update: no installed plugin named '$name' under \$HOME/.orchid/plugins"
+    [ -f "$dest/.provenance" ] \
+      || orchid_die "update: $dest has no .provenance on record -- was it installed with 'orchid plugins install'?"
+
+    # Refuse to fetch from a hand-tampered provenance (review finding: a
+    # poisoned source=/ref= would otherwise be silently followed the next
+    # time anyone ran update) -- same exit code (13) as an invalid manifest,
+    # since this is the same "refuse to act on something the kernel can no
+    # longer vouch for" class of fail-closed rejection.
+    if ! _plugins_provenance_valid "$dest"; then
+      echo "orchid: update: $dest/.provenance has been tampered with (source=/ref= no longer match its recorded sig=) -- reinstall instead" >&2
+      exit 13
+    fi
+
+    source="$(_plugins_provenance_get "$dest" source)"
+    [ -n "$source" ] || orchid_die "update: $dest/.provenance has no 'source' recorded"
+
+    # A recorded source that LOOKS like a local path (install always stores
+    # an absolute, canonicalized path for a local-dir source) but no longer
+    # exists is a vanished local source -- refused with a specific message
+    # rather than letting _plugins_fetch_src fall through to a confusing
+    # "git clone failed for '/some/path'" error.
+    if [ ! -d "$source" ]; then
+      case "$source" in
+        /*) orchid_die "update: local source '$source' for '$name' no longer exists -- reinstall from a new location instead" ;;
+      esac
+    fi
+
+    _plugins_fetch_src "$source"
+    newsrc="$_fetch_dir"; prov_source="$_fetch_prov_source"; cleanup="$_fetch_cleanup"
+    ref="$(_plugins_git_ref "$newsrc")"
+
+    if ! manifest_validate "$newsrc"; then
+      [ -z "$cleanup" ] || rm -rf "$cleanup"
+      exit 13
+    fi
+
+    newid="$(manifest_get "$newsrc" id)"; newname="${newid#*/}"
+    if [ "$newname" != "$name" ]; then
+      [ -z "$cleanup" ] || rm -rf "$cleanup"
+      orchid_die "update: source for '$name' now declares id '$newid' (name '$newname') -- refusing a silent rename"
+    fi
+
+    oldver="$(manifest_get "$dest" version)"
+    oldinstalled="$(_plugins_provenance_get "$dest" installed_digest)"
+
+    tmpbuild="$(mktemp -d "${dest}.build.XXXXXX")"
+    rm -rf "$tmpbuild"   # mktemp -d creates the dir itself; cp -R below needs to CREATE this path fresh
+    # From here until the swap begins, any failure (e.g. a digest
+    # computation error inside _plugins_write_provenance) must not leave a
+    # half-populated temp build dir on disk. Cleared right before the swap
+    # starts -- past that point a leftover tmpbuild is no longer "partial",
+    # the swap's own (separately documented) residual risk window takes
+    # over instead.
+    trap 'rm -rf "$tmpbuild"' EXIT
+    cp -R "$newsrc" "$tmpbuild"
+    rm -rf "$tmpbuild/.git"
+    [ -z "$cleanup" ] || rm -rf "$cleanup"
+
+    _plugins_write_provenance "$tmpbuild" "$prov_source" "$ref"
+    newver="$(manifest_get "$tmpbuild" version)"
+    newinstalled="$(_plugins_provenance_get "$tmpbuild" installed_digest)"
+    trap - EXIT
+
+    # Atomic-ish swap (brief: "rsync-less: build in temp, mv swap") -- two
+    # same-filesystem `mv`s, each an atomic rename, rather than an in-place
+    # overwrite: a crash mid-update never leaves a half-written plugin dir.
+    # The tiny window between the two mv's (old already moved aside, new
+    # not yet in place) is the same residual window any mv-based directory
+    # swap has without a lower-level atomic exchange -- acceptable for a
+    # HOME-scoped, single-operator v1 mutation (see the header comment on
+    # why this whole lifecycle skips the repo verb-lock).
+    olddir="${dest}.orchid-old.$$"
+    mv "$dest" "$olddir"
+    mv "$tmpbuild" "$dest"
+    rm -rf "$olddir"
+
+    echo "updated: $name $oldver -> $newver ($dest)"
+
+    # Stale-capsuite note: capsuite results are digest-marked (lib/
+    # capsuite.sh's tested_at_marker), so a changed plugin dir automatically
+    # invalidates any prior PASS the NEXT time it's consulted (capsuite_passed
+    # will simply stop matching) -- this just tells the operator that
+    # already happened, rather than re-running anything itself. Only printed
+    # when the recorded installed_digest actually changed -- a re-fetch that
+    # happens to land on byte-identical content (e.g. re-cloning the same
+    # commit) invalidates nothing, so nothing is stale.
+    if [ "$oldinstalled" != "$newinstalled" ]; then
+      for rf in "$HOME/.orchid/capsuite/${name}--"*.json; do
+        [ -f "$rf" ] || continue
+        crole="$(basename "$rf" .json)"; crole="${crole#*--}"
+        echo "note: capsuite result for $name/$crole is now stale (plugin content changed) -- re-run: orchid plugins test $name $crole"
+      done
+    fi
+    ;;
+  remove)
+    # remove <name> -- deletes the installed plugin dir outright. Checking
+    # every repo's lockfile for a reference is out of scope (there is no
+    # registry of "every repo that might reference this plugin" anywhere in
+    # this codebase, v1-m3 plan's own words: "best-effort: skip registry"),
+    # so this just prints the generic reminder unconditionally.
+    name="${1:-}"; [ -n "$name" ] || orchid_die "usage: orchid plugins remove <name>"
+    dest="$(_plugins_find_installed "$name")" \
+      || orchid_die "remove: no installed plugin named '$name' under \$HOME/.orchid/plugins"
+    rm -rf "$dest"
+    echo "removed: $name ($dest)"
+    echo "note: if any repo's .orchid/plugins.lock referenced '$name', re-run 'orchid plugins lock' there to refresh it"
+    ;;
+  audit)
+    # audit [<name>|--all] -- report-only over the discovery search path
+    # (the SAME set `list`/`validate --all` walk), one block per plugin.
+    # Exit nonzero iff any audited plugin fails manifest_validate; every
+    # other observation below (modified-since-install, stale capsuite,
+    # lockfile references) is advisory, never gates the exit code.
+    target="${1:---all}"
+    entries="$(_plugins_discover)"
+    fails=0; matched=0
+    while IFS=$'\t' read -r id kind ver origin trust dir; do
+      [ -n "$id" ] || continue
+      if [ "$target" != --all ]; then
+        base="${dir##*/}"
+        { [ "$id" = "$target" ] || [ "$base" = "$target" ]; } || continue
+      fi
+      matched=1
+
+      echo "=== $id ==="
+      echo "kind: $kind"
+      echo "version: $ver"
+      echo "origin: $origin"
+      [ "$origin" != repo ] || echo "trust: $trust"
+
+      if [ -f "$dir/.provenance" ]; then
+        psrc="$(_plugins_provenance_get "$dir" source)"
+        pref="$(_plugins_provenance_get "$dir" ref)"
+        pdig="$(_plugins_provenance_get "$dir" installed_digest)"
+        if _plugins_provenance_valid "$dir"; then
+          echo "provenance: source=$psrc ref=$pref"
+        else
+          # sig= is on record and no longer matches source=/ref= -- someone
+          # hand-edited the file after install/update wrote it. Report-only
+          # (like every other audit finding), but loud: this is exactly the
+          # "poisoned source= silently live" gap the sig= exists to close.
+          echo "provenance: TAMPERED (source/ref lines do not match sig) source=$psrc ref=$pref"
+        fi
+        if [ -n "$pdig" ]; then
+          curdig="$(plugin_digest_content "$dir" 2>/dev/null)" || curdig=""
+          if [ -n "$curdig" ] && [ "$curdig" = "$pdig" ]; then
+            echo "digest: unchanged"
+          else
+            echo "digest: modified since install"
+          fi
+        else
+          echo "digest: no installed_digest on record"
+        fi
+      else
+        echo "provenance: local"
+      fi
+
+      # Capsuite results on record, keyed off this dir's own basename -- the
+      # SAME short identifier `orchid plugins test <name> <role>` and lib/
+      # capsuite.sh's result-file naming both use (built-ins' basename
+      # already equals their id's name-part; installed/custom plugins are
+      # laid out the same way by convention, see install above). Fresh iff
+      # the recorded tested_at_marker still matches the FULL plugin_digest
+      # (the same comparison capsuite_passed itself makes) -- NOT
+      # plugin_digest_content, which is install/update's own narrower
+      # digest excluding .provenance.
+      short="${dir##*/}"; any_cs=0
+      for rf in "$HOME/.orchid/capsuite/${short}--"*.json; do
+        [ -f "$rf" ] || continue
+        any_cs=1
+        crole="$(basename "$rf" .json)"; crole="${crole#*--}"
+        cpassed="$(jq -r '.passed' "$rf" 2>/dev/null)"
+        marker="$(jq -r '.tested_at_marker // ""' "$rf" 2>/dev/null)"
+        curfull="$(plugin_digest "$dir" 2>/dev/null)" || curfull=""
+        freshness=stale
+        [ -z "$marker" ] || [ "$marker" != "$curfull" ] || freshness=fresh
+        echo "capsuite: $crole passed=$cpassed ($freshness)"
+      done
+      [ "$any_cs" -eq 1 ] || echo "capsuite: none on record"
+
+      # Lockfile references in the CURRENT repo, only when one exists.
+      lockfile="$(orchid_state "$repo")/plugins.lock"
+      if [ -f "$lockfile" ] && jq -e --arg id "$id" '.[] | select(.id==$id)' "$lockfile" >/dev/null 2>&1; then
+        echo "lockfile: referenced in $lockfile"
+      fi
+
+      if valout="$(manifest_validate "$dir" 2>&1)"; then
+        echo "validate: OK"
+      else
+        echo "validate: INVALID"
+        echo "$valout" | sed 's/^/  /'
+        fails=$((fails+1))
+      fi
+      echo
+    done <<< "$entries"
+
+    if [ "$target" != --all ] && [ "$matched" -eq 0 ]; then
+      orchid_die "audit: no such plugin: $target"
+    fi
+    [ "$fails" -eq 0 ] || exit 13
+    ;;
+  *) orchid_die "usage: orchid plugins list|validate [<id>|--all]|trust [--update] <dir>|untrust <dir>|test <engine-id> <role>|--all-defaults|lock|verify-lock|install <src> [--kind <k>]|update <name>|remove <name>|audit [<name>|--all]" ;;
 esac

@@ -404,6 +404,53 @@ plugin_digest() {
   done | _orchid_stream_sha256
 }
 
+# plugin_digest_content <dir> -- like plugin_digest above, but (a) EXCLUDES
+# this dir's own lifecycle metadata files (`.provenance`, and
+# `.installed-digest` should one ever exist) from the digest walk, and (b)
+# is PATH-INDEPENDENT: it `cd`s into the canonical dir and hashes over
+# RELATIVE (`./...`) paths, never the absolute one. v1-m3 Task 9 (plugin
+# install/update/remove/audit):
+#
+#   (a) `orchid plugins install` writes `.provenance` INTO the freshly-
+#   copied plugin dir and then wants to record, inside that same file, a
+#   digest of the plugin's actual content -- computing the FULL
+#   plugin_digest after that write would be self-referential (the recorded
+#   digest would cover the very file it's being written into, and appending
+#   the `installed_digest=` line would immediately invalidate the digest
+#   just recorded). Excluding the metadata file(s) entirely sidesteps the
+#   self-reference: this function's result is stable regardless of whether
+#   `.provenance` exists yet or what it contains.
+#
+#   (b) `orchid plugins update` builds a replacement in a TEMP dir
+#   (`<dest>.build.XXXXXX`) and computes/records installed_digest there,
+#   BEFORE the atomic `mv` swap into the real `<dest>`. plugin_digest (and
+#   an earlier, buggy version of this function) bakes the ABSOLUTE path
+#   into every hashed line (`shasum -a 256 <path>` includes <path> in its
+#   output, which is what actually gets hashed) -- so a digest computed
+#   over the temp build dir's path could never again match one computed
+#   over the final dest path, even with byte-identical content, and every
+#   `update` would then make `audit` report "modified since install"
+#   FOREVER (found in review). `cd`-ing into the dir first and walking `.`
+#   makes every hashed line read `./relative/path`, identical regardless of
+#   which absolute directory the plugin happens to be sitting in at hash
+#   time -- so "write installed_digest against the temp build dir" and
+#   "recompute later against the swapped-in final dir" are now provably
+#   the same digest whenever content is unchanged.
+#
+# Trust-store digests (INV-09, `plugins trust`) and capsuite markers (lib/
+# capsuite.sh's tested_at_marker) deliberately keep using the FULL, absolute-
+# path plugin_digest, UNCHANGED from v1-m1/m2 -- that is the recorded m2
+# design (a trust pin / capsuite result is tied to the exact path it was
+# taken against) and out of scope for this fix.
+plugin_digest_content() {
+  local dir; dir="$(_trust_canon_path "$1")" || return 1
+  [ -d "$dir" ] || return 1
+  ( cd "$dir" && find . \( -type f -o -type l \) \
+      ! -name '.provenance' ! -name '.installed-digest' | LC_ALL=C sort | while IFS= read -r f; do
+    if [ -L "$f" ]; then _orchid_symlink_sha256 "$f"; else _orchid_file_sha256 "$f"; fi
+  done ) | _orchid_stream_sha256
+}
+
 _orchid_trust_dir()  { echo "$HOME/.orchid"; }
 _orchid_trust_file() { echo "$(_orchid_trust_dir)/trust"; }
 
