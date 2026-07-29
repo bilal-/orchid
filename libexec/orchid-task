@@ -73,11 +73,22 @@ case "$sub" in
     # is a v1-m2 comma-separated failover chain (e.g. "codex,claude") --
     # seeding the template with the raw config value would land a comma
     # chain verbatim in frontmatter, which no consumer of `engine:` expects.
+    #
+    # v1-m3 Task 8: per-archetype template lookup. `templates/task-<arch>.md`
+    # when present (refactor/test/migrate each pre-set their own risk_tier/
+    # blocking_severity/exclusive defaults and body lens text in frontmatter
+    # -- plain sed substitution, so these create-time defaults are never
+    # routed through `task set risk_tier`'s monotonic/--reason guard, which
+    # only fires on POST-create changes to an existing task file), else the
+    # generic `templates/task.md` fallback (unchanged content/behavior for
+    # feature/review and any other archetype without its own template).
+    tmpl="$ORCHID_ROOT/templates/task-$arch.md"
+    [ -f "$tmpl" ] || tmpl="$ORCHID_ROOT/templates/task.md"
     sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
         -e "s|__ARCHETYPE__|$arch|g" \
         -e "s|__ENGINE__|$(resolve_role "$repo" implementer)|g" \
         -e "s|__DATE__|$(now)|g" \
-      "$ORCHID_ROOT/templates/task.md" | atomic_write "$(tf "$id")" ;;
+      "$tmpl" | atomic_write "$(tf "$id")" ;;
   show) cat "$(tf "$1")" ;;
   list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
         printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
