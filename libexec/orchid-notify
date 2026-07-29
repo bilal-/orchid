@@ -5,6 +5,7 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runti
 
 # `orchid notify` is a plain mutating verb (INV-02): it writes durable
 # BLOCKERS.md, so it is epoch-fenced like every other durable-writing verb.
+verb_lock_guard "$repo"
 epoch_require "$repo"
 
 task=""

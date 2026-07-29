@@ -18,7 +18,10 @@ req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
 operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
 input_pack="$(jq -r .input_pack "$req")"; output="$(jq -r .output "$req")"
-base_sha="$(jq -r .base_sha "$req")";     candidate_sha="$(jq -r .candidate_sha "$req")"
+# `// ""` (rather than a bare `.base_sha`): the `orchestrate` request
+# document (runners/orchid-tick) carries neither field -- a missing key
+# would otherwise stringify to the literal text "null" here.
+base_sha="$(jq -r '.base_sha // ""' "$req")"; candidate_sha="$(jq -r '.candidate_sha // ""' "$req")"
 
 write_envelope() {  # status extra-json
   local extra="${2:-}"; [ -n "$extra" ] || extra='{}'
@@ -38,7 +41,7 @@ classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
 
 # Operation gate precedes DRYRUN: an unsupported operation fails the same way
 # whether or not ORCHID_DRYRUN is set (no dryrun short-circuit for unknowns).
-case "$operation" in implement|review|critique) ;;
+case "$operation" in implement|review|critique|orchestrate) ;;
   *)
     echo "orchid/claude: unsupported operation '$operation'" >&2
     write_envelope failed '{}'
@@ -49,11 +52,71 @@ if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
   case "$operation" in
     implement)       write_envelope ok '{"summary":"dryrun"}' ;;
     review|critique) write_envelope ok '{"verdict":"approve","scope_complete":true,"findings":[]}' ;;
+    orchestrate)     write_envelope ok '{"actions":[],"summary":"dryrun"}' ;;
   esac
   exit 0
 fi
 
 err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
+
+# orchestrate: runners/orchid-tick's headless-tick operation. The prompt is
+# PROTOCOL.md's full text (the same tick procedure a human/skill front-end
+# already executes, per its own preamble) plus a fixed instruction block
+# naming the concrete repo/binary paths this exact process resolved --
+# `$worktree` (== the request's ORCHID_REPO) and `$ORCHID_ROOT` (this
+# adapter's own self-resolved root, computed above from `$0`, independent of
+# whatever the stripped child environment does or doesn't carry). Every
+# verb invocation the CLI makes is expected to echo a matching
+# `ORCHID-ACTION: <command>` line, which this adapter greps back out of the
+# transcript into the envelope's `actions[]` -- an empty array (CLI made no
+# verb calls this tick) is still `ok` as long as the CLI itself exited 0.
+#
+# Headless flags: `--permission-mode acceptEdits --allowedTools Bash`. F8
+# (dogfood): a real pump-driven tick ran and executed ZERO verbs -- claude
+# exited 0 having politely explained it lacked permission to run Bash.
+# acceptEdits alone authorizes FILE EDITS only; it does not allowlist the
+# Bash tool. The orchestrator role's entire job is running `orchid` verbs,
+# and every one of them goes through Bash (there is no other way to invoke
+# a verb), so this tick explicitly allowlists Bash. This does not widen the
+# autonomy boundary: scope containment is unchanged -- it is still the
+# kernel launcher's env allowlist + private output path plus this
+# instruction block's rules, the same "orchestrator repo+.orchid/ scope"
+# trust posture docs/specs/kernel.md's Execution policy section already
+# states for this role. See tests/probes/probe-claude-tick.sh for the real
+# round-trip that confirms Bash actually executes verbs under this flag.
+if [ "$operation" = orchestrate ]; then
+  protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"
+  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. The \`orchid\` CLI may NOT be on PATH (dev checkouts where install.sh hasn't run) -- every verb invocation you make MUST use the absolute binary $ORCHID_ROOT/bin/orchid (never bare \`orchid\`), and launch engines only via the absolute launcher $ORCHID_ROOT/runners/orchid-launch -- never hand-edit anything under .orchid/. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>"
+  prompt="$protocol"$'\n\n'"$instructions"
+
+  set +e
+  stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p --permission-mode acceptEdits --allowedTools Bash 2>"$err_file")"
+  rc=$?; set -e
+  stderr="$(cat "$err_file")"
+
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$stderr" >&2
+    write_envelope "$(classify "$stdout"$'\n'"$stderr")" '{}'
+    exit 1
+  fi
+
+  # `|| true` (same idiom as the verdict_line grep below, in the review path):
+  # under `set -euo pipefail`, a `grep` with zero matches (no ORCHID-ACTION
+  # lines this tick -- a legitimate, still-`ok` outcome per this branch's own
+  # header comment) exits 1, and pipefail promotes that to the WHOLE
+  # pipeline's status even though sed/jq downstream both exit 0 -- without
+  # this guard, `set -e` would abort the script right here, before any
+  # envelope is ever written, and orchid-tick would misread a healthy CLI
+  # exit as a crashed engine. `jq -R -s -c` on empty stdin still yields `[]`
+  # after the length>0 filter, so the actions array comes out correctly
+  # empty either way.
+  actions_json="$(printf '%s\n' "$stdout" | grep '^ORCHID-ACTION: ' | sed 's/^ORCHID-ACTION: //' \
+    | jq -R -s -c 'split("\n") | map(select(length > 0))' || true)"
+  last_line="$(printf '%s\n' "$stdout" | awk 'NF{l=$0} END{print l}')"
+  summary="${last_line:0:200}"; [ -n "$summary" ] || summary="tick complete"
+  write_envelope ok "$(jq -n --argjson a "$actions_json" --arg s "$summary" '{actions:$a, summary:$s}')"
+  exit 0
+fi
 
 if [ "$operation" = implement ]; then
   prompt=""

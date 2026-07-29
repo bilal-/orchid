@@ -2,6 +2,13 @@
 source "$(dirname "$0")/../helpers.sh"
 cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+# v1-m2 Task 5: this fixture runs T001..T006 through several overlapping
+# lifecycle walks in the SAME repo (several sit in an active status —
+# reviewing/testing/arbitrating — at once by design, unrelated to
+# concurrency itself); raise the cap well above the v1 default (2) so the
+# new dispatch gate never interferes with this file's INV-11 evidence
+# assertions.
+printf 'concurrency=10\n' > orchid.config
 export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 
 # INV-11: evidence is the sole authority — the log must exist, must record
@@ -100,6 +107,7 @@ assert_eq reviewing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d'
 rc=0; "$ORCHID_BIN" verify T004 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "fixture: real verify PASS for T004"
 "$ORCHID_BIN" task advance T004 reviewing >/dev/null
+plant_reviewer_envelope T004
 "$ORCHID_BIN" task advance T004 arbitrating --reason "single reviewer approved" >/dev/null
 
 [ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before rework"
@@ -141,6 +149,7 @@ assert_eq reviewing "$("$ORCHID_BIN" task show T004 | grep '^status: ' | cut -d'
 integ=orchid/integration
 git -C "$WORK" branch "$integ" "$head_sha"
 
+plant_reviewer_envelope T004
 "$ORCHID_BIN" task advance T004 arbitrating --reason "single reviewer approved" >/dev/null
 
 # A command that passes on a NAMED branch checkout (here, $WORK's own
@@ -153,6 +162,7 @@ vcmd_merge='test "$(git rev-parse --abbrev-ref HEAD)" != HEAD'
 "$ORCHID_BIN" task advance T004 merging --reason "approved for merge" >/dev/null
 
 [ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before the merge attempt"
+
 
 rc=0; "$ORCHID_BIN" merge T004 >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "fixture: merge validation fails in its detached temp worktree"

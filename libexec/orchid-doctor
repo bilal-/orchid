@@ -1,9 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
-source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
+source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
+source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
+
+# --greenfield (v1-m2 Task 9): the ONLY flag. Skips exactly the two checks
+# that cannot hold pre-scaffold -- everything else below runs unchanged.
+greenfield=0
+while [ $# -gt 0 ]; do case "$1" in
+  --greenfield) greenfield=1; shift ;;
+  *) orchid_die "usage: orchid doctor [--greenfield]" ;;
+esac; done
 # Plugin discovery report -- printed BEFORE role checks (role resolution
 # depends on which plugins exist at all, so an operator should see the full
 # discovery picture, including any collision, before the per-role verdicts
@@ -40,14 +50,44 @@ perm_warnings="$(echo "$validate_out" | grep -E '^warn:.*permission .* requested
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
 command -v jq >/dev/null && ok jq || bad "jq missing"
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
-[ -n "$(config_get "$repo" verify)" ] && ok "verify command configured" || bad "verify command (set 'verify=' in orchid.config)"
+if [ "$greenfield" -eq 1 ]; then
+  echo "note: greenfield: verify command deferred to scaffold task"
+else
+  [ -n "$(config_get "$repo" verify)" ] && ok "verify command configured" || bad "verify command (set 'verify=' in orchid.config)"
+fi
 for role in orchestrator implementer reviewer arbiter plan_critic; do
-  eng="$(resolve_role "$repo" "$role")"
-  if exe="$(resolve_engine_exe "$eng" 2>/dev/null)"; then
+  # v1-m2: role.* is a failover chain, not a scalar. Only the PRIMARY (chain
+  # entry 1) gates the doctor exit code -- missing/unresolvable primary is
+  # still a FAIL, exactly as before. Every entry after it is a note: whether
+  # it has actually passed the capability suite (lib/capsuite.sh, m1) for
+  # this role, so an operator can see at a glance which fallbacks are really
+  # armed vs. merely configured.
+  chain="$(resolve_role_chain "$repo" "$role")"
+  idx=0; primary=""; primary_ok=1; line=""
+  while IFS= read -r eng; do
+    [ -n "$eng" ] || continue
+    idx=$((idx + 1))
+    if [ "$idx" -eq 1 ]; then
+      primary="$eng"
+      if exe="$(resolve_engine_exe "$eng" 2>/dev/null)"; then
+        line="$eng (primary: $exe)"
+      else
+        primary_ok=0
+      fi
+    else
+      if capsuite_passed "$eng" "$role"; then
+        state="capsuite passed"
+      else
+        state="capsuite UNVERIFIED — run orchid plugins test $eng $role"
+      fi
+      line="$line, $eng (fallback: $state)"
+    fi
+  done <<< "$chain"
+  if [ "$primary_ok" -eq 1 ]; then
     tag=""; [ "$(config_provenance "$repo" "role.$role")" != default ] && tag=" [unverified]"
-    ok "role $role -> $eng ($exe)$tag"
+    ok "role $role -> $line$tag"
   else
-    bad "role $role -> $eng: no engine plugin on search path (see docs/engines/$eng.md)"
+    bad "role $role -> $primary: no engine plugin on search path (see docs/engines/$primary.md)"
   fi
 done
 # Plugin lockfile drift (Task 7) -- only runs when a lock already exists
@@ -75,6 +115,10 @@ integ="$(config_get "$repo" integration_branch orchid/integration)"
 if git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 || \
    git -C "$repo" rev-parse --verify -q HEAD >/dev/null 2>&1; then
   ok "integration branch exists or creatable"
+elif [ "$greenfield" -eq 1 ]; then
+  # Unborn HEAD, no integration branch yet -- will be creatable once
+  # `orchid init --greenfield` lands its own root commit.
+  ok "integration branch exists or creatable (greenfield: root commit pending)"
 else
   bad "integration branch exists or creatable: no HEAD to branch from and $integ absent"
 fi

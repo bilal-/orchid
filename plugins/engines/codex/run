@@ -17,7 +17,10 @@ req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
 operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
 input_pack="$(jq -r .input_pack "$req")"; output="$(jq -r .output "$req")"
-base_sha="$(jq -r .base_sha "$req")";     candidate_sha="$(jq -r .candidate_sha "$req")"
+# `// ""` (rather than a bare `.base_sha`): the `orchestrate` request
+# document (runners/orchid-tick) carries neither field -- a missing key
+# would otherwise stringify to the literal text "null" here.
+base_sha="$(jq -r '.base_sha // ""' "$req")"; candidate_sha="$(jq -r '.candidate_sha // ""' "$req")"
 
 # Engine id is overridable so a reduced-capability wrapper (e.g. codex-review)
 # can stamp its OWN id in envelopes instead of borrowing this shared adapter's
@@ -65,7 +68,7 @@ fi
 # whether or not ORCHID_DRYRUN is set (no dryrun short-circuit for unknowns) —
 # mirrors agy/claude and removes the last producer of ok-without-operation-
 # payload envelopes (lib/envelope.sh no longer accepts those regardless).
-case "$operation" in implement|review|critique) ;;
+case "$operation" in implement|review|critique|orchestrate) ;;
   *)
     echo "orchid/codex: unsupported operation '$operation'" >&2
     write_envelope failed '{}'
@@ -76,11 +79,56 @@ if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
   case "$operation" in
     implement)       write_envelope ok '{"summary":"dryrun"}' ;;
     review|critique) write_envelope ok '{"verdict":"approve","scope_complete":true,"findings":[]}' ;;
+    orchestrate)     write_envelope ok '{"actions":[],"summary":"dryrun"}' ;;
   esac
   exit 0
 fi
 
 err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
+
+# orchestrate: runners/orchid-tick's headless-tick operation. Same prompt
+# shape as plugins/engines/claude/run's orchestrate branch (PROTOCOL.md's
+# full text + a fixed instruction block naming this process's own resolved
+# $worktree/$ORCHID_ROOT paths); see that adapter's comment for the full
+# rationale. codex's own conventions, unlike claude's: prompt piped via
+# stdin with `-` as the trailing prompt arg (task.md-shaped leading-dash
+# text would otherwise be read as a flag by codex's clap parser -- same F2
+# fix as the implement path above) and `--skip-git-repo-check` (an
+# orchestrate tick's worktree is the operator's own checkout, not a fresh
+# clone codex would otherwise refuse as untrusted).
+if [ "$operation" = orchestrate ]; then
+  protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"
+  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. Use only \`orchid\` verbs (the binary at $ORCHID_ROOT/bin/orchid) and $ORCHID_ROOT/runners/orchid-launch to launch engines -- never hand-edit anything under .orchid/. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>"
+  prompt="$protocol"$'\n\n'"$instructions"
+
+  set +e
+  stdout="$(cd "$worktree" && printf '%s' "$prompt" | codex exec --sandbox workspace-write -c approval_policy='"never"' --skip-git-repo-check - 2>"$err_file")"
+  rc=$?; set -e
+  stderr="$(cat "$err_file")"
+
+  if [ "$rc" -ne 0 ]; then
+    printf '%s\n' "$stderr" >&2
+    write_envelope "$(classify "$stdout"$'\n'"$stderr")" '{}'
+    exit 1
+  fi
+
+  # `|| true` (same idiom as the verdict_line grep below, in the review path):
+  # under `set -euo pipefail`, a `grep` with zero matches (no ORCHID-ACTION
+  # lines this tick -- a legitimate, still-`ok` outcome per this branch's own
+  # header comment) exits 1, and pipefail promotes that to the WHOLE
+  # pipeline's status even though sed/jq downstream both exit 0 -- without
+  # this guard, `set -e` would abort the script right here, before any
+  # envelope is ever written, and orchid-tick would misread a healthy CLI
+  # exit as a crashed engine. `jq -R -s -c` on empty stdin still yields `[]`
+  # after the length>0 filter, so the actions array comes out correctly
+  # empty either way.
+  actions_json="$(printf '%s\n' "$stdout" | grep '^ORCHID-ACTION: ' | sed 's/^ORCHID-ACTION: //' \
+    | jq -R -s -c 'split("\n") | map(select(length > 0))' || true)"
+  last_line="$(printf '%s\n' "$stdout" | awk 'NF{l=$0} END{print l}')"
+  summary="${last_line:0:200}"; [ -n "$summary" ] || summary="tick complete"
+  write_envelope ok "$(jq -n --argjson a "$actions_json" --arg s "$summary" '{actions:$a, summary:$s}')"
+  exit 0
+fi
 
 if [ "$operation" = implement ]; then
   prompt=""

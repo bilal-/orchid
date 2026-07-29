@@ -60,9 +60,35 @@
     verify-lock` verb set. Deferred to later milestones: a real
     filesystem-write capability probe (m1 ships dryrun-only) and hooks +
     custom-role registration (both v1-m3, per plugins.md's Hooks section).
-  - **v1-m2 (core autonomy):** pump + failover (now actually gateable on
-    m1's capability suite), concurrency 2 with the rebase/re-review rules,
-    risk-tiered dual review, greenfield mode, `review` archetype.
+  - **v1-m2 (core autonomy) — SHIPPED:** the engine availability ledger
+    (`runtime/engines.json`, `orchid jobs reconcile`-driven, `orchid
+    status`'s `== engines` section); failover-aware role resolution
+    (`role.*` comma preference chains, `resolve_role_available`'s
+    discovery→eligibility→ledger→capsuite gate, exit 14 on no survivor);
+    risk-tiered dual review (`review.<tier>` routing, `orchid jobs
+    review-plan`, per-slot `--engine` launches, the kernel's own
+    reviewing→arbitrating envelope-count gate); archetype-driven
+    transitions (`plugins/archetypes/*/plugin.conf`'s `transitions=`/
+    `outcome=`) and the shipped `review` archetype; concurrency 2 with
+    `lib/schedule.sh`'s dispatch predicates (`concurrency-cap`,
+    `exclusive-overlap`, `resource-conflict`, `waiting-deps`) and the
+    rebase/re-review rules; per-verb transactional locking
+    (`verb_lock_wait_s`) across the durable-mutating CLI verbs
+    (`task`/`run advance`+`accept`/`plan`/`requirements`/`jobs
+    prepare`+`reconcile`/`journal`/`notify`/`answer` — `merge`, `init`,
+    `verify`, and `plugins` deliberately excluded: `merge` keeps its
+    coarser run-lock discipline by design); the headless
+    tick (`runners/orchid-tick`, the `orchestrate` request/envelope
+    operation) and the LLM-free pump (`runners/orchid-pump`, lease-staleness
+    mutual exclusion); greenfield mode (`orchid init --greenfield`, `orchid
+    doctor --greenfield`, the scaffold-task convention) — all implemented
+    and tested, not merely specified. PROTOCOL.md's v1 rewrite (concurrency
+    preamble, risk-tiered review policy, HEADLESS OPERATION) and the
+    version bump to `1.0.0-m2` land in the same milestone. An in-branch
+    scratch-project dogfood exercises the shipped machinery before merge;
+    the grand proof is the Pathway to Peace greenfield app under webBooks —
+    post-m2, running once this branch lands, driven entirely by the
+    autonomy this milestone built.
   - **v1-m3 (SDLC suite + custom extensibility):** hooks; CUSTOM role
     registration opens (core registry existed since m1);
     `refactor`/`test`/`migrate` archetypes with their tooling adapters;

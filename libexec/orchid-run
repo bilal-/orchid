@@ -60,6 +60,7 @@ case "$sub" in
       '{epoch:($e|tonumber), refreshed_at:$t}' | atomic_write "$rt/lease.json"
     ;;
   advance)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
     to="${1:-}"; shift || true
     reason=""
@@ -93,6 +94,7 @@ case "$sub" in
     echo "run_status: $from -> $to"
     ;;
   accept)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
     reason=""; evidence=""
     while [ $# -gt 0 ]; do case "$1" in

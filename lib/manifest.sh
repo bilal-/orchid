@@ -4,8 +4,11 @@
 # lib/common.sh, which callers must source before this file).
 
 # Keys understood at manifest_version=1; anything else is an unknown key
-# (warn, still valid) rather than a hard failure.
-_MANIFEST_KNOWN_KEYS=" manifest_version id version kind api_version requires_orchid capabilities permissions requires_binaries platforms entrypoint "
+# (warn, still valid) rather than a hard failure. `outcome`/`transitions`
+# are kind=archetype-only keys (lib/archetype.sh's meta-contract validator);
+# listed here rather than a kind-scoped allowlist since this file has no
+# such per-kind mechanism today and unknown-key warnings are advisory only.
+_MANIFEST_KNOWN_KEYS=" manifest_version id version kind api_version requires_orchid capabilities permissions requires_binaries platforms entrypoint outcome transitions "
 
 # This file's own directory, regardless of who sources it or their cwd —
 # BASH_SOURCE[0] inside a function is the file the function is DEFINED in,

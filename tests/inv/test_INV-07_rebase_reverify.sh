@@ -31,6 +31,7 @@ git checkout -q task/T001
 git checkout -q "$integ"
 
 "$ORCHID_BIN" task advance T001 reviewing
+plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating --reason "single reviewer approved"
 "$ORCHID_BIN" task advance T001 merging --reason "approved for merge"
 
@@ -96,6 +97,7 @@ assert_eq 0 "$rc" "re-verify passes on the rebased candidate"
 git checkout -q "$integ"
 
 "$ORCHID_BIN" task advance T001 reviewing
+plant_reviewer_envelope T001
 "$ORCHID_BIN" task advance T001 arbitrating --reason "re-reviewed after rebase, approved"
 "$ORCHID_BIN" task advance T001 merging --reason "approved for merge"
 

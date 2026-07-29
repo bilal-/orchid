@@ -11,6 +11,7 @@ export ORCHID_EPOCH
 sub="${1:-}"; shift || true
 case "$sub" in
   import)
+    verb_lock_guard "$repo"
     src="${1:-}"
     [ -n "$src" ] || orchid_die "usage: orchid requirements import <file>"
     [ -f "$src" ] || orchid_die "no such file: $src"

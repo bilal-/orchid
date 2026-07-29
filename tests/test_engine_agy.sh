@@ -57,6 +57,8 @@ assert_eq "-p" "$(cat "$WORK/approve.argv.1")" "approve stub: -p precedes the pr
 last_argv="$(cat "$WORK/approve.argv.2")"
 assert_match "VERDICT: approve OR request-changes" "$last_argv" "approve stub: prompt is the final argv"
 assert_match "^Acceptance criteria: does the thing" "$last_argv" "approve stub: prompt carries acceptance criteria"
+assert_match "Do not use any tools" "$last_argv" "approve stub: prompt forbids tool use"
+assert_eq "false" "$(jq -r 'has("summary")' "$d/out/envelope.json")" "approve stub: summary absent when no REASON line"
 
 # --- 2. truncated pack -> scope_complete false ------------------------------
 d="$(build_request truncated review '#!/usr/bin/env bash
@@ -140,3 +142,23 @@ rc=0; ORCHID_DRYRUN=1 run_adapter "$d" || rc=$?
 envelope_validate "$d/out/envelope.json" || fail "dryrun implement: envelope invalid"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "dryrun implement: status failed"
 [ ! -e "$WORK/dryimplement.argv" ] || fail "dryrun implement: agy must never be invoked (no spawn)"
+
+# --- 10. tool-denial emptiness: empty stdout, rc 0 -> malformed, AND the raw
+# reply is diagnosed on stderr (dogfood F6: headless print-mode auto-denies
+# a tool call, agy exits 0 with nothing on stdout, and previously nothing
+# was ever logged anywhere to explain the empty envelope).
+d="$(build_request emptyreply review '#!/usr/bin/env bash
+: ')"
+rc=0; stderr_out="$(run_adapter "$d" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "emptyreply stub: adapter should exit nonzero"
+assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "emptyreply stub: status malformed"
+assert_match "malformed reply .no VERDICT line.; raw output follows" "$stderr_out" "emptyreply stub: raw-output diagnostic marker on stderr"
+
+# --- 11. REASON line captured into the ok-envelope's summary ----------------
+d="$(build_request withreason review '#!/usr/bin/env bash
+echo "VERDICT: approve"
+echo "REASON: tests pass and the diff is scoped tightly"')"
+run_adapter "$d" || fail "withreason stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "withreason stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "withreason stub: status ok"
+assert_match "tests pass and the diff is scoped tightly" "$(jq -r .summary "$d/out/envelope.json")" "withreason stub: summary carries REASON text"

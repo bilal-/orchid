@@ -42,10 +42,18 @@ role_forbids() {  # role -> forbidden capability atoms, one per line
 role_eligibility_reason() {
   local role="$1" dir="$2" have=" " atom atoms req forb
 
-  IFS=',' read -ra atoms <<< "$(manifest_get "$dir" capabilities)"
-  for atom in "${atoms[@]}"; do
+  # A `while read` loop over a process substitution, not `IFS=',' read -ra
+  # atoms <<< "..."` -- an engine legitimately declaring NO capabilities at
+  # all (no plugin.conf, or a bare `capabilities=`) is common (e.g. a
+  # custom/no-requirement role's engine) and manifest_get then returns "".
+  # `read -ra atoms <<< ""` in bash 3.2 leaves `atoms` genuinely unset rather
+  # than an empty array, and `"${atoms[@]}"` on that under `set -u` aborts
+  # with "atoms[@]: unbound variable" -- this is exactly the idiom
+  # lib/capsuite.sh's workspace_write_probe check already uses to sidestep
+  # the same pitfall.
+  while IFS= read -r atom; do
     [ -n "$atom" ] && have="$have$atom "
-  done
+  done < <(manifest_get "$dir" capabilities | tr ',' '\n')
 
   req="$(role_get "$role" requires)"
   if [ -n "$req" ]; then

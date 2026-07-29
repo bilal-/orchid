@@ -16,15 +16,18 @@ reposA="$WORK/repoA"; mkdir -p "$reposA"
 homeA="$WORK/homeA"; mkdir -p "$homeA/.orchid"
 
 # -- built-ins only, clean HOME/repo -----------------------------------------
+# v1-m2 Task 4 adds a second built-in archetype (orchid/review, alongside
+# orchid/feature) -- 6 built-ins total from here on.
 out="$(HOME="$homeA" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "plugins list exits 0 with only built-ins"
 lines="$(echo "$out" | wc -l | tr -d ' ')"
-assert_eq 5 "$lines" "exactly the 5 built-ins are listed with a clean HOME/repo"
+assert_eq 6 "$lines" "exactly the 6 built-ins are listed with a clean HOME/repo"
 for row in "orchid/codex engine 0.1.0 builtin builtin" \
            "orchid/codex-review engine 0.1.0 builtin builtin" \
            "orchid/agy engine 0.1.0 builtin builtin" \
            "orchid/claude engine 0.1.0 builtin builtin" \
-           "orchid/feature archetype 0.1.0 builtin builtin"; do
+           "orchid/feature archetype 0.1.0 builtin builtin" \
+           "orchid/review archetype 0.1.0 builtin builtin"; do
   assert_match "$(row_re $row)" "$out" "built-in row: $row"
 done
 
@@ -35,7 +38,7 @@ out="$(HOME="$homeB" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "plugins list still exits 0 with one added user plugin"
 assert_match "$(row_re acme/fake engine 0.2.0 user user)" "$out" "user plugin: origin=user trust=user"
 lines="$(echo "$out" | wc -l | tr -d ' ')"
-assert_eq 6 "$lines" "5 built-ins + 1 user plugin"
+assert_eq 7 "$lines" "6 built-ins + 1 user plugin"
 
 # -- ORCHID_PLUGIN_PATH entries show origin=path, trust=user -----------------
 pathroot="$WORK/pathroot"
@@ -66,7 +69,7 @@ assert_match "$(row_re orchid/codex engine 9.9.9 repo 'DISABLED \(untrusted\)')"
 out="$(HOME="$homeA" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate --all)"; rc=$?
 assert_eq 0 "$rc" "validate --all passes with only built-ins"
 okcount="$(echo "$out" | grep -c '^ok:')"
-assert_eq 5 "$okcount" "validate --all prints an ok line per built-in"
+assert_eq 6 "$okcount" "validate --all prints an ok line per built-in"
 
 # -- validate --all: a malformed planted manifest aggregate-fails (exit 13) --
 homeG="$WORK/homeG"

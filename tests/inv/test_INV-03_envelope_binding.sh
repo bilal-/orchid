@@ -3,6 +3,14 @@ source "$(dirname "$0")/../helpers.sh"
 cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'verify=true\nrole.implementer=fake\n' > orchid.config
+# v1-m2: `jobs prepare` resolves via resolve_role_available, gated on
+# discoverability + role eligibility -- "fake" must exist on the search
+# path and declare the implementer role's required capabilities.
+export ORCHID_ENGINES_DIR="$WORK/eng"
+mkdir -p "$WORK/eng/fake"
+printf 'manifest_version=1\nid=test/fake\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/fake/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/eng/fake/run"; chmod +x "$WORK/eng/fake/run"
 export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 "$ORCHID_BIN" task create T001 demo
 m="$("$ORCHID_BIN" jobs prepare T001 implementer implement)"

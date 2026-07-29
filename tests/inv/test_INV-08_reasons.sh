@@ -18,7 +18,9 @@ for s in implementing testing; do "$ORCHID_BIN" task advance T001 "$s" >/dev/nul
 # (honest fixture, not a hand-written log) before it can reach reviewing.
 "$ORCHID_BIN" task set T001 verification_commands "true"
 "$ORCHID_BIN" verify T001 >/dev/null
-for s in reviewing arbitrating; do "$ORCHID_BIN" task advance T001 "$s" >/dev/null; done
+"$ORCHID_BIN" task advance T001 reviewing >/dev/null
+plant_reviewer_envelope T001
+"$ORCHID_BIN" task advance T001 arbitrating >/dev/null
 rc=0; "$ORCHID_BIN" task advance T001 merging 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-08: merging without --reason"
 "$ORCHID_BIN" task advance T001 merging --reason "both reviewers approve"

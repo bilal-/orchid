@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+verb_lock_guard "$repo"
 
 qid="${1:-}"; choice="${2:-}"
 [ -n "$qid" ] && [ -n "$choice" ] || orchid_die "usage: orchid answer <qid> <choice>"

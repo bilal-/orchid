@@ -65,6 +65,15 @@ git checkout -q "$integ"
 export ORCHID_ENGINES_DIR="$WORK/eng"
 mkdir -p "$WORK/eng/stubimpl" "$WORK/eng/stubreview"
 
+# v1-m2: `orchid-launch` -> `jobs prepare` now resolves via
+# resolve_role_available, gated on role_eligibility_reason -- each stub must
+# declare the capabilities its role requires (roles/implementer.role,
+# roles/reviewer.role) or the launches below would now (correctly) refuse.
+printf 'manifest_version=1\nid=test/stubimpl\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubimpl/plugin.conf"
+printf 'manifest_version=1\nid=test/stubreview\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubreview/plugin.conf"
+
 cat > "$WORK/eng/stubimpl/run" <<'EOF'
 #!/usr/bin/env bash
 set -eu
@@ -95,10 +104,11 @@ out="$(jq -r .output "$req")"
 jid="$(jq -r .job_id "$req")"
 task="$(jq -r .task "$req")"
 op="$(jq -r .operation "$req")"
+cand="$(jq -r .candidate_sha "$req")"
 [ "$op" = review ] || exit 1
-jq -n --arg jid "$jid" --arg task "$task" \
+jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
   '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
-    verdict:"approve", scope_complete:true, summary:"stub review: approved"}' > "$out"
+    verdict:"approve", scope_complete:true, summary:"stub review: approved", candidate_sha:$cand}' > "$out"
 EOF
 chmod +x "$WORK/eng/stubreview/run"
 

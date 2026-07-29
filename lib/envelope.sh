@@ -11,6 +11,9 @@ envelope_validate() {
         or ((.operation | IN("review","critique"))
             and (.verdict | IN("approve","request-changes"))
             and (.scope_complete | type == "boolean"))
+        or (.operation == "orchestrate"
+            and (.actions | type == "array" and all(.[]; type == "string"))
+            and (.summary | type == "string" and length > 0))
       )
     )
     and (

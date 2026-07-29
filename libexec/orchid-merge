@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 # task set/advance below run as child processes of THIS verb; ORCHID_EPOCH
@@ -13,6 +14,19 @@ id="${1:-}"
 [ -n "$id" ] || orchid_die "usage: orchid merge <task-id>"
 tf="$state/tasks/$id.md"
 [ -f "$tf" ] || orchid_die "no task $id"
+
+# FIRST check, ahead of even the status gate below: a `outcome=report`
+# archetype (e.g. `review`) declares no transition into `merging` at all
+# (archetype_validate's meta-contract enforces that), so its tasks could
+# only ever fail the "not in merging" check below -- but that message would
+# misleadingly suggest merge is just being run too early, when the real
+# answer is "never, by design." Refused here with its own message instead,
+# regardless of the task's current status.
+archetype="$(fm_get "$tf" archetype)"; [ -n "$archetype" ] || archetype=feature
+if [ "$(archetype_outcome "$archetype")" = report ]; then
+  echo "merge refused: archetype '$archetype' outcome=report never advances the integration branch (exit 3)" >&2
+  exit 3
+fi
 
 status="$(fm_get "$tf" status)"
 [ "$status" = merging ] || orchid_die "task $id is not in merging (status: $status)"

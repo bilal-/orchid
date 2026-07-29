@@ -1,11 +1,16 @@
 integration_branch
 verify
+concurrency
 role.orchestrator
 role.implementer
 role.reviewer
 role.arbiter
 role.plan_critic
+review.low
+review.medium
+review.high
 lock_break_s
+verb_lock_wait_s
 stall_minutes
 timeout_minutes
 agy_max_bytes
@@ -15,3 +20,7 @@ gc_older_than_s
 infra_max
 model
 effort
+rate_limit_backoff_s
+engine_fail_threshold
+pump_stale_s
+arbiter_wait_s

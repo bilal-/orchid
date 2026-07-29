@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-2, LLM-free: the pump is the cron/launchd-friendly front gate in front
+# of runners/orchid-tick (Task 7). It NEVER builds a prompt or reads an
+# envelope's contents -- only exit codes -- and does exactly one shot per
+# invocation (recurring packaging is v1-m4). Every no-op outcome below exits
+# 0 (cron-friendly: "nothing to do right now" is a normal poll result, never
+# an error); only when it hands off to the tick does its exit code become
+# the tick's own.
+#
+# Mutual exclusion with a live orchestrator is EXACTLY the lease-staleness
+# test below (spec: "mutual exclusion via lease staleness, not flock") -- a
+# live orchestrator refreshes runtime/lease.json every tick (`orchid run
+# resume`/`refresh-lease`), so the pump only ever acts on an ABANDONED run.
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
+source "$ORCHID_ROOT/lib/ledger.sh"
+
+repo="${ORCHID_REPO:-$PWD}"
+state="$(orchid_state "$repo")"
+
+# 1. Not initialized (neither `.orchid/tasks` nor `.orchid/roadmap.md`
+# exists) -- deliberately checked with `orchid_state` alone, BEFORE calling
+# `orchid_runtime` (which `mkdir -p`s `.orchid/runtime` as a side effect):
+# an uninitialized directory should be left untouched, not seeded with a
+# runtime dir it never asked for. This is also the reason the pump cannot
+# simply `exec` the tick unconditionally -- the tick's own uninitialized
+# guard (via `orchid run resume`) DIES with exit 1, whereas a cron-invoked
+# pump polling a not-yet-`orchid init`'d directory is a normal, silent
+# no-op, not a failure.
+if [ ! -d "$state/tasks" ] && [ ! -f "$state/roadmap.md" ]; then
+  echo "pump: not an orchid repo"
+  exit 0
+fi
+
+# 2. run_status complete, or roadmap.md absent (a partially-initialized repo
+# that cleared step 1 via a bare `.orchid/tasks` dir but has no roadmap yet)
+# -- never spend quota / spawn anything for a run that has nothing left to
+# do.
+rs=""
+[ -f "$state/roadmap.md" ] && rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
+if [ ! -f "$state/roadmap.md" ] || [ "$rs" = complete ]; then
+  echo "pump: run complete"
+  exit 0
+fi
+
+rt="$(orchid_runtime "$repo")"
+
+# 3. Lease staleness. `iso_to_epoch` is replicated here (not shared via
+# lib/) rather than sourced from libexec/orchid-jobs: runners can't source
+# libexec (that's tier-1 verb-dispatch code, not a library), and this
+# five-line portable GNU/BSD `date` idiom is small enough that duplicating
+# it beats inventing a new lib/*.sh file for one helper used by exactly one
+# runner. Kept byte-for-byte equivalent to libexec/orchid-jobs' iso_to_epoch
+# so the two never drift on parsing behavior.
+_pump_iso_to_epoch() {
+  local iso="$1"
+  [ -n "$iso" ] || { echo 0; return; }
+  date -u -d "$iso" +%s 2>/dev/null && return
+  date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null && return
+  echo 0
+}
+
+lease_file="$rt/lease.json"
+now="$(date -u +%s)"
+
+# A MISSING lease file is stale-by-policy ONLY under run_status `running`
+# (the brief's own scoping: "crashed before its first refresh" is only a
+# meaningful diagnosis once a run is actually under way). `orchid init`
+# leaves run_status `planning` and never writes lease.json at all -- PLANNING
+# is reserved for interactive drafting (PROTOCOL.md), so a bare "no lease
+# yet" here must NOT read as "abandoned run, wake it up." Same reasoning
+# covers `accepting`/`blocked`: those states are reached only via a prior
+# `running` phase that DID write a lease, so a genuinely missing lease file
+# there would be a different anomaly than staleness -- not this gate's job
+# to paper over. A PRESENT lease's staleness arithmetic below still applies
+# under any non-complete run_status (accepting/blocked included): resuming
+# a stale-leased run mid-acceptance or mid-block is legitimate tick work.
+if [ ! -f "$lease_file" ]; then
+  if [ "$rs" != running ]; then
+    echo "pump: run not running (${rs:-unknown}), no lease yet"
+    exit 0
+  fi
+  age=999999999
+else
+  refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
+  refreshed_epoch="$(_pump_iso_to_epoch "$refreshed_at")"
+  if [ "$refreshed_epoch" -gt 0 ]; then
+    age=$(( now - refreshed_epoch ))
+  else
+    age=999999999   # malformed/unparseable refreshed_at treated as stale
+  fi
+fi
+
+stale_s="$(config_get "$repo" pump_stale_s 900)"
+if [ "$age" -lt "$stale_s" ]; then
+  echo "pump: lease fresh (${age}s)"
+  exit 0
+fi
+
+# 4. Dry-check only: is an orchestrator engine currently resolvable at all?
+# The engine name itself is discarded -- the tick performs its own
+# `resolve_role_available` call once it actually runs, so this is purely a
+# GO/NO-GO probe against the exact same ledger/capsuite state the tick will
+# see moments later. `2>&1 1>/dev/null` is the classic stdout/stderr swap:
+# it captures ONLY resolve_role_available's stderr into `reason` (its own
+# stdout -- the engine name on success -- is discarded to /dev/null), with
+# no temp file needed.
+if reason="$(resolve_role_available "$repo" orchestrator 2>&1 1>/dev/null)"; then
+  : # an engine is available; fall through to the tick below.
+else
+  echo "pump: no capable orchestrator available ($reason)"
+  exit 0
+fi
+
+# 5. Hand off. The tick does its own `run resume` (fencing a fresh epoch and
+# refreshing the lease), engine pick, adapter spawn, and ledger marking --
+# the pump's job ends here. `exec`, not a plain call: no pump-side work
+# remains afterward, so the tick simply replaces this process and its exit
+# code becomes the pump's own, verbatim.
+export ORCHID_REPO="$repo"
+exec "$ORCHID_ROOT/runners/orchid-tick"

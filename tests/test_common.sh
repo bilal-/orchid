@@ -87,3 +87,30 @@ assert_eq 1 "$lines" "re-setting the same spaced path does not duplicate the rec
 trust_store_remove "$spaced"
 [ -z "$(trust_lookup "$spaced")" ] || fail "trust_store_remove clears a spaced-path record"
 [ ! -s "$HOME/.orchid/trust" ] || fail "trust file is empty after removing its only (spaced-path) record"
+
+# -- with_timeout (v1-m2 Task 7 regression): a fast command's own exit
+# status/output must survive capture through $(...), and the run must
+# return promptly even with a LONG deadline -- not just eventually succeed,
+# but return well under the deadline. This is the regression net for a real
+# bug found wiring up runners/orchid-tick: the watcher's own `sleep "$secs"`
+# had already forked as a real child of the watcher subshell by the time
+# with_timeout went to cancel it, and a bare `kill "$w"` (no process-group
+# targeting) killed only the subshell, orphaning that `sleep` under init for
+# the rest of its deadline -- which kept the orphan's inherited stdout pipe
+# open and hung any `$(...)`-capturing caller (exactly runners/orchid-tick's
+# own usage) for the full deadline on every otherwise-successful run.
+start="$(date +%s)"
+out="$(with_timeout 3600 bash -c 'echo fast; exit 7')"; rc=$?
+elapsed=$(( $(date +%s) - start ))
+assert_eq fast "$out" "with_timeout captures the timed command's stdout"
+assert_eq 7 "$rc" "with_timeout returns the timed command's own exit status"
+[ "$elapsed" -lt 10 ] || fail "with_timeout must return promptly on early finish, not linger near the deadline (took ${elapsed}s)"
+
+# timeout path: a command that outlives the deadline is killed and 124 is
+# returned.
+start="$(date +%s)"
+out="$(with_timeout 1 bash -c 'sleep 30; echo should-not-print')"; rc=$?
+elapsed=$(( $(date +%s) - start ))
+assert_eq 124 "$rc" "with_timeout returns 124 on timeout"
+assert_eq "" "$out" "with_timeout's killed command produces no output"
+[ "$elapsed" -lt 10 ] || fail "with_timeout must return promptly after killing on timeout (took ${elapsed}s)"

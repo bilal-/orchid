@@ -168,6 +168,61 @@ assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "dryrun review: v
 assert_eq "true" "$(jq -r .scope_complete "$d/out/envelope.json")" "dryrun review: scope_complete true"
 assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "dryrun review: findings placeholder empty array"
 
+# --- 7b. DRYRUN: orchestrate, no spawn --------------------------------------
+d="$(build_request dryorch orchestrate "")"
+rm -rf "$d/bin"
+ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun orchestrate: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "dryrun orchestrate: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun orchestrate: status ok"
+assert_eq "dryrun" "$(jq -r .summary "$d/out/envelope.json")" "dryrun orchestrate: summary dryrun"
+assert_eq "[]" "$(jq -c .actions "$d/out/envelope.json")" "dryrun orchestrate: actions empty array"
+
+# --- 7c. orchestrate stub prints one ORCHID-ACTION line -> actions=["..."] --
+# argv shape asserted too: F8 fix, the orchestrator role's whole job is
+# running `orchid` verbs through Bash, so this branch must allowlist the
+# Bash tool explicitly (`--allowedTools Bash`) alongside acceptEdits, and
+# the instruction text must tell claude to invoke the verb by its ABSOLUTE
+# binary path (bare `orchid` may not be on PATH in a dev checkout).
+d="$(build_request orchone orchestrate '#!/usr/bin/env bash
+printf "%s" "$#" > "'"$WORK"'/orchone.argc"
+i=0
+for a in "$@"; do i=$((i+1)); printf "%s" "$a" > "'"$WORK"'/orchone.argv.$i"; done
+cat > "'"$WORK"'/orchone.stdin"
+echo "advancing the task"
+echo "ORCHID-ACTION: orchid task advance T001 implementing --reason tick"
+echo "tick complete"')"
+run_adapter "$d" || fail "orchestrate one-action stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "orchestrate one-action stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "orchestrate one-action stub: status ok"
+assert_eq '["orchid task advance T001 implementing --reason tick"]' "$(jq -c .actions "$d/out/envelope.json")" \
+  "orchestrate one-action stub: actions captures the ORCHID-ACTION line"
+assert_eq "tick complete" "$(jq -r .summary "$d/out/envelope.json")" "orchestrate one-action stub: summary from last non-empty line"
+stdin_content="$(cat "$WORK/orchone.stdin")"
+assert_match "ORCHID-ACTION: <command>" "$stdin_content" "orchestrate one-action stub: the fixed instruction block arrives on stdin"
+argc="$(cat "$WORK/orchone.argc")"
+assert_eq "5" "$argc" "orchestrate stub: acceptEdits + allowedTools Bash, exactly five argv (no prompt argv)"
+assert_eq "-p" "$(cat "$WORK/orchone.argv.1")" "orchestrate stub: -p is first argv"
+assert_eq "--permission-mode" "$(cat "$WORK/orchone.argv.2")" "orchestrate stub: --permission-mode is second argv"
+assert_eq "acceptEdits" "$(cat "$WORK/orchone.argv.3")" "orchestrate stub: acceptEdits is third argv"
+assert_eq "--allowedTools" "$(cat "$WORK/orchone.argv.4")" "orchestrate stub: --allowedTools is fourth argv (F8: orchestrator's whole job is running orchid verbs through Bash)"
+assert_eq "Bash" "$(cat "$WORK/orchone.argv.5")" "orchestrate stub: Bash is fifth argv"
+assert_match "/bin/orchid" "$stdin_content" "orchestrate one-action stub: instructions name the absolute orchid binary path"
+
+# --- 7d. orchestrate stub prints NO ORCHID-ACTION lines, exits 0 ->
+# actions == [] and status is STILL ok (never a crash). Regression test for a
+# real bug: under `set -euo pipefail`, `grep '^ORCHID-ACTION: '` on zero
+# matches exits 1, and pipefail promoted that to the whole actions_json
+# pipeline's status -- without the `|| true` guard, `set -e` aborted the
+# adapter right there, before any envelope was ever written, and
+# runners/orchid-tick misread this healthy, no-op tick as a crashed engine
+# (ledger_mark failed instead of ok).
+d="$(build_request orchnone orchestrate '#!/usr/bin/env bash
+echo "nothing to do this tick"')"
+run_adapter "$d" || fail "orchestrate no-action stub: adapter should exit 0 (regression: must not crash on zero ORCHID-ACTION lines)"
+envelope_validate "$d/out/envelope.json" || fail "orchestrate no-action stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "orchestrate no-action stub: status ok"
+assert_eq "[]" "$(jq -c .actions "$d/out/envelope.json")" "orchestrate no-action stub: actions is empty array"
+
 # --- 8b. exact-match guard: last VERDICT line is the ECHOED instruction ----
 # ("VERDICT: approve OR request-changes") — never actually chose a verdict.
 # Must be MALFORMED, never approve.

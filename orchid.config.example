@@ -1,6 +1,11 @@
 integration_branch=orchid/integration
 verify=npm test
-# Roles are configuration — see docs/configuration.md. Tested defaults:
+# Roles are configuration — see docs/configuration.md. Each role.* value is a
+# comma-separated failover chain, primary first (e.g.
+# role.implementer=codex,claude): a fallback engine only ever activates once
+# it has passed `orchid plugins test <engine> <role>` (the capability
+# suite) -- see `orchid doctor`'s per-role chain lines. Tested defaults
+# (single entries here; add a fallback with a comma once it's been tested):
 role.orchestrator=claude
 role.implementer=codex
 role.reviewer=agy
@@ -8,15 +13,34 @@ role.arbiter=claude
 role.plan_critic=codex
 pack_budget_bytes=65536
 
+# Dual review routing (v1-m2): review.<tier> is a comma-separated failover
+# chain of engine names consulted for the risk-tiered reviewer slots (see
+# docs/specs/kernel.md's Independence section) — low tier wants one
+# engine-independent reviewer; medium/high want two (worktree-capable for
+# depth + engine-independent for diversity). Built-in defaults shown here:
+# review.low=agy
+# review.medium=codex-review,agy
+# review.high=codex-review,agy
+
 # Everything below is commented with its built-in default — uncomment and
 # change only what this repo needs. Full key reference: lib/config-keys.txt
 # (also: `orchid config list` prints the EFFECTIVE value + provenance for
 # every key, live).
+# concurrency=2
 # lock_break_s=900
+# verb_lock_wait_s=10
 # stall_minutes=10
 # timeout_minutes=60
 # agy_max_bytes=100000
 # spool_max_bytes=262144
 # gc_older_than_s=86400
+# infra_max=3
 # model=
 # effort=medium
+# rate_limit_backoff_s=3600
+# engine_fail_threshold=3
+# pump_stale_s=900
+# v1-m2: high-risk arbitration's wait (seconds) for the preferred
+# role.arbiter engine before a fallback arbiter may decide (PROTOCOL.md,
+# HEADLESS OPERATION).
+# arbiter_wait_s=14400

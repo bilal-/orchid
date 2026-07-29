@@ -1,35 +1,81 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
+source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
 
-legal() { case "$1:$2" in
-  pending:implementing|implementing:testing|testing:reviewing|testing:rework|\
-  reviewing:arbitrating|arbitrating:merging|arbitrating:rework|\
-  merging:done|merging:rework|merging:testing|rework:implementing) return 0;;
-  *:blocked) return 0;; *) return 1;; esac; }
+# legal <from> <to> <archetype> -- archetype-driven (INV-05: data from the
+# manifest, never a name branch): `to=blocked` is the one universal escape
+# hatch (legal from any status, any archetype); every other edge must be
+# literally declared in the archetype's `transitions=` list
+# (archetype_transitions). The caller (advance, below) is responsible for
+# having already run `archetype_validate` on this exact archetype THIS
+# invocation -- an invalid/unknown archetype dies 13 before legal() is ever
+# reached, so a failed `archetype_transitions` lookup here would only ever
+# reflect that same already-fatal condition.
+legal() {
+  local from="$1" to="$2" archetype="$3" transitions
+  [ "$to" = blocked ] && return 0
+  # Captured into a variable FIRST, then matched via a herestring -- NOT
+  # `archetype_transitions ... | grep -qxF ...`. That direct-pipe form hits
+  # the same SIGPIPE-under-`pipefail` race lib/review.sh's
+  # _review_worktree_capable already documents: `grep -q` can exit the
+  # instant it finds a match, SIGPIPE-killing the still-running producer,
+  # and `pipefail` then reports the PRODUCER's kill-by-signal exit status
+  # for the whole pipeline instead of grep's own (matched) 0 -- silently
+  # turning a legal edge into a reported illegal one.
+  transitions="$(archetype_transitions "$archetype")" || return 1
+  grep -qxF "$from:$to" <<< "$transitions"
+}
 
 needs_reason() { case "$1:$2" in
-  *:merging|*:blocked|arbitrating:rework) return 0;; *) return 1;; esac; }
+  *:merging|*:blocked|arbitrating:rework|arbitrating:done) return 0;; *) return 1;; esac; }
 
 rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
 
 case "$sub" in
   create)
-    epoch_require "$repo"; id="$1"; title="$2"; mkdir -p "$tasks"
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; id="$1"; title="$2"; shift 2 || true
+    # --archetype <name> (default: feature) -- the ONLY new flag; a bare
+    # `task create <id> <title>` behaves exactly as before this arm gained
+    # option parsing.
+    arch=feature
+    while [ $# -gt 0 ]; do case "$1" in
+      --archetype) [ -n "${2:-}" ] || orchid_die "--archetype requires a value"
+        arch="$2"; shift 2;;
+      *) shift;; esac; done
+    mkdir -p "$tasks"
     [ ! -f "$(tf "$id")" ] || orchid_die "task $id exists"
+    # Validated BEFORE the template is ever written: an invalid/unknown
+    # archetype must never land a task file that `advance` can then never
+    # legally move (archetype_validate's own FAIL diagnostics go to stderr).
+    if ! archetype_validate "$arch" >/dev/null 2>&1; then
+      echo "orchid: archetype '$arch' failed validation (rejected, fail closed)" >&2
+      exit 13
+    fi
+    # resolve_role (first-of-chain), NEVER raw config_get: role.implementer
+    # is a v1-m2 comma-separated failover chain (e.g. "codex,claude") --
+    # seeding the template with the raw config value would land a comma
+    # chain verbatim in frontmatter, which no consumer of `engine:` expects.
     sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
-        -e "s|__ENGINE__|$(config_get "$repo" role.implementer codex)|g" \
+        -e "s|__ARCHETYPE__|$arch|g" \
+        -e "s|__ENGINE__|$(resolve_role "$repo" implementer)|g" \
         -e "s|__DATE__|$(now)|g" \
       "$ORCHID_ROOT/templates/task.md" | atomic_write "$(tf "$id")" ;;
   show) cat "$(tf "$1")" ;;
   list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
         printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
   set)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
@@ -44,10 +90,22 @@ case "$sub" in
       [ -n "$reason" ] || orchid_die "risk_tier requires --reason (INV-08)"
       old="$(fm_get "$(tf "$id")" risk_tier)"
       [ "$(rank "$val")" -ge "$(rank "$old")" ] || orchid_die "risk_tier is monotonic ($old -> $val refused)"
-      journal --task "$id" --kind risk_change "$old -> $val: $reason"
+      # kernel.md: risk_tier drives blocking_severity too -- low tier blocks
+      # only on high-severity findings; medium/high block on medium+ (MORE
+      # findings block as risk goes up, never fewer). Derived right here, in
+      # the SAME risk_change journal entry, so it is never a silent side
+      # effect. A later explicit `task set blocking_severity` still wins --
+      # no new mechanism, it's a plain settable key.
+      case "$val" in
+        low) bsev=high ;;
+        *) bsev=medium ;;   # medium|high -> medium
+      esac
+      journal --task "$id" --kind risk_change "$old -> $val: $reason (blocking_severity -> $bsev)"
+      fm_set "$(tf "$id")" blocking_severity "$bsev"
     fi
     fm_set "$(tf "$id")" "$key" "$val"; fm_set "$(tf "$id")" updated "$(now)" ;;
   advance)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
     reason=""; waive=0
     while [ $# -gt 0 ]; do case "$1" in
@@ -56,7 +114,41 @@ case "$sub" in
       --waive-attempt) waive=1; shift;; *) shift;; esac; done
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
-    legal "$from" "$to" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    arch="$(fm_get "$f" archetype)"; [ -n "$arch" ] || arch=feature
+    # Validated ONCE per invocation (not once per candidate edge) -- an
+    # invalid/unknown archetype dies here, fail-closed, before `legal` ever
+    # reads its (possibly bogus) transitions.
+    if ! archetype_validate "$arch" >/dev/null 2>&1; then
+      echo "orchid: archetype '$arch' failed validation (rejected, fail closed)" >&2
+      exit 13
+    fi
+    legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    # v1-m2 Task 5 (keyed on active-status, not literally on `to=implementing`,
+    # per final-review Finding 1): the kernel-side dispatch gate. Applies on
+    # BOTH edges that actually dispatch a task (pending-> and rework->) INTO
+    # an active status -- a feature task's pending/rework -> implementing,
+    # but also e.g. a `review`-archetype task's pending/rework -> reviewing
+    # (`reviewing` is itself an active status per lib/schedule.sh's
+    # _SCHEDULE_ACTIVE_STATUSES). Keying on schedule_is_active_status rather
+    # than a literal `to=implementing` string means this can never silently
+    # exempt some other archetype's active-status entry edge from the same
+    # predicates orchid-status's --explain already assumes are enforced here
+    # -- and it does so without ever branching on the archetype's NAME
+    # (INV-05): only the declared `to` status's membership in the active set
+    # matters. schedule.sh is the single home for the predicate set; this
+    # call is its only kernel-side enforcement point (orchid-status's
+    # --explain is the other, read-only, caller). Deps stay orchestrator-
+    # supplied facts for worktree/base_sha (unchanged, set before this call)
+    # -- only the schedule predicates (cap/exclusive/resources/deps) are
+    # enforced HERE, fail-closed.
+    if { [ "$from" = pending ] || [ "$from" = rework ]; } && schedule_is_active_status "$to"; then
+      blockers="$(schedule_dispatch_blockers "$repo" "$id")"
+      if [ -n "$blockers" ]; then
+        echo "orchid: dispatch refused for $id ($from -> $to):" >&2
+        printf '%s\n' "$blockers" >&2
+        exit 3
+      fi
+    fi
     if needs_reason "$from" "$to"; then
       [ -n "$reason" ] || orchid_die "$from -> $to requires --reason (INV-08)"
     fi
@@ -65,6 +157,62 @@ case "$sub" in
       [ -n "$b" ] && [ -n "$c" ] || orchid_die "testing requires base_sha and candidate_sha set"
       if git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
         orchid_die "commits touch .orchid/ — entry to testing refused (INV-04)"
+      fi
+      if [ "$from" = implementing ]; then
+        # Kernel-derived, single-writer: this verb is the ONLY writer of
+        # implementer_engine_id. Read straight from the accepted implement
+        # envelope reconcile already landed at reviews/<id>-a<attempt>-
+        # implementer.json (attempt = current attempts+1, the same formula
+        # `jobs prepare` used to mint that job) -- its `.engine` field
+        # carries the "orchid/<name>" form (see orchid-jobs' reconcile cross-
+        # check), stripped to the bare name lib/review.sh's independence
+        # comparison expects. A fixture that hand-walks the lifecycle
+        # without planting an envelope leaves the field untouched (absent
+        # file is not an error here).
+        #
+        # `--waive-attempt` on arbitrating->rework leaves `attempts`
+        # unchanged (by design -- it's a waiver, not a fresh attempt), so a
+        # waived-rework round reuses the SAME attempt number K as the round
+        # it followed: the plain a<K>-implementer.json path could silently
+        # resolve to a STALE round-1 envelope after a different engine
+        # implemented the reworked candidate. Implement envelopes' own
+        # candidate_sha is an OUTPUT (not cross-checked at reconcile time
+        # the way review/critique's is -- see orchid-jobs' reconcile), so it
+        # isn't a reliable sha-binding key on its own; instead: consider the
+        # base file AND every `.N.json` collision-counter sibling reconcile
+        # may have produced for this exact attempt, prefer whichever one's
+        # candidate_sha matches the task's CURRENT candidate_sha (the
+        # strongest signal available), and otherwise fall back to the
+        # highest counter (the most recently reconciled envelope).
+        impl_attempt=$(( $(fm_get "$f" attempts) + 1 ))
+        impl_cand="$(fm_get "$f" candidate_sha)"
+        impl_best=""; impl_best_n=0
+        impl_match=""; impl_match_n=0
+        for impl_ef in "$state/reviews/$id-a$impl_attempt-implementer"*.json; do
+          [ -e "$impl_ef" ] || continue
+          impl_base="$(basename "$impl_ef")"
+          impl_rest="${impl_base#"$id"-a"$impl_attempt"-implementer}"
+          case "$impl_rest" in
+            .json) impl_n=1 ;;
+            .[0-9]*.json) impl_n="${impl_rest#.}"; impl_n="${impl_n%.json}" ;;
+            *) continue ;;
+          esac
+          if [ "$impl_n" -gt "$impl_best_n" ]; then
+            impl_best_n="$impl_n"; impl_best="$impl_ef"
+          fi
+          if [ -n "$impl_cand" ]; then
+            impl_ef_cand="$(envelope_field "$impl_ef" '.candidate_sha // empty' 2>/dev/null || true)"
+            if [ "$impl_ef_cand" = "$impl_cand" ] && [ "$impl_n" -gt "$impl_match_n" ]; then
+              impl_match_n="$impl_n"; impl_match="$impl_ef"
+            fi
+          fi
+        done
+        impl_envelope="$impl_best"; [ -z "$impl_match" ] || impl_envelope="$impl_match"
+        if [ -n "$impl_envelope" ]; then
+          impl_engine="$(envelope_field "$impl_envelope" '.engine // empty')"
+          impl_engine="${impl_engine#orchid/}"
+          [ -z "$impl_engine" ] || fm_set "$f" implementer_engine_id "$impl_engine"
+        fi
       fi
     fi
     if [ "$from" = testing ] && [ "$to" = reviewing ]; then
@@ -93,6 +241,40 @@ case "$sub" in
       fcand="$(fm_get "$f" candidate_sha)"; [ -n "$fcand" ] || fcand=none
       [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] && [ "$fcand" != none ] && [ "$vcand" = "$fcand" ] || \
         orchid_die "reviewing requires passing verify evidence bound to the current candidate_sha (run: orchid verify $id)"
+    fi
+    if [ "$from" = reviewing ] && [ "$to" = arbitrating ]; then
+      # Kernel envelope-count gate (v1-m2): arbitrating may only be reached
+      # once at least review_required_count(risk_tier) reviewer envelopes
+      # have actually been reconciled for the CURRENT attempt (attempt =
+      # current attempts+1, same formula `jobs prepare` used to mint them).
+      # Counted by filename glob, matching `jobs reconcile`'s own collision
+      # suffix (`.2.json`, `.3.json`, ...) so a relaunch that lands a second
+      # accepted envelope for the same slot is never miscounted as a fresh
+      # one. Incomplete review evidence must never silently pass as approval.
+      #
+      # sha-bound (mirrors INV-11's testing->reviewing verify gate): `--waive-
+      # attempt` on arbitrating->rework leaves `attempts` unchanged, so a
+      # waived-rework round reuses the SAME attempt number K as the round it
+      # followed -- the glob alone would happily count round-1's reviewer
+      # envelopes even though nobody has reviewed the reworked candidate yet.
+      # Review/critique envelopes' candidate_sha IS cross-checked at reconcile
+      # time (see orchid-jobs), so it's a trustworthy binding key here (unlike
+      # the implement-envelope capture above, where candidate_sha is an
+      # output, not an input). Only envelopes bound to the task's CURRENT
+      # candidate_sha count.
+      gate_attempt=$(( $(fm_get "$f" attempts) + 1 ))
+      gate_tier="$(fm_get "$f" risk_tier)"; [ -n "$gate_tier" ] || gate_tier=low
+      gate_need="$(review_required_count "$gate_tier")"
+      gate_cand="$(fm_get "$f" candidate_sha)"
+      gate_have=0
+      for gate_rf in "$state/reviews/$id-a$gate_attempt-reviewer"*.json; do
+        [ -e "$gate_rf" ] || continue
+        gate_rf_cand="$(envelope_field "$gate_rf" '.candidate_sha // empty' 2>/dev/null || true)"
+        [ -n "$gate_cand" ] && [ "$gate_rf_cand" = "$gate_cand" ] || continue
+        gate_have=$((gate_have + 1))
+      done
+      [ "$gate_have" -ge "$gate_need" ] || \
+        orchid_die "arbitrating requires $gate_need reconciled review envelope(s) for risk_tier $gate_tier (have $gate_have)"
     fi
     if [ "$to" = implementing ]; then
       # v0b2: the task wall-clock anchor. Stamped only the FIRST time a task
@@ -134,6 +316,7 @@ case "$sub" in
     fm_set "$f" status "$to"; fm_set "$f" updated "$(now)"
     echo "$id: $from -> $to" ;;
   unblock)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
       [ -n "${2:-}" ] || orchid_die "--reason requires a value"
@@ -151,6 +334,7 @@ case "$sub" in
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework" ;;
   retry)
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
       [ -n "${2:-}" ] || orchid_die "--reason requires a value"
@@ -176,6 +360,7 @@ case "$sub" in
     # counter needs its own journal-first discipline and its own auto-block
     # threshold, not a bare frontmatter write. Epoch-fenced like every other
     # mutating verb here.
+    verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
     if [ "${1:-}" = "--reason" ]; then
       [ -n "${2:-}" ] || orchid_die "--reason requires a value"
