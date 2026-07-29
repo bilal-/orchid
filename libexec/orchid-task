@@ -262,6 +262,12 @@ case "$sub" in
       # the implement-envelope capture above, where candidate_sha is an
       # output, not an input). Only envelopes bound to the task's CURRENT
       # candidate_sha count.
+      #
+      # m2 ledger finding: sha-binding alone is not enough -- a reviewer job
+      # that errored (or a quarantined/malformed envelope reconcile still
+      # wrote to disk) can leave a same-shaped, sha-bound file behind with
+      # status != "ok" (no real verdict). Only status=="ok" envelopes count;
+      # anything else is silently skipped, same as an sha mismatch.
       gate_attempt=$(( $(fm_get "$f" attempts) + 1 ))
       gate_tier="$(fm_get "$f" risk_tier)"; [ -n "$gate_tier" ] || gate_tier=low
       gate_need="$(review_required_count "$gate_tier")"
@@ -270,7 +276,8 @@ case "$sub" in
       for gate_rf in "$state/reviews/$id-a$gate_attempt-reviewer"*.json; do
         [ -e "$gate_rf" ] || continue
         gate_rf_cand="$(envelope_field "$gate_rf" '.candidate_sha // empty' 2>/dev/null || true)"
-        [ -n "$gate_cand" ] && [ "$gate_rf_cand" = "$gate_cand" ] || continue
+        gate_rf_status="$(envelope_field "$gate_rf" '.status // empty' 2>/dev/null || true)"
+        [ -n "$gate_cand" ] && [ "$gate_rf_cand" = "$gate_cand" ] && [ "$gate_rf_status" = ok ] || continue
         gate_have=$((gate_have + 1))
       done
       [ "$gate_have" -ge "$gate_need" ] || \

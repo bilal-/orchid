@@ -327,3 +327,30 @@ fi
 if ! ( ORCHID_VERSION="1.10.0"; _manifest_orchid_satisfies ">=1.9" ); then
   fail "_manifest_orchid_satisfies: orchid 1.10 must satisfy '>=1.9' (numeric 10 >= 9; a lexical bug would wrongly reject since string '10' < '9')"
 fi
+
+# ============================================================================
+# v1-m3 (m2 ledger finding, flagged in m2 Task 2): _manifest_split_csv's
+# empty-input bash-3.2 quirk. `IFS=',' read -ra tokens <<< "$s"` on an empty
+# $s leaves `tokens` genuinely UNSET in bash 3.2 (not an empty array), and
+# `"${tokens[@]}"` on that under `set -u` (every test file, via helpers.sh;
+# bin/orchid and most libexec/* entrypoints too) aborts with "tokens[@]:
+# unbound variable" -- the same pitfall lib/roles.sh's role_eligibility_
+# reason and lib/capsuite.sh's workspace_write_probe check already sidestep
+# with a `tr ',' '\n'` + `while read` idiom instead. lib/capsuite.sh's
+# binaries_present check calls _manifest_split_csv DIRECTLY on a manifest's
+# (possibly absent) requires_binaries with no such guard, so a manifest with
+# no requires_binaries key at all crashes `orchid plugins test` outright --
+# every test fixture that exercises that path currently declares
+# `requires_binaries=jq` purely to dodge this, never because the fixture
+# actually needs it validated.
+# ============================================================================
+out="$(_manifest_split_csv "" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "_manifest_split_csv on an empty string must not abort under set -u (got: $out)"
+assert_eq "" "$out" "_manifest_split_csv on an empty string yields zero tokens"
+
+# a manifest with NO requires_binaries key at all (the common real-world
+# shape: p1's mk_valid fixture above never set one) must still split cleanly
+# via manifest_get's default-empty return, end to end.
+out2="$(_manifest_split_csv "$(manifest_get "$WORK/p1" requires_binaries)" 2>&1)"; rc2=$?
+assert_eq 0 "$rc2" "_manifest_split_csv(manifest_get ... requires_binaries) must not abort when the key is entirely absent"
+assert_eq "" "$out2" "an absent requires_binaries key yields zero binary tokens, not an error"

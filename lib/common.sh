@@ -133,17 +133,28 @@ lock_release() { rm -rf "$(orchid_runtime "$1")/lock"; }
 # call can never release its parent's lock out from under it at its own exit.
 _verb_lock_owned=0
 verb_lock_acquire() {
-  local repo="$1" rt lock wait_s max_tries tries=0 pid host pstart alive owner_json myhost self_json
+  local repo="$1" rt lock wait_s pid host pstart alive owner_json myhost self_json empty_since start_s elapsed
   [ "${ORCHID_VERB_LOCK_HELD:-0}" = 1 ] && return 0
   rt="$(orchid_runtime "$repo")"; lock="$rt/verb-lock"
   wait_s="$(config_get "$repo" verb_lock_wait_s 10)"
-  max_tries=$(( wait_s * 5 ))   # retried every 0.2s (bounded; not a spawn -- INV-01 scopes to libexec/*)
   myhost="$(hostname)"          # cached once -- not re-forked every retry iteration
+  # Real wall-clock budget, NOT a try count: this function has two retry
+  # paths with genuinely different paces -- the live-owner wait below sleeps
+  # ~0.2s per try, while the self-verify-failure retry (further down) can
+  # spin with no sleep at all when mkdir keeps winning fresh. A single
+  # shared `tries` counter (the previous implementation) let a burst of the
+  # unpaced path -- or any mix of the two -- trip the budget well before
+  # wait_s real seconds had actually elapsed, making the die message's
+  # "waited <n>s" claim false. Bounding on ACTUAL elapsed time instead (not
+  # a spawn -- INV-01 scopes to libexec/*) keeps that claim honest
+  # regardless of which path, or what mix, burns the budget.
+  start_s="$(date +%s)"
   # Outer loop: a full acquire attempt is "win the mkdir race, then prove the
   # claim actually landed" (see the self-verification below) -- on ANY
   # failure to prove that, the whole attempt is abandoned and retried from
   # scratch here, never patched up by re-writing in place (see why below).
   while true; do
+    empty_since=""   # reset per fresh outer-loop attempt -- see below
     while ! mkdir "$lock" 2>/dev/null; do
       # Read owner.json ONCE into a variable and parse every field from that
       # SAME snapshot -- not three separate `jq -r .field "$lock/owner.json"`
@@ -155,14 +166,36 @@ verb_lock_acquire() {
       # -- an empty read (dir claimed but its owner.json not written yet, the
       # few-ms window right after ITS mkdir) is treated the same as "still
       # being claimed", never "dead/foreign": that misread would rm -rf a
-      # brand-new legitimate owner's lock out from under it. Just wait it out,
-      # uncounted against the wait budget below (a benign micro-race, not real
-      # contention).
+      # brand-new legitimate owner's lock out from under it. Just wait it
+      # out, uncounted against the wait budget below (a benign micro-race,
+      # not real contention) -- UNLESS it has been empty for as long as the
+      # full wait budget itself: a crash between the winner's mkdir and its
+      # owner.json write leaves exactly this signature (dir present, no
+      # owner.json, no pid/host/pid_start ever recorded), and nothing else
+      # would ever break it. `empty_since` tracks how long THIS generation
+      # has been observed empty (reset the moment a real owner record
+      # appears, so a brand-new legitimately-empty generation always gets
+      # its own fresh grace window, never inherited time from a prior one).
       owner_json="$(cat "$lock/owner.json" 2>/dev/null)"
       if [ -z "$owner_json" ]; then
+        if [ -z "$empty_since" ]; then
+          empty_since=$SECONDS
+        elif [ $(( SECONDS - empty_since )) -ge "$wait_s" ]; then
+          # Persistently empty past the wait budget: broken like a dead
+          # owner. Re-confirmed against a fresh read immediately before the
+          # destructive rm -rf, same reasoning as the dead-owner path below
+          # -- a legitimate claimant may have written owner.json in the
+          # instant since our last read.
+          if [ -z "$(cat "$lock/owner.json" 2>/dev/null)" ]; then
+            rm -rf "$lock" 2>/dev/null
+          fi
+          empty_since=""
+          continue
+        fi
         sleep 0.05
         continue
       fi
+      empty_since=""
       pid=0; host='?'; pstart='?'
       eval "$(printf '%s' "$owner_json" | jq -r \
         '"pid=" + (.pid|tostring) + "; host=" + (.hostname|@sh) + "; pstart=" + (.pid_start|@sh)' \
@@ -206,9 +239,9 @@ verb_lock_acquire() {
         fi
         continue
       fi
-      tries=$((tries + 1))
-      [ "$tries" -lt "$max_tries" ] || \
-        orchid_die "verb lock held by pid $pid — another verb is mid-transaction (waited ${wait_s}s)"
+      elapsed=$(( $(date +%s) - start_s ))
+      [ "$elapsed" -lt "$wait_s" ] || \
+        orchid_die "verb lock held by pid $pid — another verb is mid-transaction (waited ${elapsed}s)"
       sleep 0.2
     done
     # mkdir won: we hold what SHOULD be a fresh, empty generation of
@@ -241,6 +274,22 @@ verb_lock_acquire() {
     [ "$(cat "$lock/owner.json" 2>/dev/null)" = "$self_json" ] && break
     # Lost the race for this generation -- do NOT retry the write in place;
     # someone else may legitimately own this path now. Loop back to the top.
+    #
+    # This retry must still count against the overall wait budget: without
+    # it, a repeated run of this same residual-sliver loss (adversarial or
+    # just unlucky under heavy contention) would retry the WHOLE acquire
+    # forever -- never bounded by verb_lock_wait_s, the one liveness
+    # guarantee this function makes. Bounded on the SAME real-elapsed-time
+    # budget the live-owner wait above uses (not a separate try count):
+    # mkdir winning again immediately here (no sleep at all) means this
+    # path can spin far faster than the live-owner wait's ~0.2s-per-try
+    # cadence, so a shared TRY count would let a burst of these losses trip
+    # the budget well before wait_s real seconds had elapsed. A small sleep
+    # still guards against pure busy-spinning under sustained contention.
+    elapsed=$(( $(date +%s) - start_s ))
+    [ "$elapsed" -lt "$wait_s" ] || \
+      orchid_die "verb lock contention unresolved — self-verification kept losing the claim race (waited ${elapsed}s)"
+    sleep 0.05
   done
   _verb_lock_owned=1
   export ORCHID_VERB_LOCK_HELD=1

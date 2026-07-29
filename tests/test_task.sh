@@ -198,3 +198,37 @@ assert_eq done "$(t007_status)" "archetype edge merging:done"
 rc=0; "$ORCHID_BIN" task advance T008 merging 2>/dev/null || rc=$?
 assert_eq 3 "$rc" "pending -> merging is (and was always) illegal, exit 3"
 assert_eq pending "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' ' -f2)" "T008 stays in pending after the refused illegal edge"
+
+# ============================================================================
+# v1-m3 (m2 ledger finding): reviewing->arbitrating's envelope-count gate
+# must count only status=="ok" reviewer envelopes, sha-binding kept
+# alongside. A reviewer job that errored/quarantined before producing a real
+# verdict can still land a same-shaped, sha-bound file on disk (status:
+# "failed") -- that must never silently satisfy the gate just because a
+# file with the right name and candidate_sha exists.
+# ============================================================================
+"$ORCHID_BIN" task create T009 "status-ok gate"
+edge_sha2="cafebabedeadbeef0000000000000000000000"
+"$ORCHID_BIN" task set T009 base_sha "$edge_sha2"
+"$ORCHID_BIN" task set T009 candidate_sha "$edge_sha2"
+"$ORCHID_BIN" task set T009 verification_commands true
+"$ORCHID_BIN" task advance T009 implementing
+"$ORCHID_BIN" task advance T009 testing
+"$ORCHID_BIN" verify T009 >/dev/null
+"$ORCHID_BIN" task advance T009 reviewing
+mkdir -p .orchid/reviews
+jq -n --arg cand "$edge_sha2" '{contract:1, job_id:"j-fixture-T009-a1-failed", task:"T009", operation:"review",
+    status:"failed", verdict:"approve", scope_complete:true, summary:"errored reviewer", candidate_sha:$cand}' \
+  > .orchid/reviews/T009-a1-reviewer.json
+rc=0; err="$("$ORCHID_BIN" task advance T009 arbitrating --reason "should be refused" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "reviewing->arbitrating must refuse when the only reconciled envelope has status!=ok"
+assert_match "arbitrating requires 1 reconciled review envelope\(s\) for risk_tier low \(have 0\)" "$err" \
+  "gate die message reports 0 -- the status:failed envelope was correctly not counted"
+assert_eq reviewing "$("$ORCHID_BIN" task show T009 | grep '^status: ' | cut -d' ' -f2)" "refused arbitrating leaves T009 at reviewing"
+
+jq -n --arg cand "$edge_sha2" '{contract:1, job_id:"j-fixture-T009-a1-ok", task:"T009", operation:"review",
+    status:"ok", verdict:"approve", scope_complete:true, summary:"real reviewer", candidate_sha:$cand}' \
+  > .orchid/reviews/T009-a1-reviewer.2.json
+"$ORCHID_BIN" task advance T009 arbitrating --reason "now has a real ok envelope"
+assert_eq arbitrating "$("$ORCHID_BIN" task show T009 | grep '^status: ' | cut -d' ' -f2)" \
+  "reviewing->arbitrating succeeds once a status==ok envelope is reconciled (the status:failed one still doesn't count)"

@@ -25,12 +25,16 @@ mk_engine() {
   local name="$1" caps="$2" dir
   dir="$WORK/eng/$name"
   mkdir -p "$dir"
-  # requires_binaries=jq (never empty): _manifest_split_csv chokes under
-  # `set -u` on a truly empty CSV string (a latent, pre-existing bash-3.2
-  # array-expansion quirk in lib/manifest.sh unrelated to this task) -- jq
-  # is already a hard dependency of the whole test harness, so this sidesteps
-  # that without touching shared library code out of this task's scope.
-  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=%s\nrequires_binaries=jq\nentrypoint=run\n' \
+  # No requires_binaries key at all -- proof that lib/manifest.sh's
+  # _manifest_split_csv empty-CSV bash-3.2 quirk (v1-m3, fixed alongside
+  # this task) is actually fixed: this manifest used to declare
+  # `requires_binaries=jq` purely to dodge that crash (an `unbound variable`
+  # abort under `set -u` when the key was absent), never because the stub
+  # engine's run script below needed it validated. jq is still a hard
+  # dependency of the whole test harness and this run script (below) still
+  # calls it directly -- only the manifest's now-unnecessary declaration is
+  # gone.
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=%s\nentrypoint=run\n' \
     "$name" "$caps" > "$dir/plugin.conf"
   cat > "$dir/run" <<'EOF'
 #!/usr/bin/env bash

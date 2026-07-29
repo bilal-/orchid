@@ -39,6 +39,15 @@ ledger_mark "$repo" beta failed
 ledger_mark "$repo" beta failed
 ledger_available "$repo" beta || fail "2 consecutive failures (below default threshold 3) must still be available"
 assert_eq ok "$(jq -r '.beta.status' "$lf")" "status stays ok below threshold"
+
+# v1-m3 (m2 ledger finding): ledger_show's detail column must surface a
+# sub-threshold consecutive_failures count even while status is still "ok"
+# -- an operator staring at `orchid status` should see an engine is
+# accumulating failures before it actually flips to "failing", not just
+# after.
+line="$(ledger_show "$repo" | grep '^beta	')"
+assert_match "^beta	ok	failures 2\$" "$line" "ledger_show: sub-threshold consecutive_failures>0 shows 'failures <n>' even while status is still ok"
+
 ledger_mark "$repo" beta failed
 ledger_available "$repo" beta && fail "3 consecutive failures must make the engine unavailable"
 assert_eq 3 "$(jq -r '.beta.consecutive_failures' "$lf")" "consecutive_failures counted"

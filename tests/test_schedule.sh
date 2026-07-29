@@ -58,6 +58,30 @@ blockers="$(schedule_dispatch_blockers "$repo" A001)"
 echo "$blockers" | grep -q "concurrency-cap" && fail "default cap=2 with 1 active must not block on concurrency-cap"
 assert_eq "" "$blockers" "default cap=2, 1 non-conflicting active, no deps: fully dispatchable (empty blockers)"
 
+# -- v1-m3 (m2 ledger finding): a non-numeric `concurrency` config value must
+# die cleanly rather than feed straight into `[ "$n" -lt "$cap" ]` (bash
+# would print "integer expression expected" and behave unpredictably).
+printf 'concurrency=abc\n' > "$repo/orchid.config"
+rc=0; err="$(schedule_dispatch_blockers "$repo" A001 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "non-numeric concurrency config must die, not silently proceed"
+assert_match "concurrency must be a positive integer \(got 'abc'\)" "$err" "concurrency validation names the bad value"
+
+# a configured "0" is not a positive integer either.
+printf 'concurrency=0\n' > "$repo/orchid.config"
+rc=0; err="$(schedule_dispatch_blockers "$repo" A001 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "concurrency=0 must die, not be treated as a valid (impossible) cap"
+assert_match "concurrency must be a positive integer \(got '0'\)" "$err" "concurrency=0 validation names the bad value"
+
+# a leading-zero form ("00") is all-digits -- it must NOT slip past the
+# non-numeric check and get silently treated as the numeric 0 by `-lt`
+# (which would permanently trip concurrency-cap without ever naming why).
+printf 'concurrency=00\n' > "$repo/orchid.config"
+rc=0; err="$(schedule_dispatch_blockers "$repo" A001 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "concurrency=00 must die (leading-zero form), not silently evaluate as 0"
+assert_match "concurrency must be a positive integer \(got '00'\)" "$err" "concurrency=00 validation names the bad value"
+
+rm -f "$repo/orchid.config"
+
 rm -f "$repo/.orchid/tasks"/*.md
 
 # -- exclusive-overlap, direction 1: an ACTIVE task is exclusive -------------
