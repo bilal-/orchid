@@ -38,3 +38,132 @@ rc=0; ORCHID_REPO="$scratch" HOME="$WORK/home" "$ORCHID_BIN" run start >/dev/nul
 # an epoch/lease for state that was never created.
 rc=0; ORCHID_REPO="$scratch" HOME="$WORK/home" "$ORCHID_BIN" run resume >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "run resume must refuse an uninitialized repo"
+
+# ===========================================================================
+# v1-m3 Task 11: `orchid run new` -- run rollover. A real `orchid init` +
+# integration-branch worktree is needed here (unlike the bare-.orchid
+# fixtures above), since `new` mirrors `orchid plan apply`'s temp-worktree +
+# CAS commit pattern against a real integration branch.
+# ===========================================================================
+bare="$WORK/rn-bare"; mkdir -p "$bare"
+(cd "$bare" && git init -q . && git commit -q --allow-empty -m root)
+export ORCHID_REPO="$bare"
+"$ORCHID_BIN" init >/dev/null
+wt="$WORK/rn-wt"
+git -C "$bare" worktree add -q "$wt" orchid/integration
+export ORCHID_REPO="$wt"
+cd "$wt"
+export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+echo "# Requirements" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+"$ORCHID_BIN" task create T001 "demo" >/dev/null
+"$ORCHID_BIN" plan apply --reason "initial plan" >/dev/null
+"$ORCHID_BIN" lessons add --scope repo --invalidate-when "n/a" "an active lesson that must carry forward" >/dev/null
+"$ORCHID_BIN" lessons add --scope repo --invalidate-when "n/a" "a retired lesson that must NOT carry forward" >/dev/null
+"$ORCHID_BIN" lessons retire L002 --reason "no longer relevant" >/dev/null
+echo "stable repo fact" > .orchid/context.md
+git add .orchid && git commit -q -m "context + lessons fixture"
+
+# refused while running_status is still `running`
+rc=0; running_out="$("$ORCHID_BIN" run new --reason "too early" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "run new must refuse while run_status is running"
+assert_match "requires run_status complete\|blocked" "$running_out" "refusal names the required run_status"
+[ ! -d .orchid/runs ] || fail "run new must not have touched anything while refused"
+
+# refused without --reason, even once run_status is legal for it
+"$ORCHID_BIN" run advance blocked --reason "smoke shortcut to blocked" >/dev/null
+rc=0; "$ORCHID_BIN" run new >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "run new requires --reason (INV-08)"
+
+# archives + resets on a legal status (blocked here; complete is covered by
+# the same code path -- run_status is read once, up front, and only its
+# membership in {complete, blocked} is checked).
+old_journal_before="$(cat .orchid/journal.md)"
+"$ORCHID_BIN" run new --reason "rollover to r-002" || fail "run new on a legal (blocked) run_status"
+
+assert_eq "r-002" "$(grep '^run_id: ' .orchid/roadmap.md | cut -d' ' -f2)" \
+  "roadmap.md run_id incremented to r-002"
+assert_eq "planning" "$(grep '^run_status: ' .orchid/roadmap.md | cut -d' ' -f2)" "roadmap.md reset to run_status planning"
+[ -d .orchid/tasks ] && [ -z "$(ls -A .orchid/tasks)" ] || fail "tasks/ is fresh and empty on the new run"
+[ -d .orchid/reviews ] && [ -z "$(ls -A .orchid/reviews)" ] || fail "reviews/ is fresh and empty on the new run"
+assert_eq "# Blockers" "$(cat .orchid/BLOCKERS.md)" "BLOCKERS.md reset"
+
+# the fresh journal's FIRST entry names the archived run (kind intervention)
+first_journal_entry="$(grep -m1 '^## ' .orchid/journal.md)"
+assert_match "intervention" "$first_journal_entry" "fresh journal's first entry is kind intervention"
+assert_match "r-001 archived to runs/r-001/ -> r-002" "$(cat .orchid/journal.md)" "fresh journal names the archived run and the rollover reason"
+assert_match "rollover to r-002" "$(cat .orchid/journal.md)" "fresh journal carries the --reason text"
+[ "$(grep -c '^## ' .orchid/journal.md)" = 1 ] || fail "fresh journal.md has exactly one entry so far"
+
+# runs/r-001/ holds the OLD journal.md, intact and byte-identical, plus the
+# rest of the archived run's durable state.
+[ -f .orchid/runs/r-001/journal.md ] || fail "runs/r-001/journal.md exists"
+assert_eq "$old_journal_before" "$(cat .orchid/runs/r-001/journal.md)" "runs/r-001/journal.md is byte-identical to the pre-rollover journal"
+[ -f .orchid/runs/r-001/roadmap.md ] || fail "runs/r-001/roadmap.md archived"
+grep -q "run_id: r-001" .orchid/runs/r-001/roadmap.md || fail "archived roadmap.md still shows r-001"
+[ -f .orchid/runs/r-001/tasks/T001.md ] || fail "runs/r-001/tasks/T001.md archived"
+[ -f .orchid/runs/r-001/BLOCKERS.md ] || fail "runs/r-001/BLOCKERS.md archived"
+
+# lessons.md carries forward ACTIVE blocks only
+grep -q "an active lesson that must carry forward" .orchid/lessons.md \
+  || fail "run new carries forward the active lesson"
+grep -q "a retired lesson that must NOT carry forward" .orchid/lessons.md \
+  && fail "run new must not carry forward a retired lesson"
+
+# context.md carries forward untouched
+assert_eq "stable repo fact" "$(cat .orchid/context.md)" "context.md carried forward untouched"
+
+# a second `run new` immediately, still on run_status planning, is refused
+rc=0; "$ORCHID_BIN" run new --reason "too soon again" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "run new must refuse again immediately (run_status is now planning)"
+
+# the fresh run is fully usable: requirements import (planning again),
+# task create, and plan apply all work against r-002.
+echo "# Requirements v2" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md || fail "requirements import works on the fresh run"
+"$ORCHID_BIN" task create T010 "second-run task" || fail "task create works on the fresh run"
+"$ORCHID_BIN" plan apply --reason "second plan" || fail "plan apply works on the fresh run"
+assert_eq "running" "$(grep '^run_status: ' .orchid/roadmap.md | cut -d' ' -f2)" "plan apply advances the fresh run to running"
+git -C "$bare" log --format=%s -1 "orchid/integration" | grep -q "plan apply" \
+  || fail "plan apply's commit landed on the integration branch"
+
+# ===========================================================================
+# post-review CRITICAL 2: shadow-dir swap crash-window recovery. A truly
+# deterministic "kill the process between the swap's two mv calls" is
+# impractical in a bash test harness -- that window is a handful of
+# syscalls wide, with no hook to pause the real verb mid-flight without
+# invasively rewriting it just to make it kill-able (noted explicitly here,
+# per the review's own fallback instruction, rather than faked). What IS
+# testable, and is the actual safety property that matters: reproducing the
+# EXACT on-disk shape that crash window would leave (.orchid/ wholly
+# absent -- never split-brain), and proving the one documented recovery
+# command (the comment above the swap in libexec/orchid-run) genuinely
+# restores it.
+# ===========================================================================
+snap_run_id="$(grep '^run_id: ' .orchid/roadmap.md)"
+snap_run_status="$(grep '^run_status: ' .orchid/roadmap.md)"
+snap_journal="$(cat .orchid/journal.md)"
+snap_lessons="$(cat .orchid/lessons.md 2>/dev/null || true)"
+snap_context="$(cat .orchid/context.md)"
+
+# Reproduce the crash window itself: "$state" renamed away and nothing
+# renamed back in -- exactly what a kill between the two mv calls leaves.
+mv .orchid .orchid.simulated-crash-backup
+[ ! -d .orchid ] || fail "crash-window simulation: .orchid must be wholly absent"
+
+git checkout HEAD -- .orchid || fail "documented recovery command failed: git checkout HEAD -- .orchid"
+[ -d .orchid ] || fail "recovery must restore .orchid"
+assert_eq "$snap_run_id" "$(grep '^run_id: ' .orchid/roadmap.md)" "recovery restores the correct run_id"
+assert_eq "$snap_run_status" "$(grep '^run_status: ' .orchid/roadmap.md)" "recovery restores the correct run_status"
+assert_eq "$snap_journal" "$(cat .orchid/journal.md)" "recovery restores journal.md byte-identical"
+assert_eq "$snap_lessons" "$(cat .orchid/lessons.md 2>/dev/null || true)" "recovery restores lessons.md byte-identical"
+assert_eq "$snap_context" "$(cat .orchid/context.md)" "recovery restores context.md byte-identical"
+[ -f .orchid/runs/r-001/journal.md ] || fail "recovery restores the archived runs/r-001/ tree too"
+
+# runtime/ is gitignored and never part of any commit -- `git checkout`
+# cannot restore what was never tracked. This is expected, not a gap: a
+# fresh `orchid run start|resume` mints a new epoch/lease regardless, same
+# as any other crash recovery in this codebase.
+[ ! -d .orchid/runtime ] || fail "runtime/ should never be restorable by git checkout -- if this fires, something committed it by mistake"
+"$ORCHID_BIN" run resume >/dev/null || fail "run resume works normally after the simulated-crash recovery"
+rm -rf .orchid.simulated-crash-backup

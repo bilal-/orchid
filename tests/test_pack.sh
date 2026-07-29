@@ -26,6 +26,93 @@ assert_eq "true" "$(jq -r '.items[] | select(.name=="context.md") | .truncated' 
 assert_eq "true" "$(jq -r '.total_bytes == ([.items[].bytes] | add)' "$WORK/p1/pack.json")" "total_bytes sums all items (context present)"
 
 # ---------------------------------------------------------------------------
+# v1-m3 Task 11: lessons.md injection into the per-task (implementer/
+# reviewer) pack -- ACTIVE blocks only (kernel.md's per-role table), never
+# superseded/retired ones, budgeted BEFORE context.md (docs/specs/
+# plugins.md's trim order: journal/lessons/context -- packs never carry
+# journal.md at all, so lessons vs. context is the only ordering that
+# actually applies here).
+# ---------------------------------------------------------------------------
+rm -f orchid.config
+echo "repo context here" > .orchid/context.md
+cat > .orchid/lessons.md <<'EOF'
+# Lessons
+
+## L001 [active] repo
+statement: an active lesson the implementer should see
+evidence:
+first: 2026-07-01T00:00:00Z
+last_confirmed: 2026-07-01T00:00:00Z
+invalidate_when: never
+
+## L002 [retired] repo
+statement: a retired lesson the implementer must NOT see
+evidence:
+first: 2026-07-01T00:00:00Z
+last_confirmed: 2026-07-01T00:00:00Z
+invalidate_when: n/a
+
+## L003 [superseded] repo
+statement: a superseded lesson the implementer must NOT see either
+evidence:
+first: 2026-07-01T00:00:00Z
+last_confirmed: 2026-07-01T00:00:00Z
+invalidate_when: n/a
+EOF
+
+pack_build "$WORK" T001 implement "$WORK/pimpl" || fail "implementer pack build (lessons)"
+[ -f "$WORK/pimpl/lessons.md" ] || fail "implementer pack has lessons.md"
+grep -q "an active lesson" "$WORK/pimpl/lessons.md" || fail "implementer pack lessons.md includes the active lesson"
+grep -q "a retired lesson" "$WORK/pimpl/lessons.md" && fail "implementer pack lessons.md must NOT include the retired lesson"
+grep -q "a superseded lesson" "$WORK/pimpl/lessons.md" && fail "implementer pack lessons.md must NOT include the superseded lesson"
+assert_eq "false" "$(jq -r '.items[] | select(.name=="lessons.md") | .truncated' "$WORK/pimpl/pack.json")" "implementer pack lessons.md not truncated under a generous budget"
+
+pack_build "$WORK" T001 review "$WORK/prevl" || fail "reviewer pack build (lessons)"
+[ -f "$WORK/prevl/lessons.md" ] || fail "reviewer pack has lessons.md"
+grep -q "an active lesson" "$WORK/prevl/lessons.md" || fail "reviewer pack lessons.md includes the active lesson"
+grep -q "a retired lesson" "$WORK/prevl/lessons.md" && fail "reviewer pack lessons.md must NOT include the retired lesson"
+
+# no lessons.md on disk at all -> cleanly omitted, never an error
+rm -f .orchid/lessons.md
+pack_build "$WORK" T001 implement "$WORK/pimpl_noless" || fail "implementer pack build (no lessons.md)"
+[ ! -f "$WORK/pimpl_noless/lessons.md" ] || fail "no lessons.md on disk -> pack has none either"
+assert_match '"lessons.md"' "$(jq -c '.omitted' "$WORK/pimpl_noless/pack.json")" "lessons.md listed omitted when absent"
+
+# trim priority: a budget with room for EITHER lessons.md OR context.md, but
+# not both, must keep lessons.md and drop context.md entirely (lessons is
+# budgeted first).
+cat > .orchid/lessons.md <<'EOF'
+# Lessons
+
+## L001 [active] repo
+statement: an active lesson the implementer should see
+evidence:
+first: 2026-07-01T00:00:00Z
+last_confirmed: 2026-07-01T00:00:00Z
+invalidate_when: never
+EOF
+# Sized against what pack_build actually consumes for lessons.md -- the
+# ACTIVE-filtered content (lessons_active_only strips the leading "# Lessons"
+# heading, which is not itself a "## " block), not the raw file's byte count.
+# Exactly zero bytes of room left for context.md once task/diff/lessons are
+# all in: context.md (pre-existing code, unchanged here) always still
+# produces a (possibly empty) file rather than omitting it outright the way
+# lessons.md/tasks.md/symbols.txt do, so the honest assertion is "reduced to
+# nothing", not "absent" -- the point being proven is priority: lessons.md
+# keeps its full content while context.md is squeezed to zero.
+big_ctx="$(printf 'x%.0s' $(seq 1 500))"; echo "$big_ctx" > .orchid/context.md
+lessons_active_bytes="$(lessons_active_only .orchid/lessons.md | wc -c)"
+tight_lessons=$(( $(wc -c < .orchid/tasks/T001.md) + $(cd "$WORK" && git diff "$base".."$cand" | wc -c) + lessons_active_bytes ))
+printf 'pack_budget_bytes=%s\n' "$tight_lessons" > orchid.config
+pack_build "$WORK" T001 review "$WORK/ptight_lessons" || fail "reviewer pack build (tight budget, lessons priority)"
+[ -f "$WORK/ptight_lessons/lessons.md" ] || fail "lessons.md present under a budget sized for it"
+grep -q "an active lesson" "$WORK/ptight_lessons/lessons.md" || fail "lessons.md content intact under tight budget"
+assert_eq "false" "$(jq -r '.items[] | select(.name=="lessons.md") | .truncated' "$WORK/ptight_lessons/pack.json")" "lessons.md not truncated -- it got its full share before context.md"
+assert_eq "0" "$(wc -c < "$WORK/ptight_lessons/context.md" | tr -d ' ')" "context.md squeezed to nothing once lessons.md already spent the budget"
+rm -f orchid.config .orchid/lessons.md
+echo "repo context here" > .orchid/context.md
+
+# ---------------------------------------------------------------------------
 # v1-m3: plan-scoped pack -- the reserved task id `plan` (role.plan_critic
 # critiquing a draft roadmap) builds requirements.md + roadmap.md
 # (non-truncatable) + every tasks/*.md concatenated into tasks.md

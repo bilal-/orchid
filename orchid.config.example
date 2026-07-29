@@ -44,6 +44,10 @@ pack_budget_bytes=65536
 # timeout_minutes=60
 # agy_max_bytes=100000
 # spool_max_bytes=262144
+# v1-m3: cross-run lessons.md byte cap (docs/specs/kernel.md, Cross-run
+# lessons). `orchid lessons consolidate` refuses rather than deleting an
+# active lesson when hygiene alone can't fit under this cap.
+# lessons_max_bytes=16384
 # gc_older_than_s=86400
 # infra_max=3
 # model=

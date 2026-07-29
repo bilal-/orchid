@@ -201,6 +201,14 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, or
   has a legal `rework` edge. An operator resolves it with `orchid task retry
   <task-id> --reason "..."` once the underlying infra issue is fixed —
   `retry` moves `blocked→rework` without consuming an attempt.
+- *Recurring across attempts, and it looks like REPO behavior, not vendor
+  noise:* the same dead/stalled/timeout signature repeating for a task
+  across attempts — a flaky test, a flaky build step, anything the repo
+  itself does inconsistently — is a lesson-birth moment (docs/specs/
+  kernel.md, Cross-run lessons; never a vendor-availability blip, which
+  belongs in the ledger's `rate_limited`/`failing` tracking above, not
+  here): `orchid lessons add --scope repo --invalidate-when "..." "..."`
+  before continuing the ladder.
 - *`budget-exceeded`* (independent of the ladder above — it can fire
   alongside `running`, not just `dead`/`stalled`/`timeout`): the task's
   `wallclock_budget_s`, anchored at `started_at` (stamped by `task advance
@@ -323,7 +331,11 @@ ones its archetype never declares.
     whether or not a hook fired: `orchid task advance <id> rework --reason
     "verify failed: see .orchid/reviews/<id>-verify.log"` (consumes an attempt unless
     `--waive-attempt` is also given — reserve that for a failure clearly
-    unrelated to the candidate itself). After 3 non-waived rework attempts
+    unrelated to the candidate itself). When the rework was caused by
+    something `context.md` failed to state — not an actual defect in the
+    candidate — this is a lesson-birth moment (docs/specs/kernel.md,
+    Cross-run lessons): `orchid lessons add --scope repo --invalidate-when
+    "..." "..."` before continuing. After 3 non-waived rework attempts
     (`orchid task show <id>`'s `attempts` field), stop retrying
     automatically: `orchid notify --task <id> "attempts exhausted: see
     .orchid/reviews/<id>-verify.log"` then `orchid task advance <id> blocked
@@ -358,12 +370,19 @@ ones its archetype never declares.
   alongside the review envelopes below, as one more input to the same
   weighing, never a separate verb call of its own. Read the task's review
   envelope(s) under `.orchid/reviews/<id>-a<attempt>-reviewer*.json` (and
-  `orchid task show <id>` for `blocking_severity`), weigh the findings,
-  then:
+  `orchid task show <id>` for `blocking_severity`), weigh the findings.
+  When the judgment call itself turns on repo knowledge no file
+  (`context.md`, `lessons.md`, the task body) actually contained — a third
+  lesson-birth moment (docs/specs/kernel.md, Cross-run lessons) — record it
+  now, before deciding: `orchid lessons add --scope repo --invalidate-when
+  "..." "..."`. Then:
   - approve: `orchid task advance <id> merging --reason "..."`.
   - reject: `orchid task advance <id> rework --reason "..."` (add
     `--waive-attempt` when the rejection reflects an infra/tooling gap
-    rather than an actual defect in the candidate).
+    rather than an actual defect in the candidate). When this rejection was
+    itself driven by something `context.md` failed to state, that is the
+    same lesson-birth moment `testing`'s FAIL arm names above — record it
+    the same way before moving on.
 
 - **merging** (`awaiting-merge`): more than one task may sit in `merging` at
   once (it counts against `concurrency` like any other active status); per
@@ -448,8 +467,12 @@ one).
 5. Capsules: for every task not `done`, load its bounded context before
    judging anything — `orchid task show <id>` (full frontmatter and body),
    `orchid journal show --task <id>` (that task's decision capsule, backed
-   by `.orchid/runtime/journal-index/<id>`), and `orchid journal tail -n 20`
-   (recent run-wide context). Never re-scan the whole journal file by hand.
+   by `.orchid/runtime/journal-index/<id>`), `orchid journal tail -n 20`
+   (recent run-wide context), `.orchid/context.md`, and the ACTIVE lessons
+   (`orchid lessons list --active`) — the same run-wide memory every
+   request pack already carries, under the same explicit byte budgets
+   (docs/specs/kernel.md, Memory & resumption). Never re-scan the whole
+   journal file by hand.
 6. Resume THE TICK above, starting at step 3 (the state-machine walk), now
    that jobs/state have been reconciled and the capsules are loaded.
 

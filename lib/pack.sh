@@ -1,6 +1,17 @@
 #!/usr/bin/env bash
 # Input packs: kernel-materialized per-job memory. See docs/specs/plugins.md.
 
+# v1-m3 Task 11: sourced relative to THIS file's own directory, not
+# "$ORCHID_ROOT/lib/..." -- several test files source lib/pack.sh directly
+# with no ORCHID_ROOT set at all (tests/test_pack.sh, tests/test_hooks.sh,
+# tests/inv/test_INV-12_pack_overflow.sh, tests/test_review_routing.sh), so
+# resolving relative to $BASH_SOURCE keeps every existing caller working
+# unchanged. This is the one deliberate exception to the rest of lib/*.sh's
+# convention of never sourcing a sibling lib file (the caller sources
+# everything, in a fixed order) -- lib/lessons.sh has no further
+# dependencies of its own, so there is no cycle risk.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lessons.sh"
+
 # _pack_fm_field <task-file> <key> -- a single frontmatter value, same
 # one-key extraction the review/critique branch below inlines twice already
 # (base_sha, candidate_sha); factored out here so the hook branch (needing
@@ -67,17 +78,28 @@ _pack_build_plan() {
   fi
   rm -f "$tasks_tmp"
 
-  if [ -f "$state/lessons.md" ]; then
+  # v1-m3 Task 11: ACTIVE lessons only (kernel.md's per-role injection table
+  # -- plan_critic receives "lessons.md", never the raw file, which may also
+  # carry superseded/retired blocks that are historical record, not live
+  # judgment input). lessons_active_only (lib/lessons.sh) extracts exactly
+  # the "## L... [active] ..." blocks, verbatim, file order -- it also
+  # strips the raw file's leading "# Lessons" heading (that line is not
+  # itself a "## " block), so this pack's lessons.md never carries it; no
+  # consumer needs it back.
+  local lessons_active_tmp
+  lessons_active_tmp="$(mktemp)"
+  lessons_active_only "$state/lessons.md" > "$lessons_active_tmp"
+  if [ -s "$lessons_active_tmp" ]; then
     local room2 lbytes ltrunc=false
     room2=$(( budget - used ))
     if [ "$room2" -le 0 ]; then
       omitted="${omitted:+$omitted,}\"lessons.md\""
     else
-      lbytes="$(wc -c < "$state/lessons.md")"
+      lbytes="$(wc -c < "$lessons_active_tmp")"
       if [ "$lbytes" -le "$room2" ]; then
-        cp "$state/lessons.md" "$dest/lessons.md"
+        cp "$lessons_active_tmp" "$dest/lessons.md"
       else
-        head -c "$room2" "$state/lessons.md" > "$dest/lessons.md"; ltrunc=true
+        head -c "$room2" "$lessons_active_tmp" > "$dest/lessons.md"; ltrunc=true
       fi
       used=$(( used + $(wc -c < "$dest/lessons.md") ))
       items="$items,{\"name\":\"lessons.md\",\"bytes\":$(wc -c < "$dest/lessons.md"),\"truncated\":$ltrunc}"
@@ -85,6 +107,7 @@ _pack_build_plan() {
   else
     omitted="${omitted:+$omitted,}\"lessons.md\""
   fi
+  rm -f "$lessons_active_tmp"
 
   printf '{"budget":%s,"total_bytes":%s,"items":[%s],"omitted":[%s]}\n' \
     "$budget" "$used" "$items" "$omitted" | jq . > "$dest/pack.json"
@@ -262,6 +285,41 @@ pack_build() {  # repo task op dest [hook-point] ; exit 12 = input_overflow
     echo "orchid: input_overflow — non-truncatable inputs ($used bytes) exceed pack budget ($budget)" >&2
     return 12
   fi
+
+  # v1-m3 Task 11: lessons.md, ACTIVE blocks only (kernel.md's per-role
+  # table: implementer/reviewer both receive "context.md + lessons.md +
+  # ..."), budgeted BEFORE context.md -- docs/specs/plugins.md's trim order
+  # is "journal/lessons/context" (journal tail-first, context head-first);
+  # packs never carry journal.md at all (that's resume-only, PROTOCOL.md's
+  # RESUME step 5), so the only ordering that applies here is lessons before
+  # context. Truncated tail-first (`head -c`), same convention as tasks.md/
+  # lessons.md in the plan pack above (_pack_build_plan) -- keeps the
+  # earliest-recorded lessons, drops the newest under a tight budget.
+  # lessons_active_only also strips the raw file's leading "# Lessons"
+  # heading (not itself a "## " block) -- this pack's lessons.md never
+  # carries it either, same as the plan pack above.
+  local lessons_active_tmp
+  lessons_active_tmp="$(mktemp)"
+  lessons_active_only "$state/lessons.md" > "$lessons_active_tmp"
+  if [ -s "$lessons_active_tmp" ]; then
+    local lroom lbytes ltrunc=false
+    lroom=$(( budget - used ))
+    if [ "$lroom" -le 0 ]; then
+      omitted="${omitted:+$omitted,}\"lessons.md\""
+    else
+      lbytes="$(wc -c < "$lessons_active_tmp")"
+      if [ "$lbytes" -le "$lroom" ]; then
+        cp "$lessons_active_tmp" "$dest/lessons.md"
+      else
+        head -c "$lroom" "$lessons_active_tmp" > "$dest/lessons.md"; ltrunc=true
+      fi
+      used=$(( used + $(wc -c < "$dest/lessons.md") ))
+      items="$items,{\"name\":\"lessons.md\",\"bytes\":$(wc -c < "$dest/lessons.md"),\"truncated\":$ltrunc}"
+    fi
+  else
+    omitted="${omitted:+$omitted,}\"lessons.md\""
+  fi
+  rm -f "$lessons_active_tmp"
 
   if [ -f "$state/context.md" ]; then
     local room ctx_bytes trunc=false
