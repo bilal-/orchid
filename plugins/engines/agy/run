@@ -71,6 +71,7 @@ $manifest_line
 Diff:
 $diff
 
+Do not use any tools. Do not run any commands. Judge from the diff text alone.
 Reply with exactly two lines:
 VERDICT: approve OR request-changes
 REASON: one sentence"
@@ -98,11 +99,30 @@ if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space
 elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
 fi
 if [ -z "$verdict" ]; then
+  # No output ever reaches the launcher's job log otherwise: `stdout` here is
+  # a local variable, not a stream, so a tool-denial-empty reply (dogfood
+  # F6 -- headless print-mode auto-denies a tool call, agy exits 0 with
+  # nothing on stdout) would leave NO trace anywhere that the reply was
+  # empty/unparseable. Diagnose on stderr, which the launcher DOES capture.
+  echo "orchid/agy: malformed reply (no VERDICT line); raw output follows:" >&2
+  printf '%s\n' "$stdout" >&2
   write_envelope malformed '{}'
   exit 1
 fi
 
 any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
 scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
-write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc}')"
+
+# Optional REASON line (last one wins, same idiom as the VERDICT line above)
+# carried into the envelope's `summary` -- mirrors codex/run's summary
+# idiom, but stays absent rather than falling back to placeholder text when
+# the reply has no REASON line at all.
+reason_line="$(printf '%s\n' "$stdout" | grep '^REASON:' | tail -n1 || true)"
+reason="$(printf '%s' "$reason_line" | sed 's/^REASON:[[:space:]]*//')"
+reason="${reason:0:200}"
+if [ -n "$reason" ]; then
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --arg s "$reason" '{verdict:$v, scope_complete:$sc, summary:$s}')"
+else
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc}')"
+fi
 exit 0
