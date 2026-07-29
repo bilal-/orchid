@@ -155,6 +155,14 @@ post_integ4="$(git rev-parse "$integ")"
 assert_eq "$concurrent_integ" "$post_integ4" "concurrent commit is NOT clobbered by the losing CAS"
 grep -q "intervention" .orchid/journal.md || fail "CAS failure journals an intervention"
 grep -qi "update-ref\|CAS" .orchid/journal.md || fail "CAS failure journal entry names the cause"
+# v1-m3 regression: orchid-merge's `ORCHID_ACTOR="${ORCHID_ACTOR:-orchestrator}"`
+# call sites pass a bare (unmarked) actor name and have always relied on
+# libexec/orchid-journal to append " e<epoch>" itself -- pin the rendered
+# shape so a future journal refactor can't silently drop the epoch off a
+# bare-name actor the way an earlier draft of the v1-m3 actor-identity
+# change did (it special-cased only the unset-ORCHID_ACTOR default).
+assert_match "\\(orchestrator e${ORCHID_EPOCH}\\)" "$(cat .orchid/journal.md)" \
+  "CAS failure journal entry's actor is 'orchestrator e<epoch>', not epoch-less 'orchestrator'"
 
 # ---------------------------------------------------------------------------
 # v0b2: stale-base rebase IN the recorded frontmatter worktree. When a task's

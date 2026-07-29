@@ -162,3 +162,68 @@ run_adapter "$d" || fail "withreason stub: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "withreason stub: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "withreason stub: status ok"
 assert_match "tests pass and the diff is scoped tightly" "$(jq -r .summary "$d/out/envelope.json")" "withreason stub: summary carries REASON text"
+
+# --- 12. v1-m3 log streaming: the live-run finding was that a job log
+# stayed ZERO BYTES for the whole run (agy/run captured the CLI's output
+# purely into a bash variable, with nothing written to its own stdout/
+# stderr -- which is what the launcher's redirect actually captures into the
+# job log). The fix tees agy's stdout to the adapter's own stderr as it
+# arrives. Simulate the launcher's redirect here (`>> log 2>&1`) around a
+# stub agy that sleeps between lines, and assert the log has grown partway
+# through the run -- not just after the adapter exits. ----------------------
+d="$(build_request streaming review '#!/usr/bin/env bash
+echo "line one"
+sleep 0.7
+echo "line two"
+sleep 0.7
+echo "VERDICT: approve"')"
+joblog="$d/out/job.log"; : > "$joblog"
+(run_adapter "$d" >>"$joblog" 2>&1) &
+adapter_pid=$!
+sleep 0.2
+midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
+wait "$adapter_pid" || fail "streaming stub: adapter should exit 0"
+final_size="$(wc -c <"$joblog" | tr -d ' ')"
+[ "$midrun_size" -gt 0 ] || fail "streaming stub: job log must have grown WHILE the adapter was still running (was $midrun_size bytes at the midpoint) -- this is the stall-detector's liveness signal"
+[ "$final_size" -ge "$midrun_size" ] || fail "streaming stub: job log must not shrink after the adapter exits"
+assert_match "line one" "$(cat "$joblog")" "streaming stub: the CLI's early output reached the job log"
+envelope_validate "$d/out/envelope.json" || fail "streaming stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "streaming stub: status ok"
+
+# --- 13. v1-m3 round 2: adapter heartbeat. probe-stream-buffering.sh's real
+# run (codex/claude only -- agy wasn't part of that probe, but the same
+# buffering risk applies to any CLI) showed tee alone doesn't help a CLI
+# that produces literally NOTHING until it exits (worse than the streaming
+# test above, whose stub at least gives tee something to relay while it
+# runs). The stub below sleeps the WHOLE time and writes not one byte until
+# the very end; the ONLY thing that can make the job log grow mid-run here
+# is lib/heartbeat.sh's `[hb ...]` liveness line, written to the adapter's
+# own stderr (never the stub's stdout) every ORCHID_HB_INTERVAL_S seconds.
+# Set to 1 here as a TEST-ONLY override (real default is 30s, see
+# lib/heartbeat.sh) so the fixture doesn't need to wait out a real 30s
+# interval. Also pins that heartbeat lines never leak into summary parsing
+# (they're on stderr, structurally separate from the stub's real stdout --
+# $stdout is filled purely from the FIFO-relayed stdout content -- but
+# pinned here rather than left implicit).
+d="$(build_request heartbeat review '#!/usr/bin/env bash
+sleep 2.2
+echo "VERDICT: approve"
+echo "REASON: heartbeat test reply"')"
+joblog="$d/out/job.log"; : > "$joblog"
+initial_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
+adapter_pid=$!
+# Sampled at 1.3s: comfortably after the first heartbeat (fires once the
+# 1s ORCHID_HB_INTERVAL_S override elapses) and comfortably before the
+# stub's own 2.2s exit -- genuinely mid-run on both sides.
+sleep 1.3
+midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"; midrun_hb_count="${midrun_hb_count:-0}"
+midrun_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+wait "$adapter_pid" || fail "heartbeat stub: adapter should exit 0"
+[ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+[ "$midrun_mtime" -ge "$initial_mtime" ] || fail "heartbeat stub: job log mtime must have advanced mid-run (initial=$initial_mtime midrun=$midrun_mtime)"
+envelope_validate "$d/out/envelope.json" || fail "heartbeat stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "heartbeat stub: status ok"
+assert_match "heartbeat test reply" "$(jq -r .summary "$d/out/envelope.json")" "heartbeat stub: summary carries the real REASON text, unaffected by interleaved heartbeat lines"
+summary_val="$(jq -r .summary "$d/out/envelope.json")"
+case "$summary_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope summary" ;; esac

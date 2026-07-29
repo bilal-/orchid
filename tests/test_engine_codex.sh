@@ -296,3 +296,114 @@ run_adapter "$d" || fail "plain codex implement: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "plain codex implement: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "plain codex implement: status ok"
 assert_eq "orchid/codex" "$(jq -r .engine "$d/out/envelope.json")" "plain codex/run still stamps orchid/codex"
+
+# --- 15. v1-m3: codex review REASON line captured into the ok-envelope's
+# summary (200-char cap), same idiom as plugins/engines/agy/run -- but a
+# verdict-only reply stays valid (summary optional; lib/envelope.sh's
+# review/critique union never requires it). ---------------------------------
+d="$(build_request withreason review '#!/usr/bin/env bash
+echo "VERDICT: approve"
+echo "REASON: tests pass and the diff is scoped tightly"')"
+run_adapter "$d" || fail "withreason stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "withreason stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "withreason stub: status ok"
+assert_match "tests pass and the diff is scoped tightly" "$(jq -r .summary "$d/out/envelope.json")" "withreason stub: summary carries REASON text"
+
+d="$(build_request reasoncap review '#!/usr/bin/env bash
+echo "VERDICT: approve"
+echo "REASON: $(printf "x%.0s" $(seq 1 400))"')"
+run_adapter "$d" || fail "reasoncap stub: adapter should exit 0"
+summary_len="$(jq -r '.summary | length' "$d/out/envelope.json")"
+[ "$summary_len" -le 200 ] || fail "reasoncap stub: summary must be capped at 200 chars (got $summary_len)"
+
+d="$(build_request noreason review '#!/usr/bin/env bash
+echo "VERDICT: approve"')"
+run_adapter "$d" || fail "noreason stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "noreason stub: envelope invalid (verdict-only reply must still be valid)"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "noreason stub: status ok (verdict-only reply stays valid)"
+assert_eq "false" "$(jq -r 'has("summary")' "$d/out/envelope.json")" "noreason stub: summary absent when no REASON line"
+
+# --- 16. v1-m3 log streaming: the live-run finding was that a job log stayed
+# ZERO BYTES for the whole run (adapter captured CLI output purely into a
+# bash variable, with nothing written to its own stdout/stderr -- which is
+# what a launcher/tick redirect actually captures into the job log). The fix
+# tees the CLI's stdout to the adapter's own stderr as it arrives. Simulate
+# the launcher's redirect here (`>> log 2>&1`) around a stub codex that
+# sleeps between lines, and assert the log has grown partway through the
+# run -- not just after the adapter exits. ----------------------------------
+d="$(build_request streaming implement '#!/usr/bin/env bash
+echo "line one"
+sleep 0.7
+echo "line two"
+sleep 0.7
+echo "did the work" > streamed.txt
+git add streamed.txt
+git -c user.email=test@orchid.local -c user.name="Orchid Test" commit -q -m "stub commit"
+echo "Implemented with streaming."')"
+joblog="$d/out/job.log"; : > "$joblog"
+(run_adapter "$d" >>"$joblog" 2>&1) &
+adapter_pid=$!
+sleep 0.2
+midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
+wait "$adapter_pid" || fail "streaming stub: adapter should exit 0"
+final_size="$(wc -c <"$joblog" | tr -d ' ')"
+[ "$midrun_size" -gt 0 ] || fail "streaming stub: job log must have grown WHILE the adapter was still running (was $midrun_size bytes at the midpoint) -- this is the stall-detector's liveness signal"
+[ "$final_size" -ge "$midrun_size" ] || fail "streaming stub: job log must not shrink after the adapter exits"
+assert_match "line one" "$(cat "$joblog")" "streaming stub: the CLI's early output reached the job log"
+envelope_validate "$d/out/envelope.json" || fail "streaming stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "streaming stub: status ok"
+
+# --- 17. v1-m3 ORCHID-ACTION belt-and-braces fallback: the orchestrate stub
+# below prints its ORCHID-ACTION marker line ONLY to its own stderr (never
+# stdout) -- simulating a CLI that interleaves its streams so the marker
+# never lands in the adapter's primary `$stdout` capture. The adapter must
+# still fall back to grepping the stderr capture (err_file) it already has
+# on hand, so the marker still reaches actions[] instead of silently
+# vanishing. -----------------------------------------------------------------
+d="$(build_request orchstderr orchestrate '#!/usr/bin/env bash
+echo "ORCHID-ACTION: orchid task advance T001 implementing --reason tick" >&2
+echo "tick complete"')"
+run_adapter "$d" || fail "orchestrate stderr-marker stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "orchestrate stderr-marker stub: envelope invalid"
+assert_eq '["orchid task advance T001 implementing --reason tick"]' "$(jq -c .actions "$d/out/envelope.json")" \
+  "orchestrate stderr-marker stub: fallback captures an ORCHID-ACTION line that only reached stderr"
+
+# --- 18. v1-m3 round 2: adapter heartbeat. probe-stream-buffering.sh's real
+# run found codex BUFFERED -- tee alone (test 16 above) doesn't help a CLI
+# that produces literally NOTHING until it exits (worse than that test's
+# echo/sleep/echo stub, which at least gives tee something to relay). The
+# stub below sleeps the WHOLE time and writes not one byte until the very
+# end; the ONLY thing that can make the job log grow mid-run here is
+# lib/heartbeat.sh's `[hb ...]` liveness line, written to the adapter's own
+# stderr (never the stub's stdout) every ORCHID_HB_INTERVAL_S seconds. Set
+# to 1 here as a TEST-ONLY override (real default is 30s, see
+# lib/heartbeat.sh) so the fixture doesn't need to wait out a real 30s
+# interval for a heartbeat line to land. Also pins that heartbeat lines
+# never leak into actions[]/summary parsing (they're on stderr, structurally
+# separate from the stub's real stdout -- $stdout is filled purely from the
+# FIFO-relayed stdout content -- but pinned here rather than left implicit).
+d="$(build_request heartbeat orchestrate '#!/usr/bin/env bash
+sleep 2.2
+echo "ORCHID-ACTION: orchid task advance T001 implementing --reason tick"
+echo "tick complete"')"
+joblog="$d/out/job.log"; : > "$joblog"
+initial_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
+adapter_pid=$!
+# Sampled at 1.3s: comfortably after the first heartbeat (fires once the
+# 1s ORCHID_HB_INTERVAL_S override elapses) and comfortably before the
+# stub's own 2.2s exit -- genuinely mid-run on both sides.
+sleep 1.3
+midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"; midrun_hb_count="${midrun_hb_count:-0}"
+midrun_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+wait "$adapter_pid" || fail "heartbeat stub: adapter should exit 0"
+[ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+[ "$midrun_mtime" -ge "$initial_mtime" ] || fail "heartbeat stub: job log mtime must have advanced mid-run (initial=$initial_mtime midrun=$midrun_mtime)"
+envelope_validate "$d/out/envelope.json" || fail "heartbeat stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "heartbeat stub: status ok"
+assert_eq '["orchid task advance T001 implementing --reason tick"]' "$(jq -c .actions "$d/out/envelope.json")" \
+  "heartbeat stub: actions[] captures only the real marker, unaffected by interleaved heartbeat lines"
+summary_val="$(jq -r .summary "$d/out/envelope.json")"
+case "$summary_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope summary" ;; esac
+actions_val="$(jq -c .actions "$d/out/envelope.json")"
+case "$actions_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope actions[]" ;; esac

@@ -13,6 +13,7 @@ done
 ORCHID_ROOT="$(cd "$(dirname "$self")/../../.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/heartbeat.sh"
 
 req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
@@ -78,9 +79,29 @@ REASON: one sentence"
 
 err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 
-set +e
-stdout="$(agy -p "$prompt" 2>"$err_file")"
-rc=$?; set -e
+# Streaming + heartbeat (v1-m3; round 1 was `| tee /dev/stderr`; that
+# idiom is still what happens internally (see lib/heartbeat.sh), but
+# round 2's real-CLI probe (tests/probes/probe-stream-buffering.sh,
+# codex/claude only -- agy wasn't part of that probe, but the same
+# buffering risk applies to any CLI) showed tee-ing a stream that never
+# arrives until process exit doesn't make it arrive sooner: the job log
+# would still sit at zero bytes for a real run's whole duration and `jobs
+# check`'s log-mtime stall detector could still falsely kill it).
+# orchid_run_engine_cli (lib/heartbeat.sh) is the definitive fix: it
+# backgrounds agy directly (agy takes its prompt as an argv, not stdin --
+# passed straight through in "$@" below, so no temp-file/stdin plumbing is
+# needed the way codex/claude require) and runs a background heartbeat
+# alongside it that appends one `[hb ...] engine pid <pid> cpu <ps time>`
+# line to this script's own stderr (-> job log, via the launcher's `>>
+# "$log" 2>&1`) every ORCHID_HB_INTERVAL_S seconds for as long as agy's
+# real pid stays alive -- proving the ENGINE IS ALIVE instead of relying on
+# it to flush output. `stdout`/`rc` come back exactly as `stdout="$(cmd
+# 2>err | tee /dev/stderr)"`/`$?` used to; agy's own stderr is still fully
+# redirected to err_file, unaffected by any of this. See
+# lib/heartbeat.sh's header comment for the full design and the accepted
+# trade-off (a hung-but-alive engine now runs to the request's own
+# deadline_s rather than being stall-killed early).
+orchid_run_engine_cli "$err_file" stdout rc "-" "-" agy -p "$prompt"
 stderr="$(cat "$err_file")"
 
 if [ "$rc" -ne 0 ]; then

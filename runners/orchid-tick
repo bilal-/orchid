@@ -54,6 +54,14 @@ export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 # (the pump's next pass retries once ledger/capsuite state has moved on).
 engine="$(resolve_role_available "$repo" orchestrator)"
 
+# Actor identity for this tick's journal entries: rides ORCHID_* into the
+# spawned adapter's stripped environment (spawn_child_env's allowlist,
+# below), and from there into the orchestrator engine's own `orchid`
+# verb calls (task advance, journal add, ...) -- so a headless tick's
+# journal reads "claude/orchestrator tick-e7" instead of the previous
+# generic "operator e7" (libexec/orchid-journal's ORCHID_ACTOR fallback).
+export ORCHID_ACTOR="${engine}/orchestrator tick-e${epoch}"
+
 job_id="tick-e${epoch}"
 mkdir -p "$rt/requests" "$rt/logs"
 req_file="$rt/requests/$job_id.json"
