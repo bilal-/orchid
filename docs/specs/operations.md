@@ -16,6 +16,21 @@ trust are left with a note). At public launch additionally: a pinned
 `curl -fsSL … | bash` one-liner (fetching the same install.sh) and a
 Homebrew tap (v1-m4) — install must feel first-class on a Mac.
 
+### Installing plugins (v1-m3)
+
+`install.sh` sets up the orchid tool itself; third-party PLUGINS (engines,
+hooks, custom roles, archetypes) are a separate, per-plugin lifecycle:
+`orchid plugins install <src>` (a local directory or a git URL — kind/name
+derive from the plugin's own manifest), `orchid plugins update <name>`,
+`orchid plugins remove <name>`, and `orchid plugins audit` (reports
+content drift since install or a tampered `.provenance`) — see
+docs/specs/plugins.md's Plugin lifecycle section. Authoring a new plugin
+starts with `docs/extending/first-engine.md` (a full walkthrough) and
+`docs/extending/conformance.md` (the `orchid plugins conform` seven-check
+reference) — the conformance kit is the pre-install self-check every
+third-party plugin should pass before `orchid plugins install` ever runs
+against it.
+
 ### Connecting the CLIs (per-engine setup)
 
 Orchid never manages vendor auth — each CLI's own login is the source of

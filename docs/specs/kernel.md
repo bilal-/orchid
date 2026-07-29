@@ -119,9 +119,10 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 | `journal.md` | `orchid journal add` (also auto-written by reason-bearing verbs) |
 | `lessons.md` | `orchid lessons add/update/retire/consolidate` |
 | `baseline.md` | `orchid init` |
-| `reviews/*` | `orchid jobs reconcile` (envelopes), `orchid verify`/`orchid merge` (evidence), `orchid run accept` (acceptance) |
+| `reviews/*` | `orchid jobs reconcile` (envelopes, including hook-point envelopes filed as `<task>-a<n>-hook-<point>.json`, and the plan-critique envelopes filed as `plan-a<n>-plan_critic.json`), `orchid verify`/`orchid merge` (evidence), `orchid run accept` (acceptance) |
 | `plugins.lock` | `orchid plugins lock` |
 | `BLOCKERS.md` | `orchid notify` |
+| `runs/<run_id>/` | `orchid run new` (archival move of the just-finished run's `tasks/`, `reviews/`, `journal.md`, `roadmap.md`, `BLOCKERS.md` — written once, at rollover, never touched again) |
 
 Task/run schemas are versioned (`schema: 1` in frontmatter) and include the
 scheduling and budget fields the loop relies on: `exclusive`, `resources`,
@@ -275,6 +276,18 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   exact candidate to rework with logs. **v0 baseline semantics:** the suite
   must pass, full stop; `baseline.md` records pre-existing failures for
   humans. Baseline-aware comparison is post-v1.
+  **Known limitation (m3 ledger, found live):** the integration-ref advance
+  above is a bare `git update-ref` — it never touches any OTHER checkout of
+  that branch. A long-lived checkout of the integration branch left open
+  across a merge (e.g. an operator inspecting it by hand) keeps a stale
+  index/tree; committing directly from that stale checkout silently REVERTS
+  the just-merged work (the commit's parent is still the pre-merge SHA).
+  There is no kernel guard against this today — the operator workaround is
+  to never hand-commit into a checkout of the integration branch without
+  refreshing it first (`git checkout HEAD -- .` or a fresh `git pull`).
+  Roadmap candidates (staged-deletion detection, a safe operator
+  config-commit verb, worktree-aware ref advance) are tracked in
+  roadmap.md's v1-m4 ledger.
 - **Attempt fairness (tier-boundary clean):** `orchid task advance` to
   rework increments `attempts` BY DEFAULT — the deterministic verb never
   judges semantics. The orchestrator may pass `--waive-attempt --reason`
@@ -287,9 +300,14 @@ pending → implementing → testing → reviewing → arbitrating → merging �
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
 implementer_engine_id, base_sha, candidate_sha, risk_tier,
-blocking_severity, stop_condition, engine, effort, acceptance_criteria,
-verification_commands, resources, exclusive, wallclock_budget_s,
-started_at, created, updated`.
+blocking_severity, stop_condition, hook_guidance, engine, effort,
+acceptance_criteria, verification_commands, resources, exclusive,
+wallclock_budget_s, started_at, created, updated`. `hook_guidance` (v1-m3):
+written by the orchestrator from a bound `hook.on_verify_fail` handler's
+`.artifact.guidance` string, via `orchid task set <id> hook_guidance
+"..."`, before the rework advance (PROTOCOL.md, THE TICK's `testing` FAIL
+arm) — the only frontmatter field a hook handler's own artifact ever
+reaches, and only through that ordinary verb, never written directly.
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or
@@ -425,7 +443,7 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   Entries are prose for successors and humans; NEVER parsed for control
   flow — the state machine remains the only authority.
 
-### Cross-run lessons (`lessons.md`, v1)
+### Cross-run lessons (`lessons.md`, v1-m3 — SHIPPED)
 
 A lesson is a durable repo truth worth remembering across runs: a flaky
 test, an unstated convention, a build quirk, an engine-specific weakness
@@ -474,7 +492,7 @@ recipients get what their judgment needs, nothing more:
 | implementer | context.md + lessons.md + task body (incl. its OWN rework history and named dead-ends) |
 | reviewer | context.md + lessons.md + diff/manifest + acceptance criteria + stop condition (never other tasks' state) |
 | arbiter | both review envelopes + this task's journal history + diff on demand |
-| plan_critic | requirements + draft roadmap + lessons.md |
+| plan_critic | requirements + draft roadmap + concatenated tasks.md (every current `tasks/*.md`, tail-first truncatable) + lessons.md |
 | orchestrator (tick) | status + active task files + decision capsules + journal tail + lessons.md (it owns lessons hygiene) + open answers |
 
 ### Resumption procedure (reconcile FIRST, then bounded snapshot)

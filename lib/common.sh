@@ -5,7 +5,7 @@
 # `requires_orchid=>=X.Y` against it (major.minor only -- semver-ish, per
 # docs/specs/plugins.md's Manifest section). Bump alongside a milestone,
 # never mid-milestone.
-ORCHID_VERSION="1.0.0-m2"
+ORCHID_VERSION="1.0.0-m3"
 
 orchid_die() { echo "orchid: $*" >&2; exit 1; }
 atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv "$t" "$d"; }

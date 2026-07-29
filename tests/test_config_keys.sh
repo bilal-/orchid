@@ -66,3 +66,28 @@ for key in concurrency rate_limit_backoff_s engine_fail_threshold \
   key_known "$key" || fail "v1-m2 config key '$key' missing from lib/config-keys.txt"
   grep -qF "$key" "$EXAMPLE" || fail "v1-m2 config key '$key' missing from orchid.config.example"
 done
+
+# -- 4. Every m3-new key (Task 12) is present everywhere -- hook.<point>
+# family + hook_timeout_s (lib/hooks.sh, Task 6) and lessons_max_bytes
+# (lib/lessons.sh, Task 11). role.<id>.blocking is checked against
+# config-keys.txt only: it is a PATTERN (a literal "<id>" placeholder), not
+# a real key=value line, so orchid.config.example documents it in prose +
+# a commented example (`role.<id>.blocking=false`) that check #1 above
+# can't parse as a key=value assignment either -- its actual behavior is
+# covered functionally by tests/test_roles.sh and tests/test_custom_roles.sh
+# (role_binding_blocking), not this doc-coverage check.
+for key in hook.after_plan_draft hook.before_arbitration hook.on_verify_fail \
+           hook.before_merge hook.on_blocker hook_timeout_s lessons_max_bytes; do
+  key_known "$key" || fail "v1-m3 config key '$key' missing from lib/config-keys.txt"
+  grep -qF "$key" "$EXAMPLE" || fail "v1-m3 config key '$key' missing from orchid.config.example"
+done
+key_known "role.<id>.blocking" || fail "v1-m3 config key pattern 'role.<id>.blocking' missing from lib/config-keys.txt"
+grep -qF "role.<id>.blocking" "$EXAMPLE" || fail "v1-m3 config key pattern 'role.<id>.blocking' not documented in orchid.config.example"
+
+# ORCHID_HB_INTERVAL_S (lib/heartbeat.sh, Task 3) is deliberately an
+# ENV-ONLY override, never layered through config_get -- it must NOT appear
+# in lib/config-keys.txt (which is specifically the layered-config key
+# reference: env > repo orchid.config > user ~/.orchid/config > defaults).
+if key_known ORCHID_HB_INTERVAL_S; then
+  fail "ORCHID_HB_INTERVAL_S is an env-only override (lib/heartbeat.sh) -- it must not be listed in lib/config-keys.txt as a layered config key"
+fi

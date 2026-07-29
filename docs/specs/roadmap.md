@@ -89,11 +89,80 @@
     the grand proof is the Pathway to Peace greenfield app under webBooks —
     post-m2, running once this branch lands, driven entirely by the
     autonomy this milestone built.
-  - **v1-m3 (SDLC suite + custom extensibility):** hooks; CUSTOM role
-    registration opens (core registry existed since m1);
-    `refactor`/`test`/`migrate` archetypes with their tooling adapters;
-    third-party plugin lifecycle UX (`install/update/remove/test/audit`) +
-    distributable conformance kit.
+  - **v1-m3 (SDLC suite + custom extensibility) — SHIPPED:** kernel
+    hardening from the m2 dogfood ledger (`fm_set` empty-value in-place
+    replacement, an ok-only review-count gate, the verb-lock elapsed-time
+    budget + empty-dir break, `ledger_show`'s sub-threshold reporting, a
+    concurrency guard, the empty-CSV manifest fix); split-brain checkout
+    detection (`orchid_split_brain` wired into `doctor`/`status`/the pump,
+    plus an `init` worktree hint); tick actor identity (`ORCHID_ACTOR`) +
+    adapter log streaming + a heartbeat (`lib/heartbeat.sh`, the
+    `ORCHID_HB_INTERVAL_S` env-only override) + codex REASON capture + a
+    no-resume tick instruction; plan-scoped critique jobs (the reserved task
+    id `plan`, plan packs, PROTOCOL.md's PLANNING critique loop); hooks
+    (`lib/hooks.sh`, `hook.<point>` config bindings, the `operation=hook`
+    request/envelope shape, the kernel-enforced `before_merge` gate at exit
+    15, `hook_guidance`); CUSTOM role registration (core registry existed
+    since m1; `kind=role` plugins, `descriptor.role` discovery on the same
+    search path as engines, `role.<id>.blocking`); `refactor`/`test`/
+    `migrate` archetypes with their templates; third-party plugin lifecycle
+    UX (`orchid plugins install/update/remove/audit`, digest-verified
+    `.provenance` with `sig=`, path-independent `plugin_digest_content`) +
+    the distributable conformance kit (`orchid plugins conform`'s seven
+    checks, `docs/extending/first-engine.md` + `conformance.md`); and
+    cross-run lessons + run rollover (`orchid lessons
+    add/update/retire/consolidate`, per-role pack injection, `orchid run
+    new`'s `runs/<run_id>/` archival with the context+active-lessons
+    inheritance boundary, temp-worktree CAS shadow-swap sync-back with
+    git-checkout recovery). **Scope addition, recorded honestly:** the
+    lessons lifecycle and run rollover are NOT in this bullet's original
+    text above (they were slated only generically under kernel.md's
+    `lessons.md, v1` placeholder) — they were pulled forward into m3 proper
+    because the archetype and plugin-lifecycle work this milestone shipped
+    only becomes safely dogfoodable across MULTIPLE runs of the same repo
+    once a defined cross-run memory boundary exists; shipping `orchid run
+    new` without ALSO shipping the lessons lifecycle it depends on
+    (carry-forward vs. archive) would have left that boundary undefined.
+    All implemented and tested, not merely specified.
+  - **v1-m3 ledger — carried into v1-m4 as candidates, not yet scheduled**
+    (found live, during this milestone's own dogfooding; none of these are
+    fixed on this branch):
+    - **(HIGH) Ref-only merges leave a stale checked-out integration
+      worktree.** `orchid merge` advances the integration branch with `git
+      update-ref` alone (kernel.md, Task lifecycle) — it never touches any
+      OTHER checkout of that branch. A long-lived checkout left open across
+      a merge (e.g. an operator inspecting the integration branch) keeps a
+      stale index/tree; a direct operator commit made from it silently
+      REVERTS the just-merged work (its parent is still the pre-merge SHA).
+      Candidates: staged-deletion detection in `doctor`/`status` (a
+      revert-shaped commit deletes files a passing task just added); a safe
+      operator config-commit verb, built on the same plan-apply-style
+      temp-worktree pattern `orchid plan apply`/`orchid run new` already
+      use, so a human edit never touches a live checkout directly;
+      worktree-aware ref advance (refresh any other checkout of the
+      integration branch as part of the same transaction `update-ref`
+      performs, not left to operator discipline).
+    - **pack_build packs the full diff regardless of reviewer capability.**
+      `lib/pack.sh`'s review/critique pack always ships `git diff
+      base..candidate` in full — it never checks whether the launched
+      reviewer actually declares `workspace_read` (and so could read the
+      diff off its own worktree checkout instead). Bulk-content tasks
+      therefore need an operator budget raise (`pack_budget_bytes`) that a
+      worktree-capable reviewer shouldn't need at all. Roadmap item: a
+      worktree-read review pack that ships a reference + changed-path list
+      instead of the literal diff when the launched reviewer is
+      worktree-capable (a scoped-reviewer plugin built for the webBooks
+      greenfield dogfood — Distribution above — is the prototype for this,
+      outside this repo).
+    - **`jobs gc` cannot reap a pid-0 (prepared-never-launched) manifest.**
+      By design (INV-01-clean: gc never kills anything live), a manifest
+      whose launch failed before it ever recorded a real pid stays
+      `prepared` forever — `jobs gc` explicitly skips `pid: 0` entries, and
+      `jobs check` re-reports the same one every pass. Harmless today (rare:
+      only a launcher crash between `jobs prepare` and the actual spawn
+      produces one) but perpetual noise once it happens. Roadmap note: a
+      bounded pid-0 reap path (age-gated, distinct from the live-pid gc
+      path) for v1-m4.
   - **v1-m4 (ecosystem + polish):** split into release-blocking core —
     static status page, service packaging (launchd/cron pump), Homebrew
     tap, full docs suite — and CONDITIONAL reference adapters (OpenClaw
