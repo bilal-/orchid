@@ -220,6 +220,33 @@ manifest_validate() {  # plugin-dir
       ;;
   esac
 
+  # kind=role (v1-m3 Task 7): a custom role plugin has no entrypoint/
+  # capabilities of its own (it is data describing a ROLE, not something
+  # invoked) -- the manifest_validate case above deliberately excludes it
+  # from the entrypoint requirement. Instead it must ship a sibling
+  # `descriptor.role` (same key=value schema as a built-in .role file:
+  # id/requires/forbids/description, plus an optional hook_bindings=
+  # recorded for doctor display only in m3) whose own `id` names exactly
+  # the manifest id's NAME part (the text after the qualifying `/`) -- e.g.
+  # manifest id=acme/researcher requires descriptor.role's id=researcher.
+  # This is what lets lib/roles.sh's _role_file discovery trust a
+  # discovered role plugin dir's descriptor without re-deriving the role
+  # name from the directory name (which `orchid plugins list`'s discovery
+  # never assumes either -- manifest-derived, not guessed).
+  if [ "$kind" = role ]; then
+    local rf="$dir/descriptor.role" rid
+    if [ ! -f "$rf" ]; then
+      echo "FAIL: $dir: descriptor.role missing (required for kind=role)"; ok=0
+    else
+      rid="$(_cfg_file_get "$rf" id)"
+      if [ -z "$rid" ]; then
+        echo "FAIL: $dir: descriptor.role missing 'id' key"; ok=0
+      elif [ "$rid" != "${id#*/}" ]; then
+        echo "FAIL: $dir: descriptor.role id '$rid' does not match manifest id's name part '${id#*/}'"; ok=0
+      fi
+    fi
+  fi
+
   # kind=hook (v1-m3): validated with the SAME fields as kind=engine (entry-
   # point above, capabilities here) -- hook handlers are engine-kind plugins
   # invoked with operation=hook (docs/specs/plugins.md, Hooks section), not a

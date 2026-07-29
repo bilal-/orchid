@@ -140,3 +140,35 @@ printf '#!/usr/bin/env bash\ntrue\n' > "$homeL/.orchid/plugins/engines/malformed
 rc=0; out="$(HOME="$homeL" ORCHID_REPO="$repoI" ORCHID_ENGINES_DIR="$repoI/eng" "$ORCHID_BIN" doctor)" || rc=$?
 assert_eq 1 "$rc" "doctor FAILs (exit 1) when a discovered plugin manifest is malformed"
 assert_match "FAIL.*validat" "$out" "doctor reports the malformed manifest as a validate FAIL"
+
+# -- v1-m3 Task 7: a kind=role plugin (plugin.conf + descriptor.role) lists
+# and validates like any other plugin. Discovery is generic (any <root>/
+# <kind-dir>/<name>/plugin.conf), so a "roles" dir needs no special-casing
+# here -- this just proves that holds for kind=role specifically.
+mk_role_plugin() {  # dir manifest-id role-id requires
+  mkdir -p "$1"
+  printf 'manifest_version=1\nid=%s\nversion=0.1.0\nkind=role\napi_version=1\n' "$2" > "$1/plugin.conf"
+  printf 'id=%s\nrequires=%s\ndescription=test role plugin\n' "$3" "$4" > "$1/descriptor.role"
+}
+
+homeR="$WORK/homeR"; mkdir -p "$homeR/.orchid"
+mk_role_plugin "$homeR/.orchid/plugins/roles/researcher" acme/researcher researcher structured_text,citations
+out="$(HOME="$homeR" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
+assert_eq 0 "$rc" "plugins list exits 0 with a planted kind=role plugin"
+assert_match "$(row_re acme/researcher role 0.1.0 user user)" "$out" "kind=role plugin lists with kind=role, origin=user, trust=user"
+lines="$(echo "$out" | wc -l | tr -d ' ')"
+assert_eq 7 "$lines" "6 built-ins + 1 role plugin"
+
+out="$(HOME="$homeR" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate acme/researcher)"; rc=$?
+assert_eq 0 "$rc" "validate acme/researcher passes (kind=role needs no entrypoint)"
+assert_match "^ok" "$out" "ok line printed for the role plugin"
+
+# a kind=role plugin missing descriptor.role fails validate/--all (exit 13,
+# same aggregate-fail discipline as any other malformed manifest)
+homeRB="$WORK/homeRB"
+mkdir -p "$homeRB/.orchid/plugins/roles/brokenrole"
+printf 'manifest_version=1\nid=acme/brokenrole\nversion=0.1.0\nkind=role\napi_version=1\n' \
+  > "$homeRB/.orchid/plugins/roles/brokenrole/plugin.conf"
+rc=0; out="$(HOME="$homeRB" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate --all)" || rc=$?
+[ "$rc" -ne 0 ] || fail "validate --all must fail a kind=role plugin with no descriptor.role"
+assert_match "FAIL.*descriptor.role missing" "$out" "validate --all names the missing descriptor.role"

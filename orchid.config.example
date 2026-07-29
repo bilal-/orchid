@@ -13,6 +13,17 @@ role.arbiter=claude
 role.plan_critic=codex
 pack_budget_bytes=65536
 
+# Custom roles (v1-m3 Task 7): a role.<id>= binding for any id that is NOT
+# one of the five above resolves a role plugin (kind=role, shipped with a
+# descriptor.role -- docs/specs/plugins.md) discovered on the same search
+# path as engines; `orchid doctor` FAILs if the descriptor isn't
+# discoverable. Every role.<id> binding, built-in or custom, additionally
+# accepts a sibling role.<id>.blocking=false (default true) marking it
+# non-blocking: a failed non-blocking role's job is journaled and the run
+# continues rather than infra-failing (see docs/specs/operations.md).
+# role.<id>=<engine>[,<engine>...]
+# role.<id>.blocking=false
+
 # Dual review routing (v1-m2): review.<tier> is a comma-separated failover
 # chain of engine names consulted for the risk-tiered reviewer slots (see
 # docs/specs/kernel.md's Independence section) — low tier wants one

@@ -22,11 +22,23 @@ resolve_role() {  # repo role -> primary engine name (first entry of the chain)
 
 # resolve_role_chain <repo> <role> -- prints the role's preference chain, one
 # engine name per line: the configured `role.<role>=` value split on comma,
-# or (absent config) the built-in default chain. A scalar (no-comma) config
-# value is a one-entry chain, same as before v1-m2.
+# or (absent config, one of the five built-ins) the built-in default chain.
+# A scalar (no-comma) config value is a one-entry chain, same as before
+# v1-m2. A CUSTOM role (not one of the five built-ins, Task 7) has no
+# default chain at all -- it resolves PURELY from config -- so an unbound
+# one (no `role.<custom>=` anywhere) is a distinct, more specific failure
+# than "chain resolved to nothing eligible": exit 14 naming exactly the
+# config key to set, from THIS function, before resolve_role_available's own
+# chain-walk (which would otherwise just report an empty chain with no
+# disqualifiers, a confusing dead end for an operator).
 resolve_role_chain() {
-  local v; v="$(config_get "$1" "role.$2")"
-  [ -n "$v" ] || v="$(_role_default_chain "$2")"
+  local repo="$1" role="$2" v
+  v="$(config_get "$repo" "role.$role")"
+  [ -n "$v" ] || v="$(_role_default_chain "$role")"
+  if [ -z "$v" ] && ! _role_is_builtin "$role"; then
+    echo "orchid: no binding for custom role '$role' (set role.$role=...)" >&2
+    return 14
+  fi
   echo "$v" | tr ',' '\n'
 }
 resolve_engine_exe() {  # name -> executable path (search path; dup = error)
@@ -169,7 +181,11 @@ resolve_role_available() {
   local repo="$1" role="$2" chain engine dir reason skip_engine="" idx=0 disq=""
 
   [ "$role" = plan_critic ] && skip_engine="$(resolve_role "$repo" orchestrator)"
-  chain="$(resolve_role_chain "$repo" "$role")"
+  # An unbound custom role's exit 14 (its own specific "no binding for
+  # custom role" message, already on stderr) is propagated verbatim rather
+  # than falling through to the generic "no eligible engine" message below,
+  # which would otherwise report an empty chain with zero disqualifiers.
+  chain="$(resolve_role_chain "$repo" "$role")" || return $?
 
   while IFS= read -r engine; do
     [ -n "$engine" ] || continue
