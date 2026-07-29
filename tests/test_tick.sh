@@ -14,10 +14,12 @@ export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 export ORCHID_ENGINES_DIR="$WORK/eng"; mkdir -p "$WORK/eng"
 
 # mk_stub_engine <name> -- a stub orchestrator engine dir. `capabilities=
-# shell,git` matches roles/orchestrator.role's `requires=shell,git`, and
-# `requires_binaries=jq` sidesteps the pre-existing bash-3.2 empty-CSV quirk
-# in lib/manifest.sh (same fixture convention as tests/test_failover.sh's
-# mk_engine).
+# shell,git` matches roles/orchestrator.role's `requires=shell,git`.
+# `requires_binaries=jq` is just a representative populated value here, not a
+# required workaround -- the bash-3.2 empty-CSV/array quirk this used to
+# sidestep is fixed directly in lib/manifest.sh's _manifest_split_csv now
+# (see its own header comment; tests/test_failover.sh's mk_engine
+# demonstrates the fix by dropping this key entirely).
 mk_stub_engine() {
   local name="$1" dir="$WORK/eng/$1"
   mkdir -p "$dir"

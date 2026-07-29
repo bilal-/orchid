@@ -154,5 +154,12 @@ orchid_run_engine_cli() {
 
   printf -v "$_out_var" '%s' "$(cat "$_hb_out_tmp")"
   printf -v "$_rc_var" '%s' "$_hb_rc"
-  rm -f "$_hb_fifo" "$_hb_out_tmp" $_hb_prompt_file
+  # ${_hb_prompt_file:+"$_hb_prompt_file"}, NOT a bare unquoted
+  # $_hb_prompt_file: agy's "no stdin" case (`_hb_prompt` = "-") leaves
+  # _hb_prompt_file empty, and an unquoted empty expansion happens to vanish
+  # cleanly under word-splitting -- but a genuinely set path containing a
+  # space or glob metacharacter would otherwise be re-split/re-globbed here.
+  # The :+ guard also sidesteps that word-splitting on the empty case
+  # entirely rather than relying on it.
+  rm -f "$_hb_fifo" "$_hb_out_tmp" ${_hb_prompt_file:+"$_hb_prompt_file"}
 }

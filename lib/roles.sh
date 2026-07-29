@@ -115,8 +115,16 @@ role_forbids() {  # role -> forbidden capability atoms, one per line
 # role ids even exist in config at all.
 _role_custom_names() {
   local repo="$1" f all rid
-  all="$( { [ -f "$repo/orchid.config" ] && grep -oE '^role\.[a-zA-Z0-9_]+' "$repo/orchid.config"
-            [ -f "$HOME/.orchid/config" ] && grep -oE '^role\.[a-zA-Z0-9_]+' "$HOME/.orchid/config"
+  # `[a-zA-Z0-9_-]+` (WITH the hyphen): a custom role id like
+  # `role.code-reviewer=...` is a perfectly legal config key (plugin/role
+  # NAMEs elsewhere in this codebase already allow hyphens -- e.g. shipped
+  # engine dir names), but the previous `[a-zA-Z0-9_]+` class silently
+  # stopped matching at the first `-`, so `role.code-reviewer` was captured
+  # as just "code" -- never discovered as its own custom role at all (a
+  # doctor/resolver miss, not a crash: the id this produced simply never
+  # matched anything real).
+  all="$( { [ -f "$repo/orchid.config" ] && grep -oE '^role\.[a-zA-Z0-9_-]+' "$repo/orchid.config"
+            [ -f "$HOME/.orchid/config" ] && grep -oE '^role\.[a-zA-Z0-9_-]+' "$HOME/.orchid/config"
             true; } | sed -E 's/^role\.//' | sort -u)"
   while IFS= read -r rid; do
     [ -n "$rid" ] || continue

@@ -284,8 +284,13 @@ _conform_check_no_output_pollution() {
   after="$(find "$scratch" -mindepth 1 | sort)"
   rm -f "$reqfile"
 
+  # -vxF (exact whole-line match), NOT -vF (substring): a plain -vF would
+  # also filter out a genuinely polluting path that merely CONTAINS outfile
+  # as a substring (e.g. an adapter dropping "envelope.json.bak" alongside
+  # the real "envelope.json" output) -- silently passing this check on
+  # exactly the leftover file it exists to catch.
   new_paths="$(comm -13 <(printf '%s\n' "$before") <(printf '%s\n' "$after") 2>/dev/null \
-    | grep -vF "$outfile" || true)"
+    | grep -vxF "$outfile" || true)"
 
   if [ -n "$new_paths" ]; then
     rm -rf "$scratch"

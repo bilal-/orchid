@@ -185,5 +185,14 @@ if orchid_split_brain "$repo"; then
 else
   ok "no split-brain checkout state"
 fi
+# Stale integration checkout (v1-m3 final review, CRITICAL 2): see
+# lib/common.sh's orchid_stale_checkout for the full signature this detects
+# (a live run's 6638-line silent revert). Report-only, like every other
+# doctor check -- it never touches the index or working tree itself.
+if orchid_stale_checkout "$repo"; then
+  bad "integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here"
+else
+  ok "no stale integration checkout state"
+fi
 [ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins require 'orchid plugins trust <dir>' to execute (see plugins: section above for current trust status, INV-09)"
 [ "$fails" -eq 0 ] || exit 1

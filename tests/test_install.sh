@@ -159,6 +159,20 @@ grep -qE -- '--hook' "$REPO_ROOT/runners/orchid-launch" \
 grep -qE -- '--hook' "$REPO_ROOT/libexec/orchid-jobs" \
   || fail "PROTOCOL.md names '--hook' but libexec/orchid-jobs has no --hook handling"
 
+# v1-m3 final review (CRITICAL 1): PROTOCOL.md's Preamble must state the
+# no-external-mutation policy (live ticks pushing branches to origin was a
+# real finding), and both orchestrate-capable engine adapters must mirror it
+# into their OWN instruction block -- the strings those adapters actually
+# feed the engine, not just PROTOCOL.md's own prose -- same targeted-check
+# pattern as the --hook check above.
+push_policy_count="$(grep -c 'No external mutation' "$PROTOCOL")"
+[ "$push_policy_count" -gt 0 ] || fail "PROTOCOL.md never states the no-external-mutation policy"
+grep -q 'git push' "$PROTOCOL" || fail "PROTOCOL.md's no-external-mutation bullet never names git push"
+for adapter in claude codex; do
+  grep -q 'git push' "$REPO_ROOT/plugins/engines/$adapter/run" \
+    || fail "plugins/engines/$adapter/run's orchestrate instructions never mirror the no-external-mutation policy (git push)"
+done
+
 # `orchid task set <id> hook_guidance ...` (PROTOCOL's on_verify_fail step):
 # hook_guidance must actually be settable -- i.e. absent from orchid-task's
 # `set` deny-list -- not just mentioned in prose.

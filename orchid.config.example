@@ -61,8 +61,10 @@ pack_budget_bytes=65536
 # arbiter_wait_s=14400
 
 # v1-m3: kernel-owned hook points (docs/specs/plugins.md, Hooks section).
-# Each hook.<point> is an ordered, comma-separated list of plugin-ids;
-# `:required` marks a handler whose failure blocks the edge (exit 15) --
+# Each hook.<point> is an ordered, comma-separated list of plugin NAMEs (the
+# short discovery name, e.g. "stubhook" -- a qualified id like "acme/stubhook"
+# is not accepted in a binding in v1); `:required` marks a handler whose
+# failure blocks the edge (exit 15) --
 # an optional handler's failure is only journaled and skipped. No built-in
 # defaults; an unbound point runs no handler at all.
 # hook.after_plan_draft=

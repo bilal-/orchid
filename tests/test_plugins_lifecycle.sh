@@ -42,6 +42,24 @@ assert_eq "installed_digest=$expect_digest" "$digest_line" \
 assert_match "orchid plugins test widget <role>" "$out" "install prints next-step: plugins test <name> <role>"
 assert_match "orchid plugins lock" "$out" "install prints next-step: plugins lock"
 
+# ---------------------------------------------------------------------------
+# v1-m3 final review (TRIVIA): the half-installed-dir cleanup trap must be
+# set BEFORE `cp -R` runs, not after -- a `cp -R` that itself fails partway
+# (an unreadable file deep in the source tree, here) used to leave a
+# partial destination dir behind forever, since no trap was registered yet
+# at the point of failure.
+# ---------------------------------------------------------------------------
+homeCpFail="$WORK/homeCpFail"; mkdir -p "$homeCpFail/.orchid"
+repoCpFail="$WORK/repoCpFail"; mkdir -p "$repoCpFail"
+srcCpFail="$WORK/srcCpFail"; mk_engine "$srcCpFail" acme/cpfail 0.1.0
+mkdir -p "$srcCpFail/sub"; echo "unreadable" > "$srcCpFail/sub/blocked"; chmod 000 "$srcCpFail/sub/blocked"
+rc=0
+HOME="$homeCpFail" ORCHID_REPO="$repoCpFail" "$ORCHID_BIN" plugins install "$srcCpFail" >/dev/null 2>&1 || rc=$?
+chmod 644 "$srcCpFail/sub/blocked"   # restore so the scratch dir can be cleaned up on exit
+[ "$rc" -ne 0 ] || fail "install with an unreadable source file must fail, not silently succeed"
+[ ! -e "$homeCpFail/.orchid/plugins/engines/cpfail" ] \
+  || fail "a cp -R failure mid-install must not leave a half-installed plugin dir behind"
+
 # -- duplicate install is refused, pointed at 'update' ----------------------
 rc=0; out="$(HOME="$homeA" ORCHID_REPO="$repoA" "$ORCHID_BIN" plugins install "$srcA" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "duplicate install must be refused"

@@ -113,6 +113,21 @@ assert_eq 0 "$rc" "doctor passes once the researcher descriptor is discoverable 
 assert_match "^ok: role researcher -> citer \(custom, descriptor: $home/.orchid/plugins/roles/researcher/descriptor.role\)\$" "$out" "doctor's custom-role line names the resolved chain and descriptor path"
 rm -f "$repo/orchid.config"
 
+# -- v1-m3 final review (TRIVIA): _role_custom_names must capture a HYPHENATED
+# custom role id whole (e.g. "code-reviewer"), not stop at the first "-" --
+# regression test for a regex that used to only allow [a-zA-Z0-9_], silently
+# truncating "role.code-reviewer=..." down to just "code" and never
+# discovering the real custom role at all. Scoped to _role_custom_names
+# itself (not a full doctor round-trip): config_get's env-var shadow lookup
+# (`_cfg_env_name`, lib/common.sh) has its own separate, pre-existing
+# hyphen-handling gap unrelated to this regex -- out of scope here. -----------
+mk_role_plugin "$home/.orchid/plugins/roles/code-reviewer" acme/code-reviewer code-reviewer structured_text
+printf 'role.code-reviewer=citer\n' > "$repo/orchid.config"
+hyphen_names="$(HOME="$home" ORCHID_ROOT="$REPO_ROOT" _role_custom_names "$repo")"
+assert_match "^code-reviewer$" "$hyphen_names" "_role_custom_names captures a hyphenated role id whole"
+echo "$hyphen_names" | grep -qxF "code" && fail "_role_custom_names must not truncate a hyphenated id at its first hyphen"
+rm -f "$repo/orchid.config"
+
 # -- INV-10: a custom role plugin whose descriptor id shadows a BUILT-IN
 # role name (reviewer) is a collision, never a silent shadow -------------
 homeS="$WORK/homeS"; mkdir -p "$homeS/.orchid"

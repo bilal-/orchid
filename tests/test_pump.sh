@@ -16,9 +16,12 @@ export ORCHID_ENGINES_DIR="$WORK/eng"; mkdir -p "$WORK/eng"
 PUMP="$REPO_ROOT/runners/orchid-pump"
 
 # mk_stub_engine <name> -- a stub orchestrator engine (capabilities=shell,git
-# matches roles/orchestrator.role's requires=shell,git; requires_binaries=jq
-# sidesteps the pre-existing bash-3.2 empty-CSV quirk, same fixture
-# convention as tests/test_tick.sh/test_failover.sh). Its `run` touches a
+# matches roles/orchestrator.role's requires=shell,git). requires_binaries=jq
+# is just a representative populated value here, not a required workaround --
+# the bash-3.2 empty-CSV/array quirk this used to sidestep is fixed directly
+# in lib/manifest.sh's _manifest_split_csv now (see its own header comment;
+# tests/test_failover.sh's mk_engine demonstrates the fix by dropping this
+# key entirely). Its `run` touches a
 # per-engine marker file (so a scenario can assert exactly which engine, if
 # any, was actually spawned) and writes a valid `ok` orchestrate envelope.
 mk_stub_engine() {

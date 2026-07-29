@@ -176,3 +176,51 @@ assert_match "FAIL: split-brain checkout: work from the integration branch or a 
 # orchid/integration) must be unaffected by the new check.
 echo "$out1" | grep -q "FAIL: split-brain" && fail "doctor must not flag split-brain on a healthy post-init repo"
 assert_match "ok: no split-brain checkout state" "$out1" "doctor's split-brain check passes on a healthy post-init repo"
+
+# ---------------------------------------------------------------------------
+# v1-m3 final review (CRITICAL 2): stale-integration-checkout detection --
+# the live run's 6638-line silent revert. A worktree parked ON the
+# integration branch whose ref gets advanced from OUTSIDE it (a raw `git
+# update-ref`, never a `checkout`/`commit` made IN this worktree) falls
+# behind its own branch pointer -- `git diff --cached --name-status` then
+# shows a "D" row per path the new HEAD carries that the (stale) index does
+# not. Both `orchid doctor` (FAIL) and `orchid status` (first-line WARNING,
+# after any split-brain warning) must catch this; read-only, no mutation.
+# ---------------------------------------------------------------------------
+stale_bare="$WORK/stale-bare"; mkdir -p "$stale_bare"
+(cd "$stale_bare" && git init -q . && git commit -q --allow-empty -m root)
+ORCHID_REPO="$stale_bare" "$ORCHID_BIN" init >/dev/null
+stale_wt="$WORK/stale-wt"
+git -C "$stale_bare" worktree add -q "$stale_wt" orchid/integration
+
+# Healthy checkout, unchanged: a freshly-added worktree of the integration
+# branch, before anything advances the ref out from under it.
+healthy_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || true
+assert_match "ok: no stale integration checkout state" "$healthy_doctor_out" \
+  "doctor: a healthy integration-branch worktree is unaffected"
+healthy_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
+echo "$healthy_status_out" | grep -q "integration checkout is stale" \
+  && fail "status must not warn stale on a healthy integration-branch worktree"
+
+# Advance the ref from OUTSIDE $stale_wt: a second, DETACHED worktree of the
+# same commit (git refuses a second worktree with the branch itself checked
+# out) commits normally, then the branch ref is force-moved to that new
+# commit via a raw update-ref -- $stale_wt's own index/working tree are never
+# touched, reproducing the update-ref-under-a-checkout signature exactly.
+stale_wt2="$WORK/stale-wt2"
+git -C "$stale_bare" worktree add -q --detach "$stale_wt2" orchid/integration
+echo "new file from elsewhere" > "$stale_wt2/elsewhere.txt"
+git -C "$stale_wt2" add elsewhere.txt
+git -C "$stale_wt2" commit -q -m "advance integration from elsewhere"
+stale_new_sha="$(git -C "$stale_wt2" rev-parse HEAD)"
+git -C "$stale_bare" update-ref refs/heads/orchid/integration "$stale_new_sha"
+
+rc=0
+stale_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "doctor must FAIL on a stale integration checkout"
+assert_match "FAIL: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here" \
+  "$stale_doctor_out" "doctor names the stale-checkout fix"
+
+stale_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
+assert_match "WARNING: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here" \
+  "$stale_status_out" "status warns about the stale integration checkout"

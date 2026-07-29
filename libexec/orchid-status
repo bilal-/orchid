@@ -11,6 +11,12 @@ explain=0; [ "${1:-}" = "--explain" ] && explain=1
 if orchid_split_brain "$repo"; then
   echo "WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)"
 fi
+# Stale integration checkout (v1-m3 final review, CRITICAL 2): printed right
+# after any split-brain warning, same "tell the operator before anything
+# else on this page" placement -- see lib/common.sh's orchid_stale_checkout.
+if orchid_stale_checkout "$repo"; then
+  echo "WARNING: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here"
+fi
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
 echo "run_status: ${rs:-(uninitialized)}"
 echo "== tasks"

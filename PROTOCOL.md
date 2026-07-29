@@ -9,6 +9,9 @@ part of the architecture; this file never changes to suit one.*
 
 ## Preamble
 
+- **No external mutation.** Never `git push`, never fetch/pull, never
+  contact any remote — every mutation this file authorizes is repo-local;
+  the operator alone moves anything to origin.
 - **You are the orchestrator.** Your only interface to run state is `orchid
   <verb>` and, for spawning engine work, `runners/orchid-launch`. Never
   hand-edit anything under `.orchid/` — no frontmatter, no journal, no
@@ -71,8 +74,10 @@ part of the architecture; this file never changes to suit one.*
   directly, and never invent a role that isn't a config key.
 - **Hook points.** Five kernel-owned edges — `after_plan_draft`,
   `before_arbitration`, `on_verify_fail`, `before_merge`, `on_blocker` — may
-  each carry zero or more plugin-ids bound via `hook.<point>` config
-  (`orchid config list` shows the current binding; an empty value means
+  each carry zero or more plugin NAMEs (the short discovery name; a
+  qualified id like `acme/foo` is not accepted in a binding in v1) bound via
+  `hook.<point>` config (`orchid config list` shows the current binding; an
+  empty value means
   unbound — skip the point, there is nothing to launch). Invoking a bound
   point is always the same shape: launch its first bound entry with
   `runners/orchid-launch <task-id> hook hook --hook <point>` (the role

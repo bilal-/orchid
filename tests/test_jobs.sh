@@ -9,6 +9,11 @@ printf 'verify=true\nrole.implementer=fake\n' > orchid.config
 # capabilities, or prepare now (correctly) refuses with exit 14.
 export ORCHID_ENGINES_DIR="$WORK/eng"
 mkdir -p "$WORK/eng/fake"
+# requires_binaries=jq below is just a representative populated value --
+# the bash-3.2 empty-CSV/array quirk this key used to be needed to sidestep
+# is fixed directly in lib/manifest.sh's _manifest_split_csv now (see its own
+# header comment; tests/test_failover.sh's mk_engine drops this key entirely
+# to demonstrate the fix).
 printf 'manifest_version=1\nid=test/fake\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
   > "$WORK/eng/fake/plugin.conf"
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/eng/fake/run"; chmod +x "$WORK/eng/fake/run"
@@ -219,3 +224,35 @@ assert_eq "1" "$(jq '.findings | length' ".orchid/reviews/plan-a1-plan_critic.js
 # the existing reviews/plan-a1-plan_critic.json and bumps to attempt 2.
 mp2="$("$ORCHID_BIN" jobs prepare plan plan_critic critique)"
 assert_eq "2" "$(jq -r .attempt "$mp2")" "plan job second attempt counts the prior reconciled envelope"
+
+# ---------------------------------------------------------------------------
+# v1-m3 final review (IMPORTANT 4): plan-scoped HOOK attempt counting. A
+# plan-scoped hook job's role positional is the literal "hook" (the
+# Preamble's launch shape: the role positional carries no meaning for a hook
+# job), but reconcile files its envelope as reviews/plan-a<n>-hook-<point>.json
+# (hook-point-aware, since role never appears in a hook filename) -- never
+# reviews/plan-a<n>-hook.json. `jobs prepare`'s attempt-counting glob for
+# `task=plan` used to glob on `plan-a*-$role.json` regardless of operation,
+# i.e. `plan-a*-hook.json` for a hook job, which never matches anything a
+# prior plan-hook attempt actually landed -- every plan hook attempt was
+# silently stuck at attempt 1 forever (this test is the regression guard).
+# ---------------------------------------------------------------------------
+mkdir -p "$WORK/eng/planhook"
+printf 'manifest_version=1\nid=test/planhook\nversion=0.1.0\nkind=hook\napi_version=1\ncapabilities=structured_text\nentrypoint=run\n' \
+  > "$WORK/eng/planhook/plugin.conf"
+printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/eng/planhook/run"; chmod +x "$WORK/eng/planhook/run"
+printf 'hook.after_plan_draft=planhook\n' >> orchid.config
+
+mph1="$("$ORCHID_BIN" jobs prepare plan hook hook --hook after_plan_draft)"
+assert_eq "1" "$(jq -r .attempt "$mph1")" "plan hook job first attempt is 1 (no prior reviews)"
+mph1_jid="$(jq -r .job_id "$mph1")"; mph1_out="$(jq -r .output "$mph1")"
+printf '{"contract":1,"job_id":"%s","task":"plan","operation":"hook","status":"ok","artifact":{},"summary":"draft looks fine"}' \
+  "$mph1_jid" > "$mph1_out"
+mph1_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "plan	ok" "$mph1_line" "plan hook envelope reconciled"
+[ -f ".orchid/reviews/plan-a1-hook-after_plan_draft.json" ] \
+  || fail "plan hook envelope filed at plan-a1-hook-after_plan_draft.json"
+
+mph2="$("$ORCHID_BIN" jobs prepare plan hook hook --hook after_plan_draft)"
+assert_eq "2" "$(jq -r .attempt "$mph2")" \
+  "second plan-hook prepare counts the prior reconciled envelope (regression: used to stay stuck at 1)"

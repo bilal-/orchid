@@ -3,6 +3,13 @@ source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/envelope.sh"
 ADAPTER="$REPO_ROOT/plugins/engines/claude/run"
 
+# v1-m3 final review (CRITICAL 1): the orchestrate branch's own instructions=
+# string (what this adapter actually feeds the engine, not just PROTOCOL.md's
+# prose) must mirror the no-external-mutation policy -- a live tick pushing
+# a branch to origin was a real finding. Static grep against the source,
+# same lint-style check test_install.sh runs against PROTOCOL.md itself.
+grep -q 'git push' "$ADAPTER" || fail "$ADAPTER's orchestrate instructions never mirror the no-external-mutation policy (git push)"
+
 # --- shared fixture builder -------------------------------------------------
 # build_request <name> <operation> [stub-body] -> prints path to request.json
 build_request() {

@@ -8,6 +8,11 @@ mkdir -p "$WORK/eng/fake"
 # resolve_role_available, gated on role_eligibility_reason -- "fake" must
 # declare the implementer role's required capabilities to remain
 # discoverable+eligible, or the launch below would now (correctly) refuse.
+# requires_binaries=jq below is just a representative populated value -- the
+# bash-3.2 empty-CSV/array quirk this key used to be needed to sidestep is
+# fixed directly in lib/manifest.sh's _manifest_split_csv now (see its own
+# header comment; tests/test_failover.sh's mk_engine drops this key entirely
+# to demonstrate the fix).
 printf 'manifest_version=1\nid=test/fake\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
   > "$WORK/eng/fake/plugin.conf"
 cat > "$WORK/eng/fake/run" <<'EOF'

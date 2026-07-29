@@ -64,7 +64,11 @@ echo "# Requirements" > .orchid/requirements.md
 echo "stable repo fact" > .orchid/context.md
 git add .orchid && git commit -q -m "context + lessons fixture"
 
-# refused while running_status is still `running`
+# refused while running_status is still `running`. Lease staleness (IMPORTANT
+# 3, below) is orthogonal to this specific gate, so the lease is removed
+# first -- absence reads as "no live session", same as the pump's own
+# missing-lease handling -- to isolate the run_status refusal from it.
+rm -f .orchid/runtime/lease.json
 rc=0; running_out="$("$ORCHID_BIN" run new --reason "too early" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "run new must refuse while run_status is running"
 assert_match "requires run_status complete\|blocked" "$running_out" "refusal names the required run_status"
@@ -72,6 +76,28 @@ assert_match "requires run_status complete\|blocked" "$running_out" "refusal nam
 
 # refused without --reason, even once run_status is legal for it
 "$ORCHID_BIN" run advance blocked --reason "smoke shortcut to blocked" >/dev/null
+
+# ---------------------------------------------------------------------------
+# v1-m3 final review (IMPORTANT 3): lease-freshness guard. `run refresh-lease`
+# here stands in for a live session's own periodic refresh (PROTOCOL.md THE
+# TICK steps 1+5) -- a fresh lease means a live orchestrator session may
+# still be running, so `run new` must refuse rather than race a rollover
+# against it, even though run_status is otherwise legal (blocked, just
+# advanced above) and --reason is supplied.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" run refresh-lease
+rc=0; fresh_lease_out="$("$ORCHID_BIN" run new --reason "conflicting session" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "run new must refuse while the lease is still fresh"
+assert_match "a live orchestrator session may still be running" "$fresh_lease_out" \
+  "fresh-lease refusal names the reason"
+[ ! -d .orchid/runs ] || fail "run new must not have touched anything while lease-refused"
+
+# Stale/absent lease: no live session left to race -- proceeds normally.
+# Absence is the simplest stand-in for staleness (a missing/unparseable
+# lease reads as "no live session" too, same policy runners/orchid-pump's
+# own missing-lease handling uses).
+rm -f .orchid/runtime/lease.json
+
 rc=0; "$ORCHID_BIN" run new >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "run new requires --reason (INV-08)"
 

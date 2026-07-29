@@ -28,6 +28,30 @@ orchid_split_brain() {
   { [ -d "$state/tasks" ] || [ -f "$state/journal.md" ]; } && [ ! -f "$state/roadmap.md" ]
 }
 
+# orchid_stale_checkout <repo> -- v1-m3 final review (CRITICAL 2): the live
+# run's 6638-line silent revert. Something (a pump-run tick, a stray script)
+# advanced the integration branch's ref directly (`git update-ref`) while
+# THIS checkout was itself sitting on that same branch -- unlike a normal
+# `git checkout`/`commit`, that moves HEAD forward without ever touching the
+# index or working tree here, so the checkout silently falls behind its own
+# branch pointer. `git diff --cached --name-status` in that state prints one
+# "D" row per path the NEW HEAD carries that the (stale) index does not --
+# by definition, a "D" row only exists for a path present in HEAD (that is
+# exactly what `--cached`/`--staged` means: HEAD vs index, i.e. what
+# committing the index right now would change), so any D row at all, while
+# parked on the integration branch itself, IS the stale-checkout signature —
+# the next `git add -A && git commit` here would re-delete every one of
+# those files, silently reverting real history. Read-only: this function
+# only ever inspects, never mutates, and `orchid checkout HEAD -- .` (the
+# fix it recommends) is left to the operator, never run here.
+orchid_stale_checkout() {
+  local repo="$1" integ cur
+  integ="$(config_get "$repo" integration_branch orchid/integration)"
+  cur="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  [ -n "$cur" ] && [ "$cur" = "$integ" ] || return 1
+  git -C "$repo" diff --cached --name-status 2>/dev/null | awk '$1 == "D" { found=1 } END { exit !found }'
+}
+
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a
 # shell function name) with a wall-clock deadline; returns cmd's own exit
 # status, or 124 on timeout. Both the timed command AND the watcher are

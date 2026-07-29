@@ -88,12 +88,29 @@ case "$sub" in
     # landed (same counter this attempt itself will file under), and base/
     # candidate stay empty -- a plan pack has no diff to bind to. Every
     # other task keeps reading its task file exactly as before.
+    #
+    # v1-m3 final review (IMPORTANT 4): a plan-scoped HOOK job (`role` is the
+    # literal string "hook", per the Preamble's launch shape) never files
+    # under `plan-a<n>-hook.json` -- reconcile's own hook branch (below, "$m_op
+    # = hook") always names the destination `plan-a<n>-hook-<point>.json`,
+    # keyed on hook_point, since the role positional carries no meaning for a
+    # hook job. Globbing on `plan-a*-$role.json` (i.e. `plan-a*-hook.json`)
+    # therefore never matches anything a prior plan-hook attempt actually
+    # landed -- every plan hook attempt was silently stuck at 1 forever. Glob
+    # on the same hook-point-aware shape reconcile files under instead.
     if [ "$task" = plan ]; then
       attempt=1
-      for rf in "$state/reviews/plan-a"*"-$role.json"; do
-        [ -e "$rf" ] || continue
-        attempt=$((attempt + 1))
-      done
+      if [ "$operation" = hook ]; then
+        for rf in "$state/reviews/plan-a"*"-hook-$hook_point.json"; do
+          [ -e "$rf" ] || continue
+          attempt=$((attempt + 1))
+        done
+      else
+        for rf in "$state/reviews/plan-a"*"-$role.json"; do
+          [ -e "$rf" ] || continue
+          attempt=$((attempt + 1))
+        done
+      fi
       base_sha=""; candidate_sha=""
     else
       tf="$state/tasks/$task.md"

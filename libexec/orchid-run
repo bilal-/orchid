@@ -140,6 +140,19 @@ case "$sub" in
     # under .orchid/.
     verb_lock_acquire "$repo"
     trap 'verb_lock_release "$repo"' EXIT
+    # v1-m3 final review (TRIVIA): clear crash debris a PRIOR, differently-
+    # PID'd `run new` may have left behind -- the shadow-dir swap further
+    # below names its two temp dirs "$state.new.$$"/"$state.old.$$" (THIS
+    # process's own pid), so a rollover that crashed mid-swap under a
+    # different pid leaves its own same-shaped debris sitting beside
+    # .orchid/ forever (nothing else ever globs for it to clean it up).
+    # Safe here, under the verb lock already acquired above (so a
+    # genuinely concurrent in-flight `run new` can never have its OWN
+    # still-live shadow/old dirs swept out from under it) and before this
+    # invocation mints its own. `rm -rf` on a non-matching glob is a silent
+    # no-op (the -f flag alone guards it, no nullglob needed), so this is a
+    # no-op in the common case of no debris at all.
+    rm -rf "$state".old.* "$state".new.*
     # INV-02: every sibling mutating arm (advance, accept) fences the epoch
     # before touching state; this one must too, or a stale ORCHID_EPOCH
     # (from a zombie orchestrator, a pre-crash session, etc.) could execute
@@ -153,6 +166,35 @@ case "$sub" in
       *) shift ;;
     esac; done
     [ -n "$reason" ] || orchid_die "run new requires --reason (INV-08)"
+
+    # v1-m3 final review (IMPORTANT 3): a live orchestrator session refreshes
+    # runtime/lease.json every pass (PROTOCOL.md THE TICK steps 1+5) -- `run
+    # new` rewrites nearly all of .orchid/ (archive + reset), so racing it
+    # against a session that is still actively ticking would tear that
+    # session's state out from under it mid-flight. Same lease-staleness
+    # idiom runners/orchid-pump uses to decide "is anyone still driving this
+    # run" (pump_stale_s, default 900; the two-line GNU/BSD `date` parse is
+    # duplicated rather than shared, same call this codebase already made for
+    # the pump vs. libexec/orchid-jobs' iso_to_epoch -- see the pump's own
+    # header comment). A missing or unparseable lease reads as "no live
+    # session" here, exactly like the pump's own missing-lease handling.
+    lease_file="$rt/lease.json"
+    if [ -f "$lease_file" ]; then
+      refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
+      refreshed_epoch=0
+      if [ -n "$refreshed_at" ]; then
+        refreshed_epoch="$(date -u -d "$refreshed_at" +%s 2>/dev/null \
+          || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$refreshed_at" +%s 2>/dev/null \
+          || echo 0)"
+      fi
+      if [ "$refreshed_epoch" -gt 0 ]; then
+        stale_s="$(config_get "$repo" pump_stale_s 900)"
+        lease_age=$(( $(date -u +%s) - refreshed_epoch ))
+        if [ "$lease_age" -lt "$stale_s" ]; then
+          orchid_die "a live orchestrator session may still be running (lease refreshed ${lease_age}s ago); wait for the lease to lapse or stop the session"
+        fi
+      fi
+    fi
 
     roadmap="$state/roadmap.md"
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
@@ -297,9 +339,18 @@ case "$sub" in
     # is atomic, and the only observable window is BETWEEN the two mv
     # calls, when "$state" briefly does not exist at all.
     #
-    # If the process dies in exactly that window, .orchid/ is wholly
-    # ABSENT, never split-brain: `orchid doctor`/`status` see a plain
-    # not-an-orchid-repo, not a mismatched one. Recovery is a single
+    # If the process dies in exactly that window, .orchid/ carries no
+    # DURABLE content at all (no tasks/, roadmap.md, journal.md, ...) --
+    # never split-brain, since orchid_split_brain requires tasks/ or
+    # journal.md present WITHOUT roadmap.md, and none of those exist either
+    # way here. It is not, however, necessarily wholly absent from disk: this
+    # arm's own EXIT trap (`run_new_cleanup`, then `verb_lock_release`)
+    # still fires on most failure paths, and `verb_lock_release` ->
+    # `orchid_runtime` recreates a bare `.orchid/runtime` directory as a
+    # mkdir -p side effect regardless of what state .orchid/ is in --  so a
+    # crash landing exactly here can leave `.orchid/` existing but holding
+    # only that empty runtime/ dir. Either way, `orchid doctor`/`status` see
+    # a plain not-an-orchid-repo, not a mismatched one. Recovery is a single
     # command run from $repo: `git checkout HEAD -- .orchid` -- HEAD is a
     # symbolic ref to refs/heads/$integ (the assumption every verb in this
     # file makes: $repo has the integration branch itself checked out), and

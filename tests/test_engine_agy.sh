@@ -249,6 +249,6 @@ jq -n --arg job_id "j-planpack" \
     policy:"read-only", model:"", effort:"medium"}' > "$d/request.json"
 rc=0; stderr_out="$(run_adapter "$d" 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "plan pack: adapter must exit nonzero, never silently succeed"
-assert_match "cannot critique plan packs" "$stderr_out" "plan pack: stderr note explains why"
+assert_match "agy has no plan-critique mode" "$stderr_out" "plan pack: stderr note explains why"
 envelope_validate "$d/out/envelope.json" || fail "plan pack: a failed envelope must still be written and valid"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "plan pack: status failed (never a silent crash with no envelope at all)"

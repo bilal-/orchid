@@ -230,6 +230,55 @@ for name in manifest_valid entrypoint_executable declared_ops_dryrun \
   assert_match "^ok: $name\$" "$out" "stray-file dropper: '$name' is unaffected"
 done
 
+# -- Mutation 4b: a "<output>.bak" dropper -> no_output_pollution FAILs.
+# Regression test for a real bug: the check used to filter new paths with
+# `grep -vF "$outfile"` -- SUBSTRING match, not exact-line -- so a leftover
+# path that merely CONTAINS the output path as a substring (e.g. the real
+# output "envelope.json" alongside a leftover "envelope.json.bak") was
+# silently filtered out of `new_paths` and this check passed even though a
+# real leftover file was sitting right there. `grep -vxF` (exact whole-line)
+# is the fix; this adapter must now be caught. ------------------------------
+mk_good_stub "$WORK/m4b"
+cat > "$WORK/m4b/run" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+req="${1:?usage: run <request.json>}"
+operation="$(jq -r .operation "$req")"
+output="$(jq -r .output "$req")"
+job_id="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+
+write() {
+  local extra="${2:-}"; [ -n "$extra" ] || extra='{}'
+  jq -n --arg job_id "$job_id" --arg task "$task" --arg operation "$operation" \
+        --arg status "$1" --argjson extra "$extra" \
+    '{contract:1, job_id:$job_id, task:$task, operation:$operation, status:$status} + $extra' \
+    > "$output"
+}
+
+if [ "${ORCHID_DRYRUN:-0}" != "1" ]; then write failed '{}'; exit 1; fi
+
+case "$operation" in
+  implement)       write ok '{"summary":"dryrun"}' ;;
+  review|critique) write ok '{"verdict":"approve","scope_complete":true}' ;;
+  orchestrate)     write ok '{"actions":[],"summary":"dryrun"}' ;;
+  hook)            write ok '{"artifact":{},"summary":"dryrun"}' ;;
+  *) write failed '{}'; exit 1 ;;
+esac
+touch "${output}.bak"   # leftover: same dir, name CONTAINS the real output path
+exit 0
+EOF
+chmod +x "$WORK/m4b/run"
+out="$(run_conform "$WORK/m4b")"; rc=$?
+[ "$rc" -ne 0 ] || fail "an <output>.bak-dropping adapter must exit nonzero"
+assert_match "^FAIL: no_output_pollution:" "$out" "<output>.bak dropper: no_output_pollution FAILs"
+assert_match "envelope\.json\.bak" "$(printf '%s\n' "$out" | grep '^FAIL: no_output_pollution:')" \
+  "<output>.bak dropper: reason names the leftover .bak file"
+for name in manifest_valid entrypoint_executable declared_ops_dryrun \
+            stdin_closed_safe env_survives_hygiene exit_discipline; do
+  assert_match "^ok: $name\$" "$out" "<output>.bak dropper: '$name' is unaffected"
+done
+
 # -- Mutation 5: env-dependent adapter (requires a var absent once
 # env_survives_hygiene's env -i + spawn_child_env stripping applies, even
 # though it IS present in the ambient environment every other check's

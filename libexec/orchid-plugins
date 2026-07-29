@@ -534,13 +534,16 @@ $validate_out"
     fi
 
     mkdir -p "$(dirname "$dest")"
-    cp -R "$srcdir" "$dest"
-    # $dest doesn't pre-exist at this point (checked above) -- so from here
-    # until .provenance is fully written, ANY failure (e.g. a digest
-    # computation error inside _plugins_write_provenance) must not leave a
-    # half-installed plugin dir on disk. Cleared right before this arm's
-    # normal successful completion, below.
+    # $dest doesn't pre-exist at this point (checked above) -- so from HERE
+    # (before `cp -R` even runs), until .provenance is fully written, ANY
+    # failure must not leave a half-installed plugin dir on disk. The trap is
+    # set BEFORE `cp -R`, not after: a `cp -R` that itself fails partway
+    # (disk full, interrupted, a permissions error on one file deep in the
+    # tree) previously died with no trap registered yet, leaving a partial
+    # $dest behind forever with nothing to clean it up. Cleared right before
+    # this arm's normal successful completion, below.
     trap 'rm -rf "$dest"' EXIT
+    cp -R "$srcdir" "$dest"
     rm -rf "$dest/.git"   # VCS metadata from a git-URL clone is noise in an installed plugin dir, never part of its content
     [ -z "$cleanup" ] || rm -rf "$cleanup"
 

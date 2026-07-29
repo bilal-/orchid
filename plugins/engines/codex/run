@@ -99,7 +99,7 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # clone codex would otherwise refuse as untrusted).
 if [ "$operation" = orchestrate ]; then
   protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"
-  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. Use only \`orchid\` verbs (the binary at $ORCHID_ROOT/bin/orchid) and $ORCHID_ROOT/runners/orchid-launch to launch engines -- never hand-edit anything under .orchid/. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>. The kernel has already fenced a fresh epoch for this tick; do NOT run 'orchid run resume' -- start at THE TICK step 1 with the ORCHID_EPOCH provided."
+  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. Use only \`orchid\` verbs (the binary at $ORCHID_ROOT/bin/orchid) and $ORCHID_ROOT/runners/orchid-launch to launch engines -- never hand-edit anything under .orchid/. Never run 'git push', never fetch/pull, never contact any remote -- every mutation you make must stay repo-local; only the operator moves anything to origin. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>. The kernel has already fenced a fresh epoch for this tick; do NOT run 'orchid run resume' -- start at THE TICK step 1 with the ORCHID_EPOCH provided."
   prompt="$protocol"$'\n\n'"$instructions"
 
   # Streaming + heartbeat (v1-m3, round 2 of the live-run finding -- see

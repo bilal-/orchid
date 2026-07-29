@@ -62,7 +62,7 @@ fi
 # this job, so it would just sit `prepared`/`running` forever instead of
 # failing loudly). Fail closed with a real envelope instead.
 if [ ! -f "$input_pack/task.md" ] || [ ! -f "$input_pack/diff.patch" ]; then
-  echo "orchid/agy: cannot critique plan packs -- bind a workspace-capable engine" >&2
+  echo "orchid/agy: agy has no plan-critique mode -- bind an engine with a plan-critique prompt (codex/claude)" >&2
   write_envelope failed '{}'
   exit 1
 fi

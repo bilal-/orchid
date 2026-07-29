@@ -240,7 +240,10 @@ pack_build() {  # repo task op dest [hook-point] ; exit 12 = input_overflow
   state="$(orchid_state "$repo")"
   # `plan` (v1-m3): reserved task id, no task file exists at all (`orchid
   # task create` refuses it) -- routed to the plan-scoped pack builder
-  # instead of the per-task path below.
+  # instead of the per-task path below. Checked BEFORE the `hook` op check
+  # just below: a plan-scoped hook job (task=plan, op=hook) therefore still
+  # receives the PLAN pack here, by design, never the per-point hook pack --
+  # there is no task.md for _pack_build_hook to read in the first place.
   if [ "$task" = plan ]; then
     _pack_build_plan "$repo" "$state" "$dest"
     return $?

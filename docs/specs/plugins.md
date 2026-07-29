@@ -234,7 +234,9 @@ request/envelope contracts; their results are validated artifacts applied
 ONLY through tier-1 verbs (e.g. a `researcher` consulted `before_arbitration`
 returns citations that the tick attaches via `orchid task set`). PROTOCOL.md
 itself is never edited by plugins. Shipped machinery: `hook.<point>` config
-bindings (an ordered, comma-separated plugin-id list, `:required` marking a
+bindings (an ordered, comma-separated list of plugin NAMEs — the short
+discovery name a binding resolves through `resolve_engine_dir`; a qualified
+id like `acme/foo` is not accepted in a binding in v1 — `:required` marking a
 handler whose failure blocks the edge — `lib/hooks.sh`'s `hooks_for`/
 `hook_point_valid`); `orchid jobs prepare <task> hook hook --hook <point>`
 (the `hook` operation, resolved by binding rather than by role chain) and
@@ -247,6 +249,11 @@ refuse outright (exit 15); the other four points are read and applied by the
 orchestrator's own PROTOCOL.md walk, never a kernel-verb gate.
 `on_verify_fail`'s artifact reaches durable state through exactly one field,
 `orchid task set <id> hook_guidance "..."` (kernel.md's frontmatter schema).
+A plan-scoped hook job (task id `plan`, e.g. `hook.after_plan_draft`) receives
+the PLAN pack (`lib/pack.sh`'s `_pack_build_plan`) by design, not the
+per-point hook pack — `pack_build` routes on the reserved `plan` task id
+before it ever checks the `hook` operation, since there is no `task.md` for
+the per-point builder to read in the first place.
 
 ### Named patterns (the codebase vocabulary)
 
