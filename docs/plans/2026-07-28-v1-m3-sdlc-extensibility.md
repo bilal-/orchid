@@ -61,6 +61,7 @@
 **Interfaces:**
 - Actor identity: `orchid-tick` exports `ORCHID_ACTOR="<engine>/orchestrator tick-e<epoch>"` before spawning; `orchid journal add` uses `${ORCHID_ACTOR:-operator e<epoch>}` as the actor string (kernel-set env, documented as trusted-within-machine; the launcher already forwards ORCHID_*). Journal entries from headless ticks read `claude/orchestrator tick-e7` instead of `operator e7`.
 - codex review path: the reply contract gains a `REASON: one sentence` second line (mirroring agy); the adapter captures it into envelope `summary` (200-char cap); `verdict`-only replies stay valid (summary optional).
+- Log streaming (live-run finding): implement/review/orchestrate branches in codex+claude+agy adapters tee the engine CLI's combined output to the job log AS IT RUNS (log mtime advances during execution — the stall detector's signal) while still capturing it for parsing; zero-byte logs during a live job are the bug being fixed. Test: stub CLI sleeping 2s between lines → log grows during the run.
 - ORCHID-ACTION discipline: both orchestrate branches' instruction blocks strengthen the marker contract (exact-line requirement, one per verb, printed BEFORE running each verb) AND the adapters fall back to counting `^ORCHID-ACTION:` in the LOG FILE tail when stdout-captured text has none (belt-and-braces; still `[]` when genuinely none).
 - agy adapter: no change (m2 already fixed); test only.
 
