@@ -71,17 +71,26 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # transcript into the envelope's `actions[]` -- an empty array (CLI made no
 # verb calls this tick) is still `ok` as long as the CLI itself exited 0.
 #
-# Headless flags: `--permission-mode acceptEdits`, same as the `implement`
-# path above. The exact flags claude needs to actually EXECUTE Bash verb
-# invocations unattended (not just edit files) are UNVERIFIED -- see
-# tests/probes/probe-claude-tick.sh, written for exactly this question.
+# Headless flags: `--permission-mode acceptEdits --allowedTools Bash`. F8
+# (dogfood): a real pump-driven tick ran and executed ZERO verbs -- claude
+# exited 0 having politely explained it lacked permission to run Bash.
+# acceptEdits alone authorizes FILE EDITS only; it does not allowlist the
+# Bash tool. The orchestrator role's entire job is running `orchid` verbs,
+# and every one of them goes through Bash (there is no other way to invoke
+# a verb), so this tick explicitly allowlists Bash. This does not widen the
+# autonomy boundary: scope containment is unchanged -- it is still the
+# kernel launcher's env allowlist + private output path plus this
+# instruction block's rules, the same "orchestrator repo+.orchid/ scope"
+# trust posture docs/specs/kernel.md's Execution policy section already
+# states for this role. See tests/probes/probe-claude-tick.sh for the real
+# round-trip that confirms Bash actually executes verbs under this flag.
 if [ "$operation" = orchestrate ]; then
   protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"
-  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. Use only \`orchid\` verbs (the binary at $ORCHID_ROOT/bin/orchid) and $ORCHID_ROOT/runners/orchid-launch to launch engines -- never hand-edit anything under .orchid/. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>"
+  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. The \`orchid\` CLI may NOT be on PATH (dev checkouts where install.sh hasn't run) -- every verb invocation you make MUST use the absolute binary $ORCHID_ROOT/bin/orchid (never bare \`orchid\`), and launch engines only via the absolute launcher $ORCHID_ROOT/runners/orchid-launch -- never hand-edit anything under .orchid/. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>"
   prompt="$protocol"$'\n\n'"$instructions"
 
   set +e
-  stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p --permission-mode acceptEdits 2>"$err_file")"
+  stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p --permission-mode acceptEdits --allowedTools Bash 2>"$err_file")"
   rc=$?; set -e
   stderr="$(cat "$err_file")"
 
