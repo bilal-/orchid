@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  orchid pump launchd agent (v1-m4 Task 4). Rendered by runners/orchid-
+  service's _svc_render_plist; never hand-edited in place. Every
+  __TOKEN__ below is substituted via plain `sed`, the same idiom
+  templates/task.md (__ID__/__TITLE__/...) and templates/pre-push.sh
+  (__INTEGRATION_BRANCH__) already use for their own install-time tokens.
+
+  NOTE for anyone editing this file's own comments: XML comment bodies may
+  never contain two hyphens typed back to back anywhere inside them (not
+  just at the boundary); an earlier revision's comments used that pairing
+  as an em dash and were rejected by a real XML parser (a python3
+  xml.dom.minidom parse, the same well-formedness bar launchd's own plist
+  parser enforces). Use a real em dash (the character below) or rephrase
+  instead.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__ORCHID_PUMP__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ORCHID_REPO</key>
+    <string>__REPO__</string>
+    <!--
+      TMPDIR is deliberately the REPO'S PARENT DIRECTORY, not launchd's own
+      bare default — the live-run TMPDIR incident: orchid-merge/orchid-run/
+      orchid_commit_durable (lib/common.sh) all build their scratch
+      worktrees via `mktemp -d "${TMPDIR:-/tmp}"/orchid-*.XXXXXX`, so a
+      verify worktree lands as a SIBLING of wherever TMPDIR points, not
+      necessarily a sibling of the real repo. A project whose dependency
+      manifest declares a relative `file:` path reaching UP into a sibling
+      of the checkout (e.g. `file:../shared-lib`) resolves fine from an
+      ordinary working copy, but silently breaks once verify runs from a
+      worktree created under the SYSTEM's real /tmp instead — the relative
+      path then points into /tmp's sibling, not the repo's. Pinning TMPDIR
+      to the repo's own parent keeps every such worktree a sibling of the
+      real repo, so relative `file:` deps keep resolving exactly as they do
+      in a manual checkout. A launchd agent does not inherit an interactive
+      shell's TMPDIR at all (it starts from launchd's own bare per-agent
+      environment) — there is no ambient value to fall back on, so this
+      has to be set explicitly, here, at install time.
+    -->
+    <key>TMPDIR</key>
+    <string>__TMPDIR__</string>
+  </dict>
+
+  <!-- Seconds between pump invocations (orchid.config's pump_interval_s,
+       default 240) — launchd's StartInterval is native seconds, no
+       flooring needed (unlike the cron fallback's whole-minute floor). -->
+  <key>StartInterval</key>
+  <integer>__INTERVAL__</integer>
+
+  <key>StandardOutPath</key>
+  <string>__LOG__</string>
+  <key>StandardErrorPath</key>
+  <string>__LOG__</string>
+
+  <!-- The pump is a poll, not a startup task — it only ever acts on an
+       ABANDONED run (lease staleness), so there is nothing useful for it
+       to do the instant this agent is loaded. -->
+  <key>RunAtLoad</key>
+  <false/>
+</dict>
+</plist>

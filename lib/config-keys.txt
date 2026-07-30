@@ -26,6 +26,7 @@ effort
 rate_limit_backoff_s
 engine_fail_threshold
 pump_stale_s
+pump_interval_s
 arbiter_wait_s
 hook.after_plan_draft
 hook.before_arbitration

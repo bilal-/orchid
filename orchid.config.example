@@ -66,6 +66,12 @@ pack_budget_bytes=65536
 # rate_limit_backoff_s=3600
 # engine_fail_threshold=3
 # pump_stale_s=900
+# v1-m4: `orchid service install` bakes this into the rendered launchd
+# StartInterval (seconds) or the cron fallback's `*/N * * * *` line
+# (floored to whole minutes there, minimum 1) -- change it and re-run
+# `orchid service install` to take effect; editing this key alone does not
+# touch an already-installed schedule.
+# pump_interval_s=240
 # v1-m2: high-risk arbitration's wait (seconds) for the preferred
 # role.arbiter engine before a fallback arbiter may decide (PROTOCOL.md,
 # HEADLESS OPERATION).
