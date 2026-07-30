@@ -15,6 +15,7 @@ verb_lock_wait_s
 stall_minutes
 timeout_minutes
 agy_max_bytes
+hermes_max_bytes
 pack_budget_bytes
 pack_diff_inline_max_bytes
 lessons_max_bytes

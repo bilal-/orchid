@@ -203,8 +203,9 @@ assert_eq run "$(manifest_get "$WORK/p11" entrypoint)" "manifest_get reads a pre
 assert_match "structured_text" "$(cat "$REPO_ROOT/lib/capabilities.txt")" "capabilities.txt has structured_text"
 assert_match "workspace_write" "$(cat "$REPO_ROOT/lib/capabilities.txt")" "capabilities.txt has workspace_write"
 
-# each of the 5 built-in plugin dirs validates clean
-for d in engines/codex engines/codex-review engines/agy engines/claude archetypes/feature; do
+# each of these built-in plugin dirs validates clean (representative sample,
+# not exhaustive -- v1-m4 Task 6 adds engines/hermes to the sample)
+for d in engines/codex engines/codex-review engines/agy engines/claude engines/hermes archetypes/feature; do
   full="$REPO_ROOT/plugins/$d"
   [ -d "$full" ] || fail "built-in plugin dir missing: $d"
   out="$(manifest_validate "$full" 2>&1)"; rc=$?

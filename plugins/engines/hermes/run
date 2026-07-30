@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-3 engine adapter: `run <request.json>`. Invoked ONLY by runners/orchid-launch
+# (INV-06) — never directly. Writes ONLY to the request's `output` path (plus its
+# own stdout/stderr, captured into the launcher's log) — no other durable state.
+# See docs/specs/plugins.md (request/envelope contracts) and
+# docs/engines/hermes.md (flags used here + why, install/login, gotchas).
+#
+# v1-m4 Task 6 (BUILD only; the live dogfood is a later controller task):
+# review|critique ONLY. `implement` is deliberately NOT wired up. Flag
+# research (hermes --help plus reading the installed CLI's own source --
+# never a real prompt) found no way to confine hermes's file edits to a
+# request's worktree:
+#   - `-z/--oneshot` unconditionally sets HERMES_YOLO_MODE=1 for the whole
+#     call (hermes_cli/oneshot.py: "Approvals = auto-bypassed") -- unlike
+#     codex (`--sandbox read-only|workspace-write`) or claude (tool use is
+#     denied by default in `-p` mode unless `--permission-mode`/
+#     `--allowedTools` is passed), hermes has no headless mode that denies
+#     or scopes tool calls by default.
+#   - `--worktree`/`-w` does NOT mean "operate in the request's prepared
+#     worktree" -- per `hermes --help`, it makes hermes create its OWN new
+#     isolated git worktree for parallel agents, a different checkout
+#     entirely. Wrong tool for this job.
+#   - the `file` toolset's own path resolution (tools/file_tools.py) only
+#     WARNS when a relative path resolves outside the workspace root, and
+#     never blocks an absolute-path write at all -- there is no jail.
+# No documented flag closes that gap, so per the task brief's own
+# instruction ("an honest narrower adapter beats a guessed broad one"),
+# this adapter ships review/critique-only. See docs/engines/hermes.md for
+# the full writeup; the live dogfood task can re-probe if a future hermes
+# version ships a real sandbox/jail flag.
+#
+# review|critique is ALSO fully INLINE (agy-style: no `cd` into the
+# worktree; capabilities=structured_text only, no workspace_read) rather
+# than worktree-cd'd like codex/claude's review path -- declaring
+# workspace_read would invite the kernel's pack builder to swap an oversized
+# diff.patch for a diff.stat summary on the assumption this engine can
+# browse the checkout itself to fill in the rest (docs/specs/plugins.md,
+# "Worktree-read review packs"); with tool visibility cut down to `-t
+# clarify` below, it genuinely cannot, so declaring workspace_read here
+# would be a dishonest capability claim. Every prompt below also carries an
+# explicit "do not use tools" instruction, same as plugins/engines/agy/run --
+# but since that instruction is advisory only (see the YOLO-mode note
+# above), `-t clarify` is this adapter's REAL backstop: `clarify` is the one
+# built-in hermes toolset that resolves to exactly one tool (asking the user
+# a clarifying question -- a no-op in one-shot mode, since there is no user
+# to answer) with no file/terminal/network/shell reach at all (verified by
+# reading the installed CLI's toolsets.py TOOLSETS table), so even a
+# noncompliant reply has nothing to act with.
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/../../.." && pwd)"
+source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/heartbeat.sh"
+
+req="${1:?usage: run <request.json>}"
+job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
+operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
+input_pack="$(jq -r .input_pack "$req")"; output="$(jq -r .output "$req")"
+base_sha="$(jq -r '.base_sha // ""' "$req")"; candidate_sha="$(jq -r '.candidate_sha // ""' "$req")"
+
+write_envelope() {  # status extra-json
+  local extra="${2:-}"; [ -n "$extra" ] || extra='{}'
+  jq -n --arg job_id "$job_id" --arg task "$task" --arg operation "$operation" \
+        --arg status "$1" --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
+        --argjson extra "$extra" \
+        '{contract:1, job_id:$job_id, task:$task, operation:$operation, status:$status,
+          engine:"orchid/hermes", base_sha:$base_sha, candidate_sha:$candidate_sha} + $extra' \
+    | atomic_write "$output"
+}
+classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
+  if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
+  elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
+  else echo failed
+  fi
+}
+
+# Operation gate precedes DRYRUN (mirrors agy/codex/claude symmetry): an
+# unsupported operation fails the same way whether or not ORCHID_DRYRUN is
+# set. `implement`/`orchestrate` are recognized-but-unsupported here, not
+# just "anything not review/critique" -- see the header above for why.
+case "$operation" in
+  review|critique) ;;
+  *)
+    echo "orchid/hermes: unsupported operation '$operation' (review|critique only -- see docs/engines/hermes.md)" >&2
+    write_envelope failed '{}'
+    exit 1 ;;
+esac
+
+if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
+  write_envelope ok '{"verdict":"approve","scope_complete":true,"findings":[]}'
+  exit 0
+fi
+
+# Diff-based pack (task.md + diff.patch) vs plan-critique pack (task id
+# `plan`, role.plan_critic -- lib/pack.sh's _pack_build_plan; no task.md/
+# diff.patch at all). Unlike plugins/engines/agy/run (which refuses plan
+# packs outright -- it has no equivalent prompt shape), this adapter
+# supports both, same as plugins/engines/codex/run and .../claude/run's own
+# plan-critique branches: both shapes below are built purely from pack TEXT
+# FILES this adapter reads itself (`cat`/`fm_get`), never asking hermes to
+# read anything off disk on its own, so supporting the plan pack costs
+# nothing extra against the inline-only trust model in the header above.
+if [ -f "$input_pack/task.md" ]; then
+  # Byte guard: agy-style inline cap (config `hermes_max_bytes`, default
+  # 100000, env override ORCHID_HERMES_MAX_BYTES). This adapter declares no
+  # workspace_read (see header), so an oversized diff gets none of the
+  # "swap to diff.stat + let the engine navigate the checkout itself" relief
+  # docs/specs/plugins.md's Worktree-read review packs section describes for
+  # a worktree-capable engine -- it truly has no other way to see it. Fail
+  # closed and let the router fall back to a worktree-capable reviewer,
+  # exactly like plugins/engines/agy/run's own guard.
+  diff_file="$input_pack/diff.patch"
+  diff_bytes="$(wc -c <"$diff_file" 2>/dev/null | tr -d ' ')"; diff_bytes="${diff_bytes:-0}"
+  max_bytes="$(config_get "$worktree" hermes_max_bytes 100000)"
+  if [ "$diff_bytes" -gt "$max_bytes" ]; then
+    echo "orchid/hermes: diff.patch is $diff_bytes bytes (> hermes_max_bytes=$max_bytes); route to a worktree-capable reviewer" >&2
+    write_envelope failed '{}'
+    exit 1
+  fi
+
+  ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
+  stop="$(fm_get "$input_pack/task.md" stop_condition)"
+  manifest_line="$(jq -r '"pack manifest: " +
+    ([.items[] | .name + "(" + (.bytes|tostring) + "b,truncated:" + (.truncated|tostring) + ")"] | join(" "))' \
+    "$input_pack/pack.json")"
+  diff="$(cat "$diff_file" 2>/dev/null || true)"
+  prompt="Acceptance criteria: $ac
+Stop condition: $stop
+$manifest_line
+
+Diff:
+$diff
+
+Do not use any tools. Do not run any commands. Judge from the diff text alone.
+Reply with exactly two lines:
+VERDICT: approve OR request-changes
+REASON: one sentence"
+else
+  # Plan pack: requirements.md + roadmap.md (non-truncatable) + tasks.md,
+  # plus lessons.md when present -- same fields lib/pack.sh's
+  # _pack_build_plan always writes. Critique reply contract gains FINDING:
+  # lines (review's contract stays verdict-only either way, mirrored below).
+  manifest_line="$(jq -r '"pack manifest: items=" + ([.items[].name] | join(",")) + " omitted=" + ([.omitted[]] | join(","))' "$input_pack/pack.json")"
+  reqs="$(cat "$input_pack/requirements.md" 2>/dev/null || true)"
+  roadmap_body="$(cat "$input_pack/roadmap.md" 2>/dev/null || true)"
+  tasks_body="$(cat "$input_pack/tasks.md" 2>/dev/null || true)"
+  lessons_body=""
+  [ -f "$input_pack/lessons.md" ] && lessons_body="$(cat "$input_pack/lessons.md")"
+  prompt="Requirements:
+$reqs
+
+Draft roadmap:
+$roadmap_body
+
+Tasks:
+$tasks_body"
+  [ -n "$lessons_body" ] && prompt="$prompt
+
+Lessons:
+$lessons_body"
+  prompt="$prompt
+
+$manifest_line
+
+Do not use any tools. Do not run any commands. Judge from the text alone.
+Critique this draft plan against the requirements: is every requirement
+covered, are tasks correctly scoped and sequenced, are acceptance criteria
+and verification commands concrete? Reply with:
+VERDICT: approve OR request-changes
+One line per issue found, exactly: FINDING: <low|medium|high>: <title>
+(omit FINDING lines entirely when there are none)."
+fi
+
+err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
+
+# Streaming + heartbeat: same orchid_run_engine_cli idiom every adapter uses
+# (see lib/heartbeat.sh's header for the full design). cwd "-" (no `cd` --
+# this adapter never touches the worktree, see header above) and prompt "-"
+# (no stdin -- hermes's `-z PROMPT` takes the prompt as a plain argv value,
+# the exact shape the task's probed fact confirmed: `hermes --safe-mode -z
+# "<prompt>"` -> exact stdout reply, no stdin plumbing involved). None of
+# this adapter's own prompt text ever starts with a leading `-` (every
+# branch above starts with a fixed literal like "Acceptance criteria: " or
+# "Requirements:"), so passing it as a plain trailing argv (rather than
+# codex/claude's stdin-`-` trick, needed there because THEIR prompts embed
+# the raw task.md body, which begins with its own "---" frontmatter
+# delimiter) is safe.
+orchid_run_engine_cli "$err_file" stdout rc "-" "-" hermes --safe-mode -t clarify -z "$prompt"
+stderr="$(cat "$err_file")"
+
+if [ "$rc" -ne 0 ]; then
+  printf '%s\n' "$stderr" >&2
+  write_envelope "$(classify "$stdout"$'\n'"$stderr")" '{}'
+  exit 1
+fi
+
+# Exact-match only: the last line that IS (not merely contains) a verdict
+# line, so a reply that only echoes back the reply-contract instruction
+# ("VERDICT: approve OR request-changes") never satisfies this -- it must
+# fall through to malformed rather than being read as an approval. Same
+# idiom as plugins/engines/{agy,codex,claude}/run.
+verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
+verdict=""
+if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
+elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
+fi
+if [ -z "$verdict" ]; then
+  # No output ever reaches the launcher's job log otherwise: `stdout` here is
+  # a local variable, not a stream -- diagnose on stderr, which the launcher
+  # DOES capture (same F6-class fix as plugins/engines/agy/run).
+  echo "orchid/hermes: malformed reply (no VERDICT line); raw output follows:" >&2
+  printf '%s\n' "$stdout" >&2
+  write_envelope malformed '{}'
+  exit 1
+fi
+
+any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
+scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
+
+# findings[] (critique only, same idiom as codex/claude's plan-critique
+# branch): each matched line is `FINDING: <low|medium|high>: <title>`;
+# cut -f2- (not a second split on ":") so a title containing its own colon
+# is kept intact. A line whose severity token doesn't match exactly one of
+# the three, or whose title is empty, is silently dropped -- best-effort
+# scrape of free text, not a strict parser.
+findings_json='[]'
+if [ "$operation" = critique ]; then
+  findings_ndjson=""
+  while IFS= read -r rest; do
+    [ -n "$rest" ] || continue
+    sev="$(printf '%s' "$rest" | cut -d: -f1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    title="$(printf '%s' "$rest" | cut -d: -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$sev" in low|medium|high) ;; *) continue ;; esac
+    [ -n "$title" ] || continue
+    findings_ndjson="$findings_ndjson$(jq -n --arg s "$sev" --arg t "$title" '{severity:$s, title:$t}')"$'\n'
+  done < <(printf '%s\n' "$stdout" | grep '^FINDING:' | sed 's/^FINDING:[[:space:]]*//')
+  [ -z "$findings_ndjson" ] || findings_json="$(printf '%s' "$findings_ndjson" | jq -s -c '.')"
+fi
+
+# Optional REASON line (last one wins, same idiom as the VERDICT line above)
+# carried into the envelope's `summary` -- stays absent rather than falling
+# back to placeholder text when the reply has no REASON line at all.
+reason_line="$(printf '%s\n' "$stdout" | grep '^REASON:' | tail -n1 || true)"
+reason="$(printf '%s' "$reason_line" | sed 's/^REASON:[[:space:]]*//')"
+reason="${reason:0:200}"
+if [ -n "$reason" ]; then
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" --arg s "$reason" '{verdict:$v, scope_complete:$sc, findings:$f, summary:$s}')"
+else
+  write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
+fi
+exit 0

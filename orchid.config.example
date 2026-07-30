@@ -47,6 +47,12 @@ pack_budget_bytes=65536
 # stall_minutes=10
 # timeout_minutes=60
 # agy_max_bytes=100000
+# v1-m4: same shape as agy_max_bytes above -- plugins/engines/hermes/run is
+# ALSO an inline-only reviewer (capabilities=structured_text, no
+# workspace_read; see docs/engines/hermes.md), so an oversized diff.patch
+# fails closed the same way rather than getting the workspace-read engines'
+# diff.stat relief below.
+# hermes_max_bytes=100000
 # spool_max_bytes=262144
 # v1-m4: worktree-read review packs. A review/critique diff.patch larger
 # than this many bytes is replaced with diff.stat (git diff --stat +
