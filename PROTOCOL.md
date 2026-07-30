@@ -474,9 +474,16 @@ the task should simply run again.
 
 **5. Before sleeping.**
 `orchid status --explain` (so anything watching the terminal — or the next
-resumer — sees exactly where the run stands) then `orchid run refresh-lease`
-once more (so a concurrent resumer never mistakes this pass for a stalled
-one).
+resumer — sees exactly where the run stands), then `orchid status --html`
+to regenerate the static status page (`status_page` (config, default
+`runtime/status.html`)) — the "check from another room" surface: a
+self-contained snapshot (inline CSS, no external assets, no JS) of the run
+header, task table with explain predicates, engines ledger, open blockers,
+and the last 10 journal entries. Best-effort: this call never blocks the
+tick — an unwritable status_page path or any other failure here is simply
+left for the next pass to retry, exactly like a transient engine hiccup
+elsewhere in the loop. Then `orchid run refresh-lease` once more (so a
+concurrent resumer never mistakes this pass for a stalled one).
 
 ## RESUME
 

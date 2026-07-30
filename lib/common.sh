@@ -12,6 +12,20 @@ atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv 
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
 
+# orchid_html_escape <string> -- escapes the three characters illegal bare
+# inside HTML/XML element content: `&` (must run FIRST -- doing `<`/`>`
+# first would corrupt when this step's own `&`-insertion is then
+# re-escaped) becomes `&amp;`, `<` becomes `&lt;`, `>` becomes `&gt;`.
+# Promoted here (v1-m4, static status page) from runners/orchid-service's
+# `_svc_xml_escape` (still that name there, now a thin wrapper over this)
+# so `orchid status --html` can share the exact same escaping for
+# arbitrary operator-authored text (task titles, journal entries, blocker
+# text) landing in the generated page -- one home for "make text safe to
+# embed in an XML/HTML element", not two copies that could drift.
+orchid_html_escape() {
+  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+}
+
 # orchid_split_brain <repo> -- v1-m3 Task 2 (F7, docs/dogfood-notes.md
 # v1-m2 section): `orchid init` restores the user's OWN branch when it
 # exits; the durable .orchid state (roadmap.md and everything gated on it)

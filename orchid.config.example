@@ -97,3 +97,10 @@ pack_budget_bytes=65536
 # Never overwrites a pre-existing pre-push hook of your own. Set to false to
 # skip installing it.
 # push_guard=true
+
+# v1-m4: `orchid status --html` writes a self-contained static status page
+# to this path (relative paths resolve under `.orchid/`, same as every
+# other runtime/ path this file documents) -- the "check from another
+# room" surface, regenerated best-effort at THE TICK's step 5. Never
+# served; open the file directly.
+# status_page=runtime/status.html

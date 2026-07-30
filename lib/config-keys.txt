@@ -35,3 +35,4 @@ hook.before_merge
 hook.on_blocker
 hook_timeout_s
 push_guard
+status_page

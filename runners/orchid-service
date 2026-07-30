@@ -124,8 +124,14 @@ _svc_sed_escape() { printf '%s' "$1" | sed -e 's/[|&\\]/\\&/g'; }
 # the two escaping passes target two different downstream consumers (the
 # XML parser vs. sed's replacement-string grammar) and must compose in
 # exactly this order, never merged into one pass.
+#
+# v1-m4 (static status page): the escaping itself now lives in
+# lib/common.sh's `orchid_html_escape` (`orchid status --html` needs the
+# exact same "make text safe inside an XML/HTML element" behavior for
+# arbitrary operator-authored text) -- this stays a thin wrapper, same
+# name, so every call site below is untouched.
 _svc_xml_escape() {
-  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+  orchid_html_escape "$1"
 }
 
 # _svc_plist_value <string> -- the full escaping pipeline for one value

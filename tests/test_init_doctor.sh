@@ -225,7 +225,10 @@ stale_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
 assert_match "FAIL: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
   "$stale_doctor_out" "doctor names the scoped stale-checkout fix"
 
-stale_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
+# v1-m4 Task 5 review: `status`'s split-brain/stale-checkout warnings now go
+# to STDERR only (never stdout, in any mode -- see libexec/orchid-status),
+# so this capture needs `2>&1` to still see it; unchanged otherwise.
+stale_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status 2>&1)"
 assert_match "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
   "$stale_status_out" "status warns about the scoped stale-checkout fix"
 
