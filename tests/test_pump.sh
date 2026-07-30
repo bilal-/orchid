@@ -58,6 +58,20 @@ write_lease() {
 
 cur_epoch() { cat .orchid/runtime/epoch 2>/dev/null || echo 0; }
 
+# write_released_lease <age_seconds> -- like write_lease, but additionally
+# sets `released: true` (v1-m4: orchid run release-lease, PROTOCOL.md
+# COMPLETION's clean-session-exit affordance). refreshed_at is still stamped
+# at now-<age_seconds> exactly like write_lease -- the point of every test
+# using this helper is that the pump must treat it as stale regardless of
+# how FRESH that timestamp is, not because it happens to also be old.
+write_released_lease() {
+  local age="$1" now target iso
+  now="$(date -u +%s)"; target=$((now - age))
+  iso="$(date -u -d "@$target" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$target" +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p .orchid/runtime
+  jq -n --arg t "$iso" '{epoch:1, refreshed_at:$t, released:true}' > .orchid/runtime/lease.json
+}
+
 # ===========================================================================
 # A -- uninitialized dir (no .orchid/tasks, no journal.md, no roadmap.md):
 # exit 0, and the pump must say so plainly rather than let the tick's "not
@@ -168,6 +182,27 @@ out="$("$PUMP" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "pump exits 0 when the lease is fresh"
 assert_match '^pump: lease fresh \([0-9]+s\)$' "$out" "pump prints the lease-fresh message with the observed age"
 [ -f "$WORK/marker-stubfresh" ] && fail "pump must not spawn the tick while the lease is fresh"
+
+# ===========================================================================
+# C2 -- v1-m4 Task 2 (the "no clean-exit affordance" incident): a RELEASED
+# lease (orchid run release-lease) whose refreshed_at is only moments old
+# must still be treated as immediately stale -- the session that wrote it
+# is genuinely gone, not merely between refreshes. Before this fix, an
+# operator had to wait out pump_stale_s (or hand-backdate lease.json) even
+# though the session itself had already cleanly signaled it was done.
+# ===========================================================================
+mk_stub_engine stubreleased
+printf 'role.orchestrator=stubreleased\n' > orchid.config
+write_released_lease 5   # fresh by age alone -- released must override that
+rm -f "$WORK/marker-stubreleased"
+epoch_before="$(cur_epoch)"
+
+out="$("$PUMP" 2>&1)"; rc=$?
+epoch_after="$(cur_epoch)"
+
+assert_eq 0 "$rc" "pump exits 0 on a healthy ok tick when the lease is released"
+[ -f "$WORK/marker-stubreleased" ] || fail "a released lease must be treated as immediately stale, even with a fresh refreshed_at"
+[ "$epoch_after" -gt "$epoch_before" ] || fail "pump's tick fences a fresh epoch ($epoch_before -> $epoch_after)"
 
 # ===========================================================================
 # D -- stale lease + a healthy primary orchestrator engine: the tick runs

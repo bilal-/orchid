@@ -151,3 +151,129 @@ for rf in "$WORK/.orchid/runtime/requests/"*.json; do
 done
 [ -n "$plan_req" ] || fail "plan critique request document not found under runtime/requests"
 assert_eq "$WORK" "$(jq -r .worktree "$plan_req")" "plan critique request worktree defaults to the repo (no task file to read one from)"
+
+# ===========================================================================
+# v1-m4 Task 2 (push prevention): `orchid init` installs a defense-in-depth
+# `.git/hooks/pre-push` guard (PROTOCOL.md already forbids external
+# mutation outright -- "the operator alone moves anything to origin" -- but
+# a live run pushed a task branch to origin TWICE anyway). Blocks pushes of
+# `refs/heads/task/*` and the configured integration branch unless
+# ORCHID_ALLOW_PUSH=1; never overwrites a pre-existing user hook; config
+# `push_guard=false` skips installing it entirely.
+# ===========================================================================
+pg="$WORK/pushguard"; mkdir -p "$pg"
+(cd "$pg" && git init -q . && git symbolic-ref HEAD refs/heads/trunk && git commit -q --allow-empty -m root)
+ORCHID_REPO="$pg" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
+[ -x "$pg/.git/hooks/pre-push" ] || fail "orchid init installs an executable .git/hooks/pre-push guard by default"
+
+remote="$WORK/push-remote.git"; git init -q --bare "$remote"
+git -C "$pg" remote add origin "$remote"
+git -C "$pg" branch task/T001 trunk
+
+rc=0; task_push_out="$(git -C "$pg" push origin task/T001 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "push guard must block pushing a task/* branch"
+assert_match "push blocked" "$task_push_out" "push guard names the block plainly"
+
+rc=0; integ_push_out="$(git -C "$pg" push origin orchid/integration 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "push guard must block pushing the integration branch"
+assert_match "push blocked" "$integ_push_out" "push guard names the block plainly for the integration branch"
+
+# ORCHID_ALLOW_PUSH=1 overrides the guard for exactly the ref it names.
+rc=0; ORCHID_ALLOW_PUSH=1 git -C "$pg" push origin task/T001 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "ORCHID_ALLOW_PUSH=1 must allow pushing a task/* branch"
+
+# A branch that is neither task/* nor the integration branch pushes normally,
+# guard or no guard.
+git -C "$pg" branch feature/other trunk
+rc=0; other_push_out="$(git -C "$pg" push origin feature/other 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "push guard must never block a non-task/non-integration branch (got: $other_push_out)"
+
+# A pre-existing user pre-push hook must NEVER be overwritten by init.
+pg2="$WORK/pushguard-userhook"; mkdir -p "$pg2"
+(cd "$pg2" && git init -q . && git symbolic-ref HEAD refs/heads/trunk && git commit -q --allow-empty -m root)
+mkdir -p "$pg2/.git/hooks"
+printf '#!/bin/sh\necho custom-user-hook\nexit 0\n' > "$pg2/.git/hooks/pre-push"
+chmod +x "$pg2/.git/hooks/pre-push"
+custom_hook_before="$(cat "$pg2/.git/hooks/pre-push")"
+init_out="$(ORCHID_REPO="$pg2" HOME="$WORK/home" "$ORCHID_BIN" init)"
+assert_match "existing pre-push hook found" "$init_out" "orchid init reports skipping an existing user pre-push hook"
+assert_eq "$custom_hook_before" "$(cat "$pg2/.git/hooks/pre-push")" "orchid init must never overwrite an existing pre-push hook"
+
+# push_guard=false (config) skips installing the hook entirely.
+pg3="$WORK/pushguard-disabled"; mkdir -p "$pg3"
+(cd "$pg3" && git init -q . && git symbolic-ref HEAD refs/heads/trunk \
+  && echo "push_guard=false" > orchid.config && git add orchid.config && git commit -q -m cfg)
+ORCHID_REPO="$pg3" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
+[ -e "$pg3/.git/hooks/pre-push" ] && fail "push_guard=false must skip installing the pre-push hook"
+
+# ===========================================================================
+# Post-review fix (Important, reviewer-reproduced): the hook used to `grep
+# orchid.config` for `integration_branch` at PUSH time -- but a real push
+# originates from wherever the pusher's cwd is, which for a task branch is
+# a TASK WORKTREE. `orchid.config` is untracked and repo-root-only, so it is
+# simply absent there, and a customized integration_branch silently fell
+# back to the hook's own hardcoded default -- bypassing that leg of the
+# guard. Fixed by resolving the name ONCE at install time (`orchid init`
+# substitutes `__INTEGRATION_BRANCH__` via sed, mirroring templates/task.md's
+# own placeholder idiom) and baking it into the installed hook file, which
+# never reads orchid.config again. Proves both halves: the baked name in the
+# installed hook file, and the guard actually firing when triggered from a
+# task WORKTREE checkout (not the main repo) that has no orchid.config at
+# all on disk.
+# ===========================================================================
+pg4="$WORK/pushguard-custom"; mkdir -p "$pg4"
+# orchid.config here is gitignored, NOT committed -- the realistic shape the
+# reviewer's finding actually depends on: `orchid init`'s clean-working-tree
+# gate passes because git ignores it (never shows up in `git status
+# --porcelain`), `config_get` still reads it fine straight off disk (it
+# never cared whether a file is tracked), but a worktree checked out from
+# any commit genuinely never receives an ignored, uncommitted file -- unlike
+# committing it, which would (wrongly, for this test) carry it into every
+# worktree too and mask the exact bug being fixed.
+(cd "$pg4" && git init -q . && git symbolic-ref HEAD refs/heads/trunk \
+  && echo "orchid.config" > .gitignore && git add .gitignore && git commit -q -m "gitignore local config" \
+  && echo "integration_branch=custom/integ" > orchid.config)
+ORCHID_REPO="$pg4" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
+grep -qx 'integ="custom/integ"' "$pg4/.git/hooks/pre-push" \
+  || fail "orchid init bakes the CUSTOM integration_branch name into the installed pre-push hook"
+grep -q "__INTEGRATION_BRANCH__" "$pg4/.git/hooks/pre-push" \
+  && fail "the installed pre-push hook must never carry the raw __INTEGRATION_BRANCH__ placeholder"
+
+remote4="$WORK/push-remote-custom.git"; git init -q --bare "$remote4"
+git -C "$pg4" remote add origin "$remote4"
+# `orchid init` itself already created the `custom/integ` branch (that IS
+# the integration branch it just initialized) -- no separate branch needed.
+
+wt4="$WORK/pushguard-custom-wt"
+git -C "$pg4" worktree add -q -b task/T099 "$wt4" trunk
+[ ! -e "$wt4/orchid.config" ] || fail "sanity: orchid.config must be absent from the task worktree (untracked, repo-root-only)"
+
+rc=0; wt_task_push_out="$(git -C "$wt4" push origin task/T099 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "push guard must block a task/* branch pushed from a TASK WORKTREE checkout (no orchid.config present there)"
+assert_match "push blocked" "$wt_task_push_out" "push guard message fires from the worktree checkout too"
+
+rc=0; wt_integ_push_out="$(git -C "$wt4" push origin custom/integ 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "push guard must block the CUSTOM integration branch pushed from a task worktree checkout"
+assert_match "push blocked" "$wt_integ_push_out" "push guard names the custom integration branch even from a worktree"
+
+rc=0; ORCHID_ALLOW_PUSH=1 git -C "$wt4" push origin task/T099 >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "ORCHID_ALLOW_PUSH=1 still allows the push when triggered from a task worktree checkout"
+
+# ===========================================================================
+# Post-review fix (trivial, re-review): $integ is substituted into a sed
+# REPLACEMENT string at install time -- `|` (the delimiter itself), `&`
+# (whole-match backreference), and `\` (escape introducer) are all
+# syntactically significant there, and `|`/`&` (unlike `\`) are legal
+# characters in a real git branch name. An unescaped substitution would
+# corrupt the baked-in name for a branch like `weird&name` (sed would
+# expand the `&` to the whole match instead of keeping it literal) rather
+# than erroring loudly. `integration_branch=weird&name` must bake in
+# EXACTLY that literal text.
+# ===========================================================================
+pg5="$WORK/pushguard-weirdchars"; mkdir -p "$pg5"
+(cd "$pg5" && git init -q . && git symbolic-ref HEAD refs/heads/trunk \
+  && echo "orchid.config" > .gitignore && git add .gitignore && git commit -q -m "gitignore local config" \
+  && echo "integration_branch=weird&name" > orchid.config)
+ORCHID_REPO="$pg5" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
+grep -qx 'integ="weird&name"' "$pg5/.git/hooks/pre-push" \
+  || fail "orchid init bakes an integration_branch containing '&' in literally, unescaped by sed's whole-match expansion"

@@ -93,6 +93,65 @@ fi
 ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins lock >/dev/null 2>&1 || true
 git -C "$repo" checkout -q "$integ"
 git -C "$repo" add .orchid .gitignore && git -C "$repo" commit -q -m "orchid: initialize run state"
+
+# v1-m4 Task 2 (push prevention): install `.git/hooks/pre-push` as a
+# defense-in-depth guard against pushing orchid-managed refs to origin --
+# PROTOCOL.md's Preamble already forbids this outright ("No external
+# mutation ... the operator alone moves anything to origin"), but a live run
+# violated it anyway (a task branch pushed to origin twice) with nothing in
+# place to stop it. `push_guard` (config, default true; any falsy spelling
+# -- false, 0, no -- skips installing it, same convention
+# role_binding_blocking uses) gates whether this runs at all. Hooks live
+# under the git dir, never inside a commit -- `git rev-parse
+# --git-common-dir` resolves the SHARED hooks dir even when invoked from a
+# worktree (task worktrees all share one hooks dir with the main checkout),
+# and is resolved relative to $repo (not the caller's cwd) since init may be
+# invoked with ORCHID_REPO pointing elsewhere.
+# Never overwrites a pre-existing pre-push hook of the user's own -- that
+# hook is authoritative regardless of what it does; skip and say so.
+#
+# Post-review fix (Important): the template's integration-branch check used
+# to `grep orchid.config` at PUSH time -- but a pre-push hook's cwd is
+# whatever checkout triggered the push, which for a real task-branch push is
+# a TASK WORKTREE, and `orchid.config` is an untracked, repo-root-only file
+# that is simply absent there. A customized `integration_branch` would
+# silently fall back to the hook's own hardcoded default, bypassing that leg
+# of the guard entirely. Fixed by resolving ONCE, here, at install time
+# instead -- same `sed` substitution idiom `templates/task.md`'s
+# __ID__/__TITLE__/... placeholders already use -- and baking the resolved
+# name into the installed hook file, so the hook itself never has to locate
+# or read `orchid.config` again. Re-running `orchid init` after changing
+# `integration_branch` refreshes the baked-in name (subject to the
+# never-overwrite rule below, same as any other re-run).
+push_guard_cfg="$(config_get "$repo" push_guard true)"
+case "$push_guard_cfg" in
+  false|0|no) : ;;
+  *)
+    git_common_dir="$(cd "$repo" && git rev-parse --git-common-dir)"
+    case "$git_common_dir" in
+      /*) hooks_dir="$git_common_dir/hooks" ;;
+      *) hooks_dir="$repo/$git_common_dir/hooks" ;;
+    esac
+    if [ -e "$hooks_dir/pre-push" ]; then
+      echo "orchid: existing pre-push hook found at $hooks_dir/pre-push -- leaving it untouched (push guard not installed)"
+    else
+      mkdir -p "$hooks_dir"
+      # Post-review fix (trivial, re-review): $integ is substituted into a
+      # sed REPLACEMENT string, where `|` (the delimiter itself), `&` (whole-
+      # match backreference), and `\` (escape introducer) are all
+      # syntactically significant -- and all three are legal in a git branch
+      # name. Unescaped, a branch named e.g. `weird&name` would corrupt the
+      # substitution (the literal branch text, not `&`, is what must land in
+      # the hook) rather than erroring loudly. Escape every occurrence of
+      # those three characters with a leading backslash before substituting.
+      integ_esc="$(printf '%s' "$integ" | sed -e 's/[|&\\]/\\&/g')"
+      sed "s|__INTEGRATION_BRANCH__|$integ_esc|g" "$ORCHID_ROOT/templates/pre-push.sh" > "$hooks_dir/pre-push"
+      chmod +x "$hooks_dir/pre-push"
+      echo "pre-push guard installed: $hooks_dir/pre-push (integration branch: $integ)"
+    fi
+    ;;
+esac
+
 echo "initialized: $integ"
 # v1-m3 Task 2 operator UX (F7): init just restored the operator onto
 # their OWN branch (see `cleanup` above) -- durable .orchid state (the

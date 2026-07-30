@@ -23,6 +23,10 @@ pack_budget_bytes=65536
 # continues rather than infra-failing (see docs/specs/operations.md).
 # role.<id>=<engine>[,<engine>...]
 # role.<id>.blocking=false
+# Note: a custom <id> may use `-` or `_` interchangeably (both map to the
+# same env-override variable, e.g. role.code-reviewer and role.code_reviewer
+# both resolve ORCHID_ROLE_CODE_REVIEWER) -- never rely on `-` vs `_` to
+# distinguish two otherwise-identical role ids; they collide.
 
 # Dual review routing (v1-m2): review.<tier> is a comma-separated failover
 # chain of engine names consulted for the risk-tiered reviewer slots (see
@@ -73,3 +77,10 @@ pack_budget_bytes=65536
 # hook.before_merge=
 # hook.on_blocker=
 # hook_timeout_s=600
+
+# v1-m4: `orchid init` installs a `.git/hooks/pre-push` guard (defense-in-
+# depth against pushing orchid-managed refs -- task/* branches, the
+# integration branch -- to origin; PROTOCOL.md already forbids it outright).
+# Never overwrites a pre-existing pre-push hook of your own. Set to false to
+# skip installing it.
+# push_guard=true

@@ -11,7 +11,11 @@ part of the architecture; this file never changes to suit one.*
 
 - **No external mutation.** Never `git push`, never fetch/pull, never
   contact any remote — every mutation this file authorizes is repo-local;
-  the operator alone moves anything to origin.
+  the operator alone moves anything to origin. `orchid init` also installs
+  a `.git/hooks/pre-push` guard (`push_guard`, config, default true) as
+  defense-in-depth: it refuses any push of a `task/*` branch or the
+  integration branch unless `ORCHID_ALLOW_PUSH=1`, so a session violating
+  this rule (deliberately or by accident) still cannot push either.
 - **You are the orchestrator.** Your only interface to run state is `orchid
   <verb>` and, for spawning engine work, `runners/orchid-launch`. Never
   hand-edit anything under `.orchid/` — no frontmatter, no journal, no
@@ -84,7 +88,7 @@ part of the architecture; this file never changes to suit one.*
   positional carries no meaning for a hook job — pass the literal `hook`; a
   hook job's real identity for engine-resolution purposes comes entirely
   from the point's config binding, never the role chain), launch every
-  additional bound entry the same way but with `--engine <plugin-id>` naming
+  additional bound entry the same way but with `--engine <name>` naming
   it explicitly (mirrors a second reviewer slot), then `orchid jobs
   reconcile` before reading any of their envelopes. A binding entry marked
   `:required` whose reconciled envelope is missing, stale, or not `status:
@@ -415,7 +419,7 @@ ones its archetype never declares.
   a second concurrent merge anyway. Before that one call, if
   `hook.before_merge` is bound (`orchid config list`), invoke every bound
   entry first — the Preamble's shape, `runners/orchid-launch <id> hook hook
-  --hook before_merge` for the first bound entry, `--engine <plugin-id>`
+  --hook before_merge` for the first bound entry, `--engine <name>`
   naming each additional one — then `orchid jobs reconcile`. This is the ONE
   hook point the kernel itself also enforces: a `:required` entry with no
   fresh ok envelope for the task's CURRENT `candidate_sha` makes the verb
@@ -600,6 +604,14 @@ Once `orchid status --explain` shows every task `done`:
    A further call once that commit has actually landed dies cleanly
    instead ("already accepted and committed") — there is nothing left to
    retry.
+4. `orchid run release-lease` — the clean-session-exit affordance (v1-m4):
+   writes `released: true` into `runtime/lease.json` so nothing watching
+   this run mistakes your own still-fresh lease for a live session. Both
+   `run new`'s freshness guard and the pump's own lease-staleness check
+   (HEADLESS OPERATION above) treat a released lease as immediately stale,
+   regardless of how recently it was last refreshed — closing the gap where
+   an operator previously had to wait out `pump_stale_s`, or hand-backdate
+   `lease.json`, before `run new` or the pump would touch this run again.
 
 ## Known documentation discrepancies surfaced while writing this file
 

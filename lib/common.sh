@@ -279,7 +279,14 @@ with_timeout() {
   return 124
 }
 
-_cfg_env_name() { echo "ORCHID_$(echo "$1" | tr 'a-z.' 'A-Z_')"; }
+# v1-m4: hyphenated config keys (a custom role id like `role.code-reviewer`)
+# used to have NO working env override at all -- `tr 'a-z.'` never mapped
+# `-`, so `ORCHID_ROLE_CODE-REVIEWER` (an invalid env var name; bash silently
+# treats it as unset) was the only name ever produced, and `config_get`'s
+# `eval "v=\${$env:-}"` line would in fact throw a "bad substitution" for that
+# exact shape were it ever reached with the raw hyphen still in place. `-`
+# now maps to `_` alongside `.`, so `role.code-reviewer` -> `ORCHID_ROLE_CODE_REVIEWER`.
+_cfg_env_name() { echo "ORCHID_$(echo "$1" | tr 'a-z.-' 'A-Z__')"; }
 # Last matching `key=value` line in the file wins (append-to-override, as in
 # a typical shell/config file); this was a `head -n1` (first-wins) bug that
 # silently made appended config overrides no-ops. Found while writing Task 8's

@@ -165,6 +165,67 @@ echo "$hostile_out" | grep -Eq "^gc (\.\.|/)" && fail "gc must never echo a reap
 [ -f "$rt/quarantine/j-hostile.json.reason-gc-suspect" ] || fail "gc: hostile manifest quarantined as .reason-gc-suspect"
 
 # ---------------------------------------------------------------------------
+# v1-m4 Task 2 (the pid-0 ghost incident): `jobs gc --reap-prepared
+# [--older-than-s N]` (default 3600) is a SEPARATE mode targeting EXACTLY
+# the pid==0 "prepared, never launched" manifests -- e.g. `orchid-launch`
+# dying between `jobs prepare` and the actual spawn -- that plain `gc` (no
+# flag) deliberately skips outright (see the `[ "$pid" != 0 ] || continue`
+# line above), and which otherwise sat forever, re-reported as `prepared` by
+# every `jobs check` pass. Age is measured off the manifest FILE's own
+# mtime, since `started_at` is always 0 for a never-launched manifest.
+# ---------------------------------------------------------------------------
+mkdir -p "$rt/jobs"
+
+# A genuinely old, never-launched manifest: must be reaped as gc-prepared.
+jq -n '{job_id:"j-e1-TPREP-a1-aaaa0001", task:"TPREP", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-old.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-old.json"
+touch -t 202001010000 "$rt/jobs/j-prep-old.json"   # ancient mtime
+
+# A young, never-launched manifest: must survive (age gates it, just like
+# the dead-job reap above).
+jq -n '{job_id:"j-e1-TPREPYOUNG-a1-bbbb0001", task:"TPREPYOUNG", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-young.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-young.json"
+
+# Plain gc (no --reap-prepared) must still skip BOTH pid-0 manifests outright
+# -- unchanged existing behavior.
+plain_gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+echo "$plain_gc_out" | grep -q "j-prep-old\|TPREP" && fail "plain gc must never touch a pid==0 (prepared) manifest, old or young"
+[ -f "$rt/jobs/j-prep-old.json" ] || fail "plain gc must not remove the old prepared manifest"
+
+reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 60)"
+assert_match "^gc-prepared j-e1-TPREP-a1-aaaa0001$" "$reap_out" "gc --reap-prepared reaps the old never-launched manifest"
+echo "$reap_out" | grep -q "TPREPYOUNG" && fail "gc --reap-prepared must not touch the young prepared manifest"
+[ ! -f "$rt/jobs/j-prep-old.json" ] || fail "gc --reap-prepared: old prepared manifest removed from jobs dir"
+[ -f "$rt/quarantine/j-prep-old.json.reason-gc-prepared" ] || fail "gc --reap-prepared: quarantined as .reason-gc-prepared"
+[ -f "$rt/jobs/j-prep-young.json" ] || fail "gc --reap-prepared: young prepared manifest must survive"
+
+# --reap-prepared's own suspect-fields validation (same discipline as the
+# ordinary dead-job reap): a hand-edited/corrupt job_id must never be reaped
+# -- quarantined as gc-suspect instead, and nothing on disk touched.
+jq -n '{job_id:"../../../../etc/j-evil-prep", task:"THOSTILEPREP", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"/nonexistent.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-hostile-prep.json"
+touch -t 202001010000 "$rt/jobs/j-hostile-prep.json"
+
+hostile_prep_out="$("$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 60)"
+assert_match "^gc-skip j-hostile-prep\.json \(suspect fields\)$" "$hostile_prep_out" "gc --reap-prepared skips a hostile job_id"
+[ ! -f "$rt/jobs/j-hostile-prep.json" ] || fail "gc --reap-prepared: hostile prepared manifest removed from jobs dir (quarantined)"
+[ -f "$rt/quarantine/j-hostile-prep.json.reason-gc-suspect" ] || fail "gc --reap-prepared: hostile manifest quarantined as .reason-gc-suspect"
+
+# --older-than-s defaults to 3600 under --reap-prepared (distinct from plain
+# gc's 86400 default): a manifest just past 3600s old is reaped with no
+# --older-than-s given at all.
+jq -n '{job_id:"j-e1-TPREPDEF-a1-def00001", task:"TPREPDEF", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-def.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-def.json"
+touch -t 202001010000 "$rt/jobs/j-prep-def.json"
+
+default_reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared)"
+assert_match "^gc-prepared j-e1-TPREPDEF-a1-def00001$" "$default_reap_out" "gc --reap-prepared's --older-than-s defaults to 3600"
+
+# ---------------------------------------------------------------------------
 # v0b2: `jobs check` ALSO reads the task's `started_at` + `wallclock_budget_s`
 # from frontmatter, independent of the job/pid's own liveness, and prints
 # `<task>\tbudget-exceeded` once exceeded. This is a report only — `jobs

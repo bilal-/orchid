@@ -60,6 +60,28 @@ case "$sub" in
     jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{epoch:($e|tonumber), refreshed_at:$t}' | atomic_write "$rt/lease.json"
     ;;
+  release-lease)
+    # v1-m4: clean-session-exit affordance (the live-run incident this
+    # closes: after a session's own FINAL tick, `run new`/the pump were both
+    # blocked for up to pump_stale_s by that same session's own still-fresh
+    # lease — there was no way to signal "I am genuinely done", short of an
+    # operator hand-backdating lease.json). PROTOCOL.md's COMPLETION ends
+    # with this call, right after `run accept`. Writes `released: true` into
+    # lease.json alongside the usual epoch/refreshed_at shape; both `run
+    # new`'s own freshness guard (below) and runners/orchid-pump's lease-
+    # staleness check treat a released lease as immediately stale,
+    # regardless of how recently refreshed_at itself was stamped.
+    #
+    # Epoch-fenced, unlike refresh-lease above: a STALE session (one whose
+    # epoch a newer `run resume`/`start` has already superseded — e.g. a
+    # crashed session's own delayed cleanup call finally running) must never
+    # be able to mark the CURRENT owner's lease released out from under it.
+    epoch_require "$repo"; export ORCHID_EPOCH
+    e="$(epoch_current "$repo")"
+    jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{epoch:($e|tonumber), refreshed_at:$t, released:true}' | atomic_write "$rt/lease.json"
+    echo "lease released"
+    ;;
   advance)
     verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
@@ -232,18 +254,28 @@ case "$sub" in
     # session" here, exactly like the pump's own missing-lease handling.
     lease_file="$rt/lease.json"
     if [ -f "$lease_file" ]; then
-      refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
-      refreshed_epoch=0
-      if [ -n "$refreshed_at" ]; then
-        refreshed_epoch="$(date -u -d "$refreshed_at" +%s 2>/dev/null \
-          || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$refreshed_at" +%s 2>/dev/null \
-          || echo 0)"
-      fi
-      if [ "$refreshed_epoch" -gt 0 ]; then
-        stale_s="$(config_get "$repo" pump_stale_s 900)"
-        lease_age=$(( $(date -u +%s) - refreshed_epoch ))
-        if [ "$lease_age" -lt "$stale_s" ]; then
-          orchid_die "a live orchestrator session may still be running (lease refreshed ${lease_age}s ago); wait for the lease to lapse or stop the session"
+      # v1-m4: `released: true` (orchid run release-lease, PROTOCOL.md
+      # COMPLETION) is a clean-session-exit affordance -- the session that
+      # wrote it is genuinely gone, not merely between refreshes, so it must
+      # read as immediately stale here regardless of how recently
+      # refreshed_at itself was stamped (closes the live-run incident: an
+      # operator having to hand-backdate lease.json to unblock `run new`
+      # after a session's own final tick).
+      released="$(jq -r '.released // false' "$lease_file" 2>/dev/null || echo false)"
+      if [ "$released" != true ]; then
+        refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
+        refreshed_epoch=0
+        if [ -n "$refreshed_at" ]; then
+          refreshed_epoch="$(date -u -d "$refreshed_at" +%s 2>/dev/null \
+            || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$refreshed_at" +%s 2>/dev/null \
+            || echo 0)"
+        fi
+        if [ "$refreshed_epoch" -gt 0 ]; then
+          stale_s="$(config_get "$repo" pump_stale_s 900)"
+          lease_age=$(( $(date -u +%s) - refreshed_epoch ))
+          if [ "$lease_age" -lt "$stale_s" ]; then
+            orchid_die "a live orchestrator session may still be running (lease refreshed ${lease_age}s ago); wait for the lease to lapse or stop the session"
+          fi
         fi
       fi
     fi
@@ -427,5 +459,5 @@ case "$sub" in
 
     echo "run rolled over: $old_run_id -> $new_run_id (archived to runs/$old_run_id/)"
     ;;
-  *) orchid_die "usage: orchid run start|resume|refresh-lease|advance|accept|new" ;;
+  *) orchid_die "usage: orchid run start|resume|refresh-lease|release-lease|advance|accept|new" ;;
 esac

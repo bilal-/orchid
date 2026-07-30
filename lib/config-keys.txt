@@ -32,3 +32,4 @@ hook.on_verify_fail
 hook.before_merge
 hook.on_blocker
 hook_timeout_s
+push_guard

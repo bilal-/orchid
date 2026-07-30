@@ -111,12 +111,24 @@ if [ ! -f "$lease_file" ]; then
   fi
   age=999999999
 else
-  refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
-  refreshed_epoch="$(_pump_iso_to_epoch "$refreshed_at")"
-  if [ "$refreshed_epoch" -gt 0 ]; then
-    age=$(( now - refreshed_epoch ))
+  # v1-m4: `released: true` (orchid run release-lease, PROTOCOL.md
+  # COMPLETION) is the clean-session-exit affordance -- the session that
+  # wrote this lease is genuinely gone, not merely between refreshes, so it
+  # must read as immediately stale here regardless of how recently
+  # refreshed_at itself was stamped. Closes the live-run incident where the
+  # pump sat blocked for up to pump_stale_s after a session's own final
+  # tick, with operators resorting to hand-backdating lease.json.
+  released="$(jq -r '.released // false' "$lease_file" 2>/dev/null || echo false)"
+  if [ "$released" = true ]; then
+    age=999999999
   else
-    age=999999999   # malformed/unparseable refreshed_at treated as stale
+    refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
+    refreshed_epoch="$(_pump_iso_to_epoch "$refreshed_at")"
+    if [ "$refreshed_epoch" -gt 0 ]; then
+      age=$(( now - refreshed_epoch ))
+    else
+      age=999999999   # malformed/unparseable refreshed_at treated as stale
+    fi
   fi
 fi
 
