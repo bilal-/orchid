@@ -153,6 +153,69 @@ done
 assert_eq "$WORK" "$(jq -r .worktree "$plan_req")" "plan critique request worktree defaults to the repo (no task file to read one from)"
 
 # ===========================================================================
+# v1-m4 Task 3 (worktree-read review packs): orchid-launch now resolves the
+# reviewer engine's plugin dir BEFORE pack_build (previously it happened
+# only at the spawn site, after the pack was already built) so pack_build
+# can see whether that engine declares workspace_read. A big diff + a
+# workspace_read-capable engine must reach the spawned engine as diff.stat,
+# never diff.patch (the stub `run` below refuses/exits 1 otherwise, so a
+# failed reconcile line would itself prove the plumbing broke); the SAME
+# big diff + an inline-only engine still hits input_overflow end-to-end,
+# unchanged (tests/test_pack.sh already covers lib/pack.sh directly -- this
+# proves the LAUNCHER actually wires the capability fact through).
+# ===========================================================================
+base_wt="$(git -C "$WORK" rev-parse HEAD)"
+big_wt_content="$(printf 'w%.0s' $(seq 1 300000))"
+printf '%s\n' "$big_wt_content" > "$WORK/big.txt"
+(cd "$WORK" && git add big.txt && git commit -q -m "big change")
+cand_wt="$(git -C "$WORK" rev-parse HEAD)"
+
+"$ORCHID_BIN" task create TWT demo >/dev/null
+"$ORCHID_BIN" task set TWT base_sha "$base_wt" >/dev/null
+"$ORCHID_BIN" task set TWT candidate_sha "$cand_wt" >/dev/null
+
+mkdir -p "$WORK/eng/wtrev"
+printf 'manifest_version=1\nid=test/wtrev\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text,workspace_read,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/wtrev/plugin.conf"
+cat > "$WORK/eng/wtrev/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"; out="$(jq -r .output "$req")"; jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
+pack="$(jq -r .input_pack "$req")"
+[ -f "$pack/diff.stat" ] || exit 1
+[ ! -f "$pack/diff.patch" ] || exit 1
+[ "$(jq -r .operation "$req")" = review ] || exit 1
+printf '{"contract":1,"job_id":"%s","task":"%s","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"summary":"wt stub"}' \
+  "$jid" "$task" > "$out"
+EOF
+chmod +x "$WORK/eng/wtrev/run"
+printf 'role.wtcritic=wtrev\n' >> "$WORK/orchid.config"
+
+wt_launch_out="$("$REPO_ROOT/runners/orchid-launch" TWT wtcritic review)"
+assert_match "^launched j-" "$wt_launch_out" "worktree-read review launch reports a launched job"
+sleep 1
+wt_reconcile_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match $'^TWT\tok' "$wt_reconcile_line" \
+  "worktree-read review job reconciled end-to-end (stub itself refuses unless diff.stat is present and diff.patch is absent)"
+
+# An inline-only engine (no workspace_read) reviewing the SAME big diff
+# still hits input_overflow end-to-end through the real launcher -- unchanged,
+# never silently truncated.
+mkdir -p "$WORK/eng/inlinerev"
+printf 'manifest_version=1\nid=test/inlinerev\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/inlinerev/plugin.conf"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$WORK/eng/inlinerev/run"
+chmod +x "$WORK/eng/inlinerev/run"
+printf 'role.inlinecritic=inlinerev\n' >> "$WORK/orchid.config"
+
+"$ORCHID_BIN" task create TWT2 demo >/dev/null
+"$ORCHID_BIN" task set TWT2 base_sha "$base_wt" >/dev/null
+"$ORCHID_BIN" task set TWT2 candidate_sha "$cand_wt" >/dev/null
+rc=0; wt2_err="$("$REPO_ROOT/runners/orchid-launch" TWT2 inlinecritic review 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "inline-only engine: launcher must fail (input_overflow) for the same big diff, unchanged"
+assert_match "input_overflow" "$wt2_err" "inline-only engine: launcher surfaces input_overflow for the big diff"
+
+# ===========================================================================
 # v1-m4 Task 2 (push prevention): `orchid init` installs a defense-in-depth
 # `.git/hooks/pre-push` guard (PROTOCOL.md already forbids external
 # mutation outright -- "the operator alone moves anything to origin" -- but

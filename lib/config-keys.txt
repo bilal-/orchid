@@ -16,6 +16,7 @@ stall_minutes
 timeout_minutes
 agy_max_bytes
 pack_budget_bytes
+pack_diff_inline_max_bytes
 lessons_max_bytes
 spool_max_bytes
 gc_older_than_s

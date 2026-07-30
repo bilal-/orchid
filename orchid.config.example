@@ -48,6 +48,13 @@ pack_budget_bytes=65536
 # timeout_minutes=60
 # agy_max_bytes=100000
 # spool_max_bytes=262144
+# v1-m4: worktree-read review packs. A review/critique diff.patch larger
+# than this many bytes is replaced with diff.stat (git diff --stat +
+# --name-status) instead, but ONLY when the resolved reviewer/critic engine
+# declares the workspace_read capability (it can read the checkout itself);
+# an inline-only engine still gets the full diff.patch regardless of size,
+# subject to the ordinary pack_budget_bytes overflow check.
+# pack_diff_inline_max_bytes=262144
 # v1-m3: cross-run lessons.md byte cap (docs/specs/kernel.md, Cross-run
 # lessons). `orchid lessons consolidate` refuses rather than deleting an
 # active lesson when hygiene alone can't fit under this cap.

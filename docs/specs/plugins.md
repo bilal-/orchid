@@ -84,7 +84,14 @@ decision in config. **Visibility honesty:** worktree-capable
 engines can physically read the whole checkout, including committed
 `.orchid/` state — the pack defines what they are GIVEN, the execution
 policy defines what they may DO, and review independence never rests on
-secrecy.
+secrecy. **Worktree-read review packs:** a review/critique diff larger than
+`pack_diff_inline_max_bytes` (config, default 262144) is not, in itself, an
+overflow — when the RESOLVED engine declares `workspace_read`, the pack
+swaps the inline `diff.patch` for `diff.stat` (stat summary + name-status:
+enough to navigate the checkout directly) and records the omission
+honestly in `pack.json` (`{"name":"diff.patch","omitted":"worktree-read"}`).
+An inline-only engine gets no such relief — a diff that large still hits
+`input_overflow` exactly as above, since it has no other way to see it.
 
 One adapter serves many roles by branching on `operation` — no pseudo-engine
 identities. Adapters never guess paths, never choose output locations, exit

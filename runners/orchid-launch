@@ -50,8 +50,36 @@ base_sha="$(jq -r .base_sha "$manifest")"; candidate_sha="$(jq -r .candidate_sha
 # locally-parsed flag -- authoritative, and "" for every non-hook job.
 hook_point="$(jq -r '.hook_point // empty' "$manifest")"
 
+# v1-m4 Task 3 (worktree-read review packs): the engine + its plugin dir are
+# resolved HERE, BEFORE pack_build, not down at the spawn site below -- this
+# resolution is read-only (no exec; INV-06 only gates the actual spawn line
+# further down) so hoisting it is safe, and pack_build needs the resolved
+# engine's capability fact to decide whether a big diff may skip diff.patch
+# for diff.stat. `exe`/`plugin_dir` are reused unchanged at the spawn site
+# below -- resolved exactly once, never twice.
+exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"
+plugin_dir="$(dirname "$exe")"
+
+# Capability fact for pack_build, in the SAME positional slot the hook
+# branch already uses for hook_point (mutually exclusive: hook ops never
+# reach the review/critique branch, and vice versa) -- pack.sh stays
+# resolver-dumb, handed only the fact, never a dir/engine name to resolve
+# itself. Built as the space-bounded "have" string idiom (lib/review.sh's
+# _review_worktree_capable) rather than `manifest_capabilities | grep -q`:
+# this script runs under `set -o pipefail`, and grep -q's early exit on its
+# first match would SIGPIPE the manifest_capabilities writer, corrupting the
+# pipeline's exit status.
+pack_extra="$hook_point"
+if [ "$operation" = review ] || [ "$operation" = critique ]; then
+  wt_have=" "
+  while IFS= read -r wt_atom; do
+    [ -n "$wt_atom" ] && wt_have="$wt_have$wt_atom "
+  done < <(manifest_capabilities "$plugin_dir" 2>/dev/null)
+  case "$wt_have" in *" workspace_read "*) pack_extra="workspace_read=1" ;; esac
+fi
+
 pack_dir="$rt/packs/$job_id"
-pack_build "$repo" "$task" "$operation" "$pack_dir" "$hook_point"
+pack_build "$repo" "$task" "$operation" "$pack_dir" "$pack_extra"
 
 # `plan` (v1-m3): the reserved task id has no `.orchid/tasks/plan.md` to
 # read at all -- `fm_get` on a nonexistent file is an awk open-failure, not
@@ -96,8 +124,8 @@ jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
     hook_point:$hook_point}' \
   | atomic_write "$req_file"
 
-exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"
-plugin_dir="$(dirname "$exe")"
+# exe/plugin_dir already resolved above (before pack_build) -- reused here
+# unchanged, never re-resolved.
 mkdir -p "$(dirname "$log")"
 
 # Env hygiene (v1-m1 Task 5; extracted to lib/spawn.sh's spawn_child_env in
