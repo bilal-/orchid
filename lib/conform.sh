@@ -455,3 +455,45 @@ conform_run() {
   echo "$passed/$total checks passed"
   [ "$passed" -eq "$total" ]
 }
+
+# conform_run_notify <plugin-dir> -- kind=notify's OWN, much narrower conform
+# path (v1-m4 Task 7). A notify channel plugin has no request/envelope
+# contract at all (docs/specs/plugins.md: its whole contract is `send
+# <question-id> <text>`, an exit code, nothing else) -- there is no dryrun
+# operation to probe, no envelope to validate, no stdin/output-pollution/
+# env-hygiene/exit-discipline story shaped like an engine's. Running the
+# full seven-check battery against one would either force a fake
+# envelope-shaped contract onto a plugin kind that doesn't have one, or
+# (worse) actually invoke `send`, which could attempt a REAL outbound
+# message even under ORCHID_DRYRUN -- something no notify plugin's contract
+# promises to honor the way an engine's dryrun branch does. So this is a
+# minimal LINT instead: manifest_valid (reused from the engine battery
+# above -- generic, not engine-specific) + entrypoint_executable (same
+# reuse) -- send is never invoked. `orchid plugins conform` (libexec/
+# orchid-plugins) dispatches here for kind=notify instead of conform_run,
+# based on the plugin dir's own manifest kind=.
+conform_run_notify() {
+  local dir="$1" total=2 passed=0
+
+  dir="$(cd "$dir" 2>/dev/null && pwd)" || {
+    echo "orchid: conform: no such directory: $1" >&2
+    return 1
+  }
+
+  echo "notify plugins: send-contract lint only (manifest + entrypoint; no dryrun battery -- kind=notify has no request/envelope contract to probe, and this never invokes send)"
+
+  if _conform_check_manifest_valid "$dir"; then
+    echo "ok: manifest_valid"; passed=$((passed + 1))
+  else
+    echo "FAIL: manifest_valid: $_conform_reason"
+  fi
+
+  if _conform_check_entrypoint "$dir"; then
+    echo "ok: entrypoint_executable"; passed=$((passed + 1))
+  else
+    echo "FAIL: entrypoint_executable: $_conform_reason"
+  fi
+
+  echo "$passed/$total checks passed"
+  [ "$passed" -eq "$total" ]
+}

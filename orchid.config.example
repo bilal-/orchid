@@ -110,3 +110,36 @@ pack_budget_bytes=65536
 # room" surface, regenerated best-effort at THE TICK's step 5. Never
 # served; open the file directly.
 # status_page=runtime/status.html
+
+# v1-m4 Task 7: OpenClaw notify channel (docs/engines/openclaw.md). Both
+# empty/unset by default -- no channel configured means `orchid notify`
+# never writes an outbox file at all; BLOCKERS.md + terminal stays a
+# complete surface on its own (docs/specs/operations.md). `notify.channel`
+# is OpenClaw's OWN channel enum (telegram|whatsapp|discord|irc|
+# googlechat|slack|signal|imessage|feishu|nostr|msteams|mattermost|
+# nextcloud-talk|matrix|raft|line|zalo|clickclack|zalouser|sms|
+# synology-chat|tlon|qqbot|twitch -- `openclaw message send --help`);
+# `notify.to` is the recipient (`--target`: E.164, chat id, channelId, etc,
+# per that channel).
+# notify.channel=
+# notify.to=
+# v1-m4 Task 7: setting this to anything turns inbox hardening ON for
+# EVERY `orchid answer` call, not just ones that self-assert a sender --
+# once configured, --nonce is mandatory for every caller (local terminal
+# included; read it off BLOCKERS.md/the .question file), and a caller that
+# additionally sets ORCHID_ANSWER_SENDER (a remote surface -- the openclaw
+# AgentSkill, currently the only one) must also appear in this list.
+# Leaving this unset/empty means no remote answer path exists at all, so
+# `orchid answer` stays in its plain lenient local-terminal shape (no
+# nonce needed) for everyone. Comma-separated exact sender identifiers.
+# answer_allowlist=
+# v1-m4 Task 7: a question (`.orchid/runtime/answers/<qid>.question`)
+# expires this many seconds after it was minted (file mtime) -- `orchid
+# answer` refuses an expired qid outright (die + journal note), regardless
+# of sender.
+# answer_expiry_s=86400
+# v1-m4 Task 7: `runners/orchid-pump`'s outbox drain gives up on a queued
+# notify-channel message after this many consecutive failed `send`
+# attempts, quarantining it (`runtime/outbox/<qid>.reason-send-failed`)
+# rather than retrying forever.
+# send_retry_max=5

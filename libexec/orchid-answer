@@ -1,14 +1,106 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+# v1-m4 Task 7 (inbox hardening): needed for _manifest_split_csv, the same
+# bash-3.2-safe trimmed-CSV-split helper every other comma-list config value
+# in this codebase already shares (role.<id>=, capabilities=, hook.<point>=,
+# ...) -- answer_allowlist below reuses it rather than inventing a second
+# split idiom.
+source "$ORCHID_ROOT/lib/manifest.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 verb_lock_guard "$repo"
 
-qid="${1:-}"; choice="${2:-}"
-[ -n "$qid" ] && [ -n "$choice" ] || orchid_die "usage: orchid answer <qid> <choice>"
+qid=""; choice=""; nonce_arg=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --nonce)
+      [ -n "${2:-}" ] || orchid_die "--nonce requires a value"
+      nonce_arg="$2"; shift 2 ;;
+    -*) orchid_die "usage: orchid answer <qid> <choice> [--nonce <n>]" ;;
+    *)
+      if [ -z "$qid" ]; then qid="$1"
+      elif [ -z "$choice" ]; then choice="$1"
+      else orchid_die "usage: orchid answer <qid> <choice> [--nonce <n>]"
+      fi
+      shift ;;
+  esac
+done
+[ -n "$qid" ] && [ -n "$choice" ] || orchid_die "usage: orchid answer <qid> <choice> [--nonce <n>]"
 
 qf="$rt/answers/$qid.question"
 [ -f "$qf" ] || orchid_die "unknown question $qid (no .question file — orchid notify never minted it, or runtime was wiped)"
+
+# Recover task/nonce from the .question file (libexec/orchid-notify's own
+# format: "task: <id|none>" then "nonce: <value>" then the free-text body).
+# Read individually rather than assuming a fixed line count so a
+# pre-v1-m4-Task-7 .question file (no nonce line at all -- shouldn't exist
+# in practice since notify always mints one now, but a stale runtime dir
+# from before this change is exactly that) degrades to "no nonce on this
+# question" rather than misreading the body as a nonce.
+task_line="$(head -n1 "$qf")"; task_id="${task_line#task: }"
+[ "$task_id" = "none" ] && task_id=""
+qnonce="$(grep -m1 '^nonce: ' "$qf" 2>/dev/null | sed 's/^nonce: //')"
+
+# -- Expiry (answer_expiry_s, default 86400) --------------------------------
+# Applies UNCONDITIONALLY (local terminal and remote sender alike) — the
+# .question file's own mtime is the only signal on disk for "how long has
+# this sat unanswered," same portable GNU/BSD stat idiom used everywhere
+# else in this codebase (lib/common.sh's lock_acquire, libexec/orchid-jobs'
+# stall/gc checks). Expired -> die AND leave a journal note (unfenced, same
+# as every other write this un-fenced verb makes — see the un-fenced
+# rationale below) so the expiry is visible in the run's history, not just a
+# silent refusal on stderr.
+qf_mtime="$(stat -f %m "$qf" 2>/dev/null || stat -c %Y "$qf" 2>/dev/null || echo 0)"
+expiry_s="$(config_get "$repo" answer_expiry_s 86400)"
+now="$(date -u +%s)"
+if [ "$qf_mtime" -gt 0 ] && [ $(( now - qf_mtime )) -gt "$expiry_s" ]; then
+  if [ -n "$task_id" ]; then
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --task "$task_id" --kind blocker_expired "$qid: expired (unanswered > ${expiry_s}s)" || true
+  else
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --kind blocker_expired "$qid: expired (unanswered > ${expiry_s}s)" || true
+  fi
+  orchid_die "$qid has expired (unanswered for more than ${expiry_s}s — see answer_expiry_s)"
+fi
+
+# -- Nonce + allowlist hardening ---------------------------------------------
+# Review finding (round 2, Critical): gating this purely on ORCHID_ANSWER_
+# SENDER being set let ANY caller bypass every check just by omitting that
+# env var — a remote caller (or an injected instruction) doesn't need to
+# forge anything; it just has to not set it. The gate is now the REPO'S
+# OWN CONFIG, not a self-asserted env var:
+#
+#   answer_allowlist NOT configured -> no remote answer path exists at all
+#   (no channel/skill was ever set up to attack) -> current lenient local
+#   behavior: no nonce, no allowlist check, for anyone.
+#
+#   answer_allowlist configured -> hardening is ON, unconditionally, for
+#   EVERY caller:
+#     - --nonce is ALWAYS required and must match the question's own
+#       recorded nonce, whether or not ORCHID_ANSWER_SENDER is set. This is
+#       what closes the bypass: omitting the sender var no longer skips
+#       anything, since the nonce check does not look at that var at all.
+#     - ORCHID_ANSWER_SENDER, when set, ADDITIONALLY requires that identity
+#       to appear in answer_allowlist.
+#     - ORCHID_ANSWER_SENDER, when unset, is treated as "local-with-nonce":
+#       the operator is trusted to be local precisely because they can only
+#       have obtained the nonce from this machine's own BLOCKERS.md/
+#       .question file (both now carry it — libexec/orchid-notify) or from
+#       the outbound channel message itself; there is no sender identity to
+#       check against the allowlist in that case, so only the nonce gates.
+allowlist="$(config_get "$repo" answer_allowlist "")"
+if [ -n "$allowlist" ]; then
+  [ -n "$qnonce" ] || orchid_die "$qid has no nonce on record — refusing (stale question file predates nonce hardening; answer_allowlist is configured)"
+  [ -n "$nonce_arg" ] || orchid_die "--nonce is required (answer_allowlist is configured)"
+  [ "$nonce_arg" = "$qnonce" ] || orchid_die "--nonce does not match $qid's recorded nonce — refusing"
+
+  if [ -n "${ORCHID_ANSWER_SENDER:-}" ]; then
+    allowed=0
+    while IFS= read -r entry; do
+      [ "$entry" = "$ORCHID_ANSWER_SENDER" ] && allowed=1
+    done < <(_manifest_split_csv "$allowlist")
+    [ "$allowed" -eq 1 ] || orchid_die "sender '$ORCHID_ANSWER_SENDER' is not in answer_allowlist — refusing (set answer_allowlist to permit it)"
+  fi
+fi
 
 af="$rt/answers/$qid.answer"
 # v0 TOCTOU: this existence check and the write below are not atomic together,
@@ -48,8 +140,6 @@ printf '%s\n' "$choice" | atomic_write "$af"
 # Recover the originating task from the question file's first line
 # ("task: <id|none>", written by `orchid notify`) so the resolution lands
 # in the same task-scoped journal view as the original blocker.
-task_line="$(head -n1 "$qf")"; task_id="${task_line#task: }"
-[ "$task_id" = "none" ] && task_id=""
 if [ -n "$task_id" ]; then
   ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --task "$task_id" --kind blocker_resolved "$qid: $choice"
 else

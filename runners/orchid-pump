@@ -21,7 +21,7 @@ ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
-source "$ORCHID_ROOT/lib/ledger.sh"
+source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/spawn.sh"
 
 repo="${ORCHID_REPO:-$PWD}"
 state="$(orchid_state "$repo")"
@@ -89,6 +89,120 @@ _pump_iso_to_epoch() {
   echo 0
 }
 
+# _pump_drain_outbox <repo> -- v1-m4 Task 7 (OUTBOX pattern, INV-01):
+# `orchid notify` (tier-1) never spawns -- it only WRITES runtime/outbox/
+# <qid> (the fully-composed message text, nonce included) when notify.
+# channel is configured. The pump (tier-2, this file) is what actually
+# LAUNCHES the channel plugin's `send`, on every pass -- called from the
+# main body below right after the lease-gate decision (age computed) but
+# BEFORE the stale/fresh branch, and thus BEFORE any exec of the tick: a
+# fresh lease still drains the outbox (channel-send must never wait for a
+# tick; draining is cheap -- a handful of file stats and, at most, one
+# `send` spawn per queued question).
+#
+# There is exactly one channel plugin kind this milestone ships
+# (plugins/notify/openclaw) -- openclaw is itself a multi-channel hub
+# (telegram/whatsapp/discord/slack/...), so `notify.channel`'s configured
+# value is OpenClaw's OWN channel enum (passed straight through as
+# `--channel`), not a second layer of "which orchid notify plugin" naming;
+# resolving the fixed name "openclaw" here is a deliberate v1-m4
+# simplification (a future milestone shipping a second, DIFFERENT notify
+# plugin would need its own selector config key -- not this one, which is
+# already spoken for as the openclaw-internal channel enum).
+#
+# Single-pump assumption: the `.tries` sidecar bump below is a plain
+# read-modify-write with no lock of its own -- correct only because v1-m4
+# assumes a single pump instance drives a given repo (the documented
+# operational model: one launchd/cron entry per repo). Two pumps racing the
+# same outbox concurrently could under-count a failure (both read the same
+# stale `tries` value) and delay quarantine past `send_retry_max` attempts;
+# not fixed here, since nothing in this codebase's service packaging
+# (`orchid service install`) ever installs more than one.
+#
+# Direct spawn (not through runners/orchid-launch): acceptable here because
+# this IS tier-2 code (same tier orchid-launch itself lives at), so INV-06's
+# "launcher-only engine spawning" grep (which only names literal
+# `plugins/engines`/`orchid-launch` text outside runners/) never applies to
+# a notify-kind plugin dir either way -- but the launcher's OWN env-hygiene
+# discipline is still reused verbatim (spawn_child_env, env -i, stdin from
+# /dev/null) rather than re-invented, per the brief's own instruction.
+_pump_drain_outbox() {
+  local repo="$1" box channel to dir ep retry_max f qid text tf rc tries
+  local -a child_env
+  box="$(orchid_runtime "$repo")/outbox"
+  [ -d "$box" ] || return 0
+
+  channel="$(config_get "$repo" notify.channel "")"
+  [ -n "$channel" ] || return 0   # no channel configured: nothing to drain, ever
+  to="$(config_get "$repo" notify.to "")"
+
+  if ! dir="$(resolve_notify_dir openclaw 2>&1)"; then
+    echo "pump: outbox drain: notify channel plugin 'openclaw' not found on search path ($dir) -- leaving outbox for next pass" >&2
+    return 0
+  fi
+  ep="$(manifest_get "$dir" entrypoint send)"
+  if [ ! -x "$dir/$ep" ]; then
+    echo "pump: outbox drain: notify channel plugin's entrypoint '$ep' is not executable in $dir -- leaving outbox for next pass" >&2
+    return 0
+  fi
+
+  retry_max="$(config_get "$repo" send_retry_max 5)"
+
+  for f in "$box"/*; do
+    [ -f "$f" ] || continue
+    case "$f" in
+      *.tries|*.reason-send-failed) continue ;;   # sidecar/quarantine files, not queued messages
+    esac
+    qid="$(basename "$f")"
+    text="$(cat "$f")"
+
+    # Env hygiene identical in shape to runners/orchid-launch's own spawn:
+    # base allowlist (PATH/HOME/USER/LANG/TERM/TMPDIR, LC_*, ORCHID_*) plus
+    # nothing else. ORCHID_NOTIFY_CHANNEL/ORCHID_NOTIFY_TO are exported only
+    # for the duration of this spawn_child_env call (bash's temporary-
+    # environment-on-a-command-prefix semantics), so they ride the existing
+    # ORCHID_* wildcard in without a plugin.conf `permissions=` opt-in.
+    child_env=()
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      child_env+=("$line")
+    done < <(ORCHID_NOTIFY_CHANNEL="$channel" ORCHID_NOTIFY_TO="$to" spawn_child_env "$dir")
+
+    rc=0
+    if [ "${#child_env[@]}" -gt 0 ]; then
+      env -i "${child_env[@]}" "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?
+    else
+      env -i "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?
+    fi
+
+    if [ "$rc" -eq 0 ]; then
+      rm -f "$f" "$box/$qid.tries"
+      continue
+    fi
+
+    # Failure: bump the .tries sidecar; leave the outbox file for the next
+    # pump pass UNLESS this was the send_retry_max'th consecutive failure,
+    # in which case quarantine it (rename with a .reason-send-failed
+    # sidecar, remove the retried original) so a permanently-broken channel
+    # can't retry forever -- BLOCKERS.md + terminal remains the complete
+    # surface regardless (docs/specs/operations.md), so a quarantined
+    # outbox entry loses nothing an operator can't already see there.
+    tf="$box/$qid.tries"
+    tries=0
+    [ -f "$tf" ] && tries="$(cat "$tf" 2>/dev/null || echo 0)"
+    tries=$((tries + 1))
+    if [ "$tries" -ge "$retry_max" ]; then
+      { echo "send failed $tries time(s) (send_retry_max=$retry_max), quarantined"; echo "text: $text"; } \
+        > "$box/$qid.reason-send-failed"
+      rm -f "$f" "$tf"
+      echo "pump: outbox drain: $qid quarantined after $tries failed send attempt(s)" >&2
+    else
+      printf '%s\n' "$tries" > "$tf"
+      echo "pump: outbox drain: $qid send failed (attempt $tries/$retry_max, rc=$rc) -- left for next pass" >&2
+    fi
+  done
+}
+
 lease_file="$rt/lease.json"
 now="$(date -u +%s)"
 
@@ -131,6 +245,13 @@ else
     fi
   fi
 fi
+
+# Outbox drain (v1-m4 Task 7): AFTER the lease-gate decision (age is now
+# known) but BEFORE either exit below or the tick hand-off further down --
+# runs even on the fresh-lease early exit, since channel-send must never
+# wait for a tick and a drain pass is cheap. See _pump_drain_outbox's own
+# header for the full rationale.
+_pump_drain_outbox "$repo"
 
 stale_s="$(config_get "$repo" pump_stale_s 900)"
 if [ "$age" -lt "$stale_s" ]; then

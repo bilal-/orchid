@@ -458,6 +458,11 @@ ones its archetype never declares.
     candidate defect the way exit `1`'s `rework` is.
 
 **4. Blockers.**
+If a notify channel is configured (`notify.channel`), the outbound message
+to it is best-effort only (queued in `runtime/outbox/`, drained by the pump,
+retried up to `send_retry_max` times before quarantine) — `BLOCKERS.md` plus
+the terminal is always a complete interaction surface on its own, with or
+without a channel ever delivering anything (docs/specs/operations.md).
 Raise one with `orchid notify [--task <id>] "<text>"` (prints a `qid`). If
 `hook.on_blocker` is bound, invoke it now (Preamble shape:
 `runners/orchid-launch <id> hook hook --hook on_blocker`, then `orchid jobs

@@ -20,6 +20,48 @@ epoch="$(epoch_current "$repo")"
 suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
 qid="q-${epoch}-${suffix}"  # collision within one epoch is improbable (16 bits) and not currently guarded against
 
+# -- nonce (v1-m4 Task 7, review round: mint BEFORE any durable write) ------
+# Unrelated to the qid's own 16-bit collision-improbable suffix above: this
+# is what `orchid answer` now requires whenever `answer_allowlist` is
+# configured (any caller, local or remote -- see libexec/orchid-answer),
+# and what a channel message echoes back so it can't be spoofed/replayed by
+# anyone who merely guesses or observes a qid.
+#
+# Review finding (round 2): a guessable fallback nonce is only harmless when
+# there is genuinely no remote answer path to attack. So: if EITHER
+# `notify.channel` or `answer_allowlist` is configured, a real high-entropy
+# source is MANDATORY -- refuse to mint (and thus refuse to raise the
+# blocker at all) rather than silently hand out a guessable nonce. Two
+# independent strong sources are tried (`xxd`, then `od`, both reading
+# straight from `/dev/urandom`) before giving up; only with NEITHER
+# configured does the weak date+pid fallback survive (the nonce is then
+# purely decorative -- nothing reachable from outside this machine could
+# ever present it anyway).
+remote_configured=0
+[ -n "$(config_get "$repo" notify.channel "")" ] && remote_configured=1
+[ -n "$(config_get "$repo" answer_allowlist "")" ] && remote_configured=1
+
+_notify_strong_nonce() {  # -> a 16-hex-char high-entropy nonce on stdout,
+  # or nonzero if neither strong source could read /dev/urandom.
+  local n
+  n="$(xxd -p -l8 /dev/urandom 2>/dev/null)" || n=""
+  if [ -z "$n" ]; then
+    n="$(od -An -tx1 -N8 /dev/urandom 2>/dev/null)" || n=""
+    n="$(printf '%s' "$n" | tr -d ' \n')"
+  fi
+  [ -n "$n" ] || return 1
+  printf '%s\n' "$n"
+}
+
+if ! nonce="$(_notify_strong_nonce)"; then
+  if [ "$remote_configured" -eq 1 ]; then
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind notify_entropy_failure \
+      "$qid: refused -- no strong nonce entropy source available (xxd and od both failed against /dev/urandom) while notify.channel or answer_allowlist is configured" || true
+    orchid_die "no strong nonce entropy source available (xxd and od both failed against /dev/urandom) -- refusing to mint a guessable nonce while a remote answer path (notify.channel/answer_allowlist) is configured"
+  fi
+  nonce="$(printf '%08x%08x' "$(date +%s)" $$)"   # decorative only: no remote path is configured
+fi
+
 # Journal first (same INV-08 discipline as `task advance`/`run advance`):
 # the blocker is durably recorded in journal.md BEFORE BLOCKERS.md (also
 # durable, sole-writer `orchid notify` per kernel.md's ownership table) is
@@ -31,17 +73,42 @@ else
   ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind blocker "$qid: $text"
 fi
 
+# BLOCKERS.md carries the nonce too (not just the .question file below) --
+# review finding: once `answer_allowlist` is configured, EVERY caller
+# (including the local terminal path, when no sender is asserted) must
+# supply --nonce, so the operator reading BLOCKERS.md needs a one-copy-paste
+# path to it without having to go spelunking in runtime/answers/*.question.
 header="## $qid"
 [ -n "$task" ] && header="## $qid (task: $task)"
-{ [ -f "$state/BLOCKERS.md" ] && cat "$state/BLOCKERS.md"; echo; echo "$header"; echo "$text"; } \
-  | atomic_write "$state/BLOCKERS.md"
+{
+  [ -f "$state/BLOCKERS.md" ] && cat "$state/BLOCKERS.md"
+  echo; echo "$header"; echo "$text"
+  echo "nonce: $nonce"
+  echo "reply: orchid answer $qid <choice> --nonce $nonce"
+} | atomic_write "$state/BLOCKERS.md"
 
 # Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
 # existence is what makes a qid "known" to `orchid answer`. First line
 # records the originating task (or "none"), so `orchid answer` can resolve
-# blocker_resolved back into the same task's journal view; this is an
-# internal file format, not a public contract.
+# blocker_resolved back into the same task's journal view; second line is
+# the nonce above; this is an internal file format, not a public contract.
 mkdir -p "$rt/answers"
-{ printf 'task: %s\n' "${task:-none}"; printf '%s\n' "$text"; } | atomic_write "$rt/answers/$qid.question"
+{ printf 'task: %s\n' "${task:-none}"; printf 'nonce: %s\n' "$nonce"; printf '%s\n' "$text"; } \
+  | atomic_write "$rt/answers/$qid.question"
+
+# v1-m4 Task 7 (OUTBOX pattern, INV-01): `orchid notify` is tier-1 and must
+# NEVER spawn (INV-01) -- so when a channel is configured, this only WRITES
+# runtime/outbox/<qid> (the fully-composed message text, nonce included).
+# runners/orchid-pump (tier-2) is what actually launches the channel
+# plugin's `send`, on its next pass, per that runner's own outbox-drain
+# comment. `notify.channel` gates this unconditionally: no channel
+# configured means no outbox file at all, ever -- BLOCKERS.md + terminal
+# stays a complete surface on its own (docs/specs/operations.md).
+channel="$(config_get "$repo" notify.channel "")"
+if [ -n "$channel" ]; then
+  mkdir -p "$rt/outbox"
+  printf '%s: %s — reply: orchid answer %s <choice> --nonce %s\n' "$qid" "$text" "$qid" "$nonce" \
+    | atomic_write "$rt/outbox/$qid"
+fi
 
 echo "$qid"
