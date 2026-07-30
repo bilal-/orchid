@@ -6,7 +6,19 @@ FAILS=0
 fail()        { echo "  FAIL: $*"; FAILS=$((FAILS+1)); }
 assert_eq()   { [ "$1" = "$2" ] || fail "$3 (expected '$1', got '$2')"; }
 assert_match(){ echo "$2" | grep -Eq "$1" || fail "$3 (no match '$1')"; }
-WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"; exit $((FAILS>0))' EXIT
+WORK="$(mktemp -d)"
+# v1-m3 (m2 ledger finding, the stray-commit mishap): if mktemp -d ever
+# fails, WORK ends up "" -- NOT unset, so `set -u` above never catches it.
+# `cd ""` is a silent bash no-op (exit 0, cwd unchanged), so every test
+# file's `cd "$WORK"; git init -q .; git commit ...` would then run against
+# whatever the CALLER's cwd happens to be -- typically the real repo
+# checkout under test. Die loudly here, before any test file gets to run a
+# single cd/git command against a bogus WORK.
+[ -n "$WORK" ] && [ -d "$WORK" ] || {
+  echo "FATAL: helpers.sh: mktemp -d failed to produce a usable scratch dir (WORK='$WORK') -- refusing to run any cd/git" >&2
+  exit 1
+}
+trap 'rm -rf "$WORK"; exit $((FAILS>0))' EXIT
 
 # plant_reviewer_envelope <task-id> [attempt] -- v1-m2's kernel envelope-
 # count gate (reviewing->arbitrating) requires review_required_count(risk_

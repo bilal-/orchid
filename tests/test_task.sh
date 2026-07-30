@@ -6,6 +6,50 @@ export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 
 "$ORCHID_BIN" task create T001 "demo"
 assert_eq pending "$(fm() { "$ORCHID_BIN" task show T001 | grep "^status: " | cut -d' ' -f2; }; fm)" "created pending"
+
+# v1-m3: `plan` is a reserved task id (plan-scoped critique jobs -- `orchid
+# jobs prepare plan <role> critique`, PROTOCOL PLANNING step 2). `task
+# create` must refuse it outright, before any file is written.
+rc=0; plan_refuse_out="$("$ORCHID_BIN" task create plan "should be refused" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task create plan must be refused (reserved id)"
+assert_match "reserved" "$plan_refuse_out" "task create plan names it reserved"
+[ ! -f ".orchid/tasks/plan.md" ] || fail "task create plan must not write a task file"
+
+# v1-m3 fix (Important 1, post-review): `task set`/`task unblock` on a
+# NONEXISTENT id (including the reserved `plan`) must die cleanly, before
+# any read/write of the task file -- previously `set` could crash via
+# `fm_set`'s `awk ... | atomic_write` pipe (atomic_write writes an EMPTY
+# file before awk's can't-open-file failure aborts the script), leaving a
+# stray empty tasks/<id>.md behind, and `unblock` leaked a raw awk error to
+# stderr before falling through to a misleading "not blocked" die. Both
+# arms now check existence (and refuse `plan` by name) before touching the
+# file at all.
+before_count="$(ls .orchid/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
+
+rc=0; set_nope_out="$("$ORCHID_BIN" task set NOPE somekey someval 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set on a nonexistent id must be refused"
+assert_match "no task NOPE" "$set_nope_out" "task set on a nonexistent id names it (clean die, not a raw awk error)"
+echo "$set_nope_out" | grep -qi "awk" && fail "task set on a nonexistent id must never leak a raw awk error"
+
+rc=0; set_plan_out="$("$ORCHID_BIN" task set plan somekey someval 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set plan must be refused (reserved id)"
+assert_match "reserved" "$set_plan_out" "task set plan names it reserved"
+
+rc=0; unblock_nope_out="$("$ORCHID_BIN" task unblock NOPE2 --reason x 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task unblock on a nonexistent id must be refused"
+assert_match "no task NOPE2" "$unblock_nope_out" "task unblock on a nonexistent id names it (clean die, not a raw awk error)"
+echo "$unblock_nope_out" | grep -qi "awk" && fail "task unblock on a nonexistent id must never leak a raw awk error"
+
+rc=0; unblock_plan_out="$("$ORCHID_BIN" task unblock plan --reason x 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task unblock plan must be refused (reserved id)"
+assert_match "reserved" "$unblock_plan_out" "task unblock plan names it reserved"
+
+after_count="$(ls .orchid/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "$before_count" "$after_count" "no stray task file left behind by any of the four refused calls above"
+[ ! -f ".orchid/tasks/NOPE.md" ] || fail "task set NOPE must not have written a stray task file"
+[ ! -f ".orchid/tasks/NOPE2.md" ] || fail "task unblock NOPE2 must not have written a stray task file"
+[ ! -f ".orchid/tasks/plan.md" ] || fail "task set/unblock plan must not have written a task file"
+
 "$ORCHID_BIN" task advance T001 implementing
 rc=0; "$ORCHID_BIN" task advance T001 done 2>/dev/null || rc=$?
 assert_eq 3 "$rc" "illegal transition exits 3"
@@ -198,3 +242,37 @@ assert_eq done "$(t007_status)" "archetype edge merging:done"
 rc=0; "$ORCHID_BIN" task advance T008 merging 2>/dev/null || rc=$?
 assert_eq 3 "$rc" "pending -> merging is (and was always) illegal, exit 3"
 assert_eq pending "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' ' -f2)" "T008 stays in pending after the refused illegal edge"
+
+# ============================================================================
+# v1-m3 (m2 ledger finding): reviewing->arbitrating's envelope-count gate
+# must count only status=="ok" reviewer envelopes, sha-binding kept
+# alongside. A reviewer job that errored/quarantined before producing a real
+# verdict can still land a same-shaped, sha-bound file on disk (status:
+# "failed") -- that must never silently satisfy the gate just because a
+# file with the right name and candidate_sha exists.
+# ============================================================================
+"$ORCHID_BIN" task create T009 "status-ok gate"
+edge_sha2="cafebabedeadbeef0000000000000000000000"
+"$ORCHID_BIN" task set T009 base_sha "$edge_sha2"
+"$ORCHID_BIN" task set T009 candidate_sha "$edge_sha2"
+"$ORCHID_BIN" task set T009 verification_commands true
+"$ORCHID_BIN" task advance T009 implementing
+"$ORCHID_BIN" task advance T009 testing
+"$ORCHID_BIN" verify T009 >/dev/null
+"$ORCHID_BIN" task advance T009 reviewing
+mkdir -p .orchid/reviews
+jq -n --arg cand "$edge_sha2" '{contract:1, job_id:"j-fixture-T009-a1-failed", task:"T009", operation:"review",
+    status:"failed", verdict:"approve", scope_complete:true, summary:"errored reviewer", candidate_sha:$cand}' \
+  > .orchid/reviews/T009-a1-reviewer.json
+rc=0; err="$("$ORCHID_BIN" task advance T009 arbitrating --reason "should be refused" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "reviewing->arbitrating must refuse when the only reconciled envelope has status!=ok"
+assert_match "arbitrating requires 1 reconciled review envelope\(s\) for risk_tier low \(have 0\)" "$err" \
+  "gate die message reports 0 -- the status:failed envelope was correctly not counted"
+assert_eq reviewing "$("$ORCHID_BIN" task show T009 | grep '^status: ' | cut -d' ' -f2)" "refused arbitrating leaves T009 at reviewing"
+
+jq -n --arg cand "$edge_sha2" '{contract:1, job_id:"j-fixture-T009-a1-ok", task:"T009", operation:"review",
+    status:"ok", verdict:"approve", scope_complete:true, summary:"real reviewer", candidate_sha:$cand}' \
+  > .orchid/reviews/T009-a1-reviewer.2.json
+"$ORCHID_BIN" task advance T009 arbitrating --reason "now has a real ok envelope"
+assert_eq arbitrating "$("$ORCHID_BIN" task show T009 | grep '^status: ' | cut -d' ' -f2)" \
+  "reviewing->arbitrating succeeds once a status==ok envelope is reconciled (the status:failed one still doesn't count)"

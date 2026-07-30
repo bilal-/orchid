@@ -14,10 +14,12 @@ export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 export ORCHID_ENGINES_DIR="$WORK/eng"; mkdir -p "$WORK/eng"
 
 # mk_stub_engine <name> -- a stub orchestrator engine dir. `capabilities=
-# shell,git` matches roles/orchestrator.role's `requires=shell,git`, and
-# `requires_binaries=jq` sidesteps the pre-existing bash-3.2 empty-CSV quirk
-# in lib/manifest.sh (same fixture convention as tests/test_failover.sh's
-# mk_engine).
+# shell,git` matches roles/orchestrator.role's `requires=shell,git`.
+# `requires_binaries=jq` is just a representative populated value here, not a
+# required workaround -- the bash-3.2 empty-CSV/array quirk this used to
+# sidestep is fixed directly in lib/manifest.sh's _manifest_split_csv now
+# (see its own header comment; tests/test_failover.sh's mk_engine
+# demonstrates the fix by dropping this key entirely).
 mk_stub_engine() {
   local name="$1" dir="$WORK/eng/$1"
   mkdir -p "$dir"
@@ -41,8 +43,10 @@ EOF
 chmod +x "$WORK/eng/stubmarker/run"
 
 # -- stubo: the happy path. Runs a real `orchid status` (proves ORCHID_REPO
-# reached the child through the tick's env hygiene), then writes an `ok`
-# envelope with exactly one action.
+# reached the child through the tick's env hygiene) and a real `orchid
+# journal add` (proves ORCHID_ACTOR rode the same env-hygiene path into the
+# child, so the entry it writes is attributed to the tick, not "operator"),
+# then writes an `ok` envelope with exactly one action.
 mk_stub_engine stubo
 {
   echo '#!/usr/bin/env bash'
@@ -56,6 +60,7 @@ jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
 [ "$(jq -r .operation "$req")" = orchestrate ] || exit 1
 [ -n "${ORCHID_REPO:-}" ] || exit 1
 "$ORCHID_BIN" status >/dev/null
+"$ORCHID_BIN" journal add --kind note "tick actor probe"
 printf '{"contract":1,"job_id":"%s","task":"%s","operation":"orchestrate","status":"ok","actions":["orchid status"],"summary":"tick stub ok"}' \
   "$jid" "$task" > "$out"
 EOF
@@ -108,6 +113,18 @@ envelope_validate "$env_file" || fail "the happy-path envelope must validate"
 
 ledger_status="$(jq -r '.stubo.status' .orchid/runtime/engines.json)"
 assert_eq "ok" "$ledger_status" "ledger marks stubo ok after a successful tick"
+
+# Actor identity (v1-m3): the tick exports ORCHID_ACTOR="<engine>/orchestrator
+# tick-e<epoch>" before spawning; the child's `orchid journal add` call above
+# picked it up via the same env-hygiene path ORCHID_REPO/ORCHID_EPOCH already
+# used, so the journal entry reads "stubo/orchestrator tick-e<epoch>" instead
+# of the generic "operator e<epoch>".
+journal_content="$(cat .orchid/journal.md 2>/dev/null || true)"
+assert_match "tick actor probe" "$journal_content" "tick's journal add call reached journal.md"
+assert_match "\\(stubo/orchestrator tick-e${epoch_after}\\)" "$journal_content" \
+  "headless tick's journal entry is attributed to '<engine>/orchestrator tick-e<epoch>', not 'operator'"
+[ "$(printf '%s\n' "$journal_content" | grep -c "operator e${epoch_after}")" -eq 0 ] || \
+  fail "headless tick's journal entry must not fall back to the generic 'operator' actor"
 
 # ===========================================================================
 # C -- rate_limited: ledger marks the engine rate-limited and tick exits

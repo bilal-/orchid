@@ -57,6 +57,19 @@ cleanup() {
     git -C "$repo" branch -D "$integ" 2>/dev/null || true
   else
     git -C "$repo" checkout -q "$cur" 2>/dev/null || true
+    # v1-m3 Task 2 (F7): "$state/tasks" and "$state/reviews" were mkdir -p'd
+    # directly on disk, BEFORE the branch switch to $integ, purely so the
+    # `git add .orchid` commit below would have somewhere to look -- git
+    # never tracks an empty directory, so neither dir was ever actually
+    # committed to $integ either. Checking back out to $cur (which never
+    # had .orchid tracked at all) leaves them behind as untracked ghost
+    # directories on the OPERATOR'S OWN branch -- exactly the shape
+    # orchid_split_brain (lib/common.sh) looks for, so a healthy,
+    # just-completed init would otherwise immediately misreport itself as
+    # split-brain. `rmdir` only removes an EMPTY directory, so this is a
+    # guaranteed no-op in the one case it could matter (some other process
+    # already populated one of these before this trap ran).
+    rmdir "$state/tasks" "$state/reviews" 2>/dev/null || true
   fi
 }
 trap cleanup EXIT
@@ -81,3 +94,13 @@ ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins lock >/dev/null 2>&1 || tr
 git -C "$repo" checkout -q "$integ"
 git -C "$repo" add .orchid .gitignore && git -C "$repo" commit -q -m "orchid: initialize run state"
 echo "initialized: $integ"
+# v1-m3 Task 2 operator UX (F7): init just restored the operator onto
+# their OWN branch (see `cleanup` above) -- durable .orchid state (the
+# roadmap.md just committed) lives only on $integ. Spelling out the
+# integration branch and the exact worktree command up front heads off the
+# split-brain checkout this task's other half detects: an operator who
+# stays on their own branch and runs task verbs there builds untracked
+# .orchid state with no roadmap, which `orchid doctor`/`status`/pump now
+# flag as split-brain.
+echo "integration branch: $integ"
+echo "next: git worktree add ../$(basename "$repo")-orchid $integ && cd ../$(basename "$repo")-orchid"

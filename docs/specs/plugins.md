@@ -44,10 +44,10 @@ differences are declared capabilities.
 | Kind | Contract | Stage |
 |---|---|---|
 | **engine** | executable `run`; receives a request document; writes an envelope to the kernel-specified spool path; declares atomic capabilities | v0 (seam), v1 (manifests) |
-| **archetype** | data-only workflow declaration validated against kernel invariants (below) | feature v0; review v1-m1; rest v1-m3 |
+| **archetype** | data-only workflow declaration validated against kernel invariants (below) | feature v0; review v1-m1; refactor/test/migrate v1-m3 — SHIPPED |
 | **notify channel** | `send <question-id> <text>`; inbound via `orchid answer` | v1-m4 |
-| **hook** | named lifecycle hook handlers with typed payloads (below) | v1-m3 |
-| **role** | descriptor: required/forbidden capabilities + hook bindings | v1-m3 |
+| **hook** | named lifecycle hook handlers with typed payloads (below) | v1-m3 — SHIPPED |
+| **role** | descriptor: required/forbidden capabilities + hook bindings | v1-m3 — SHIPPED |
 
 Front-ends (Claude skill, headless tick, a future TUI) are a documented
 CONVENTION — anything that executes PROTOCOL.md through verbs — not a
@@ -153,7 +153,57 @@ list/validate/trust/test/lock/verify-lock` verb set plus `orchid version` —
 all implemented and tested, not merely specified. Deferred to later
 milestones: a real filesystem-write capability probe (m1's
 `workspace_write_probe` is dryrun-only; a real-write probe is post-m1), and
-hooks + custom-role registration (v1-m3, per the Hooks section above).
+hooks + custom-role registration — SHIPPED in v1-m3, per the Hooks and
+Custom role registration sections below.
+
+**Custom role registration (v1-m3 — SHIPPED):** a `role.<id>=` binding for
+any id outside the built-in five resolves a `kind=role` plugin — a
+`descriptor.role` file (same key=value shape as a manifest: `id`,
+`requires=<cap,cap,...>`, optional `hook_bindings=<point>:<plugin-id>,...`)
+discovered on the identical search path as engines (`lib/roles.sh`).
+`orchid doctor` FAILs if a configured `role.<id>` binding's descriptor isn't
+discoverable, exactly like an engine binding that doesn't resolve. Every
+`role.<id>` binding, built-in or custom, additionally accepts a sibling
+`role.<id>.blocking=false` (default `true`): a failed non-blocking role's
+job is journaled and the run continues rather than infra-failing
+(docs/specs/operations.md's optionality-is-binding-policy rule).
+
+**Plugin lifecycle (v1-m3 — SHIPPED):** `orchid plugins install <src>
+[--kind <k>]` (src is a local dir or a git URL; installs to
+`~/.orchid/plugins/<kind>s/<name>`, kind/name always DERIVED from the
+manifest; refuses an INV-10 collision against the WHOLE discovery search
+path, not just the destination), `orchid plugins update <name>` (re-fetches
+from the recorded `.provenance` source, builds into a temp dir, swaps in
+atomically), `orchid plugins remove <name>`, and `orchid plugins audit`
+(reports drift: content modified since install, or a tampered
+`.provenance`). Every installed/updated plugin dir carries a `.provenance`
+file (`source=`, `ref=`, `sig=` — `sig=` binds the two lines above it, so an
+edited `source=`/`ref=` with no matching `sig=` is detectable tampering, not
+silently trusted) and an `installed_digest=` computed by
+`plugin_digest_content` (path-independent: hashes relative `./...` paths so
+a digest computed in a temp build dir still matches once swapped into its
+final location — unlike the trust-store/capsuite digests, which
+deliberately stay path-bound).
+
+**Conformance kit (v1-m3 — SHIPPED):** `orchid plugins conform <plugin-dir>`
+runs a fixed seven-check battery (`manifest_valid`,
+`entrypoint_executable`, `declared_ops_dryrun`, `stdin_closed_safe`,
+`no_output_pollution`, `env_survives_hygiene`, `exit_discipline`) against a
+plugin directory directly — no `.orchid`, no role/resolver lookups, no
+repo state at all, so a third-party author can run it before ever
+installing or binding the plugin to anything. Every check invokes the
+plugin's own entrypoint under `ORCHID_DRYRUN=1`: it never spends real quota
+or shells out to a vendor CLI. `declared_ops_dryrun` also catches an
+operation-echo bypass — a stub that reports the SAME operation in its
+envelope no matter which one was actually requested fails this check rather
+than passing it. `orchid plugins conform` is a distinct gate from `orchid
+plugins test <engine> <role>`: `test` is the ROLE-PAIRING capability suite
+(needs a real repo, resolves the role×engine combination, writes a durable
+result) that decides whether a binding may activate; `conform` is a
+zero-state CONTRACT preflight an author runs standalone, with nothing
+durable written. `docs/extending/first-engine.md` (a full adapter-authoring
+walkthrough) and `docs/extending/conformance.md` (the seven-check
+reference) ship alongside.
 
 **Role & capability model (breaks the circularity):** engines declare atomic
 capabilities (`structured_text`, `workspace_read`, `workspace_write`,
@@ -175,15 +225,35 @@ bounds are mandatory; terminal states are `done` and `blocked`; declared
 implement/merge but can never advance the integration branch. Unreachable
 states are rejected.
 
-**Hooks (v1-m3 — one mechanism for custom roles AND middleware):** a finite,
-kernel-owned set of named extension points — `after_plan_draft`,
+**Hooks (v1-m3 — SHIPPED — one mechanism for custom roles AND middleware):**
+a finite, kernel-owned set of named extension points — `after_plan_draft`,
 `before_arbitration`, `on_verify_fail`, `before_merge`, `on_blocker` — each
 with a typed request payload, ordering, timeout, and required/optional
 semantics. Handlers are plugins invoked through the same launcher and
 request/envelope contracts; their results are validated artifacts applied
 ONLY through tier-1 verbs (e.g. a `researcher` consulted `before_arbitration`
 returns citations that the tick attaches via `orchid task set`). PROTOCOL.md
-itself is never edited by plugins.
+itself is never edited by plugins. Shipped machinery: `hook.<point>` config
+bindings (an ordered, comma-separated list of plugin NAMEs — the short
+discovery name a binding resolves through `resolve_engine_dir`; a qualified
+id like `acme/foo` is not accepted in a binding in v1 — `:required` marking a
+handler whose failure blocks the edge — `lib/hooks.sh`'s `hooks_for`/
+`hook_point_valid`); `orchid jobs prepare <task> hook hook --hook <point>`
+(the `hook` operation, resolved by binding rather than by role chain) and
+`runners/orchid-launch ... --hook <point>`; `hook_timeout_s` (config,
+default 600s) as the per-hook-job wall-clock budget; hook envelopes filed at
+`.orchid/reviews/<task>-a<attempt>-hook-<point>.json`. `before_merge` is the
+ONE point the kernel itself also enforces: a `:required` entry with no fresh
+`ok` envelope for the task's current `candidate_sha` makes `orchid merge`
+refuse outright (exit 15); the other four points are read and applied by the
+orchestrator's own PROTOCOL.md walk, never a kernel-verb gate.
+`on_verify_fail`'s artifact reaches durable state through exactly one field,
+`orchid task set <id> hook_guidance "..."` (kernel.md's frontmatter schema).
+A plan-scoped hook job (task id `plan`, e.g. `hook.after_plan_draft`) receives
+the PLAN pack (`lib/pack.sh`'s `_pack_build_plan`) by design, not the
+per-point hook pack — `pack_build` routes on the reserved `plan` task id
+before it ever checks the `hook` operation, since there is no `task.md` for
+the per-point builder to read in the first place.
 
 ### Named patterns (the codebase vocabulary)
 

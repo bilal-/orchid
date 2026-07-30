@@ -13,6 +13,7 @@ done
 ORCHID_ROOT="$(cd "$(dirname "$self")/../../.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/heartbeat.sh"
 
 req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
@@ -86,12 +87,22 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # round-trip that confirms Bash actually executes verbs under this flag.
 if [ "$operation" = orchestrate ]; then
   protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"
-  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. The \`orchid\` CLI may NOT be on PATH (dev checkouts where install.sh hasn't run) -- every verb invocation you make MUST use the absolute binary $ORCHID_ROOT/bin/orchid (never bare \`orchid\`), and launch engines only via the absolute launcher $ORCHID_ROOT/runners/orchid-launch -- never hand-edit anything under .orchid/. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>"
+  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. The \`orchid\` CLI may NOT be on PATH (dev checkouts where install.sh hasn't run) -- every verb invocation you make MUST use the absolute binary $ORCHID_ROOT/bin/orchid (never bare \`orchid\`), and launch engines only via the absolute launcher $ORCHID_ROOT/runners/orchid-launch -- never hand-edit anything under .orchid/. Never run 'git push', never fetch/pull, never contact any remote -- every mutation you make must stay repo-local; only the operator moves anything to origin. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>. The kernel has already fenced a fresh epoch for this tick; do NOT run 'orchid run resume' -- start at THE TICK step 1 with the ORCHID_EPOCH provided."
   prompt="$protocol"$'\n\n'"$instructions"
 
-  set +e
-  stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p --permission-mode acceptEdits --allowedTools Bash 2>"$err_file")"
-  rc=$?; set -e
+  # Streaming + heartbeat (v1-m3, round 2 of the live-run finding -- see
+  # lib/heartbeat.sh's header for the full rationale). Round 1's `| tee
+  # /dev/stderr` alone proved insufficient against the REAL engine:
+  # tests/probes/probe-stream-buffering.sh found claude BUFFERED too (all
+  # output arrives in one shot at exit). orchid_run_engine_cli backgrounds
+  # claude directly (so it can track its own real pid) and runs a
+  # heartbeat alongside it that appends a liveness line to this script's
+  # own stderr (-> job log, via orchid-tick's synchronous spawn or the
+  # launcher, whichever spawned this adapter) every ORCHID_HB_INTERVAL_S
+  # seconds for as long as claude's pid is alive -- log mtime now advances
+  # for the WHOLE run regardless of when/whether claude itself flushes.
+  orchid_run_engine_cli "$err_file" stdout rc "$worktree" "$prompt" \
+    claude -p --permission-mode acceptEdits --allowedTools Bash
   stderr="$(cat "$err_file")"
 
   if [ "$rc" -ne 0 ]; then
@@ -112,6 +123,17 @@ if [ "$operation" = orchestrate ]; then
   # empty either way.
   actions_json="$(printf '%s\n' "$stdout" | grep '^ORCHID-ACTION: ' | sed 's/^ORCHID-ACTION: //' \
     | jq -R -s -c 'split("\n") | map(select(length > 0))' || true)"
+  # Belt-and-braces fallback (v1-m3): if the CLI interleaved its streams
+  # such that ORCHID-ACTION lines landed on its own stderr rather than
+  # stdout, `$stdout` alone would miss them even though they reached the
+  # log via the tee above. `$stderr` (captured to err_file by the `2>`
+  # redirect on the CLI invocation itself, unaffected by the stdout-side
+  # tee) is already available with no extra plumbing, so a zero-actions
+  # primary parse re-greps it before settling on a genuinely empty `[]`.
+  if [ "$(printf '%s' "$actions_json" | jq 'length')" -eq 0 ]; then
+    actions_json="$(printf '%s\n' "$stderr" | grep '^ORCHID-ACTION: ' | sed 's/^ORCHID-ACTION: //' \
+      | jq -R -s -c 'split("\n") | map(select(length > 0))' || true)"
+  fi
   last_line="$(printf '%s\n' "$stdout" | awk 'NF{l=$0} END{print l}')"
   summary="${last_line:0:200}"; [ -n "$summary" ] || summary="tick complete"
   write_envelope ok "$(jq -n --argjson a "$actions_json" --arg s "$summary" '{actions:$a, summary:$s}')"
@@ -136,9 +158,16 @@ if [ "$operation" = implement ]; then
   # tests/probes/README.md). Lower stakes than the codex fix either way:
   # per docs/dogfood-notes.md, this adapter's implement path can't self-
   # commit under acceptEdits, so claude is already review-only in practice.
-  set +e
-  stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p --permission-mode acceptEdits 2>"$err_file")"
-  rc=$?; set -e
+  #
+  # Streaming + heartbeat (v1-m3, round 2 -- see lib/heartbeat.sh and the
+  # orchestrate branch above for the full rationale): real claude was found
+  # BUFFERED, so `rc`/`stdout` now come from orchid_run_engine_cli, which
+  # backgrounds claude directly (feeding the prompt via a temp file/stdin
+  # redirect instead of a `printf | claude` pipe -- a pipe would cost us
+  # claude's own real pid, which the heartbeat needs for a truthful `cpu`
+  # reading) and runs a liveness heartbeat alongside it.
+  orchid_run_engine_cli "$err_file" stdout rc "$worktree" "$prompt" \
+    claude -p --permission-mode acceptEdits
   stderr="$(cat "$err_file")"
 
   if [ "$rc" -eq 0 ]; then
@@ -192,11 +221,12 @@ if [ "$operation" = implement ]; then
 fi
 
 # review | critique
-ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
-stop="$(fm_get "$input_pack/task.md" stop_condition)"
 manifest_line="$(jq -r '"pack manifest: items=" + ([.items[].name] | join(",")) + " omitted=" + ([.omitted[]] | join(","))' "$input_pack/pack.json")"
-diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
-prompt="Acceptance criteria: $ac
+if [ -f "$input_pack/task.md" ]; then
+  ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
+  stop="$(fm_get "$input_pack/task.md" stop_condition)"
+  diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
+  prompt="Acceptance criteria: $ac
 Stop condition: $stop
 $manifest_line
 
@@ -204,11 +234,69 @@ Diff:
 $diff
 
 End your reply with exactly: VERDICT: approve OR request-changes"
+else
+  # v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
+  # diff.patch at all -- lib/pack.sh's _pack_build_plan builds
+  # requirements.md + the draft roadmap.md (non-truncatable) plus tasks.md
+  # (every current tasks/*.md concatenated) and lessons.md when present.
+  # Judge the DRAFT PLAN, not a diff -- and the reply contract gains a
+  # third line shape (`FINDING:`) alongside VERDICT, since a plan critique's
+  # whole point is surfacing findings[] the operator folds back into the
+  # draft (see lib/envelope.sh's review/critique union + PROTOCOL PLANNING
+  # step 2), not a single approve/request-changes verdict alone.
+  reqs="$(cat "$input_pack/requirements.md" 2>/dev/null || true)"
+  roadmap_body="$(cat "$input_pack/roadmap.md" 2>/dev/null || true)"
+  tasks_body="$(cat "$input_pack/tasks.md" 2>/dev/null || true)"
+  lessons_body=""
+  [ -f "$input_pack/lessons.md" ] && lessons_body="$(cat "$input_pack/lessons.md")"
+  prompt="Requirements:
+$reqs
+
+Draft roadmap:
+$roadmap_body
+
+Tasks:
+$tasks_body"
+  [ -n "$lessons_body" ] && prompt="$prompt
+
+Lessons:
+$lessons_body"
+  prompt="$prompt
+
+$manifest_line
+
+Critique this draft plan against the requirements: is every requirement
+covered, are tasks correctly scoped and sequenced, are acceptance criteria
+and verification commands concrete? Reply with:
+VERDICT: approve OR request-changes
+One line per issue found, exactly: FINDING: <low|medium|high>: <title>
+(omit FINDING lines entirely when there are none)."
+fi
 
 # Same F2 stdin fix as the implement path above (line ~65).
-set +e
-stdout="$(cd "$worktree" && printf '%s' "$prompt" | claude -p 2>"$err_file")"
-rc=$?; set -e
+#
+# Streaming + heartbeat (v1-m3; round 1 was `| tee /dev/stderr`; that
+# idiom is still what happens internally (see lib/heartbeat.sh), but
+# round 2's real-CLI probe (tests/probes/probe-stream-buffering.sh) found
+# claude BUFFERED -- tee-ing a stream that never arrives until process
+# exit doesn't make it arrive sooner, so the job log still sat at zero
+# bytes for a real run's whole duration and `jobs check`'s log-mtime stall
+# detector could still falsely kill it). orchid_run_engine_cli
+# (lib/heartbeat.sh) is the definitive fix: it backgrounds claude directly
+# -- prompt fed via a temp file/stdin redirect rather than a `printf |
+# claude` pipe, since a pipe would cost us claude's own real pid -- and
+# runs a background heartbeat alongside it that appends one `[hb ...]
+# engine pid <pid> cpu <ps time>` line to this script's own stderr (-> job
+# log, via the launcher's `>> "$log" 2>&1`) every ORCHID_HB_INTERVAL_S
+# seconds for as long as claude's real pid stays alive -- proving the
+# ENGINE IS ALIVE instead of trying (and, per the probe, failing) to prove
+# it's still producing output. `stdout`/`rc` come back exactly as
+# `stdout="$(cmd 2>err | tee /dev/stderr)"`/`$?` used to; claude's own
+# stderr is still fully redirected to err_file, unaffected by any of this.
+# See lib/heartbeat.sh's header comment for the full design and the
+# accepted trade-off (a hung-but-alive engine now runs to the request's
+# own deadline_s rather than being stall-killed early).
+orchid_run_engine_cli "$err_file" stdout rc "$worktree" "$prompt" claude -p
 stderr="$(cat "$err_file")"
 
 if [ "$rc" -ne 0 ]; then
@@ -233,5 +321,28 @@ fi
 
 any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
 scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
-write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" '{verdict:$v, scope_complete:$sc, findings:[]}')"
+
+# findings[] (v1-m3): only `critique` replies are asked for `FINDING:` lines
+# (see the prompt above) -- `review` keeps its existing verdict-only
+# contract, findings stays the literal empty array it always was. Each
+# matched line is `FINDING: <low|medium|high>: <title>`; cut -f2- (not a
+# second split on ":") so a title containing its own colon is kept intact.
+# A line whose severity token doesn't match exactly one of the three, or
+# whose title is empty, is silently dropped rather than failing the whole
+# reply -- this is a best-effort scrape of free text, not a strict parser.
+findings_json='[]'
+if [ "$operation" = critique ]; then
+  findings_ndjson=""
+  while IFS= read -r rest; do
+    [ -n "$rest" ] || continue
+    sev="$(printf '%s' "$rest" | cut -d: -f1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    title="$(printf '%s' "$rest" | cut -d: -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+    case "$sev" in low|medium|high) ;; *) continue ;; esac
+    [ -n "$title" ] || continue
+    findings_ndjson="$findings_ndjson$(jq -n --arg s "$sev" --arg t "$title" '{severity:$s, title:$t}')"$'\n'
+  done < <(printf '%s\n' "$stdout" | grep '^FINDING:' | sed 's/^FINDING:[[:space:]]*//')
+  [ -z "$findings_ndjson" ] || findings_json="$(printf '%s' "$findings_ndjson" | jq -s -c '.')"
+fi
+
+write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
 exit 0

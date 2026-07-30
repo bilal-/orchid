@@ -15,8 +15,35 @@ case "$sub" in
       *) break;; esac; done
     text="$*"
     if [ "$unfenced" -eq 1 ]; then e="-"; else epoch_require "$repo"; e="$ORCHID_EPOCH"; fi
-    actor="${ORCHID_ACTOR:-operator}"
-    entry="## $(date -u +%Y-%m-%dT%H:%M:%SZ) ${task:-run} $kind ($actor e$e)"
+    # ORCHID_ACTOR is kernel-set (runners/orchid-tick exports it before
+    # spawning the orchestrator engine; the launcher's ORCHID_* allowlist
+    # forwards it into the child, whose `orchid` verb calls -- including
+    # this one -- inherit it), trusted-within-machine like every other
+    # ORCHID_* env var. The invariant this line enforces for EVERY caller,
+    # present and future: the actor string that lands in the journal always
+    # carries the epoch exactly once. Some callers (runners/orchid-tick) set
+    # ORCHID_ACTOR already epoch-marked (tick-e<epoch>); others
+    # (libexec/orchid-merge's two `ORCHID_ACTOR="${ORCHID_ACTOR:-orchestrator}"`
+    # call sites) set a bare name and have always relied on this verb to
+    # append " e$e" itself -- the same appending this line did pre-v1m3 for
+    # the unset case. Distinguish the two shapes instead of always appending
+    # (which would double the epoch onto "...tick-e7") or never appending
+    # (which would silently drop the epoch from "orchestrator", breaking
+    # orchid-merge's callers and the documented actor+epoch invariant):
+    #   - unset                                -> "operator e$e" (unchanged default)
+    #   - already epoch-marked (tick-e<n> or a
+    #     prior "<name> e<n>")                 -> verbatim
+    #   - anything else (a bare caller-supplied
+    #     name, e.g. orchid-merge's "orchestrator") -> "$ORCHID_ACTOR e$e"
+    if [ -n "${ORCHID_ACTOR:-}" ]; then
+      case "$ORCHID_ACTOR" in
+        *tick-e[0-9]*|*' e'[0-9]*) actor="$ORCHID_ACTOR" ;;
+        *) actor="$ORCHID_ACTOR e$e" ;;
+      esac
+    else
+      actor="operator e$e"
+    fi
+    entry="## $(date -u +%Y-%m-%dT%H:%M:%SZ) ${task:-run} $kind ($actor)"
     { [ -f "$state/journal.md" ] && cat "$state/journal.md"; echo; echo "$entry"; echo "$text"; } \
       | atomic_write "$state/journal.md"
     if [ -n "$task" ]; then

@@ -3,6 +3,13 @@ source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/envelope.sh"
 ADAPTER="$REPO_ROOT/plugins/engines/codex/run"
 
+# v1-m3 final review (CRITICAL 1): the orchestrate branch's own instructions=
+# string (what this adapter actually feeds the engine, not just PROTOCOL.md's
+# prose) must mirror the no-external-mutation policy -- a live tick pushing
+# a branch to origin was a real finding. Static grep against the source,
+# same lint-style check test_install.sh runs against PROTOCOL.md itself.
+grep -q 'git push' "$ADAPTER" || fail "$ADAPTER's orchestrate instructions never mirror the no-external-mutation policy (git push)"
+
 # --- shared fixture builder -------------------------------------------------
 # build_request <name> <operation> [stub-body] -> prints path to request.json
 build_request() {
@@ -296,3 +303,167 @@ run_adapter "$d" || fail "plain codex implement: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "plain codex implement: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "plain codex implement: status ok"
 assert_eq "orchid/codex" "$(jq -r .engine "$d/out/envelope.json")" "plain codex/run still stamps orchid/codex"
+
+# --- 15. v1-m3: codex review REASON line captured into the ok-envelope's
+# summary (200-char cap), same idiom as plugins/engines/agy/run -- but a
+# verdict-only reply stays valid (summary optional; lib/envelope.sh's
+# review/critique union never requires it). ---------------------------------
+d="$(build_request withreason review '#!/usr/bin/env bash
+echo "VERDICT: approve"
+echo "REASON: tests pass and the diff is scoped tightly"')"
+run_adapter "$d" || fail "withreason stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "withreason stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "withreason stub: status ok"
+assert_match "tests pass and the diff is scoped tightly" "$(jq -r .summary "$d/out/envelope.json")" "withreason stub: summary carries REASON text"
+
+d="$(build_request reasoncap review '#!/usr/bin/env bash
+echo "VERDICT: approve"
+echo "REASON: $(printf "x%.0s" $(seq 1 400))"')"
+run_adapter "$d" || fail "reasoncap stub: adapter should exit 0"
+summary_len="$(jq -r '.summary | length' "$d/out/envelope.json")"
+[ "$summary_len" -le 200 ] || fail "reasoncap stub: summary must be capped at 200 chars (got $summary_len)"
+
+d="$(build_request noreason review '#!/usr/bin/env bash
+echo "VERDICT: approve"')"
+run_adapter "$d" || fail "noreason stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "noreason stub: envelope invalid (verdict-only reply must still be valid)"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "noreason stub: status ok (verdict-only reply stays valid)"
+assert_eq "false" "$(jq -r 'has("summary")' "$d/out/envelope.json")" "noreason stub: summary absent when no REASON line"
+
+# --- 16. v1-m3 log streaming: the live-run finding was that a job log stayed
+# ZERO BYTES for the whole run (adapter captured CLI output purely into a
+# bash variable, with nothing written to its own stdout/stderr -- which is
+# what a launcher/tick redirect actually captures into the job log). The fix
+# tees the CLI's stdout to the adapter's own stderr as it arrives. Simulate
+# the launcher's redirect here (`>> log 2>&1`) around a stub codex that
+# sleeps between lines, and assert the log has grown partway through the
+# run -- not just after the adapter exits. ----------------------------------
+d="$(build_request streaming implement '#!/usr/bin/env bash
+echo "line one"
+sleep 0.7
+echo "line two"
+sleep 0.7
+echo "did the work" > streamed.txt
+git add streamed.txt
+git -c user.email=test@orchid.local -c user.name="Orchid Test" commit -q -m "stub commit"
+echo "Implemented with streaming."')"
+joblog="$d/out/job.log"; : > "$joblog"
+(run_adapter "$d" >>"$joblog" 2>&1) &
+adapter_pid=$!
+sleep 0.2
+midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
+wait "$adapter_pid" || fail "streaming stub: adapter should exit 0"
+final_size="$(wc -c <"$joblog" | tr -d ' ')"
+[ "$midrun_size" -gt 0 ] || fail "streaming stub: job log must have grown WHILE the adapter was still running (was $midrun_size bytes at the midpoint) -- this is the stall-detector's liveness signal"
+[ "$final_size" -ge "$midrun_size" ] || fail "streaming stub: job log must not shrink after the adapter exits"
+assert_match "line one" "$(cat "$joblog")" "streaming stub: the CLI's early output reached the job log"
+envelope_validate "$d/out/envelope.json" || fail "streaming stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "streaming stub: status ok"
+
+# --- 17. v1-m3 ORCHID-ACTION belt-and-braces fallback: the orchestrate stub
+# below prints its ORCHID-ACTION marker line ONLY to its own stderr (never
+# stdout) -- simulating a CLI that interleaves its streams so the marker
+# never lands in the adapter's primary `$stdout` capture. The adapter must
+# still fall back to grepping the stderr capture (err_file) it already has
+# on hand, so the marker still reaches actions[] instead of silently
+# vanishing. -----------------------------------------------------------------
+d="$(build_request orchstderr orchestrate '#!/usr/bin/env bash
+echo "ORCHID-ACTION: orchid task advance T001 implementing --reason tick" >&2
+echo "tick complete"')"
+run_adapter "$d" || fail "orchestrate stderr-marker stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "orchestrate stderr-marker stub: envelope invalid"
+assert_eq '["orchid task advance T001 implementing --reason tick"]' "$(jq -c .actions "$d/out/envelope.json")" \
+  "orchestrate stderr-marker stub: fallback captures an ORCHID-ACTION line that only reached stderr"
+
+# --- 18. v1-m3 round 2: adapter heartbeat. probe-stream-buffering.sh's real
+# run found codex BUFFERED -- tee alone (test 16 above) doesn't help a CLI
+# that produces literally NOTHING until it exits (worse than that test's
+# echo/sleep/echo stub, which at least gives tee something to relay). The
+# stub below sleeps the WHOLE time and writes not one byte until the very
+# end; the ONLY thing that can make the job log grow mid-run here is
+# lib/heartbeat.sh's `[hb ...]` liveness line, written to the adapter's own
+# stderr (never the stub's stdout) every ORCHID_HB_INTERVAL_S seconds. Set
+# to 1 here as a TEST-ONLY override (real default is 30s, see
+# lib/heartbeat.sh) so the fixture doesn't need to wait out a real 30s
+# interval for a heartbeat line to land. Also pins that heartbeat lines
+# never leak into actions[]/summary parsing (they're on stderr, structurally
+# separate from the stub's real stdout -- $stdout is filled purely from the
+# FIFO-relayed stdout content -- but pinned here rather than left implicit).
+d="$(build_request heartbeat orchestrate '#!/usr/bin/env bash
+sleep 2.2
+echo "ORCHID-ACTION: orchid task advance T001 implementing --reason tick"
+echo "tick complete"')"
+joblog="$d/out/job.log"; : > "$joblog"
+initial_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
+adapter_pid=$!
+# Sampled at 1.3s: comfortably after the first heartbeat (fires once the
+# 1s ORCHID_HB_INTERVAL_S override elapses) and comfortably before the
+# stub's own 2.2s exit -- genuinely mid-run on both sides.
+sleep 1.3
+midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"; midrun_hb_count="${midrun_hb_count:-0}"
+midrun_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+wait "$adapter_pid" || fail "heartbeat stub: adapter should exit 0"
+[ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+[ "$midrun_mtime" -ge "$initial_mtime" ] || fail "heartbeat stub: job log mtime must have advanced mid-run (initial=$initial_mtime midrun=$midrun_mtime)"
+envelope_validate "$d/out/envelope.json" || fail "heartbeat stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "heartbeat stub: status ok"
+assert_eq '["orchid task advance T001 implementing --reason tick"]' "$(jq -c .actions "$d/out/envelope.json")" \
+  "heartbeat stub: actions[] captures only the real marker, unaffected by interleaved heartbeat lines"
+summary_val="$(jq -r .summary "$d/out/envelope.json")"
+case "$summary_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope summary" ;; esac
+actions_val="$(jq -c .actions "$d/out/envelope.json")"
+case "$actions_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked into the envelope actions[]" ;; esac
+
+# --- 19. v1-m3: plan-scoped critique pack (task id `plan`, no task.md/
+# diff.patch at all -- lib/pack.sh's _pack_build_plan builds requirements.md
+# + roadmap.md + tasks.md instead). The prompt must be built from those
+# files, not the diff-based review prompt, and a critique reply's `FINDING:
+# <severity>: <title>` lines must parse into findings[] (review's contract
+# stays verdict-only, unaffected -- see test 1 above).
+build_plan_request() {  # name stub -> prints path to request.json's dir
+  local name="$1" stub="$2"
+  local d="$WORK/$name"
+  mkdir -p "$d/pack" "$d/worktree" "$d/out" "$d/bin"
+  printf '# Requirements\nShip the widget end to end.\n' > "$d/pack/requirements.md"
+  printf -- '---\nrun_status: planning\n---\n# Roadmap\n- T001: build the widget\n' > "$d/pack/roadmap.md"
+  printf -- '---\nid: T001\n---\nBuild the widget.\n' > "$d/pack/tasks.md"
+  printf '{"budget":65536,"total_bytes":10,"items":[{"name":"requirements.md","bytes":5,"truncated":false}],"omitted":[]}\n' \
+    > "$d/pack/pack.json"
+  [ -n "$stub" ] && { printf '%s\n' "$stub" > "$d/bin/codex"; chmod +x "$d/bin/codex"; }
+  (cd "$d/worktree" && git init -q . \
+    && git -c user.email=test@orchid.local -c user.name="Orchid Test" \
+         commit -q --allow-empty -m root) >/dev/null 2>&1
+  jq -n --arg job_id "j-$name" \
+    --arg worktree "$d/worktree" --arg input_pack "$d/pack" --arg output "$d/out/envelope.json" \
+    '{request:1, job_id:$job_id, task:"plan", attempt:1, role:"plan_critic", operation:"critique",
+      base_sha:"", candidate_sha:"", worktree:$worktree,
+      input_pack:$input_pack, output:$output, deadline_s:3600,
+      policy:"read-only", model:"", effort:"medium"}' > "$d/request.json"
+  echo "$d"
+}
+
+d="$(build_plan_request plancritique '#!/usr/bin/env bash
+echo "VERDICT: request-changes"
+echo "FINDING: medium: missing rollback plan for T002"
+echo "FINDING: low: acceptance criteria too vague on T003"')"
+run_adapter "$d" || fail "plan critique stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "plan critique stub: envelope invalid"
+assert_eq "request-changes" "$(jq -r .verdict "$d/out/envelope.json")" "plan critique stub: verdict parsed"
+assert_eq "2" "$(jq '.findings | length' "$d/out/envelope.json")" "plan critique stub: FINDING lines parsed into findings[]"
+assert_eq "medium" "$(jq -r '.findings[0].severity' "$d/out/envelope.json")" "plan critique stub: first finding severity"
+assert_eq "missing rollback plan for T002" "$(jq -r '.findings[0].title' "$d/out/envelope.json")" "plan critique stub: first finding title"
+assert_eq "low" "$(jq -r '.findings[1].severity' "$d/out/envelope.json")" "plan critique stub: second finding severity"
+
+# The prompt itself must be built from the plan pack (requirements/roadmap/
+# tasks), never the diff-based review prompt -- captured via the same
+# stdin-capture stub convention as test 11 above.
+d="$(build_plan_request planprompt "$codex_stdin_stub"$'\necho "VERDICT: approve"')"
+run_adapter "$d" || fail "plan prompt stub: adapter should exit 0"
+captured="$(cat "$d/out/stdin_capture.txt")"
+assert_match "Requirements:" "$captured" "plan prompt: requirements section present"
+assert_match "Ship the widget end to end." "$captured" "plan prompt: requirements body present"
+assert_match "Draft roadmap:" "$captured" "plan prompt: roadmap section present"
+assert_match "Build the widget." "$captured" "plan prompt: tasks.md body present"
+case "$captured" in *"Diff:"*) fail "plan prompt: must never contain the diff-based review prompt shape" ;; esac
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "plan prompt stub: approve-only reply still yields empty findings[]"

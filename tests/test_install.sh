@@ -144,3 +144,39 @@ fi
 if grep -qE 'engine.*unavailable.*not implemented by any verb' "$PROTOCOL"; then
   fail "PROTOCOL.md still claims marking an engine unavailable 'is not implemented by any verb' -- lib/ledger.sh + jobs reconcile ship it now"
 fi
+
+# v1-m3 (Task 6): `orchid-launch ... hook --hook <point>` is a NEW invocation
+# form the top-level verb regex above can't validate on its own (it only
+# ever captures the bare word after "orchid " -- here that word is "notify"/
+# "task"/"jobs"/"merge", all already-existing verbs; the `--hook` flag and
+# the `hook` operation are what's actually new). Same targeted-check pattern
+# as the `jobs review-plan` check above: PROTOCOL.md must name the form, and
+# runners/orchid-launch + libexec/orchid-jobs must actually implement it.
+hook_flag_count="$(grep -c -- '--hook' "$PROTOCOL")"
+[ "$hook_flag_count" -gt 0 ] || fail "PROTOCOL.md never mentions the --hook flag"
+grep -qE -- '--hook' "$REPO_ROOT/runners/orchid-launch" \
+  || fail "PROTOCOL.md names '--hook' but runners/orchid-launch has no --hook handling"
+grep -qE -- '--hook' "$REPO_ROOT/libexec/orchid-jobs" \
+  || fail "PROTOCOL.md names '--hook' but libexec/orchid-jobs has no --hook handling"
+
+# v1-m3 final review (CRITICAL 1): PROTOCOL.md's Preamble must state the
+# no-external-mutation policy (live ticks pushing branches to origin was a
+# real finding), and both orchestrate-capable engine adapters must mirror it
+# into their OWN instruction block -- the strings those adapters actually
+# feed the engine, not just PROTOCOL.md's own prose -- same targeted-check
+# pattern as the --hook check above.
+push_policy_count="$(grep -c 'No external mutation' "$PROTOCOL")"
+[ "$push_policy_count" -gt 0 ] || fail "PROTOCOL.md never states the no-external-mutation policy"
+grep -q 'git push' "$PROTOCOL" || fail "PROTOCOL.md's no-external-mutation bullet never names git push"
+for adapter in claude codex; do
+  grep -q 'git push' "$REPO_ROOT/plugins/engines/$adapter/run" \
+    || fail "plugins/engines/$adapter/run's orchestrate instructions never mirror the no-external-mutation policy (git push)"
+done
+
+# `orchid task set <id> hook_guidance ...` (PROTOCOL's on_verify_fail step):
+# hook_guidance must actually be settable -- i.e. absent from orchid-task's
+# `set` deny-list -- not just mentioned in prose.
+grep -qF 'hook_guidance' "$PROTOCOL" || fail "PROTOCOL.md never mentions hook_guidance"
+deny_line="$(grep -nE '^\s*status\|attempts\|infra_failures\|id\|created\|updated\|schema\)' "$REPO_ROOT/libexec/orchid-task")"
+[ -n "$deny_line" ] || fail "orchid-task's set deny-list case arm not found -- update this check"
+printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must never land in orchid-task's set deny-list"

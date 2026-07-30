@@ -3,6 +3,7 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+source "$ORCHID_ROOT/lib/hooks.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
@@ -90,6 +91,57 @@ for role in orchestrator implementer reviewer arbiter plan_critic; do
     bad "role $role -> $primary: no engine plugin on search path (see docs/engines/$primary.md)"
   fi
 done
+# Custom role bindings (v1-m3 Task 7): any `role.<id>`/`role.<id>.blocking`
+# config key whose id is NOT one of the five built-ins above is a custom
+# role plugin binding. A custom role has no default chain at all (lib/
+# resolver.sh's resolve_role_chain exits 14 for an unbound one) -- what
+# doctor gates here is different from the built-in loop's "is an engine on
+# the search path": there must be a DISCOVERABLE descriptor.role for the
+# role itself (lib/roles.sh's _role_file search path) before an engine
+# binding even means anything, since without a descriptor there is no
+# requires/forbids to check eligibility against at all.
+while IFS= read -r crole; do
+  [ -n "$crole" ] || continue
+  if ! cfile="$(_role_file "$crole" 2>/dev/null)"; then
+    bad "role $crole: descriptor lookup ambiguous -- duplicate role on the search path (INV-10)"
+    continue
+  fi
+  if [ ! -f "$cfile" ]; then
+    bad "role $crole: custom role has a config binding but no discoverable descriptor.role (checked \$ORCHID_PLUGIN_PATH/roles/$crole, ~/.orchid/plugins/roles/$crole, $ORCHID_ROOT/roles/$crole.role)"
+    continue
+  fi
+  # resolve_role_chain exits 14 (its own "no binding for custom role" stderr
+  # message) when the descriptor IS discoverable but nothing ever bound
+  # role.$crole itself (e.g. only role.$crole.blocking was set) -- this is
+  # a real, reachable misconfiguration (_role_custom_names names a role
+  # from EITHER key), and under this script's `set -euo pipefail` an
+  # unguarded `var="$(cmd | tr ...)"` here would aborts the ENTIRE doctor
+  # run right here, silently, skipping every check still to come (lockfile
+  # drift, integration branch, split-brain) -- guarded explicitly so a FAIL
+  # is printed and the loop (and the rest of doctor) continues instead.
+  if ! chain_line="$(resolve_role_chain "$repo" "$crole" 2>/dev/null | tr '\n' ',')"; then
+    bad "role $crole: no binding (set role.$crole=<engine>[,fallback])"
+    continue
+  fi
+  chain_line="${chain_line%,}"
+  # hook_bindings=<point>:<plugin-id>,... (optional, descriptor-only, doctor
+  # display ONLY in m3 -- never consulted for gating, lib/roles.sh's header
+  # comment). Each point is checked against the closed kernel hook-point set
+  # (lib/hooks.sh's hook_point_valid) -- an unknown point is a WARN, never a
+  # FAIL: this is descriptive metadata about the role plugin, not something
+  # doctor enforces.
+  hook_bindings="$(_cfg_file_get "$cfile" hook_bindings)"
+  hookline=""
+  if [ -n "$hook_bindings" ]; then
+    hookline=" (hooks: $hook_bindings)"
+    while IFS= read -r hb; do
+      [ -n "$hb" ] || continue
+      pt="${hb%%:*}"
+      hook_point_valid "$pt" || echo "warn: role $crole: hook_bindings names unknown hook point '$pt'"
+    done < <(_manifest_split_csv "$hook_bindings")
+  fi
+  ok "role $crole -> $chain_line (custom, descriptor: $cfile)$hookline"
+done < <(_role_custom_names "$repo")
 # Plugin lockfile drift (Task 7) -- only runs when a lock already exists
 # (orchid-init writes one best-effort; a repo that never locked simply has
 # no opinion here). Drift is a WARNING, not a FAIL, in v1-m1 -- it surfaces
@@ -121,6 +173,26 @@ elif [ "$greenfield" -eq 1 ]; then
   ok "integration branch exists or creatable (greenfield: root commit pending)"
 else
   bad "integration branch exists or creatable: no HEAD to branch from and $integ absent"
+fi
+# Split-brain checkout (v1-m3 Task 2, F7): `orchid init` restores the
+# user's own branch on exit -- durable .orchid state lives only on the
+# integration branch. A checkout with task-verb-built state (tasks/ or
+# journal.md) but no roadmap.md is neither uninitialized nor healthy; FAIL
+# it by name so the operator switches checkouts rather than debug a
+# missing roadmap.
+if orchid_split_brain "$repo"; then
+  bad "split-brain checkout: work from the integration branch or a worktree of it — see 'orchid init' output"
+else
+  ok "no split-brain checkout state"
+fi
+# Stale integration checkout (v1-m3 final review, CRITICAL 2): see
+# lib/common.sh's orchid_stale_checkout for the full signature this detects
+# (a live run's 6638-line silent revert). Report-only, like every other
+# doctor check -- it never touches the index or working tree itself.
+if orchid_stale_checkout "$repo"; then
+  bad "integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here"
+else
+  ok "no stale integration checkout state"
 fi
 [ -d "$repo/.orchid/plugins" ] && echo "note: repo-local plugins require 'orchid plugins trust <dir>' to execute (see plugins: section above for current trust status, INV-09)"
 [ "$fails" -eq 0 ] || exit 1

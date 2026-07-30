@@ -45,6 +45,13 @@ case "$sub" in
   create)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; title="$2"; shift 2 || true
+    # `plan` is a RESERVED task id (v1-m3): it names the plan-scoped critique
+    # job (`orchid jobs prepare plan <role> critique`, PROTOCOL PLANNING step
+    # 2), which mints a manifest with no backing task file at all -- a real
+    # task ever landing at `.orchid/tasks/plan.md` would collide with that
+    # convention (jobs prepare's plan-branch would then shadow a real task's
+    # frontmatter). Refused up front, before any file is written.
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
     # --archetype <name> (default: feature) -- the ONLY new flag; a bare
     # `task create <id> <title>` behaves exactly as before this arm gained
     # option parsing.
@@ -66,17 +73,42 @@ case "$sub" in
     # is a v1-m2 comma-separated failover chain (e.g. "codex,claude") --
     # seeding the template with the raw config value would land a comma
     # chain verbatim in frontmatter, which no consumer of `engine:` expects.
+    #
+    # v1-m3 Task 8: per-archetype template lookup. `templates/task-<arch>.md`
+    # when present (refactor/test/migrate each pre-set their own risk_tier/
+    # blocking_severity/exclusive defaults and body lens text in frontmatter
+    # -- plain sed substitution, so these create-time defaults are never
+    # routed through `task set risk_tier`'s monotonic/--reason guard, which
+    # only fires on POST-create changes to an existing task file), else the
+    # generic `templates/task.md` fallback (unchanged content/behavior for
+    # feature/review and any other archetype without its own template).
+    tmpl="$ORCHID_ROOT/templates/task-$arch.md"
+    [ -f "$tmpl" ] || tmpl="$ORCHID_ROOT/templates/task.md"
     sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
         -e "s|__ARCHETYPE__|$arch|g" \
         -e "s|__ENGINE__|$(resolve_role "$repo" implementer)|g" \
         -e "s|__DATE__|$(now)|g" \
-      "$ORCHID_ROOT/templates/task.md" | atomic_write "$(tf "$id")" ;;
+      "$tmpl" | atomic_write "$(tf "$id")" ;;
   show) cat "$(tf "$1")" ;;
   list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
         printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
   set)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
+    # Reserved-id + existence guards BEFORE any read/write of the task
+    # file (v1-m3 fix): `fm_set`'s `awk ... | atomic_write "$f"` pipe has
+    # atomic_write write empty stdin to `$f` BEFORE awk's own can't-open-
+    # file failure aborts the script under `set -e` -- so a nonexistent id
+    # used to crash with a raw awk error AND leave a stray empty
+    # tasks/<id>.md behind. `plan` is additionally refused by name (same
+    # message `task create` uses) rather than falling through to the
+    # generic "no task" die -- it can never have a real task file (`task
+    # create` refuses it), so a plain existence check alone would still be
+    # correct, but naming it explicitly keeps the diagnostic honest about
+    # WHY, and closes the door before a stray file could ever be raced into
+    # existence out-of-band and defeat the reserved-id protection.
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
@@ -88,7 +120,7 @@ case "$sub" in
         reason="$2"
       fi
       [ -n "$reason" ] || orchid_die "risk_tier requires --reason (INV-08)"
-      old="$(fm_get "$(tf "$id")" risk_tier)"
+      old="$(fm_get "$f" risk_tier)"
       [ "$(rank "$val")" -ge "$(rank "$old")" ] || orchid_die "risk_tier is monotonic ($old -> $val refused)"
       # kernel.md: risk_tier drives blocking_severity too -- low tier blocks
       # only on high-severity findings; medium/high block on medium+ (MORE
@@ -101,9 +133,9 @@ case "$sub" in
         *) bsev=medium ;;   # medium|high -> medium
       esac
       journal --task "$id" --kind risk_change "$old -> $val: $reason (blocking_severity -> $bsev)"
-      fm_set "$(tf "$id")" blocking_severity "$bsev"
+      fm_set "$f" blocking_severity "$bsev"
     fi
-    fm_set "$(tf "$id")" "$key" "$val"; fm_set "$(tf "$id")" updated "$(now)" ;;
+    fm_set "$f" "$key" "$val"; fm_set "$f" updated "$(now)" ;;
   advance)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
@@ -262,6 +294,12 @@ case "$sub" in
       # the implement-envelope capture above, where candidate_sha is an
       # output, not an input). Only envelopes bound to the task's CURRENT
       # candidate_sha count.
+      #
+      # m2 ledger finding: sha-binding alone is not enough -- a reviewer job
+      # that errored (or a quarantined/malformed envelope reconcile still
+      # wrote to disk) can leave a same-shaped, sha-bound file behind with
+      # status != "ok" (no real verdict). Only status=="ok" envelopes count;
+      # anything else is silently skipped, same as an sha mismatch.
       gate_attempt=$(( $(fm_get "$f" attempts) + 1 ))
       gate_tier="$(fm_get "$f" risk_tier)"; [ -n "$gate_tier" ] || gate_tier=low
       gate_need="$(review_required_count "$gate_tier")"
@@ -270,7 +308,8 @@ case "$sub" in
       for gate_rf in "$state/reviews/$id-a$gate_attempt-reviewer"*.json; do
         [ -e "$gate_rf" ] || continue
         gate_rf_cand="$(envelope_field "$gate_rf" '.candidate_sha // empty' 2>/dev/null || true)"
-        [ -n "$gate_cand" ] && [ "$gate_rf_cand" = "$gate_cand" ] || continue
+        gate_rf_status="$(envelope_field "$gate_rf" '.status // empty' 2>/dev/null || true)"
+        [ -n "$gate_cand" ] && [ "$gate_rf_cand" = "$gate_cand" ] && [ "$gate_rf_status" = ok ] || continue
         gate_have=$((gate_have + 1))
       done
       [ "$gate_have" -ge "$gate_need" ] || \
@@ -324,7 +363,15 @@ case "$sub" in
     else
       orchid_die "unblock requires --reason"
     fi
-    f="$(tf "$id")"
+    # Reserved-id + existence guards BEFORE any read of the task file
+    # (v1-m3 fix, same rationale as `set` above): a nonexistent id used to
+    # reach `fm_get "$f" status` on a file that doesn't exist -- a raw awk
+    # can't-open-file error on stderr before falling through to the
+    # (technically correct but noisy, and wrong-reason-shaped) "$id is not
+    # blocked" die. Checked here so the die is clean and, for the reserved
+    # id `plan`, names the real reason.
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
     journal --task "$id" --kind intervention "unblock: $reason"
     { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"

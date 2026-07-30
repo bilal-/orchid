@@ -17,17 +17,21 @@ homeA="$WORK/homeA"; mkdir -p "$homeA/.orchid"
 
 # -- built-ins only, clean HOME/repo -----------------------------------------
 # v1-m2 Task 4 adds a second built-in archetype (orchid/review, alongside
-# orchid/feature) -- 6 built-ins total from here on.
+# orchid/feature). v1-m3 Task 8 adds three more (orchid/refactor, orchid/
+# test, orchid/migrate) -- 9 built-ins total from here on.
 out="$(HOME="$homeA" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "plugins list exits 0 with only built-ins"
 lines="$(echo "$out" | wc -l | tr -d ' ')"
-assert_eq 6 "$lines" "exactly the 6 built-ins are listed with a clean HOME/repo"
+assert_eq 9 "$lines" "exactly the 9 built-ins are listed with a clean HOME/repo"
 for row in "orchid/codex engine 0.1.0 builtin builtin" \
            "orchid/codex-review engine 0.1.0 builtin builtin" \
            "orchid/agy engine 0.1.0 builtin builtin" \
            "orchid/claude engine 0.1.0 builtin builtin" \
            "orchid/feature archetype 0.1.0 builtin builtin" \
-           "orchid/review archetype 0.1.0 builtin builtin"; do
+           "orchid/review archetype 0.1.0 builtin builtin" \
+           "orchid/refactor archetype 0.1.0 builtin builtin" \
+           "orchid/test archetype 0.1.0 builtin builtin" \
+           "orchid/migrate archetype 0.1.0 builtin builtin"; do
   assert_match "$(row_re $row)" "$out" "built-in row: $row"
 done
 
@@ -38,7 +42,7 @@ out="$(HOME="$homeB" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "plugins list still exits 0 with one added user plugin"
 assert_match "$(row_re acme/fake engine 0.2.0 user user)" "$out" "user plugin: origin=user trust=user"
 lines="$(echo "$out" | wc -l | tr -d ' ')"
-assert_eq 7 "$lines" "6 built-ins + 1 user plugin"
+assert_eq 10 "$lines" "9 built-ins + 1 user plugin"
 
 # -- ORCHID_PLUGIN_PATH entries show origin=path, trust=user -----------------
 pathroot="$WORK/pathroot"
@@ -69,7 +73,7 @@ assert_match "$(row_re orchid/codex engine 9.9.9 repo 'DISABLED \(untrusted\)')"
 out="$(HOME="$homeA" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate --all)"; rc=$?
 assert_eq 0 "$rc" "validate --all passes with only built-ins"
 okcount="$(echo "$out" | grep -c '^ok:')"
-assert_eq 6 "$okcount" "validate --all prints an ok line per built-in"
+assert_eq 9 "$okcount" "validate --all prints an ok line per built-in"
 
 # -- validate --all: a malformed planted manifest aggregate-fails (exit 13) --
 homeG="$WORK/homeG"
@@ -140,3 +144,35 @@ printf '#!/usr/bin/env bash\ntrue\n' > "$homeL/.orchid/plugins/engines/malformed
 rc=0; out="$(HOME="$homeL" ORCHID_REPO="$repoI" ORCHID_ENGINES_DIR="$repoI/eng" "$ORCHID_BIN" doctor)" || rc=$?
 assert_eq 1 "$rc" "doctor FAILs (exit 1) when a discovered plugin manifest is malformed"
 assert_match "FAIL.*validat" "$out" "doctor reports the malformed manifest as a validate FAIL"
+
+# -- v1-m3 Task 7: a kind=role plugin (plugin.conf + descriptor.role) lists
+# and validates like any other plugin. Discovery is generic (any <root>/
+# <kind-dir>/<name>/plugin.conf), so a "roles" dir needs no special-casing
+# here -- this just proves that holds for kind=role specifically.
+mk_role_plugin() {  # dir manifest-id role-id requires
+  mkdir -p "$1"
+  printf 'manifest_version=1\nid=%s\nversion=0.1.0\nkind=role\napi_version=1\n' "$2" > "$1/plugin.conf"
+  printf 'id=%s\nrequires=%s\ndescription=test role plugin\n' "$3" "$4" > "$1/descriptor.role"
+}
+
+homeR="$WORK/homeR"; mkdir -p "$homeR/.orchid"
+mk_role_plugin "$homeR/.orchid/plugins/roles/researcher" acme/researcher researcher structured_text,citations
+out="$(HOME="$homeR" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
+assert_eq 0 "$rc" "plugins list exits 0 with a planted kind=role plugin"
+assert_match "$(row_re acme/researcher role 0.1.0 user user)" "$out" "kind=role plugin lists with kind=role, origin=user, trust=user"
+lines="$(echo "$out" | wc -l | tr -d ' ')"
+assert_eq 10 "$lines" "9 built-ins + 1 role plugin"
+
+out="$(HOME="$homeR" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate acme/researcher)"; rc=$?
+assert_eq 0 "$rc" "validate acme/researcher passes (kind=role needs no entrypoint)"
+assert_match "^ok" "$out" "ok line printed for the role plugin"
+
+# a kind=role plugin missing descriptor.role fails validate/--all (exit 13,
+# same aggregate-fail discipline as any other malformed manifest)
+homeRB="$WORK/homeRB"
+mkdir -p "$homeRB/.orchid/plugins/roles/brokenrole"
+printf 'manifest_version=1\nid=acme/brokenrole\nversion=0.1.0\nkind=role\napi_version=1\n' \
+  > "$homeRB/.orchid/plugins/roles/brokenrole/plugin.conf"
+rc=0; out="$(HOME="$homeRB" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate --all)" || rc=$?
+[ "$rc" -ne 0 ] || fail "validate --all must fail a kind=role plugin with no descriptor.role"
+assert_match "FAIL.*descriptor.role missing" "$out" "validate --all names the missing descriptor.role"

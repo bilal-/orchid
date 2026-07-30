@@ -22,11 +22,23 @@ resolve_role() {  # repo role -> primary engine name (first entry of the chain)
 
 # resolve_role_chain <repo> <role> -- prints the role's preference chain, one
 # engine name per line: the configured `role.<role>=` value split on comma,
-# or (absent config) the built-in default chain. A scalar (no-comma) config
-# value is a one-entry chain, same as before v1-m2.
+# or (absent config, one of the five built-ins) the built-in default chain.
+# A scalar (no-comma) config value is a one-entry chain, same as before
+# v1-m2. A CUSTOM role (not one of the five built-ins, Task 7) has no
+# default chain at all -- it resolves PURELY from config -- so an unbound
+# one (no `role.<custom>=` anywhere) is a distinct, more specific failure
+# than "chain resolved to nothing eligible": exit 14 naming exactly the
+# config key to set, from THIS function, before resolve_role_available's own
+# chain-walk (which would otherwise just report an empty chain with no
+# disqualifiers, a confusing dead end for an operator).
 resolve_role_chain() {
-  local v; v="$(config_get "$1" "role.$2")"
-  [ -n "$v" ] || v="$(_role_default_chain "$2")"
+  local repo="$1" role="$2" v
+  v="$(config_get "$repo" "role.$role")"
+  [ -n "$v" ] || v="$(_role_default_chain "$role")"
+  if [ -z "$v" ] && ! _role_is_builtin "$role"; then
+    echo "orchid: no binding for custom role '$role' (set role.$role=...)" >&2
+    return 14
+  fi
   echo "$v" | tr ',' '\n'
 }
 resolve_engine_exe() {  # name -> executable path (search path; dup = error)
@@ -99,6 +111,33 @@ resolve_engine_dir() {  # name -> plugin dir (dirname of resolve_engine_exe)
   dirname "$exe"
 }
 
+# resolve_engine_qualified_id <name> -- the qualified manifest id (e.g.
+# "orchid/claude", or a third-party publisher's own "acme/foo") a plugin's
+# OWN plugin.conf claims for itself, for comparing against an envelope's
+# self-reported `.engine` field -- real adapters echo that field back in
+# exactly this qualified form (docs/specs/plugins.md). Resolves the bound
+# NAME to its plugin dir (resolve_engine_dir) and reads THAT dir's manifest
+# `id=` directly -- this must never assume the "orchid/<name>" shape, which
+# only happens to hold for first-party plugins; hardcoding it would make any
+# `:required`-bound third-party engine permanently unsatisfiable at every
+# call site that compares against it (INV-05: this is manifest-derived data
+# being compared, not a branch on a hardcoded name). When the name cannot be
+# resolved to an installed dir at all (unbound, or not currently discoverable
+# at gate/reconcile time), falls back to the literal "orchid/<name>" string
+# -- preserves every fixture/test that predates third-party publishers
+# rather than refusing to compare at all.
+# Callers must additionally source lib/manifest.sh (manifest_get).
+resolve_engine_qualified_id() {
+  local name="$1" dir qid
+  if dir="$(resolve_engine_dir "$name" 2>/dev/null)"; then
+    qid="$(manifest_get "$dir" id)"
+    [ -n "$qid" ] || qid="orchid/$name"
+  else
+    qid="orchid/$name"
+  fi
+  echo "$qid"
+}
+
 # resolve_role_checked <repo> <role> -- resolves the role's engine (same
 # lookup as resolve_role) then gates it on capability eligibility (lib/
 # roles.sh's role_eligible against the engine's manifest capabilities).
@@ -142,7 +181,11 @@ resolve_role_available() {
   local repo="$1" role="$2" chain engine dir reason skip_engine="" idx=0 disq=""
 
   [ "$role" = plan_critic ] && skip_engine="$(resolve_role "$repo" orchestrator)"
-  chain="$(resolve_role_chain "$repo" "$role")"
+  # An unbound custom role's exit 14 (its own specific "no binding for
+  # custom role" message, already on stderr) is propagated verbatim rather
+  # than falling through to the generic "no eligible engine" message below,
+  # which would otherwise report an empty chain with zero disqualifiers.
+  chain="$(resolve_role_chain "$repo" "$role")" || return $?
 
   while IFS= read -r engine; do
     [ -n "$engine" ] || continue

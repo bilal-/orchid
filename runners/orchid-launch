@@ -12,43 +12,72 @@ ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/pack.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/spawn.sh"
+source "$ORCHID_ROOT/lib/hooks.sh"
 
 task="${1:-}"; role="${2:-}"; operation="${3:-}"
 [ -n "$task" ] && [ -n "$role" ] && [ -n "$operation" ] \
-  || orchid_die "usage: orchid-launch <task-id> <role> <operation> [--engine <name>]"
+  || orchid_die "usage: orchid-launch <task-id> <role> <operation> [--engine <name>] [--hook <point>]"
 shift 3
-override_engine=""
+override_engine=""; hook_point_arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --engine)
       [ -n "${2:-}" ] || orchid_die "--engine requires a value"
       override_engine="$2"; shift 2 ;;
-    *) orchid_die "usage: orchid-launch <task-id> <role> <operation> [--engine <name>]" ;;
+    --hook)
+      [ -n "${2:-}" ] || orchid_die "--hook requires a value"
+      hook_point_arg="$2"; shift 2 ;;
+    *) orchid_die "usage: orchid-launch <task-id> <role> <operation> [--engine <name>] [--hook <point>]" ;;
   esac
 done
 
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 
 # tier-1 mints the job identity + manifest; never spawns (INV-01). --engine
-# is forwarded to prepare VERBATIM -- prepare owns the only validation
-# (discovered + role-eligible), this launcher never re-validates it (F5).
-if [ -n "$override_engine" ]; then
-  manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "$task" "$role" "$operation" --engine "$override_engine")"
-else
-  manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "$task" "$role" "$operation")"
-fi
+# and --hook are forwarded to prepare VERBATIM -- prepare owns the only
+# validation (discovered + role-eligible for --engine on a role job;
+# discovered + kind=engine|hook, name-bound by the hook.<point> config, for a
+# hook job), this launcher never re-validates either (F5).
+prepare_args=("$task" "$role" "$operation")
+[ -z "$override_engine" ] || prepare_args+=(--engine "$override_engine")
+[ -z "$hook_point_arg" ] || prepare_args+=(--hook "$hook_point_arg")
+manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "${prepare_args[@]}")"
 job_id="$(jq -r .job_id "$manifest")"; engine="$(jq -r .engine "$manifest")"
 attempt="$(jq -r .attempt "$manifest")"; output="$(jq -r .output "$manifest")"
 log="$(jq -r .log "$manifest")"
 base_sha="$(jq -r .base_sha "$manifest")"; candidate_sha="$(jq -r .candidate_sha "$manifest")"
+# hook_point: read back from the manifest (prepare's own recording), not the
+# locally-parsed flag -- authoritative, and "" for every non-hook job.
+hook_point="$(jq -r '.hook_point // empty' "$manifest")"
 
 pack_dir="$rt/packs/$job_id"
-pack_build "$repo" "$task" "$operation" "$pack_dir"
+pack_build "$repo" "$task" "$operation" "$pack_dir" "$hook_point"
 
-worktree="$(fm_get "$state/tasks/$task.md" worktree)"
+# `plan` (v1-m3): the reserved task id has no `.orchid/tasks/plan.md` to
+# read at all -- `fm_get` on a nonexistent file is an awk open-failure, not
+# an empty read, which under `set -e` would abort this launch outright.
+# Guarded the same way pack_build/jobs prepare special-case the id: skip the
+# read entirely and fall through to the repo default below.
+task_file="$state/tasks/$task.md"
+if [ -f "$task_file" ]; then
+  worktree="$(fm_get "$task_file" worktree)"
+else
+  worktree=""
+fi
 [ -n "$worktree" ] || worktree="$repo"
 
-deadline_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
+# hook ops get their own budget (hook_timeout_s, default 600) instead of the
+# ordinary implement/review timeout_minutes -- hook handlers are typically
+# short-lived middleware (e.g. a guidance lookup), not a full engine session.
+if [ "$operation" = hook ]; then
+  deadline_s="$(hook_timeout_s "$repo")"
+else
+  deadline_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
+fi
+# policy: read-only for everything except implement (hook ops fall through
+# to read-only here same as review/critique -- lib/hooks.sh's header note:
+# results are applied ONLY by the orchestrator through tier-1 verbs, never
+# by the hook handler itself).
 case "$operation" in implement) policy=workspace-write ;; *) policy=read-only ;; esac
 model="$(config_get "$repo" model "")"
 effort="$(config_get "$repo" effort medium)"
@@ -59,11 +88,12 @@ jq -n --arg job_id "$job_id" --arg task "$task" --argjson attempt "$attempt" \
   --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
   --arg worktree "$worktree" --arg input_pack "$pack_dir" --arg output "$output" \
   --argjson deadline_s "$deadline_s" --arg policy "$policy" \
-  --arg model "$model" --arg effort "$effort" \
+  --arg model "$model" --arg effort "$effort" --arg hook_point "$hook_point" \
   '{request:1, job_id:$job_id, task:$task, attempt:$attempt, role:$role,
     operation:$operation, base_sha:$base_sha, candidate_sha:$candidate_sha,
     worktree:$worktree, input_pack:$input_pack, output:$output,
-    deadline_s:$deadline_s, policy:$policy, model:$model, effort:$effort}' \
+    deadline_s:$deadline_s, policy:$policy, model:$model, effort:$effort,
+    hook_point:$hook_point}' \
   | atomic_write "$req_file"
 
 exe="$(resolve_engine_exe "$engine")" || orchid_die "cannot resolve engine '$engine'"

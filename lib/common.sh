@@ -5,12 +5,52 @@
 # `requires_orchid=>=X.Y` against it (major.minor only -- semver-ish, per
 # docs/specs/plugins.md's Manifest section). Bump alongside a milestone,
 # never mid-milestone.
-ORCHID_VERSION="1.0.0-m2"
+ORCHID_VERSION="1.0.0-m3"
 
 orchid_die() { echo "orchid: $*" >&2; exit 1; }
 atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv "$t" "$d"; }
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
+
+# orchid_split_brain <repo> -- v1-m3 Task 2 (F7, docs/dogfood-notes.md
+# v1-m2 section): `orchid init` restores the user's OWN branch when it
+# exits; the durable .orchid state (roadmap.md and everything gated on it)
+# lives only on the integration branch. A task verb run against the wrong
+# checkout happily builds untracked .orchid state there anyway (tasks/,
+# journal.md), and nothing else on disk distinguishes that from a healthy
+# repo -- except the one file only the integration branch ever carries:
+# roadmap.md. True (exit 0) when EITHER tasks/ or journal.md exists but
+# roadmap.md does NOT. A repo with none of the three is simply
+# uninitialized (not split-brain); a repo with roadmap.md present is
+# healthy regardless of what else exists alongside it.
+orchid_split_brain() {
+  local state; state="$(orchid_state "$1")"
+  { [ -d "$state/tasks" ] || [ -f "$state/journal.md" ]; } && [ ! -f "$state/roadmap.md" ]
+}
+
+# orchid_stale_checkout <repo> -- v1-m3 final review (CRITICAL 2): the live
+# run's 6638-line silent revert. Something (a pump-run tick, a stray script)
+# advanced the integration branch's ref directly (`git update-ref`) while
+# THIS checkout was itself sitting on that same branch -- unlike a normal
+# `git checkout`/`commit`, that moves HEAD forward without ever touching the
+# index or working tree here, so the checkout silently falls behind its own
+# branch pointer. `git diff --cached --name-status` in that state prints one
+# "D" row per path the NEW HEAD carries that the (stale) index does not --
+# by definition, a "D" row only exists for a path present in HEAD (that is
+# exactly what `--cached`/`--staged` means: HEAD vs index, i.e. what
+# committing the index right now would change), so any D row at all, while
+# parked on the integration branch itself, IS the stale-checkout signature —
+# the next `git add -A && git commit` here would re-delete every one of
+# those files, silently reverting real history. Read-only: this function
+# only ever inspects, never mutates, and `orchid checkout HEAD -- .` (the
+# fix it recommends) is left to the operator, never run here.
+orchid_stale_checkout() {
+  local repo="$1" integ cur
+  integ="$(config_get "$repo" integration_branch orchid/integration)"
+  cur="$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  [ -n "$cur" ] && [ "$cur" = "$integ" ] || return 1
+  git -C "$repo" diff --cached --name-status 2>/dev/null | awk '$1 == "D" { found=1 } END { exit !found }'
+}
 
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a
 # shell function name) with a wall-clock deadline; returns cmd's own exit
@@ -133,17 +173,28 @@ lock_release() { rm -rf "$(orchid_runtime "$1")/lock"; }
 # call can never release its parent's lock out from under it at its own exit.
 _verb_lock_owned=0
 verb_lock_acquire() {
-  local repo="$1" rt lock wait_s max_tries tries=0 pid host pstart alive owner_json myhost self_json
+  local repo="$1" rt lock wait_s pid host pstart alive owner_json myhost self_json empty_since start_s elapsed
   [ "${ORCHID_VERB_LOCK_HELD:-0}" = 1 ] && return 0
   rt="$(orchid_runtime "$repo")"; lock="$rt/verb-lock"
   wait_s="$(config_get "$repo" verb_lock_wait_s 10)"
-  max_tries=$(( wait_s * 5 ))   # retried every 0.2s (bounded; not a spawn -- INV-01 scopes to libexec/*)
   myhost="$(hostname)"          # cached once -- not re-forked every retry iteration
+  # Real wall-clock budget, NOT a try count: this function has two retry
+  # paths with genuinely different paces -- the live-owner wait below sleeps
+  # ~0.2s per try, while the self-verify-failure retry (further down) can
+  # spin with no sleep at all when mkdir keeps winning fresh. A single
+  # shared `tries` counter (the previous implementation) let a burst of the
+  # unpaced path -- or any mix of the two -- trip the budget well before
+  # wait_s real seconds had actually elapsed, making the die message's
+  # "waited <n>s" claim false. Bounding on ACTUAL elapsed time instead (not
+  # a spawn -- INV-01 scopes to libexec/*) keeps that claim honest
+  # regardless of which path, or what mix, burns the budget.
+  start_s="$(date +%s)"
   # Outer loop: a full acquire attempt is "win the mkdir race, then prove the
   # claim actually landed" (see the self-verification below) -- on ANY
   # failure to prove that, the whole attempt is abandoned and retried from
   # scratch here, never patched up by re-writing in place (see why below).
   while true; do
+    empty_since=""   # reset per fresh outer-loop attempt -- see below
     while ! mkdir "$lock" 2>/dev/null; do
       # Read owner.json ONCE into a variable and parse every field from that
       # SAME snapshot -- not three separate `jq -r .field "$lock/owner.json"`
@@ -155,14 +206,36 @@ verb_lock_acquire() {
       # -- an empty read (dir claimed but its owner.json not written yet, the
       # few-ms window right after ITS mkdir) is treated the same as "still
       # being claimed", never "dead/foreign": that misread would rm -rf a
-      # brand-new legitimate owner's lock out from under it. Just wait it out,
-      # uncounted against the wait budget below (a benign micro-race, not real
-      # contention).
+      # brand-new legitimate owner's lock out from under it. Just wait it
+      # out, uncounted against the wait budget below (a benign micro-race,
+      # not real contention) -- UNLESS it has been empty for as long as the
+      # full wait budget itself: a crash between the winner's mkdir and its
+      # owner.json write leaves exactly this signature (dir present, no
+      # owner.json, no pid/host/pid_start ever recorded), and nothing else
+      # would ever break it. `empty_since` tracks how long THIS generation
+      # has been observed empty (reset the moment a real owner record
+      # appears, so a brand-new legitimately-empty generation always gets
+      # its own fresh grace window, never inherited time from a prior one).
       owner_json="$(cat "$lock/owner.json" 2>/dev/null)"
       if [ -z "$owner_json" ]; then
+        if [ -z "$empty_since" ]; then
+          empty_since=$SECONDS
+        elif [ $(( SECONDS - empty_since )) -ge "$wait_s" ]; then
+          # Persistently empty past the wait budget: broken like a dead
+          # owner. Re-confirmed against a fresh read immediately before the
+          # destructive rm -rf, same reasoning as the dead-owner path below
+          # -- a legitimate claimant may have written owner.json in the
+          # instant since our last read.
+          if [ -z "$(cat "$lock/owner.json" 2>/dev/null)" ]; then
+            rm -rf "$lock" 2>/dev/null
+          fi
+          empty_since=""
+          continue
+        fi
         sleep 0.05
         continue
       fi
+      empty_since=""
       pid=0; host='?'; pstart='?'
       eval "$(printf '%s' "$owner_json" | jq -r \
         '"pid=" + (.pid|tostring) + "; host=" + (.hostname|@sh) + "; pstart=" + (.pid_start|@sh)' \
@@ -206,9 +279,9 @@ verb_lock_acquire() {
         fi
         continue
       fi
-      tries=$((tries + 1))
-      [ "$tries" -lt "$max_tries" ] || \
-        orchid_die "verb lock held by pid $pid — another verb is mid-transaction (waited ${wait_s}s)"
+      elapsed=$(( $(date +%s) - start_s ))
+      [ "$elapsed" -lt "$wait_s" ] || \
+        orchid_die "verb lock held by pid $pid — another verb is mid-transaction (waited ${elapsed}s)"
       sleep 0.2
     done
     # mkdir won: we hold what SHOULD be a fresh, empty generation of
@@ -241,6 +314,22 @@ verb_lock_acquire() {
     [ "$(cat "$lock/owner.json" 2>/dev/null)" = "$self_json" ] && break
     # Lost the race for this generation -- do NOT retry the write in place;
     # someone else may legitimately own this path now. Loop back to the top.
+    #
+    # This retry must still count against the overall wait budget: without
+    # it, a repeated run of this same residual-sliver loss (adversarial or
+    # just unlucky under heavy contention) would retry the WHOLE acquire
+    # forever -- never bounded by verb_lock_wait_s, the one liveness
+    # guarantee this function makes. Bounded on the SAME real-elapsed-time
+    # budget the live-owner wait above uses (not a separate try count):
+    # mkdir winning again immediately here (no sleep at all) means this
+    # path can spin far faster than the live-owner wait's ~0.2s-per-try
+    # cadence, so a shared TRY count would let a burst of these losses trip
+    # the budget well before wait_s real seconds had elapsed. A small sleep
+    # still guards against pure busy-spinning under sustained contention.
+    elapsed=$(( $(date +%s) - start_s ))
+    [ "$elapsed" -lt "$wait_s" ] || \
+      orchid_die "verb lock contention unresolved — self-verification kept losing the claim race (waited ${elapsed}s)"
+    sleep 0.05
   done
   _verb_lock_owned=1
   export ORCHID_VERB_LOCK_HELD=1
@@ -337,6 +426,53 @@ plugin_digest() {
   find "$dir" \( -type f -o -type l \) | LC_ALL=C sort | while IFS= read -r f; do
     if [ -L "$f" ]; then _orchid_symlink_sha256 "$f"; else _orchid_file_sha256 "$f"; fi
   done | _orchid_stream_sha256
+}
+
+# plugin_digest_content <dir> -- like plugin_digest above, but (a) EXCLUDES
+# this dir's own lifecycle metadata files (`.provenance`, and
+# `.installed-digest` should one ever exist) from the digest walk, and (b)
+# is PATH-INDEPENDENT: it `cd`s into the canonical dir and hashes over
+# RELATIVE (`./...`) paths, never the absolute one. v1-m3 Task 9 (plugin
+# install/update/remove/audit):
+#
+#   (a) `orchid plugins install` writes `.provenance` INTO the freshly-
+#   copied plugin dir and then wants to record, inside that same file, a
+#   digest of the plugin's actual content -- computing the FULL
+#   plugin_digest after that write would be self-referential (the recorded
+#   digest would cover the very file it's being written into, and appending
+#   the `installed_digest=` line would immediately invalidate the digest
+#   just recorded). Excluding the metadata file(s) entirely sidesteps the
+#   self-reference: this function's result is stable regardless of whether
+#   `.provenance` exists yet or what it contains.
+#
+#   (b) `orchid plugins update` builds a replacement in a TEMP dir
+#   (`<dest>.build.XXXXXX`) and computes/records installed_digest there,
+#   BEFORE the atomic `mv` swap into the real `<dest>`. plugin_digest (and
+#   an earlier, buggy version of this function) bakes the ABSOLUTE path
+#   into every hashed line (`shasum -a 256 <path>` includes <path> in its
+#   output, which is what actually gets hashed) -- so a digest computed
+#   over the temp build dir's path could never again match one computed
+#   over the final dest path, even with byte-identical content, and every
+#   `update` would then make `audit` report "modified since install"
+#   FOREVER (found in review). `cd`-ing into the dir first and walking `.`
+#   makes every hashed line read `./relative/path`, identical regardless of
+#   which absolute directory the plugin happens to be sitting in at hash
+#   time -- so "write installed_digest against the temp build dir" and
+#   "recompute later against the swapped-in final dir" are now provably
+#   the same digest whenever content is unchanged.
+#
+# Trust-store digests (INV-09, `plugins trust`) and capsuite markers (lib/
+# capsuite.sh's tested_at_marker) deliberately keep using the FULL, absolute-
+# path plugin_digest, UNCHANGED from v1-m1/m2 -- that is the recorded m2
+# design (a trust pin / capsuite result is tied to the exact path it was
+# taken against) and out of scope for this fix.
+plugin_digest_content() {
+  local dir; dir="$(_trust_canon_path "$1")" || return 1
+  [ -d "$dir" ] || return 1
+  ( cd "$dir" && find . \( -type f -o -type l \) \
+      ! -name '.provenance' ! -name '.installed-digest' | LC_ALL=C sort | while IFS= read -r f; do
+    if [ -L "$f" ]; then _orchid_symlink_sha256 "$f"; else _orchid_file_sha256 "$f"; fi
+  done ) | _orchid_stream_sha256
 }
 
 _orchid_trust_dir()  { echo "$HOME/.orchid"; }

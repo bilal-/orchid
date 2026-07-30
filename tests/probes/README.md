@@ -1,6 +1,6 @@
 # Real-engine probes
 
-These scripts answer four open questions about the real `codex`, `agy`,
+These scripts answer five open questions about the real `codex`, `agy`,
 and `claude` CLIs that stub-based tests can't settle, because the stubs
 *are* the answer to those questions by construction. They are **manual,
 operator-run tools — never part of the automated suite.**
@@ -30,13 +30,16 @@ with this directory present).
 | `probe-agy-stdin.sh` | Does `agy -p` accept the prompt via stdin (the `-` convention, or plain redirection)? | **Real quota, small.** Runs up to two short "reply with exactly OK" round trips against the real model. |
 | `probe-claude-implement.sh` | Can `claude -p --permission-mode acceptEdits` actually create a file and commit it, unattended? | **Real quota, larger.** Runs one full implement-shaped round trip (`claude -p ... --permission-mode acceptEdits`) against a scratch git repo. |
 | `probe-claude-tick.sh` | With `--allowedTools Bash` added (F8 fix, on top of `--permission-mode acceptEdits`), does headless claude actually EXECUTE `orchid` verbs by absolute binary path — real command output, not just a hallucinated `ORCHID-ACTION:` marker line with nothing behind it? | **Real quota, one round trip.** Asks claude to run `<abs>/bin/orchid version` and `<abs>/bin/orchid config list` in a scratch repo, echo the marker for each, and checks the transcript for the real output (`1.0.0-m2`, `integration_branch`). |
+| `probe-stream-buffering.sh` | v1-m3 log-streaming fix: adapters now `tee` each CLI's stdout to the job log as it runs (`stdout="$(cli ... 2>err \| tee /dev/stderr)"`). That idiom proves bash's own plumbing doesn't buffer — whether the real `codex`/`claude` binaries buffer THEIR OWN stdout internally until the whole reply is ready (which would still leave the job log jumping from 0 to full size in one shot, right at exit) is a separate, unverified question. | **Real quota, one small round trip each.** Runs a "count to 5, one number per line" prompt through the exact adapter pipeline shape for codex and (separately) claude, sampling a scratch log's byte size once a second while each CLI runs. One `PROBE-RESULT:` line per engine: `STREAMS` (log grew before exit) or `BUFFERED` (log stayed empty until exit, then jumped). |
 
-**Quota warning:** `probe-agy-stdin.sh`, `probe-claude-implement.sh`, and
-`probe-claude-tick.sh` call the real, billed CLIs. Don't loop them, don't
-wire them into CI, and don't run them more than needed to answer the
-question. Treat `probe-claude-implement.sh` in particular as the most
-expensive of the four — it drives a full implement-style agentic turn, not
-a one-line reply.
+**Quota warning:** `probe-agy-stdin.sh`, `probe-claude-implement.sh`,
+`probe-claude-tick.sh`, and `probe-stream-buffering.sh` call the real,
+billed CLIs (`probe-stream-buffering.sh` calls two of them, codex and
+claude, in a single run). Don't loop them, don't wire them into CI, and
+don't run them more than needed to answer the question. Treat
+`probe-claude-implement.sh` in particular as the most expensive of the
+five — it drives a full implement-style agentic turn, not a one-line
+reply.
 
 ## When/why to run
 
@@ -60,6 +63,7 @@ bash tests/probes/probe-codex-review-range.sh
 bash tests/probes/probe-agy-stdin.sh
 bash tests/probes/probe-claude-implement.sh
 bash tests/probes/probe-claude-tick.sh
+bash tests/probes/probe-stream-buffering.sh
 ```
 
 Each guards on `command -v <cli>` first and prints exactly one line on
@@ -80,9 +84,12 @@ PROBE-RESULT: AUTH-UNAVAILABLE (<first line of the CLI's error>)
 ```
 
 Otherwise each probe prints its finding — `YES` / `NO` / `PARTIAL` /
-`AMBIGUOUS` / `WORKED` / `NONE` depending on the probe — with the
-concrete evidence (raw usage line, CLI reply, or `git log` output) that
-produced it, on a single `PROBE-RESULT:` line. All four exit 0
+`AMBIGUOUS` / `WORKED` / `NONE` / `STREAMS` / `BUFFERED` depending on the
+probe — with the concrete evidence (raw usage line, CLI reply, `git log`
+output, or log byte-size samples) that produced it, on a single
+`PROBE-RESULT:` line. `probe-stream-buffering.sh` is the one exception to
+"a single line": it checks two CLIs (codex, then claude) in one run, so it
+prints one `PROBE-RESULT: <engine> ...` line per engine. All five exit 0
 regardless of outcome; a probe's job is to report a finding, not to pass
 or fail.
 

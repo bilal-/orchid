@@ -58,6 +58,30 @@ blockers="$(schedule_dispatch_blockers "$repo" A001)"
 echo "$blockers" | grep -q "concurrency-cap" && fail "default cap=2 with 1 active must not block on concurrency-cap"
 assert_eq "" "$blockers" "default cap=2, 1 non-conflicting active, no deps: fully dispatchable (empty blockers)"
 
+# -- v1-m3 (m2 ledger finding): a non-numeric `concurrency` config value must
+# die cleanly rather than feed straight into `[ "$n" -lt "$cap" ]` (bash
+# would print "integer expression expected" and behave unpredictably).
+printf 'concurrency=abc\n' > "$repo/orchid.config"
+rc=0; err="$(schedule_dispatch_blockers "$repo" A001 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "non-numeric concurrency config must die, not silently proceed"
+assert_match "concurrency must be a positive integer \(got 'abc'\)" "$err" "concurrency validation names the bad value"
+
+# a configured "0" is not a positive integer either.
+printf 'concurrency=0\n' > "$repo/orchid.config"
+rc=0; err="$(schedule_dispatch_blockers "$repo" A001 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "concurrency=0 must die, not be treated as a valid (impossible) cap"
+assert_match "concurrency must be a positive integer \(got '0'\)" "$err" "concurrency=0 validation names the bad value"
+
+# a leading-zero form ("00") is all-digits -- it must NOT slip past the
+# non-numeric check and get silently treated as the numeric 0 by `-lt`
+# (which would permanently trip concurrency-cap without ever naming why).
+printf 'concurrency=00\n' > "$repo/orchid.config"
+rc=0; err="$(schedule_dispatch_blockers "$repo" A001 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "concurrency=00 must die (leading-zero form), not silently evaluate as 0"
+assert_match "concurrency must be a positive integer \(got '00'\)" "$err" "concurrency=00 validation names the bad value"
+
+rm -f "$repo/orchid.config"
+
 rm -f "$repo/.orchid/tasks"/*.md
 
 # -- exclusive-overlap, direction 1: an ACTIVE task is exclusive -------------
@@ -271,3 +295,47 @@ rc=0; errE="$("$ORCHID_BIN" task advance K002 reviewing 2>&1 1>/dev/null)" || rc
 assert_eq 3 "$rc" "review-archetype rework -> reviewing refused at cap exits 3"
 assert_match "concurrency-cap \(1/1\)" "$errE" "refusal names concurrency-cap for a review-archetype rework -> reviewing re-entry"
 assert_eq rework "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' -f2)" "K002 stays rework after the refused reviewing re-entry"
+
+# ============================================================================
+# v1-m3 Task 8: `orchid task create --archetype migrate` writes a template
+# default of `exclusive: true` (frontmatter substitution, not a `task set
+# exclusive` call) -- proving the m2 scheduler's exclusive-overlap predicate
+# gates a migrate task's dispatch identically to any other exclusive:true
+# task, purely off that create-time default, with no extra `task set
+# exclusive true` step required.
+# ============================================================================
+repo4="$WORK/integ4"; mkdir -p "$repo4/.orchid/tasks"
+(cd "$repo4" && git init -q . && git commit -q --allow-empty -m root)
+export ORCHID_REPO="$repo4" HOME="$WORK/home4"; mkdir -p "$HOME"
+export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+repo4_sha="$(git -C "$repo4" rev-parse HEAD)"
+
+"$ORCHID_BIN" task create M001 "occupies the cap, ordinary feature task" >/dev/null
+"$ORCHID_BIN" task advance M001 implementing >/dev/null   # feature, active
+
+"$ORCHID_BIN" task create M002 "a migration" --archetype migrate >/dev/null
+assert_eq true "$("$ORCHID_BIN" task show M002 | grep '^exclusive: ' | cut -d' ' -f2)" "task create --archetype migrate defaults exclusive: true from the template, no task set needed"
+
+# M001 is active (any status) -> M002's exclusive:true refuses dispatch,
+# naming exclusive-overlap, even though the concurrency cap (default 2) is
+# nowhere near full.
+rc=0; errM="$("$ORCHID_BIN" task advance M002 implementing 2>&1 1>/dev/null)" || rc=$?
+assert_eq 3 "$rc" "migrate task dispatch refused while another task is active exits 3"
+assert_match "exclusive-overlap \(M001\)" "$errM" "refusal names exclusive-overlap against the active feature task"
+assert_eq pending "$("$ORCHID_BIN" task show M002 | grep '^status: ' | cut -d' ' -f2)" "M002 stays pending after the refused exclusive dispatch"
+
+# once M001 is no longer active, M002's migrate dispatch proceeds cleanly.
+"$ORCHID_BIN" task set M001 base_sha "$repo4_sha" >/dev/null
+"$ORCHID_BIN" task set M001 candidate_sha "$repo4_sha" >/dev/null
+"$ORCHID_BIN" task advance M001 testing >/dev/null
+"$ORCHID_BIN" task advance M001 rework --reason "back to rework, freeing the cap" >/dev/null
+"$ORCHID_BIN" task advance M002 implementing >/dev/null \
+  || fail "migrate task must dispatch cleanly once nothing else is active"
+assert_eq implementing "$("$ORCHID_BIN" task show M002 | grep '^status: ' | cut -d' ' -f2)" "M002 reached implementing once the exclusive-overlap cleared"
+
+# and, symmetrically, a fresh ordinary task is now refused because the
+# ACTIVE migrate task (M002) is itself exclusive:true.
+"$ORCHID_BIN" task create M003 "blocked by the active migration" >/dev/null
+rc=0; errN="$("$ORCHID_BIN" task advance M003 implementing 2>&1 1>/dev/null)" || rc=$?
+assert_eq 3 "$rc" "an ordinary task's dispatch is refused while the migrate task is active"
+assert_match "exclusive-overlap \(M002\)" "$errN" "refusal names exclusive-overlap against the active migrate task"

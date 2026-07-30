@@ -15,9 +15,11 @@ assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"
 # init now refuses a dirty tree, so commit the fixture's config/engine
 # scaffolding first (a real user would already have these committed).
 git add -A && git commit -q -m "fixture: engines + config"
-"$ORCHID_BIN" init
+init_out="$("$ORCHID_BIN" init)"
 git rev-parse --verify -q orchid/integration >/dev/null || fail "integration branch"
 git show orchid/integration:.orchid/roadmap.md | grep -q "run_status: planning" || fail "roadmap committed with run_status"
+assert_match "integration branch: orchid/integration" "$init_out" "init prints the integration branch name"
+assert_match "git worktree add \.\./$(basename "$WORK")-orchid orchid/integration && cd \.\./$(basename "$WORK")-orchid" "$init_out" "init prints the exact worktree hint command"
 out1="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes post-init"
 assert_match "integration branch exists or creatable" "$out1" "doctor post-init: integration branch exists"
 rc=0; printf 'role.implementer=missing-engine\n' >> orchid.config
@@ -149,3 +151,76 @@ git -C "$scratch8" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
   || fail "init --greenfield (no-op modifier) still creates the integration branch"
 [ "$(git -C "$scratch8" log --oneline HEAD | wc -l | tr -d ' ')" = 1 ] \
   || fail "init --greenfield on a repo with commits must NOT mint an extra root commit"
+
+# ---------------------------------------------------------------------------
+# v1-m3 Task 2: split-brain checkout detection (F7) -- `orchid init` restores
+# the user's own branch; durable .orchid state lives only on the integration
+# branch. A checkout with task-verb-built state (.orchid/tasks/) but no
+# roadmap.md is neither "uninitialized" nor a healthy run -- doctor must FAIL
+# it by name, distinct from every other check.
+# ---------------------------------------------------------------------------
+scratch9="$WORK/scratch9"; mkdir -p "$scratch9"
+git init -q "$scratch9"
+(cd "$scratch9" && git commit -q --allow-empty -m root)
+mkdir -p "$scratch9/.orchid/tasks"
+rc=0
+sb_out="$(ORCHID_REPO="$scratch9" ORCHID_ENGINES_DIR="$WORK/eng" \
+  ORCHID_ROLE_ORCHESTRATOR=fake ORCHID_ROLE_IMPLEMENTER=fake ORCHID_ROLE_REVIEWER=fake \
+  ORCHID_ROLE_ARBITER=fake ORCHID_ROLE_PLAN_CRITIC=fake \
+  "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+assert_eq 1 "$rc" "doctor fails on a split-brain checkout (.orchid/tasks without roadmap.md)"
+assert_match "FAIL: split-brain checkout: work from the integration branch or a worktree of it — see 'orchid init' output" "$sb_out" \
+  "doctor names the split-brain fix"
+
+# healthy fixture (the main $WORK repo, already initialized with a roadmap on
+# orchid/integration) must be unaffected by the new check.
+echo "$out1" | grep -q "FAIL: split-brain" && fail "doctor must not flag split-brain on a healthy post-init repo"
+assert_match "ok: no split-brain checkout state" "$out1" "doctor's split-brain check passes on a healthy post-init repo"
+
+# ---------------------------------------------------------------------------
+# v1-m3 final review (CRITICAL 2): stale-integration-checkout detection --
+# the live run's 6638-line silent revert. A worktree parked ON the
+# integration branch whose ref gets advanced from OUTSIDE it (a raw `git
+# update-ref`, never a `checkout`/`commit` made IN this worktree) falls
+# behind its own branch pointer -- `git diff --cached --name-status` then
+# shows a "D" row per path the new HEAD carries that the (stale) index does
+# not. Both `orchid doctor` (FAIL) and `orchid status` (first-line WARNING,
+# after any split-brain warning) must catch this; read-only, no mutation.
+# ---------------------------------------------------------------------------
+stale_bare="$WORK/stale-bare"; mkdir -p "$stale_bare"
+(cd "$stale_bare" && git init -q . && git commit -q --allow-empty -m root)
+ORCHID_REPO="$stale_bare" "$ORCHID_BIN" init >/dev/null
+stale_wt="$WORK/stale-wt"
+git -C "$stale_bare" worktree add -q "$stale_wt" orchid/integration
+
+# Healthy checkout, unchanged: a freshly-added worktree of the integration
+# branch, before anything advances the ref out from under it.
+healthy_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || true
+assert_match "ok: no stale integration checkout state" "$healthy_doctor_out" \
+  "doctor: a healthy integration-branch worktree is unaffected"
+healthy_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
+echo "$healthy_status_out" | grep -q "integration checkout is stale" \
+  && fail "status must not warn stale on a healthy integration-branch worktree"
+
+# Advance the ref from OUTSIDE $stale_wt: a second, DETACHED worktree of the
+# same commit (git refuses a second worktree with the branch itself checked
+# out) commits normally, then the branch ref is force-moved to that new
+# commit via a raw update-ref -- $stale_wt's own index/working tree are never
+# touched, reproducing the update-ref-under-a-checkout signature exactly.
+stale_wt2="$WORK/stale-wt2"
+git -C "$stale_bare" worktree add -q --detach "$stale_wt2" orchid/integration
+echo "new file from elsewhere" > "$stale_wt2/elsewhere.txt"
+git -C "$stale_wt2" add elsewhere.txt
+git -C "$stale_wt2" commit -q -m "advance integration from elsewhere"
+stale_new_sha="$(git -C "$stale_wt2" rev-parse HEAD)"
+git -C "$stale_bare" update-ref refs/heads/orchid/integration "$stale_new_sha"
+
+rc=0
+stale_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "doctor must FAIL on a stale integration checkout"
+assert_match "FAIL: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here" \
+  "$stale_doctor_out" "doctor names the stale-checkout fix"
+
+stale_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
+assert_match "WARNING: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here" \
+  "$stale_status_out" "status warns about the stale integration checkout"

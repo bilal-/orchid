@@ -7,7 +7,7 @@ assert_eq "2" "$rc" "unknown verb exits 2"
 
 # `orchid version` (libexec/orchid-version), run through the dispatcher --
 # exits 0 and prints a line naming the running kernel's ORCHID_VERSION
-# (lib/common.sh), currently 1.0.0-m2.
+# (lib/common.sh), currently 1.0.0-m3.
 rc=0; out="$("$ORCHID_BIN" version)" || rc=$?
 assert_eq "0" "$rc" "version exits 0"
-assert_match "1\.0\.0-m2" "$out" "version prints a line containing ORCHID_VERSION"
+assert_match "1\.0\.0-m3" "$out" "version prints a line containing ORCHID_VERSION"

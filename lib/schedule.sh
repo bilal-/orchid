@@ -85,6 +85,18 @@ schedule_dispatch_blockers() {
   n=0
   for a_id in $active; do n=$((n + 1)); done
   cap="$(config_get "$repo" concurrency 2)"
+  # v1-m3 (m2 ledger finding): a hand-edited/misconfigured `concurrency`
+  # config value must die cleanly here, not feed straight into the `-lt`
+  # comparison below (bash's `[ "$n" -lt "$cap" ]` on a non-numeric operand
+  # errors out with an unhelpful "integer expression expected" deep inside
+  # an unrelated caller). Any leading-zero/zero form ("0", "00", "01", ...)
+  # is rejected by `0*` too -- a cap of zero is never a legitimate
+  # concurrency limit, only a misconfiguration, and "00" is all-digits so it
+  # would otherwise slip past `*[!0-9]*` and get treated as the numeric 0 by
+  # `-lt` below (permanently tripping concurrency-cap).
+  case "$cap" in
+    ''|*[!0-9]*|0*) orchid_die "concurrency must be a positive integer (got '$cap')" ;;
+  esac
   [ "$n" -lt "$cap" ] || echo "concurrency-cap ($n/$cap)"
 
   local self_exclusive self_resources

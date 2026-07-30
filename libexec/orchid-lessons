@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/lessons.sh"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; lf="$state/lessons.md"
+sub="${1:-}"; shift || true
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind lesson "$@"; }
+# _no_newline <field-name> <value> -- dies cleanly if value contains an
+# embedded newline. lessons.md's block format is strictly one field per
+# line (docs/specs/kernel.md, Cross-run lessons); a value containing its
+# own newline could itself start with "## " and be silently misparsed as a
+# phantom block header by every awk-based reader in lib/lessons.sh (or, for
+# a blank line, just as silent truncation in packs), rather than dying loud
+# here. Multi-line prose must be flattened by the CALLER before calling
+# this verb -- never silently flattened/rejected only downstream.
+_no_newline() {
+  case "$2" in
+    *$'\n'*) orchid_die "$1 must not contain embedded newlines (lessons.md is one field per line -- flatten multi-line prose into a single line first)" ;;
+  esac
+}
+
+case "$sub" in
+  add)
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    scope=""; invalidate=""; evidence=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --scope) [ -n "${2:-}" ] || orchid_die "--scope requires a value"
+        _no_newline --scope "$2"; scope="$2"; shift 2;;
+      --invalidate-when) [ -n "${2:-}" ] || orchid_die "--invalidate-when requires a value"
+        _no_newline --invalidate-when "$2"; invalidate="$2"; shift 2;;
+      --evidence) [ -n "${2:-}" ] || orchid_die "--evidence requires a value"
+        _no_newline --evidence "$2"; evidence="$2"; shift 2;;
+      --) shift; break;;
+      -*) orchid_die "unknown flag: $1";;
+      *) break;;
+    esac; done
+    statement="$*"
+    [ -n "$scope" ] || orchid_die "usage: orchid lessons add --scope <repo|engine:<id>> --invalidate-when \"...\" \"<statement>\""
+    case "$scope" in
+      repo|engine:*) ;;
+      *) orchid_die "invalid --scope '$scope' (must be 'repo' or 'engine:<id>')" ;;
+    esac
+    [ -n "$invalidate" ] || orchid_die "lessons add requires --invalidate-when \"...\""
+    [ -n "$statement" ] || orchid_die "usage: orchid lessons add --scope <repo|engine:<id>> --invalidate-when \"...\" \"<statement>\""
+    _no_newline statement "$statement"
+
+    id="$(lessons_next_id "$lf")"
+    d="$(now)"
+    # Journal-first (INV-08 discipline, matching retire below): the reason
+    # this lesson exists is durable before lessons.md itself changes, so a
+    # crash between the two writes leaves at most an orphan journal entry
+    # (benign, re-runnable), never an unjournaled state change.
+    journal "$id added ($scope): $statement"
+    {
+      if [ -f "$lf" ]; then cat "$lf"; else printf '# Lessons\n\n'; fi
+      printf '## %s [active] %s\nstatement: %s\nevidence: %s\nfirst: %s\nlast_confirmed: %s\ninvalidate_when: %s\n\n' \
+        "$id" "$scope" "$statement" "$evidence" "$d" "$d" "$invalidate"
+    } | atomic_write "$lf"
+    echo "$id: added" ;;
+
+  update)
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    [ -n "$id" ] || orchid_die "usage: orchid lessons update <id> [--confirm] [--statement \"...\"] [--evidence \"...\"] [--invalidate-when \"...\"]"
+    [ -f "$lf" ] || orchid_die "no lessons.md"
+    cur_state="$(lessons_state "$lf" "$id")"
+    [ -n "$cur_state" ] || orchid_die "no lesson $id"
+    [ "$cur_state" != retired ] || orchid_die "cannot update a retired lesson ($id) — retired lessons are terminal"
+
+    saw_confirm=0; new_statement=""; new_evidence=""; new_invalidate=""; changes=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --confirm) saw_confirm=1; shift;;
+      --statement) [ -n "${2:-}" ] || orchid_die "--statement requires a value"
+        _no_newline --statement "$2"; new_statement="$2"; changes="${changes:+$changes, }statement"; shift 2;;
+      --evidence) [ -n "${2:-}" ] || orchid_die "--evidence requires a value"
+        _no_newline --evidence "$2"; new_evidence="$2"; changes="${changes:+$changes, }evidence"; shift 2;;
+      --invalidate-when) [ -n "${2:-}" ] || orchid_die "--invalidate-when requires a value"
+        _no_newline --invalidate-when "$2"; new_invalidate="$2"; changes="${changes:+$changes, }invalidate_when"; shift 2;;
+      *) shift;;
+    esac; done
+    [ "$saw_confirm" -eq 1 ] || [ -n "$changes" ] || \
+      orchid_die "usage: orchid lessons update <id> [--confirm] [--statement \"...\"] [--evidence \"...\"] [--invalidate-when \"...\"]"
+
+    tmp="$(mktemp)"; cp "$lf" "$tmp"
+    if [ -n "$new_statement" ]; then
+      lessons_set_field "$tmp" "$id" statement "$new_statement" > "$tmp.next"; mv "$tmp.next" "$tmp"
+    fi
+    if [ -n "$new_evidence" ]; then
+      lessons_set_field "$tmp" "$id" evidence "$new_evidence" > "$tmp.next"; mv "$tmp.next" "$tmp"
+    fi
+    if [ -n "$new_invalidate" ]; then
+      lessons_set_field "$tmp" "$id" invalidate_when "$new_invalidate" > "$tmp.next"; mv "$tmp.next" "$tmp"
+    fi
+    # Every successful update bumps last_confirmed, regardless of which
+    # flags were given -- the act of updating IS reconfirming currency.
+    lessons_set_field "$tmp" "$id" last_confirmed "$(now)" > "$tmp.next"; mv "$tmp.next" "$tmp"
+    # Journal-first (INV-08 discipline): the tmp file above is only ever a
+    # scratch transform, never lessons.md itself, so nothing durable has
+    # changed yet -- the reason lands before the one write that does.
+    journal "$id updated (${changes:-confirm only})"
+    cat "$tmp" | atomic_write "$lf"; rm -f "$tmp"
+    echo "$id: updated" ;;
+
+  retire)
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2;;
+      *) shift;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid lessons retire <id> --reason \"...\""
+    [ -n "$reason" ] || orchid_die "lessons retire requires --reason (INV-08)"
+    [ -f "$lf" ] || orchid_die "no lessons.md"
+    cur_state="$(lessons_state "$lf" "$id")"
+    [ -n "$cur_state" ] || orchid_die "no lesson $id"
+    [ "$cur_state" != retired ] || orchid_die "$id is already retired"
+
+    # Journal-first (INV-08): the reason is recorded before the state flip
+    # it justifies, same discipline as task advance/run advance/accept.
+    journal "$id retire ($cur_state -> retired): $reason"
+    lessons_set_state "$lf" "$id" retired | atomic_write "$lf"
+    echo "$id: $cur_state -> retired" ;;
+
+  consolidate)
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    if [ ! -f "$lf" ]; then echo "orchid: no lessons.md — nothing to consolidate"; exit 0; fi
+    cutoff="$(_lessons_journal_start_date "$state/journal.md")"
+    cap="$(config_get "$repo" lessons_max_bytes 16384)"
+
+    # Deterministic hygiene, step 1: drop RETIRED blocks whose last_confirmed
+    # (fallback: first) predates the CURRENT run's start (the oldest entry
+    # in journal.md -- see lib/lessons.sh's _lessons_journal_start_date) --
+    # i.e. retired in a PRIOR run. A retired block from THIS run, and every
+    # active/superseded block regardless of age, is never touched here.
+    body_tmp="$(mktemp)"
+    awk -v cutoff="$cutoff" '
+      function flush(   d) {
+        if (id == "") return
+        d = lastc; if (d == "") d = firstd
+        if (!(state == "retired" && cutoff != "" && d != "" && (d < cutoff))) printf "%s", buf
+      }
+      /^## L/ {
+        flush()
+        buf = $0 "\n"
+        line = $0; sub(/^## /, "", line); n = split(line, a, " ")
+        id = a[1]; state = a[2]; gsub(/[][]/, "", state)
+        lastc = ""; firstd = ""
+        next
+      }
+      {
+        buf = buf $0 "\n"
+        if (index($0, "last_confirmed: ") == 1) lastc = substr($0, 17)
+        if (index($0, "first: ") == 1) firstd = substr($0, 8)
+      }
+      END { flush() }
+    ' "$lf" > "$body_tmp"
+
+    full_tmp="$(mktemp)"
+    { printf '# Lessons\n\n'; cat "$body_tmp"; } > "$full_tmp"
+    new_bytes="$(wc -c < "$full_tmp" | tr -d ' ')"
+
+    # Deterministic hygiene, step 2: enforce the byte cap. All-or-nothing --
+    # if the file (after step 1's safe drop) is STILL over cap, refuse
+    # outright rather than writing a partial cleanup: never auto-deletes an
+    # active lesson to make room, ever. The candidate list names every
+    # non-active block still present (superseded, or retired-but-not-old-
+    # enough-to-auto-drop) an operator could manually retire/shrink instead.
+    if [ "$new_bytes" -gt "$cap" ]; then
+      candidates="$(lessons_list_blocks "$body_tmp" | awk -F'\t' '$2 != "active" {print $1}' | tr '\n' ' ')"
+      rm -f "$body_tmp" "$full_tmp"
+      if [ -n "$candidates" ]; then
+        orchid_die "lessons.md over cap ($new_bytes/$cap bytes) after hygiene — candidates for manual retirement: ${candidates% } (active lessons are never auto-deleted)"
+      else
+        orchid_die "lessons.md over cap ($new_bytes/$cap bytes) — no retired/superseded lessons to trim and active lessons are never auto-deleted; raise lessons_max_bytes or retire lessons by hand"
+      fi
+    fi
+
+    if cmp -s "$full_tmp" "$lf"; then
+      rm -f "$body_tmp" "$full_tmp"
+      echo "consolidate: nothing to do ($new_bytes/$cap bytes)"
+    else
+      dropped="$(comm -23 \
+        <(lessons_list_blocks "$lf" | cut -f1 | sort) \
+        <(lessons_list_blocks "$body_tmp" | cut -f1 | sort) | tr '\n' ' ')"
+      # Journal-first (INV-08 discipline): the hygiene action is recorded
+      # before lessons.md itself changes -- a crash between the two writes
+      # leaves at most an orphan journal entry, never an unjournaled drop.
+      journal "consolidate: dropped stale retired lesson(s): ${dropped% } ($new_bytes/$cap bytes)"
+      cat "$full_tmp" | atomic_write "$lf"
+      rm -f "$body_tmp" "$full_tmp"
+      echo "consolidate: dropped ${dropped% } ($new_bytes/$cap bytes)"
+    fi ;;
+
+  list)
+    active_only=0
+    [ "${1:-}" = "--active" ] && active_only=1
+    [ -f "$lf" ] || exit 0
+    lessons_list_blocks "$lf" | while IFS=$'\t' read -r lid lstate lscope lstmt; do
+      [ "$active_only" -eq 1 ] && [ "$lstate" != active ] && continue
+      printf '%s\t%s\t%s\t%s\n' "$lid" "$lstate" "$lscope" "$lstmt"
+    done ;;
+
+  *) orchid_die "usage: orchid lessons add|update|retire|consolidate|list" ;;
+esac

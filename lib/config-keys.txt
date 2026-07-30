@@ -6,6 +6,7 @@ role.implementer
 role.reviewer
 role.arbiter
 role.plan_critic
+role.<id>.blocking
 review.low
 review.medium
 review.high
@@ -15,6 +16,7 @@ stall_minutes
 timeout_minutes
 agy_max_bytes
 pack_budget_bytes
+lessons_max_bytes
 spool_max_bytes
 gc_older_than_s
 infra_max
@@ -24,3 +26,9 @@ rate_limit_backoff_s
 engine_fail_threshold
 pump_stale_s
 arbiter_wait_s
+hook.after_plan_draft
+hook.before_arbitration
+hook.on_verify_fail
+hook.before_merge
+hook.on_blocker
+hook_timeout_s

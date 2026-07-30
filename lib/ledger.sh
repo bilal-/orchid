@@ -77,7 +77,10 @@ ledger_available() {
 }
 
 # ledger_show <repo> -- one line per engine: <engine>\t<status>\t<detail>
-# (detail = "until <iso>" for rate_limited, "failures <n>" for failing, "-"
+# (detail = "until <iso>" for rate_limited, "failures <n>" whenever
+# consecutive_failures>0 -- whether status has already flipped to "failing"
+# at threshold or is still sub-threshold "ok", so an operator sees an engine
+# accumulating failures before it actually goes unavailable -- "-"
 # otherwise). Prints nothing when the ledger is missing or empty; callers
 # (e.g. `orchid status`) supply the "(no engine events yet)" placeholder.
 ledger_show() {
@@ -91,7 +94,13 @@ ledger_show() {
     case "$status" in
       rate_limited) printf '%s\t%s\tuntil %s\n' "$engine" "$status" "$(_ledger_epoch_to_iso "$until")" ;;
       failing)      printf '%s\t%s\tfailures %s\n' "$engine" "$status" "$fails" ;;
-      *)            printf '%s\t%s\t-\n' "$engine" "$status" ;;
+      *)
+        if [ "${fails:-0}" -gt 0 ] 2>/dev/null; then
+          printf '%s\t%s\tfailures %s\n' "$engine" "$status" "$fails"
+        else
+          printf '%s\t%s\t-\n' "$engine" "$status"
+        fi
+        ;;
     esac
   done
 }

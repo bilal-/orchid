@@ -25,23 +25,42 @@ manifest_get() {  # plugin-dir key [default]
 
 # _manifest_split_csv <string> -- splits a comma list and prints each token
 # TRIMMED of leading/trailing whitespace, one per line, skipping empty
-# tokens. Shared by manifest_capabilities, manifest_permissions, and
-# manifest_validate's capability-atom check so `permissions=A, B` or
-# `capabilities=structured_text, git` (a space after the comma -- easy to
-# type, common in hand-edited plugin.conf files) never leaks a leading-space
-# token. An untrimmed " B" previously defeated the launcher's `${!perm}`
-# indirect expansion (always-unset, since no variable is literally named
-# " B") and produced a misleading "permission  B requested, not set" warning
-# (two spaces, unreadable) -- same house-style bug in both call sites, one
-# helper fixes both.
+# tokens. Shared by manifest_capabilities, manifest_permissions,
+# manifest_validate's capability-atom check, lib/schedule.sh's resources
+# splitting, and lib/capsuite.sh's binaries_present check, so `permissions=A,
+# B` or `capabilities=structured_text, git` (a space after the comma -- easy
+# to type, common in hand-edited plugin.conf files) never leaks a
+# leading-space token. An untrimmed " B" previously defeated the launcher's
+# `${!perm}` indirect expansion (always-unset, since no variable is
+# literally named " B") and produced a misleading "permission  B requested,
+# not set" warning (two spaces, unreadable) -- same house-style bug in both
+# call sites, one helper fixes both.
+#
+# NOT `IFS=',' read -ra tokens <<< "$s"` (the previous implementation): in
+# bash 3.2, that leaves `tokens` genuinely UNSET (not an empty array) when
+# $s is empty, and `"${tokens[@]}"` on that under `set -u` (every test file,
+# via helpers.sh; bin/orchid and most libexec/* entrypoints too) aborts with
+# "tokens[@]: unbound variable" -- e.g. lib/capsuite.sh's binaries_present
+# check calling this directly on a manifest's absent `requires_binaries`
+# crashed `orchid plugins test` outright (m2 Task 2 finding). A `tr ','
+# '\n'` + `while read` pipeline never constructs an array at all -- an empty
+# $s just yields zero loop iterations -- same idiom lib/roles.sh's role_
+# eligibility_reason and lib/capsuite.sh's workspace_write_probe check
+# already use to sidestep this exact pitfall.
 _manifest_split_csv() {  # string -> trimmed non-empty tokens, one per line
-  local s="$1" tokens tok
-  IFS=',' read -ra tokens <<< "$s"
-  for tok in "${tokens[@]}"; do
+  local s="$1" tok
+  while IFS= read -r tok; do
     tok="${tok#"${tok%%[![:space:]]*}"}"   # trim leading whitespace
     tok="${tok%"${tok##*[![:space:]]}"}"   # trim trailing whitespace
     [ -n "$tok" ] && echo "$tok"
-  done
+  done < <(printf '%s\n' "$s" | tr ',' '\n')
+  # `while read` returns the exit status of its FINAL (EOF-failing) read,
+  # not "did this run cleanly" -- always 1 once the input is exhausted, even
+  # for a totally empty $s with zero real tokens. Normalize to 0 so a caller
+  # that checks this function's own exit status (unlike every current
+  # caller, which only consumes its stdout) never mistakes "no tokens" for
+  # a failure.
+  return 0
 }
 
 # _manifest_version_mm <version-string> -> "<major> <minor>" -- strips any
@@ -191,7 +210,7 @@ manifest_validate() {  # plugin-dir
   fi
 
   case "$kind" in
-    engine|notify)
+    engine|notify|hook)
       local ep; ep="$(manifest_get "$dir" entrypoint)"
       if [ -z "$ep" ]; then
         echo "FAIL: $dir: entrypoint missing (required for kind=$kind)"; ok=0
@@ -201,7 +220,38 @@ manifest_validate() {  # plugin-dir
       ;;
   esac
 
-  if [ "$kind" = engine ]; then
+  # kind=role (v1-m3 Task 7): a custom role plugin has no entrypoint/
+  # capabilities of its own (it is data describing a ROLE, not something
+  # invoked) -- the manifest_validate case above deliberately excludes it
+  # from the entrypoint requirement. Instead it must ship a sibling
+  # `descriptor.role` (same key=value schema as a built-in .role file:
+  # id/requires/forbids/description, plus an optional hook_bindings=
+  # recorded for doctor display only in m3) whose own `id` names exactly
+  # the manifest id's NAME part (the text after the qualifying `/`) -- e.g.
+  # manifest id=acme/researcher requires descriptor.role's id=researcher.
+  # This is what lets lib/roles.sh's _role_file discovery trust a
+  # discovered role plugin dir's descriptor without re-deriving the role
+  # name from the directory name (which `orchid plugins list`'s discovery
+  # never assumes either -- manifest-derived, not guessed).
+  if [ "$kind" = role ]; then
+    local rf="$dir/descriptor.role" rid
+    if [ ! -f "$rf" ]; then
+      echo "FAIL: $dir: descriptor.role missing (required for kind=role)"; ok=0
+    else
+      rid="$(_cfg_file_get "$rf" id)"
+      if [ -z "$rid" ]; then
+        echo "FAIL: $dir: descriptor.role missing 'id' key"; ok=0
+      elif [ "$rid" != "${id#*/}" ]; then
+        echo "FAIL: $dir: descriptor.role id '$rid' does not match manifest id's name part '${id#*/}'"; ok=0
+      fi
+    fi
+  fi
+
+  # kind=hook (v1-m3): validated with the SAME fields as kind=engine (entry-
+  # point above, capabilities here) -- hook handlers are engine-kind plugins
+  # invoked with operation=hook (docs/specs/plugins.md, Hooks section), not a
+  # distinct executable contract.
+  if [ "$kind" = engine ] || [ "$kind" = hook ]; then
     local caps atom
     caps="$(manifest_get "$dir" capabilities)"
     if [ -n "$caps" ]; then
