@@ -201,6 +201,98 @@ grep -q "acceptance" .orchid/journal.md || fail "run accept journals kind accept
 grep -q "all requirements covered" .orchid/journal.md || fail "run accept journal entry carries the reason"
 
 # ---------------------------------------------------------------------------
+# v1-m4 Task 1 (the r-001 journal-loss incident, closed): `run accept`
+# commits ALL current durable .orchid/ state onto the integration branch --
+# via the SAME temp-worktree + CAS + sync-back transaction `plan apply`
+# uses (lib/common.sh's orchid_commit_durable) -- so a completed run's
+# record is never left uncommitted-only. This fixture's own checkout ($WORK)
+# is never switched onto $integ itself (same "operator stays on their own
+# branch" shape plan apply's own test above already exercises).
+# ---------------------------------------------------------------------------
+post_accept_integ="$(git rev-parse "$integ")"
+[ "$post_accept_integ" != "$pre_integ" ] || fail "run accept must advance the integration branch"
+assert_eq "orchid: run accepted (r-001)" "$(git log -1 --format=%s "$integ")" \
+  "run accept commit message names the run id"
+git show "$integ:.orchid/roadmap.md" | grep -q "run_status: complete" \
+  || fail "run accept's commit on the integration branch shows run_status complete"
+git show "$integ:.orchid/journal.md" | grep -q "all requirements covered" \
+  || fail "run accept's commit carries the acceptance journal entry"
+assert_eq "$(cat "$WORK/evidence.log")" "$(git show "$integ:.orchid/reviews/acceptance.log")" \
+  "run accept's commit carries the evidence log"
+# The user's own checkout is untouched by the commit, same guarantee plan
+# apply's own test asserts.
+assert_eq "$user_branch_before" "$(git rev-parse --abbrev-ref HEAD)" "run accept must not switch the user's branch"
+assert_eq "$user_head_before" "$(git rev-parse HEAD)" "run accept must not move the user's HEAD"
+
+# ---------------------------------------------------------------------------
+# v1-m4 Task 1 fix wave (review Important): `run accept`'s CAS-failure
+# recovery must be REAL -- retrying the exact same `orchid run accept`
+# call must actually land the missing commit, not just die again (the
+# ORIGINAL comment here claimed "simply retry" was enough; it was false,
+# since run_status is already `complete` locally and the old code's
+# `from = accepting` guard refused any retry outright).
+#
+# A genuine live CAS race (the integration ref moving between
+# orchid_commit_durable's own read and its own update-ref) is a handful of
+# syscalls wide with no test-only hook to pause it mid-flight -- same
+# judgment call plan apply's own test above makes. Reproduced deterministically
+# instead, via a technique that leaves the EXACT on-disk shape a lost CAS
+# race leaves (local run_status already `complete`, evidence/journal
+# already written, but no commit landed): force the FIRST attempt's
+# orchid_commit_durable call to fail by pointing it at an integration
+# branch that does not exist (ORCHID_INTEGRATION_BRANCH, config_get's env
+# override) -- accept's own local mutations run to completion first
+# regardless of what orchid_commit_durable does with them afterward, so
+# the resulting state is identical to a real lost CAS race even though the
+# SPECIFIC failure reason differs. Uses a FRESH single-cycle fixture (real
+# `orchid init` + worktree) so there is no PRIOR "complete" commit on this
+# integration branch to confuse the "is the commit already there" check.
+# ---------------------------------------------------------------------------
+cas_bare="$WORK/accept-retry-bare"; mkdir -p "$cas_bare"
+(cd "$cas_bare" && git init -q . && git commit -q --allow-empty -m root)
+ORCHID_REPO="$cas_bare" "$ORCHID_BIN" init >/dev/null
+cas_wt="$WORK/accept-retry-wt"
+git -C "$cas_bare" worktree add -q "$cas_wt" orchid/integration
+cas_epoch="$(ORCHID_REPO="$cas_wt" HOME="$WORK/home" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_REPO="$cas_wt" ORCHID_EPOCH="$cas_epoch" HOME="$WORK/home" "$ORCHID_BIN" run advance running --reason "start" >/dev/null
+ORCHID_REPO="$cas_wt" ORCHID_EPOCH="$cas_epoch" HOME="$WORK/home" "$ORCHID_BIN" run advance accepting --reason "ready" >/dev/null
+echo "cas-retry evidence" > "$WORK/cas-evidence.log"
+pre_cas_integ="$(git -C "$cas_bare" rev-parse orchid/integration)"
+
+rc=0
+ORCHID_REPO="$cas_wt" ORCHID_EPOCH="$cas_epoch" HOME="$WORK/home" \
+  ORCHID_INTEGRATION_BRANCH="orchid/integration-does-not-exist" \
+  "$ORCHID_BIN" run accept --reason "cas retry fixture" --evidence "$WORK/cas-evidence.log" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "the simulated first attempt must fail (commit never lands)"
+fm_get "$cas_wt/.orchid/roadmap.md" run_status | grep -q '^complete$' \
+  || fail "the failed first attempt must still leave run_status: complete locally (state already set)"
+assert_eq "$pre_cas_integ" "$(git -C "$cas_bare" rev-parse orchid/integration)" \
+  "the failed first attempt must not have advanced the real integration branch"
+
+# Retry: the SAME verb call, no override this time -- must detect the
+# missing commit and land it, without re-running the state transition or
+# evidence copy a second time.
+retry_out="$(ORCHID_REPO="$cas_wt" ORCHID_EPOCH="$cas_epoch" HOME="$WORK/home" \
+  "$ORCHID_BIN" run accept --reason "cas retry fixture" --evidence "$WORK/cas-evidence.log")"
+assert_match "accepting -> complete" "$retry_out" "retried accept still prints the transition"
+post_cas_integ="$(git -C "$cas_bare" rev-parse orchid/integration)"
+[ "$post_cas_integ" != "$pre_cas_integ" ] || fail "retried accept must advance the integration branch"
+assert_eq "orchid: run accepted (r-001)" "$(git -C "$cas_bare" log -1 --format=%s orchid/integration)" \
+  "retried accept's commit carries the correct message"
+git -C "$cas_bare" show "orchid/integration:.orchid/roadmap.md" | grep -q "run_status: complete" \
+  || fail "retried accept's commit shows run_status complete"
+grep -q "accept commit retried after CAS failure" "$cas_wt/.orchid/journal.md" \
+  || fail "retried accept journals the retry as an intervention"
+
+# Third invocation: genuinely done both locally AND committed -- must die
+# cleanly rather than attempt yet another commit.
+rc=0
+already_out="$(ORCHID_REPO="$cas_wt" ORCHID_EPOCH="$cas_epoch" HOME="$WORK/home" \
+  "$ORCHID_BIN" run accept --reason "cas retry fixture" --evidence "$WORK/cas-evidence.log" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a third accept call, already fully committed, must be refused"
+assert_match "already accepted and committed" "$already_out" "third call names the already-done state"
+
+# ---------------------------------------------------------------------------
 # Epoch fencing: a stale ORCHID_EPOCH must refuse all three ownership verbs,
 # without mutating any state.
 # ---------------------------------------------------------------------------

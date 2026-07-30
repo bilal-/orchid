@@ -12,6 +12,10 @@ if [ "$cmd" = help ] || [ "$cmd" = -h ] || [ "$cmd" = --help ]; then
   for f in "$ORCHID_ROOT"/libexec/orchid-*; do [ -e "$f" ] && echo "  ${f##*/orchid-}"; done
   exit 0
 fi
+# This dispatcher is deliberately dumb: it never special-cases a verb by
+# name or decides which subverbs are read-only vs. mutating (e.g. `config
+# list` vs. `config commit`, v1-m4) -- every libexec/orchid-* script owns
+# its own subverb dispatch, locking, and epoch fencing internally.
 exe="$ORCHID_ROOT/libexec/orchid-$cmd"
 [ -x "$exe" ] || { echo "orchid: unknown command '$cmd'" >&2; exit 2; }
 exec "$exe" "$@"

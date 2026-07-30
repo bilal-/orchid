@@ -2,8 +2,68 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
 repo="${ORCHID_REPO:-$PWD}"
-[ "${1:-list}" = list ] || orchid_die "usage: orchid config list"
-while IFS= read -r key; do
-  [ -n "$key" ] || continue
-  printf '%s\t%s\t%s\n' "$key" "$(config_get "$repo" "$key")" "$(config_provenance "$repo" "$key")"
-done < "$ORCHID_ROOT/lib/config-keys.txt"
+sub="${1:-list}"; shift || true
+case "$sub" in
+  list)
+    # Read-only, no lock, no epoch fence -- unchanged from pre-v1m4: just
+    # prints the effective config (env > repo orchid.config > user config >
+    # default) and its provenance for each known key.
+    while IFS= read -r key; do
+      [ -n "$key" ] || continue
+      printf '%s\t%s\t%s\n' "$key" "$(config_get "$repo" "$key")" "$(config_provenance "$repo" "$key")"
+    done < "$ORCHID_ROOT/lib/config-keys.txt"
+    ;;
+  commit)
+    # v1-m4 Task 1 (the r-001 journal-loss incident, closed): the SAFE
+    # operator path for landing a repo-config edit on the integration
+    # branch. Before this verb existed, an operator sitting in a checkout
+    # of the integration branch would hand-commit `orchid.config` there
+    # directly -- fine on a fresh checkout, but a live run's own incident
+    # showed that a STALE integration checkout (lib/common.sh's
+    # orchid_stale_checkout: the branch pointer advanced from OUTSIDE this
+    # checkout, e.g. a pump-driven `plan apply`/`run accept` elsewhere,
+    # without ever refreshing this one's index) makes a naive `git add -A
+    # && git commit` here silently re-commit whatever stray staged
+    # deletions the stale index carries, reverting real history.
+    #
+    # This verb never touches THIS checkout's own git index or working
+    # tree at all: it hands `orchid.config`'s CURRENT ON-DISK bytes (exactly
+    # as they sit here right now, dirty index or not) to
+    # orchid_commit_durable, which stages and commits them ONLY inside an
+    # entirely separate, freshly-created temp worktree of the integration
+    # branch -- built from the integration branch's CURRENT head, never
+    # from this checkout's (possibly stale) index. Structurally closes the
+    # hazard rather than merely warning about it.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) shift ;;
+    esac; done
+    [ -n "$reason" ] || orchid_die "config commit requires --reason (INV-08)"
+    [ -f "$repo/orchid.config" ] || orchid_die "no orchid.config in current checkout"
+
+    orchid_commit_durable "$repo" "orchid: config commit ($reason)" orchid.config
+
+    # Journal-first (INV-08) still holds *for the state this journal entry
+    # itself describes*: it is written only once the commit it reports on
+    # has actually happened -- v1-m4 fix wave (review Minor): writing this
+    # BEFORE orchid_commit_durable meant a CAS failure left a misleading
+    # "config committed: ..." line in the journal even though nothing was
+    # actually committed (the helper's own CAS-failure branch already
+    # journals its own `intervention` entry naming the failure, so that
+    # case is covered either way). Recorded to THIS checkout's own
+    # journal.md, same as every other kernel verb -- it is not part of the
+    # commit above (which stages exactly orchid.config, per the incident's
+    # own fix), and rides into the integration branch whenever a subsequent
+    # `plan apply`/`run accept` next commits durable .orchid/ state.
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \
+      "config committed: $reason"
+
+    echo "committed: $ORCHID_COMMIT_DURABLE_SHA"
+    ;;
+  *) orchid_die "usage: orchid config list|commit --reason \"...\"" ;;
+esac

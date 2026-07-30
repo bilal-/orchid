@@ -193,3 +193,34 @@ assert_eq "$snap_context" "$(cat .orchid/context.md)" "recovery restores context
 [ ! -d .orchid/runtime ] || fail "runtime/ should never be restorable by git checkout -- if this fires, something committed it by mistake"
 "$ORCHID_BIN" run resume >/dev/null || fail "run resume works normally after the simulated-crash recovery"
 rm -rf .orchid.simulated-crash-backup
+
+# ===========================================================================
+# v1-m4 Task 1 (the r-001 journal-loss incident, closed): `run accept`
+# commits the run's ENTIRE durable .orchid/ state onto the integration
+# branch -- not just the files it directly touches (reviews/acceptance.log,
+# journal.md, roadmap.md). This fixture's own checkout ($wt) IS a real
+# worktree of the integration branch (`$bare`'s orchid/integration), so this
+# also exercises the operator's actual documented working shape, unlike
+# test_ownership_verbs.sh's lighter mechanism-only fixture.
+# ===========================================================================
+"$ORCHID_BIN" task create T011 "third task, never committed via a plan apply" >/dev/null
+"$ORCHID_BIN" run advance accepting --reason "wrap up r-002" >/dev/null
+echo "acceptance evidence: r-002 done" > "$WORK/r2-evidence.log"
+pre_bare_integ="$(git -C "$bare" rev-parse orchid/integration)"
+accept_out="$("$ORCHID_BIN" run accept --reason "r-002 complete" --evidence "$WORK/r2-evidence.log")"
+assert_match "accepting -> complete" "$accept_out" "run accept prints the transition"
+post_bare_integ="$(git -C "$bare" rev-parse orchid/integration)"
+[ "$post_bare_integ" != "$pre_bare_integ" ] || fail "run accept must advance the integration branch"
+assert_eq "orchid: run accepted (r-002)" "$(git -C "$bare" log -1 --format=%s orchid/integration)" \
+  "run accept commit message names the current run id"
+git -C "$bare" show "orchid/integration:.orchid/roadmap.md" | grep -q "run_status: complete" \
+  || fail "run accept's commit shows run_status complete"
+git -C "$bare" show "orchid/integration:.orchid/tasks/T011.md" >/dev/null 2>&1 \
+  || fail "run accept commits ALL durable .orchid/ state -- T011.md was never committed via plan apply"
+assert_eq "$(cat "$WORK/r2-evidence.log")" "$(git -C "$bare" show "orchid/integration:.orchid/reviews/acceptance.log")" \
+  "run accept's commit carries the evidence log"
+# The worktree's own checkout is left exactly where it was (still a
+# worktree of orchid/integration, same branch/HEAD) -- orchid_commit_durable
+# never switches branches or touches the working checkout's own git state.
+[ "$(git rev-parse --abbrev-ref HEAD)" = orchid/integration ] || fail "run accept must not switch the worktree's own branch"
+assert_eq "$post_bare_integ" "$(git rev-parse HEAD)" "run accept's worktree HEAD now matches the advanced integration branch"

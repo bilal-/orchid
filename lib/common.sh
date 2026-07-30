@@ -52,6 +52,193 @@ orchid_stale_checkout() {
   git -C "$repo" diff --cached --name-status 2>/dev/null | awk '$1 == "D" { found=1 } END { exit !found }'
 }
 
+# _ocd_cleanup_wt <wt> <repo> -- removes a temp detached worktree (used by
+# orchid_commit_durable below). A standalone function, not a closure, taking
+# both paths as explicit STRING ARGUMENTS baked into the trap command at
+# registration time (see orchid_commit_durable) rather than referencing a
+# variable by name -- a `local` variable inside orchid_commit_durable would
+# already be out of scope by the time a later EXIT trap actually fires if
+# the function itself returned normally first.
+_ocd_cleanup_wt() {
+  local wt="$1" repo="$2"
+  if [ -n "$wt" ]; then
+    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    rm -rf "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+  fi
+}
+
+# _ocd_copy_path <src> <dst> -- rebuild <dst> from <src> FROM SCRATCH, so a
+# path removed on the source side is reflected as absent on the destination
+# side too (not just additions/edits) -- same rsync-less approach orchid-
+# plan's apply arm and orchid-run's new arm already use for .orchid/. A
+# DIRECTORY is rebuilt one top-level entry at a time, skipping any entry
+# literally named `runtime` (the one directory ever passed here that can
+# contain one -- .orchid/runtime/ is local-only, ephemeral, and must never
+# ride into a durable commit); a FILE is copied verbatim; a <src> that does
+# not exist at all leaves <dst> absent (a deletion, carried through).
+_ocd_copy_path() {
+  local src="$1" dst="$2" entry name
+  rm -rf "$dst"
+  if [ -d "$src" ]; then
+    mkdir -p "$dst"
+    for entry in "$src"/*; do
+      [ -e "$entry" ] || continue
+      name="$(basename "$entry")"
+      [ "$name" = runtime ] && continue
+      cp -R "$entry" "$dst/$name"
+    done
+  elif [ -f "$src" ]; then
+    mkdir -p "$(dirname "$dst")"
+    cp "$src" "$dst"
+  fi
+}
+
+# _ocd_sync_dir_atomic <dst-dir> <src-dir> -- syncs a DIRECTORY <dst-dir>
+# (e.g. "$repo/.orchid") to match <src-dir> (the just-committed worktree's
+# copy) via the same crash-safe shadow-dir-swap `orchid run new` already
+# uses for its own whole-tree resync: build the complete replacement in a
+# sibling shadow dir first (nothing observable changes yet), carry <dst-
+# dir>'s own LIVE runtime/ across untouched (the worktree copy never had
+# one), then swap it in with two same-parent `mv`s -- each is a single
+# filesystem rename, so the only observable window is BETWEEN the two
+# renames, when <dst-dir> briefly does not exist at all (never split-brain:
+# see orchid-run's own comment on this exact window).
+_ocd_sync_dir_atomic() {
+  local dst="$1" src="$2" shadow old entry name
+  shadow="$dst.new.$$"; old="$dst.old.$$"
+  rm -rf "$shadow" "$old"
+  mkdir -p "$shadow"
+  for entry in "$src"/*; do
+    [ -e "$entry" ] || continue
+    name="$(basename "$entry")"
+    [ "$name" = runtime ] && continue
+    cp -R "$entry" "$shadow/$name"
+  done
+  [ -d "$dst/runtime" ] && cp -R "$dst/runtime" "$shadow/runtime"
+  mv "$dst" "$old"
+  mv "$shadow" "$dst"
+  rm -rf "$old"
+}
+
+# orchid_commit_durable <repo> <message> <path...> -- the plan-apply temp-
+# worktree + CAS + sync-back transaction (orchid-plan's `apply` arm; read
+# its own header comments for the full CAS-discipline rationale), extracted
+# into a single reusable helper. Commits the CURRENT on-disk content of each
+# given <path> (relative to <repo> -- a file like `orchid.config`, or a
+# directory like `.orchid`) onto `refs/heads/<integration_branch>`, entirely
+# through a DETACHED temp worktree: <repo>'s own branch/HEAD/index/working
+# tree are NEVER switched, staged into, or otherwise touched (the r-001
+# stale-checkout config-commit hazard this closes -- see orchid-config's
+# `commit` subverb -- is exactly a naive `git add`/`git commit` run directly
+# in a possibly-stale checkout).
+#
+# Journal-first/epoch discipline is deliberately NOT this helper's job --
+# each caller differs on WHEN it applies its own mutations relative to
+# calling this (`orchid-plan apply` must apply its planning->running
+# transition ONLY inside the temp worktree, never touching <repo> until the
+# CAS below actually succeeds; `orchid run accept`/`orchid config commit`
+# instead apply their own mutations to <repo> directly, BEFORE ever calling
+# this helper, and simply let it commit whatever is now on disk). A caller
+# that needs the former may set `ORCHID_COMMIT_DURABLE_HOOK` to the name of
+# a function taking the temp worktree's absolute path as `$1`; if set, it is
+# invoked once the worktree's copy is fully populated (below) but BEFORE
+# `git add`/commit, so whatever it writes into the worktree rides into the
+# SAME commit and — critically — is never visible in <repo> until CAS
+# success. Callers that mutate <repo> directly beforehand simply leave it
+# unset.
+#
+# Compare-and-swap: `refs/heads/<integ>` is read ONCE at entry and only
+# advanced if it still points there once the worktree's commit is ready --
+# same discipline `orchid-merge`/`orchid-run new` already use. On CAS
+# failure the commit just built is left unreferenced (for gc); an
+# `intervention` journal entry naming the conflict is written directly to
+# <repo> and this function dies (nonzero) -- retryable, since nothing this
+# helper itself wrote to <repo> is ever undone (and whatever the CALLER
+# already wrote to <repo> before calling this, for callers that mutate
+# first, is untouched either way).
+#
+# On CAS success, each given <path> is synced back from the worktree's
+# just-committed copy over <repo>'s own copy -- a FILE via atomic_write, a
+# DIRECTORY via the crash-safe shadow-dir-swap above -- so every caller's
+# postcondition is simply "<repo> now matches what's committed." Sets
+# ORCHID_COMMIT_DURABLE_SHA to the new commit sha on success.
+#
+# MUST be called as a plain statement, never via `$(...)`/a pipeline: this
+# function manages its OWN EXIT trap (composed with whatever the caller's
+# was, so a temp-worktree cleanup always runs before -- and never replaces
+# -- the caller's own, e.g. verb_lock_release). A command substitution
+# forks a subshell, so any trap manipulation inside would only ever affect
+# that throwaway subshell, never the real calling script -- silently
+# breaking that composition (and, since bash local variables/flags like
+# `_verb_lock_owned` are copied into the subshell at fork time, a `trap`
+# left armed there firing on the subshell's own exit could act on the
+# caller's still-live state, e.g. releasing its verb lock too early).
+orchid_commit_durable() {
+  local repo="$1" message="$2"; shift 2
+  [ "$#" -gt 0 ] || orchid_die "orchid_commit_durable: at least one path required"
+
+  local integ integ_head
+  integ="$(config_get "$repo" integration_branch orchid/integration)"
+  git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
+    || orchid_die "integration branch '$integ' does not exist"
+  integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
+
+  local wt; wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-commit.XXXXXX")"
+  local wt_q repo_q; printf -v wt_q '%q' "$wt"; printf -v repo_q '%q' "$repo"
+  local prev_trap; prev_trap="$(trap -p EXIT)"
+  local prev_cmd=""
+  case "$prev_trap" in
+    "trap -- "*)
+      prev_cmd="${prev_trap#trap -- \'}"; prev_cmd="${prev_cmd%\' EXIT}" ;;
+  esac
+  if [ -n "$prev_cmd" ]; then
+    trap "_ocd_cleanup_wt $wt_q $repo_q; $prev_cmd" EXIT
+  else
+    trap "_ocd_cleanup_wt $wt_q $repo_q" EXIT
+  fi
+
+  git -C "$repo" worktree add -q --detach "$wt" "$integ_head" >/dev/null 2>&1 \
+    || orchid_die "cannot create temp worktree at $integ_head"
+
+  local p
+  for p in "$@"; do
+    _ocd_copy_path "$repo/$p" "$wt/$p"
+  done
+
+  if [ -n "${ORCHID_COMMIT_DURABLE_HOOK:-}" ]; then
+    "$ORCHID_COMMIT_DURABLE_HOOK" "$wt"
+  fi
+
+  git -C "$wt" add -- "$@"
+  if git -C "$wt" diff --cached --quiet -- "$@"; then
+    orchid_die "orchid_commit_durable: nothing to commit -- no changes in: $*"
+  fi
+  git -C "$wt" commit -q -m "$message"
+  local new_sha; new_sha="$(git -C "$wt" rev-parse HEAD)"
+
+  if ! git -C "$repo" update-ref "refs/heads/$integ" "$new_sha" "$integ_head"; then
+    local moved_to; moved_to="$(git -C "$repo" rev-parse "refs/heads/$integ" 2>/dev/null || echo "?")"
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \
+      "commit-durable CAS failure ($message) — integration branch '$integ' changed concurrently (expected $integ_head, now $moved_to) — retry"
+    orchid_die "update-ref CAS failed: integration branch '$integ' changed concurrently (expected $integ_head) — retry"
+  fi
+
+  for p in "$@"; do
+    if [ -f "$wt/$p" ]; then
+      cat "$wt/$p" | atomic_write "$repo/$p"
+    elif [ -d "$wt/$p" ]; then
+      _ocd_sync_dir_atomic "$repo/$p" "$wt/$p"
+    else
+      rm -rf "$repo/$p"
+    fi
+  done
+
+  _ocd_cleanup_wt "$wt" "$repo"
+  if [ -n "$prev_cmd" ]; then trap "$prev_cmd" EXIT; else trap - EXIT; fi
+  ORCHID_COMMIT_DURABLE_SHA="$new_sha"
+}
+
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a
 # shell function name) with a wall-clock deadline; returns cmd's own exit
 # status, or 124 on timeout. Both the timed command AND the watcher are

@@ -157,6 +157,23 @@ task after it drafts normally.
 Once `run_status: running`, PLANNING is over — THE TICK below is the only
 procedure that touches task state from here on.
 
+**Repo-config changes (`orchid.config`) and stale-checkout hygiene.** Never
+hand-commit `orchid.config` from a checkout of the integration branch (or a
+worktree of it) directly — use `orchid config commit --reason "..."`
+instead. It stages exactly `orchid.config`'s current on-disk content into a
+separate temp worktree of the integration branch and commits it there
+(journaling `intervention`), never touching this checkout's own git index —
+closing a real incident: a long-lived integration-branch checkout whose ref
+gets advanced from OUTSIDE it (another worktree's commit, a pump-driven
+`plan apply`/`run accept`) falls behind its own branch pointer without its
+index/working tree ever refreshing (`orchid doctor`/`orchid status` detect
+this and call it out by name). A naive `git add -A && git commit` in that
+state silently re-commits whatever stray staged deletions the stale index
+still carries, reverting real history. If you do need to refresh such a
+checkout by hand for some other reason, use `git checkout HEAD -- .
+':(exclude).orchid'` — NOT a bare `git checkout HEAD -- .`, which would
+also clobber any uncommitted `.orchid/` run state sitting there.
+
 ## THE TICK
 
 **1. Refresh the lease.**
@@ -563,10 +580,26 @@ Once `orchid status --explain` shows every task `done`:
    result to an evidence file.
 3. `orchid run accept --reason "..." --evidence <path-to-evidence-file>` —
    requires `run_status: accepting`; copies the evidence file into
-   `.orchid/reviews/acceptance.log` and sets `run_status: complete`. This is
-   the *only* path to `complete`: `orchid run advance complete` is refused
+   `.orchid/reviews/acceptance.log` and sets `run_status: complete`, then
+   COMMITS the run's entire durable `.orchid/` state onto the integration
+   branch itself (the same temp-worktree + CAS transaction `orchid plan
+   apply` uses, via `orchid_commit_durable`) — a completed run's record is
+   never left uncommitted-only (v1-m4 ledger, the r-001 journal-loss
+   incident). This is the *only* path to `complete`: `orchid run advance complete` is refused
    unconditionally, from any state, so `complete` is unreachable without an
    evidence file backing it.
+
+   If that commit itself fails (a concurrent commit landed on the
+   integration branch first — the CAS conflict), `run accept` dies but
+   `run_status: complete`, the evidence copy, and the journal entry are
+   already on disk — re-running the EXACT SAME `orchid run accept
+   --reason ... --evidence ...` call is the real recovery: it recognizes
+   `run_status` is already `complete`, skips the state transition and
+   evidence copy (never redone), and re-attempts only the durable commit,
+   journaling `intervention` ("accept commit retried after CAS failure").
+   A further call once that commit has actually landed dies cleanly
+   instead ("already accepted and committed") — there is nothing left to
+   retry.
 
 ## Known documentation discrepancies surfaced while writing this file
 

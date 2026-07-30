@@ -218,9 +218,100 @@ git -C "$stale_bare" update-ref refs/heads/orchid/integration "$stale_new_sha"
 rc=0
 stale_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "doctor must FAIL on a stale integration checkout"
-assert_match "FAIL: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here" \
-  "$stale_doctor_out" "doctor names the stale-checkout fix"
+# v1-m4 Task 1: the remedy text is now SCOPED to exclude .orchid/ (a bare
+# `git checkout HEAD -- .` would clobber uncommitted run state -- the r-001
+# incident's other half); ':(exclude)' contains ERE metacharacters, escaped
+# here since assert_match's first arg is an extended regex.
+assert_match "FAIL: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
+  "$stale_doctor_out" "doctor names the scoped stale-checkout fix"
 
 stale_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
-assert_match "WARNING: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here" \
-  "$stale_status_out" "status warns about the stale integration checkout"
+assert_match "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
+  "$stale_status_out" "status warns about the scoped stale-checkout fix"
+
+# ---------------------------------------------------------------------------
+# v1-m4 Task 1 (the r-001 journal-loss incident, closed): `orchid config
+# commit` -- the safe operator path for repo-config changes. Same stale-
+# checkout fixture shape as above (a worktree of the integration branch
+# whose ref gets advanced from OUTSIDE it, leaving a "D" row in its index
+# relative to the new HEAD), but this time the operator ALSO edits
+# orchid.config directly in that stale checkout. The pre-fix hazard: a
+# naive `git add -A && git commit` there would both land the config edit
+# AND silently re-delete `elsewhere.txt` (the stray staged "D"), reverting
+# real history. `config commit` must land ONLY orchid.config, and must
+# never touch this checkout's own git index/working tree at all.
+# ---------------------------------------------------------------------------
+cfg_bare="$WORK/cfg-bare"; mkdir -p "$cfg_bare"
+(cd "$cfg_bare" && git init -q . && printf 'verify=true\n' > orchid.config \
+  && git add orchid.config && git commit -q -m "fixture: base orchid.config")
+ORCHID_REPO="$cfg_bare" "$ORCHID_BIN" init >/dev/null
+cfg_wt="$WORK/cfg-wt"
+git -C "$cfg_bare" worktree add -q "$cfg_wt" orchid/integration
+cfg_epoch="$(ORCHID_REPO="$cfg_wt" HOME="$WORK/home" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+
+# Advance the ref from OUTSIDE $cfg_wt (same technique as the stale-checkout
+# fixture above): $cfg_wt's own index/working tree are never touched by this.
+cfg_wt2="$WORK/cfg-wt2"
+git -C "$cfg_bare" worktree add -q --detach "$cfg_wt2" orchid/integration
+echo "new file from elsewhere" > "$cfg_wt2/elsewhere.txt"
+git -C "$cfg_wt2" add elsewhere.txt
+git -C "$cfg_wt2" commit -q -m "advance integration from elsewhere"
+cfg_new_sha="$(git -C "$cfg_wt2" rev-parse HEAD)"
+git -C "$cfg_bare" update-ref refs/heads/orchid/integration "$cfg_new_sha"
+
+# $cfg_wt is now a genuinely STALE, DIRTY checkout: its index still shows the
+# "D elsewhere.txt" signature relative to the new HEAD, AND the operator now
+# edits orchid.config directly on top of that (uncommitted).
+[ -n "$(git -C "$cfg_wt" diff --cached --name-status | grep '^D')" ] \
+  || fail "config-commit fixture setup: $cfg_wt must show the stale-checkout D-row signature"
+printf 'role.implementer=fake\n' >> "$cfg_wt/orchid.config"
+# The RAW index content (`ls-files --stage`, independent of whatever HEAD
+# happens to be) is the right thing to snapshot here -- `git status`/`diff
+# --cached` are relative to HEAD, and HEAD itself is about to move forward
+# (config commit's own CAS-advance of the SAME branch $cfg_wt sits on) --
+# that alone would make new diffs appear against the now-newer HEAD even if
+# $cfg_wt's own index/working tree are never touched, which is the actual
+# property under test.
+pre_cfg_wt_index="$(git -C "$cfg_wt" ls-files --stage)"
+pre_cfg_wt_config="$(cat "$cfg_wt/orchid.config")"
+pre_cfg_journal="$(cat "$cfg_wt/.orchid/journal.md")"
+
+cfg_commit_out="$(ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$WORK/home" "$ORCHID_BIN" config commit --reason "add implementer role binding")"
+assert_match "^committed: " "$cfg_commit_out" "config commit prints the new commit sha"
+
+# The edited config landed on the integration branch...
+git -C "$cfg_bare" show orchid/integration:orchid.config | grep -q "^role.implementer=fake$" \
+  || fail "config commit lands the edited orchid.config on the integration branch"
+# ...and EXACTLY orchid.config -- the stray staged deletion never rode along:
+# elsewhere.txt must still exist at the new HEAD, untouched.
+git -C "$cfg_bare" show orchid/integration:elsewhere.txt >/dev/null 2>&1 \
+  || fail "config commit must not resurrect the stale-checkout D-row deletion (elsewhere.txt missing)"
+assert_eq "orchid: config commit (add implementer role binding)" \
+  "$(git -C "$cfg_bare" log -1 --format=%s orchid/integration)" \
+  "config commit's own commit message"
+
+# $cfg_wt's own git INDEX is completely untouched (raw stage content,
+# independent of HEAD, which config commit's own CAS-advance legitimately
+# moves forward out from under it -- see the comment above the "before"
+# snapshot).
+assert_eq "$pre_cfg_wt_index" "$(git -C "$cfg_wt" ls-files --stage)" \
+  "config commit must not touch the operator's own git index"
+# ...and its own working tree: the operator's own uncommitted orchid.config
+# edit is exactly as it was (byte-identical, even though the file itself
+# was rewritten via sync-back -- same content that was read from it).
+assert_eq "$pre_cfg_wt_config" "$(cat "$cfg_wt/orchid.config")" \
+  "config commit must leave the operator's own working-tree orchid.config untouched"
+
+# Journaled as `intervention`, locally (not part of THIS commit -- rides
+# into the integration branch on the next .orchid-committing verb).
+grep -q "intervention" "$cfg_wt/.orchid/journal.md" || fail "config commit journals kind intervention"
+grep -q "add implementer role binding" "$cfg_wt/.orchid/journal.md" || fail "config commit journal entry carries the reason"
+[ "$(cat "$cfg_wt/.orchid/journal.md")" != "$pre_cfg_journal" ] || fail "config commit must journal locally"
+
+# --reason is required (INV-08); refused before anything is touched.
+rc=0
+ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$WORK/home" "$ORCHID_BIN" config commit >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "config commit without --reason must be refused"
+
+# `config list` remains read-only/unaffected by the new subverb.
+ORCHID_REPO="$cfg_wt" "$ORCHID_BIN" config list >/dev/null || fail "config list still works"

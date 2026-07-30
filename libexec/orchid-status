@@ -14,8 +14,10 @@ fi
 # Stale integration checkout (v1-m3 final review, CRITICAL 2): printed right
 # after any split-brain warning, same "tell the operator before anything
 # else on this page" placement -- see lib/common.sh's orchid_stale_checkout.
+# v1-m4 Task 1: remedy scoped to exclude .orchid/ (see orchid-doctor's own
+# comment on this same wording) so it never clobbers uncommitted run state.
 if orchid_stale_checkout "$repo"; then
-  echo "WARNING: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here"
+  echo "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid'\" before committing anything here"
 fi
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
 echo "run_status: ${rs:-(uninitialized)}"
