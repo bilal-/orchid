@@ -190,3 +190,17 @@ purely decorative (nothing outside this machine could present it anyway).
   shipped notify plugin needs a repo-local location this milestone, so
   there is nothing to trust yet. Extend it the same way engines already
   work if a repo-local notify channel is ever needed.
+
+## See also
+
+- [../../README.md](../../README.md) — the "requirements sent from your
+  phone in the morning, OpenClaw pings you the finished diff by evening"
+  hero demo this channel + the AgentSkill together enable.
+- [../configuration.md](../configuration.md) — the general config-key
+  reference; every key this page names is documented there too.
+- [../troubleshooting.md#blocked-tasks](../troubleshooting.md#blocked-tasks) —
+  the operator verbs (`orchid answer`, `orchid task unblock/retry`) this
+  channel's inbound side ultimately drives.
+- [../extending/first-engine.md](../extending/first-engine.md) — the engine
+  extension point this notify-channel plugin is a sibling of (different
+  `kind=`, same discovery/trust model).

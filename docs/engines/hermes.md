@@ -192,3 +192,15 @@ requires BOTH), hermes is orchestrator-ineligible regardless of the
 - `hermes_max_bytes` (default `100000`) — `diff.patch` byte ceiling above
   which this adapter fails closed rather than invoking hermes (mirrors
   `agy_max_bytes`). Env override: `ORCHID_HERMES_MAX_BYTES`.
+
+## See also
+
+- [../../README.md#any-engine-any-role](../../README.md#any-engine-any-role) —
+  where hermes sits in the capability-eligibility matrix (`reviewer`,
+  `plan_critic`; not `implementer`/`orchestrate` — see above).
+- [../configuration.md](../configuration.md) — the general `role.*`/
+  `review.<tier>` keys that decide when this engine is actually invoked.
+- [../troubleshooting.md#pack-overflow](../troubleshooting.md#pack-overflow) —
+  what happens when a diff exceeds `hermes_max_bytes`.
+- [agy.md](./agy.md) — the other inline-only (no worktree-read) reviewer,
+  same byte-ceiling shape.
