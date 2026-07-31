@@ -273,3 +273,62 @@ m3 development coexisted with the live m2 run all day; the run's incidents
 pushes to origin) were folded into m3 as the log-streaming/heartbeat work,
 worktree-read reviewer prototype, stale-checkout detection, and the
 PROTOCOL no-push policy — the milestone was shaped by production evidence.
+
+## v1-m4 Task 9 — Hermes live dogfood (scratch greeter repo, r-001/r-002)
+
+Setup: fresh scratch repo, quickstart followed literally with the dev
+checkout; `role.reviewer=hermes`, `role.implementer=codex` (r-001), then
+`role.implementer=hermes,codex` (r-002). Both runs reached
+`run_status: complete` — codex implemented, hermes reviewed real diffs
+(T001 approve, T002 approve, both in the exact VERDICT/REASON contract),
+arbitration/merge/accept clean, shipped behavior verified by hand.
+PROBE-RESULT (review-shaped): YES — the adapter's exact invocation returns
+the contract live. `plugins conform` 7/7; capsuite: hermes reviewer PASS,
+hermes implementer FAIL (as designed — review-only adapter).
+
+### F10 (docs bug, HIGH — quickstart fails as written) — ORCHID_EPOCH never taught
+`orchid requirements import` (and 10 more verbs) call `epoch_require`, but
+no doc in the new suite mentions `ORCHID_EPOCH` at all. The quickstart's
+step-3 path dies with INV-02 "stale epoch 'unset'" on a fresh init: the
+epoch file doesn't exist yet (current = 0) and `orchid run start` — the
+only verb that prints the epoch — is two steps later. Operator remedy used
+live: `export ORCHID_EPOCH=0` after init, re-export after every
+`run start`/`run new`/tick (each mints a fresh epoch). Docs fix required
+before release; also nit: quickstart says `reviews/plan-a1-plan_critic.json`,
+real path is `.orchid/reviews/…`.
+
+### F11 (adapter bug, medium, cosmetic-but-shipped) — codex commit subjects are garbage
+Both live tasks merged with junk subjects taken verbatim from model
+output: ``T001: ``` `` and ``T002: - `git diff --check` passes.``. The
+codex adapter's commit-subject extraction grabs the first line of the
+reply even when it's a markdown fence or a bullet. Wants a sanitize/
+fallback (strip fences/list markers; fall back to the task title).
+
+### F12 (observability gap, minor, ledgered) — capability fallback is silent in the run record
+With `role.implementer=hermes,codex`, the launcher correctly skipped
+hermes (no implement op) and ran codex — verified only by the job's pid
+pointing at `plugins/engines/codex/run`. `orchid doctor` labels the chain,
+but nothing in journal/status/request records says "hermes skipped:
+capsuite/ops gate" for the actual dispatch. Fine for m4; wants a journal
+note at launch time.
+
+### F13 (environment note) — hermes refuses mktemp scratch dirs as "sensitive system path"
+`probe-hermes.sh`'s implement-shaped half can't get a real answer from a
+`mktemp -d` scratch (macOS `/var/folders/…`): hermes's file tools refuse
+all writes there ("classified as a sensitive system path"), rc=0, no
+marker. Manual retry from a `$HOME` scratch dir: the relative-path write
+landed inside the scratch dir (PARTIAL per the probe's own definition —
+necessary, not sufficient; absolute-path confinement still unsettled, so
+the review-only stance stands).
+
+### Observations (no fix needed)
+- Plan critic (codex) took 4 rounds to approve a one-task plan; every
+  finding was individually legitimate (bash-3.2 coverage, verification
+  bypassing `./test.sh`, missing --shout assertion). Real quota cost of
+  the honesty bar on trivial plans.
+- `orchid jobs check` run between a job's exit and reconcile reports it
+  `dead` even though its envelope is already in the spool; the next
+  `jobs reconcile` harvests it fine. PROTOCOL's reconcile-first ordering
+  exists precisely for this; expected, but easy to misread as a failure.
+- m4's stale-checkout warning + scoped-exclude remedy and the r-001→r-002
+  `run new` rollover both behaved exactly as designed under live use.
