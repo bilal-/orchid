@@ -183,7 +183,9 @@ orchid doctor   # role implementer: claude,codex (claude: verified)
 
 See [quickstart.md's step 1](./docs/quickstart.md#1-clone-and-install) for
 the full explanation of exactly what gets linked where, and
-`docs/install.md` for Homebrew tap instructions (once published).
+[docs/install.md](./docs/install.md) for `--prefix` support and Homebrew
+tap instructions (prepared; `brew install` itself lands once the tap is
+published).
 
 To run continuously without babysitting a terminal:
 

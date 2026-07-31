@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # Installs orchid for the current user. Does exactly and only:
 #   - symlink skills/* into $CLAUDE_SKILLS_DIR (default ~/.claude/skills)
-#   - symlink bin/orchid into $ORCHID_BIN_DIR (default ~/.local/bin)
+#   - symlink bin/orchid into $ORCHID_BIN_DIR (default ~/.local/bin, or
+#     <prefix>/bin when --prefix DIR / --prefix=DIR is given)
 #   - create ~/.orchid/{plugins/engines,trust} and a commented ~/.orchid/config
 #     (never overwritten if it already exists)
 #   - finish by running `orchid doctor` (inside a git repo) or printing
 #     next-steps (outside one)
 # `./install.sh --uninstall` removes precisely the symlinks this script
-# creates; config and trust are left in place with a note.
+# creates; config and trust are left in place with a note. `--uninstall` and
+# `--prefix` combine (uninstall reads the same ORCHID_BIN_DIR --prefix would
+# have set, so it un-links the right place).
 set -euo pipefail
 
 self="$0"
@@ -20,6 +23,23 @@ ROOT="$(cd "$(dirname "$self")" && pwd)"
 CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
 ORCHID_BIN_DIR="${ORCHID_BIN_DIR:-$HOME/.local/bin}"
 SKILLS="orchid orchid-plan orchid-resume"
+
+# Argument parsing -- deliberately just these two flags, combinable in
+# either order (`--prefix DIR --uninstall` or `--uninstall --prefix DIR`).
+# --prefix only ever redirects ORCHID_BIN_DIR (where the `orchid` binary
+# symlink lands); it does not move skills/config/trust, which are always
+# per-user (CLAUDE_SKILLS_DIR / ~/.orchid), never per-prefix.
+UNINSTALL=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --uninstall) UNINSTALL=1 ;;
+    --prefix) [ $# -ge 2 ] || { echo "orchid: install.sh: --prefix requires a directory argument" >&2; exit 2; }
+              ORCHID_BIN_DIR="$2/bin"; shift ;;
+    --prefix=*) ORCHID_BIN_DIR="${1#--prefix=}/bin" ;;
+    *) echo "orchid: install.sh: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 
 # link_one src dest: creates dest as a symlink to src, refusing to clobber
 # anything at dest that isn't already a symlink (a real file/dir there is
@@ -55,7 +75,7 @@ unlink_one() {
   fi
 }
 
-if [ "${1:-}" = "--uninstall" ]; then
+if [ "$UNINSTALL" = 1 ]; then
   for name in $SKILLS; do
     unlink_one "$ROOT/skills/$name" "$CLAUDE_SKILLS_DIR/$name"
   done
