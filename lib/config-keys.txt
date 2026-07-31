@@ -37,6 +37,7 @@ hook.on_blocker
 hook_timeout_s
 push_guard
 status_page
+notify.plugin
 notify.channel
 notify.to
 answer_allowlist

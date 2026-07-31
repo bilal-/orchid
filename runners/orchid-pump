@@ -100,15 +100,22 @@ _pump_iso_to_epoch() {
 # tick; draining is cheap -- a handful of file stats and, at most, one
 # `send` spawn per queued question).
 #
-# There is exactly one channel plugin kind this milestone ships
-# (plugins/notify/openclaw) -- openclaw is itself a multi-channel hub
-# (telegram/whatsapp/discord/slack/...), so `notify.channel`'s configured
-# value is OpenClaw's OWN channel enum (passed straight through as
-# `--channel`), not a second layer of "which orchid notify plugin" naming;
-# resolving the fixed name "openclaw" here is a deliberate v1-m4
-# simplification (a future milestone shipping a second, DIFFERENT notify
-# plugin would need its own selector config key -- not this one, which is
-# already spoken for as the openclaw-internal channel enum).
+# `notify.plugin` (default `openclaw`, zero behavior change when unset)
+# selects WHICH kind=notify plugin dir the pump launches -- the value is a
+# plugin DIRECTORY NAME under plugins/notify/ (resolved through
+# resolve_notify_dir, the exact same search path/precedence any other
+# notify-plugin lookup uses), e.g. `openclaw` or `hermes` -- never a
+# manifest id (plugins/notify/hermes's own id is `orchid/hermes-notify`,
+# deliberately distinct from the kind=engine hermes adapter's `orchid/
+# hermes`; resolve_notify_dir keys off directory name, not manifest id, so
+# that distinction never surfaces here). `notify.channel` stays each
+# PLUGIN's OWN inner enum/target string (OpenClaw's own channel name, or a
+# hermes platform name, passed straight through) -- a separate axis from
+# `notify.plugin`, unchanged by this selector's addition. A second, real
+# notify plugin (plugins/notify/hermes) ships starting v1-m4's hermes
+# channel task, so the "exactly one channel plugin kind this milestone
+# ships" simplification this comment used to describe no longer holds --
+# `notify.plugin` is that selector.
 #
 # Single-pump assumption: the `.tries` sidecar bump below is a plain
 # read-modify-write with no lock of its own -- correct only because v1-m4
@@ -128,6 +135,7 @@ _pump_iso_to_epoch() {
 # /dev/null) rather than re-invented, per the brief's own instruction.
 _pump_drain_outbox() {
   local repo="$1" box channel to dir ep retry_max f qid text tf rc tries
+  local plugin_name resolve_err
   local -a child_env
   box="$(orchid_runtime "$repo")/outbox"
   [ -d "$box" ] || return 0
@@ -136,14 +144,18 @@ _pump_drain_outbox() {
   [ -n "$channel" ] || return 0   # no channel configured: nothing to drain, ever
   to="$(config_get "$repo" notify.to "")"
 
-  if ! dir="$(resolve_notify_dir openclaw 2>&1)"; then
-    echo "pump: outbox drain: notify channel plugin 'openclaw' not found on search path ($dir) -- leaving outbox for next pass" >&2
-    return 0
-  fi
-  ep="$(manifest_get "$dir" entrypoint send)"
-  if [ ! -x "$dir/$ep" ]; then
-    echo "pump: outbox drain: notify channel plugin's entrypoint '$ep' is not executable in $dir -- leaving outbox for next pass" >&2
-    return 0
+  # notify.plugin (default "openclaw", see this function's own header) --
+  # resolved ONCE per pump pass, not per queued message (every queued
+  # message this pass shares the same configured plugin).
+  plugin_name="$(config_get "$repo" notify.plugin openclaw)"
+  resolve_err=""
+  if ! dir="$(resolve_notify_dir "$plugin_name" 2>&1)"; then
+    resolve_err="notify channel plugin '$plugin_name' not found on search path ($dir)"
+  else
+    ep="$(manifest_get "$dir" entrypoint send)"
+    if [ ! -x "$dir/$ep" ]; then
+      resolve_err="notify channel plugin's entrypoint '$ep' is not executable in $dir"
+    fi
   fi
 
   retry_max="$(config_get "$repo" send_retry_max 5)"
@@ -156,23 +168,36 @@ _pump_drain_outbox() {
     qid="$(basename "$f")"
     text="$(cat "$f")"
 
-    # Env hygiene identical in shape to runners/orchid-launch's own spawn:
-    # base allowlist (PATH/HOME/USER/LANG/TERM/TMPDIR, LC_*, ORCHID_*) plus
-    # nothing else. ORCHID_NOTIFY_CHANNEL/ORCHID_NOTIFY_TO are exported only
-    # for the duration of this spawn_child_env call (bash's temporary-
-    # environment-on-a-command-prefix semantics), so they ride the existing
-    # ORCHID_* wildcard in without a plugin.conf `permissions=` opt-in.
-    child_env=()
-    while IFS= read -r line; do
-      [ -n "$line" ] || continue
-      child_env+=("$line")
-    done < <(ORCHID_NOTIFY_CHANNEL="$channel" ORCHID_NOTIFY_TO="$to" spawn_child_env "$dir")
-
-    rc=0
-    if [ "${#child_env[@]}" -gt 0 ]; then
-      env -i "${child_env[@]}" "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?
+    if [ -n "$resolve_err" ]; then
+      # notify.plugin itself doesn't resolve to a runnable send entrypoint
+      # (missing/mistyped plugin name, or its manifest's own entrypoint
+      # isn't executable) -- a CONFIG problem, not a per-message send
+      # failure, but it must feed the exact same failure/quarantine path
+      # below (never a silent no-op): a permanently-misconfigured
+      # notify.plugin must eventually quarantine every queued message with
+      # a clear reason, the same as a permanently-broken channel would,
+      # rather than retry forever with nothing but a repeated stderr line
+      # to show for it. No spawn happens at all in this branch.
+      rc=1
     else
-      env -i "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?
+      # Env hygiene identical in shape to runners/orchid-launch's own spawn:
+      # base allowlist (PATH/HOME/USER/LANG/TERM/TMPDIR, LC_*, ORCHID_*) plus
+      # nothing else. ORCHID_NOTIFY_CHANNEL/ORCHID_NOTIFY_TO are exported only
+      # for the duration of this spawn_child_env call (bash's temporary-
+      # environment-on-a-command-prefix semantics), so they ride the existing
+      # ORCHID_* wildcard in without a plugin.conf `permissions=` opt-in.
+      child_env=()
+      while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        child_env+=("$line")
+      done < <(ORCHID_NOTIFY_CHANNEL="$channel" ORCHID_NOTIFY_TO="$to" spawn_child_env "$dir")
+
+      rc=0
+      if [ "${#child_env[@]}" -gt 0 ]; then
+        env -i "${child_env[@]}" "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?
+      else
+        env -i "$dir/$ep" "$qid" "$text" </dev/null >/dev/null 2>&1 || rc=$?
+      fi
     fi
 
     if [ "$rc" -eq 0 ]; then
@@ -184,6 +209,7 @@ _pump_drain_outbox() {
     # pump pass UNLESS this was the send_retry_max'th consecutive failure,
     # in which case quarantine it (rename with a .reason-send-failed
     # sidecar, remove the retried original) so a permanently-broken channel
+    # (or a permanently-misconfigured notify.plugin -- resolve_err above)
     # can't retry forever -- BLOCKERS.md + terminal remains the complete
     # surface regardless (docs/specs/operations.md), so a quarantined
     # outbox entry loses nothing an operator can't already see there.
@@ -192,13 +218,23 @@ _pump_drain_outbox() {
     [ -f "$tf" ] && tries="$(cat "$tf" 2>/dev/null || echo 0)"
     tries=$((tries + 1))
     if [ "$tries" -ge "$retry_max" ]; then
-      { echo "send failed $tries time(s) (send_retry_max=$retry_max), quarantined"; echo "text: $text"; } \
-        > "$box/$qid.reason-send-failed"
+      {
+        if [ -n "$resolve_err" ]; then
+          echo "send failed $tries time(s) (send_retry_max=$retry_max), quarantined: $resolve_err"
+        else
+          echo "send failed $tries time(s) (send_retry_max=$retry_max), quarantined"
+        fi
+        echo "text: $text"
+      } > "$box/$qid.reason-send-failed"
       rm -f "$f" "$tf"
-      echo "pump: outbox drain: $qid quarantined after $tries failed send attempt(s)" >&2
+      echo "pump: outbox drain: $qid quarantined after $tries failed send attempt(s)${resolve_err:+ ($resolve_err)}" >&2
     else
       printf '%s\n' "$tries" > "$tf"
-      echo "pump: outbox drain: $qid send failed (attempt $tries/$retry_max, rc=$rc) -- left for next pass" >&2
+      if [ -n "$resolve_err" ]; then
+        echo "pump: outbox drain: $qid send failed (attempt $tries/$retry_max): $resolve_err -- left for next pass" >&2
+      else
+        echo "pump: outbox drain: $qid send failed (attempt $tries/$retry_max, rc=$rc) -- left for next pass" >&2
+      fi
     fi
   done
 }

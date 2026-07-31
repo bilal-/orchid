@@ -7,6 +7,14 @@
 # validate/list/conform, and the INV-01 carve-out (orchid notify itself
 # never spawns -- only writes runtime/outbox/<qid>; runners/orchid-pump,
 # tier-2, is what actually launches the channel plugin's `send`).
+#
+# Follow-up (hermes notify channel task): `notify.plugin` (default
+# `openclaw`) now selects WHICH kind=notify plugin dir the pump's outbox
+# drain launches -- section 8 (bottom of this file) covers that selector:
+# the default (unset, still openclaw -- every section above this comment
+# exercises exactly that, unchanged), an explicit `notify.plugin=hermes`
+# (stubbed), and a bogus value's failure/quarantine path. Everything above
+# section 8 is untouched by that change.
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/roles.sh"; source "$REPO_ROOT/lib/resolver.sh"
@@ -238,3 +246,70 @@ after_j="$(wc -l < .orchid/journal.md)"
 [ "$after_j" -gt "$before_j" ] || fail "expiry must actually append a new journal entry, not just fail silently"
 
 [ ! -f ".orchid/runtime/answers/$qidE.answer" ] || fail "an expired question must never be recorded as answered"
+
+# ===========================================================================
+# 8 -- notify.plugin selector (hermes notify channel follow-up): default
+# stays openclaw (every section above this one already proves that, with
+# no notify.plugin key in orchid.config at all); an explicit
+# notify.plugin=hermes routes the SAME outbox/pump machinery to the
+# sibling plugin instead; a bogus value feeds the identical
+# failure/quarantine path a real send failure does, rather than silently
+# looping forever untouched.
+# ===========================================================================
+
+# 8a -- default: a direct, explicit check of the resolved default in
+# isolation (orchid.config still has no notify.plugin line at this point).
+out="$(config_get "$WORK" notify.plugin openclaw)"
+assert_eq "openclaw" "$out" "notify.plugin defaults to openclaw when never configured"
+
+# -- stub `hermes` on PATH too (the sibling channel plugin), same shape as
+# the openclaw stub above: captures argv, never sends anything real.
+H_LOG="$WORK/hermes-calls.log"; : > "$H_LOG"
+H_MODE_FILE="$WORK/hermes-mode"   # absent/"ok" -> exit 0; "fail" -> exit 1
+cat > "$STUBBIN/hermes" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$H_LOG"
+if [ -f "$H_MODE_FILE" ] && [ "\$(cat "$H_MODE_FILE")" = fail ]; then
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$STUBBIN/hermes"
+
+# 8b -- notify.plugin=hermes: the SAME outbox/pump machinery now resolves
+# and launches plugins/notify/hermes/send instead of plugins/notify/
+# openclaw/send -- reusing this file's already-configured notify.channel=
+# slack / notify.to=#ops (irrelevant to hermes's own real-world semantics;
+# the point here is purely selector routing, not a realistic hermes
+# platform name -- plugins/notify/hermes's own target-composition contract
+# is covered in full in tests/test_notify_hermes_channel.sh).
+echo "notify.plugin=hermes" >> orchid.config
+: > "$OC_LOG"; : > "$H_LOG"
+qidH="$("$ORCHID_BIN" notify "hermes-routed message")"
+[ -f ".orchid/runtime/outbox/$qidH" ] || fail "notify.plugin=hermes: outbox file must still be written the same way"
+"$PUMP" >/dev/null 2>&1
+[ -f ".orchid/runtime/outbox/$qidH" ] && fail "notify.plugin=hermes: outbox file must be removed after a successful send"
+[ -s "$OC_LOG" ] && fail "notify.plugin=hermes: the openclaw stub must NOT be invoked once hermes is selected"
+assert_match "^send --to slack:#ops $qidH: hermes-routed message" "$(cat "$H_LOG")" "notify.plugin=hermes: the hermes stub was invoked with the composed target+message"
+
+# 8c -- a bogus notify.plugin value: send_retry_max is already 2 (section
+# 3) -- two consecutive pump passes must quarantine the message with a
+# clear reason, exactly like a real send failure would, rather than
+# retrying forever with nothing but a stderr line to show for it. No
+# spawn (openclaw OR hermes) may happen at all -- resolution fails before
+# either stub is ever reached.
+echo "notify.plugin=totally-bogus-plugin-name" >> orchid.config
+: > "$OC_LOG"; : > "$H_LOG"
+qidB="$("$ORCHID_BIN" notify "bogus plugin selector")"
+"$PUMP" >/dev/null 2>&1
+[ -f ".orchid/runtime/outbox/$qidB" ] || fail "bogus notify.plugin, attempt 1: outbox file must be left for the next pass (not silently dropped)"
+[ -f ".orchid/runtime/outbox/$qidB.tries" ] || fail "bogus notify.plugin, attempt 1: must bump a .tries sidecar, same as a real send failure"
+assert_eq "1" "$(cat ".orchid/runtime/outbox/$qidB.tries")" "bogus notify.plugin, attempt 1: tries=1"
+[ -s "$OC_LOG" ] && fail "bogus notify.plugin: the openclaw stub must never be invoked"
+[ -s "$H_LOG" ] && fail "bogus notify.plugin: the hermes stub must never be invoked either -- resolution fails before any spawn"
+
+"$PUMP" >/dev/null 2>&1
+[ -f ".orchid/runtime/outbox/$qidB" ] && fail "bogus notify.plugin, attempt 2 (= send_retry_max): must quarantine, same as a real send failure would"
+[ -f ".orchid/runtime/outbox/$qidB.reason-send-failed" ] || fail "bogus notify.plugin: quarantine must write a .reason-send-failed sidecar"
+assert_match "not found on search path" "$(cat ".orchid/runtime/outbox/$qidB.reason-send-failed")" "the quarantine reason names the resolution failure, not a generic 'send failed'"
+assert_match "totally-bogus-plugin-name" "$(cat ".orchid/runtime/outbox/$qidB.reason-send-failed")" "the quarantine reason names the bogus notify.plugin value itself"

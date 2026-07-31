@@ -12,11 +12,16 @@ channel plugin (docs/specs/plugins.md's "notify channel" row: `send
 
 ## What this is (and isn't)
 
-There is exactly one shipped notify-channel plugin: `openclaw`. OpenClaw
-itself is a multi-channel hub (Telegram, WhatsApp, Discord, Slack, Signal,
-iMessage, ...), so orchid does not ship a separate notify plugin per chat
-app — `notify.channel` configures WHICH of OpenClaw's own channels to use,
-not which orchid plugin to invoke.
+`openclaw` is this milestone's *reference* notify-channel plugin, and the
+default (`notify.plugin` unset resolves to it — see "Config keys" below).
+A second, sibling `kind=notify` plugin, `plugins/notify/hermes` (see
+[hermes.md](./hermes.md)'s own "Notify channel" section), also ships —
+`notify.plugin` is the selector between the two. OpenClaw itself is
+additionally a multi-channel hub in its own right (Telegram, WhatsApp,
+Discord, Slack, Signal, iMessage, ...), so THIS plugin doesn't get one
+orchid plugin per chat app under it — `notify.channel` configures WHICH of
+OpenClaw's own channels to use, a separate axis from `notify.plugin`
+(which orchid plugin to invoke in the first place).
 
 ## Install
 
@@ -69,6 +74,10 @@ the adapter and this doc can never drift on which flags are real.
 
 ## Config keys
 
+- `notify.plugin` (default `openclaw`) — selects which `kind=notify`
+  plugin dir under `plugins/notify/` the pump's outbox drain launches
+  (`openclaw` or `hermes`; a directory name, not a manifest id). Unset
+  stays on this plugin — nothing below changes behavior on its own.
 - `notify.channel` (default empty — no channel configured, `orchid notify`
   never writes an outbox file at all) — OpenClaw's channel enum, see above.
 - `notify.to` (default empty) — the `--target` recipient.

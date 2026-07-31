@@ -21,17 +21,22 @@ homeA="$WORK/homeA"; mkdir -p "$homeA/.orchid"
 # test, orchid/migrate) -- 9 built-ins. v1-m4 Task 6 adds a fifth built-in
 # engine (orchid/hermes, review/critique only) -- 10 built-ins. v1-m4
 # Task 7 adds the first built-in kind=notify plugin (orchid/openclaw) --
-# 11 built-ins total from here on.
+# 11 built-ins. v1-m4 (hermes notify channel plugin task) adds a second
+# kind=notify plugin (orchid/hermes-notify, plugins/notify/hermes -- id
+# deliberately NOT `orchid/hermes`, which is already taken by the kind=engine
+# plugin above; INV-10 collision detection is keyed on id across the whole
+# discovered set regardless of kind) -- 12 built-ins total from here on.
 out="$(HOME="$homeA" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "plugins list exits 0 with only built-ins"
 lines="$(echo "$out" | wc -l | tr -d ' ')"
-assert_eq 11 "$lines" "exactly the 11 built-ins are listed with a clean HOME/repo"
+assert_eq 12 "$lines" "exactly the 12 built-ins are listed with a clean HOME/repo"
 for row in "orchid/codex engine 0.1.0 builtin builtin" \
            "orchid/codex-review engine 0.1.0 builtin builtin" \
            "orchid/agy engine 0.1.0 builtin builtin" \
            "orchid/claude engine 0.1.0 builtin builtin" \
            "orchid/hermes engine 0.1.0 builtin builtin" \
            "orchid/openclaw notify 0.1.0 builtin builtin" \
+           "orchid/hermes-notify notify 0.1.0 builtin builtin" \
            "orchid/feature archetype 0.1.0 builtin builtin" \
            "orchid/review archetype 0.1.0 builtin builtin" \
            "orchid/refactor archetype 0.1.0 builtin builtin" \
@@ -47,7 +52,7 @@ out="$(HOME="$homeB" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "plugins list still exits 0 with one added user plugin"
 assert_match "$(row_re acme/fake engine 0.2.0 user user)" "$out" "user plugin: origin=user trust=user"
 lines="$(echo "$out" | wc -l | tr -d ' ')"
-assert_eq 12 "$lines" "11 built-ins + 1 user plugin"
+assert_eq 13 "$lines" "12 built-ins + 1 user plugin"
 
 # -- ORCHID_PLUGIN_PATH entries show origin=path, trust=user -----------------
 pathroot="$WORK/pathroot"
@@ -78,7 +83,7 @@ assert_match "$(row_re orchid/codex engine 9.9.9 repo 'DISABLED \(untrusted\)')"
 out="$(HOME="$homeA" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate --all)"; rc=$?
 assert_eq 0 "$rc" "validate --all passes with only built-ins"
 okcount="$(echo "$out" | grep -c '^ok:')"
-assert_eq 11 "$okcount" "validate --all prints an ok line per built-in"
+assert_eq 12 "$okcount" "validate --all prints an ok line per built-in"
 
 # -- validate --all: a malformed planted manifest aggregate-fails (exit 13) --
 homeG="$WORK/homeG"
@@ -166,7 +171,7 @@ out="$(HOME="$homeR" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_eq 0 "$rc" "plugins list exits 0 with a planted kind=role plugin"
 assert_match "$(row_re acme/researcher role 0.1.0 user user)" "$out" "kind=role plugin lists with kind=role, origin=user, trust=user"
 lines="$(echo "$out" | wc -l | tr -d ' ')"
-assert_eq 12 "$lines" "11 built-ins + 1 role plugin"
+assert_eq 13 "$lines" "12 built-ins + 1 role plugin"
 
 out="$(HOME="$homeR" ORCHID_REPO="$reposA" "$ORCHID_BIN" plugins validate acme/researcher)"; rc=$?
 assert_eq 0 "$rc" "validate acme/researcher passes (kind=role needs no entrypoint)"

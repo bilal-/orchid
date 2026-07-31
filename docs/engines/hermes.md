@@ -200,6 +200,80 @@ requires BOTH), hermes is orchestrator-ineligible regardless of the
   which this adapter fails closed rather than invoking hermes (mirrors
   `agy_max_bytes`). Env override: `ORCHID_HERMES_MAX_BYTES`.
 
+## Notify channel
+
+Status: **build-only** (v1-m4, sibling task to the one above). This is a
+*second*, unrelated plugin that also happens to wrap the `hermes` CLI:
+`plugins/notify/hermes/send`, a `kind=notify` channel plugin
+(`plugins/notify/hermes/plugin.conf`, `id=orchid/hermes-notify` —
+deliberately NOT `orchid/hermes`, to avoid colliding with this page's own
+engine plugin's id; `orchid plugins list`'s collision check is keyed on id
+across every discovered plugin regardless of kind). It has nothing to do
+with the `implement`/`review`/`critique` engine adapter documented above —
+it drives `hermes send`, a separate, no-LLM message pipe subcommand that
+reuses the gateway's own already-configured platform credentials
+(`~/.hermes/.env` + `~/.hermes/config.yaml`); no agent loop, no running
+gateway required for bot-token platforms (Telegram/Discord/Slack/Signal).
+
+The OUTBOX pattern this plugin fits into — why `orchid notify` (tier-1)
+never spawns anything itself, how `runners/orchid-pump` (tier-2) drains
+`runtime/outbox/<qid>` by launching a channel plugin's `send`, retry/
+quarantine via `send_retry_max`, and the inbox-hardening (`orchid answer`
+nonce/allowlist/expiry) story on the way back in — is documented once, in
+[openclaw.md](./openclaw.md), and not repeated here; that pattern is
+channel-agnostic and this plugin fits it exactly the same way.
+
+**One difference from openclaw worth calling out:** openclaw's `notify.to`
+is mandatory (its `send` dies without a `--target`). Hermes has its own
+notion of a "home channel" per platform (`~/.hermes/config.yaml`), so
+`notify.to` is **optional** for this plugin — when empty, `send` passes the
+bare platform name as `--to` and hermes routes to that platform's home
+channel; when set, `send` composes `<channel>:<to>`.
+
+```
+notify.plugin=hermes    # selects THIS plugin (default is openclaw -- see below)
+notify.channel=telegram
+notify.to=              # optional here (unlike openclaw) -- home channel if empty
+```
+
+- `notify.plugin=hermes` — `hermes` here is the plugin's **directory name**
+  under `plugins/notify/` (`plugins/notify/hermes`), not this plugin's
+  manifest id (`orchid/hermes-notify`) and not the kind=engine hermes
+  adapter documented above. `runners/orchid-pump`'s outbox drain resolves
+  this the same way any other notify plugin lookup works
+  (`resolve_notify_dir`); leaving `notify.plugin` unset keeps the default,
+  `openclaw`, so configuring `notify.channel`/`notify.to` alone (with no
+  `notify.plugin` line) still drives the openclaw plugin, exactly as
+  before this key existed.
+- `notify.channel` (default empty) — a hermes platform name recognized by
+  the operator's own `~/.hermes/config.yaml` (whatever `hermes send --list`
+  shows configured — e.g. `telegram`, `discord`, `slack`, `signal`).
+- `notify.to` (default empty) — a chat id (`-100123456789`), a
+  `#channel-name` (Discord/Slack), or an E.164 number (Signal); composed
+  onto `notify.channel` as `<channel>:<to>`. **Optional for this plugin** —
+  unlike openclaw, where it's required — left empty, the platform's home
+  channel is used instead.
+
+**The verified invocation**, per `hermes send --help` (Hermes Agent v0.19.0,
+help text only — no real `hermes send` has been run by this task):
+
+```sh
+hermes send --to <channel[:to]> "<text>"
+```
+
+`plugins/notify/hermes/send`'s own header comment carries the full flag
+research (the `-t`/`--to` target-format grammar, exit codes 0/1/2, no
+`--dry-run` flag exists) so the adapter and this doc can't drift.
+
+**Known gotchas / PENDING-VALIDATION**, same shape as openclaw's own list:
+this invocation has not yet been run against a live, configured Hermes
+gateway with a real platform connected — that live round trip is a later
+controller task (hero-demo dogfood), not this build task. `notify.plugin`
+must actually be set to `hermes` for the pump to launch this plugin at all
+— leaving it unset (or setting `notify.channel`/`notify.to` alone, the way
+the openclaw section above documents) still drives the openclaw plugin,
+since `openclaw` remains `notify.plugin`'s default.
+
 ## See also
 
 - [../../README.md#any-engine-any-role](../../README.md#any-engine-any-role) —
@@ -211,3 +285,7 @@ requires BOTH), hermes is orchestrator-ineligible regardless of the
   what happens when a diff exceeds `hermes_max_bytes`.
 - [agy.md](./agy.md) — the other inline-only (no worktree-read) reviewer,
   same byte-ceiling shape.
+- [openclaw.md](./openclaw.md) — the shipped reference notify-channel plugin
+  and the OUTBOX pattern this section's plugin is a sibling of (retry/
+  quarantine, inbox hardening, the `orchid answer` nonce/allowlist/expiry
+  story) — documented there once, not duplicated here.

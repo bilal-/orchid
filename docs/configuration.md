@@ -69,6 +69,7 @@ live checkout.
 | `hook_timeout_s` | `600` | repo | v1-m3 |
 | `push_guard` | `true` | repo | v1-m4 |
 | `status_page` | `runtime/status.html` | repo | v1-m4 |
+| `notify.plugin` | `openclaw` | repo or user | v1-m4 |
 | `notify.channel` | *(empty — no channel configured)* | repo or user | v1-m4 |
 | `notify.to` | *(empty)* | repo or user | v1-m4 |
 | `answer_allowlist` | *(empty — hardening off)* | repo | v1-m4 |
@@ -115,9 +116,22 @@ live checkout.
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.
+- **`notify.plugin`** (default `openclaw`) selects WHICH `kind=notify`
+  plugin `runners/orchid-pump`'s outbox drain launches — the value is a
+  plugin **directory name** under `plugins/notify/` (e.g. `openclaw` or
+  `hermes`), resolved the same way any other notify-plugin lookup is, never
+  a manifest `id=`. Leaving it unset is a no-op (same `openclaw` default as
+  before this key existed). An unresolvable value (missing plugin dir, or
+  one whose entrypoint isn't executable) feeds the same failure/quarantine
+  path a real send failure does — every queued message eventually
+  quarantines with a clear reason rather than retrying forever silently.
 - **`notify.channel`** / **`notify.to`** / **`answer_allowlist`** /
-  **`answer_expiry_s`** / **`send_retry_max`** are the OpenClaw notify
-  channel's keys — see [docs/engines/openclaw.md](./engines/openclaw.md) for
+  **`answer_expiry_s`** / **`send_retry_max`** are per-PLUGIN keys (each
+  plugin's own inner channel enum/target string, plus the shared
+  inbox-hardening/retry knobs) — see
+  [docs/engines/openclaw.md](./engines/openclaw.md) (the reference plugin,
+  `notify.plugin` unset/`openclaw`) and
+  [docs/engines/hermes.md](./engines/hermes.md) (`notify.plugin=hermes`) for
   the full setup and inbox-hardening story.
 - `ORCHID_HB_INTERVAL_S` (the adapter heartbeat interval) is deliberately
   **not** a layered config key — it's an env-only override read directly by
