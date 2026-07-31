@@ -332,3 +332,49 @@ the review-only stance stands).
   exists precisely for this; expected, but easy to misread as a failure.
 - m4's stale-checkout warning + scoped-exclude remedy and the r-001→r-002
   `run new` rollover both behaved exactly as designed under live use.
+
+## v1-m4 Task 10 — hero demo (hermes-telegram live, OpenClaw AgentSkill registered)
+
+Live evidence (scratch repo ~/orchid-m4t10-demo-orchid, notify.plugin=hermes,
+notify.channel=telegram, answer_allowlist configured):
+- Outbound leg PROVEN three times: `orchid notify` → strong nonce minted →
+  outbox → pump drain → `hermes send -t telegram` → operator's phone, ~2s
+  per message; drain fires even on a fresh lease (channel-send never waits
+  for a tick), exactly as specified.
+- Inbox hardening PROVEN on live questions: no-nonce, wrong-nonce, and
+  unlisted-sender answers all refused with the exact contract messages;
+  the consumed nonce (q-0) correctly refused a second answer.
+- AgentSkill bundle registered into the local OpenClaw instance
+  (`openclaw skills install <dir>` → enabled, ✓ Ready once `orchid` was
+  resolvable to the gateway); OpenClaw answer leg untested — no chat
+  channel paired yet (operator action).
+- The same SKILL.md installed unmodified into hermes
+  (~/.hermes/skills/orchestration/orchid/) — the single-file AgentSkill
+  format is portable across both products; the operator's Telegram agent
+  loaded it and, on the second blocker, constructed the exact correct
+  `orchid answer <qid> <choice> --nonce <nonce>` command from a natural-
+  language reply.
+
+### F14 (UX gap, medium) — outbound-only channel is a dead-end reply experience
+The operator's first instinct was to reply "proceed" in the same Telegram
+chat. The receiving agent (hermes, pre-skill) had no idea what to do with
+it. A notify channel whose agent can't answer is a confusing
+half-experience — the docs now under-sell this. Wants: (a) docs/openclaw.md
++ hermes.md to say plainly that the answering agent must be skilled up or
+replies dead-end; (b) future: richer sends (Telegram inline buttons) once
+the receiving side can act on them.
+
+### F15 (skill-config lesson, medium) — inline the repo/env in the command template
+First skilled attempt failed: the agent ran bare `orchid answer …` from its
+own cwd — "unknown question" — because the installed skill's configuration
+expressed ORCHID_REPO/sender as prose. Fix that worked: the operator-config
+section must carry the COMPLETE command template inline
+(`ORCHID_REPO="…" ORCHID_ANSWER_SENDER=… /abs/path/orchid answer <qid>
+<choice> --nonce <n>`). skills-external/openclaw-orchid/SKILL.md's
+Configuration section should model exactly that shape.
+
+### Status
+q-0/q-1 answered (operator intent via controller relay after the above
+failures); q-2-0518 remains OPEN for the operator's true phone round trip
+with the hardened skill. Screenshots for the README hero panel: operator
+capture pending.
