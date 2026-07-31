@@ -10,6 +10,16 @@ case "$sub" in
     # default) and its provenance for each known key.
     while IFS= read -r key; do
       [ -n "$key" ] || continue
+      # `role.<id>.blocking` is a TEMPLATE row (lib/config-keys.txt's own
+      # placeholder for "any custom role id"), never a real config key --
+      # its literal `<id>` makes _cfg_env_name compose an invalid bash
+      # identifier (ORCHID_ROLE_<ID>_BLOCKING), which config_get/
+      # config_provenance's own `eval "v=\${$env:-}"` then throws a
+      # "bad substitution" interpreter error for, straight onto this
+      # otherwise-quiet verb's stderr (review fix-now minor). Skip any key
+      # still carrying its placeholder `<...>` shape rather than ever
+      # reaching that eval.
+      case "$key" in *'<'*) continue ;; esac
       printf '%s\t%s\t%s\n' "$key" "$(config_get "$repo" "$key")" "$(config_provenance "$repo" "$key")"
     done < "$ORCHID_ROOT/lib/config-keys.txt"
     ;;

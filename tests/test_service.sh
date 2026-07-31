@@ -57,6 +57,13 @@ grep -qF "<string>$REPO_ROOT/runners/orchid-pump</string>" "$plist" || fail "pli
 grep -qF "<string>$repo_canon/.orchid/runtime/pump.log</string>" "$plist" || fail "plist Std{Out,Err}Path does not point at runtime/pump.log"
 assert_match 'DRY-RUN:.*launchctl load' "$out" "install --dry-run prints the launchctl load command"
 
+# IMPORTANT fix (final review #1): a launchd agent gets only launchd's own
+# bare PATH -- the installing user's OWN $PATH (this test process's own, the
+# same one the script itself ran under) must be baked into the plist's
+# EnvironmentVariables, so `jq`/engine CLIs are findable by a scheduled pump.
+grep -qF "<key>PATH</key>" "$plist" || fail "plist must declare a PATH key in EnvironmentVariables"
+grep -qF "<string>$PATH</string>" "$plist" || fail "plist PATH does not carry the installing user's \$PATH"
+
 # A real `launchctl` invocation must never happen: the fixture HOME has no
 # real launchd session behind it, so if the script ever ran it for real
 # instead of printing it, the command would either hang or error loudly
@@ -189,11 +196,18 @@ record="$WORK/.orchid/runtime/pump.cron"
 [ -f "$record" ] || fail "linux install must render + place a local pump.cron record for real, same as the plist on darwin"
 line="$(cat "$record")"
 assert_match '^\*/2 \* \* \* \*' "$line" "150s floors to 2 minutes (150/60=2, integer division)"
-assert_match "ORCHID_REPO=$repo_canon" "$line" "cron line carries ORCHID_REPO (canonical)"
-assert_match "TMPDIR=$parent" "$line" "cron line carries TMPDIR set to the repo's parent (same rationale as the plist)"
+assert_match "ORCHID_REPO='$repo_canon'" "$line" "cron line carries ORCHID_REPO (canonical), single-quoted"
+assert_match "TMPDIR='$parent'" "$line" "cron line carries TMPDIR set to the repo's parent (same rationale as the plist), single-quoted"
 assert_match "$repo_canon/.orchid/runtime/pump.log" "$line" "cron line redirects into runtime/pump.log"
 assert_match "# orchid-service:$label" "$line" "cron line carries the marker comment used to find/remove it later"
 assert_match 'DRY-RUN:.*crontab' "$out" "linux install --dry-run prints (never runs) the crontab pipeline"
+
+# IMPORTANT fix (final review #1): same PATH-baking as the plist, for the
+# cron fallback -- a scheduled cron pump gets scarcely more environment than
+# launchd's own bare default, so PATH must be baked into the rendered line
+# too (single-quoted, same as every other path-shaped value here -- Minor
+# #5/final review).
+assert_match "PATH='$PATH'" "$line" "cron line bakes in the installing user's \$PATH, single-quoted"
 
 # Sub-minute interval floors to 1, never 0.
 out="$("$SERVICE" install --repo "$WORK" --interval-s 30 --dry-run 2>&1)"
@@ -231,10 +245,10 @@ assert_eq 0 "$rcp" "linux install --dry-run exits 0 even when --repo contains %"
 recordp="$WORKP/.orchid/runtime/pump.cron"
 [ -f "$recordp" ] || fail "linux install must render + place a pump.cron record even when --repo contains %"
 linep="$(cat "$recordp")"
-assert_match "ORCHID_REPO=$(printf '%s' "$WORKP_canon" | sed 's/%/\\\\%/g')" "$linep" \
-  "cron line escapes a literal % in the repo path as \\% (cron's own escape for a literal percent)"
+assert_match "ORCHID_REPO='$(printf '%s' "$WORKP_canon" | sed 's/%/\\\\%/g')'" "$linep" \
+  "cron line escapes a literal % in the repo path as \\% (cron's own escape for a literal percent), inside single quotes"
 case "$linep" in
-  *"ORCHID_REPO=$WORKP_canon "*)
+  *"ORCHID_REPO=$WORKP_canon "*|*"ORCHID_REPO='$WORKP_canon'"*)
     fail "cron line must NEVER carry an unescaped % in ORCHID_REPO -- cron would treat it as a line-continuation/stdin marker and silently truncate the command" ;;
 esac
 rm -rf "$(dirname "$WORKP")"

@@ -140,14 +140,33 @@ _svc_xml_escape() {
 # _svc_render_plist can't apply the two passes out of order or forget one.
 _svc_plist_value() { _svc_sed_escape "$(_svc_xml_escape "$1")"; }
 
+# _svc_install_path -- the PATH baked into the rendered plist/cron artifacts
+# at `orchid service install` time (review finding: a launchd agent gets
+# only launchd's own bare default PATH, /usr/bin:/bin:/usr/sbin:/sbin, and
+# a marker-guarded crontab line's shell is scarcely richer -- neither ever
+# sources an interactive shell's profile, so `jq` (Homebrew) and every
+# engine CLI the pump's tick execs (claude/codex/hermes -- npm/Homebrew
+# paths) would be unfindable on a stock machine). Prefers the INSTALLING
+# user's own resolved $PATH (the value in effect right now, in this
+# process, when `install` runs) -- the same PATH the operator's own shell
+# already uses to find those exact binaries. Falls back to a documented,
+# reasonable composition only in the degenerate case of $PATH being unset/
+# empty (never expected interactively, but cheap to guard).
+_svc_install_path() {
+  local p="${PATH:-}"
+  [ -n "$p" ] || p="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
+  echo "$p"
+}
+
 _svc_render_plist() {
-  local label="$1" repo="$2" parent="$3" interval="$4" log="$5" pump_exe="$6"
+  local label="$1" repo="$2" parent="$3" interval="$4" log="$5" pump_exe="$6" path_val="$7"
   sed -e "s|__LABEL__|$(_svc_plist_value "$label")|g" \
       -e "s|__REPO__|$(_svc_plist_value "$repo")|g" \
       -e "s|__TMPDIR__|$(_svc_plist_value "$parent")|g" \
       -e "s|__INTERVAL__|$(_svc_plist_value "$interval")|g" \
       -e "s|__LOG__|$(_svc_plist_value "$log")|g" \
       -e "s|__ORCHID_PUMP__|$(_svc_plist_value "$pump_exe")|g" \
+      -e "s|__PATH__|$(_svc_plist_value "$path_val")|g" \
       "$ORCHID_ROOT/templates/launchd.orchid-pump.plist"
 }
 
@@ -172,15 +191,29 @@ _svc_cron_record_path() { echo "$1/.orchid/runtime/pump.cron"; }
 # `\%` is cron's own escape for a literal percent.
 _svc_cron_escape() { printf '%s' "$1" | sed -e 's/%/\\%/g'; }
 
+# _svc_shq <string> -- POSIX single-quote-wrap for the cron line's OWN sh
+# parse (review Minor: the crontab WRITE is safely %q-quoted via
+# _svc_cron_pipeline_install/printf %q, but the rendered LINE ITSELF is
+# handed to /bin/sh unquoted -- a repo/log/pump path containing a space or
+# quote character produced a silently broken scheduled command at cron-exec
+# time). Applied AFTER _svc_cron_escape: cron's own %-handling is a plain
+# textual scan of the crontab line that happens BEFORE any shell ever parses
+# it, so % must already be escaped in the value regardless of quoting; a
+# literal `'` inside the value is closed-quote/escaped-quote/reopen-quote
+# (`'\''`), the standard POSIX idiom, so the SHELL sees the value as one
+# argument/assignment no matter what it contains.
+_svc_shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
 _svc_render_cron_line() {
-  local label="$1" repo="$2" parent="$3" interval_s="$4" log="$5" pump_exe="$6" mins
-  local repo_e parent_e log_e pump_e
+  local label="$1" repo="$2" parent="$3" interval_s="$4" log="$5" pump_exe="$6" path_val="$7" mins
+  local repo_e parent_e log_e pump_e path_e
   mins="$(_svc_cron_minutes "$interval_s")"
-  repo_e="$(_svc_cron_escape "$repo")"
-  parent_e="$(_svc_cron_escape "$parent")"
-  log_e="$(_svc_cron_escape "$log")"
-  pump_e="$(_svc_cron_escape "$pump_exe")"
-  echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e $pump_e >> $log_e 2>&1 # orchid-service:$label"
+  repo_e="$(_svc_shq "$(_svc_cron_escape "$repo")")"
+  parent_e="$(_svc_shq "$(_svc_cron_escape "$parent")")"
+  log_e="$(_svc_shq "$(_svc_cron_escape "$log")")"
+  pump_e="$(_svc_shq "$(_svc_cron_escape "$pump_exe")")"
+  path_e="$(_svc_shq "$(_svc_cron_escape "$path_val")")"
+  echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e >> $log_e 2>&1 # orchid-service:$label"
 }
 
 _svc_print_log_tail() {
@@ -204,15 +237,16 @@ _svc_install_darwin() {
   local agents_dir="$HOME/Library/LaunchAgents"
   local plist_path="$agents_dir/$label.plist"
   local parent; parent="$(cd "$repo/.." && pwd -P)"
-  local rt log pump_exe existed=0
+  local rt log pump_exe path_val existed=0
   rt="$(orchid_runtime "$repo")"   # repo already confirmed initialized by the caller
   log="$rt/pump.log"
   pump_exe="$ORCHID_ROOT/runners/orchid-pump"
+  path_val="$(_svc_install_path)"
   [ -f "$plist_path" ] && existed=1
 
   mkdir -p "$agents_dir"
   local tmp="$plist_path.tmp.$$"
-  _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" > "$tmp"
+  _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val" > "$tmp"
   mv "$tmp" "$plist_path"
 
   # Idempotent re-install: unload the PRIOR load (best-effort -- if it was
@@ -334,12 +368,13 @@ _svc_install_linux() {
   local repo="$1" interval_s="$2" dry="$3"
   local label; label="$(_svc_label "$repo")"
   local parent; parent="$(cd "$repo/.." && pwd -P)"
-  local rt log pump_exe record line marker
+  local rt log pump_exe path_val record line marker
   rt="$(orchid_runtime "$repo")"
   log="$rt/pump.log"
   pump_exe="$ORCHID_ROOT/runners/orchid-pump"
+  path_val="$(_svc_install_path)"
   record="$(_svc_cron_record_path "$repo")"
-  line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe")"
+  line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val")"
   marker="# orchid-service:$label"
 
   printf '%s\n' "$line" > "$record"

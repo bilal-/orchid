@@ -161,7 +161,11 @@ if [ "$html" -eq 1 ]; then
       [ -e "$qf" ] || continue
       qid="$(basename "$qf" .question)"
       [ -f "$rt/answers/$qid.answer" ] && continue
-      qtext="$(tail -n +2 "$qf")"
+      # Review fix (Minor #6): drop the `nonce: ` line -- the nonce belongs
+      # to BLOCKERS.md and the outbound channel message (the answer path's
+      # own secret), never to this static page, which is the "check from
+      # another room" surface and may be screen-shared.
+      qtext="$(tail -n +2 "$qf" | grep -v '^nonce: ')"
       blockers_html="$blockers_html<li><strong>$(orchid_html_escape "$qid")</strong>: <pre>$(orchid_html_escape "$qtext")</pre></li>
 "
     done

@@ -313,3 +313,26 @@ assert_eq "1" "$(cat ".orchid/runtime/outbox/$qidB.tries")" "bogus notify.plugin
 [ -f ".orchid/runtime/outbox/$qidB.reason-send-failed" ] || fail "bogus notify.plugin: quarantine must write a .reason-send-failed sidecar"
 assert_match "not found on search path" "$(cat ".orchid/runtime/outbox/$qidB.reason-send-failed")" "the quarantine reason names the resolution failure, not a generic 'send failed'"
 assert_match "totally-bogus-plugin-name" "$(cat ".orchid/runtime/outbox/$qidB.reason-send-failed")" "the quarantine reason names the bogus notify.plugin value itself"
+
+# 8d -- final review Important #2: a notify.plugin value containing a path
+# separator or '..' must be refused by resolve_notify_dir BEFORE it ever
+# touches the filesystem (unrefused, `$d/$name/plugin.conf` traverses out of
+# every notify root, and the pump would then exec that directory's `send`
+# with NO INV-09 digest/trust gate at all). Must feed the identical
+# failure/quarantine path the bogus-name case above does -- never a silent
+# no-op, and never a spawn of either stub. `_cfg_file_get` is last-line-wins
+# (lib/common.sh), so appending a new notify.plugin= line below is enough to
+# override the bogus-name value from 8c without editing the file in place.
+echo "notify.plugin=../../etc" >> orchid.config
+: > "$OC_LOG"; : > "$H_LOG"
+qidT="$("$ORCHID_BIN" notify "traversal plugin selector")"
+"$PUMP" >/dev/null 2>&1
+[ -f ".orchid/runtime/outbox/$qidT" ] || fail "traversal notify.plugin, attempt 1: outbox file must be left for the next pass (not silently dropped)"
+assert_eq "1" "$(cat ".orchid/runtime/outbox/$qidT.tries")" "traversal notify.plugin, attempt 1: tries=1"
+[ -s "$OC_LOG" ] && fail "traversal notify.plugin: the openclaw stub must never be invoked"
+[ -s "$H_LOG" ] && fail "traversal notify.plugin: the hermes stub must never be invoked either -- resolution fails before any spawn"
+
+"$PUMP" >/dev/null 2>&1
+[ -f ".orchid/runtime/outbox/$qidT" ] && fail "traversal notify.plugin, attempt 2 (= send_retry_max): must quarantine, same as a real send failure would"
+[ -f ".orchid/runtime/outbox/$qidT.reason-send-failed" ] || fail "traversal notify.plugin: quarantine must write a .reason-send-failed sidecar"
+assert_match "invalid notify plugin name" "$(cat ".orchid/runtime/outbox/$qidT.reason-send-failed")" "the quarantine reason names the traversal refusal, not a generic 'not found'"

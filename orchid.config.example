@@ -120,7 +120,10 @@ pack_budget_bytes=65536
 # nextcloud-talk|matrix|raft|line|zalo|clickclack|zalouser|sms|
 # synology-chat|tlon|qqbot|twitch -- `openclaw message send --help`);
 # `notify.to` is the recipient (`--target`: E.164, chat id, channelId, etc,
-# per that channel).
+# per that channel). `notify.plugin` selects WHICH kind=notify plugin dir
+# the pump's outbox drain launches (a plugin directory NAME under
+# plugins/notify/, e.g. `hermes` -- never a manifest id), default openclaw.
+# notify.plugin=openclaw
 # notify.channel=
 # notify.to=
 # v1-m4 Task 7: setting this to anything turns inbox hardening ON for

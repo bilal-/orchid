@@ -53,7 +53,21 @@ qnonce="$(grep -m1 '^nonce: ' "$qf" 2>/dev/null | sed 's/^nonce: //')"
 qf_mtime="$(stat -f %m "$qf" 2>/dev/null || stat -c %Y "$qf" 2>/dev/null || echo 0)"
 expiry_s="$(config_get "$repo" answer_expiry_s 86400)"
 now="$(date -u +%s)"
-if [ "$qf_mtime" -gt 0 ] && [ $(( now - qf_mtime )) -gt "$expiry_s" ]; then
+# Review fix (Minor #10): if BOTH `stat` variants fail, `qf_mtime` is 0 --
+# the age can't be determined at all. Failing OPEN here (treating "unknown
+# age" as "not expired," which the original `[ "$qf_mtime" -gt 0 ] && ...`
+# guard did by simply skipping the whole check) would let an unbounded-age
+# question be answered regardless of answer_expiry_s. Fail CLOSED instead:
+# refuse plainly, same journal-then-die shape as a genuine expiry below.
+if [ "$qf_mtime" -le 0 ]; then
+  if [ -n "$task_id" ]; then
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --task "$task_id" --kind blocker_expired "$qid: refused (unable to determine question age -- stat failed on its .question file)" || true
+  else
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --kind blocker_expired "$qid: refused (unable to determine question age -- stat failed on its .question file)" || true
+  fi
+  orchid_die "cannot determine $qid's age (stat failed on its .question file) -- refusing to answer rather than skip the expiry check"
+fi
+if [ $(( now - qf_mtime )) -gt "$expiry_s" ]; then
   if [ -n "$task_id" ]; then
     ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --unfenced --task "$task_id" --kind blocker_expired "$qid: expired (unanswered > ${expiry_s}s)" || true
   else

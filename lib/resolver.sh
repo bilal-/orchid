@@ -133,6 +133,19 @@ resolve_engine_dir() {  # name -> plugin dir (dirname of resolve_engine_exe)
 # needed.
 resolve_notify_dir() {
   local name="$1" d found="" p
+  # Review finding (Important #2): `name` comes straight from `notify.plugin`
+  # config -- operator-trusted today, but `orchid config commit` makes
+  # orchid.config a tracked, merge-reachable file, so a value containing a
+  # path separator or `..` must never be allowed to traverse out of every
+  # notify root below (`$d/$name/plugin.conf` would otherwise resolve
+  # anywhere on disk, and the caller then execs that directory's `send` with
+  # NO INV-09 digest/trust gate at all -- contradicting docs/specs/
+  # plugins.md's threat model). Refused before any root is even searched;
+  # the caller (runners/orchid-pump's outbox drain) already feeds this exact
+  # 1-argument stderr into its existing per-message failure/quarantine path.
+  case "$name" in
+    */*|*..*) echo "orchid: invalid notify plugin name '$name' (must not contain '/' or '..')" >&2; return 1 ;;
+  esac
   local -a search_dirs=()
   if [ -n "${ORCHID_PLUGIN_PATH:-}" ]; then
     local IFS=':' parts=()

@@ -144,7 +144,20 @@ case "$push_guard_cfg" in
       # substitution (the literal branch text, not `&`, is what must land in
       # the hook) rather than erroring loudly. Escape every occurrence of
       # those three characters with a leading backslash before substituting.
-      integ_esc="$(printf '%s' "$integ" | sed -e 's/[|&\\]/\\&/g')"
+      #
+      # Final review fix (Minor #9): the substituted value also lands INSIDE
+      # DOUBLE QUOTES in the rendered hook (`integ="__INTEGRATION_BRANCH__"`)
+      # -- `"`, `$`, and a backtick are all legal in a git refname too, and
+      # any of them left unescaped there becomes live shell syntax (command
+      # substitution / a broken quote) in the INSTALLED hook, not inert text.
+      # Escape those three for the SHELL context first (a leading backslash
+      # on each), THEN run the existing sed-escape pass (which itself
+      # doubles any backslash it finds, so the backslash just added here
+      # survives sed's own replacement-string grammar and reaches the
+      # rendered file as a single literal `\` ahead of the character it
+      # guards) -- never merge the two passes or reorder them.
+      integ_shell_esc="$(printf '%s' "$integ" | sed -e 's/[`$"]/\\&/g')"
+      integ_esc="$(printf '%s' "$integ_shell_esc" | sed -e 's/[|&\\]/\\&/g')"
       sed "s|__INTEGRATION_BRANCH__|$integ_esc|g" "$ORCHID_ROOT/templates/pre-push.sh" > "$hooks_dir/pre-push"
       chmod +x "$hooks_dir/pre-push"
       echo "pre-push guard installed: $hooks_dir/pre-push (integration branch: $integ)"

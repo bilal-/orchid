@@ -62,6 +62,8 @@ assert_eq "$expected_explain" "$("$ORCHID_BIN" status --explain)" \
 
 # Plant an open blocker (qid unanswered yet).
 qid="$("$ORCHID_BIN" notify --task T001 "waiting on operator input")"
+blocker_nonce="$(grep -m1 '^nonce: ' ".orchid/runtime/answers/$qid.question" | sed 's/^nonce: //')"
+[ -n "$blocker_nonce" ] || fail "test fixture: the planted blocker's .question file must carry a nonce line"
 
 # Plant an engine ledger row (same direct-source pattern as tests/test_ledger.sh).
 (
@@ -82,6 +84,11 @@ echo "$content" | grep -qF '<script>alert(1)</script>' && fail "task title must 
 echo "$content" | grep -qF '&lt;script&gt;alert(1)&lt;/script&gt;' || fail "task title's < > must appear HTML-escaped in the page"
 echo "$content" | grep -qF "$qid" || fail "open blocker qid must appear in the page"
 echo "$content" | grep -qF "waiting on operator input" || fail "open blocker text must appear in the page"
+# Review fix (Minor #6): the nonce is the one secret in the answer path and
+# belongs only to BLOCKERS.md/the outbound channel message -- this static
+# page (the "check from another room" surface, possibly screen-shared) must
+# never render it.
+echo "$content" | grep -qF "$blocker_nonce" && fail "open blocker's nonce must never appear on the status page"
 echo "$content" | grep -qF "acme-engine" || fail "engines ledger row must appear in the page"
 echo "$content" | grep -qF 'T001' || fail "task table must list T001 in the page"
 echo "$content" | grep -qF 'T002' || fail "task table must list T002 in the page"

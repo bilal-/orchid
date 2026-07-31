@@ -340,3 +340,25 @@ pg5="$WORK/pushguard-weirdchars"; mkdir -p "$pg5"
 ORCHID_REPO="$pg5" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
 grep -qx 'integ="weird&name"' "$pg5/.git/hooks/pre-push" \
   || fail "orchid init bakes an integration_branch containing '&' in literally, unescaped by sed's whole-match expansion"
+
+# ===========================================================================
+# Final review fix (Minor #9): $integ also lands INSIDE DOUBLE QUOTES in the
+# rendered hook (`integ="__INTEGRATION_BRANCH__"`) -- `"`, `$`, and a
+# backtick are all legal in a real git refname (unlike `\`, which git itself
+# forbids), and any of them left unescaped there becomes LIVE SHELL SYNTAX in
+# the installed hook (a broken quote, variable expansion, or a command
+# substitution) rather than inert text. `integration_branch=weird"quote$
+# dollar`tick`name` must bake in EXACTLY that literal text, escaped for the
+# double-quoted shell context, and the installed hook must still be
+# syntactically valid shell (proof no stray unescaped quote/backtick broke
+# it).
+# ===========================================================================
+pg6="$WORK/pushguard-shellchars"; mkdir -p "$pg6"
+(cd "$pg6" && git init -q . && git symbolic-ref HEAD refs/heads/trunk \
+  && echo "orchid.config" > .gitignore && git add .gitignore && git commit -q -m "gitignore local config" \
+  && printf 'integration_branch=%s\n' 'weird"quote$dollar`tick`name' > orchid.config)
+ORCHID_REPO="$pg6" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
+grep -Fqx 'integ="weird\"quote\$dollar\`tick\`name"' "$pg6/.git/hooks/pre-push" \
+  || fail "orchid init escapes '\"'/'\$'/backtick in the integration branch name for the double-quoted shell context"
+bash -n "$pg6/.git/hooks/pre-push" \
+  || fail "installed pre-push hook with '\"'/'\$'/backtick in the integration branch name must still be syntactically valid shell"

@@ -50,6 +50,17 @@
     -->
     <key>TMPDIR</key>
     <string>__TMPDIR__</string>
+
+    <!-- launchd user agents run with the bare default PATH
+         (/usr/bin:/bin:/usr/sbin:/sbin) — no ambient shell profile is
+         sourced, so `jq` (Homebrew) and every engine CLI (claude/codex/
+         hermes — npm/Homebrew paths) would be unfindable here without
+         this. Baked in at `orchid service install` time from the
+         installing user's own resolved PATH (see runners/orchid-service's
+         _svc_install_path); re-run `orchid service install` after changing
+         PATH to refresh it. -->
+    <key>PATH</key>
+    <string>__PATH__</string>
   </dict>
 
   <!-- Seconds between pump invocations (orchid.config's pump_interval_s,

@@ -220,6 +220,28 @@ it is deliberately not the first thing to reach for — task-splitting keeps
 every engine's job bounded and reviewable regardless of which one is
 bound to a role.
 
+## Scheduled pump can't find jq / engine CLIs
+
+**Symptom:** `orchid service install` succeeds and `orchid service status`
+reports installed/loaded, but the pump's own log
+(`.orchid/runtime/pump.log`) shows failures that look like a missing
+command (`jq: command not found`, or an engine CLI failing to launch)
+even though the same repo runs fine by hand.
+
+A launchd user agent starts from launchd's own bare default PATH
+(`/usr/bin:/bin:/usr/sbin:/sbin`); a cron fallback's environment is
+scarcely richer. Neither ever sources an interactive shell's profile, so
+`jq` (a Homebrew install) and every engine CLI the pump's tick execs
+(`claude`/`codex`/`hermes` — npm or Homebrew paths) can be invisible to a
+scheduled run even though they're on the operator's own `$PATH`.
+
+`orchid service install` bakes the installing user's own `$PATH` (captured
+at install time) into the rendered plist's `EnvironmentVariables` /
+the cron line's `PATH=` prefix — re-run `orchid service install` after
+changing your `$PATH` (e.g. installing a new engine CLI) so the scheduled
+pump picks up the change; editing the shell's profile alone does not touch
+an already-installed schedule.
+
 ## See also
 
 - [docs/configuration.md](./configuration.md) — every config key named

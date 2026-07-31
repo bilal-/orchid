@@ -9,6 +9,17 @@ ORCHID_ENGINES_DIR="$WORK/eng" out="$(ORCHID_ENGINES_DIR="$WORK/eng" resolve_eng
 assert_match "fake/run" "$out" "exe path"
 assert_match "role.implementer	fake	repo" "$("$ORCHID_BIN" config list)" "config list provenance"
 
+# Review fix-now minor: `role.<id>.blocking` is a TEMPLATE row in
+# lib/config-keys.txt (a placeholder for "any custom role id"), not a real
+# key -- its literal `<id>` used to reach config_get/config_provenance's own
+# eval and throw two "bad substitution" interpreter errors on stderr, on a
+# verb the quickstart/PROTOCOL/README all direct users to run. `config list`
+# must now produce no stderr noise at all.
+cfg_list_err="$(mktemp)"
+"$ORCHID_BIN" config list >/dev/null 2>"$cfg_list_err"
+assert_eq "" "$(cat "$cfg_list_err")" "orchid config list emits no stderr noise (no 'bad substitution' from the role.<id>.blocking template row)"
+rm -f "$cfg_list_err"
+
 # -- resolve_engine_exe searches ORCHID_PLUGIN_PATH roots too (Must-fix 2) --
 # `plugins list` already discovers ORCHID_PLUGIN_PATH-root plugins as
 # origin=path (tests/test_plugins_list.sh) -- resolve_engine_exe must be able
