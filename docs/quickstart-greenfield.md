@@ -51,6 +51,22 @@ discovery, role bindings, git topology — is checked exactly as normal.
 
 ## 3. Requirements, then the scaffold task
 
+`orchid requirements import` (like every mutating verb) fences itself
+against a monotonic **epoch** (`ORCHID_EPOCH`; INV-02 — a stale epoch
+refuses to mutate durable state). `orchid init --greenfield` started that
+epoch at `0`, but nothing prints it until `orchid run start` does, so
+export it by hand now:
+
+```sh
+export ORCHID_EPOCH=0
+```
+
+`orchid run start`, `orchid run resume`, and every headless tick
+(`runners/orchid-tick`) mint a **new** epoch — re-export after each one
+(`export ORCHID_EPOCH="$(cat .orchid/runtime/epoch)"`), or the next verb
+refuses with `stale epoch '...' (current N) — refused (INV-02)` (see
+[troubleshooting.md#stale-epoch](./troubleshooting.md#stale-epoch)).
+
 ```sh
 $EDITOR requirements.md
 orchid requirements import "$HOME/path/to/your-new-product/requirements.md"

@@ -75,6 +75,30 @@ shows a lease that looks old.
   recently it was refreshed. PROTOCOL.md's `COMPLETION` procedure ends every
   run with it.
 
+## Stale epoch
+
+**Symptom:** a verb refuses immediately with `stale epoch '...' (current N)
+— refused (INV-02)`, often on the very first mutating verb after `orchid
+init` (`orchid requirements import`, `orchid task create`, ...).
+
+Every mutating verb fences itself against a monotonic **epoch**
+(`ORCHID_EPOCH`) via `epoch_require` — INV-02: a stale (or unset) epoch can
+never mutate durable state, by design. A fresh `orchid init` starts the
+epoch at `0`, but nothing prints it until `orchid run start` does, so
+export it by hand right after init:
+
+```sh
+export ORCHID_EPOCH=0
+```
+
+`orchid run start`, `orchid run resume`, and every headless tick
+(`runners/orchid-tick`) mint a **new** epoch — re-export after each one, or
+the very next verb call in that shell hits this exact error:
+
+```sh
+export ORCHID_EPOCH="$(cat .orchid/runtime/epoch)"
+```
+
 ## Blocked tasks
 
 **Symptom:** a task sits in `blocked` (rework attempts exhausted, a genuine

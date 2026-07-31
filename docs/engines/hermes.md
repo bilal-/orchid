@@ -186,6 +186,13 @@ requires BOTH), hermes is orchestrator-ineligible regardless of the
   see what's enabled for the CLI platform on a given machine/config — useful
   for confirming `-t clarify` actually narrows things down versus whatever
   the operator has configured by default.
+- **File tools refuse a macOS `mktemp -d` scratch dir outright.** A live
+  v1-m4 dogfood run found `-t file` rejecting every write under
+  `/var/folders/…` (macOS's `mktemp -d`/`$TMPDIR`) as "classified as a
+  sensitive system path" — rc 0, no marker file, nothing written. Any
+  scratch experiment against hermes's file tools needs a directory under
+  `$HOME` instead; `tests/probes/probe-hermes.sh`'s implement-shaped half
+  is affected by exactly this (see that probe's header comment).
 
 ## Config keys
 

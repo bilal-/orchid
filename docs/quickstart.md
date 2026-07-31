@@ -79,6 +79,25 @@ cd ../your-project-orchid
 
 Do the rest of this walkthrough from that worktree.
 
+Every mutating verb fences itself against a monotonic **epoch**
+(`ORCHID_EPOCH`; INV-02 — a stale epoch refuses to mutate durable state).
+A fresh `orchid init` starts that epoch at `0`, but nothing prints it until
+`orchid run start` does, so export it by hand now:
+
+```sh
+export ORCHID_EPOCH=0
+```
+
+`orchid run start`, `orchid run resume`, and every headless tick
+(`runners/orchid-tick`) mint a **new** epoch — re-export after each one, or
+the next verb refuses with `stale epoch '...' (current N) — refused
+(INV-02)` (see
+[troubleshooting.md#stale-epoch](./troubleshooting.md#stale-epoch)):
+
+```sh
+export ORCHID_EPOCH="$(cat .orchid/runtime/epoch)"
+```
+
 ```sh
 orchid requirements import "$HOME/path/to/your-project/requirements.md"
 ```
@@ -99,7 +118,7 @@ ever becomes real work) and commit it:
 ```sh
 runners/orchid-launch plan plan_critic critique
 orchid jobs reconcile
-# fold reviews/plan-a1-plan_critic.json's findings back into your tasks,
+# fold .orchid/reviews/plan-a1-plan_critic.json's findings back into your tasks,
 # repeat until nothing at/above medium severity remains, then:
 orchid plan apply --reason "initial plan"
 ```

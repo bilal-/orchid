@@ -16,7 +16,7 @@ build_request() {
   local name="$1" op="$2" stub="$3" nocontext="${4:-}"
   local d="$WORK/$name"
   mkdir -p "$d/pack" "$d/worktree" "$d/out" "$d/bin"
-  printf -- '---\nschema: 1\nid: T001\nacceptance_criteria: does the thing\nstop_condition: one pass only\n---\nDo the thing.\n' \
+  printf -- '---\nschema: 1\nid: T001\ntitle: Do the thing\nacceptance_criteria: does the thing\nstop_condition: one pass only\n---\nDo the thing.\n' \
     > "$d/pack/task.md"
   [ -n "$nocontext" ] || echo "some repo context" > "$d/pack/context.md"
   printf 'diff --git a/f b/f\n+changed\n' > "$d/pack/diff.patch"
@@ -105,6 +105,43 @@ new_sha="$(git -C "$d/worktree" rev-parse HEAD)"
 assert_eq "[\"$new_sha\"]" "$(jq -c .commits "$d/out/envelope.json")" "edit-no-commit stub: commits array is exactly the adapter's new sha"
 assert_eq "$new_sha" "$(jq -r .candidate_sha "$d/out/envelope.json")" "edit-no-commit stub: candidate_sha == adapter's new HEAD"
 assert_eq "T001: Implemented the feature end to end." "$(git -C "$d/worktree" log -1 --format=%s)" "edit-no-commit stub: adapter's commit message is '<task>: <summary>'"
+
+# --- 5a-i. v1-m4 F11 regression: reply's own LAST non-empty line is a bare
+# markdown fence (the exact live-run repro: commit subject shipped as
+# literal "T001: ```"). Sanitization must treat a bare fence line as an
+# empty candidate and fall back to the clean line right before it, not
+# ship the fence verbatim.
+d="$(build_request fencelast implement '#!/usr/bin/env bash
+echo "engine edit" > fencelast.txt
+echo "Implemented the caching layer end to end."
+echo "\`\`\`"')"
+run_adapter "$d" || fail "fence-last-line stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "fence-last-line stub: envelope invalid"
+assert_eq "T001: Implemented the caching layer end to end." "$(git -C "$d/worktree" log -1 --format=%s)" "fence-last-line stub: commit subject falls back to the clean line before the bare fence, not the fence itself"
+
+# --- 5a-ii. v1-m4 F11 regression: reply's own last non-empty line is an
+# unsanitized bullet with inline backticks (the exact live-run repro:
+# commit subject shipped as literal "T002: - \`git diff --check\` passes.").
+# Sanitization strips the leading list marker and the backticks, producing
+# a sane subject instead of shipping the markup verbatim.
+d="$(build_request bulletlast implement '#!/usr/bin/env bash
+echo "engine edit" > bulletlast.txt
+echo "- \`git diff --check\` passes."')"
+run_adapter "$d" || fail "bullet-last-line stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "bullet-last-line stub: envelope invalid"
+assert_eq "T001: git diff --check passes." "$(git -C "$d/worktree" log -1 --format=%s)" "bullet-last-line stub: commit subject strips the leading bullet marker and backticks"
+
+# --- 5a-iii. v1-m4 F11 regression: the reply is fence-only start to finish
+# -- nothing anywhere in it survives sanitization -- so the adapter falls
+# back to the task's own title (already loaded from task.md, not a new
+# input) rather than shipping an empty or garbage subject.
+d="$(build_request fenceonly implement '#!/usr/bin/env bash
+echo "engine edit" > fenceonly.txt
+echo "\`\`\`"
+echo "\`\`\`"')"
+run_adapter "$d" || fail "fence-only stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "fence-only stub: envelope invalid"
+assert_eq "T001: Do the thing" "$(git -C "$d/worktree" log -1 --format=%s)" "fence-only stub: commit subject falls back to the task title when nothing in the reply survives sanitization"
 
 # --- 5b. implement: engine produces NO changes at all (no edit, no commit)
 # -> the adapter must NOT emit ok with an empty commits[] -- an implement

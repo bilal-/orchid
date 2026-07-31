@@ -36,6 +36,17 @@ set -euo pipefail
 # cwd-scoping the CLI to $scratch is what this probe controls; whether
 # hermes ITSELF stays inside $scratch is exactly what's being tested, not
 # assumed.
+#
+# v1-m4 Task 9 live dogfood (F13): this probe's `mktemp -d` scratch dir
+# (macOS puts that under /var/folders/...) got every file-tool write
+# refused outright as "classified as a sensitive system path" (rc 0, no
+# marker file) -- hermes's file tools reject macOS's own temp-dir
+# convention wholesale. A manual retry from a $HOME-rooted scratch dir
+# instead got a real answer: the relative-path write landed inside the
+# scratch dir (PARTIAL, per this probe's own definition below --
+# necessary, not sufficient; absolute-path confinement is still
+# unsettled). See docs/engines/hermes.md's "Known gotchas" for the
+# operator-facing version of this note.
 
 if ! command -v hermes >/dev/null 2>&1; then
   echo "PROBE-RESULT: SKIP (hermes not installed)"

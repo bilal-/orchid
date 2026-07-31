@@ -12,6 +12,46 @@ atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv 
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
 
+# commit_subject_from_output <stdout-text> <fallback-title> -- turns a
+# model reply's own text into a sane git-commit-subject fragment. Shared by
+# the implement-path self-commit logic in plugins/engines/codex/run and
+# plugins/engines/claude/run (identical shape in both -- v1-m4 Task 9 live
+# dogfood, F11): a real run shipped literal junk subjects lifted verbatim
+# from the reply's last non-empty line when that line happened to be a bare
+# markdown-fence delimiter or an unsanitized bullet -- e.g. `T001: ``` `
+# and ``T002: - `git diff --check` passes.``.
+#
+# Scans the reply from its LAST line backward (same direction the adapters
+# already used to pick their own envelope `summary` line, so an
+# already-clean final line still wins unchanged). Each candidate line is:
+# a bare ``` / ```lang fence line is dropped entirely (empty candidate,
+# falls through to the line before it); a leading list marker (`-`/`*`/`+`
+# or `1.`/`1)`) is stripped; backticks are removed; whitespace is collapsed
+# and trimmed. The FIRST candidate that survives sanitization non-empty
+# becomes the subject, truncated to ~72 chars. If nothing in the whole
+# reply survives (e.g. the reply was fence-only start to finish), falls
+# back to the caller-supplied title -- both adapters already have the
+# task's own title on hand (from the task pack's frontmatter), so this
+# never invents a new input.
+commit_subject_from_output() {
+  local text="$1" fallback="$2" line clean i
+  local -a lines=()
+  while IFS= read -r line || [ -n "$line" ]; do
+    lines+=("$line")
+  done <<< "$text"
+  for (( i=${#lines[@]}-1; i>=0; i-- )); do
+    line="${lines[$i]}"
+    case "$line" in '```'*) continue ;; esac
+    clean="$(printf '%s' "$line" | sed -E 's/^[[:space:]]*([-*+]|[0-9]+[.)])[[:space:]]+//')"
+    clean="${clean//\`/}"
+    clean="$(printf '%s' "$clean" | tr -s '[:space:]' ' ' | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [ -n "$clean" ] || continue
+    printf '%s' "${clean:0:72}"
+    return 0
+  done
+  printf '%s' "${fallback:0:72}"
+}
+
 # orchid_html_escape <string> -- escapes the three characters illegal bare
 # inside HTML/XML element content: `&` (must run FIRST -- doing `<`/`>`
 # first would corrupt when this step's own `&`-insertion is then

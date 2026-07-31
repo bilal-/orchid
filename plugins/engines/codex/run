@@ -192,8 +192,16 @@ if [ "$operation" = implement ]; then
 
     if ! (cd "$worktree" && git diff --cached --quiet); then
       # Engine left staged-worthy edits uncommitted: the adapter makes
-      # exactly one commit for them.
-      msg="${task}: ${summary:0:60}"
+      # exactly one commit for them. The SUBJECT is independently
+      # sanitized from raw stdout (v1-m4 F11: a live run shipped literal
+      # junk here -- "T001: ```" and "T002: - `git diff --check` passes."
+      # -- when the reply's own last non-empty line was a bare fence or an
+      # unsanitized bullet) via commit_subject_from_output (lib/common.sh,
+      # shared with plugins/engines/claude/run's identical shape), which
+      # falls back to the task's own title when nothing in the reply
+      # survives sanitization.
+      subject="$(commit_subject_from_output "$stdout" "$(fm_get "$input_pack/task.md" title)")"
+      msg="${task}: ${subject}"
       set +e
       commit_err="$(cd "$worktree" && git commit -q -m "$msg" 2>&1)"
       commit_rc=$?; set -e
