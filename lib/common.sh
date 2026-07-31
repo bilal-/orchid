@@ -4,8 +4,9 @@
 # verbatim; `manifest_validate` (lib/manifest.sh) compares a plugin's
 # `requires_orchid=>=X.Y` against it (major.minor only -- semver-ish, per
 # docs/specs/plugins.md's Manifest section). Bump alongside a milestone,
-# never mid-milestone.
-ORCHID_VERSION="1.0.0-m3"
+# never mid-milestone. v1-m4: the release version -- the `-mN` milestone
+# suffix era ends here; there is no `1.0.0-m4` intermediate.
+ORCHID_VERSION="1.0.0"
 
 orchid_die() { echo "orchid: $*" >&2; exit 1; }
 atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv "$t" "$d"; }

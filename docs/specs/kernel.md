@@ -52,7 +52,11 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
   orchid-plugins            #   list/validate/trust (v1-m1); lifecycle (v1-m3)
   orchid-journal            #   add/tail/show — decision journal
   orchid-lessons            #   add/update/retire/consolidate (v1)
-  orchid-config             #   list effective config with per-key provenance
+  orchid-config             #   list effective config with per-key provenance;
+                            #   commit <reason> (v1-m4 — SHIPPED): the safe
+                            #   operator path for landing an orchid.config
+                            #   edit onto the integration branch, via the same
+                            #   temp-worktree CAS transaction as plan apply
   orchid-status             #   task + run-level status; --explain prints WHY
                             #   the scheduler did/didn't act (blocked
                             #   predicates by name: waiting-for-independent-
@@ -64,7 +68,11 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
 runners/                    # TIER 2 — effectful: launch processes.
   orchid-launch             #   the kernel launcher: spawns engine adapters
   orchid-tick  orchid-pump  #   headless tick; LLM-free heartbeat
-                            #   (v1-m2 — SHIPPED)
+                            #   (v1-m2 — SHIPPED); the pump also drains the
+                            #   notify outbox each pass (v1-m4 — SHIPPED)
+  orchid-service            #   install/uninstall/status: schedules the pump
+                            #   via the host's own scheduler (launchd/cron)
+                            #   (v1-m4 — SHIPPED)
 plugins/                    # TIER 3 — the BUILT-IN plugin set, discovered via
   engines/codex/            #   the same path and contracts as third-party
   engines/agy/              #   plugins. Engine adapters write ONLY to the
@@ -93,7 +101,13 @@ and `reconcile`.
    current lease, not from how it was started) or kernel-launched by the
    pump (`orchid-tick`).
 3. The orchestrator holds the **lease** (identity + epoch, refreshed per
-   turn). `orchid run start|resume` takes the mkdir lock only transiently —
+   turn). `orchid run release-lease` (v1-m4 — SHIPPED, epoch-fenced): the
+   clean-session-exit affordance, called at the end of PROTOCOL.md's
+   COMPLETION — writes `released: true` into `lease.json`, which both `run
+   new`'s freshness guard and the pump's staleness check treat as
+   immediately stale regardless of `refreshed_at`'s own age, closing the
+   incident where a session's own final tick otherwise left `run new`/the
+   pump blocked for up to `pump_stale_s`. `orchid run start|resume` takes the mkdir lock only transiently —
    just long enough to fence a new epoch and refresh the lease — it does
    not hold the lock for the run's duration. Individual verb invocations
    are separate short-lived processes: each validates `ORCHID_EPOCH`
@@ -115,6 +129,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 | `tasks/*.md` | `orchid task create/set/advance/unblock/retry` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
+| `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
 | `context.md` | `orchid plan apply` / `orchid plan refresh-context` |
 | `journal.md` | `orchid journal add` (also auto-written by reason-bearing verbs) |
 | `lessons.md` | `orchid lessons add/update/retire/consolidate` |
@@ -346,6 +361,12 @@ requirement→task coverage map; run-level status lives in roadmap frontmatter
 acceptance gate (coverage check + end-to-end acceptance tests) writes an
 evidence record to `reviews/acceptance.log` before `run_status: complete`.
 `orchid status` shows task table, jobs, open questions, AND run-level state.
+`orchid status --html` (v1-m4 — SHIPPED) is a separate output MODE, not an
+addition to that text report: it writes a self-contained static page (run
+header, task table with the same why-predicate text, engines ledger, open
+blockers, last-10 journal entries) to `status_page` (config, default
+`runtime/status.html`) and prints ONLY the path it wrote on stdout — safety
+warnings (split-brain, stale checkout) still go to stderr in either mode.
 
 ## Sequence: happy path (one task)
 ```mermaid
@@ -547,6 +568,16 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   reconcile manifests/spool. Never re-adopt ambiguous processes: job
   identity is job_id + pgid + start-time; unidentifiable → confirm
   termination, relaunch cleanly. Session resume is an optimization.
+- Prepared-never-launched manifests (m3 ledger, closed): a launcher crash
+  between `jobs prepare` and the actual spawn leaves a `pid: 0` manifest that
+  ordinary `jobs gc` deliberately skips (it isn't "dead", just never
+  started) and `jobs check` re-reports forever. `orchid jobs gc
+  --reap-prepared [--older-than-s N]` (v1-m4 — SHIPPED) is a SEPARATE,
+  exclusive gc mode targeting exactly those pid-0 manifests, age-gated off
+  the manifest FILE's own mtime (a never-launched manifest's `started_at` is
+  always 0); ordinary `gc` is unchanged and must still be invoked on its own
+  cadence (e.g. a separate cron line) — this is not folded into the default
+  pass.
 
 ## Execution policy (the autonomy boundary)
 
@@ -556,7 +587,15 @@ flags: implementer worktree-write + `approval_policy=never` + no secrets +
 network only in declared install phases; reviewers read-only; orchestrator
 repo+`.orchid/` scope. **External mutations prohibited in v0/v1** (no push,
 deploy, publish, prod-data) — blockers instead. `orchid.config` and
-`plugin.conf` are parsed data, never sourced.
+`plugin.conf` are parsed data, never sourced. **Defense in depth (v1-m4 —
+SHIPPED):** `orchid init` installs a pre-push hook (`templates/pre-push.sh`,
+`push_guard` config, default true; never overwrites a pre-existing user
+hook) refusing any push whose destination ref is a task branch or the
+integration branch (the name baked in at install time, not read from
+`orchid.config` at push time, since a task worktree has no `orchid.config`
+at all), overridable per-push via `ORCHID_ALLOW_PUSH=1` — a backstop for
+when the no-external-mutation policy above is violated anyway, not a
+replacement for it.
 
 ## Glossary (one sentence each; forbidden confusions marked ✗)
 

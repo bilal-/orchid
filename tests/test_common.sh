@@ -9,7 +9,8 @@ echo hi | atomic_write "$WORK/f"; assert_eq hi "$(cat "$WORK/f")" "atomic write"
 # against lib/common.sh (tests/test_dispatcher.sh covers the same fact
 # through the CLI's `orchid version` verb; this is the library-level source
 # of truth both that verb and every manifest's `requires_orchid` check read).
-assert_eq "1.0.0-m3" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0-m3"
+# v1-m4: bumped to the release version 1.0.0 (no more `-mN` suffix).
+assert_eq "1.0.0" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0"
 
 # layered config
 mkdir -p "$WORK/repo"; cd "$WORK/repo"; git init -q .

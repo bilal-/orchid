@@ -378,3 +378,51 @@ q-0/q-1 answered (operator intent via controller relay after the above
 failures); q-2-0518 remains OPEN for the operator's true phone round trip
 with the hardened skill. Screenshots for the README hero panel: operator
 capture pending.
+
+## v1-m4 Task 12 — release rehearsal
+
+Timed rehearsal PASSED on a clean-machine profile (fresh sandbox HOME, PATH
+restricted to the real CLIs, fresh clone of the release branch), following
+`docs/quickstart.md` ONLY, as written, using nothing but the commands the
+quickstart itself shows: clone → install → doctor (14 ok) → init → plan
+critique (approve round 1) → codex implement → agy review → merge → run
+accepted, in **13m19s** (release-gate bar: 15 minutes).
+
+### F16 (docs bug, HIGH — quickstart fails as written) — step 3 hits `orchid init` on a dirty tree
+Following step 2's own instructions (add a `verify=` line / role bindings to
+`orchid.config`) then step 3's `$EDITOR requirements.md` leaves both files
+uncommitted; `orchid init` refuses outright ("working tree not clean —
+commit or stash first — orchid never touches user work"). Fixed this
+commit: `docs/quickstart.md` step 3 now commits `requirements.md` and
+`orchid.config` on the operator's own branch before ever calling
+`orchid init`.
+
+### F17 (installer bug, medium) — install.sh mkdir'd the trust STORE FILE as a directory
+Re-install exited 1 on any machine that had ever run `orchid plugins
+trust`: `~/.orchid/trust` is the digest-pinned trust store FILE, and
+install.sh ran `mkdir -p` on that path — `-p` tolerates an existing
+directory but still fails on an existing file, and under `set -e` that
+killed the whole re-install (the rehearsal hit exactly this). First fix
+attempt missed it by testing only fresh scratch HOMEs (no trust store yet).
+Fixed: install.sh creates only `~/.orchid/plugins/engines`; the trust file
+is created on demand by the trust verbs and never pre-created (a directory
+at that path would break every trust read). `tests/test_install.sh` now
+guards the real shape: re-install with an existing trust store FILE exits 0
+and leaves the file and its content intact.
+
+### Greenfield quickstart — correctness pass (no timer)
+Re-ran `docs/quickstart-greenfield.md` end to end for correctness (not
+speed, per the roadmap's rehearsal scope): the unborn-HEAD root commit,
+`orchid init --greenfield`'s empty-dir refusal, `orchid doctor
+--greenfield`'s pre-scaffold check skipping, and the epoch-export note all
+behave exactly as documented — green. Engine dispatch itself was not
+re-exercised in this pass (the implement→review→merge pipeline has already
+been proven live three times this milestone — Tasks 9 and 10 above, plus
+this task's own existing-repo rehearsal); this pass targeted the
+greenfield-specific bootstrap surface only.
+
+### F11 observed live, this rehearsal
+F11's fix (sanitizing the codex adapter's commit-subject extraction) held
+up under a real run: the rehearsal task's merged commit carried a clean,
+correctly truncated sentence subject, not the markdown-fence/bullet garbage
+F11 originally reported.

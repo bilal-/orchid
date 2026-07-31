@@ -37,7 +37,7 @@ path_out="$(PATH="$HOME/.local/bin:$PATH" command -v orchid)"
 assert_eq "$bin_link" "$path_out" "orchid is found on PATH at the installed symlink"
 
 [ -d "$HOME/.orchid/plugins/engines" ] || fail "~/.orchid/plugins/engines not created"
-[ -d "$HOME/.orchid/trust" ] || fail "~/.orchid/trust not created"
+[ -e "$HOME/.orchid/trust" ] && fail "install must not pre-create ~/.orchid/trust (store FILE, made on demand by the trust verbs)"
 [ -f "$HOME/.orchid/config" ] || fail "~/.orchid/config not created"
 grep -q '^# integration_branch=' "$HOME/.orchid/config" || fail "~/.orchid/config missing a commented key (integration_branch)"
 
@@ -82,13 +82,14 @@ out_prefix2="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail
 [ "$(readlink "$customprefix/bin/orchid")" = "$REPO_ROOT/bin/orchid" ] || fail "install.sh --prefix re-run left the bin symlink intact"
 
 # --- Uninstall: removes exactly the symlinks it created; leaves config/trust.
+printf '%s %s\n' "1111111111111111111111111111111111111111111111111111111111111111" "/nowhere/keepme" > "$HOME/.orchid/trust"
 "$INSTALL" --uninstall >/dev/null 2>&1 || fail "install.sh --uninstall failed"
 for name in orchid orchid-plan orchid-resume; do
   [ -e "$HOME/.claude/skills/$name" ] && fail "uninstall left skill symlink: $name"
 done
 [ -e "$HOME/.local/bin/orchid" ] && fail "uninstall left bin symlink"
 [ -f "$HOME/.orchid/config" ] || fail "uninstall must leave ~/.orchid/config in place"
-[ -d "$HOME/.orchid/trust" ] || fail "uninstall must leave ~/.orchid/trust in place"
+[ -f "$HOME/.orchid/trust" ] && grep -q "/nowhere/keepme" "$HOME/.orchid/trust" || fail "uninstall must leave the ~/.orchid/trust store FILE and its content in place"
 
 # Uninstall must not remove a symlink it did not create (points elsewhere).
 mkdir -p "$HOME/.claude/skills"
@@ -96,6 +97,33 @@ ln -sfn "$WORK/somewhere-else" "$HOME/.claude/skills/orchid"
 "$INSTALL" --uninstall >/dev/null 2>&1 || fail "install.sh --uninstall failed (foreign symlink present)"
 [ -L "$HOME/.claude/skills/orchid" ] || fail "uninstall removed a symlink it did not create"
 
+# ===========================================================================
+# v1-m4 Task 12 (rehearsal finding F17): ~/.orchid/trust is the digest-pinned
+# trust STORE FILE, not a directory. The rehearsal failure was `mkdir -p`
+# treating it as a directory: -p tolerates an existing DIRECTORY but still
+# exits nonzero when the path exists as a FILE, so any machine that had ever
+# run `orchid plugins trust` hard-failed every re-install under set -e.
+# install.sh now creates only plugins/engines; the trust file is the trust
+# verbs' business. Guard both shapes: fresh HOME twice, and a HOME whose
+# trust STORE FILE already exists (the real failure shape).
+# ===========================================================================
+f17_home="$WORK/f17home"; mkdir -p "$f17_home"
+f17_prefix="$WORK/f17prefix"
+f17_nogit="$WORK/f17nogit"; mkdir -p "$f17_nogit"
+f17_out1="$(cd "$f17_nogit" && HOME="$f17_home" "$INSTALL" --prefix "$f17_prefix" 2>&1)"; f17_rc1=$?
+[ "$f17_rc1" -eq 0 ] || fail "install.sh (F17 regression): first run against a fresh scratch HOME/--prefix must exit 0 (rc=$f17_rc1): $f17_out1"
+[ -d "$f17_home/.orchid/plugins/engines" ] || fail "install.sh (F17 regression): ~/.orchid/plugins/engines not created on first run"
+[ -e "$f17_home/.orchid/trust" ] && fail "install.sh (F17 regression): install must NOT pre-create ~/.orchid/trust (a directory there breaks every trust-store read)"
+f17_out2="$(cd "$f17_nogit" && HOME="$f17_home" "$INSTALL" --prefix "$f17_prefix" 2>&1)"; f17_rc2=$?
+[ "$f17_rc2" -eq 0 ] || fail "install.sh (F17 regression): SECOND run against the same scratch HOME/--prefix must exit 0 (rc=$f17_rc2): $f17_out2"
+printf '%s %s\n' "0000000000000000000000000000000000000000000000000000000000000000" "/nowhere/example" > "$f17_home/.orchid/trust"
+f17_out3="$(cd "$f17_nogit" && HOME="$f17_home" "$INSTALL" --prefix "$f17_prefix" 2>&1)"; f17_rc3=$?
+[ "$f17_rc3" -eq 0 ] || fail "install.sh (F17 regression): re-install with an EXISTING trust store FILE must exit 0 — this is the exact rehearsal failure (rc=$f17_rc3): $f17_out3"
+[ -f "$f17_home/.orchid/trust" ] || fail "install.sh (F17 regression): trust store file clobbered by re-install"
+grep -q "/nowhere/example" "$f17_home/.orchid/trust" || fail "install.sh (F17 regression): trust store content lost on re-install"
+[ -L "$f17_prefix/bin/orchid" ] || fail "install.sh (F17 regression): --prefix bin symlink missing after re-install"
+
+# ===========================================================================
 # ===========================================================================
 # v1-m4 Task 11: Homebrew formula (prepare-only) + docs/install.md
 # ===========================================================================

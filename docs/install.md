@@ -16,7 +16,8 @@ cd "$HOME/src/orchid"
 Does exactly and only: symlinks `skills/{orchid,orchid-plan,orchid-resume}`
 into `$CLAUDE_SKILLS_DIR` (default `~/.claude/skills`), symlinks
 `bin/orchid` into `$ORCHID_BIN_DIR` (default `~/.local/bin`), creates
-`~/.orchid/{plugins/engines,trust}` and a commented `~/.orchid/config`
+`~/.orchid/plugins/engines` and a commented `~/.orchid/config` (the
+`~/.orchid/trust` store file appears on first `orchid plugins trust`)
 (never overwritten if it already exists), then finishes by running `orchid
 doctor` (inside a git repo you'd orchestrate) or printing next-steps
 (outside one). Re-running it is safe: an existing `~/.orchid/config` is

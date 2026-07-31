@@ -29,7 +29,8 @@ cd "$HOME/src/orchid"
 into `~/.claude/skills/` (so a Claude Code session can drive orchid via
 those three skills), symlinks `bin/orchid` into `~/.local/bin` (add it to
 `PATH` if the installer warns it isn't there), creates
-`~/.orchid/{plugins,trust}` and a commented `~/.orchid/config`, then finishes
+`~/.orchid/plugins` and a commented `~/.orchid/config` (the `~/.orchid/trust`
+store file appears on first `orchid plugins trust`), then finishes
 by running `orchid doctor` if your current directory is a repo to
 orchestrate. `./install.sh --uninstall` reverses precisely those
 symlinks/dirs (your config and trust store are left in place).
@@ -61,6 +62,19 @@ Re-run `orchid doctor` until it's green.
 
 ```sh
 $EDITOR requirements.md   # goal, constraints, acceptance criteria — any format, any name
+```
+
+`orchid init` refuses to run against a dirty working tree — "orchid never
+touches user work" — and both `requirements.md` and any `orchid.config` edit
+from step 2 are, at this point, uncommitted. Commit them on your own branch
+first:
+
+```sh
+git add -A
+git commit -m "orchid: requirements + config for orchid init"
+```
+
+```sh
 orchid init
 ```
 

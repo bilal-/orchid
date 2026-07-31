@@ -97,7 +97,16 @@ case ":$PATH:" in
   *) echo "warning: $ORCHID_BIN_DIR is not on PATH — add it to your shell profile" >&2 ;;
 esac
 
-mkdir -p "$HOME/.orchid/plugins/engines" "$HOME/.orchid/trust"
+# v1-m4 Task 12 (rehearsal F17): ~/.orchid/trust is the digest-pinned trust
+# STORE FILE (lib/common.sh's trust model), not a directory — `mkdir -p` on a
+# path that exists as a file still exits nonzero, which under `set -e` killed
+# every re-install on a machine that had ever run `orchid plugins trust`.
+# Only plugins/engines is a directory here; the trust file is created on
+# demand by the trust verbs and must never be pre-created (an empty file vs
+# absent file is meaningful to nothing, but a DIRECTORY at that path would
+# break every trust read). tests/test_install.sh covers the
+# trust-store-file-already-exists re-install case.
+mkdir -p "$HOME/.orchid/plugins/engines"
 if [ ! -e "$HOME/.orchid/config" ]; then
   {
     echo "# orchid user config — key=value, one per line, parsed never sourced."

@@ -12,9 +12,17 @@ into `~/.claude/skills/`; link `bin/orchid` into `~/.local/bin` (or
 `~/.orchid/{plugins,trust}` and a commented `~/.orchid/config`; finish by
 running `orchid doctor` so the user's first output is a readiness report.
 `./install.sh --uninstall` removes precisely those symlinks/dirs (config and
-trust are left with a note). At public launch additionally: a pinned
-`curl -fsSL … | bash` one-liner (fetching the same install.sh) and a
-Homebrew tap (v1-m4) — install must feel first-class on a Mac.
+trust are left with a note). `install.sh --prefix DIR` (v1-m4 — SHIPPED)
+redirects only the `orchid` binary symlink to `DIR/bin` (skills/config/trust
+stay per-user, unaffected by `--prefix`). At public launch additionally: a
+pinned `curl -fsSL … | bash` one-liner (fetching the same install.sh) and a
+Homebrew tap — install must feel first-class on a Mac. **v1-m4 — prepared,
+not yet released:** `Formula/orchid.rb` + `docs/install.md` are written and
+lint-tested (`ruby -c`, placeholder tokens, a simulated-prefix resolution
+proof), but the formula is never tapped, built, or installed by the test
+suite or by any part of orchid itself — tapping the Homebrew repo and
+publishing a real release tarball are release-day operator actions (see the
+release checklist, roadmap.md).
 
 ### Installing plugins (v1-m3)
 
@@ -81,8 +89,13 @@ that fail the rehearsal block the release the same way failing tests do.
    PROTOCOL.md via verbs (with the default bindings: a Claude Code session
    → `/orchid-plan`; with codex as orchestrator: `orchid run start &&
    runners/orchid-tick`).
-4. Walk away. Check `orchid status` anytime; answer questions via
-   `orchid answer`; intervene via `orchid task unblock/retry/set`.
+4. Walk away. Check `orchid status` anytime (or `orchid status --html` for a
+   self-contained static page — v1-m4 — SHIPPED); answer questions via
+   `orchid answer`; intervene via `orchid task unblock/retry/set`. Optionally
+   `orchid service install` (v1-m4 — SHIPPED) schedules the pump via the
+   host's own scheduler (a launchd agent on macOS, a marker-guarded crontab
+   line elsewhere) so ticks continue without a terminal open —
+   `orchid service status`/`orchid service uninstall` report/reverse it.
 5. Run ends at `run_status: complete` (acceptance evidence in
    `reviews/acceptance.log`) or surfaces a blocker. Integration branch holds
    the product; pushing/deploying is yours.
@@ -92,18 +105,31 @@ that fail the rehearsal block the release the same way failing tests do.
 - **v0/v1 seam:** `orchid notify` (question-id minted by the kernel,
   multiple-choice preferred) → `BLOCKERS.md` + terminal; `orchid answer
   <qid> <choice>` — idempotent, expiring, consumed by the next tick.
-- **v1-m4 channels — three explicit actors (round-4 topology fix):**
+- **v1-m4 channels — three explicit actors (round-4 topology fix) — SHIPPED:**
   (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
-  access); (2) the **orchid AgentSkill inside OpenClaw** — an authenticated
-  external front-end authorized for exactly two verbs, `orchid status` and
-  `orchid answer` (this, not the channel plugin, answers "how's the run?"
-  from your phone); (3) a lock-safe kernel INBOX: `orchid answer` validates
-  nonce, sender allowlist, and expiry before recording — no listener
-  daemon; the tick polls the inbox. Telegram fallback uses the same
-  three-actor shape. An unanswered question is just a blocked task.
-- **API-billing exception, stated plainly:** API-backed engines (Kimi,
-  Perplexity researcher) are metered per call, unlike subscription CLIs;
-  their role BINDINGS carry call budgets and retry ceilings. **Optionality
+  access) — `orchid notify` (tier-1) never spawns it directly; it only
+  writes `runtime/outbox/<qid>`, and `runners/orchid-pump` (tier-2) drains
+  the outbox every pass through whichever `kind=notify` plugin `notify.plugin`
+  selects (default `openclaw`; `hermes` is the other built-in), quarantining
+  a message after `send_retry_max` consecutive failures rather than retrying
+  forever; (2) the **orchid AgentSkill inside OpenClaw**
+  (`skills-external/openclaw-orchid`) — an authenticated external front-end
+  authorized for exactly two verbs, `orchid status` and `orchid answer`
+  (this, not the channel plugin, answers "how's the run?" from your phone);
+  (3) a lock-safe kernel INBOX: `orchid answer` validates nonce, sender
+  allowlist, and expiry before recording — no listener daemon; the tick
+  polls the inbox. Telegram fallback uses the same three-actor shape. An
+  unanswered question is just a blocked task.
+- **API-billing exception, stated plainly:** API-backed engines are metered
+  per call, unlike subscription CLIs; their role BINDINGS carry call budgets
+  and retry ceilings. **Dropped, per the v1-m4 escape hatch (roadmap.md):**
+  the Kimi reviewer and Perplexity researcher reference adapters named
+  earlier in this exception did not ship this milestone — their CLIs are not
+  installed on the dogfood machine, so neither was built past the roadmap
+  mention; neither appears anywhere in the README, compatibility matrix, or
+  `docs/engines/` as an available adapter. The mechanism this exception
+  describes (call-budget/retry-ceiling bindings for a metered API-backed
+  engine) remains available to any future adapter that needs it. **Optionality
   is binding policy, not role identity** (Perplexity's own fix): any role
   binding may declare `blocking: false` — the run continues without that
   role's output when it fails — so future non-blocking roles need no
@@ -111,5 +137,5 @@ that fail the rehearsal block the release the same way failing tests do.
 - **The entire remote stack is post-core:** no kernel behavior may assume a
   channel, AgentSkill, or inbox exists — `BLOCKERS.md` + terminal is always
   a complete interaction surface.
-- Non-goal: native app. `orchid status` (later a static page) is the
-  read surface.
+- Non-goal: native app. `orchid status` (or `orchid status --html`, a
+  self-contained static page — v1-m4 — SHIPPED) is the read surface.
