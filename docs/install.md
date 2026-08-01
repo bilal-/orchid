@@ -13,10 +13,22 @@ cd "$HOME/src/orchid"
 ./install.sh
 ```
 
-Does exactly and only: symlinks `skills/{orchid,orchid-plan,orchid-resume}`
-into `$CLAUDE_SKILLS_DIR` (default `~/.claude/skills`), symlinks
-`bin/orchid` into `$ORCHID_BIN_DIR` (default `~/.local/bin`), creates
-`~/.orchid/plugins/engines` and a commented `~/.orchid/config` (the
+Does exactly and only: wires the interactive orchestrator skills
+(`skills/{orchid,orchid-plan,orchid-resume}`) into whichever agent
+front-ends are **actually present** on this machine — not one hardcoded
+vendor. Concretely: Claude Code (symlinked into `$CLAUDE_SKILLS_DIR`,
+default `~/.claude/skills` — today's tested default, wired if `~/.claude`
+exists or `CLAUDE_SKILLS_DIR` is set) and Hermes (symlinked into
+`~/.hermes/skills/orchestration/`, wired if that directory exists) each get
+wired when present, and skipped with a one-line note (no directory
+creation) when absent; OpenClaw gets a suggested `openclaw skills install`
+command printed instead of an automatic run, since registration targets a
+specific agent/gateway install.sh has no business choosing. See
+[frontends.md](./frontends.md) for the full per-engine breakdown (what's
+tested vs. untested) and for driving orchid from codex/agy, which need no
+install.sh wiring at all. Regardless of front-end, install.sh also
+symlinks `bin/orchid` into `$ORCHID_BIN_DIR` (default `~/.local/bin`),
+creates `~/.orchid/plugins/engines` and a commented `~/.orchid/config` (the
 `~/.orchid/trust` store file appears on first `orchid plugins trust`)
 (never overwritten if it already exists), then finishes by running `orchid
 doctor` (inside a git repo you'd orchestrate) or printing next-steps

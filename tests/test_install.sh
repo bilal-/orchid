@@ -7,10 +7,17 @@ INSTALL="$REPO_ROOT/install.sh"
 # ORCHID_BIN_DIR override) so both resolve under the sandbox HOME. Run from
 # a plain (non-git) directory so install.sh takes the "next steps" branch
 # instead of running `orchid doctor` against some incidental repo.
+# `~/.claude` is pre-created here so this main flow exercises the
+# already-present-front-end path (front-end presence detection itself --
+# ~/.claude only / ~/.hermes/skills only / neither -- gets its own isolated
+# block further down, each with its own fresh sandbox HOME).
 export HOME="$WORK/home"
+mkdir -p "$HOME/.claude"
 nogit="$WORK/nogit"; mkdir -p "$nogit"
 out="$(cd "$nogit" && "$INSTALL" 2>&1)" || fail "install.sh exits 0 on a fresh sandbox HOME (got: $out)"
 assert_match "[Nn]ext steps" "$out" "install.sh prints next-steps outside a git repo"
+assert_match "skip Hermes skills" "$out" "install.sh notes the Hermes skip when ~/.hermes/skills is absent"
+[ -e "$HOME/.hermes" ] && fail "install.sh must not create ~/.hermes on a HOME that never had it"
 
 for name in orchid orchid-plan orchid-resume; do
   link="$HOME/.claude/skills/$name"
@@ -96,6 +103,60 @@ mkdir -p "$HOME/.claude/skills"
 ln -sfn "$WORK/somewhere-else" "$HOME/.claude/skills/orchid"
 "$INSTALL" --uninstall >/dev/null 2>&1 || fail "install.sh --uninstall failed (foreign symlink present)"
 [ -L "$HOME/.claude/skills/orchid" ] || fail "uninstall removed a symlink it did not create"
+
+# ===========================================================================
+# Front-end presence detection (front-end-neutral install.sh): install.sh
+# wires whichever agent front-ends are ACTUALLY PRESENT on this machine and
+# skips the rest cleanly -- a one-line note, exit 0, and (crucially) never
+# creating that front-end's OWN top-level config directory (~/.claude,
+# ~/.hermes) on a machine that never had it. Three fresh, isolated sandbox
+# HOMEs, no CLAUDE_SKILLS_DIR/ORCHID_BIN_DIR override:
+#   fe1: ~/.claude present only       -> claude wired, hermes skipped
+#   fe2: ~/.hermes/skills present only -> hermes wired, claude skipped
+#   fe3: neither present               -> both skipped, still exits 0
+# ===========================================================================
+fe_nogit="$WORK/fe-nogit"; mkdir -p "$fe_nogit"
+
+fe1_home="$WORK/fe1-home"; mkdir -p "$fe1_home/.claude"
+fe1_out="$(cd "$fe_nogit" && HOME="$fe1_home" "$INSTALL" 2>&1)" || fail "install.sh (front-end detection): ~/.claude-only HOME must exit 0"
+for name in orchid orchid-plan orchid-resume; do
+  link="$fe1_home/.claude/skills/$name"
+  [ -L "$link" ] || fail "front-end detection: ~/.claude-only HOME did not wire Claude Code skill $name"
+  [ "$(readlink "$link")" = "$REPO_ROOT/skills/$name" ] \
+    || fail "front-end detection: ~/.claude-only HOME's $name symlink does not resolve to the repo"
+done
+[ -e "$fe1_home/.hermes" ] && fail "front-end detection: ~/.claude-only HOME must not have ~/.hermes created"
+assert_match "skip Hermes skills" "$fe1_out" "front-end detection: ~/.claude-only HOME notes the Hermes skip"
+
+fe2_home="$WORK/fe2-home"; mkdir -p "$fe2_home/.hermes/skills"
+fe2_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" 2>&1)" || fail "install.sh (front-end detection): ~/.hermes/skills-only HOME must exit 0"
+for name in orchid orchid-plan orchid-resume; do
+  link="$fe2_home/.hermes/skills/orchestration/$name"
+  [ -L "$link" ] || fail "front-end detection: ~/.hermes/skills-only HOME did not wire Hermes skill $name"
+  [ "$(readlink "$link")" = "$REPO_ROOT/skills/$name" ] \
+    || fail "front-end detection: ~/.hermes/skills-only HOME's $name symlink does not resolve to the repo"
+done
+[ -e "$fe2_home/.claude" ] && fail "front-end detection: ~/.hermes-only HOME must not have ~/.claude created"
+assert_match "skip Claude Code skills" "$fe2_out" "front-end detection: ~/.hermes-only HOME notes the Claude Code skip"
+
+fe3_home="$WORK/fe3-home"; mkdir -p "$fe3_home"
+fe3_out="$(cd "$fe_nogit" && HOME="$fe3_home" "$INSTALL" 2>&1)"; fe3_rc=$?
+[ "$fe3_rc" -eq 0 ] || fail "install.sh (front-end detection): neither-present HOME must still exit 0 (rc=$fe3_rc): $fe3_out"
+assert_match "skip Claude Code skills" "$fe3_out" "front-end detection: neither-present HOME notes the Claude Code skip"
+assert_match "skip Hermes skills" "$fe3_out" "front-end detection: neither-present HOME notes the Hermes skip"
+[ -e "$fe3_home/.claude" ] && fail "front-end detection: neither-present HOME must not have ~/.claude created"
+[ -e "$fe3_home/.hermes" ] && fail "front-end detection: neither-present HOME must not have ~/.hermes created"
+[ -L "$fe3_home/.local/bin/orchid" ] || fail "front-end detection: neither-present HOME must still wire bin/orchid regardless of any front-end's presence"
+
+# --uninstall on the hermes-only HOME must remove exactly the Hermes
+# symlinks it created (mirrors the Claude uninstall checks above) and leave
+# the orchestration category directory itself in place (install.sh owns the
+# symlinks it placed inside it, never the directory).
+fe2_uninstall_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" --uninstall 2>&1)" || fail "install.sh --uninstall (front-end detection, hermes-only HOME) failed"
+for name in orchid orchid-plan orchid-resume; do
+  [ -e "$fe2_home/.hermes/skills/orchestration/$name" ] && fail "uninstall left Hermes skill symlink: $name"
+done
+[ -d "$fe2_home/.hermes/skills/orchestration" ] || fail "uninstall must leave the Hermes orchestration category directory itself in place"
 
 # ===========================================================================
 # v1-m4 Task 12 (rehearsal finding F17): ~/.orchid/trust is the digest-pinned

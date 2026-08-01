@@ -1,6 +1,19 @@
 #!/usr/bin/env bash
 # Installs orchid for the current user. Does exactly and only:
-#   - symlink skills/* into $CLAUDE_SKILLS_DIR (default ~/.claude/skills)
+#   - wire the interactive orchestrator skills (skills/{orchid,orchid-plan,
+#     orchid-resume}) into whichever agent front-ends are ACTUALLY PRESENT
+#     on this machine (front-end neutral -- orchid itself is engine-neutral
+#     already; see docs/frontends.md):
+#       - Claude Code: symlink into $CLAUDE_SKILLS_DIR (default
+#         ~/.claude/skills) -- wired if ~/.claude exists or CLAUDE_SKILLS_DIR
+#         is set; otherwise skipped with a one-line note (never creates
+#         ~/.claude on a machine that doesn't have it).
+#       - Hermes: symlink into ~/.hermes/skills/orchestration/<name> -- wired
+#         if ~/.hermes/skills exists; otherwise skipped with a one-line note.
+#       - OpenClaw: never auto-registered (registration can prompt for an
+#         agent/gateway target) -- if the `openclaw` binary and ~/.openclaw
+#         are both present, prints the suggested `openclaw skills install`
+#         command for the answering AgentSkill instead.
 #   - symlink bin/orchid into $ORCHID_BIN_DIR (default ~/.local/bin, or
 #     <prefix>/bin when --prefix DIR / --prefix=DIR is given)
 #   - create ~/.orchid/{plugins/engines,trust} and a commented ~/.orchid/config
@@ -8,9 +21,10 @@
 #   - finish by running `orchid doctor` (inside a git repo) or printing
 #     next-steps (outside one)
 # `./install.sh --uninstall` removes precisely the symlinks this script
-# creates; config and trust are left in place with a note. `--uninstall` and
-# `--prefix` combine (uninstall reads the same ORCHID_BIN_DIR --prefix would
-# have set, so it un-links the right place).
+# creates (across whichever front-ends were actually wired); config and
+# trust are left in place with a note. `--uninstall` and `--prefix` combine
+# (uninstall reads the same ORCHID_BIN_DIR --prefix would have set, so it
+# un-links the right place).
 set -euo pipefail
 
 self="$0"
@@ -20,7 +34,15 @@ while [ -L "$self" ]; do
 done
 ROOT="$(cd "$(dirname "$self")" && pwd)"
 
+# CLAUDE_SKILLS_DIR_SET tracks whether the caller overrode the env var
+# BEFORE the default below is applied -- an explicit override is itself
+# taken as "yes, wire Claude Code here" even on a machine with no ~/.claude
+# yet (e.g. a test harness pointing it at a scratch dir).
+CLAUDE_SKILLS_DIR_SET=0
+if [ -n "${CLAUDE_SKILLS_DIR+x}" ]; then CLAUDE_SKILLS_DIR_SET=1; fi
 CLAUDE_SKILLS_DIR="${CLAUDE_SKILLS_DIR:-$HOME/.claude/skills}"
+HERMES_SKILLS_DIR="$HOME/.hermes/skills"
+HERMES_ORCH_DIR="$HERMES_SKILLS_DIR/orchestration"
 ORCHID_BIN_DIR="${ORCHID_BIN_DIR:-$HOME/.local/bin}"
 SKILLS="orchid orchid-plan orchid-resume"
 
@@ -76,18 +98,77 @@ unlink_one() {
 }
 
 if [ "$UNINSTALL" = 1 ]; then
+  # Reverses exactly what an install could have created, across every
+  # front-end this script knows how to wire -- unlink_one is a no-op for a
+  # front-end that was never wired in the first place (dest either doesn't
+  # exist or isn't a symlink back to $ROOT), so it's safe to attempt all of
+  # them unconditionally rather than re-deriving "was this one installed".
   for name in $SKILLS; do
     unlink_one "$ROOT/skills/$name" "$CLAUDE_SKILLS_DIR/$name"
+    unlink_one "$ROOT/skills/$name" "$HERMES_ORCH_DIR/$name"
   done
   unlink_one "$ROOT/bin/orchid" "$ORCHID_BIN_DIR/orchid"
   echo "uninstall complete (~/.orchid/config and ~/.orchid/trust left in place)"
   exit 0
 fi
 
-mkdir -p "$CLAUDE_SKILLS_DIR"
-for name in $SKILLS; do
-  link_one "$ROOT/skills/$name" "$CLAUDE_SKILLS_DIR/$name"
-done
+# --- Front-end wiring: whichever agent products are actually present on
+# this machine, per docs/frontends.md. Never creates a front-end's own
+# config directory (~/.claude, ~/.hermes) on a machine that doesn't already
+# have it -- only ever adds INSIDE a directory that's already there (or
+# whose location was explicitly overridden), the same "leave what I don't
+# own alone" philosophy link_one/unlink_one already follow for symlinks.
+
+if [ "$CLAUDE_SKILLS_DIR_SET" = 1 ] || [ -d "$HOME/.claude" ]; then
+  mkdir -p "$CLAUDE_SKILLS_DIR"
+  for name in $SKILLS; do
+    link_one "$ROOT/skills/$name" "$CLAUDE_SKILLS_DIR/$name"
+  done
+else
+  echo "orchid: skip Claude Code skills (no ~/.claude found -- set CLAUDE_SKILLS_DIR to wire this front-end anyway)"
+fi
+
+# Hermes: verified 2026-08-01 against a live Hermes Agent v0.19.0 install --
+# `hermes skills list` discovers a SYMLINKED skill directory under
+# ~/.hermes/skills/<category>/<name>/ and reads its name/description
+# straight out of SKILL.md frontmatter (agent/skill_utils.py's
+# iter_skill_index_files walks os.walk(..., followlinks=True)); all three
+# of skills/{orchid,orchid-plan,orchid-resume}'s minimal frontmatter (name +
+# description only -- no Claude-Code-only keys) round-tripped this way,
+# each showing up `enabled`/`local` under category `orchestration`. That is
+# a real, checked result (unlike skills-external/openclaw-orchid/SKILL.md's
+# own dogfood, which only ever exercised hermes with a COPY, not a symlink,
+# per docs/dogfood-notes.md's v1-m4 Task 10 entry) -- symlinking here is
+# safe, not a guess, and keeps a `git pull` updating these in place exactly
+# like the Claude Code wiring above.
+if [ -d "$HERMES_SKILLS_DIR" ]; then
+  mkdir -p "$HERMES_ORCH_DIR"
+  for name in $SKILLS; do
+    link_one "$ROOT/skills/$name" "$HERMES_ORCH_DIR/$name"
+  done
+else
+  echo "orchid: skip Hermes skills (no ~/.hermes/skills found -- see docs/engines/hermes.md to install it)"
+fi
+
+# OpenClaw: registration is a SUGGESTION, never run automatically here --
+# `openclaw skills install` targets a specific agent workspace/gateway
+# (`--agent`, `--global`), which install.sh has no business picking for the
+# operator, and this script must stay non-interactive. Only the ANSWERING
+# AgentSkill (skills-external/openclaw-orchid -- status + nonce-verified
+# blocker answers, nothing else) has an OpenClaw-shaped bundle today; there
+# is no OpenClaw orchestrator front-end to suggest (see docs/frontends.md).
+if command -v openclaw >/dev/null 2>&1 && [ -d "$HOME/.openclaw" ]; then
+  cat <<EOF
+orchid: OpenClaw detected -- to register orchid's answering-skill bundle
+(read-only status + nonce-verified blocker answers; see
+skills-external/openclaw-orchid/README.md), run:
+  openclaw skills install "$ROOT/skills-external/openclaw-orchid" --as orchid
+(not run automatically -- registration targets a specific agent/gateway,
+which install.sh does not choose on your behalf; see docs/frontends.md)
+EOF
+else
+  echo "orchid: skip OpenClaw registration suggestion (openclaw binary or ~/.openclaw not found)"
+fi
 
 mkdir -p "$ORCHID_BIN_DIR"
 link_one "$ROOT/bin/orchid" "$ORCHID_BIN_DIR/orchid"

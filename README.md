@@ -233,6 +233,10 @@ too** (same discovery, same contracts). Five extension points:
 | **hook** | named lifecycle hook handler, typed payload | v1-m3 |
 | **role** | descriptor: required/forbidden capabilities + hook bindings | v1-m3 |
 
+**Driving orchid from any agent product** (not just Claude Code):
+[docs/frontends.md](./docs/frontends.md) — per-engine status (tested vs.
+untested), what `install.sh` auto-wires, and manual steps for the rest.
+
 **Your first adapter, in under an hour:**
 [docs/extending/first-engine.md](./docs/extending/first-engine.md) walks a
 minimal engine from `mkdir` to a green `orchid plugins conform` — no repo,
