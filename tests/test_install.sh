@@ -395,10 +395,16 @@ printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must nev
 # `clone`, and answers `-C <dir> rev-parse --git-dir` / `-C <dir> pull
 # --ff-only` against whatever fake checkouts already exist on disk (no
 # state of its own -- the filesystem IS the state, same as real git).
-# Anything else (bare `rev-parse`, `worktree`, etc. -- the calls install.sh
-# makes for its OWN unrelated "am I inside a repo to orchestrate" check)
-# delegates to the real git so the rest of install.sh's behavior stays
-# correct; only clone/-C (bootstrap's own two git shapes) are faked.
+# `-C <dir> config ...` (used by install.sh's stale-clone safety check,
+# review-round-2 fix) delegates to REAL git instead of being faked, so it
+# reads whatever genuine `.git/config` a fixture set up with real
+# `git init`/`git remote add` actually contains -- there is no safe way to
+# fake "what does this repo's remote.origin.url say" without just running
+# real git against a real repo. Anything else (bare `rev-parse`,
+# `worktree`, etc. -- the calls install.sh makes for its OWN unrelated "am
+# I inside a repo to orchestrate" check) also delegates to the real git so
+# the rest of install.sh's behavior stays correct; only clone/-C
+# rev-parse/-C pull (bootstrap's own faked shapes) are faked.
 fake_git_bin() {
   local dir="$1" gitlog="$2" real_git
   real_git="$(command -v git)"
@@ -423,8 +429,8 @@ INNER
     case "\$sub" in
       rev-parse) [ -d "\$fedir/.git" ] && exit 0 || exit 1 ;;
       pull) exit 0 ;;
+      *) exec "$real_git" "\$@" ;;
     esac
-    exit 0
     ;;
   *)
     exec "$real_git" "\$@"
@@ -464,35 +470,91 @@ assert_eq "--prefix
 $bs_work/customprefix" "$(cat "$bs_work/record1.txt")" \
   "bootstrap (fresh clone): cloned installer exec'd with the original pass-through args (--prefix DIR)"
 
-# --- stale/partial checkout already at $home (Finding 1): a prior
-# bootstrap clone interrupted mid-flight (network drop, Ctrl-C, disk full)
-# leaves ORCHID_HOME existing on disk but NOT a valid checkout -- real git
-# creates .git/ before it has fetched every object, so a dead clone can
-# leave anything from an empty .git/ up to a partial tree; a bare
-# directory with one stray file is the minimal shape that fails the same
-# anchor-file test and is enough to prove the recovery path without
-# needing to actually reproduce a half-finished git clone. On retry, this
-# must be cleaned up and re-cloned into -- not fail forever with git's own
-# "destination path already exists and is not an empty directory".
+# ===========================================================================
+# review-round-2 fix: auto-removal of a non-checkout $home must require
+# POSITIVE proof it is dead wreckage from orchid's OWN bootstrap -- (a)
+# $home/.git exists, (b) that .git's remote.origin.url is EXACTLY this
+# repo's clone URL, (c) it's still incomplete (anchor files missing, or
+# rev-parse fails). Anything short of all three must be refused loudly
+# (named path, nonzero exit, both remedies) and left completely intact --
+# never deleted on a merely negative "isn't a checkout" signal. Three
+# shapes at the SAME kind of path ($ORCHID_HOME, user-settable), only one
+# of which may ever be auto-cleaned:
+#   2b. a genuinely dead ORCHID clone (real .git, origin.url matches,
+#       anchor files missing)        -> cleaned + recloned
+#   2c. a plain directory of unrelated user files (no .git at all)
+#                                    -> REFUSED, intact, nonzero exit
+#   2d. the user's own unrelated git repo (real .git, no matching origin)
+#                                    -> REFUSED, intact, nonzero exit
+# ===========================================================================
+
+# --- 2b: dead orchid clone (positive proof present) -> cleaned + recloned.
 bs_gitlog2b="$bs_work/gitlog2b.txt"; : > "$bs_gitlog2b"
 bs_gitbin2b="$bs_work/gitbin2b"; fake_git_bin "$bs_gitbin2b" "$bs_gitlog2b"
 bs_home_partial="$bs_work/home-partial"
 mkdir -p "$bs_home_partial"
+# Real git init + a real remote.origin.url matching the hardcoded clone
+# URL -- genuine positive proof, not a guess -- with the anchor files
+# deliberately absent (exactly what an interrupted `git clone` leaves:
+# .git/ created before every object was fetched).
+git init -q "$bs_home_partial"
+git -C "$bs_home_partial" remote add origin https://github.com/bilal-/orchid.git
 touch "$bs_home_partial/some-partial-clone-leftover"
 export STUB_INSTALL_RECORD="$bs_work/record2b.txt"; rm -f "$bs_work/record2b.txt"
 bs_out2b="$(PATH="$bs_gitbin2b:$PATH" ORCHID_HOME="$bs_home_partial" "$bs_work/bare/nogit/install.sh" 2>&1)"
 bs_rc2b=$?
-[ "$bs_rc2b" -eq 0 ] || fail "bootstrap (stale/partial checkout): install.sh exits 0 on retry after an interrupted clone (got rc=$bs_rc2b, output: $bs_out2b)"
-assert_match "removing stale" "$bs_out2b" "bootstrap (stale/partial checkout): prints a note that the stale dir is being removed before retrying"
-[ -e "$bs_home_partial/some-partial-clone-leftover" ] && fail "bootstrap (stale/partial checkout): the stale leftover file must be gone after cleanup+reclone"
+[ "$bs_rc2b" -eq 0 ] || fail "bootstrap (dead orchid clone): install.sh exits 0 on retry after an interrupted clone (got rc=$bs_rc2b, output: $bs_out2b)"
+assert_match "removing incomplete clone" "$bs_out2b" "bootstrap (dead orchid clone): prints a note naming what was verified before removing it"
+[ -e "$bs_home_partial/some-partial-clone-leftover" ] && fail "bootstrap (dead orchid clone): the stale leftover file must be gone after cleanup+reclone"
 [ -f "$bs_home_partial/bin/orchid" ] && [ -f "$bs_home_partial/lib/common.sh" ] \
-  || fail "bootstrap (stale/partial checkout): a fresh checkout must be cloned into place after cleanup"
-[ -f "$bs_work/record2b.txt" ] || fail "bootstrap (stale/partial checkout): cloned install.sh was never exec'd after recovery"
+  || fail "bootstrap (dead orchid clone): a fresh checkout must be cloned into place after cleanup"
+[ -f "$bs_work/record2b.txt" ] || fail "bootstrap (dead orchid clone): cloned install.sh was never exec'd after recovery"
 bs_clone_line2b="$(grep '^clone' "$bs_gitlog2b")"
-[ -n "$bs_clone_line2b" ] || fail "bootstrap (stale/partial checkout): no git clone call recorded after cleanup (log: $(cat "$bs_gitlog2b"))"
+[ -n "$bs_clone_line2b" ] || fail "bootstrap (dead orchid clone): no git clone call recorded after cleanup (log: $(cat "$bs_gitlog2b"))"
 bs_clone_dest2b="$(printf '%s' "$bs_clone_line2b" | awk '{print $NF}')"
 [ "$bs_clone_dest2b" != "$bs_home_partial" ] \
-  || fail "bootstrap (stale/partial checkout): must still clone to a TEMP sibling, never directly to ORCHID_HOME"
+  || fail "bootstrap (dead orchid clone): must still clone to a TEMP sibling, never directly to ORCHID_HOME"
+
+# --- 2c: plain directory of unrelated user files (no .git at all) ->
+# REFUSED: nonzero exit, files untouched, message names the path, no
+# clone attempted.
+bs_gitlog2c="$bs_work/gitlog2c.txt"; : > "$bs_gitlog2c"
+bs_gitbin2c="$bs_work/gitbin2c"; fake_git_bin "$bs_gitbin2c" "$bs_gitlog2c"
+bs_home_userfiles="$bs_work/home-userfiles"
+mkdir -p "$bs_home_userfiles/subdir"
+echo "do not delete me" > "$bs_home_userfiles/my-precious-file.txt"
+echo "nested" > "$bs_home_userfiles/subdir/nested.txt"
+bs_out2c="$(PATH="$bs_gitbin2c:$PATH" ORCHID_HOME="$bs_home_userfiles" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc2c=$?
+[ "$bs_rc2c" -ne 0 ] || fail "bootstrap (unrelated user directory): install.sh must exit nonzero rather than proceed (output: $bs_out2c)"
+assert_match "$bs_home_userfiles" "$bs_out2c" "bootstrap (unrelated user directory): refusal message names the exact path"
+[ -f "$bs_home_userfiles/my-precious-file.txt" ] || fail "bootstrap (unrelated user directory): user file was deleted -- must be left completely intact"
+[ "$(cat "$bs_home_userfiles/my-precious-file.txt")" = "do not delete me" ] || fail "bootstrap (unrelated user directory): user file content was altered"
+[ -f "$bs_home_userfiles/subdir/nested.txt" ] || fail "bootstrap (unrelated user directory): nested user file/subdir was deleted -- must be left completely intact"
+grep -q '^clone' "$bs_gitlog2c" && fail "bootstrap (unrelated user directory): must never attempt a clone against a refused path"
+
+# --- 2d: the user's own unrelated git repo (real .git, but NOT this
+# repo's remote) -> REFUSED: nonzero exit, repo untouched, message names
+# the path, no clone attempted. This is the one .git-having-but-wrong
+# shape (b) must still catch even though (a) alone would have let it
+# through.
+bs_gitlog2d="$bs_work/gitlog2d.txt"; : > "$bs_gitlog2d"
+bs_gitbin2d="$bs_work/gitbin2d"; fake_git_bin "$bs_gitbin2d" "$bs_gitlog2d"
+bs_home_userrepo="$bs_work/home-userrepo"
+mkdir -p "$bs_home_userrepo"
+git init -q "$bs_home_userrepo"
+git -C "$bs_home_userrepo" remote add origin https://example.com/someone-else/unrelated.git
+echo "my own project" > "$bs_home_userrepo/README.md"
+git -C "$bs_home_userrepo" add README.md
+git -C "$bs_home_userrepo" -c user.email=test@example.com -c user.name=test commit -q -m "unrelated user commit"
+bs_out2d="$(PATH="$bs_gitbin2d:$PATH" ORCHID_HOME="$bs_home_userrepo" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc2d=$?
+[ "$bs_rc2d" -ne 0 ] || fail "bootstrap (user's own git repo): install.sh must exit nonzero rather than proceed (output: $bs_out2d)"
+assert_match "$bs_home_userrepo" "$bs_out2d" "bootstrap (user's own git repo): refusal message names the exact path"
+[ -f "$bs_home_userrepo/README.md" ] || fail "bootstrap (user's own git repo): user's repo content was deleted -- must be left completely intact"
+[ "$(git -C "$bs_home_userrepo" config --get remote.origin.url)" = "https://example.com/someone-else/unrelated.git" ] \
+  || fail "bootstrap (user's own git repo): the repo's own remote must be untouched"
+grep -q '^clone' "$bs_gitlog2d" && fail "bootstrap (user's own git repo): must never attempt a clone against a refused path"
 
 # --- already-cloned: same $home already looks like an orchid checkout ->
 # git pull --ff-only, no second clone, and the (stub) installer is still
