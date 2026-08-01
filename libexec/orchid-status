@@ -4,20 +4,258 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
-explain=0; [ "${1:-}" = "--explain" ] && explain=1
+
+# --explain and --html are independent flags (either, neither, or both may
+# be given) -- a loop over every arg rather than the old single `[ "${1:-}"
+# = --explain ]` check, so `status --html` (a second, brand-new invocation
+# shape, v1-m4) doesn't have to land in argv position 1 relative to
+# --explain for either to be recognized.
+explain=0; html=0
+for _status_arg in "$@"; do
+  case "$_status_arg" in
+    --explain) explain=1 ;;
+    --html) html=1 ;;
+  esac
+done
+
+# _status_task_why <repo> <status> <id> -- the ONE home for the "why isn't
+# this task moving" predicate string (v1-m2 Task 5's schedule.sh already
+# owns the underlying dispatch-blocker predicate SET; this wraps it into
+# the single-line-per-status text `orchid status --explain` prints,
+# unchanged since before this refactor). Both the text loop below and the
+# --html task table call this same function, so the predicate text can
+# never drift between the two surfaces.
+_status_task_why() {
+  local repo="$1" st="$2" id="$3" why="" blockers bl
+  case "$st" in
+    pending|rework)
+      # v1-m2 Task 5: schedule.sh is the ONE home for the dispatch-blocker
+      # predicate set -- pending AND rework rows both print it (rework
+      # dispatches through the exact same kernel gate as pending; see
+      # libexec/orchid-task's advance arm). Multiple predicate lines are
+      # joined with "; " for the single-line status table.
+      blockers="$(schedule_dispatch_blockers "$repo" "$id")"
+      while IFS= read -r bl; do
+        [ -n "$bl" ] || continue
+        if [ -z "$why" ]; then why="$bl"; else why="$why; $bl"; fi
+      done <<< "$blockers"
+      [ -n "$why" ] || why="ready-to-dispatch" ;;
+    implementing) why="awaiting-implementer-envelope" ;;
+    testing)      why="awaiting-verify (or rebase-pending)" ;;
+    reviewing)    why="awaiting-review-envelopes" ;;
+    arbitrating)  why="awaiting-arbitration" ;;
+    merging)      why="awaiting-merge" ;;
+    blocked)      why="blocked (see: orchid journal show --task $id)" ;;
+    done)         why="-" ;;
+  esac
+  echo "$why"
+}
+
 # Split-brain checkout (v1-m3 Task 2, F7): printed FIRST, above run_status
 # -- an operator staring at a stale/missing run_status needs to know
-# they're on the wrong checkout before anything else on this page.
+# they're on the wrong checkout before anything else on this page. v1-m4
+# (Task 5 review, static status page): routed to STDERR, in every mode,
+# never stdout -- these are operator diagnostics, not data. Text-mode
+# consumers grep stdout for the tasks/engines report, never for this
+# warning, and `--html`'s contract is "stdout is exactly the path it wrote"
+# (`page="$(orchid status --html)"`); a warning landing on stdout would
+# silently corrupt that capture into two lines in exactly the broken-
+# checkout states where having the right page path matters most. A caller
+# that wants both together (as several tests here do) still can, via a
+# plain `2>&1`.
 if orchid_split_brain "$repo"; then
-  echo "WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)"
+  echo "WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)" >&2
 fi
 # Stale integration checkout (v1-m3 final review, CRITICAL 2): printed right
 # after any split-brain warning, same "tell the operator before anything
 # else on this page" placement -- see lib/common.sh's orchid_stale_checkout.
+# v1-m4 Task 1: remedy scoped to exclude .orchid/ (see orchid-doctor's own
+# comment on this same wording) so it never clobbers uncommitted run state.
+# v1-m4 Task 5 review: stderr, same reasoning as the split-brain warning above.
 if orchid_stale_checkout "$repo"; then
-  echo "WARNING: integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here"
+  echo "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid'\" before committing anything here" >&2
 fi
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
+
+# -- v1-m4: `orchid status --html` -------------------------------------------
+# A separate output MODE, not an addition to the text report above: it
+# writes the self-contained static page (read-only data, one runtime-only
+# write -- same INV-01/tier-1 shape as `run refresh-lease`'s lease.json
+# write, no epoch fence needed, nothing durable touched) and prints ONLY
+# the path it wrote, so PROTOCOL.md's THE TICK step 5 (and any operator
+# script) can capture it with a plain `page="$(orchid status --html)"`.
+# The split-brain/stale-checkout warnings above still print regardless of
+# mode -- those are safety-critical regardless of which surface is asked
+# for -- but the normal run_status/tasks/jobs/engines text below is
+# skipped entirely in this mode; the same information (plus more) lands in
+# the page instead.
+if [ "$html" -eq 1 ]; then
+  # -- run header -------------------------------------------------------
+  run_id="$(fm_get "$state/roadmap.md" run_id 2>/dev/null)" || true
+  [ -n "$run_id" ] || run_id="(uninitialized)"
+  epoch="$(epoch_current "$repo")"
+
+  rt="$(orchid_runtime "$repo")"
+  lease_file="$rt/lease.json"
+  lease_desc="no lease"
+  if [ -f "$lease_file" ]; then
+    released="$(jq -r '.released // false' "$lease_file" 2>/dev/null || echo false)"
+    refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
+    refreshed_epoch=0
+    if [ -n "$refreshed_at" ]; then
+      # Same two-line GNU/BSD `date` parse idiom as libexec/orchid-jobs'
+      # iso_to_epoch / runners/orchid-pump's _pump_iso_to_epoch /
+      # libexec/orchid-run's `run new` freshness guard -- duplicated
+      # rather than shared, per this codebase's existing convention for
+      # this exact idiom (see runners/orchid-pump's own header comment on
+      # why: no single caller-neutral home for it yet).
+      refreshed_epoch="$(date -u -d "$refreshed_at" +%s 2>/dev/null \
+        || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$refreshed_at" +%s 2>/dev/null \
+        || echo 0)"
+    fi
+    if [ "$refreshed_epoch" -gt 0 ]; then
+      age=$(( $(date -u +%s) - refreshed_epoch ))
+      if [ "$released" = true ]; then
+        lease_desc="released (refreshed ${age}s before release)"
+      else
+        lease_desc="refreshed ${age}s ago"
+      fi
+    else
+      lease_desc="refreshed_at unparseable"
+    fi
+  fi
+
+  # -- task table (status + explain predicate, always -- the page has no
+  # separate --explain/no-explain distinction the way the text report does)
+  tasks_html=""
+  for f in "$state/tasks"/*.md; do
+    [ -e "$f" ] || continue
+    id="$(fm_get "$f" id)"; st="$(fm_get "$f" status)"; title="$(fm_get "$f" title)"
+    why="$(_status_task_why "$repo" "$st" "$id")"
+    tasks_html="$tasks_html<tr><td>$(orchid_html_escape "$id")</td><td>$(orchid_html_escape "$st")</td><td>$(orchid_html_escape "$title")</td><td>$(orchid_html_escape "$why")</td></tr>
+"
+  done
+  [ -n "$tasks_html" ] || tasks_html='<tr><td colspan="4">(no tasks)</td></tr>
+'
+
+  # -- engines ledger (same lib/ledger.sh reader the text report uses) ----
+  engines_html=""
+  engines_out="$(ledger_show "$repo" 2>/dev/null || true)"
+  if [ -n "$engines_out" ]; then
+    while IFS=$'\t' read -r eng est edet; do
+      [ -n "$eng" ] || continue
+      engines_html="$engines_html<tr><td>$(orchid_html_escape "$eng")</td><td>$(orchid_html_escape "$est")</td><td>$(orchid_html_escape "$edet")</td></tr>
+"
+    done <<< "$engines_out"
+  fi
+  [ -n "$engines_html" ] || engines_html='<tr><td colspan="3">(no engine events yet)</td></tr>
+'
+
+  # -- open blockers: a runtime/answers/<qid>.question with no matching
+  # <qid>.answer yet (libexec/orchid-notify mints the .question;
+  # libexec/orchid-answer mints the .answer -- the qid is "known but
+  # unresolved" for exactly as long as the first exists without the second).
+  blockers_html=""
+  if [ -d "$rt/answers" ]; then
+    for qf in "$rt/answers"/*.question; do
+      [ -e "$qf" ] || continue
+      qid="$(basename "$qf" .question)"
+      [ -f "$rt/answers/$qid.answer" ] && continue
+      # Review fix (Minor #6): drop the `nonce: ` line -- the nonce belongs
+      # to BLOCKERS.md and the outbound channel message (the answer path's
+      # own secret), never to this static page, which is the "check from
+      # another room" surface and may be screen-shared.
+      qtext="$(tail -n +2 "$qf" | grep -v '^nonce: ')"
+      blockers_html="$blockers_html<li><strong>$(orchid_html_escape "$qid")</strong>: <pre>$(orchid_html_escape "$qtext")</pre></li>
+"
+    done
+  fi
+  [ -n "$blockers_html" ] || blockers_html='<li>(no open blockers)</li>
+'
+
+  # -- last 10 journal entries: journal.md is blank-line-separated
+  # "## <header>\n<body>" paragraphs (libexec/orchid-journal's `add` arm
+  # appends exactly that shape every call) -- awk's paragraph mode (RS="")
+  # splits on that same blank-line boundary, so each record here is one
+  # whole journal entry regardless of how many lines its body spans. The
+  # `/^## /` filter excludes the file's own leading "# Journal" title line
+  # (libexec/orchid-init seeds a bare journal.md with just that one line,
+  # its own paragraph before any real entry is ever appended) from being
+  # counted as if it were an entry itself.
+  #
+  # Caveat: `RS=""` paragraph mode splits on ANY blank line, not
+  # specifically the blank line `libexec/orchid-journal`'s `add` arm itself
+  # inserts between entries -- it has no notion of "one entry" beyond that.
+  # Every entry `journal add` writes today is exactly one header line plus
+  # one body line (its `text` is always a single `"$*"`-joined, one-`echo`
+  # line, never multi-line), so this holds in practice; a future caller
+  # that journaled a body containing a literal blank line would have that
+  # single entry mis-split into two records here (each still rendered, just
+  # as two `<div class="entry">` blocks instead of one) -- a display-only
+  # rendering quirk, not a data-loss risk, since nothing here writes
+  # journal.md itself.
+  journal_html=""
+  jf="$state/journal.md"
+  if [ -f "$jf" ]; then
+    journal_records="$(awk -v RS='' -v ORS=$'\x01' -v n=10 '
+      /^## / { n2++; rec[n2]=$0 }
+      END { start=(n2>n)?n2-n+1:1; for(i=start;i<=n2;i++) print rec[i] }
+    ' "$jf")"
+    if [ -n "$journal_records" ]; then
+      while IFS= read -r -d $'\x01' rec; do
+        jheader="${rec%%$'\n'*}"
+        if [ "$jheader" = "$rec" ]; then jbody=""; else jbody="${rec#*$'\n'}"; fi
+        journal_html="$journal_html<div class=\"entry\"><h3>$(orchid_html_escape "$jheader")</h3><pre>$(orchid_html_escape "$jbody")</pre></div>
+"
+      done <<< "$journal_records"
+    fi
+  fi
+  [ -n "$journal_html" ] || journal_html='<p>(no journal entries yet)</p>
+'
+
+  content="<h1>orchid status</h1>
+<div class=\"meta\">
+<div><strong>repo:</strong> <code>$(orchid_html_escape "$repo")</code></div>
+<div><strong>run_id:</strong> $(orchid_html_escape "$run_id")</div>
+<div><strong>run_status:</strong> $(orchid_html_escape "${rs:-(uninitialized)}")</div>
+<div><strong>epoch:</strong> $(orchid_html_escape "$epoch")</div>
+<div><strong>lease:</strong> $(orchid_html_escape "$lease_desc")</div>
+</div>
+
+<h2>Tasks</h2>
+<table>
+<tr><th>id</th><th>status</th><th>title</th><th>why</th></tr>
+$tasks_html</table>
+
+<h2>Engines</h2>
+<table>
+<tr><th>engine</th><th>status</th><th>detail</th></tr>
+$engines_html</table>
+
+<h2>Open blockers</h2>
+<ul>
+$blockers_html</ul>
+
+<h2>Journal (last 10)</h2>
+$journal_html"
+
+  page_rel="$(config_get "$repo" status_page runtime/status.html)"
+  case "$page_rel" in
+    /*) page_path="$page_rel" ;;
+    *)  page_path="$state/$page_rel" ;;
+  esac
+  mkdir -p "$(dirname "$page_path")"
+
+  tpl="$(cat "$ORCHID_ROOT/templates/status.html")"
+  marker='__CONTENT__'
+  tpl_pre="${tpl%%"$marker"*}"
+  tpl_post="${tpl#*"$marker"}"
+  { printf '%s' "$tpl_pre"; printf '%s' "$content"; printf '%s' "$tpl_post"; } | atomic_write "$page_path"
+
+  echo "$page_path"
+  exit 0
+fi
+
 echo "run_status: ${rs:-(uninitialized)}"
 echo "== tasks"
 for f in "$state/tasks"/*.md; do
@@ -25,30 +263,7 @@ for f in "$state/tasks"/*.md; do
   id="$(fm_get "$f" id)"; st="$(fm_get "$f" status)"
   line="$(printf '%s\t%s\t%s' "$id" "$st" "$(fm_get "$f" title)")"
   if [ "$explain" -eq 1 ]; then
-    why=""
-    case "$st" in
-      pending|rework)
-        # v1-m2 Task 5: schedule.sh is the ONE home for the dispatch-blocker
-        # predicate set -- pending AND rework rows both print it (rework
-        # dispatches through the exact same kernel gate as pending; see
-        # libexec/orchid-task's advance arm). Multiple predicate lines are
-        # joined with "; " for the single-line status table.
-        blockers="$(schedule_dispatch_blockers "$repo" "$id")"
-        why=""
-        while IFS= read -r bl; do
-          [ -n "$bl" ] || continue
-          if [ -z "$why" ]; then why="$bl"; else why="$why; $bl"; fi
-        done <<< "$blockers"
-        [ -n "$why" ] || why="ready-to-dispatch" ;;
-      implementing) why="awaiting-implementer-envelope" ;;
-      testing)      why="awaiting-verify (or rebase-pending)" ;;
-      reviewing)    why="awaiting-review-envelopes" ;;
-      arbitrating)  why="awaiting-arbitration" ;;
-      merging)      why="awaiting-merge" ;;
-      blocked)      why="blocked (see: orchid journal show --task $id)" ;;
-      done)         why="-" ;;
-    esac
-    line="$line	$why"
+    line="$line	$(_status_task_why "$repo" "$st" "$id")"
   fi
   echo "$line"
 done

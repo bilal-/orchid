@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>orchid status</title>
+<!--
+  Genuinely self-contained: inline CSS only, no external stylesheets/
+  fonts/images, no JS. This page is a static snapshot written by
+  `orchid status --html` (never served, never live) -- the "check from
+  another room" surface (PROTOCOL.md, THE TICK step 5) -- so it must
+  render correctly from a plain file:// open with nothing else reachable.
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    margin: 2rem auto; max-width: 60rem; line-height: 1.5;
+    color: #1a1a1a; background: #fafafa;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e6e6e6; background: #121212; }
+  }
+  h1 { margin-bottom: 0.25rem; }
+  h2 { margin-top: 2rem; border-bottom: 1px solid rgba(128,128,128,0.4); padding-bottom: 0.3rem; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid rgba(128,128,128,0.25); vertical-align: top; }
+  th { font-weight: 600; }
+  .meta div { margin: 0.15rem 0; }
+  .entry { margin-bottom: 0.9rem; }
+  .entry h3 { margin: 0 0 0.25rem 0; font-size: 0.95rem; font-weight: 600; }
+  pre { white-space: pre-wrap; word-wrap: break-word; font-family: inherit; margin: 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  ul { padding-left: 1.2rem; }
+</style>
+</head>
+<body>
+__CONTENT__
+</body>
+</html>

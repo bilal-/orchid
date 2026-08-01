@@ -1,0 +1,514 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-2, effectful: schedules the ALREADY one-shot, lease-gated pump
+# (runners/orchid-pump, v1-m2 Task 8) via the host's own scheduler -- a
+# launchd agent on macOS, a marker-guarded crontab line everywhere else --
+# so a run proceeds semi-attended without a hand-run nohup loop. This
+# script is the ONLY place that ever shells out to launchctl/crontab
+# (mirrors runners/orchid-launch being the only spawner, INV-06); the tier-1
+# libexec/orchid-service is a bare handoff, nothing more.
+#
+# Every subverb accepts --dry-run: the exact launchctl/crontab command(s)
+# are PRINTED, prefixed "DRY-RUN:", instead of run. File rendering +
+# placement (the plist under ~/Library/LaunchAgents, and the local
+# .orchid/runtime/pump.cron record kept as the linux-side install record --
+# see _svc_install_linux below for why that record exists) still happens
+# for REAL under --dry-run: that part is plain, safe, repo/HOME-local file
+# I/O, never a system scheduler mutation. Only the launchctl/crontab call
+# itself is gated. This is deliberate: the test suite runs EVERY subverb
+# under --dry-run (never touches a real launchctl/crontab), and still needs
+# to assert real template rendering, real file placement, and real
+# install/uninstall/status bookkeeping against that placement.
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+source "$ORCHID_ROOT/lib/common.sh"
+
+PUMP_LOG_TAIL_LINES=20
+
+_svc_usage() {
+  cat <<'EOF'
+usage: orchid service <install|uninstall|status> [options]
+
+Schedules the orchid pump (runners/orchid-pump -- one-shot, lease-gated) to
+run on a fixed interval via the host's own scheduler, so a run proceeds on a
+semi-attended cadence without a hand-run nohup loop. macOS installs a
+launchd agent (~/Library/LaunchAgents); every other platform falls back to
+a crontab line.
+
+  install    render + install (or replace) the schedule for --repo.
+               refuses when --repo has no .orchid/ (not an orchid repo).
+               idempotent: re-running install for the same repo REPLACES
+               its existing schedule (same label/marker) in place -- it
+               never stacks a second launchd job or a second crontab line.
+  uninstall  remove exactly what install created for --repo (the plist
+               file + its launchctl load, or the marker-guarded crontab
+               line). idempotent: refuses cleanly (a plain message, no
+               launchctl/crontab touched) when nothing is installed for
+               --repo -- safe to call blind.
+  status     report installed/loaded state plus the tail of --repo's
+               .orchid/runtime/pump.log. Always exits 0 -- a status query
+               is never a failure, even when nothing is installed.
+
+options:
+  --repo <path>    target repo (default: $ORCHID_REPO, else the cwd)
+  --interval-s N   install only: override pump_interval_s (config default
+                     240) for this install
+  --dry-run        print the exact launchctl/crontab commands instead of
+                     running them (file rendering + placement still
+                     happens for real -- only the scheduler mutation/query
+                     itself is skipped)
+EOF
+}
+
+# _svc_hash12 <string> -- first 12 hex chars of the string's sha256, used
+# to derive a repo's launchd label / cron marker deterministically. Prefers
+# sha256sum (near-universal on Linux); falls back to shasum -a 256 (macOS's
+# always-available Perl-based tool, which typically lacks sha256sum).
+_svc_hash12() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    printf '%s' "$1" | sha256sum | cut -c1-12
+  else
+    printf '%s' "$1" | shasum -a 256 | cut -c1-12
+  fi
+}
+_svc_label() { echo "com.orchid.pump.$(_svc_hash12 "$1")"; }
+
+# _svc_platform -- "darwin" (launchd) or "linux" (cron fallback, the
+# default for anything that isn't Darwin). ORCHID_SERVICE_OS is a TEST-ONLY
+# seam (never documented in --help, not an operator-facing knob): it lets
+# this suite exercise BOTH scheduler branches deterministically regardless
+# of which OS actually runs the tests, the same way other tests inject a
+# fixed HOME/ORCHID_ENGINES_DIR rather than depending on the real host.
+_svc_platform() {
+  local p="${ORCHID_SERVICE_OS:-$(uname -s)}"
+  case "$p" in
+    Darwin) echo darwin ;;
+    *) echo linux ;;
+  esac
+}
+
+# _svc_dryprint <cmd...> -- prints "DRY-RUN: <cmd>" with every argument
+# shell-quoted (printf %q) so the line is exactly re-runnable/copy-pastable,
+# never a lossy plain join (an argument containing a space would otherwise
+# print ambiguously).
+_svc_dryprint() {
+  local out="DRY-RUN:" a
+  for a in "$@"; do out="$out $(printf '%q' "$a")"; done
+  echo "$out"
+}
+
+# _svc_sed_escape <string> -- escapes sed REPLACEMENT metacharacters for the
+# `s|__TOKEN__|<escaped>|g` idiom (same escaping libexec/orchid-init already
+# uses for __INTEGRATION_BRANCH__): `|` (the delimiter itself), `&` (whole-
+# match backreference), and `\` (escape introducer) all need a literal
+# backslash ahead of them in the replacement text, or a path containing any
+# of the three would corrupt the substitution instead of being inserted
+# verbatim. This escapes for SED's syntax only -- it says nothing about
+# whether the resulting text is well-formed in whatever format it's being
+# substituted INTO (see _svc_xml_escape below, which must run first for the
+# plist template: sed-escaping alone was the review-flagged bug -- a repo
+# path containing a bare `&`, `<`, or `>` rendered non-well-formed XML that
+# `launchctl load` would refuse, while this script still reported success).
+_svc_sed_escape() { printf '%s' "$1" | sed -e 's/[|&\\]/\\&/g'; }
+
+# _svc_xml_escape <string> -- escapes the three XML metacharacters that are
+# illegal bare inside plist element content: `&` (must run FIRST -- doing
+# `<`/`>` first would corrupt when this step's own `&`-insertion is then
+# re-escaped) becomes `&amp;`, `<` becomes `&lt;`, `>` becomes `&gt;`. Run
+# on every value BEFORE _svc_sed_escape (which then escapes the LITERAL `&`
+# characters these entities themselves contain, for sed's own syntax) --
+# the two escaping passes target two different downstream consumers (the
+# XML parser vs. sed's replacement-string grammar) and must compose in
+# exactly this order, never merged into one pass.
+#
+# v1-m4 (static status page): the escaping itself now lives in
+# lib/common.sh's `orchid_html_escape` (`orchid status --html` needs the
+# exact same "make text safe inside an XML/HTML element" behavior for
+# arbitrary operator-authored text) -- this stays a thin wrapper, same
+# name, so every call site below is untouched.
+_svc_xml_escape() {
+  orchid_html_escape "$1"
+}
+
+# _svc_plist_value <string> -- the full escaping pipeline for one value
+# destined for the plist template: XML-escape for the target FORMAT, then
+# sed-escape the result for the substitution MECHANISM. Centralized so
+# _svc_render_plist can't apply the two passes out of order or forget one.
+_svc_plist_value() { _svc_sed_escape "$(_svc_xml_escape "$1")"; }
+
+# _svc_install_path -- the PATH baked into the rendered plist/cron artifacts
+# at `orchid service install` time (review finding: a launchd agent gets
+# only launchd's own bare default PATH, /usr/bin:/bin:/usr/sbin:/sbin, and
+# a marker-guarded crontab line's shell is scarcely richer -- neither ever
+# sources an interactive shell's profile, so `jq` (Homebrew) and every
+# engine CLI the pump's tick execs (claude/codex/hermes -- npm/Homebrew
+# paths) would be unfindable on a stock machine). Prefers the INSTALLING
+# user's own resolved $PATH (the value in effect right now, in this
+# process, when `install` runs) -- the same PATH the operator's own shell
+# already uses to find those exact binaries. Falls back to a documented,
+# reasonable composition only in the degenerate case of $PATH being unset/
+# empty (never expected interactively, but cheap to guard).
+_svc_install_path() {
+  local p="${PATH:-}"
+  [ -n "$p" ] || p="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
+  echo "$p"
+}
+
+_svc_render_plist() {
+  local label="$1" repo="$2" parent="$3" interval="$4" log="$5" pump_exe="$6" path_val="$7"
+  sed -e "s|__LABEL__|$(_svc_plist_value "$label")|g" \
+      -e "s|__REPO__|$(_svc_plist_value "$repo")|g" \
+      -e "s|__TMPDIR__|$(_svc_plist_value "$parent")|g" \
+      -e "s|__INTERVAL__|$(_svc_plist_value "$interval")|g" \
+      -e "s|__LOG__|$(_svc_plist_value "$log")|g" \
+      -e "s|__ORCHID_PUMP__|$(_svc_plist_value "$pump_exe")|g" \
+      -e "s|__PATH__|$(_svc_plist_value "$path_val")|g" \
+      "$ORCHID_ROOT/templates/launchd.orchid-pump.plist"
+}
+
+# _svc_cron_minutes <interval_s> -- cron's finest granularity is one
+# MINUTE; floors interval_s/60 (integer division) at 1 so a sub-60s
+# interval never renders `*/0` (which cron would either reject or treat as
+# "every minute" inconsistently across implementations -- never emitted).
+_svc_cron_minutes() {
+  local m=$(( $1 / 60 ))
+  [ "$m" -ge 1 ] || m=1
+  echo "$m"
+}
+
+_svc_cron_record_path() { echo "$1/.orchid/runtime/pump.cron"; }
+
+# _svc_cron_escape <string> -- escapes the target FORMAT's own metacharacter
+# for a crontab command field: an unescaped `%` is cron's line-continuation/
+# stdin-feed marker (everything after it, and every subsequent `%`-delimited
+# segment, is joined with newlines and fed to the command's stdin instead of
+# staying part of the command line) -- a repo/log path containing a bare
+# `%` would silently truncate the installed command at that character.
+# `\%` is cron's own escape for a literal percent.
+_svc_cron_escape() { printf '%s' "$1" | sed -e 's/%/\\%/g'; }
+
+# _svc_shq <string> -- POSIX single-quote-wrap for the cron line's OWN sh
+# parse (review Minor: the crontab WRITE is safely %q-quoted via
+# _svc_cron_pipeline_install/printf %q, but the rendered LINE ITSELF is
+# handed to /bin/sh unquoted -- a repo/log/pump path containing a space or
+# quote character produced a silently broken scheduled command at cron-exec
+# time). Applied AFTER _svc_cron_escape: cron's own %-handling is a plain
+# textual scan of the crontab line that happens BEFORE any shell ever parses
+# it, so % must already be escaped in the value regardless of quoting; a
+# literal `'` inside the value is closed-quote/escaped-quote/reopen-quote
+# (`'\''`), the standard POSIX idiom, so the SHELL sees the value as one
+# argument/assignment no matter what it contains.
+_svc_shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+_svc_render_cron_line() {
+  local label="$1" repo="$2" parent="$3" interval_s="$4" log="$5" pump_exe="$6" path_val="$7" mins
+  local repo_e parent_e log_e pump_e path_e
+  mins="$(_svc_cron_minutes "$interval_s")"
+  repo_e="$(_svc_shq "$(_svc_cron_escape "$repo")")"
+  parent_e="$(_svc_shq "$(_svc_cron_escape "$parent")")"
+  log_e="$(_svc_shq "$(_svc_cron_escape "$log")")"
+  pump_e="$(_svc_shq "$(_svc_cron_escape "$pump_exe")")"
+  path_e="$(_svc_shq "$(_svc_cron_escape "$path_val")")"
+  echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e >> $log_e 2>&1 # orchid-service:$label"
+}
+
+_svc_print_log_tail() {
+  local log="$1"
+  echo "  log: $log"
+  if [ -f "$log" ]; then
+    echo "  --- last $PUMP_LOG_TAIL_LINES line(s) of pump.log ---"
+    tail -n "$PUMP_LOG_TAIL_LINES" "$log"
+  else
+    echo "  (no pump.log yet)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# darwin (launchd)
+# ---------------------------------------------------------------------------
+
+_svc_install_darwin() {
+  local repo="$1" interval_s="$2" dry="$3"
+  local label; label="$(_svc_label "$repo")"
+  local agents_dir="$HOME/Library/LaunchAgents"
+  local plist_path="$agents_dir/$label.plist"
+  local parent; parent="$(cd "$repo/.." && pwd -P)"
+  local rt log pump_exe path_val existed=0
+  rt="$(orchid_runtime "$repo")"   # repo already confirmed initialized by the caller
+  log="$rt/pump.log"
+  pump_exe="$ORCHID_ROOT/runners/orchid-pump"
+  path_val="$(_svc_install_path)"
+  [ -f "$plist_path" ] && existed=1
+
+  mkdir -p "$agents_dir"
+  local tmp="$plist_path.tmp.$$"
+  _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val" > "$tmp"
+  mv "$tmp" "$plist_path"
+
+  # Idempotent re-install: unload the PRIOR load (best-effort -- if it was
+  # never actually loaded, or launchd has no record of it, that's fine, not
+  # an error) before loading the freshly-rendered file, so a second `install`
+  # for the same repo replaces the running schedule in place rather than
+  # erroring "already loaded" or silently leaving the old copy active.
+  if [ "$existed" -eq 1 ]; then
+    if [ "$dry" -eq 1 ]; then _svc_dryprint launchctl unload "$plist_path"
+    else launchctl unload "$plist_path" >/dev/null 2>&1 || true
+    fi
+  fi
+  if [ "$dry" -eq 1 ]; then
+    _svc_dryprint launchctl load "$plist_path"
+  else
+    launchctl load "$plist_path"
+  fi
+
+  echo "orchid: service installed for $repo"
+  echo "  label:      $label"
+  echo "  plist:      $plist_path"
+  echo "  interval_s: $interval_s"
+  echo "  log:        $log"
+}
+
+_svc_uninstall_darwin() {
+  local repo="$1" dry="$2"
+  local label; label="$(_svc_label "$repo")"
+  local plist_path="$HOME/Library/LaunchAgents/$label.plist"
+  [ -f "$plist_path" ] || orchid_die "no service installed for $repo (label $label)"
+  if [ "$dry" -eq 1 ]; then
+    _svc_dryprint launchctl unload "$plist_path"
+  else
+    launchctl unload "$plist_path" >/dev/null 2>&1 || true
+  fi
+  rm -f "$plist_path"
+  echo "orchid: service uninstalled for $repo (label $label)"
+}
+
+_svc_status_darwin() {
+  local repo="$1" dry="$2"
+  local label; label="$(_svc_label "$repo")"
+  local plist_path="$HOME/Library/LaunchAgents/$label.plist"
+  echo "orchid service status: $repo"
+  echo "  platform: darwin"
+  echo "  label:    $label"
+  if [ ! -f "$plist_path" ]; then
+    echo "  installed: no"
+  else
+    echo "  installed: yes"
+    echo "  plist:     $plist_path"
+    local interval
+    interval="$(grep -A1 '<key>StartInterval</key>' "$plist_path" 2>/dev/null | tail -n1 | grep -o '[0-9]\+' || true)"
+    [ -n "$interval" ] && echo "  interval_s: $interval"
+    if [ "$dry" -eq 1 ]; then
+      _svc_dryprint launchctl list "$label"
+      echo "  loaded:    unknown (--dry-run -- not queried)"
+    else
+      if launchctl list "$label" >/dev/null 2>&1; then
+        echo "  loaded:    yes"
+      else
+        echo "  loaded:    no"
+      fi
+    fi
+  fi
+  _svc_print_log_tail "$repo/.orchid/runtime/pump.log"
+}
+
+# ---------------------------------------------------------------------------
+# linux (cron fallback)
+# ---------------------------------------------------------------------------
+# `crontab -l`/`crontab -` talk to the REAL per-user system crontab -- there
+# is no HOME-style redirection knob for them, unlike launchd's plist file.
+# So install keeps a repo-local record, `.orchid/runtime/pump.cron`
+# (exactly the line last installed), as the durable, filesystem-only
+# artifact status/uninstall reason from -- the linux-side analogue of the
+# plist file itself on macOS. This is what makes install/uninstall/status
+# fully testable under --dry-run without ever touching the real crontab
+# (this suite's own machine may not even run linux, or may have a real
+# crontab of its own that must never be read or mutated by a test).
+
+# _svc_cron_pipeline_install <marker> <line> / _svc_cron_pipeline_uninstall
+# <marker> -- build the ONE canonical shell command string for each
+# mutating crontab operation. Both the --dry-run print and the real `eval`
+# below read this SAME string (never two hand-written near-duplicates) --
+# closes a review-flagged drift where an earlier revision's --dry-run print
+# had silently diverged from the real command it claimed to describe
+# (missing the `|| true` guard, and a `(...)` subshell in the print vs. the
+# real path's `{...}` group -- semantically different: `(...)` would have
+# hidden the `crontab -` write inside a subshell, sent to the terminal
+# instead of piped). `$marker`/`$line` are individually `printf %q`-quoted
+# so a repo path containing a space/quote/`$`/backtick can't break out of
+# its argument position once this string is eval'd.
+_svc_cron_pipeline_install() {
+  local marker="$1" line="$2"
+  echo "{ crontab -l 2>/dev/null | grep -vF $(printf '%q' "$marker") || true; printf '%s\n' $(printf '%q' "$line"); } | crontab -"
+}
+_svc_cron_pipeline_uninstall() {
+  local marker="$1"
+  echo "{ crontab -l 2>/dev/null | grep -vF $(printf '%q' "$marker") || true; } | crontab -"
+}
+
+# _svc_emit_cron_seam <pipeline> -- TEST-ONLY debug seam. `install`/
+# `uninstall` run as their OWN process (invoked via command substitution
+# or a plain call from the test), so a plain `export` inside this script
+# never reaches back into the test's own shell -- it dies with the
+# subprocess. When ORCHID_SERVICE_DEBUG_CRON_CMD_FILE is set (only ever by
+# tests/test_service.sh), this writes the exact pipeline string used for
+# BOTH the --dry-run print and the real `eval` to that file, verbatim, no
+# trailing newline -- proof the two surfaces are reading the same value,
+# not merely that they currently happen to look alike. A no-op, and the
+# env var otherwise unreferenced, when unset.
+_svc_emit_cron_seam() {
+  [ -n "${ORCHID_SERVICE_DEBUG_CRON_CMD_FILE:-}" ] || return 0
+  printf '%s' "$1" > "$ORCHID_SERVICE_DEBUG_CRON_CMD_FILE"
+}
+
+_svc_install_linux() {
+  local repo="$1" interval_s="$2" dry="$3"
+  local label; label="$(_svc_label "$repo")"
+  local parent; parent="$(cd "$repo/.." && pwd -P)"
+  local rt log pump_exe path_val record line marker
+  rt="$(orchid_runtime "$repo")"
+  log="$rt/pump.log"
+  pump_exe="$ORCHID_ROOT/runners/orchid-pump"
+  path_val="$(_svc_install_path)"
+  record="$(_svc_cron_record_path "$repo")"
+  line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val")"
+  marker="# orchid-service:$label"
+
+  printf '%s\n' "$line" > "$record"
+
+  # Idempotent re-install: strip any PRIOR line carrying this exact label's
+  # marker before appending the fresh one, so a second `install` for the
+  # same repo replaces its own line rather than stacking a duplicate --
+  # see _svc_cron_pipeline_install's own header for the `|| true`/grouping
+  # reasoning.
+  local pipeline; pipeline="$(_svc_cron_pipeline_install "$marker" "$line")"
+  _svc_emit_cron_seam "$pipeline"
+  if [ "$dry" -eq 1 ]; then
+    echo "DRY-RUN: $pipeline"
+  else
+    # eval is safe here: $pipeline is entirely THIS script's own fixed
+    # pipeline syntax plus two values ($marker, $line) that
+    # _svc_cron_pipeline_install already ran through `printf %q` --
+    # shell-quoted, so an embedded space/quote/$/backtick in a repo path
+    # can't break out of its argument position. Nothing reaches eval here
+    # that didn't originate from this same script's own computed values.
+    eval "$pipeline"
+  fi
+
+  echo "orchid: service installed for $repo"
+  echo "  label:      $label"
+  echo "  crontab:    $line"
+  echo "  interval_s: $interval_s (floored to $(_svc_cron_minutes "$interval_s") min for cron)"
+  echo "  log:        $log"
+}
+
+_svc_uninstall_linux() {
+  local repo="$1" dry="$2"
+  local label; label="$(_svc_label "$repo")"
+  local record; record="$(_svc_cron_record_path "$repo")"
+  [ -f "$record" ] || orchid_die "no service installed for $repo (label $label)"
+  local marker="# orchid-service:$label"
+  local pipeline; pipeline="$(_svc_cron_pipeline_uninstall "$marker")"
+  _svc_emit_cron_seam "$pipeline"
+  if [ "$dry" -eq 1 ]; then
+    echo "DRY-RUN: $pipeline"
+  else
+    # Same eval-safety reasoning as the install branch above.
+    eval "$pipeline"
+  fi
+  rm -f "$record"
+  echo "orchid: service uninstalled for $repo (label $label)"
+}
+
+_svc_status_linux() {
+  local repo="$1" dry="$2"
+  local label; label="$(_svc_label "$repo")"
+  local record; record="$(_svc_cron_record_path "$repo")"
+  echo "orchid service status: $repo"
+  echo "  platform: linux"
+  echo "  label:    $label"
+  if [ ! -f "$record" ]; then
+    echo "  installed: no"
+  else
+    echo "  installed: yes"
+    echo "  crontab:   $(cat "$record")"
+    local marker="# orchid-service:$label"
+    if [ "$dry" -eq 1 ]; then
+      echo "DRY-RUN: crontab -l 2>/dev/null | grep -F $(printf '%q' "$marker")"
+      echo "  confirmed: unknown (--dry-run -- not queried)"
+    else
+      if crontab -l 2>/dev/null | grep -qF "$marker"; then
+        echo "  confirmed: yes"
+      else
+        echo "  confirmed: no"
+      fi
+    fi
+  fi
+  _svc_print_log_tail "$repo/.orchid/runtime/pump.log"
+}
+
+# ---------------------------------------------------------------------------
+# dispatch
+# ---------------------------------------------------------------------------
+
+sub="${1:-}"; shift || true
+case "$sub" in
+  -h|--help|help|"") _svc_usage; exit 0 ;;
+  install|uninstall|status) ;;
+  *) orchid_die "usage: orchid service <install|uninstall|status> [--repo <path>] [--interval-s N] [--dry-run]" ;;
+esac
+
+repo_arg=""; interval_arg=""; dry_run=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)
+      [ -n "${2:-}" ] || orchid_die "--repo requires a value"
+      repo_arg="$2"; shift 2 ;;
+    --interval-s)
+      [ -n "${2:-}" ] || orchid_die "--interval-s requires a value"
+      interval_arg="$2"; shift 2 ;;
+    --dry-run) dry_run=1; shift ;;
+    *) orchid_die "orchid service $sub: unknown argument '$1'" ;;
+  esac
+done
+[ "$sub" = install ] || [ -z "$interval_arg" ] \
+  || orchid_die "--interval-s is only valid with 'install'"
+
+repo_in="${repo_arg:-${ORCHID_REPO:-$PWD}}"
+[ -d "$repo_in" ] || orchid_die "no such repo directory: $repo_in"
+repo="$(cd "$repo_in" && pwd -P)"
+plat="$(_svc_platform)"
+
+case "$sub" in
+  install)
+    [ -d "$repo/.orchid" ] \
+      || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
+    interval_s="${interval_arg:-$(config_get "$repo" pump_interval_s 240)}"
+    case "$interval_s" in
+      ''|*[!0-9]*) orchid_die "--interval-s must be a positive integer (got '$interval_s')" ;;
+    esac
+    [ "$interval_s" -gt 0 ] || orchid_die "--interval-s must be a positive integer (got '$interval_s')"
+    if [ "$plat" = darwin ]; then
+      _svc_install_darwin "$repo" "$interval_s" "$dry_run"
+    else
+      _svc_install_linux "$repo" "$interval_s" "$dry_run"
+    fi
+    ;;
+  uninstall)
+    if [ "$plat" = darwin ]; then
+      _svc_uninstall_darwin "$repo" "$dry_run"
+    else
+      _svc_uninstall_linux "$repo" "$dry_run"
+    fi
+    ;;
+  status)
+    if [ "$plat" = darwin ]; then
+      _svc_status_darwin "$repo" "$dry_run"
+    else
+      _svc_status_linux "$repo" "$dry_run"
+    fi
+    ;;
+esac

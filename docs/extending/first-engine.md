@@ -184,3 +184,17 @@ come up there:
 
 Whatever you change, `orchid plugins conform` stays your fast, no-quota,
 no-repo feedback loop — run it again after every edit to the entrypoint.
+
+## See also
+
+- [conformance.md](./conformance.md) — the full seven-check reference this
+  walkthrough uses.
+- [../engines/](../engines/) — every built-in and reference adapter's own
+  guide (install/login/flags/gotchas), the best reading material once
+  you're wiring up a real vendor CLI instead of a dryrun skeleton.
+- [../../README.md#extending-orchid](../../README.md#extending-orchid) —
+  the other four extension points (archetype, notify channel, hook, role)
+  beyond the engine one this guide walks.
+- [../configuration.md](../configuration.md) — where a new `role.<id>=`
+  binding for a custom role, or any engine-specific config key your
+  adapter reads, belongs.

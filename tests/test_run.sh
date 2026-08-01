@@ -193,3 +193,64 @@ assert_eq "$snap_context" "$(cat .orchid/context.md)" "recovery restores context
 [ ! -d .orchid/runtime ] || fail "runtime/ should never be restorable by git checkout -- if this fires, something committed it by mistake"
 "$ORCHID_BIN" run resume >/dev/null || fail "run resume works normally after the simulated-crash recovery"
 rm -rf .orchid.simulated-crash-backup
+
+# ===========================================================================
+# v1-m4 Task 1 (the r-001 journal-loss incident, closed): `run accept`
+# commits the run's ENTIRE durable .orchid/ state onto the integration
+# branch -- not just the files it directly touches (reviews/acceptance.log,
+# journal.md, roadmap.md). This fixture's own checkout ($wt) IS a real
+# worktree of the integration branch (`$bare`'s orchid/integration), so this
+# also exercises the operator's actual documented working shape, unlike
+# test_ownership_verbs.sh's lighter mechanism-only fixture.
+# ===========================================================================
+"$ORCHID_BIN" task create T011 "third task, never committed via a plan apply" >/dev/null
+"$ORCHID_BIN" run advance accepting --reason "wrap up r-002" >/dev/null
+echo "acceptance evidence: r-002 done" > "$WORK/r2-evidence.log"
+pre_bare_integ="$(git -C "$bare" rev-parse orchid/integration)"
+accept_out="$("$ORCHID_BIN" run accept --reason "r-002 complete" --evidence "$WORK/r2-evidence.log")"
+assert_match "accepting -> complete" "$accept_out" "run accept prints the transition"
+post_bare_integ="$(git -C "$bare" rev-parse orchid/integration)"
+[ "$post_bare_integ" != "$pre_bare_integ" ] || fail "run accept must advance the integration branch"
+assert_eq "orchid: run accepted (r-002)" "$(git -C "$bare" log -1 --format=%s orchid/integration)" \
+  "run accept commit message names the current run id"
+git -C "$bare" show "orchid/integration:.orchid/roadmap.md" | grep -q "run_status: complete" \
+  || fail "run accept's commit shows run_status complete"
+git -C "$bare" show "orchid/integration:.orchid/tasks/T011.md" >/dev/null 2>&1 \
+  || fail "run accept commits ALL durable .orchid/ state -- T011.md was never committed via plan apply"
+assert_eq "$(cat "$WORK/r2-evidence.log")" "$(git -C "$bare" show "orchid/integration:.orchid/reviews/acceptance.log")" \
+  "run accept's commit carries the evidence log"
+# The worktree's own checkout is left exactly where it was (still a
+# worktree of orchid/integration, same branch/HEAD) -- orchid_commit_durable
+# never switches branches or touches the working checkout's own git state.
+[ "$(git rev-parse --abbrev-ref HEAD)" = orchid/integration ] || fail "run accept must not switch the worktree's own branch"
+assert_eq "$post_bare_integ" "$(git rev-parse HEAD)" "run accept's worktree HEAD now matches the advanced integration branch"
+
+# ===========================================================================
+# v1-m4 Task 2 (the "no clean-exit affordance" incident): `orchid run
+# release-lease` writes `released: true` into lease.json; both `run new`'s
+# own freshness guard (exercised just above, for the plain-fresh-lease case)
+# and the pump (tests/test_pump.sh) must treat a RELEASED lease as
+# immediately stale, regardless of how recently refreshed_at was stamped --
+# no more waiting out pump_stale_s, no more hand-backdating lease.json.
+# run_status is already `complete` here (the accept just above), which is
+# itself a legal starting status for `run new` -- no extra advance needed.
+# ===========================================================================
+"$ORCHID_BIN" run refresh-lease
+"$ORCHID_BIN" run release-lease || fail "release-lease works with a current epoch"
+assert_eq true "$(jq -r .released .orchid/runtime/lease.json)" "release-lease writes released: true"
+# refreshed_at is still a fresh timestamp (release-lease stamps its own,
+# moments ago) -- proving the staleness bypass is keyed on `released`, not on
+# age.
+released_refreshed_at="$(jq -r .refreshed_at .orchid/runtime/lease.json)"
+released_epoch="$(date -u -d "$released_refreshed_at" +%s 2>/dev/null \
+  || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$released_refreshed_at" +%s)"
+[ $(( $(date -u +%s) - released_epoch )) -lt 5 ] || fail "sanity: released_refreshed_at should be moments ago"
+
+rc=0; released_new_out="$("$ORCHID_BIN" run new --reason "released lease must not block" 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "run new must proceed immediately once the lease is released, even though refreshed_at is fresh (got: $released_new_out)"
+assert_match "run rolled over: r-002 -> r-003" "$released_new_out" "run new actually rolled over past the released lease"
+
+# release-lease itself must be epoch-fenced: a stale ORCHID_EPOCH is refused
+# (INV-02), same as every other mutating run verb.
+rc=0; ORCHID_EPOCH=$(( ORCHID_EPOCH - 1 )) "$ORCHID_BIN" run release-lease >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "release-lease with a stale epoch must be refused (INV-02)"

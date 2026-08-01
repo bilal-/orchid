@@ -189,8 +189,15 @@ fi
 # lib/common.sh's orchid_stale_checkout for the full signature this detects
 # (a live run's 6638-line silent revert). Report-only, like every other
 # doctor check -- it never touches the index or working tree itself.
+#
+# v1-m4 Task 1: the remedy text itself used to recommend a bare `git
+# checkout HEAD -- .`, which is exactly what clobbered the r-001 run's own
+# uncommitted `.orchid/` state when an operator followed it literally --
+# ':(exclude).orchid' scopes the refresh to everything EXCEPT `.orchid/`,
+# so it never touches durable run state; the config half of this same
+# incident now has its own safe path anyway (`orchid config commit`).
 if orchid_stale_checkout "$repo"; then
-  bad "integration checkout is stale — refresh with 'git checkout HEAD -- .' before committing anything here"
+  bad "integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid'\" before committing anything here"
 else
   ok "no stale integration checkout state"
 fi

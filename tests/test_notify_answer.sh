@@ -98,3 +98,18 @@ assert_match "e-\)" "$(cat .orchid/journal.md)" "unfenced answer entry stamped e
 qid5="$("$ORCHID_BIN" notify "fifth question?")"
 ( unset ORCHID_EPOCH; "$ORCHID_BIN" answer "$qid5" sure ) || fail "unfenced answer works with ORCHID_EPOCH entirely absent"
 assert_match "$qid5: sure" "$(cat .orchid/journal.md)" "absent-epoch answer journaled with qid+choice"
+
+# --- answer: expiry check fails CLOSED when both `stat` variants fail -------
+# (review Minor #10: the age-unknown case used to silently SKIP the expiry
+# check entirely -- fail open -- letting an unbounded-age question through
+# regardless of answer_expiry_s). A PATH prefix shadowing `stat` with an
+# always-failing stub reproduces "both stat variants fail" deterministically,
+# without touching the real coreutils this suite otherwise needs.
+qid6="$("$ORCHID_BIN" notify "sixth question?")"
+STUBBIN_STAT="$WORK/stubbin-stat"; mkdir -p "$STUBBIN_STAT"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$STUBBIN_STAT/stat"; chmod +x "$STUBBIN_STAT/stat"
+rc=0
+err6="$(PATH="$STUBBIN_STAT:$PATH" "$ORCHID_BIN" answer "$qid6" nope 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "answer must refuse (not silently proceed) when both stat variants fail on the .question file"
+assert_match "cannot determine .* age" "$err6" "answer names the age-unknown refusal plainly, rather than skipping the expiry check"
+[ ! -f ".orchid/runtime/answers/$qid6.answer" ] || fail "an answer refused for unknown age must never be recorded as answered"

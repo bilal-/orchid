@@ -153,3 +153,65 @@ rc=0; pack_build "$WORK" plan critique "$WORK/pplan3" 2>"$plan_err_f" || rc=$?
 grep -qi "requirements" "$plan_err_f" || fail "plan pack failure names requirements.md"
 rm -f "$plan_err_f"
 echo "# Requirements" > .orchid/requirements.md
+
+# ---------------------------------------------------------------------------
+# v1-m4: worktree-read review packs (promotes the r-001 live-run prototype
+# into the kernel). A review/critique pack_build call now takes an optional
+# 5th arg carrying the RESOLVED engine's capability fact (the launcher's
+# job, not pack.sh's -- pack.sh stays resolver-dumb): "workspace_read=1"
+# when that engine declares workspace_read, empty/absent otherwise (every
+# existing call site above omits it, proving the default is unchanged).
+# When the diff exceeds `pack_diff_inline_max_bytes` (config, default
+# 262144) AND the engine is worktree-capable, the pack swaps diff.patch for
+# diff.stat (git diff --stat + --name-status: enough for a worktree-capable
+# reviewer to navigate the checkout, cheap enough to never blow the budget)
+# and records the omission honestly in pack.json. An inline-only engine (no
+# workspace_read fact) keeps today's full-diff behavior UNCHANGED, including
+# the existing overflow path for a diff that large -- and a small diff stays
+# a full diff.patch even for a worktree-capable engine (the threshold, not
+# the capability alone, decides).
+# ---------------------------------------------------------------------------
+rm -f orchid.config
+echo "repo context here" > .orchid/context.md
+
+# A diff comfortably over the DEFAULT pack_diff_inline_max_bytes (262144)
+# and over the DEFAULT pack_budget_bytes (65536) too, so the inline-only
+# path below still demonstrably overflows (unchanged behavior) while the
+# worktree-read path (small diff.stat + symbols.txt) comfortably fits.
+big_content="$(printf 'z%.0s' $(seq 1 300000))"
+printf '%s\n' "$big_content" > f.txt
+git add f.txt; git commit -q -m "big change"
+big_cand="$(git rev-parse HEAD)"
+printf -- '---\nid: T003\nstatus: reviewing\nbase_sha: %s\ncandidate_sha: %s\n---\nSpec body.\n' "$cand" "$big_cand" > .orchid/tasks/T003.md
+
+pack_build "$WORK" T003 review "$WORK/pwt" "workspace_read=1" || fail "worktree-read pack build (big diff) must not overflow"
+[ -f "$WORK/pwt/diff.stat" ] || fail "worktree-read pack contains diff.stat"
+[ ! -f "$WORK/pwt/diff.patch" ] || fail "worktree-read pack must NOT contain diff.patch for an over-threshold diff"
+[ -f "$WORK/pwt/symbols.txt" ] || fail "worktree-read pack still contains symbols.txt (blind-spot guard data)"
+grep -q "f.txt" "$WORK/pwt/diff.stat" || fail "diff.stat names the changed file"
+assert_eq "worktree-read" "$(jq -r '.items[] | select(.name=="diff.patch") | .omitted' "$WORK/pwt/pack.json")" \
+  "pack.json records diff.patch omitted for worktree-read"
+
+# The same big diff with NO workspace_read fact (inline-only engine, the
+# launcher's default for anything that doesn't declare the capability) is
+# UNCHANGED: a full diff.patch this large still blows the default budget --
+# input_overflow (INV-12), exactly as before this feature existed.
+rc=0; pack_build "$WORK" T003 review "$WORK/pinline" 2>/dev/null || rc=$?
+assert_eq "12" "$rc" "inline-only engine: the same big diff still overflows (input_overflow), unchanged"
+[ ! -d "$WORK/pinline" ] || fail "overflow path still removes dest"
+
+# A SMALL diff (T001: base -> "change") with a worktree-read engine still
+# gets the full diff.patch -- the threshold, not the capability alone,
+# decides.
+pack_build "$WORK" T001 review "$WORK/pwt_small" "workspace_read=1" || fail "worktree-read pack build (small diff)"
+[ -f "$WORK/pwt_small/diff.patch" ] || fail "worktree-read pack keeps diff.patch for a small diff (threshold respected)"
+[ ! -f "$WORK/pwt_small/diff.stat" ] || fail "worktree-read pack must not add diff.stat for a small diff"
+grep -q "change" "$WORK/pwt_small/diff.patch" || fail "small diff content intact"
+
+# pack_diff_inline_max_bytes is a REAL config key, not a hardcoded constant
+# -- lowering it makes even T001's small diff cross the threshold.
+printf 'pack_diff_inline_max_bytes=10\n' > orchid.config
+pack_build "$WORK" T001 review "$WORK/pwt_cfg" "workspace_read=1" || fail "worktree-read pack build (custom low threshold)"
+[ -f "$WORK/pwt_cfg/diff.stat" ] || fail "custom pack_diff_inline_max_bytes triggers diff.stat"
+[ ! -f "$WORK/pwt_cfg/diff.patch" ] || fail "custom pack_diff_inline_max_bytes omits diff.patch"
+rm -f orchid.config

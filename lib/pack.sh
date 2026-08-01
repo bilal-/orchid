@@ -234,7 +234,17 @@ _pack_build_hook() {
     "$budget" "$used" "$items" "$omitted" | jq . > "$dest/pack.json"
 }
 
-pack_build() {  # repo task op dest [hook-point] ; exit 12 = input_overflow
+pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = input_overflow
+  # The 5th positional arg is overloaded exactly like the hook branch's own
+  # `point` already is: `op=hook` reads it as the hook point (_pack_build_
+  # hook below); `op=review|critique` instead reads it as the caller's
+  # (runners/orchid-launch's) capability FACT for the RESOLVED engine --
+  # the literal string "workspace_read=1" when that engine's manifest
+  # declares workspace_read, empty/absent otherwise. The two meanings never
+  # collide (hook and review/critique are different `op` values), so one
+  # slot serves both, same as m3's hook-point precedent. pack.sh stays
+  # resolver-dumb on purpose: it is handed a already-resolved FACT, never a
+  # plugin dir or engine name to go look up itself (v1-m4 Task 3).
   local repo="$1" task="$2" op="$3" dest="$4" point="${5:-}"
   local state tf budget used=0 items="" omitted="" symbols_tmp=""
   state="$(orchid_state "$repo")"
@@ -265,12 +275,47 @@ pack_build() {  # repo task op dest [hook-point] ; exit 12 = input_overflow
   items="{\"name\":\"task.md\",\"bytes\":$(wc -c < "$dest/task.md"),\"truncated\":false}"
 
   if [ "$op" = review ] || [ "$op" = critique ]; then
-    local b c
+    local b c diff_tmp diff_bytes inline_max
     b="$(awk -v k=base_sha '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$tf")"
     c="$(awk -v k=candidate_sha '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$tf")"
-    git -C "$repo" diff "$b".."$c" > "$dest/diff.patch"
-    used=$(( used + $(wc -c < "$dest/diff.patch") ))
-    items="$items,{\"name\":\"diff.patch\",\"bytes\":$(wc -c < "$dest/diff.patch"),\"truncated\":false}"
+
+    # v1-m4 Task 3 (promotes the r-001 live-run prototype): a worktree-
+    # capable reviewer can navigate the checkout directly, so a diff.patch
+    # over `pack_diff_inline_max_bytes` need not be inlined at all -- a
+    # multi-MB extraction diff used to blow the budget outright for exactly
+    # this reviewer shape. Computed into a tmp file first (never twice) so
+    # the size check never re-runs the (potentially large) `git diff` a
+    # second time.
+    diff_tmp="$(mktemp)"
+    git -C "$repo" diff "$b".."$c" > "$diff_tmp"
+    diff_bytes="$(wc -c < "$diff_tmp")"
+    inline_max="$(config_get "$repo" pack_diff_inline_max_bytes 262144)"
+
+    if [ "$point" = "workspace_read=1" ] && [ "$diff_bytes" -gt "$inline_max" ]; then
+      rm -f "$diff_tmp"
+      # diff.stat: stat summary + name-status, enough for a worktree-capable
+      # engine to navigate straight to the changed files itself -- honest
+      # about the trade (docs/specs/plugins.md: "review independence never
+      # rests on secrecy"), not a truncation of diff.patch (which would
+      # silently lose hunks INV-12 exists to protect against).
+      git -C "$repo" diff --stat "$b".."$c" > "$dest/diff.stat"
+      printf '\n' >> "$dest/diff.stat"
+      git -C "$repo" diff --name-status "$b".."$c" >> "$dest/diff.stat"
+      used=$(( used + $(wc -c < "$dest/diff.stat") ))
+      items="$items,{\"name\":\"diff.stat\",\"bytes\":$(wc -c < "$dest/diff.stat"),\"truncated\":false}"
+      # Recorded as its OWN items[] entry (not the plain-string `omitted`
+      # list used elsewhere in this file for budget-omitted artifacts) --
+      # this omission is capability-shaped, not budget-shaped, and pack.json
+      # readers deserve the reason, not just the name. jq's `add` treats a
+      # missing "bytes" key as null, which behaves as the identity element
+      # for +, so the total_bytes-sums-items invariant still holds with this
+      # entry present.
+      items="$items,{\"name\":\"diff.patch\",\"omitted\":\"worktree-read\"}"
+    else
+      mv "$diff_tmp" "$dest/diff.patch"
+      used=$(( used + $(wc -c < "$dest/diff.patch") ))
+      items="$items,{\"name\":\"diff.patch\",\"bytes\":$(wc -c < "$dest/diff.patch"),\"truncated\":false}"
+    fi
 
     # symbols.txt: the inline blind-spot guard's data (changed-file list +
     # every hunk header) -- the changed-symbol list PROTOCOL's routing-
@@ -278,7 +323,9 @@ pack_build() {  # repo task op dest [hook-point] ; exit 12 = input_overflow
     # worktree-capable reviewer. Built now but only written into the pack
     # (further down) AFTER context.md has taken its share of the budget: it
     # is truncatable, and trimmed strictly after the higher-priority repo
-    # context, never before it.
+    # context, never before it. Still built even when diff.patch itself was
+    # swapped for diff.stat above -- a worktree-capable engine still
+    # benefits from the same blind-spot guard data as everyone else.
     symbols_tmp="$(mktemp)"
     git -C "$repo" diff --unified=0 "$b".."$c" 2>/dev/null | grep -E '^(\+\+\+|@@)' > "$symbols_tmp" || true
   fi

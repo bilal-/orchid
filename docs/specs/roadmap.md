@@ -163,14 +163,69 @@
       produces one) but perpetual noise once it happens. Roadmap note: a
       bounded pid-0 reap path (age-gated, distinct from the live-pid gc
       path) for v1-m4.
-  - **v1-m4 (ecosystem + polish):** split into release-blocking core —
-    static status page, service packaging (launchd/cron pump), Homebrew
-    tap, full docs suite — and CONDITIONAL reference adapters (OpenClaw
-    channel + AgentSkill, Hermes, Kimi reviewer, Perplexity researcher):
-    upstream churn may drop an individual adapter from launch, and any
-    dropped adapter automatically disappears from the README headline,
-    compatibility matrix, and tutorial list. The escape hatch never waives
-    a core conformance gate.
+  - **v1-m4 (ecosystem + polish) — SHIPPED:** split into release-blocking
+    core and CONDITIONAL reference adapters, per this milestone's own escape
+    hatch (upstream churn may drop an individual adapter from launch; a
+    dropped adapter disappears from the README headline, compatibility
+    matrix, and tutorial list — never from a core conformance gate). Shipped
+    scope by theme:
+    - **Durable state (m3 ledger paydown):** `orchid_commit_durable`
+      (`lib/common.sh`) — the shared plan-apply-style temp-worktree commit
+      helper now backs `orchid run accept` and `orchid config` (a safe
+      operator config-commit verb), closing the journal-loss incident's
+      root cause; `orchid run release-lease` (clean-session-exit affordance
+      so a session's own final tick no longer blocks `run new`/the pump for
+      up to `pump_stale_s`); `orchid jobs gc --reap-prepared` (bounded,
+      age-gated reap of pid-0 prepared-never-launched manifests, a separate
+      exclusive mode from ordinary gc); a baked pre-push hook (installed by
+      `orchid init`, `push_guard` config, refuses pushes to task branches or
+      the integration branch with the branch name substituted in at install
+      time, `ORCHID_ALLOW_PUSH=1` override).
+    - **Worktree-read review packs:** `pack_diff_inline_max_bytes` (config,
+      default 262144) — a diff larger than this swaps the inline
+      `diff.patch` for a `diff.stat` summary when the resolved reviewer
+      declares `workspace_read`, honestly recorded in `pack.json`; an
+      inline-only engine still hits `input_overflow` at that size. The
+      scoped-reviewer prototype from the m3 ledger is promoted into the
+      kernel pack builder proper.
+    - **Service packaging:** `orchid service install/uninstall/status`
+      (`runners/orchid-service`) — a launchd agent on macOS, a
+      marker-guarded crontab line elsewhere, both idempotent re-install,
+      both testable end-to-end under `--dry-run` without ever touching the
+      real scheduler.
+    - **Status page:** `orchid status --html` — a self-contained static
+      page (run header, task table with `--explain`-style predicates,
+      engines ledger, open blockers, last-10 journal entries) written to
+      `status_page` (config, default `runtime/status.html`); independent of
+      `--explain`, stdout is exactly the path written.
+    - **Hermes adapter:** a conditional reference engine adapter
+      (`plugins/engines/hermes`, `docs/engines/hermes.md`) verified live
+      against real quota.
+    - **OpenClaw + Hermes notify channels, and the orchid AgentSkill:** the
+      outbox pattern (`orchid notify` writes `runtime/outbox/<qid>`;
+      `runners/orchid-pump` drains it through the configured
+      `notify.plugin`'s `send`, tier-2 only, INV-01-clean); nonce +
+      allowlist hardening on `orchid answer` (`answer_allowlist` configured
+      ⇒ `--nonce` mandatory for every caller, local or remote — closes the
+      prior bypass of simply omitting `ORCHID_ANSWER_SENDER`); the orchid
+      AgentSkill (`skills-external/openclaw-orchid`) — an OpenClaw-hosted
+      front-end authorized for exactly `orchid status` and `orchid answer`.
+      Verified live against real quota (hero demo).
+    - **Docs suite + rehearsal gate:** full quickstart (existing +
+      greenfield), `docs/configuration.md`, `docs/engines/*`,
+      `docs/extending/*`, `docs/troubleshooting.md`, README — rehearsed
+      clean-machine, clone-to-first-completed-task under 15 minutes.
+    - **Homebrew prep:** `Formula/orchid.rb` (prepare-only — never tapped,
+      installed, or built by the suite) + `docs/install.md` + `install.sh
+      --prefix`.
+    - **Dropped, per the escape hatch:** the Kimi reviewer and Perplexity
+      researcher reference adapters did NOT ship this milestone — the
+      relevant CLIs are not installed on the dogfood machine, so both were
+      never built past the roadmap-stage mention above. Verified plain:
+      README, the compatibility matrix, the tutorial list, and every
+      `docs/engines/*` guide name only the adapters that actually shipped
+      (Claude Code, Codex, Antigravity, agy, Hermes, OpenClaw) — neither
+      name appears anywhere in that surface as an available adapter.
   - **Release checklist (binary, no judgment calls at the gate):** all
     m1–m3 conformance suites green; m4 core complete; docs suite passes the
     15-minute clean-machine rehearsal; screenshots from real dogfood runs;

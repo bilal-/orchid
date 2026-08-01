@@ -9,7 +9,8 @@ echo hi | atomic_write "$WORK/f"; assert_eq hi "$(cat "$WORK/f")" "atomic write"
 # against lib/common.sh (tests/test_dispatcher.sh covers the same fact
 # through the CLI's `orchid version` verb; this is the library-level source
 # of truth both that verb and every manifest's `requires_orchid` check read).
-assert_eq "1.0.0-m3" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0-m3"
+# v1-m4: bumped to the release version 1.0.0 (no more `-mN` suffix).
+assert_eq "1.0.0" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0"
 
 # layered config
 mkdir -p "$WORK/repo"; cd "$WORK/repo"; git init -q .
@@ -20,6 +21,18 @@ assert_eq claude "$(config_get "$WORK/repo" role.implementer)" "repo overrides u
 ORCHID_ROLE_IMPLEMENTER=agy \
   assert_eq agy "$(ORCHID_ROLE_IMPLEMENTER=agy config_get "$WORK/repo" role.implementer)" "env overrides repo"
 assert_eq repo "$(config_provenance "$WORK/repo" role.implementer)" "provenance"
+
+# v1-m4: hyphenated keys (a custom role id, e.g. role.code-reviewer) must get
+# a working env override too -- `_cfg_env_name` used to only map `.` to `_`,
+# never `-`, so a hyphenated key's "env name" carried a raw hyphen through
+# (an invalid bash identifier -- config_get's own `eval "v=\${$env:-}"` would
+# throw a bad-substitution error if that value were ever actually consulted).
+assert_eq "ORCHID_ROLE_CODE_REVIEWER" "$(_cfg_env_name role.code-reviewer)" \
+  "_cfg_env_name maps both '.' and '-' to '_'"
+printf 'role.code-reviewer=agy\n' > "$WORK/repo/orchid.config"
+assert_eq agy "$(config_get "$WORK/repo" role.code-reviewer)" "hyphenated key resolves from repo config"
+assert_eq codex "$(ORCHID_ROLE_CODE_REVIEWER=codex config_get "$WORK/repo" role.code-reviewer)" \
+  "hyphenated key's env override wins over repo config"
 printf 'evil=$(touch %s/pwned)\n' "$WORK" >> "$WORK/repo/orchid.config"
 config_get "$WORK/repo" evil >/dev/null; [ ! -e "$WORK/pwned" ] || fail "never sourced"
 

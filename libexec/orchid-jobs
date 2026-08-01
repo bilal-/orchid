@@ -366,17 +366,64 @@ case "$sub" in
     # never kills anything: it only reaps pids that are ALREADY dead
     # (`kill -0` already failing), so INV-01's tier-1 "no spawn/kill" posture
     # holds trivially — there is no kill call to guard here at all.
-    older_than_s="$(config_get "$repo" gc_older_than_s 86400)"
+    reap_prepared=0
+    older_than_s_arg=""
     while [ $# -gt 0 ]; do
       case "$1" in
+        --reap-prepared) reap_prepared=1; shift ;;
         --older-than-s)
           [ -n "${2:-}" ] || orchid_die "--older-than-s requires a value"
-          older_than_s="$2"; shift 2 ;;
-        *) orchid_die "usage: orchid jobs gc [--older-than-s N]" ;;
+          older_than_s_arg="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs gc [--older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N]" ;;
       esac
     done
     mkdir -p "$quarantine_dir"
     now="$(date +%s)"
+
+    # --reap-prepared (v1-m4): a SEPARATE, exclusive mode from the ordinary
+    # dead-job reap below -- targets EXACTLY the pid==0 "prepared, never
+    # launched" manifests the ordinary loop deliberately skips (see its own
+    # comment just below), closing the live incident where an orphaned
+    # prepare-but-never-launch manifest (e.g. `runners/orchid-launch` dying
+    # between `jobs prepare` and the actual spawn) sat forever, re-reported
+    # as `prepared` by every `jobs check` call across two whole runs. A
+    # never-launched manifest's own `started_at` is always 0 (jobs prepare
+    # mints it that way), so age is instead measured off the manifest FILE's
+    # own mtime -- the only signal on disk for "how long has this sat
+    # prepared". Ordinary `gc` (no --reap-prepared) is UNCHANGED: it still
+    # skips every pid==0 manifest outright, so this must be invoked as its
+    # own explicit pass (e.g. a separate cron line) rather than folded into
+    # the default. Same suspect-fields validation as the dead-job reap below
+    # (job_id must match the exact shape `jobs prepare` generates) --
+    # quarantined as `.reason-gc-suspect`, never reaped, on any mismatch. No
+    # epoch fence here either, for the same reason the whole `gc` arm
+    # isn't fenced (runtime-only; see the arm's own header comment).
+    if [ "$reap_prepared" -eq 1 ]; then
+      older_than_s="${older_than_s_arg:-3600}"
+      for f in "$jobs_dir"/*.json; do
+        [ -e "$f" ] || continue
+        pid="$(jq -r .pid "$f")"
+        [ "$pid" = 0 ] || continue   # only never-launched manifests
+        mtime="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+        age=$(( now - mtime ))
+        [ "$age" -gt "$older_than_s" ] || continue   # too young: untouched
+        job_id="$(jq -r .job_id "$f")"
+        suspect=0
+        echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
+        if [ "$suspect" -eq 1 ]; then
+          base="$(basename "$f")"
+          quarantine_file "$f" gc-suspect
+          echo "gc-skip $base (suspect fields)"
+          continue
+        fi
+        quarantine_file "$f" gc-prepared
+        rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json"
+        echo "gc-prepared $job_id"
+      done
+      exit 0
+    fi
+
+    older_than_s="${older_than_s_arg:-$(config_get "$repo" gc_older_than_s 86400)}"
     for f in "$jobs_dir"/*.json; do
       [ -e "$f" ] || continue
       pid="$(jq -r .pid "$f")"

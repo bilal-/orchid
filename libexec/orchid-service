@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-1 -> tier-2 boundary (mirrors bin/orchid's own generic dispatch, and
+# the docs/specs/kernel.md determinism-boundary split behind `orchid jobs
+# launch`'s relationship to runners/orchid-launch): `service` is inherently
+# effectful -- every subverb (install/uninstall/status) ends up running (or,
+# under --dry-run, PRINTING) a real host scheduler mutation/query
+# (launchctl/crontab). Tier-1 verbs must never spawn/detach a process or
+# shell out to a daemon controller (INV-01), so this file's entire job IS
+# the handoff: no subverb parsing, no validation, no epoch fencing (service
+# installs sit outside the run/epoch model entirely -- they configure the
+# SCHEDULER, not a run). `runners/orchid-service` (tier 2) owns all of it.
+exec "$ORCHID_ROOT/runners/orchid-service" "$@"

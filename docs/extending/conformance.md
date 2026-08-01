@@ -162,3 +162,14 @@ Run `conform` first, and again every time you touch an adapter's
 request/envelope handling — it's fast, needs nothing on disk, and never
 spends quota. Run `plugins test` afterward, once the plugin is installed
 and you're deciding whether to actually bind it to a role.
+
+## See also
+
+- [first-engine.md](./first-engine.md) — the full under-an-hour walkthrough
+  this reference supports.
+- [../../README.md#any-engine-any-role](../../README.md#any-engine-any-role) —
+  how a `plugins test` pass actually promotes a binding from `unverified`
+  to capability-gated-eligible.
+- [../troubleshooting.md](../troubleshooting.md) — what to do when a real
+  (non-dryrun) invocation fails in ways `conform` can't catch (rate limits,
+  pack overflow, and friends).

@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# kind=notify entrypoint. Contract (docs/specs/plugins.md, "notify channel"
+# row): `send <question-id> <text>`. No repo access, no stdin, no exit-code
+# guessing -- this script's own exit code IS the send outcome the pump acts
+# on (0 -> outbox file removed; nonzero -> left for retry, see runners/
+# orchid-pump's outbox drain). Launched ONLY by runners/orchid-pump (tier-2,
+# via the launcher-hygiene env: env -i + lib/spawn.sh's spawn_child_env),
+# never directly by any tier-1 verb -- `orchid notify` itself only ever
+# WRITES `runtime/outbox/<qid>` (INV-01: tier-1 never spawns).
+#
+# Config reaches this script as two ORCHID_*-prefixed env vars (base-
+# allowlisted by spawn_child_env's env hygiene -- see runners/orchid-pump's
+# outbox-drain header for how they get exported before the spawn):
+#   ORCHID_NOTIFY_CHANNEL  <- notify.channel config (an openclaw channel:
+#                             telegram|whatsapp|discord|... -- see
+#                             `openclaw message send --help`)
+#   ORCHID_NOTIFY_TO       <- notify.to config (the --target recipient)
+#
+# Verified invocation shape (flag/format research, HELP TEXT ONLY -- no real
+# `openclaw message send` was ever executed by this task):
+#   OpenClaw 2026.7.1-2, `openclaw message --help` / `openclaw message send
+#   --help`. The task brief's own placeholder flags (--to/--text) do NOT
+#   exist on the real CLI -- the actual flags are:
+#     -t, --target <dest>   Recipient/channel (E.164, chat id, channelId, ...)
+#     -m, --message <text>  Message body
+#     --channel <channel>   telegram|whatsapp|discord|irc|googlechat|slack|
+#                            signal|imessage|feishu|nostr|msteams|mattermost|
+#                            nextcloud-talk|matrix|raft|line|zalo|clickclack|
+#                            zalouser|sms|synology-chat|tlon|qqbot|twitch
+#   So the real call is:
+#     openclaw message send --channel <channel> --target <to> --message <text>
+#   `--dry-run` exists on the real CLI too (prints the payload, skips
+#   sending) but is NOT used here -- a real send is exactly what this
+#   entrypoint exists to perform once the operator has genuinely configured
+#   a channel; PENDING-VALIDATION: this invocation has not yet been run
+#   against a live, configured OpenClaw gateway -- that is the live
+#   hero-demo dogfood (a later controller task), not this build task.
+qid="${1:?usage: send <question-id> <text>}"
+text="${2:?usage: send <question-id> <text>}"
+: "$qid"   # accepted per the notify-channel contract; not otherwise used --
+           # $text already carries "<qid>: ..." (orchid-notify built it that
+           # way), so nothing else here needs to re-embed it.
+
+channel="${ORCHID_NOTIFY_CHANNEL:?ORCHID_NOTIFY_CHANNEL not set (notify.channel config missing or empty)}"
+to="${ORCHID_NOTIFY_TO:?ORCHID_NOTIFY_TO not set (notify.to config missing or empty)}"
+
+exec openclaw message send --channel "$channel" --target "$to" --message "$text"

@@ -111,6 +111,60 @@ resolve_engine_dir() {  # name -> plugin dir (dirname of resolve_engine_exe)
   dirname "$exe"
 }
 
+# resolve_notify_dir <name> -- the kind=notify analogue of resolve_engine_dir:
+# searches the SAME class of roots ($ORCHID_PLUGIN_PATH entries, ~/.orchid/
+# plugins, $ORCHID_ROOT/plugins) but under a `notify` kind-dir instead of
+# `engines`, and returns the plugin DIR rather than a hardcoded `.../run`
+# path -- kind=notify's own entrypoint contract is `send` (docs/specs/
+# plugins.md), read from the manifest by the caller (manifest_get "$dir"
+# entrypoint), not assumed to be literally named "run" the way
+# resolve_engine_exe assumes for engines.
+#
+# v1-m4 Task 7 scope note: repo-local (<repo>/.orchid/plugins/notify)
+# discovery + digest-pinned trust (INV-09, the same treatment
+# resolve_engine_exe gives engines) is NOT implemented here -- no shipped
+# notify channel plugin needs it yet (the one built-in, plugins/notify/
+# openclaw, is discovered via the builtin root below), and `orchid plugins
+# list/validate/audit` (libexec/orchid-plugins' generic, kind-agnostic
+# discovery) already covers repo-local notify plugins for those verbs
+# regardless. Only the launch-time resolver (used solely by runners/
+# orchid-pump's outbox drain) is narrower; extend this the same way
+# resolve_engine_exe handles INV-09 if a repo-local notify channel is ever
+# needed.
+resolve_notify_dir() {
+  local name="$1" d found="" p
+  # Review finding (Important #2): `name` comes straight from `notify.plugin`
+  # config -- operator-trusted today, but `orchid config commit` makes
+  # orchid.config a tracked, merge-reachable file, so a value containing a
+  # path separator or `..` must never be allowed to traverse out of every
+  # notify root below (`$d/$name/plugin.conf` would otherwise resolve
+  # anywhere on disk, and the caller then execs that directory's `send` with
+  # NO INV-09 digest/trust gate at all -- contradicting docs/specs/
+  # plugins.md's threat model). Refused before any root is even searched;
+  # the caller (runners/orchid-pump's outbox drain) already feeds this exact
+  # 1-argument stderr into its existing per-message failure/quarantine path.
+  case "$name" in
+    */*|*..*) echo "orchid: invalid notify plugin name '$name' (must not contain '/' or '..')" >&2; return 1 ;;
+  esac
+  local -a search_dirs=()
+  if [ -n "${ORCHID_PLUGIN_PATH:-}" ]; then
+    local IFS=':' parts=()
+    read -ra parts <<< "$ORCHID_PLUGIN_PATH"
+    for p in "${parts[@]}"; do
+      [ -n "$p" ] && search_dirs+=("$p/notify")
+    done
+  fi
+  search_dirs+=("$HOME/.orchid/plugins/notify" "${ORCHID_ROOT:-}/plugins/notify")
+  for d in "${search_dirs[@]}"; do
+    [ -n "$d" ] || continue
+    [ -f "$d/$name/plugin.conf" ] || continue
+    [ -z "$found" ] || { echo "orchid: duplicate notify plugin '$name' ($found vs $d/$name) (INV-10)" >&2; return 1; }
+    found="$d/$name"
+  done
+  [ -n "$found" ] || return 1
+  echo "$found"
+}
+
 # resolve_engine_qualified_id <name> -- the qualified manifest id (e.g.
 # "orchid/claude", or a third-party publisher's own "acme/foo") a plugin's
 # OWN plugin.conf claims for itself, for comparing against an envelope's

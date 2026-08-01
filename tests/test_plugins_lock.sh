@@ -88,7 +88,12 @@ assert_match "MISSING: orchid/agy" "$out" "drift report labels orchid/agy as MIS
 # script mutated-then-restored -- a second pristine copy keeps those
 # scenarios from depending on either) ---------------------------------------
 root2="$WORK/root2"; mkdir -p "$root2"
-for d in bin lib libexec plugins roles; do cp -R "$REPO_ROOT/$d" "$root2/$d"; done
+# v1-m4: `templates/` is now also a real ORCHID_ROOT dependency of `orchid
+# init` itself (the pre-push guard template, alongside orchid-task's
+# pre-existing task-<archetype>.md templates) -- must be copied in here too,
+# same as bin/lib/libexec/plugins/roles, or `orchid init` against this
+# fake root fails trying to `cp` a template that was never copied over.
+for d in bin lib libexec plugins roles templates; do cp -R "$REPO_ROOT/$d" "$root2/$d"; done
 bin2="$root2/bin/orchid"
 
 # -- doctor is unaffected when no plugins.lock exists at all -----------------

@@ -19,12 +19,14 @@ case "$sub" in
     # currently sits in `.orchid/` -- it has no opinion on whether a
     # critique loop preceded it.
     verb_lock_acquire "$repo"
-    # Provisional release-on-EXIT, set IMMEDIATELY after acquire so nothing
-    # between here and the temp-worktree trap below (--reason validation,
-    # roadmap/integration-branch checks, each an `orchid_die` exit point) can
-    # leak the lock. Superseded a few lines down once `wt` exists and
-    # `plan_cleanup` takes over EXIT -- that later trap folds this same
-    # verb_lock_release call into its own string, composed by hand.
+    # Release-on-EXIT, set IMMEDIATELY after acquire so nothing between here
+    # and orchid_commit_durable below (--reason validation, roadmap/
+    # integration-branch checks, each an `orchid_die` exit point) can leak
+    # the lock. orchid_commit_durable (lib/common.sh) composes its OWN
+    # temp-worktree cleanup with whatever EXIT trap is already armed when it
+    # is called -- this one -- rather than installing a second, competing
+    # trap that would just clobber it; it restores this exact trap before
+    # returning, so it is still the one active for the rest of this arm too.
     trap 'verb_lock_release "$repo"' EXIT
     reason=""
     while [ $# -gt 0 ]; do case "$1" in
@@ -47,119 +49,53 @@ case "$sub" in
     git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
       || orchid_die "integration branch '$integ' does not exist"
 
-    # CAS discipline (Fix 3): neither the journal reason nor the
-    # planning->running transition may land in the CURRENT checkout's
-    # .orchid until the compare-and-swap below has actually succeeded —
-    # otherwise a concurrent commit to $integ between here and update-ref
-    # leaves local state claiming a transition ("running", reason
-    # journaled) that the integration branch never received. Both
-    # mutations are deferred and applied into the TEMP WORKTREE's copy
-    # instead (below, after it's populated), so they ride into the commit
-    # this verb is building; local .orchid is only ever touched AFTER CAS
-    # success (sync-back) or, on CAS failure, to record the failure itself
-    # (Fix 3c below). Source of truth for journal.md/roadmap.md is the temp
-    # worktree until CAS succeeds, local from that instant on.
-    integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
+    # v1-m4 Task 1: the temp-worktree + CAS + sync-back mechanics below (once
+    # this arm's own inline code) now live in lib/common.sh's
+    # orchid_commit_durable, shared with `orchid run accept` and `orchid
+    # config commit`. This arm's own CAS discipline (Fix 3) is UNCHANGED:
+    # neither the journal reason nor the planning->running transition may
+    # land in the CURRENT checkout's .orchid until the compare-and-swap
+    # inside the helper has actually succeeded — otherwise a concurrent
+    # commit to $integ leaves local state claiming a transition the
+    # integration branch never received. Both mutations are applied by
+    # `plan_apply_hook` below, which the helper invokes ONLY against the
+    # temp worktree's OWN copy (never $repo directly) before it commits —
+    # local .orchid is only ever touched by the helper's own post-CAS-
+    # success sync-back, or, on CAS failure, to record the failure itself.
+    plan_apply_hook() {
+      local wt="$1" wt_roadmap status
+      wt_roadmap="$wt/.orchid/roadmap.md"
+      status="$(fm_get "$wt_roadmap" run_status)"
 
-    # Never switch the user's checkout: stage + commit in a detached temp
-    # worktree of the integration branch, then advance the branch ref via a
-    # compare-and-swap update-ref (mirrors orchid-merge's pattern exactly —
-    # this is what "mirror init's temp-worktree pattern" cashes out to once
-    # the branch already exists and may be the very branch the operator is
-    # sitting on: `git worktree add <name>` of an already-checked-out branch
-    # would fail, so this only ever touches it via a detached worktree + ref
-    # update, never a named checkout).
-    wt=""
-    plan_cleanup() {
-      if [ -n "$wt" ]; then
-        git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
-        rm -rf "$wt" 2>/dev/null || true
-        git -C "$repo" worktree prune >/dev/null 2>&1 || true
+      # Journal-first (INV-08) still holds *within* this commit: the reason
+      # is written to the worktree's journal.md before the run_status edit
+      # below. `journal add` enforces its own epoch fencing, so lend the
+      # worktree a throwaway runtime/epoch equal to the one already
+      # validated at the top of this script (via epoch_require), then strip
+      # runtime/ back out — runtime/ is never durable and must never ride
+      # into a commit on the integration branch (orchid_commit_durable's own
+      # copy-in step already excludes it, but this arm minted a fresh one
+      # here for the nested `journal add` call, so it must clean up after
+      # itself too).
+      mkdir -p "$wt/.orchid/runtime"
+      echo "$ORCHID_EPOCH" > "$wt/.orchid/runtime/epoch"
+      ORCHID_REPO="$wt" ORCHID_EPOCH="$ORCHID_EPOCH" \
+        "$ORCHID_ROOT/bin/orchid" journal add --kind plan_revision "$reason"
+      rm -rf "$wt/.orchid/runtime"
+
+      # Plan apply is the sole writer of run_status's planning->running edge
+      # (kernel.md's ownership table: "orchid plan apply ... run_status").
+      # Applied here, into the worktree, so it rides in the same commit as
+      # the journal entry above.
+      if [ "$status" = planning ]; then
+        fm_set "$wt_roadmap" run_status running
       fi
     }
-    # Composed by hand (not verb_lock_guard): this arm already owns the EXIT
-    # trap for temp-worktree cleanup, so the verb lock's release is folded
-    # into the SAME trap string rather than installed as a second, competing
-    # `trap ... EXIT` that would just clobber this one.
-    trap 'plan_cleanup; verb_lock_release "$repo"' EXIT
-    wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-plan.XXXXXX")"
-    git -C "$repo" worktree add -q --detach "$wt" "$integ_head" >/dev/null 2>&1 \
-      || orchid_die "cannot create temp worktree at $integ_head"
+    ORCHID_COMMIT_DURABLE_HOOK=plan_apply_hook
+    orchid_commit_durable "$repo" "orchid: plan apply" .orchid
+    unset ORCHID_COMMIT_DURABLE_HOOK
 
-    # Copy in ALL current .orchid/ durable state, excluding runtime/
-    # (rsync-less: rebuild .orchid/ in the worktree fully from the current
-    # checkout's .orchid/ minus runtime/, so deletions on the source side are
-    # reflected too, not just additions/edits).
-    rm -rf "$wt/.orchid"
-    mkdir -p "$wt/.orchid"
-    for entry in "$state"/*; do
-      [ -e "$entry" ] || continue
-      name="$(basename "$entry")"
-      [ "$name" = runtime ] && continue
-      cp -R "$entry" "$wt/.orchid/$name"
-    done
-
-    # --- Fix 3: apply BOTH deferred mutations into the WORKTREE's copy
-    # only, so they ride into the commit below. Local .orchid is untouched
-    # until CAS succeeds (sync-back, further down).
-    wt_roadmap="$wt/.orchid/roadmap.md"
-    status="$(fm_get "$wt_roadmap" run_status)"
-
-    # Journal-first (INV-08) still holds *within* this commit: the reason
-    # is written to the worktree's journal.md before the run_status edit
-    # below. `journal add` enforces its own epoch fencing, so lend the
-    # worktree a throwaway runtime/epoch equal to the one already validated
-    # at the top of this script (via epoch_require), then strip runtime/
-    # back out before `git add` — runtime/ is never durable and must never
-    # ride into a commit on the integration branch.
-    mkdir -p "$wt/.orchid/runtime"
-    echo "$ORCHID_EPOCH" > "$wt/.orchid/runtime/epoch"
-    ORCHID_REPO="$wt" ORCHID_EPOCH="$ORCHID_EPOCH" \
-      "$ORCHID_ROOT/bin/orchid" journal add --kind plan_revision "$reason"
-    rm -rf "$wt/.orchid/runtime"
-
-    # Plan apply is the sole writer of run_status's planning->running edge
-    # (kernel.md's ownership table: "orchid plan apply ... run_status").
-    # Applied here, into the worktree, so it rides in the same commit as
-    # the journal entry above.
-    if [ "$status" = planning ]; then
-      fm_set "$wt_roadmap" run_status running
-    fi
-
-    git -C "$wt" add .orchid
-    if git -C "$wt" diff --cached --quiet -- .orchid; then
-      orchid_die "nothing to apply — no .orchid changes since last plan apply"
-    fi
-    git -C "$wt" commit -q -m "orchid: plan apply"
-    new_sha="$(git -C "$wt" rev-parse HEAD)"
-
-    # Compare-and-swap: only advance refs/heads/$integ if it still points at
-    # the integ_head this call read at the top (same discipline as
-    # orchid-merge's update-ref) — refuses rather than clobbering a
-    # concurrent commit.
-    if ! git -C "$repo" update-ref "refs/heads/$integ" "$new_sha" "$integ_head"; then
-      # Fix 3c: CAS failure. The commit built above is unreferenced (never
-      # touches local state or any branch) and is left for gc. The
-      # integration branch moved concurrently — journal that fact to the
-      # LOCAL journal (the operator must see it; this IS a deliberate
-      # local-only mutation, the sole exception to "local untouched until
-      # CAS success") and die nonzero. Local roadmap is completely
-      # untouched: no planning->running transition, since that edit only
-      # ever existed inside the orphaned worktree commit.
-      moved_to="$(git -C "$repo" rev-parse "refs/heads/$integ" 2>/dev/null || echo "?")"
-      ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \
-        "plan apply CAS failure — integration branch '$integ' changed concurrently (expected $integ_head, now $moved_to) — retry orchid plan apply"
-      orchid_die "update-ref CAS failed: integration branch '$integ' changed concurrently (expected $integ_head) — retry orchid plan apply"
-    fi
-
-    # CAS succeeded: the worktree's just-committed journal.md and
-    # roadmap.md are supersets of local's (identical prior content plus the
-    # two mutations applied above) — copy them back over local atomically.
-    # This is the ONLY point the current checkout's .orchid changes.
-    cat "$wt/.orchid/journal.md" | atomic_write "$state/journal.md"
-    cat "$wt/.orchid/roadmap.md" | atomic_write "$state/roadmap.md"
-
-    echo "applied: $integ -> $new_sha"
+    echo "applied: $integ -> $ORCHID_COMMIT_DURABLE_SHA"
     ;;
   *) orchid_die "usage: orchid plan apply --reason \"...\"" ;;
 esac

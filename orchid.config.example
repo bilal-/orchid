@@ -23,6 +23,10 @@ pack_budget_bytes=65536
 # continues rather than infra-failing (see docs/specs/operations.md).
 # role.<id>=<engine>[,<engine>...]
 # role.<id>.blocking=false
+# Note: a custom <id> may use `-` or `_` interchangeably (both map to the
+# same env-override variable, e.g. role.code-reviewer and role.code_reviewer
+# both resolve ORCHID_ROLE_CODE_REVIEWER) -- never rely on `-` vs `_` to
+# distinguish two otherwise-identical role ids; they collide.
 
 # Dual review routing (v1-m2): review.<tier> is a comma-separated failover
 # chain of engine names consulted for the risk-tiered reviewer slots (see
@@ -43,7 +47,20 @@ pack_budget_bytes=65536
 # stall_minutes=10
 # timeout_minutes=60
 # agy_max_bytes=100000
+# v1-m4: same shape as agy_max_bytes above -- plugins/engines/hermes/run is
+# ALSO an inline-only reviewer (capabilities=structured_text, no
+# workspace_read; see docs/engines/hermes.md), so an oversized diff.patch
+# fails closed the same way rather than getting the workspace-read engines'
+# diff.stat relief below.
+# hermes_max_bytes=100000
 # spool_max_bytes=262144
+# v1-m4: worktree-read review packs. A review/critique diff.patch larger
+# than this many bytes is replaced with diff.stat (git diff --stat +
+# --name-status) instead, but ONLY when the resolved reviewer/critic engine
+# declares the workspace_read capability (it can read the checkout itself);
+# an inline-only engine still gets the full diff.patch regardless of size,
+# subject to the ordinary pack_budget_bytes overflow check.
+# pack_diff_inline_max_bytes=262144
 # v1-m3: cross-run lessons.md byte cap (docs/specs/kernel.md, Cross-run
 # lessons). `orchid lessons consolidate` refuses rather than deleting an
 # active lesson when hygiene alone can't fit under this cap.
@@ -55,6 +72,12 @@ pack_budget_bytes=65536
 # rate_limit_backoff_s=3600
 # engine_fail_threshold=3
 # pump_stale_s=900
+# v1-m4: `orchid service install` bakes this into the rendered launchd
+# StartInterval (seconds) or the cron fallback's `*/N * * * *` line
+# (floored to whole minutes there, minimum 1) -- change it and re-run
+# `orchid service install` to take effect; editing this key alone does not
+# touch an already-installed schedule.
+# pump_interval_s=240
 # v1-m2: high-risk arbitration's wait (seconds) for the preferred
 # role.arbiter engine before a fallback arbiter may decide (PROTOCOL.md,
 # HEADLESS OPERATION).
@@ -73,3 +96,53 @@ pack_budget_bytes=65536
 # hook.before_merge=
 # hook.on_blocker=
 # hook_timeout_s=600
+
+# v1-m4: `orchid init` installs a `.git/hooks/pre-push` guard (defense-in-
+# depth against pushing orchid-managed refs -- task/* branches, the
+# integration branch -- to origin; PROTOCOL.md already forbids it outright).
+# Never overwrites a pre-existing pre-push hook of your own. Set to false to
+# skip installing it.
+# push_guard=true
+
+# v1-m4: `orchid status --html` writes a self-contained static status page
+# to this path (relative paths resolve under `.orchid/`, same as every
+# other runtime/ path this file documents) -- the "check from another
+# room" surface, regenerated best-effort at THE TICK's step 5. Never
+# served; open the file directly.
+# status_page=runtime/status.html
+
+# v1-m4 Task 7: OpenClaw notify channel (docs/engines/openclaw.md). Both
+# empty/unset by default -- no channel configured means `orchid notify`
+# never writes an outbox file at all; BLOCKERS.md + terminal stays a
+# complete surface on its own (docs/specs/operations.md). `notify.channel`
+# is OpenClaw's OWN channel enum (telegram|whatsapp|discord|irc|
+# googlechat|slack|signal|imessage|feishu|nostr|msteams|mattermost|
+# nextcloud-talk|matrix|raft|line|zalo|clickclack|zalouser|sms|
+# synology-chat|tlon|qqbot|twitch -- `openclaw message send --help`);
+# `notify.to` is the recipient (`--target`: E.164, chat id, channelId, etc,
+# per that channel). `notify.plugin` selects WHICH kind=notify plugin dir
+# the pump's outbox drain launches (a plugin directory NAME under
+# plugins/notify/, e.g. `hermes` -- never a manifest id), default openclaw.
+# notify.plugin=openclaw
+# notify.channel=
+# notify.to=
+# v1-m4 Task 7: setting this to anything turns inbox hardening ON for
+# EVERY `orchid answer` call, not just ones that self-assert a sender --
+# once configured, --nonce is mandatory for every caller (local terminal
+# included; read it off BLOCKERS.md/the .question file), and a caller that
+# additionally sets ORCHID_ANSWER_SENDER (a remote surface -- the openclaw
+# AgentSkill, currently the only one) must also appear in this list.
+# Leaving this unset/empty means no remote answer path exists at all, so
+# `orchid answer` stays in its plain lenient local-terminal shape (no
+# nonce needed) for everyone. Comma-separated exact sender identifiers.
+# answer_allowlist=
+# v1-m4 Task 7: a question (`.orchid/runtime/answers/<qid>.question`)
+# expires this many seconds after it was minted (file mtime) -- `orchid
+# answer` refuses an expired qid outright (die + journal note), regardless
+# of sender.
+# answer_expiry_s=86400
+# v1-m4 Task 7: `runners/orchid-pump`'s outbox drain gives up on a queued
+# notify-channel message after this many consecutive failed `send`
+# attempts, quarantining it (`runtime/outbox/<qid>.reason-send-failed`)
+# rather than retrying forever.
+# send_retry_max=5

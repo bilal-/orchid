@@ -11,7 +11,11 @@ part of the architecture; this file never changes to suit one.*
 
 - **No external mutation.** Never `git push`, never fetch/pull, never
   contact any remote — every mutation this file authorizes is repo-local;
-  the operator alone moves anything to origin.
+  the operator alone moves anything to origin. `orchid init` also installs
+  a `.git/hooks/pre-push` guard (`push_guard`, config, default true) as
+  defense-in-depth: it refuses any push of a `task/*` branch or the
+  integration branch unless `ORCHID_ALLOW_PUSH=1`, so a session violating
+  this rule (deliberately or by accident) still cannot push either.
 - **You are the orchestrator.** Your only interface to run state is `orchid
   <verb>` and, for spawning engine work, `runners/orchid-launch`. Never
   hand-edit anything under `.orchid/` — no frontmatter, no journal, no
@@ -84,7 +88,7 @@ part of the architecture; this file never changes to suit one.*
   positional carries no meaning for a hook job — pass the literal `hook`; a
   hook job's real identity for engine-resolution purposes comes entirely
   from the point's config binding, never the role chain), launch every
-  additional bound entry the same way but with `--engine <plugin-id>` naming
+  additional bound entry the same way but with `--engine <name>` naming
   it explicitly (mirrors a second reviewer slot), then `orchid jobs
   reconcile` before reading any of their envelopes. A binding entry marked
   `:required` whose reconciled envelope is missing, stale, or not `status:
@@ -156,6 +160,23 @@ task after it drafts normally.
 
 Once `run_status: running`, PLANNING is over — THE TICK below is the only
 procedure that touches task state from here on.
+
+**Repo-config changes (`orchid.config`) and stale-checkout hygiene.** Never
+hand-commit `orchid.config` from a checkout of the integration branch (or a
+worktree of it) directly — use `orchid config commit --reason "..."`
+instead. It stages exactly `orchid.config`'s current on-disk content into a
+separate temp worktree of the integration branch and commits it there
+(journaling `intervention`), never touching this checkout's own git index —
+closing a real incident: a long-lived integration-branch checkout whose ref
+gets advanced from OUTSIDE it (another worktree's commit, a pump-driven
+`plan apply`/`run accept`) falls behind its own branch pointer without its
+index/working tree ever refreshing (`orchid doctor`/`orchid status` detect
+this and call it out by name). A naive `git add -A && git commit` in that
+state silently re-commits whatever stray staged deletions the stale index
+still carries, reverting real history. If you do need to refresh such a
+checkout by hand for some other reason, use `git checkout HEAD -- .
+':(exclude).orchid'` — NOT a bare `git checkout HEAD -- .`, which would
+also clobber any uncommitted `.orchid/` run state sitting there.
 
 ## THE TICK
 
@@ -398,7 +419,7 @@ ones its archetype never declares.
   a second concurrent merge anyway. Before that one call, if
   `hook.before_merge` is bound (`orchid config list`), invoke every bound
   entry first — the Preamble's shape, `runners/orchid-launch <id> hook hook
-  --hook before_merge` for the first bound entry, `--engine <plugin-id>`
+  --hook before_merge` for the first bound entry, `--engine <name>`
   naming each additional one — then `orchid jobs reconcile`. This is the ONE
   hook point the kernel itself also enforces: a `:required` entry with no
   fresh ok envelope for the task's CURRENT `candidate_sha` makes the verb
@@ -437,6 +458,11 @@ ones its archetype never declares.
     candidate defect the way exit `1`'s `rework` is.
 
 **4. Blockers.**
+If a notify channel is configured (`notify.channel`), the outbound message
+to it is best-effort only (queued in `runtime/outbox/`, drained by the pump,
+retried up to `send_retry_max` times before quarantine) — `BLOCKERS.md` plus
+the terminal is always a complete interaction surface on its own, with or
+without a channel ever delivering anything (docs/specs/operations.md).
 Raise one with `orchid notify [--task <id>] "<text>"` (prints a `qid`). If
 `hook.on_blocker` is bound, invoke it now (Preamble shape:
 `runners/orchid-launch <id> hook hook --hook on_blocker`, then `orchid jobs
@@ -453,9 +479,16 @@ the task should simply run again.
 
 **5. Before sleeping.**
 `orchid status --explain` (so anything watching the terminal — or the next
-resumer — sees exactly where the run stands) then `orchid run refresh-lease`
-once more (so a concurrent resumer never mistakes this pass for a stalled
-one).
+resumer — sees exactly where the run stands), then `orchid status --html`
+to regenerate the static status page (`status_page` (config, default
+`runtime/status.html`)) — the "check from another room" surface: a
+self-contained snapshot (inline CSS, no external assets, no JS) of the run
+header, task table with explain predicates, engines ledger, open blockers,
+and the last 10 journal entries. Best-effort: this call never blocks the
+tick — an unwritable status_page path or any other failure here is simply
+left for the next pass to retry, exactly like a transient engine hiccup
+elsewhere in the loop. Then `orchid run refresh-lease` once more (so a
+concurrent resumer never mistakes this pass for a stalled one).
 
 ## RESUME
 
@@ -563,10 +596,34 @@ Once `orchid status --explain` shows every task `done`:
    result to an evidence file.
 3. `orchid run accept --reason "..." --evidence <path-to-evidence-file>` —
    requires `run_status: accepting`; copies the evidence file into
-   `.orchid/reviews/acceptance.log` and sets `run_status: complete`. This is
-   the *only* path to `complete`: `orchid run advance complete` is refused
+   `.orchid/reviews/acceptance.log` and sets `run_status: complete`, then
+   COMMITS the run's entire durable `.orchid/` state onto the integration
+   branch itself (the same temp-worktree + CAS transaction `orchid plan
+   apply` uses, via `orchid_commit_durable`) — a completed run's record is
+   never left uncommitted-only (v1-m4 ledger, the r-001 journal-loss
+   incident). This is the *only* path to `complete`: `orchid run advance complete` is refused
    unconditionally, from any state, so `complete` is unreachable without an
    evidence file backing it.
+
+   If that commit itself fails (a concurrent commit landed on the
+   integration branch first — the CAS conflict), `run accept` dies but
+   `run_status: complete`, the evidence copy, and the journal entry are
+   already on disk — re-running the EXACT SAME `orchid run accept
+   --reason ... --evidence ...` call is the real recovery: it recognizes
+   `run_status` is already `complete`, skips the state transition and
+   evidence copy (never redone), and re-attempts only the durable commit,
+   journaling `intervention` ("accept commit retried after CAS failure").
+   A further call once that commit has actually landed dies cleanly
+   instead ("already accepted and committed") — there is nothing left to
+   retry.
+4. `orchid run release-lease` — the clean-session-exit affordance (v1-m4):
+   writes `released: true` into `runtime/lease.json` so nothing watching
+   this run mistakes your own still-fresh lease for a live session. Both
+   `run new`'s freshness guard and the pump's own lease-staleness check
+   (HEADLESS OPERATION above) treat a released lease as immediately stale,
+   regardless of how recently it was last refreshed — closing the gap where
+   an operator previously had to wait out `pump_stale_s`, or hand-backdate
+   `lease.json`, before `run new` or the pump would touch this run again.
 
 ## Known documentation discrepancies surfaced while writing this file
 

@@ -44,3 +44,105 @@ assert_match "^run_status: \(uninitialized\)$" "$out_sb" "status still prints ru
 
 # healthy fixture (the main $WORK repo on orchid/integration) is unaffected.
 echo "$("$ORCHID_BIN" status)" | grep -q "split-brain" && fail "status must not warn split-brain on a healthy checkout"
+
+# ===========================================================================
+# v1-m4 Task 5: static status page (`orchid status --html`)
+# ===========================================================================
+
+# Regression pin: refactoring the task-row/explain-predicate logic into
+# functions shared with the new --html path must not change one byte of the
+# existing `status --explain` TEXT output (still on the $WORK fixture above:
+# T001 pending/ready, T002 pending/waiting-deps, no engine events).
+expected_explain="$(printf 'run_status: planning\n== tasks\nT001\tpending\tdemo\tready-to-dispatch\nT002\tpending\tdep\twaiting-deps (T001)\n== jobs\n== engines\n(no engine events yet)')"
+assert_eq "$expected_explain" "$("$ORCHID_BIN" status --explain)" \
+  "status --explain text output is byte-identical after the --html refactor"
+
+# Plant an escaping hazard: a task title containing raw HTML.
+"$ORCHID_BIN" task create T003 '<script>alert(1)</script>' >/dev/null
+
+# Plant an open blocker (qid unanswered yet).
+qid="$("$ORCHID_BIN" notify --task T001 "waiting on operator input")"
+blocker_nonce="$(grep -m1 '^nonce: ' ".orchid/runtime/answers/$qid.question" | sed 's/^nonce: //')"
+[ -n "$blocker_nonce" ] || fail "test fixture: the planted blocker's .question file must carry a nonce line"
+
+# Plant an engine ledger row (same direct-source pattern as tests/test_ledger.sh).
+(
+  source "$REPO_ROOT/lib/common.sh"
+  source "$REPO_ROOT/lib/ledger.sh"
+  ledger_mark "$WORK" acme-engine ok
+)
+
+page="$("$ORCHID_BIN" status --html)"
+assert_match '\.orchid/runtime/status\.html$' "$page" "status --html prints the default configured page path"
+[ -f "$page" ] || fail "status --html must actually write the page at the path it printed"
+
+content="$(cat "$page")"
+echo "$content" | grep -q '<!doctype html' || fail "page must be a self-contained HTML document (doctype)"
+echo "$content" | grep -qF '<script src=' && fail "page must not load any external script (self-contained, no JS)"
+echo "$content" | grep -qF '<link' && fail "page must not link any external resource (inline CSS only, no <link> tags)"
+echo "$content" | grep -qF '<script>alert(1)</script>' && fail "task title must be HTML-escaped, never embedded raw"
+echo "$content" | grep -qF '&lt;script&gt;alert(1)&lt;/script&gt;' || fail "task title's < > must appear HTML-escaped in the page"
+echo "$content" | grep -qF "$qid" || fail "open blocker qid must appear in the page"
+echo "$content" | grep -qF "waiting on operator input" || fail "open blocker text must appear in the page"
+# Review fix (Minor #6): the nonce is the one secret in the answer path and
+# belongs only to BLOCKERS.md/the outbound channel message -- this static
+# page (the "check from another room" surface, possibly screen-shared) must
+# never render it.
+echo "$content" | grep -qF "$blocker_nonce" && fail "open blocker's nonce must never appear on the status page"
+echo "$content" | grep -qF "acme-engine" || fail "engines ledger row must appear in the page"
+echo "$content" | grep -qF 'T001' || fail "task table must list T001 in the page"
+echo "$content" | grep -qF 'T002' || fail "task table must list T002 in the page"
+echo "$content" | grep -qF 'waiting-deps (T001)' || fail "task table must include T002's explain predicate"
+
+# Atomic write: no leftover tmp artifact beside the page (atomic_write's
+# own mktemp+mv idiom -- confirms the --html path actually used it).
+ls -a "$(dirname "$page")" | grep -q '\.tmp\.' && fail "status --html must not leave a stray atomic-write tmp file behind"
+
+# Answering a blocker must drop it from the "open blockers" section on the
+# NEXT --html regeneration (it still legitimately appears elsewhere, e.g.
+# the journal's blocker_resolved entry -- only the open-blockers listing
+# itself is asserted here).
+"$ORCHID_BIN" answer "$qid" ack >/dev/null
+page2="$("$ORCHID_BIN" status --html)"
+blockers_section="$(awk '/Open blockers/,/Journal/' "$page2")"
+echo "$blockers_section" | grep -qF "$qid" && fail "an ANSWERED blocker must no longer be listed in Open blockers"
+echo "$blockers_section" | grep -qi 'no open blockers' || fail "Open blockers must say so once the only blocker is answered"
+
+# Last-10 journal entries: the just-added blocker/blocker_resolved entries
+# must be in the page's journal section.
+journal_section="$(awk '/Journal \(last 10\)/,0' "$page2")"
+echo "$journal_section" | grep -qF "$qid" || fail "journal tail must include the recent blocker entry"
+echo "$journal_section" | grep -qF 'blocker_resolved' || fail "journal tail must include the recent blocker_resolved entry"
+
+# status_page is config-able: point it at a custom relative path (resolved
+# under .orchid/, same as every other runtime/ path) and confirm the page
+# lands there instead of the default.
+printf 'status_page=runtime/custom-status.html\n' >> orchid.config
+custom_page="$("$ORCHID_BIN" status --html)"
+assert_match 'runtime/custom-status\.html$' "$custom_page" "status_page config controls where the page is written"
+[ -f "$custom_page" ] || fail "custom status_page path must actually be written"
+[ -f "$WORK/.orchid/runtime/custom-status.html" ] || fail "custom status_page resolves relative to .orchid/, not repo root"
+
+# Review fix: split-brain/stale-checkout warnings must land on STDERR only,
+# in EVERY mode -- they were breaking `--html`'s "stdout is exactly the path
+# it wrote" contract exactly on a broken checkout, the state where having
+# the right page path matters most. Reuse the $splitb fixture from above.
+html_stderr_file="$WORK/html-stderr.txt"
+html_stdout="$(ORCHID_REPO="$splitb" HOME="$HOME" "$ORCHID_BIN" status --html 2>"$html_stderr_file")"
+html_stderr="$(cat "$html_stderr_file")"
+html_stdout_lines="$(printf '%s\n' "$html_stdout" | wc -l | tr -d ' ')"
+assert_eq 1 "$html_stdout_lines" \
+  "status --html stdout is EXACTLY one line (the path), even on a split-brain checkout"
+echo "$html_stdout" | grep -qF '.orchid/runtime/status.html' \
+  || fail "status --html stdout must be the page path on a split-brain checkout too"
+[ -f "$html_stdout" ] || fail "the path --html printed on stdout must be a real file even on a split-brain checkout"
+assert_match "WARNING: split-brain checkout" "$html_stderr" \
+  "the split-brain warning lands on stderr (not stdout) in --html mode"
+
+# --- PROTOCOL.md lint: THE TICK step 5 must regenerate the page ------------
+grep -q 'orchid status --html' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md's THE TICK step 5 must mention 'orchid status --html'"
+grep -q 'status_page' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md must document the status_page config key"
+grep -qi 'best-effort' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md must describe the status page regeneration as best-effort"

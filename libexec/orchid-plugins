@@ -414,7 +414,14 @@ $validate_out"
     # conform.sh's conform_run; see that file's header for the INV-01 note.
     dir="${1:-}"; [ -n "$dir" ] || orchid_die "usage: orchid plugins conform <plugin-dir>"
     [ -d "$dir" ] || orchid_die "no such directory: $dir"
-    conform_run "$dir" || exit 1
+    # kind=notify (v1-m4 Task 7) gets its own minimal lint (lib/conform.sh's
+    # conform_run_notify), not the seven-check engine battery -- see that
+    # function's header for why. Every other kind is unchanged.
+    if [ "$(manifest_get "$dir" kind)" = notify ]; then
+      conform_run_notify "$dir" || exit 1
+    else
+      conform_run "$dir" || exit 1
+    fi
     ;;
   lock)
     # Writes .orchid/plugins.lock: an atomic snapshot of _plugins_lock_records

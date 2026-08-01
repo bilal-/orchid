@@ -60,6 +60,28 @@ case "$sub" in
     jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{epoch:($e|tonumber), refreshed_at:$t}' | atomic_write "$rt/lease.json"
     ;;
+  release-lease)
+    # v1-m4: clean-session-exit affordance (the live-run incident this
+    # closes: after a session's own FINAL tick, `run new`/the pump were both
+    # blocked for up to pump_stale_s by that same session's own still-fresh
+    # lease — there was no way to signal "I am genuinely done", short of an
+    # operator hand-backdating lease.json). PROTOCOL.md's COMPLETION ends
+    # with this call, right after `run accept`. Writes `released: true` into
+    # lease.json alongside the usual epoch/refreshed_at shape; both `run
+    # new`'s own freshness guard (below) and runners/orchid-pump's lease-
+    # staleness check treat a released lease as immediately stale,
+    # regardless of how recently refreshed_at itself was stamped.
+    #
+    # Epoch-fenced, unlike refresh-lease above: a STALE session (one whose
+    # epoch a newer `run resume`/`start` has already superseded — e.g. a
+    # crashed session's own delayed cleanup call finally running) must never
+    # be able to mark the CURRENT owner's lease released out from under it.
+    epoch_require "$repo"; export ORCHID_EPOCH
+    e="$(epoch_current "$repo")"
+    jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{epoch:($e|tonumber), refreshed_at:$t, released:true}' | atomic_write "$rt/lease.json"
+    echo "lease released"
+    ;;
   advance)
     verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
@@ -114,14 +136,66 @@ case "$sub" in
     roadmap="$state/roadmap.md"
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
     from="$(fm_get "$roadmap" run_status)"
-    # Shorthand for accepting->complete only: requires an acceptance evidence
-    # file, unlike the bare `run advance complete` escape hatch above.
-    [ "$from" = accepting ] || orchid_die "run accept requires run_status accepting (current: $from)"
+    run_id="$(fm_get "$roadmap" run_id)"; [ -n "$run_id" ] || run_id=r-001
 
-    mkdir -p "$state/reviews"
-    cat "$evidence" | atomic_write "$state/reviews/acceptance.log"
-    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind acceptance "run_status accepting -> complete: $reason"
-    fm_set "$roadmap" run_status complete
+    # v1-m4 Task 1 fix wave (review Important): a completed run's record
+    # must never be uncommitted-only, but "state already set locally;
+    # commit retryable" has to be REAL, not just worded that way -- the
+    # naive "just re-run orchid run accept" is false on its own: run_status
+    # is already `complete` by the time orchid_commit_durable is called
+    # below, and the `from = accepting` guard a few lines down would
+    # otherwise refuse a bare retry outright. So `from = complete` is its
+    # OWN branch here, handling exactly that retry: it never re-runs the
+    # state transition or evidence copy (already done, and must not be
+    # re-journaled a second time) -- it only ever re-attempts the durable
+    # commit. Distinguishing "commit genuinely missing" from "already fully
+    # accepted AND committed" is a cheap check: compare the run_status the
+    # INTEGRATION BRANCH'S OWN committed roadmap.md shows right now against
+    # `complete` -- if it isn't, the accept commit from a prior attempt
+    # never landed.
+    if [ "$from" = complete ]; then
+      integ="$(config_get "$repo" integration_branch orchid/integration)"
+      committed_status=""
+      if git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1; then
+        committed_roadmap="$(mktemp)"
+        if git -C "$repo" show "refs/heads/$integ:.orchid/roadmap.md" > "$committed_roadmap" 2>/dev/null; then
+          committed_status="$(fm_get "$committed_roadmap" run_status)"
+        fi
+        rm -f "$committed_roadmap"
+      fi
+      [ "$committed_status" != complete ] || \
+        orchid_die "run $run_id already accepted and committed (run_status: complete on $integ) — nothing to retry"
+      ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \
+        "accept commit retried after CAS failure"
+    else
+      # Shorthand for accepting->complete only: requires an acceptance
+      # evidence file, unlike the bare `run advance complete` escape hatch
+      # above.
+      [ "$from" = accepting ] || orchid_die "run accept requires run_status accepting (current: $from)"
+
+      mkdir -p "$state/reviews"
+      cat "$evidence" | atomic_write "$state/reviews/acceptance.log"
+      ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --kind acceptance "run_status accepting -> complete: $reason"
+      fm_set "$roadmap" run_status complete
+    fi
+
+    # The durable commit itself: every other ownership verb (`run advance`,
+    # `task advance`, ...) mutates $repo/.orchid directly and never
+    # commits at all -- orchid_commit_durable (lib/common.sh), called here
+    # with no ORCHID_COMMIT_DURABLE_HOOK, simply commits whatever is
+    # CURRENTLY on disk (the mutations above, plus anything else that
+    # accumulated locally over the run's whole lifetime -- every task
+    # verb/journal entry/requirements import that ran without an
+    # intervening `plan apply`) onto the integration branch. On CAS
+    # failure it journals its OWN `intervention` entry and dies nonzero --
+    # the run_status/evidence-log/journal mutations are already on disk
+    # regardless (either from this call, above, or a prior one), so a
+    # SUBSEQUENT `orchid run accept` call is the real retry path: it lands
+    # here again with `from = complete` and re-attempts exactly this commit
+    # (branch just above), never touching the evidence/journal/run_status
+    # a second time.
+    orchid_commit_durable "$repo" "orchid: run accepted ($run_id)" .orchid
+
     echo "run_status: accepting -> complete"
     ;;
   new)
@@ -180,18 +254,28 @@ case "$sub" in
     # session" here, exactly like the pump's own missing-lease handling.
     lease_file="$rt/lease.json"
     if [ -f "$lease_file" ]; then
-      refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
-      refreshed_epoch=0
-      if [ -n "$refreshed_at" ]; then
-        refreshed_epoch="$(date -u -d "$refreshed_at" +%s 2>/dev/null \
-          || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$refreshed_at" +%s 2>/dev/null \
-          || echo 0)"
-      fi
-      if [ "$refreshed_epoch" -gt 0 ]; then
-        stale_s="$(config_get "$repo" pump_stale_s 900)"
-        lease_age=$(( $(date -u +%s) - refreshed_epoch ))
-        if [ "$lease_age" -lt "$stale_s" ]; then
-          orchid_die "a live orchestrator session may still be running (lease refreshed ${lease_age}s ago); wait for the lease to lapse or stop the session"
+      # v1-m4: `released: true` (orchid run release-lease, PROTOCOL.md
+      # COMPLETION) is a clean-session-exit affordance -- the session that
+      # wrote it is genuinely gone, not merely between refreshes, so it must
+      # read as immediately stale here regardless of how recently
+      # refreshed_at itself was stamped (closes the live-run incident: an
+      # operator having to hand-backdate lease.json to unblock `run new`
+      # after a session's own final tick).
+      released="$(jq -r '.released // false' "$lease_file" 2>/dev/null || echo false)"
+      if [ "$released" != true ]; then
+        refreshed_at="$(jq -r '.refreshed_at // ""' "$lease_file" 2>/dev/null || echo "")"
+        refreshed_epoch=0
+        if [ -n "$refreshed_at" ]; then
+          refreshed_epoch="$(date -u -d "$refreshed_at" +%s 2>/dev/null \
+            || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$refreshed_at" +%s 2>/dev/null \
+            || echo 0)"
+        fi
+        if [ "$refreshed_epoch" -gt 0 ]; then
+          stale_s="$(config_get "$repo" pump_stale_s 900)"
+          lease_age=$(( $(date -u +%s) - refreshed_epoch ))
+          if [ "$lease_age" -lt "$stale_s" ]; then
+            orchid_die "a live orchestrator session may still be running (lease refreshed ${lease_age}s ago); wait for the lease to lapse or stop the session"
+          fi
         fi
       fi
     fi
@@ -375,5 +459,5 @@ case "$sub" in
 
     echo "run rolled over: $old_run_id -> $new_run_id (archived to runs/$old_run_id/)"
     ;;
-  *) orchid_die "usage: orchid run start|resume|refresh-lease|advance|accept|new" ;;
+  *) orchid_die "usage: orchid run start|resume|refresh-lease|release-lease|advance|accept|new" ;;
 esac

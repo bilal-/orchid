@@ -45,7 +45,7 @@ differences are declared capabilities.
 |---|---|---|
 | **engine** | executable `run`; receives a request document; writes an envelope to the kernel-specified spool path; declares atomic capabilities | v0 (seam), v1 (manifests) |
 | **archetype** | data-only workflow declaration validated against kernel invariants (below) | feature v0; review v1-m1; refactor/test/migrate v1-m3 — SHIPPED |
-| **notify channel** | `send <question-id> <text>`; inbound via `orchid answer` | v1-m4 |
+| **notify channel** | `send <question-id> <text>`; inbound via `orchid answer` | v1-m4 — SHIPPED |
 | **hook** | named lifecycle hook handlers with typed payloads (below) | v1-m3 — SHIPPED |
 | **role** | descriptor: required/forbidden capabilities + hook bindings | v1-m3 — SHIPPED |
 
@@ -84,7 +84,14 @@ decision in config. **Visibility honesty:** worktree-capable
 engines can physically read the whole checkout, including committed
 `.orchid/` state — the pack defines what they are GIVEN, the execution
 policy defines what they may DO, and review independence never rests on
-secrecy.
+secrecy. **Worktree-read review packs:** a review/critique diff larger than
+`pack_diff_inline_max_bytes` (config, default 262144) is not, in itself, an
+overflow — when the RESOLVED engine declares `workspace_read`, the pack
+swaps the inline `diff.patch` for `diff.stat` (stat summary + name-status:
+enough to navigate the checkout directly) and records the omission
+honestly in `pack.json` (`{"name":"diff.patch","omitted":"worktree-read"}`).
+An inline-only engine gets no such relief — a diff that large still hits
+`input_overflow` exactly as above, since it has no other way to see it.
 
 One adapter serves many roles by branching on `operation` — no pseudo-engine
 identities. Adapters never guess paths, never choose output locations, exit
@@ -255,6 +262,38 @@ per-point hook pack — `pack_build` routes on the reserved `plan` task id
 before it ever checks the `hook` operation, since there is no `task.md` for
 the per-point builder to read in the first place.
 
+### Notify channel plugins (v1-m4 — SHIPPED)
+
+A `kind=notify` plugin has no request/envelope contract (unlike engine/hook
+plugins) — its manifest declares only the usual identity/version/platform
+fields plus `entrypoint=send`; `send <question-id> <text>` is invoked with a
+kernel-hygienic environment (env allowlist, stdin `/dev/null`, same
+`spawn_child_env` discipline the launcher itself uses) and exits nonzero on
+failure. Two built-ins ship: `plugins/notify/openclaw` and
+`plugins/notify/hermes`.
+
+**The outbox pattern (INV-01-clean):** `orchid notify` is tier-1 and must
+never spawn — when `notify.channel` is configured, it only WRITES
+`runtime/outbox/<qid>` (the fully-composed message text, nonce included).
+`runners/orchid-pump` (tier-2) drains the outbox on every pass — including a
+fresh-lease pass that would otherwise exit immediately, since a channel send
+must never wait for a tick — spawning the resolved plugin's `send` directly
+(not through `runners/orchid-launch`; the pump is already tier-2). A failed
+send bumps a `.tries` sidecar and is retried on the next pass; after
+`send_retry_max` (config, default 5) consecutive failures the message is
+quarantined (`<qid>.reason-send-failed`) rather than retried forever —
+`BLOCKERS.md` + terminal remains the complete surface regardless.
+
+**Two independent config axes:** `notify.plugin` (default `openclaw`)
+selects WHICH `kind=notify` plugin DIRECTORY the pump launches, resolved by
+directory name on the same search path as any other plugin — never a
+manifest id (the hermes notify plugin's own id, `orchid/hermes-notify`, is
+deliberately distinct from the `kind=engine` hermes adapter's `orchid/
+hermes`, precisely so this selector never confuses the two). `notify.to`
+stays a target address, unchanged by this selector; `notify.channel` stays
+each PLUGIN's OWN inner enum/target string (OpenClaw's own channel name, or
+a hermes platform name) — a separate axis from which plugin sends it.
+
 ### Named patterns (the codebase vocabulary)
 
 Verb kernel · Envelope · Adapter · Runner · Archetype · Ledger · Spool ·
@@ -298,5 +337,5 @@ Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
 | plugin executables | trust decision at install | trusted-code classification (stated plainly); launcher hygiene; containment roadmap post-v1 |
 | engine output (envelopes) | reconciliation | job_id binding to manifests; schema fail-closed; quarantine on mismatch/replay |
 | task/diff content in prompts | reviewer/arbiter judgment | prompt injection is assumed possible; verdicts are advisory to the arbiter, which reads high-risk diffs itself; verification is deterministic and immune to prompt content (`orchid verify`) |
-| inbound answers | `orchid answer` | question-id + idempotency; channel adapters get no shell/repo access; nonce + sender allowlist when remote channels ship (v1-m4) |
+| inbound answers | `orchid answer` | question-id + idempotency; channel adapters get no shell/repo access; nonce + sender allowlist (v1-m4 — SHIPPED): `answer_allowlist` unconfigured leaves the lenient v0 behavior (no nonce, no allowlist check) since no remote answer path exists to attack; once configured, EVERY caller (local or remote) must supply a matching `--nonce`, closing the prior bypass of simply omitting `ORCHID_ANSWER_SENDER` — that env var, when set, additionally requires the identity to appear in the allowlist |
 | implementer commits | merge path | worktree contamination guard; review immutability; transactional merge |

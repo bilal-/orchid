@@ -64,10 +64,11 @@ _manifest_split_csv() {  # string -> trimmed non-empty tokens, one per line
 }
 
 # _manifest_version_mm <version-string> -> "<major> <minor>" -- strips any
-# trailing `-suffix` (ORCHID_VERSION is `1.0.0-m1`) and keeps only the first
-# two dot-separated components. requires_orchid is documented (docs/specs/
-# plugins.md, Manifest section) as semver-ish `>=` compared on major.minor
-# ONLY -- not full semver ordering (patch/prerelease never gate compatibility).
+# trailing `-suffix` (e.g. a pre-release build tagged `1.1.0-rc1`) and keeps
+# only the first two dot-separated components. requires_orchid is documented
+# (docs/specs/plugins.md, Manifest section) as semver-ish `>=` compared on
+# major.minor ONLY -- not full semver ordering (patch/prerelease never gate
+# compatibility).
 _manifest_version_mm() {
   local v="${1%%-*}" major minor
   major="${v%%.*}"

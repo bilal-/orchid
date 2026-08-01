@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# kind=notify entrypoint. Contract (docs/specs/plugins.md, "notify channel"
+# row): `send <question-id> <text>`. No repo access, no stdin, no exit-code
+# guessing -- this script's own exit code IS the send outcome the pump acts
+# on (0 -> outbox file removed; nonzero -> left for retry, see runners/
+# orchid-pump's outbox drain). Launched ONLY by runners/orchid-pump (tier-2,
+# via the launcher-hygiene env: env -i + lib/spawn.sh's spawn_child_env),
+# never directly by any tier-1 verb -- `orchid notify` itself only ever
+# WRITES `runtime/outbox/<qid>` (INV-01: tier-1 never spawns).
+#
+# Config reaches this script as two ORCHID_*-prefixed env vars (base-
+# allowlisted by spawn_child_env's env hygiene -- see runners/orchid-pump's
+# outbox-drain header for how they get exported before the spawn):
+#   ORCHID_NOTIFY_CHANNEL  <- notify.channel config (a hermes platform:
+#                             telegram|discord|slack|signal|... -- whatever
+#                             `hermes send --list` shows configured)
+#   ORCHID_NOTIFY_TO       <- notify.to config (OPTIONAL for this plugin --
+#                             see below; unlike openclaw's send, an empty
+#                             value is not an error)
+#
+# Verified invocation shape (flag/format research, HELP TEXT ONLY -- no real
+# `hermes send` was ever executed by this task; `hermes send --list` was run
+# to confirm it is a read-only diagnostic, per its own --help description,
+# not a send):
+#   Hermes Agent v0.19.0 (2026.7.20), `hermes send --help`. The task brief's
+#   own verified shape matches the installed CLI exactly:
+#     usage: hermes send [-h] [-t TARGET] [-f PATH] [-s LINE] [-l] [-q]
+#                        [--json] [message]
+#     -t, --to TARGET   Delivery target. Format: 'platform' (home channel),
+#                       'platform:chat_id', 'platform:chat_id:thread_id', or
+#                       'platform:#channel-name'. Examples: telegram,
+#                       telegram:-1001234567890:17585, discord:#ops,
+#                       slack:C0123ABCD, signal:+15551234567.
+#     message           Positional. Message text (stdin/--file also exist,
+#                       neither used here -- see below).
+#   Exit codes (from `hermes send --help`): 0 ok, 1 delivery/backend error,
+#   2 usage error -- both nonzero, so this adapter's `exec` passes either
+#   straight through unchanged, exactly the "nonzero -> retry" contract the
+#   pump needs; no exit-code translation happens or is needed here.
+#   So the real call is:
+#     hermes send --to <target> "<text>"
+#   No LLM/agent loop and no running gateway is required for bot-token
+#   platforms (Telegram/Discord/Slack/Signal) per `hermes send --help`'s own
+#   description -- reuses the gateway's platform credentials
+#   (~/.hermes/.env + ~/.hermes/config.yaml) directly.
+#
+# Target composition (this plugin's own mapping, not a hermes flag): hermes,
+# unlike openclaw, has a "home channel" default -- passing the bare platform
+# name with no chat id is a legitimate target (whatever
+# `~/.hermes/config.yaml` designates as that platform's home channel), so
+# `notify.to` is OPTIONAL here:
+#   ORCHID_NOTIFY_TO empty  -> --to "$channel"            (home channel)
+#   ORCHID_NOTIFY_TO set    -> --to "$channel:$to"         (explicit target)
+# The message text is passed as the single positional argv value (not
+# stdin, not --file) -- $text already carries "<qid>: ..." (orchid-notify
+# built it that way), so nothing else here needs to re-embed it, matching
+# how openclaw's send passes the composed text via one flag/arg rather than
+# splitting it across stdin and argv.
+#
+# `--dry-run` does not appear anywhere in `hermes send --help` -- there is no
+# such flag to avoid; PENDING-VALIDATION: this invocation has not yet been
+# run against a live, configured Hermes gateway with a real platform
+# connected -- that is the live hero-demo dogfood (a later controller task),
+# not this build task.
+qid="${1:?usage: send <question-id> <text>}"
+text="${2:?usage: send <question-id> <text>}"
+: "$qid"   # accepted per the notify-channel contract; not otherwise used --
+           # $text already carries "<qid>: ..." (orchid-notify built it that
+           # way), so nothing else here needs to re-embed it.
+
+channel="${ORCHID_NOTIFY_CHANNEL:?ORCHID_NOTIFY_CHANNEL not set (notify.channel config missing or empty)}"
+to="${ORCHID_NOTIFY_TO:-}"
+
+target="$channel"
+[ -z "$to" ] || target="$channel:$to"
+
+exec hermes send --to "$target" "$text"
