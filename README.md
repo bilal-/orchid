@@ -1,8 +1,10 @@
 # orchid
 
-**A multi-agent orchestrator for people who already pay for several AI
-coding CLIs and want them working together — deterministically, on your own
-machine, with nobody grading their own homework.**
+**A small, auditable orchestration kernel — bash + git + jq, no daemon, no
+API keys — that turns the coding-agent CLIs you already subscribe to
+(Claude Code, Codex, Antigravity, Hermes, …) into an autonomous dev team:
+it plans, implements, reviews, merges, and pings your phone only when a
+human decision is needed.**
 
 Works with **Claude Code · Codex · Antigravity · Hermes · OpenClaw**
 (compatibility, not endorsement or partnership — orchid is an independent,
@@ -11,14 +13,77 @@ unaffiliated tool that shells out to each vendor's own CLI).
 <!-- SCREENSHOT: hero — orchid status --html open in a browser, a run mid-flight -->
 
 ```sh
-git clone <this-repo-url> "$HOME/src/orchid"
-cd "$HOME/src/orchid" && ./install.sh
-cd /path/to/your/project && orchid doctor && orchid init
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
 ```
+
+Running the same line again later is the upgrade command. Flags,
+`--uninstall`, the Homebrew tap, and the git-clone method (for hacking
+on orchid itself): [docs/install.md](./docs/install.md).
+
+## The 60-second story
+
+1. Install (the one line above).
+2. `cd` into your repo. `orchid doctor` names what's missing — a
+   `verify=<your test command>` line, an engine CLI — then `orchid init`
+   creates an integration branch. Your own branches are never touched.
+3. Write `requirements.md`: goal, constraints, acceptance criteria. A
+   second engine critiques the plan before it becomes real work.
+4. `orchid run start` — or `orchid service install` — and walk away.
+   Engines implement, independent engines review, `orchid verify` runs
+   your real test command, and merges land only after re-verification.
+5. When something genuinely needs a human, one Telegram message arrives on
+   your phone. You reply; the answer lands nonce-verified.
+6. Come back to merged, verified code on the integration branch, with
+   every decision journaled and every merge carrying its evidence.
+
+That pace is measured, not aspirational: the release rehearsal ran clone →
+install → doctor → plan → implement → review → merge → accepted on a
+clean-machine profile, following the quickstart alone, in **13m19s**
+([docs/dogfood-notes.md](./docs/dogfood-notes.md), "v1-m4 Task 12 —
+release rehearsal").
 
 Full walkthrough: [quickstart.md](./docs/quickstart.md) (existing repo) ·
 [quickstart-greenfield.md](./docs/quickstart-greenfield.md) (new product,
 no code yet).
+
+<!-- SCREENSHOT: phone — Telegram blocker question and the nonce-verified reply -->
+
+## What makes orchid different
+
+- **Runs on the subscriptions you already pay for.** Engines are vendor
+  CLIs in their own first-party headless modes. Orchid never holds an API
+  key, never meters tokens, never proxies a request — billing stays on
+  whatever plan each CLI is already logged into.
+- **A deterministic kernel, not an agent framework.** Engines never spawn
+  engines. A small bash state machine launches every engine and brokers
+  every result as a file; each state change is a git commit on the
+  integration branch with its evidence attached — verify output, review
+  verdicts, an append-only journal. See [Who runs whom](#who-runs-whom).
+- **Any engine, any role.** Implementer, reviewer, orchestrator, plan
+  critic are config lines, not hardcoded vendors — capability-gated by a
+  real conformance suite and labeled honestly (tested vs.
+  works-by-construction vs. untested): the
+  [matrix below](#any-engine-any-role) and
+  [docs/frontends.md](./docs/frontends.md).
+- **Crash-anywhere resumability.** Durable state is single-writer,
+  git-committed on the integration branch, and every mutating verb is
+  fenced by a monotonic epoch. Kill it mid-run; a crash loses at most the
+  current uncommitted tick, and the next tick resumes from files.
+- **Blockers reach you where you live.** Telegram/WhatsApp via the Hermes
+  or OpenClaw channel plugins; answers come back from your phone
+  nonce-verified and sender-allowlisted — proven in a live round trip
+  ([docs/dogfood-notes.md](./docs/dogfood-notes.md), F18).
+- **Zero infrastructure.** bash 3.2 + git + jq — nothing else. No Python,
+  no Node runtime, no cloud, no telemetry, no accounts. Unattended mode is
+  one launchd/cron line running a short-lived pump, not a resident daemon.
+- **The record is public, failures included.**
+  [docs/dogfood-notes.md](./docs/dogfood-notes.md) is the ledger: runs
+  driven to `run_status: complete` unattended (including a headless,
+  pump-launched tick that finished a run with no human in the loop), a
+  live production run on a real application repo whose incidents fed
+  straight back into the design, the timed rehearsal above, the live phone
+  round trip — and every F-numbered bug those runs surfaced, stated
+  plainly, with the fix.
 
 ## How it works
 
@@ -174,7 +239,17 @@ orchid config commit --reason "try claude as implementer"
 orchid doctor   # role implementer: claude,codex (claude: verified)
 ```
 
+**Driving orchid from any agent product** (not just Claude Code):
+[docs/frontends.md](./docs/frontends.md) — per-engine status (tested vs.
+untested), what `install.sh` auto-wires, and manual steps for the rest.
+
 ## Install / uninstall
+
+The one-liner at the top of this page is the normal path — it clones a
+canonical copy and runs its installer; see
+[docs/install.md](./docs/install.md) for how flags pass through, the
+prepared Homebrew tap, and `--prefix` support. From a checkout (best if
+you're hacking on orchid itself):
 
 ```sh
 ./install.sh              # symlinks skills/ + bin/orchid, seeds ~/.orchid/
@@ -182,10 +257,7 @@ orchid doctor   # role implementer: claude,codex (claude: verified)
 ```
 
 See [quickstart.md's step 1](./docs/quickstart.md#1-clone-and-install) for
-the full explanation of exactly what gets linked where, and
-[docs/install.md](./docs/install.md) for `--prefix` support and Homebrew
-tap instructions (prepared; `brew install` itself lands once the tap is
-published).
+the full explanation of exactly what gets linked where.
 
 To run continuously without babysitting a terminal:
 
@@ -232,10 +304,6 @@ too** (same discovery, same contracts). Five extension points:
 | **notify channel** | `send <question-id> <text>`; inbound via `orchid answer` | v1-m4 |
 | **hook** | named lifecycle hook handler, typed payload | v1-m3 |
 | **role** | descriptor: required/forbidden capabilities + hook bindings | v1-m3 |
-
-**Driving orchid from any agent product** (not just Claude Code):
-[docs/frontends.md](./docs/frontends.md) — per-engine status (tested vs.
-untested), what `install.sh` auto-wires, and manual steps for the rest.
 
 **Your first adapter, in under an hour:**
 [docs/extending/first-engine.md](./docs/extending/first-engine.md) walks a
