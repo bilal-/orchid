@@ -20,6 +20,11 @@ Running the same line again later is the upgrade command. Flags,
 `--uninstall`, the Homebrew tap, and the git-clone method (for hacking
 on orchid itself): [docs/install.md](./docs/install.md).
 
+> Orchid is in final private dogfooding — the one-liner goes live the day
+> this repo does. Until then, install from a clone
+> ([docs/install.md](./docs/install.md#git-clone-for-hacking-on-orchid-itself)); that is the
+> exact path the timed rehearsal below used.
+
 ## The 60-second story
 
 1. Install (the one line above).
