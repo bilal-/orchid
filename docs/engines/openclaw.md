@@ -97,8 +97,9 @@ the adapter and this doc can never drift on which flags are real.
 `orchid notify` is a tier-1 verb; INV-01 forbids tier-1 verbs from
 spawning/detaching a process. So when `notify.channel` is configured,
 `orchid notify` only ever **writes** `runtime/outbox/<qid>` — the fully
-composed message text, nonce included: `"<qid>: <text> — reply: orchid
-answer <qid> <choice> --nonce <nonce>"`.
+composed message text, nonce included and the repo binding inline so the
+command runs verbatim from any cwd (F18): `"<qid>: <text> — reply:
+ORCHID_REPO="<repo>" orchid answer <qid> <choice> --nonce <nonce>"`.
 
 `runners/orchid-pump` (tier-2) is what actually launches
 `plugins/notify/openclaw/send <qid> <text>` for each queued outbox file —

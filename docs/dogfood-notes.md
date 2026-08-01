@@ -426,3 +426,26 @@ F11's fix (sanitizing the codex adapter's commit-subject extraction) held
 up under a real run: the rehearsal task's merged commit carried a clean,
 correctly truncated sentence subject, not the markdown-fence/bullet garbage
 F11 originally reported.
+
+### F18 (design fix, medium) — the notify reply command must be self-sufficient
+Four consecutive phone attempts failed the same way: the Telegram-side
+agent reliably executed the reply command from the message VERBATIM — and
+that command, run from the agent's own cwd, died with "no such question"
+because nothing bound the repo. Skill-side configuration (F15's inline
+template) was not dependable either: gateway sessions did not load the
+locally-installed skill's config section even after a restart, while the
+same skill worked perfectly in a fresh CLI session (nonce-verified answer,
+journaled). Fix: `orchid notify` now composes the reply instruction with
+the repo binding inline — `reply: ORCHID_REPO="<repo>" orchid answer <qid>
+<choice> --nonce <n>` — in both BLOCKERS.md and the outbox message, so the
+command is complete from any cwd on any answering surface. The skill
+remains useful (sender identity, guardrails) but is no longer load-bearing
+for correctness.
+CONFIRMED LIVE: with the complete command in the message, the operator's
+Telegram reply worked on the first attempt — the hermes agent executed the
+message's command verbatim (its consistent behavior across all five
+rounds) and the demo repo journaled `blocker_resolved: proceed`. The
+phone→orchid answer leg of the hero demo is now proven end-to-end over
+hermes-telegram. (The suite flake seen once during this branch's gate —
+test_engine_claude's midpoint-liveness assertion — passed 3/3 isolated and
+is unrelated to this diff.)
