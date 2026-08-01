@@ -25,6 +25,14 @@
 # trust are left in place with a note. `--uninstall` and `--prefix` combine
 # (uninstall reads the same ORCHID_BIN_DIR --prefix would have set, so it
 # un-links the right place).
+#
+# Bootstrap mode: run OUTSIDE an orchid checkout --
+#   curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+# -- clones a canonical copy to ${ORCHID_HOME:-~/.local/share/orchid} (or
+# fast-forwards it if already cloned there, making the same one-liner the
+# upgrade command too) and hands off to that checkout's own install.sh with
+# the original arguments. Inside a real checkout, this is a complete no-op
+# -- behavior is identical to before bootstrap mode existed.
 set -euo pipefail
 
 self="$0"
@@ -33,6 +41,82 @@ while [ -L "$self" ]; do
   case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
 done
 ROOT="$(cd "$(dirname "$self")" && pwd)"
+
+# --- Bootstrap mode ------------------------------------------------------
+# A real orchid checkout always has both bin/orchid and lib/common.sh next
+# to install.sh. When either is missing, ROOT isn't a checkout at all --
+# it's just wherever $0 happened to resolve to, which for `curl|bash` is
+# "bash" itself (dirname "bash" -> "."), i.e. the caller's cwd, and for a
+# bare copy of this one file (this task's own test fixture) is whatever
+# scratch dir that copy lives in. Neither $0 nor BASH_SOURCE is a usable
+# repo anchor in that shape, so there is nothing to symlink FROM yet --
+# clone (or update) one first, then hand off to ITS install.sh.
+if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
+  bootstrap_and_exec() {
+    command -v git >/dev/null 2>&1 || {
+      echo "orchid: install.sh: git is required to install orchid this way (curl|bash) -- install git and re-run" >&2
+      exit 1
+    }
+
+    local home="${ORCHID_HOME:-$HOME/.local/share/orchid}"
+    local uninstalling=0 a parent tmp
+    for a in "$@"; do [ "$a" = "--uninstall" ] && uninstalling=1; done
+
+    # "Already a checkout" is judged by the same two anchor files checked
+    # above, plus actual git metadata -- not just "a directory exists here"
+    # -- so a stray non-orchid directory at $home is never mistaken for one
+    # and silently `pull`ed or uninstalled against.
+    if [ -f "$home/bin/orchid" ] && [ -f "$home/lib/common.sh" ] \
+       && git -C "$home" rev-parse --git-dir >/dev/null 2>&1; then
+      if [ "$uninstalling" = 1 ]; then
+        echo "orchid: uninstalling via the canonical checkout at $home (the clone itself is left in place -- --uninstall never deletes it)"
+      else
+        echo "orchid: canonical checkout already present at $home -- updating (git pull --ff-only)"
+        git -C "$home" pull --ff-only
+      fi
+    else
+      if [ "$uninstalling" = 1 ]; then
+        echo "orchid: nothing to uninstall -- no canonical checkout found at $home"
+        exit 0
+      fi
+
+      # $home exists but failed the checkout test above (missing an anchor
+      # file, or `git rev-parse --git-dir` doesn't recognize it) -- the
+      # only way that happens under this scheme is a PRIOR bootstrap clone
+      # that got interrupted (network drop, Ctrl-C, disk full: real git
+      # creates .git/ before it has fetched every object, so a dead clone
+      # leaves a non-empty, non-checkout directory right here). Nothing
+      # else ever writes to $ORCHID_HOME, so it is safe to clear and retry
+      # -- this is what makes "just run the same line again" actually true
+      # after a dropped connection, instead of a permanent "destination
+      # path already exists and is not an empty directory" from git.
+      if [ -e "$home" ]; then
+        echo "orchid: removing stale/partial checkout at $home (left behind by an interrupted clone) before retrying"
+        rm -rf "$home"
+      fi
+
+      echo "orchid: cloning orchid to $home"
+      parent="$(dirname "$home")"
+      mkdir -p "$parent"
+      # Clone to a TEMP SIBLING of $home (same parent -- same filesystem,
+      # so the mv below is a pure rename, not a copy) and only mv it into
+      # place once git has fully succeeded. This is what keeps a clone
+      # interrupted partway through from ever leaving $home itself
+      # half-populated for the next run to trip over -- the failure mode
+      # the fix above recovers FROM, but recovery is only ever needed once
+      # here, going forward, because a dead clone never lands at $home at
+      # all anymore.
+      tmp="$(mktemp -d "$parent/.orchid-clone.XXXXXX")"
+      trap 'rm -rf "$tmp"' EXIT
+      git clone --depth 1 https://github.com/bilal-/orchid.git "$tmp"
+      trap - EXIT
+      mv "$tmp" "$home"
+    fi
+
+    exec "$home/install.sh" "$@"
+  }
+  bootstrap_and_exec "$@"
+fi
 
 # CLAUDE_SKILLS_DIR_SET tracks whether the caller overrode the env var
 # BEFORE the default below is applied -- an explicit override is itself

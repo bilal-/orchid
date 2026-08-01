@@ -20,12 +20,23 @@ and bash 3.2+ (macOS's shipped `/bin/bash` is fine).
 ## 1. Clone and install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+```
+
+(goes live once the repo is public; see [docs/install.md](./install.md#one-line-install-recommended)
+for the exact caveat and how flags like `--prefix`/`--uninstall` pass
+through). Running this exact line again later is the upgrade command too.
+
+**Developing on orchid itself?** Clone it instead, so `install.sh` runs
+from — and `orchid` resolves to — your own checkout:
+
+```sh
 git clone <this-repo-url> "$HOME/src/orchid"
 cd "$HOME/src/orchid"
 ./install.sh
 ```
 
-`install.sh` does exactly and only: wires the interactive orchestrator
+Either way, `install.sh` does exactly and only: wires the interactive orchestrator
 skills (`skills/{orchid,orchid-plan,orchid-resume}`) into whichever agent
 front-ends are **actually present** on this machine — Claude Code
 (`~/.claude/skills/`) is today's tested default, and it also wires Hermes
