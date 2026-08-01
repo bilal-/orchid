@@ -134,7 +134,7 @@ qid1="$("$ORCHID_BIN" notify "db migration ready")"
 obtext="$(cat ".orchid/runtime/outbox/$qid1")"
 assert_match "$qid1: db migration ready" "$obtext" "outbox message carries qid+text"
 assert_match "nonce [0-9a-f]+" "$obtext" "outbox message carries a nonce"
-assert_match "reply: orchid answer $qid1 <choice>" "$obtext" "outbox message carries the reply instructions"
+assert_match "reply: ORCHID_REPO=\"[^\"]+\" orchid answer $qid1 <choice>" "$obtext" "outbox message carries a complete, cwd-independent reply command (F18: the repo binding rides in the message)"
 
 qf1nonce="$(grep -m1 '^nonce: ' ".orchid/runtime/answers/$qid1.question" | sed 's/^nonce: //')"
 [ -n "$qf1nonce" ] || fail "question file must carry a nonce: line"

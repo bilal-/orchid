@@ -34,7 +34,9 @@ shell:
 2. **`orchid answer <qid> <choice> --nonce <n>`** — answers a blocker
    raised by `orchid notify`. `<qid>` and `<n>` (the nonce) both come from
    the inbound notify-channel message itself (its text ends with
-   `— reply: orchid answer <qid> <choice> --nonce <nonce>` — copy `<qid>`
+   `— reply: ORCHID_REPO="<repo>" orchid answer <qid> <choice> --nonce <nonce>`
+   — the command in the message is COMPLETE (the repo binding rides inline;
+   hero-demo F18): run it verbatim, substituting only `<choice>`. Copy `<qid>`
    and the real nonce value straight out of that message). `<choice>` is
    whatever the user replied, passed through as ONE opaque argument to
    `orchid answer` — never parsed, split, or re-interpreted by this skill

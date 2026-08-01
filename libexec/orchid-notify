@@ -84,7 +84,7 @@ header="## $qid"
   [ -f "$state/BLOCKERS.md" ] && cat "$state/BLOCKERS.md"
   echo; echo "$header"; echo "$text"
   echo "nonce: $nonce"
-  echo "reply: orchid answer $qid <choice> --nonce $nonce"
+  echo "reply: ORCHID_REPO=\"$repo\" orchid answer $qid <choice> --nonce $nonce"
 } | atomic_write "$state/BLOCKERS.md"
 
 # Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
@@ -107,7 +107,13 @@ mkdir -p "$rt/answers"
 channel="$(config_get "$repo" notify.channel "")"
 if [ -n "$channel" ]; then
   mkdir -p "$rt/outbox"
-  printf '%s: %s — reply: orchid answer %s <choice> --nonce %s\n' "$qid" "$text" "$qid" "$nonce" \
+  # The reply instruction embeds the repo binding so the command is complete
+  # from ANY cwd — hero-demo F18: a channel-side agent reliably executes the
+  # message's command verbatim, and a bare `orchid answer` run from the
+  # agent's own cwd dies with "no such question". Never rely on the
+  # answering side knowing the repo out of band.
+  printf '%s: %s — reply: ORCHID_REPO="%s" orchid answer %s <choice> --nonce %s\n' \
+      "$qid" "$text" "$repo" "$qid" "$nonce" \
     | atomic_write "$rt/outbox/$qid"
 fi
 
