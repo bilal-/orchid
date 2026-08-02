@@ -92,22 +92,55 @@ no code yet).
 
 ## How it works
 
+Who runs whom, top to bottom. The one structural fact to read off this
+diagram: **every arrow into an engine adapter comes from the kernel's own
+launcher** — there is no engine-to-engine edge anywhere in the system, so
+"engines never spawn engines" is the shape of the graph, not a policy
+statement.
+
+<!-- Diagram grounding: docs/specs/kernel.md "Architecture" (tier split,
+     normative process model, INV-01/INV-06) and PROTOCOL.md (the tick).
+     Role labels are the tested defaults from orchid.config.example. -->
 ```mermaid
-flowchart LR
-    subgraph Kernel["Deterministic kernel (bash + git + jq)"]
-        V["orchid verbs<br/>(task/run/jobs/merge/...)"]
-        L["runners/orchid-launch<br/>(the one spawner)"]
-        R["Reconcile + reviews/<br/>envelopes"]
+flowchart TD
+    OP["Operator<br/>terminal + phone"]
+    PUMP["runners/orchid-pump<br/>launchd/cron heartbeat, short-lived"]
+    TICK["runners/orchid-tick<br/>one bounded tick"]
+    ORCH["Orchestrator engine - claude by default<br/>one power: run orchid verbs in a bash shell"]
+    VERBS["Tier-1 verbs - libexec/<br/>orchid task / run / jobs / verify / merge / notify"]
+    LAUNCH["runners/orchid-launch<br/>tier 2 - the ONE engine spawner"]
+    subgraph ENGINES["Engine adapters - siblings, one role per job, launched per job"]
+        COD["codex<br/>implementer"]
+        AGY["agy<br/>reviewer"]
+        HER["hermes<br/>reviewer, second slot"]
+        CLA["claude<br/>fallback implementer / reviewer"]
     end
-    O["Orchestrator engine<br/>(1 power: run a bash CLI)"] -->|drives| V
-    L -->|request document| E1["Implementer engine"]
-    L -->|request document| E2["Reviewer engine(s)"]
-    L -->|request document| E3["Arbiter / plan-critic engine"]
-    E1 -->|result envelope| R
-    E2 -->|result envelope| R
-    E3 -->|result envelope| R
-    R --> V
-    V -->|git commits, files| G[("Integration branch<br/>.orchid/ durable state")]
+    SPOOL["runtime/spool/<br/>result envelopes"]
+    STATE[("orchid/integration branch<br/>.orchid/: tasks/ journal.md reviews/ roadmap.md")]
+    OUTBOX["runtime/outbox/"]
+    CHAN["notify channel plugin<br/>hermes send / openclaw message send"]
+    PHONE["Telegram / WhatsApp"]
+
+    OP -->|"orchid run start - interactive session"| ORCH
+    OP -->|"orchid service install"| PUMP
+    PUMP -->|"lease stale? wake the run"| TICK
+    TICK -->|"orchestrate request"| ORCH
+    ORCH -->|"verbs only - never hand-edits state"| VERBS
+    ORCH -->|"asks the kernel to launch"| LAUNCH
+    LAUNCH -->|"request document"| COD
+    LAUNCH -->|"request document"| AGY
+    LAUNCH -->|"request document"| HER
+    LAUNCH -->|"request document"| CLA
+    COD -->|"result envelope"| SPOOL
+    AGY -->|"result envelope"| SPOOL
+    HER -->|"result envelope"| SPOOL
+    CLA -->|"result envelope"| SPOOL
+    SPOOL -->|"orchid jobs reconcile"| VERBS
+    VERBS -->|"epoch-fenced git commits"| STATE
+    VERBS -->|"orchid notify writes the question"| OUTBOX
+    OUTBOX -->|"pump drains, spawns send"| CHAN
+    CHAN --> PHONE
+    PHONE -->|"reply runs orchid answer, nonce-verified"| VERBS
 ```
 
 Every arrow into an engine box is a **request document**; every arrow back
@@ -116,7 +149,47 @@ kernel, never trusted claims taken at face value. `orchid verify` (a real
 shell command you configure) is the only thing that ever says "tests
 pass."
 
+The deeper visual tour — including the dual-review independence and
+epoch-fencing diagrams this front page skips:
+[architecture, in five diagrams](./docs/architecture.md).
+
 ## One task's journey
+
+Every transition below is a kernel verb, refused unless its evidence gate
+holds — a passing `orchid verify` log, reconciled review envelopes bound to
+this exact candidate SHA, a journaled reason. State lives in git commits on
+the integration branch, so a crash anywhere resumes from files.
+
+<!-- Source of truth: PROTOCOL.md "THE TICK - 3. State-machine walk" (the
+     feature archetype's walk) and docs/specs/kernel.md "Task lifecycle"
+     (the canonical transition table). Every state and edge below appears
+     in that table; none is invented here. -->
+```mermaid
+stateDiagram-v2
+    [*] --> pending
+    pending --> implementing: deps done - worktree created, base_sha recorded
+    implementing --> testing: implementer envelope ok - candidate_sha set, no commit touches .orchid/
+    testing --> reviewing: orchid verify PASS - the evidence log is the only gate (INV-11)
+    testing --> rework: verify FAIL - consumes an attempt
+    reviewing --> arbitrating: every required review envelope reconciled for this candidate
+    arbitrating --> merging: approve - journaled reason required
+    arbitrating --> rework: request-changes - journaled reason required
+    merging --> done: orchid merge re-runs the suite in a temp worktree, then advances the ref
+    merging --> rework: validation failed
+    merging --> testing: base moved - rebase, then re-verify and re-review (INV-07)
+    rework --> implementing: rework spec written (3 attempts max)
+    testing --> blocked: attempts exhausted - a human is pinged
+    blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
+    done --> [*]
+    note right of blocked
+        blocked is legal from any status
+        (infra failures, budget, operator call).
+        Entering it raises a question via
+        orchid notify - the round trip below.
+    end note
+```
+
+The same walk, in verbs:
 
 1. `orchid task advance T001 implementing` — a worktree is created, base
    SHA recorded; the resolved `implementer` engine is launched via
@@ -157,6 +230,45 @@ its behalf, exactly the way a human operator would. Every OTHER
 role×engine pairing beyond the tested defaults is disabled at resolution
 time until `orchid plugins test <engine> <role>` (the capability suite)
 proves it eligible — see [any-engine-any-role](#any-engine-any-role) below.
+
+## The blocker round trip
+
+When a task genuinely needs a human — a design fork, an exhausted rework
+budget, a prohibited external mutation — the run doesn't stall in a
+terminal you have to babysit. One message reaches your phone; your reply
+comes back nonce-verified. This exact flow is live-proven end-to-end over
+hermes-Telegram ([docs/dogfood-notes.md](./docs/dogfood-notes.md), F18):
+
+<!-- Grounded in the LIVE-PROVEN flow: docs/dogfood-notes.md F18 (the
+     hermes-telegram phone round trip), docs/engines/openclaw.md "The
+     OUTBOX pattern", and PROTOCOL.md "4. Blockers". -->
+```mermaid
+sequenceDiagram
+    participant O as Orchestrator (tick)
+    participant K as Tier-1 verbs
+    participant X as runtime/outbox/
+    participant P as runners/orchid-pump
+    participant C as Channel plugin (hermes / openclaw)
+    participant H as Your phone (Telegram / WhatsApp)
+    O->>K: orchid notify --task T007 "which auth provider?"
+    K->>K: mint qid + nonce, append BLOCKERS.md
+    K->>X: write outbox/qid - message carries the COMPLETE reply command
+    Note over K,X: tier-1 never spawns a process (INV-01) - the send waits for the pump
+    P->>X: drain on the next pass, even when the lease is fresh
+    P->>C: send qid text
+    C->>H: one chat message - question plus reply command
+    H->>K: ORCHID_REPO=... orchid answer qid choice --nonce n
+    K->>K: nonce checked, sender allowlist checked - answer file written
+    O->>K: next tick reads answers/qid.answer - orchid task unblock --reason
+```
+
+The message IS the interface: it carries the complete `orchid answer`
+command inline (the F18 fix), so any answering agent — hermes, OpenClaw, or
+you pasting into a terminal — can execute it verbatim from any directory.
+The reply is refused unless its nonce matches the question's, and, when
+`answer_allowlist` is configured, unless the sender is on it. If no channel
+is configured at all, `BLOCKERS.md` plus the terminal is the same complete
+interaction surface — the phone is a convenience, never a dependency.
 
 ## Why this design
 

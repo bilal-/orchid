@@ -185,3 +185,45 @@ if [ -f "$CONFIGURATION_MD" ]; then
 else
   fail "docs/configuration.md missing -- cannot check key-table completeness"
 fi
+
+# ===========================================================================
+# 4 -- mermaid-fence lint over README.md + docs/*.md (top level; docs/specs
+# and docs/plans keep their own conventions, same scoping rationale as
+# check 2's docs_suite_files): every ```mermaid fence is balanced (a
+# closing ``` before EOF), never nested, and its first non-blank line
+# opens with one of the three diagram types this repo permits --
+# flowchart / stateDiagram-v2 / sequenceDiagram -- the boring, universally
+# GitHub-rendered subset. A cheap grep/awk-level parse guard: it cannot
+# prove a diagram renders, but it catches the common breakages (unclosed
+# fence, a typo'd or exotic diagram type) with no node/mermaid-cli
+# dependency.
+# ===========================================================================
+mermaid_total=0
+for f in "$REPO_ROOT/README.md" "$REPO_ROOT"/docs/*.md; do
+  [ -f "$f" ] || continue
+  out="$(awk '
+    BEGIN { open = 0; count = 0 }
+    /^[[:space:]]*```mermaid[[:space:]]*$/ {
+      if (open) { print "ERR nested mermaid fence at line " NR; open = 0 }
+      open = 1; first = 1; count++; next
+    }
+    open && /^[[:space:]]*```/ { open = 0; next }
+    open && first && NF > 0 {
+      t = $1
+      if (t != "flowchart" && t != "stateDiagram-v2" && t != "sequenceDiagram")
+        print "ERR unsupported diagram type \"" t "\" at line " NR
+      first = 0
+    }
+    END {
+      if (open) print "ERR unclosed mermaid fence"
+      print "COUNT " count
+    }
+  ' "$f")"
+  while IFS= read -r line; do
+    case "$line" in
+      ERR*)    fail "$f: ${line#ERR }" ;;
+      COUNT*)  mermaid_total=$((mermaid_total + ${line#COUNT })) ;;
+    esac
+  done <<< "$out"
+done
+[ "$mermaid_total" -gt 0 ] || fail "mermaid-fence scan over README.md + docs/*.md found no fences -- README's architecture diagrams are gone, or the scan broke"
