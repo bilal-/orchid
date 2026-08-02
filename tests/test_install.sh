@@ -7,10 +7,17 @@ INSTALL="$REPO_ROOT/install.sh"
 # ORCHID_BIN_DIR override) so both resolve under the sandbox HOME. Run from
 # a plain (non-git) directory so install.sh takes the "next steps" branch
 # instead of running `orchid doctor` against some incidental repo.
+# `~/.claude` is pre-created here so this main flow exercises the
+# already-present-front-end path (front-end presence detection itself --
+# ~/.claude only / ~/.hermes/skills only / neither -- gets its own isolated
+# block further down, each with its own fresh sandbox HOME).
 export HOME="$WORK/home"
+mkdir -p "$HOME/.claude"
 nogit="$WORK/nogit"; mkdir -p "$nogit"
 out="$(cd "$nogit" && "$INSTALL" 2>&1)" || fail "install.sh exits 0 on a fresh sandbox HOME (got: $out)"
 assert_match "[Nn]ext steps" "$out" "install.sh prints next-steps outside a git repo"
+assert_match "skip Hermes skills" "$out" "install.sh notes the Hermes skip when ~/.hermes/skills is absent"
+[ -e "$HOME/.hermes" ] && fail "install.sh must not create ~/.hermes on a HOME that never had it"
 
 for name in orchid orchid-plan orchid-resume; do
   link="$HOME/.claude/skills/$name"
@@ -96,6 +103,60 @@ mkdir -p "$HOME/.claude/skills"
 ln -sfn "$WORK/somewhere-else" "$HOME/.claude/skills/orchid"
 "$INSTALL" --uninstall >/dev/null 2>&1 || fail "install.sh --uninstall failed (foreign symlink present)"
 [ -L "$HOME/.claude/skills/orchid" ] || fail "uninstall removed a symlink it did not create"
+
+# ===========================================================================
+# Front-end presence detection (front-end-neutral install.sh): install.sh
+# wires whichever agent front-ends are ACTUALLY PRESENT on this machine and
+# skips the rest cleanly -- a one-line note, exit 0, and (crucially) never
+# creating that front-end's OWN top-level config directory (~/.claude,
+# ~/.hermes) on a machine that never had it. Three fresh, isolated sandbox
+# HOMEs, no CLAUDE_SKILLS_DIR/ORCHID_BIN_DIR override:
+#   fe1: ~/.claude present only       -> claude wired, hermes skipped
+#   fe2: ~/.hermes/skills present only -> hermes wired, claude skipped
+#   fe3: neither present               -> both skipped, still exits 0
+# ===========================================================================
+fe_nogit="$WORK/fe-nogit"; mkdir -p "$fe_nogit"
+
+fe1_home="$WORK/fe1-home"; mkdir -p "$fe1_home/.claude"
+fe1_out="$(cd "$fe_nogit" && HOME="$fe1_home" "$INSTALL" 2>&1)" || fail "install.sh (front-end detection): ~/.claude-only HOME must exit 0"
+for name in orchid orchid-plan orchid-resume; do
+  link="$fe1_home/.claude/skills/$name"
+  [ -L "$link" ] || fail "front-end detection: ~/.claude-only HOME did not wire Claude Code skill $name"
+  [ "$(readlink "$link")" = "$REPO_ROOT/skills/$name" ] \
+    || fail "front-end detection: ~/.claude-only HOME's $name symlink does not resolve to the repo"
+done
+[ -e "$fe1_home/.hermes" ] && fail "front-end detection: ~/.claude-only HOME must not have ~/.hermes created"
+assert_match "skip Hermes skills" "$fe1_out" "front-end detection: ~/.claude-only HOME notes the Hermes skip"
+
+fe2_home="$WORK/fe2-home"; mkdir -p "$fe2_home/.hermes/skills"
+fe2_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" 2>&1)" || fail "install.sh (front-end detection): ~/.hermes/skills-only HOME must exit 0"
+for name in orchid orchid-plan orchid-resume; do
+  link="$fe2_home/.hermes/skills/orchestration/$name"
+  [ -L "$link" ] || fail "front-end detection: ~/.hermes/skills-only HOME did not wire Hermes skill $name"
+  [ "$(readlink "$link")" = "$REPO_ROOT/skills/$name" ] \
+    || fail "front-end detection: ~/.hermes/skills-only HOME's $name symlink does not resolve to the repo"
+done
+[ -e "$fe2_home/.claude" ] && fail "front-end detection: ~/.hermes-only HOME must not have ~/.claude created"
+assert_match "skip Claude Code skills" "$fe2_out" "front-end detection: ~/.hermes-only HOME notes the Claude Code skip"
+
+fe3_home="$WORK/fe3-home"; mkdir -p "$fe3_home"
+fe3_out="$(cd "$fe_nogit" && HOME="$fe3_home" "$INSTALL" 2>&1)"; fe3_rc=$?
+[ "$fe3_rc" -eq 0 ] || fail "install.sh (front-end detection): neither-present HOME must still exit 0 (rc=$fe3_rc): $fe3_out"
+assert_match "skip Claude Code skills" "$fe3_out" "front-end detection: neither-present HOME notes the Claude Code skip"
+assert_match "skip Hermes skills" "$fe3_out" "front-end detection: neither-present HOME notes the Hermes skip"
+[ -e "$fe3_home/.claude" ] && fail "front-end detection: neither-present HOME must not have ~/.claude created"
+[ -e "$fe3_home/.hermes" ] && fail "front-end detection: neither-present HOME must not have ~/.hermes created"
+[ -L "$fe3_home/.local/bin/orchid" ] || fail "front-end detection: neither-present HOME must still wire bin/orchid regardless of any front-end's presence"
+
+# --uninstall on the hermes-only HOME must remove exactly the Hermes
+# symlinks it created (mirrors the Claude uninstall checks above) and leave
+# the orchestration category directory itself in place (install.sh owns the
+# symlinks it placed inside it, never the directory).
+fe2_uninstall_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" --uninstall 2>&1)" || fail "install.sh --uninstall (front-end detection, hermes-only HOME) failed"
+for name in orchid orchid-plan orchid-resume; do
+  [ -e "$fe2_home/.hermes/skills/orchestration/$name" ] && fail "uninstall left Hermes skill symlink: $name"
+done
+[ -d "$fe2_home/.hermes/skills/orchestration" ] || fail "uninstall must leave the Hermes orchestration category directory itself in place"
 
 # ===========================================================================
 # v1-m4 Task 12 (rehearsal finding F17): ~/.orchid/trust is the digest-pinned
@@ -304,3 +365,247 @@ grep -qF 'hook_guidance' "$PROTOCOL" || fail "PROTOCOL.md never mentions hook_gu
 deny_line="$(grep -nE '^\s*status\|attempts\|infra_failures\|id\|created\|updated\|schema\)' "$REPO_ROOT/libexec/orchid-task")"
 [ -n "$deny_line" ] || fail "orchid-task's set deny-list case arm not found -- update this check"
 printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must never land in orchid-task's set deny-list"
+
+# ===========================================================================
+# Bootstrap mode (single-line curl|bash install): install.sh, run OUTSIDE
+# an orchid checkout, must clone (or update) a canonical copy and hand off
+# to it -- WITHOUT any real network access. A fake `git` on PATH intercepts
+# every invocation, records its argv, and (on `clone`) fabricates a minimal
+# fake checkout: bin/orchid + lib/common.sh (the two anchor files
+# install.sh's own bootstrap-detection checks for) plus a stub install.sh
+# that records the args IT was exec'd with. This proves several things with
+# no network at all: (1) git is invoked as `clone --depth 1 <url> <tmp
+# sibling of ORCHID_HOME>`, never ORCHID_HOME directly (the atomic
+# clone-then-mv pattern -- installer-review.md Finding 1: a `git clone`
+# interrupted partway through, network drop/Ctrl-C/disk full, must never
+# leave ORCHID_HOME itself half-populated, since real git creates .git/
+# before it has fetched every object); (2) the cloned installer is exec'd
+# with the original pass-through args (--prefix, --uninstall); (3) an
+# already-cloned $home takes the `git pull --ff-only` branch instead of
+# cloning again; (4) a STALE/PARTIAL $home (exists on disk but isn't a
+# valid checkout -- exactly what a prior interrupted clone leaves behind)
+# is cleaned up and re-cloned into, rather than failing forever with
+# git's own "destination path already exists and is not an empty
+# directory" -- this is what makes docs/install.md's "run the same line
+# again" retry story actually true after a dropped connection.
+# ===========================================================================
+
+# fake_git_bin DIR: writes an executable `git` into DIR that logs every
+# invocation to DIR/../gitlog.txt, fabricates a fake orchid checkout on
+# `clone`, and answers `-C <dir> rev-parse --git-dir` / `-C <dir> pull
+# --ff-only` against whatever fake checkouts already exist on disk (no
+# state of its own -- the filesystem IS the state, same as real git).
+# `-C <dir> config ...` (used by install.sh's stale-clone safety check,
+# review-round-2 fix) delegates to REAL git instead of being faked, so it
+# reads whatever genuine `.git/config` a fixture set up with real
+# `git init`/`git remote add` actually contains -- there is no safe way to
+# fake "what does this repo's remote.origin.url say" without just running
+# real git against a real repo. Anything else (bare `rev-parse`,
+# `worktree`, etc. -- the calls install.sh makes for its OWN unrelated "am
+# I inside a repo to orchestrate" check) also delegates to the real git so
+# the rest of install.sh's behavior stays correct; only clone/-C
+# rev-parse/-C pull (bootstrap's own faked shapes) are faked.
+fake_git_bin() {
+  local dir="$1" gitlog="$2" real_git
+  real_git="$(command -v git)"
+  mkdir -p "$dir"
+  cat > "$dir/git" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$gitlog"
+case "\$1" in
+  clone)
+    dest="\${*: -1}"
+    mkdir -p "\$dest/bin" "\$dest/lib" "\$dest/.git"
+    touch "\$dest/bin/orchid" "\$dest/lib/common.sh"
+    cat > "\$dest/install.sh" <<'INNER'
+#!/usr/bin/env bash
+printf -- '%s\n' "\$@" > "\$STUB_INSTALL_RECORD"
+INNER
+    chmod +x "\$dest/install.sh"
+    exit 0
+    ;;
+  -C)
+    fedir="\$2"; sub="\$3"
+    case "\$sub" in
+      rev-parse) [ -d "\$fedir/.git" ] && exit 0 || exit 1 ;;
+      pull) exit 0 ;;
+      *) exec "$real_git" "\$@" ;;
+    esac
+    ;;
+  *)
+    exec "$real_git" "\$@"
+    ;;
+esac
+EOF
+  chmod +x "$dir/git"
+}
+
+# --- fresh bootstrap: no ORCHID_HOME clone yet -> git clone --depth 1 --
+bs_work="$WORK/bootstrap"; mkdir -p "$bs_work/bare/nogit"
+# "copy install.sh alone" -- no sibling bin/ or lib/, so install.sh's own
+# ROOT-has-both-anchor-files check can't find a real checkout to run from.
+cp "$INSTALL" "$bs_work/bare/nogit/install.sh"
+chmod +x "$bs_work/bare/nogit/install.sh"
+
+bs_gitbin="$bs_work/gitbin1"; bs_gitlog="$bs_work/gitlog1.txt"; : > "$bs_gitlog"
+fake_git_bin "$bs_gitbin" "$bs_gitlog"
+export STUB_INSTALL_RECORD="$bs_work/record1.txt"
+bs_home="$bs_work/home1"
+bs_out="$(PATH="$bs_gitbin:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" --prefix "$bs_work/customprefix" 2>&1)"
+bs_rc=$?
+[ "$bs_rc" -eq 0 ] || fail "bootstrap (fresh clone): install.sh exits 0 (got rc=$bs_rc, output: $bs_out)"
+bs_clone_line="$(grep '^clone' "$bs_gitlog")"
+assert_match '^clone --depth 1 https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
+  "bootstrap (fresh clone): git invoked as clone --depth 1 <url> <dest>"
+bs_clone_dest="$(printf '%s' "$bs_clone_line" | awk '{print $NF}')"
+[ "$(dirname "$bs_clone_dest")" = "$(dirname "$bs_home")" ] \
+  || fail "bootstrap (fresh clone): git clone target's parent must be ORCHID_HOME's own parent dir (clone target: $bs_clone_dest)"
+[ "$bs_clone_dest" != "$bs_home" ] \
+  || fail "bootstrap (fresh clone): git clone must target a TEMP sibling of ORCHID_HOME, never ORCHID_HOME itself (atomic clone-then-mv pattern, installer-review.md Finding 1)"
+[ -d "$bs_clone_dest" ] && fail "bootstrap (fresh clone): the temp clone dir must not remain on disk after a successful mv into place ($bs_clone_dest)"
+[ -f "$bs_home/bin/orchid" ] && [ -f "$bs_home/lib/common.sh" ] \
+  || fail "bootstrap (fresh clone): ORCHID_HOME missing the cloned checkout's anchor files after the atomic mv"
+[ -f "$bs_work/record1.txt" ] || fail "bootstrap (fresh clone): cloned install.sh was never exec'd"
+assert_eq "--prefix
+$bs_work/customprefix" "$(cat "$bs_work/record1.txt")" \
+  "bootstrap (fresh clone): cloned installer exec'd with the original pass-through args (--prefix DIR)"
+
+# ===========================================================================
+# review-round-2 fix: auto-removal of a non-checkout $home must require
+# POSITIVE proof it is dead wreckage from orchid's OWN bootstrap -- (a)
+# $home/.git exists, (b) that .git's remote.origin.url is EXACTLY this
+# repo's clone URL, (c) it's still incomplete (anchor files missing, or
+# rev-parse fails). Anything short of all three must be refused loudly
+# (named path, nonzero exit, both remedies) and left completely intact --
+# never deleted on a merely negative "isn't a checkout" signal. Three
+# shapes at the SAME kind of path ($ORCHID_HOME, user-settable), only one
+# of which may ever be auto-cleaned:
+#   2b. a genuinely dead ORCHID clone (real .git, origin.url matches,
+#       anchor files missing)        -> cleaned + recloned
+#   2c. a plain directory of unrelated user files (no .git at all)
+#                                    -> REFUSED, intact, nonzero exit
+#   2d. the user's own unrelated git repo (real .git, no matching origin)
+#                                    -> REFUSED, intact, nonzero exit
+# ===========================================================================
+
+# --- 2b: dead orchid clone (positive proof present) -> cleaned + recloned.
+bs_gitlog2b="$bs_work/gitlog2b.txt"; : > "$bs_gitlog2b"
+bs_gitbin2b="$bs_work/gitbin2b"; fake_git_bin "$bs_gitbin2b" "$bs_gitlog2b"
+bs_home_partial="$bs_work/home-partial"
+mkdir -p "$bs_home_partial"
+# Real git init + a real remote.origin.url matching the hardcoded clone
+# URL -- genuine positive proof, not a guess -- with the anchor files
+# deliberately absent (exactly what an interrupted `git clone` leaves:
+# .git/ created before every object was fetched).
+git init -q "$bs_home_partial"
+git -C "$bs_home_partial" remote add origin https://github.com/bilal-/orchid.git
+touch "$bs_home_partial/some-partial-clone-leftover"
+export STUB_INSTALL_RECORD="$bs_work/record2b.txt"; rm -f "$bs_work/record2b.txt"
+bs_out2b="$(PATH="$bs_gitbin2b:$PATH" ORCHID_HOME="$bs_home_partial" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc2b=$?
+[ "$bs_rc2b" -eq 0 ] || fail "bootstrap (dead orchid clone): install.sh exits 0 on retry after an interrupted clone (got rc=$bs_rc2b, output: $bs_out2b)"
+assert_match "removing incomplete clone" "$bs_out2b" "bootstrap (dead orchid clone): prints a note naming what was verified before removing it"
+[ -e "$bs_home_partial/some-partial-clone-leftover" ] && fail "bootstrap (dead orchid clone): the stale leftover file must be gone after cleanup+reclone"
+[ -f "$bs_home_partial/bin/orchid" ] && [ -f "$bs_home_partial/lib/common.sh" ] \
+  || fail "bootstrap (dead orchid clone): a fresh checkout must be cloned into place after cleanup"
+[ -f "$bs_work/record2b.txt" ] || fail "bootstrap (dead orchid clone): cloned install.sh was never exec'd after recovery"
+bs_clone_line2b="$(grep '^clone' "$bs_gitlog2b")"
+[ -n "$bs_clone_line2b" ] || fail "bootstrap (dead orchid clone): no git clone call recorded after cleanup (log: $(cat "$bs_gitlog2b"))"
+bs_clone_dest2b="$(printf '%s' "$bs_clone_line2b" | awk '{print $NF}')"
+[ "$bs_clone_dest2b" != "$bs_home_partial" ] \
+  || fail "bootstrap (dead orchid clone): must still clone to a TEMP sibling, never directly to ORCHID_HOME"
+
+# --- 2c: plain directory of unrelated user files (no .git at all) ->
+# REFUSED: nonzero exit, files untouched, message names the path, no
+# clone attempted.
+bs_gitlog2c="$bs_work/gitlog2c.txt"; : > "$bs_gitlog2c"
+bs_gitbin2c="$bs_work/gitbin2c"; fake_git_bin "$bs_gitbin2c" "$bs_gitlog2c"
+bs_home_userfiles="$bs_work/home-userfiles"
+mkdir -p "$bs_home_userfiles/subdir"
+echo "do not delete me" > "$bs_home_userfiles/my-precious-file.txt"
+echo "nested" > "$bs_home_userfiles/subdir/nested.txt"
+bs_out2c="$(PATH="$bs_gitbin2c:$PATH" ORCHID_HOME="$bs_home_userfiles" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc2c=$?
+[ "$bs_rc2c" -ne 0 ] || fail "bootstrap (unrelated user directory): install.sh must exit nonzero rather than proceed (output: $bs_out2c)"
+assert_match "$bs_home_userfiles" "$bs_out2c" "bootstrap (unrelated user directory): refusal message names the exact path"
+[ -f "$bs_home_userfiles/my-precious-file.txt" ] || fail "bootstrap (unrelated user directory): user file was deleted -- must be left completely intact"
+[ "$(cat "$bs_home_userfiles/my-precious-file.txt")" = "do not delete me" ] || fail "bootstrap (unrelated user directory): user file content was altered"
+[ -f "$bs_home_userfiles/subdir/nested.txt" ] || fail "bootstrap (unrelated user directory): nested user file/subdir was deleted -- must be left completely intact"
+grep -q '^clone' "$bs_gitlog2c" && fail "bootstrap (unrelated user directory): must never attempt a clone against a refused path"
+
+# --- 2d: the user's own unrelated git repo (real .git, but NOT this
+# repo's remote) -> REFUSED: nonzero exit, repo untouched, message names
+# the path, no clone attempted. This is the one .git-having-but-wrong
+# shape (b) must still catch even though (a) alone would have let it
+# through.
+bs_gitlog2d="$bs_work/gitlog2d.txt"; : > "$bs_gitlog2d"
+bs_gitbin2d="$bs_work/gitbin2d"; fake_git_bin "$bs_gitbin2d" "$bs_gitlog2d"
+bs_home_userrepo="$bs_work/home-userrepo"
+mkdir -p "$bs_home_userrepo"
+git init -q "$bs_home_userrepo"
+git -C "$bs_home_userrepo" remote add origin https://example.com/someone-else/unrelated.git
+echo "my own project" > "$bs_home_userrepo/README.md"
+git -C "$bs_home_userrepo" add README.md
+git -C "$bs_home_userrepo" -c user.email=test@example.com -c user.name=test commit -q -m "unrelated user commit"
+bs_out2d="$(PATH="$bs_gitbin2d:$PATH" ORCHID_HOME="$bs_home_userrepo" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc2d=$?
+[ "$bs_rc2d" -ne 0 ] || fail "bootstrap (user's own git repo): install.sh must exit nonzero rather than proceed (output: $bs_out2d)"
+assert_match "$bs_home_userrepo" "$bs_out2d" "bootstrap (user's own git repo): refusal message names the exact path"
+[ -f "$bs_home_userrepo/README.md" ] || fail "bootstrap (user's own git repo): user's repo content was deleted -- must be left completely intact"
+[ "$(git -C "$bs_home_userrepo" config --get remote.origin.url)" = "https://example.com/someone-else/unrelated.git" ] \
+  || fail "bootstrap (user's own git repo): the repo's own remote must be untouched"
+grep -q '^clone' "$bs_gitlog2d" && fail "bootstrap (user's own git repo): must never attempt a clone against a refused path"
+
+# --- already-cloned: same $home already looks like an orchid checkout ->
+# git pull --ff-only, no second clone, and the (stub) installer is still
+# exec'd with the current call's own args.
+bs_gitlog2="$bs_work/gitlog2.txt"; : > "$bs_gitlog2"
+bs_gitbin2="$bs_work/gitbin2"; fake_git_bin "$bs_gitbin2" "$bs_gitlog2"
+export STUB_INSTALL_RECORD="$bs_work/record2.txt"; rm -f "$bs_work/record2.txt"
+bs_out2="$(PATH="$bs_gitbin2:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc2=$?
+[ "$bs_rc2" -eq 0 ] || fail "bootstrap (already cloned): install.sh exits 0 (got rc=$bs_rc2, output: $bs_out2)"
+grep -q '^clone' "$bs_gitlog2" && fail "bootstrap (already cloned): must not re-clone an existing checkout ($(cat "$bs_gitlog2"))"
+assert_match '\-C .*pull --ff-only' "$(cat "$bs_gitlog2")" "bootstrap (already cloned): git pull --ff-only run against the existing checkout"
+[ -f "$bs_work/record2.txt" ] || fail "bootstrap (already cloned): cloned install.sh was never exec'd on the update path"
+
+# --- bootstrap --uninstall: operates against the canonical clone if
+# present, never deletes the clone itself, and prints a one-line note
+# saying so.
+bs_gitlog3="$bs_work/gitlog3.txt"; : > "$bs_gitlog3"
+bs_gitbin3="$bs_work/gitbin3"; fake_git_bin "$bs_gitbin3" "$bs_gitlog3"
+export STUB_INSTALL_RECORD="$bs_work/record3.txt"; rm -f "$bs_work/record3.txt"
+bs_out3="$(PATH="$bs_gitbin3:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" --uninstall 2>&1)"
+bs_rc3=$?
+[ "$bs_rc3" -eq 0 ] || fail "bootstrap (--uninstall, clone present): install.sh exits 0 (got rc=$bs_rc3, output: $bs_out3)"
+grep -q '^clone' "$bs_gitlog3" && fail "bootstrap (--uninstall): must not clone just to uninstall"
+assert_match "$bs_home" "$bs_out3" "bootstrap (--uninstall): note names the path the clone stays at"
+assert_match "not delete|left in place|is not deleted|never delete" "$bs_out3" "bootstrap (--uninstall): note says the clone itself is not removed"
+[ -d "$bs_home/.git" ] || fail "bootstrap (--uninstall): the canonical clone must still exist afterward"
+[ -f "$bs_work/record3.txt" ] || fail "bootstrap (--uninstall): cloned install.sh was never exec'd"
+assert_eq "--uninstall" "$(cat "$bs_work/record3.txt")" "bootstrap (--uninstall): cloned installer exec'd with --uninstall"
+
+# --- bootstrap --uninstall with NO clone present: nothing to clone just to
+# tear down, so exit cleanly without ever calling `git clone`.
+bs_gitlog4="$bs_work/gitlog4.txt"; : > "$bs_gitlog4"
+bs_gitbin4="$bs_work/gitbin4"; fake_git_bin "$bs_gitbin4" "$bs_gitlog4"
+bs_home_missing="$bs_work/home-never-cloned"
+bs_out4="$(PATH="$bs_gitbin4:$PATH" ORCHID_HOME="$bs_home_missing" "$bs_work/bare/nogit/install.sh" --uninstall 2>&1)"
+bs_rc4=$?
+[ "$bs_rc4" -eq 0 ] || fail "bootstrap (--uninstall, no clone): install.sh still exits 0 (got rc=$bs_rc4, output: $bs_out4)"
+grep -q '^clone' "$bs_gitlog4" && fail "bootstrap (--uninstall, no clone): must not clone when there is nothing to uninstall"
+[ -e "$bs_home_missing" ] && fail "bootstrap (--uninstall, no clone): must not create a clone dir as a side effect of --uninstall"
+unset STUB_INSTALL_RECORD
+
+# --- inside-checkout path never triggers bootstrap: the real $INSTALL,
+# run from $REPO_ROOT (which genuinely has bin/orchid + lib/common.sh
+# beside it), must never touch the fake git's clone/pull machinery, even
+# with the same fake git stub sitting first on PATH.
+bs_gitlog5="$bs_work/gitlog5.txt"; : > "$bs_gitlog5"
+bs_gitbin5="$bs_work/gitbin5"; fake_git_bin "$bs_gitbin5" "$bs_gitlog5"
+bs_insidecheckout_home="$bs_work/should-never-exist"
+insidecheckout_nogit="$bs_work/insidecheckout-nogit"; mkdir -p "$insidecheckout_nogit"
+bs_out5="$(cd "$insidecheckout_nogit" && PATH="$bs_gitbin5:$PATH" ORCHID_HOME="$bs_insidecheckout_home" "$INSTALL" 2>&1)"
+grep -qE '^clone|pull --ff-only' "$bs_gitlog5" && fail "inside-checkout install.sh must never invoke bootstrap's clone/pull (git calls seen: $(cat "$bs_gitlog5"))"
+[ -e "$bs_insidecheckout_home" ] && fail "inside-checkout install.sh must never create/touch ORCHID_HOME -- bootstrap must not have triggered"
+assert_match "[Nn]ext steps" "$bs_out5" "inside-checkout install.sh (with bootstrap's fake git on PATH) still runs its normal flow, not bootstrap"

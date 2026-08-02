@@ -60,7 +60,8 @@ docs_suite_files() {
            "$REPO_ROOT/docs/quickstart-greenfield.md" \
            "$REPO_ROOT/docs/configuration.md" \
            "$REPO_ROOT/docs/troubleshooting.md" \
-           "$REPO_ROOT/docs/research.md"; do
+           "$REPO_ROOT/docs/research.md" \
+           "$REPO_ROOT/docs/frontends.md"; do
     [ -f "$f" ] && echo "$f"
   done
   [ -d "$REPO_ROOT/docs/engines" ] && find "$REPO_ROOT/docs/engines" -name '*.md' | sort
@@ -81,6 +82,7 @@ docs/quickstart-greenfield.md
 docs/configuration.md
 docs/troubleshooting.md
 docs/research.md
+docs/frontends.md
 docs/engines/codex.md
 docs/engines/claude.md
 docs/engines/agy.md

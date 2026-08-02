@@ -20,20 +20,37 @@ and bash 3.2+ (macOS's shipped `/bin/bash` is fine).
 ## 1. Clone and install
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+```
+
+(goes live once the repo is public; see [docs/install.md](./install.md#one-line-install-recommended)
+for the exact caveat and how flags like `--prefix`/`--uninstall` pass
+through). Running this exact line again later is the upgrade command too.
+
+**Developing on orchid itself?** Clone it instead, so `install.sh` runs
+from — and `orchid` resolves to — your own checkout:
+
+```sh
 git clone <this-repo-url> "$HOME/src/orchid"
 cd "$HOME/src/orchid"
 ./install.sh
 ```
 
-`install.sh` does exactly and only: symlinks `skills/{orchid,orchid-plan,orchid-resume}`
-into `~/.claude/skills/` (so a Claude Code session can drive orchid via
-those three skills), symlinks `bin/orchid` into `~/.local/bin` (add it to
-`PATH` if the installer warns it isn't there), creates
-`~/.orchid/plugins` and a commented `~/.orchid/config` (the `~/.orchid/trust`
-store file appears on first `orchid plugins trust`), then finishes
-by running `orchid doctor` if your current directory is a repo to
-orchestrate. `./install.sh --uninstall` reverses precisely those
-symlinks/dirs (your config and trust store are left in place).
+Either way, `install.sh` does exactly and only: wires the interactive orchestrator
+skills (`skills/{orchid,orchid-plan,orchid-resume}`) into whichever agent
+front-ends are **actually present** on this machine — Claude Code
+(`~/.claude/skills/`) is today's tested default, and it also wires Hermes
+(`~/.hermes/skills/orchestration/`) when that's present, skipping cleanly
+(one-line note, no directory creation) for whichever front-end isn't
+installed — symlinks `bin/orchid` into `~/.local/bin` (add it to `PATH` if
+the installer warns it isn't there), creates `~/.orchid/plugins` and a
+commented `~/.orchid/config` (the `~/.orchid/trust` store file appears on
+first `orchid plugins trust`), then finishes by running `orchid doctor` if
+your current directory is a repo to orchestrate. `./install.sh --uninstall`
+reverses precisely those symlinks/dirs (your config and trust store are
+left in place). See [frontends.md](./frontends.md) for driving orchid from
+any of these agents (or codex/agy/OpenClaw, none of which need install.sh
+wiring), and for exactly what's tested vs. untested per engine.
 
 ## 2. Point orchid at your project
 

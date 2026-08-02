@@ -1,50 +1,48 @@
 # Install
 
-Two ways to get orchid onto a machine: `install.sh` (works today, symlinks
-this checkout in place) or a Homebrew tap (prepared here, not yet
-published). Both install the same bash+git+jq kernel — see
-[quickstart.md](./quickstart.md) for what happens after either one.
+Three ways to get orchid onto a machine — the one-liner below (recommended
+for most people), a Homebrew tap (prepared here, not yet published), or a
+plain git clone (best if you're hacking on orchid itself). All three end up
+running the same bash+git+jq kernel — see [quickstart.md](./quickstart.md)
+for what happens after any of them.
 
-## install.sh (available now)
-
-```sh
-git clone <this-repo-url> "$HOME/src/orchid"
-cd "$HOME/src/orchid"
-./install.sh
-```
-
-Does exactly and only: symlinks `skills/{orchid,orchid-plan,orchid-resume}`
-into `$CLAUDE_SKILLS_DIR` (default `~/.claude/skills`), symlinks
-`bin/orchid` into `$ORCHID_BIN_DIR` (default `~/.local/bin`), creates
-`~/.orchid/plugins/engines` and a commented `~/.orchid/config` (the
-`~/.orchid/trust` store file appears on first `orchid plugins trust`)
-(never overwritten if it already exists), then finishes by running `orchid
-doctor` (inside a git repo you'd orchestrate) or printing next-steps
-(outside one). Re-running it is safe: an existing `~/.orchid/config` is
-left untouched, and a real file or a symlink to somewhere else already
-sitting at a link path is left alone (with a warning) rather than
-clobbered.
-
-**Custom bin location:** pass `--prefix DIR` (or `--prefix=DIR`) to link
-`bin/orchid` under `DIR/bin` instead of `~/.local/bin` — useful if
-`~/.local/bin` isn't on `PATH` on this machine, or a shared install
-location is preferred. Only the bin symlink moves; skills and
-`~/.orchid/{config,trust}` are always per-user, never per-prefix:
+## One-line install (recommended)
 
 ```sh
-./install.sh --prefix /usr/local        # links /usr/local/bin/orchid
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
 ```
 
-**Uninstall** reverses precisely the symlinks `install.sh` created
-(config and trust are left in place):
+**This goes live once the repo is public.** `raw.githubusercontent.com`
+cannot serve a file out of a private repository, so until then this
+command 404s — use the [git clone method](#git-clone-for-hacking-on-orchid-itself)
+below instead.
+
+This downloads `install.sh` and runs it. Since that's happening outside
+any existing orchid checkout, `install.sh` first clones a canonical copy
+(shallow, `--depth 1`) to `${ORCHID_HOME:-~/.local/share/orchid}`, then
+hands off to that checkout's own `install.sh` — which is exactly the
+git-clone method's `install.sh`, so it does exactly the same thing
+described in the [git-clone section](#git-clone-for-hacking-on-orchid-itself)
+below (front-end detection, `bin/orchid` symlink, `~/.orchid/` seeding,
+`orchid doctor`).
+
+**Running the exact same line again is the upgrade command:** if
+`$ORCHID_HOME` already holds an orchid checkout, it's fast-forwarded
+(`git pull --ff-only`) instead of re-cloned.
+
+**Flags pass through** — since `bash` is reading the script off a pipe,
+put them after `-s --`:
 
 ```sh
-./install.sh --uninstall
-./install.sh --prefix /usr/local --uninstall   # if a custom --prefix was used to install
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash -s -- --prefix /usr/local
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash -s -- --uninstall
 ```
 
-See [quickstart.md's step 1](./quickstart.md#1-clone-and-install) for the
-full walkthrough this feeds into.
+`--uninstall` this way removes the symlinks the canonical clone created,
+the same as it would from a manual checkout — but the clone at
+`$ORCHID_HOME` itself is **not** deleted (it's what the next one-liner run
+reuses to upgrade, not the installer's scratch space); the command prints
+a one-line note confirming the clone's path.
 
 ## Homebrew (prepared, not yet published)
 
@@ -104,3 +102,56 @@ None of steps 1–5 are executed as part of this task — this section exists
 so the operator has exact, copy-pasteable commands the day they're ready
 to publish, and so [README.md](../README.md)'s current "once published"
 note has somewhere concrete to point.
+
+## git clone (for hacking on orchid itself)
+
+```sh
+git clone <this-repo-url> "$HOME/src/orchid"
+cd "$HOME/src/orchid"
+./install.sh
+```
+
+Does exactly and only: wires the interactive orchestrator skills
+(`skills/{orchid,orchid-plan,orchid-resume}`) into whichever agent
+front-ends are **actually present** on this machine — not one hardcoded
+vendor. Concretely: Claude Code (symlinked into `$CLAUDE_SKILLS_DIR`,
+default `~/.claude/skills` — today's tested default, wired if `~/.claude`
+exists or `CLAUDE_SKILLS_DIR` is set) and Hermes (symlinked into
+`~/.hermes/skills/orchestration/`, wired if that directory exists) each get
+wired when present, and skipped with a one-line note (no directory
+creation) when absent; OpenClaw gets a suggested `openclaw skills install`
+command printed instead of an automatic run, since registration targets a
+specific agent/gateway install.sh has no business choosing. See
+[frontends.md](./frontends.md) for the full per-engine breakdown (what's
+tested vs. untested) and for driving orchid from codex/agy, which need no
+install.sh wiring at all. Regardless of front-end, install.sh also
+symlinks `bin/orchid` into `$ORCHID_BIN_DIR` (default `~/.local/bin`),
+creates `~/.orchid/plugins/engines` and a commented `~/.orchid/config` (the
+`~/.orchid/trust` store file appears on first `orchid plugins trust`)
+(never overwritten if it already exists), then finishes by running `orchid
+doctor` (inside a git repo you'd orchestrate) or printing next-steps
+(outside one). Re-running it is safe: an existing `~/.orchid/config` is
+left untouched, and a real file or a symlink to somewhere else already
+sitting at a link path is left alone (with a warning) rather than
+clobbered.
+
+**Custom bin location:** pass `--prefix DIR` (or `--prefix=DIR`) to link
+`bin/orchid` under `DIR/bin` instead of `~/.local/bin` — useful if
+`~/.local/bin` isn't on `PATH` on this machine, or a shared install
+location is preferred. Only the bin symlink moves; skills and
+`~/.orchid/{config,trust}` are always per-user, never per-prefix:
+
+```sh
+./install.sh --prefix /usr/local        # links /usr/local/bin/orchid
+```
+
+**Uninstall** reverses precisely the symlinks `install.sh` created
+(config and trust are left in place):
+
+```sh
+./install.sh --uninstall
+./install.sh --prefix /usr/local --uninstall   # if a custom --prefix was used to install
+```
+
+See [quickstart.md's step 1](./quickstart.md#1-clone-and-install) for the
+full walkthrough this feeds into.
