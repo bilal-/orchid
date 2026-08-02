@@ -30,7 +30,10 @@ procedure..."*). There are exactly two shapes this takes:
 
 Neither mode is more "real" than the other — they're the same procedure, two
 different callers. See `PROTOCOL.md` itself for the full THE TICK / RESUME /
-HEADLESS OPERATION procedures this page never restates.
+HEADLESS OPERATION procedures this page never restates. Both modes drive
+the same one-way topology — the kernel launches every engine, engines never
+launch anything — drawn in [architecture.md](./architecture.md) (diagram 1,
+"Who runs whom").
 
 ## Per-engine status
 
