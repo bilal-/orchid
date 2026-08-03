@@ -27,11 +27,13 @@ the integration branch from a dirty or stale checkout (see
 live checkout.
 
 Unattended trust is intentionally **not a configuration key or layer**.
-Only `orchid trust unattended <repo> --reason <reason>` can create that
-operator-authored record, under `~/.orchid/unattended-trust/`. Environment
-variables, tracked `orchid.config`, Git config, and origin metadata are
-ignored by the trust decision. Inspect it with `orchid trust show <repo>`;
-remove it with `orchid trust revoke <repo>`.
+The supported interface for creating that operator-authored record is
+`orchid trust unattended <repo> --reason <reason>`; it writes under
+`~/.orchid/unattended-trust/`. No `ORCHID_*` configuration override, tracked
+`orchid.config`, Git config, or origin metadata can grant trust. (`HOME`
+selects the operator's machine-local store in the normal Unix way.) Inspect
+the effective decision with `orchid trust show <repo>`; remove it with
+`orchid trust revoke <repo>`.
 
 ## Key table
 

@@ -109,6 +109,10 @@ ancestry is locally complete. Trust-store containment uses the physical
 checkout marker, not a repository-configurable worktree path. If `HOME` or a
 symlinked `~/.orchid` would place the record inside the target,
 acknowledgement refuses instead of creating repository-controlled trust state.
+The record itself must be an operator-owned, single-link regular file without
+group/other write permission. Symbolic links, hard-link aliases (including
+aliases of tracked files), non-files, and unsafe permissions are denied;
+`orchid trust revoke` removes a record symlink itself rather than following it.
 
 The acknowledgement means only that the operator accepts this repository as
 input to an unattended, shell-capable model. Target content may prompt-inject

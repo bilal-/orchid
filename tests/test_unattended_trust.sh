@@ -7,6 +7,7 @@ source "$REPO_ROOT/lib/common.sh"
 
 home="$WORK/home"
 mkdir -p "$home"
+home_physical="$(cd "$home" && pwd -P)"
 export HOME="$home"
 export GIT_AUTHOR_NAME="Orchid Test"
 export GIT_AUTHOR_EMAIL="orchid-test@example.invalid"
@@ -72,12 +73,96 @@ assert_match "acknowledged_repo: " "$out" "show surfaces the path used when ackn
 assert_match "recorded_root_commit: $root" "$out" "record binds the repository root commit"
 record="$(printf '%s\n' "$out" | sed -n 's/^record: //p')"
 case "$record" in
-  "$home"/.orchid/unattended-trust/*.json) ;;
+  "$home_physical"/.orchid/unattended-trust/*.json) ;;
   *) fail "record must live under the operator HOME, outside the repo (got '$record')" ;;
 esac
 [ -f "$record" ] || fail "show's machine-local record path must exist"
 [ ! -e "$repo/.orchid/unattended-trust.json" ] \
   || fail "unattended trust must never write a record inside the repo"
+
+# A record path is itself part of the boundary. It must not be a symlink or
+# hard-link alias of tracked content, and another local account must not be
+# able to rewrite it through group/other permissions. Re-acknowledging a
+# repairable regular-file record replaces it atomically; a symlink must be
+# explicitly revoked first so a symlink-to-directory can never make `mv`
+# place a temp record in the target or make `chmod` change that directory.
+alias_repo="$WORK/record-alias-repo"
+mk_repo "$alias_repo"
+trust_repo "$alias_repo" "record alias fixture"
+alias_out="$(HOME="$home" "$ORCHID_BIN" trust show "$alias_repo")"
+alias_record="$(printf '%s\n' "$alias_out" | sed -n 's/^record: //p')"
+tracked_record="$alias_repo/tracked-trust-record.json"
+cp "$alias_record" "$tracked_record"
+git -C "$alias_repo" add tracked-trust-record.json
+git -C "$alias_repo" commit -q -m "tracked trust-shaped data"
+tracked_before="$(cat "$tracked_record")"
+
+rm -f "$alias_record"
+ln -s "$tracked_record" "$alias_record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$alias_repo")"
+assert_match '^binding_state: invalid$' "$out" \
+  "a symlinked record never derives trust from tracked content"
+assert_match 'must not be a symbolic link' "$out" \
+  "a symlinked record refusal names the non-canonical path"
+rc=0
+HOME="$home" "$ORCHID_BIN" trust unattended "$alias_repo" \
+  --reason "must not follow a record symlink" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "acknowledgement must refuse an existing record symlink"
+assert_eq "$tracked_before" "$(cat "$tracked_record")" \
+  "refusing a record symlink leaves its tracked target byte-identical"
+HOME="$home" "$ORCHID_BIN" trust revoke "$alias_repo" >/dev/null \
+  || fail "revoke must remove a non-canonical record symlink without following it"
+[ ! -L "$alias_record" ] || fail "revoke must remove the record symlink itself"
+
+record_target_dir="$alias_repo/tracked-record-directory"
+mkdir -p "$record_target_dir"
+printf 'sentinel\n' > "$record_target_dir/sentinel"
+if record_dir_mode="$(stat -f '%Lp' "$record_target_dir" 2>/dev/null)"; then
+  :
+else
+  record_dir_mode="$(stat -c '%a' "$record_target_dir")"
+fi
+ln -s "$record_target_dir" "$alias_record"
+rc=0
+HOME="$home" "$ORCHID_BIN" trust unattended "$alias_repo" \
+  --reason "must not follow a directory symlink" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "acknowledgement must refuse a record symlink to a directory"
+assert_eq sentinel "$(cat "$record_target_dir/sentinel")" \
+  "directory-symlink refusal preserves existing target content"
+target_entries="$(find "$record_target_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+assert_eq 1 "$target_entries" \
+  "directory-symlink refusal must not move an atomic-write temp file into the target"
+if record_dir_mode_after="$(stat -f '%Lp' "$record_target_dir" 2>/dev/null)"; then
+  :
+else
+  record_dir_mode_after="$(stat -c '%a' "$record_target_dir")"
+fi
+assert_eq "$record_dir_mode" "$record_dir_mode_after" \
+  "directory-symlink refusal must not chmod the symlink target"
+HOME="$home" "$ORCHID_BIN" trust revoke "$alias_repo" >/dev/null \
+  || fail "revoke must remove a directory-valued record symlink safely"
+
+ln "$tracked_record" "$alias_record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$alias_repo")"
+assert_match '^binding_state: invalid$' "$out" \
+  "a hard-linked record never derives trust from tracked content"
+assert_match 'must not be hard-linked' "$out" \
+  "a hard-linked record refusal names the alias"
+trust_repo "$alias_repo" "replace hard-linked record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$alias_repo")"
+assert_match '^unattended trust: trusted$' "$out" \
+  "re-acknowledgement atomically replaces a hard-linked regular record"
+
+chmod 666 "$alias_record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$alias_repo")"
+assert_match '^binding_state: invalid$' "$out" \
+  "a group/other-writable record fails closed"
+assert_match 'writable by group or other' "$out" \
+  "unsafe record permissions are actionable"
+trust_repo "$alias_repo" "replace writable record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$alias_repo")"
+assert_match '^unattended trust: trusted$' "$out" \
+  "re-acknowledgement restores a canonical private record"
 
 # HOME (or a symlink beneath it) must not place the supposedly machine-local
 # record inside the repository being authorized. When no outside store is

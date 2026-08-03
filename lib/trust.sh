@@ -50,8 +50,10 @@ _unattended_repo_canon() {
 # consulting a promisor remote before the unattended gate has passed.
 _unattended_git() (
   unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
+  unset GIT_IMPLICIT_WORK_TREE GIT_PREFIX
   unset GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_NAMESPACE
   unset GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE GIT_QUARANTINE_PATH
+  unset GIT_CONFIG GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
   unset GIT_CEILING_DIRECTORIES
   unset GIT_DISCOVERY_ACROSS_FILESYSTEM
   GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 \
@@ -131,6 +133,55 @@ _unattended_fs_identity() {
   printf '%s\n' "$out"
 }
 
+# Return "<hard-link-count> <octal-mode>" for an existing file. Trust records
+# are required to be single-link, operator-owned regular files without
+# group/other write permission: otherwise a record under the machine-local
+# store could merely be an alias of tracked content, or another local account
+# could rewrite the decision after the operator acknowledged it.
+_unattended_file_security_metadata() {
+  local path="$1" out links mode
+  if out="$(stat -f '%l %Lp' "$path" 2>/dev/null)"; then
+    :
+  elif out="$(stat -c '%h %a' "$path" 2>/dev/null)"; then
+    :
+  else
+    return 1
+  fi
+  links="${out%% *}"
+  mode="${out#* }"
+  case "$links" in ''|*[!0-9]*) return 1 ;; esac
+  case "$mode" in ''|*[!0-7]*) return 1 ;; esac
+  printf '%s %s\n' "$links" "$mode"
+}
+
+# Record-only atomic writer. BSD `mv -h` and GNU/BusyBox `mv -T` are the
+# respective no-dereference/no-target-directory forms: unlike a plain `mv`,
+# they replace a destination symlink to a directory instead of moving the
+# temp file through that symlink into the directory. The caller rejects an
+# existing non-file first; the repeated directory check here narrows the
+# remaining check/write race and also keeps a real directory from becoming a
+# plain `mv` target on BSD.
+_unattended_record_atomic_write() {
+  local d="$1" t
+  t="$(mktemp "${d}.tmp.XXXXXX")" || return 1
+  if ! cat >"$t"; then
+    rm -f "$t"
+    return 1
+  fi
+  if [ -d "$d" ] && [ ! -L "$d" ]; then
+    rm -f "$t"
+    return 1
+  fi
+  if mv -h "$t" "$d" 2>/dev/null; then
+    return 0
+  fi
+  if mv -T "$t" "$d" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$t"
+  return 1
+}
+
 _unattended_root_commit() {
   local repo="$1"
   # Most repositories have exactly one root. Joining a sorted set also
@@ -146,6 +197,37 @@ _unattended_one_line() {
   printf '%s' "$1" | tr '\r\n\t' '   ' | tr -s ' '
 }
 
+# Re-check the repository facts after parsing a matching record. This cannot
+# make a shell script immune to a hostile concurrent rename after the gate
+# returns, but it prevents one inspection from silently combining a common
+# directory/device observation from one repository state with root history
+# read from a replacement state.
+_unattended_identity_still_matches() {
+  local common ident root
+  common="$(_unattended_git_common_dir "$ORCHID_UNATTENDED_REPO")" || return 1
+  [ "$common" = "$ORCHID_UNATTENDED_COMMON_DIR" ] || return 1
+  ident="$(_unattended_fs_identity "$common")" || return 1
+  [ "$ident" = "$ORCHID_UNATTENDED_DEVICE $ORCHID_UNATTENDED_INODE" ] || return 1
+  root="$(_unattended_root_commit "$ORCHID_UNATTENDED_REPO")" || return 1
+  [ "$root" = "$ORCHID_UNATTENDED_ROOT_COMMIT" ]
+}
+
+# Confirm that the exact regular file parsed below is still present and
+# byte-equivalent immediately before allowing the gate. The JSON is passed as
+# an in-shell string (not re-derived field by field), so concurrent replacement
+# cannot produce a trusted decision assembled from multiple record versions.
+_unattended_record_still_matches() {
+  local path="$1" expected_ident="$2" expected_meta="$3" expected_json="$4"
+  local ident meta json
+  [ ! -L "$path" ] && [ -f "$path" ] && [ -O "$path" ] || return 1
+  ident="$(_unattended_fs_identity "$path")" || return 1
+  [ "$ident" = "$expected_ident" ] || return 1
+  meta="$(_unattended_file_security_metadata "$path")" || return 1
+  [ "$meta" = "$expected_meta" ] || return 1
+  json="$(cat "$path" 2>/dev/null)" || return 1
+  [ "$json" = "$expected_json" ]
+}
+
 # unattended_trust_inspect <repo>
 #
 # Always returns zero and populates the ORCHID_UNATTENDED_* globals below.
@@ -154,7 +236,7 @@ _unattended_one_line() {
 # refusal. This function is read-only.
 unattended_trust_inspect() {
   local repo_in="$1" ident rec_schema rec_kind rec_device rec_inode rec_policy rec_root
-  local trust_dir trust_dir_physical
+  local trust_dir trust_dir_physical rec_meta rec_links rec_mode record_ident record_json
   local provenance_valid=0
 
   ORCHID_UNATTENDED_STATE=unavailable
@@ -167,6 +249,8 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_ROOT_COMMIT=""
   ORCHID_UNATTENDED_TRUST_DIR=""
   ORCHID_UNATTENDED_RECORD=""
+  ORCHID_UNATTENDED_RECORD_EXISTS=0
+  ORCHID_UNATTENDED_RECORD_LOADED=0
   ORCHID_UNATTENDED_RECORDED_REPO=""
   ORCHID_UNATTENDED_RECORDED_COMMON_DIR=""
   ORCHID_UNATTENDED_RECORDED_SCHEMA=""
@@ -196,7 +280,11 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="machine-local unattended-trust directory is unavailable"
     return 0
   fi
-  ORCHID_UNATTENDED_TRUST_DIR="$trust_dir"
+  # Use the resolved absolute directory for every record access. The logical
+  # HOME spelling is useful for locating the store, but continuing through a
+  # symlinked component after validating its physical target would reopen a
+  # needless redirection window.
+  ORCHID_UNATTENDED_TRUST_DIR="$trust_dir_physical"
 
   # The record must not be trackable by the repository it authorizes. Check
   # both the supplied path and the physical worktree root (the caller may
@@ -229,12 +317,51 @@ unattended_trust_inspect() {
   fi
 
   ORCHID_UNATTENDED_RECORD="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.json"
-  if [ ! -f "$ORCHID_UNATTENDED_RECORD" ]; then
+  if [ ! -e "$ORCHID_UNATTENDED_RECORD" ] && [ ! -L "$ORCHID_UNATTENDED_RECORD" ]; then
     ORCHID_UNATTENDED_STATE=untrusted
     ORCHID_UNATTENDED_DETAIL="no machine-local acknowledgement for this Git common-directory identity"
     return 0
   fi
-  if ! jq -e '
+  ORCHID_UNATTENDED_RECORD_EXISTS=1
+  if [ -L "$ORCHID_UNATTENDED_RECORD" ]; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record must not be a symbolic link"
+    return 0
+  fi
+  if [ ! -f "$ORCHID_UNATTENDED_RECORD" ]; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record is not a regular file"
+    return 0
+  fi
+  if [ ! -O "$ORCHID_UNATTENDED_RECORD" ]; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record is not owned by the current operator"
+    return 0
+  fi
+  if ! rec_meta="$(_unattended_file_security_metadata "$ORCHID_UNATTENDED_RECORD")"; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="cannot inspect machine-local acknowledgement record permissions"
+    return 0
+  fi
+  rec_links="${rec_meta%% *}"
+  rec_mode="${rec_meta#* }"
+  if [ "$rec_links" != 1 ]; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record must not be hard-linked to another path"
+    return 0
+  fi
+  if [ $((8#$rec_mode & 022)) -ne 0 ]; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record is writable by group or other"
+    return 0
+  fi
+  if ! record_ident="$(_unattended_fs_identity "$ORCHID_UNATTENDED_RECORD")" \
+     || ! record_json="$(cat "$ORCHID_UNATTENDED_RECORD" 2>/dev/null)"; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="cannot read machine-local acknowledgement record"
+    return 0
+  fi
+  if ! printf '%s' "$record_json" | jq -e '
     type == "object"
     and (.schema | type == "number")
     and (.kind | type == "string")
@@ -246,29 +373,30 @@ unattended_trust_inspect() {
     and (.git_common_device | type == "string")
     and (.git_common_inode | type == "string")
     and (.root_commit | type == "string")
-  ' "$ORCHID_UNATTENDED_RECORD" >/dev/null 2>&1; then
+  ' >/dev/null 2>&1; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record is malformed"
     return 0
   fi
 
-  rec_schema="$(jq -r '.schema // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
-  rec_kind="$(jq -r '.kind // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
-  rec_device="$(jq -r '.git_common_device // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
-  rec_inode="$(jq -r '.git_common_inode // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
-  rec_policy="$(jq -r '.policy_version // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
-  rec_root="$(jq -r '.root_commit // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
+  rec_schema="$(printf '%s' "$record_json" | jq -r '.schema // ""' 2>/dev/null || true)"
+  rec_kind="$(printf '%s' "$record_json" | jq -r '.kind // ""' 2>/dev/null || true)"
+  rec_device="$(printf '%s' "$record_json" | jq -r '.git_common_device // ""' 2>/dev/null || true)"
+  rec_inode="$(printf '%s' "$record_json" | jq -r '.git_common_inode // ""' 2>/dev/null || true)"
+  rec_policy="$(printf '%s' "$record_json" | jq -r '.policy_version // ""' 2>/dev/null || true)"
+  rec_root="$(printf '%s' "$record_json" | jq -r '.root_commit // ""' 2>/dev/null || true)"
 
-  ORCHID_UNATTENDED_RECORDED_REPO="$(jq -r '.acknowledged_repo // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
-  ORCHID_UNATTENDED_RECORDED_COMMON_DIR="$(jq -r '.git_common_dir // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
+  ORCHID_UNATTENDED_RECORDED_REPO="$(printf '%s' "$record_json" | jq -r '.acknowledged_repo // ""' 2>/dev/null || true)"
+  ORCHID_UNATTENDED_RECORDED_COMMON_DIR="$(printf '%s' "$record_json" | jq -r '.git_common_dir // ""' 2>/dev/null || true)"
   ORCHID_UNATTENDED_RECORDED_SCHEMA="$rec_schema"
   ORCHID_UNATTENDED_RECORDED_KIND="$rec_kind"
   ORCHID_UNATTENDED_RECORDED_DEVICE="$rec_device"
   ORCHID_UNATTENDED_RECORDED_INODE="$rec_inode"
   ORCHID_UNATTENDED_RECORDED_ROOT_COMMIT="$rec_root"
   ORCHID_UNATTENDED_RECORDED_POLICY_VERSION="$rec_policy"
-  ORCHID_UNATTENDED_ACKNOWLEDGED_AT="$(jq -r '.acknowledged_at // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
-  ORCHID_UNATTENDED_REASON="$(jq -r '.reason // ""' "$ORCHID_UNATTENDED_RECORD" 2>/dev/null || true)"
+  ORCHID_UNATTENDED_ACKNOWLEDGED_AT="$(printf '%s' "$record_json" | jq -r '.acknowledged_at // ""' 2>/dev/null || true)"
+  ORCHID_UNATTENDED_REASON="$(printf '%s' "$record_json" | jq -r '.reason // ""' 2>/dev/null || true)"
+  ORCHID_UNATTENDED_RECORD_LOADED=1
 
   if [ -n "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT" ] \
      && [ -n "$ORCHID_UNATTENDED_RECORDED_REPO" ] \
@@ -296,6 +424,13 @@ unattended_trust_inspect() {
   elif [ "$provenance_valid" -ne 1 ]; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="acknowledgement record is missing operator provenance"
+  elif ! _unattended_record_still_matches "$ORCHID_UNATTENDED_RECORD" \
+      "$record_ident" "$rec_meta" "$record_json"; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record changed during inspection; retry"
+  elif ! _unattended_identity_still_matches; then
+    ORCHID_UNATTENDED_STATE=unavailable
+    ORCHID_UNATTENDED_DETAIL="repository identity changed during trust inspection; retry"
   else
     ORCHID_UNATTENDED_STATE=trusted
     ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement matches"
@@ -317,7 +452,7 @@ unattended_trust_summary_loaded() {
       "$ORCHID_UNATTENDED_DETAIL" \
       "${ORCHID_UNATTENDED_DEVICE:-unavailable}" "${ORCHID_UNATTENDED_INODE:-unavailable}" \
       "${ORCHID_UNATTENDED_ROOT_COMMIT:-unavailable}" "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION"
-    if [ -n "$ORCHID_UNATTENDED_RECORD" ] && [ -f "$ORCHID_UNATTENDED_RECORD" ]; then
+    if [ "${ORCHID_UNATTENDED_RECORD_EXISTS:-0}" -eq 1 ]; then
       printf '; existing record %s' "$ORCHID_UNATTENDED_RECORD"
       [ -z "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT" ] \
         || printf '; acknowledged at %s' "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT"
@@ -351,7 +486,7 @@ unattended_trust_show() {
   printf 'root_commit: %s\n' "${ORCHID_UNATTENDED_ROOT_COMMIT:-unavailable}"
   printf 'policy_version: %s\n' "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION"
   printf 'record: %s\n' "${ORCHID_UNATTENDED_RECORD:-none}"
-  if [ -n "$ORCHID_UNATTENDED_RECORD" ] && [ -f "$ORCHID_UNATTENDED_RECORD" ]; then
+  if [ "${ORCHID_UNATTENDED_RECORD_LOADED:-0}" -eq 1 ]; then
     printf 'recorded_schema: %s\n' "$ORCHID_UNATTENDED_RECORDED_SCHEMA"
     printf 'recorded_kind: %s\n' "$ORCHID_UNATTENDED_RECORDED_KIND"
     printf 'acknowledged_at: %s\n' "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT"
@@ -374,7 +509,7 @@ unattended_trust_acknowledge() {
     || orchid_die "unattended trust requires a non-empty --reason"
 
   acknowledged_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  dir="$(_unattended_trust_dir)"
+  dir="$ORCHID_UNATTENDED_TRUST_DIR"
   (
     umask 077
     mkdir -p "$dir"
@@ -384,6 +519,11 @@ unattended_trust_acknowledge() {
     unattended_trust_inspect "$repo"
     [ "$ORCHID_UNATTENDED_STATE" != unavailable ] \
       || orchid_die "cannot acknowledge unattended execution: $ORCHID_UNATTENDED_DETAIL"
+    [ ! -L "$ORCHID_UNATTENDED_RECORD" ] \
+      || orchid_die "cannot acknowledge unattended execution: acknowledgement record path is a symbolic link; revoke it first"
+    if [ -e "$ORCHID_UNATTENDED_RECORD" ] && [ ! -f "$ORCHID_UNATTENDED_RECORD" ]; then
+      orchid_die "cannot acknowledge unattended execution: acknowledgement record path is not a regular file"
+    fi
     jq -n \
       --argjson schema "$ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA" \
       --argjson policy_version "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION" \
@@ -399,8 +539,7 @@ unattended_trust_acknowledge() {
         acknowledged_repo:$acknowledged_repo, git_common_dir:$git_common_dir,
         git_common_device:$git_common_device, git_common_inode:$git_common_inode,
         root_commit:$root_commit}' \
-      | atomic_write "$ORCHID_UNATTENDED_RECORD"
-    chmod 600 "$ORCHID_UNATTENDED_RECORD"
+      | _unattended_record_atomic_write "$ORCHID_UNATTENDED_RECORD"
   )
   unattended_trust_inspect "$repo"
   [ "$ORCHID_UNATTENDED_STATE" = trusted ] \
@@ -412,9 +551,12 @@ unattended_trust_revoke() {
   unattended_trust_inspect "$repo"
   [ "$ORCHID_UNATTENDED_STATE" != unavailable ] \
     || orchid_die "cannot revoke unattended trust: $ORCHID_UNATTENDED_DETAIL"
-  if [ -f "$ORCHID_UNATTENDED_RECORD" ]; then
+  if [ -L "$ORCHID_UNATTENDED_RECORD" ] || [ -f "$ORCHID_UNATTENDED_RECORD" ]; then
     rm -f "$ORCHID_UNATTENDED_RECORD"
     return 0
+  fi
+  if [ -e "$ORCHID_UNATTENDED_RECORD" ]; then
+    orchid_die "cannot revoke unattended trust: acknowledgement record path is not a file"
   fi
   return 1
 }
