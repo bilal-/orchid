@@ -104,6 +104,26 @@ HOME="$WORK/symlink-home" "$ORCHID_BIN" trust unattended "$symlink_store_repo" \
 [ ! -e "$symlink_store_repo/local-state/unattended-trust" ] \
   || fail "refused symlinked in-repo trust must not create a record directory"
 
+# A caller may name a subdirectory, and repository-local core.worktree may
+# change Git's reported top level. Placement checks must use the physical
+# checkout marker so config cannot hide an in-repository HOME alongside that
+# subdirectory.
+configured_store_repo="$WORK/configured-store-repo"
+mk_repo "$configured_store_repo"
+mkdir -p "$configured_store_repo/subdir" "$configured_store_repo/operator-home"
+git -C "$configured_store_repo" config core.worktree "$configured_store_repo/subdir"
+assert_eq true \
+  "$(git -C "$configured_store_repo/subdir" rev-parse --is-inside-work-tree)" \
+  "core.worktree fixture must remain a Git worktree"
+rc=0
+HOME="$configured_store_repo/operator-home" "$ORCHID_BIN" trust unattended \
+  "$configured_store_repo/subdir" --reason "config must not hide placement" \
+  >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "repository config must not hide an in-checkout trust store"
+[ ! -e "$configured_store_repo/operator-home/.orchid/unattended-trust" ] \
+  || fail "config-hidden in-repo trust must not create a record directory"
+
 # Descendant commits do not change the repository root identity.
 git -C "$repo" commit -q --allow-empty -m descendant
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$repo")"
@@ -151,10 +171,16 @@ assert_match '^unattended trust: untrusted$' "$out" "filesystem copy is untruste
 # ---------------------------------------------------------------------------
 move_repo="$WORK/move-repo"
 mk_repo "$move_repo"
+# An absolute core.worktree becomes stale after the rename. It must not
+# override the physical marker/common-directory identity used by trust.
+git -C "$move_repo" config core.worktree "$move_repo"
 trust_repo "$move_repo" "safe to move"
 move_record="$(HOME="$home" "$ORCHID_BIN" trust show "$move_repo" | sed -n 's/^record: //p')"
 moved_repo="$WORK/moved-repo"
 mv "$move_repo" "$moved_repo"
+assert_eq false \
+  "$(git -C "$moved_repo" rev-parse --is-inside-work-tree)" \
+  "move fixture must leave Git's configured worktree path stale"
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$moved_repo")"
 assert_match '^unattended trust: trusted$' "$out" "same-filesystem move preserving inode remains trusted"
 assert_match "record: $move_record" "$out" "move still resolves the identity-keyed record"
@@ -185,6 +211,66 @@ assert_match '^unattended trust: untrusted$' "$out" "root-history replacement in
 assert_match '^binding_state: mismatch$' "$out" "root replacement is classified as a binding mismatch"
 assert_match 'repository root commit changed' "$out" "root mismatch is actionable"
 
+# Git replacement refs and legacy grafts are repository-local object views.
+# Neither may disguise a replacement history as descending from the root that
+# the operator acknowledged.
+view_repo="$WORK/object-view-repo"
+mk_repo "$view_repo"
+view_old_root="$(git -C "$view_repo" rev-parse HEAD)"
+git -C "$view_repo" commit -q --allow-empty -m descendant
+view_descendant="$(git -C "$view_repo" rev-parse HEAD)"
+trust_repo "$view_repo" "underlying history only"
+git -C "$view_repo" checkout -q --orphan replacement-history
+git -C "$view_repo" commit -q --allow-empty -m replacement-history
+view_new_root="$(git -C "$view_repo" rev-parse HEAD)"
+
+git -C "$view_repo" replace "$view_new_root" "$view_descendant"
+assert_eq "$view_old_root" \
+  "$(git -C "$view_repo" rev-list --max-parents=0 HEAD 2>/dev/null)" \
+  "replacement-ref fixture must disguise the new root from an ordinary Git query"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$view_repo")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a replacement ref cannot preserve unattended trust across root replacement"
+assert_match "^root_commit: $view_new_root$" "$out" \
+  "trust inspection ignores replacement refs when binding root history"
+git -C "$view_repo" replace -d "$view_new_root" >/dev/null
+
+printf '%s %s\n' "$view_new_root" "$view_old_root" > "$view_repo/.git/info/grafts"
+assert_eq "$view_old_root" \
+  "$(git -C "$view_repo" rev-list --max-parents=0 HEAD 2>/dev/null)" \
+  "graft fixture must disguise the new root from an ordinary Git query"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$view_repo")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a legacy graft cannot preserve unattended trust across root replacement"
+assert_match "^root_commit: $view_new_root$" "$out" \
+  "trust inspection ignores legacy grafts when binding root history"
+
+# A shallow boundary is not the repository's underlying root. Trust
+# inspection must not bind to that movable boundary or fetch the omitted
+# ancestry as a side effect; acknowledgement remains unavailable until the
+# history is locally complete.
+shallow_source="$WORK/shallow-source"
+mk_repo "$shallow_source"
+git -C "$shallow_source" commit -q --allow-empty -m descendant
+shallow_repo="$WORK/shallow-repo"
+git -c protocol.file.allow=always clone -q --depth 1 \
+  "file://$shallow_source" "$shallow_repo"
+shallow_tip="$(git -C "$shallow_repo" rev-parse HEAD)"
+assert_eq "$shallow_tip" \
+  "$(git -C "$shallow_repo" rev-list --max-parents=0 HEAD)" \
+  "ordinary Git must treat the shallow tip as the fixture's traversal root"
+rc=0
+HOME="$home" "$ORCHID_BIN" trust unattended "$shallow_repo" \
+  --reason "incomplete ancestry must fail closed" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a shallow history must not be acknowledged as complete"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$shallow_repo")"
+assert_match '^binding_state: unavailable$' "$out" \
+  "a shallow repository has no locally establishable underlying root"
+assert_match '^root_commit: unavailable$' "$out" \
+  "the shallow traversal boundary is never surfaced as the trust root"
+[ -f "$shallow_repo/.git/shallow" ] \
+  || fail "trust inspection must not deepen or rewrite a shallow repository"
+
 # A policy-version mismatch is also fail-closed. Simulate a record written
 # under an older policy; the executable's current policy constant remains 1.
 policy_repo="$WORK/policy-repo"
@@ -206,6 +292,11 @@ jq '.kind = "unattended" | .reason = "   "' "$policy_record" | atomic_write "$po
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$policy_repo")"
 assert_match '^binding_state: invalid$' "$out" "whitespace-only recorded provenance fails closed"
 assert_match 'missing operator provenance' "$out" "invalid recorded provenance is named"
+
+jq '.reason = "valid" | .policy_version = "1"' "$policy_record" | atomic_write "$policy_record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$policy_repo")"
+assert_match '^binding_state: invalid$' "$out" "wrongly typed record fields fail closed"
+assert_match 'record is malformed' "$out" "a record schema type error is named"
 
 # Revocation from either the main checkout or a linked worktree removes the
 # shared record and is idempotent.

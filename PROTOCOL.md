@@ -532,8 +532,12 @@ an acknowledgement and a same-filesystem move preserves it; a clone, copy,
 recreated/replaced `.git`, root-history replacement, or policy-version change
 does not. Repository content, origin URLs, Git config, and `orchid.config`
 cannot grant it. Identity queries ignore ambient Git repository-selection or
-object-view variables and do not lazy-fetch missing history. A `HOME` layout
-that resolves the trust store inside the target is refused. `orchid trust show
+object-view variables, disable replacement refs, legacy grafts, and shallow
+boundaries, and do not lazy-fetch missing history. A shallow repository
+therefore cannot be acknowledged until its commit ancestry is locally
+complete. Trust-store containment is checked against the physical checkout
+marker rather than a configurable Git worktree path. A `HOME` layout that
+resolves the trust store inside the target is refused. `orchid trust show
 <repo>` displays the decision and its operator-authored reason/timestamp;
 `orchid trust revoke <repo>` removes it.
 Interactive sessions, planning, manual verbs, and read-only commands do not

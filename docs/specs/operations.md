@@ -102,10 +102,13 @@ same-filesystem move, while a fresh clone, copy, replaced/recreated `.git`,
 root-history replacement, or policy-version change is denied. Path text,
 tracked content, origin metadata, Git config, and `orchid.config` never grant
 trust. Identity inspection ignores inherited Git repository-selection and
-object-view variables (for example `GIT_DIR`/`GIT_WORK_TREE`) and disables
-lazy object fetching. If `HOME` or a symlinked `~/.orchid` would place the
-record inside the target, acknowledgement refuses instead of creating
-repository-controlled trust state.
+object-view variables (for example `GIT_DIR`/`GIT_WORK_TREE`), disables
+replacement refs, legacy grafts, and shallow boundaries, and disables lazy
+object fetching. A shallow repository cannot be acknowledged until its commit
+ancestry is locally complete. Trust-store containment uses the physical
+checkout marker, not a repository-configurable worktree path. If `HOME` or a
+symlinked `~/.orchid` would place the record inside the target,
+acknowledgement refuses instead of creating repository-controlled trust state.
 
 The acknowledgement means only that the operator accepts this repository as
 input to an unattended, shell-capable model. Target content may prompt-inject

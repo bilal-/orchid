@@ -39,9 +39,11 @@ _unattended_repo_canon() {
 # against repository-selection state inherited from an outer Git/Orchid
 # process. Without this boundary, `GIT_DIR=<trusted> GIT_WORK_TREE=<target>`
 # could make an untrusted target resolve another repository's acknowledged
-# common directory and root history. Object-location/replace/shallow
-# overrides are cleared for the same reason: the binding must describe the
-# repository on disk at <repo>, not a caller-composed object view.
+# common directory and root history. Object-location overrides are cleared
+# for the same reason. Replacement refs, legacy grafts, and shallow traversal
+# boundaries are disabled outright: repository-local metadata must not be
+# able to present a replaced or incomplete history while retaining the
+# previously acknowledged root.
 #
 # GIT_NO_LAZY_FETCH also keeps inspection side-effect-free for partial clones:
 # if a root cannot be established from local objects, fail closed instead of
@@ -52,7 +54,8 @@ _unattended_git() (
   unset GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE GIT_QUARANTINE_PATH
   unset GIT_CEILING_DIRECTORIES
   unset GIT_DISCOVERY_ACROSS_FILESYSTEM
-  GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 command git "$@"
+  GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 \
+    GIT_GRAFT_FILE=/dev/null GIT_SHALLOW_FILE=/dev/null command git "$@"
 )
 
 _unattended_path_within() {
@@ -94,6 +97,25 @@ _unattended_git_common_dir() {
   esac
 }
 
+# Find the checkout root from the nearest on-disk .git marker rather than
+# `git rev-parse --show-toplevel`. The latter honors repository-local
+# core.worktree configuration, which could narrow the reported top level and
+# hide that HOME's trust store is elsewhere inside the real checkout.
+_unattended_worktree_root() {
+  local path
+  path="$(_unattended_repo_canon "$1")" || return 1
+  while :; do
+    if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+    [ "$path" != / ] || break
+    path="${path%/*}"
+    [ -n "$path" ] || path=/
+  done
+  return 1
+}
+
 _unattended_fs_identity() {
   local path="$1" out
   if out="$(stat -f '%d %i' "$path" 2>/dev/null)"; then
@@ -132,12 +154,13 @@ _unattended_one_line() {
 # refusal. This function is read-only.
 unattended_trust_inspect() {
   local repo_in="$1" ident rec_schema rec_kind rec_device rec_inode rec_policy rec_root
-  local trust_dir trust_dir_physical worktree_root
+  local trust_dir trust_dir_physical
   local provenance_valid=0
 
   ORCHID_UNATTENDED_STATE=unavailable
   ORCHID_UNATTENDED_DETAIL="repository identity is unavailable"
   ORCHID_UNATTENDED_REPO=""
+  ORCHID_UNATTENDED_WORKTREE_ROOT=""
   ORCHID_UNATTENDED_COMMON_DIR=""
   ORCHID_UNATTENDED_DEVICE=""
   ORCHID_UNATTENDED_INODE=""
@@ -163,6 +186,11 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="target is not a Git worktree with an accessible common directory"
     return 0
   fi
+  if ! ORCHID_UNATTENDED_WORKTREE_ROOT="$(_unattended_worktree_root "$ORCHID_UNATTENDED_REPO")" \
+     || _unattended_path_within "$ORCHID_UNATTENDED_COMMON_DIR" "$ORCHID_UNATTENDED_REPO"; then
+    ORCHID_UNATTENDED_DETAIL="target is not inside a Git worktree with an on-disk .git marker"
+    return 0
+  fi
   if ! trust_dir="$(_unattended_trust_dir)" \
      || ! trust_dir_physical="$(_unattended_trust_dir_physical)"; then
     ORCHID_UNATTENDED_DETAIL="machine-local unattended-trust directory is unavailable"
@@ -171,16 +199,12 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_TRUST_DIR="$trust_dir"
 
   # The record must not be trackable by the repository it authorizes. Check
-  # both the supplied path and Git's worktree root (the caller may have named
-  # a subdirectory), plus the common directory itself. Physical paths catch
-  # symlinked HOME/.orchid layouts as well as simple lexical containment.
-  worktree_root="$(_unattended_git -C "$ORCHID_UNATTENDED_REPO" rev-parse --show-toplevel 2>/dev/null || true)"
-  if [ -n "$worktree_root" ]; then
-    worktree_root="$(_unattended_repo_canon "$worktree_root" 2>/dev/null || true)"
-  fi
-  [ -n "$worktree_root" ] || worktree_root="$ORCHID_UNATTENDED_REPO"
+  # both the supplied path and the physical worktree root (the caller may
+  # have named a subdirectory), plus the common directory itself. Physical
+  # paths catch symlinked HOME/.orchid layouts as well as simple lexical
+  # containment.
   if _unattended_path_within "$ORCHID_UNATTENDED_REPO" "$trust_dir_physical" \
-     || _unattended_path_within "$worktree_root" "$trust_dir_physical" \
+     || _unattended_path_within "$ORCHID_UNATTENDED_WORKTREE_ROOT" "$trust_dir_physical" \
      || _unattended_path_within "$ORCHID_UNATTENDED_COMMON_DIR" "$trust_dir_physical"; then
     ORCHID_UNATTENDED_DETAIL="machine-local unattended-trust directory resolves inside the target repository; use an operator HOME outside the target"
     return 0
@@ -210,7 +234,19 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="no machine-local acknowledgement for this Git common-directory identity"
     return 0
   fi
-  if ! jq -e 'type == "object"' "$ORCHID_UNATTENDED_RECORD" >/dev/null 2>&1; then
+  if ! jq -e '
+    type == "object"
+    and (.schema | type == "number")
+    and (.kind | type == "string")
+    and (.policy_version | type == "number")
+    and (.acknowledged_at | type == "string")
+    and (.reason | type == "string")
+    and (.acknowledged_repo | type == "string")
+    and (.git_common_dir | type == "string")
+    and (.git_common_device | type == "string")
+    and (.git_common_inode | type == "string")
+    and (.root_commit | type == "string")
+  ' "$ORCHID_UNATTENDED_RECORD" >/dev/null 2>&1; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record is malformed"
     return 0
@@ -308,6 +344,7 @@ unattended_trust_show() {
   fi
   printf 'why: %s\n' "$ORCHID_UNATTENDED_DETAIL"
   printf 'repo: %s\n' "${ORCHID_UNATTENDED_REPO:-unavailable}"
+  printf 'worktree_root: %s\n' "${ORCHID_UNATTENDED_WORKTREE_ROOT:-unavailable}"
   printf 'git_common_dir: %s\n' "${ORCHID_UNATTENDED_COMMON_DIR:-unavailable}"
   printf 'git_common_device: %s\n' "${ORCHID_UNATTENDED_DEVICE:-unavailable}"
   printf 'git_common_inode: %s\n' "${ORCHID_UNATTENDED_INODE:-unavailable}"
