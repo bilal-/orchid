@@ -387,6 +387,8 @@ orchid service uninstall
 `orchid trust show "$PWD"` displays the machine-local acknowledgement and
 its identity/root/policy provenance; `orchid trust revoke "$PWD"` disables
 future pump/tick runs without removing an already-installed schedule.
+Unattended trust inspection requires Git 2.45 or newer; older Git remains
+usable for manual operation, but is denied before any repository object walk.
 
 ## State files, guardrails, operator verbs
 

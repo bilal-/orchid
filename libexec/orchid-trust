@@ -20,7 +20,8 @@ config, and orchid.config never grant trust. The trust store and repository
 must be on one filesystem so the non-reusable anchor can be hard-linked. A
 usable JSON record is an operator-owned, single-link regular file without
 group/other write permission; record symlinks and hard-link aliases fail
-closed.
+closed. Inspection requires Git 2.45 or newer so pre-gate object access can
+reliably forbid lazy fetching from a promisor remote.
 EOF
 }
 

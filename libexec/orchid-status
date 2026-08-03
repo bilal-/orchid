@@ -213,6 +213,27 @@ if [ "$html" -eq 1 ]; then
   [ -n "$journal_html" ] || journal_html='<p>(no journal entries yet)</p>
 '
 
+  # --html remains a one-line stdout data mode. When --explain is combined
+  # with it, put the unattended gate and its full provenance in the generated
+  # page instead of printing another stdout line (or skipping inspection at
+  # this mode's early exit, as the old flow did).
+  unattended_html=""
+  if [ "$explain" -eq 1 ]; then
+    unattended_trust_inspect "$repo"
+    if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
+      unattended_gate=allowed
+    else
+      unattended_gate=denied
+    fi
+    unattended_summary="$(unattended_trust_summary_loaded)"
+    unattended_html="<h2>Unattended trust</h2>
+<div class=\"meta\">
+<div><strong>gate:</strong> $(orchid_html_escape "$unattended_gate")</div>
+<div><strong>provenance:</strong> $(orchid_html_escape "$unattended_summary")</div>
+</div>
+"
+  fi
+
   content="<h1>orchid status</h1>
 <div class=\"meta\">
 <div><strong>repo:</strong> <code>$(orchid_html_escape "$repo")</code></div>
@@ -222,6 +243,7 @@ if [ "$html" -eq 1 ]; then
 <div><strong>lease:</strong> $(orchid_html_escape "$lease_desc")</div>
 </div>
 
+$unattended_html
 <h2>Tasks</h2>
 <table>
 <tr><th>id</th><th>status</th><th>title</th><th>why</th></tr>

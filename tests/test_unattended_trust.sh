@@ -524,6 +524,84 @@ assert_match '^root_commit: unavailable$' "$out" \
 [ -f "$shallow_repo/.git/shallow" ] \
   || fail "trust inspection must not deepen or rewrite a shallow repository"
 
+# Git before 2.45 ignores GIT_NO_LAZY_FETCH during client-side object access.
+# Model that supported-range edge with a wrapper that advertises 2.44 and
+# would explicitly drop the variable at any object walk. The repository is
+# marked partial/promisor, its root object is absent, and its remote is an
+# executable contact trap. Inspection must reject the Git version before any
+# target-repository Git command, so neither the walk nor the remote can run.
+promisor_repo="$WORK/promisor-old-git"
+mk_repo "$promisor_repo"
+promisor_root="$(git -C "$promisor_repo" rev-parse HEAD)"
+git -C "$promisor_repo" commit -q --allow-empty -m descendant
+git -C "$promisor_repo" config core.repositoryformatversion 1
+git -C "$promisor_repo" config extensions.partialClone origin
+git -C "$promisor_repo" config remote.origin.promisor true
+git -C "$promisor_repo" config remote.origin.partialCloneFilter blob:none
+
+promisor_contact="$WORK/promisor-contacted"
+promisor_walk="$WORK/promisor-object-walk"
+promisor_target_git="$WORK/promisor-target-git-query"
+promisor_helper="$WORK/promisor-contact-helper"
+cat > "$promisor_helper" <<'EOF'
+#!/usr/bin/env bash
+printf 'contacted\n' > "$ORCHID_TEST_PROMISOR_CONTACT"
+exit 1
+EOF
+chmod +x "$promisor_helper"
+git -C "$promisor_repo" config remote.origin.url "ext::$promisor_helper"
+git -C "$promisor_repo" config protocol.ext.allow always
+
+promisor_root_object="$promisor_repo/.git/objects/${promisor_root:0:2}/${promisor_root:2}"
+[ -f "$promisor_root_object" ] \
+  || fail "promisor fixture root commit must begin as a loose local object"
+rm -f "$promisor_root_object"
+[ ! -e "$promisor_root_object" ] \
+  || fail "promisor fixture root commit must be absent before inspection"
+
+old_git_bin="$WORK/old-git-bin"
+mkdir -p "$old_git_bin"
+cat > "$old_git_bin/git" <<'EOF'
+#!/usr/bin/env bash
+if [ "$#" -eq 1 ] && [ "$1" = --version ]; then
+  printf 'git version 2.44.0\n'
+  exit 0
+fi
+printf 'target query\n' > "$ORCHID_TEST_TARGET_GIT"
+for arg in "$@"; do
+  if [ "$arg" = rev-list ]; then
+    printf 'object walk\n' > "$ORCHID_TEST_OBJECT_WALK"
+    unset GIT_NO_LAZY_FETCH
+  fi
+done
+exec "$ORCHID_TEST_REAL_GIT" "$@"
+EOF
+chmod +x "$old_git_bin/git"
+
+real_git="$(command -v git)"
+out="$(
+  HOME="$home" PATH="$old_git_bin:$PATH" \
+  ORCHID_TEST_REAL_GIT="$real_git" \
+  ORCHID_TEST_PROMISOR_CONTACT="$promisor_contact" \
+  ORCHID_TEST_OBJECT_WALK="$promisor_walk" \
+  ORCHID_TEST_TARGET_GIT="$promisor_target_git" \
+  "$ORCHID_BIN" trust show "$promisor_repo"
+)"
+assert_match '^binding_state: unavailable$' "$out" \
+  "Git without reliable no-lazy-fetch support makes trust unavailable"
+assert_match 'requires Git 2\.45 or newer \(found 2\.44\.0\)' "$out" \
+  "old-Git refusal names the explicit safe minimum"
+assert_match '^root_commit: unavailable$' "$out" \
+  "old Git is refused before the missing root is inspected"
+[ ! -e "$promisor_target_git" ] \
+  || fail "old-Git refusal must precede every target-repository Git query"
+[ ! -e "$promisor_walk" ] \
+  || fail "old-Git refusal must occur before any history object walk"
+[ ! -e "$promisor_contact" ] \
+  || fail "trust inspection must never contact a promisor remote on old Git"
+[ ! -e "$promisor_root_object" ] \
+  || fail "trust inspection must not hydrate a missing promisor object"
+
 # A policy-version mismatch is also fail-closed. Simulate a record written
 # under an older policy; the executable's current policy constant remains 1.
 policy_repo="$WORK/policy-repo"

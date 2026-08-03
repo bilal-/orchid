@@ -210,8 +210,11 @@ a non-reusable hard-link witness identity, root commit, and trust-policy
 version. Linked worktrees share the record, and a same-filesystem move keeps
 it; a clone, copy, recreated/replaced `.git`, root-history replacement, or
 policy-version change does not. The trust store and Git common directory must
-be on the same filesystem for the witness anchor. Re-acknowledge only after
-reviewing the changed boundary:
+be on the same filesystem for the witness anchor. Trust inspection also
+requires Git 2.45 or newer so a pre-gate history walk can reliably forbid
+promisor/lazy fetching; older Git remains usable manually, but the unattended
+gate stays denied before inspecting repository objects. Re-acknowledge only
+after reviewing the changed boundary:
 
 ```sh
 orchid trust unattended "$PWD" --reason "reviewed the new repository identity/history"
@@ -228,6 +231,7 @@ orchid status               # task table, engines, open questions
 orchid status --explain     # + unattended gate/provenance and dispatch reasons
 orchid status --html        # writes a static page to runtime/status.html —
                              # open it directly, "check from another room"
+orchid status --html --explain # + gate/provenance in page; stdout remains its path
 ```
 
 A genuine blocker raises a question in `BLOCKERS.md` and (if you configured

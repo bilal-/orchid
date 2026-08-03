@@ -29,6 +29,12 @@
 ORCHID_UNATTENDED_TRUST_POLICY_VERSION=1
 ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA=2
 ORCHID_UNATTENDED_IDENTITY_WITNESS_NAME=description
+# Git 2.45 introduced the client-side --no-lazy-fetch control. Older clients
+# ignore GIT_NO_LAZY_FETCH during ordinary object access, so they cannot safely
+# walk a promisor repository before its unattended boundary has been accepted.
+# This is a minimum for unattended trust inspection only; Orchid's manual and
+# non-object-walking read-only surfaces remain available on older Git versions.
+ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN=2.45
 
 # Command substitution removes every trailing newline from its output. That is
 # unsafe for filesystem values: a directory named "repo\n" is distinct from
@@ -87,9 +93,11 @@ _unattended_repo_canon() {
 # able to present a replaced or incomplete history while retaining the
 # previously acknowledged root.
 #
-# GIT_NO_LAZY_FETCH also keeps inspection side-effect-free for partial clones:
-# if a root cannot be established from local objects, fail closed instead of
-# consulting a promisor remote before the unattended gate has passed.
+# GIT_NO_LAZY_FETCH is retained as defense in depth. It is not the compatibility
+# boundary: Git before 2.45 ignores it for ordinary object access. Every trust
+# object walk separately checks the 2.45 minimum and supplies the supported
+# --no-lazy-fetch command-line option, so a missing local object fails closed
+# instead of consulting a promisor remote before the unattended gate passes.
 _unattended_git() (
   unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
   unset GIT_IMPLICIT_WORK_TREE GIT_PREFIX
@@ -101,6 +109,28 @@ _unattended_git() (
   GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 \
     GIT_GRAFT_FILE=/dev/null GIT_SHALLOW_FILE=/dev/null command git "$@"
 )
+
+# Record the executable's advertised version and accept only versions with a
+# reliable client-side no-lazy-fetch control. Keep parsing deliberately narrow:
+# an unrecognized vendor spelling is unavailable, never optimistically safe.
+_unattended_git_supports_local_object_walk() {
+  local output version major rest minor
+  ORCHID_UNATTENDED_GIT_VERSION=""
+  _unattended_capture_line output _unattended_git --version 2>/dev/null \
+    || return 1
+  case "$output" in
+    "git version "*) version="${output#git version }"; version="${version%% *}" ;;
+    *) return 1 ;;
+  esac
+  ORCHID_UNATTENDED_GIT_VERSION="$version"
+  major="${version%%.*}"
+  rest="${version#*.}"
+  [ "$rest" != "$version" ] || return 1
+  minor="${rest%%.*}"
+  case "$major" in ''|*[!0-9]*) return 1 ;; esac
+  case "$minor" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$major" -gt 2 ] || { [ "$major" -eq 2 ] && [ "$minor" -ge 45 ]; }
+}
 
 _unattended_path_within() {
   local parent="${1%/}" child="${2%/}"
@@ -534,10 +564,15 @@ _unattended_json_value() {
 
 _unattended_root_commit() {
   local repo="$1"
+  # Check again at the exact object-walk boundary. The earlier inspection gate
+  # produces the operator-facing diagnostic; this repeated guard also covers a
+  # changed PATH/executable during a concurrent inspection.
+  _unattended_git_supports_local_object_walk || return 1
   # Most repositories have exactly one root. Joining a sorted set also
   # handles histories created with --allow-unrelated-histories without
   # silently ignoring one of their roots.
-  _unattended_git -C "$repo" rev-list --max-parents=0 HEAD 2>/dev/null \
+  _unattended_git --no-lazy-fetch -C "$repo" \
+    rev-list --max-parents=0 HEAD 2>/dev/null \
     | LC_ALL=C sort \
     | awk 'NF { if (roots != "") roots=roots ","; roots=roots $0 }
            END { if (roots != "") print roots }'
@@ -554,6 +589,9 @@ _unattended_one_line() {
 # read from a replacement state.
 _unattended_identity_still_matches() {
   local common ident root worktree expected_kind expected_gitdir
+  # Fail before any target-repository Git query if the executable changed to a
+  # version that cannot guarantee local-only object access.
+  _unattended_git_supports_local_object_walk || return 1
   expected_kind="$ORCHID_UNATTENDED_WORKTREE_MARKER_KIND"
   expected_gitdir="$ORCHID_UNATTENDED_WORKTREE_GITDIR"
   _unattended_capture_line worktree \
@@ -622,6 +660,7 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_IDENTITY_WITNESS=""
   ORCHID_UNATTENDED_ANCHOR_DEVICE=""
   ORCHID_UNATTENDED_ANCHOR_INODE=""
+  ORCHID_UNATTENDED_GIT_VERSION=""
   ORCHID_UNATTENDED_RECORD_EXISTS=0
   ORCHID_UNATTENDED_RECORD_LOADED=0
   ORCHID_UNATTENDED_RECORDED_REPO=""
@@ -649,6 +688,15 @@ unattended_trust_inspect() {
   fi
   if ! _unattended_worktree_marker_validate "$ORCHID_UNATTENDED_WORKTREE_ROOT"; then
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-caller-selected worktree marker is invalid}"
+    return 0
+  fi
+  # This check intentionally precedes every Git command aimed at the target.
+  # Git 2.44 and older ignore GIT_NO_LAZY_FETCH for client object access; even
+  # apparently metadata-only commands stay behind this boundary so an older
+  # implementation cannot acquire an object (and contact a promisor) before
+  # the unattended decision.
+  if ! _unattended_git_supports_local_object_walk; then
+    ORCHID_UNATTENDED_DETAIL="side-effect-free unattended trust inspection requires Git $ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN or newer (found ${ORCHID_UNATTENDED_GIT_VERSION:-an unrecognized version}); no target-repository Git query or history object walk was attempted"
     return 0
   fi
   if ! _unattended_capture_line ORCHID_UNATTENDED_COMMON_DIR \
