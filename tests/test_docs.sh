@@ -303,3 +303,32 @@ assert_eq 1 "$release_tag_commands" \
   "docs/install.md must contain one metadata-bound release-day git tag command"
 assert_eq 1 "$release_gate_commands" \
   "docs/install.md must contain one metadata-bound release-day release-gate command"
+
+# ===========================================================================
+# 6 -- README's compact guardrails summary must preserve the threat model's
+# trust-boundary distinction. Orchid can omit external-mutation verbs from
+# its own action surface, but prompt policy is not enforcement over an
+# engine process: without brokerage/containment, host capabilities remain.
+# Keep this scoped to the Guardrails paragraph so an accurate FAQ elsewhere
+# cannot mask a new overclaim in the summary operators are most likely to
+# rely on.
+# ===========================================================================
+guardrails="$(
+  awk '
+    /^\*\*Guardrails:\*\*/ { capture = 1 }
+    capture { print }
+    capture && /^$/ { exit }
+  ' "$REPO_ROOT/README.md"
+)"
+[ -n "$guardrails" ] || fail "README.md: Guardrails paragraph missing"
+guardrails_one_line="$(printf '%s' "$guardrails" | tr '\n' ' ')"
+assert_match "deterministic verbs provide no push,.*deploy, or publish operation" \
+  "$guardrails_one_line" \
+  "README guardrails must limit Orchid's enforced boundary to its own action surface"
+assert_match "blocker instruction is prompt policy" "$guardrails_one_line" \
+  "README guardrails must identify the blocker instruction as prompt policy"
+assert_match "no command broker.*or OS containment" "$guardrails_one_line" \
+  "README guardrails must disclose missing brokerage and OS containment"
+assert_match "engine process with external credentials, network access, or.*host capabilities could invoke another executable" \
+  "$guardrails_one_line" \
+  "README guardrails must disclose residual engine-process capabilities"
