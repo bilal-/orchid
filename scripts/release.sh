@@ -8,6 +8,9 @@ TAG=""
 OUTPUT=""
 BASH_BIN="${BASH:-/bin/bash}"
 TMP_ROOT=""
+GIT_BIN=""
+GZIP_BIN=""
+CLEAN_TMPDIR=""
 
 die() { echo "release: $*" >&2; exit 1; }
 usage() {
@@ -51,20 +54,82 @@ if ! "$BASH_BIN" -c '[ -n "${BASH_VERSION:-}" ] && (( BASH_VERSINFO[0] > 3 || (B
   die "--bash must name Bash 3.2 or newer: $BASH_BIN"
 fi
 
-git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "not a Git checkout: $ROOT"
-[ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ] \
+GIT_BIN="$(command -v git)" || die "git is required"
+GZIP_BIN="$(command -v gzip)" || die "gzip is required"
+CLEAN_TMPDIR="${TMPDIR:-/tmp}"
+[ -x "$GIT_BIN" ] || die "git is not executable: $GIT_BIN"
+[ -x "$GZIP_BIN" ] || die "gzip is not executable: $GZIP_BIN"
+
+# Git normally combines system, global, repository-local, environment, and
+# command-line configuration. Release object lookup needs the source repo's
+# refs, but it must not inherit ambient system/global configuration.
+source_git() {
+  env -i \
+    PATH="$PATH" \
+    TMPDIR="$CLEAN_TMPDIR" \
+    LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_ATTR_NOSYSTEM=1 \
+    "$GIT_BIN" -C "$ROOT" "$@"
+}
+
+source_git rev-parse --git-dir >/dev/null 2>&1 || die "not a Git checkout: $ROOT"
+[ -z "$(source_git status --porcelain=v1 --untracked-files=all)" ] \
   || die "working tree and index must be clean"
 
 tag_ref="refs/tags/$TAG"
-tag_object_before="$(git -C "$ROOT" rev-parse --verify "$tag_ref" 2>/dev/null)" \
+tag_object_before="$(source_git rev-parse --verify "$tag_ref" 2>/dev/null)" \
   || die "tag does not exist: $TAG"
-commit="$(git -C "$ROOT" rev-parse --verify "$tag_ref^{commit}" 2>/dev/null)" \
+commit="$(source_git rev-parse --verify "$tag_ref^{commit}" 2>/dev/null)" \
   || die "tag does not resolve to a commit: $TAG"
-head_commit="$(git -C "$ROOT" rev-parse --verify HEAD)"
+head_commit="$(source_git rev-parse --verify HEAD)"
 [ "$head_commit" = "$commit" ] || die "HEAD $head_commit is not tagged commit $commit ($TAG)"
 
+# Build from objects exposed read-only to a disposable bare repository. Its
+# empty template supplies no info/attributes, while env -i and the explicit
+# config/attribute controls exclude system, global, environment-injected,
+# and source-repository config. The archived tree's own .gitattributes is
+# therefore the only attribute input.
+TMP_ROOT="$(mktemp -d "$CLEAN_TMPDIR/orchid-release.XXXXXX")"
+repository_common_dir="$(source_git rev-parse --git-common-dir)"
+case "$repository_common_dir" in
+  /*) ;;
+  *) repository_common_dir="$ROOT/$repository_common_dir" ;;
+esac
+repository_objects="$repository_common_dir/objects"
+[ -d "$repository_objects" ] || die "Git object directory not found: $repository_objects"
+archive_git_dir="$TMP_ROOT/archive.git"
+empty_template="$TMP_ROOT/empty-template"
+mkdir -p "$empty_template"
+env -i \
+  PATH="$PATH" \
+  TMPDIR="$CLEAN_TMPDIR" \
+  LC_ALL=C \
+  GIT_CONFIG_NOSYSTEM=1 \
+  GIT_CONFIG_GLOBAL=/dev/null \
+  GIT_ATTR_NOSYSTEM=1 \
+  "$GIT_BIN" init -q --bare --template="$empty_template" "$archive_git_dir"
+
+archive_git() {
+  env -i \
+    PATH="$PATH" \
+    TMPDIR="$CLEAN_TMPDIR" \
+    LC_ALL=C \
+    GIT_CONFIG_NOSYSTEM=1 \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_ATTR_NOSYSTEM=1 \
+    GIT_DIR="$archive_git_dir" \
+    GIT_OBJECT_DIRECTORY="$archive_git_dir/objects" \
+    GIT_ALTERNATE_OBJECT_DIRECTORIES="$repository_objects" \
+    "$GIT_BIN" "$@"
+}
+
+tree="$(archive_git rev-parse --verify "$commit^{tree}")" \
+  || die "tagged commit tree is unavailable: $commit"
+
 git_file() {
-  git -C "$ROOT" show "$commit:$1"
+  archive_git show "$commit:$1"
 }
 metadata_value() {
   local key="$1" values count
@@ -121,15 +186,17 @@ mkdir -p "$OUTPUT"
 [ ! -e "$OUTPUT/$archive_name.sha256" ] || die "refusing to overwrite $OUTPUT/$archive_name.sha256"
 [ ! -e "$OUTPUT/Formula/orchid.rb" ] || die "refusing to overwrite $OUTPUT/Formula/orchid.rb"
 
-TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchid-release.XXXXXX")"
 archive_a="$TMP_ROOT/archive-a.tar.gz"
 archive_b="$TMP_ROOT/archive-b.tar.gz"
-treeish="$commit^{tree}"
 archive_from_commit() {
-  local destination="$1"
-  git -C "$ROOT" archive --format=tar.gz \
+  local destination="$1" raw_tar="$1.tar"
+  # Always request Git's built-in, uncompressed tar format. Compressed archive
+  # formats can be replaced by tar.<format>.command configuration; compressing
+  # the raw tar ourselves makes such custom commands irrelevant.
+  archive_git archive --format=tar \
     --mtime=1970-01-01T00:00:00Z --prefix="$prefix" \
-    --output="$destination" "$treeish"
+    --output="$raw_tar" "$tree"
+  env -i PATH="$PATH" LC_ALL=C "$GZIP_BIN" -n -c "$raw_tar" > "$destination"
 }
 
 archive_from_commit "$archive_a"
@@ -175,9 +242,9 @@ extract_root="$extract_parent/${prefix%/}"
 
 verify_tag_unchanged() {
   local tag_object_after commit_after
-  tag_object_after="$(git -C "$ROOT" rev-parse --verify "$tag_ref" 2>/dev/null)" \
+  tag_object_after="$(source_git rev-parse --verify "$tag_ref" 2>/dev/null)" \
     || die "tag disappeared during release verification: $TAG"
-  commit_after="$(git -C "$ROOT" rev-parse --verify "$tag_ref^{commit}" 2>/dev/null)" \
+  commit_after="$(source_git rev-parse --verify "$tag_ref^{commit}" 2>/dev/null)" \
     || die "tag stopped resolving to a commit: $TAG"
   [ "$tag_object_after" = "$tag_object_before" ] && [ "$commit_after" = "$commit" ] \
     || die "tag moved during release verification: $TAG"

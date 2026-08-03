@@ -17,12 +17,16 @@ cannot serve a file out of a private repository, so until then this
 command 404s — use the [git clone method](#git-clone-for-hacking-on-orchid-itself)
 below instead.
 
-This downloads the installer from the version tag and runs it. Outside an
-existing orchid checkout, the stable channel shallow-clones that same exact
-tag to `${ORCHID_HOME:-~/.local/share/orchid}` and checks it out detached.
-It never resolves `HEAD`, a branch name, or another moving ref. Re-running the
-same command re-selects `v1.0.0`; it does not silently upgrade. To upgrade,
-run the URL for the new release version.
+This downloads the installer from the version tag and runs it. A piped
+invocation always selects that same exact tag in the canonical checkout at
+`${ORCHID_HOME:-~/.local/share/orchid}`—shallow-cloning when it is absent and
+reusing it otherwise—regardless of the caller's current directory. Running
+the command from inside another, even dirty, Orchid checkout never installs
+from that checkout: piped Bash has no installer pathname, so the current
+directory is never accepted as source. The stable channel never resolves
+`HEAD`, a branch name, or another moving ref. Re-running the same command
+re-selects `v1.0.0`; it does not silently upgrade. To upgrade, run the URL for
+the new release version.
 
 The development channel is deliberately more conspicuous because it follows
 the moving `main` branch:
@@ -71,9 +75,10 @@ from the source archive, avoiding a checksum self-reference.
 
 2. Re-pin the formula checksum with the canonical tool (the same fixed
    mtime, prefix, and tree inputs the verifier uses — it snapshots current
-   content through a temporary index and rewrites `Formula/orchid.rb` in
-   place; `--check` verifies without rewriting, and the test suite runs
-   that check on every commit so a stale pin can never linger unnoticed):
+   content through a disposable, config-isolated Git repository and rewrites
+   `Formula/orchid.rb` in place; `--check` verifies without rewriting, and the
+   test suite runs that check on every commit so a stale pin can never linger
+   unnoticed):
 
    ```sh
    /bin/bash scripts/pin-formula.sh
@@ -98,8 +103,11 @@ from the source archive, avoiding a checksum self-reference.
    It requires a clean HEAD at the exact tag, peels that tag to one commit,
    builds twice from that commit's tree with `git archive`, compares bytes and
    checksums, validates prefix/content and all metadata, extracts the archive,
-   and runs `scripts/ci-local.sh` inside it. It never reads payload files from
-   the working tree and never pushes or publishes.
+   and runs `scripts/ci-local.sh` inside it. Archive generation uses disposable
+   Git metadata and the tree's own attributes only: system/global/local Git
+   configuration, custom archive commands, and the source checkout's
+   `info/attributes` cannot change the bytes. It never reads payload files
+   from the working tree and never pushes or publishes.
 
 5. Inspect the emitted archive, checksum file, and formula. Uploading the
    archive, pushing the tag, and updating a tap remain separate, explicit

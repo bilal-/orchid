@@ -73,23 +73,25 @@ if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
   }
 fi
 
-self="$0"
-while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
-done
-ROOT="$(cd "$(dirname "$self")" && pwd)"
+self="${BASH_SOURCE[0]:-}"
+ROOT=""
+if [ -n "$self" ]; then
+  while [ -L "$self" ]; do
+    t="$(readlink "$self")"
+    case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  done
+  ROOT="$(cd "$(dirname "$self")" && pwd)"
+fi
 
 # --- Bootstrap mode ------------------------------------------------------
-# A real orchid checkout always has both bin/orchid and lib/common.sh next
-# to install.sh. When either is missing, ROOT isn't a checkout at all --
-# it's just wherever $0 happened to resolve to, which for `curl|bash` is
-# "bash" itself (dirname "bash" -> "."), i.e. the caller's cwd, and for a
-# bare copy of this one file (this task's own test fixture) is whatever
-# scratch dir that copy lives in. Neither $0 nor BASH_SOURCE is a usable
-# repo anchor in that shape, so there is nothing to symlink FROM yet --
-# clone (or update) one first, then hand off to ITS install.sh.
-if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
+# A file-backed invocation has a BASH_SOURCE path and may run directly from a
+# real checkout. A piped invocation has no BASH_SOURCE at all; $0 merely names
+# bash and its dirname is the CALLER'S cwd. Never treat that cwd as installer
+# source, even if it is itself a dirty orchid checkout with both anchor files.
+# A bare copy of install.sh likewise lacks the adjacent anchors. In either
+# bootstrap shape there is nothing trustworthy to symlink FROM yet, so clone
+# (or update) the canonical checkout and hand off to ITS install.sh.
+if [ -z "$ROOT" ] || [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
   bootstrap_and_exec() {
     command -v git >/dev/null 2>&1 || {
       echo "orchid: install.sh: git is required to install orchid this way (curl|bash) -- install git and re-run" >&2

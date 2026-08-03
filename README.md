@@ -14,10 +14,12 @@ unaffiliated tool that shells out to each vendor's own CLI).
 curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash
 ```
 
-That command stays on the immutable `v1.0.0` release. To upgrade, use the
-new version's equally pinned URL; following `main` is an explicitly labeled
-development channel. Flags, channels, `--uninstall`, the prepared Homebrew
-tap, and the git-clone method: [docs/install.md](./docs/install.md).
+That command stays on the immutable `v1.0.0` release, independent of the
+caller's current directory (including inside a dirty Orchid checkout). To
+upgrade, use the new version's equally pinned URL; following `main` is an
+explicitly labeled development channel. Flags, channels, `--uninstall`, the
+prepared Homebrew tap, and the git-clone method:
+[docs/install.md](./docs/install.md).
 
 > Orchid is in final private dogfooding — the one-liner goes live the day
 > this repo does. Until then, install from a clone

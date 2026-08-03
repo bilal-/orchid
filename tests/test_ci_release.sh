@@ -253,6 +253,42 @@ printf '%s\n' "$archive_list" | grep -q '^orchid-1.2.3/\.orchid/' \
 printf '%s\n' "$archive_list" | grep -q '^orchid-1.2.3/Formula/' \
   && fail "release archive included the external tap formula"
 
+# Hostile Git state outside the tagged tree must not alter archive bytes. Git
+# supports replacement compressors through tar.<format>.command, reads config
+# from system/global/local/environment scopes, and normally gives
+# $GIT_DIR/info/attributes precedence over the tree's own .gitattributes.
+# Plant every one of those inputs: the custom commands would fail if invoked,
+# while the attributes would export-ignore the whole tree if consulted. The
+# release must still reproduce the original commit/content-only checksum.
+hostile_system_config="$WORK/hostile-system.gitconfig"
+hostile_global_config="$WORK/hostile-global.gitconfig"
+hostile_attributes="$WORK/hostile-attributes"
+printf '%s\n' '* export-ignore' > "$hostile_attributes"
+git config --file "$hostile_system_config" tar.tar.gz.command false
+git config --file "$hostile_system_config" core.attributesFile "$hostile_attributes"
+git config --file "$hostile_global_config" tar.tar.command false
+git config --file "$hostile_global_config" core.attributesFile "$hostile_attributes"
+git -C "$fixture" config tar.tar.gz.command false
+git -C "$fixture" config core.attributesFile "$hostile_attributes"
+printf '%s\n' '* export-ignore' > "$fixture/.git/info/attributes"
+
+hostile_release_out="$WORK/release-out-hostile"
+hostile_release_output="$(
+  GIT_CONFIG_SYSTEM="$hostile_system_config" \
+  GIT_CONFIG_GLOBAL="$hostile_global_config" \
+  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=tar.tar.gz.command \
+  GIT_CONFIG_VALUE_0=false \
+  GIT_CONFIG_KEY_1=core.attributesFile \
+  GIT_CONFIG_VALUE_1="$hostile_attributes" \
+    "$BASH" "$fixture/scripts/release.sh" \
+      --tag v1.2.3 --output "$hostile_release_out" --bash "$BASH"
+)" || fail "release archive depends on hostile ambient/source Git config or attributes"
+assert_match "release verified: v1.2.3" "$hostile_release_output" \
+  "config-isolated release still verifies the exact tag"
+assert_eq "$fixture_sha" "$(sha256_file "$hostile_release_out/orchid-1.2.3.tar.gz")" \
+  "system/global/local/environment Git config and info/attributes cannot alter release bytes"
+
 run_release_failure() {
   local repo="$1" tag="$2" pattern="$3" name="$4" out rc=0
   out="$("$BASH" "$repo/scripts/release.sh" --tag "$tag" \
@@ -355,22 +391,51 @@ git -C "$pin_repo" archive --format=tar.gz --mtime=1970-01-01T00:00:00Z \
   --prefix=orchid-1.2.3/ --output="$pin_probe" 'HEAD^{tree}'
 pin_expected_sha="$(sha256_file "$pin_probe")"
 write_formula "$pin_repo" 1.2.3 "1111111111111111111111111111111111111111111111111111111111111111"
+# Apply the same hostile archive/config/attribute state to the current-content
+# snapshotter. It must compute the same bytes as the clean baseline above and
+# must never execute a configured archive command.
+git -C "$pin_repo" config tar.tar.gz.command false
+git -C "$pin_repo" config core.attributesFile "$hostile_attributes"
+printf '%s\n' '* export-ignore' > "$pin_repo/.git/info/attributes"
 # A temporary index is insufficient isolation on its own: `git add` would
 # otherwise persist the dirty formula blob and synthesized trees in the real
 # object database. Both modes must keep every temporary object disposable so
 # this maintenance check also works with read-only repository metadata.
 pin_objects_before="$(git -C "$pin_repo" count-objects -v)"
 rc=0
-pin_check_out="$("$BASH" "$pin_repo/scripts/pin-formula.sh" --check 2>&1)" || rc=$?
+pin_check_out="$(
+  GIT_CONFIG_SYSTEM="$hostile_system_config" \
+  GIT_CONFIG_GLOBAL="$hostile_global_config" \
+  GIT_CONFIG_COUNT=2 \
+  GIT_CONFIG_KEY_0=tar.tar.gz.command \
+  GIT_CONFIG_VALUE_0=false \
+  GIT_CONFIG_KEY_1=core.attributesFile \
+  GIT_CONFIG_VALUE_1="$hostile_attributes" \
+    "$BASH" "$pin_repo/scripts/pin-formula.sh" --check 2>&1
+)" || rc=$?
 [ "$rc" -ne 0 ] || fail "pin-formula --check accepted a stale formula checksum"
 assert_match 'STALE' "$pin_check_out" "pin-formula --check names the staleness"
 assert_match "$pin_expected_sha" "$pin_check_out" \
   "pin-formula --check prints the exact expected fixed-point checksum"
-"$BASH" "$pin_repo/scripts/pin-formula.sh" >/dev/null 2>&1 \
+GIT_CONFIG_SYSTEM="$hostile_system_config" \
+GIT_CONFIG_GLOBAL="$hostile_global_config" \
+GIT_CONFIG_COUNT=2 \
+GIT_CONFIG_KEY_0=tar.tar.gz.command \
+GIT_CONFIG_VALUE_0=false \
+GIT_CONFIG_KEY_1=core.attributesFile \
+GIT_CONFIG_VALUE_1="$hostile_attributes" \
+  "$BASH" "$pin_repo/scripts/pin-formula.sh" >/dev/null 2>&1 \
   || fail "pin-formula failed to repin a stale formula"
 grep -q "sha256 \"$pin_expected_sha\"" "$pin_repo/Formula/orchid.rb" \
   || fail "pin-formula did not pin the exact fixed-point checksum (wanted $pin_expected_sha)"
-"$BASH" "$pin_repo/scripts/pin-formula.sh" --check >/dev/null 2>&1 \
+GIT_CONFIG_SYSTEM="$hostile_system_config" \
+GIT_CONFIG_GLOBAL="$hostile_global_config" \
+GIT_CONFIG_COUNT=2 \
+GIT_CONFIG_KEY_0=tar.tar.gz.command \
+GIT_CONFIG_VALUE_0=false \
+GIT_CONFIG_KEY_1=core.attributesFile \
+GIT_CONFIG_VALUE_1="$hostile_attributes" \
+  "$BASH" "$pin_repo/scripts/pin-formula.sh" --check >/dev/null 2>&1 \
   || fail "pin-formula --check rejects the checksum it just pinned"
 assert_eq "$pin_objects_before" "$(git -C "$pin_repo" count-objects -v)" \
   "pin-formula leaves the repository object database untouched"

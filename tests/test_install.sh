@@ -511,6 +511,44 @@ assert_eq "--prefix
 $bs_work/customprefix" "$(cat "$bs_work/record1.txt")" \
   "bootstrap (fresh clone): cloned installer exec'd with the original pass-through args (--prefix DIR)"
 
+# A real curl-to-bash invocation has no BASH_SOURCE filename. Its $0 names
+# bash, so dirname "$0" is just the caller's cwd. Make that cwd adversarial:
+# it looks exactly like an Orchid checkout, is backed by Git, and is dirty.
+# The piped stable installer must ignore it completely, clone v1.0.0 into the
+# canonical ORCHID_HOME, peel the tag, and execute only that cloned installer.
+bs_pipe_cwd="$bs_work/dirty-caller-checkout"
+mkdir -p "$bs_pipe_cwd/bin" "$bs_pipe_cwd/lib"
+touch "$bs_pipe_cwd/bin/orchid" "$bs_pipe_cwd/lib/common.sh"
+git init -q "$bs_pipe_cwd"
+printf '%s\n' 'dirty caller content' > "$bs_pipe_cwd/untracked"
+[ -n "$(git -C "$bs_pipe_cwd" status --porcelain --untracked-files=all)" ] \
+  || fail "bootstrap (piped from dirty checkout): adversarial caller fixture is not dirty"
+
+bs_pipe_gitlog="$bs_work/gitlog-pipe.txt"; : > "$bs_pipe_gitlog"
+bs_pipe_gitbin="$bs_work/gitbin-pipe"; fake_git_bin "$bs_pipe_gitbin" "$bs_pipe_gitlog"
+bs_pipe_home="$bs_work/home-pipe"
+export STUB_INSTALL_RECORD="$bs_work/record-pipe.txt"; rm -f "$STUB_INSTALL_RECORD"
+bs_pipe_out="$(
+  cd "$bs_pipe_cwd" &&
+    PATH="$bs_pipe_gitbin:$PATH" ORCHID_HOME="$bs_pipe_home" \
+      "$BASH" -s -- --prefix "$bs_work/prefix-pipe" < "$INSTALL" 2>&1
+)"
+bs_pipe_rc=$?
+[ "$bs_pipe_rc" -eq 0 ] \
+  || fail "bootstrap (piped from dirty checkout): stable install exits 0 (rc=$bs_pipe_rc, output: $bs_pipe_out)"
+bs_pipe_clone_line="$(grep '^clone' "$bs_pipe_gitlog")"
+assert_match '^clone --depth 1 --branch v1\.0\.0 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_pipe_clone_line" \
+  "bootstrap (piped from dirty checkout): ignores cwd and clones immutable v1.0.0"
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0\^\{commit\}' "$(cat "$bs_pipe_gitlog")" \
+  "bootstrap (piped from dirty checkout): peels the stable tag"
+assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_pipe_gitlog")" \
+  "bootstrap (piped from dirty checkout): detaches at the pinned commit"
+[ -f "$STUB_INSTALL_RECORD" ] \
+  || fail "bootstrap (piped from dirty checkout): immutable clone's installer was not executed"
+assert_eq "--prefix
+$bs_work/prefix-pipe" "$(cat "$STUB_INSTALL_RECORD")" \
+  "bootstrap (piped from dirty checkout): cloned installer receives pass-through args"
+
 # `git clone --branch vX.Y.Z` also accepts a branch with that name. A stable
 # bootstrap must prove refs/tags/vX.Y.Z exists before promoting the clone.
 bs_gitlog_notag="$bs_work/gitlog-notag.txt"; : > "$bs_gitlog_notag"
