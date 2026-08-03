@@ -90,13 +90,33 @@ from the source archive, avoiding a checksum self-reference.
    the tagged commit:
 
    ```sh
-   git tag "v$version"
+   version="$(sed -n 's/^version=//p' release/metadata.conf)"
+   tag="$(sed -n 's/^tag=//p' release/metadata.conf)"
+   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+     echo "invalid release metadata version: $version" >&2
+     exit 1
+   fi
+   if [ "$tag" != "v$version" ]; then
+     echo "release metadata mismatch: tag=$tag version=$version" >&2
+     exit 1
+   fi
+   git tag "$tag"
    ```
 
 4. Run the local, non-publishing gate:
 
    ```sh
-   /bin/bash scripts/release.sh --tag "v$version" \
+   version="$(sed -n 's/^version=//p' release/metadata.conf)"
+   tag="$(sed -n 's/^tag=//p' release/metadata.conf)"
+   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+     echo "invalid release metadata version: $version" >&2
+     exit 1
+   fi
+   if [ "$tag" != "v$version" ]; then
+     echo "release metadata mismatch: tag=$tag version=$version" >&2
+     exit 1
+   fi
+   /bin/bash scripts/release.sh --tag "$tag" \
      --output "$(mktemp -d)/orchid-release" --bash /bin/bash
    ```
 

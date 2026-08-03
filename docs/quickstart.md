@@ -24,8 +24,9 @@ curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | b
 (goes live once the repo is public; see [docs/install.md](./install.md#one-line-install-recommended)
 for the exact caveat and how flags like `--prefix`/`--uninstall` pass
 through). The pinned install is independent of your current directory, even
-if it is a dirty Orchid checkout. Running this exact line again later is the
-upgrade command too.
+if it is a dirty Orchid checkout. The URL is immutable: running this exact
+line later reselects `v1.0.0`; it does not upgrade Orchid. To upgrade, select
+the install URL for a newer immutable released tag.
 
 **Developing on orchid itself?** Clone it instead, so `install.sh` runs
 from — and `orchid` resolves to — your own checkout:
