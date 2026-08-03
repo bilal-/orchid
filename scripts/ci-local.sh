@@ -166,7 +166,10 @@ echo "== ShellCheck (zero warnings)"
 SHELLCHECK_PATHS=()
 for rel in "${SHELL_FILES[@]}"; do SHELLCHECK_PATHS+=("$ROOT/$rel"); done
 unset SHELLCHECK_OPTS || true
-shellcheck --shell=bash --severity=warning -- "${SHELLCHECK_PATHS[@]}"
+# Inline, line-scoped directives audited above are the only allowed policy.
+# Ignore repository-parent and user/global rc files so ambient configuration
+# cannot suppress a warning that CI is responsible for detecting.
+shellcheck --norc --shell=bash --severity=warning -- "${SHELLCHECK_PATHS[@]}"
 
 echo "== Full test suite"
 ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$ROOT/tests/run.sh"

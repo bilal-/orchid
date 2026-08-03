@@ -94,6 +94,26 @@ assert_match 'non-POSIX find depth primary' "$portability_out" \
   "CI explains why a non-POSIX find depth primary is rejected"
 rm -f "$discovery_fixture/tests/nonportable-find.sh"
 
+# Regression (T004 attempt 7): ShellCheck normally searches a script's parent
+# directories and the invoking user's home for .shellcheckrc. Neither source
+# may suppress a warning outside the repository's audited inline-directive
+# policy. Requiring the actual warning code avoids passing merely because the
+# intentionally minimal discovery fixture has no full test runner afterward.
+ambient_home="$WORK/ambient-home"
+mkdir -p "$ambient_home"
+printf '%s\n' 'disable=SC2034' > "$WORK/.shellcheckrc"
+printf '%s\n' 'disable=SC2034' > "$ambient_home/.shellcheckrc"
+printf '%s\n' '#!/usr/bin/env bash' 'ambient_policy_must_not_hide_me=1' \
+  > "$discovery_fixture/tests/ambient-policy-warning.sh"
+rc=0
+ambient_policy_out="$(HOME="$ambient_home" \
+  "$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "CI accepts a warning suppressed by ambient .shellcheckrc policy"
+assert_match 'SC2034' "$ambient_policy_out" \
+  "CI ignores suppressive parent/global .shellcheckrc policy and reports the warning"
+rm -f "$discovery_fixture/tests/ambient-policy-warning.sh" \
+  "$WORK/.shellcheckrc" "$ambient_home/.shellcheckrc"
+
 rc=0; "$BASH" "$CI" --bash /bin/false --list-shell >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "ci-local accepts a non-Bash --bash interpreter"
 

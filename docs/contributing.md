@@ -36,8 +36,10 @@ the_one_affected_command
 The CI script rejects missing rationales, multi-code directives, directives
 placed before a file's first command (ShellCheck scopes those to the entire
 file, turning one annotation into a silent baseline), and blanket exclusions
-in `.shellcheckrc`. Test files and generated templates are not exempt from
-lint.
+in a repository `.shellcheckrc`. It invokes ShellCheck with `--norc`, so
+repository-parent and user/global `.shellcheckrc` files cannot suppress the
+warnings enforced by CI; the audited inline directives above are the only
+exceptions. Test files and generated templates are not exempt from lint.
 
 ## Portability
 
