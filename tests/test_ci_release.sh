@@ -129,6 +129,7 @@ cat > "$fixture/install.sh" <<'EOF'
 #!/usr/bin/env bash
 ORCHID_INSTALL_VERSION="1.2.3"
 ORCHID_INSTALL_REF="v1.2.3"
+ORCHID_INSTALL_REPOSITORY="https://github.com/bilal-/orchid.git"
 exit 0
 EOF
 cat > "$fixture/bin/orchid" <<'EOF'
@@ -242,6 +243,20 @@ mv "$installer_repo/install.sh.new" "$installer_repo/install.sh"
 commit_fixture "$installer_repo" "break installer metadata"
 git -C "$installer_repo" tag -f v1.2.3 >/dev/null
 run_release_failure "$installer_repo" v1.2.3 'installer ref mismatch' installer-mismatch
+
+installer_origin_repo="$(clone_fixture installer-origin-mismatch)"
+sed 's#ORCHID_INSTALL_REPOSITORY="https://github.com/bilal-/orchid.git"#ORCHID_INSTALL_REPOSITORY="https://example.invalid/orchid.git"#' \
+  "$installer_origin_repo/install.sh" > "$installer_origin_repo/install.sh.new"
+mv "$installer_origin_repo/install.sh.new" "$installer_origin_repo/install.sh"
+commit_fixture "$installer_origin_repo" "break installer repository metadata"
+git -C "$installer_origin_repo" tag -f v1.2.3 >/dev/null
+run_release_failure "$installer_origin_repo" v1.2.3 'installer repository mismatch' installer-origin-mismatch
+
+duplicate_metadata_repo="$(clone_fixture duplicate-metadata)"
+printf '%s\n' 'version=' >> "$duplicate_metadata_repo/release/metadata.conf"
+commit_fixture "$duplicate_metadata_repo" "duplicate release metadata"
+git -C "$duplicate_metadata_repo" tag -f v1.2.3 >/dev/null
+run_release_failure "$duplicate_metadata_repo" v1.2.3 'exactly one version value' duplicate-metadata
 
 formula_repo="$(clone_fixture formula-mismatch)"
 write_formula "$formula_repo" 1.2.4 "$fixture_sha"

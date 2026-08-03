@@ -446,8 +446,12 @@ INNER
           --git-dir) printf '%s\n' .git ;;
           --verify)
             case "\${5:-}" in
-              refs/tags/*) printf '%s\n' 1111111111111111111111111111111111111111 ;;
+              refs/tags/*)
+                [ "\${FAKE_GIT_NO_TAG:-0}" != 1 ] || exit 1
+                printf '%s\n' 1111111111111111111111111111111111111111
+                ;;
               'FETCH_HEAD^{commit}') printf '%s\n' 2222222222222222222222222222222222222222 ;;
+              'HEAD^{commit}') printf '%s\n' 2222222222222222222222222222222222222222 ;;
               *) exit 1 ;;
             esac
             ;;
@@ -490,6 +494,10 @@ bs_rc=$?
 bs_clone_line="$(grep '^clone' "$bs_gitlog")"
 assert_match '^clone --depth 1 --branch v1\.0\.0 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
   "bootstrap (fresh clone): git invoked with the immutable stable tag"
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0\^\{commit\}' "$(cat "$bs_gitlog")" \
+  "bootstrap (fresh clone): resolves the stable name specifically through refs/tags"
+assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog")" \
+  "bootstrap (fresh clone): detaches at the stable tag's peeled commit"
 bs_clone_dest="$(printf '%s' "$bs_clone_line" | awk '{print $NF}')"
 [ "$(dirname "$bs_clone_dest")" = "$(dirname "$bs_home")" ] \
   || fail "bootstrap (fresh clone): git clone target's parent must be ORCHID_HOME's own parent dir (clone target: $bs_clone_dest)"
@@ -502,6 +510,21 @@ bs_clone_dest="$(printf '%s' "$bs_clone_line" | awk '{print $NF}')"
 assert_eq "--prefix
 $bs_work/customprefix" "$(cat "$bs_work/record1.txt")" \
   "bootstrap (fresh clone): cloned installer exec'd with the original pass-through args (--prefix DIR)"
+
+# `git clone --branch vX.Y.Z` also accepts a branch with that name. A stable
+# bootstrap must prove refs/tags/vX.Y.Z exists before promoting the clone.
+bs_gitlog_notag="$bs_work/gitlog-notag.txt"; : > "$bs_gitlog_notag"
+bs_gitbin_notag="$bs_work/gitbin-notag"; fake_git_bin "$bs_gitbin_notag" "$bs_gitlog_notag"
+bs_home_notag="$bs_work/home-notag"
+export STUB_INSTALL_RECORD="$bs_work/record-notag.txt"; rm -f "$bs_work/record-notag.txt"
+bs_out_notag="$(FAKE_GIT_NO_TAG=1 PATH="$bs_gitbin_notag:$PATH" ORCHID_HOME="$bs_home_notag" \
+  "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc_notag=$?
+[ "$bs_rc_notag" -ne 0 ] || fail "bootstrap (same-named branch): stable install accepted a clone with no version tag"
+assert_match 'refs/tags' "$bs_out_notag" \
+  "bootstrap (same-named branch): refusal explains that the stable tag ref is missing"
+[ ! -e "$bs_home_notag" ] || fail "bootstrap (same-named branch): refused clone must not be promoted into ORCHID_HOME"
+[ ! -e "$STUB_INSTALL_RECORD" ] || fail "bootstrap (same-named branch): refused clone's installer must not execute"
 
 # ===========================================================================
 # review-round-2 fix: auto-removal of a non-checkout $home must require

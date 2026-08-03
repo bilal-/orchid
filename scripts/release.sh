@@ -47,6 +47,9 @@ esac
 printf '%s\n' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
   || die "tag must be exactly vMAJOR.MINOR.PATCH"
 [ -x "$BASH_BIN" ] || die "Bash interpreter is not executable: $BASH_BIN"
+if ! "$BASH_BIN" -c '[ -n "${BASH_VERSION:-}" ] && (( BASH_VERSINFO[0] > 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] >= 2) ))'; then
+  die "--bash must name Bash 3.2 or newer: $BASH_BIN"
+fi
 
 git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "not a Git checkout: $ROOT"
 [ -z "$(git -C "$ROOT" status --porcelain=v1 --untracked-files=all)" ] \
@@ -66,7 +69,13 @@ git_file() {
 metadata_value() {
   local key="$1" values count
   values="$(git_file release/metadata.conf | sed -n "s/^${key}=//p")"
-  count="$(printf '%s\n' "$values" | awk 'NF { n++ } END { print n + 0 }')"
+  # Count matching records in the Git object itself. Counting only non-empty
+  # extracted values would incorrectly accept `key=value` plus a second,
+  # empty `key=` record after command substitution trimmed its newline.
+  count="$(git_file release/metadata.conf | awk -v prefix="${key}=" '
+    index($0, prefix) == 1 { n++ }
+    END { print n + 0 }
+  ')"
   [ "$count" -eq 1 ] || die "release/metadata.conf must contain exactly one $key value"
   printf '%s\n' "$values"
 }
@@ -86,8 +95,12 @@ common_version="$(git_file lib/common.sh | sed -n 's/^ORCHID_VERSION="\([^"]*\)"
 [ "$common_version" = "$version" ] || die "lib/common.sh version mismatch: $common_version vs $version"
 install_version="$(git_file install.sh | sed -n 's/^ORCHID_INSTALL_VERSION="\([^"]*\)"$/\1/p')"
 install_ref="$(git_file install.sh | sed -n 's/^ORCHID_INSTALL_REF="\([^"]*\)"$/\1/p')"
+install_repository="$(git_file install.sh | sed -n 's/^ORCHID_INSTALL_REPOSITORY="\([^"]*\)"$/\1/p')"
 [ "$install_version" = "$version" ] || die "installer version mismatch: $install_version vs $version"
 [ "$install_ref" = "$TAG" ] || die "installer ref mismatch: $install_ref vs $TAG"
+expected_repository="https://github.com/bilal-/orchid.git"
+[ "$install_repository" = "$expected_repository" ] \
+  || die "installer repository mismatch: $install_repository vs $expected_repository"
 
 formula="$(git_file Formula/orchid.rb)"
 formula_version="$(printf '%s\n' "$formula" | sed -n 's/^[[:space:]]*version "\([^"]*\)"$/\1/p')"
@@ -160,19 +173,25 @@ extract_root="$extract_parent/${prefix%/}"
   ORCHID_RELEASE_ARCHIVE_TEST=1 "$BASH_BIN" scripts/ci-local.sh --bash "$BASH_BIN"
 ) || die "tests failed inside the release archive"
 
+verify_tag_unchanged() {
+  local tag_object_after commit_after
+  tag_object_after="$(git -C "$ROOT" rev-parse --verify "$tag_ref" 2>/dev/null)" \
+    || die "tag disappeared during release verification: $TAG"
+  commit_after="$(git -C "$ROOT" rev-parse --verify "$tag_ref^{commit}" 2>/dev/null)" \
+    || die "tag stopped resolving to a commit: $TAG"
+  [ "$tag_object_after" = "$tag_object_before" ] && [ "$commit_after" = "$commit" ] \
+    || die "tag moved during release verification: $TAG"
+}
+
 # Resolve the ref again after every build/check. Both the tag object and its
 # peeled commit must remain identical, so a concurrently moved tag fails.
-tag_object_after="$(git -C "$ROOT" rev-parse --verify "$tag_ref" 2>/dev/null)" \
-  || die "tag disappeared during release verification: $TAG"
-commit_after="$(git -C "$ROOT" rev-parse --verify "$tag_ref^{commit}" 2>/dev/null)" \
-  || die "tag stopped resolving to a commit: $TAG"
-[ "$tag_object_after" = "$tag_object_before" ] && [ "$commit_after" = "$commit" ] \
-  || die "tag moved during release verification: $TAG"
+verify_tag_unchanged
 
 cp "$archive_a" "$OUTPUT/$archive_name"
 printf '%s  %s\n' "$archive_sha" "$archive_name" > "$OUTPUT/$archive_name.sha256"
 mkdir -p "$OUTPUT/Formula"
 printf '%s\n' "$formula" > "$OUTPUT/Formula/orchid.rb"
+verify_tag_unchanged
 echo "release verified: $TAG -> $commit"
 echo "archive: $OUTPUT/$archive_name"
 echo "sha256: $archive_sha"

@@ -61,6 +61,17 @@ case "$BOOTSTRAP_CHANNEL" in
   stable|development) ;;
   *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;;
 esac
+if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
+  printf '%s\n' "$ORCHID_INSTALL_REF" \
+    | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
+      echo "orchid: stable installer ref is not version-pinned: $ORCHID_INSTALL_REF" >&2
+      exit 1
+    }
+  [ "$ORCHID_INSTALL_REF" = "v$ORCHID_INSTALL_VERSION" ] || {
+    echo "orchid: stable installer version/ref mismatch: $ORCHID_INSTALL_VERSION vs $ORCHID_INSTALL_REF" >&2
+    exit 1
+  }
+fi
 
 self="$0"
 while [ -L "$self" ]; do
@@ -87,7 +98,8 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
 
     local home="${ORCHID_HOME:-$HOME/.local/share/orchid}"
     local orchid_url="$ORCHID_INSTALL_REPOSITORY"
-    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone tag_before tag_after development_commit
+    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone
+    local tag_object_before tag_object_after tag_commit_before tag_commit_after selected_commit
     for a in "$@"; do [ "$a" = "--uninstall" ] && uninstalling=1; done
 
     # "Already a checkout" is judged by the same two anchor files checked
@@ -109,26 +121,25 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
           exit 1
         }
         if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
-          case "$ORCHID_INSTALL_REF" in
-            v[0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "orchid: stable installer ref is not version-pinned: $ORCHID_INSTALL_REF" >&2; exit 1 ;;
-          esac
-          tag_before="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF" 2>/dev/null || true)"
+          tag_object_before="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF" 2>/dev/null || true)"
+          tag_commit_before="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF^{commit}" 2>/dev/null || true)"
           echo "orchid: canonical checkout already present at $home -- selecting stable $ORCHID_INSTALL_REF"
           git -C "$home" fetch --depth 1 origin \
             "refs/tags/$ORCHID_INSTALL_REF:refs/tags/$ORCHID_INSTALL_REF"
-          tag_after="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF")"
-          [ -z "$tag_before" ] || [ "$tag_before" = "$tag_after" ] || {
-            echo "orchid: stable tag moved locally ($tag_before -> $tag_after) -- refused" >&2
+          tag_object_after="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF")"
+          tag_commit_after="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF^{commit}")"
+          [ -z "$tag_object_before" ] || { [ "$tag_object_before" = "$tag_object_after" ] \
+            && [ "$tag_commit_before" = "$tag_commit_after" ]; } || {
+            echo "orchid: stable tag moved locally ($tag_object_before -> $tag_object_after) -- refused" >&2
             exit 1
           }
-          git -C "$home" checkout --detach "$tag_after"
+          git -C "$home" checkout --detach "$tag_commit_after"
         else
           echo "orchid: DEVELOPMENT channel: fetching the moving main branch at $home"
           git -C "$home" fetch --depth 1 origin refs/heads/main
-          development_commit="$(git -C "$home" rev-parse --verify 'FETCH_HEAD^{commit}')"
-          echo "orchid: selecting development snapshot $development_commit"
-          git -C "$home" checkout --detach "$development_commit"
+          selected_commit="$(git -C "$home" rev-parse --verify 'FETCH_HEAD^{commit}')"
+          echo "orchid: selecting development snapshot $selected_commit"
+          git -C "$home" checkout --detach "$selected_commit"
         fi
       fi
     else
@@ -200,9 +211,20 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
         echo "orchid: stable channel pinned to $ORCHID_INSTALL_REF"
         git clone --depth 1 --branch "$ORCHID_INSTALL_REF" --single-branch "$orchid_url" "$tmp"
+        # `git clone --branch NAME` accepts either a tag or a same-named
+        # branch. Prove the immutable tag ref exists, peel it to one commit,
+        # and detach there before the clone becomes the canonical install.
+        selected_commit="$(git -C "$tmp" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF^{commit}" 2>/dev/null)" || {
+          echo "orchid: stable ref $ORCHID_INSTALL_REF did not resolve through refs/tags -- refused" >&2
+          exit 1
+        }
+        git -C "$tmp" checkout --detach "$selected_commit"
       else
         echo "orchid: DEVELOPMENT channel follows moving ref main"
         git clone --depth 1 --branch main --single-branch "$orchid_url" "$tmp"
+        selected_commit="$(git -C "$tmp" rev-parse --verify 'HEAD^{commit}')"
+        echo "orchid: selecting development snapshot $selected_commit"
+        git -C "$tmp" checkout --detach "$selected_commit"
       fi
       trap - EXIT
       mv "$tmp" "$home"
