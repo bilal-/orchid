@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
-cd "$WORK"; git init -q .; echo a > a.txt; git add a.txt; git commit -q -m base
+cd "$WORK" || exit 1; git init -q .; echo a > a.txt; git add a.txt; git commit -q -m base
 # .orchid/runtime/ is machine-local, volatile state (per kernel.md) and must
 # never be committed; without this, `git add .orchid` below would sweep the
 # live epoch/lease files onto task/T001, and checking back out to main would
@@ -9,7 +9,8 @@ cd "$WORK"; git init -q .; echo a > a.txt; git add a.txt; git commit -q -m base
 echo ".orchid/runtime/" > .gitignore; git add .gitignore; git commit -q -m gitignore
 mkdir -p .orchid/tasks; git add .orchid 2>/dev/null || true
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create T001 demo
 # Commit the task file to main before branching: otherwise it's untracked on
 # main, gets swept into the task/T001 commit below, and checking back out to

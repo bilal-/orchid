@@ -101,6 +101,7 @@ if [ "$operation" = orchestrate ]; then
   # launcher, whichever spawned this adapter) every ORCHID_HB_INTERVAL_S
   # seconds for as long as claude's pid is alive -- log mtime now advances
   # for the WHOLE run regardless of when/whether claude itself flushes.
+  stdout=""; rc=0
   orchid_run_engine_cli "$err_file" stdout rc "$worktree" "$prompt" \
     claude -p --permission-mode acceptEdits --allowedTools Bash
   stderr="$(cat "$err_file")"

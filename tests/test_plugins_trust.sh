@@ -81,8 +81,8 @@ assert_match "repoeng/run$" "$exe" "resolved path points at the repo-local run s
 # re-trusting at the SAME digest is idempotent (no duplicate record, no error)
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins trust "$plugin_dir")"; rc=$?
 assert_eq 0 "$rc" "re-trusting at an unchanged digest is idempotent"
-lines="$(path_count "$home/.orchid/trust" "$canon_dir")"
-assert_eq 1 "$lines" "no duplicate record after re-trusting at the same digest"
+trust_record_count="$(path_count "$home/.orchid/trust" "$canon_dir")"
+assert_eq 1 "$trust_record_count" "no duplicate record after re-trusting at the same digest"
 
 # -- mutating a file in the dir changes the digest -> de-trusted ------------
 printf '# mutated\n' >> "$plugin_dir/run"
@@ -108,8 +108,8 @@ assert_match "trust --update" "$out" "refusal message points at 'trust --update'
 # -- trust --update re-pins ---------------------------------------------
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins trust --update "$plugin_dir")"; rc=$?
 assert_eq 0 "$rc" "trust --update re-pins the new digest"
-lines="$(path_count "$home/.orchid/trust" "$canon_dir")"
-assert_eq 1 "$lines" "trust --update rewrites the record in place (no duplicate)"
+trust_record_count="$(path_count "$home/.orchid/trust" "$canon_dir")"
+assert_eq 1 "$trust_record_count" "trust --update rewrites the record in place (no duplicate)"
 
 out="$(HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins list)"; rc=$?
 assert_match "$(row_re acme/repoeng engine 0.1.0 repo trusted)" "$out" "re-pinned repo-local plugin shows trusted again"

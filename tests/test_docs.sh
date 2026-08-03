@@ -41,7 +41,6 @@ source "$(dirname "$0")/helpers.sh"
 # exist (key-coverage loop fails outright), and the annotation-scan file
 # list itself doesn't resolve.
 
-DOCS="$REPO_ROOT/docs"
 KEYFILE="$REPO_ROOT/lib/config-keys.txt"
 
 # docs_suite_files -- the exact surface this task owns: README + the
@@ -227,3 +226,80 @@ for f in "$REPO_ROOT/README.md" "$REPO_ROOT"/docs/*.md; do
   done <<< "$out"
 done
 [ "$mermaid_total" -gt 0 ] || fail "mermaid-fence scan over README.md + docs/*.md found no fences -- README's architecture diagrams are gone, or the scan broke"
+
+# ===========================================================================
+# 5 -- pinned-install and release-day instructions remain executable and
+# honest. An immutable installer URL always reselects its named release; it
+# cannot be an upgrade command. Each release command that consumes the
+# documented tag must derive version/tag from release metadata and cross-check
+# them in that same shell block before use, so copying either block into a
+# fresh shell never relies on an undefined variable.
+# ===========================================================================
+QUICKSTART_MD="$REPO_ROOT/docs/quickstart.md"
+quickstart_text="$(tr '\n' ' ' < "$QUICKSTART_MD" | tr -s '[:space:]' ' ')"
+printf '%s\n' "$quickstart_text" | grep -qF \
+  'The URL is immutable: running this exact line later reselects `v1.0.0`; it does not upgrade Orchid. To upgrade, select the install URL for a newer immutable released tag.' \
+  || fail "docs/quickstart.md must explain that upgrading requires a newer immutable released tag"
+printf '%s\n' "$quickstart_text" | grep -qF \
+  'Running this exact line again later is the upgrade command too.' \
+  && fail "docs/quickstart.md falsely calls the immutable v1.0.0 URL an upgrade command"
+
+INSTALL_MD="$REPO_ROOT/docs/install.md"
+release_command_audit="$(awk '
+  /^### Release-day steps \(operator, not automated\)$/ {
+    in_release_steps = 1
+    next
+  }
+  in_release_steps && /^## / { in_release_steps = 0 }
+  !in_release_steps { next }
+
+  /^[[:space:]]*```sh[[:space:]]*$/ {
+    in_shell = 1
+    version_from_metadata = 0
+    tag_from_metadata = 0
+    metadata_cross_checked = 0
+    next
+  }
+  in_shell && /^[[:space:]]*```[[:space:]]*$/ {
+    in_shell = 0
+    next
+  }
+  !in_shell { next }
+
+  index($0, "version=\"$(") && index($0, "release/metadata.conf") {
+    version_from_metadata = 1
+  }
+  index($0, "tag=\"$(") && index($0, "release/metadata.conf") {
+    tag_from_metadata = 1
+  }
+  index($0, "[ \"$tag\" != \"v$version\" ]") {
+    metadata_cross_checked = 1
+  }
+  index($0, "git tag \"$tag\"") {
+    tag_commands++
+    if (!version_from_metadata || !tag_from_metadata || !metadata_cross_checked)
+      print "ERR git tag command lacks prior metadata derivation/cross-check at line " NR
+  }
+  index($0, "scripts/release.sh --tag \"$tag\"") {
+    release_commands++
+    if (!version_from_metadata || !tag_from_metadata || !metadata_cross_checked)
+      print "ERR release command lacks prior metadata derivation/cross-check at line " NR
+  }
+  END {
+    print "TAG_COUNT " tag_commands + 0
+    print "RELEASE_COUNT " release_commands + 0
+  }
+' "$INSTALL_MD")"
+release_tag_commands=0
+release_gate_commands=0
+while IFS= read -r line; do
+  case "$line" in
+    ERR*)           fail "docs/install.md: ${line#ERR }" ;;
+    TAG_COUNT*)     release_tag_commands="${line#TAG_COUNT }" ;;
+    RELEASE_COUNT*) release_gate_commands="${line#RELEASE_COUNT }" ;;
+  esac
+done <<< "$release_command_audit"
+assert_eq 1 "$release_tag_commands" \
+  "docs/install.md must contain one metadata-bound release-day git tag command"
+assert_eq 1 "$release_gate_commands" \
+  "docs/install.md must contain one metadata-bound release-day release-gate command"

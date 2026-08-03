@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 
@@ -8,7 +8,8 @@ integ=orchid/integration
 git branch "$integ"
 echo "integration_branch=$integ" > orchid.config
 
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # helper: walk a task from pending all the way to `merging`, with a real
 # passing `orchid verify` in between (INV-11 gate) — mirrors the only path
@@ -46,7 +47,7 @@ out="$WORK/merge1.out"; rc=0
 "$ORCHID_BIN" merge T001 >"$out" 2>&1 || rc=$?
 assert_eq 0 "$rc" "clean merge exits 0"
 assert_match "^merged T001: $integ -> " "$(cat "$out")" "prints merged message"
-assert_eq done "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task advances to done"
+assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task advances to done"
 post_integ="$(git rev-parse "$integ")"
 [ "$post_integ" != "$pre_integ" ] || fail "integration ref advanced"
 git show "$integ:feature1.txt" >/dev/null 2>&1 || fail "integ now contains feature1.txt"
@@ -252,7 +253,7 @@ plant_reviewer_envelope T005
 rc=0; out5b="$WORK/merge5b.out"
 "$ORCHID_BIN" merge T005 >"$out5b" 2>&1 || rc=$?
 assert_eq 0 "$rc" "merge succeeds on the new base (recorded worktree)"
-assert_eq done "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "task reaches done (recorded worktree path)"
+assert_eq "done" "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" "task reaches done (recorded worktree path)"
 
 # ---------------------------------------------------------------------------
 # v1-m3 (Task 6) regression: no `hook.before_merge` binding at all -> the
@@ -276,4 +277,4 @@ walk_to_merging T006 task/T006 "$base6" "$cand6" "test -f feature6.txt"
 
 rc=0; "$ORCHID_BIN" merge T006 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "no hook.before_merge binding -> merge proceeds unchanged (exit 0)"
-assert_eq done "$("$ORCHID_BIN" task show T006 | grep '^status: ' | cut -d' ' -f2)" "no hook.before_merge binding -> task still reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show T006 | grep '^status: ' | cut -d' ' -f2)" "no hook.before_merge binding -> task still reaches done"

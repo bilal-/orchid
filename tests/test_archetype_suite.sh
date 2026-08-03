@@ -50,9 +50,10 @@ done
 # template lookup (templates/task-<a>.md), frontmatter defaults, and body
 # lens text.
 # ============================================================================
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 fm_field() { "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
 
@@ -203,8 +204,8 @@ walk_full_archetype() {  # id archetype
   "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
 
   # edge: merging:done
-  "$ORCHID_BIN" task advance "$id" done
-  assert_eq done "$(st)" "$arch edge merging:done"
+  "$ORCHID_BIN" task advance "$id" "done"
+  assert_eq "done" "$(st)" "$arch edge merging:done"
 }
 
 walk_full_archetype W001 refactor

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # v1-m3 (m2 ledger finding): tests/helpers.sh's own WORK guard.
 #
-# Every test file's `cd "$WORK"; git init -q .; git commit ...` pattern
+# Every test file's `cd "$WORK" || exit 1; git init -q .; git commit ...` pattern
 # trusts that $WORK is a real, freshly-made scratch directory. If `mktemp -d`
 # ever fails (disk full, TMPDIR misconfigured, sandboxing quirk...), plain
 # `WORK="$(mktemp -d)"` leaves WORK="" -- NOT unset, so `set -u` never catches

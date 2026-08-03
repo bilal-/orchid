@@ -9,7 +9,7 @@ for what happens after any of them.
 ## One-line install (recommended)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash
 ```
 
 **This goes live once the repo is public.** `raw.githubusercontent.com`
@@ -17,25 +17,32 @@ cannot serve a file out of a private repository, so until then this
 command 404s — use the [git clone method](#git-clone-for-hacking-on-orchid-itself)
 below instead.
 
-This downloads `install.sh` and runs it. Since that's happening outside
-any existing orchid checkout, `install.sh` first clones a canonical copy
-(shallow, `--depth 1`) to `${ORCHID_HOME:-~/.local/share/orchid}`, then
-hands off to that checkout's own `install.sh` — which is exactly the
-git-clone method's `install.sh`, so it does exactly the same thing
-described in the [git-clone section](#git-clone-for-hacking-on-orchid-itself)
-below (front-end detection, `bin/orchid` symlink, `~/.orchid/` seeding,
-`orchid doctor`).
+This downloads the installer from the version tag and runs it. A piped
+invocation always selects that same exact tag in the canonical checkout at
+`${ORCHID_HOME:-~/.local/share/orchid}`—shallow-cloning when it is absent and
+reusing it otherwise—regardless of the caller's current directory. Running
+the command from inside another, even dirty, Orchid checkout never installs
+from that checkout: piped Bash has no installer pathname, so the current
+directory is never accepted as source. The stable channel never resolves
+`HEAD`, a branch name, or another moving ref. Re-running the same command
+re-selects `v1.0.0`; it does not silently upgrade. To upgrade, run the URL for
+the new release version.
 
-**Running the exact same line again is the upgrade command:** if
-`$ORCHID_HOME` already holds an orchid checkout, it's fast-forwarded
-(`git pull --ff-only`) instead of re-cloned.
+The development channel is deliberately more conspicuous because it follows
+the moving `main` branch:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash -s -- --channel development
+```
+
+Do not use the development channel when you need a reproducible install.
 
 **Flags pass through** — since `bash` is reading the script off a pipe,
 put them after `-s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash -s -- --prefix /usr/local
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash -s -- --prefix /usr/local
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash -s -- --uninstall
 ```
 
 `--uninstall` this way removes the symlinks the canonical clone created,
@@ -46,7 +53,7 @@ a one-line note confirming the clone's path.
 
 ## Homebrew (prepared, not yet published)
 
-[`Formula/orchid.rb`](../Formula/orchid.rb) in this repo is a tap-ready
+`Formula/orchid.rb` in the source repository is a tap-ready
 formula: it installs `bin/`, `libexec/`, `lib/`, `runners/`, `plugins/`,
 `templates/`, `roles/`, and `PROTOCOL.md` under the formula's own
 `libexec` prefix, then symlinks `bin/orchid` out into Homebrew's `bin` —
@@ -55,40 +62,79 @@ real file, then takes that file's grandparent directory as `ORCHID_ROOT`)
 lands on that `libexec` prefix without any wrapper script or rewriting.
 `git` and `jq` are declared as formula dependencies.
 
-**This formula is not tapped, installed, or published by this repository
-or its tests.** `VERSION-PLACEHOLDER` and `SHA256-PLACEHOLDER` are literal
-placeholder tokens; they are filled in by the steps below, by a human, on
-release day — nothing here does it automatically.
+**This formula is not tapped, installed, or published by this repository or
+its tests.** Its version, release-asset URL, and SHA-256 are concrete inputs
+cross-checked by the local release gate. The formula itself is export-ignored
+from the source archive, avoiding a checksum self-reference.
 
 ### Release-day steps (operator, not automated)
 
-1. Tag the release and push the tag:
+1. Update `release/metadata.conf`, `ORCHID_VERSION` in `lib/common.sh`, the
+   two `ORCHID_INSTALL_*` assignments in `install.sh`, and the formula's
+   version and URL. Commit the release payload while the tree is clean.
+
+2. Re-pin the formula checksum with the canonical tool (the same fixed
+   mtime, prefix, and tree inputs the verifier uses — it snapshots current
+   content through a disposable, config-isolated Git repository and rewrites
+   `Formula/orchid.rb` in place; `--check` verifies without rewriting, and the
+   test suite runs that check on every commit so a stale pin can never linger
+   unnoticed):
 
    ```sh
-   git tag vX.Y.Z
-   git push origin vX.Y.Z
+   /bin/bash scripts/pin-formula.sh
    ```
 
-2. Compute the tarball's sha256 the same way GitHub's own
-   `archive/refs/tags/vX.Y.Z.tar.gz` link generates it, via `git archive`
-   against that tag (reproducible — no need to actually download the
-   GitHub asset first):
+3. Commit the formula-only change and create the version tag on that clean
+   commit. `Formula/` is export-ignored, so this commit does not alter the
+   archive bytes — which is exactly why the pinned digest stays valid for
+   the tagged commit:
 
    ```sh
-   git archive --format=tar.gz --prefix=orchid-X.Y.Z/ vX.Y.Z | shasum -a 256
+   version="$(sed -n 's/^version=//p' release/metadata.conf)"
+   tag="$(sed -n 's/^tag=//p' release/metadata.conf)"
+   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+     echo "invalid release metadata version: $version" >&2
+     exit 1
+   fi
+   if [ "$tag" != "v$version" ]; then
+     echo "release metadata mismatch: tag=$tag version=$version" >&2
+     exit 1
+   fi
+   git tag "$tag"
    ```
 
-3. In `Formula/orchid.rb`, replace both placeholders with the values from
-   steps 1–2: `VERSION-PLACEHOLDER` → `X.Y.Z` (two occurrences: the `url`
-   line's `vVERSION-PLACEHOLDER` and the `version` line), `SHA256-PLACEHOLDER`
-   → the `shasum -a 256` output from step 2.
+4. Run the local, non-publishing gate:
 
-4. Create the tap repository `bilal-/homebrew-orchid` (empty except for a
-   `Formula/` directory), commit the filled-in `Formula/orchid.rb` there,
-   and push it.
+   ```sh
+   version="$(sed -n 's/^version=//p' release/metadata.conf)"
+   tag="$(sed -n 's/^tag=//p' release/metadata.conf)"
+   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+     echo "invalid release metadata version: $version" >&2
+     exit 1
+   fi
+   if [ "$tag" != "v$version" ]; then
+     echo "release metadata mismatch: tag=$tag version=$version" >&2
+     exit 1
+   fi
+   /bin/bash scripts/release.sh --tag "$tag" \
+     --output "$(mktemp -d)/orchid-release" --bash /bin/bash
+   ```
 
-5. Pin the install one-liner below into `README.md`'s install section
-   (replacing "once published") once step 4 is live:
+   It requires a clean HEAD at the exact tag, peels that tag to one commit,
+   builds twice from that commit's tree with `git archive`, compares bytes and
+   checksums, validates prefix/content and all metadata, extracts the archive,
+   and runs `scripts/ci-local.sh` inside it. Archive generation uses disposable
+   Git metadata and the tree's own attributes only: system/global/local Git
+   configuration, custom archive commands, and the source checkout's
+   `info/attributes` cannot change the bytes. It never reads payload files
+   from the working tree and never pushes or publishes.
+
+5. Inspect the emitted archive, checksum file, and formula. Uploading the
+   archive, pushing the tag, and updating a tap remain separate, explicit
+   operator actions; neither CI nor the release script performs them.
+
+6. After those operator-owned publication steps are complete, install from
+   the tap with:
 
    ```sh
    brew tap bilal-/orchid
@@ -98,10 +144,7 @@ release day — nothing here does it automatically.
    (equivalently, `brew install bilal-/orchid/orchid` without a separate
    `brew tap` step).
 
-None of steps 1–5 are executed as part of this task — this section exists
-so the operator has exact, copy-pasteable commands the day they're ready
-to publish, and so [README.md](../README.md)'s current "once published"
-note has somewhere concrete to point.
+No publication step is executed by repository tests or CI.
 
 ## git clone (for hacking on orchid itself)
 

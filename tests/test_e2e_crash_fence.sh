@@ -33,7 +33,7 @@ reconcile_until_ok() {
   fail "timed out waiting for $task to reconcile ok (last reconcile output: $out)"
 }
 
-cd "$WORK"; git init -q .
+cd "$WORK" || exit 1; git init -q .
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'role.implementer=stubslow\nrole.reviewer=stubreview\n' > orchid.config
 git add -A && git commit -q -m "fixture: config"
@@ -77,7 +77,7 @@ jid="$(jq -r .job_id "$req")"
 task="$(jq -r .task "$req")"
 op="$(jq -r .operation "$req")"
 [ "$op" = implement ] || exit 1
-cd "$worktree"
+cd "$worktree" || exit 1
 echo "stub implementation" > stub_feature.txt
 git add stub_feature.txt
 git -c user.email=stub-implementer@example.com -c user.name="stub implementer" \
@@ -109,7 +109,8 @@ chmod +x "$WORK/eng/stubreview/run"
 # run start (epoch1), plan a single task, dispatch it to the SLOW stub.
 # ---------------------------------------------------------------------------
 epoch1="$(run_ok "orchid run start" "$ORCHID_BIN" run start | sed 's/epoch: //')"
-export ORCHID_EPOCH="$epoch1"
+ORCHID_EPOCH="$epoch1"
+export ORCHID_EPOCH
 [ -n "$epoch1" ] || fail "epoch1 minted by run start"
 
 cat > "$WORK/requirements-v1.md" <<'EOF'
@@ -136,10 +137,11 @@ assert_match "launched j-" "$launch_out" "slow implementer job launched"
 slow_pid="$(echo "$launch_out" | awk '{print $4}')"
 manifest_before="$(ls "$WORK/.orchid/runtime/jobs/"*.json 2>/dev/null | head -n1)"
 [ -n "$manifest_before" ] || fail "manifest exists for the slow job before the crash"
-own_pgid="$(ps -o pgid= -p $$ | tr -d ' ')"
+own_pgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ' || true)"
 manifest_pgid="$(jq -r .pgid "$manifest_before")"
 [ "$manifest_pgid" -gt 0 ] 2>/dev/null || fail "slow job manifest pgid must be > 0"
-[ "$manifest_pgid" != "$own_pgid" ] || fail "slow job must run in its OWN process group, not this test's"
+[ -z "$own_pgid" ] || [ "$manifest_pgid" != "$own_pgid" ] \
+  || fail "slow job must run in its OWN process group, not this test's"
 kill -0 "$slow_pid" 2>/dev/null || fail "sanity: slow job pid alive right after launch"
 
 # ---------------------------------------------------------------------------
@@ -181,7 +183,8 @@ pre_title="$(fm_get "$WORK/.orchid/tasks/T001.md" title)"
 [ $? -ne 9 ] || fail "task set under the OLD epoch must be refused (INV-02 fence)"
 assert_eq "$pre_title" "$(fm_get "$WORK/.orchid/tasks/T001.md" title)" "task frontmatter untouched by the stale-epoch mutation attempt"
 
-export ORCHID_EPOCH="$epoch2"
+ORCHID_EPOCH="$epoch2"
+export ORCHID_EPOCH
 
 # ---------------------------------------------------------------------------
 # `jobs check` finds the still-live slow job — its OWN process group, alive
@@ -258,11 +261,11 @@ run_ok "advance arbitrating" "$ORCHID_BIN" task advance T001 arbitrating \
 run_ok "advance merging" "$ORCHID_BIN" task advance T001 merging --reason "approved for merge" >/dev/null
 
 pre_integ="$(git rev-parse "$integ")"
-rc=0; merge_out="$("$ORCHID_BIN" merge T001 2>&1)" || rc=$?
+rc=0; _merge_out="$("$ORCHID_BIN" merge T001 2>&1)" || rc=$?
 assert_eq 0 "$rc" "merge exits 0 after the crash-and-recover walk"
 post_integ="$(git rev-parse "$integ")"
 [ "$post_integ" != "$pre_integ" ] || fail "integration ref must have advanced"
-assert_eq done "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task T001 reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task T001 reaches done"
 git merge-base --is-ancestor "$cand1" "$integ" \
   || fail "integration branch must contain the relaunched stub's own commit ($cand1)"
 

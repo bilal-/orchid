@@ -26,32 +26,72 @@
 # (uninstall reads the same ORCHID_BIN_DIR --prefix would have set, so it
 # un-links the right place).
 #
-# Bootstrap mode: run OUTSIDE an orchid checkout --
-#   curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
-# -- clones a canonical copy to ${ORCHID_HOME:-~/.local/share/orchid} (or
-# fast-forwards it if already cloned there, making the same one-liner the
-# upgrade command too) and hands off to that checkout's own install.sh with
-# the original arguments. Inside a real checkout, this is a complete no-op
-# -- behavior is identical to before bootstrap mode existed.
+# Bootstrap mode: run OUTSIDE an orchid checkout. The default stable channel
+# checks out the immutable version tag below. Following the moving `main`
+# branch requires an explicit `--channel development` argument.
 set -euo pipefail
 
-self="$0"
-while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+# Release tooling reads these exact assignments from the tagged Git object and
+# cross-checks them against release/metadata.conf, the tag, and the formula.
+# ShellCheck rationale: release tooling reads this public metadata assignment from the tagged file.
+# shellcheck disable=SC2034
+ORCHID_INSTALL_VERSION="1.0.0"
+ORCHID_INSTALL_REF="v1.0.0"
+ORCHID_INSTALL_REPOSITORY="https://github.com/bilal-/orchid.git"
+
+BOOTSTRAP_CHANNEL="stable"
+_install_scan_args=("$@")
+_install_scan_i=0
+while [ "$_install_scan_i" -lt "${#_install_scan_args[@]}" ]; do
+  _install_scan_arg="${_install_scan_args[$_install_scan_i]}"
+  case "$_install_scan_arg" in
+    --channel)
+      _install_scan_i=$((_install_scan_i + 1))
+      [ "$_install_scan_i" -lt "${#_install_scan_args[@]}" ] || {
+        echo "orchid: install.sh: --channel requires stable or development" >&2
+        exit 2
+      }
+      BOOTSTRAP_CHANNEL="${_install_scan_args[$_install_scan_i]}"
+      ;;
+    --channel=*) BOOTSTRAP_CHANNEL="${_install_scan_arg#--channel=}" ;;
+  esac
+  _install_scan_i=$((_install_scan_i + 1))
 done
-ROOT="$(cd "$(dirname "$self")" && pwd)"
+case "$BOOTSTRAP_CHANNEL" in
+  stable|development) ;;
+  *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;;
+esac
+if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
+  printf '%s\n' "$ORCHID_INSTALL_REF" \
+    | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
+      echo "orchid: stable installer ref is not version-pinned: $ORCHID_INSTALL_REF" >&2
+      exit 1
+    }
+  [ "$ORCHID_INSTALL_REF" = "v$ORCHID_INSTALL_VERSION" ] || {
+    echo "orchid: stable installer version/ref mismatch: $ORCHID_INSTALL_VERSION vs $ORCHID_INSTALL_REF" >&2
+    exit 1
+  }
+fi
+
+self="${BASH_SOURCE[0]:-}"
+ROOT=""
+if [ -n "$self" ]; then
+  while [ -L "$self" ]; do
+    t="$(readlink "$self")"
+    case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  done
+  ROOT="$(cd "$(dirname "$self")" && pwd)"
+fi
 
 # --- Bootstrap mode ------------------------------------------------------
-# A real orchid checkout always has both bin/orchid and lib/common.sh next
-# to install.sh. When either is missing, ROOT isn't a checkout at all --
-# it's just wherever $0 happened to resolve to, which for `curl|bash` is
-# "bash" itself (dirname "bash" -> "."), i.e. the caller's cwd, and for a
-# bare copy of this one file (this task's own test fixture) is whatever
-# scratch dir that copy lives in. Neither $0 nor BASH_SOURCE is a usable
-# repo anchor in that shape, so there is nothing to symlink FROM yet --
-# clone (or update) one first, then hand off to ITS install.sh.
-if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
+# A file-backed invocation has a BASH_SOURCE path and may run directly from a
+# real checkout. A piped invocation has no BASH_SOURCE at all; $0 merely names
+# bash and its dirname is the CALLER'S cwd. Never treat that cwd as installer
+# source, even if it is itself a dirty orchid checkout with both anchor files.
+# A bare copy of install.sh likewise lacks the adjacent anchors. In either
+# bootstrap shape there is nothing trustworthy to symlink FROM yet, so clone
+# (or update) the canonical checkout and hand off to ITS install.sh.
+if [ -z "$ROOT" ] || [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
   bootstrap_and_exec() {
     command -v git >/dev/null 2>&1 || {
       echo "orchid: install.sh: git is required to install orchid this way (curl|bash) -- install git and re-run" >&2
@@ -59,8 +99,9 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
     }
 
     local home="${ORCHID_HOME:-$HOME/.local/share/orchid}"
-    local orchid_url="https://github.com/bilal-/orchid.git"
-    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone
+    local orchid_url="$ORCHID_INSTALL_REPOSITORY"
+    local uninstalling=0 a parent tmp origin_url
+    local tag_object_before tag_object_after tag_commit_before tag_commit_after selected_commit
     for a in "$@"; do [ "$a" = "--uninstall" ] && uninstalling=1; done
 
     # "Already a checkout" is judged by the same two anchor files checked
@@ -72,8 +113,36 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       if [ "$uninstalling" = 1 ]; then
         echo "orchid: uninstalling via the canonical checkout at $home (the clone itself is left in place -- --uninstall never deletes it)"
       else
-        echo "orchid: canonical checkout already present at $home -- updating (git pull --ff-only)"
-        git -C "$home" pull --ff-only
+        origin_url="$(git -C "$home" config --get remote.origin.url 2>/dev/null || true)"
+        [ "$origin_url" = "$orchid_url" ] || {
+          echo "orchid: canonical checkout at $home has unexpected origin '$origin_url' -- refusing to update or execute it" >&2
+          exit 1
+        }
+        [ -z "$(git -C "$home" status --porcelain --untracked-files=all)" ] || {
+          echo "orchid: canonical checkout at $home has local changes -- refusing to replace or update it" >&2
+          exit 1
+        }
+        if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
+          tag_object_before="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF" 2>/dev/null || true)"
+          tag_commit_before="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF^{commit}" 2>/dev/null || true)"
+          echo "orchid: canonical checkout already present at $home -- selecting stable $ORCHID_INSTALL_REF"
+          git -C "$home" fetch --depth 1 origin \
+            "refs/tags/$ORCHID_INSTALL_REF:refs/tags/$ORCHID_INSTALL_REF"
+          tag_object_after="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF")"
+          tag_commit_after="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF^{commit}")"
+          [ -z "$tag_object_before" ] || { [ "$tag_object_before" = "$tag_object_after" ] \
+            && [ "$tag_commit_before" = "$tag_commit_after" ]; } || {
+            echo "orchid: stable tag moved locally ($tag_object_before -> $tag_object_after) -- refused" >&2
+            exit 1
+          }
+          git -C "$home" checkout --detach "$tag_commit_after"
+        else
+          echo "orchid: DEVELOPMENT channel: fetching the moving main branch at $home"
+          git -C "$home" fetch --depth 1 origin refs/heads/main
+          selected_commit="$(git -C "$home" rev-parse --verify 'FETCH_HEAD^{commit}')"
+          echo "orchid: selecting development snapshot $selected_commit"
+          git -C "$home" checkout --detach "$selected_commit"
+        fi
       fi
     else
       if [ "$uninstalling" = 1 ]; then
@@ -84,48 +153,27 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       # $home exists but failed the checkout test above (missing an anchor
       # file, or `git rev-parse --git-dir` doesn't recognize it). That is
       # only a NEGATIVE signal ("not currently a usable orchid checkout")
-      # -- on its own it is NOT enough to justify deleting anything: $home
-      # is `${ORCHID_HOME:-...}`, a user-settable env var, so this branch
-      # is reached just as easily by a user pointing ORCHID_HOME at their
-      # own unrelated directory (or git repo) as by an actually-interrupted
-      # prior bootstrap clone. A review found the earlier version of this
-      # fix rm -rf'd unconditionally here -- verified live to destroy an
-      # unrelated directory of user files with no warning beyond a message
-      # asserting a cause ("left behind by an interrupted clone") the code
-      # never actually checked. Auto-removal now requires POSITIVE proof
-      # this is dead wreckage from orchid's own bootstrap and nothing
-      # else -- ALL three, not just the pre-existing negative one:
-      #   (a) $home/.git exists at all (a plain directory of unrelated
-      #       files, no git repo, fails here -- left untouched)
-      #   (b) that .git's own remote.origin.url is EXACTLY this repo's
-      #       clone URL (a user's own unrelated git repo at this path
-      #       fails here -- left untouched, even though it has a .git)
-      #   (c) it is still incomplete -- true by construction (this whole
-      #       `else` only runs when the checkout test above failed), kept
-      #       as an explicit check for readability rather than relying
-      #       purely on control flow
-      # Anything short of all three is refused loudly instead -- named
-      # path, why, and both remedies -- never silently deleted, never
-      # silently proceeded past.
-      is_dead_orchid_clone=0
+      # -- and it is NEVER grounds for deleting anything: $home is
+      # `${ORCHID_HOME:-...}`, a user-settable env var, so this branch is
+      # reached just as easily by a user pointing ORCHID_HOME at their own
+      # directory (or git repo) as by wreckage from some earlier failed
+      # install. Two review rounds each caught a destructive repair here:
+      # first an unconditional rm -rf (verified live to destroy an
+      # unrelated directory of user files), then an rm -rf gated on
+      # $home/.git's remote.origin.url matching this repo's clone URL --
+      # but an expected-origin repo that lacks an anchor file is still
+      # routinely a USER-CONTROLLED checkout (a contributor's own clone
+      # with uncommitted work, stash state, or bin/orchid deleted
+      # mid-edit), and nothing observable here can prove otherwise. So
+      # this installer fails closed: name the path, explain, give both
+      # remedies, exit nonzero, delete nothing -- recursively or
+      # otherwise. Half-populated wreckage at $home cannot come from THIS
+      # installer anyway: the clone below lands in a temp sibling and is
+      # only ever mv'd into place after git fully succeeds.
       if [ -e "$home" ]; then
-        if [ -e "$home/.git" ]; then
-          origin_url="$(git -C "$home" config --get remote.origin.url 2>/dev/null || true)"
-          if [ "$origin_url" = "$orchid_url" ] \
-             && { [ ! -f "$home/bin/orchid" ] || [ ! -f "$home/lib/common.sh" ] \
-                  || ! git -C "$home" rev-parse --git-dir >/dev/null 2>&1; }; then
-            is_dead_orchid_clone=1
-          fi
-        fi
-
-        if [ "$is_dead_orchid_clone" = 1 ]; then
-          echo "orchid: removing incomplete clone at $home (verified: .git present, remote.origin.url is $orchid_url, but the checkout is missing its files) before retrying"
-          rm -rf "$home"
-        else
-          echo "orchid: install.sh: $home already exists and is not a usable orchid checkout -- refusing to touch it" >&2
-          echo "orchid: either remove $home yourself if it's safe to discard, or set ORCHID_HOME to a different path and re-run" >&2
-          exit 1
-        fi
+        echo "orchid: install.sh: $home already exists but is not a usable orchid checkout -- refusing to touch it (this installer never deletes an existing ORCHID_HOME)" >&2
+        echo "orchid: inspect $home yourself and remove it only if it's safe to discard, or set ORCHID_HOME to a different path and re-run" >&2
+        exit 1
       fi
 
       echo "orchid: cloning orchid to $home"
@@ -135,13 +183,30 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       # so the mv below is a pure rename, not a copy) and only mv it into
       # place once git has fully succeeded. This is what keeps a clone
       # interrupted partway through from ever leaving $home itself
-      # half-populated for the next run to trip over -- the failure mode
-      # the stale-clone recovery above recovers FROM, but recovery is only
-      # ever needed once here, going forward, because a dead clone never
-      # lands at $home at all anymore.
+      # half-populated for the next run to trip over -- and it is the
+      # load-bearing guarantee behind the fail-closed refusal above: since
+      # a dead clone never lands at $home, anything already sitting there
+      # is presumed to be the user's and is never auto-removed.
       tmp="$(mktemp -d "$parent/.orchid-clone.XXXXXX")"
       trap 'rm -rf "$tmp"' EXIT
-      git clone --depth 1 "$orchid_url" "$tmp"
+      if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
+        echo "orchid: stable channel pinned to $ORCHID_INSTALL_REF"
+        git clone --depth 1 --branch "$ORCHID_INSTALL_REF" --single-branch "$orchid_url" "$tmp"
+        # `git clone --branch NAME` accepts either a tag or a same-named
+        # branch. Prove the immutable tag ref exists, peel it to one commit,
+        # and detach there before the clone becomes the canonical install.
+        selected_commit="$(git -C "$tmp" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF^{commit}" 2>/dev/null)" || {
+          echo "orchid: stable ref $ORCHID_INSTALL_REF did not resolve through refs/tags -- refused" >&2
+          exit 1
+        }
+        git -C "$tmp" checkout --detach "$selected_commit"
+      else
+        echo "orchid: DEVELOPMENT channel follows moving ref main"
+        git clone --depth 1 --branch main --single-branch "$orchid_url" "$tmp"
+        selected_commit="$(git -C "$tmp" rev-parse --verify 'HEAD^{commit}')"
+        echo "orchid: selecting development snapshot $selected_commit"
+        git -C "$tmp" checkout --detach "$selected_commit"
+      fi
       trap - EXIT
       mv "$tmp" "$home"
     fi
@@ -163,7 +228,8 @@ HERMES_ORCH_DIR="$HERMES_SKILLS_DIR/orchestration"
 ORCHID_BIN_DIR="${ORCHID_BIN_DIR:-$HOME/.local/bin}"
 SKILLS="orchid orchid-plan orchid-resume"
 
-# Argument parsing -- deliberately just these two flags, combinable in
+# Argument parsing. Channel controls bootstrap source selection only and is
+# accepted as a no-op after the pinned checkout hands off to its installer.
 # either order (`--prefix DIR --uninstall` or `--uninstall --prefix DIR`).
 # --prefix only ever redirects ORCHID_BIN_DIR (where the `orchid` binary
 # symlink lands); it does not move skills/config/trust, which are always
@@ -172,6 +238,10 @@ UNINSTALL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --uninstall) UNINSTALL=1 ;;
+    --channel) [ $# -ge 2 ] || { echo "orchid: install.sh: --channel requires stable or development" >&2; exit 2; }
+               case "$2" in stable|development) ;; *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;; esac
+               shift ;;
+    --channel=*) case "${1#--channel=}" in stable|development) ;; *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;; esac ;;
     --prefix) [ $# -ge 2 ] || { echo "orchid: install.sh: --prefix requires a directory argument" >&2; exit 2; }
               ORCHID_BIN_DIR="$2/bin"; shift ;;
     --prefix=*) ORCHID_BIN_DIR="${1#--prefix=}/bin" ;;

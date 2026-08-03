@@ -1,19 +1,15 @@
 # Homebrew formula for orchid.
 #
-# PREPARE-ONLY (v1-m4 Task 11): written for a future `bilal-/homebrew-orchid`
-# tap. This file is never tapped, built, or published by anything in this
-# repository's own test suite or CI -- it is filled in and pushed by the
-# release-day operator, per docs/install.md's "Homebrew release steps"
-# section (git tag -> git archive -> shasum -> fill these two placeholders
-# -> push to the tap repo). VERSION-PLACEHOLDER and SHA256-PLACEHOLDER below
-# are never guessed or hand-computed here.
+# Prepared for a future `bilal-/homebrew-orchid` tap. The pinned URL and
+# checksum describe the deterministic archive produced by scripts/release.sh;
+# neither this formula nor that script publishes anything.
 class Orchid < Formula
   desc "Deterministic multi-agent orchestrator for AI coding CLIs"
   homepage "https://github.com/bilal-/orchid"
-  url "https://github.com/bilal-/orchid/archive/refs/tags/vVERSION-PLACEHOLDER.tar.gz"
-  sha256 "SHA256-PLACEHOLDER"
+  url "https://github.com/bilal-/orchid/releases/download/v1.0.0/orchid-1.0.0.tar.gz"
+  sha256 "175da17ab0ca4f728e24038b5b7f5f12b869cafe4c7f4839b5bed99cb4e94400"
   license "MIT"
-  version "VERSION-PLACEHOLDER"
+  version "1.0.0"
 
   depends_on "git"
   depends_on "jq"

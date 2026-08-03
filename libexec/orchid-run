@@ -136,7 +136,7 @@ case "$sub" in
     roadmap="$state/roadmap.md"
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
     from="$(fm_get "$roadmap" run_status)"
-    run_id="$(fm_get "$roadmap" run_id)"; [ -n "$run_id" ] || run_id=r-001
+    run_id="$(fm_get "$roadmap" run_id)"; [ -n "$run_id" ] || run_id='r-001'
 
     # v1-m4 Task 1 fix wave (review Important): a completed run's record
     # must never be uncommitted-only, but "state already set locally;
@@ -288,7 +288,7 @@ case "$sub" in
       *) orchid_die "run new requires run_status complete|blocked (current: $from_status)" ;;
     esac
 
-    old_run_id="$(fm_get "$roadmap" run_id)"; [ -n "$old_run_id" ] || old_run_id=r-001
+    old_run_id="$(fm_get "$roadmap" run_id)"; [ -n "$old_run_id" ] || old_run_id='r-001'
     # r-NNN -> r-(NNN+1), forced base-10 (a leading-zero string like "001"
     # would otherwise be misread as octal by bash arithmetic). Guarded
     # explicitly, before any arithmetic, so a malformed/hand-edited run_id

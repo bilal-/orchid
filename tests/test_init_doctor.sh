@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME/.orchid"
 printf 'verify=true\n' > orchid.config
 mkdir -p "$WORK/eng/fake"; printf '#!/usr/bin/env bash\n' > "$WORK/eng/fake/run"; chmod +x "$WORK/eng/fake/run"
@@ -42,7 +42,11 @@ git -C "$scratch1" rev-parse --verify -q orchid/integration >/dev/null 2>&1 && f
 # (simulate by breaking git identity in a scratch clone)
 scratch2="$WORK/scratch2"; git init -q "$scratch2"
 (cd "$scratch2" && git commit -q --allow-empty -m root && printf 'verify=true\n' > orchid.config && git add -A && git commit -q -m cfg && git config user.email "" && git config user.name "")
-rc=0; (cd "$scratch2" && ORCHID_REPO="$scratch2" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init) >/dev/null 2>&1 || rc=$?
+rc=0
+(
+  unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+  cd "$scratch2" && ORCHID_REPO="$scratch2" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" init
+) >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "init must fail when commit fails"
 [ "$(git -C "$scratch2" rev-parse --abbrev-ref HEAD)" != "orchid/integration" ] || fail "prior branch must be restored on failure"
 [ -z "$(git -C "$scratch2" status --porcelain)" ] || fail "failed init must leave tree and index clean"

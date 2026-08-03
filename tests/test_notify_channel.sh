@@ -22,7 +22,7 @@ source "$REPO_ROOT/lib/capsuite.sh"; source "$REPO_ROOT/lib/ledger.sh"
 export ORCHID_ROOT="$REPO_ROOT"
 PUMP="$REPO_ROOT/runners/orchid-pump"
 
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 
@@ -91,8 +91,9 @@ assert_match "^2/2 checks passed\$" "$out" "conform on kind=notify runs exactly 
 # `orchid answer` stays fully lenient for everyone (no allowlist configured
 # means no remote path to defend), even for a caller that asserts a sender.
 # ===========================================================================
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
-qid_nochan="$("$ORCHID_BIN" notify "no channel configured yet")"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+_qid_nochan="$("$ORCHID_BIN" notify "no channel configured yet")"
 [ -d ".orchid/runtime/outbox" ] && fail "no notify.channel configured: outbox dir must not even be created"
 
 qid_weak="$(PATH="$BLOCKENT:$PATH" "$ORCHID_BIN" notify "weak nonce tolerated, no remote path")"; rc=$?

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 "$ORCHID_BIN" task create T001 "demo"
 assert_eq pending "$(fm() { "$ORCHID_BIN" task show T001 | grep "^status: " | cut -d' ' -f2; }; fm)" "created pending"
@@ -51,7 +52,7 @@ assert_eq "$before_count" "$after_count" "no stray task file left behind by any 
 [ ! -f ".orchid/tasks/plan.md" ] || fail "task set/unblock plan must not have written a task file"
 
 "$ORCHID_BIN" task advance T001 implementing
-rc=0; "$ORCHID_BIN" task advance T001 done 2>/dev/null || rc=$?
+rc=0; "$ORCHID_BIN" task advance T001 "done" 2>/dev/null || rc=$?
 assert_eq 3 "$rc" "illegal transition exits 3"
 
 # journal + reasons
@@ -227,8 +228,8 @@ assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2
 "$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
 
 # edge: merging:done
-"$ORCHID_BIN" task advance T007 done
-assert_eq done "$(t007_status)" "archetype edge merging:done"
+"$ORCHID_BIN" task advance T007 "done"
+assert_eq "done" "$(t007_status)" "archetype edge merging:done"
 
 # -- every edge in feature's declared transition table has now been driven
 # through T007 (pending:implementing, implementing:testing, testing:reviewing,

@@ -30,8 +30,12 @@ if [ "$unborn_head" -eq 1 ]; then
   # be empty apart from .git itself before the root commit is minted. This is
   # a raw directory-listing check, deliberately stronger than `git status
   # --porcelain` below (which would miss a stray file the user's own
-  # not-yet-committed .gitignore happens to exclude).
-  stray="$(cd "$repo" && ls -A | grep -vx '\.git' || true)"
+  # not-yet-committed .gitignore happens to exclude). orchid_list_dir
+  # (lib/common.sh) does the one-level listing with plain globbing --
+  # find(1)'s depth-limiting primaries are not POSIX. `grep -Fxv` exits
+  # nonzero when nothing survives the .git filter, which under `set -e` +
+  # pipefail is exactly the wanted-empty case -- hence `|| true`.
+  stray="$(orchid_list_dir "$repo" | grep -Fxv .git || true)"
   if [ -n "$stray" ]; then
     orchid_die "orchid init --greenfield requires an empty directory (found: $(printf '%s' "$stray" | tr '\n' ' ' | sed 's/ *$//')) — greenfield never adopts a pre-existing pile silently"
   fi

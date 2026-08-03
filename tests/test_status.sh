@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'verify=true\n' > orchid.config
 # init now refuses a dirty tree (Task 8 safety fix): commit the fixture's
@@ -13,7 +13,8 @@ git add -A && git commit -q -m "fixture: config"
 # touching task/status state — mirrors the real operator workflow
 # (docs/specs/operations.md: "Integration branch holds the product").
 git checkout -q orchid/integration
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create T001 demo
 "$ORCHID_BIN" task create T002 dep
 "$ORCHID_BIN" task set T002 depends_on T001
@@ -96,7 +97,8 @@ echo "$content" | grep -qF 'waiting-deps (T001)' || fail "task table must includ
 
 # Atomic write: no leftover tmp artifact beside the page (atomic_write's
 # own mktemp+mv idiom -- confirms the --html path actually used it).
-ls -a "$(dirname "$page")" | grep -q '\.tmp\.' && fail "status --html must not leave a stray atomic-write tmp file behind"
+list_dir_entries "$(dirname "$page")" | grep -q '\.tmp\.' \
+  && fail "status --html must not leave a stray atomic-write tmp file behind"
 
 # Answering a blocker must drop it from the "open blockers" section on the
 # NEXT --html regeneration (it still legitimately appears elsewhere, e.g.

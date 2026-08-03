@@ -190,6 +190,7 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # codex/claude's stdin-`-` trick, needed there because THEIR prompts embed
 # the raw task.md body, which begins with its own "---" frontmatter
 # delimiter) is safe.
+stdout=""; rc=0
 orchid_run_engine_cli "$err_file" stdout rc "-" "-" hermes --safe-mode -t clarify -z "$prompt"
 stderr="$(cat "$err_file")"
 

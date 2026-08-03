@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 # v1-m2 Task 5: this fixture runs T001..T006 through several overlapping
 # lifecycle walks in the SAME repo (several sit in an active status —
@@ -9,7 +9,8 @@ mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "
 # new dispatch gate never interferes with this file's INV-11 evidence
 # assertions.
 printf 'concurrency=10\n' > orchid.config
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # INV-11: evidence is the sole authority — the log must exist, must record
 # the exact command and exit code, and must flip honestly (FAIL -> PASS)

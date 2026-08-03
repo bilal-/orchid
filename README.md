@@ -10,15 +10,16 @@ Works with **Claude Code · Codex · Antigravity · Hermes · OpenClaw**
 (compatibility, not endorsement or partnership — orchid is an independent,
 unaffiliated tool that shells out to each vendor's own CLI).
 
-<!-- SCREENSHOT: hero — orchid status --html open in a browser, a run mid-flight -->
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash
 ```
 
-Running the same line again later is the upgrade command. Flags,
-`--uninstall`, the Homebrew tap, and the git-clone method (for hacking
-on orchid itself): [docs/install.md](./docs/install.md).
+That command stays on the immutable `v1.0.0` release, independent of the
+caller's current directory (including inside a dirty Orchid checkout). To
+upgrade, use the new version's equally pinned URL; following `main` is an
+explicitly labeled development channel. Flags, channels, `--uninstall`, the
+prepared Homebrew tap, and the git-clone method:
+[docs/install.md](./docs/install.md).
 
 > Orchid is in final private dogfooding — the one-liner goes live the day
 > this repo does. Until then, install from a clone
@@ -50,8 +51,6 @@ release rehearsal").
 Full walkthrough: [quickstart.md](./docs/quickstart.md) (existing repo) ·
 [quickstart-greenfield.md](./docs/quickstart-greenfield.md) (new product,
 no code yet).
-
-<!-- SCREENSHOT: phone — Telegram blocker question and the nonce-verified reply -->
 
 ## What makes orchid different
 
@@ -501,13 +500,10 @@ own v1-m4 milestone, not carried over from memory. Summary:
 
 ## Contributing
 
-Community contributions (third-party plugins, an `awesome-orchid` listing,
-issue/PR conventions) are welcomed from public launch — see
-`CONTRIBUTING.md` (published alongside the public repository) once this
-project leaves private dogfooding. Until then, third-party engine/hook/
-role/archetype/notify-channel authorship is fully supported today via the
-[extension points above](#extending-orchid) — you don't need to wait for
-a public listing to build and use your own plugin locally.
+Community contributions are welcome. Start with the deterministic local gate
+and lint policy in [docs/contributing.md](./docs/contributing.md). Third-party
+engine, hook, role, archetype, and notification-channel authorship is fully
+supported through the [extension points above](#extending-orchid).
 
 ## License
 

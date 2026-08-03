@@ -159,7 +159,7 @@ assert_eq "engine produced no changes" "$(jq -r .summary "$d/out/envelope.json")
 
 # --- 6. DRYRUN: implement, no spawn (no claude on PATH at all) -------------
 d="$(build_request dryimpl implement "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun implement: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "dryrun implement: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun implement: status ok"
@@ -167,7 +167,7 @@ assert_eq "dryrun" "$(jq -r .summary "$d/out/envelope.json")" "dryrun implement:
 
 # --- 7. DRYRUN: review, no spawn --------------------------------------------
 d="$(build_request dryreview review "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun review: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "dryrun review: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status ok"
@@ -177,7 +177,7 @@ assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "dryrun review: findi
 
 # --- 7b. DRYRUN: orchestrate, no spawn --------------------------------------
 d="$(build_request dryorch orchestrate "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun orchestrate: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "dryrun orchestrate: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun orchestrate: status ok"
@@ -242,7 +242,7 @@ assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruct
 
 # --- 9. unsupported operation ------------------------------------------------
 d="$(build_request badop research "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "badop: adapter should exit nonzero"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status failed"
@@ -250,7 +250,7 @@ assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status fail
 # --- 9. DRYRUN + unsupported operation: operation gate precedes DRYRUN, so
 # this still fails (no dryrun short-circuit for unknown operations) --------
 d="$(build_request dryimplbadop research "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 rc=0; ORCHID_DRYRUN=1 run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "dryrun badop: adapter should exit nonzero"
 envelope_validate "$d/out/envelope.json" || fail "dryrun badop: envelope invalid"
