@@ -355,6 +355,11 @@ git -C "$pin_repo" archive --format=tar.gz --mtime=1970-01-01T00:00:00Z \
   --prefix=orchid-1.2.3/ --output="$pin_probe" 'HEAD^{tree}'
 pin_expected_sha="$(sha256_file "$pin_probe")"
 write_formula "$pin_repo" 1.2.3 "1111111111111111111111111111111111111111111111111111111111111111"
+# A temporary index is insufficient isolation on its own: `git add` would
+# otherwise persist the dirty formula blob and synthesized trees in the real
+# object database. Both modes must keep every temporary object disposable so
+# this maintenance check also works with read-only repository metadata.
+pin_objects_before="$(git -C "$pin_repo" count-objects -v)"
 rc=0
 pin_check_out="$("$BASH" "$pin_repo/scripts/pin-formula.sh" --check 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "pin-formula --check accepted a stale formula checksum"
@@ -367,5 +372,7 @@ grep -q "sha256 \"$pin_expected_sha\"" "$pin_repo/Formula/orchid.rb" \
   || fail "pin-formula did not pin the exact fixed-point checksum (wanted $pin_expected_sha)"
 "$BASH" "$pin_repo/scripts/pin-formula.sh" --check >/dev/null 2>&1 \
   || fail "pin-formula --check rejects the checksum it just pinned"
+assert_eq "$pin_objects_before" "$(git -C "$pin_repo" count-objects -v)" \
+  "pin-formula leaves the repository object database untouched"
 
 exit 0

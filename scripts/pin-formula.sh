@@ -93,12 +93,33 @@ TMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/orchid-pin-formula.XXXXXX")"
 # Formula/ stays export-ignored in the snapshot -- the fixed-point property
 # this whole script relies on.
 snapshot_index="$TMP_ROOT/index"
-GIT_INDEX_FILE="$snapshot_index" git -C "$ROOT" read-tree --empty
-GIT_INDEX_FILE="$snapshot_index" git -C "$ROOT" add -A -- . ':(exclude).orchid'
-tree="$(GIT_INDEX_FILE="$snapshot_index" git -C "$ROOT" write-tree)"
+snapshot_objects="$TMP_ROOT/objects"
+repository_common_dir="$(git -C "$ROOT" rev-parse --git-common-dir)"
+case "$repository_common_dir" in
+  /*) ;;
+  *) repository_common_dir="$ROOT/$repository_common_dir" ;;
+esac
+repository_objects="$repository_common_dir/objects"
+[ -d "$repository_objects" ] || die "Git object directory not found: $repository_objects"
+mkdir -p "$snapshot_objects"
+
+# A temporary index alone is not isolated: `git add` would still write new
+# blobs into the checkout's real object database. Keep both stores under the
+# disposable temp root and expose the repository's existing objects only as
+# a read-only alternate. This makes pinning work even when .git is read-only
+# and leaves all repository metadata untouched.
+snapshot_git() {
+  GIT_INDEX_FILE="$snapshot_index" \
+  GIT_OBJECT_DIRECTORY="$snapshot_objects" \
+  GIT_ALTERNATE_OBJECT_DIRECTORIES="$repository_objects" \
+    git -C "$ROOT" "$@"
+}
+snapshot_git read-tree --empty
+snapshot_git add -A -- . ':(exclude).orchid'
+tree="$(snapshot_git write-tree)"
 
 archive="$TMP_ROOT/$archive_name"
-git -C "$ROOT" archive --format=tar.gz \
+snapshot_git archive --format=tar.gz \
   --mtime=1970-01-01T00:00:00Z --prefix="$prefix" \
   --output="$archive" "$tree"
 archive_sha="$(sha256_file "$archive")"
