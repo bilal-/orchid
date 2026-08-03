@@ -41,4 +41,3 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y jq shellcheck
       - name: Build and test without publishing
         run: /bin/bash scripts/release.sh --tag "$GITHUB_REF_NAME" --output "$RUNNER_TEMP/orchid-release" --bash /bin/bash
-

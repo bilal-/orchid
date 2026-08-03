@@ -30,6 +30,39 @@ done
 printf '%s\n' "$shell_list" | grep -q '^\.orchid/' \
   && fail "shell discovery must never inspect run state under .orchid"
 
+# Exercise discovery against layouts and shebang forms rather than proving
+# only that today's known files happen to be present. The copied gate has no
+# Git metadata, so this also covers the extracted-archive find fallback.
+discovery_fixture="$WORK/discovery-fixture"
+mkdir -p "$discovery_fixture"/{plugins/example,scripts,skills/example/helpers,templates,tests}
+cp "$CI" "$discovery_fixture/scripts/ci-local.sh"
+printf '%s\n' '#!/usr/bin/env sh' 'exit 0' > "$discovery_fixture/root-helper"
+printf '%s\n' '#!/usr/bin/env -S bash -e' 'exit 0' > "$discovery_fixture/skills/example/helpers/check"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$discovery_fixture/plugins/example/run"
+printf '%s\n' 'exit 0' > "$discovery_fixture/templates/hook.sh"
+printf '%s\n' '#!/usr/bin/env python3' 'pass' > "$discovery_fixture/tests/not-shell"
+chmod +x "$discovery_fixture/root-helper" \
+  "$discovery_fixture/skills/example/helpers/check" \
+  "$discovery_fixture/plugins/example/run"
+fixture_shell_list="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" --list-shell)" \
+  || fail "archive-layout shell discovery failed"
+for expected in root-helper plugins/example/run skills/example/helpers/check templates/hook.sh; do
+  printf '%s\n' "$fixture_shell_list" | grep -qxF "$expected" \
+    || fail "archive-layout shell discovery omitted $expected"
+done
+printf '%s\n' "$fixture_shell_list" | grep -qxF tests/not-shell \
+  && fail "shell discovery included a non-shell executable"
+
+lint_disable='# shellcheck '
+lint_disable="${lint_disable}disable=SC2034"
+printf '%s\n' '#!/usr/bin/env bash' "$lint_disable" 'unused=1' \
+  > "$discovery_fixture/tests/undocumented-exception.sh"
+rc=0
+lint_policy_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "CI accepts an undocumented ShellCheck exception"
+assert_match 'lacks an adjacent rationale' "$lint_policy_out" \
+  "CI explains why an undocumented ShellCheck exception is rejected"
+
 rc=0; "$BASH" "$CI" --bash /bin/false --list-shell >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "ci-local accepts a non-Bash --bash interpreter"
 
@@ -112,6 +145,10 @@ set -eu
 [ ! -e .orchid ]
 [ ! -e Formula ]
 [ -f release/metadata.conf ]
+if [ -n "${ORCHID_TEST_MOVE_TAG_REPO:-}" ]; then
+  [ -n "${ORCHID_TEST_MOVE_TAG_TO:-}" ]
+  git -C "$ORCHID_TEST_MOVE_TAG_REPO" tag -f v1.2.3 "$ORCHID_TEST_MOVE_TAG_TO" >/dev/null
+fi
 echo "archive fixture CI PASS"
 EOF
 printf '%s\n' '# Release fixture' > "$fixture/README.md"
@@ -217,5 +254,21 @@ write_formula "$checksum_repo" 1.2.3 "ffffffffffffffffffffffffffffffffffffffffff
 commit_fixture "$checksum_repo" "break formula checksum"
 git -C "$checksum_repo" tag -f v1.2.3 >/dev/null
 run_release_failure "$checksum_repo" v1.2.3 'formula checksum mismatch' checksum-mismatch
+
+# A tag that changes after its commit has been resolved must fail even though
+# every archive byte came from the originally resolved commit.
+moving_tag_repo="$(clone_fixture moving-tag)"
+printf '%s\n' later > "$moving_tag_repo/later"
+commit_fixture "$moving_tag_repo" "commit available for a moved tag"
+moving_tag_to="$(git -C "$moving_tag_repo" rev-parse HEAD)"
+git -C "$moving_tag_repo" checkout -q --detach v1.2.3
+rc=0
+moving_tag_out="$(ORCHID_TEST_MOVE_TAG_REPO="$moving_tag_repo" \
+  ORCHID_TEST_MOVE_TAG_TO="$moving_tag_to" \
+  "$BASH" "$moving_tag_repo/scripts/release.sh" --tag v1.2.3 \
+  --output "$WORK/fail-moving-tag" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "moving-tag: release unexpectedly succeeded"
+assert_match 'tag moved during release verification' "$moving_tag_out" \
+  "moving-tag: failure reason"
 
 exit 0

@@ -37,13 +37,34 @@ if ! "$BASH_BIN" -c '[ -n "${BASH_VERSION:-}" ] && (( BASH_VERSINFO[0] > 3 || (B
 fi
 
 is_shell_file() {
-  local rel="$1" first=""
+  local rel="$1" first="" shell_command="" token
+  local index=0
+  local -a shebang_words
   case "$rel" in *.sh|*.bash) return 0 ;; esac
   IFS= read -r first < "$ROOT/$rel" || true
-  case "$first" in
-    '#!'*bash*|'#!'*'/sh'|'#!'*'/sh '*) return 0 ;;
-  esac
-  return 1
+  case "$first" in '#!'*) ;; *) return 1 ;; esac
+
+  # Parse the shebang by interpreter name, including the common env and
+  # env -S forms. This keeps extensionless POSIX-sh helpers visible without
+  # relying on a substring match or a directory allowlist.
+  read -r -a shebang_words <<< "${first#\#!}"
+  [ "${#shebang_words[@]}" -gt 0 ] || return 1
+  shell_command="${shebang_words[0]##*/}"
+  if [ "$shell_command" = env ]; then
+    index=1
+    shell_command=""
+    while [ "$index" -lt "${#shebang_words[@]}" ]; do
+      token="${shebang_words[$index]}"
+      case "$token" in
+        --) index=$((index + 1)); [ "$index" -lt "${#shebang_words[@]}" ] || break
+            shell_command="${shebang_words[$index]##*/}"; break ;;
+        -u|--unset|-C|--chdir) index=$((index + 2)); continue ;;
+        -*|*=*) index=$((index + 1)); continue ;;
+        *) shell_command="${token##*/}"; break ;;
+      esac
+    done
+  fi
+  case "$shell_command" in bash|sh) return 0 ;; *) return 1 ;; esac
 }
 
 # Prefer Git's tracked-file set in a checkout. An extracted release archive

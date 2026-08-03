@@ -87,7 +87,7 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
 
     local home="${ORCHID_HOME:-$HOME/.local/share/orchid}"
     local orchid_url="$ORCHID_INSTALL_REPOSITORY"
-    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone tag_before tag_after
+    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone tag_before tag_after development_commit
     for a in "$@"; do [ "$a" = "--uninstall" ] && uninstalling=1; done
 
     # "Already a checkout" is judged by the same two anchor files checked
@@ -124,8 +124,11 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
           }
           git -C "$home" checkout --detach "$tag_after"
         else
-          echo "orchid: DEVELOPMENT channel: updating the moving main branch at $home (git pull --ff-only)"
-          git -C "$home" pull --ff-only
+          echo "orchid: DEVELOPMENT channel: fetching the moving main branch at $home"
+          git -C "$home" fetch --depth 1 origin refs/heads/main
+          development_commit="$(git -C "$home" rev-parse --verify 'FETCH_HEAD^{commit}')"
+          echo "orchid: selecting development snapshot $development_commit"
+          git -C "$home" checkout --detach "$development_commit"
         fi
       fi
     else

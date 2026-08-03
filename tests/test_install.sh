@@ -383,26 +383,30 @@ printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must nev
 # fake checkout: bin/orchid + lib/common.sh (the two anchor files
 # install.sh's own bootstrap-detection checks for) plus a stub install.sh
 # that records the args IT was exec'd with. This proves several things with
-# no network at all: (1) git is invoked as `clone --depth 1 <url> <tmp
-# sibling of ORCHID_HOME>`, never ORCHID_HOME directly (the atomic
+# no network at all: (1) git is invoked as `clone --depth 1 --branch <ref>
+# --single-branch <url> <tmp sibling of ORCHID_HOME>`, never ORCHID_HOME
+# directly (the atomic
 # clone-then-mv pattern -- installer-review.md Finding 1: a `git clone`
 # interrupted partway through, network drop/Ctrl-C/disk full, must never
 # leave ORCHID_HOME itself half-populated, since real git creates .git/
 # before it has fetched every object); (2) the cloned installer is exec'd
 # with the original pass-through args (--prefix, --uninstall); (3) an
-# already-cloned $home takes the `git pull --ff-only` branch instead of
-# cloning again; (4) a STALE/PARTIAL $home (exists on disk but isn't a
-# valid checkout -- exactly what a prior interrupted clone leaves behind)
+# already-cloned $home fetches and detaches at the selected channel's exact
+# commit instead of cloning again; (4) a STALE/PARTIAL $home (exists on disk
+# but isn't a valid checkout -- exactly what a prior interrupted clone leaves
+# behind)
 # is cleaned up and re-cloned into, rather than failing forever with
 # git's own "destination path already exists and is not an empty
 # directory" -- this is what makes docs/install.md's "run the same line
-# again" retry story actually true after a dropped connection.
+# again" retry story actually true after a dropped connection. Existing
+# clones select an exact fetched commit for either the stable tag or the
+# explicitly requested moving development channel.
 # ===========================================================================
 
 # fake_git_bin DIR: writes an executable `git` into DIR that logs every
 # invocation to DIR/../gitlog.txt, fabricates a fake orchid checkout on
-# `clone`, and answers `-C <dir> rev-parse --git-dir` / `-C <dir> pull
-# --ff-only` against whatever fake checkouts already exist on disk (no
+# `clone`, and answers the bootstrap's `-C <dir>` metadata/fetch/checkout
+# calls against whatever fake checkouts already exist on disk (no
 # state of its own -- the filesystem IS the state, same as real git).
 # `-C <dir> config ...` (used by install.sh's stale-clone safety check,
 # review-round-2 fix) delegates to REAL git instead of being faked, so it
@@ -412,8 +416,8 @@ printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must nev
 # real git against a real repo. Anything else (bare `rev-parse`,
 # `worktree`, etc. -- the calls install.sh makes for its OWN unrelated "am
 # I inside a repo to orchestrate" check) also delegates to the real git so
-# the rest of install.sh's behavior stays correct; only clone/-C
-# rev-parse/-C pull (bootstrap's own faked shapes) are faked.
+# the rest of install.sh's behavior stays correct; only clone and bootstrap's
+# own `-C` command shapes are faked.
 fake_git_bin() {
   local dir="$1" gitlog="$2" real_git
   real_git="$(command -v git)"
@@ -436,7 +440,20 @@ INNER
   -C)
     fedir="\$2"; sub="\$3"
     case "\$sub" in
-      rev-parse) [ -d "\$fedir/.git" ] && exit 0 || exit 1 ;;
+      rev-parse)
+        [ -d "\$fedir/.git" ] || exit 1
+        case "\${4:-}" in
+          --git-dir) printf '%s\n' .git ;;
+          --verify)
+            case "\${5:-}" in
+              refs/tags/*) printf '%s\n' 1111111111111111111111111111111111111111 ;;
+              'FETCH_HEAD^{commit}') printf '%s\n' 2222222222222222222222222222222222222222 ;;
+              *) exit 1 ;;
+            esac
+            ;;
+          *) exit 1 ;;
+        esac
+        ;;
       config)
         if [ -f "\$fedir/bin/orchid" ] && [ -f "\$fedir/lib/common.sh" ]; then
           printf '%s\n' 'https://github.com/bilal-/orchid.git'
@@ -444,7 +461,7 @@ INNER
         fi
         exec "$real_git" "\$@"
         ;;
-      pull|status) exit 0 ;;
+      fetch|checkout|pull|status) exit 0 ;;
       *) exec "$real_git" "\$@" ;;
     esac
     ;;
@@ -572,9 +589,25 @@ assert_match "$bs_home_userrepo" "$bs_out2d" "bootstrap (user's own git repo): r
   || fail "bootstrap (user's own git repo): the repo's own remote must be untouched"
 grep -q '^clone' "$bs_gitlog2d" && fail "bootstrap (user's own git repo): must never attempt a clone against a refused path"
 
-# --- already-cloned: same $home already looks like an orchid checkout ->
-# git pull --ff-only, no second clone, and the (stub) installer is still
-# exec'd with the current call's own args.
+# --- already-cloned stable: re-fetch the exact version-tag ref, verify that
+# its object did not move, and detach at that object without re-cloning.
+bs_gitlog_stable="$bs_work/gitlog-stable.txt"; : > "$bs_gitlog_stable"
+bs_gitbin_stable="$bs_work/gitbin-stable"; fake_git_bin "$bs_gitbin_stable" "$bs_gitlog_stable"
+export STUB_INSTALL_RECORD="$bs_work/record-stable.txt"; rm -f "$bs_work/record-stable.txt"
+bs_out_stable="$(PATH="$bs_gitbin_stable:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc_stable=$?
+[ "$bs_rc_stable" -eq 0 ] || fail "bootstrap (existing stable clone): install.sh exits 0 (got rc=$bs_rc_stable, output: $bs_out_stable)"
+grep -q '^clone' "$bs_gitlog_stable" && fail "bootstrap (existing stable clone): must not re-clone"
+assert_match '\-C .* fetch --depth 1 origin refs/tags/v1\.0\.0:refs/tags/v1\.0\.0' "$(cat "$bs_gitlog_stable")" \
+  "bootstrap (existing stable clone): fetches only the immutable stable tag"
+assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog_stable")" \
+  "bootstrap (existing stable clone): detaches at the verified tag object"
+[ -f "$bs_work/record-stable.txt" ] || fail "bootstrap (existing stable clone): cloned installer was not exec'd"
+
+# --- already-cloned development: this starts from the stable clone above,
+# which is detached at a tag. Fetch main explicitly and detach at FETCH_HEAD's
+# exact commit so switching channels never depends on `git pull` having an
+# attached/upstream-configured branch.
 bs_gitlog2="$bs_work/gitlog2.txt"; : > "$bs_gitlog2"
 bs_gitbin2="$bs_work/gitbin2"; fake_git_bin "$bs_gitbin2" "$bs_gitlog2"
 export STUB_INSTALL_RECORD="$bs_work/record2.txt"; rm -f "$bs_work/record2.txt"
@@ -582,7 +615,12 @@ bs_out2="$(PATH="$bs_gitbin2:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/
 bs_rc2=$?
 [ "$bs_rc2" -eq 0 ] || fail "bootstrap (already cloned): install.sh exits 0 (got rc=$bs_rc2, output: $bs_out2)"
 grep -q '^clone' "$bs_gitlog2" && fail "bootstrap (already cloned): must not re-clone an existing checkout ($(cat "$bs_gitlog2"))"
-assert_match '\-C .*pull --ff-only' "$(cat "$bs_gitlog2")" "bootstrap (already cloned): git pull --ff-only run against the existing checkout"
+assert_match '\-C .* fetch --depth 1 origin refs/heads/main' "$(cat "$bs_gitlog2")" \
+  "bootstrap (already cloned): development channel fetches moving main explicitly"
+assert_match '\-C .* checkout --detach 2222222222222222222222222222222222222222' "$(cat "$bs_gitlog2")" \
+  "bootstrap (already cloned): development channel detaches at the exact fetched commit"
+grep -q 'pull --ff-only' "$bs_gitlog2" \
+  && fail "bootstrap (already cloned): development switch must not pull from a detached stable checkout"
 [ -f "$bs_work/record2.txt" ] || fail "bootstrap (already cloned): cloned install.sh was never exec'd on the update path"
 
 # --- bootstrap --uninstall: operates against the canonical clone if
@@ -622,6 +660,6 @@ bs_gitbin5="$bs_work/gitbin5"; fake_git_bin "$bs_gitbin5" "$bs_gitlog5"
 bs_insidecheckout_home="$bs_work/should-never-exist"
 insidecheckout_nogit="$bs_work/insidecheckout-nogit"; mkdir -p "$insidecheckout_nogit"
 bs_out5="$(cd "$insidecheckout_nogit" && PATH="$bs_gitbin5:$PATH" ORCHID_HOME="$bs_insidecheckout_home" "$INSTALL" 2>&1)"
-grep -qE '^clone|pull --ff-only' "$bs_gitlog5" && fail "inside-checkout install.sh must never invoke bootstrap's clone/pull (git calls seen: $(cat "$bs_gitlog5"))"
+grep -qE '^clone|fetch --depth|checkout --detach' "$bs_gitlog5" && fail "inside-checkout install.sh must never invoke bootstrap's clone/fetch/checkout (git calls seen: $(cat "$bs_gitlog5"))"
 [ -e "$bs_insidecheckout_home" ] && fail "inside-checkout install.sh must never create/touch ORCHID_HOME -- bootstrap must not have triggered"
 assert_match "[Nn]ext steps" "$bs_out5" "inside-checkout install.sh (with bootstrap's fake git on PATH) still runs its normal flow, not bootstrap"
