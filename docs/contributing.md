@@ -33,9 +33,19 @@ source a library. A necessary exception must be line-local, name exactly one
 the_one_affected_command
 ```
 
-The CI script rejects missing rationales, multi-code directives, and blanket
-exclusions in `.shellcheckrc`. Test files and generated templates are not
-exempt from lint.
+The CI script rejects missing rationales, multi-code directives, directives
+placed before a file's first command (ShellCheck scopes those to the entire
+file, turning one annotation into a silent baseline), and blanket exclusions
+in `.shellcheckrc`. Test files and generated templates are not exempt from
+lint.
+
+## Portability
+
+Shipped scripts run under whatever `find(1)` the host provides, so the gate
+also rejects find's non-POSIX depth primaries (`-mindepth`/`-maxdepth`).
+One-level directory listings use plain bash globbing instead:
+`orchid_list_dir` in `lib/common.sh` for shipped code, `list_dir_entries` /
+`list_dir_files` in `tests/helpers.sh` for tests.
 
 ## Release rehearsal
 

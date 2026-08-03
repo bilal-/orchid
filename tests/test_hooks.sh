@@ -213,7 +213,7 @@ mkdir -p "$WORK/.orchid/runtime/spool" "$WORK/.orchid/runtime/quarantine"
 printf '{"contract":1,"job_id":"j-bad-hook","task":"T001","operation":"hook","status":"ok","summary":"no artifact here"}' \
   > "$WORK/.orchid/runtime/spool/j-bad-hook.json"
 "$ORCHID_BIN" jobs reconcile >/dev/null
-find "$WORK/.orchid/runtime/quarantine" -type f -maxdepth 1 -exec basename {} \; \
+list_dir_files "$WORK/.orchid/runtime/quarantine" \
   | grep -q "j-bad-hook.json.reason-malformed" \
   || fail "malformed hook envelope (missing artifact) quarantined"
 
@@ -245,7 +245,7 @@ jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
 "$ORCHID_BIN" jobs reconcile >/dev/null
 [ -f "$WORK/.orchid/reviews/T001-a9-reviewer.json" ] \
   || fail "a third-party publisher envelope (.engine=acme/foo, dir=foo) reconciles cleanly, not quarantined"
-find "$WORK/.orchid/runtime/quarantine" -type f -maxdepth 1 -exec basename {} \; \
+list_dir_files "$WORK/.orchid/runtime/quarantine" \
   | grep -q "j-thirdparty.json.reason-mismatch" \
   && fail "a third-party publisher envelope (.engine=acme/foo) must NOT be quarantined as a mismatch"
 

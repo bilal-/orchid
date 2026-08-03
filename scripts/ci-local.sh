@@ -104,9 +104,13 @@ for rel in "${SHELL_FILES[@]}"; do
   "$BASH_BIN" -n "$ROOT/$rel"
 done
 
-# Every suppression must be one code, immediately preceded by a rationale.
-# This prevents a new file-level or multi-code baseline from silently hiding
-# warnings while still permitting a narrow false-positive annotation.
+# Every suppression must be one code, immediately preceded by a rationale,
+# and must not sit ahead of the file's first command: ShellCheck scopes a
+# directive that precedes the first command to the ENTIRE file, so even a
+# well-documented single code placed there becomes a file-wide baseline
+# that silently hides every later instance of that warning. This prevents
+# both that placement and a new multi-code baseline from hiding warnings
+# while still permitting a narrow false-positive annotation.
 echo "== ShellCheck exception policy"
 for rel in "${SHELL_FILES[@]}"; do
   awk -v file="$rel" '
@@ -122,7 +126,12 @@ for rel in "${SHELL_FILES[@]}"; do
         printf "%s:%d: ShellCheck suppression lacks an adjacent rationale\n", file, NR > "/dev/stderr"
         bad = 1
       }
+      if (!seen_command) {
+        printf "%s:%d: ShellCheck suppression precedes the first command, so it would apply file-wide\n", file, NR > "/dev/stderr"
+        bad = 1
+      }
     }
+    !/^[[:space:]]*(#|$)/ { seen_command = 1 }
     { previous = $0 }
     END { exit bad }
   ' "$ROOT/$rel"
@@ -133,6 +142,21 @@ while IFS= read -r rc_file; do
     exit 1
   fi
 done < <(find "$ROOT" \( -path "$ROOT/.git" -o -path "$ROOT/.orchid" \) -prune -o -name .shellcheckrc -type f -print)
+
+# find(1)'s depth-limiting primaries (min/max) are not POSIX, so a shipped
+# script leaning on them ties the suite to one find implementation. One-level
+# listings use plain bash globbing instead (lib/common.sh orchid_list_dir,
+# tests/helpers.sh list_dir_entries/list_dir_files). The pattern is
+# assembled, never written literally, so this gate does not flag itself.
+echo "== Portability policy (POSIX find only)"
+nonportable_find_depth='[-]m'
+nonportable_find_depth="${nonportable_find_depth}(in|ax)depth"
+for rel in "${SHELL_FILES[@]}"; do
+  if grep -En "$nonportable_find_depth" "$ROOT/$rel" >&2; then
+    echo "ci-local: $rel uses a non-POSIX find depth primary — use shell globbing (see tests/helpers.sh list_dir_entries)" >&2
+    exit 1
+  fi
+done
 
 command -v shellcheck >/dev/null 2>&1 || {
   echo "ci-local: shellcheck is required (see docs/contributing.md)" >&2

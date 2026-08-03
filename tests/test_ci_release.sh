@@ -63,6 +63,36 @@ lint_policy_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BAS
 assert_match 'lacks an adjacent rationale' "$lint_policy_out" \
   "CI explains why an undocumented ShellCheck exception is rejected"
 
+# Regression (T004 rework): even a fully-documented suppression is rejected
+# when its directive precedes the file's first command — ShellCheck scopes
+# that placement to the WHOLE file (the lib/common.sh SC2034 defect), so an
+# adjacent rationale alone must not excuse it.
+rm -f "$discovery_fixture/tests/undocumented-exception.sh"
+printf '%s\n' '#!/usr/bin/env bash' \
+  '# ShellCheck rationale: fixture regression for file-wide suppression placement.' \
+  "$lint_disable" 'unused=1' \
+  > "$discovery_fixture/tests/filewide-exception.sh"
+rc=0
+filewide_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "CI accepts a file-wide ShellCheck suppression (directive before the first command)"
+assert_match 'precedes the first command' "$filewide_out" \
+  "CI explains why a file-wide ShellCheck suppression is rejected"
+
+# Regression (T004 rework): a shipped script reintroducing a non-POSIX find
+# depth primary must fail the portability policy. The offending token is
+# assembled at runtime so this test file itself stays clean under the gate.
+rm -f "$discovery_fixture/tests/filewide-exception.sh"
+nonportable_find_use='find . -m'
+nonportable_find_use="${nonportable_find_use}axdepth 1 -type f"
+printf '%s\n' '#!/usr/bin/env bash' "$nonportable_find_use" \
+  > "$discovery_fixture/tests/nonportable-find.sh"
+rc=0
+portability_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "CI accepts a non-POSIX find depth primary"
+assert_match 'non-POSIX find depth primary' "$portability_out" \
+  "CI explains why a non-POSIX find depth primary is rejected"
+rm -f "$discovery_fixture/tests/nonportable-find.sh"
+
 rc=0; "$BASH" "$CI" --bash /bin/false --list-shell >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "ci-local accepts a non-Bash --bash interpreter"
 
@@ -80,6 +110,16 @@ while IFS= read -r shell_file; do
   [ "$shell_file" = tests/test_ci_release.sh ] && continue
   grep -En "$unsafe_mktemp_pattern" "$REPO_ROOT/$shell_file" >/dev/null \
     && fail "a shipped shell script still uses the racy temporary-name pattern: $shell_file"
+done <<< "$shell_list"
+
+# Regression (T004 rework): the live tree itself must stay free of find's
+# non-POSIX depth primaries — the pattern is assembled at runtime, so no
+# shipped file (this one included) needs an exclusion.
+nonportable_find_pattern='[-]m'
+nonportable_find_pattern="${nonportable_find_pattern}(in|ax)depth"
+while IFS= read -r shell_file; do
+  grep -En "$nonportable_find_pattern" "$REPO_ROOT/$shell_file" >/dev/null \
+    && fail "a shipped shell script still uses a non-POSIX find depth primary: $shell_file"
 done <<< "$shell_list"
 
 sha256_file() {

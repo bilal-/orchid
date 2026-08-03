@@ -20,7 +20,7 @@ jid="$(jq -r .job_id "$m")"; sp="$WORK/.orchid/runtime/spool"
 # forged job_id -> quarantine
 printf '{"contract":1,"job_id":"j-forged","task":"T001","operation":"implement","status":"ok","summary":"evil"}' > "$sp/j-forged.json"
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: unknown job_id quarantined"
-find "$WORK/.orchid/runtime/quarantine" -type f -maxdepth 1 | grep -q . \
+list_dir_files "$WORK/.orchid/runtime/quarantine" | grep -q . \
   || fail "INV-03: quarantine dir holds it"
 [ -f "$m" ] || fail "INV-03: manifest untouched by forgery"
 
@@ -42,7 +42,7 @@ printf '{"contract":1,"job_id":"j-forged-repeat","task":"T001","operation":"impl
 "$ORCHID_BIN" jobs reconcile >/dev/null
 printf '{"contract":1,"job_id":"j-forged-repeat","task":"T001","operation":"implement","status":"ok","summary":"evil-2"}' > "$sp/j-repeat.json"
 "$ORCHID_BIN" jobs reconcile >/dev/null
-count="$(find "$qd" -type f -maxdepth 1 -exec basename {} \; | grep -c '^j-repeat\.json\.reason-unknown-job')"
+count="$(list_dir_files "$qd" | grep -c '^j-repeat\.json\.reason-unknown-job')"
 assert_eq "2" "$count" "quarantine: repeat forged filename preserves both copies"
 c1="$(cat "$qd/j-repeat.json.reason-unknown-job" 2>/dev/null)"
 c2="$(cat "$qd/j-repeat.json.reason-unknown-job.2" 2>/dev/null)"

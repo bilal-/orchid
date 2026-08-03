@@ -124,7 +124,7 @@ repo="$WORK/repo"; mkdir -p "$repo"
 git init -q "$repo"
 export ORCHID_REPO="$repo"
 
-only_git="$(find "$repo" -mindepth 1 -maxdepth 1 ! -name .git -exec basename {} \;)"
+only_git="$(list_dir_entries "$repo" | grep -Fxv .git || true)"
 [ -z "$only_git" ] || fail "fixture bug: repo must be empty apart from .git before the greenfield walk starts"
 
 # ---------------------------------------------------------------------------

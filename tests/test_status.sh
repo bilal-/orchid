@@ -97,7 +97,7 @@ echo "$content" | grep -qF 'waiting-deps (T001)' || fail "task table must includ
 
 # Atomic write: no leftover tmp artifact beside the page (atomic_write's
 # own mktemp+mv idiom -- confirms the --html path actually used it).
-find "$(dirname "$page")" -maxdepth 1 -name '*.tmp.*' | grep -q . \
+list_dir_entries "$(dirname "$page")" | grep -q '\.tmp\.' \
   && fail "status --html must not leave a stray atomic-write tmp file behind"
 
 # Answering a blocker must drop it from the "open blockers" section on the

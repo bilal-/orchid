@@ -12,6 +12,26 @@ export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-$GIT_AUTHOR_EMAIL}"
 fail()        { echo "  FAIL: $*"; FAILS=$((FAILS+1)); }
 assert_eq()   { [ "$1" = "$2" ] || fail "$3 (expected '$1', got '$2')"; }
 assert_match(){ echo "$2" | grep -Eq "$1" || fail "$3 (no match '$1')"; }
+# list_dir_entries <dir> / list_dir_files <dir> -- depth-1 entry names
+# (dotfiles included, `.`/`..` never; _files keeps regular files only), one
+# per line. Plain bash globbing, not find(1) depth primaries -- limiting a
+# find walk to one level needs primaries that are not in POSIX find (T004
+# rework; scripts/ci-local.sh's portability policy rejects them repo-wide).
+# Subshell function bodies, so the shopt changes never leak into a test.
+list_dir_entries() (
+  shopt -s nullglob dotglob
+  local entry
+  for entry in "$1"/*; do
+    printf '%s\n' "${entry##*/}"
+  done
+)
+list_dir_files() (
+  shopt -s nullglob dotglob
+  local entry
+  for entry in "$1"/*; do
+    if [ -f "$entry" ]; then printf '%s\n' "${entry##*/}"; fi
+  done
+)
 WORK="$(mktemp -d)"
 # v1-m3 (m2 ledger finding, the stray-commit mishap): if mktemp -d ever
 # fails, WORK ends up "" -- NOT unset, so `set -u` above never catches it.
