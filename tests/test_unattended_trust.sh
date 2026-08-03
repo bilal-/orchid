@@ -71,12 +71,38 @@ assert_match '^git_common_inode: [0-9]+$' "$out" "show surfaces Git common-direc
 assert_match '^acknowledged_at: [0-9]{4}-[0-9]{2}-[0-9]{2}T' "$out" "show surfaces acknowledgement time"
 assert_match "acknowledged_repo: " "$out" "show surfaces the path used when acknowledged"
 assert_match "recorded_root_commit: $root" "$out" "record binds the repository root commit"
+assert_match '^recorded_schema: 2$' "$out" "record uses the incarnation-anchor schema"
+assert_match '^recorded_identity_anchor_device: [0-9]+$' "$out" \
+  "record binds the machine-local incarnation anchor device"
+assert_match '^recorded_identity_anchor_inode: [0-9]+$' "$out" \
+  "record binds the machine-local incarnation anchor inode"
 record="$(printf '%s\n' "$out" | sed -n 's/^record: //p')"
+anchor="$(printf '%s\n' "$out" | sed -n 's/^identity_anchor: //p')"
+witness="$(printf '%s\n' "$out" | sed -n 's/^identity_witness: //p')"
 case "$record" in
   "$home_physical"/.orchid/unattended-trust/*.json) ;;
   *) fail "record must live under the operator HOME, outside the repo (got '$record')" ;;
 esac
 [ -f "$record" ] || fail "show's machine-local record path must exist"
+case "$anchor" in
+  "$home_physical"/.orchid/unattended-trust/*.anchor) ;;
+  *) fail "identity anchor must live under the operator HOME (got '$anchor')" ;;
+esac
+[ -f "$anchor" ] || fail "show's machine-local identity anchor must exist"
+[ "$witness" = "$(cd "$repo/.git" && pwd -P)/description" ] \
+  || fail "identity witness must be Git's stable common-directory description file"
+if anchor_ident="$(stat -f '%d %i' "$anchor" 2>/dev/null)"; then
+  witness_ident="$(stat -f '%d %i' "$witness")"
+  anchor_links="$(stat -f '%l' "$anchor")"
+else
+  anchor_ident="$(stat -c '%d %i' "$anchor")"
+  witness_ident="$(stat -c '%d %i' "$witness")"
+  anchor_links="$(stat -c '%h' "$anchor")"
+fi
+assert_eq "$anchor_ident" "$witness_ident" \
+  "outside anchor and common-directory witness are the same inode"
+assert_eq 2 "$anchor_links" \
+  "incarnation witness has exactly its Git and machine-local hard links"
 [ ! -e "$repo/.orchid/unattended-trust.json" ] \
   || fail "unattended trust must never write a record inside the repo"
 
@@ -241,6 +267,19 @@ HOME="$home" "$ORCHID_BIN" trust unattended "$copied_linked" \
   --reason "copy must get its own identity" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a copied linked worktree must not be acknowledgeable through the original registration"
 
+# A trailing newline is a valid and distinct sibling name. Lossy `pwd`
+# command substitution used to collapse this copied path onto the registered,
+# trusted sibling before the reciprocal comparison even ran.
+newline_copied_linked="${linked}"$'\n'
+cp -R "$linked" "$newline_copied_linked"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$newline_copied_linked")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a newline-suffixed copied worktree cannot collapse onto its trusted sibling"
+assert_match '^binding_state: unavailable$' "$out" \
+  "the newline-suffixed copy fails the reciprocal caller-path binding"
+assert_match 'caller-selected worktree path does not match the linked-worktree registration' "$out" \
+  "newline-suffixed copied-worktree refusal names the exact path mismatch"
+
 # Machine-local state outside the selected checkout can still be inside a
 # sibling checkout sharing the same common directory. Such state is trackable
 # by the repository and must be rejected before it can authorize any sibling.
@@ -304,6 +343,32 @@ cp -R "$repo" "$copy"
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$copy")"
 assert_match '^unattended trust: untrusted$' "$out" "filesystem copy is untrusted"
 
+# Canonical-path capture must retain trailing newlines. Without lossless
+# framing around `pwd`, the untrusted path below collapses onto its trusted
+# sibling and the sibling's common-directory acknowledgement is reused.
+newline_trusted="$WORK/newline-sibling"
+newline_untrusted="${newline_trusted}"$'\n'
+mk_repo "$newline_trusted"
+mk_repo "$newline_untrusted"
+trust_repo "$newline_trusted" "trusted sibling only"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$newline_untrusted")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a newline-suffixed untrusted repo cannot collapse onto a trusted sibling"
+assert_match '^gate: denied$' "$out" \
+  "the losslessly distinct newline-suffixed repository remains gated"
+
+# Git itself permits newlines inside both sides of a linked-worktree
+# registration. Whole-file pointer parsing and lossless canonicalization must
+# retain them while still enforcing the reciprocal caller-path binding.
+newline_main="$WORK/newline-main"$'\n'
+newline_linked="$WORK/newline-linked"$'\n'
+mk_repo "$newline_main"
+trust_repo "$newline_main" "newline-linked fixture"
+git -C "$newline_main" worktree add -q --detach "$newline_linked" HEAD
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$newline_linked")"
+assert_match '^unattended trust: trusted$' "$out" \
+  "linked-worktree trust preserves newlines in common and registered paths"
+
 # ---------------------------------------------------------------------------
 # Path independence: moving the same common directory on one filesystem keeps
 # its device/inode and therefore its acknowledgement.
@@ -334,6 +399,55 @@ git -C "$replace_repo" init -q
 git -C "$replace_repo" commit -q --allow-empty -m replacement-root
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$replace_repo")"
 assert_match '^unattended trust: untrusted$' "$out" "replacement/recreated .git is untrusted"
+
+# Device/inode numbers can eventually be reused after a directory is removed.
+# Recreate a clone at the exact acknowledged root, then interpose only the
+# common-directory stat result to emulate that reuse deterministically. The
+# old machine-local JSON key, common-directory identity, root history, and
+# policy all match; the non-reusable hard-link anchor must still distinguish
+# the new clone from the moved-away repository incarnation.
+reuse_repo="$WORK/reused-identity-repo"
+reuse_seed="$WORK/reused-identity-seed"
+reuse_old="$WORK/reused-identity-old"
+mk_repo "$reuse_repo"
+trust_repo "$reuse_repo" "original repository incarnation"
+reuse_out="$(HOME="$home" "$ORCHID_BIN" trust show "$reuse_repo")"
+reuse_device="$(printf '%s\n' "$reuse_out" | sed -n 's/^git_common_device: //p')"
+reuse_inode="$(printf '%s\n' "$reuse_out" | sed -n 's/^git_common_inode: //p')"
+reuse_common="$(printf '%s\n' "$reuse_out" | sed -n 's/^git_common_dir: //p')"
+reuse_root="$(git -C "$reuse_repo" rev-parse HEAD)"
+git clone -q "$reuse_repo" "$reuse_seed"
+mv "$reuse_repo" "$reuse_old"
+git clone -q "$reuse_seed" "$reuse_repo"
+assert_eq "$reuse_root" "$(git -C "$reuse_repo" rev-parse HEAD)" \
+  "recreated-clone fixture must preserve the acknowledged root history"
+
+fake_stat_bin="$WORK/reused-identity-bin"
+mkdir -p "$fake_stat_bin"
+printf '%s\n' \
+  '#!/usr/bin/env bash' \
+  'if [ "$#" -eq 3 ] && [ "$1" = -f ] && [ "$2" = "%d %i" ] && [ "$3" = "$ORCHID_TEST_REUSED_COMMON" ]; then' \
+  '  printf "%s\\n" "$ORCHID_TEST_REUSED_IDENT"' \
+  '  exit 0' \
+  'fi' \
+  'exec "$ORCHID_TEST_REAL_STAT" "$@"' \
+  >"$fake_stat_bin/stat"
+chmod +x "$fake_stat_bin/stat"
+real_stat="$(command -v stat)"
+out="$(
+  HOME="$home" \
+  PATH="$fake_stat_bin:$PATH" \
+  ORCHID_TEST_REAL_STAT="$real_stat" \
+  ORCHID_TEST_REUSED_COMMON="$reuse_common" \
+  ORCHID_TEST_REUSED_IDENT="$reuse_device $reuse_inode" \
+  "$ORCHID_BIN" trust show "$reuse_repo"
+)"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a recreated clone stays untrusted when common-directory device/inode are reused"
+assert_match '^binding_state: mismatch$' "$out" \
+  "reused numeric filesystem identity is rejected as another repository incarnation"
+assert_match 'repository incarnation anchor is missing or does not match' "$out" \
+  "recreated-clone refusal identifies the non-reusable incarnation binding"
 
 # Replacing root history in the SAME common directory produces a named
 # mismatch rather than silently inheriting the old acknowledgement.
@@ -444,6 +558,8 @@ assert_eq 0 "$rc" "trust revoke succeeds from a linked worktree"
 assert_match '^unattended trust revoked:' "$out" "revoke prints confirmation"
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$repo")"
 assert_match '^unattended trust: untrusted$' "$out" "revoke disables the main checkout too"
+[ ! -e "$anchor" ] || fail "revoke removes the outside incarnation anchor"
+[ -f "$witness" ] || fail "revoke leaves Git's existing identity witness untouched"
 out="$(HOME="$home" "$ORCHID_BIN" trust revoke "$repo")"; rc=$?
 assert_eq 0 "$rc" "revoke is idempotent"
 assert_match 'already absent' "$out" "idempotent revoke names the absent record"

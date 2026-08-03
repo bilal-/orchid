@@ -11,13 +11,16 @@ usage:
   orchid trust revoke [<repo>]
 
 Unattended trust is an operator-authored, machine-local acknowledgement of
-the prompt-injection risk presented by a target repository. Records live
-outside the repository and bind to Git common-directory device/inode, the
-repository root commit, and the current trust-policy version. Linked
+the prompt-injection risk presented by a target repository. Records and their
+identity anchors live outside the repository. Validation binds Git
+common-directory device/inode, a hard-linked common-directory witness inode,
+the repository root commit, and the current trust-policy version. Linked
 worktrees share a record; repository paths, origins, tracked content, Git
-config, and orchid.config never grant trust. A usable record must also be an
-operator-owned, single-link regular file that is not writable by group or
-other; symbolic links and hard-link aliases fail closed.
+config, and orchid.config never grant trust. The trust store and repository
+must be on one filesystem so the non-reusable anchor can be hard-linked. A
+usable JSON record is an operator-owned, single-link regular file without
+group/other write permission; record symlinks and hard-link aliases fail
+closed.
 EOF
 }
 

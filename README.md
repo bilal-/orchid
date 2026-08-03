@@ -454,9 +454,9 @@ wiring up a real CLI: [docs/engines/](./docs/engines/).
 - **Plugin trust record** — a digest-pinned entry outside the repo that
   enables one repo-local plugin.
 - **Unattended trust record** — an operator-authored machine-local
-  acknowledgement, bound to Git common-directory filesystem identity, root
-  history, and policy version; it enables the pump/tick boundary, not code
-  safety.
+  acknowledgement, bound to Git common-directory and non-reusable witness
+  filesystem identities, root history, and policy version; it enables the
+  pump/tick boundary, not code safety.
 - **Hook** — a named lifecycle extension point with a typed payload.
 
 ## FAQ

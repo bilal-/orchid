@@ -8,23 +8,65 @@
 # whole target repository. Its records live outside every repository under
 # ~/.orchid/unattended-trust/.
 #
-# A record is bound to three facts that repository-controlled content cannot
-# grant:
+# A record is bound to four facts. None grants trust by itself; the matching
+# operator-authored record and anchor remain outside the repository:
 #   * the filesystem identity (device + inode) of Git's common directory;
+#   * a machine-local hard-link anchor to that directory's stable witness file;
 #   * the root commit(s) reachable from the target worktree's HEAD; and
 #   * this in-code policy version.
 #
 # The common directory, rather than a checkout path or per-worktree gitdir,
 # makes linked worktrees share one acknowledgement. Device/inode, rather than
-# a path, keeps a same-filesystem rename trusted. A clone, copy, replacement
-# common directory, root-history replacement, or policy-version bump no longer
-# matches. Origin URLs, git config, orchid.config, and tracked files are never
-# consulted.
+# a path, keeps a same-filesystem rename trusted. The anchor keeps the
+# common-directory witness inode allocated after repository replacement, so
+# even reuse of the directory's device/inode cannot resurrect an old
+# acknowledgement. A clone, copy, replacement common directory, root-history
+# replacement, or policy-version bump no longer matches. Origin URLs, Git
+# config, orchid.config, and tracked files are never consulted.
 
 # Security constant: always overwrite an inherited environment value. An
 # environment variable must not be able to select an older trust policy.
 ORCHID_UNATTENDED_TRUST_POLICY_VERSION=1
-ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA=1
+ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA=2
+ORCHID_UNATTENDED_IDENTITY_WITNESS_NAME=description
+
+# Command substitution removes every trailing newline from its output. That is
+# unsafe for filesystem values: a directory named "repo\n" is distinct from
+# its sibling "repo". Append a non-newline framing byte inside the substitution
+# so Bash preserves the payload, then remove only that byte. The line variant
+# removes exactly one producer-added newline and therefore retains every
+# newline that is part of the value itself. Valid filesystem names cannot
+# contain NUL, but they can contain the framing byte; removing only the final
+# byte preserves one supplied by the producer.
+_unattended_capture_stdout() {
+  local __orchid_capture_target="$1" __orchid_capture_value
+  local __orchid_capture_status __orchid_capture_marker=$'\036'
+  shift
+  __orchid_capture_value="$(
+    "$@"
+    __orchid_capture_status=$?
+    printf '%s' "$__orchid_capture_marker"
+    exit "$__orchid_capture_status"
+  )" || return 1
+  case "$__orchid_capture_value" in
+    *"$__orchid_capture_marker")
+      __orchid_capture_value="${__orchid_capture_value%"$__orchid_capture_marker"}"
+      ;;
+    *) return 1 ;;
+  esac
+  printf -v "$__orchid_capture_target" '%s' "$__orchid_capture_value"
+}
+
+_unattended_capture_line() {
+  local __orchid_line_target="$1" __orchid_line_value
+  shift
+  _unattended_capture_stdout __orchid_line_value "$@" || return 1
+  case "$__orchid_line_value" in
+    *$'\n') __orchid_line_value="${__orchid_line_value%$'\n'}" ;;
+    *) return 1 ;;
+  esac
+  printf -v "$__orchid_line_target" '%s' "$__orchid_line_value"
+}
 
 _unattended_trust_dir() {
   [ -n "${HOME:-}" ] || return 1
@@ -76,23 +118,26 @@ _unattended_path_within() {
 _unattended_trust_dir_physical() {
   local home orchid_dir trust_dir
   [ -n "${HOME:-}" ] && [ -d "$HOME" ] || return 1
-  home="$(cd "$HOME" 2>/dev/null && pwd -P)" || return 1
+  _unattended_capture_line home _unattended_repo_canon "$HOME" || return 1
   orchid_dir="$home/.orchid"
   if [ -e "$orchid_dir" ] || [ -L "$orchid_dir" ]; then
     [ -d "$orchid_dir" ] || return 1
-    orchid_dir="$(cd "$orchid_dir" 2>/dev/null && pwd -P)" || return 1
+    _unattended_capture_line orchid_dir _unattended_repo_canon "$orchid_dir" \
+      || return 1
   fi
   trust_dir="$orchid_dir/unattended-trust"
   if [ -e "$trust_dir" ] || [ -L "$trust_dir" ]; then
     [ -d "$trust_dir" ] || return 1
-    trust_dir="$(cd "$trust_dir" 2>/dev/null && pwd -P)" || return 1
+    _unattended_capture_line trust_dir _unattended_repo_canon "$trust_dir" \
+      || return 1
   fi
   printf '%s\n' "$trust_dir"
 }
 
 _unattended_git_common_dir() {
   local repo="$1" raw
-  raw="$(_unattended_git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 1
+  _unattended_capture_line raw _unattended_git -C "$repo" \
+    rev-parse --git-common-dir 2>/dev/null || return 1
   case "$raw" in
     /*) ( cd "$raw" 2>/dev/null && pwd -P ) ;;
     *)  ( cd "$repo/$raw" 2>/dev/null && pwd -P ) ;;
@@ -105,7 +150,7 @@ _unattended_git_common_dir() {
 # hide that HOME's trust store is elsewhere inside the real checkout.
 _unattended_worktree_root() {
   local path
-  path="$(_unattended_repo_canon "$1")" || return 1
+  _unattended_capture_line path _unattended_repo_canon "$1" || return 1
   while :; do
     if [ -d "$path/.git" ] || [ -f "$path/.git" ]; then
       printf '%s\n' "$path"
@@ -118,20 +163,16 @@ _unattended_worktree_root() {
   return 1
 }
 
-# Read one metadata line without silently accepting a second line. Git's
-# .git/gitdir pointer formats are line based, so a newline in a purported path
-# is malformed rather than another spelling of the same registration.
-_unattended_read_single_line() {
-  local path="$1" line="" extra=""
-  {
-    IFS= read -r line || [ -n "$line" ] || return 1
-    if IFS= read -r extra || [ -n "$extra" ]; then
-      return 1
-    fi
-  } <"$path"
-  case "$line" in *$'\r') line="${line%$'\r'}" ;; esac
-  [ -n "$line" ] || return 1
-  printf '%s\n' "$line"
+# Git's .git/gitdir pointer files contain one path value plus a final framing
+# newline, but the value itself may contain newlines because those are valid
+# filesystem bytes. Read the whole file, remove exactly one Git-added newline,
+# and add exactly one output newline for _unattended_capture_line to remove.
+_unattended_read_git_path_file() {
+  local path="$1" value
+  _unattended_capture_stdout value cat "$path" 2>/dev/null || return 1
+  case "$value" in *$'\n') value="${value%$'\n'}" ;; esac
+  [ -n "$value" ] || return 1
+  printf '%s\n' "$value"
 }
 
 _unattended_resolve_directory() {
@@ -155,7 +196,7 @@ _unattended_resolve_git_marker() {
   [ "${candidate##*/}" = .git ] || return 1
   parent="${candidate%/*}"
   [ -n "$parent" ] || parent=/
-  parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 1
+  _unattended_capture_line parent _unattended_repo_canon "$parent" || return 1
   candidate="${parent%/}/.git"
   [ ! -L "$candidate" ] && [ -f "$candidate" ] || return 1
   printf '%s\n' "$candidate"
@@ -180,8 +221,8 @@ _unattended_worktree_marker_validate() {
   fi
   if [ -d "$marker" ]; then
     ORCHID_UNATTENDED_WORKTREE_MARKER_KIND=directory
-    ORCHID_UNATTENDED_WORKTREE_GITDIR="$(cd "$marker" 2>/dev/null && pwd -P)" \
-      || return 1
+    _unattended_capture_line ORCHID_UNATTENDED_WORKTREE_GITDIR \
+      _unattended_repo_canon "$marker" || return 1
     return 0
   fi
   if [ ! -f "$marker" ]; then
@@ -189,7 +230,7 @@ _unattended_worktree_marker_validate() {
     return 1
   fi
 
-  line="$(_unattended_read_single_line "$marker")" || {
+  _unattended_capture_line line _unattended_read_git_path_file "$marker" || {
     ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git pointer is malformed"
     return 1
   }
@@ -204,7 +245,7 @@ _unattended_worktree_marker_validate() {
     ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git pointer is empty"
     return 1
   }
-  gitdir="$(_unattended_resolve_directory "$root" "$raw")" || {
+  _unattended_capture_line gitdir _unattended_resolve_directory "$root" "$raw" || {
     ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git pointer is inaccessible"
     return 1
   }
@@ -212,11 +253,13 @@ _unattended_worktree_marker_validate() {
     ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree is not backed by a linked-worktree registration"
     return 1
   }
-  registered_line="$(_unattended_read_single_line "$gitdir/gitdir")" || {
+  _unattended_capture_line registered_line \
+    _unattended_read_git_path_file "$gitdir/gitdir" || {
     ORCHID_UNATTENDED_BOUNDARY_DETAIL="the linked-worktree registration is malformed"
     return 1
   }
-  registered="$(_unattended_resolve_git_marker "$gitdir" "$registered_line")" || {
+  _unattended_capture_line registered \
+    _unattended_resolve_git_marker "$gitdir" "$registered_line" || {
     ORCHID_UNATTENDED_BOUNDARY_DETAIL="the linked-worktree registration does not name an accessible .git marker"
     return 1
   }
@@ -244,11 +287,13 @@ _unattended_worktree_marker_matches_common() {
       }
       ;;
     linked)
-      worktrees="$(cd "$common/worktrees" 2>/dev/null && pwd -P)" || {
+      _unattended_capture_line worktrees \
+        _unattended_repo_canon "$common/worktrees" || {
         ORCHID_UNATTENDED_BOUNDARY_DETAIL="Git's common directory has no linked-worktree registry"
         return 1
       }
-      gitdir_parent="$(cd "$ORCHID_UNATTENDED_WORKTREE_GITDIR/.." 2>/dev/null && pwd -P)" \
+      _unattended_capture_line gitdir_parent \
+        _unattended_repo_canon "$ORCHID_UNATTENDED_WORKTREE_GITDIR/.." \
         || return 1
       [ "$gitdir_parent" = "$worktrees" ] || {
         ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree is not registered under Git's common directory"
@@ -280,7 +325,8 @@ _unattended_trust_store_outside_registered_worktrees() {
     case "$field" in
       "worktree "*)
         raw="${field#worktree }"
-        registered="$(_unattended_repo_canon "$raw")" || continue
+        _unattended_capture_line registered _unattended_repo_canon "$raw" \
+          || continue
         if _unattended_path_within "$registered" "$trust_dir"; then
           ORCHID_UNATTENDED_BOUNDARY_DETAIL="machine-local unattended-trust directory resolves inside registered worktree $registered; use an operator HOME outside every worktree sharing this Git common directory"
           return 1
@@ -373,6 +419,119 @@ _unattended_record_atomic_write() {
   return 1
 }
 
+# Replace one already-staged regular file without following a destination
+# symlink. Used to publish the outside repository-incarnation anchor link.
+_unattended_file_atomic_replace() {
+  local source="$1" destination="$2"
+  if [ -d "$destination" ] && [ ! -L "$destination" ]; then
+    return 1
+  fi
+  if mv -h "$source" "$destination" 2>/dev/null; then
+    return 0
+  fi
+  mv -T "$source" "$destination" 2>/dev/null
+}
+
+# Rotate the incarnation anchor used by a newly authored acknowledgement. The
+# repository-side witness is Git's normally stable, untracked common-directory
+# `description` file; the command never writes its contents or adds an in-repo
+# trust record. Its second link lives beside the machine-local JSON record.
+# Deleting/replacing the repository cannot make the witness inode reusable
+# while that outside link exists. A copied common directory and a fresh clone
+# get different witness inodes. Requiring a hard link also fails closed when
+# HOME and the repository are on different filesystems, where portable shell
+# tools cannot provide the non-reuse guarantee.
+_unattended_identity_anchor_rotate() {
+  local anchor="$1" witness="$2"
+  local stage ident meta links existing_anchor_ident=""
+  ORCHID_UNATTENDED_ANCHOR_ERROR=""
+
+  [ ! -L "$witness" ] && [ -f "$witness" ] && [ -O "$witness" ] || {
+    ORCHID_UNATTENDED_ANCHOR_ERROR="Git's common-directory identity witness must be an operator-owned regular file"
+    return 1
+  }
+  _unattended_capture_line ident _unattended_fs_identity "$witness" || {
+    ORCHID_UNATTENDED_ANCHOR_ERROR="cannot inspect Git's common-directory identity witness"
+    return 1
+  }
+  _unattended_capture_line meta \
+    _unattended_file_security_metadata "$witness" || {
+    ORCHID_UNATTENDED_ANCHOR_ERROR="cannot inspect Git's common-directory identity witness permissions"
+    return 1
+  }
+  links="${meta%% *}"
+  if [ $((8#${meta#* } & 022)) -ne 0 ]; then
+    ORCHID_UNATTENDED_ANCHOR_ERROR="Git's common-directory identity witness is writable by group or other"
+    return 1
+  fi
+  if [ ! -L "$anchor" ] && [ -f "$anchor" ]; then
+    _unattended_capture_line existing_anchor_ident \
+      _unattended_fs_identity "$anchor" || existing_anchor_ident=""
+  fi
+  if [ "$links" = 2 ] && [ "$existing_anchor_ident" = "$ident" ]; then
+    ORCHID_UNATTENDED_ANCHOR_DEVICE="${ident%% *}"
+    ORCHID_UNATTENDED_ANCHOR_INODE="${ident#* }"
+    return 0
+  fi
+  if [ "$links" != 1 ]; then
+    ORCHID_UNATTENDED_ANCHOR_ERROR="Git's common-directory identity witness has an unexpected hard-link alias"
+    return 1
+  fi
+
+  stage="$(mktemp -d "$ORCHID_UNATTENDED_TRUST_DIR/.identity-stage.XXXXXX")" \
+    || {
+      ORCHID_UNATTENDED_ANCHOR_ERROR="cannot stage the machine-local repository-incarnation anchor"
+      return 1
+    }
+  if ! ln "$witness" "$stage/anchor" 2>/dev/null; then
+    rmdir "$stage" 2>/dev/null || true
+    ORCHID_UNATTENDED_ANCHOR_ERROR="the trust store and Git common directory must be on the same filesystem to create a non-reusable identity anchor"
+    return 1
+  fi
+
+  if ! _unattended_file_atomic_replace "$stage/anchor" "$anchor"; then
+    rm -f "$stage/anchor"
+    rmdir "$stage" 2>/dev/null || true
+    ORCHID_UNATTENDED_ANCHOR_ERROR="cannot publish the machine-local repository-incarnation anchor"
+    return 1
+  fi
+  rmdir "$stage" 2>/dev/null || true
+
+  ORCHID_UNATTENDED_ANCHOR_DEVICE="${ident%% *}"
+  ORCHID_UNATTENDED_ANCHOR_INODE="${ident#* }"
+  return 0
+}
+
+# Validate both names of the non-reusable anchor and bind them to the identity
+# recorded by the operator-authored JSON. The exact link count ensures neither
+# tracked data nor an additional local alias can stand in for the pair.
+_unattended_identity_anchor_matches() {
+  local anchor="$ORCHID_UNATTENDED_IDENTITY_ANCHOR"
+  local witness="$ORCHID_UNATTENDED_IDENTITY_WITNESS"
+  local anchor_ident witness_ident anchor_meta witness_meta
+  [ ! -L "$anchor" ] && [ -f "$anchor" ] && [ -O "$anchor" ] || return 1
+  [ ! -L "$witness" ] && [ -f "$witness" ] && [ -O "$witness" ] || return 1
+  _unattended_capture_line anchor_ident _unattended_fs_identity "$anchor" \
+    || return 1
+  _unattended_capture_line witness_ident _unattended_fs_identity "$witness" \
+    || return 1
+  [ "$anchor_ident" = "$witness_ident" ] || return 1
+  [ "$anchor_ident" = "$ORCHID_UNATTENDED_RECORDED_ANCHOR_DEVICE $ORCHID_UNATTENDED_RECORDED_ANCHOR_INODE" ] \
+    || return 1
+  _unattended_capture_line anchor_meta \
+    _unattended_file_security_metadata "$anchor" || return 1
+  _unattended_capture_line witness_meta \
+    _unattended_file_security_metadata "$witness" || return 1
+  [ "$anchor_meta" = "$witness_meta" ] || return 1
+  [ "${anchor_meta%% *}" = 2 ] || return 1
+  [ $((8#${anchor_meta#* } & 022)) -eq 0 ]
+}
+
+_unattended_json_value() {
+  local json="$1" expression="$2"
+  printf '%s' "$json" | jq -j "$expression"
+}
+
 _unattended_root_commit() {
   local repo="$1"
   # Most repositories have exactly one root. Joining a sorted set also
@@ -397,21 +556,25 @@ _unattended_identity_still_matches() {
   local common ident root worktree expected_kind expected_gitdir
   expected_kind="$ORCHID_UNATTENDED_WORKTREE_MARKER_KIND"
   expected_gitdir="$ORCHID_UNATTENDED_WORKTREE_GITDIR"
-  worktree="$(_unattended_worktree_root "$ORCHID_UNATTENDED_REPO")" || return 1
+  _unattended_capture_line worktree \
+    _unattended_worktree_root "$ORCHID_UNATTENDED_REPO" || return 1
   [ "$worktree" = "$ORCHID_UNATTENDED_WORKTREE_ROOT" ] || return 1
   _unattended_worktree_marker_validate "$worktree" || return 1
   [ "$ORCHID_UNATTENDED_WORKTREE_MARKER_KIND" = "$expected_kind" ] || return 1
   [ "$ORCHID_UNATTENDED_WORKTREE_GITDIR" = "$expected_gitdir" ] || return 1
-  common="$(_unattended_git_common_dir "$ORCHID_UNATTENDED_REPO")" || return 1
+  _unattended_capture_line common \
+    _unattended_git_common_dir "$ORCHID_UNATTENDED_REPO" || return 1
   [ "$common" = "$ORCHID_UNATTENDED_COMMON_DIR" ] || return 1
   _unattended_worktree_marker_matches_common "$common" || return 1
   _unattended_trust_store_validate \
     "$ORCHID_UNATTENDED_REPO" "$worktree" "$common" \
     "$ORCHID_UNATTENDED_TRUST_DIR" || return 1
-  ident="$(_unattended_fs_identity "$common")" || return 1
+  _unattended_capture_line ident _unattended_fs_identity "$common" || return 1
   [ "$ident" = "$ORCHID_UNATTENDED_DEVICE $ORCHID_UNATTENDED_INODE" ] || return 1
-  root="$(_unattended_root_commit "$ORCHID_UNATTENDED_REPO")" || return 1
-  [ "$root" = "$ORCHID_UNATTENDED_ROOT_COMMIT" ]
+  _unattended_capture_line root \
+    _unattended_root_commit "$ORCHID_UNATTENDED_REPO" || return 1
+  [ "$root" = "$ORCHID_UNATTENDED_ROOT_COMMIT" ] || return 1
+  _unattended_identity_anchor_matches
 }
 
 # Confirm that the exact regular file parsed below is still present and
@@ -422,11 +585,12 @@ _unattended_record_still_matches() {
   local path="$1" expected_ident="$2" expected_meta="$3" expected_json="$4"
   local ident meta json
   [ ! -L "$path" ] && [ -f "$path" ] && [ -O "$path" ] || return 1
-  ident="$(_unattended_fs_identity "$path")" || return 1
+  _unattended_capture_line ident _unattended_fs_identity "$path" || return 1
   [ "$ident" = "$expected_ident" ] || return 1
-  meta="$(_unattended_file_security_metadata "$path")" || return 1
+  _unattended_capture_line meta \
+    _unattended_file_security_metadata "$path" || return 1
   [ "$meta" = "$expected_meta" ] || return 1
-  json="$(cat "$path" 2>/dev/null)" || return 1
+  _unattended_capture_stdout json cat "$path" 2>/dev/null || return 1
   [ "$json" = "$expected_json" ]
 }
 
@@ -438,6 +602,7 @@ _unattended_record_still_matches() {
 # refusal. This function is read-only.
 unattended_trust_inspect() {
   local repo_in="$1" ident rec_schema rec_kind rec_device rec_inode rec_policy rec_root
+  local rec_anchor_device rec_anchor_inode
   local trust_dir trust_dir_physical rec_meta rec_links rec_mode record_ident record_json
   local provenance_valid=0
 
@@ -453,6 +618,10 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_ROOT_COMMIT=""
   ORCHID_UNATTENDED_TRUST_DIR=""
   ORCHID_UNATTENDED_RECORD=""
+  ORCHID_UNATTENDED_IDENTITY_ANCHOR=""
+  ORCHID_UNATTENDED_IDENTITY_WITNESS=""
+  ORCHID_UNATTENDED_ANCHOR_DEVICE=""
+  ORCHID_UNATTENDED_ANCHOR_INODE=""
   ORCHID_UNATTENDED_RECORD_EXISTS=0
   ORCHID_UNATTENDED_RECORD_LOADED=0
   ORCHID_UNATTENDED_RECORDED_REPO=""
@@ -461,16 +630,20 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_RECORDED_KIND=""
   ORCHID_UNATTENDED_RECORDED_DEVICE=""
   ORCHID_UNATTENDED_RECORDED_INODE=""
+  ORCHID_UNATTENDED_RECORDED_ANCHOR_DEVICE=""
+  ORCHID_UNATTENDED_RECORDED_ANCHOR_INODE=""
   ORCHID_UNATTENDED_RECORDED_ROOT_COMMIT=""
   ORCHID_UNATTENDED_RECORDED_POLICY_VERSION=""
   ORCHID_UNATTENDED_ACKNOWLEDGED_AT=""
   ORCHID_UNATTENDED_REASON=""
 
-  if ! ORCHID_UNATTENDED_REPO="$(_unattended_repo_canon "$repo_in")"; then
+  if ! _unattended_capture_line ORCHID_UNATTENDED_REPO \
+      _unattended_repo_canon "$repo_in"; then
     ORCHID_UNATTENDED_DETAIL="target is not an accessible directory"
     return 0
   fi
-  if ! ORCHID_UNATTENDED_WORKTREE_ROOT="$(_unattended_worktree_root "$ORCHID_UNATTENDED_REPO")"; then
+  if ! _unattended_capture_line ORCHID_UNATTENDED_WORKTREE_ROOT \
+      _unattended_worktree_root "$ORCHID_UNATTENDED_REPO"; then
     ORCHID_UNATTENDED_DETAIL="target is not inside a Git worktree with an on-disk .git marker"
     return 0
   fi
@@ -478,7 +651,8 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-caller-selected worktree marker is invalid}"
     return 0
   fi
-  if ! ORCHID_UNATTENDED_COMMON_DIR="$(_unattended_git_common_dir "$ORCHID_UNATTENDED_REPO")"; then
+  if ! _unattended_capture_line ORCHID_UNATTENDED_COMMON_DIR \
+      _unattended_git_common_dir "$ORCHID_UNATTENDED_REPO"; then
     ORCHID_UNATTENDED_DETAIL="target is not a Git worktree with an accessible common directory"
     return 0
   fi
@@ -490,8 +664,9 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-caller-selected worktree is not registered under its Git common directory}"
     return 0
   fi
-  if ! trust_dir="$(_unattended_trust_dir)" \
-     || ! trust_dir_physical="$(_unattended_trust_dir_physical)"; then
+  if ! _unattended_capture_line trust_dir _unattended_trust_dir \
+     || ! _unattended_capture_line trust_dir_physical \
+       _unattended_trust_dir_physical; then
     ORCHID_UNATTENDED_DETAIL="machine-local unattended-trust directory is unavailable"
     return 0
   fi
@@ -510,7 +685,8 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-machine-local unattended-trust directory placement is unsafe}"
     return 0
   fi
-  if ! ident="$(_unattended_fs_identity "$ORCHID_UNATTENDED_COMMON_DIR")"; then
+  if ! _unattended_capture_line ident \
+      _unattended_fs_identity "$ORCHID_UNATTENDED_COMMON_DIR"; then
     ORCHID_UNATTENDED_DETAIL="cannot read Git common-directory filesystem identity"
     return 0
   fi
@@ -521,7 +697,8 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="cannot parse Git common-directory filesystem identity"
     return 0
   fi
-  if ! ORCHID_UNATTENDED_ROOT_COMMIT="$(_unattended_root_commit "$ORCHID_UNATTENDED_REPO")"; then
+  if ! _unattended_capture_line ORCHID_UNATTENDED_ROOT_COMMIT \
+      _unattended_root_commit "$ORCHID_UNATTENDED_REPO"; then
     ORCHID_UNATTENDED_ROOT_COMMIT=""
   fi
   if [ -z "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
@@ -530,6 +707,8 @@ unattended_trust_inspect() {
   fi
 
   ORCHID_UNATTENDED_RECORD="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.json"
+  ORCHID_UNATTENDED_IDENTITY_ANCHOR="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.anchor"
+  ORCHID_UNATTENDED_IDENTITY_WITNESS="$ORCHID_UNATTENDED_COMMON_DIR/$ORCHID_UNATTENDED_IDENTITY_WITNESS_NAME"
   if [ ! -e "$ORCHID_UNATTENDED_RECORD" ] && [ ! -L "$ORCHID_UNATTENDED_RECORD" ]; then
     ORCHID_UNATTENDED_STATE=untrusted
     ORCHID_UNATTENDED_DETAIL="no machine-local acknowledgement for this Git common-directory identity"
@@ -551,7 +730,8 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record is not owned by the current operator"
     return 0
   fi
-  if ! rec_meta="$(_unattended_file_security_metadata "$ORCHID_UNATTENDED_RECORD")"; then
+  if ! _unattended_capture_line rec_meta \
+      _unattended_file_security_metadata "$ORCHID_UNATTENDED_RECORD"; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="cannot inspect machine-local acknowledgement record permissions"
     return 0
@@ -568,8 +748,10 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record is writable by group or other"
     return 0
   fi
-  if ! record_ident="$(_unattended_fs_identity "$ORCHID_UNATTENDED_RECORD")" \
-     || ! record_json="$(cat "$ORCHID_UNATTENDED_RECORD" 2>/dev/null)"; then
+  if ! _unattended_capture_line record_ident \
+      _unattended_fs_identity "$ORCHID_UNATTENDED_RECORD" \
+     || ! _unattended_capture_stdout record_json \
+       cat "$ORCHID_UNATTENDED_RECORD" 2>/dev/null; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="cannot read machine-local acknowledgement record"
     return 0
@@ -585,6 +767,8 @@ unattended_trust_inspect() {
     and (.git_common_dir | type == "string")
     and (.git_common_device | type == "string")
     and (.git_common_inode | type == "string")
+    and (.identity_anchor_device | type == "string")
+    and (.identity_anchor_inode | type == "string")
     and (.root_commit | type == "string")
   ' >/dev/null 2>&1; then
     ORCHID_UNATTENDED_STATE=invalid
@@ -592,23 +776,42 @@ unattended_trust_inspect() {
     return 0
   fi
 
-  rec_schema="$(printf '%s' "$record_json" | jq -r '.schema // ""' 2>/dev/null || true)"
-  rec_kind="$(printf '%s' "$record_json" | jq -r '.kind // ""' 2>/dev/null || true)"
-  rec_device="$(printf '%s' "$record_json" | jq -r '.git_common_device // ""' 2>/dev/null || true)"
-  rec_inode="$(printf '%s' "$record_json" | jq -r '.git_common_inode // ""' 2>/dev/null || true)"
-  rec_policy="$(printf '%s' "$record_json" | jq -r '.policy_version // ""' 2>/dev/null || true)"
-  rec_root="$(printf '%s' "$record_json" | jq -r '.root_commit // ""' 2>/dev/null || true)"
-
-  ORCHID_UNATTENDED_RECORDED_REPO="$(printf '%s' "$record_json" | jq -r '.acknowledged_repo // ""' 2>/dev/null || true)"
-  ORCHID_UNATTENDED_RECORDED_COMMON_DIR="$(printf '%s' "$record_json" | jq -r '.git_common_dir // ""' 2>/dev/null || true)"
+  if ! _unattended_capture_stdout rec_schema \
+      _unattended_json_value "$record_json" '.schema // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout rec_kind \
+       _unattended_json_value "$record_json" '.kind // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout rec_device \
+       _unattended_json_value "$record_json" '.git_common_device // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout rec_inode \
+       _unattended_json_value "$record_json" '.git_common_inode // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout rec_anchor_device \
+       _unattended_json_value "$record_json" '.identity_anchor_device // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout rec_anchor_inode \
+       _unattended_json_value "$record_json" '.identity_anchor_inode // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout rec_policy \
+       _unattended_json_value "$record_json" '.policy_version // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout rec_root \
+       _unattended_json_value "$record_json" '.root_commit // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout ORCHID_UNATTENDED_RECORDED_REPO \
+       _unattended_json_value "$record_json" '.acknowledged_repo // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout ORCHID_UNATTENDED_RECORDED_COMMON_DIR \
+       _unattended_json_value "$record_json" '.git_common_dir // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout ORCHID_UNATTENDED_ACKNOWLEDGED_AT \
+       _unattended_json_value "$record_json" '.acknowledged_at // ""' 2>/dev/null \
+     || ! _unattended_capture_stdout ORCHID_UNATTENDED_REASON \
+       _unattended_json_value "$record_json" '.reason // ""' 2>/dev/null; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="cannot decode machine-local acknowledgement record"
+    return 0
+  fi
   ORCHID_UNATTENDED_RECORDED_SCHEMA="$rec_schema"
   ORCHID_UNATTENDED_RECORDED_KIND="$rec_kind"
   ORCHID_UNATTENDED_RECORDED_DEVICE="$rec_device"
   ORCHID_UNATTENDED_RECORDED_INODE="$rec_inode"
+  ORCHID_UNATTENDED_RECORDED_ANCHOR_DEVICE="$rec_anchor_device"
+  ORCHID_UNATTENDED_RECORDED_ANCHOR_INODE="$rec_anchor_inode"
   ORCHID_UNATTENDED_RECORDED_ROOT_COMMIT="$rec_root"
   ORCHID_UNATTENDED_RECORDED_POLICY_VERSION="$rec_policy"
-  ORCHID_UNATTENDED_ACKNOWLEDGED_AT="$(printf '%s' "$record_json" | jq -r '.acknowledged_at // ""' 2>/dev/null || true)"
-  ORCHID_UNATTENDED_REASON="$(printf '%s' "$record_json" | jq -r '.reason // ""' 2>/dev/null || true)"
   ORCHID_UNATTENDED_RECORD_LOADED=1
 
   if [ -n "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT" ] \
@@ -634,6 +837,9 @@ unattended_trust_inspect() {
   elif [ "$rec_root" != "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
     ORCHID_UNATTENDED_STATE=mismatch
     ORCHID_UNATTENDED_DETAIL="repository root commit changed (recorded ${rec_root:-missing}, current $ORCHID_UNATTENDED_ROOT_COMMIT)"
+  elif ! _unattended_identity_anchor_matches; then
+    ORCHID_UNATTENDED_STATE=mismatch
+    ORCHID_UNATTENDED_DETAIL="repository incarnation anchor is missing or does not match the machine-local acknowledgement"
   elif [ "$provenance_valid" -ne 1 ]; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="acknowledgement record is missing operator provenance"
@@ -655,9 +861,11 @@ unattended_trust_summary_loaded() {
   local reason
   if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
     reason="$(_unattended_one_line "$ORCHID_UNATTENDED_REASON")"
-    printf 'allowed — acknowledged at %s; reason: %s; git-common identity %s:%s; root %s; policy %s; record %s\n' \
+    printf 'allowed — acknowledged at %s; reason: %s; git-common identity %s:%s; incarnation anchor %s:%s; root %s; policy %s; record %s\n' \
       "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT" "$reason" \
       "$ORCHID_UNATTENDED_DEVICE" "$ORCHID_UNATTENDED_INODE" \
+      "$ORCHID_UNATTENDED_RECORDED_ANCHOR_DEVICE" \
+      "$ORCHID_UNATTENDED_RECORDED_ANCHOR_INODE" \
       "$ORCHID_UNATTENDED_ROOT_COMMIT" "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION" \
       "$ORCHID_UNATTENDED_RECORD"
   else
@@ -699,6 +907,8 @@ unattended_trust_show() {
   printf 'root_commit: %s\n' "${ORCHID_UNATTENDED_ROOT_COMMIT:-unavailable}"
   printf 'policy_version: %s\n' "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION"
   printf 'record: %s\n' "${ORCHID_UNATTENDED_RECORD:-none}"
+  printf 'identity_anchor: %s\n' "${ORCHID_UNATTENDED_IDENTITY_ANCHOR:-none}"
+  printf 'identity_witness: %s\n' "${ORCHID_UNATTENDED_IDENTITY_WITNESS:-none}"
   if [ "${ORCHID_UNATTENDED_RECORD_LOADED:-0}" -eq 1 ]; then
     printf 'recorded_schema: %s\n' "$ORCHID_UNATTENDED_RECORDED_SCHEMA"
     printf 'recorded_kind: %s\n' "$ORCHID_UNATTENDED_RECORDED_KIND"
@@ -707,6 +917,8 @@ unattended_trust_show() {
     printf 'acknowledged_git_common_dir: %s\n' "$ORCHID_UNATTENDED_RECORDED_COMMON_DIR"
     printf 'recorded_git_common_device: %s\n' "$ORCHID_UNATTENDED_RECORDED_DEVICE"
     printf 'recorded_git_common_inode: %s\n' "$ORCHID_UNATTENDED_RECORDED_INODE"
+    printf 'recorded_identity_anchor_device: %s\n' "$ORCHID_UNATTENDED_RECORDED_ANCHOR_DEVICE"
+    printf 'recorded_identity_anchor_inode: %s\n' "$ORCHID_UNATTENDED_RECORDED_ANCHOR_INODE"
     printf 'recorded_root_commit: %s\n' "$ORCHID_UNATTENDED_RECORDED_ROOT_COMMIT"
     printf 'recorded_policy_version: %s\n' "$ORCHID_UNATTENDED_RECORDED_POLICY_VERSION"
     printf 'reason: %s\n' "$(_unattended_one_line "$ORCHID_UNATTENDED_REASON")"
@@ -737,7 +949,12 @@ unattended_trust_acknowledge() {
     if [ -e "$ORCHID_UNATTENDED_RECORD" ] && [ ! -f "$ORCHID_UNATTENDED_RECORD" ]; then
       orchid_die "cannot acknowledge unattended execution: acknowledgement record path is not a regular file"
     fi
-    jq -n \
+    if ! _unattended_identity_anchor_rotate \
+        "$ORCHID_UNATTENDED_IDENTITY_ANCHOR" \
+        "$ORCHID_UNATTENDED_IDENTITY_WITNESS"; then
+      orchid_die "cannot acknowledge unattended execution: $ORCHID_UNATTENDED_ANCHOR_ERROR"
+    fi
+    if ! jq -n \
       --argjson schema "$ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA" \
       --argjson policy_version "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION" \
       --arg acknowledged_at "$acknowledged_at" \
@@ -746,13 +963,19 @@ unattended_trust_acknowledge() {
       --arg git_common_dir "$ORCHID_UNATTENDED_COMMON_DIR" \
       --arg git_common_device "$ORCHID_UNATTENDED_DEVICE" \
       --arg git_common_inode "$ORCHID_UNATTENDED_INODE" \
+      --arg identity_anchor_device "$ORCHID_UNATTENDED_ANCHOR_DEVICE" \
+      --arg identity_anchor_inode "$ORCHID_UNATTENDED_ANCHOR_INODE" \
       --arg root_commit "$ORCHID_UNATTENDED_ROOT_COMMIT" \
       '{schema:$schema, kind:"unattended", policy_version:$policy_version,
         acknowledged_at:$acknowledged_at, reason:$reason,
         acknowledged_repo:$acknowledged_repo, git_common_dir:$git_common_dir,
         git_common_device:$git_common_device, git_common_inode:$git_common_inode,
+        identity_anchor_device:$identity_anchor_device,
+        identity_anchor_inode:$identity_anchor_inode,
         root_commit:$root_commit}' \
-      | _unattended_record_atomic_write "$ORCHID_UNATTENDED_RECORD"
+      | _unattended_record_atomic_write "$ORCHID_UNATTENDED_RECORD"; then
+      orchid_die "cannot write the machine-local unattended acknowledgement record"
+    fi
   )
   unattended_trust_inspect "$repo"
   [ "$ORCHID_UNATTENDED_STATE" = trusted ] \
@@ -760,18 +983,28 @@ unattended_trust_acknowledge() {
 }
 
 unattended_trust_revoke() {
-  local repo="$1"
+  local repo="$1" removed=0
   unattended_trust_inspect "$repo"
   [ "$ORCHID_UNATTENDED_STATE" != unavailable ] \
     || orchid_die "cannot revoke unattended trust: $ORCHID_UNATTENDED_DETAIL"
+
+  # Only the outside link is Orchid state. Removing it leaves Git's existing
+  # common-directory witness and its contents untouched.
+  if [ -L "$ORCHID_UNATTENDED_IDENTITY_ANCHOR" ] \
+     || [ -f "$ORCHID_UNATTENDED_IDENTITY_ANCHOR" ]; then
+    rm -f "$ORCHID_UNATTENDED_IDENTITY_ANCHOR"
+    removed=1
+  elif [ -e "$ORCHID_UNATTENDED_IDENTITY_ANCHOR" ]; then
+    orchid_die "cannot revoke unattended trust: identity anchor path is not a file"
+  fi
   if [ -L "$ORCHID_UNATTENDED_RECORD" ] || [ -f "$ORCHID_UNATTENDED_RECORD" ]; then
     rm -f "$ORCHID_UNATTENDED_RECORD"
-    return 0
+    removed=1
   fi
   if [ -e "$ORCHID_UNATTENDED_RECORD" ]; then
     orchid_die "cannot revoke unattended trust: acknowledgement record path is not a file"
   fi
-  return 1
+  [ "$removed" -eq 1 ]
 }
 
 unattended_trust_require() {

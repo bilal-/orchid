@@ -42,7 +42,9 @@ orchid trust unattended "$PWD" --reason "reviewed target and accept unattended p
 A root-commit or policy mismatch is deliberately not auto-updated; inspect
 the changed history/policy and run the same acknowledgement command again
 only if the new boundary is acceptable. A clone, copy, or recreated `.git`
-has a different Git common-directory device/inode and needs its own decision.
+needs its own decision. Normally its Git common-directory device/inode is
+different; even if the filesystem reuses those numbers, its common-directory
+witness cannot match the old machine-local hard-link anchor.
 `orchid trust revoke "$PWD"` denies future pump/tick invocations. It does not
 remove a scheduler entry, so use `orchid service status` and `orchid service
 uninstall` as needed; both remain available while denied.

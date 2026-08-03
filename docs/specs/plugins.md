@@ -43,9 +43,10 @@ differences are declared capabilities.
   `orchid trust unattended <repo> --reason <reason>` records an
   operator-authored acknowledgement under
   `~/.orchid/unattended-trust/`, never in tracked content. It binds Git
-  common-directory device/inode, root commit(s), and policy version. It
-  gates the pump, direct headless tick, and service installation; it does
-  not enable a repo-local plugin or assert that repository prompts are safe.
+  common-directory device/inode, a non-reusable hard-link witness identity,
+  root commit(s), and policy version. It gates the pump, direct headless tick,
+  and service installation; it does not enable a repo-local plugin or assert
+  that repository prompts are safe.
 
 ### Extension points and contracts
 

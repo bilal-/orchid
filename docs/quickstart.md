@@ -206,10 +206,12 @@ The pump and direct `runners/orchid-tick` entry point re-check trust on every
 invocation, before creating runtime state, draining the notification outbox,
 or spawning an engine. `orchid trust show "$PWD"` includes the operator's
 reason/timestamp and the current binding: Git common-directory device/inode,
-root commit, and trust-policy version. Linked worktrees share the record, and
-a same-filesystem move keeps it; a clone, copy, recreated/replaced `.git`,
-root-history replacement, or policy-version change does not. Re-acknowledge
-only after reviewing the changed boundary:
+a non-reusable hard-link witness identity, root commit, and trust-policy
+version. Linked worktrees share the record, and a same-filesystem move keeps
+it; a clone, copy, recreated/replaced `.git`, root-history replacement, or
+policy-version change does not. The trust store and Git common directory must
+be on the same filesystem for the witness anchor. Re-acknowledge only after
+reviewing the changed boundary:
 
 ```sh
 orchid trust unattended "$PWD" --reason "reviewed the new repository identity/history"

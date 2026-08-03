@@ -525,27 +525,33 @@ point may act, the operator must run:
 orchid trust unattended <repo> --reason "<why this target is trusted for unattended execution>"
 ```
 
-The record is outside the repository, and is bound to Git's shared common
-directory device/inode, the root commit(s) reachable from `HEAD`, and the
-trust-policy version compiled into Orchid. Linked worktrees therefore share
-an acknowledgement and a same-filesystem move preserves it; a clone, copy,
-recreated/replaced `.git`, root-history replacement, or policy-version change
-does not. Repository content, origin URLs, Git config, and `orchid.config`
-cannot grant it. Identity queries ignore ambient Git repository-selection or
-object-view variables, disable replacement refs, legacy grafts, and shallow
-boundaries, and do not lazy-fetch missing history. A shallow repository
-therefore cannot be acknowledged until its commit ancestry is locally
-complete. Trust-store containment is checked against the physical checkout
-marker rather than a configurable Git worktree path. A linked marker must
-point back to the exact caller-selected path registered under the common
-directory; copying a linked checkout and its `.git` pointer is denied. A
-`HOME` layout that resolves the trust store inside the target or any registered
-sibling worktree is refused. The record must be an operator-owned, single-link
+The JSON record and identity anchor are outside the repository. Validation
+binds Git's shared common-directory device/inode, the inode of Git's stable
+untracked `description` witness, the root commit(s) reachable from `HEAD`, and
+the trust-policy version compiled into Orchid. The anchor is an outside hard
+link to that witness; it keeps the witness inode allocated after repository
+replacement, so reuse of the common-directory device/inode cannot resurrect
+an acknowledgement. This requires the trust store and common directory to be
+on one filesystem. Linked worktrees share an acknowledgement and a
+same-filesystem move preserves it; a clone, copy, recreated/replaced `.git`,
+root-history replacement, or policy-version change does not. Repository
+content, origin URLs, Git config, and `orchid.config` cannot grant it.
+Identity queries ignore ambient Git repository-selection or object-view
+variables, disable replacement refs, legacy grafts, and shallow boundaries,
+and do not lazy-fetch missing history. A shallow repository therefore cannot
+be acknowledged until its commit ancestry is locally complete.
+Trust-boundary paths are captured and compared losslessly, including literal
+newlines. Store containment is checked against the physical checkout marker
+rather than a configurable Git worktree path. A linked marker must point back
+to the exact caller-selected path registered under the common directory;
+copying a linked checkout and its `.git` pointer is denied. A `HOME` layout
+that resolves the trust store inside the target or any registered sibling
+worktree is refused. The JSON record must be an operator-owned, single-link
 regular file without group/other write permission; record symlinks, hard-link
 aliases, and non-files fail closed. `orchid trust show <repo>` displays the
-decision and its operator-authored reason/timestamp; `orchid trust revoke
-<repo>` removes the record (or a rejected symlink itself, without following
-it).
+decision, anchor binding, and operator-authored reason/timestamp; `orchid
+trust revoke <repo>` removes the outside record and anchor (or a rejected
+symlink itself, without following it).
 Interactive sessions, planning, manual verbs, and read-only commands do not
 require or create this record.
 

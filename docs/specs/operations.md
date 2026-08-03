@@ -94,9 +94,15 @@ orchid trust show <repo>
 orchid trust revoke <repo>
 ```
 
-The JSON record is machine-local under `~/.orchid/unattended-trust/`, outside
-the target. Its key and validation bind Git's shared common-directory
-device/inode, the reachable root commit set, and an in-code policy version.
+The JSON record and identity anchor are machine-local under
+`~/.orchid/unattended-trust/`, outside the target. Their key and validation
+bind Git's shared common-directory device/inode, the inode of Git's stable
+untracked `description` witness, the reachable root commit set, and an in-code
+policy version. The anchor is a second hard link to that witness. Its outside
+link keeps the witness inode allocated after repository replacement, so a
+fresh clone cannot inherit an old decision even if the filesystem reuses the
+common directory's device/inode. Creating this non-reusable binding requires
+the trust store and common directory to be on the same filesystem.
 That intentionally shares trust across linked worktrees and survives a
 same-filesystem move, while a fresh clone, copy, replaced/recreated `.git`,
 root-history replacement, or policy-version change is denied. Path text,
@@ -105,18 +111,21 @@ trust. Identity inspection ignores inherited Git repository-selection and
 object-view variables (for example `GIT_DIR`/`GIT_WORK_TREE`), disables
 replacement refs, legacy grafts, and shallow boundaries, and disables lazy
 object fetching. A shallow repository cannot be acknowledged until its commit
-ancestry is locally complete. Trust-store containment uses the physical
-checkout marker, not a repository-configurable worktree path. A linked
-checkout's marker must reciprocally match the path registered under the common
-directory, so copying a linked worktree together with its `.git` pointer
-cannot inherit the registered original's acknowledgement. If `HOME` or a
-symlinked `~/.orchid` would place the record inside the target or any
-registered sibling worktree, acknowledgement refuses instead of creating
-repository-controlled trust state.
+ancestry is locally complete. Every trust-boundary path is captured and
+compared losslessly, including paths ending in a literal newline.
+Trust-store containment uses the physical checkout marker, not a
+repository-configurable worktree path. A linked checkout's marker must
+reciprocally match the path registered under the common directory, so copying
+a linked worktree together with its `.git` pointer cannot inherit the
+registered original's acknowledgement. If `HOME` or a symlinked `~/.orchid`
+would place the record inside the target or any registered sibling worktree,
+acknowledgement refuses instead of creating repository-controlled trust state.
 The record itself must be an operator-owned, single-link regular file without
 group/other write permission. Symbolic links, hard-link aliases (including
 aliases of tracked files), non-files, and unsafe permissions are denied;
-`orchid trust revoke` removes a record symlink itself rather than following it.
+the separate identity anchor is intentionally the witness's second link.
+`orchid trust revoke` removes the outside record and anchor, and removes a
+record symlink itself rather than following it.
 
 The acknowledgement means only that the operator accepts this repository as
 input to an unattended, shell-capable model. Target content may prompt-inject
