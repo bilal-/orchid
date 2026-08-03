@@ -9,7 +9,6 @@ OUTPUT=""
 BASH_BIN="${BASH:-/bin/bash}"
 TMP_ROOT=""
 GIT_BIN=""
-GZIP_BIN=""
 CLEAN_TMPDIR=""
 
 die() { echo "release: $*" >&2; exit 1; }
@@ -55,10 +54,8 @@ if ! "$BASH_BIN" -c '[ -n "${BASH_VERSION:-}" ] && (( BASH_VERSINFO[0] > 3 || (B
 fi
 
 GIT_BIN="$(command -v git)" || die "git is required"
-GZIP_BIN="$(command -v gzip)" || die "gzip is required"
 CLEAN_TMPDIR="${TMPDIR:-/tmp}"
 [ -x "$GIT_BIN" ] || die "git is not executable: $GIT_BIN"
-[ -x "$GZIP_BIN" ] || die "gzip is not executable: $GZIP_BIN"
 
 # Git normally combines system, global, repository-local, environment, and
 # command-line configuration. Release object lookup needs the source repo's
@@ -189,14 +186,15 @@ mkdir -p "$OUTPUT"
 archive_a="$TMP_ROOT/archive-a.tar.gz"
 archive_b="$TMP_ROOT/archive-b.tar.gz"
 archive_from_commit() {
-  local destination="$1" raw_tar="$1.tar"
-  # Always request Git's built-in, uncompressed tar format. Compressed archive
-  # formats can be replaced by tar.<format>.command configuration; compressing
-  # the raw tar ourselves makes such custom commands irrelevant.
-  archive_git archive --format=tar \
+  local destination="$1"
+  # In the config-isolated disposable repository, tar.gz resolves to Git's
+  # default magic `git archive gzip` command and therefore its internal gzip
+  # implementation. No host gzip from PATH produces release bytes, while the
+  # isolation above prevents any tar.<format>.command override from replacing
+  # that built-in path.
+  archive_git archive --format=tar.gz \
     --mtime=1970-01-01T00:00:00Z --prefix="$prefix" \
-    --output="$raw_tar" "$tree"
-  env -i PATH="$PATH" LC_ALL=C "$GZIP_BIN" -n -c "$raw_tar" > "$destination"
+    --output="$destination" "$tree"
 }
 
 archive_from_commit "$archive_a"

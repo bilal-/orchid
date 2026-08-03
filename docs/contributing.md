@@ -63,3 +63,9 @@ current content and rewrites `Formula/orchid.rb`; its `--check` mode runs in
 the test suite on every commit, so any change to shipped bytes must be
 committed together with a re-pinned formula (`Formula/` is export-ignored,
 so re-pinning never changes the archive itself).
+
+Both tools build compressed bytes through the disposable repository's
+config-isolated `git archive --format=tar.gz` backend. With archive-command
+overrides excluded, Git uses its internal gzip implementation; a host `gzip`
+found on `PATH` cannot influence the pinned bytes. Linux and macOS CI each
+recompute and compare those bytes with the same committed formula checksum.

@@ -12,7 +12,6 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODE=pin
 TMP_ROOT=""
 GIT_BIN=""
-GZIP_BIN=""
 CLEAN_TMPDIR=""
 
 die() { echo "pin-formula: $*" >&2; exit 1; }
@@ -45,10 +44,8 @@ while [ "$#" -gt 0 ]; do
 done
 
 GIT_BIN="$(command -v git)" || die "git is required"
-GZIP_BIN="$(command -v gzip)" || die "gzip is required"
 CLEAN_TMPDIR="${TMPDIR:-/tmp}"
 [ -x "$GIT_BIN" ] || die "git is not executable: $GIT_BIN"
-[ -x "$GZIP_BIN" ] || die "gzip is not executable: $GZIP_BIN"
 
 # Discovery may read the source repository's own config, but never ambient
 # system/global/environment config. Snapshotting and archiving below use a
@@ -159,14 +156,14 @@ snapshot_git add -A -- . ':(exclude).git' ':(exclude).orchid'
 tree="$(snapshot_git write-tree)"
 
 archive="$TMP_ROOT/$archive_name"
-raw_archive="$TMP_ROOT/$archive_name.tar"
-# Git's compressed formats can be replaced by tar.<format>.command config.
-# Archive with the built-in raw tar backend, then apply deterministic gzip
-# ourselves so no custom archive command can participate.
-snapshot_git archive --format=tar \
+# This disposable repository cannot see ambient or source-repository archive
+# configuration, so tar.gz selects Git's default magic `git archive gzip`
+# command and its internal gzip implementation. The formula checksum therefore
+# cannot depend on a host gzip found on PATH, and no tar.<format>.command
+# override can replace the built-in compressor.
+snapshot_git archive --format=tar.gz \
   --mtime=1970-01-01T00:00:00Z --prefix="$prefix" \
-  --output="$raw_archive" "$tree"
-env -i PATH="$PATH" LC_ALL=C "$GZIP_BIN" -n -c "$raw_archive" > "$archive"
+  --output="$archive" "$tree"
 archive_sha="$(sha256_file "$archive")"
 
 if [ "$MODE" = check ]; then

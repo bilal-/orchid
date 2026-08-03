@@ -277,12 +277,32 @@ printf '%s\n' "$archive_list" | grep -q '^orchid-1.2.3/Formula/' \
 # supports replacement compressors through tar.<format>.command, reads config
 # from system/global/local/environment scopes, and normally gives
 # $GIT_DIR/info/attributes precedence over the tree's own .gitattributes.
-# Plant every one of those inputs: the custom commands would fail if invoked,
-# while the attributes would export-ignore the whole tree if consulted. The
-# release must still reproduce the original commit/content-only checksum.
+# Plant every one of those inputs. Also put a gzip first on PATH that delegates
+# decompression (GNU tar may request it) but emits divergent bytes and fails for
+# compression. The custom commands and hostile gzip would fail if invoked to
+# build an archive, while the attributes would export-ignore the whole tree if
+# consulted. The release must still reproduce the original checksum.
 hostile_system_config="$WORK/hostile-system.gitconfig"
 hostile_global_config="$WORK/hostile-global.gitconfig"
 hostile_attributes="$WORK/hostile-attributes"
+real_gzip="$(command -v gzip)" || fail "gzip is required to exercise hostile PATH coverage"
+hostile_bin="$WORK/hostile-bin"
+mkdir -p "$hostile_bin"
+cat > "$hostile_bin/gzip" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+for arg in "$@"; do
+  case "$arg" in
+    -d|--decompress|-*d*) exec "${ORCHID_TEST_REAL_GZIP:?}" "$@" ;;
+  esac
+done
+printf '%s\n' 'hostile gzip output must never become release bytes'
+exit 97
+EOF
+chmod +x "$hostile_bin/gzip"
+hostile_path="$hostile_bin:$PATH"
+[ "$(PATH="$hostile_path" command -v gzip)" = "$hostile_bin/gzip" ] \
+  || fail "hostile gzip is not first on PATH"
 printf '%s\n' '* export-ignore' > "$hostile_attributes"
 git config --file "$hostile_system_config" tar.tar.gz.command false
 git config --file "$hostile_system_config" core.attributesFile "$hostile_attributes"
@@ -294,6 +314,8 @@ printf '%s\n' '* export-ignore' > "$fixture/.git/info/attributes"
 
 hostile_release_out="$WORK/release-out-hostile"
 hostile_release_output="$(
+  PATH="$hostile_path" \
+  ORCHID_TEST_REAL_GZIP="$real_gzip" \
   GIT_CONFIG_SYSTEM="$hostile_system_config" \
   GIT_CONFIG_GLOBAL="$hostile_global_config" \
   GIT_CONFIG_COUNT=2 \
@@ -305,9 +327,9 @@ hostile_release_output="$(
       --tag v1.2.3 --output "$hostile_release_out" --bash "$BASH"
 )" || fail "release archive depends on hostile ambient/source Git config or attributes"
 assert_match "release verified: v1.2.3" "$hostile_release_output" \
-  "config-isolated release still verifies the exact tag"
+  "config- and compressor-isolated release still verifies the exact tag"
 assert_eq "$fixture_sha" "$(sha256_file "$hostile_release_out/orchid-1.2.3.tar.gz")" \
-  "system/global/local/environment Git config and info/attributes cannot alter release bytes"
+  "ambient gzip, Git config, and info/attributes cannot alter release bytes"
 
 run_release_failure() {
   local repo="$1" tag="$2" pattern="$3" name="$4" out rc=0
@@ -413,7 +435,7 @@ pin_expected_sha="$(sha256_file "$pin_probe")"
 write_formula "$pin_repo" 1.2.3 "1111111111111111111111111111111111111111111111111111111111111111"
 # Apply the same hostile archive/config/attribute state to the current-content
 # snapshotter. It must compute the same bytes as the clean baseline above and
-# must never execute a configured archive command.
+# must never execute a configured archive command or PATH-provided compressor.
 git -C "$pin_repo" config tar.tar.gz.command false
 git -C "$pin_repo" config core.attributesFile "$hostile_attributes"
 printf '%s\n' '* export-ignore' > "$pin_repo/.git/info/attributes"
@@ -424,6 +446,8 @@ printf '%s\n' '* export-ignore' > "$pin_repo/.git/info/attributes"
 pin_objects_before="$(git -C "$pin_repo" count-objects -v)"
 rc=0
 pin_check_out="$(
+  PATH="$hostile_path" \
+  ORCHID_TEST_REAL_GZIP="$real_gzip" \
   GIT_CONFIG_SYSTEM="$hostile_system_config" \
   GIT_CONFIG_GLOBAL="$hostile_global_config" \
   GIT_CONFIG_COUNT=2 \
@@ -436,7 +460,9 @@ pin_check_out="$(
 [ "$rc" -ne 0 ] || fail "pin-formula --check accepted a stale formula checksum"
 assert_match 'STALE' "$pin_check_out" "pin-formula --check names the staleness"
 assert_match "$pin_expected_sha" "$pin_check_out" \
-  "pin-formula --check prints the exact expected fixed-point checksum"
+  "pin-formula ignores ambient gzip and prints the exact fixed-point checksum"
+PATH="$hostile_path" \
+ORCHID_TEST_REAL_GZIP="$real_gzip" \
 GIT_CONFIG_SYSTEM="$hostile_system_config" \
 GIT_CONFIG_GLOBAL="$hostile_global_config" \
 GIT_CONFIG_COUNT=2 \
@@ -448,6 +474,8 @@ GIT_CONFIG_VALUE_1="$hostile_attributes" \
   || fail "pin-formula failed to repin a stale formula"
 grep -q "sha256 \"$pin_expected_sha\"" "$pin_repo/Formula/orchid.rb" \
   || fail "pin-formula did not pin the exact fixed-point checksum (wanted $pin_expected_sha)"
+PATH="$hostile_path" \
+ORCHID_TEST_REAL_GZIP="$real_gzip" \
 GIT_CONFIG_SYSTEM="$hostile_system_config" \
 GIT_CONFIG_GLOBAL="$hostile_global_config" \
 GIT_CONFIG_COUNT=2 \
