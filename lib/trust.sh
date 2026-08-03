@@ -118,6 +118,197 @@ _unattended_worktree_root() {
   return 1
 }
 
+# Read one metadata line without silently accepting a second line. Git's
+# .git/gitdir pointer formats are line based, so a newline in a purported path
+# is malformed rather than another spelling of the same registration.
+_unattended_read_single_line() {
+  local path="$1" line="" extra=""
+  {
+    IFS= read -r line || [ -n "$line" ] || return 1
+    if IFS= read -r extra || [ -n "$extra" ]; then
+      return 1
+    fi
+  } <"$path"
+  case "$line" in *$'\r') line="${line%$'\r'}" ;; esac
+  [ -n "$line" ] || return 1
+  printf '%s\n' "$line"
+}
+
+_unattended_resolve_directory() {
+  local base="$1" raw="$2" candidate
+  case "$raw" in
+    /*) candidate="$raw" ;;
+    *)  candidate="$base/$raw" ;;
+  esac
+  ( cd "$candidate" 2>/dev/null && pwd -P )
+}
+
+# Resolve a registered worktree's .git marker while preserving the final
+# filename. Requiring that literal marker name and a regular, non-symlink file
+# keeps path normalization from turning some other object into a registration.
+_unattended_resolve_git_marker() {
+  local base="$1" raw="$2" candidate parent
+  case "$raw" in
+    /*) candidate="$raw" ;;
+    *)  candidate="$base/$raw" ;;
+  esac
+  [ "${candidate##*/}" = .git ] || return 1
+  parent="${candidate%/*}"
+  [ -n "$parent" ] || parent=/
+  parent="$(cd "$parent" 2>/dev/null && pwd -P)" || return 1
+  candidate="${parent%/}/.git"
+  [ ! -L "$candidate" ] && [ -f "$candidate" ] || return 1
+  printf '%s\n' "$candidate"
+}
+
+# Bind the physical checkout selected by the caller before asking Git to
+# canonicalize its common directory. A linked worktree has two reciprocal
+# pointers: <worktree>/.git names its administrative gitdir, whose `gitdir`
+# file names that exact worktree marker. A copied linked checkout retains the
+# first pointer but its administrative gitdir still points back to the
+# registered original; comparing physical marker paths therefore fails closed
+# instead of lending the copy the original worktree's common-directory trust.
+_unattended_worktree_marker_validate() {
+  local root="$1" marker="$1/.git" line raw gitdir registered_line registered
+  ORCHID_UNATTENDED_WORKTREE_MARKER_KIND=""
+  ORCHID_UNATTENDED_WORKTREE_GITDIR=""
+  ORCHID_UNATTENDED_BOUNDARY_DETAIL=""
+
+  if [ -L "$marker" ]; then
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git marker is a symbolic link"
+    return 1
+  fi
+  if [ -d "$marker" ]; then
+    ORCHID_UNATTENDED_WORKTREE_MARKER_KIND=directory
+    ORCHID_UNATTENDED_WORKTREE_GITDIR="$(cd "$marker" 2>/dev/null && pwd -P)" \
+      || return 1
+    return 0
+  fi
+  if [ ! -f "$marker" ]; then
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree has no regular on-disk .git marker"
+    return 1
+  fi
+
+  line="$(_unattended_read_single_line "$marker")" || {
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git pointer is malformed"
+    return 1
+  }
+  case "$line" in
+    "gitdir: "*) raw="${line#gitdir: }" ;;
+    *)
+      ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git pointer is malformed"
+      return 1
+      ;;
+  esac
+  [ -n "$raw" ] || {
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git pointer is empty"
+    return 1
+  }
+  gitdir="$(_unattended_resolve_directory "$root" "$raw")" || {
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree .git pointer is inaccessible"
+    return 1
+  }
+  [ ! -L "$gitdir/gitdir" ] && [ -f "$gitdir/gitdir" ] || {
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree is not backed by a linked-worktree registration"
+    return 1
+  }
+  registered_line="$(_unattended_read_single_line "$gitdir/gitdir")" || {
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the linked-worktree registration is malformed"
+    return 1
+  }
+  registered="$(_unattended_resolve_git_marker "$gitdir" "$registered_line")" || {
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the linked-worktree registration does not name an accessible .git marker"
+    return 1
+  }
+  if [ "$registered" != "$marker" ]; then
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree path does not match the linked-worktree registration"
+    return 1
+  fi
+
+  ORCHID_UNATTENDED_WORKTREE_MARKER_KIND=linked
+  ORCHID_UNATTENDED_WORKTREE_GITDIR="$gitdir"
+  return 0
+}
+
+# Once Git's common directory is known, make sure the marker validated above
+# is one of that directory's own administrative entries. A normal checkout's
+# .git directory is the common directory; a linked checkout's gitdir is a
+# direct child of <common>/worktrees/.
+_unattended_worktree_marker_matches_common() {
+  local common="$1" worktrees gitdir_parent
+  case "$ORCHID_UNATTENDED_WORKTREE_MARKER_KIND" in
+    directory)
+      [ "$ORCHID_UNATTENDED_WORKTREE_GITDIR" = "$common" ] || {
+        ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected .git directory is not Git's resolved common directory"
+        return 1
+      }
+      ;;
+    linked)
+      worktrees="$(cd "$common/worktrees" 2>/dev/null && pwd -P)" || {
+        ORCHID_UNATTENDED_BOUNDARY_DETAIL="Git's common directory has no linked-worktree registry"
+        return 1
+      }
+      gitdir_parent="$(cd "$ORCHID_UNATTENDED_WORKTREE_GITDIR/.." 2>/dev/null && pwd -P)" \
+        || return 1
+      [ "$gitdir_parent" = "$worktrees" ] || {
+        ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree is not registered under Git's common directory"
+        return 1
+      }
+      ;;
+    *)
+      ORCHID_UNATTENDED_BOUNDARY_DETAIL="the caller-selected worktree marker was not validated"
+      return 1
+      ;;
+  esac
+}
+
+# The trust store must be outside every worktree registered under the shared
+# common directory, not merely outside the worktree used for this invocation.
+# Otherwise a sibling could commit the machine-local acknowledgement and lend
+# repository-controlled state to every linked checkout. `-z` preserves unusual
+# path bytes. The success sentinel distinguishes an empty/partial failed Git
+# query from a complete list without creating a temporary file during this
+# read-only inspection.
+_unattended_trust_store_outside_registered_worktrees() {
+  local common="$1" trust_dir="$2" field raw registered
+  local complete=0 sentinel="orchid-unattended-worktree-list-complete-v1"
+  while IFS= read -r -d '' field; do
+    if [ "$field" = "$sentinel" ]; then
+      complete=1
+      continue
+    fi
+    case "$field" in
+      "worktree "*)
+        raw="${field#worktree }"
+        registered="$(_unattended_repo_canon "$raw")" || continue
+        if _unattended_path_within "$registered" "$trust_dir"; then
+          ORCHID_UNATTENDED_BOUNDARY_DETAIL="machine-local unattended-trust directory resolves inside registered worktree $registered; use an operator HOME outside every worktree sharing this Git common directory"
+          return 1
+        fi
+        ;;
+    esac
+  done < <(
+    if _unattended_git --git-dir="$common" worktree list --porcelain -z 2>/dev/null; then
+      printf '%s\0' "$sentinel"
+    fi
+  )
+  [ "$complete" -eq 1 ] || {
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="cannot enumerate worktrees registered under Git's common directory"
+    return 1
+  }
+}
+
+_unattended_trust_store_validate() {
+  local repo="$1" worktree_root="$2" common="$3" trust_dir="$4"
+  if _unattended_path_within "$repo" "$trust_dir" \
+     || _unattended_path_within "$worktree_root" "$trust_dir" \
+     || _unattended_path_within "$common" "$trust_dir"; then
+    ORCHID_UNATTENDED_BOUNDARY_DETAIL="machine-local unattended-trust directory resolves inside the target repository; use an operator HOME outside the target"
+    return 1
+  fi
+  _unattended_trust_store_outside_registered_worktrees "$common" "$trust_dir"
+}
+
 _unattended_fs_identity() {
   local path="$1" out
   if out="$(stat -f '%d %i' "$path" 2>/dev/null)"; then
@@ -203,9 +394,20 @@ _unattended_one_line() {
 # directory/device observation from one repository state with root history
 # read from a replacement state.
 _unattended_identity_still_matches() {
-  local common ident root
+  local common ident root worktree expected_kind expected_gitdir
+  expected_kind="$ORCHID_UNATTENDED_WORKTREE_MARKER_KIND"
+  expected_gitdir="$ORCHID_UNATTENDED_WORKTREE_GITDIR"
+  worktree="$(_unattended_worktree_root "$ORCHID_UNATTENDED_REPO")" || return 1
+  [ "$worktree" = "$ORCHID_UNATTENDED_WORKTREE_ROOT" ] || return 1
+  _unattended_worktree_marker_validate "$worktree" || return 1
+  [ "$ORCHID_UNATTENDED_WORKTREE_MARKER_KIND" = "$expected_kind" ] || return 1
+  [ "$ORCHID_UNATTENDED_WORKTREE_GITDIR" = "$expected_gitdir" ] || return 1
   common="$(_unattended_git_common_dir "$ORCHID_UNATTENDED_REPO")" || return 1
   [ "$common" = "$ORCHID_UNATTENDED_COMMON_DIR" ] || return 1
+  _unattended_worktree_marker_matches_common "$common" || return 1
+  _unattended_trust_store_validate \
+    "$ORCHID_UNATTENDED_REPO" "$worktree" "$common" \
+    "$ORCHID_UNATTENDED_TRUST_DIR" || return 1
   ident="$(_unattended_fs_identity "$common")" || return 1
   [ "$ident" = "$ORCHID_UNATTENDED_DEVICE $ORCHID_UNATTENDED_INODE" ] || return 1
   root="$(_unattended_root_commit "$ORCHID_UNATTENDED_REPO")" || return 1
@@ -243,6 +445,8 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_DETAIL="repository identity is unavailable"
   ORCHID_UNATTENDED_REPO=""
   ORCHID_UNATTENDED_WORKTREE_ROOT=""
+  ORCHID_UNATTENDED_WORKTREE_MARKER_KIND=""
+  ORCHID_UNATTENDED_WORKTREE_GITDIR=""
   ORCHID_UNATTENDED_COMMON_DIR=""
   ORCHID_UNATTENDED_DEVICE=""
   ORCHID_UNATTENDED_INODE=""
@@ -266,13 +470,24 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="target is not an accessible directory"
     return 0
   fi
+  if ! ORCHID_UNATTENDED_WORKTREE_ROOT="$(_unattended_worktree_root "$ORCHID_UNATTENDED_REPO")"; then
+    ORCHID_UNATTENDED_DETAIL="target is not inside a Git worktree with an on-disk .git marker"
+    return 0
+  fi
+  if ! _unattended_worktree_marker_validate "$ORCHID_UNATTENDED_WORKTREE_ROOT"; then
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-caller-selected worktree marker is invalid}"
+    return 0
+  fi
   if ! ORCHID_UNATTENDED_COMMON_DIR="$(_unattended_git_common_dir "$ORCHID_UNATTENDED_REPO")"; then
     ORCHID_UNATTENDED_DETAIL="target is not a Git worktree with an accessible common directory"
     return 0
   fi
-  if ! ORCHID_UNATTENDED_WORKTREE_ROOT="$(_unattended_worktree_root "$ORCHID_UNATTENDED_REPO")" \
-     || _unattended_path_within "$ORCHID_UNATTENDED_COMMON_DIR" "$ORCHID_UNATTENDED_REPO"; then
-    ORCHID_UNATTENDED_DETAIL="target is not inside a Git worktree with an on-disk .git marker"
+  if _unattended_path_within "$ORCHID_UNATTENDED_COMMON_DIR" "$ORCHID_UNATTENDED_REPO"; then
+    ORCHID_UNATTENDED_DETAIL="target worktree resolves inside its Git common directory"
+    return 0
+  fi
+  if ! _unattended_worktree_marker_matches_common "$ORCHID_UNATTENDED_COMMON_DIR"; then
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-caller-selected worktree is not registered under its Git common directory}"
     return 0
   fi
   if ! trust_dir="$(_unattended_trust_dir)" \
@@ -286,15 +501,13 @@ unattended_trust_inspect() {
   # needless redirection window.
   ORCHID_UNATTENDED_TRUST_DIR="$trust_dir_physical"
 
-  # The record must not be trackable by the repository it authorizes. Check
-  # both the supplied path and the physical worktree root (the caller may
-  # have named a subdirectory), plus the common directory itself. Physical
-  # paths catch symlinked HOME/.orchid layouts as well as simple lexical
-  # containment.
-  if _unattended_path_within "$ORCHID_UNATTENDED_REPO" "$trust_dir_physical" \
-     || _unattended_path_within "$ORCHID_UNATTENDED_WORKTREE_ROOT" "$trust_dir_physical" \
-     || _unattended_path_within "$ORCHID_UNATTENDED_COMMON_DIR" "$trust_dir_physical"; then
-    ORCHID_UNATTENDED_DETAIL="machine-local unattended-trust directory resolves inside the target repository; use an operator HOME outside the target"
+  # The record must not be trackable by any checkout sharing this trust
+  # identity. Physical paths catch symlinked HOME/.orchid layouts as well as
+  # simple lexical containment, including containment in a sibling worktree.
+  if ! _unattended_trust_store_validate \
+      "$ORCHID_UNATTENDED_REPO" "$ORCHID_UNATTENDED_WORKTREE_ROOT" \
+      "$ORCHID_UNATTENDED_COMMON_DIR" "$trust_dir_physical"; then
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-machine-local unattended-trust directory placement is unsafe}"
     return 0
   fi
   if ! ident="$(_unattended_fs_identity "$ORCHID_UNATTENDED_COMMON_DIR")"; then

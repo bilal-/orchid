@@ -536,13 +536,16 @@ object-view variables, disable replacement refs, legacy grafts, and shallow
 boundaries, and do not lazy-fetch missing history. A shallow repository
 therefore cannot be acknowledged until its commit ancestry is locally
 complete. Trust-store containment is checked against the physical checkout
-marker rather than a configurable Git worktree path. A `HOME` layout that
-resolves the trust store inside the target is refused. The record must be an
-operator-owned, single-link regular file without group/other write permission;
-record symlinks, hard-link aliases, and non-files fail closed. `orchid trust
-show <repo>` displays the decision and its operator-authored reason/timestamp;
-`orchid trust revoke <repo>` removes the record (or a rejected symlink itself,
-without following it).
+marker rather than a configurable Git worktree path. A linked marker must
+point back to the exact caller-selected path registered under the common
+directory; copying a linked checkout and its `.git` pointer is denied. A
+`HOME` layout that resolves the trust store inside the target or any registered
+sibling worktree is refused. The record must be an operator-owned, single-link
+regular file without group/other write permission; record symlinks, hard-link
+aliases, and non-files fail closed. `orchid trust show <repo>` displays the
+decision and its operator-authored reason/timestamp; `orchid trust revoke
+<repo>` removes the record (or a rejected symlink itself, without following
+it).
 Interactive sessions, planning, manual verbs, and read-only commands do not
 require or create this record.
 

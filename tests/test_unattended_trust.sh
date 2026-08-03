@@ -221,6 +221,60 @@ out="$(HOME="$home" "$ORCHID_BIN" trust show "$linked")"
 assert_match '^unattended trust: trusted$' "$out" "linked worktree shares common-directory trust"
 assert_match "record: $record" "$out" "linked worktree resolves the exact same record"
 
+# Copying a linked checkout also copies its .git pointer, but the common
+# directory still registers the ORIGINAL worktree path. The caller-selected
+# path must be bound to that reciprocal registration before its Git identity
+# can inherit the original's acknowledgement.
+copied_linked="$WORK/copied-linked"
+cp -R "$linked" "$copied_linked"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$copied_linked")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a copied linked worktree cannot inherit the registered original's trust"
+assert_match '^binding_state: unavailable$' "$out" \
+  "a copied linked worktree has no valid caller-path binding"
+assert_match '^gate: denied$' "$out" \
+  "a copied linked worktree defaults to a denied unattended gate"
+assert_match 'caller-selected worktree path does not match the linked-worktree registration' "$out" \
+  "copied linked-worktree refusal names the reciprocal path mismatch"
+rc=0
+HOME="$home" "$ORCHID_BIN" trust unattended "$copied_linked" \
+  --reason "copy must get its own identity" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a copied linked worktree must not be acknowledgeable through the original registration"
+
+# Machine-local state outside the selected checkout can still be inside a
+# sibling checkout sharing the same common directory. Such state is trackable
+# by the repository and must be rejected before it can authorize any sibling.
+sibling_main="$WORK/sibling-store-main"
+sibling_target="$WORK/sibling-store-target"
+sibling_host="$WORK/sibling-store-host"
+mk_repo "$sibling_main"
+git -C "$sibling_main" worktree add -q --detach "$sibling_target" HEAD
+git -C "$sibling_main" worktree add -q --detach "$sibling_host" HEAD
+sibling_home="$sibling_host/operator-home"
+mkdir -p "$sibling_home/.orchid/unattended-trust"
+trust_repo "$sibling_target" "external sibling fixture acknowledgement"
+sibling_source_record="$(
+  HOME="$home" "$ORCHID_BIN" trust show "$sibling_target" | sed -n 's/^record: //p'
+)"
+sibling_record="$sibling_home/.orchid/unattended-trust/$(basename "$sibling_source_record")"
+cp "$sibling_source_record" "$sibling_record"
+sibling_record_before="$(cat "$sibling_record")"
+out="$(HOME="$sibling_home" "$ORCHID_BIN" trust show "$sibling_target")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a valid trust-shaped record inside a sibling linked worktree cannot grant trust"
+assert_match '^binding_state: unavailable$' "$out" \
+  "a sibling-hosted trust store has invalid machine-local placement"
+assert_match '^gate: denied$' "$out" \
+  "a sibling-hosted trust store defaults to a denied unattended gate"
+assert_match 'inside registered worktree' "$out" \
+  "sibling trust-store refusal names the registered-worktree boundary"
+rc=0
+HOME="$sibling_home" "$ORCHID_BIN" trust unattended "$sibling_target" \
+  --reason "must remain outside every sibling" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "acknowledgement must refuse a trust store inside a sibling worktree"
+assert_eq "$sibling_record_before" "$(cat "$sibling_record")" \
+  "sibling-store refusal must not rewrite repository-controlled trust state"
+
 # A local clone has the same root history but a different common-directory
 # filesystem identity, so origin/history similarity grants nothing.
 clone="$WORK/clone"

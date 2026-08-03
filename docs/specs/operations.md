@@ -106,9 +106,13 @@ object-view variables (for example `GIT_DIR`/`GIT_WORK_TREE`), disables
 replacement refs, legacy grafts, and shallow boundaries, and disables lazy
 object fetching. A shallow repository cannot be acknowledged until its commit
 ancestry is locally complete. Trust-store containment uses the physical
-checkout marker, not a repository-configurable worktree path. If `HOME` or a
-symlinked `~/.orchid` would place the record inside the target,
-acknowledgement refuses instead of creating repository-controlled trust state.
+checkout marker, not a repository-configurable worktree path. A linked
+checkout's marker must reciprocally match the path registered under the common
+directory, so copying a linked worktree together with its `.git` pointer
+cannot inherit the registered original's acknowledgement. If `HOME` or a
+symlinked `~/.orchid` would place the record inside the target or any
+registered sibling worktree, acknowledgement refuses instead of creating
+repository-controlled trust state.
 The record itself must be an operator-owned, single-link regular file without
 group/other write permission. Symbolic links, hard-link aliases (including
 aliases of tracked files), non-files, and unsafe permissions are denied;
