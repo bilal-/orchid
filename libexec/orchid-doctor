@@ -3,7 +3,7 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
-source "$ORCHID_ROOT/lib/hooks.sh"
+source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
@@ -51,6 +51,21 @@ perm_warnings="$(echo "$validate_out" | grep -E '^warn:.*permission .* requested
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
 command -v jq >/dev/null && ok jq || bad "jq missing"
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
+
+# Unattended trust is a separate readiness dimension from ordinary/manual
+# Orchid operation. Report the effective gate and its full machine-local
+# provenance, but do not make an otherwise healthy interactive/planning
+# doctor run fail: the actual pump, tick, and service-install boundaries
+# enforce the denial. This also keeps `doctor --greenfield` useful before a
+# root commit exists (a record cannot be bound until one does).
+unattended_trust_inspect "$repo"
+if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
+  printf 'ok: unattended trust: '
+else
+  printf 'WARN: unattended trust (headless execution gated): '
+fi
+unattended_trust_summary_loaded
+
 if [ "$greenfield" -eq 1 ]; then
   echo "note: greenfield: verify command deferred to scaffold task"
 else

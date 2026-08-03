@@ -60,15 +60,12 @@ flowchart TD
     PHONE -->|"reply runs orchid answer, nonce-verified"| VERBS
 ```
 
-**What this proves: one-way launch authority.** Every edge into an engine
-adapter originates at `runners/orchid-launch`; an adapter's only outputs
-are files (a result envelope into the spool, commits inside its own task
-worktree). No engine holds a channel to any other engine — the orchestrator
-included, whose entire interface is running `orchid` verbs under bash. That
-is INV-01 (no tier-1 verb spawns a long-lived process) and INV-06 (no
-engine process is spawned except by the tier-2 launcher) in
-[specs/kernel.md](./specs/kernel.md)'s conformance invariants — enforced by
-the test suite, not just drawn here.
+**What this proves: one-way launch topology in Orchid's source.** Every
+implemented edge into an engine adapter originates at a tier-2 runner, and
+the adapter contract returns a file envelope (plus implementer commits in
+its task worktree). INV-01/INV-06 statically test those Orchid-owned launch
+sites. They do not inspect or jail every subprocess a shell-capable engine
+might invoke; the diagram is not OS containment or a command broker.
 
 ## 2. The task lifecycle
 
@@ -218,9 +215,11 @@ a verb bearing a stale epoch refuses to run, so a zombie session from
 before a crash can never mutate state (INV-02) — the newer epoch wins, the
 older is fenced out. Layered under that, the single-writer rule gives every
 durable file exactly one writing verb ([specs/kernel.md](./specs/kernel.md),
-"Single-writer rule"), and the pump's lease-staleness check means an
-interactive session and a headless tick never both act on a live run
-(PROTOCOL.md, HEADLESS OPERATION). Kill anything, any time: the next
+"Single-writer rule"). The pump's lease-staleness check avoids the ordinary
+overlap case; if a delayed-but-live session crosses the stale threshold,
+epoch fencing makes its next stale verb refuse after the headless tick
+mints a newer epoch (PROTOCOL.md, HEADLESS OPERATION). Kill anything, any
+time: the next
 `orchid run resume` reconciles jobs first, then picks up the walk from
 committed files.
 

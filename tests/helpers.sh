@@ -3,12 +3,15 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORCHID_BIN="$REPO_ROOT/bin/orchid"
 FAILS=0
+
+# Fixtures deliberately replace HOME to isolate machine-local Orchid state.
 # Disposable fixture commits must not depend on an operator's global Git
-# identity (hosted CI and extracted archives intentionally have none).
+# identity, which may be absent in hosted CI and extracted archives.
 export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Orchid Tests}"
 export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-orchid-tests@example.invalid}"
 export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-$GIT_AUTHOR_NAME}"
 export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-$GIT_AUTHOR_EMAIL}"
+
 fail()        { echo "  FAIL: $*"; FAILS=$((FAILS+1)); }
 assert_eq()   { [ "$1" = "$2" ] || fail "$3 (expected '$1', got '$2')"; }
 assert_match(){ echo "$2" | grep -Eq "$1" || fail "$3 (no match '$1')"; }

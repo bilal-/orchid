@@ -22,6 +22,31 @@ early), there is no override verb — the ledger window is time-based by
 design, so waiting it out or configuring a fallback chain
 (`role.<role>=<primary>,<fallback>`) is the supported path.
 
+## Unattended trust refusal
+
+**Symptom:** the pump, direct headless tick, or `orchid service install`
+prints `unattended trust is denied` and exits before acting.
+
+```sh
+orchid trust show "$PWD"
+orchid status --explain
+```
+
+Read the `why` field. With no record, review the target repository as
+potentially prompt-injecting input, then acknowledge it with an honest reason:
+
+```sh
+orchid trust unattended "$PWD" --reason "reviewed target and accept unattended prompt risk"
+```
+
+A root-commit or policy mismatch is deliberately not auto-updated; inspect
+the changed history/policy and run the same acknowledgement command again
+only if the new boundary is acceptable. A clone, copy, or recreated `.git`
+has a different Git common-directory device/inode and needs its own decision.
+`orchid trust revoke "$PWD"` denies future pump/tick invocations. It does not
+remove a scheduler entry, so use `orchid service status` and `orchid service
+uninstall` as needed; both remain available while denied.
+
 ## Resume (crash / restart)
 
 **Symptom:** the interactive session died mid-run (crash, closed terminal,
@@ -45,7 +70,7 @@ for the full capsule-loading walk a resuming session performs before
 touching any task.
 
 **Headless equivalent:** you don't need to do any of this by hand at all —
-`runners/orchid-pump` (installed as a service, see
+`runners/orchid-pump` (acknowledged and installed as a service, see
 [quickstart.md](./quickstart.md)) detects an abandoned run itself (a lease
 older than `pump_stale_s`, default `900`) and runs the exact same resume
 sequence via `runners/orchid-tick` on its own.

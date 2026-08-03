@@ -82,7 +82,13 @@ full text plus a fixed instruction block naming the concrete `$worktree`/
 lines to populate the envelope's `actions[]`. Requires `shell,git`
 capabilities (`plugins/engines/codex/plugin.conf` declares both) —
 `--sandbox workspace-write` is used for this path too, since a tick needs to
-run `git`/`orchid` verbs, not just edit files.
+run `git`/`orchid` verbs, not just edit files. That vendor sandbox is a real
+filesystem/network policy enforced by Codex, but it is not Orchid command
+brokerage: repository content can still prompt-inject a shell-capable model
+within the granted sandbox, and `ORCHID-ACTION` transcript lines do not prove
+that only reported commands ran. `orchid trust unattended` therefore gates
+the headless runner separately; T002, not this adapter, owns any future
+broker.
 
 ## Known gotchas
 

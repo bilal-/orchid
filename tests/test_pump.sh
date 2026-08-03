@@ -162,6 +162,16 @@ printf -- '---\nrun_status: planning\nrun_id: r-pump\n---\n# Roadmap\n' > .orchi
 printf 'role.orchestrator=stubplanning\n' > orchid.config
 rm -f .orchid/runtime/lease.json "$WORK/marker-stubplanning"
 
+rc=0
+out="$("$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "pump must refuse a runnable repo without unattended trust"
+assert_match 'unattended pump refused: unattended trust is denied' "$out" \
+  "pump refusal names the unattended trust gate"
+[ -f "$WORK/marker-stubplanning" ] && fail "untrusted pump must never spawn an engine"
+
+HOME="$HOME" "$ORCHID_BIN" trust unattended "$WORK" --reason "pump test fixture" >/dev/null \
+  || fail "pump fixture acknowledgement must succeed"
+
 out="$("$PUMP" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "pump exits 0 when run_status is planning and no lease exists"
 assert_eq "pump: run not running (planning), no lease yet" "$out" \

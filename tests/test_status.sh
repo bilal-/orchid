@@ -55,8 +55,12 @@ echo "$("$ORCHID_BIN" status)" | grep -q "split-brain" && fail "status must not 
 # existing `status --explain` TEXT output (still on the $WORK fixture above:
 # T001 pending/ready, T002 pending/waiting-deps, no engine events).
 expected_explain="$(printf 'run_status: planning\n== tasks\nT001\tpending\tdemo\tready-to-dispatch\nT002\tpending\tdep\twaiting-deps (T001)\n== jobs\n== engines\n(no engine events yet)')"
-assert_eq "$expected_explain" "$("$ORCHID_BIN" status --explain)" \
-  "status --explain text output is byte-identical after the --html refactor"
+actual_explain="$("$ORCHID_BIN" status --explain)"
+assert_match '^unattended: denied' "$actual_explain" \
+  "status --explain reports the unacknowledged headless gate"
+actual_explain_without_trust="$(printf '%s\n' "$actual_explain" | grep -v '^unattended: ')"
+assert_eq "$expected_explain" "$actual_explain_without_trust" \
+  "apart from the required unattended gate line, status --explain text is byte-identical after the --html refactor"
 
 # Plant an escaping hazard: a task title containing raw HTML.
 "$ORCHID_BIN" task create T003 '<script>alert(1)</script>' >/dev/null

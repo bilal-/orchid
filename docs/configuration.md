@@ -26,6 +26,13 @@ the integration branch from a dirty or stale checkout (see
 [troubleshooting.md](./troubleshooting.md)) — never hand-commit it from a
 live checkout.
 
+Unattended trust is intentionally **not a configuration key or layer**.
+Only `orchid trust unattended <repo> --reason <reason>` can create that
+operator-authored record, under `~/.orchid/unattended-trust/`. Environment
+variables, tracked `orchid.config`, Git config, and origin metadata are
+ignored by the trust decision. Inspect it with `orchid trust show <repo>`;
+remove it with `orchid trust revoke <repo>`.
+
 ## Key table
 
 | Key | Default | Layer | Introduced |
@@ -112,7 +119,8 @@ live checkout.
   [docs/engines/hermes.md](./engines/hermes.md).
 - **`push_guard`** governs whether `orchid init` installs a `.git/hooks/pre-push`
   guard that refuses pushing `task/*` branches or the integration branch
-  (defense-in-depth; PROTOCOL.md already forbids pushing outright).
+  (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
+  prompt policy is not OS/network containment).
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.

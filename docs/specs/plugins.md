@@ -37,7 +37,15 @@ differences are declared capabilities.
   (secrets are opt-in per plugin via manifest `permissions`), a
   kernel-chosen private output location, and the invocation request document
   below. Vendor-CLI sandbox flags (workspace-write, read-only) remain the
-  engine-level second layer.
+  engine-level second layer. Hygiene is not syscall, network, or command
+  containment.
+- **Whole-repository unattended trust is separate from plugin trust.**
+  `orchid trust unattended <repo> --reason <reason>` records an
+  operator-authored acknowledgement under
+  `~/.orchid/unattended-trust/`, never in tracked content. It binds Git
+  common-directory device/inode, root commit(s), and policy version. It
+  gates the pump, direct headless tick, and service installation; it does
+  not enable a repo-local plugin or assert that repository prompts are safe.
 
 ### Extension points and contracts
 
@@ -297,7 +305,8 @@ a hermes platform name) — a separate axis from which plugin sends it.
 ### Named patterns (the codebase vocabulary)
 
 Verb kernel · Envelope · Adapter · Runner · Archetype · Ledger · Spool ·
-Lease · Request document · Trust record · Hook.
+Lease · Request document · Plugin trust record · Unattended trust record ·
+Hook.
 
 ## Engine availability & role failover (v1-m2 — SHIPPED)
 
@@ -334,8 +343,9 @@ Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
 | Untrusted input | Boundary | Mitigation |
 |---|---|---|
 | cloned repo content (incl. `.orchid/plugins/`) | plugin discovery | repo-local disabled by default; digest-pinned trust records outside the repo; no silent shadowing |
+| target-repository requirements, tasks, diffs, filenames, and source | unattended orchestrator prompt + shell tool | machine-local per-repository acknowledgement before pump/tick/service; explicit prompt-injection warning; vendor sandbox where available; no command broker yet (T002) and no claim that prompt policy is enforcement |
 | plugin executables | trust decision at install | trusted-code classification (stated plainly); launcher hygiene; containment roadmap post-v1 |
 | engine output (envelopes) | reconciliation | job_id binding to manifests; schema fail-closed; quarantine on mismatch/replay |
-| task/diff content in prompts | reviewer/arbiter judgment | prompt injection is assumed possible; verdicts are advisory to the arbiter, which reads high-risk diffs itself; verification is deterministic and immune to prompt content (`orchid verify`) |
+| task/diff content in reviewer prompts | reviewer/arbiter judgment | prompt injection is assumed possible; verdicts are advisory to the arbiter, which reads high-risk diffs itself; verification commands are selected by the operator and their recorded exit/evidence is deterministic, but the commands themselves are repository-specific code and are not made safe by Orchid |
 | inbound answers | `orchid answer` | question-id + idempotency; channel adapters get no shell/repo access; nonce + sender allowlist (v1-m4 — SHIPPED): `answer_allowlist` unconfigured leaves the lenient v0 behavior (no nonce, no allowlist check) since no remote answer path exists to attack; once configured, EVERY caller (local or remote) must supply a matching `--nonce`, closing the prior bypass of simply omitting `ORCHID_ANSWER_SENDER` — that env var, when set, additionally requires the identity to appear in the allowlist |
 | implementer commits | merge path | worktree contamination guard; review immutability; transactional merge |

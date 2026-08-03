@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/trust.sh"
+
+_trust_usage() {
+  cat <<'EOF'
+usage:
+  orchid trust unattended <repo> --reason <reason>
+  orchid trust show [<repo>]
+  orchid trust revoke [<repo>]
+
+Unattended trust is an operator-authored, machine-local acknowledgement of
+the prompt-injection risk presented by a target repository. Records live
+outside the repository and bind to Git common-directory device/inode, the
+repository root commit, and the current trust-policy version. Linked
+worktrees share a record; repository paths, origins, tracked content, Git
+config, and orchid.config never grant trust.
+EOF
+}
+
+sub="${1:-}"; [ "$#" -gt 0 ] && shift
+case "$sub" in
+  -h|--help|help|"")
+    _trust_usage
+    exit 0
+    ;;
+  unattended)
+    repo="${1:-}"
+    [ -n "$repo" ] || orchid_die "usage: orchid trust unattended <repo> --reason <reason>"
+    shift
+    reason=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --reason)
+          [ -n "${2:-}" ] || orchid_die "--reason requires a non-empty value"
+          reason="$2"; shift 2 ;;
+        *) orchid_die "orchid trust unattended: unknown argument '$1'" ;;
+      esac
+    done
+    [ -n "$reason" ] || orchid_die "usage: orchid trust unattended <repo> --reason <reason>"
+    unattended_trust_acknowledge "$repo" "$reason"
+    echo "unattended trust acknowledged:"
+    unattended_trust_show "$repo" | sed 's/^/  /'
+    ;;
+  show)
+    [ "$#" -le 1 ] || orchid_die "usage: orchid trust show [<repo>]"
+    repo="${1:-${ORCHID_REPO:-$PWD}}"
+    unattended_trust_show "$repo"
+    ;;
+  revoke)
+    [ "$#" -le 1 ] || orchid_die "usage: orchid trust revoke [<repo>]"
+    repo="${1:-${ORCHID_REPO:-$PWD}}"
+    unattended_trust_inspect "$repo"
+    shown_repo="${ORCHID_UNATTENDED_REPO:-$repo}"
+    if unattended_trust_revoke "$repo"; then
+      echo "unattended trust revoked: $shown_repo"
+    else
+      echo "unattended trust already absent: $shown_repo"
+    fi
+    ;;
+  *)
+    orchid_die "unknown trust subcommand '$sub' (expected unattended, show, or revoke)"
+    ;;
+esac

@@ -34,9 +34,11 @@ prepared Homebrew tap, and the git-clone method:
    creates an integration branch. Your own branches are never touched.
 3. Write `requirements.md`: goal, constraints, acceptance criteria. A
    second engine critiques the plan before it becomes real work.
-4. `orchid run start` — or `orchid service install` — and walk away.
-   Engines implement, independent engines review, `orchid verify` runs
-   your real test command, and merges land only after re-verification.
+4. For a headless tick/service, review the target and run `orchid trust
+   unattended "$PWD" --reason "..."`; then `orchid run start` or `orchid
+   service install`. Engines implement, independent engines review, `orchid
+   verify` runs your real test command, and merges land only after
+   re-verification. Interactive/manual operation needs no acknowledgement.
 5. When something genuinely needs a human, one Telegram message arrives on
    your phone. You reply; the answer lands nonce-verified.
 6. Come back to merged, verified code on the integration branch, with
@@ -58,9 +60,9 @@ no code yet).
   CLIs in their own first-party headless modes. Orchid never holds an API
   key, never meters tokens, never proxies a request — billing stays on
   whatever plan each CLI is already logged into.
-- **A deterministic kernel, not an agent framework.** Engines never spawn
-  engines. A small bash state machine launches every engine and brokers
-  every result as a file; each state change is a git commit on the
+- **A deterministic kernel, not an agent framework.** Orchid's supported
+  launch path routes engine jobs through a small bash state machine and
+  brokers every result as a file; each state change is a git commit on the
   integration branch with its evidence attached — verify output, review
   verdicts, an append-only journal. See [Who runs whom](#who-runs-whom).
 - **Any engine, any role.** Implementer, reviewer, orchestrator, plan
@@ -91,11 +93,11 @@ no code yet).
 
 ## How it works
 
-Who runs whom, top to bottom. The one structural fact to read off this
-diagram: **every arrow into an engine adapter comes from the kernel's own
-launcher** — there is no engine-to-engine edge anywhere in the system, so
-"engines never spawn engines" is the shape of the graph, not a policy
-statement.
+Who runs whom, top to bottom. Every arrow Orchid itself implements into an
+engine adapter comes from a tier-2 runner. This is a property of Orchid's
+source and supported control flow, not OS containment: a shell-capable,
+prompt-injected orchestrator is still an operating-system process and there
+is no command broker preventing it from invoking some other executable.
 
 <!-- Diagram grounding: docs/specs/kernel.md "Architecture" (tier split,
      normative process model, INV-01/INV-06) and PROTOCOL.md (the tick).
@@ -214,18 +216,16 @@ The same walk, in verbs:
 This is the one design decision every other choice in this project follows
 from, stated exactly:
 
-> **Engines never spawn engines.** The deterministic kernel launches every
-> engine and brokers all results as files. The orchestrating engine needs
-> exactly one power — running a bash CLI — and every other role×engine
-> combination is disabled until the capability suite proves it.
+> **Orchid routes engine launches through its tier-2 runners.** The
+> deterministic kernel brokers their results as files, and every non-default
+> role×engine combination is disabled until the capability suite proves it.
 
-Concretely: there is no LLM anywhere in this system that is permitted to
-decide to invoke another LLM directly. An "orchestrator" engine (by
-default, an interactive Claude Code session) does nothing more privileged
-than run `orchid` verbs and `runners/orchid-launch` — the same commands
-shown throughout this README — under a bash shell. It cannot reach an
-implementer or reviewer engine except by asking the kernel to launch one on
-its behalf, exactly the way a human operator would. Every OTHER
+Concretely, the protocol tells an orchestrator engine (by default, an
+interactive Claude Code session) to use only `orchid` verbs and
+`runners/orchid-launch`, the same commands shown throughout this README.
+INV-01/INV-06 test that Orchid's own tier-1 and adapter launch sites follow
+that topology. They do not jail the orchestrator's Bash process or turn the
+prompt instruction into an enforceable command allowlist. Every other
 role×engine pairing beyond the tested defaults is disabled at resolution
 time until `orchid plugins test <engine> <role>` (the capability suite)
 proves it eligible — see [any-engine-any-role](#any-engine-any-role) below.
@@ -378,10 +378,15 @@ the full explanation of exactly what gets linked where.
 To run continuously without babysitting a terminal:
 
 ```sh
+orchid trust unattended "$PWD" --reason "reviewed this repository for unattended execution"
 orchid service install     # launchd agent (macOS) or crontab line (Linux)
 orchid service status
 orchid service uninstall
 ```
+
+`orchid trust show "$PWD"` displays the machine-local acknowledgement and
+its identity/root/policy provenance; `orchid trust revoke "$PWD"` disables
+future pump/tick runs without removing an already-installed schedule.
 
 ## State files, guardrails, operator verbs
 
@@ -446,27 +451,39 @@ wiring up a real CLI: [docs/engines/](./docs/engines/).
 - **Lease** — the orchestrator's ownership heartbeat (`runtime/lease.json`).
 - **Request document / Envelope / Input pack** — invocation contract /
   result contract / materialized per-job memory.
-- **Trust record** — a digest-pinned entry outside the repo that enables a
-  repo-local plugin.
+- **Plugin trust record** — a digest-pinned entry outside the repo that
+  enables one repo-local plugin.
+- **Unattended trust record** — an operator-authored machine-local
+  acknowledgement, bound to Git common-directory filesystem identity, root
+  history, and policy version; it enables the pump/tick boundary, not code
+  safety.
 - **Hook** — a named lifecycle extension point with a typed payload.
 
 ## FAQ
 
-**Can an engine spawn another engine?** No — structurally impossible
-(INV-01: no tier-1 verb spawns a long-lived process; every engine launch
-goes through the kernel's own launcher, never through another engine).
+**Can an engine spawn another engine?** Orchid never does so in its supported
+launch flow: INV-01/INV-06 statically test that kernel launch sites use the
+tier-2 runners. That is source-level mediation, not OS containment. A
+shell-capable engine process is not jailed by those invariants, and no
+command broker is wired yet.
 
 **Is this sandboxed?** Plugins (including the built-ins) are **trusted
 code** — orchid v1 doesn't containerize them and says so plainly rather
 than implying protection it doesn't have. Vendor-CLI sandbox flags
 (`--sandbox workspace-write`, read-only modes, etc.) are a real second
-layer; full OS-level plugin containment is post-v1 roadmap.
+layer. The launcher's stripped environment is hygiene, PROTOCOL.md's
+command restrictions are prompt policy, no command broker is wired yet,
+and full OS-level plugin/process containment is post-v1 roadmap. The
+unattended acknowledgement makes this residual target-repository
+prompt-injection risk explicit; it does not remove it.
 
-**Does orchid push, deploy, or touch anything outside my machine?** No.
-External mutation (push/deploy/publish/prod-data) is prohibited outright in
-every stage shipped so far — it surfaces as a blocker, never an action.
-Moving the integration branch to `origin` is entirely your call, done by
-you, outside orchid.
+**Does orchid push or deploy?** Orchid's shipped verbs and adapters do not
+intentionally perform those actions; PROTOCOL.md requires external mutation
+to become a blocker, and the installed pre-push hook is defense in depth.
+That policy is not a network sandbox for a prompt-injected, Bash-capable
+orchestrator. Review the target and explicitly acknowledge that residual
+risk before enabling unattended mode. Moving the integration branch to
+`origin` remains an operator action.
 
 **What if my engine's own CLI changes its flags?** Each adapter documents
 the exact invocation it verified and why (`docs/engines/*.md`) — a drifted

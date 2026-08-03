@@ -8,6 +8,18 @@ printf 'role.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.
 
 out0="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes with resolvable fake engines"
 assert_match "integration branch exists or creatable" "$out0" "doctor pre-init: integration branch creatable from HEAD"
+assert_match "WARN: unattended trust \\(headless execution gated\\): denied" "$out0" \
+  "doctor reports the default-denied unattended gate without blocking interactive readiness"
+
+trust_out="$("$ORCHID_BIN" trust unattended "$WORK" --reason "doctor test fixture")" \
+  || fail "doctor fixture acknowledgement must succeed"
+assert_match "reason: doctor test fixture" "$trust_out" \
+  "trust acknowledgement records operator provenance"
+trusted_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
+  || fail "doctor remains healthy after unattended acknowledgement"
+assert_match "^ok: unattended trust: allowed" "$trusted_doctor" \
+  "doctor reports the allowed gate with machine-local provenance"
+
 mkdir -p .orchid/plugins/engines/evil
 out="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || true
 assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"

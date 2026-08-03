@@ -91,13 +91,26 @@ rm -f "$MARKER"
 out="$("$REPO_ROOT/runners/orchid-tick" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "tick exits 0 when run_status is already complete"
 [ -f "$MARKER" ] && fail "tick must not spawn the orchestrator engine when run_status is complete"
+[ ! -d .orchid/runtime ] || fail "complete no-op must not create runtime state before the trust gate"
 
 # ===========================================================================
-# B -- happy path: run_status running, stub runs a real verb, writes an ok
-# envelope with one action.
+# B -- a runnable but unacknowledged repo is refused before epoch/runtime
+# mutation or adapter spawn. Once acknowledged, the happy path runs a real
+# verb and writes an ok envelope with one action.
 # ===========================================================================
 printf -- '---\nrun_status: running\nrun_id: r-tick\n---\n# Roadmap\n' > .orchid/roadmap.md
 printf 'role.orchestrator=stubo\n' >> orchid.config
+
+rc=0
+out="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "headless tick must refuse an unacknowledged repo"
+assert_match 'headless tick refused: unattended trust is denied' "$out" \
+  "tick refusal names the unattended trust gate"
+[ ! -d .orchid/runtime ] || fail "refused tick must not create runtime state"
+[ -f "$WORK/marker-spawned" ] && fail "refused tick must not spawn any adapter"
+
+HOME="$HOME" "$ORCHID_BIN" trust unattended "$WORK" --reason "tick test fixture" >/dev/null \
+  || fail "tick fixture acknowledgement must succeed"
 
 epoch_before="$(cat .orchid/runtime/epoch 2>/dev/null || echo 0)"
 out="$("$REPO_ROOT/runners/orchid-tick" 2>&1)"; rc=$?

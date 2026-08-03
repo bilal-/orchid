@@ -118,8 +118,10 @@ and `reconcile`.
    crash can never mutate state. Per-verb transactional locking (each verb
    taking its own lock for its own transaction) is a Plan B deliverable,
    arriving alongside the tick loop.
-4. Engines are launched ONLY by the tier-2 launcher, which writes the
-   manifest via tier-1 `jobs prepare` first. Engines never spawn engines.
+4. Every engine launch site implemented by Orchid lives in a tier-2 runner,
+   which writes the manifest via tier-1 `jobs prepare` first. This is a
+   source-level topology invariant, not a jail around a shell-capable engine
+   process.
 
 **Single-writer rule with a complete ownership table** — every durable file
 has exactly one writing verb; anything not listed is read-only for everyone:
@@ -191,8 +193,9 @@ yet.
 `.git/info/exclude`, implementer prompts forbid touching it, and
 `orchid task advance` REFUSES entry to `testing` while any commit in
 `base_sha..candidate_sha` touches `.orchid/` paths (the orchestrator strips
-such commits and re-verifies). State corruption via task branches is
-structurally impossible.
+such commits and re-verifies). Thus a candidate containing a committed
+`.orchid/` change cannot cross this kernel transition; this does not claim
+general filesystem containment of the engine process.
 
 ## The loop
 
@@ -450,15 +453,17 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   crashes leave at most orphan journal entries (benign, re-runnable), never
   unjournaled state changes. This is INV-08's guarantee: no state change occurs
   without an already-journaled reason. Actor identity (`engine/role/session`),
-  run, epoch, job, and SHAs are derived from KERNEL context — never
-  caller-supplied, so the audit trail is not forgeable. **Exception, stated
-  plainly:** the lock-break `intervention` entry is written AFTER the new
+  run, epoch, job, and SHAs are derived from KERNEL context rather than
+  supplied as transition arguments, so Orchid-owned transition records use
+  kernel context rather than model prose. This is not a host-level
+  tamper-proof log. **Exception, stated plainly:** the lock-break
+  `intervention` entry is written AFTER the new
   epoch is minted (it must journal under a valid fenced epoch, per the epoch
   write ordering in `orchid run start|resume`), not before any state
   change — it is informational (no state mutation depends on it), so this is
   the one journal write that follows epoch-mint rather than preceding a state
-  change. A decision without a
-  recorded why is structurally impossible.
+  change. Reason-bearing transition verbs refuse the state change when the
+  required reason is absent.
 - **Read surface:** `orchid journal tail [-n N]`,
   `orchid journal show --task T007` (that task's full decision history).
   Entries are prose for successors and humans; NEVER parsed for control
@@ -542,7 +547,7 @@ derived cache, rebuildable from it.
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
-| Blocked on prompt | structurally impossible: launcher stdin `/dev/null` + `approval_policy=never` + never-prompt flags |
+| Blocked on an interactive terminal prompt | supported adapters receive stdin `/dev/null` plus their documented noninteractive/never-approval flags; a vendor regression can still fail or hang and is bounded by timeout |
 | Spinning | deterministic FIRST, with a false-positive guard: duplicate-line checks apply to the ADAPTER's own output, use a sliding window (≥5 min identical lines AND no CPU/disk delta AND no new commits) — build tools legitimately repeat progress lines and are never judged by line content alone; LLM log-tail judgment is the ESCALATION tier |
 
 Write-ahead manifests keyed by job_id (task, attempt, role, engine id +
@@ -581,14 +586,34 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
 
 ## Execution policy (the autonomy boundary)
 
-Per enabled role×engine pair, enforced by the kernel launcher (env
-allowlist, stdin `/dev/null`, private output path) plus vendor-CLI sandbox
-flags: implementer worktree-write + `approval_policy=never` + no secrets +
-network only in declared install phases; reviewers read-only; orchestrator
-repo+`.orchid/` scope. **External mutations prohibited in v0/v1** (no push,
-deploy, publish, prod-data) — blockers instead. `orchid.config` and
-`plugin.conf` are parsed data, never sourced. **Defense in depth (v1-m4 —
-SHIPPED):** `orchid init` installs a pre-push hook (`templates/pre-push.sh`,
+The boundary has five distinct layers; none should be described as another:
+
+1. **Launcher environment hygiene (kernel-enforced):** an environment
+   allowlist, stdin `/dev/null`, and a kernel-chosen private output path
+   reduce ambient credentials, hidden prompts, and output confusion. They do
+   not restrict syscalls or which commands a shell-capable child may run.
+2. **Vendor sandboxing (vendor-enforced, adapter-specific):** for example,
+   Codex review is read-only and its implement/orchestrate path uses
+   `workspace-write` plus `approval_policy=never`. Claude's headless
+   orchestrator instead receives Bash tool access; that is permission to use
+   a tool, not a per-command sandbox. Guarantees vary by CLI.
+3. **Prompt policy (advisory to the model):** PROTOCOL.md requires
+   repo-local mutation only, no push/fetch/deploy, and use of Orchid's
+   launcher. Target-repository requirements, tasks, diffs, filenames, and
+   source may contain prompt injection, especially dangerous when the
+   orchestrator has Bash. The machine-local unattended acknowledgement makes
+   the operator accept that residual risk; it does not sanitize the prompt.
+4. **Command brokerage (not available yet):** the current orchestrator calls
+   Bash directly. No broker enforces an Orchid-only command vocabulary or
+   mediates every subprocess. That work belongs to T002 and is intentionally
+   not wired here.
+5. **OS containment (not provided):** adapters/plugins are trusted host code;
+   Orchid v1 does not jail their process trees, apply an OS sandbox profile,
+   or provide a network namespace.
+
+`orchid.config` and `plugin.conf` are parsed data, never sourced.
+**Defense in depth (v1-m4 — SHIPPED):** `orchid init` installs a pre-push
+hook (`templates/pre-push.sh`,
 `push_guard` config, default true; never overwrites a pre-existing user
 hook) refusing any push whose destination ref is a task branch or the
 integration branch (the name baked in at install time, not read from
@@ -623,10 +648,13 @@ replacement for it.
 
 **Guaranteed:** single writer per durable file; validated transitions only;
 epoch-fenced mutation; envelopes bound to launches (quarantine otherwise);
-tests pass only via `orchid verify`; unreviewed trees never merge; engines
-never spawn engines; a decision without a journaled reason cannot occur on
-reason-bearing verbs; crash loses at most the current uncommitted tick.
+tests pass only via `orchid verify`; unreviewed trees never merge; Orchid's
+own engine launch sites route through tier-2 runners; a decision without a
+journaled reason cannot occur on reason-bearing verbs; crash loses at most
+the current uncommitted tick.
 **NOT guaranteed:** plugin containment (plugins are trusted code);
+an enforceable command allowlist for a shell-capable orchestrator;
+immunity to prompt injection from target-repository content;
 engine output quality (reviews/arbitration mitigate, never prove);
 wall-clock progress when required engines are unavailable (work queues);
 semantic correctness beyond declared verification commands.
@@ -638,7 +666,7 @@ semantic correctness beyond declared verification commands.
 - INV-03 envelope mismatch/replay/oversize → quarantine, never acceptance
 - INV-04 a commit touching `.orchid/` blocks entry to `testing`
 - INV-05 kernel code never branches on a plugin's name
-- INV-06 no engine process is spawned except by the tier-2 launcher
+- INV-06 Orchid source contains no engine-spawn site outside tier-2 runners
 - INV-07 a candidate whose SHA changed cannot merge without re-verify +
   re-review (rebase included)
 - INV-08 reason-bearing transitions fail without `--reason`; actor identity

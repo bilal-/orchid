@@ -26,6 +26,7 @@ while [ -L "$self" ]; do
 done
 ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
 source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/trust.sh"
 
 PUMP_LOG_TAIL_LINES=20
 
@@ -41,6 +42,8 @@ a crontab line.
 
   install    render + install (or replace) the schedule for --repo.
                refuses when --repo has no .orchid/ (not an orchid repo).
+               also refuses until this machine has an acknowledgement from
+               `orchid trust unattended <repo> --reason <reason>`.
                idempotent: re-running install for the same repo REPLACES
                its existing schedule (same label/marker) in place -- it
                never stacks a second launchd job or a second crontab line.
@@ -486,6 +489,11 @@ case "$sub" in
   install)
     [ -d "$repo/.orchid" ] \
       || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
+    # Dry-run still renders and places scheduler artifacts, so it crosses the
+    # same unattended boundary as a real install and is gated identically.
+    # Status/uninstall remain available after revocation so an operator can
+    # always inspect or remove an existing schedule.
+    unattended_trust_require "$repo" "service installation" || exit 1
     interval_s="${interval_arg:-$(config_get "$repo" pump_interval_s 240)}"
     case "$interval_s" in
       ''|*[!0-9]*) orchid_die "--interval-s must be a positive integer (got '$interval_s')" ;;

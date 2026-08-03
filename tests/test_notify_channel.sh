@@ -151,6 +151,19 @@ printf -- '---\nrun_status: running\nrun_id: r-notify\n---\n# Roadmap\n' > .orch
 now="$(date -u +%s)"; iso="$(date -u -d "@$now" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$now" +%Y-%m-%dT%H:%M:%SZ)"
 jq -n --arg t "$iso" '{epoch:1, refreshed_at:$t}' > .orchid/runtime/lease.json
 
+oc_before="$(cat "$OC_LOG")"
+rc=0
+out="$("$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "untrusted pump must refuse before draining the outbox"
+assert_match 'unattended pump refused: unattended trust is denied' "$out" \
+  "outbox refusal names unattended trust"
+[ -f ".orchid/runtime/outbox/$qid1" ] || fail "untrusted pump must leave the queued outbox message untouched"
+[ ! -f ".orchid/runtime/outbox/$qid1.tries" ] || fail "untrusted pump must not mutate outbox retry state"
+assert_eq "$oc_before" "$(cat "$OC_LOG")" "untrusted pump must not launch the notify plugin"
+
+HOME="$HOME" "$ORCHID_BIN" trust unattended "$WORK" --reason "notify drain test fixture" >/dev/null \
+  || fail "notify fixture unattended acknowledgement must succeed"
+
 out="$("$PUMP" 2>&1)"
 assert_match '^pump: lease fresh \([0-9]+s\)$' "$out" "pump still reports lease-fresh (drain must not block/replace that exit)"
 [ -f ".orchid/runtime/outbox/$qid1" ] && fail "outbox file must be removed after a successful send"

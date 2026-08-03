@@ -68,9 +68,14 @@ alone (`docs/dogfood-notes.md`'s F8): claude politely explained it lacked
 permission to run Bash and exited 0 having done nothing. Since every
 `orchid` verb invocation goes through Bash (there is no other way to invoke
 one), the orchestrator role's entire job requires this flag. This does not
-widen the autonomy boundary — the kernel launcher's env allowlist, stdin
-`/dev/null`, and private output path are unchanged; only the specific tool
-already needed to do this role's job is unblocked.
+remove the launcher's environment allowlist, stdin `/dev/null`, or private
+output path, but it does grant a general Bash tool. Claude's flag does not
+provide an Orchid-command-only allowlist, filesystem jail, or network
+namespace. The fixed "use only Orchid verbs; never contact a remote" text is
+prompt policy. For that reason, direct/pump-driven headless ticks are
+separately denied until `orchid trust unattended` records the operator's
+machine-local acknowledgement of the target repository's prompt-injection
+risk.
 
 `orchid_run_engine_cli` (`lib/heartbeat.sh`) backgrounds claude directly
 (same reasoning as codex's adapter — real claude was also found to buffer
@@ -100,7 +105,9 @@ The adapter feeds claude PROTOCOL.md's full text plus a fixed instruction
 block naming the concrete `$worktree`/`$ORCHID_ROOT` paths (absolute —
 dev checkouts may not have `orchid` on `PATH` at all) and greps the
 transcript for `ORCHID-ACTION: <command>` lines into the envelope's
-`actions[]`.
+`actions[]`. Those transcript lines are observability, not proof that no
+other command ran; there is no command broker in this release (T002 owns
+that boundary).
 
 ## Known gotchas
 

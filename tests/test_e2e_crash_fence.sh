@@ -142,6 +142,10 @@ manifest_pgid="$(jq -r .pgid "$manifest_before")"
 [ "$manifest_pgid" -gt 0 ] 2>/dev/null || fail "slow job manifest pgid must be > 0"
 [ -z "$own_pgid" ] || [ "$manifest_pgid" != "$own_pgid" ] \
   || fail "slow job must run in its OWN process group, not this test's"
+assert_eq "$slow_pid" "$manifest_pgid" \
+  "slow job must lead its OWN process group (pgid equals launched pid)"
+kill -0 -- "-$manifest_pgid" 2>/dev/null \
+  || fail "slow job's recorded process group must exist"
 kill -0 "$slow_pid" 2>/dev/null || fail "sanity: slow job pid alive right after launch"
 
 # ---------------------------------------------------------------------------

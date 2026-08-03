@@ -14,8 +14,10 @@ part of the architecture; this file never changes to suit one.*
   the operator alone moves anything to origin. `orchid init` also installs
   a `.git/hooks/pre-push` guard (`push_guard`, config, default true) as
   defense-in-depth: it refuses any push of a `task/*` branch or the
-  integration branch unless `ORCHID_ALLOW_PUSH=1`, so a session violating
-  this rule (deliberately or by accident) still cannot push either.
+  integration branch unless `ORCHID_ALLOW_PUSH=1`. This bullet is prompt
+  policy and the hook is a bypassable backstop (it may also be absent when
+  an operator hook already exists); neither is OS/network containment for a
+  shell-capable orchestrator.
 - **You are the orchestrator.** Your only interface to run state is `orchid
   <verb>` and, for spawning engine work, `runners/orchid-launch`. Never
   hand-edit anything under `.orchid/` — no frontmatter, no journal, no
@@ -516,6 +518,24 @@ concurrent resumer never mistakes this pass for a stalled one).
 
 ## HEADLESS OPERATION
 
+**Machine-local acknowledgement is mandatory.** Before either headless entry
+point may act, the operator must run:
+
+```sh
+orchid trust unattended <repo> --reason "<why this target is trusted for unattended execution>"
+```
+
+The record is outside the repository, and is bound to Git's shared common
+directory device/inode, the root commit(s) reachable from `HEAD`, and the
+trust-policy version compiled into Orchid. Linked worktrees therefore share
+an acknowledgement and a same-filesystem move preserves it; a clone, copy,
+recreated/replaced `.git`, root-history replacement, or policy-version change
+does not. Repository content, origin URLs, Git config, and `orchid.config`
+cannot grant it. `orchid trust show <repo>` displays the decision and its
+operator-authored reason/timestamp; `orchid trust revoke <repo>` removes it.
+Interactive sessions, planning, manual verbs, and read-only commands do not
+require or create this record.
+
 The interactive session above is one front-end for this file;
 `runners/orchid-pump` (cron/launchd-invoked, or run by hand) is the other. The pump
 never builds a prompt and never reads an envelope's contents — only exit
@@ -524,6 +544,14 @@ codes — and it does at most one thing per invocation: hand off to
 epoch and refreshing the lease via its own `orchid run resume` call, same as
 RESUME step 1 above) and exits. Every other outcome below is a no-op, exit
 0 — a cron poll finding nothing to do is normal, never an error:
+
+- **Trust denied:** after the side-effect-free uninitialized, split-brain,
+  and already-complete checks, the pump refuses before it creates
+  `runtime/`, drains the outbox, or hands off. The tick independently checks
+  the same record before `run resume` or any spawn, so invoking the tick
+  directly is not a bypass. Service installation is gated too; service
+  status/uninstall remain available so an operator can inspect or remove a
+  schedule after revocation.
 
 - **Uninitialized, or the run is already `complete`:** the pump exits
   immediately, touching nothing (it will not even create `runtime/` on an
@@ -543,8 +571,9 @@ RESUME step 1 above) and exits. Every other outcome below is a no-op, exit
   IS the mutual-exclusion mechanism between an interactive session and the
   pump: lease STALENESS, not a lock file. An interactive session already
   refreshes the lease every pass (THE TICK step 1 and step 5 above), so the
-  pump only ever wakes an ABANDONED run (crashed, or a session that quit
-  without a graceful stop). Combined with epoch fencing — `orchid run
+  pump treats the run as abandoned (crashed, or a session that quit without
+  a graceful stop). A live but delayed session can still cross that time
+  threshold. Combined with epoch fencing — `orchid run
   resume` mints a fresh epoch on every invocation, interactive or headless —
   a tick that wakes a stale run and a session that was actually still alive
   can never both mutate state: whichever call mints the newer epoch wins,

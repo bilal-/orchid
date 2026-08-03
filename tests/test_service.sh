@@ -15,6 +15,11 @@ cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 export ORCHID_ROOT="$REPO_ROOT"
 
+trust_repo() {
+  HOME="$HOME" "$ORCHID_BIN" trust unattended "$1" --reason "service test fixture" >/dev/null \
+    || fail "service fixture acknowledgement failed for $1"
+}
+
 # $WORK (from mktemp -d) commonly has a symlinked component on macOS
 # (/var/folders/... -> /private/var/folders/...) -- the service always
 # hashes/bakes in the CANONICAL, physically-resolved repo path (the brief's
@@ -35,6 +40,20 @@ assert_match 'uninitialized|no \.orchid' "$out" "install names the uninitialized
 [ -d "$HOME/Library/LaunchAgents" ] && fail "a refused install must not render/place anything"
 
 mkdir -p .orchid/tasks
+
+# An initialized repo is still denied until acknowledged. Dry-run is gated
+# too because it places real scheduler artifacts.
+rc=0
+out="$("$SERVICE" install --repo "$WORK" --dry-run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "install must refuse an initialized but unacknowledged repo"
+assert_match 'service installation refused: unattended trust is denied' "$out" \
+  "service refusal names the unattended trust gate"
+[ ! -d "$HOME/Library/LaunchAgents" ] \
+  || fail "trust-refused install must not place a launchd artifact"
+[ ! -d "$WORK/.orchid/runtime" ] \
+  || fail "trust-refused install must not create runtime state"
+
+trust_repo "$WORK"
 
 # ===========================================================================
 # B -- macOS (default host branch, no ORCHID_SERVICE_OS override): install
@@ -85,6 +104,7 @@ if command -v python3 >/dev/null 2>&1; then
   mkdir -p "$WORKX"
   ( cd "$WORKX" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
   WORKX_canon="$(cd "$WORKX" && pwd -P)"
+  trust_repo "$WORKX"
 
   outx="$("$SERVICE" install --repo "$WORKX" --dry-run 2>&1)"; rcx=$?
   assert_eq 0 "$rcx" "install --dry-run exits 0 even when --repo contains & < >"
@@ -142,6 +162,8 @@ rm -f orchid.config
 # ===========================================================================
 mkdir -p .orchid/runtime
 printf 'pump: run complete\npump: run complete\n' > .orchid/runtime/pump.log
+HOME="$HOME" "$ORCHID_BIN" trust revoke "$WORK" >/dev/null \
+  || fail "service fixture revocation must succeed"
 out="$("$SERVICE" status --repo "$WORK" --dry-run 2>&1)"; rc=$?
 assert_eq 0 "$rc" "status always exits 0"
 assert_match "$label_re" "$out" "status names the label"
@@ -187,6 +209,7 @@ assert_match 'pump: run complete' "$out" "status still tails an existing pump.lo
 # the interval to whole minutes; uninstall reverses it; status parses it.
 # ===========================================================================
 export ORCHID_SERVICE_OS=Linux
+trust_repo "$WORK"
 out="$("$SERVICE" install --repo "$WORK" --interval-s 150 --dry-run 2>&1)"; rc=$?
 assert_eq 0 "$rc" "linux install --dry-run exits 0"
 assert_match "$label_re" "$out" "linux install prints a label"
@@ -239,6 +262,7 @@ WORKP="$(mktemp -d)/repo%with%percent"
 mkdir -p "$WORKP"
 ( cd "$WORKP" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
 WORKP_canon="$(cd "$WORKP" && pwd -P)"
+trust_repo "$WORKP"
 
 _outp="$("$SERVICE" install --repo "$WORKP" --interval-s 120 --dry-run 2>&1)"; rcp=$?
 assert_eq 0 "$rcp" "linux install --dry-run exits 0 even when --repo contains %"
@@ -301,6 +325,7 @@ unset ORCHID_SERVICE_OS
 # at the end of this section instead.
 WORK2="$(mktemp -d)"
 ( cd "$WORK2" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
+trust_repo "$WORK2"
 
 out1="$("$SERVICE" install --repo "$WORK" --dry-run 2>&1)"
 out2="$("$SERVICE" install --repo "$WORK2" --dry-run 2>&1)"
@@ -326,3 +351,4 @@ assert_match 'uninstall' "$out" "help mentions uninstall"
 assert_match 'status' "$out" "help mentions status"
 assert_match 'idempotent' "$out" "help documents install/uninstall idempotence"
 assert_match 'dry-run' "$out" "help documents --dry-run"
+assert_match 'trust unattended' "$out" "help documents the unattended acknowledgement prerequisite"

@@ -22,6 +22,7 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/spawn.sh"
+source "$ORCHID_ROOT/lib/trust.sh"
 
 repo="${ORCHID_REPO:-$PWD}"
 state="$(orchid_state "$repo")"
@@ -71,6 +72,14 @@ if [ "$rs" = complete ]; then
   echo "pump: run complete"
   exit 0
 fi
+
+# The first potentially effectful operation below is orchid_runtime (which
+# creates .orchid/runtime), followed later by an outbox drain and possibly a
+# headless tick. Require the operator-authored MACHINE-LOCAL acknowledgement
+# before any of those can happen. The side-effect-free "not a repo",
+# split-brain, and already-complete diagnostics above remain available on an
+# untrusted target.
+unattended_trust_require "$repo" "unattended pump" || exit 1
 
 rt="$(orchid_runtime "$repo")"
 

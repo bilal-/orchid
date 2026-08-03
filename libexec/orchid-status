@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
-source "$ORCHID_ROOT/lib/schedule.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
 # --explain and --html are independent flags (either, neither, or both may
@@ -257,6 +257,11 @@ $journal_html"
 fi
 
 echo "run_status: ${rs:-(uninitialized)}"
+if [ "$explain" -eq 1 ]; then
+  unattended_trust_inspect "$repo"
+  printf 'unattended: '
+  unattended_trust_summary_loaded
+fi
 echo "== tasks"
 for f in "$state/tasks"/*.md; do
   [ -e "$f" ] || continue

@@ -170,7 +170,9 @@ tested vs. untested) and for driving orchid from codex/agy, which need no
 install.sh wiring at all. Regardless of front-end, install.sh also
 symlinks `bin/orchid` into `$ORCHID_BIN_DIR` (default `~/.local/bin`),
 creates `~/.orchid/plugins/engines` and a commented `~/.orchid/config` (the
-`~/.orchid/trust` store file appears on first `orchid plugins trust`)
+`~/.orchid/trust` store file appears on first `orchid plugins trust`; the
+separate `~/.orchid/unattended-trust/` directory appears on first
+`orchid trust unattended`)
 (never overwritten if it already exists), then finishes by running `orchid
 doctor` (inside a git repo you'd orchestrate) or printing next-steps
 (outside one). Re-running it is safe: an existing `~/.orchid/config` is
@@ -182,14 +184,15 @@ clobbered.
 `bin/orchid` under `DIR/bin` instead of `~/.local/bin` — useful if
 `~/.local/bin` isn't on `PATH` on this machine, or a shared install
 location is preferred. Only the bin symlink moves; skills and
-`~/.orchid/{config,trust}` are always per-user, never per-prefix:
+`~/.orchid/{config,trust,unattended-trust}` are always per-user, never
+per-prefix:
 
 ```sh
 ./install.sh --prefix /usr/local        # links /usr/local/bin/orchid
 ```
 
 **Uninstall** reverses precisely the symlinks `install.sh` created
-(config and trust are left in place):
+(config, plugin trust, and unattended acknowledgements are left in place):
 
 ```sh
 ./install.sh --uninstall

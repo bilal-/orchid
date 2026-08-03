@@ -9,12 +9,15 @@
 `git clone` + `./install.sh`, which does exactly and only: symlink `skills/`
 into `~/.claude/skills/`; link `bin/orchid` into `~/.local/bin` (or
 `$ORCHID_BIN_DIR`), warning if that dir is not on `PATH`; create
-`~/.orchid/{plugins,trust}` and a commented `~/.orchid/config`; finish by
+`~/.orchid/plugins/engines` and a commented `~/.orchid/config`; finish by
 running `orchid doctor` so the user's first output is a readiness report.
-`./install.sh --uninstall` removes precisely those symlinks/dirs (config and
-trust are left with a note). `install.sh --prefix DIR` (v1-m4 — SHIPPED)
-redirects only the `orchid` binary symlink to `DIR/bin` (skills/config/trust
-stay per-user, unaffected by `--prefix`). At public launch additionally: a
+The plugin-trust file (`~/.orchid/trust`) and unattended-trust directory
+(`~/.orchid/unattended-trust/`) are created on first use, never by tracked
+content. `./install.sh --uninstall` removes precisely installed symlinks
+(config and both trust stores are left with a note). `install.sh --prefix
+DIR` redirects only the `orchid` binary symlink to `DIR/bin`; skills,
+configuration, and trust stay per-user, unaffected by `--prefix`. At public
+launch additionally: a
 pinned `curl -fsSL … | bash` one-liner (fetching the same install.sh) and a
 Homebrew tap — install must feel first-class on a Mac. **v1-m4 — prepared,
 not yet released:** `Formula/orchid.rb` + `docs/install.md` are written and
@@ -80,6 +83,35 @@ their first completed orchid task in under 15 minutes using only the
 quickstart** — rehearsed during dogfood on a clean machine profile. Docs
 that fail the rehearsal block the release the same way failing tests do.
 
+## Unattended trust gate
+
+`runners/orchid-pump`, direct `runners/orchid-tick`, and `orchid service
+install` fail closed until an operator explicitly acknowledges the target:
+
+```sh
+orchid trust unattended <repo> --reason "<operator-authored reason>"
+orchid trust show <repo>
+orchid trust revoke <repo>
+```
+
+The JSON record is machine-local under `~/.orchid/unattended-trust/`, outside
+the target. Its key and validation bind Git's shared common-directory
+device/inode, the reachable root commit set, and an in-code policy version.
+That intentionally shares trust across linked worktrees and survives a
+same-filesystem move, while a fresh clone, copy, replaced/recreated `.git`,
+root-history replacement, or policy-version change is denied. Path text,
+tracked content, origin metadata, Git config, and `orchid.config` never grant
+trust.
+
+The acknowledgement means only that the operator accepts this repository as
+input to an unattended, shell-capable model. Target content may prompt-inject
+the orchestrator. Launcher environment hygiene reduces ambient authority;
+vendor sandbox flags enforce only what that vendor documents; PROTOCOL.md's
+command rules are prompt policy; no command broker is available yet (T002);
+and Orchid provides no OS-level containment for adapter/plugin process trees.
+Interactive/manual operation, planning, and read-only commands remain
+available and never create an acknowledgement.
+
 ## Operator walkthrough (the human's seat)
 
 1. `orchid doctor` — readiness + plugin/trust report.
@@ -87,12 +119,13 @@ that fail the rehearsal block the release the same way failing tests do.
    role bindings if non-default). `orchid init`.
 3. Start your configured orchestrator front-end — any front-end executing
    PROTOCOL.md via verbs (with the default bindings: a Claude Code session
-   → `/orchid-plan`; with codex as orchestrator: `orchid run start &&
-   runners/orchid-tick`).
+   → `/orchid-plan`). A direct headless tick first requires `orchid trust
+   unattended "$PWD" --reason "..."`, then `orchid run start &&
+   runners/orchid-tick`.
 4. Walk away. Check `orchid status` anytime (or `orchid status --html` for a
    self-contained static page — v1-m4 — SHIPPED); answer questions via
-   `orchid answer`; intervene via `orchid task unblock/retry/set`. Optionally
-   `orchid service install` (v1-m4 — SHIPPED) schedules the pump via the
+   `orchid answer`; intervene via `orchid task unblock/retry/set`. After the
+   same acknowledgement, `orchid service install` schedules the pump via the
    host's own scheduler (a launchd agent on macOS, a marker-guarded crontab
    line elsewhere) so ticks continue without a terminal open —
    `orchid service status`/`orchid service uninstall` report/reverse it.
