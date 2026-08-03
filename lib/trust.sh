@@ -98,6 +98,13 @@ _unattended_repo_canon() {
 # object walk separately checks the 2.45 minimum and supplies the supported
 # --no-lazy-fetch command-line option, so a missing local object fails closed
 # instead of consulting a promisor remote before the unattended gate passes.
+#
+# Commit-graph files are also repository-controlled object metadata. A forged
+# parent entry can make a replacement root appear to descend from the root an
+# operator previously acknowledged, even though the commit object itself has
+# no parent. Disable that acceleration at the command-line config scope for
+# every trust-boundary Git query. That scope outranks repository config, so a
+# target cannot turn commit-graph use back on through its own config.
 _unattended_git() (
   unset GIT_DIR GIT_WORK_TREE GIT_COMMON_DIR GIT_INDEX_FILE
   unset GIT_IMPLICIT_WORK_TREE GIT_PREFIX
@@ -107,7 +114,8 @@ _unattended_git() (
   unset GIT_CEILING_DIRECTORIES
   unset GIT_DISCOVERY_ACROSS_FILESYSTEM
   GIT_NO_LAZY_FETCH=1 GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 \
-    GIT_GRAFT_FILE=/dev/null GIT_SHALLOW_FILE=/dev/null command git "$@"
+    GIT_GRAFT_FILE=/dev/null GIT_SHALLOW_FILE=/dev/null \
+    command git -c core.commitGraph=false "$@"
 )
 
 # Record the executable's advertised version and accept only versions with a

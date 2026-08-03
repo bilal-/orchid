@@ -464,6 +464,120 @@ assert_match '^unattended trust: untrusted$' "$out" "root-history replacement in
 assert_match '^binding_state: mismatch$' "$out" "root replacement is classified as a binding mismatch"
 assert_match 'repository root commit changed' "$out" "root mismatch is actionable"
 
+# Commit-graph parent edges are repository-controlled acceleration metadata,
+# not the underlying commit history. Forge a graph in which a real replacement
+# root falsely names the acknowledged root as its parent. Ordinary Git accepts
+# that edge without comparing it with the commit object and therefore reports
+# the old root; trust inspection must disable the graph at command-line config
+# scope even when repository config explicitly enables it.
+graph_repo="$WORK/commit-graph-repo"
+mk_repo "$graph_repo"
+graph_old_root="$(git -C "$graph_repo" rev-parse HEAD)"
+trust_repo "$graph_repo" "history before commit-graph forgery"
+git -C "$graph_repo" checkout -q --orphan replacement-history
+git -C "$graph_repo" commit -q --allow-empty -m replacement-history
+graph_new_root="$(git -C "$graph_repo" rev-parse HEAD)"
+[ "$graph_old_root" != "$graph_new_root" ] \
+  || fail "commit-graph fixture must produce a different root commit"
+
+printf '%s\n%s\n' "$graph_old_root" "$graph_new_root" \
+  | git -c core.commitGraph=true -C "$graph_repo" \
+      commit-graph write --stdin-commits --no-progress
+graph_file="$graph_repo/.git/objects/info/commit-graph"
+[ -f "$graph_file" ] || fail "commit-graph fixture must write an acceleration file"
+chmod u+w "$graph_file"
+
+graph_hash_version="$(od -An -t u1 -j 5 -N 1 "$graph_file" | tr -d ' ')"
+case "$graph_hash_version" in
+  1) graph_hash_len=20; graph_hash_bits=1 ;;
+  2) graph_hash_len=32; graph_hash_bits=256 ;;
+  *) fail "commit-graph fixture found an unsupported hash version"; graph_hash_len=20; graph_hash_bits=1 ;;
+esac
+graph_chunk_count="$(od -An -t u1 -j 6 -N 1 "$graph_file" | tr -d ' ')"
+graph_chunk_index=0
+graph_cdat_offset=
+while [ "$graph_chunk_index" -lt "$graph_chunk_count" ]; do
+  graph_lookup_offset=$((8 + graph_chunk_index * 12))
+  graph_chunk_id="$(
+    od -An -t x1 -j "$graph_lookup_offset" -N 4 "$graph_file" \
+      | tr -d ' \n'
+  )"
+  if [ "$graph_chunk_id" = 43444154 ]; then
+    set -- $(od -An -t u1 -j $((graph_lookup_offset + 4)) -N 8 "$graph_file")
+    graph_cdat_offset=$(( $5 * 16777216 + $6 * 65536 + $7 * 256 + $8 ))
+    break
+  fi
+  graph_chunk_index=$((graph_chunk_index + 1))
+done
+[ -n "$graph_cdat_offset" ] \
+  || fail "commit-graph fixture must locate the commit-data chunk"
+
+graph_first_oid="$(
+  printf '%s\n%s\n' "$graph_old_root" "$graph_new_root" \
+    | LC_ALL=C sort | sed -n '1p'
+)"
+if [ "$graph_first_oid" = "$graph_new_root" ]; then
+  graph_new_position=0
+  graph_old_position=1
+else
+  graph_new_position=1
+  graph_old_position=0
+fi
+graph_parent_offset=$((
+  graph_cdat_offset
+  + graph_new_position * (graph_hash_len + 16)
+  + graph_hash_len
+))
+if [ "$graph_old_position" -eq 0 ]; then
+  graph_parent_bytes='\000\000\000\000'
+else
+  graph_parent_bytes='\000\000\000\001'
+fi
+printf '%b' "$graph_parent_bytes" \
+  | dd of="$graph_file" bs=1 seek="$graph_parent_offset" conv=notrunc 2>/dev/null
+
+# Recompute the format checksum so this is a deliberately forged graph, not
+# merely a file with a stale trailer. The project already supports shasum with
+# an openssl fallback for its machine-local content digests.
+graph_size="$(wc -c < "$graph_file" | tr -d ' ')"
+graph_body_size=$((graph_size - graph_hash_len))
+graph_body="$WORK/forged-commit-graph.body"
+graph_checksum="$WORK/forged-commit-graph.checksum"
+dd if="$graph_file" of="$graph_body" bs=1 count="$graph_body_size" 2>/dev/null
+if command -v shasum >/dev/null 2>&1; then
+  graph_digest="$(shasum -a "$graph_hash_bits" "$graph_body" | awk '{print $1}')"
+else
+  graph_digest="$(
+    openssl dgst "-sha$graph_hash_bits" "$graph_body" | awk '{print $NF}'
+  )"
+fi
+: > "$graph_checksum"
+graph_digest_index=0
+while [ "$graph_digest_index" -lt "${#graph_digest}" ]; do
+  printf '%b' "\\x${graph_digest:$graph_digest_index:2}" >> "$graph_checksum"
+  graph_digest_index=$((graph_digest_index + 2))
+done
+cp "$graph_body" "$graph_file"
+cat "$graph_checksum" >> "$graph_file"
+assert_eq "$graph_size" "$(wc -c < "$graph_file" | tr -d ' ')" \
+  "forged commit-graph retains a complete checksum trailer"
+
+git -C "$graph_repo" config core.commitGraph true
+assert_eq "$graph_old_root" \
+  "$(git -C "$graph_repo" rev-list --max-parents=0 HEAD 2>/dev/null)" \
+  "forged commit-graph fixture must disguise the real replacement root"
+assert_eq "$graph_new_root" \
+  "$(git -c core.commitGraph=false -C "$graph_repo" \
+      rev-list --max-parents=0 HEAD 2>/dev/null)" \
+  "disabling commit-graph metadata must recover the underlying root"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$graph_repo")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a forged commit-graph cannot preserve trust across root replacement"
+assert_match "^root_commit: $graph_new_root$" "$out" \
+  "trust root derivation ignores forged commit-graph parent edges"
+assert_match 'repository root commit changed' "$out" \
+  "commit-graph forgery leaves an actionable root-history mismatch"
+
 # Git replacement refs and legacy grafts are repository-local object views.
 # Neither may disguise a replacement history as descending from the root that
 # the operator acknowledged.
@@ -563,7 +677,8 @@ old_git_bin="$WORK/old-git-bin"
 mkdir -p "$old_git_bin"
 cat > "$old_git_bin/git" <<'EOF'
 #!/usr/bin/env bash
-if [ "$#" -eq 1 ] && [ "$1" = --version ]; then
+if [ "$#" -eq 3 ] && [ "$1" = -c ] \
+   && [ "$2" = core.commitGraph=false ] && [ "$3" = --version ]; then
   printf 'git version 2.44.0\n'
   exit 0
 fi
