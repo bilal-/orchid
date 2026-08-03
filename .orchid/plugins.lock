@@ -1,0 +1,26 @@
+[
+  {
+    "id": "orchid/claude",
+    "version": "0.1.0",
+    "digest": "fddedd873461eb7780e60395c1ca6a368fc4646a3f152cb4f7b82a94f4b736f3",
+    "source_origin": "builtin",
+    "api_version": "1",
+    "capsuite_passed": false
+  },
+  {
+    "id": "orchid/codex",
+    "version": "0.1.0",
+    "digest": "6f8721e24e8f22e85fe144157b48e6b266445ac926a96b78679b3e32cf99c3f3",
+    "source_origin": "builtin",
+    "api_version": "1",
+    "capsuite_passed": false
+  },
+  {
+    "id": "orchid/agy",
+    "version": "0.1.0",
+    "digest": "e9ef4fdfacfd252111113dae0ed9d60747713a19e12b9f910d896479213f2879",
+    "source_origin": "builtin",
+    "api_version": "1",
+    "capsuite_passed": false
+  }
+]
