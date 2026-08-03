@@ -20,15 +20,24 @@ set -euo pipefail
 # to assert real template rendering, real file placement, and real
 # install/uninstall/status bookkeeping against that placement.
 
-# Service installation is itself an unattended trust boundary.  Preserve the
-# installing operator's PATH only as data for the scheduler artifact, and use
-# a fixed machine-local system/package-manager search path from the first
-# instruction onward.  Thus bash, self-resolution helpers, and every identity
-# tool run before acknowledgement cannot come from a target-controlled PATH
-# entry.  Privileged Bash mode also ignores BASH_ENV/imported functions.
-unset __orchid_entry_path_was_set __orchid_entry_operator_path
-__orchid_entry_path_was_set="${PATH+x}"
-__orchid_entry_operator_path="${PATH-}"
+# Service installation is itself an unattended trust boundary. Preserve the
+# installing operator's PATH only as data for the scheduler artifact, capturing
+# it here for a direct entry or accepting the inert value carried by the generic
+# bin/orchid dispatcher. Use a fixed machine-local system/package-manager
+# search path from the first instruction onward. Thus bash, self-resolution
+# helpers, and every identity tool run before acknowledgement cannot come from
+# a target-controlled PATH entry. Privileged Bash mode also ignores
+# BASH_ENV/imported functions.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
 PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 unset CDPATH
@@ -39,6 +48,7 @@ while [ -L "$self" ]; do
   case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
 ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+__orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/trust.sh"
 
@@ -171,8 +181,8 @@ _svc_plist_value() { _svc_sed_escape "$(_svc_xml_escape "$1")"; }
 # empty (never expected interactively, but cheap to guard).
 _svc_install_path() {
   local p=""
-  if [ "$__orchid_entry_path_was_set" = x ]; then
-    p="$__orchid_entry_operator_path"
+  if [ "${__orchid_entry_path_was_set:-}" = x ]; then
+    p="${__orchid_entry_operator_path-}"
   fi
   [ -n "$p" ] || p="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
   echo "$p"

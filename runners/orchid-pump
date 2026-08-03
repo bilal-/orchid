@@ -13,29 +13,27 @@ set -euo pipefail
 # live orchestrator refreshes runtime/lease.json every tick (`orchid run
 # resume`/`refresh-lease`), so the pump only ever acts on an ABANDONED run.
 
-# Capture the scheduler/operator PATH as inert data, then exclude it before
-# even resolving this script's symlinks.  The fixed directories are
+# Capture the scheduler/operator PATH as inert data when this is a direct
+# entry. A bin/orchid handoff already carries the original value without
+# restoring it. Exclude either value before resolving this script's symlinks.
+# The fixed directories are
 # machine-local system/package-manager locations supported by Orchid; target
 # checkout directories and arbitrary inherited PATH entries are never searched
 # while the unattended acknowledgement is being evaluated.  Privileged Bash
 # mode in the shebang also suppresses BASH_ENV and imported shell functions.
-unset __orchid_entry_path_was_set __orchid_entry_operator_path
-__orchid_entry_path_was_set="${PATH+x}"
-__orchid_entry_operator_path="${PATH-}"
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
 PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH
 unset CDPATH
-
-_orchid_unattended_restore_operator_path() {
-  if [ "$__orchid_entry_path_was_set" = x ]; then
-    PATH="$__orchid_entry_operator_path"
-    export PATH
-  else
-    unset PATH
-  fi
-  unset __orchid_entry_path_was_set __orchid_entry_operator_path
-  unset -f _orchid_unattended_restore_operator_path
-}
 
 self="$0"
 while [ -L "$self" ]; do
@@ -43,6 +41,7 @@ while [ -L "$self" ]; do
   case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
 ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+__orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
@@ -105,7 +104,7 @@ fi
 # split-brain, and already-complete diagnostics above remain available on an
 # untrusted target.
 unattended_trust_require "$repo" "unattended pump" || exit 1
-_orchid_unattended_restore_operator_path
+_orchid_entry_restore_operator_path
 
 rt="$(orchid_runtime "$repo")"
 

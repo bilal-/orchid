@@ -1,5 +1,32 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
+
+# Resolve direct and dispatched entry through the same privileged interpreter
+# and fixed helper path used by unattended runners. The operator PATH remains
+# inert until the trust gate and its provenance have been printed; doctor then
+# restores it for ordinary environment/plugin readiness checks.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+__orchid_entry_defer_restore=1
+
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
@@ -7,6 +34,19 @@ source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
+
+# Inspect and render the gate before making the operator PATH executable
+# again. Later readiness checks intentionally use that PATH (for example,
+# capsuite required-binary discovery), but cannot retroactively alter this
+# already-emitted decision or its trusted identity provenance.
+unattended_trust_inspect "$repo"
+if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
+  printf 'ok: unattended trust: '
+else
+  printf 'WARN: unattended trust (headless execution gated): '
+fi
+unattended_trust_summary_loaded
+_orchid_entry_restore_operator_path
 
 # --greenfield (v1-m2 Task 9): the ONLY flag. Skips exactly the two checks
 # that cannot hold pre-scaffold -- everything else below runs unchanged.
@@ -51,20 +91,6 @@ perm_warnings="$(echo "$validate_out" | grep -E '^warn:.*permission .* requested
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
 command -v jq >/dev/null && ok jq || bad "jq missing"
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
-
-# Unattended trust is a separate readiness dimension from ordinary/manual
-# Orchid operation. Report the effective gate and its full machine-local
-# provenance, but do not make an otherwise healthy interactive/planning
-# doctor run fail: the actual pump, tick, and service-install boundaries
-# enforce the denial. This also keeps `doctor --greenfield` useful before a
-# root commit exists (a record cannot be bound until one does).
-unattended_trust_inspect "$repo"
-if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
-  printf 'ok: unattended trust: '
-else
-  printf 'WARN: unattended trust (headless execution gated): '
-fi
-unattended_trust_summary_loaded
 
 if [ "$greenfield" -eq 1 ]; then
   echo "note: greenfield: verify command deferred to scaffold task"

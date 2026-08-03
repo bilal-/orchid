@@ -1,5 +1,33 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
+
+# Direct libexec invocation is a supported entry surface, so do not rely on
+# bin/orchid to have selected Bash, sanitized PATH, or supplied ORCHID_ROOT.
+# A dispatched invocation already carries the original operator PATH as inert
+# data; a direct invocation captures it here. Trust acknowledgement,
+# inspection, and revocation intentionally never restore it.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+__orchid_entry_defer_restore=1
+
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/trust.sh"
 

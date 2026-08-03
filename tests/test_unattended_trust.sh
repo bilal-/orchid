@@ -561,6 +561,145 @@ assert_entry_path_denied() {
     || fail "$label executed a pre-authorization PATH/BASH_ENV shim ($(tr '\n' ' ' < "$entry_shim_log"))"
 }
 
+# Read-only trust/status entry points and trust mutations must retain the fixed
+# interpreter/helper path for their complete authorization work. Exercise both
+# normal dispatch and direct libexec execution; also inject a bogus
+# ORCHID_ROOT, which direct entry must replace from its own physical path.
+ENTRY_PATH_OUT=""
+assert_entry_path_clean() {
+  local label="$1" expected_rc="$2" expected="$3" target_repo="$4"
+  local rc=0
+  shift 4
+  rm -f "$entry_shim_log"
+  ENTRY_PATH_OUT="$(
+    HOME="$home" PATH="$entry_shim_bin:$PATH" BASH_ENV="$entry_bash_env" \
+      ORCHID_ROOT="$entry_fresh" ORCHID_REPO="$target_repo" \
+      "$@" 2>&1
+  )" || rc=$?
+  assert_eq "$expected_rc" "$rc" "$label exit status"
+  assert_match "$expected" "$ENTRY_PATH_OUT" "$label reports the real gate/provenance"
+  [ ! -e "$entry_shim_log" ] \
+    || fail "$label executed a trust-reporting PATH/BASH_ENV shim ($(tr '\n' ' ' < "$entry_shim_log"))"
+}
+
+assert_entry_path_clean \
+  "dispatched trust show" 0 \
+  "^root_commit: $entry_new_head$" "$entry_replaced" \
+  "$ORCHID_BIN" trust show "$entry_replaced"
+assert_match '^unattended trust: untrusted$' "$ENTRY_PATH_OUT" \
+  "dispatched trust show cannot inherit the replaced repository's old acknowledgement"
+assert_entry_path_clean \
+  "direct trust show" 0 \
+  "^root_commit: $entry_new_head$" "$entry_replaced" \
+  "$REPO_ROOT/libexec/orchid-trust" show "$entry_replaced"
+assert_match '^unattended trust: untrusted$' "$ENTRY_PATH_OUT" \
+  "direct trust show cannot inherit the replaced repository's old acknowledgement"
+
+entry_dispatch_reason="dispatched PATH-boundary acknowledgement"
+assert_entry_path_clean \
+  "dispatched trust acknowledgement" 0 \
+  "reason: $entry_dispatch_reason$" "$entry_replaced" \
+  "$ORCHID_BIN" trust unattended "$entry_replaced" \
+    --reason "$entry_dispatch_reason"
+assert_match "root_commit: $entry_new_head$" "$ENTRY_PATH_OUT" \
+  "dispatched acknowledgement binds the real replacement root"
+entry_new_record="$(
+  printf '%s\n' "$ENTRY_PATH_OUT" | sed -n 's/^  record: //p'
+)"
+[ -f "$entry_new_record" ] \
+  || fail "dispatched acknowledgement must create the real replacement identity record"
+
+assert_entry_path_clean \
+  "direct trusted show" 0 '^unattended trust: trusted$' "$entry_replaced" \
+  "$REPO_ROOT/libexec/orchid-trust" show "$entry_replaced"
+assert_match "^record: $entry_new_record$" "$ENTRY_PATH_OUT" \
+  "direct trust show resolves the record authored by dispatched trust"
+assert_entry_path_clean \
+  "direct trust revoke" 0 '^unattended trust revoked:' "$entry_replaced" \
+  "$REPO_ROOT/libexec/orchid-trust" revoke "$entry_replaced"
+[ ! -e "$entry_new_record" ] \
+  || fail "direct revoke must remove the replacement identity record"
+[ -f "$entry_old_record" ] \
+  || fail "direct revoke must not let PATH shims redirect it to the old identity record"
+
+entry_direct_reason="direct PATH-boundary acknowledgement"
+assert_entry_path_clean \
+  "direct trust acknowledgement" 0 \
+  "reason: $entry_direct_reason$" "$entry_replaced" \
+  "$REPO_ROOT/libexec/orchid-trust" unattended "$entry_replaced" \
+    --reason "$entry_direct_reason"
+entry_new_record="$(
+  printf '%s\n' "$ENTRY_PATH_OUT" | sed -n 's/^  record: //p'
+)"
+assert_entry_path_clean \
+  "dispatched trusted show" 0 '^unattended trust: trusted$' "$entry_replaced" \
+  "$ORCHID_BIN" trust show "$entry_replaced"
+assert_match "^root_commit: $entry_new_head$" "$ENTRY_PATH_OUT" \
+  "dispatched trust show agrees with direct acknowledgement provenance"
+assert_entry_path_clean \
+  "dispatched trust revoke" 0 '^unattended trust revoked:' "$entry_replaced" \
+  "$ORCHID_BIN" trust revoke "$entry_replaced"
+[ ! -e "$entry_new_record" ] \
+  || fail "dispatched revoke must remove the direct-entry identity record"
+
+# Explain status keeps the fixed helper path for the entire report. Text and
+# HTML modes must expose the same denied gate and real replacement root through
+# both dispatch surfaces, exactly as the runners below enforce it.
+assert_entry_path_clean \
+  "dispatched status --explain" 0 \
+  "^unattended: denied.*root $entry_new_head" "$entry_replaced" \
+  "$ORCHID_BIN" status --explain
+assert_entry_path_clean \
+  "direct status --explain" 0 \
+  "^unattended: denied.*root $entry_new_head" "$entry_replaced" \
+  "$REPO_ROOT/libexec/orchid-status" --explain
+assert_entry_path_clean \
+  "dispatched status --html --explain" 0 \
+  '\.orchid/runtime/status\.html$' "$entry_replaced" \
+  "$ORCHID_BIN" status --html --explain
+entry_status_page="$ENTRY_PATH_OUT"
+entry_status_content="$(/bin/cat "$entry_status_page")"
+assert_match '<strong>gate:</strong> denied' "$entry_status_content" \
+  "dispatched HTML status reports the denied runner gate"
+assert_match "root $entry_new_head" "$entry_status_content" \
+  "dispatched HTML status reports the real replacement root"
+assert_entry_path_clean \
+  "direct status --html --explain" 0 \
+  '\.orchid/runtime/status\.html$' "$entry_replaced" \
+  "$REPO_ROOT/libexec/orchid-status" --html --explain
+entry_status_content="$(/bin/cat "$ENTRY_PATH_OUT")"
+assert_match '<strong>gate:</strong> denied' "$entry_status_content" \
+  "direct HTML status reports the denied runner gate"
+assert_match "root $entry_new_head" "$entry_status_content" \
+  "direct HTML status reports the real replacement root"
+
+# Doctor prints its trust verdict before restoring the operator PATH needed by
+# later readiness/binary checks. Those later shims may run, but cannot change
+# the first, already-emitted gate line.
+assert_doctor_entry_gate() {
+  local label="$1" target_repo="$2"
+  local out first
+  shift 2
+  rm -f "$entry_shim_log"
+  out="$(
+    HOME="$home" PATH="$entry_shim_bin:$PATH" BASH_ENV="$entry_bash_env" \
+      ORCHID_ROOT="$entry_fresh" ORCHID_REPO="$target_repo" \
+      "$@" 2>&1
+  )" || true
+  first="${out%%$'\n'*}"
+  assert_match \
+    "^WARN: unattended trust \\(headless execution gated\\): denied.*root $entry_new_head" \
+    "$first" "$label prints the real runner gate before operator-PATH checks"
+  case "$(printf '%s\n' "$out" | grep -Ec '^(ok|WARN): unattended trust')" in
+    1) ;;
+    *) fail "$label must print exactly one unattended trust verdict" ;;
+  esac
+}
+assert_doctor_entry_gate \
+  "dispatched doctor" "$entry_replaced" "$ORCHID_BIN" doctor
+assert_doctor_entry_gate \
+  "direct doctor" "$entry_replaced" "$REPO_ROOT/libexec/orchid-doctor"
+
 assert_entry_path_denied \
   "fresh-target pump" \
   'unattended pump refused: unattended trust is denied' \
@@ -576,6 +715,11 @@ assert_entry_path_denied \
   'service installation refused: unattended trust is denied' \
   "$entry_fresh" \
   "$ORCHID_BIN" service install --dry-run
+assert_entry_path_denied \
+  "fresh-target direct libexec service install" \
+  'service installation refused: unattended trust is denied' \
+  "$entry_fresh" \
+  "$REPO_ROOT/libexec/orchid-service" install --dry-run
 
 assert_entry_path_denied \
   "replaced-target pump" \
@@ -592,6 +736,11 @@ assert_entry_path_denied \
   'service installation refused: unattended trust is denied' \
   "$entry_replaced" \
   "$ORCHID_BIN" service install --dry-run
+assert_entry_path_denied \
+  "replaced-target direct libexec service install" \
+  'service installation refused: unattended trust is denied' \
+  "$entry_replaced" \
+  "$REPO_ROOT/libexec/orchid-service" install --dry-run
 
 unset ORCHID_TEST_ENTRY_SHIM_LOG
 unset ORCHID_TEST_ENTRY_OLD_DEVICE ORCHID_TEST_ENTRY_OLD_INODE
@@ -641,10 +790,17 @@ real_stat="$(command -v stat)"
 out="$(
   HOME="$home" \
   PATH="$fake_stat_bin:$PATH" \
+  ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_REPO="$reuse_repo" \
   ORCHID_TEST_REAL_STAT="$real_stat" \
   ORCHID_TEST_REUSED_COMMON="$reuse_common" \
   ORCHID_TEST_REUSED_IDENT="$reuse_device $reuse_inode" \
-  "$ORCHID_BIN" trust show "$reuse_repo"
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_show "$ORCHID_TEST_REPO"
+  '
 )"
 assert_match '^unattended trust: untrusted$' "$out" \
   "a recreated clone stays untrusted when common-directory device/inode are reused"
@@ -900,11 +1056,18 @@ chmod +x "$old_git_bin/git"
 real_git="$(command -v git)"
 out="$(
   HOME="$home" PATH="$old_git_bin:$PATH" \
+  ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_REPO="$promisor_repo" \
   ORCHID_TEST_REAL_GIT="$real_git" \
   ORCHID_TEST_PROMISOR_CONTACT="$promisor_contact" \
   ORCHID_TEST_OBJECT_WALK="$promisor_walk" \
   ORCHID_TEST_TARGET_GIT="$promisor_target_git" \
-  "$ORCHID_BIN" trust show "$promisor_repo"
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_show "$ORCHID_TEST_REPO"
+  '
 )"
 assert_match '^binding_state: unavailable$' "$out" \
   "Git without reliable no-lazy-fetch support makes trust unavailable"

@@ -1,5 +1,33 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
+
+# Resolve direct and dispatched entry through the same privileged interpreter
+# and fixed helper path used by unattended runners. Explain modes retain that
+# path for the complete report so target-local helper shims cannot make status
+# provenance disagree with the runner gate. Plain status restores the operator
+# PATH after argument parsing because it does not inspect unattended trust.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+__orchid_entry_defer_restore=1
+
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
@@ -17,6 +45,12 @@ for _status_arg in "$@"; do
     --html) html=1 ;;
   esac
 done
+
+if [ "$explain" -eq 1 ]; then
+  unattended_trust_inspect "$repo"
+else
+  _orchid_entry_restore_operator_path
+fi
 
 # _status_task_why <repo> <status> <id> -- the ONE home for the "why isn't
 # this task moving" predicate string (v1-m2 Task 5's schedule.sh already
@@ -219,7 +253,6 @@ if [ "$html" -eq 1 ]; then
   # this mode's early exit, as the old flow did).
   unattended_html=""
   if [ "$explain" -eq 1 ]; then
-    unattended_trust_inspect "$repo"
     if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
       unattended_gate=allowed
     else
@@ -280,7 +313,6 @@ fi
 
 echo "run_status: ${rs:-(uninitialized)}"
 if [ "$explain" -eq 1 ]; then
-  unattended_trust_inspect "$repo"
   printf 'unattended: '
   unattended_trust_summary_loaded
 fi

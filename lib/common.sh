@@ -9,6 +9,29 @@
 # file-wide placement outright).
 orchid_die() { echo "orchid: $*" >&2; exit 1; }
 
+# bin/orchid resolves itself and selects a libexec target while PATH is limited
+# to fixed machine-local system/package-manager directories. It carries the
+# caller's original PATH as inert environment data rather than restoring it
+# before the handoff. Ordinary/manual verbs recover that PATH here, before any
+# of their other libraries or helpers run. A trust-boundary entry point sets
+# __orchid_entry_defer_restore=1 before sourcing this file and calls the helper
+# only after its authorization decision when later work genuinely needs the
+# operator PATH.
+_orchid_entry_restore_operator_path() {
+  [ "${__orchid_entry_context:-}" = 1 ] || return 0
+  if [ "${__orchid_entry_path_was_set:-}" = x ]; then
+    PATH="${__orchid_entry_operator_path-}"
+    export PATH
+  else
+    unset PATH
+  fi
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path __orchid_entry_defer_restore
+}
+if [ "${__orchid_entry_defer_restore:-0}" != 1 ]; then
+  _orchid_entry_restore_operator_path
+fi
+
 # The kernel version. `orchid version` (libexec/orchid-version) prints it
 # verbatim; `manifest_validate` (lib/manifest.sh) compares a plugin's
 # `requires_orchid=>=X.Y` against it (major.minor only -- semver-ish, per
