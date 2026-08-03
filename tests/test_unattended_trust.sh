@@ -400,6 +400,210 @@ git -C "$replace_repo" commit -q --allow-empty -m replacement-root
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$replace_repo")"
 assert_match '^unattended trust: untrusted$' "$out" "replacement/recreated .git is untrusted"
 
+# Every unattended process must reach the identity gate without consulting the
+# captured operator PATH. This includes the kernel-selected Bash interpreter,
+# self-resolution helpers, and the awk/git/stat/jq toolchain used by trust
+# inspection. Build shims capable of presenting the old identity/root/record
+# after a .git replacement, put them first on PATH, and also provide a BASH_ENV
+# prelude. A fresh target and the replaced target must both be denied by each
+# real entry surface without executing any of that target-influenced code.
+entry_fresh="$WORK/unattended-entry-fresh"
+entry_replaced="$WORK/unattended-entry-replaced"
+entry_replaced_old_git="$WORK/unattended-entry-replaced-old-git"
+mk_repo "$entry_fresh"
+mk_repo "$entry_replaced"
+for entry_repo in "$entry_fresh" "$entry_replaced"; do
+  mkdir -p "$entry_repo/.orchid/tasks"
+  printf -- '---\nrun_status: running\nrun_id: r-path-boundary\n---\n# Roadmap\n' \
+    > "$entry_repo/.orchid/roadmap.md"
+done
+
+trust_repo "$entry_replaced" "PATH boundary replacement fixture"
+entry_old_out="$(HOME="$home" "$ORCHID_BIN" trust show "$entry_replaced")"
+entry_old_device="$(printf '%s\n' "$entry_old_out" | sed -n 's/^git_common_device: //p')"
+entry_old_inode="$(printf '%s\n' "$entry_old_out" | sed -n 's/^git_common_inode: //p')"
+entry_old_anchor_device="$(printf '%s\n' "$entry_old_out" | sed -n 's/^recorded_identity_anchor_device: //p')"
+entry_old_anchor_inode="$(printf '%s\n' "$entry_old_out" | sed -n 's/^recorded_identity_anchor_inode: //p')"
+entry_old_root="$(printf '%s\n' "$entry_old_out" | sed -n 's/^root_commit: //p')"
+entry_old_record="$(printf '%s\n' "$entry_old_out" | sed -n 's/^record: //p')"
+entry_old_anchor="$(printf '%s\n' "$entry_old_out" | sed -n 's/^identity_anchor: //p')"
+
+mv "$entry_replaced/.git" "$entry_replaced_old_git"
+git -C "$entry_replaced" init -q
+git -C "$entry_replaced" commit -q --allow-empty -m replacement-root
+entry_new_common="$(cd "$entry_replaced/.git" && pwd -P)"
+entry_new_witness="$entry_new_common/description"
+entry_new_head="$(git -C "$entry_replaced" rev-parse HEAD)"
+[ "$entry_new_head" != "$entry_old_root" ] \
+  || fail "PATH boundary replacement fixture must have a new root commit"
+
+entry_shim_bin="$WORK/unattended-entry-shims"
+entry_shim_log="$WORK/unattended-entry-shim.log"
+entry_bash_env="$WORK/unattended-entry-bash-env"
+mkdir -p "$entry_shim_bin"
+cat > "$entry_shim_bin/attack-tool" <<'EOF'
+#!/bin/sh
+tool=${0##*/}
+printf '%s\n' "$tool" >> "$ORCHID_TEST_ENTRY_SHIM_LOG"
+
+case "$tool" in
+  bash)
+    exec /bin/bash "$@"
+    ;;
+  readlink|dirname|pwd|awk|sort|grep|cat|tr|sed)
+    eval "real=\${ORCHID_TEST_REAL_${tool}}"
+    exec "$real" "$@"
+    ;;
+  git)
+    for arg in "$@"; do
+      case "$arg" in
+        --version)
+          printf 'git version 2.50.1\n'
+          exit 0
+          ;;
+        --git-common-dir)
+          printf '%s\n' "$ORCHID_TEST_ENTRY_COMMON"
+          exit 0
+          ;;
+        rev-list)
+          printf '%s\n' "$ORCHID_TEST_ENTRY_OLD_ROOT"
+          exit 0
+          ;;
+        worktree)
+          printf 'worktree %s\0HEAD %s\0branch refs/heads/main\0\0' \
+            "$ORCHID_TEST_ENTRY_REPO" "$ORCHID_TEST_ENTRY_NEW_HEAD"
+          exit 0
+          ;;
+      esac
+    done
+    exit 1
+    ;;
+  stat)
+    last=
+    for last do :; done
+    case "${2:-}" in
+      '%d %i')
+        case "$last" in
+          "$ORCHID_TEST_ENTRY_COMMON")
+            printf '%s %s\n' \
+              "$ORCHID_TEST_ENTRY_OLD_DEVICE" "$ORCHID_TEST_ENTRY_OLD_INODE"
+            ;;
+          "$ORCHID_TEST_ENTRY_OLD_ANCHOR"|"$ORCHID_TEST_ENTRY_NEW_WITNESS")
+            printf '%s %s\n' \
+              "$ORCHID_TEST_ENTRY_OLD_ANCHOR_DEVICE" \
+              "$ORCHID_TEST_ENTRY_OLD_ANCHOR_INODE"
+            ;;
+          "$ORCHID_TEST_ENTRY_OLD_RECORD")
+            printf '900001 900002\n'
+            ;;
+          *)
+            printf '900003 900004\n'
+            ;;
+        esac
+        ;;
+      '%l %Lp')
+        case "$last" in
+          "$ORCHID_TEST_ENTRY_OLD_RECORD") printf '1 600\n' ;;
+          *) printf '2 644\n' ;;
+        esac
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
+    ;;
+  jq)
+    exec "$ORCHID_TEST_REAL_jq" "$@"
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+EOF
+chmod +x "$entry_shim_bin/attack-tool"
+for entry_tool in bash readlink dirname pwd awk sort grep cat tr sed git stat jq; do
+  ln -s attack-tool "$entry_shim_bin/$entry_tool"
+done
+cat > "$entry_bash_env" <<'EOF'
+printf '%s\n' BASH_ENV >> "$ORCHID_TEST_ENTRY_SHIM_LOG"
+EOF
+
+export ORCHID_TEST_ENTRY_SHIM_LOG="$entry_shim_log"
+export ORCHID_TEST_ENTRY_OLD_DEVICE="$entry_old_device"
+export ORCHID_TEST_ENTRY_OLD_INODE="$entry_old_inode"
+export ORCHID_TEST_ENTRY_OLD_ANCHOR_DEVICE="$entry_old_anchor_device"
+export ORCHID_TEST_ENTRY_OLD_ANCHOR_INODE="$entry_old_anchor_inode"
+export ORCHID_TEST_ENTRY_OLD_ROOT="$entry_old_root"
+export ORCHID_TEST_ENTRY_OLD_RECORD="$entry_old_record"
+export ORCHID_TEST_ENTRY_OLD_ANCHOR="$entry_old_anchor"
+export ORCHID_TEST_ENTRY_COMMON="$entry_new_common"
+export ORCHID_TEST_ENTRY_NEW_WITNESS="$entry_new_witness"
+export ORCHID_TEST_ENTRY_REPO="$entry_replaced"
+export ORCHID_TEST_ENTRY_NEW_HEAD="$entry_new_head"
+for entry_tool in readlink dirname pwd awk sort grep cat tr sed jq; do
+  eval "ORCHID_TEST_REAL_${entry_tool}=\$(command -v \"$entry_tool\")"
+  eval "export ORCHID_TEST_REAL_${entry_tool}"
+done
+
+assert_entry_path_denied() {
+  local label="$1" refusal="$2" target_repo="$3"
+  local rc=0 out
+  shift 3
+  rm -f "$entry_shim_log"
+  out="$(
+    HOME="$home" PATH="$entry_shim_bin:$PATH" BASH_ENV="$entry_bash_env" \
+      ORCHID_REPO="$target_repo" \
+      "$@" 2>&1
+  )" || rc=$?
+  [ "$rc" -ne 0 ] || fail "$label must be denied"
+  assert_match "$refusal" "$out" "$label reaches the unattended refusal"
+  [ ! -e "$entry_shim_log" ] \
+    || fail "$label executed a pre-authorization PATH/BASH_ENV shim ($(tr '\n' ' ' < "$entry_shim_log"))"
+}
+
+assert_entry_path_denied \
+  "fresh-target pump" \
+  'unattended pump refused: unattended trust is denied' \
+  "$entry_fresh" \
+  "$REPO_ROOT/runners/orchid-pump"
+assert_entry_path_denied \
+  "fresh-target tick" \
+  'headless tick refused: unattended trust is denied' \
+  "$entry_fresh" \
+  "$REPO_ROOT/runners/orchid-tick"
+assert_entry_path_denied \
+  "fresh-target service install" \
+  'service installation refused: unattended trust is denied' \
+  "$entry_fresh" \
+  "$ORCHID_BIN" service install --dry-run
+
+assert_entry_path_denied \
+  "replaced-target pump" \
+  'unattended pump refused: unattended trust is denied' \
+  "$entry_replaced" \
+  "$REPO_ROOT/runners/orchid-pump"
+assert_entry_path_denied \
+  "replaced-target tick" \
+  'headless tick refused: unattended trust is denied' \
+  "$entry_replaced" \
+  "$REPO_ROOT/runners/orchid-tick"
+assert_entry_path_denied \
+  "replaced-target service install" \
+  'service installation refused: unattended trust is denied' \
+  "$entry_replaced" \
+  "$ORCHID_BIN" service install --dry-run
+
+unset ORCHID_TEST_ENTRY_SHIM_LOG
+unset ORCHID_TEST_ENTRY_OLD_DEVICE ORCHID_TEST_ENTRY_OLD_INODE
+unset ORCHID_TEST_ENTRY_OLD_ANCHOR_DEVICE ORCHID_TEST_ENTRY_OLD_ANCHOR_INODE
+unset ORCHID_TEST_ENTRY_OLD_ROOT ORCHID_TEST_ENTRY_OLD_RECORD
+unset ORCHID_TEST_ENTRY_OLD_ANCHOR ORCHID_TEST_ENTRY_COMMON
+unset ORCHID_TEST_ENTRY_NEW_WITNESS ORCHID_TEST_ENTRY_REPO
+unset ORCHID_TEST_ENTRY_NEW_HEAD
+for entry_tool in readlink dirname pwd awk sort grep cat tr sed jq; do
+  eval "unset ORCHID_TEST_REAL_${entry_tool}"
+done
+
 # Device/inode numbers can eventually be reused after a directory is removed.
 # Recreate a clone at the exact acknowledged root, then interpose only the
 # common-directory stat result to emulate that reuse deterministically. The

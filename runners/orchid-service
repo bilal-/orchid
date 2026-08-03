@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 # tier-2, effectful: schedules the ALREADY one-shot, lease-gated pump
 # (runners/orchid-pump, v1-m2 Task 8) via the host's own scheduler -- a
@@ -19,12 +19,26 @@ set -euo pipefail
 # under --dry-run (never touches a real launchctl/crontab), and still needs
 # to assert real template rendering, real file placement, and real
 # install/uninstall/status bookkeeping against that placement.
+
+# Service installation is itself an unattended trust boundary.  Preserve the
+# installing operator's PATH only as data for the scheduler artifact, and use
+# a fixed machine-local system/package-manager search path from the first
+# instruction onward.  Thus bash, self-resolution helpers, and every identity
+# tool run before acknowledgement cannot come from a target-controlled PATH
+# entry.  Privileged Bash mode also ignores BASH_ENV/imported functions.
+unset __orchid_entry_path_was_set __orchid_entry_operator_path
+__orchid_entry_path_was_set="${PATH+x}"
+__orchid_entry_operator_path="${PATH-}"
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+
 self="$0"
 while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/trust.sh"
 
@@ -156,7 +170,10 @@ _svc_plist_value() { _svc_sed_escape "$(_svc_xml_escape "$1")"; }
 # reasonable composition only in the degenerate case of $PATH being unset/
 # empty (never expected interactively, but cheap to guard).
 _svc_install_path() {
-  local p="${PATH:-}"
+  local p=""
+  if [ "$__orchid_entry_path_was_set" = x ]; then
+    p="$__orchid_entry_operator_path"
+  fi
   [ -n "$p" ] || p="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
   echo "$p"
 }

@@ -267,7 +267,11 @@ at install time) into the rendered plist's `EnvironmentVariables` /
 the cron line's `PATH=` prefix — re-run `orchid service install` after
 changing your `$PATH` (e.g. installing a new engine CLI) so the scheduled
 pump picks up the change; editing the shell's profile alone does not touch
-an already-installed schedule.
+an already-installed schedule. For safety, the pump holds that captured value
+without searching it while unattended trust is checked; pre-gate Git/jq and
+filesystem helpers resolve only from fixed system, Homebrew/Linuxbrew, or
+MacPorts directories. The captured operator path becomes active only after
+trust succeeds, in time for engine/plugin discovery and execution.
 
 ## See also
 

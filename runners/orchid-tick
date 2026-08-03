@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 # tier-2, effectful: the headless tick. Fences a fresh epoch, resolves the
 # orchestrator role's available engine, builds a one-shot `orchestrate`
@@ -12,12 +12,36 @@ set -euo pipefail
 # rather than a jobs-prepare call): a tick is not a task job, and its
 # envelope must never enter `jobs reconcile`'s manifest-matching path --
 # ledger_mark below is this runner's own, private disposal of the envelope.
+
+# The direct tick is an unattended entry point, not merely a pump
+# implementation detail.  Capture the operator PATH without consulting it,
+# then use only fixed machine-local system/package-manager directories for
+# self-resolution and the complete trust decision.  The shebang's privileged
+# mode also prevents BASH_ENV and imported functions from running first.
+unset __orchid_entry_path_was_set __orchid_entry_operator_path
+__orchid_entry_path_was_set="${PATH+x}"
+__orchid_entry_operator_path="${PATH-}"
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+
+_orchid_unattended_restore_operator_path() {
+  if [ "$__orchid_entry_path_was_set" = x ]; then
+    PATH="$__orchid_entry_operator_path"
+    export PATH
+  else
+    unset PATH
+  fi
+  unset __orchid_entry_path_was_set __orchid_entry_operator_path
+  unset -f _orchid_unattended_restore_operator_path
+}
+
 self="$0"
 while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
@@ -40,6 +64,7 @@ fi
 # directory, before `run resume` fences an epoch, and before any adapter is
 # resolved or spawned.
 unattended_trust_require "$repo" "headless tick" || exit 1
+_orchid_unattended_restore_operator_path
 rt="$(orchid_runtime "$repo")"
 
 # `orchid run resume` fences a fresh epoch (breaking a stale lock per

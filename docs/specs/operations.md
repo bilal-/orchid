@@ -110,13 +110,19 @@ tracked content, origin metadata, Git config, and `orchid.config` never grant
 trust. Identity inspection ignores inherited Git repository-selection and
 object-view variables (for example `GIT_DIR`/`GIT_WORK_TREE`), disables
 replacement refs, legacy grafts, and shallow boundaries, and disables lazy
-object fetching. Unattended trust inspection requires Git 2.45 or newer (the
-release that added a reliable client-side no-lazy-fetch control); on older Git,
-the gate stays denied before any target-repository Git query or history object
-walk, while manual operation remains available. A shallow repository cannot be
-acknowledged until its commit ancestry is locally complete. Every trust-boundary
-path is captured and compared losslessly, including paths ending in a literal
-newline.
+object fetching. Pump, tick, and service entry paths use `/bin/bash` directly
+and replace inherited `PATH` with fixed machine-local system/package-manager
+directories before self-resolution or identity inspection. The scheduler or
+operator `PATH` is captured only as inert data and is restored by pump/tick
+after the gate allows execution, so engine discovery still sees the operator's
+tools; service installation likewise writes that captured value into the
+scheduler artifact without using it to authorize the target. Unattended trust
+inspection requires Git 2.45 or newer (the release that added a reliable
+client-side no-lazy-fetch control); on older Git, the gate stays denied before
+any target-repository Git query or history object walk, while manual operation
+remains available. A shallow repository cannot be acknowledged until its commit
+ancestry is locally complete. Every trust-boundary path is captured and
+compared losslessly, including paths ending in a literal newline.
 Trust-store containment uses the physical checkout marker, not a
 repository-configurable worktree path. A linked checkout's marker must
 reciprocally match the path registered under the common directory, so copying

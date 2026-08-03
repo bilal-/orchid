@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 # tier-2, LLM-free: the pump is the cron/launchd-friendly front gate in front
 # of runners/orchid-tick (Task 7). It NEVER builds a prompt or reads an
@@ -12,12 +12,37 @@ set -euo pipefail
 # test below (spec: "mutual exclusion via lease staleness, not flock") -- a
 # live orchestrator refreshes runtime/lease.json every tick (`orchid run
 # resume`/`refresh-lease`), so the pump only ever acts on an ABANDONED run.
+
+# Capture the scheduler/operator PATH as inert data, then exclude it before
+# even resolving this script's symlinks.  The fixed directories are
+# machine-local system/package-manager locations supported by Orchid; target
+# checkout directories and arbitrary inherited PATH entries are never searched
+# while the unattended acknowledgement is being evaluated.  Privileged Bash
+# mode in the shebang also suppresses BASH_ENV and imported shell functions.
+unset __orchid_entry_path_was_set __orchid_entry_operator_path
+__orchid_entry_path_was_set="${PATH+x}"
+__orchid_entry_operator_path="${PATH-}"
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+
+_orchid_unattended_restore_operator_path() {
+  if [ "$__orchid_entry_path_was_set" = x ]; then
+    PATH="$__orchid_entry_operator_path"
+    export PATH
+  else
+    unset PATH
+  fi
+  unset __orchid_entry_path_was_set __orchid_entry_operator_path
+  unset -f _orchid_unattended_restore_operator_path
+}
+
 self="$0"
 while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
@@ -80,6 +105,7 @@ fi
 # split-brain, and already-complete diagnostics above remain available on an
 # untrusted target.
 unattended_trust_require "$repo" "unattended pump" || exit 1
+_orchid_unattended_restore_operator_path
 
 rt="$(orchid_runtime "$repo")"
 

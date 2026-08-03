@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 # tier-1 -> tier-2 boundary (mirrors bin/orchid's own generic dispatch, and
 # the docs/specs/kernel.md determinism-boundary split behind `orchid jobs
