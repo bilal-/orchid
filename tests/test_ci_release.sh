@@ -23,6 +23,7 @@ for expected in \
   tests/helpers.sh \
   lib/common.sh \
   scripts/ci-local.sh \
+  scripts/pin-formula.sh \
   scripts/release.sh; do
   printf '%s\n' "$shell_list" | grep -qxF "$expected" \
     || fail "shell discovery omitted $expected"
@@ -129,6 +130,21 @@ sha256_file() {
     sha256sum "$1" | awk '{print $1}'
   fi
 }
+
+# Regression (T004 rework): Formula/orchid.rb's pinned checksum must stay
+# fresh for the tree that carries it -- a repair commit that changes shipped
+# bytes without re-pinning the formula previously went undetected until the
+# release gate at tag time. Enforced here on the live checkout at every run;
+# skipped inside an extracted release archive, which by design has neither a
+# Git checkout at this root nor a Formula/ directory. On failure the message
+# carries pin-formula's own output, which names the exact expected checksum
+# and the one-command remedy.
+if [ "$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)" = "$REPO_ROOT" ] \
+   && [ -f "$REPO_ROOT/Formula/orchid.rb" ]; then
+  rc=0
+  freshness_out="$("$BASH" "$REPO_ROOT/scripts/pin-formula.sh" --check 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] || fail "Formula/orchid.rb checksum is stale for the current tree -- $freshness_out"
+fi
 
 write_formula() {
   local repo="$1" version="$2" sha="$3"
@@ -325,5 +341,31 @@ moving_tag_out="$(ORCHID_TEST_MOVE_TAG_REPO="$moving_tag_repo" \
 [ "$rc" -ne 0 ] || fail "moving-tag: release unexpectedly succeeded"
 assert_match 'tag moved during release verification' "$moving_tag_out" \
   "moving-tag: failure reason"
+
+# Regression (T004 rework): checksum freshness is owned by one deterministic
+# tool. pin-formula --check must flag a stale pinned value and print the
+# exact expected checksum; pin-formula must then repair the formula to that
+# fixed point (Formula/ is export-ignored, so pinning cannot change the
+# archive); and the repaired formula must pass --check again.
+pin_repo="$(clone_fixture pin-formula)"
+cp "$REPO_ROOT/scripts/pin-formula.sh" "$pin_repo/scripts/pin-formula.sh"
+commit_fixture "$pin_repo" "carry the pin-formula tool"
+pin_probe="$WORK/pin-probe.tar.gz"
+git -C "$pin_repo" archive --format=tar.gz --mtime=1970-01-01T00:00:00Z \
+  --prefix=orchid-1.2.3/ --output="$pin_probe" 'HEAD^{tree}'
+pin_expected_sha="$(sha256_file "$pin_probe")"
+write_formula "$pin_repo" 1.2.3 "1111111111111111111111111111111111111111111111111111111111111111"
+rc=0
+pin_check_out="$("$BASH" "$pin_repo/scripts/pin-formula.sh" --check 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "pin-formula --check accepted a stale formula checksum"
+assert_match 'STALE' "$pin_check_out" "pin-formula --check names the staleness"
+assert_match "$pin_expected_sha" "$pin_check_out" \
+  "pin-formula --check prints the exact expected fixed-point checksum"
+"$BASH" "$pin_repo/scripts/pin-formula.sh" >/dev/null 2>&1 \
+  || fail "pin-formula failed to repin a stale formula"
+grep -q "sha256 \"$pin_expected_sha\"" "$pin_repo/Formula/orchid.rb" \
+  || fail "pin-formula did not pin the exact fixed-point checksum (wanted $pin_expected_sha)"
+"$BASH" "$pin_repo/scripts/pin-formula.sh" --check >/dev/null 2>&1 \
+  || fail "pin-formula --check rejects the checksum it just pinned"
 
 exit 0

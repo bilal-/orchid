@@ -69,19 +69,20 @@ from the source archive, avoiding a checksum self-reference.
    two `ORCHID_INSTALL_*` assignments in `install.sh`, and the formula's
    version and URL. Commit the release payload while the tree is clean.
 
-2. Compute the candidate checksum from Git objects only. The fixed mtime and
-   tree object are the same inputs used by the verifier:
+2. Re-pin the formula checksum with the canonical tool (the same fixed
+   mtime, prefix, and tree inputs the verifier uses — it snapshots current
+   content through a temporary index and rewrites `Formula/orchid.rb` in
+   place; `--check` verifies without rewriting, and the test suite runs
+   that check on every commit so a stale pin can never linger unnoticed):
 
    ```sh
-   version=X.Y.Z
-   commit=$(git rev-parse HEAD)
-   git archive --format=tar.gz --mtime=1970-01-01T00:00:00Z \
-     --prefix="orchid-$version/" "${commit}^{tree}" | shasum -a 256
+   /bin/bash scripts/pin-formula.sh
    ```
 
-3. Put that exact digest in `Formula/orchid.rb`, commit the formula-only
-   change, and create the version tag on that clean commit. `Formula/` is
-   export-ignored, so this commit does not alter the archive bytes:
+3. Commit the formula-only change and create the version tag on that clean
+   commit. `Formula/` is export-ignored, so this commit does not alter the
+   archive bytes — which is exactly why the pinned digest stays valid for
+   the tagged commit:
 
    ```sh
    git tag "v$version"

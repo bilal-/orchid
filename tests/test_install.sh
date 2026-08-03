@@ -392,13 +392,13 @@ printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must nev
 # before it has fetched every object); (2) the cloned installer is exec'd
 # with the original pass-through args (--prefix, --uninstall); (3) an
 # already-cloned $home fetches and detaches at the selected channel's exact
-# commit instead of cloning again; (4) a STALE/PARTIAL $home (exists on disk
-# but isn't a valid checkout -- exactly what a prior interrupted clone leaves
-# behind)
-# is cleaned up and re-cloned into, rather than failing forever with
-# git's own "destination path already exists and is not an empty
-# directory" -- this is what makes docs/install.md's "run the same line
-# again" retry story actually true after a dropped connection. Existing
+# commit instead of cloning again; (4) ANY $home that exists on disk but
+# isn't a usable checkout -- whatever put it there -- is REFUSED with a
+# nonzero exit and left completely intact, never auto-deleted. The
+# "run the same line again" retry story after a dropped connection holds
+# without any cleanup step because the clone targets a temp sibling and
+# only ever lands at $home via mv after git fully succeeds, so an
+# interrupted clone leaves $home absent, not half-populated. Existing
 # clones select an exact fetched commit for either the stable tag or the
 # explicitly requested moving development channel.
 # ===========================================================================
@@ -527,49 +527,50 @@ assert_match 'refs/tags' "$bs_out_notag" \
 [ ! -e "$STUB_INSTALL_RECORD" ] || fail "bootstrap (same-named branch): refused clone's installer must not execute"
 
 # ===========================================================================
-# review-round-2 fix: auto-removal of a non-checkout $home must require
-# POSITIVE proof it is dead wreckage from orchid's OWN bootstrap -- (a)
-# $home/.git exists, (b) that .git's remote.origin.url is EXACTLY this
-# repo's clone URL, (c) it's still incomplete (anchor files missing, or
-# rev-parse fails). Anything short of all three must be refused loudly
-# (named path, nonzero exit, both remedies) and left completely intact --
-# never deleted on a merely negative "isn't a checkout" signal. Three
-# shapes at the SAME kind of path ($ORCHID_HOME, user-settable), only one
-# of which may ever be auto-cleaned:
-#   2b. a genuinely dead ORCHID clone (real .git, origin.url matches,
-#       anchor files missing)        -> cleaned + recloned
+# T004 rework (destructive-install prevention): a $home that exists but
+# isn't a usable checkout is NEVER auto-deleted -- not even with "positive
+# proof" that its .git's remote.origin.url matches this repo's clone URL.
+# An expected-origin repo missing an anchor file is still routinely a
+# user-controlled checkout (a contributor's own clone with uncommitted
+# work, or bin/orchid deleted mid-edit); a prior round of this fix rm
+# -rf'd exactly that shape. install.sh now fails closed for EVERY
+# non-usable shape: nonzero exit, path named in the message, both
+# remedies printed, contents (including .git) left completely intact, no
+# clone attempted. Three shapes at the SAME kind of path ($ORCHID_HOME,
+# user-settable), all refused identically:
+#   2b. an expected-origin orchid clone missing its anchor files, with
+#       local (dirty/user) content on disk -> REFUSED, intact, nonzero
 #   2c. a plain directory of unrelated user files (no .git at all)
-#                                    -> REFUSED, intact, nonzero exit
+#                                          -> REFUSED, intact, nonzero
 #   2d. the user's own unrelated git repo (real .git, no matching origin)
-#                                    -> REFUSED, intact, nonzero exit
+#                                          -> REFUSED, intact, nonzero
 # ===========================================================================
 
-# --- 2b: dead orchid clone (positive proof present) -> cleaned + recloned.
+# --- 2b: expected-origin clone lacking anchor files, with user content ->
+# REFUSED and left intact. This is the exact shape the reverted fix used to
+# rm -rf: real .git, remote.origin.url matching the hardcoded clone URL,
+# anchor files absent, plus a local file a deletion would destroy.
 bs_gitlog2b="$bs_work/gitlog2b.txt"; : > "$bs_gitlog2b"
 bs_gitbin2b="$bs_work/gitbin2b"; fake_git_bin "$bs_gitbin2b" "$bs_gitlog2b"
 bs_home_partial="$bs_work/home-partial"
 mkdir -p "$bs_home_partial"
-# Real git init + a real remote.origin.url matching the hardcoded clone
-# URL -- genuine positive proof, not a guess -- with the anchor files
-# deliberately absent (exactly what an interrupted `git clone` leaves:
-# .git/ created before every object was fetched).
 git init -q "$bs_home_partial"
 git -C "$bs_home_partial" remote add origin https://github.com/bilal-/orchid.git
-touch "$bs_home_partial/some-partial-clone-leftover"
+echo "uncommitted local work" > "$bs_home_partial/dirty-user-file.txt"
 export STUB_INSTALL_RECORD="$bs_work/record2b.txt"; rm -f "$bs_work/record2b.txt"
 bs_out2b="$(PATH="$bs_gitbin2b:$PATH" ORCHID_HOME="$bs_home_partial" "$bs_work/bare/nogit/install.sh" 2>&1)"
 bs_rc2b=$?
-[ "$bs_rc2b" -eq 0 ] || fail "bootstrap (dead orchid clone): install.sh exits 0 on retry after an interrupted clone (got rc=$bs_rc2b, output: $bs_out2b)"
-assert_match "removing incomplete clone" "$bs_out2b" "bootstrap (dead orchid clone): prints a note naming what was verified before removing it"
-[ -e "$bs_home_partial/some-partial-clone-leftover" ] && fail "bootstrap (dead orchid clone): the stale leftover file must be gone after cleanup+reclone"
-[ -f "$bs_home_partial/bin/orchid" ] && [ -f "$bs_home_partial/lib/common.sh" ] \
-  || fail "bootstrap (dead orchid clone): a fresh checkout must be cloned into place after cleanup"
-[ -f "$bs_work/record2b.txt" ] || fail "bootstrap (dead orchid clone): cloned install.sh was never exec'd after recovery"
-bs_clone_line2b="$(grep '^clone' "$bs_gitlog2b")"
-[ -n "$bs_clone_line2b" ] || fail "bootstrap (dead orchid clone): no git clone call recorded after cleanup (log: $(cat "$bs_gitlog2b"))"
-bs_clone_dest2b="$(printf '%s' "$bs_clone_line2b" | awk '{print $NF}')"
-[ "$bs_clone_dest2b" != "$bs_home_partial" ] \
-  || fail "bootstrap (dead orchid clone): must still clone to a TEMP sibling, never directly to ORCHID_HOME"
+[ "$bs_rc2b" -ne 0 ] || fail "bootstrap (expected-origin clone, anchors missing): install.sh must exit nonzero rather than delete or proceed (output: $bs_out2b)"
+assert_match "$bs_home_partial" "$bs_out2b" "bootstrap (expected-origin clone, anchors missing): refusal message names the exact path"
+assert_match "refusing" "$bs_out2b" "bootstrap (expected-origin clone, anchors missing): refusal message says it is refusing, not repairing"
+[ -f "$bs_home_partial/dirty-user-file.txt" ] || fail "bootstrap (expected-origin clone, anchors missing): local user file was deleted -- must be left completely intact"
+[ "$(cat "$bs_home_partial/dirty-user-file.txt")" = "uncommitted local work" ] \
+  || fail "bootstrap (expected-origin clone, anchors missing): local user file content was altered"
+[ -d "$bs_home_partial/.git" ] || fail "bootstrap (expected-origin clone, anchors missing): the repo's .git was deleted -- must be left completely intact"
+[ "$(git -C "$bs_home_partial" config --get remote.origin.url)" = "https://github.com/bilal-/orchid.git" ] \
+  || fail "bootstrap (expected-origin clone, anchors missing): the repo's own remote must be untouched"
+grep -q '^clone' "$bs_gitlog2b" && fail "bootstrap (expected-origin clone, anchors missing): must never attempt a clone against a refused path"
+[ ! -e "$bs_work/record2b.txt" ] || fail "bootstrap (expected-origin clone, anchors missing): no installer may execute after a refusal"
 
 # --- 2c: plain directory of unrelated user files (no .git at all) ->
 # REFUSED: nonzero exit, files untouched, message names the path, no

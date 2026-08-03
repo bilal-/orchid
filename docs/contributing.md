@@ -54,3 +54,10 @@ kernel, installer, tag, and Homebrew formula by `scripts/release.sh`. Follow the
 local-only checklist in [install.md](./install.md#release-day-steps-operator-not-automated).
 The script emits files to the requested output directory but does not upload,
 push, publish, or alter a tag.
+
+The formula's pinned SHA-256 must stay fresh for the tree that carries it:
+`scripts/pin-formula.sh` recomputes the deterministic archive checksum from
+current content and rewrites `Formula/orchid.rb`; its `--check` mode runs in
+the test suite on every commit, so any change to shipped bytes must be
+committed together with a re-pinned formula (`Formula/` is export-ignored,
+so re-pinning never changes the archive itself).

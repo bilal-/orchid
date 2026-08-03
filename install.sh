@@ -98,7 +98,7 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
 
     local home="${ORCHID_HOME:-$HOME/.local/share/orchid}"
     local orchid_url="$ORCHID_INSTALL_REPOSITORY"
-    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone
+    local uninstalling=0 a parent tmp origin_url
     local tag_object_before tag_object_after tag_commit_before tag_commit_after selected_commit
     for a in "$@"; do [ "$a" = "--uninstall" ] && uninstalling=1; done
 
@@ -151,48 +151,27 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       # $home exists but failed the checkout test above (missing an anchor
       # file, or `git rev-parse --git-dir` doesn't recognize it). That is
       # only a NEGATIVE signal ("not currently a usable orchid checkout")
-      # -- on its own it is NOT enough to justify deleting anything: $home
-      # is `${ORCHID_HOME:-...}`, a user-settable env var, so this branch
-      # is reached just as easily by a user pointing ORCHID_HOME at their
-      # own unrelated directory (or git repo) as by an actually-interrupted
-      # prior bootstrap clone. A review found the earlier version of this
-      # fix rm -rf'd unconditionally here -- verified live to destroy an
-      # unrelated directory of user files with no warning beyond a message
-      # asserting a cause ("left behind by an interrupted clone") the code
-      # never actually checked. Auto-removal now requires POSITIVE proof
-      # this is dead wreckage from orchid's own bootstrap and nothing
-      # else -- ALL three, not just the pre-existing negative one:
-      #   (a) $home/.git exists at all (a plain directory of unrelated
-      #       files, no git repo, fails here -- left untouched)
-      #   (b) that .git's own remote.origin.url is EXACTLY this repo's
-      #       clone URL (a user's own unrelated git repo at this path
-      #       fails here -- left untouched, even though it has a .git)
-      #   (c) it is still incomplete -- true by construction (this whole
-      #       `else` only runs when the checkout test above failed), kept
-      #       as an explicit check for readability rather than relying
-      #       purely on control flow
-      # Anything short of all three is refused loudly instead -- named
-      # path, why, and both remedies -- never silently deleted, never
-      # silently proceeded past.
-      is_dead_orchid_clone=0
+      # -- and it is NEVER grounds for deleting anything: $home is
+      # `${ORCHID_HOME:-...}`, a user-settable env var, so this branch is
+      # reached just as easily by a user pointing ORCHID_HOME at their own
+      # directory (or git repo) as by wreckage from some earlier failed
+      # install. Two review rounds each caught a destructive repair here:
+      # first an unconditional rm -rf (verified live to destroy an
+      # unrelated directory of user files), then an rm -rf gated on
+      # $home/.git's remote.origin.url matching this repo's clone URL --
+      # but an expected-origin repo that lacks an anchor file is still
+      # routinely a USER-CONTROLLED checkout (a contributor's own clone
+      # with uncommitted work, stash state, or bin/orchid deleted
+      # mid-edit), and nothing observable here can prove otherwise. So
+      # this installer fails closed: name the path, explain, give both
+      # remedies, exit nonzero, delete nothing -- recursively or
+      # otherwise. Half-populated wreckage at $home cannot come from THIS
+      # installer anyway: the clone below lands in a temp sibling and is
+      # only ever mv'd into place after git fully succeeds.
       if [ -e "$home" ]; then
-        if [ -e "$home/.git" ]; then
-          origin_url="$(git -C "$home" config --get remote.origin.url 2>/dev/null || true)"
-          if [ "$origin_url" = "$orchid_url" ] \
-             && { [ ! -f "$home/bin/orchid" ] || [ ! -f "$home/lib/common.sh" ] \
-                  || ! git -C "$home" rev-parse --git-dir >/dev/null 2>&1; }; then
-            is_dead_orchid_clone=1
-          fi
-        fi
-
-        if [ "$is_dead_orchid_clone" = 1 ]; then
-          echo "orchid: removing incomplete clone at $home (verified: .git present, remote.origin.url is $orchid_url, but the checkout is missing its files) before retrying"
-          rm -rf "$home"
-        else
-          echo "orchid: install.sh: $home already exists and is not a usable orchid checkout -- refusing to touch it" >&2
-          echo "orchid: either remove $home yourself if it's safe to discard, or set ORCHID_HOME to a different path and re-run" >&2
-          exit 1
-        fi
+        echo "orchid: install.sh: $home already exists but is not a usable orchid checkout -- refusing to touch it (this installer never deletes an existing ORCHID_HOME)" >&2
+        echo "orchid: inspect $home yourself and remove it only if it's safe to discard, or set ORCHID_HOME to a different path and re-run" >&2
+        exit 1
       fi
 
       echo "orchid: cloning orchid to $home"
@@ -202,10 +181,10 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       # so the mv below is a pure rename, not a copy) and only mv it into
       # place once git has fully succeeded. This is what keeps a clone
       # interrupted partway through from ever leaving $home itself
-      # half-populated for the next run to trip over -- the failure mode
-      # the stale-clone recovery above recovers FROM, but recovery is only
-      # ever needed once here, going forward, because a dead clone never
-      # lands at $home at all anymore.
+      # half-populated for the next run to trip over -- and it is the
+      # load-bearing guarantee behind the fail-closed refusal above: since
+      # a dead clone never lands at $home, anything already sitting there
+      # is presumed to be the user's and is never auto-removed.
       tmp="$(mktemp -d "$parent/.orchid-clone.XXXXXX")"
       trap 'rm -rf "$tmp"' EXIT
       if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
