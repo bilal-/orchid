@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e0-plan-a6-22d1",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": []
+}

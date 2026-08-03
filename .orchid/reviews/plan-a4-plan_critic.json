@@ -1,0 +1,42 @@
+{
+  "contract": 1,
+  "job_id": "j-e0-plan-a4-d25e",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Machine-local trust persistence contradicts the required repo-local acknowledgement configuration"
+    },
+    {
+      "severity": "high",
+      "title": "T001 enables the judgment-only broker before T002 supplies the deterministic driver and arbitration verbs, breaking acknowledged headless ticks"
+    },
+    {
+      "severity": "medium",
+      "title": "Repository identity and clone, worktree, move, and replacement trust semantics are undefined and therefore unverifiable"
+    },
+    {
+      "severity": "medium",
+      "title": "The arbitration truth table has overlapping outcomes for mixed or malformed evidence that also contains a blocking finding"
+    },
+    {
+      "severity": "medium",
+      "title": "orchid start lacks criteria requiring a separate explicit trust opt-in and reason"
+    },
+    {
+      "severity": "medium",
+      "title": "T002 lacks focused verification that driver dispatch preserves engine neutrality and plugin contracts"
+    },
+    {
+      "severity": "medium",
+      "title": "The end-to-end rehearsal lacks an enforced network and external-mutation tripwire"
+    }
+  ]
+}

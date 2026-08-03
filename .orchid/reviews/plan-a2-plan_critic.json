@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e0-plan-a2-3124",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Final integrated tree lacks a Bash 3.2 CI-equivalent verification after T005"
+    },
+    {
+      "severity": "medium",
+      "title": "Syntax and ShellCheck verification does not cover every shipped shell script"
+    },
+    {
+      "severity": "medium",
+      "title": "Verb-only durable-state mutation lacks an explicit driver invariant"
+    },
+    {
+      "severity": "medium",
+      "title": "Headless command restrictions lack a concrete adapter policy and focused verification"
+    }
+  ]
+}
