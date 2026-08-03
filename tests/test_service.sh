@@ -12,7 +12,7 @@ source "$(dirname "$0")/helpers.sh"
 SERVICE="$REPO_ROOT/runners/orchid-service"
 
 cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ROOT="$REPO_ROOT"
 
 trust_repo() {

@@ -101,7 +101,11 @@ That intentionally shares trust across linked worktrees and survives a
 same-filesystem move, while a fresh clone, copy, replaced/recreated `.git`,
 root-history replacement, or policy-version change is denied. Path text,
 tracked content, origin metadata, Git config, and `orchid.config` never grant
-trust.
+trust. Identity inspection ignores inherited Git repository-selection and
+object-view variables (for example `GIT_DIR`/`GIT_WORK_TREE`) and disables
+lazy object fetching. If `HOME` or a symlinked `~/.orchid` would place the
+record inside the target, acknowledgement refuses instead of creating
+repository-controlled trust state.
 
 The acknowledgement means only that the operator accepts this repository as
 input to an unattended, shell-capable model. Target content may prompt-inject

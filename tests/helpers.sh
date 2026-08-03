@@ -4,6 +4,14 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORCHID_BIN="$REPO_ROOT/bin/orchid"
 FAILS=0
 
+# A self-hosted test run can inherit the OUTER Orchid session's identity.
+# Fixtures create and export their own repo/epoch as needed; an inherited
+# actor would otherwise misattribute every fixture journal entry (and an
+# inherited repo/epoch can bind early setup commands to the outer run).
+# Keep dry-run available because adapter tests intentionally exercise that
+# public seam, but never inherit durable-run identity into a disposable repo.
+unset ORCHID_ACTOR ORCHID_REPO ORCHID_EPOCH
+
 # Fixtures deliberately replace HOME to isolate machine-local Orchid state.
 # Disposable fixture commits must not depend on an operator's global Git
 # identity, which may be absent in hosted CI and extracted archives.
@@ -47,7 +55,16 @@ WORK="$(mktemp -d)"
   echo "FATAL: helpers.sh: mktemp -d failed to produce a usable scratch dir (WORK='$WORK') -- refusing to run any cd/git" >&2
   exit 1
 }
-trap 'rm -rf "$WORK"; exit $((FAILS>0))' EXIT
+
+# Trust/config/plugin state models machine-local HOME state and must not live
+# beneath a target repository. Trust-boundary fixtures use this independent
+# disposable directory instead of the historical "$WORK/home" shortcut.
+MACHINE_HOME="$(mktemp -d)"
+[ -n "$MACHINE_HOME" ] && [ -d "$MACHINE_HOME" ] || {
+  echo "FATAL: helpers.sh: mktemp -d failed to produce a machine HOME (MACHINE_HOME='$MACHINE_HOME')" >&2
+  exit 1
+}
+trap 'rm -rf "$WORK" "$MACHINE_HOME"; exit $((FAILS>0))' EXIT
 
 # plant_reviewer_envelope <task-id> [attempt] -- v1-m2's kernel envelope-
 # count gate (reviewing->arbitrating) requires review_required_count(risk_

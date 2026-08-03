@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME/.orchid"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME/.orchid"
 printf 'verify=true\n' > orchid.config
 mkdir -p "$WORK/eng/fake"; printf '#!/usr/bin/env bash\n' > "$WORK/eng/fake/run"; chmod +x "$WORK/eng/fake/run"
 printf 'role.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' >> orchid.config
@@ -266,7 +266,7 @@ cfg_bare="$WORK/cfg-bare"; mkdir -p "$cfg_bare"
 ORCHID_REPO="$cfg_bare" "$ORCHID_BIN" init >/dev/null
 cfg_wt="$WORK/cfg-wt"
 git -C "$cfg_bare" worktree add -q "$cfg_wt" orchid/integration
-cfg_epoch="$(ORCHID_REPO="$cfg_wt" HOME="$WORK/home" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+cfg_epoch="$(ORCHID_REPO="$cfg_wt" HOME="$MACHINE_HOME" "$ORCHID_BIN" run start | sed 's/epoch: //')"
 
 # Advance the ref from OUTSIDE $cfg_wt (same technique as the stale-checkout
 # fixture above): $cfg_wt's own index/working tree are never touched by this.
@@ -295,7 +295,7 @@ pre_cfg_wt_index="$(git -C "$cfg_wt" ls-files --stage)"
 pre_cfg_wt_config="$(cat "$cfg_wt/orchid.config")"
 pre_cfg_journal="$(cat "$cfg_wt/.orchid/journal.md")"
 
-cfg_commit_out="$(ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$WORK/home" "$ORCHID_BIN" config commit --reason "add implementer role binding")"
+cfg_commit_out="$(ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$MACHINE_HOME" "$ORCHID_BIN" config commit --reason "add implementer role binding")"
 assert_match "^committed: " "$cfg_commit_out" "config commit prints the new commit sha"
 
 # The edited config landed on the integration branch...
@@ -329,7 +329,7 @@ grep -q "add implementer role binding" "$cfg_wt/.orchid/journal.md" || fail "con
 
 # --reason is required (INV-08); refused before anything is touched.
 rc=0
-ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$WORK/home" "$ORCHID_BIN" config commit >/dev/null 2>&1 || rc=$?
+ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$MACHINE_HOME" "$ORCHID_BIN" config commit >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "config commit without --reason must be refused"
 
 # `config list` remains read-only/unaffected by the new subverb.

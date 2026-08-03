@@ -50,6 +50,11 @@ HOME="$home" "$ORCHID_BIN" trust unattended "$repo" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "acknowledgement without --reason must be refused"
 [ ! -d "$home/.orchid/unattended-trust" ] \
   || fail "a refused acknowledgement must not create the machine-local store"
+rc=0
+HOME="$home" "$ORCHID_BIN" trust unattended "$repo" --reason '   ' >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "acknowledgement with a whitespace-only reason must be refused"
+[ ! -d "$home/.orchid/unattended-trust" ] \
+  || fail "a whitespace-only reason must not create the machine-local store"
 
 reason="reviewed target and accept prompt-injection risk"
 out="$(HOME="$home" "$ORCHID_BIN" trust unattended "$repo" --reason "$reason")"; rc=$?
@@ -74,6 +79,31 @@ esac
 [ ! -e "$repo/.orchid/unattended-trust.json" ] \
   || fail "unattended trust must never write a record inside the repo"
 
+# HOME (or a symlink beneath it) must not place the supposedly machine-local
+# record inside the repository being authorized. When no outside store is
+# available, acknowledgement fails closed without creating one in-tree.
+inside_store_repo="$WORK/inside-store-repo"
+mk_repo "$inside_store_repo"
+inside_home="$inside_store_repo/operator-home"
+mkdir -p "$inside_home"
+rc=0
+HOME="$inside_home" "$ORCHID_BIN" trust unattended "$inside_store_repo" \
+  --reason "must not be tracked" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "acknowledgement must refuse a trust store inside the target repo"
+[ ! -e "$inside_home/.orchid/unattended-trust" ] \
+  || fail "refused in-repo trust must not create a record directory"
+
+symlink_store_repo="$WORK/symlink-store-repo"
+mk_repo "$symlink_store_repo"
+mkdir -p "$symlink_store_repo/local-state" "$WORK/symlink-home"
+ln -s "$symlink_store_repo/local-state" "$WORK/symlink-home/.orchid"
+rc=0
+HOME="$WORK/symlink-home" "$ORCHID_BIN" trust unattended "$symlink_store_repo" \
+  --reason "symlink must not bypass placement" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "acknowledgement must resolve a symlinked trust-store parent"
+[ ! -e "$symlink_store_repo/local-state/unattended-trust" ] \
+  || fail "refused symlinked in-repo trust must not create a record directory"
+
 # Descendant commits do not change the repository root identity.
 git -C "$repo" commit -q --allow-empty -m descendant
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$repo")"
@@ -93,6 +123,21 @@ git clone -q "$repo" "$clone"
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$clone")"
 assert_match '^unattended trust: untrusted$' "$out" "fresh clone is untrusted"
 assert_match '^gate: denied$' "$out" "fresh clone remains gated"
+
+# Ambient Git repository-selection variables cannot substitute an already
+# trusted common directory for the target being inspected. This is especially
+# important for self-hosted/nested runs, where Git variables can legitimately
+# be present in the outer process environment.
+spoof_target="$WORK/spoof-target"
+mk_repo "$spoof_target"
+out="$(HOME="$home" GIT_DIR="$repo/.git" GIT_WORK_TREE="$spoof_target" \
+  "$ORCHID_BIN" trust show "$spoof_target")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "ambient GIT_DIR/GIT_WORK_TREE cannot lend another repo's acknowledgement"
+spoof_common="$(git -C "$spoof_target" rev-parse --git-common-dir)"
+spoof_common="$(cd "$spoof_target/$spoof_common" && pwd -P)"
+assert_match "^git_common_dir: $spoof_common$" "$out" \
+  "identity inspection resolves the target's own Git common directory"
 
 # A filesystem copy likewise gets a distinct common-directory inode.
 copy="$WORK/copy"
@@ -151,6 +196,16 @@ out="$(HOME="$home" "$ORCHID_BIN" trust show "$policy_repo")"
 assert_match '^unattended trust: untrusted$' "$out" "policy-version change invalidates trust"
 assert_match '^binding_state: mismatch$' "$out" "policy change is classified as a binding mismatch"
 assert_match 'trust-policy version changed' "$out" "policy mismatch is actionable"
+
+jq '.policy_version = 1 | .kind = "plugin"' "$policy_record" | atomic_write "$policy_record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$policy_repo")"
+assert_match '^binding_state: invalid$' "$out" "a record for another trust kind fails closed"
+assert_match 'record kind is invalid' "$out" "invalid record kind is named"
+
+jq '.kind = "unattended" | .reason = "   "' "$policy_record" | atomic_write "$policy_record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$policy_repo")"
+assert_match '^binding_state: invalid$' "$out" "whitespace-only recorded provenance fails closed"
+assert_match 'missing operator provenance' "$out" "invalid recorded provenance is named"
 
 # Revocation from either the main checkout or a linked worktree removes the
 # shared record and is idempotent.

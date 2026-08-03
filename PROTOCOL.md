@@ -531,8 +531,11 @@ trust-policy version compiled into Orchid. Linked worktrees therefore share
 an acknowledgement and a same-filesystem move preserves it; a clone, copy,
 recreated/replaced `.git`, root-history replacement, or policy-version change
 does not. Repository content, origin URLs, Git config, and `orchid.config`
-cannot grant it. `orchid trust show <repo>` displays the decision and its
-operator-authored reason/timestamp; `orchid trust revoke <repo>` removes it.
+cannot grant it. Identity queries ignore ambient Git repository-selection or
+object-view variables and do not lazy-fetch missing history. A `HOME` layout
+that resolves the trust store inside the target is refused. `orchid trust show
+<repo>` displays the decision and its operator-authored reason/timestamp;
+`orchid trust revoke <repo>` removes it.
 Interactive sessions, planning, manual verbs, and read-only commands do not
 require or create this record.
 

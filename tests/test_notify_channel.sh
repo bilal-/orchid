@@ -24,7 +24,7 @@ PUMP="$REPO_ROOT/runners/orchid-pump"
 
 cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 
 # -- stub `openclaw` on PATH: captures argv, never sends anything real -----
 STUBBIN="$WORK/stubbin"; mkdir -p "$STUBBIN"

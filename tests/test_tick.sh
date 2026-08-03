@@ -10,7 +10,7 @@ source "$REPO_ROOT/lib/envelope.sh"
 
 cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ENGINES_DIR="$WORK/eng"; mkdir -p "$WORK/eng"
 
 # mk_stub_engine <name> -- a stub orchestrator engine dir. `capabilities=
