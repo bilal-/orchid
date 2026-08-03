@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+source "$(dirname "$0")/helpers.sh"
+
+CI="$REPO_ROOT/scripts/ci-local.sh"
+RELEASE="$REPO_ROOT/scripts/release.sh"
+WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+
+[ -f "$CI" ] || fail "scripts/ci-local.sh missing"
+[ -f "$RELEASE" ] || fail "scripts/release.sh missing"
+[ -f "$WORKFLOW" ] || fail ".github/workflows/ci.yml missing"
+
+# Content-based discovery must cover every layout in which this repository
+# ships shell: root files, templates, extensionless executables, runners,
+# adapters, tests, libraries, and the CI/release helpers themselves.
+shell_list="$("$BASH" "$CI" --bash "$BASH" --list-shell)" || fail "ci-local --list-shell failed"
+for expected in \
+  install.sh \
+  templates/pre-push.sh \
+  bin/orchid \
+  runners/orchid-tick \
+  plugins/engines/codex/run \
+  plugins/notify/openclaw/send \
+  tests/helpers.sh \
+  lib/common.sh \
+  scripts/ci-local.sh \
+  scripts/release.sh; do
+  printf '%s\n' "$shell_list" | grep -qxF "$expected" \
+    || fail "shell discovery omitted $expected"
+done
+printf '%s\n' "$shell_list" | grep -q '^\.orchid/' \
+  && fail "shell discovery must never inspect run state under .orchid"
+
+rc=0; "$BASH" "$CI" --bash /bin/false --list-shell >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "ci-local accepts a non-Bash --bash interpreter"
+
+grep -q 'ubuntu-latest' "$WORKFLOW" || fail "CI workflow has no Linux runner"
+grep -q 'macos-latest' "$WORKFLOW" || fail "CI workflow has no macOS runner"
+grep -q 'scripts/ci-local.sh --bash /bin/bash' "$WORKFLOW" \
+  || fail "hosted CI does not use the canonical local gate"
+grep -q 'scripts/release.sh --tag' "$WORKFLOW" || fail "tag workflow has no pinned release gate"
+grep -q 'contents: read' "$WORKFLOW" || fail "CI workflow does not use read-only repository permissions"
+grep -Eq 'secrets\.' "$WORKFLOW" && fail "deterministic CI must not require repository secrets"
+
+unsafe_mktemp_pattern='mktemp[[:space:]]+'
+unsafe_mktemp_pattern="${unsafe_mktemp_pattern}-u"
+while IFS= read -r shell_file; do
+  [ "$shell_file" = tests/test_ci_release.sh ] && continue
+  grep -En "$unsafe_mktemp_pattern" "$REPO_ROOT/$shell_file" >/dev/null \
+    && fail "a shipped shell script still uses the racy temporary-name pattern: $shell_file"
+done <<< "$shell_list"
+
+sha256_file() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | awk '{print $1}'
+  else
+    sha256sum "$1" | awk '{print $1}'
+  fi
+}
+
+write_formula() {
+  local repo="$1" version="$2" sha="$3"
+  cat > "$repo/Formula/orchid.rb" <<EOF
+class Orchid < Formula
+  url "https://github.com/bilal-/orchid/releases/download/v$version/orchid-$version.tar.gz"
+  sha256 "$sha"
+  version "$version"
+end
+EOF
+}
+
+commit_fixture() {
+  local repo="$1" message="$2"
+  git -C "$repo" add -A
+  git -C "$repo" commit -q -m "$message"
+}
+
+fixture="$WORK/release-fixture"
+mkdir -p "$fixture"/{Formula,bin,docs,lib,release,scripts,.orchid}
+cp "$RELEASE" "$fixture/scripts/release.sh"
+cat > "$fixture/.gitattributes" <<'EOF'
+/.orchid export-ignore
+/Formula export-ignore
+EOF
+cat > "$fixture/release/metadata.conf" <<'EOF'
+version=1.2.3
+tag=v1.2.3
+archive=orchid-1.2.3.tar.gz
+prefix=orchid-1.2.3/
+installer_ref=v1.2.3
+EOF
+cat > "$fixture/lib/common.sh" <<'EOF'
+#!/usr/bin/env bash
+ORCHID_VERSION="1.2.3"
+EOF
+cat > "$fixture/install.sh" <<'EOF'
+#!/usr/bin/env bash
+ORCHID_INSTALL_VERSION="1.2.3"
+ORCHID_INSTALL_REF="v1.2.3"
+exit 0
+EOF
+cat > "$fixture/bin/orchid" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$fixture/scripts/ci-local.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+[ "${ORCHID_RELEASE_ARCHIVE_TEST:-0}" = 1 ]
+[ "$1" = --bash ]
+[ -x "$2" ]
+[ ! -e .git ]
+[ ! -e .orchid ]
+[ ! -e Formula ]
+[ -f release/metadata.conf ]
+echo "archive fixture CI PASS"
+EOF
+printf '%s\n' '# Release fixture' > "$fixture/README.md"
+printf '%s\n' '# Install fixture' > "$fixture/docs/install.md"
+printf '%s\n' '# Quickstart fixture' > "$fixture/docs/quickstart.md"
+printf '%s\n' 'private run state' > "$fixture/.orchid/private"
+write_formula "$fixture" 1.2.3 "0000000000000000000000000000000000000000000000000000000000000000"
+
+git init -q "$fixture"
+git -C "$fixture" config user.email test@example.com
+git -C "$fixture" config user.name "Release Test"
+commit_fixture "$fixture" "fixture payload"
+
+# Formula is export-ignored, so its final checksum can be committed without a
+# checksum self-reference. Fixed archive mtimes make the tree archive stable
+# across that formula-only commit.
+probe="$WORK/probe.tar.gz"
+git -C "$fixture" archive --format=tar.gz --mtime=1970-01-01T00:00:00Z \
+  --prefix=orchid-1.2.3/ --output="$probe" 'HEAD^{tree}'
+fixture_sha="$(sha256_file "$probe")"
+write_formula "$fixture" 1.2.3 "$fixture_sha"
+commit_fixture "$fixture" "pin formula checksum"
+probe_after="$WORK/probe-after.tar.gz"
+git -C "$fixture" archive --format=tar.gz --mtime=1970-01-01T00:00:00Z \
+  --prefix=orchid-1.2.3/ --output="$probe_after" 'HEAD^{tree}'
+assert_eq "$fixture_sha" "$(sha256_file "$probe_after")" \
+  "export-ignored formula update leaves the release archive reproducible"
+git -C "$fixture" tag v1.2.3
+
+release_out="$WORK/release-out"
+positive_output="$("$BASH" "$fixture/scripts/release.sh" \
+  --tag v1.2.3 --output "$release_out" --bash "$BASH")" \
+  || fail "release builder rejected a valid clean tagged fixture"
+assert_match "release verified: v1.2.3" "$positive_output" "release success names the verified tag"
+[ -f "$release_out/orchid-1.2.3.tar.gz" ] || fail "release archive not emitted"
+[ -f "$release_out/orchid-1.2.3.tar.gz.sha256" ] || fail "release checksum not emitted"
+[ -f "$release_out/Formula/orchid.rb" ] || fail "verified formula not emitted"
+assert_eq "$fixture_sha" "$(sha256_file "$release_out/orchid-1.2.3.tar.gz")" \
+  "emitted archive checksum matches the pinned formula input"
+archive_list="$(tar -tzf "$release_out/orchid-1.2.3.tar.gz")"
+printf '%s\n' "$archive_list" | grep -v '^orchid-1.2.3/' \
+  && fail "release archive contains an entry outside its canonical prefix"
+printf '%s\n' "$archive_list" | grep -q '^orchid-1.2.3/\.orchid/' \
+  && fail "release archive leaked .orchid run state"
+printf '%s\n' "$archive_list" | grep -q '^orchid-1.2.3/Formula/' \
+  && fail "release archive included the external tap formula"
+
+run_release_failure() {
+  local repo="$1" tag="$2" pattern="$3" name="$4" out rc=0
+  out="$("$BASH" "$repo/scripts/release.sh" --tag "$tag" \
+    --output "$WORK/fail-$name" --bash "$BASH" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "$name: release unexpectedly succeeded"
+  assert_match "$pattern" "$out" "$name: failure reason"
+}
+
+# Dirty state is rejected before any Git object is archived.
+printf '%s\n' dirty > "$fixture/untracked"
+run_release_failure "$fixture" v1.2.3 'clean' dirty
+rm "$fixture/untracked"
+
+# Moving names and missing tags are never accepted as release inputs.
+run_release_failure "$fixture" main 'moving refs|semantic-version' moving-ref
+run_release_failure "$fixture" v9.9.9 'does not exist' missing-tag
+
+clone_fixture() {
+  local name="$1" destination
+  destination="$WORK/$name"
+  git clone -q "$fixture" "$destination"
+  git -C "$destination" config user.email test@example.com
+  git -C "$destination" config user.name "Release Test"
+  printf '%s\n' "$destination"
+}
+
+# A valid tag elsewhere is insufficient: the clean checked-out HEAD itself
+# must be the exact tagged commit.
+head_mismatch="$(clone_fixture head-mismatch)"
+printf '%s\n' later > "$head_mismatch/later"
+commit_fixture "$head_mismatch" "commit after tag"
+run_release_failure "$head_mismatch" v1.2.3 'HEAD .* is not tagged commit' head-mismatch
+
+placeholder_repo="$(clone_fixture placeholder)"
+printf '%s\n' '<!-- SCREENSHOT: missing evidence -->' >> "$placeholder_repo/README.md"
+commit_fixture "$placeholder_repo" "plant placeholder"
+git -C "$placeholder_repo" tag -f v1.2.3 >/dev/null
+run_release_failure "$placeholder_repo" v1.2.3 'placeholder' placeholder
+
+installer_repo="$(clone_fixture installer-mismatch)"
+sed 's/ORCHID_INSTALL_REF="v1.2.3"/ORCHID_INSTALL_REF="main"/' \
+  "$installer_repo/install.sh" > "$installer_repo/install.sh.new"
+mv "$installer_repo/install.sh.new" "$installer_repo/install.sh"
+commit_fixture "$installer_repo" "break installer metadata"
+git -C "$installer_repo" tag -f v1.2.3 >/dev/null
+run_release_failure "$installer_repo" v1.2.3 'installer ref mismatch' installer-mismatch
+
+formula_repo="$(clone_fixture formula-mismatch)"
+write_formula "$formula_repo" 1.2.4 "$fixture_sha"
+commit_fixture "$formula_repo" "break formula metadata"
+git -C "$formula_repo" tag -f v1.2.3 >/dev/null
+run_release_failure "$formula_repo" v1.2.3 'formula version mismatch' formula-mismatch
+
+checksum_repo="$(clone_fixture checksum-mismatch)"
+write_formula "$checksum_repo" 1.2.3 "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+commit_fixture "$checksum_repo" "break formula checksum"
+git -C "$checksum_repo" tag -f v1.2.3 >/dev/null
+run_release_failure "$checksum_repo" v1.2.3 'formula checksum mismatch' checksum-mismatch
+
+exit 0

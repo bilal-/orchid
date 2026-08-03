@@ -26,14 +26,41 @@
 # (uninstall reads the same ORCHID_BIN_DIR --prefix would have set, so it
 # un-links the right place).
 #
-# Bootstrap mode: run OUTSIDE an orchid checkout --
-#   curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
-# -- clones a canonical copy to ${ORCHID_HOME:-~/.local/share/orchid} (or
-# fast-forwards it if already cloned there, making the same one-liner the
-# upgrade command too) and hands off to that checkout's own install.sh with
-# the original arguments. Inside a real checkout, this is a complete no-op
-# -- behavior is identical to before bootstrap mode existed.
+# Bootstrap mode: run OUTSIDE an orchid checkout. The default stable channel
+# checks out the immutable version tag below. Following the moving `main`
+# branch requires an explicit `--channel development` argument.
 set -euo pipefail
+
+# Release tooling reads these exact assignments from the tagged Git object and
+# cross-checks them against release/metadata.conf, the tag, and the formula.
+# ShellCheck rationale: release tooling reads this public metadata assignment from the tagged file.
+# shellcheck disable=SC2034
+ORCHID_INSTALL_VERSION="1.0.0"
+ORCHID_INSTALL_REF="v1.0.0"
+ORCHID_INSTALL_REPOSITORY="https://github.com/bilal-/orchid.git"
+
+BOOTSTRAP_CHANNEL="stable"
+_install_scan_args=("$@")
+_install_scan_i=0
+while [ "$_install_scan_i" -lt "${#_install_scan_args[@]}" ]; do
+  _install_scan_arg="${_install_scan_args[$_install_scan_i]}"
+  case "$_install_scan_arg" in
+    --channel)
+      _install_scan_i=$((_install_scan_i + 1))
+      [ "$_install_scan_i" -lt "${#_install_scan_args[@]}" ] || {
+        echo "orchid: install.sh: --channel requires stable or development" >&2
+        exit 2
+      }
+      BOOTSTRAP_CHANNEL="${_install_scan_args[$_install_scan_i]}"
+      ;;
+    --channel=*) BOOTSTRAP_CHANNEL="${_install_scan_arg#--channel=}" ;;
+  esac
+  _install_scan_i=$((_install_scan_i + 1))
+done
+case "$BOOTSTRAP_CHANNEL" in
+  stable|development) ;;
+  *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;;
+esac
 
 self="$0"
 while [ -L "$self" ]; do
@@ -59,8 +86,8 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
     }
 
     local home="${ORCHID_HOME:-$HOME/.local/share/orchid}"
-    local orchid_url="https://github.com/bilal-/orchid.git"
-    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone
+    local orchid_url="$ORCHID_INSTALL_REPOSITORY"
+    local uninstalling=0 a parent tmp origin_url is_dead_orchid_clone tag_before tag_after
     for a in "$@"; do [ "$a" = "--uninstall" ] && uninstalling=1; done
 
     # "Already a checkout" is judged by the same two anchor files checked
@@ -72,8 +99,34 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       if [ "$uninstalling" = 1 ]; then
         echo "orchid: uninstalling via the canonical checkout at $home (the clone itself is left in place -- --uninstall never deletes it)"
       else
-        echo "orchid: canonical checkout already present at $home -- updating (git pull --ff-only)"
-        git -C "$home" pull --ff-only
+        origin_url="$(git -C "$home" config --get remote.origin.url 2>/dev/null || true)"
+        [ "$origin_url" = "$orchid_url" ] || {
+          echo "orchid: canonical checkout at $home has unexpected origin '$origin_url' -- refusing to update or execute it" >&2
+          exit 1
+        }
+        [ -z "$(git -C "$home" status --porcelain --untracked-files=all)" ] || {
+          echo "orchid: canonical checkout at $home has local changes -- refusing to replace or update it" >&2
+          exit 1
+        }
+        if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
+          case "$ORCHID_INSTALL_REF" in
+            v[0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "orchid: stable installer ref is not version-pinned: $ORCHID_INSTALL_REF" >&2; exit 1 ;;
+          esac
+          tag_before="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF" 2>/dev/null || true)"
+          echo "orchid: canonical checkout already present at $home -- selecting stable $ORCHID_INSTALL_REF"
+          git -C "$home" fetch --depth 1 origin \
+            "refs/tags/$ORCHID_INSTALL_REF:refs/tags/$ORCHID_INSTALL_REF"
+          tag_after="$(git -C "$home" rev-parse --verify "refs/tags/$ORCHID_INSTALL_REF")"
+          [ -z "$tag_before" ] || [ "$tag_before" = "$tag_after" ] || {
+            echo "orchid: stable tag moved locally ($tag_before -> $tag_after) -- refused" >&2
+            exit 1
+          }
+          git -C "$home" checkout --detach "$tag_after"
+        else
+          echo "orchid: DEVELOPMENT channel: updating the moving main branch at $home (git pull --ff-only)"
+          git -C "$home" pull --ff-only
+        fi
       fi
     else
       if [ "$uninstalling" = 1 ]; then
@@ -141,7 +194,13 @@ if [ ! -f "$ROOT/bin/orchid" ] || [ ! -f "$ROOT/lib/common.sh" ]; then
       # lands at $home at all anymore.
       tmp="$(mktemp -d "$parent/.orchid-clone.XXXXXX")"
       trap 'rm -rf "$tmp"' EXIT
-      git clone --depth 1 "$orchid_url" "$tmp"
+      if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
+        echo "orchid: stable channel pinned to $ORCHID_INSTALL_REF"
+        git clone --depth 1 --branch "$ORCHID_INSTALL_REF" --single-branch "$orchid_url" "$tmp"
+      else
+        echo "orchid: DEVELOPMENT channel follows moving ref main"
+        git clone --depth 1 --branch main --single-branch "$orchid_url" "$tmp"
+      fi
       trap - EXIT
       mv "$tmp" "$home"
     fi
@@ -163,7 +222,8 @@ HERMES_ORCH_DIR="$HERMES_SKILLS_DIR/orchestration"
 ORCHID_BIN_DIR="${ORCHID_BIN_DIR:-$HOME/.local/bin}"
 SKILLS="orchid orchid-plan orchid-resume"
 
-# Argument parsing -- deliberately just these two flags, combinable in
+# Argument parsing. Channel controls bootstrap source selection only and is
+# accepted as a no-op after the pinned checkout hands off to its installer.
 # either order (`--prefix DIR --uninstall` or `--uninstall --prefix DIR`).
 # --prefix only ever redirects ORCHID_BIN_DIR (where the `orchid` binary
 # symlink lands); it does not move skills/config/trust, which are always
@@ -172,6 +232,10 @@ UNINSTALL=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --uninstall) UNINSTALL=1 ;;
+    --channel) [ $# -ge 2 ] || { echo "orchid: install.sh: --channel requires stable or development" >&2; exit 2; }
+               case "$2" in stable|development) ;; *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;; esac
+               shift ;;
+    --channel=*) case "${1#--channel=}" in stable|development) ;; *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;; esac ;;
     --prefix) [ $# -ge 2 ] || { echo "orchid: install.sh: --prefix requires a directory argument" >&2; exit 2; }
               ORCHID_BIN_DIR="$2/bin"; shift ;;
     --prefix=*) ORCHID_BIN_DIR="${1#--prefix=}/bin" ;;

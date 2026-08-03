@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 # Fixture correction (Plan-A backlog step 2): `run start` now refuses an
 # uninitialized repo (neither .orchid/tasks/ nor .orchid/roadmap.md present).
 # This fixture predates that guard and only created the bare .orchid/ dir —
@@ -52,8 +52,9 @@ export ORCHID_REPO="$bare"
 wt="$WORK/rn-wt"
 git -C "$bare" worktree add -q "$wt" orchid/integration
 export ORCHID_REPO="$wt"
-cd "$wt"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+cd "$wt" || exit 1
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 echo "# Requirements" > .orchid/requirements.md
 "$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
 "$ORCHID_BIN" task create T001 "demo" >/dev/null

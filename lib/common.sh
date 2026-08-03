@@ -6,6 +6,8 @@
 # docs/specs/plugins.md's Manifest section). Bump alongside a milestone,
 # never mid-milestone. v1-m4: the release version -- the `-mN` milestone
 # suffix era ends here; there is no `1.0.0-m4` intermediate.
+# ShellCheck rationale: this public constant is consumed by scripts that source this library.
+# shellcheck disable=SC2034
 ORCHID_VERSION="1.0.0"
 
 orchid_die() { echo "orchid: $*" >&2; exit 1; }
@@ -248,8 +250,12 @@ orchid_commit_durable() {
       prev_cmd="${prev_trap#trap -- \'}"; prev_cmd="${prev_cmd%\' EXIT}" ;;
   esac
   if [ -n "$prev_cmd" ]; then
+    # ShellCheck rationale: quoted local paths and the prior trap are intentionally captured before locals leave scope.
+    # shellcheck disable=SC2064
     trap "_ocd_cleanup_wt $wt_q $repo_q; $prev_cmd" EXIT
   else
+    # ShellCheck rationale: the quoted local paths must be captured before locals leave scope.
+    # shellcheck disable=SC2064
     trap "_ocd_cleanup_wt $wt_q $repo_q" EXIT
   fi
 
@@ -285,12 +291,20 @@ orchid_commit_durable() {
     elif [ -d "$wt/$p" ]; then
       _ocd_sync_dir_atomic "$repo/$p" "$wt/$p"
     else
-      rm -rf "$repo/$p"
+      rm -rf "${repo:?}/$p"
     fi
   done
 
   _ocd_cleanup_wt "$wt" "$repo"
-  if [ -n "$prev_cmd" ]; then trap "$prev_cmd" EXIT; else trap - EXIT; fi
+  if [ -n "$prev_cmd" ]; then
+    # ShellCheck rationale: this restores the exact previously captured EXIT command.
+    # shellcheck disable=SC2064
+    trap "$prev_cmd" EXIT
+  else
+    trap - EXIT
+  fi
+  # ShellCheck rationale: this public result is read by callers after this sourced function returns.
+  # shellcheck disable=SC2034
   ORCHID_COMMIT_DURABLE_SHA="$new_sha"
 }
 
@@ -603,6 +617,8 @@ verb_lock_guard() {
   local repo="$1" q
   verb_lock_acquire "$repo" || return 1
   printf -v q '%q' "$repo"
+  # ShellCheck rationale: the safely shell-quoted local path must be captured before the function returns.
+  # shellcheck disable=SC2064
   trap "verb_lock_release $q" EXIT
 }
 

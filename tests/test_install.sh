@@ -43,10 +43,10 @@ assert_eq "$direct_out" "$linked_out" "orchid via the installed symlink resolves
 path_out="$(PATH="$HOME/.local/bin:$PATH" command -v orchid)"
 assert_eq "$bin_link" "$path_out" "orchid is found on PATH at the installed symlink"
 
-[ -d "$HOME/.orchid/plugins/engines" ] || fail "~/.orchid/plugins/engines not created"
+[ -d "$HOME/.orchid/plugins/engines" ] || fail "user plugin engine directory not created"
 [ -e "$HOME/.orchid/trust" ] && fail "install must not pre-create ~/.orchid/trust (store FILE, made on demand by the trust verbs)"
-[ -f "$HOME/.orchid/config" ] || fail "~/.orchid/config not created"
-grep -q '^# integration_branch=' "$HOME/.orchid/config" || fail "~/.orchid/config missing a commented key (integration_branch)"
+[ -f "$HOME/.orchid/config" ] || fail "user orchid config not created"
+grep -q '^# integration_branch=' "$HOME/.orchid/config" || fail "user orchid config missing a commented key (integration_branch)"
 
 # Re-running install.sh must never clobber an already-customized user config.
 printf '\nrole.implementer=my-custom-engine\n' >> "$HOME/.orchid/config"
@@ -81,11 +81,11 @@ rm -f "$HOME/.local/bin/orchid"; ln -sfn "$REPO_ROOT/bin/orchid" "$HOME/.local/b
 # everything"); re-running with the same --prefix must stay idempotent, the
 # same way the default-prefix path above already proved for ORCHID_BIN_DIR.
 customprefix="$WORK/customprefix"
-out_prefix="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix exits 0"
+_out_prefix="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix exits 0"
 [ -L "$customprefix/bin/orchid" ] || fail "install.sh --prefix did not create a bin symlink under <prefix>/bin"
 [ "$(readlink "$customprefix/bin/orchid")" = "$REPO_ROOT/bin/orchid" ] || fail "install.sh --prefix's bin symlink does not resolve to $REPO_ROOT/bin/orchid"
 [ -L "$HOME/.local/bin/orchid" ] || fail "install.sh --prefix must not remove the previously-linked default-prefix symlink"
-out_prefix2="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix re-run exits 0"
+_out_prefix2="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix re-run exits 0"
 [ "$(readlink "$customprefix/bin/orchid")" = "$REPO_ROOT/bin/orchid" ] || fail "install.sh --prefix re-run left the bin symlink intact"
 
 # --- Uninstall: removes exactly the symlinks it created; leaves config/trust.
@@ -152,7 +152,7 @@ assert_match "skip Hermes skills" "$fe3_out" "front-end detection: neither-prese
 # symlinks it created (mirrors the Claude uninstall checks above) and leave
 # the orchestration category directory itself in place (install.sh owns the
 # symlinks it placed inside it, never the directory).
-fe2_uninstall_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" --uninstall 2>&1)" || fail "install.sh --uninstall (front-end detection, hermes-only HOME) failed"
+_fe2_uninstall_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" --uninstall 2>&1)" || fail "install.sh --uninstall (front-end detection, hermes-only HOME) failed"
 for name in orchid orchid-plan orchid-resume; do
   [ -e "$fe2_home/.hermes/skills/orchestration/$name" ] && fail "uninstall left Hermes skill symlink: $name"
 done
@@ -192,18 +192,27 @@ grep -q "/nowhere/example" "$f17_home/.orchid/trust" || fail "install.sh (F17 re
 # never tapped, installed, or built by this suite (no `brew` invocation
 # anywhere below; outward-facing actions are for the release-day operator,
 # per docs/install.md, not this test). Lint only: valid Ruby syntax, and the
-# placeholders/URL the release-day steps key off of are actually present.
+# pinned version, release-asset URL, and checksum are concrete.
 FORMULA="$REPO_ROOT/Formula/orchid.rb"
-[ -f "$FORMULA" ] || fail "Formula/orchid.rb missing"
-if command -v ruby >/dev/null 2>&1; then
-  ruby_err="$(ruby -c "$FORMULA" 2>&1)" || fail "Formula/orchid.rb fails 'ruby -c' syntax check: $ruby_err"
+if [ "${ORCHID_RELEASE_ARCHIVE_TEST:-0}" = 1 ]; then
+  [ ! -e "$FORMULA" ] || fail "release archive must keep the external tap formula export-ignored"
 else
-  echo "  SKIP: ruby not present on this machine -- Formula/orchid.rb syntax not linted"
+  [ -f "$FORMULA" ] || fail "Formula/orchid.rb missing"
+  if command -v ruby >/dev/null 2>&1; then
+    ruby_err="$(ruby -c "$FORMULA" 2>&1)" || fail "Formula/orchid.rb fails 'ruby -c' syntax check: $ruby_err"
+  else
+    echo "  SKIP: ruby not present on this machine -- Formula/orchid.rb syntax not linted"
+  fi
+  grep -q 'version "1.0.0"' "$FORMULA" || fail "Formula/orchid.rb version is not pinned to 1.0.0"
+  grep -q 'releases/download/v1.0.0/orchid-1.0.0.tar.gz' "$FORMULA" \
+    || fail "Formula/orchid.rb does not reference the version-pinned release asset"
+  grep -Eq 'sha256 "[0-9a-f]{64}"' "$FORMULA" || fail "Formula/orchid.rb does not contain a concrete SHA-256"
+  grep -Eq 'VERSION-PLACEHOLDER|SHA256-PLACEHOLDER' "$FORMULA" \
+    && fail "Formula/orchid.rb still contains a release placeholder"
+  grep -qE 'class +Orchid *< *Formula' "$FORMULA" || fail "Formula/orchid.rb does not define 'class Orchid < Formula'"
 fi
-grep -q 'VERSION-PLACEHOLDER' "$FORMULA" || fail "Formula/orchid.rb missing the VERSION-PLACEHOLDER token"
-grep -q 'SHA256-PLACEHOLDER' "$FORMULA" || fail "Formula/orchid.rb missing the SHA256-PLACEHOLDER token"
-grep -q 'bilal-/orchid' "$FORMULA" || fail "Formula/orchid.rb does not reference the bilal-/orchid tarball URL"
-grep -qE 'class +Orchid *< *Formula' "$FORMULA" || fail "Formula/orchid.rb does not define 'class Orchid < Formula'"
+grep -q '^ORCHID_INSTALL_VERSION="1.0.0"$' "$INSTALL" || fail "install.sh release version metadata mismatch"
+grep -q '^ORCHID_INSTALL_REF="v1.0.0"$' "$INSTALL" || fail "install.sh stable ref is not version-pinned"
 
 # --- Wrapper resolution: simulate exactly the directory shape Formula/
 # orchid.rb's `install` block produces (bin/, libexec/, lib/, runners/,
@@ -428,7 +437,14 @@ INNER
     fedir="\$2"; sub="\$3"
     case "\$sub" in
       rev-parse) [ -d "\$fedir/.git" ] && exit 0 || exit 1 ;;
-      pull) exit 0 ;;
+      config)
+        if [ -f "\$fedir/bin/orchid" ] && [ -f "\$fedir/lib/common.sh" ]; then
+          printf '%s\n' 'https://github.com/bilal-/orchid.git'
+          exit 0
+        fi
+        exec "$real_git" "\$@"
+        ;;
+      pull|status) exit 0 ;;
       *) exec "$real_git" "\$@" ;;
     esac
     ;;
@@ -455,8 +471,8 @@ bs_out="$(PATH="$bs_gitbin:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/in
 bs_rc=$?
 [ "$bs_rc" -eq 0 ] || fail "bootstrap (fresh clone): install.sh exits 0 (got rc=$bs_rc, output: $bs_out)"
 bs_clone_line="$(grep '^clone' "$bs_gitlog")"
-assert_match '^clone --depth 1 https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
-  "bootstrap (fresh clone): git invoked as clone --depth 1 <url> <dest>"
+assert_match '^clone --depth 1 --branch v1\.0\.0 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
+  "bootstrap (fresh clone): git invoked with the immutable stable tag"
 bs_clone_dest="$(printf '%s' "$bs_clone_line" | awk '{print $NF}')"
 [ "$(dirname "$bs_clone_dest")" = "$(dirname "$bs_home")" ] \
   || fail "bootstrap (fresh clone): git clone target's parent must be ORCHID_HOME's own parent dir (clone target: $bs_clone_dest)"
@@ -562,7 +578,7 @@ grep -q '^clone' "$bs_gitlog2d" && fail "bootstrap (user's own git repo): must n
 bs_gitlog2="$bs_work/gitlog2.txt"; : > "$bs_gitlog2"
 bs_gitbin2="$bs_work/gitbin2"; fake_git_bin "$bs_gitbin2" "$bs_gitlog2"
 export STUB_INSTALL_RECORD="$bs_work/record2.txt"; rm -f "$bs_work/record2.txt"
-bs_out2="$(PATH="$bs_gitbin2:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_out2="$(PATH="$bs_gitbin2:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" --channel development 2>&1)"
 bs_rc2=$?
 [ "$bs_rc2" -eq 0 ] || fail "bootstrap (already cloned): install.sh exits 0 (got rc=$bs_rc2, output: $bs_out2)"
 grep -q '^clone' "$bs_gitlog2" && fail "bootstrap (already cloned): must not re-clone an existing checkout ($(cat "$bs_gitlog2"))"

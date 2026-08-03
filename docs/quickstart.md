@@ -15,12 +15,10 @@ never manages vendor auth itself; see
 [docs/engines/](./engines/) for the per-engine login flow. `git`, `jq`,
 and bash 3.2+ (macOS's shipped `/bin/bash` is fine).
 
-<!-- SCREENSHOT: terminal — orchid doctor's readiness report after install -->
-
 ## 1. Clone and install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash
 ```
 
 (goes live once the repo is public; see [docs/install.md](./install.md#one-line-install-recommended)
@@ -154,8 +152,6 @@ orchid jobs reconcile
 orchid plan apply --reason "initial plan"
 ```
 
-<!-- SCREENSHOT: terminal — orchid plan apply committing the first roadmap -->
-
 ## 5. Start the orchestrator and walk away
 
 Two equivalent front-ends execute the same `PROTOCOL.md` procedure — pick
@@ -205,8 +201,6 @@ orchid status --explain     # + why each pending/rework task isn't dispatching
 orchid status --html        # writes a static page to runtime/status.html —
                              # open it directly, "check from another room"
 ```
-
-<!-- SCREENSHOT: orchid status --html rendered in a browser -->
 
 A genuine blocker raises a question in `BLOCKERS.md` and (if you configured
 [a notify channel](./engines/openclaw.md)) pings you outside the terminal.

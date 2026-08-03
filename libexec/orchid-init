@@ -31,7 +31,7 @@ if [ "$unborn_head" -eq 1 ]; then
   # a raw directory-listing check, deliberately stronger than `git status
   # --porcelain` below (which would miss a stray file the user's own
   # not-yet-committed .gitignore happens to exclude).
-  stray="$(cd "$repo" && ls -A | grep -vx '\.git' || true)"
+  stray="$(find "$repo" -mindepth 1 -maxdepth 1 ! -name .git -exec basename {} \;)"
   if [ -n "$stray" ]; then
     orchid_die "orchid init --greenfield requires an empty directory (found: $(printf '%s' "$stray" | tr '\n' ' ' | sed 's/ *$//')) — greenfield never adopts a pre-existing pile silently"
   fi

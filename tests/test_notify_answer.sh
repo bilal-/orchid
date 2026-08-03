@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # --- notify: happy path -----------------------------------------------------
 qid="$("$ORCHID_BIN" notify "which db do you want?")"
@@ -19,7 +20,7 @@ assert_match "$qid: which db do you want" "$(cat .orchid/journal.md)" "journal b
 
 # --- notify: --task scoping --------------------------------------------------
 "$ORCHID_BIN" task create T001 "demo"
-qid_t="$("$ORCHID_BIN" notify --task T001 "ok to deploy on Friday?")"
+_qid_t="$("$ORCHID_BIN" notify --task T001 "ok to deploy on Friday?")"
 assert_match "T001" "$(cat .orchid/journal.md)" "task-scoped blocker journaled with task id"
 assert_match "T001" "$(cat .orchid/BLOCKERS.md)" "task-scoped blocker noted in BLOCKERS.md"
 [ -f ".orchid/runtime/journal-index/T001" ] || fail "task journal index written (via journal add --task)"
@@ -34,7 +35,8 @@ rc=0
 unset ORCHID_EPOCH
 "$ORCHID_BIN" notify "should never be minted either" 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "notify with absent epoch must die"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run resume | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run resume | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # --- answer: unknown qid dies ------------------------------------------------
 rc=0

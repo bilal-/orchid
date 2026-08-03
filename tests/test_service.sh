@@ -11,7 +11,7 @@
 source "$(dirname "$0")/helpers.sh"
 SERVICE="$REPO_ROOT/runners/orchid-service"
 
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 export ORCHID_ROOT="$REPO_ROOT"
 
@@ -240,7 +240,7 @@ mkdir -p "$WORKP"
 ( cd "$WORKP" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
 WORKP_canon="$(cd "$WORKP" && pwd -P)"
 
-outp="$("$SERVICE" install --repo "$WORKP" --interval-s 120 --dry-run 2>&1)"; rcp=$?
+_outp="$("$SERVICE" install --repo "$WORKP" --interval-s 120 --dry-run 2>&1)"; rcp=$?
 assert_eq 0 "$rcp" "linux install --dry-run exits 0 even when --repo contains %"
 recordp="$WORKP/.orchid/runtime/pump.cron"
 [ -f "$recordp" ] || fail "linux install must render + place a pump.cron record even when --repo contains %"

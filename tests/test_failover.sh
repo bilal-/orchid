@@ -125,7 +125,8 @@ crepo="$WORK/crepo"; mkdir -p "$crepo/.orchid/tasks" "$crepo/.orchid/reviews"
 mk_engine soloe "workspace_write,shell,git"
 printf 'verify=true\nrole.implementer=soloe\n' > "$crepo/orchid.config"
 export ORCHID_REPO="$crepo"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create TE demo >/dev/null
 ledger_mark "$crepo" soloe rate_limited 999999
 rc=0; err="$("$ORCHID_BIN" jobs prepare TE implementer implement 2>&1 1>/dev/null)" || rc=$?

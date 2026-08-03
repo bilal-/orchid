@@ -61,7 +61,8 @@ repoB="$WORK/repoB"; mkdir -p "$repoB/.orchid/tasks"
 export ORCHID_ENGINES_DIR="$WORK/engB"; mkdir -p "$ORCHID_ENGINES_DIR"
 mk_custom_engine "$ORCHID_ENGINES_DIR" ovr1 "workspace_write,shell,git"
 export ORCHID_REPO="$repoB"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create TB demo >/dev/null
 
 # B -- a discovered + eligible override is recorded in the manifest exactly
@@ -102,13 +103,14 @@ repoR="$WORK/repoR"; mkdir -p "$repoR/.orchid/tasks"
 (cd "$repoR" && git init -q . && git commit -q --allow-empty -m root)
 unset ORCHID_ENGINES_DIR
 export ORCHID_REPO="$repoR"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # F -- low-tier task, default (codex) implementer -> a single agy slot,
 # labeled engine-independent (agy != codex). review-plan is read-only:
 # no ORCHID_EPOCH needed at all.
 "$ORCHID_BIN" task create TR1 demo >/dev/null
-outF="$(ORCHID_EPOCH= "$ORCHID_BIN" jobs review-plan TR1)"
+outF="$(ORCHID_EPOCH='' "$ORCHID_BIN" jobs review-plan TR1)"
 assert_eq 1 "$(echo "$outF" | wc -l | tr -d ' ')" "low tier: review-plan prints exactly one slot"
 assert_match $'^1\tagy\tengine-independent$' "$outF" "low tier: slot 1 is agy, engine-independent (differs from codex implementer)"
 
@@ -138,7 +140,8 @@ repoL="$WORK/repoL"; mkdir -p "$repoL/.orchid/tasks"
 (cd "$repoL" && git init -q . && git commit -q --allow-empty -m root)
 printf 'verify=true\n' > "$repoL/orchid.config"
 export ORCHID_REPO="$repoL"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 "$ORCHID_BIN" task create TL1 demo >/dev/null
 "$ORCHID_BIN" task advance TL1 implementing >/dev/null
@@ -231,7 +234,8 @@ repoW="$WORK/repoW"; mkdir -p "$repoW/.orchid/tasks"
 # dispatch gate never interferes with these waived-rework assertions.
 printf 'verify=true\nconcurrency=10\n' > "$repoW/orchid.config"
 export ORCHID_REPO="$repoW"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 head_w="$(git -C "$repoW" rev-parse HEAD)"
 mkdir -p "$repoW/.orchid/reviews"
 

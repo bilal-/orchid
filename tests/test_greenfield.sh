@@ -74,7 +74,7 @@ jid="$(jq -r .job_id "$req")"
 task="$(jq -r .task "$req")"
 op="$(jq -r .operation "$req")"
 [ "$op" = implement ] || exit 1
-cd "$worktree"
+cd "$worktree" || exit 1
 if [ "$task" = T001 ]; then
   echo "# Greenfield scaffold" > README.md
   git add README.md
@@ -124,7 +124,7 @@ repo="$WORK/repo"; mkdir -p "$repo"
 git init -q "$repo"
 export ORCHID_REPO="$repo"
 
-only_git="$(cd "$repo" && ls -A | grep -vx '\.git' || true)"
+only_git="$(find "$repo" -mindepth 1 -maxdepth 1 ! -name .git -exec basename {} \;)"
 [ -z "$only_git" ] || fail "fixture bug: repo must be empty apart from .git before the greenfield walk starts"
 
 # ---------------------------------------------------------------------------
@@ -155,14 +155,15 @@ git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 \
 git -C "$repo" show "$integ:.orchid/roadmap.md" 2>/dev/null | grep -q "run_status: planning" \
   || fail "init --greenfield: roadmap committed with run_status"
 
-cd "$repo"
+cd "$repo" || exit 1
 git checkout -q "$integ"
 
 # ---------------------------------------------------------------------------
 # PLANNING: requirements import, T001 authored as the scaffold task
 # (scaffold: true, structural verification_commands), plan apply.
 # ---------------------------------------------------------------------------
-export ORCHID_EPOCH="$(run_ok "orchid run start" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$(run_ok "orchid run start" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 [ -n "$ORCHID_EPOCH" ] || fail "epoch minted by run start"
 
 cat > "$WORK/requirements-v1.md" <<'EOF'
@@ -234,7 +235,7 @@ pre_integ="$(git rev-parse "$integ")"
 rc=0; merge1_out="$("$ORCHID_BIN" merge T001 2>&1)" || rc=$?
 assert_eq 0 "$rc" "T001 merge exits 0"
 assert_match "^merged T001: $integ -> " "$merge1_out" "T001 merge prints the merged message"
-assert_eq done "$(fm_get "$repo/.orchid/tasks/T001.md" status)" "T001 reaches done"
+assert_eq "done" "$(fm_get "$repo/.orchid/tasks/T001.md" status)" "T001 reaches done"
 
 post_integ1="$(git rev-parse "$integ")"
 [ "$post_integ1" != "$pre_integ" ] || fail "integration ref must have advanced after T001's merge"
@@ -282,7 +283,7 @@ run_ok "advance T002 merging" "$ORCHID_BIN" task advance T002 merging \
 rc=0; merge2_out="$("$ORCHID_BIN" merge T002 2>&1)" || rc=$?
 assert_eq 0 "$rc" "T002 merge exits 0"
 assert_match "^merged T002: $integ -> " "$merge2_out" "T002 merge prints the merged message"
-assert_eq done "$(fm_get "$repo/.orchid/tasks/T002.md" status)" "T002 reaches done"
+assert_eq "done" "$(fm_get "$repo/.orchid/tasks/T002.md" status)" "T002 reaches done"
 
 git show "$integ:README.md" >/dev/null 2>&1 || fail "integration branch still contains README.md after T002 merges"
 git show "$integ:stub_T002.txt" >/dev/null 2>&1 || fail "integration branch contains T002's own file"

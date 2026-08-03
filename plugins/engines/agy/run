@@ -118,6 +118,7 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # lib/heartbeat.sh's header comment for the full design and the accepted
 # trade-off (a hung-but-alive engine now runs to the request's own
 # deadline_s rather than being stall-killed early).
+stdout=""; rc=0
 orchid_run_engine_cli "$err_file" stdout rc "-" "-" agy -p "$prompt"
 stderr="$(cat "$err_file")"
 

@@ -165,7 +165,9 @@ write() {
 if [ "${ORCHID_DRYRUN:-0}" != "1" ]; then write failed '{}'; exit 1; fi
 
 if [ "$job_id" = "conform-stdin_closed_safe" ]; then
-  FIFO="$(mktemp -u)"; mkfifo "$FIFO"
+  FIFO_DIR="$(mktemp -d)"
+  trap 'rm -rf "$FIFO_DIR"' EXIT
+  FIFO="$FIFO_DIR/stream"; mkfifo "$FIFO"
   read -r _unused < "$FIFO"   # nobody ever writes: blocks until killed
 fi
 

@@ -95,15 +95,20 @@
 #               right after backgrounding it is genuinely its own pid.
 orchid_run_engine_cli() {
   local err_file="$1" _out_var="$2" _rc_var="$3" _hb_cwd="$4" _hb_prompt="$5"; shift 5
-  local _hb_fifo _hb_out_tmp _hb_prompt_file="" _hb_tee_pid _hb_cli_pid _hb_hb_pid \
+  local _hb_fifo_dir _hb_fifo _hb_out_tmp _hb_prompt_file="" _hb_tee_pid _hb_cli_pid _hb_hb_pid \
         _hb_rc _hb_interval _hb_cpu _hb_orig_pwd
 
-  _hb_fifo="$(mktemp -u "${TMPDIR:-/tmp}/orchid-hb.XXXXXX")"; mkfifo "$_hb_fifo"
+  # Allocate a private directory first, then create the FIFO at a fixed name
+  # inside it. No attacker can claim the path in a gap between unallocated
+  # name generation and mkfifo.
+  _hb_fifo_dir="$(mktemp -d "${TMPDIR:-/tmp}/orchid-hb.XXXXXX")"
+  _hb_fifo="$_hb_fifo_dir/stream"
+  mkfifo "$_hb_fifo"
   _hb_out_tmp="$(mktemp)"
   # Reader started BEFORE the engine's write-open below: opening a FIFO for
   # writing blocks until a reader exists, so starting `tee` first avoids a
   # race where the engine would otherwise hang waiting on this same FIFO.
-  tee /dev/stderr <"$_hb_fifo" >"$_hb_out_tmp" &
+  tee "$_hb_out_tmp" <"$_hb_fifo" >&2 &
   _hb_tee_pid=$!
 
   if [ "$_hb_prompt" != "-" ]; then
@@ -113,14 +118,30 @@ orchid_run_engine_cli() {
   # Plain `cd`/`cd back`, not a `(cd ... && cmd) &` subshell wrapper -- see
   # the "WHY A REAL PID" note above for why a subshell here would silently
   # reintroduce the same wrong-pid problem this function exists to avoid.
-  if [ "$_hb_cwd" != "-" ]; then _hb_orig_pwd="$PWD"; cd "$_hb_cwd"; fi
+  if [ "$_hb_cwd" != "-" ]; then
+    _hb_orig_pwd="$PWD"
+    if ! cd "$_hb_cwd"; then
+      kill "$_hb_tee_pid" 2>/dev/null || true
+      wait "$_hb_tee_pid" 2>/dev/null || true
+      rm -f "$_hb_out_tmp" ${_hb_prompt_file:+"$_hb_prompt_file"}
+      rm -rf "${_hb_fifo_dir:?}"
+      return 1
+    fi
+  fi
   if [ -n "$_hb_prompt_file" ]; then
     "$@" <"$_hb_prompt_file" >"$_hb_fifo" 2>"$err_file" &
   else
     "$@" >"$_hb_fifo" 2>"$err_file" &
   fi
   _hb_cli_pid=$!
-  if [ "$_hb_cwd" != "-" ]; then cd "$_hb_orig_pwd"; fi
+  if [ "$_hb_cwd" != "-" ] && ! cd "$_hb_orig_pwd"; then
+    kill "$_hb_cli_pid" 2>/dev/null || true
+    wait "$_hb_cli_pid" 2>/dev/null || true
+    wait "$_hb_tee_pid" 2>/dev/null || true
+    rm -f "$_hb_out_tmp" ${_hb_prompt_file:+"$_hb_prompt_file"}
+    rm -rf "${_hb_fifo_dir:?}"
+    return 1
+  fi
 
   _hb_interval="${ORCHID_HB_INTERVAL_S:-30}"
   (
@@ -131,7 +152,7 @@ orchid_run_engine_cli() {
     while kill -0 "$_hb_cli_pid" 2>/dev/null; do
       sleep "$_hb_interval"
       kill -0 "$_hb_cli_pid" 2>/dev/null || break
-      _hb_cpu="$(ps -o time= -p "$_hb_cli_pid" 2>/dev/null | tr -d ' ')"
+      _hb_cpu="$(ps -o time= -p "$_hb_cli_pid" 2>/dev/null | tr -d ' ' || true)"
       printf '[hb %s] engine pid %s cpu %s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$_hb_cli_pid" "${_hb_cpu:-?}" >&2
     done
@@ -161,5 +182,6 @@ orchid_run_engine_cli() {
   # space or glob metacharacter would otherwise be re-split/re-globbed here.
   # The :+ guard also sidesteps that word-splitting on the empty case
   # entirely rather than relying on it.
-  rm -f "$_hb_fifo" "$_hb_out_tmp" ${_hb_prompt_file:+"$_hb_prompt_file"}
+  rm -f "$_hb_out_tmp" ${_hb_prompt_file:+"$_hb_prompt_file"}
+  rm -rf "${_hb_fifo_dir:?}"
 }

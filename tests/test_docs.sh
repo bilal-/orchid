@@ -41,7 +41,6 @@ source "$(dirname "$0")/helpers.sh"
 # exist (key-coverage loop fails outright), and the annotation-scan file
 # list itself doesn't resolve.
 
-DOCS="$REPO_ROOT/docs"
 KEYFILE="$REPO_ROOT/lib/config-keys.txt"
 
 # docs_suite_files -- the exact surface this task owns: README + the

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create T001 demo
 # Fixture correction (Plan-A backlog step 9): entry to `testing` now requires
 # non-empty base_sha/candidate_sha. This test only exercises reason/deny-list
@@ -30,7 +31,7 @@ grep -q '"by": *"operator' .orchid/journal.md 2>/dev/null || grep -q "(operator"
 # Fix 1: kernel-owned keys must not be settable via `task set`
 before_status="$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)"
 before_attempts="$("$ORCHID_BIN" task show T001 | grep '^attempts: ' | cut -d' ' -f2)"
-rc=0; "$ORCHID_BIN" task set T001 status done 2>/dev/null || rc=$?
+rc=0; "$ORCHID_BIN" task set T001 status "done" 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "task set status must be refused (kernel-owned)"
 rc=0; "$ORCHID_BIN" task set T001 attempts 99 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "task set attempts must be refused (kernel-owned)"

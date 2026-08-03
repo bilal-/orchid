@@ -124,7 +124,7 @@ schedule_dispatch_blockers() {
   local deps d unmet=""
   deps="$(fm_get "$f" depends_on)"
   for d in $deps; do
-    [ "$(fm_get "$state/tasks/$d.md" status 2>/dev/null)" = done ] || unmet="$unmet $d"
+    [ "$(fm_get "$state/tasks/$d.md" status 2>/dev/null)" = "done" ] || unmet="$unmet $d"
   done
   [ -z "$unmet" ] || echo "waiting-deps ($(printf '%s' "${unmet# }"))"
 }
