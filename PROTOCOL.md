@@ -562,12 +562,13 @@ the same bounded on-disk identity derivation and no Git version, ref,
 history, object, root, or scratch check, so an unsupported Git or a
 mismatched, shallow, object-missing, or corrupt-history repository can never
 strand an acknowledgement that would apply again later.
-Root verification is cached machine-locally beside the record, keyed by the
-policy version, record schema, common-directory identity, incarnation anchor,
-and the exact verified `HEAD`, so an unchanged repository revalidates without
-re-walking its history. Any entry not matching all of those falls through to
-the full walk; acknowledgement always walks. `show` reports
-`root_verification: walked` or `cached`, and `revoke` removes the entry.
+Root verification is never cached: acknowledgement and every later gate re-walk
+the reachable history and re-hash each commit's exact stored payload, so a
+rewritten, removed, or corrupted object is re-detected even when refs and the
+anchor are untouched. Reuse keyed on identity plus `HEAD` would miss exactly
+that, and no portable filesystem witness can prove an object store unchanged
+more cheaply than reading it. `show` reports `root_verification: walked`; the
+cost is bounded by batching the walk, not by skipping it.
 A scheduled invocation's output is discarded by the scheduler and the
 repo-local service log is not opened until after the gate, so its refusals are
 also appended to `~/.orchid/unattended-trust/refusals.log`, which `orchid

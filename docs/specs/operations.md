@@ -153,31 +153,32 @@ unattended execution again as soon as the repository became inspectable.
 Because that path runs no Git command, ordinary revocation costs nothing
 proportional to repository history.
 
-Root verification is cached machine-locally so a scheduled gate does not
-re-walk and re-hash the whole reachable history every few minutes. The entry
-sits beside the record it serves, under the same device/inode key, and is keyed
-by the policy version, the record schema, the common-directory device/inode,
-the incarnation-anchor identity, and the exact `HEAD` object ID that was
-verified. Resolving `HEAD` is a ref lookup, not a history walk. Anything else —
-a missing, unreadable, unsafely permissioned, symlinked, malformed, or simply
-non-matching entry — is a miss that falls through to the full fail-closed walk,
-so an entry can only ever cost a walk, never grant trust: it supplies a
-derivation, and the recorded root is still compared against it. Acknowledgement
-never uses the cache and always pays for a complete walk with exact-payload
-rehashing. `orchid trust show` reports `root_verification: walked` or
-`cached`, and `orchid trust revoke` removes the entry with the record.
-Be precise about what a reuse re-establishes: that this is the same
-acknowledged incarnation at the same `HEAD` as the walk that produced it, so
-every identity substitution the gate exists to catch — clone, copy, replaced
-common directory, moved or rewritten branch — still misses and still walks. It
-does not re-run exact-payload rehashing, so it does not re-detect a rewrite of
-a stored commit payload that leaves both the `HEAD` ref value and the anchor
-intact. That rewrite needs write access to the already-acknowledged
-repository's own object store, which is inside the prompt-injection boundary
-the operator accepted, not a route for an unacknowledged repository to become
-trusted. Write access to `~/.orchid/unattended-trust/` is likewise equivalent
-to authoring the record itself; the cache adds no authority the record does not
-already have.
+Root verification is never cached and never reused. Acknowledgement and every
+later gate each walk the complete reachable history from `HEAD` and re-hash
+each commit's exact stored payload; `orchid trust show` reports this as
+`root_verification: walked`, and no machine-local file records a previous
+verification. That repetition is the point rather than an oversight. A stored
+derivation keyed by the common-directory identity, the incarnation anchor, and
+the verified `HEAD` would defeat every *identity* substitution — clone, copy,
+replaced common directory, moved or rewritten branch all change one of those
+keys — but it would not defeat a *content* substitution, which is what this
+verification exists to catch. Rewriting the bytes stored under a reachable
+commit's advertised OID, removing or corrupting a reachable object, introducing
+a shallow boundary, or repointing alternates all leave the ref values and the
+anchor untouched, so a warm entry would be reused and the mismatch never
+recomputed.
+
+Proving the object store unchanged instead of re-reading it is not portably
+available either: every cheap witness is filesystem metadata, and an in-place
+rewrite that preserves size and restores mtime leaves all of it identical,
+while reading the store's bytes to prove they are unchanged costs at least what
+the walk costs over a store that is usually larger than the reachable commit
+set. The optimization Orchid keeps is therefore the one that cannot trade
+integrity for speed: verification is batched, using one long-lived `cat-file`
+and one long-lived `hash-object` process per batch of commits rather than a
+process pair per commit. Cost stays proportional to history length without
+paying per-commit process overhead. Operators who schedule a pump against a
+very large repository should size the interval accordingly.
 
 A scheduled pump has nowhere to print. The installed cron line and launchd
 agent both send its output to `/dev/null`, and the repo-local

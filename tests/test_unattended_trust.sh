@@ -1102,6 +1102,33 @@ assert_eq 1 "$batch_reads" \
 assert_eq 1 "$batch_hashes" \
   "one sub-limit history uses one batched hash-object process"
 
+# The same counters are the evidence that a repeat gate re-reads and re-hashes
+# rather than reusing anything: a second inspection of an unchanged repository
+# doubles every count instead of leaving it where the first one stopped.
+out="$(
+  HOME="$home" PATH="$batch_git_bin:$PATH" \
+  ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_BATCH_REPO="$batch_repo" \
+  ORCHID_TEST_BATCH_GIT_LOG="$batch_git_log" \
+  ORCHID_TEST_BATCH_REAL_GIT="$batch_real_git" \
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_show "$ORCHID_TEST_BATCH_REPO"
+  '
+)"
+assert_match '^unattended trust: trusted$' "$out" \
+  "the repeated inspection of the unchanged repository stays trusted"
+assert_match '^root_verification: walked$' "$out" \
+  "the repeated inspection reports its own walk"
+assert_eq 2 "$(grep -c '^rev-list$' "$batch_git_log" || true)" \
+  "a second gate performs its own complete parent walk"
+assert_eq 2 "$(grep -c '^cat-file$' "$batch_git_log" || true)" \
+  "a second gate re-reads every reachable commit payload"
+assert_eq 2 "$(grep -c '^hash-object$' "$batch_git_log" || true)" \
+  "a second gate re-hashes every reachable commit payload"
+
 # Commit-graph parent edges are repository-controlled acceleration metadata,
 # not the underlying commit history. Forge a graph in which a real replacement
 # root falsely names the acknowledged root as its parent. Ordinary Git accepts
@@ -1623,118 +1650,116 @@ out="$(HOME="$home" "$ORCHID_BIN" trust show "$manual")"
 assert_match '^unattended trust: untrusted$' "$out" "manual operation never silently opts into unattended trust"
 
 # ---------------------------------------------------------------------------
-# Machine-local root-derivation cache. A verified derivation is reused only
-# while the repository is the same acknowledged incarnation at the same HEAD.
-# Every identity change the boundary exists to catch must still miss and still
-# re-walk, and no entry may ever substitute for the recorded binding.
+# Every gate re-verifies from scratch. Nothing records that a repository was
+# already verified, so no later gate can inherit an earlier gate's answer.
 # ---------------------------------------------------------------------------
-cache_repo="$WORK/root-cache-repo"
-mk_repo "$cache_repo"
-cache_root="$(git -C "$cache_repo" rev-list --max-parents=0 HEAD)"
-trust_repo "$cache_repo" "root derivation cache fixture"
+reverify_repo="$WORK/repeat-gate-repo"
+mk_repo "$reverify_repo"
+reverify_root="$(git -C "$reverify_repo" rev-list --max-parents=0 HEAD)"
+trust_repo "$reverify_repo" "repeat gate re-verification fixture"
 
-out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
-assert_match '^unattended trust: trusted$' "$out" "the cache fixture starts trusted"
-assert_match '^root_verification: cached$' "$out" \
-  "a repeat gate reuses the verified derivation instead of re-walking history"
-assert_match "^root_commit: $cache_root\$" "$out" \
-  "a reused derivation reports the same root the walk verified"
-
-cache_record="$(printf '%s\n' "$out" | sed -n 's/^record: //p')"
-cache_file="${cache_record%.json}.rootcache"
-[ -f "$cache_file" ] \
-  || fail "the verified derivation must be cached in the machine-local store"
-case "$cache_file" in
-  "$home_physical"/.orchid/unattended-trust/*.rootcache) ;;
-  *) fail "the derivation cache must live under the operator HOME (got '$cache_file')" ;;
-esac
-[ -z "$(git -C "$cache_repo" status --porcelain)" ] \
-  || fail "caching a derivation must not write anything into the target repository"
-[ ! -e "$cache_repo/.git/rootcache" ] \
-  || fail "the derivation cache must never be written into the Git common directory"
-cache_mode="$(stat -f '%Lp' "$cache_file" 2>/dev/null || stat -c '%a' "$cache_file")"
-[ $((8#$cache_mode & 077)) -eq 0 ] \
-  || fail "the derivation cache must not be readable or writable by group or other"
-
-# A moved HEAD is a different history: the entry must miss and the walk must
-# run again. The root is unchanged, so trust survives on its own merits.
-git -C "$cache_repo" commit -q --allow-empty -m descendant
-out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$reverify_repo")"
+assert_match '^unattended trust: trusted$' "$out" "the repeat-gate fixture starts trusted"
 assert_match '^root_verification: walked$' "$out" \
-  "a moved HEAD invalidates the cached derivation and re-walks"
-assert_match '^unattended trust: trusted$' "$out" \
-  "a descendant commit re-verifies to the acknowledged root"
-out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
-assert_match '^root_verification: cached$' "$out" \
-  "the walk at the new HEAD refreshes the entry for the next gate"
+  "the first gate after acknowledgement derives the root from its own walk"
+assert_match "^root_commit: $reverify_root\$" "$out" \
+  "the walked derivation reports the acknowledged root"
+reverify_record="$(printf '%s\n' "$out" | sed -n 's/^record: //p')"
+reverify_anchor="$(printf '%s\n' "$out" | sed -n 's/^identity_anchor: //p')"
 
-# An entry keyed to a different identity must be ignored outright, never
-# obeyed. This one advertises a structurally valid but wrong root: if the
-# loader honored it, the gate would report a root mismatch instead of walking.
-cache_head="$(git -C "$cache_repo" rev-parse HEAD)"
-printf 'orchid-unattended-root-cache-v1 1 2 0 0 0 0 %s %s\n' \
-  "$cache_head" "0000000000000000000000000000000000000000" > "$cache_file"
-# Safe permissions on purpose: this must be rejected for its identity fields,
-# not incidentally by the group/other-write check exercised further below.
-chmod 0600 "$cache_file"
-out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$reverify_repo")"
+assert_match '^unattended trust: trusted$' "$out" "a repeat gate stays trusted"
 assert_match '^root_verification: walked$' "$out" \
-  "an entry keyed to another identity is ignored rather than obeyed"
-assert_match '^unattended trust: trusted$' "$out" \
-  "ignoring a foreign entry falls through to the full walk, not to a refusal"
-assert_match "^root_commit: $cache_root\$" "$out" \
-  "the walk, not the planted entry, decides the root"
+  "a repeat gate walks again instead of reusing the previous verification"
 
-# Same placement rules as the record it serves: another local account must not
-# be able to hand the gate a derivation.
-out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
-assert_match '^root_verification: cached$' "$out" "the entry is repaired by the walk"
-chmod 0666 "$cache_file"
-out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
-assert_match '^root_verification: walked$' "$out" \
-  "a group/other-writable derivation entry is never read"
-assert_match '^unattended trust: trusted$' "$out" \
-  "an unreadable entry costs a walk, never trust"
+# The machine-local store holds exactly the record and its anchor for this
+# identity. Any additional per-identity file would be state a later gate could
+# consult in place of walking.
+reverify_key="${reverify_record%.json}"
+assert_eq "$(printf '%s\n%s\n' "$reverify_anchor" "$reverify_record" | LC_ALL=C sort)" \
+  "$(find "$home_physical/.orchid/unattended-trust" -maxdepth 1 \
+       -name "${reverify_key##*/}.*" -print | LC_ALL=C sort)" \
+  "an identity's machine-local state is exactly its record and its anchor"
+[ -z "$(git -C "$reverify_repo" status --porcelain)" ] \
+  || fail "repeated gates must not write anything into the target repository"
 
-rm -f "$cache_file"
-ln -s /dev/null "$cache_file"
-out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
-assert_match '^root_verification: walked$' "$out" \
-  "a symlinked derivation entry is never read"
+# The substitution a derivation cache keyed on identity plus HEAD would mask:
+# different bytes stored under an acknowledged reachable commit's advertised
+# OID, applied AFTER a successful gate, leaving HEAD, every ref, the common
+# directory, and the incarnation anchor untouched. Exact-payload verification
+# must refuse on the next gate and on every gate after it.
+warm_repo="$WORK/warm-substitution-repo"
+mk_repo "$warm_repo"
+warm_advertised="$(git -C "$warm_repo" rev-parse HEAD)"
+trust_repo "$warm_repo" "before warm same-OID substitution"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$warm_repo")"
 assert_match '^unattended trust: trusted$' "$out" \
-  "a symlinked entry is refused without being written through"
-[ -L "$cache_file" ] \
-  || fail "a symlinked derivation entry must be left alone, not written through"
-rm -f "$cache_file"
+  "the same-OID substitution fixture is verified and trusted before its objects are edited"
+warm_head_before="$(git -C "$warm_repo" rev-parse HEAD)"
+warm_refs_before="$(
+  git -C "$warm_repo" for-each-ref --format='%(refname) %(objectname)' \
+    | LC_ALL=C sort
+)"
 
-# A replaced root history is the exact substitution the binding exists to
-# catch. A warm entry must not soften it: HEAD moves, the entry misses, the
-# walk finds the replacement root, and the recorded root no longer matches.
-orphan_repo="$WORK/root-cache-orphan"
+warm_tree="$(git -C "$warm_repo" rev-parse "$warm_advertised^{tree}")"
+warm_actual="$(
+  printf 'payload substituted after a successful gate\n' \
+    | git -c commit.gpgSign=false -C "$warm_repo" commit-tree "$warm_tree"
+)"
+[ "$warm_actual" != "$warm_advertised" ] \
+  || fail "the warm substitution fixture must create different valid commit bytes"
+warm_advertised_path="$warm_repo/.git/objects/${warm_advertised:0:2}/${warm_advertised:2}"
+warm_actual_path="$warm_repo/.git/objects/${warm_actual:0:2}/${warm_actual:2}"
+[ -f "$warm_advertised_path" ] && [ -f "$warm_actual_path" ] \
+  || fail "the warm substitution fixture requires both commits to be loose"
+chmod u+w "$warm_advertised_path"
+cp "$warm_actual_path" "$warm_advertised_path"
+
+assert_eq "$warm_head_before" "$(git -C "$warm_repo" rev-parse HEAD)" \
+  "the substitution leaves HEAD at the same object ID"
+assert_eq "$warm_refs_before" \
+  "$(git -C "$warm_repo" for-each-ref --format='%(refname) %(objectname)' \
+      | LC_ALL=C sort)" \
+  "the substitution leaves every ref unchanged"
+
+warm_gate=0
+while [ "$warm_gate" -lt 2 ]; do
+  warm_gate=$((warm_gate + 1))
+  out="$(HOME="$home" "$ORCHID_BIN" trust show "$warm_repo")"
+  assert_match '^unattended trust: untrusted$' "$out" \
+    "gate $warm_gate after a same-OID substitution refuses despite an unchanged HEAD"
+  assert_match "commit object integrity mismatch: advertised OID $warm_advertised hashes to $warm_actual" \
+    "$out" \
+    "gate $warm_gate names the advertised-versus-actual object mismatch"
+  assert_match '^root_verification: none$' "$out" \
+    "gate $warm_gate reports no verified root derivation"
+done
+
+# A replaced root history is the identity substitution the binding exists to
+# catch, and it must be caught on an already-acknowledged repository too.
+orphan_repo="$WORK/root-replacement-repo"
 mk_repo "$orphan_repo"
 trust_repo "$orphan_repo" "root replacement fixture"
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$orphan_repo")"
-assert_match '^root_verification: cached$' "$out" \
-  "the replacement fixture starts from a warm derivation entry"
+assert_match '^unattended trust: trusted$' "$out" \
+  "the replacement fixture starts trusted"
 git -C "$orphan_repo" checkout -q --orphan replacement
 git -C "$orphan_repo" commit -q --allow-empty -m "replacement root"
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$orphan_repo")"
 assert_match '^unattended trust: untrusted$' "$out" \
-  "a replaced root history is untrusted even with a warm derivation cache"
+  "a replaced root history is untrusted on the next gate"
 assert_match '^binding_state: mismatch$' "$out" \
   "the replacement root is reported as a binding mismatch"
 assert_match '^root_verification: walked$' "$out" \
-  "detecting the replacement came from a walk, not from a reused entry"
+  "the replacement was detected by this gate's own walk"
 
-# Revocation takes the machine-local derivation with the record it served.
-orphan_cache="$(
-  printf '%s\n' "$out" | sed -n 's/^record: //p'
-)"
-orphan_cache="${orphan_cache%.json}.rootcache"
+# Revocation removes this identity's machine-local state.
+orphan_record="$(printf '%s\n' "$out" | sed -n 's/^record: //p')"
+orphan_anchor="$(printf '%s\n' "$out" | sed -n 's/^identity_anchor: //p')"
 HOME="$home" "$ORCHID_BIN" trust revoke "$orphan_repo" >/dev/null \
   || fail "revoking the replacement fixture must succeed"
-[ ! -e "$orphan_cache" ] \
-  || fail "revocation must remove the machine-local derivation cache"
+[ ! -e "$orphan_record" ] && [ ! -e "$orphan_anchor" ] \
+  || fail "revocation must remove the machine-local record and anchor"
 
 # ---------------------------------------------------------------------------
 # jq is one of the kernel's three binaries and the only reader of the record.
