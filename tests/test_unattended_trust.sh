@@ -155,7 +155,7 @@ HOME="$home" "$ORCHID_BIN" trust unattended "$alias_repo" \
 [ "$rc" -ne 0 ] || fail "acknowledgement must refuse a record symlink to a directory"
 assert_eq sentinel "$(cat "$record_target_dir/sentinel")" \
   "directory-symlink refusal preserves existing target content"
-target_entries="$(find "$record_target_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+target_entries="$(list_dir_entries "$record_target_dir" | wc -l | tr -d ' ')"
 assert_eq 1 "$target_entries" \
   "directory-symlink refusal must not move an atomic-write temp file into the target"
 if record_dir_mode_after="$(stat -f '%Lp' "$record_target_dir" 2>/dev/null)"; then
