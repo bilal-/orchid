@@ -56,6 +56,31 @@ readable. Revocation still needs a usable `.git` marker to know which record
 applies; if a linked worktree's own marker or registration is broken, revoke
 from the main checkout, which shares the same record.
 
+## An installed service runs on schedule but nothing happens
+
+**Symptom:** `orchid service status` looks healthy, the scheduler fires, and
+`.orchid/runtime/pump.log` is empty or missing.
+
+The pump is being denied at the unattended gate. Its output goes to
+`/dev/null` (that is what the installed cron line and launchd agent specify),
+and it deliberately does not open the repo-local `pump.log` until after the
+gate passes — so a refusal leaves no repo-local trace by design. Look at the
+machine-local record instead:
+
+```sh
+orchid doctor
+tail ~/.orchid/unattended-trust/refusals.log
+```
+
+Each line carries the time, the refused surface, the repository, the binding
+state, and the same `why` text `orchid trust show` would print. Fix the cause
+above and the next scheduled invocation proceeds; nothing needs to be cleared.
+
+If the `why` names a missing `jq`, the scheduler's `PATH` — not the
+repository — is the problem. A launchd agent starts from a bare environment
+with the `PATH` that was baked in at install time, so re-run `orchid service
+install` from a shell where `jq` resolves.
+
 ## Resume (crash / restart)
 
 **Symptom:** the interactive session died mid-run (crash, closed terminal,

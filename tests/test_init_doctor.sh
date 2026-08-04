@@ -19,6 +19,25 @@ trusted_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
   || fail "doctor remains healthy after unattended acknowledgement"
 assert_match "^ok: unattended trust: allowed" "$trusted_doctor" \
   "doctor reports the allowed gate with machine-local provenance"
+echo "$trusted_doctor" | grep -q "scheduled/service invocation" \
+  && fail "doctor must not report scheduled refusals when none were recorded"
+
+# A scheduled pump/tick has nowhere to print: the cron line and the launchd
+# agent both discard its output, and the repo-local service log is not opened
+# until after the gate. Those refusals are recorded machine-locally instead,
+# and doctor is where an operator finds them.
+doctor_refusal_log="$HOME/.orchid/unattended-trust/refusals.log"
+[ -d "$(dirname "$doctor_refusal_log")" ] \
+  || fail "the acknowledgement above must have created the machine-local store"
+printf '2026-01-01T00:00:00Z\tunattended pump\t%s\tuntrusted\tno machine-local acknowledgement\n' \
+  "$WORK" > "$doctor_refusal_log"
+refusal_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
+  || fail "recorded refusals are a warning, not a doctor failure"
+assert_match "WARN: unattended trust denied a scheduled/service invocation" \
+  "$refusal_doctor" "doctor surfaces refusals the scheduler discarded"
+assert_match "unattended pump" "$refusal_doctor" \
+  "doctor shows which surface was refused"
+rm -f "$doctor_refusal_log"
 
 mkdir -p .orchid/plugins/engines/evil
 out="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || true

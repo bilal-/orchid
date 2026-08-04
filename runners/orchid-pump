@@ -116,7 +116,17 @@ fi
 # before any of those can happen. The side-effect-free "not a repo",
 # split-brain, and already-complete diagnostics above remain available on an
 # untrusted target.
-unattended_trust_require "$repo" "unattended pump" || exit 1
+#
+# Under --service-log this is a scheduler invocation whose stdout and stderr
+# the cron line / launchd agent send to /dev/null, and the repo-local pump.log
+# below cannot be opened before the gate has passed. Tell the gate so it also
+# records the refusal in the machine-local trust store, where `orchid doctor`
+# will surface it.
+if [ "$pump_service_log" -eq 1 ]; then
+  unattended_trust_require "$repo" "unattended pump" scheduled || exit 1
+else
+  unattended_trust_require "$repo" "unattended pump" || exit 1
+fi
 
 rt="$(orchid_runtime "$repo")"
 if [ "$pump_service_log" -eq 1 ]; then

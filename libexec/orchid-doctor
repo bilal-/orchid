@@ -46,6 +46,13 @@ else
   printf 'WARN: unattended trust (headless execution gated): '
 fi
 unattended_trust_summary_loaded
+# A scheduled pump discards its own stdout and stderr, and cannot open the
+# repo-local service log until after the gate. Its refusals land in the
+# machine-local trust store instead; this is where an operator finds them.
+if unattended_refusal_log="$(unattended_trust_refusal_log_path)"; then
+  echo "WARN: unattended trust denied a scheduled/service invocation on this machine; most recent entries (time, surface, repo, state, why) from $unattended_refusal_log:"
+  tail -n 5 "$unattended_refusal_log" | sed 's/^/  /'
+fi
 _orchid_entry_restore_operator_path
 
 # --greenfield (v1-m2 Task 9): the ONLY flag. Skips exactly the two checks

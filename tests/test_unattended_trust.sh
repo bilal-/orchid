@@ -1621,3 +1621,195 @@ assert_match '^epoch: [0-9]+$' "$out" "manual run start still fences an epoch"
 
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$manual")"
 assert_match '^unattended trust: untrusted$' "$out" "manual operation never silently opts into unattended trust"
+
+# ---------------------------------------------------------------------------
+# Machine-local root-derivation cache. A verified derivation is reused only
+# while the repository is the same acknowledged incarnation at the same HEAD.
+# Every identity change the boundary exists to catch must still miss and still
+# re-walk, and no entry may ever substitute for the recorded binding.
+# ---------------------------------------------------------------------------
+cache_repo="$WORK/root-cache-repo"
+mk_repo "$cache_repo"
+cache_root="$(git -C "$cache_repo" rev-list --max-parents=0 HEAD)"
+trust_repo "$cache_repo" "root derivation cache fixture"
+
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+assert_match '^unattended trust: trusted$' "$out" "the cache fixture starts trusted"
+assert_match '^root_verification: cached$' "$out" \
+  "a repeat gate reuses the verified derivation instead of re-walking history"
+assert_match "^root_commit: $cache_root\$" "$out" \
+  "a reused derivation reports the same root the walk verified"
+
+cache_record="$(printf '%s\n' "$out" | sed -n 's/^record: //p')"
+cache_file="${cache_record%.json}.rootcache"
+[ -f "$cache_file" ] \
+  || fail "the verified derivation must be cached in the machine-local store"
+case "$cache_file" in
+  "$home_physical"/.orchid/unattended-trust/*.rootcache) ;;
+  *) fail "the derivation cache must live under the operator HOME (got '$cache_file')" ;;
+esac
+[ -z "$(git -C "$cache_repo" status --porcelain)" ] \
+  || fail "caching a derivation must not write anything into the target repository"
+[ ! -e "$cache_repo/.git/rootcache" ] \
+  || fail "the derivation cache must never be written into the Git common directory"
+cache_mode="$(stat -f '%Lp' "$cache_file" 2>/dev/null || stat -c '%a' "$cache_file")"
+[ $((8#$cache_mode & 077)) -eq 0 ] \
+  || fail "the derivation cache must not be readable or writable by group or other"
+
+# A moved HEAD is a different history: the entry must miss and the walk must
+# run again. The root is unchanged, so trust survives on its own merits.
+git -C "$cache_repo" commit -q --allow-empty -m descendant
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+assert_match '^root_verification: walked$' "$out" \
+  "a moved HEAD invalidates the cached derivation and re-walks"
+assert_match '^unattended trust: trusted$' "$out" \
+  "a descendant commit re-verifies to the acknowledged root"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+assert_match '^root_verification: cached$' "$out" \
+  "the walk at the new HEAD refreshes the entry for the next gate"
+
+# An entry keyed to a different identity must be ignored outright, never
+# obeyed. This one advertises a structurally valid but wrong root: if the
+# loader honored it, the gate would report a root mismatch instead of walking.
+cache_head="$(git -C "$cache_repo" rev-parse HEAD)"
+printf 'orchid-unattended-root-cache-v1 1 2 0 0 0 0 %s %s\n' \
+  "$cache_head" "0000000000000000000000000000000000000000" > "$cache_file"
+# Safe permissions on purpose: this must be rejected for its identity fields,
+# not incidentally by the group/other-write check exercised further below.
+chmod 0600 "$cache_file"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+assert_match '^root_verification: walked$' "$out" \
+  "an entry keyed to another identity is ignored rather than obeyed"
+assert_match '^unattended trust: trusted$' "$out" \
+  "ignoring a foreign entry falls through to the full walk, not to a refusal"
+assert_match "^root_commit: $cache_root\$" "$out" \
+  "the walk, not the planted entry, decides the root"
+
+# Same placement rules as the record it serves: another local account must not
+# be able to hand the gate a derivation.
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+assert_match '^root_verification: cached$' "$out" "the entry is repaired by the walk"
+chmod 0666 "$cache_file"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+assert_match '^root_verification: walked$' "$out" \
+  "a group/other-writable derivation entry is never read"
+assert_match '^unattended trust: trusted$' "$out" \
+  "an unreadable entry costs a walk, never trust"
+
+rm -f "$cache_file"
+ln -s /dev/null "$cache_file"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$cache_repo")"
+assert_match '^root_verification: walked$' "$out" \
+  "a symlinked derivation entry is never read"
+assert_match '^unattended trust: trusted$' "$out" \
+  "a symlinked entry is refused without being written through"
+[ -L "$cache_file" ] \
+  || fail "a symlinked derivation entry must be left alone, not written through"
+rm -f "$cache_file"
+
+# A replaced root history is the exact substitution the binding exists to
+# catch. A warm entry must not soften it: HEAD moves, the entry misses, the
+# walk finds the replacement root, and the recorded root no longer matches.
+orphan_repo="$WORK/root-cache-orphan"
+mk_repo "$orphan_repo"
+trust_repo "$orphan_repo" "root replacement fixture"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$orphan_repo")"
+assert_match '^root_verification: cached$' "$out" \
+  "the replacement fixture starts from a warm derivation entry"
+git -C "$orphan_repo" checkout -q --orphan replacement
+git -C "$orphan_repo" commit -q --allow-empty -m "replacement root"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$orphan_repo")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a replaced root history is untrusted even with a warm derivation cache"
+assert_match '^binding_state: mismatch$' "$out" \
+  "the replacement root is reported as a binding mismatch"
+assert_match '^root_verification: walked$' "$out" \
+  "detecting the replacement came from a walk, not from a reused entry"
+
+# Revocation takes the machine-local derivation with the record it served.
+orphan_cache="$(
+  printf '%s\n' "$out" | sed -n 's/^record: //p'
+)"
+orphan_cache="${orphan_cache%.json}.rootcache"
+HOME="$home" "$ORCHID_BIN" trust revoke "$orphan_repo" >/dev/null \
+  || fail "revoking the replacement fixture must succeed"
+[ ! -e "$orphan_cache" ] \
+  || fail "revocation must remove the machine-local derivation cache"
+
+# ---------------------------------------------------------------------------
+# jq is one of the kernel's three binaries and the only reader of the record.
+# Without it every parse fails, which must read as a missing tool rather than
+# as a malformed operator-authored file. Build a PATH that is the current one
+# with jq removed -- a symlink farm, so by construction nothing ELSE can go
+# missing and confuse the result -- and drive the library directly, the same
+# way the fast-denial guard above does.
+# ---------------------------------------------------------------------------
+nojq_bin="$WORK/no-jq-bin"
+mkdir -p "$nojq_bin"
+(
+  IFS=:
+  for nojq_dir in $PATH; do
+    [ -n "$nojq_dir" ] && [ -d "$nojq_dir" ] || continue
+    for nojq_exe in "$nojq_dir"/*; do
+      [ -f "$nojq_exe" ] && [ -x "$nojq_exe" ] || continue
+      nojq_name="${nojq_exe##*/}"
+      if [ "$nojq_name" != jq ] && [ ! -e "$nojq_bin/$nojq_name" ]; then
+        ln -s "$nojq_exe" "$nojq_bin/$nojq_name"
+      fi
+    done
+  done
+)
+[ -x "$nojq_bin/git" ] || fail "jq-absence fixture must still provide git"
+[ -x "$nojq_bin/stat" ] || fail "jq-absence fixture must still provide stat"
+# Check in a subshell with the lookup hash dropped: a temporary PATH
+# assignment alone can still be answered from this shell's command hash.
+if ( PATH="$nojq_bin"; hash -r 2>/dev/null; command -v jq >/dev/null 2>&1 ); then
+  fail "jq-absence fixture must not leave jq resolvable"
+fi
+
+nojq_repo="$WORK/no-jq-repo"
+mk_repo "$nojq_repo"
+trust_repo "$nojq_repo" "jq availability fixture"
+nojq_out="$(
+  HOME="$home" PATH="$nojq_bin" ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_NOJQ_REPO="$nojq_repo" \
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_show "$ORCHID_TEST_NOJQ_REPO"
+  '
+)"
+assert_match '^unattended trust: untrusted$' "$nojq_out" \
+  "a missing jq fails the unattended gate closed"
+assert_match '^gate: denied$' "$nojq_out" "a missing jq denies the gate"
+assert_match '^binding_state: unavailable$' "$nojq_out" \
+  "a missing jq is an unavailable boundary, not an invalid record"
+assert_match '^why: jq is required' "$nojq_out" \
+  "a missing jq is reported as a missing tool, not as a malformed record"
+assert_match 'install jq' "$nojq_out" \
+  "the missing-jq diagnostic tells the operator what to do about it"
+[ -f "$nojq_repo/.git/description" ] \
+  || fail "the jq-absence path must leave the repository untouched"
+
+# The same applies when authoring a record: refuse with a diagnostic naming
+# the tool instead of writing something unreadable.
+nojq_ack_repo="$WORK/no-jq-ack-repo"
+mk_repo "$nojq_ack_repo"
+rc=0
+nojq_ack_out="$(
+  HOME="$home" PATH="$nojq_bin" ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_NOJQ_REPO="$nojq_ack_repo" \
+  /bin/bash -c '
+    set -uo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_acknowledge "$ORCHID_TEST_NOJQ_REPO" "jq must be present"
+  ' 2>&1
+)" || rc=$?
+[ "$rc" -ne 0 ] || fail "acknowledgement must refuse when jq is unavailable"
+assert_match 'requires jq' "$nojq_ack_out" \
+  "a jq-less acknowledgement names the missing tool"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$nojq_ack_repo")"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "a refused jq-less acknowledgement leaves the repository untrusted"

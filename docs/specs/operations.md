@@ -153,6 +153,52 @@ unattended execution again as soon as the repository became inspectable.
 Because that path runs no Git command, ordinary revocation costs nothing
 proportional to repository history.
 
+Root verification is cached machine-locally so a scheduled gate does not
+re-walk and re-hash the whole reachable history every few minutes. The entry
+sits beside the record it serves, under the same device/inode key, and is keyed
+by the policy version, the record schema, the common-directory device/inode,
+the incarnation-anchor identity, and the exact `HEAD` object ID that was
+verified. Resolving `HEAD` is a ref lookup, not a history walk. Anything else —
+a missing, unreadable, unsafely permissioned, symlinked, malformed, or simply
+non-matching entry — is a miss that falls through to the full fail-closed walk,
+so an entry can only ever cost a walk, never grant trust: it supplies a
+derivation, and the recorded root is still compared against it. Acknowledgement
+never uses the cache and always pays for a complete walk with exact-payload
+rehashing. `orchid trust show` reports `root_verification: walked` or
+`cached`, and `orchid trust revoke` removes the entry with the record.
+Be precise about what a reuse re-establishes: that this is the same
+acknowledged incarnation at the same `HEAD` as the walk that produced it, so
+every identity substitution the gate exists to catch — clone, copy, replaced
+common directory, moved or rewritten branch — still misses and still walks. It
+does not re-run exact-payload rehashing, so it does not re-detect a rewrite of
+a stored commit payload that leaves both the `HEAD` ref value and the anchor
+intact. That rewrite needs write access to the already-acknowledged
+repository's own object store, which is inside the prompt-injection boundary
+the operator accepted, not a route for an unacknowledged repository to become
+trusted. Write access to `~/.orchid/unattended-trust/` is likewise equivalent
+to authoring the record itself; the cache adds no authority the record does not
+already have.
+
+A scheduled pump has nowhere to print. The installed cron line and launchd
+agent both send its output to `/dev/null`, and the repo-local
+`.orchid/runtime/pump.log` is deliberately not opened until after the gate has
+passed — opening a target-controlled path first would let a revoked or replaced
+repository be written to before it was trusted. Refusals from a scheduled
+invocation are therefore also appended to
+`~/.orchid/unattended-trust/refusals.log` (time, surface, repository, binding
+state, and reason; bounded, machine-local, never inside the target, and refused
+outright if the store would resolve into the target). `orchid doctor` warns and
+shows the most recent entries. An interactive refusal prints to the caller's
+terminal and does not append to that file.
+
+`jq` is one of the kernel's three required binaries and the only reader of the
+acknowledgement record. If it is missing, the gate stays closed and says so —
+`orchid trust show` reports the boundary as unavailable with a `why:` naming
+the missing tool, and acknowledgement refuses — rather than reporting a
+perfectly good record as malformed. A launchd agent starts from a bare
+environment, so re-run `orchid service install` after a `PATH` change to
+refresh the `PATH` baked into the scheduler artifact.
+
 The acknowledgement means only that the operator accepts this repository as
 input to an unattended, shell-capable model. Target content may prompt-inject
 the orchestrator. Launcher environment hygiene reduces ambient authority;

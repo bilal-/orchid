@@ -40,6 +40,15 @@ ORCHID_UNATTENDED_COMMIT_BATCH_SIZE=256
 # This is a minimum for unattended trust inspection only; Orchid's manual and
 # non-object-walking read-only surfaces remain available on older Git versions.
 ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN=2.45
+# Machine-local root-derivation cache. The magic string is part of the key: a
+# format change invalidates every stored entry, exactly like a policy bump.
+ORCHID_UNATTENDED_ROOT_CACHE_MAGIC=orchid-unattended-root-cache-v1
+# Machine-local refusal diagnostics for detached invocation. A scheduler sends
+# the pump's stdout and stderr to /dev/null and the repo-local service log is
+# deliberately not opened before the gate, so a denial would otherwise be
+# invisible. Keep the file bounded; a wedged schedule must not grow it forever.
+ORCHID_UNATTENDED_REFUSAL_LOG_NAME=refusals.log
+ORCHID_UNATTENDED_REFUSAL_LOG_KEEP=200
 
 # Command substitution removes every trailing newline from its output. That is
 # unsafe for filesystem values: a directory named "repo\n" is distinct from
@@ -608,6 +617,17 @@ _unattended_json_value() {
   printf '%s' "$json" | jq -j "$expression"
 }
 
+# jq is one of the three binaries Orchid's kernel depends on, and it is the
+# only reader of the operator-authored acknowledgement record. Without it every
+# record parse below fails, which would otherwise be reported as "the record is
+# malformed" — a diagnostic that sends the operator to inspect a file that is
+# perfectly fine. Detect the missing tool explicitly instead. Unattended
+# surfaces evaluate this on the fixed system PATH (Homebrew, MacPorts, and the
+# system directories), before the inherited operator PATH is restored.
+_unattended_jq_available() {
+  command -v jq >/dev/null 2>&1
+}
+
 _unattended_oid_is_valid() {
   local oid="$1" expected_length="$2"
   [ "${#oid}" -eq "$expected_length" ] || return 1
@@ -1010,8 +1030,213 @@ _unattended_root_commit() {
   esac
 }
 
+# Machine-local cache of ONE already-verified root derivation.
+#
+# The walk above re-reads every commit reachable from HEAD and re-hashes each
+# stored payload. That cost buys something only when the answer can have
+# changed; repeating it on every scheduled gate for a repository that has not
+# moved is pure repetition. The cache therefore stores the verified derivation
+# beside the record it serves, keyed by every fact that can invalidate it:
+#
+#   * the trust-policy version and the record schema, so either bump re-walks;
+#   * the Git common-directory device/inode that selects this record at all;
+#   * the machine-local incarnation-anchor identity, so a replaced repository —
+#     whose anchor cannot be resurrected while the outside hard link exists —
+#     can never reuse an entry; and
+#   * the exact HEAD object ID whose history was verified.
+#
+# Three properties keep it from becoming a trust decision of its own. It is
+# consulted only after a candidate record has already been validated and its
+# anchor matched, so an unacknowledged repository never reaches it. It stores a
+# DERIVATION, not a verdict: the recorded root set is still compared against
+# the value it returns, and every later identity/record recheck still runs. And
+# every failure — missing, unsafe, malformed, or simply not matching — is a
+# plain miss that falls through to the full fail-closed walk. A stale entry can
+# therefore only cost a walk, never grant trust.
+#
+# It lives in the machine-local trust store under the same device/inode key as
+# the record and the anchor. Nothing is written into the target repository.
+#
+# Be precise about what a hit does and does not re-establish. It re-establishes
+# that this is the same acknowledged incarnation (device/inode plus the
+# non-reusable anchor) at the same HEAD as the walk that produced the entry, so
+# every identity substitution the boundary exists to catch — a clone, a copy, a
+# replaced common directory, a moved or rewritten branch — still misses and
+# still walks. It does NOT re-run exact-payload rehashing, so it does not
+# re-detect a rewrite of a stored commit payload that leaves both the HEAD ref
+# value and the anchor intact. That rewrite requires write access to the
+# already-acknowledged repository's own object store, which is inside the
+# prompt-injection boundary the operator accepted when acknowledging it, not a
+# way for an unacknowledged repository to become trusted. Acknowledgement
+# itself, which establishes the binding, never uses this path.
+_unattended_root_cache_load() {
+  local target="$1" head="$2" anchor_device="$3" anchor_inode="$4"
+  local path="$ORCHID_UNATTENDED_ROOT_CACHE" meta trailing parsed=0
+  local magic policy schema device inode cached_anchor_device
+  local cached_anchor_inode cached_head root extra
+
+  [ -n "$path" ] || return 1
+  [ -n "$head" ] && [ -n "$anchor_device" ] && [ -n "$anchor_inode" ] || return 1
+  # Hold the cache to the record's own placement rules: a symlink, an alias of
+  # tracked content, or a file another local account can rewrite is not
+  # operator-authored machine-local state and is never read.
+  [ ! -L "$path" ] && [ -f "$path" ] && [ -O "$path" ] || return 1
+  _unattended_capture_line meta _unattended_file_security_metadata "$path" \
+    || return 1
+  [ "${meta%% *}" = 1 ] || return 1
+  [ $((8#${meta#* } & 022)) -eq 0 ] || return 1
+
+  # Read the single framed line from one handle scoped to this group, so no
+  # descriptor outlives the parse in the caller's shell. A missing newline, a
+  # second line, a missing field, or an extra field is a miss rather than a
+  # partially trusted parse.
+  parsed=0
+  root=""
+  extra=""
+  { if IFS=' ' read -r magic policy schema device inode cached_anchor_device \
+        cached_anchor_inode cached_head root extra; then
+      trailing=""
+      if ! IFS= read -r trailing && [ -z "$trailing" ]; then
+        parsed=1
+      fi
+    fi
+  } 2>/dev/null <"$path" || return 1
+  [ "$parsed" -eq 1 ] || return 1
+
+  [ -z "$extra" ] || return 1
+  [ "$magic" = "$ORCHID_UNATTENDED_ROOT_CACHE_MAGIC" ] || return 1
+  [ "$policy" = "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION" ] || return 1
+  [ "$schema" = "$ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA" ] || return 1
+  [ "$device" = "$ORCHID_UNATTENDED_DEVICE" ] || return 1
+  [ "$inode" = "$ORCHID_UNATTENDED_INODE" ] || return 1
+  [ "$cached_anchor_device" = "$anchor_device" ] || return 1
+  [ "$cached_anchor_inode" = "$anchor_inode" ] || return 1
+  [ "$cached_head" = "$head" ] || return 1
+  case "${#cached_head}" in 40|64) ;; *) return 1 ;; esac
+  _unattended_oid_is_valid "$cached_head" "${#cached_head}" || return 1
+  _unattended_root_set_is_structurally_valid "$root" || return 1
+  printf -v "$target" '%s' "$root"
+}
+
+# Publish the entry the loader above will re-validate field by field. Every
+# stored value is a digit string, a hex object ID, or a comma-joined set of
+# them, so the single space-separated line can never need quoting. Failure is
+# never fatal: an unwritable cache only means the next gate walks again.
+_unattended_root_cache_store() {
+  local head="$1" anchor_device="$2" anchor_inode="$3" root="$4"
+  local path="$ORCHID_UNATTENDED_ROOT_CACHE"
+
+  [ -n "$path" ] && [ -n "$head" ] && [ -n "$root" ] || return 1
+  [ -n "$anchor_device" ] && [ -n "$anchor_inode" ] || return 1
+  [ -n "$ORCHID_UNATTENDED_TRUST_DIR" ] || return 1
+  [ -d "$ORCHID_UNATTENDED_TRUST_DIR" ] || return 1
+  # Never write through a planted symlink or over a non-regular object. The
+  # loader already refuses to read either, so leaving it in place costs only
+  # the walk it would have saved.
+  [ ! -L "$path" ] || return 1
+  [ ! -e "$path" ] || [ -f "$path" ] || return 1
+  (
+    umask 077
+    printf '%s %s %s %s %s %s %s %s %s\n' \
+      "$ORCHID_UNATTENDED_ROOT_CACHE_MAGIC" \
+      "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION" \
+      "$ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA" \
+      "$ORCHID_UNATTENDED_DEVICE" "$ORCHID_UNATTENDED_INODE" \
+      "$anchor_device" "$anchor_inode" "$head" "$root" \
+      | _unattended_record_atomic_write "$path"
+  ) 2>/dev/null
+}
+
+# Resolve the verified root set for the repository's current HEAD, reusing the
+# machine-local entry when this same incarnation is still at the same HEAD.
+# Resolving HEAD is a ref lookup, not a history walk. A miss falls through to
+# the full walk, which produces both the answer and the failure diagnostic;
+# the refreshed entry is then best-effort.
+_unattended_root_commit_verified() {
+  local target="$1" repo="$2" anchor_device="$3" anchor_inode="$4"
+  local head cached
+
+  ORCHID_UNATTENDED_ROOT_SOURCE=walked
+  if _unattended_capture_line head \
+      _unattended_git --no-lazy-fetch -C "$repo" \
+        rev-parse --verify HEAD 2>/dev/null \
+     && _unattended_root_cache_load cached "$head" \
+       "$anchor_device" "$anchor_inode"; then
+    printf -v "$target" '%s' "$cached"
+    ORCHID_UNATTENDED_HEAD_OID="$head"
+    ORCHID_UNATTENDED_ROOT_ERROR=""
+    ORCHID_UNATTENDED_ROOT_SOURCE=cached
+    return 0
+  fi
+
+  _unattended_root_commit "$target" "$repo" || return 1
+  _unattended_root_cache_store "$ORCHID_UNATTENDED_HEAD_OID" \
+    "$anchor_device" "$anchor_inode" "${!target}" || true
+  return 0
+}
+
 _unattended_one_line() {
   printf '%s' "$1" | tr '\r\n\t' '   ' | tr -s ' '
+}
+
+# Append one refusal line to the machine-local diagnostic log and print its
+# path. Only detached (scheduled/service) invocation uses this: an interactive
+# caller already has the same text on its terminal.
+#
+# The destination is resolved and placement-checked exactly like the trust
+# store itself. Writing a "this repository is not trusted" diagnostic INTO that
+# repository would hand the untrusted target both the evidence and the ability
+# to edit it, so a store that resolves inside the target, its checkout, or its
+# common directory is refused outright rather than written to.
+_unattended_refusal_log_append() {
+  local repo="$1" surface="$2" dir log repo_physical stamp lines
+  _unattended_capture_line dir _unattended_trust_dir_physical || return 1
+  if _unattended_capture_line repo_physical _unattended_repo_canon "$repo"; then
+    ! _unattended_path_within "$repo_physical" "$dir" || return 1
+  fi
+  [ -z "$ORCHID_UNATTENDED_WORKTREE_ROOT" ] \
+    || ! _unattended_path_within "$ORCHID_UNATTENDED_WORKTREE_ROOT" "$dir" \
+    || return 1
+  [ -z "$ORCHID_UNATTENDED_COMMON_DIR" ] \
+    || ! _unattended_path_within "$ORCHID_UNATTENDED_COMMON_DIR" "$dir" \
+    || return 1
+
+  ( umask 077; mkdir -p "$dir" ) 2>/dev/null || return 1
+  log="$dir/$ORCHID_UNATTENDED_REFUSAL_LOG_NAME"
+  [ ! -L "$log" ] || return 1
+  [ ! -e "$log" ] || [ -f "$log" ] || return 1
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  (
+    umask 077
+    printf '%s\t%s\t%s\t%s\t%s\n' "$stamp" \
+      "$(_unattended_one_line "$surface")" \
+      "${ORCHID_UNATTENDED_REPO:-$repo}" \
+      "$ORCHID_UNATTENDED_STATE" \
+      "$(_unattended_one_line "$ORCHID_UNATTENDED_DETAIL")" >>"$log"
+  ) 2>/dev/null || return 1
+
+  # Trim lazily: rewrite only once the file has grown to twice the retained
+  # window, so an every-few-minutes schedule does not rewrite it every pass.
+  lines="$(LC_ALL=C wc -l <"$log" 2>/dev/null)" || lines=""
+  lines="${lines//[![:digit:]]/}"
+  if [ -n "$lines" ] \
+     && [ "$lines" -gt $((ORCHID_UNATTENDED_REFUSAL_LOG_KEEP * 2)) ]; then
+    ( umask 077
+      tail -n "$ORCHID_UNATTENDED_REFUSAL_LOG_KEEP" "$log" \
+        | _unattended_record_atomic_write "$log" ) 2>/dev/null || true
+  fi
+  printf '%s\n' "$log"
+}
+
+# Print the machine-local refusal log path when it exists and has entries.
+# Read-only; used by doctor to point an operator at denials they could not
+# have seen on a scheduler's discarded stdout.
+unattended_trust_refusal_log_path() {
+  local dir log
+  _unattended_capture_line dir _unattended_trust_dir_physical || return 1
+  log="$dir/$ORCHID_UNATTENDED_REFUSAL_LOG_NAME"
+  [ ! -L "$log" ] && [ -f "$log" ] && [ -s "$log" ] || return 1
+  printf '%s\n' "$log"
 }
 
 # Re-check the repository facts after a complete history verification. This
@@ -1083,9 +1308,11 @@ _unattended_trust_reset() {
   ORCHID_UNATTENDED_INODE=""
   ORCHID_UNATTENDED_ROOT_COMMIT=""
   ORCHID_UNATTENDED_ROOT_STATUS=unavailable
+  ORCHID_UNATTENDED_ROOT_SOURCE=none
   ORCHID_UNATTENDED_HEAD_OID=""
   ORCHID_UNATTENDED_TRUST_DIR=""
   ORCHID_UNATTENDED_RECORD=""
+  ORCHID_UNATTENDED_ROOT_CACHE=""
   ORCHID_UNATTENDED_IDENTITY_ANCHOR=""
   ORCHID_UNATTENDED_IDENTITY_WITNESS=""
   ORCHID_UNATTENDED_ANCHOR_DEVICE=""
@@ -1172,6 +1399,7 @@ _unattended_trust_identity_discover() {
 
   ORCHID_UNATTENDED_RECORD="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.json"
   ORCHID_UNATTENDED_IDENTITY_ANCHOR="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.anchor"
+  ORCHID_UNATTENDED_ROOT_CACHE="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.rootcache"
   ORCHID_UNATTENDED_IDENTITY_WITNESS="$ORCHID_UNATTENDED_COMMON_DIR/$ORCHID_UNATTENDED_IDENTITY_WITNESS_NAME"
   ORCHID_UNATTENDED_ROOT_STATUS=pending
   ORCHID_UNATTENDED_DETAIL="repository identity resolved; root verification is pending an eligible machine-local acknowledgement"
@@ -1183,7 +1411,9 @@ _unattended_trust_identity_discover() {
 # Always returns zero and populates the ORCHID_UNATTENDED_* globals below.
 # Callers can therefore report an unavailable/untrusted state without
 # tripping their own `set -e`; only unattended_trust_require turns it into a
-# refusal. This function is read-only.
+# refusal. This function never writes to the target repository. It may refresh
+# the machine-local root-derivation cache beside the record it just validated,
+# which is operator-owned state outside every repository.
 unattended_trust_inspect() {
   local repo_in="$1" rec_schema rec_kind rec_device rec_inode rec_policy rec_root
   local rec_anchor_device rec_anchor_inode
@@ -1198,6 +1428,14 @@ unattended_trust_inspect() {
     return 0
   fi
   ORCHID_UNATTENDED_RECORD_EXISTS=1
+  # Every read of the operator-authored record below goes through jq. Say so
+  # once, plainly, instead of letting each failed parse report the record as
+  # malformed. This is still a closed gate: an unreadable record is untrusted.
+  if ! _unattended_jq_available; then
+    ORCHID_UNATTENDED_STATE=unavailable
+    ORCHID_UNATTENDED_DETAIL="jq is required to read the machine-local acknowledgement record but was not found on the unattended PATH; install jq (Orchid's kernel is bash + git + jq) and, for a scheduled service, re-run 'orchid service install' so the scheduler inherits a PATH that includes it"
+    return 0
+  fi
   # Git 2.44 and older cannot reliably prohibit lazy object fetching. Check
   # the executable only after finding an identity-keyed candidate, but before
   # any Git command targets the repository.
@@ -1368,15 +1606,20 @@ unattended_trust_inspect() {
 
   # The candidate is now safe, current-policy, identity-bound, structurally
   # complete, and backed by its non-reusable machine-local anchor. Only this
-  # state may pay for exact-payload/root verification.
+  # state may pay for exact-payload/root verification — or reuse the entry a
+  # previous payment for this same incarnation and HEAD already produced.
   ORCHID_UNATTENDED_ROOT_STATUS=unavailable
-  if ! _unattended_root_commit ORCHID_UNATTENDED_ROOT_COMMIT \
-      "$ORCHID_UNATTENDED_REPO"; then
+  if ! _unattended_root_commit_verified ORCHID_UNATTENDED_ROOT_COMMIT \
+      "$ORCHID_UNATTENDED_REPO" \
+      "$ORCHID_UNATTENDED_RECORDED_ANCHOR_DEVICE" \
+      "$ORCHID_UNATTENDED_RECORDED_ANCHOR_INODE"; then
     ORCHID_UNATTENDED_ROOT_COMMIT=""
+    ORCHID_UNATTENDED_ROOT_SOURCE=none
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-cannot verify locally reachable commit history}"
     return 0
   fi
   if [ -z "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
+    ORCHID_UNATTENDED_ROOT_SOURCE=none
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-repository has no reachable root commit at HEAD}"
     return 0
   fi
@@ -1449,6 +1692,10 @@ unattended_trust_show() {
   printf 'git_common_device: %s\n' "${ORCHID_UNATTENDED_DEVICE:-unavailable}"
   printf 'git_common_inode: %s\n' "${ORCHID_UNATTENDED_INODE:-unavailable}"
   printf 'root_commit: %s\n' "$root_display"
+  # Make it visible whether this answer came from a fresh complete walk or from
+  # the machine-local entry a previous walk for this same incarnation and HEAD
+  # produced, so a slow first gate and a fast later one are explainable.
+  printf 'root_verification: %s\n' "${ORCHID_UNATTENDED_ROOT_SOURCE:-none}"
   printf 'policy_version: %s\n' "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION"
   printf 'record: %s\n' "${ORCHID_UNATTENDED_RECORD:-none}"
   printf 'identity_anchor: %s\n' "${ORCHID_UNATTENDED_IDENTITY_ANCHOR:-none}"
@@ -1488,13 +1735,19 @@ _unattended_trust_acknowledgement_verify() {
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-machine-local unattended-trust directory placement is unsafe}"
     return 1
   fi
+  # Acknowledgement never consults the root cache. There is no record and no
+  # anchor to key one against yet, and this is the deliberate, rare operator
+  # action that establishes the binding every later gate reuses: it always pays
+  # for a complete walk with exact-payload rehashing.
   ORCHID_UNATTENDED_ROOT_STATUS=unavailable
   if ! _unattended_root_commit ORCHID_UNATTENDED_ROOT_COMMIT \
       "$ORCHID_UNATTENDED_REPO"; then
     ORCHID_UNATTENDED_ROOT_COMMIT=""
+    ORCHID_UNATTENDED_ROOT_SOURCE=none
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-cannot verify locally reachable commit history}"
     return 1
   fi
+  ORCHID_UNATTENDED_ROOT_SOURCE=walked
   [ -n "$ORCHID_UNATTENDED_ROOT_COMMIT" ] || {
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-repository has no reachable root commit at HEAD}"
     return 1
@@ -1510,6 +1763,8 @@ unattended_trust_acknowledge() {
   local repo="$1" reason="$2" acknowledged_at dir trust_dir_after
   printf '%s' "$reason" | LC_ALL=C grep -q '[^[:space:]]' \
     || orchid_die "unattended trust requires a non-empty --reason"
+  _unattended_jq_available \
+    || orchid_die "unattended trust requires jq to author the machine-local acknowledgement record; install jq (Orchid's kernel is bash + git + jq) and retry"
 
   _unattended_trust_acknowledgement_verify "$repo" \
     || orchid_die "cannot acknowledge unattended execution: $ORCHID_UNATTENDED_DETAIL"
@@ -1609,13 +1864,33 @@ unattended_trust_revoke() {
   if [ -e "$ORCHID_UNATTENDED_RECORD" ]; then
     orchid_die "cannot revoke unattended trust: acknowledgement record path is not a file"
   fi
+  # Drop the derivation cache with the record it served. It cannot grant trust
+  # on its own — the loader keys it to a record's anchor identity, and nothing
+  # reaches it without a validated record — but leaving machine-local state
+  # behind after an explicit revocation would be its own kind of surprise.
+  # Removal is unconditional and never fatal: an odd object here must not be
+  # able to make revocation fail.
+  rm -f "$ORCHID_UNATTENDED_ROOT_CACHE" 2>/dev/null || true
   [ "$removed" -eq 1 ]
 }
 
+# unattended_trust_require <repo> <surface> [scheduled]
+#
+# Pass `scheduled` from a detached entry point (a cron line or launchd agent).
+# Those invocations have no terminal and their stdout/stderr go to /dev/null,
+# and the repo-local service log is deliberately not opened until after this
+# gate — so without a machine-local copy the operator sees a service that runs
+# on time and silently does nothing. Interactive callers already print the same
+# text to the caller's terminal and do not write the log.
 unattended_trust_require() {
-  local repo="$1" surface="${2:-unattended execution}" repo_q
+  local repo="$1" surface="${2:-unattended execution}" scheduled="${3:-}"
+  local repo_q refusal_log=""
   unattended_trust_inspect "$repo"
   [ "$ORCHID_UNATTENDED_STATE" = trusted ] && return 0
+  if [ "$scheduled" = scheduled ]; then
+    _unattended_capture_line refusal_log \
+      _unattended_refusal_log_append "$repo" "$surface" || refusal_log=""
+  fi
   printf 'orchid: %s refused: unattended trust is denied — %s\n' \
     "$surface" "$ORCHID_UNATTENDED_DETAIL" >&2
   if [ -n "$ORCHID_UNATTENDED_REPO" ]; then
@@ -1624,6 +1899,10 @@ unattended_trust_require() {
       "$repo_q" '"<why you trust this repository for unattended execution>"' >&2
   else
     printf 'orchid: the target must be a Git worktree with a root commit before it can be acknowledged\n' >&2
+  fi
+  if [ -n "$refusal_log" ]; then
+    printf 'orchid: recorded this refusal for the operator at %s (also shown by: orchid doctor)\n' \
+      "$refusal_log" >&2
   fi
   return 1
 }

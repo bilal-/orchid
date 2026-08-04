@@ -57,6 +57,17 @@ this repository's record and anchor without any version, ref, history,
 object, root, or scratch-space check, so an unsupported Git, a mismatched,
 shallow, object-missing, or corrupt history cannot strand an acknowledgement
 on disk.
+
+Root verification is cached machine-locally, keyed by the policy version,
+record schema, common-directory identity, incarnation anchor, and the exact
+verified HEAD. `show` reports it as `root_verification: walked` or `cached`;
+`revoke` removes it with the record. Any entry that does not match every one
+of those facts is ignored and the full walk runs, so an entry can cost a walk
+but never grant trust. Acknowledgement always walks. Refusals from a
+scheduled/service invocation, whose output the scheduler discards, are also
+appended to `~/.orchid/unattended-trust/refusals.log` and shown by `orchid
+doctor`. jq is required to read or author a record; without it the gate stays
+closed and says which tool is missing.
 EOF
 }
 

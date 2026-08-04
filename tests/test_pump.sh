@@ -178,6 +178,33 @@ assert_match 'unattended pump refused: unattended trust is denied' "$out" \
 [ ! -e .orchid/runtime/pump.log ] \
   || fail "untrusted service-mode pump must not create or open pump.log"
 
+# A real scheduler discards this stderr (`>> /dev/null 2>&1` in the cron line,
+# /dev/null StandardOutPath+StandardErrorPath in the launchd agent) and the
+# repo-local pump.log above is deliberately not opened before the gate. Without
+# a machine-local copy the operator would see a service that runs on schedule
+# and silently does nothing. Assert the copy exists, is outside the repository,
+# and names the surface and the reason.
+refusal_log="$MACHINE_HOME/.orchid/unattended-trust/refusals.log"
+[ -f "$refusal_log" ] \
+  || fail "a scheduled refusal must be recorded in the machine-local trust store"
+refusal_entry="$(tail -n 1 "$refusal_log")"
+assert_match 'unattended pump' "$refusal_entry" \
+  "the machine-local refusal names the refused surface"
+assert_match 'unattended trust' "$refusal_entry" \
+  "the machine-local refusal carries the gate's own reason"
+[ ! -e "$WORK/.orchid/runtime/refusals.log" ] \
+  || fail "refusal diagnostics must never be written inside the untrusted target"
+
+# The interactive pump prints to the caller's terminal and must NOT append to
+# the machine-local log: an operator who can see the refusal does not need it
+# duplicated into shared machine state.
+refusal_lines_before="$(wc -l < "$refusal_log")"
+rc=0
+"$PUMP" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "interactive pump must still refuse an untrusted repo"
+assert_eq "$refusal_lines_before" "$(wc -l < "$refusal_log")" \
+  "an interactive refusal does not append to the machine-local diagnostic log"
+
 HOME="$HOME" "$ORCHID_BIN" trust unattended "$WORK" --reason "pump test fixture" >/dev/null \
   || fail "pump fixture acknowledgement must succeed"
 
