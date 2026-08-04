@@ -43,7 +43,8 @@ out="$(HOME="$home" "$ORCHID_BIN" trust show "$repo")"; rc=$?
 assert_eq 0 "$rc" "trust show is read-only and exits 0 for an untrusted repo"
 assert_match '^unattended trust: untrusted$' "$out" "a fresh repo is untrusted"
 assert_match '^gate: denied$' "$out" "show reports the unattended gate as denied"
-assert_match "root_commit: $root" "$out" "show surfaces the current root commit"
+assert_match '^root_commit: pending$' "$out" \
+  "show honestly defers root verification until an acknowledgement candidate exists"
 assert_match '^policy_version: 1$' "$out" "show surfaces the current trust-policy version"
 
 rc=0
@@ -56,6 +57,102 @@ HOME="$home" "$ORCHID_BIN" trust unattended "$repo" --reason '   ' >/dev/null 2>
 [ "$rc" -ne 0 ] || fail "acknowledgement with a whitespace-only reason must be refused"
 [ ! -d "$home/.orchid/unattended-trust" ] \
   || fail "a whitespace-only reason must not create the machine-local store"
+
+# Deterministically fence the fast-deny boundary. Directly source the trust
+# library with git/mktemp wrappers so this checks implementation work rather
+# than wall-clock time. A no-record inspection must derive the identity-keyed
+# path without invoking Git or creating any scratch file.
+fast_guard_bin="$WORK/unattended-fast-guard-bin"
+fast_guard_log="$WORK/unattended-fast-guard.log"
+fast_guard_real_git="$(command -v git)"
+fast_guard_real_mktemp="$(command -v mktemp)"
+mkdir -p "$fast_guard_bin"
+cat > "$fast_guard_bin/git" <<'EOF'
+#!/bin/bash
+printf 'git\t%s\n' "$*" >> "$ORCHID_TEST_FAST_GUARD_LOG"
+exec "$ORCHID_TEST_FAST_GUARD_REAL_GIT" "$@"
+EOF
+cat > "$fast_guard_bin/mktemp" <<'EOF'
+#!/bin/bash
+printf 'mktemp\t%s\n' "$*" >> "$ORCHID_TEST_FAST_GUARD_LOG"
+exec "$ORCHID_TEST_FAST_GUARD_REAL_MKTEMP" "$@"
+EOF
+chmod +x "$fast_guard_bin/git" "$fast_guard_bin/mktemp"
+
+FAST_GUARD_OUT=""
+assert_fast_denial_has_zero_repository_work() {
+  local label="$1" target_repo="$2"
+  : > "$fast_guard_log"
+  FAST_GUARD_OUT="$(
+    HOME="$home" PATH="$fast_guard_bin:$PATH" \
+    ORCHID_ROOT="$REPO_ROOT" \
+    ORCHID_TEST_FAST_GUARD_LOG="$fast_guard_log" \
+    ORCHID_TEST_FAST_GUARD_REAL_GIT="$fast_guard_real_git" \
+    ORCHID_TEST_FAST_GUARD_REAL_MKTEMP="$fast_guard_real_mktemp" \
+    ORCHID_TEST_FAST_GUARD_REPO="$target_repo" \
+    /bin/bash -c '
+      set -euo pipefail
+      source "$ORCHID_ROOT/lib/common.sh"
+      source "$ORCHID_ROOT/lib/trust.sh"
+      unattended_trust_show "$ORCHID_TEST_FAST_GUARD_REPO"
+    '
+  )"
+  assert_match '^binding_state: untrusted$' "$FAST_GUARD_OUT" \
+    "$label is default-denied"
+  assert_match '^root_commit: pending$' "$FAST_GUARD_OUT" \
+    "$label leaves unneeded root verification pending"
+  [ ! -s "$fast_guard_log" ] \
+    || fail "$label invoked Git or mktemp before finding an acknowledgement ($(tr '\n' ' ' < "$fast_guard_log"))"
+}
+
+assert_fast_denial_has_zero_repository_work \
+  "a fresh unacknowledged repository" "$repo"
+
+# The explicit acknowledgement-only path is allowed to cross that boundary,
+# but it must finish a complete walk and exact-payload rehash before staging
+# the JSON record. Its ordinary post-write inspection also verifies that the
+# new candidate can independently reach the trusted state.
+fast_ack_repo="$WORK/unattended-fast-guard-ack"
+mk_repo "$fast_ack_repo"
+: > "$fast_guard_log"
+fast_ack_out="$(
+  HOME="$home" PATH="$fast_guard_bin:$PATH" \
+  ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_FAST_GUARD_LOG="$fast_guard_log" \
+  ORCHID_TEST_FAST_GUARD_REAL_GIT="$fast_guard_real_git" \
+  ORCHID_TEST_FAST_GUARD_REAL_MKTEMP="$fast_guard_real_mktemp" \
+  ORCHID_TEST_FAST_GUARD_REPO="$fast_ack_repo" \
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_acknowledge \
+      "$ORCHID_TEST_FAST_GUARD_REPO" "instrumented acknowledgement"
+    printf "state: %s\nrecord: %s\n" \
+      "$ORCHID_UNATTENDED_STATE" "$ORCHID_UNATTENDED_RECORD"
+  '
+)"
+assert_match '^state: trusted$' "$fast_ack_out" \
+  "the acknowledgement-only verifier persists a usable record"
+grep -q $'^git\t.*rev-list --parents ' "$fast_guard_log" \
+  || fail "acknowledgement must completely walk reachable commit history"
+grep -q $'^git\t.*cat-file --batch=' "$fast_guard_log" \
+  || fail "acknowledgement must batch-read exact commit payloads"
+grep -q $'^git\t.*hash-object --no-filters -t commit --stdin-paths' "$fast_guard_log" \
+  || fail "acknowledgement must batch-rehash exact commit payloads"
+grep -q $'^mktemp\t-d .*/orchid-unattended-commit-verify\\.XXXXXX$' "$fast_guard_log" \
+  || fail "acknowledgement must use bounded private history-verification scratch space"
+fast_ack_hash_line="$(
+  grep -n $'^git\t.*hash-object --no-filters -t commit --stdin-paths' \
+    "$fast_guard_log" | head -n 1 | cut -d: -f1
+)"
+fast_ack_record_line="$(
+  grep -n $'^mktemp\t.*\\.json\\.tmp\\.XXXXXX$' \
+    "$fast_guard_log" | head -n 1 | cut -d: -f1
+)"
+[ -n "$fast_ack_hash_line" ] && [ -n "$fast_ack_record_line" ] \
+  && [ "$fast_ack_hash_line" -lt "$fast_ack_record_line" ] \
+  || fail "complete exact-payload verification must precede JSON record staging"
 
 reason="reviewed target and accept prompt-injection risk"
 out="$(HOME="$home" "$ORCHID_BIN" trust unattended "$repo" --reason "$reason")"; rc=$?
@@ -399,6 +496,8 @@ git -C "$replace_repo" init -q
 git -C "$replace_repo" commit -q --allow-empty -m replacement-root
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$replace_repo")"
 assert_match '^unattended trust: untrusted$' "$out" "replacement/recreated .git is untrusted"
+assert_fast_denial_has_zero_repository_work \
+  "a repository with a replaced Git common directory" "$replace_repo"
 
 # Every unattended process must reach the identity gate without consulting the
 # captured operator PATH. This includes the kernel-selected Bash interpreter,
@@ -584,13 +683,13 @@ assert_entry_path_clean() {
 
 assert_entry_path_clean \
   "dispatched trust show" 0 \
-  "^root_commit: $entry_new_head$" "$entry_replaced" \
+  '^root_commit: pending$' "$entry_replaced" \
   "$ORCHID_BIN" trust show "$entry_replaced"
 assert_match '^unattended trust: untrusted$' "$ENTRY_PATH_OUT" \
   "dispatched trust show cannot inherit the replaced repository's old acknowledgement"
 assert_entry_path_clean \
   "direct trust show" 0 \
-  "^root_commit: $entry_new_head$" "$entry_replaced" \
+  '^root_commit: pending$' "$entry_replaced" \
   "$REPO_ROOT/libexec/orchid-trust" show "$entry_replaced"
 assert_match '^unattended trust: untrusted$' "$ENTRY_PATH_OUT" \
   "direct trust show cannot inherit the replaced repository's old acknowledgement"
@@ -643,15 +742,16 @@ assert_entry_path_clean \
   || fail "dispatched revoke must remove the direct-entry identity record"
 
 # Explain status keeps the fixed helper path for the entire report. Text and
-# HTML modes must expose the same denied gate and real replacement root through
-# both dispatch surfaces, exactly as the runners below enforce it.
+# HTML modes must expose the same denied gate and honest pending-root
+# provenance through both dispatch surfaces, exactly as the runners below
+# enforce it.
 assert_entry_path_clean \
   "dispatched status --explain" 0 \
-  "^unattended: denied.*root $entry_new_head" "$entry_replaced" \
+  '^unattended: denied.*root pending' "$entry_replaced" \
   "$ORCHID_BIN" status --explain
 assert_entry_path_clean \
   "direct status --explain" 0 \
-  "^unattended: denied.*root $entry_new_head" "$entry_replaced" \
+  '^unattended: denied.*root pending' "$entry_replaced" \
   "$REPO_ROOT/libexec/orchid-status" --explain
 assert_entry_path_clean \
   "dispatched status --html --explain" 0 \
@@ -661,8 +761,8 @@ entry_status_page="$ENTRY_PATH_OUT"
 entry_status_content="$(/bin/cat "$entry_status_page")"
 assert_match '<strong>gate:</strong> denied' "$entry_status_content" \
   "dispatched HTML status reports the denied runner gate"
-assert_match "root $entry_new_head" "$entry_status_content" \
-  "dispatched HTML status reports the real replacement root"
+assert_match 'root pending' "$entry_status_content" \
+  "dispatched HTML status reports that replacement-root verification is pending"
 assert_entry_path_clean \
   "direct status --html --explain" 0 \
   '\.orchid/runtime/status\.html$' "$entry_replaced" \
@@ -670,8 +770,8 @@ assert_entry_path_clean \
 entry_status_content="$(/bin/cat "$ENTRY_PATH_OUT")"
 assert_match '<strong>gate:</strong> denied' "$entry_status_content" \
   "direct HTML status reports the denied runner gate"
-assert_match "root $entry_new_head" "$entry_status_content" \
-  "direct HTML status reports the real replacement root"
+assert_match 'root pending' "$entry_status_content" \
+  "direct HTML status reports that replacement-root verification is pending"
 
 # Doctor prints its trust verdict before restoring the operator PATH needed by
 # later readiness/binary checks. Those later shims may run, but cannot change
@@ -688,8 +788,8 @@ assert_doctor_entry_gate() {
   )" || true
   first="${out%%$'\n'*}"
   assert_match \
-    "^WARN: unattended trust \\(headless execution gated\\): denied.*root $entry_new_head" \
-    "$first" "$label prints the real runner gate before operator-PATH checks"
+    '^WARN: unattended trust \(headless execution gated\): denied.*root pending' \
+    "$first" "$label prints the fast denied runner gate before operator-PATH checks"
   case "$(printf '%s\n' "$out" | grep -Ec '^(ok|WARN): unattended trust')" in
     1) ;;
     *) fail "$label must print exactly one unattended trust verdict" ;;
@@ -1169,23 +1269,25 @@ HOME="$home" "$ORCHID_BIN" trust unattended "$shallow_repo" \
   --reason "incomplete ancestry must fail closed" >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a shallow history must not be acknowledged as complete"
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$shallow_repo")"
-assert_match '^binding_state: unavailable$' "$out" \
-  "a shallow repository has no locally establishable underlying root"
-assert_match '^root_commit: unavailable$' "$out" \
-  "the shallow traversal boundary is never surfaced as the trust root"
+assert_match '^binding_state: untrusted$' "$out" \
+  "a failed shallow acknowledgement leaves no eligible trust record"
+assert_match '^root_commit: pending$' "$out" \
+  "ordinary no-record inspection never re-walks the shallow history"
 [ -f "$shallow_repo/.git/shallow" ] \
   || fail "trust inspection must not deepen or rewrite a shallow repository"
 
 # Git before 2.45 ignores GIT_NO_LAZY_FETCH during client-side object access.
 # Model that supported-range edge with a wrapper that advertises 2.44 and
 # would explicitly drop the variable at any object walk. The repository is
-# marked partial/promisor, its root object is absent, and its remote is an
-# executable contact trap. Inspection must reject the Git version before any
-# target-repository Git command, so neither the walk nor the remote can run.
+# acknowledged while complete, then marked partial/promisor; its root object
+# is removed and its remote becomes an executable contact trap. Candidate
+# verification must reject the Git version before any target-repository Git
+# command, so neither the walk nor the remote can run.
 promisor_repo="$WORK/promisor-old-git"
 mk_repo "$promisor_repo"
 promisor_root="$(git -C "$promisor_repo" rev-parse HEAD)"
 git -C "$promisor_repo" commit -q --allow-empty -m descendant
+trust_repo "$promisor_repo" "old-Git local-only boundary fixture"
 git -C "$promisor_repo" config core.repositoryformatversion 1
 git -C "$promisor_repo" config extensions.partialClone origin
 git -C "$promisor_repo" config remote.origin.promisor true

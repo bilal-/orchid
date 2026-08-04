@@ -211,7 +211,9 @@ version. Linked worktrees share the record, and a same-filesystem move keeps
 it; a clone, copy, recreated/replaced `.git`, root-history replacement, or
 policy-version change does not. The trust store and Git common directory must
 be on the same filesystem for the witness anchor. Trust inspection also
-requires Git 2.45 or newer so a pre-gate history walk can reliably forbid
+returns immediately with root verification `pending` when no identity-keyed
+record exists. Acknowledgement and verification of an existing candidate
+require Git 2.45 or newer so any required history walk can reliably forbid
 promisor/lazy fetching; older Git remains usable manually, but the unattended
 gate stays denied before inspecting repository objects. Re-acknowledge only
 after reviewing the changed boundary:

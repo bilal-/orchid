@@ -536,6 +536,12 @@ on one filesystem. Linked worktrees share an acknowledgement and a
 same-filesystem move preserves it; a clone, copy, recreated/replaced `.git`,
 root-history replacement, or policy-version change does not. Repository
 content, origin URLs, Git config, and `orchid.config` cannot grant it.
+With no identity-keyed acknowledgement candidate, inspection stops after
+side-effect-free common-directory identity discovery, reports root
+verification as pending, and performs no Git query, worktree enumeration,
+history walk, or scratch-file creation. Explicit acknowledgement and an
+existing structurally eligible candidate take the bounded local-only history
+verification path.
 Identity queries ignore ambient Git repository-selection or object-view
 variables, disable replacement refs, legacy grafts, and shallow boundaries,
 and do not lazy-fetch missing history. A shallow repository therefore cannot

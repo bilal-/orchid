@@ -316,6 +316,33 @@ _unattended_worktree_marker_validate() {
   return 0
 }
 
+# Resolve Git's common directory from the already-validated on-disk marker,
+# without asking Git to inspect repository objects or enumerate repository
+# state. A normal checkout's .git directory is itself the common directory.
+# A linked worktree's administrative gitdir contains Git's `commondir`
+# pointer. This is the identity-only path used before Orchid knows whether a
+# machine-local acknowledgement candidate exists.
+_unattended_common_dir_from_marker() {
+  local raw
+  case "$ORCHID_UNATTENDED_WORKTREE_MARKER_KIND" in
+    directory)
+      printf '%s\n' "$ORCHID_UNATTENDED_WORKTREE_GITDIR"
+      ;;
+    linked)
+      [ ! -L "$ORCHID_UNATTENDED_WORKTREE_GITDIR/commondir" ] \
+        && [ -f "$ORCHID_UNATTENDED_WORKTREE_GITDIR/commondir" ] \
+        || return 1
+      _unattended_capture_line raw _unattended_read_git_path_file \
+        "$ORCHID_UNATTENDED_WORKTREE_GITDIR/commondir" || return 1
+      _unattended_resolve_directory \
+        "$ORCHID_UNATTENDED_WORKTREE_GITDIR" "$raw"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 # Once Git's common directory is known, make sure the marker validated above
 # is one of that directory's own administrative entries. A normal checkout's
 # .git directory is the common directory; a linked checkout's gitdir is a
@@ -387,7 +414,7 @@ _unattended_trust_store_outside_registered_worktrees() {
   }
 }
 
-_unattended_trust_store_validate() {
+_unattended_trust_store_basic_validate() {
   local repo="$1" worktree_root="$2" common="$3" trust_dir="$4"
   if _unattended_path_within "$repo" "$trust_dir" \
      || _unattended_path_within "$worktree_root" "$trust_dir" \
@@ -395,6 +422,12 @@ _unattended_trust_store_validate() {
     ORCHID_UNATTENDED_BOUNDARY_DETAIL="machine-local unattended-trust directory resolves inside the target repository; use an operator HOME outside the target"
     return 1
   fi
+}
+
+_unattended_trust_store_validate() {
+  local repo="$1" worktree_root="$2" common="$3" trust_dir="$4"
+  _unattended_trust_store_basic_validate \
+    "$repo" "$worktree_root" "$common" "$trust_dir" || return 1
   _unattended_trust_store_outside_registered_worktrees "$common" "$trust_dir"
 }
 
@@ -581,6 +614,40 @@ _unattended_oid_is_valid() {
   case "$oid" in
     *[!0-9a-f]*) return 1 ;;
   esac
+}
+
+# A candidate record must carry a non-empty, consistently hashed set of
+# lowercase object IDs before it is eligible to trigger any object walk.
+# Exact object-format and root equality are established later by the batched
+# verifier; this check only rejects structurally impossible machine-local
+# records without consulting repository history.
+_unattended_root_set_is_structurally_valid() {
+  local remaining="$1" oid oid_length=0
+  [ -n "$remaining" ] || return 1
+  case "$remaining" in ,*|*,|*,,*) return 1 ;; esac
+  while :; do
+    case "$remaining" in
+      *,*)
+        oid="${remaining%%,*}"
+        remaining="${remaining#*,}"
+        ;;
+      *)
+        oid="$remaining"
+        remaining=""
+        ;;
+    esac
+    case "${#oid}" in
+      40|64) ;;
+      *) return 1 ;;
+    esac
+    case "$oid" in *[!0-9a-f]*) return 1 ;; esac
+    if [ "$oid_length" -eq 0 ]; then
+      oid_length="${#oid}"
+    elif [ "${#oid}" -ne "$oid_length" ]; then
+      return 1
+    fi
+    [ -n "$remaining" ] || break
+  done
 }
 
 _unattended_join_root_set() (
@@ -947,12 +1014,14 @@ _unattended_one_line() {
   printf '%s' "$1" | tr '\r\n\t' '   ' | tr -s ' '
 }
 
-# Re-check the repository facts after parsing a matching record. This cannot
-# make a shell script immune to a hostile concurrent rename after the gate
-# returns, but it prevents one inspection from silently combining a common
+# Re-check the repository facts after a complete history verification. This
+# cannot make a shell script immune to a hostile concurrent rename after the
+# gate returns, but it prevents one operation from silently combining a common
 # directory/device observation from one repository state with root history
-# read from a replacement state.
-_unattended_identity_still_matches() {
+# read from a replacement state. The acknowledgement-only path calls this
+# before publishing a record; ordinary inspection additionally rechecks the
+# machine-local incarnation anchor below.
+_unattended_repository_identity_still_matches() {
   local common ident head worktree expected_kind expected_gitdir
   # Fail before any target-repository Git query if the executable changed to a
   # version that cannot guarantee local-only object access.
@@ -978,6 +1047,10 @@ _unattended_identity_still_matches() {
     _unattended_git --no-lazy-fetch -C "$ORCHID_UNATTENDED_REPO" \
       rev-parse --verify HEAD 2>/dev/null || return 1
   [ "$head" = "$ORCHID_UNATTENDED_HEAD_OID" ] || return 1
+}
+
+_unattended_identity_still_matches() {
+  _unattended_repository_identity_still_matches || return 1
   _unattended_identity_anchor_matches
 }
 
@@ -998,18 +1071,7 @@ _unattended_record_still_matches() {
   [ "$json" = "$expected_json" ]
 }
 
-# unattended_trust_inspect <repo>
-#
-# Always returns zero and populates the ORCHID_UNATTENDED_* globals below.
-# Callers can therefore report an unavailable/untrusted state without
-# tripping their own `set -e`; only unattended_trust_require turns it into a
-# refusal. This function is read-only.
-unattended_trust_inspect() {
-  local repo_in="$1" ident rec_schema rec_kind rec_device rec_inode rec_policy rec_root
-  local rec_anchor_device rec_anchor_inode
-  local trust_dir trust_dir_physical rec_meta rec_links rec_mode record_ident record_json
-  local provenance_valid=0
-
+_unattended_trust_reset() {
   ORCHID_UNATTENDED_STATE=unavailable
   ORCHID_UNATTENDED_DETAIL="repository identity is unavailable"
   ORCHID_UNATTENDED_REPO=""
@@ -1020,6 +1082,7 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_DEVICE=""
   ORCHID_UNATTENDED_INODE=""
   ORCHID_UNATTENDED_ROOT_COMMIT=""
+  ORCHID_UNATTENDED_ROOT_STATUS=unavailable
   ORCHID_UNATTENDED_HEAD_OID=""
   ORCHID_UNATTENDED_TRUST_DIR=""
   ORCHID_UNATTENDED_RECORD=""
@@ -1029,6 +1092,7 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_ANCHOR_INODE=""
   ORCHID_UNATTENDED_GIT_VERSION=""
   ORCHID_UNATTENDED_ROOT_ERROR=""
+  ORCHID_UNATTENDED_BOUNDARY_DETAIL=""
   ORCHID_UNATTENDED_RECORD_EXISTS=0
   ORCHID_UNATTENDED_RECORD_LOADED=0
   ORCHID_UNATTENDED_RECORDED_REPO=""
@@ -1043,96 +1107,114 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_RECORDED_POLICY_VERSION=""
   ORCHID_UNATTENDED_ACKNOWLEDGED_AT=""
   ORCHID_UNATTENDED_REASON=""
+}
+
+# Resolve only the caller-selected worktree, its physical common-directory
+# identity, and the corresponding machine-local record names. This phase uses
+# filesystem metadata and constant-size Git administrative pointer files; it
+# does not run Git, enumerate registered worktrees, inspect refs or objects,
+# walk history, create scratch space, or write anything.
+_unattended_trust_identity_discover() {
+  local repo_in="$1" ident trust_dir trust_dir_physical
 
   if ! _unattended_capture_line ORCHID_UNATTENDED_REPO \
       _unattended_repo_canon "$repo_in"; then
     ORCHID_UNATTENDED_DETAIL="target is not an accessible directory"
-    return 0
+    return 1
   fi
   if ! _unattended_capture_line ORCHID_UNATTENDED_WORKTREE_ROOT \
       _unattended_worktree_root "$ORCHID_UNATTENDED_REPO"; then
     ORCHID_UNATTENDED_DETAIL="target is not inside a Git worktree with an on-disk .git marker"
-    return 0
+    return 1
   fi
   if ! _unattended_worktree_marker_validate "$ORCHID_UNATTENDED_WORKTREE_ROOT"; then
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-caller-selected worktree marker is invalid}"
-    return 0
-  fi
-  # This check intentionally precedes every Git command aimed at the target.
-  # Git 2.44 and older ignore GIT_NO_LAZY_FETCH for client object access; even
-  # apparently metadata-only commands stay behind this boundary so an older
-  # implementation cannot acquire an object (and contact a promisor) before
-  # the unattended decision.
-  if ! _unattended_git_supports_local_object_walk; then
-    ORCHID_UNATTENDED_DETAIL="side-effect-free unattended trust inspection requires Git $ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN or newer (found ${ORCHID_UNATTENDED_GIT_VERSION:-an unrecognized version}); no target-repository Git query or history object walk was attempted"
-    return 0
+    return 1
   fi
   if ! _unattended_capture_line ORCHID_UNATTENDED_COMMON_DIR \
-      _unattended_git_common_dir "$ORCHID_UNATTENDED_REPO"; then
+      _unattended_common_dir_from_marker; then
     ORCHID_UNATTENDED_DETAIL="target is not a Git worktree with an accessible common directory"
-    return 0
+    return 1
   fi
   if _unattended_path_within "$ORCHID_UNATTENDED_COMMON_DIR" "$ORCHID_UNATTENDED_REPO"; then
     ORCHID_UNATTENDED_DETAIL="target worktree resolves inside its Git common directory"
-    return 0
+    return 1
   fi
   if ! _unattended_worktree_marker_matches_common "$ORCHID_UNATTENDED_COMMON_DIR"; then
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-caller-selected worktree is not registered under its Git common directory}"
-    return 0
+    return 1
   fi
   if ! _unattended_capture_line trust_dir _unattended_trust_dir \
      || ! _unattended_capture_line trust_dir_physical \
        _unattended_trust_dir_physical; then
     ORCHID_UNATTENDED_DETAIL="machine-local unattended-trust directory is unavailable"
-    return 0
+    return 1
   fi
-  # Use the resolved absolute directory for every record access. The logical
-  # HOME spelling is useful for locating the store, but continuing through a
-  # symlinked component after validating its physical target would reopen a
-  # needless redirection window.
   ORCHID_UNATTENDED_TRUST_DIR="$trust_dir_physical"
-
-  # The record must not be trackable by any checkout sharing this trust
-  # identity. Physical paths catch symlinked HOME/.orchid layouts as well as
-  # simple lexical containment, including containment in a sibling worktree.
-  if ! _unattended_trust_store_validate \
+  if ! _unattended_trust_store_basic_validate \
       "$ORCHID_UNATTENDED_REPO" "$ORCHID_UNATTENDED_WORKTREE_ROOT" \
       "$ORCHID_UNATTENDED_COMMON_DIR" "$trust_dir_physical"; then
     ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-machine-local unattended-trust directory placement is unsafe}"
-    return 0
+    return 1
   fi
   if ! _unattended_capture_line ident \
       _unattended_fs_identity "$ORCHID_UNATTENDED_COMMON_DIR"; then
     ORCHID_UNATTENDED_DETAIL="cannot read Git common-directory filesystem identity"
-    return 0
+    return 1
   fi
   ORCHID_UNATTENDED_DEVICE="${ident%% *}"
   ORCHID_UNATTENDED_INODE="${ident#* }"
   if [ -z "$ORCHID_UNATTENDED_DEVICE" ] || [ -z "$ORCHID_UNATTENDED_INODE" ] \
      || [ "$ORCHID_UNATTENDED_INODE" = "$ident" ]; then
     ORCHID_UNATTENDED_DETAIL="cannot parse Git common-directory filesystem identity"
-    return 0
-  fi
-  if ! _unattended_root_commit ORCHID_UNATTENDED_ROOT_COMMIT \
-      "$ORCHID_UNATTENDED_REPO"; then
-    ORCHID_UNATTENDED_ROOT_COMMIT=""
-    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-cannot verify locally reachable commit history}"
-    return 0
-  fi
-  if [ -z "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
-    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-repository has no reachable root commit at HEAD}"
-    return 0
+    return 1
   fi
 
   ORCHID_UNATTENDED_RECORD="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.json"
   ORCHID_UNATTENDED_IDENTITY_ANCHOR="$ORCHID_UNATTENDED_TRUST_DIR/$ORCHID_UNATTENDED_DEVICE-$ORCHID_UNATTENDED_INODE.anchor"
   ORCHID_UNATTENDED_IDENTITY_WITNESS="$ORCHID_UNATTENDED_COMMON_DIR/$ORCHID_UNATTENDED_IDENTITY_WITNESS_NAME"
+  ORCHID_UNATTENDED_ROOT_STATUS=pending
+  ORCHID_UNATTENDED_DETAIL="repository identity resolved; root verification is pending an eligible machine-local acknowledgement"
+  return 0
+}
+
+# unattended_trust_inspect <repo>
+#
+# Always returns zero and populates the ORCHID_UNATTENDED_* globals below.
+# Callers can therefore report an unavailable/untrusted state without
+# tripping their own `set -e`; only unattended_trust_require turns it into a
+# refusal. This function is read-only.
+unattended_trust_inspect() {
+  local repo_in="$1" rec_schema rec_kind rec_device rec_inode rec_policy rec_root
+  local rec_anchor_device rec_anchor_inode
+  local rec_meta rec_links rec_mode record_ident record_json
+  local provenance_valid=0
+
+  _unattended_trust_reset
+  _unattended_trust_identity_discover "$repo_in" || return 0
   if [ ! -e "$ORCHID_UNATTENDED_RECORD" ] && [ ! -L "$ORCHID_UNATTENDED_RECORD" ]; then
     ORCHID_UNATTENDED_STATE=untrusted
-    ORCHID_UNATTENDED_DETAIL="no machine-local acknowledgement for this Git common-directory identity"
+    ORCHID_UNATTENDED_DETAIL="no machine-local acknowledgement for this Git common-directory identity; root verification was not attempted"
     return 0
   fi
   ORCHID_UNATTENDED_RECORD_EXISTS=1
+  # Git 2.44 and older cannot reliably prohibit lazy object fetching. Check
+  # the executable only after finding an identity-keyed candidate, but before
+  # any Git command targets the repository.
+  if ! _unattended_git_supports_local_object_walk; then
+    ORCHID_UNATTENDED_ROOT_STATUS=unavailable
+    ORCHID_UNATTENDED_DETAIL="side-effect-free unattended trust inspection requires Git $ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN or newer (found ${ORCHID_UNATTENDED_GIT_VERSION:-an unrecognized version}); no target-repository Git query or history object walk was attempted"
+    return 0
+  fi
+  # Only an existing candidate justifies enumerating linked worktrees. This
+  # keeps the ordinary no-record denial constant-size while preserving the
+  # rule that machine-local state cannot live in any sibling checkout.
+  if ! _unattended_trust_store_validate \
+      "$ORCHID_UNATTENDED_REPO" "$ORCHID_UNATTENDED_WORKTREE_ROOT" \
+      "$ORCHID_UNATTENDED_COMMON_DIR" "$ORCHID_UNATTENDED_TRUST_DIR"; then
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-machine-local unattended-trust directory placement is unsafe}"
+    return 0
+  fi
   if [ -L "$ORCHID_UNATTENDED_RECORD" ]; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record must not be a symbolic link"
@@ -1242,29 +1324,71 @@ unattended_trust_inspect() {
   if [ "$rec_schema" != "$ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA" ]; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="acknowledgement record schema is unsupported (recorded ${rec_schema:-missing}, current $ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA)"
+    return 0
   elif [ "$rec_kind" != unattended ]; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="acknowledgement record kind is invalid (recorded ${rec_kind:-missing}, expected unattended)"
+    return 0
   elif [ "$rec_device" != "$ORCHID_UNATTENDED_DEVICE" ] \
        || [ "$rec_inode" != "$ORCHID_UNATTENDED_INODE" ]; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="acknowledgement record identity does not match its Git common directory"
+    return 0
   elif [ "$rec_policy" != "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION" ]; then
     ORCHID_UNATTENDED_STATE=mismatch
     ORCHID_UNATTENDED_DETAIL="trust-policy version changed (recorded ${rec_policy:-missing}, current $ORCHID_UNATTENDED_TRUST_POLICY_VERSION)"
-  elif [ "$rec_root" != "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
-    ORCHID_UNATTENDED_STATE=mismatch
-    ORCHID_UNATTENDED_DETAIL="repository root commit changed (recorded ${rec_root:-missing}, current $ORCHID_UNATTENDED_ROOT_COMMIT)"
-  elif ! _unattended_identity_anchor_matches; then
-    ORCHID_UNATTENDED_STATE=mismatch
-    ORCHID_UNATTENDED_DETAIL="repository incarnation anchor is missing or does not match the machine-local acknowledgement"
+    return 0
   elif [ "$provenance_valid" -ne 1 ]; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="acknowledgement record is missing operator provenance"
-  elif ! _unattended_record_still_matches "$ORCHID_UNATTENDED_RECORD" \
+    return 0
+  elif ! _unattended_root_set_is_structurally_valid "$rec_root"; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="acknowledgement record contains a malformed root commit set"
+    return 0
+  fi
+  case "$rec_anchor_device:$rec_anchor_inode" in
+    :*|*:|*[!0-9:]*|*:*:*)
+      ORCHID_UNATTENDED_STATE=invalid
+      ORCHID_UNATTENDED_DETAIL="acknowledgement record contains a malformed incarnation-anchor identity"
+      return 0
+      ;;
+  esac
+  if ! _unattended_identity_anchor_matches; then
+    ORCHID_UNATTENDED_STATE=mismatch
+    ORCHID_UNATTENDED_DETAIL="repository incarnation anchor is missing or does not match the machine-local acknowledgement"
+    return 0
+  fi
+  if ! _unattended_record_still_matches "$ORCHID_UNATTENDED_RECORD" \
       "$record_ident" "$rec_meta" "$record_json"; then
     ORCHID_UNATTENDED_STATE=invalid
     ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record changed during inspection; retry"
+    return 0
+  fi
+
+  # The candidate is now safe, current-policy, identity-bound, structurally
+  # complete, and backed by its non-reusable machine-local anchor. Only this
+  # state may pay for exact-payload/root verification.
+  ORCHID_UNATTENDED_ROOT_STATUS=unavailable
+  if ! _unattended_root_commit ORCHID_UNATTENDED_ROOT_COMMIT \
+      "$ORCHID_UNATTENDED_REPO"; then
+    ORCHID_UNATTENDED_ROOT_COMMIT=""
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-cannot verify locally reachable commit history}"
+    return 0
+  fi
+  if [ -z "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-repository has no reachable root commit at HEAD}"
+    return 0
+  fi
+  ORCHID_UNATTENDED_ROOT_STATUS=verified
+
+  if [ "$rec_root" != "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
+    ORCHID_UNATTENDED_STATE=mismatch
+    ORCHID_UNATTENDED_DETAIL="repository root commit changed (recorded ${rec_root:-missing}, current $ORCHID_UNATTENDED_ROOT_COMMIT)"
+  elif ! _unattended_record_still_matches "$ORCHID_UNATTENDED_RECORD" \
+      "$record_ident" "$rec_meta" "$record_json"; then
+    ORCHID_UNATTENDED_STATE=invalid
+    ORCHID_UNATTENDED_DETAIL="machine-local acknowledgement record changed during history verification; retry"
   elif ! _unattended_identity_still_matches; then
     ORCHID_UNATTENDED_STATE=unavailable
     ORCHID_UNATTENDED_DETAIL="repository identity changed during trust inspection; retry"
@@ -1276,7 +1400,8 @@ unattended_trust_inspect() {
 }
 
 unattended_trust_summary_loaded() {
-  local reason
+  local reason root_display
+  root_display="${ORCHID_UNATTENDED_ROOT_COMMIT:-${ORCHID_UNATTENDED_ROOT_STATUS:-unavailable}}"
   if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
     reason="$(_unattended_one_line "$ORCHID_UNATTENDED_REASON")"
     printf 'allowed — acknowledged at %s; reason: %s; git-common identity %s:%s; incarnation anchor %s:%s; root %s; policy %s; record %s\n' \
@@ -1290,7 +1415,7 @@ unattended_trust_summary_loaded() {
     printf 'denied — %s; git-common identity %s:%s; root %s; policy %s' \
       "$ORCHID_UNATTENDED_DETAIL" \
       "${ORCHID_UNATTENDED_DEVICE:-unavailable}" "${ORCHID_UNATTENDED_INODE:-unavailable}" \
-      "${ORCHID_UNATTENDED_ROOT_COMMIT:-unavailable}" "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION"
+      "$root_display" "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION"
     if [ "${ORCHID_UNATTENDED_RECORD_EXISTS:-0}" -eq 1 ]; then
       printf '; existing record %s' "$ORCHID_UNATTENDED_RECORD"
       [ -z "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT" ] \
@@ -1305,8 +1430,9 @@ unattended_trust_summary_loaded() {
 }
 
 unattended_trust_show() {
-  local trust_label
+  local trust_label root_display
   unattended_trust_inspect "$1"
+  root_display="${ORCHID_UNATTENDED_ROOT_COMMIT:-${ORCHID_UNATTENDED_ROOT_STATUS:-unavailable}}"
   trust_label="$ORCHID_UNATTENDED_STATE"
   [ "$trust_label" = trusted ] || trust_label=untrusted
   printf 'unattended trust: %s\n' "$trust_label"
@@ -1322,7 +1448,7 @@ unattended_trust_show() {
   printf 'git_common_dir: %s\n' "${ORCHID_UNATTENDED_COMMON_DIR:-unavailable}"
   printf 'git_common_device: %s\n' "${ORCHID_UNATTENDED_DEVICE:-unavailable}"
   printf 'git_common_inode: %s\n' "${ORCHID_UNATTENDED_INODE:-unavailable}"
-  printf 'root_commit: %s\n' "${ORCHID_UNATTENDED_ROOT_COMMIT:-unavailable}"
+  printf 'root_commit: %s\n' "$root_display"
   printf 'policy_version: %s\n' "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION"
   printf 'record: %s\n' "${ORCHID_UNATTENDED_RECORD:-none}"
   printf 'identity_anchor: %s\n' "${ORCHID_UNATTENDED_IDENTITY_ANCHOR:-none}"
@@ -1343,25 +1469,66 @@ unattended_trust_show() {
   fi
 }
 
+# The explicit operator acknowledgement is the sole no-record path allowed to
+# perform complete local history verification. Keep that authority in a
+# dedicated helper so ordinary inspection cannot accidentally regain an
+# eager object walk. No trust-store file is created or changed here.
+_unattended_trust_acknowledgement_verify() {
+  local repo="$1"
+  _unattended_trust_reset
+  _unattended_trust_identity_discover "$repo" || return 1
+  if ! _unattended_git_supports_local_object_walk; then
+    ORCHID_UNATTENDED_ROOT_STATUS=unavailable
+    ORCHID_UNATTENDED_DETAIL="local acknowledgement verification requires Git $ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN or newer (found ${ORCHID_UNATTENDED_GIT_VERSION:-an unrecognized version})"
+    return 1
+  fi
+  if ! _unattended_trust_store_validate \
+      "$ORCHID_UNATTENDED_REPO" "$ORCHID_UNATTENDED_WORKTREE_ROOT" \
+      "$ORCHID_UNATTENDED_COMMON_DIR" "$ORCHID_UNATTENDED_TRUST_DIR"; then
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_BOUNDARY_DETAIL:-machine-local unattended-trust directory placement is unsafe}"
+    return 1
+  fi
+  ORCHID_UNATTENDED_ROOT_STATUS=unavailable
+  if ! _unattended_root_commit ORCHID_UNATTENDED_ROOT_COMMIT \
+      "$ORCHID_UNATTENDED_REPO"; then
+    ORCHID_UNATTENDED_ROOT_COMMIT=""
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-cannot verify locally reachable commit history}"
+    return 1
+  fi
+  [ -n "$ORCHID_UNATTENDED_ROOT_COMMIT" ] || {
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-repository has no reachable root commit at HEAD}"
+    return 1
+  }
+  ORCHID_UNATTENDED_ROOT_STATUS=verified
+  if ! _unattended_repository_identity_still_matches; then
+    ORCHID_UNATTENDED_DETAIL="repository identity changed during acknowledgement verification; retry"
+    return 1
+  fi
+}
+
 unattended_trust_acknowledge() {
-  local repo="$1" reason="$2" acknowledged_at dir
-  unattended_trust_inspect "$repo"
-  [ "$ORCHID_UNATTENDED_STATE" != unavailable ] \
-    || orchid_die "cannot acknowledge unattended execution: $ORCHID_UNATTENDED_DETAIL"
+  local repo="$1" reason="$2" acknowledged_at dir trust_dir_after
   printf '%s' "$reason" | LC_ALL=C grep -q '[^[:space:]]' \
     || orchid_die "unattended trust requires a non-empty --reason"
 
+  _unattended_trust_acknowledgement_verify "$repo" \
+    || orchid_die "cannot acknowledge unattended execution: $ORCHID_UNATTENDED_DETAIL"
   acknowledged_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   dir="$ORCHID_UNATTENDED_TRUST_DIR"
   (
     umask 077
     mkdir -p "$dir"
-    # Re-inspect after creating the directory so a pre-existing/symlinked
-    # component and the repository identity are validated immediately before
-    # the record is selected and written, not only before mkdir.
-    unattended_trust_inspect "$repo"
-    [ "$ORCHID_UNATTENDED_STATE" != unavailable ] \
-      || orchid_die "cannot acknowledge unattended execution: $ORCHID_UNATTENDED_DETAIL"
+    # Resolve the just-created store again and retain the verified repository
+    # HEAD/identity globals. A symlink or repository replacement raced into
+    # either path must fail before the anchor or JSON record is published.
+    _unattended_capture_line trust_dir_after \
+      _unattended_trust_dir_physical \
+      || orchid_die "cannot acknowledge unattended execution: machine-local unattended-trust directory became unavailable"
+    [ "$trust_dir_after" = "$dir" ] \
+      || orchid_die "cannot acknowledge unattended execution: machine-local unattended-trust directory changed during verification"
+    _unattended_repository_identity_still_matches \
+      || orchid_die "cannot acknowledge unattended execution: repository identity changed after history verification; retry"
+
     [ ! -L "$ORCHID_UNATTENDED_RECORD" ] \
       || orchid_die "cannot acknowledge unattended execution: acknowledgement record path is a symbolic link; revoke it first"
     if [ -e "$ORCHID_UNATTENDED_RECORD" ] && [ ! -f "$ORCHID_UNATTENDED_RECORD" ]; then
@@ -1372,6 +1539,8 @@ unattended_trust_acknowledge() {
         "$ORCHID_UNATTENDED_IDENTITY_WITNESS"; then
       orchid_die "cannot acknowledge unattended execution: $ORCHID_UNATTENDED_ANCHOR_ERROR"
     fi
+    _unattended_repository_identity_still_matches \
+      || orchid_die "cannot acknowledge unattended execution: repository identity changed before the acknowledgement record was written; retry"
     if ! jq -n \
       --argjson schema "$ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA" \
       --argjson policy_version "$ORCHID_UNATTENDED_TRUST_POLICY_VERSION" \

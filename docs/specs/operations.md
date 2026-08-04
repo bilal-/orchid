@@ -117,12 +117,17 @@ operator `PATH` is captured only as inert data and is restored by pump/tick
 after the gate allows execution, so engine discovery still sees the operator's
 tools; service installation likewise writes that captured value into the
 scheduler artifact without using it to authorize the target. Unattended trust
-inspection requires Git 2.45 or newer (the release that added a reliable
-client-side no-lazy-fetch control); on older Git, the gate stays denied before
-any target-repository Git query or history object walk, while manual operation
-remains available. A shallow repository cannot be acknowledged until its commit
-ancestry is locally complete. Every trust-boundary path is captured and
-compared losslessly, including paths ending in a literal newline.
+inspection first derives only the on-disk common-directory identity and
+identity-keyed record path. With no candidate it reports root verification as
+pending and denies without invoking Git, enumerating worktrees, walking
+history, or creating scratch files. Acknowledgement and verification of an
+existing candidate require Git 2.45 or newer (the release that added a
+reliable client-side no-lazy-fetch control); on older Git, the gate stays
+denied before any target-repository Git query or history object walk, while
+manual operation remains available. A shallow repository cannot be
+acknowledged until its commit ancestry is locally complete. Every
+trust-boundary path is captured and compared losslessly, including paths
+ending in a literal newline.
 Trust-store containment uses the physical checkout marker, not a
 repository-configurable worktree path. A linked checkout's marker must
 reciprocally match the path registered under the common directory, so copying
