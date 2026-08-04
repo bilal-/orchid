@@ -570,20 +570,171 @@ _unattended_json_value() {
   printf '%s' "$json" | jq -j "$expression"
 }
 
-_unattended_root_commit() {
-  local repo="$1"
-  # Check again at the exact object-walk boundary. The earlier inspection gate
-  # produces the operator-facing diagnostic; this repeated guard also covers a
-  # changed PATH/executable during a concurrent inspection.
-  _unattended_git_supports_local_object_walk || return 1
-  # Most repositories have exactly one root. Joining a sorted set also
-  # handles histories created with --allow-unrelated-histories without
-  # silently ignoring one of their roots.
-  _unattended_git --no-lazy-fetch -C "$repo" \
-    rev-list --max-parents=0 HEAD 2>/dev/null \
+_unattended_oid_is_valid() {
+  local oid="$1" expected_length="$2"
+  [ "${#oid}" -eq "$expected_length" ] || return 1
+  case "$oid" in
+    *[!0-9a-f]*) return 1 ;;
+  esac
+}
+
+# Recompute one commit's object ID from the exact payload Git reads locally.
+# `cat-file <type> <oid>` emits the stored object payload without its loose or
+# pack representation; `hash-object -t commit` restores Git's canonical
+# "commit <size>\0" framing and uses the repository's storage hash (SHA-1 or
+# SHA-256). Neither command writes an object, and both retain the explicit
+# no-lazy-fetch boundary. pipefail is scoped to this subshell so a cat-file
+# failure cannot be hidden by hash-object successfully hashing a partial or
+# empty stream.
+_unattended_hash_commit_stream() (
+  set -o pipefail
+  _unattended_git --no-lazy-fetch -C "$1" cat-file commit "$2" 2>/dev/null \
+    | _unattended_git --no-lazy-fetch -C "$1" \
+        hash-object --no-filters -t commit --stdin 2>/dev/null
+)
+
+_unattended_hash_commit_object() {
+  local target="$1" repo="$2" oid="$3" actual
+  _unattended_capture_line actual \
+    _unattended_hash_commit_stream "$repo" "$oid" || return 1
+  printf -v "$target" '%s' "$actual"
+}
+
+_unattended_join_root_set() (
+  set -o pipefail
+  printf '%s' "$1" \
     | LC_ALL=C sort \
     | awk 'NF { if (roots != "") roots=roots ","; roots=roots $0 }
            END { if (roots != "") print roots }'
+)
+
+# _unattended_root_commit <result-variable> <repo>
+#
+# Derive the root set only from a complete local parent walk whose every
+# reachable commit has been independently re-hashed. Git normally trusts that
+# loose bytes found below objects/aa/bb... belong to the advertised aa... OID;
+# rev-list consequently keeps reporting that filename OID even if the payload
+# was replaced with a different valid commit. Comparing cat-file's exact
+# payload with hash-object's result closes that gap before a root can be
+# accepted or recorded.
+#
+# `--parents` makes the same complete walk provide the roots and the list of
+# graph-contributing commits. Commit-graph acceleration, replacement refs,
+# grafts, shallow boundaries, repository-selection overrides, and lazy fetches
+# remain disabled by _unattended_git. The success sentinel prevents a partial
+# rev-list result from being mistaken for a complete history when a local
+# object is missing or unreadable.
+_unattended_root_commit() {
+  local target="$1" repo="$2"
+  local object_format oid_length line commit parents parent computed
+  local roots="" joined="" commit_count=0 complete=0
+  local sentinel="orchid-unattended-commit-walk-complete-v1"
+
+  ORCHID_UNATTENDED_ROOT_ERROR=""
+
+  # Check again at the exact object-walk boundary. The earlier inspection gate
+  # produces the usual version diagnostic; this repeated guard also covers a
+  # changed PATH/executable during a concurrent inspection.
+  if ! _unattended_git_supports_local_object_walk; then
+    ORCHID_UNATTENDED_ROOT_ERROR="side-effect-free commit verification requires Git $ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN or newer (found ${ORCHID_UNATTENDED_GIT_VERSION:-an unrecognized version})"
+    return 1
+  fi
+  if ! _unattended_capture_line object_format \
+      _unattended_git --no-lazy-fetch -C "$repo" \
+        rev-parse --show-object-format=storage 2>/dev/null; then
+    ORCHID_UNATTENDED_ROOT_ERROR="cannot determine the repository object format before verifying commit history"
+    return 1
+  fi
+  case "$object_format" in
+    sha1) oid_length=40 ;;
+    sha256) oid_length=64 ;;
+    *)
+      ORCHID_UNATTENDED_ROOT_ERROR="unsupported repository object format '${object_format:-unknown}' while verifying commit history"
+      return 1
+      ;;
+  esac
+
+  while IFS= read -r line; do
+    if [ "$line" = "$sentinel" ]; then
+      complete=1
+      continue
+    fi
+    if [ "$complete" -eq 1 ] || [ -z "$line" ]; then
+      ORCHID_UNATTENDED_ROOT_ERROR="Git returned a malformed reachable-commit graph while deriving the unattended trust root"
+      return 1
+    fi
+
+    commit="${line%% *}"
+    if [ "$line" = "$commit" ]; then
+      parents=""
+    else
+      parents="${line#* }"
+    fi
+    if ! _unattended_oid_is_valid "$commit" "$oid_length"; then
+      ORCHID_UNATTENDED_ROOT_ERROR="Git returned an invalid commit OID while deriving the unattended trust root"
+      return 1
+    fi
+
+    # Validate every advertised edge as well as every commit row. A successful
+    # complete rev-list walk emits each reachable parent as its own row, where
+    # its stored payload is re-hashed below.
+    parent="$parents"
+    while [ -n "$parent" ]; do
+      case "$parent" in
+        *" "*)
+          oid="${parent%% *}"
+          parent="${parent#* }"
+          ;;
+        *)
+          oid="$parent"
+          parent=""
+          ;;
+      esac
+      if ! _unattended_oid_is_valid "$oid" "$oid_length"; then
+        ORCHID_UNATTENDED_ROOT_ERROR="Git returned an invalid parent OID for commit $commit while deriving the unattended trust root"
+        return 1
+      fi
+    done
+
+    if ! _unattended_hash_commit_object computed "$repo" "$commit"; then
+      ORCHID_UNATTENDED_ROOT_ERROR="cannot locally read and hash advertised commit object $commit; the object may be missing, malformed, or unavailable without a fetch"
+      return 1
+    fi
+    if ! _unattended_oid_is_valid "$computed" "$oid_length"; then
+      ORCHID_UNATTENDED_ROOT_ERROR="Git returned an invalid recomputed object ID for advertised commit $commit"
+      return 1
+    fi
+    if [ "$computed" != "$commit" ]; then
+      ORCHID_UNATTENDED_ROOT_ERROR="commit object integrity mismatch: advertised OID $commit hashes to $computed; repair or replace the repository before acknowledging unattended trust"
+      return 1
+    fi
+
+    if [ -z "$parents" ]; then
+      roots="${roots}${commit}"$'\n'
+    fi
+    commit_count=$((commit_count + 1))
+  done < <(
+    if _unattended_git --no-lazy-fetch -C "$repo" \
+        rev-list --parents HEAD 2>/dev/null; then
+      printf '%s\n' "$sentinel"
+    fi
+  )
+
+  if [ "$complete" -ne 1 ]; then
+    ORCHID_UNATTENDED_ROOT_ERROR="cannot completely walk locally reachable commit history; a commit may be missing or unreadable"
+    return 1
+  fi
+  if [ "$commit_count" -eq 0 ] || [ -z "$roots" ]; then
+    ORCHID_UNATTENDED_ROOT_ERROR="repository has no reachable root commit at HEAD"
+    return 1
+  fi
+  if ! _unattended_capture_line joined _unattended_join_root_set "$roots" \
+     || [ -z "$joined" ]; then
+    ORCHID_UNATTENDED_ROOT_ERROR="cannot normalize the verified repository root commit set"
+    return 1
+  fi
+
+  printf -v "$target" '%s' "$joined"
 }
 
 _unattended_one_line() {
@@ -617,8 +768,7 @@ _unattended_identity_still_matches() {
     "$ORCHID_UNATTENDED_TRUST_DIR" || return 1
   _unattended_capture_line ident _unattended_fs_identity "$common" || return 1
   [ "$ident" = "$ORCHID_UNATTENDED_DEVICE $ORCHID_UNATTENDED_INODE" ] || return 1
-  _unattended_capture_line root \
-    _unattended_root_commit "$ORCHID_UNATTENDED_REPO" || return 1
+  _unattended_root_commit root "$ORCHID_UNATTENDED_REPO" || return 1
   [ "$root" = "$ORCHID_UNATTENDED_ROOT_COMMIT" ] || return 1
   _unattended_identity_anchor_matches
 }
@@ -669,6 +819,7 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_ANCHOR_DEVICE=""
   ORCHID_UNATTENDED_ANCHOR_INODE=""
   ORCHID_UNATTENDED_GIT_VERSION=""
+  ORCHID_UNATTENDED_ROOT_ERROR=""
   ORCHID_UNATTENDED_RECORD_EXISTS=0
   ORCHID_UNATTENDED_RECORD_LOADED=0
   ORCHID_UNATTENDED_RECORDED_REPO=""
@@ -753,12 +904,14 @@ unattended_trust_inspect() {
     ORCHID_UNATTENDED_DETAIL="cannot parse Git common-directory filesystem identity"
     return 0
   fi
-  if ! _unattended_capture_line ORCHID_UNATTENDED_ROOT_COMMIT \
-      _unattended_root_commit "$ORCHID_UNATTENDED_REPO"; then
+  if ! _unattended_root_commit ORCHID_UNATTENDED_ROOT_COMMIT \
+      "$ORCHID_UNATTENDED_REPO"; then
     ORCHID_UNATTENDED_ROOT_COMMIT=""
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-cannot verify locally reachable commit history}"
+    return 0
   fi
   if [ -z "$ORCHID_UNATTENDED_ROOT_COMMIT" ]; then
-    ORCHID_UNATTENDED_DETAIL="repository has no reachable root commit at HEAD"
+    ORCHID_UNATTENDED_DETAIL="${ORCHID_UNATTENDED_ROOT_ERROR:-repository has no reachable root commit at HEAD}"
     return 0
   fi
 

@@ -824,6 +824,127 @@ assert_match '^unattended trust: untrusted$' "$out" "root-history replacement in
 assert_match '^binding_state: mismatch$' "$out" "root replacement is classified as a binding mismatch"
 assert_match 'repository root commit changed' "$out" "root mismatch is actionable"
 
+# Git ordinarily trusts that the bytes found under a loose object's advertised
+# OID path actually hash to that OID. Replace an acknowledged reachable commit
+# with the compressed bytes of a different valid commit while leaving HEAD and
+# every ref untouched: rev-list still reports the acknowledged root filename.
+# Trust inspection must independently hash the exact locally-read commit
+# payload, refuse the mismatch, avoid the configured promisor remote, and
+# leave both repository and machine-local acknowledgement state unchanged.
+loose_repo="$WORK/loose-commit-substitution-repo"
+mk_repo "$loose_repo"
+loose_advertised_oid="$(git -C "$loose_repo" rev-parse HEAD)"
+trust_repo "$loose_repo" "before loose commit substitution"
+loose_trusted_out="$(HOME="$home" "$ORCHID_BIN" trust show "$loose_repo")"
+loose_record="$(printf '%s\n' "$loose_trusted_out" | sed -n 's/^record: //p')"
+loose_anchor="$(printf '%s\n' "$loose_trusted_out" | sed -n 's/^identity_anchor: //p')"
+
+loose_tree="$(git -C "$loose_repo" rev-parse "$loose_advertised_oid^{tree}")"
+loose_actual_oid="$(
+  printf 'different valid root commit payload\n' \
+    | git -c commit.gpgSign=false -C "$loose_repo" commit-tree "$loose_tree"
+)"
+[ "$loose_actual_oid" != "$loose_advertised_oid" ] \
+  || fail "loose-object substitution fixture must create different valid commit bytes"
+loose_advertised_path="$loose_repo/.git/objects/${loose_advertised_oid:0:2}/${loose_advertised_oid:2}"
+loose_actual_path="$loose_repo/.git/objects/${loose_actual_oid:0:2}/${loose_actual_oid:2}"
+[ -f "$loose_advertised_path" ] && [ -f "$loose_actual_path" ] \
+  || fail "loose-object substitution fixture requires both commits to be loose"
+chmod u+w "$loose_advertised_path"
+cp "$loose_actual_path" "$loose_advertised_path"
+
+loose_recomputed_oid="$(
+  set -o pipefail
+  git -C "$loose_repo" cat-file commit "$loose_advertised_oid" \
+    | git -C "$loose_repo" hash-object --no-filters -t commit --stdin
+)"
+assert_eq "$loose_actual_oid" "$loose_recomputed_oid" \
+  "the acknowledged OID path now contains the different valid commit payload"
+assert_eq "$loose_advertised_oid" \
+  "$(git -c core.commitGraph=false -C "$loose_repo" \
+      rev-list --max-parents=0 HEAD 2>/dev/null)" \
+  "ordinary rev-list preserves the advertised acknowledged root after loose-object substitution"
+
+loose_remote_contact="$WORK/loose-commit-remote-contact"
+loose_remote_helper="$WORK/loose-commit-remote-helper"
+cat > "$loose_remote_helper" <<EOF
+#!/usr/bin/env bash
+printf 'contacted\n' > "$loose_remote_contact"
+exit 1
+EOF
+chmod +x "$loose_remote_helper"
+git -C "$loose_repo" config core.repositoryformatversion 1
+git -C "$loose_repo" config extensions.partialClone origin
+git -C "$loose_repo" config remote.origin.promisor true
+git -C "$loose_repo" config remote.origin.partialCloneFilter blob:none
+git -C "$loose_repo" config remote.origin.url "ext::$loose_remote_helper"
+git -C "$loose_repo" config protocol.ext.allow always
+
+loose_object_before="$(cksum "$loose_advertised_path")"
+loose_record_before="$(cksum "$loose_record")"
+loose_anchor_before="$(cksum "$loose_anchor")"
+loose_refs_before="$(
+  git -C "$loose_repo" for-each-ref --format='%(refname) %(objectname)' \
+    | LC_ALL=C sort
+)"
+loose_git_files_before="$(
+  find "$loose_repo/.git" -type f -print | LC_ALL=C sort
+)"
+
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$loose_repo")"; rc=$?
+assert_eq 0 "$rc" \
+  "trust show reports loose commit substitution without turning inspection into an effectful failure"
+assert_match '^unattended trust: untrusted$' "$out" \
+  "different bytes stored under an acknowledged commit OID never preserve trust"
+assert_match '^binding_state: unavailable$' "$out" \
+  "a commit object integrity failure makes the trust binding unavailable"
+assert_match '^root_commit: unavailable$' "$out" \
+  "an unverified advertised OID is never surfaced or recorded as the trust root"
+assert_match "commit object integrity mismatch: advertised OID $loose_advertised_oid hashes to $loose_actual_oid" "$out" \
+  "loose commit substitution has an actionable advertised-versus-actual diagnostic"
+
+loose_ack_error="$WORK/loose-commit-reacknowledge-error"
+rc=0
+HOME="$home" "$ORCHID_BIN" trust unattended "$loose_repo" \
+  --reason "must not record an unverified root" \
+  >"$loose_ack_error" 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "acknowledgement must refuse a commit whose bytes do not match its advertised OID"
+assert_match 'commit object integrity mismatch' "$(cat "$loose_ack_error")" \
+  "refused acknowledgement repeats the commit-integrity repair diagnostic"
+
+[ ! -e "$loose_remote_contact" ] \
+  || fail "commit integrity inspection must never contact a configured promisor remote"
+assert_eq "$loose_object_before" "$(cksum "$loose_advertised_path")" \
+  "commit integrity inspection leaves the substituted object byte-identical"
+assert_eq "$loose_record_before" "$(cksum "$loose_record")" \
+  "commit integrity inspection leaves the existing acknowledgement byte-identical"
+assert_eq "$loose_anchor_before" "$(cksum "$loose_anchor")" \
+  "commit integrity inspection leaves the incarnation anchor byte-identical"
+assert_eq "$loose_refs_before" \
+  "$(git -C "$loose_repo" for-each-ref --format='%(refname) %(objectname)' \
+      | LC_ALL=C sort)" \
+  "commit integrity inspection leaves every repository ref unchanged"
+assert_eq "$loose_git_files_before" \
+  "$(find "$loose_repo/.git" -type f -print | LC_ALL=C sort)" \
+  "commit integrity inspection creates no persistent target-repository file"
+
+# The same exact-payload verification must use the repository's storage hash,
+# not assume forty-character SHA-1 object IDs.
+sha256_repo="$WORK/sha256-trust-repo"
+git init -q --object-format=sha256 "$sha256_repo"
+git -C "$sha256_repo" commit -q --allow-empty -m root
+sha256_root="$(git -C "$sha256_repo" rev-parse HEAD)"
+assert_eq 64 "${#sha256_root}" \
+  "SHA-256 trust fixture uses the repository's sixty-four-character OIDs"
+trust_repo "$sha256_repo" "SHA-256 repository fixture"
+git -C "$sha256_repo" commit -q --allow-empty -m descendant
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$sha256_repo")"
+assert_match '^unattended trust: trusted$' "$out" \
+  "verified SHA-256 commit history remains eligible for unattended trust"
+assert_match "^root_commit: $sha256_root$" "$out" \
+  "SHA-256 root derivation preserves the verified repository root"
+
 # Commit-graph parent edges are repository-controlled acceleration metadata,
 # not the underlying commit history. Forge a graph in which a real replacement
 # root falsely names the acknowledged root as its parent. Ordinary Git accepts
