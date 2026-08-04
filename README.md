@@ -388,9 +388,11 @@ orchid service uninstall
 its identity/root/policy provenance; without an identity-keyed record it
 reports root verification as pending and returns denied without walking
 history. `orchid trust revoke "$PWD"` disables future pump/tick runs without
-removing an already-installed schedule. Acknowledgement and verification of
-an existing candidate require Git 2.45 or newer; older Git remains usable for
-manual operation, but is denied before any repository object walk.
+removing an already-installed schedule; it needs only the on-disk identity,
+so it still works when Orchid cannot inspect the repository. Acknowledgement
+and verification of an existing candidate require Git 2.45 or newer; older
+Git remains usable for manual operation, but is denied before any repository
+object walk.
 
 ## State files, guardrails, operator verbs
 

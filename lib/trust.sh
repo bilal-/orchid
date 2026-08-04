@@ -1569,10 +1569,28 @@ unattended_trust_acknowledge() {
     || orchid_die "failed to persist unattended trust: $ORCHID_UNATTENDED_DETAIL"
 }
 
+# Removal is deliberately NOT built on unattended_trust_inspect. Inspection
+# fails closed on an unsupported Git version, an unreadable ref, a shallow,
+# corrupt, or object-missing history, and an unusable scratch directory. If
+# revocation inherited those preconditions, the operator could be unable to
+# take an acknowledgement away precisely when it is least understood: the
+# identity-keyed record would stay on disk, eligible, and would authorize
+# unattended execution again as soon as the repository became inspectable.
+# Failing closed on the read path and failing closed on the removal path are
+# opposite behaviors; only the former is protective.
+#
+# Revocation therefore anchors on the bounded, side-effect-free identity
+# discovery alone. That path still applies every containment rule that decides
+# WHICH record is this repository's: physical .git marker validation, the
+# reciprocal linked-worktree registration check, common-directory resolution,
+# the store-is-outside-the-target check, and the device/inode key. It runs no
+# Git command, walks no history, reads no object, and creates no scratch file,
+# so an unrelated record cannot be selected and repository state cannot make
+# removal expensive. Trust-granting decisions keep their full verification.
 unattended_trust_revoke() {
   local repo="$1" removed=0
-  unattended_trust_inspect "$repo"
-  [ "$ORCHID_UNATTENDED_STATE" != unavailable ] \
+  _unattended_trust_reset
+  _unattended_trust_identity_discover "$repo" \
     || orchid_die "cannot revoke unattended trust: $ORCHID_UNATTENDED_DETAIL"
 
   # Only the outside link is Orchid state. Removing it leaves Git's existing

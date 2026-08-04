@@ -557,7 +557,11 @@ regular file without group/other write permission; record symlinks, hard-link
 aliases, and non-files fail closed. `orchid trust show <repo>` displays the
 decision, anchor binding, and operator-authored reason/timestamp; `orchid
 trust revoke <repo>` removes the outside record and anchor (or a rejected
-symlink itself, without following it).
+symlink itself, without following it). Revocation resolves that record with
+the same bounded on-disk identity derivation and no Git version, ref,
+history, object, root, or scratch check, so an unsupported Git or a
+mismatched, shallow, object-missing, or corrupt-history repository can never
+strand an acknowledgement that would apply again later.
 Interactive sessions, planning, manual verbs, and read-only commands do not
 require or create this record.
 

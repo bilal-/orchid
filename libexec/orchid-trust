@@ -52,7 +52,11 @@ closed. With no identity-keyed candidate, inspection denies with root
 verification pending and does not invoke Git or create scratch files.
 Acknowledgement and verification of an existing candidate require Git 2.45
 or newer so object access can reliably forbid lazy fetching from a promisor
-remote.
+remote. Revocation uses only that bounded identity derivation: it removes
+this repository's record and anchor without any version, ref, history,
+object, root, or scratch-space check, so an unsupported Git, a mismatched,
+shallow, object-missing, or corrupt history cannot strand an acknowledgement
+on disk.
 EOF
 }
 
@@ -88,12 +92,13 @@ case "$sub" in
   revoke)
     [ "$#" -le 1 ] || orchid_die "usage: orchid trust revoke [<repo>]"
     repo="${1:-${ORCHID_REPO:-$PWD}}"
-    unattended_trust_inspect "$repo"
-    shown_repo="${ORCHID_UNATTENDED_REPO:-$repo}"
+    # Do not inspect first: revocation must stay available when inspection
+    # cannot complete. The revoke call itself resolves the repository identity
+    # it acted on.
     if unattended_trust_revoke "$repo"; then
-      echo "unattended trust revoked: $shown_repo"
+      echo "unattended trust revoked: ${ORCHID_UNATTENDED_REPO:-$repo}"
     else
-      echo "unattended trust already absent: $shown_repo"
+      echo "unattended trust already absent: ${ORCHID_UNATTENDED_REPO:-$repo}"
     fi
     ;;
   *)

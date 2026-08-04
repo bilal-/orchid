@@ -1363,6 +1363,12 @@ assert_match '^root_commit: unavailable$' "$out" \
   || fail "trust inspection must never contact a promisor remote on old Git"
 [ ! -e "$promisor_root_object" ] \
   || fail "trust inspection must not hydrate a missing promisor object"
+promisor_record="$(printf '%s\n' "$out" | sed -n 's/^record: //p')"
+promisor_anchor="$(printf '%s\n' "$out" | sed -n 's/^identity_anchor: //p')"
+[ -f "$promisor_record" ] \
+  || fail "old-Git refusal must leave the identity-keyed record on disk to revoke"
+[ -f "$promisor_anchor" ] \
+  || fail "old-Git refusal must leave the machine-local anchor on disk to revoke"
 
 # A policy-version mismatch is also fail-closed. Simulate a record written
 # under an older policy; the executable's current policy constant remains 1.
@@ -1390,6 +1396,185 @@ jq '.reason = "valid" | .policy_version = "1"' "$policy_record" | atomic_write "
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$policy_repo")"
 assert_match '^binding_state: invalid$' "$out" "wrongly typed record fields fail closed"
 assert_match 'record is malformed' "$out" "a record schema type error is named"
+
+# ---------------------------------------------------------------------------
+# Revocation may never inherit inspection's preconditions. Inspection fails
+# closed on an unsupported Git, a mismatched binding, a shallow boundary, a
+# missing object, or a corrupt history — and in every one of those states an
+# operator must still be able to take the acknowledgement away. Otherwise the
+# identity-keyed record survives on disk and authorizes unattended execution
+# again the moment the repository becomes inspectable.
+# ---------------------------------------------------------------------------
+
+# Ordinary revocation is bounded: it derives the identity-keyed record from
+# on-disk markers alone. No Git command and no scratch file, so its cost
+# cannot scale with repository history.
+revoke_guard_repo="$WORK/revoke-bounded-repo"
+mk_repo "$revoke_guard_repo"
+git -C "$revoke_guard_repo" commit -q --allow-empty -m descendant
+trust_repo "$revoke_guard_repo" "bounded revocation fixture"
+revoke_guard_out="$(HOME="$home" "$ORCHID_BIN" trust show "$revoke_guard_repo")"
+revoke_guard_record="$(printf '%s\n' "$revoke_guard_out" | sed -n 's/^record: //p')"
+revoke_guard_anchor="$(
+  printf '%s\n' "$revoke_guard_out" | sed -n 's/^identity_anchor: //p'
+)"
+revoke_guard_witness="$(
+  printf '%s\n' "$revoke_guard_out" | sed -n 's/^identity_witness: //p'
+)"
+# An unrelated acknowledgement must survive; revocation acts on one identity.
+bystander_repo="$WORK/revoke-bystander-repo"
+mk_repo "$bystander_repo"
+trust_repo "$bystander_repo" "unrelated acknowledgement"
+bystander_record="$(
+  HOME="$home" "$ORCHID_BIN" trust show "$bystander_repo" | sed -n 's/^record: //p'
+)"
+: > "$fast_guard_log"
+revoke_guard_result="$(
+  HOME="$home" PATH="$fast_guard_bin:$PATH" \
+  ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_FAST_GUARD_LOG="$fast_guard_log" \
+  ORCHID_TEST_FAST_GUARD_REAL_GIT="$fast_guard_real_git" \
+  ORCHID_TEST_FAST_GUARD_REAL_MKTEMP="$fast_guard_real_mktemp" \
+  ORCHID_TEST_FAST_GUARD_REPO="$revoke_guard_repo" \
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_revoke "$ORCHID_TEST_FAST_GUARD_REPO"
+    printf "revoked: %s\n" "$ORCHID_UNATTENDED_REPO"
+  '
+)"
+assert_match "^revoked: " "$revoke_guard_result" \
+  "revocation resolves the repository identity it acted on"
+[ ! -s "$fast_guard_log" ] \
+  || fail "ordinary revocation invoked Git or mktemp ($(tr '\n' ' ' < "$fast_guard_log"))"
+[ ! -e "$revoke_guard_record" ] \
+  || fail "bounded revocation must remove the identity-keyed record"
+[ ! -e "$revoke_guard_anchor" ] \
+  || fail "bounded revocation must remove the machine-local identity anchor"
+[ -f "$revoke_guard_witness" ] \
+  || fail "bounded revocation must leave Git's own common-directory witness"
+[ -f "$bystander_record" ] \
+  || fail "revocation must not remove another repository's acknowledgement"
+
+# Unsupported Git. The old-Git fixture above still holds a record; removal
+# must not require the version check that inspection fails, and must not run
+# any target-repository Git command to get there.
+revoke_out="$(
+  HOME="$home" PATH="$old_git_bin:$PATH" \
+  ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_REPO="$promisor_repo" \
+  ORCHID_TEST_REAL_GIT="$real_git" \
+  ORCHID_TEST_PROMISOR_CONTACT="$promisor_contact" \
+  ORCHID_TEST_OBJECT_WALK="$promisor_walk" \
+  ORCHID_TEST_TARGET_GIT="$promisor_target_git" \
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_revoke "$ORCHID_TEST_REPO"
+    printf "revoked: %s\n" "$ORCHID_UNATTENDED_REPO"
+  '
+)"; rc=$?
+assert_eq 0 "$rc" "revocation succeeds on a Git too old to inspect the target"
+assert_match '^revoked: ' "$revoke_out" "old-Git revocation names the target"
+[ ! -e "$promisor_record" ] \
+  || fail "an unsupported Git must not strand the acknowledgement record on disk"
+[ ! -e "$promisor_anchor" ] \
+  || fail "an unsupported Git must not strand the machine-local anchor on disk"
+[ ! -e "$promisor_target_git" ] \
+  || fail "revocation must not issue a target-repository Git query"
+[ ! -e "$promisor_walk" ] \
+  || fail "revocation must not walk history objects"
+[ ! -e "$promisor_contact" ] \
+  || fail "revocation must never contact a promisor remote"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$promisor_repo")"
+assert_match '^binding_state: untrusted$' "$out" \
+  "a revoked record cannot become active again once Git can inspect the repo"
+assert_match '^root_commit: pending$' "$out" \
+  "the revoked repository falls back to the constant-size no-record denial"
+
+# A binding mismatch is inspectable but denied; revocation still applies.
+jq '.policy_version = 0 | .reason = "revocable policy mismatch"' \
+  "$policy_record" | atomic_write "$policy_record"
+out="$(HOME="$home" "$ORCHID_BIN" trust show "$policy_repo")"
+assert_match '^binding_state: mismatch$' "$out" \
+  "policy-version mismatch fixture is a denied but readable binding"
+policy_anchor="$(printf '%s\n' "$out" | sed -n 's/^identity_anchor: //p')"
+out="$(HOME="$home" "$ORCHID_BIN" trust revoke "$policy_repo")"; rc=$?
+assert_eq 0 "$rc" "revocation succeeds for a mismatched binding"
+assert_match '^unattended trust revoked:' "$out" "mismatch revocation confirms removal"
+[ ! -e "$policy_record" ] || fail "mismatch revocation must remove the record"
+[ ! -e "$policy_anchor" ] || fail "mismatch revocation must remove the anchor"
+
+# Repositories whose history Orchid cannot verify: a shallow boundary hiding
+# absent ancestry, an outright missing root object, and a corrupt commit
+# object. Each denies inspection; each must still be revocable by the
+# operator, using the same identity derivation.
+assert_revocable_while_uninspectable() {
+  local label="$1" target="$2" record anchor witness show_out revoke_out rc=0
+  show_out="$(HOME="$home" "$ORCHID_BIN" trust show "$target")"
+  assert_match '^unattended trust: untrusted$' "$show_out" \
+    "$label is denied while its history cannot be verified"
+  record="$(printf '%s\n' "$show_out" | sed -n 's/^record: //p')"
+  anchor="$(printf '%s\n' "$show_out" | sed -n 's/^identity_anchor: //p')"
+  witness="$(printf '%s\n' "$show_out" | sed -n 's/^identity_witness: //p')"
+  [ -f "$record" ] || fail "$label must still hold an identity-keyed record"
+  [ -f "$anchor" ] || fail "$label must still hold a machine-local anchor"
+  revoke_out="$(HOME="$home" "$ORCHID_BIN" trust revoke "$target")" || rc=$?
+  assert_eq 0 "$rc" "$label remains revocable"
+  assert_match '^unattended trust revoked:' "$revoke_out" \
+    "$label revocation confirms removal"
+  [ ! -e "$record" ] || fail "$label revocation must remove the record"
+  [ ! -e "$anchor" ] || fail "$label revocation must remove the anchor"
+  [ -f "$witness" ] || fail "$label revocation must leave Git's witness intact"
+}
+
+shallow_revoke_repo="$WORK/shallow-revoke-repo"
+mk_repo "$shallow_revoke_repo"
+shallow_revoke_root="$(git -C "$shallow_revoke_repo" rev-parse HEAD)"
+git -C "$shallow_revoke_repo" commit -q --allow-empty -m descendant
+shallow_revoke_tip="$(git -C "$shallow_revoke_repo" rev-parse HEAD)"
+trust_repo "$shallow_revoke_repo" "acknowledged while history was complete"
+printf '%s\n' "$shallow_revoke_tip" > "$shallow_revoke_repo/.git/shallow"
+rm -f "$shallow_revoke_repo/.git/objects/${shallow_revoke_root:0:2}/${shallow_revoke_root:2}"
+assert_eq "$shallow_revoke_tip" \
+  "$(git -C "$shallow_revoke_repo" rev-list --max-parents=0 HEAD 2>/dev/null)" \
+  "shallow fixture must hide its absent ancestry from an ordinary Git query"
+assert_revocable_while_uninspectable "a shallow repository" "$shallow_revoke_repo"
+
+missing_object_repo="$WORK/missing-object-revoke-repo"
+mk_repo "$missing_object_repo"
+missing_object_root="$(git -C "$missing_object_repo" rev-parse HEAD)"
+git -C "$missing_object_repo" commit -q --allow-empty -m descendant
+trust_repo "$missing_object_repo" "acknowledged before the object went missing"
+rm -f "$missing_object_repo/.git/objects/${missing_object_root:0:2}/${missing_object_root:2}"
+assert_revocable_while_uninspectable \
+  "a repository missing a reachable object" "$missing_object_repo"
+
+corrupt_history_repo="$WORK/corrupt-history-revoke-repo"
+mk_repo "$corrupt_history_repo"
+git -C "$corrupt_history_repo" commit -q --allow-empty -m descendant
+corrupt_history_tip="$(git -C "$corrupt_history_repo" rev-parse HEAD)"
+trust_repo "$corrupt_history_repo" "acknowledged before the corruption"
+corrupt_history_object="$corrupt_history_repo/.git/objects/${corrupt_history_tip:0:2}/${corrupt_history_tip:2}"
+[ -f "$corrupt_history_object" ] \
+  || fail "corrupt-history fixture must start from a loose commit object"
+printf 'not a git object payload\n' > "$corrupt_history_object"
+assert_revocable_while_uninspectable \
+  "a repository with a corrupt commit object" "$corrupt_history_repo"
+
+# Removal still refuses when no identity can be derived safely: without a
+# validated worktree marker there is no applicable record to name.
+not_a_repo="$WORK/revoke-not-a-repo"
+mkdir -p "$not_a_repo"
+rc=0
+revoke_out="$(HOME="$home" "$ORCHID_BIN" trust revoke "$not_a_repo" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "revocation must refuse a target with no derivable identity"
+assert_match 'cannot revoke unattended trust' "$revoke_out" \
+  "an underivable revocation target is named"
+[ -f "$bystander_record" ] \
+  || fail "a refused revocation must not remove any other record"
 
 # Revocation from either the main checkout or a linked worktree removes the
 # shared record and is idempotent.

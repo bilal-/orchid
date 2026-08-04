@@ -140,7 +140,18 @@ group/other write permission. Symbolic links, hard-link aliases (including
 aliases of tracked files), non-files, and unsafe permissions are denied;
 the separate identity anchor is intentionally the witness's second link.
 `orchid trust revoke` removes the outside record and anchor, and removes a
-record symlink itself rather than following it.
+record symlink itself rather than following it. Revocation deliberately does
+not inherit inspection's preconditions. It reuses only the bounded identity
+derivation above — the same physical marker, linked-worktree registration,
+common-directory, and store-placement checks that name this repository's
+record — and applies no Git version, ref, history, object, root, or
+scratch-space check. An operator can therefore always withdraw an
+acknowledgement, including on an unsupported Git or for a mismatched,
+shallow, object-missing, or corrupt-history repository that inspection
+refuses to read; otherwise the record would survive on disk and authorize
+unattended execution again as soon as the repository became inspectable.
+Because that path runs no Git command, ordinary revocation costs nothing
+proportional to repository history.
 
 The acknowledgement means only that the operator accepts this repository as
 input to an unattended, shell-capable model. Target content may prompt-inject

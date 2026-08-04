@@ -47,7 +47,14 @@ different; even if the filesystem reuses those numbers, its common-directory
 witness cannot match the old machine-local hard-link anchor.
 `orchid trust revoke "$PWD"` denies future pump/tick invocations. It does not
 remove a scheduler entry, so use `orchid service status` and `orchid service
-uninstall` as needed; both remain available while denied.
+uninstall` as needed; both remain available while denied. Revocation only
+needs the repository's on-disk identity, so it also works when `orchid trust
+show` cannot finish — an unsupported Git, or a mismatched, shallow,
+object-missing, or corrupt history. Revoke in that situation rather than
+leaving the record in place: it would apply again once the repository is
+readable. Revocation still needs a usable `.git` marker to know which record
+applies; if a linked worktree's own marker or registration is broken, revoke
+from the main checkout, which shares the same record.
 
 ## Resume (crash / restart)
 
