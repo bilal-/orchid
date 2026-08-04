@@ -1675,18 +1675,20 @@ assert_match '^root_verification: walked$' "$out" \
 # The machine-local store holds exactly the record and its anchor for this
 # identity. Any additional per-identity file would be state a later gate could
 # consult in place of walking.
+# Depth-1 listing by shell globbing, not a find(1) depth primary: those are
+# non-POSIX and ci-local.sh rejects them repo-wide. Anchoring the glob on the
+# record's own path prefix is the filter, so no `case` is needed inside the
+# substitution -- Bash 3.2 mis-scans one there, letting a quoted pattern's
+# `)` close the substitution early. `*` never crosses a `/`, nullglob turns
+# "no such entry" into an empty list rather than the literal pattern, and the
+# loop keeps that empty case from printing the blank line a bare
+# `printf '%s\n' glob` would.
 reverify_key="${reverify_record%.json}"
-reverify_dir="$home_physical/.orchid/unattended-trust"
-# Depth-1 listing via helpers.sh's glob-based lister, not a find(1) depth
-# primary: those are non-POSIX and ci-local.sh rejects them repo-wide.
-# list_dir_entries yields bare names (dotfiles included, none when the
-# directory is empty), so re-attach the directory to match find's -print.
 reverify_state="$(
-  while IFS= read -r reverify_entry; do
-    case "$reverify_entry" in
-      "${reverify_key##*/}".*) printf '%s/%s\n' "$reverify_dir" "$reverify_entry" ;;
-    esac
-  done < <(list_dir_entries "$reverify_dir") | LC_ALL=C sort
+  shopt -s nullglob
+  for reverify_entry in "$reverify_key".*; do
+    printf '%s\n' "$reverify_entry"
+  done | LC_ALL=C sort
 )"
 assert_eq "$(printf '%s\n%s\n' "$reverify_anchor" "$reverify_record" | LC_ALL=C sort)" \
   "$reverify_state" \
