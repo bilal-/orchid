@@ -39,6 +39,35 @@ assert_match "unattended pump" "$refusal_doctor" \
   "doctor shows which surface was refused"
 rm -f "$doctor_refusal_log"
 
+# doctor probes jq after restoring the operator PATH, while the unattended
+# gate it printed above resolves tools on the fixed PATH the runners pin. The
+# two must never disagree silently -- a bare `command -v` here reported `ok
+# jq` about a jq no scheduled run could reach. Build the current PATH minus jq
+# (a symlink farm, so by construction nothing ELSE goes missing) and check
+# that doctor names the surface that is short.
+assert_match '^ok: jq$' "$out0" \
+  "doctor reports jq ready when the operator and unattended PATHs agree"
+nojq_bin="$WORK/doctor-no-jq-bin"
+mkdir -p "$nojq_bin"
+(
+  IFS=:
+  for nojq_dir in $PATH; do
+    [ -n "$nojq_dir" ] && [ -d "$nojq_dir" ] || continue
+    for nojq_exe in "$nojq_dir"/*; do
+      [ -f "$nojq_exe" ] && [ -x "$nojq_exe" ] || continue
+      nojq_name="${nojq_exe##*/}"
+      if [ "$nojq_name" != jq ] && [ ! -e "$nojq_bin/$nojq_name" ]; then
+        ln -s "$nojq_exe" "$nojq_bin/$nojq_name"
+      fi
+    done
+  done
+)
+nojq_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" PATH="$nojq_bin" "$ORCHID_BIN" doctor 2>&1)" || true
+assert_match 'jq missing: jq is reachable on the fixed PATH' "$nojq_doctor" \
+  "doctor names the PATH that is short rather than a bare 'jq missing'"
+assert_match 'not on the operator PATH' "$nojq_doctor" \
+  "doctor says which of the two PATHs cannot reach jq"
+
 mkdir -p .orchid/plugins/engines/evil
 out="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || true
 assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"

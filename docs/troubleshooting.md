@@ -78,10 +78,64 @@ wording the refused invocation would have printed, where `<why>` is the same
 text `orchid trust show` reports. Fix the cause above and the next scheduled
 invocation proceeds; nothing needs to be cleared.
 
-If the `why` names a missing `jq`, the scheduler's `PATH` — not the
-repository — is the problem. A launchd agent starts from a bare environment
-with the `PATH` that was baked in at install time, so re-run `orchid service
-install` from a shell where `jq` resolves.
+If the `why` names a missing `jq`, `jq`'s location — not the scheduler's
+environment — is the problem. Every unattended entry point (the pump and the
+headless tick runner) overwrites `PATH` with a fixed list of system prefixes
+at entry, so whatever `PATH` a scheduler hands it is never consulted, and
+re-running `orchid service install` cannot change the answer.
+The gate prints the exact list it searched; install `jq` into one of those
+directories (`/usr/local/bin`, `/opt/homebrew/bin` and `/usr/bin` are on it)
+or symlink it there. A `jq` in `~/.local/bin`, a nix profile, or an
+asdf/cargo shim is invisible to headless runs by design.
+
+`orchid doctor` and `orchid status --explain` evaluate the same probe on the
+same fixed `PATH`, so they now agree with the gate instead of reporting `ok
+jq` about a `jq` no scheduled run can reach. When the two `PATH`s disagree
+they say so explicitly: doctor prints a `WARN:` line naming the surface that
+is short, and `status --explain` prints an `unattended_tools: WARNING:` line.
+
+## Unattended trust breaks after a machine-wide deduplication pass
+
+**Symptom:** repositories that were acknowledged and working start reporting
+
+```
+binding_state: mismatch
+why: repository incarnation anchor does not match the machine-local
+     acknowledgement, and Git's common-directory identity witness
+     <repo>/.git/description carries N hard links ...
+```
+
+and re-acknowledging fails with `unexpected hard-link alias`.
+
+A disk-space deduplicator — `jdupes -L`, `rdfind -makehardlinks`,
+`hardlink(1)`, and some backup/sync tools — replaces byte-identical files
+with hard links to one copy. Git's stock `.git/description` is identical in
+every repository on the machine, so such a pass links them all together.
+
+Orchid binds each acknowledgement to a two-link pair: `.git/description` and
+a second link to that same inode under `~/.orchid/unattended-trust/`. A
+foreign third link breaks the pair, and that refusal is deliberate — the
+gate cannot tell a deduplicator's link from an attacker's, so it fails
+closed both at the gate and at re-acknowledgement.
+
+The fix is cheap and lossless, because Orchid never reads the witness's
+contents and Git does not track them. Give the file an inode of its own
+again, then acknowledge the repository once more:
+
+```sh
+cp .git/description .git/description.orchid-new
+mv .git/description.orchid-new .git/description
+orchid trust unattended "$PWD" --reason "reviewed target and accept unattended prompt risk"
+```
+
+From a linked worktree, `.git` is a file rather than a directory: use the
+path `orchid trust show` prints as `identity_witness`, which is the shared
+common directory's `description`. Linked worktrees share one record, so one
+repair covers them all.
+
+Do this per affected repository. To keep it from recurring, exclude
+`.git/description` (or the whole `.git` directory) from the deduplicator's
+scan.
 
 ## Resume (crash / restart)
 

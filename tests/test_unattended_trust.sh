@@ -1851,3 +1851,142 @@ assert_match 'requires jq' "$nojq_ack_out" \
 out="$(HOME="$home" "$ORCHID_BIN" trust show "$nojq_ack_repo")"
 assert_match '^unattended trust: untrusted$' "$out" \
   "a refused jq-less acknowledgement leaves the repository untrusted"
+
+# ---------------------------------------------------------------------------
+# The gate resolves kernel tools on the fixed PATH every entry point pins, not
+# on the operator's PATH. A reporting surface that asks the other question
+# contradicts the gate: doctor probed jq after restoring the operator PATH, so
+# a jq in ~/.local/bin (or nix/asdf/cargo) made it print `ok jq` about a jq no
+# scheduled run can reach. Probe both directions through the library, then
+# check the surface. The remedy must not be "re-run orchid service install" --
+# the runners overwrite PATH unconditionally, so the scheduler's PATH is never
+# consulted and reinstalling the service cannot change the answer.
+# ---------------------------------------------------------------------------
+probe_tool_state() {
+  # $1: the PATH the library is loaded under (what an unattended run pins).
+  # $2: the operator PATH lib/common.sh holds inert until a verb restores it.
+  PATH="$1" ORCHID_ROOT="$REPO_ROOT" ORCHID_TEST_OPERATOR_PATH="$2" \
+  /bin/bash -c '
+    set -uo pipefail
+    __orchid_entry_context=1
+    __orchid_entry_path_was_set=x
+    __orchid_entry_operator_path="$ORCHID_TEST_OPERATOR_PATH"
+    __orchid_entry_defer_restore=1
+    export __orchid_entry_context __orchid_entry_path_was_set
+    export __orchid_entry_operator_path
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_tool_probe jq || true
+    printf "%s\n%s\n" "$ORCHID_UNATTENDED_TOOL_STATE" \
+      "$ORCHID_UNATTENDED_TOOL_DETAIL"
+  '
+}
+
+probe_both="$(probe_tool_state "$PATH" "$PATH")"
+assert_match '^both$' "$probe_both" \
+  "a jq on both PATHs is reported as ready on both"
+
+probe_interactive="$(probe_tool_state "$nojq_bin" "$PATH")"
+assert_match '^interactive-only$' "$probe_interactive" \
+  "a jq the operator PATH can reach but an unattended run cannot is not simply 'ok'"
+assert_match 'not on the fixed PATH unattended runs pin' "$probe_interactive" \
+  "the discrepancy is reported explicitly, naming the PATH that is short"
+assert_match 'install jq into one of the directories on that fixed PATH' \
+  "$probe_interactive" "the remedy is the one that actually works"
+assert_match 'orchid service install. cannot help' "$probe_interactive" \
+  "the remedy corrects the reinstall-the-service guess that cannot help"
+
+probe_unattended="$(probe_tool_state "$PATH" "$nojq_bin")"
+assert_match '^unattended-only$' "$probe_unattended" \
+  "a jq only an unattended run can reach is reported as missing interactively"
+
+probe_neither="$(probe_tool_state "$nojq_bin" "$nojq_bin")"
+assert_match '^neither$' "$probe_neither" \
+  "a jq on no PATH at all is still reported as missing"
+assert_match 'install jq into one of the directories on that fixed PATH' \
+  "$probe_neither" "an entirely missing jq names the same remedy"
+
+# The gate itself must answer from the same PATH, so its refusal and the
+# surfaces above cannot disagree about the same machine.
+nojq_gate_detail="$(printf '%s\n' "$nojq_out" | sed -n 's/^why: //p')"
+assert_match 'fixed PATH unattended runs pin' "$nojq_gate_detail" \
+  "the gate's own refusal names the PATH it searched"
+assert_match 'orchid service install. cannot help' "$nojq_gate_detail" \
+  "the gate no longer sends the operator to re-run 'orchid service install'"
+
+# `status --explain` keeps the fixed unattended PATH for its whole run, so it
+# can see an operator PATH that would leave interactive verbs short. It says
+# so rather than leaving the operator to meet it as an unexplained failure.
+tools_repo="$WORK/tool-probe-repo"
+mk_repo "$tools_repo"
+trust_repo "$tools_repo" "tool probe fixture"
+tools_status="$(
+  HOME="$home" PATH="$nojq_bin" ORCHID_REPO="$tools_repo" \
+    "$ORCHID_BIN" status --explain 2>&1
+)"
+assert_match '^unattended: allowed' "$tools_status" \
+  "the tool-probe fixture is acknowledged, so the gate itself is open"
+assert_match '^unattended_tools: WARNING: jq is reachable on the fixed PATH' \
+  "$tools_status" "status --explain reports a kernel tool the operator PATH cannot reach"
+
+tools_status_ok="$(
+  HOME="$home" ORCHID_REPO="$tools_repo" "$ORCHID_BIN" status --explain 2>&1
+)"
+echo "$tools_status_ok" | grep -q '^unattended_tools:' \
+  && fail "status --explain must stay silent about tools when both PATHs agree"
+
+# ---------------------------------------------------------------------------
+# Machine-wide deduplication (jdupes -L, rdfind, hardlink(1), some backup
+# tools) replaces byte-identical files with hard links to one copy. Git's
+# stock .git/description -- Orchid's identity witness -- is byte-identical in
+# every repository on the machine, so such a pass links them all together and
+# breaks the two-link anchor pair. That must stay fail-closed at BOTH the gate
+# and re-acknowledgement, but it must not deadlock: the witness is untracked
+# and its contents are never read, so recreating it clears foreign aliases,
+# and both refusals must say so.
+# ---------------------------------------------------------------------------
+dedup_repo="$WORK/dedup-witness-repo"
+mk_repo "$dedup_repo"
+trust_repo "$dedup_repo" "deduplication fixture"
+dedup_out="$(HOME="$home" "$ORCHID_BIN" trust show "$dedup_repo")"
+assert_match '^unattended trust: trusted$' "$dedup_out" \
+  "the deduplication fixture starts out trusted"
+dedup_witness="$(printf '%s\n' "$dedup_out" | sed -n 's/^identity_witness: //p')"
+dedup_before="$(cat "$dedup_witness")"
+ln "$dedup_witness" "$WORK/dedup-twin" \
+  || fail "the deduplication fixture must be able to hard-link the witness"
+
+dedup_denied="$(HOME="$home" "$ORCHID_BIN" trust show "$dedup_repo")"
+assert_match '^unattended trust: untrusted$' "$dedup_denied" \
+  "a foreign hard link on the identity witness denies the gate, fail-closed"
+assert_match '^binding_state: mismatch$' "$dedup_denied" \
+  "the aliased witness is reported as an incarnation mismatch"
+assert_match 'carries 3 hard links' "$dedup_denied" \
+  "the refusal names the actual finding, not just a bare anchor mismatch"
+assert_match 'recreating it' "$dedup_denied" \
+  "the gate's refusal names the remedy for a deduplicated witness"
+assert_match 'orchid trust unattended' "$dedup_denied" \
+  "the gate's refusal names the command that completes the repair"
+
+rc=0
+dedup_ack="$(HOME="$home" "$ORCHID_BIN" trust unattended "$dedup_repo" \
+  --reason "re-acknowledge after deduplication" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "re-acknowledgement must stay closed while the alias exists"
+assert_match 'hard-link alias' "$dedup_ack" \
+  "the acknowledgement refusal still names the unexpected alias"
+assert_match 'recreating it' "$dedup_ack" \
+  "the acknowledgement refusal names the remedy instead of dead-ending"
+
+# The documented repair, exactly as docs/troubleshooting.md prints it.
+cp "$dedup_witness" "$dedup_witness.orchid-new"
+mv "$dedup_witness.orchid-new" "$dedup_witness"
+assert_eq "$dedup_before" "$(cat "$dedup_witness")" \
+  "the documented repair preserves the witness contents"
+HOME="$home" "$ORCHID_BIN" trust unattended "$dedup_repo" \
+  --reason "re-acknowledge after deduplication" >/dev/null \
+  || fail "recreating the witness must make the repository acknowledgeable again"
+dedup_repaired="$(HOME="$home" "$ORCHID_BIN" trust show "$dedup_repo")"
+assert_match '^unattended trust: trusted$' "$dedup_repaired" \
+  "the repaired witness restores unattended trust"
+[ -f "$WORK/dedup-twin" ] \
+  || fail "the repair must leave the other party's own copy alone"

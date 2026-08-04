@@ -96,7 +96,23 @@ perm_warnings="$(echo "$validate_out" | grep -E '^warn:.*permission .* requested
 [ -z "$perm_warnings" ] || echo "$perm_warnings" | sed 's/^/  /'
 [ "$validate_rc" -eq 0 ] && ok "plugin manifests: validate clean" || bad "plugin manifests: validate failed (see above)"
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
-command -v jq >/dev/null && ok jq || bad "jq missing"
+# jq readiness is two questions, not one. This check runs after the operator
+# PATH has been restored above, but the unattended gate printed further up
+# resolves tools on the fixed PATH the runners pin -- so a bare `command -v`
+# here could report `ok jq` about a jq the gate cannot see, and did. Ask both
+# questions through the same helper the gate uses (lib/trust.sh), and when the
+# two PATHs disagree say which surface is short instead of leaving the
+# contradiction for the operator to discover from a denied scheduled run.
+if unattended_tool_probe jq; then
+  ok jq
+elif [ "$ORCHID_UNATTENDED_TOOL_STATE" = interactive-only ]; then
+  # Interactive orchid works; only headless execution is affected, and the
+  # unattended gate is a warning here, never a doctor failure.
+  ok "jq (operator PATH)"
+  echo "WARN: $ORCHID_UNATTENDED_TOOL_DETAIL"
+else
+  bad "jq missing: $ORCHID_UNATTENDED_TOOL_DETAIL"
+fi
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
 
 if [ "$greenfield" -eq 1 ]; then

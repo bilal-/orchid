@@ -514,6 +514,27 @@ _unattended_file_atomic_replace() {
   mv -T "$source" "$destination" 2>/dev/null
 }
 
+# The single wording for "something else on this machine hard-linked Git's
+# identity witness", shared by the acknowledgement error and the gate's
+# untrusted detail so the two cannot drift.
+#
+# The witness is Git's untracked common-directory `description` file, and its
+# stock contents are byte-identical in every repository on the machine. A
+# machine-wide deduplication pass (jdupes -L, rdfind, hardlink) therefore
+# links it to its twins in other repositories. That breaks the exact two-link
+# anchor pair, which is deliberately fatal -- an alias Orchid did not create
+# is refused here exactly as before. What it must not do is leave the operator
+# stuck: naming the alias without naming a remedy makes the refusal look like
+# a permanent deadlock. The remedy is cheap and lossless precisely because
+# Orchid never reads the witness's contents and Git does not track them --
+# recreating the file gives it an inode of its own again, drops every foreign
+# link, and makes the repository acknowledgeable once more.
+_unattended_witness_alias_remedy() {
+  local witness="$1"
+  printf 'a machine-wide file deduplicator (jdupes -L, rdfind, hardlink) links byte-identical files together, and this file is identical in every repository. Orchid never reads its contents and Git does not track it, so break the foreign links by recreating it: cp "%s" "%s.orchid-new" && mv "%s.orchid-new" "%s" -- then acknowledge the repository again with: orchid trust unattended <repo> --reason <reason>' \
+    "$witness" "$witness" "$witness" "$witness"
+}
+
 # Rotate the incarnation anchor used by a newly authored acknowledgement. The
 # repository-side witness is Git's normally stable, untracked common-directory
 # `description` file; the command never writes its contents or adds an in-repo
@@ -556,7 +577,7 @@ _unattended_identity_anchor_rotate() {
     return 0
   fi
   if [ "$links" != 1 ]; then
-    ORCHID_UNATTENDED_ANCHOR_ERROR="Git's common-directory identity witness has an unexpected hard-link alias"
+    ORCHID_UNATTENDED_ANCHOR_ERROR="Git's common-directory identity witness $witness has an unexpected hard-link alias (found $links links, and Orchid holds at most one of them): $(_unattended_witness_alias_remedy "$witness")"
     return 1
   fi
 
@@ -609,20 +630,147 @@ _unattended_identity_anchor_matches() {
   [ $((8#${anchor_meta#* } & 022)) -eq 0 ]
 }
 
+# Explain an anchor-pair failure at gate time. The default wording covers the
+# cases the pair exists to catch (a clone, a copy, a replaced or recreated
+# common directory), where the witness has only its own Git link. A witness
+# carrying additional links is the recoverable case instead: some other tool
+# on this machine aliased it, and the operator needs the remedy, not just the
+# verdict. The gate stays closed either way -- this only chooses the text.
+_unattended_set_anchor_mismatch_detail() {
+  local witness="$ORCHID_UNATTENDED_IDENTITY_WITNESS"
+  local anchor="$ORCHID_UNATTENDED_IDENTITY_ANCHOR"
+  local meta links witness_ident anchor_ident expected=1
+  ORCHID_UNATTENDED_DETAIL="repository incarnation anchor is missing or does not match the machine-local acknowledgement"
+  [ -n "$witness" ] && [ ! -L "$witness" ] && [ -f "$witness" ] || return 0
+  _unattended_capture_line meta \
+    _unattended_file_security_metadata "$witness" || return 0
+  links="${meta%% *}"
+  case "$links" in ''|*[!0-9]*) return 0 ;; esac
+  # Orchid's anchor accounts for a second link only when it really is this
+  # inode's other name. When it is not (a clone, a copy, a recreated common
+  # directory), every link past Git's own belongs to someone else.
+  if [ -n "$anchor" ] && [ ! -L "$anchor" ] && [ -f "$anchor" ] \
+     && _unattended_capture_line witness_ident \
+          _unattended_fs_identity "$witness" \
+     && _unattended_capture_line anchor_ident \
+          _unattended_fs_identity "$anchor" \
+     && [ "$witness_ident" = "$anchor_ident" ]; then
+    expected=2
+  fi
+  [ "$links" -gt "$expected" ] || return 0
+  ORCHID_UNATTENDED_DETAIL="repository incarnation anchor does not match the machine-local acknowledgement, and Git's common-directory identity witness $witness carries $links hard links -- more than Git's own name for it and Orchid's anchor account for: $(_unattended_witness_alias_remedy "$witness")"
+}
+
 _unattended_json_value() {
   local json="$1" expression="$2"
   printf '%s' "$json" | jq -j "$expression"
+}
+
+# The PATH an unattended gate resolves tools on. Every surface that inspects
+# the gate -- bin/orchid's trust-boundary verbs, doctor, status --explain,
+# runners/orchid-pump, runners/orchid-tick -- pins the fixed system prefixes
+# (Homebrew, Linuxbrew, MacPorts, and the system directories) at entry and
+# sources this library while that PATH is still in force, so capturing it here
+# records exactly what the gate sees. A reporting surface that later restores
+# the operator PATH can still probe the gate's view, and a tool living outside
+# those prefixes (~/.local/bin, nix, asdf, cargo, a per-shell version manager)
+# is correctly reported as invisible to a scheduled run no matter what the
+# operator's login PATH contains.
+ORCHID_UNATTENDED_PATH="${PATH-/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
+
+# Answer "can an unattended gate run this tool?" independently of the PATH the
+# asking surface happens to have. Reporting surfaces run the probe after
+# restoring the operator PATH (doctor) or before restoring it (status
+# --explain), so a bare `command -v` answers a different question on each and
+# can contradict the gate outright. Pinning the PATH here makes every surface
+# ask the gate's question.
+#
+# Each probe drops the shell's command hash first: `command -v` answers from
+# that hash before it consults PATH, and by the time a surface reports, the
+# gate above has already run jq -- a hashed path would make every probe agree
+# with itself and with nothing else.
+unattended_tool_available() {
+  local tool="$1"
+  ( PATH="$ORCHID_UNATTENDED_PATH"; export PATH
+    hash -r 2>/dev/null || true
+    command -v "$tool" >/dev/null 2>&1 )
+}
+
+# The same probe against the operator's own PATH, which interactive verbs
+# restore and use. lib/common.sh keeps that PATH inert while a trust-boundary
+# verb holds the fixed one, so read it from there when it has not been
+# restored yet.
+unattended_tool_available_interactively() {
+  local tool="$1"
+  if [ "${__orchid_entry_context:-}" = 1 ]; then
+    if [ "${__orchid_entry_path_was_set:-}" = x ]; then
+      ( PATH="${__orchid_entry_operator_path-}"; export PATH
+        hash -r 2>/dev/null || true
+        command -v "$tool" >/dev/null 2>&1 )
+    else
+      ( unset PATH
+        hash -r 2>/dev/null || true
+        command -v "$tool" >/dev/null 2>&1 )
+    fi
+  else
+    ( hash -r 2>/dev/null || true
+      command -v "$tool" >/dev/null 2>&1 )
+  fi
+}
+
+# unattended_tool_probe <tool>
+#
+# One place for the readiness verdict doctor and `status --explain` print, so
+# neither can quietly disagree with the gate. Sets ORCHID_UNATTENDED_TOOL_STATE
+# to both|interactive-only|unattended-only|neither and
+# ORCHID_UNATTENDED_TOOL_DETAIL to the operator-facing explanation, and returns
+# zero only when both surfaces can reach the tool.
+unattended_tool_probe() {
+  local tool="$1" unattended=0 interactive=0 state detail
+  if unattended_tool_available "$tool"; then unattended=1; fi
+  if unattended_tool_available_interactively "$tool"; then interactive=1; fi
+  if [ "$unattended" -eq 1 ] && [ "$interactive" -eq 1 ]; then
+    state=both
+    detail="$tool is reachable on both the operator PATH and the fixed PATH unattended runs pin"
+  elif [ "$unattended" -eq 1 ]; then
+    state=unattended-only
+    detail="$tool is reachable on the fixed PATH unattended runs pin but not on the operator PATH, so interactive verbs will report it missing; put the directory holding $tool on your PATH"
+  elif [ "$interactive" -eq 1 ]; then
+    state=interactive-only
+    detail="$tool is on the operator PATH but not on the fixed PATH unattended runs pin ($ORCHID_UNATTENDED_PATH), so the unattended gate reports it missing; $(unattended_tool_path_remedy "$tool")"
+  else
+    state=neither
+    detail="$tool is not reachable on the operator PATH or on the fixed PATH unattended runs pin; $(unattended_tool_path_remedy "$tool")"
+  fi
+  # ShellCheck rationale: this function's output, read by the surfaces that call it.
+  # shellcheck disable=SC2034
+  ORCHID_UNATTENDED_TOOL_STATE="$state"
+  # ShellCheck rationale: this function's output, read by the surfaces that call it.
+  # shellcheck disable=SC2034
+  ORCHID_UNATTENDED_TOOL_DETAIL="$detail"
+  [ "$state" = both ]
+}
+
+# The one remedy for "the unattended PATH cannot see this tool". Re-running
+# `orchid service install` is the obvious guess and it cannot work: the
+# scheduler's inherited PATH is irrelevant because runners/orchid-pump and
+# runners/orchid-tick overwrite PATH unconditionally at entry. Only the
+# tool's location can change the answer.
+unattended_tool_path_remedy() {
+  local tool="$1"
+  printf 'install %s into one of the directories on that fixed PATH (for example /usr/local/bin, /opt/homebrew/bin, or /usr/bin), or symlink it there. Re-running "orchid service install" cannot help: the unattended runners set that PATH unconditionally at entry, so the PATH a scheduler hands them is never consulted' \
+    "$tool"
 }
 
 # jq is one of the three binaries Orchid's kernel depends on, and it is the
 # only reader of the operator-authored acknowledgement record. Without it every
 # record parse below fails, which would otherwise be reported as "the record is
 # malformed" — a diagnostic that sends the operator to inspect a file that is
-# perfectly fine. Detect the missing tool explicitly instead. Unattended
-# surfaces evaluate this on the fixed system PATH (Homebrew, MacPorts, and the
-# system directories), before the inherited operator PATH is restored.
+# perfectly fine. Detect the missing tool explicitly instead. The probe pins
+# the fixed system PATH (Homebrew, MacPorts, and the system directories)
+# rather than trusting whichever PATH the calling surface currently holds.
 _unattended_jq_available() {
-  command -v jq >/dev/null 2>&1
+  unattended_tool_available jq
 }
 
 _unattended_oid_is_valid() {
@@ -1336,7 +1484,7 @@ unattended_trust_inspect() {
   # malformed. This is still a closed gate: an unreadable record is untrusted.
   if ! _unattended_jq_available; then
     ORCHID_UNATTENDED_STATE=unavailable
-    ORCHID_UNATTENDED_DETAIL="jq is required to read the machine-local acknowledgement record but was not found on the unattended PATH; install jq (Orchid's kernel is bash + git + jq) and, for a scheduled service, re-run 'orchid service install' so the scheduler inherits a PATH that includes it"
+    ORCHID_UNATTENDED_DETAIL="jq is required to read the machine-local acknowledgement record but was not found on the fixed PATH unattended runs pin ($ORCHID_UNATTENDED_PATH); $(unattended_tool_path_remedy jq). Orchid's kernel is bash + git + jq"
     return 0
   fi
   # Git 2.44 and older cannot reliably prohibit lazy object fetching. Check
@@ -1497,7 +1645,7 @@ unattended_trust_inspect() {
   esac
   if ! _unattended_identity_anchor_matches; then
     ORCHID_UNATTENDED_STATE=mismatch
-    ORCHID_UNATTENDED_DETAIL="repository incarnation anchor is missing or does not match the machine-local acknowledgement"
+    _unattended_set_anchor_mismatch_detail
     return 0
   fi
   if ! _unattended_record_still_matches "$ORCHID_UNATTENDED_RECORD" \
