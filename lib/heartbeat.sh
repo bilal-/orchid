@@ -2,7 +2,7 @@
 # orchid_run_engine_cli <err_file> <stdout-var> <rc-var> <cwd|-> <prompt|-> <cli-argv...>
 #
 # v1-m3, round 2 of the live-run log-streaming finding: the first fix in
-# this milestone (a direct stdout tee into the adapter's stderr)
+# this milestone (`stdout="$(cli ... 2>"$err_file" | tee /dev/stderr)"`)
 # proved harmless but INSUFFICIENT against the real engines --
 # tests/probes/probe-stream-buffering.sh's first live run reported BOTH
 # codex and claude BUFFERED (see that probe's header for the exact result):
@@ -48,20 +48,18 @@
 # To get the engine's own real pid from `$!`, the engine must be
 # backgrounded ALONE, with no `|` operator touching it directly. That
 # rules out the previous `printf '%s' "$prompt" | cli ... | tee
-# into inherited stderr idiom outright (both pipes disqualify a bare `$!`),
-# hence
+# /dev/stderr` idiom outright (both pipes disqualify a bare `$!`), hence
 # this function's restructuring:
 #   - the prompt (if any) is written to a temp FILE and fed to the engine
 #     via plain `<` stdin redirection instead of a pipe from `printf`;
 #   - the engine's stdout is redirected (plain `>`, not `|`) to a FIFO;
-#   - a separate line relay from `fifo` to stdout and inherited fd 2,
-#     started FIRST so
+#   - a separate `tee /dev/stderr <fifo >out_tmp` process, started FIRST so
 #     it's ready to read before the engine's write-open on the FIFO can
 #     block, relays the engine's output live to the log (harmless best-
 #     effort, catches whatever a given CLI DOES flush) while also
 #     accumulating it into `out_tmp` for this function to hand back as the
 #     caller's captured stdout text -- semantically identical to what
-#     the earlier stdout tee produced before, just
+#     `stdout="$(cli 2>err | tee /dev/stderr)"` produced before, just
 #     wired through a FIFO instead of a `|` so the engine itself can still
 #     be backgrounded alone.
 #   - the engine's real stderr is UNCHANGED: still a plain `2>"$err_file"`
@@ -95,23 +93,9 @@
 #   cli-argv  - the engine binary + its own flags/args, executed directly
 #               (never wrapped in a subshell or an explicit `|`), so `$!`
 #               right after backgrounding it is genuinely its own pid.
-_orchid_hb_relay_stderr() {
-  local _hb_line=""
-  while IFS= read -r _hb_line; do
-    printf '%s\n' "$_hb_line"
-    printf '%s\n' "$_hb_line" >&2
-  done
-  # `read` retains bytes from a final line without a newline even though it
-  # returns nonzero at EOF. Preserve that exact final fragment in both sinks.
-  if [ -n "$_hb_line" ]; then
-    printf '%s' "$_hb_line"
-    printf '%s' "$_hb_line" >&2
-  fi
-}
-
 orchid_run_engine_cli() {
   local err_file="$1" _out_var="$2" _rc_var="$3" _hb_cwd="$4" _hb_prompt="$5"; shift 5
-  local _hb_fifo_dir _hb_fifo _hb_out_tmp _hb_prompt_file="" _hb_relay_pid _hb_cli_pid _hb_hb_pid \
+  local _hb_fifo_dir _hb_fifo _hb_out_tmp _hb_prompt_file="" _hb_tee_pid _hb_cli_pid _hb_hb_pid \
         _hb_rc _hb_interval _hb_cpu _hb_orig_pwd
 
   # Allocate a private directory first, then create the FIFO at a fixed name
@@ -122,11 +106,10 @@ orchid_run_engine_cli() {
   mkfifo "$_hb_fifo"
   _hb_out_tmp="$(mktemp)"
   # Reader started BEFORE the engine's write-open below: opening a FIFO for
-  # writing blocks until a reader exists. The relay writes to the stderr
-  # descriptor it inherited; it never opens /dev/stderr or /dev/fd paths,
-  # which hardened sandboxes may deny even while writes to fd 2 are allowed.
-  _orchid_hb_relay_stderr <"$_hb_fifo" >"$_hb_out_tmp" &
-  _hb_relay_pid=$!
+  # writing blocks until a reader exists, so starting `tee` first avoids a
+  # race where the engine would otherwise hang waiting on this same FIFO.
+  tee "$_hb_out_tmp" <"$_hb_fifo" >&2 &
+  _hb_tee_pid=$!
 
   if [ "$_hb_prompt" != "-" ]; then
     _hb_prompt_file="$(mktemp)"; printf '%s' "$_hb_prompt" > "$_hb_prompt_file"
@@ -138,8 +121,8 @@ orchid_run_engine_cli() {
   if [ "$_hb_cwd" != "-" ]; then
     _hb_orig_pwd="$PWD"
     if ! cd "$_hb_cwd"; then
-      kill "$_hb_relay_pid" 2>/dev/null || true
-      wait "$_hb_relay_pid" 2>/dev/null || true
+      kill "$_hb_tee_pid" 2>/dev/null || true
+      wait "$_hb_tee_pid" 2>/dev/null || true
       rm -f "$_hb_out_tmp" ${_hb_prompt_file:+"$_hb_prompt_file"}
       rm -rf "${_hb_fifo_dir:?}"
       return 1
@@ -154,7 +137,7 @@ orchid_run_engine_cli() {
   if [ "$_hb_cwd" != "-" ] && ! cd "$_hb_orig_pwd"; then
     kill "$_hb_cli_pid" 2>/dev/null || true
     wait "$_hb_cli_pid" 2>/dev/null || true
-    wait "$_hb_relay_pid" 2>/dev/null || true
+    wait "$_hb_tee_pid" 2>/dev/null || true
     rm -f "$_hb_out_tmp" ${_hb_prompt_file:+"$_hb_prompt_file"}
     rm -rf "${_hb_fifo_dir:?}"
     return 1
@@ -178,7 +161,7 @@ orchid_run_engine_cli() {
 
   _hb_rc=0
   wait "$_hb_cli_pid" || _hb_rc=$?
-  wait "$_hb_relay_pid" 2>/dev/null || true
+  wait "$_hb_tee_pid" 2>/dev/null || true
   # Killed immediately after the engine returns, BEFORE any parsing of its
   # output -- the heartbeat's only job is log liveness during the run; it
   # has nothing to add once the run is over. `|| true` on both the kill
