@@ -73,8 +73,10 @@ tail ~/.orchid/unattended-trust/refusals.log
 ```
 
 Each line carries the time, the refused surface, the repository, the binding
-state, and the same `why` text `orchid trust show` would print. Fix the cause
-above and the next scheduled invocation proceeds; nothing needs to be cleared.
+state, and the gate's own reason — `unattended trust is denied — <why>`, the
+wording the refused invocation would have printed, where `<why>` is the same
+text `orchid trust show` reports. Fix the cause above and the next scheduled
+invocation proceeds; nothing needs to be cleared.
 
 If the `why` names a missing `jq`, the scheduler's `PATH` — not the
 repository — is the problem. A launchd agent starts from a bare environment

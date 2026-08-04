@@ -1073,6 +1073,17 @@ _unattended_one_line() {
   printf '%s' "$1" | tr '\r\n\t' '   ' | tr -s ' '
 }
 
+# The single wording for "why unattended execution was denied", shared by the
+# terminal refusal and the machine-local log line so the two cannot drift. The
+# machine-local entry is often read far from the gate that wrote it -- tailed
+# out of the store, quoted into a bug report, printed by doctor among other
+# warnings -- so it names the gate as well as the specific finding, rather than
+# leaving "unattended trust" to be inferred from the file's path or from a bare
+# state column.
+_unattended_refusal_reason() {
+  printf 'unattended trust is denied — %s' "$ORCHID_UNATTENDED_DETAIL"
+}
+
 # Append one refusal line to the machine-local diagnostic log and print its
 # path. Only detached (scheduled/service) invocation uses this: an interactive
 # caller already has the same text on its terminal.
@@ -1106,7 +1117,7 @@ _unattended_refusal_log_append() {
       "$(_unattended_one_line "$surface")" \
       "${ORCHID_UNATTENDED_REPO:-$repo}" \
       "$ORCHID_UNATTENDED_STATE" \
-      "$(_unattended_one_line "$ORCHID_UNATTENDED_DETAIL")" >>"$log"
+      "$(_unattended_one_line "$(_unattended_refusal_reason)")" >>"$log"
   ) 2>/dev/null || return 1
 
   # Trim lazily: rewrite only once the file has grown to twice the retained
@@ -1774,8 +1785,7 @@ unattended_trust_require() {
     _unattended_capture_line refusal_log \
       _unattended_refusal_log_append "$repo" "$surface" || refusal_log=""
   fi
-  printf 'orchid: %s refused: unattended trust is denied — %s\n' \
-    "$surface" "$ORCHID_UNATTENDED_DETAIL" >&2
+  printf 'orchid: %s refused: %s\n' "$surface" "$(_unattended_refusal_reason)" >&2
   if [ -n "$ORCHID_UNATTENDED_REPO" ]; then
     printf -v repo_q '%q' "$ORCHID_UNATTENDED_REPO"
     printf 'orchid: acknowledge on this machine with: orchid trust unattended %s --reason %s\n' \
