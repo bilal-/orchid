@@ -1936,6 +1936,51 @@ echo "$tools_status_ok" | grep -q '^unattended_tools:' \
   && fail "status --explain must stay silent about tools when both PATHs agree"
 
 # ---------------------------------------------------------------------------
+# The fixed PATH belongs to the trust work alone. `status --explain` used to
+# hold it through the entire report, so ledger_show ran without the operator's
+# own jq and printed "(no engine events yet)" over a populated ledger -- the
+# same repository that plain `status` reported correctly. The machine's real
+# /usr/bin cannot be emptied to reproduce that, so run a copy of the kernel
+# whose status entry point pins a jq-less fixed PATH: identical control flow,
+# and jq reachable only on the operator PATH, exactly as it is for an operator
+# whose jq lives in nix, asdf, or ~/.local/bin.
+# ---------------------------------------------------------------------------
+report_root="$WORK/jqless-fixed-path-kernel"
+mkdir -p "$report_root"
+for report_dir in bin lib libexec templates runners plugins roles; do
+  cp -R "$REPO_ROOT/$report_dir" "$report_root/$report_dir" \
+    || fail "the jq-less fixed-PATH kernel must be copyable"
+done
+report_entry="$report_root/libexec/orchid-status"
+sed 's|^PATH="/opt/homebrew/bin:.*"$|PATH="'"$nojq_bin"'"|' "$report_entry" \
+  > "$report_entry.patched"
+mv "$report_entry.patched" "$report_entry"
+chmod +x "$report_entry"
+[ "$(grep -c "^PATH=\"$nojq_bin\"\$" "$report_entry")" -eq 1 ] \
+  || fail "the fixed-PATH fixture must pin exactly one jq-less PATH in its status entry point"
+grep -q '^PATH="/opt/homebrew/bin:' "$report_entry" \
+  && fail "the fixed-PATH fixture must not keep the real pinned PATH"
+
+report_repo="$WORK/report-path-repo"
+mk_repo "$report_repo"
+trust_repo "$report_repo" "report path fixture"
+mkdir -p "$report_repo/.orchid/runtime"
+printf '{"stub-engine":{"status":"failing","rate_limited_until":0,"consecutive_failures":3}}\n' \
+  > "$report_repo/.orchid/runtime/engines.json"
+
+report_status="$(
+  HOME="$home" ORCHID_REPO="$report_repo" \
+    "$report_root/bin/orchid" status --explain 2>&1
+)"
+assert_match '^unattended_tools: WARNING: jq is on the operator PATH but not on the fixed PATH' \
+  "$report_status" \
+  "the kernel-tool probe still answers the gate's question from the fixed PATH"
+echo "$report_status" | grep -qF '(no engine events yet)' \
+  && fail "status --explain must not report an empty ledger just because the fixed PATH lacks jq"
+assert_match '^stub-engine	failing	failures 3$' "$report_status" \
+  "status --explain reads the populated ledger on the operator's own PATH"
+
+# ---------------------------------------------------------------------------
 # Machine-wide deduplication (jdupes -L, rdfind, hardlink(1), some backup
 # tools) replaces byte-identical files with hard links to one copy. Git's
 # stock .git/description -- Orchid's identity witness -- is byte-identical in
@@ -1990,3 +2035,39 @@ assert_match '^unattended trust: trusted$' "$dedup_repaired" \
   "the repaired witness restores unattended trust"
 [ -f "$WORK/dedup-twin" ] \
   || fail "the repair must leave the other party's own copy alone"
+
+# ---------------------------------------------------------------------------
+# The machine-local refusal log is a TAB-separated record per refusal, read by
+# doctor and quoted into bug reports. Its repository field is a caller-selected
+# path, and CR, LF, and TAB are all legal in a POSIX path name -- so an
+# untrusted target that lives under such a name must not be able to split one
+# refusal into several records, or forge trailing columns of its own choosing,
+# in the one diagnostic that explains why an operator's schedule does nothing.
+# ---------------------------------------------------------------------------
+refusal_home="$WORK/refusal-log-home"
+mkdir -p "$refusal_home"
+refusal_repo="$WORK/refusal-log-repo"$'\n'"forged"$'\t'"column"
+mk_repo "$refusal_repo"
+rc=0
+HOME="$refusal_home" ORCHID_ROOT="$REPO_ROOT" \
+ORCHID_TEST_REFUSAL_REPO="$refusal_repo" \
+/bin/bash -c '
+  set -uo pipefail
+  source "$ORCHID_ROOT/lib/common.sh"
+  source "$ORCHID_ROOT/lib/trust.sh"
+  unattended_trust_require "$ORCHID_TEST_REFUSAL_REPO" "unattended pump" scheduled
+' >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "an unacknowledged scheduled surface must still be refused"
+newline_refusal_log="$refusal_home/.orchid/unattended-trust/refusals.log"
+[ -f "$newline_refusal_log" ] \
+  || fail "a scheduled refusal must be recorded even under a newline-bearing repository path"
+assert_eq 1 "$(LC_ALL=C wc -l < "$newline_refusal_log" | tr -d '[:space:]')" \
+  "a newline-bearing repository path must not split one refusal into several records"
+assert_eq 5 "$(awk -F'\t' 'NR==1 {print NF}' "$newline_refusal_log")" \
+  "a TAB-bearing repository path must not forge extra columns on the refusal record"
+newline_refusal_repo_field="$(awk -F'\t' 'NR==1 {print $3}' "$newline_refusal_log")"
+assert_match 'refusal-log-repo forged column' "$newline_refusal_repo_field" \
+  "the flattened repository field still names the actual path"
+assert_match 'unattended trust is denied' \
+  "$(awk -F'\t' 'NR==1 {print $5}' "$newline_refusal_log")" \
+  "the reason stays in its own column behind the flattened path"

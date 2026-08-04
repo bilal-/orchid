@@ -1261,9 +1261,15 @@ _unattended_refusal_log_append() {
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   (
     umask 077
+    # Every operator-visible field goes through the same one-line flattening,
+    # the repository path included. That path is caller-selected and can carry
+    # CR, LF, or TAB -- all legal in a POSIX path name -- so an unflattened
+    # field would let an untrusted target split one refusal into several
+    # records, or forge trailing columns on its own line, in exactly the log
+    # an operator reads to understand why their schedule does nothing.
     printf '%s\t%s\t%s\t%s\t%s\n' "$stamp" \
       "$(_unattended_one_line "$surface")" \
-      "${ORCHID_UNATTENDED_REPO:-$repo}" \
+      "$(_unattended_one_line "${ORCHID_UNATTENDED_REPO:-$repo}")" \
       "$ORCHID_UNATTENDED_STATE" \
       "$(_unattended_one_line "$(_unattended_refusal_reason)")" >>"$log"
   ) 2>/dev/null || return 1

@@ -2,10 +2,13 @@
 set -euo pipefail
 
 # Resolve direct and dispatched entry through the same privileged interpreter
-# and fixed helper path used by unattended runners. Explain modes retain that
-# path for the complete report so target-local helper shims cannot make status
-# provenance disagree with the runner gate. Plain status restores the operator
-# PATH after argument parsing because it does not inspect unattended trust.
+# and fixed helper path used by unattended runners. Explain mode holds that
+# path across exactly the trust work -- the gate inspection, the provenance it
+# renders, and the kernel-tool probe -- so target-local helper shims cannot
+# make status provenance disagree with the runner gate, then restores the
+# operator PATH before any of the report itself, mirroring libexec/orchid-
+# doctor. Plain status restores it right after argument parsing because it
+# does not inspect unattended trust.
 unset __orchid_entry_defer_restore
 if [ "${__orchid_entry_context:-}" != 1 ]; then
   unset __orchid_entry_context __orchid_entry_path_was_set
@@ -46,11 +49,29 @@ for _status_arg in "$@"; do
   esac
 done
 
+# The trust work -- and only the trust work -- runs on the fixed unattended
+# PATH: the gate inspection, the provenance line it renders, and the kernel-
+# tool probe, exactly the three things `orchid doctor` and `orchid trust show`
+# also answer from that PATH. All three are resolved here rather than beside
+# the lines that print them, so a helper shim on the operator PATH can neither
+# rewrite the provenance an operator reads nor make the probe answer a
+# different question from the gate. Both verdicts are rendered now and printed
+# below, in the same place, order, and wording as before.
+explain_unattended_summary=""
+explain_tool_warning=""
 if [ "$explain" -eq 1 ]; then
   unattended_trust_inspect "$repo"
-else
-  _orchid_entry_restore_operator_path
+  explain_unattended_summary="$(unattended_trust_summary_loaded)"
+  unattended_tool_probe jq || explain_tool_warning="$ORCHID_UNATTENDED_TOOL_DETAIL"
 fi
+# Everything from here on is report work -- ledger_show, `jobs check`, the
+# --html page -- and it runs on the operator's own PATH. Leaving the fixed
+# PATH pinned through the report made `status --explain` disagree with plain
+# `status` on the same repository: an operator whose jq lives outside that
+# fixed list (nix, asdf, ~/.local/bin) got "(no engine events yet)" printed
+# over a perfectly good ledger. The gate decision and its provenance are
+# already loaded into shell variables, so nothing on this PATH can revise them.
+_orchid_entry_restore_operator_path
 
 # _status_task_why <repo> <status> <id> -- the ONE home for the "why isn't
 # this task moving" predicate string (v1-m2 Task 5's schedule.sh already
@@ -258,7 +279,7 @@ if [ "$html" -eq 1 ]; then
     else
       unattended_gate=denied
     fi
-    unattended_summary="$(unattended_trust_summary_loaded)"
+    unattended_summary="$explain_unattended_summary"
     unattended_html="<h2>Unattended trust</h2>
 <div class=\"meta\">
 <div><strong>gate:</strong> $(orchid_html_escape "$unattended_gate")</div>
@@ -313,16 +334,14 @@ fi
 
 echo "run_status: ${rs:-(uninitialized)}"
 if [ "$explain" -eq 1 ]; then
-  printf 'unattended: '
-  unattended_trust_summary_loaded
-  # Explain mode keeps the fixed unattended PATH for its whole run, so the
-  # kernel-tool probe here answers exactly the question the gate answers --
-  # the same helper doctor uses after restoring the operator PATH. Printed
-  # only when the two PATHs disagree or the tool is missing outright: a
-  # discrepancy an operator cannot see is one they meet as an unexplained
-  # denial from a scheduled pump.
-  unattended_tool_probe jq \
-    || printf 'unattended_tools: WARNING: %s\n' "$ORCHID_UNATTENDED_TOOL_DETAIL"
+  printf 'unattended: %s\n' "$explain_unattended_summary"
+  # The probe above ran while the fixed unattended PATH was still pinned, so
+  # it answers exactly the question the gate answers -- the same helper doctor
+  # uses. Printed only when the two PATHs disagree or the tool is missing
+  # outright: a discrepancy an operator cannot see is one they meet as an
+  # unexplained denial from a scheduled pump.
+  [ -z "$explain_tool_warning" ] \
+    || printf 'unattended_tools: WARNING: %s\n' "$explain_tool_warning"
 fi
 echo "== tasks"
 for f in "$state/tasks"/*.md; do
