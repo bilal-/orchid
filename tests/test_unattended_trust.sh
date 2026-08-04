@@ -1560,7 +1560,19 @@ trust_repo "$corrupt_history_repo" "acknowledged before the corruption"
 corrupt_history_object="$corrupt_history_repo/.git/objects/${corrupt_history_tip:0:2}/${corrupt_history_tip:2}"
 [ -f "$corrupt_history_object" ] \
   || fail "corrupt-history fixture must start from a loose commit object"
+# Git writes loose objects read-only (0444), so the replacement bytes cannot be
+# redirected over the existing file -- that is a Permission denied, not a
+# corruption. Unlink the directory entry first, then create a fresh file at the
+# same path: the object is still present, but its payload is no longer a valid
+# Git object. This is deliberately distinct from the missing-object fixture
+# above, which removes the entry and leaves nothing behind.
+rm -f "$corrupt_history_object"
 printf 'not a git object payload\n' > "$corrupt_history_object"
+[ -s "$corrupt_history_object" ] \
+  || fail "corrupt-history fixture must leave a non-empty object file in place"
+if git -C "$corrupt_history_repo" cat-file -p "$corrupt_history_tip" >/dev/null 2>&1; then
+  fail "corrupt-history fixture must leave the tip commit unreadable"
+fi
 assert_revocable_while_uninspectable \
   "a repository with a corrupt commit object" "$corrupt_history_repo"
 
