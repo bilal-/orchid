@@ -169,8 +169,24 @@ assert_match 'unattended pump refused: unattended trust is denied' "$out" \
   "pump refusal names the unattended trust gate"
 [ -f "$WORK/marker-stubplanning" ] && fail "untrusted pump must never spawn an engine"
 
+rm -f .orchid/runtime/pump.log
+rc=0
+out="$("$PUMP" --service-log 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "service-mode pump must refuse a runnable repo without unattended trust"
+assert_match 'unattended pump refused: unattended trust is denied' "$out" \
+  "service-mode refusal is still available before its internal log is opened"
+[ ! -e .orchid/runtime/pump.log ] \
+  || fail "untrusted service-mode pump must not create or open pump.log"
+
 HOME="$HOME" "$ORCHID_BIN" trust unattended "$WORK" --reason "pump test fixture" >/dev/null \
   || fail "pump fixture acknowledgement must succeed"
+
+out="$("$PUMP" --service-log 2>&1)"; rc=$?
+assert_eq 0 "$rc" "trusted service-mode pump exits 0 when planning has no lease"
+assert_eq "" "$out" "trusted service-mode diagnostics move from scheduler output into pump.log"
+assert_match '^pump: run not running \(planning\), no lease yet$' \
+  "$(cat .orchid/runtime/pump.log)" \
+  "service-mode pump begins repo-local logging after trust succeeds"
 
 out="$("$PUMP" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "pump exits 0 when run_status is planning and no lease exists"

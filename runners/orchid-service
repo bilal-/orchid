@@ -189,12 +189,11 @@ _svc_install_path() {
 }
 
 _svc_render_plist() {
-  local label="$1" repo="$2" parent="$3" interval="$4" log="$5" pump_exe="$6" path_val="$7"
+  local label="$1" repo="$2" parent="$3" interval="$4" pump_exe="$5" path_val="$6"
   sed -e "s|__LABEL__|$(_svc_plist_value "$label")|g" \
       -e "s|__REPO__|$(_svc_plist_value "$repo")|g" \
       -e "s|__TMPDIR__|$(_svc_plist_value "$parent")|g" \
       -e "s|__INTERVAL__|$(_svc_plist_value "$interval")|g" \
-      -e "s|__LOG__|$(_svc_plist_value "$log")|g" \
       -e "s|__ORCHID_PUMP__|$(_svc_plist_value "$pump_exe")|g" \
       -e "s|__PATH__|$(_svc_plist_value "$path_val")|g" \
       "$ORCHID_ROOT/templates/launchd.orchid-pump.plist"
@@ -235,15 +234,14 @@ _svc_cron_escape() { printf '%s' "$1" | sed -e 's/%/\\%/g'; }
 _svc_shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 _svc_render_cron_line() {
-  local label="$1" repo="$2" parent="$3" interval_s="$4" log="$5" pump_exe="$6" path_val="$7" mins
-  local repo_e parent_e log_e pump_e path_e
+  local label="$1" repo="$2" parent="$3" interval_s="$4" pump_exe="$5" path_val="$6" mins
+  local repo_e parent_e pump_e path_e
   mins="$(_svc_cron_minutes "$interval_s")"
   repo_e="$(_svc_shq "$(_svc_cron_escape "$repo")")"
   parent_e="$(_svc_shq "$(_svc_cron_escape "$parent")")"
-  log_e="$(_svc_shq "$(_svc_cron_escape "$log")")"
   pump_e="$(_svc_shq "$(_svc_cron_escape "$pump_exe")")"
   path_e="$(_svc_shq "$(_svc_cron_escape "$path_val")")"
-  echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e >> $log_e 2>&1 # orchid-service:$label"
+  echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e --service-log >> /dev/null 2>&1 # orchid-service:$label"
 }
 
 _svc_print_log_tail() {
@@ -276,7 +274,7 @@ _svc_install_darwin() {
 
   mkdir -p "$agents_dir"
   local tmp="$plist_path.tmp.$$"
-  _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val" > "$tmp"
+  _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val" > "$tmp"
   mv "$tmp" "$plist_path"
 
   # Idempotent re-install: unload the PRIOR load (best-effort -- if it was
@@ -404,7 +402,7 @@ _svc_install_linux() {
   pump_exe="$ORCHID_ROOT/runners/orchid-pump"
   path_val="$(_svc_install_path)"
   record="$(_svc_cron_record_path "$repo")"
-  line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val")"
+  line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val")"
   marker="# orchid-service:$label"
 
   printf '%s\n' "$line" > "$record"

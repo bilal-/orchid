@@ -48,6 +48,19 @@ source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/spawn.sh"
 source "$ORCHID_ROOT/lib/trust.sh"
 
+# `orchid service install` invokes the pump with this internal flag while the
+# scheduler itself sends stdout/stderr to /dev/null. The pump does not open the
+# repo-local service log until unattended trust has succeeded below. A direct
+# invocation has no flag and keeps its diagnostics on the caller's terminal.
+pump_service_log=0
+case "${1:-}" in
+  --service-log) pump_service_log=1; shift ;;
+esac
+if [ "$#" -ne 0 ]; then
+  echo "pump: unknown argument '$1'" >&2
+  exit 2
+fi
+
 repo="${ORCHID_REPO:-$PWD}"
 state="$(orchid_state "$repo")"
 
@@ -104,9 +117,66 @@ fi
 # split-brain, and already-complete diagnostics above remain available on an
 # untrusted target.
 unattended_trust_require "$repo" "unattended pump" || exit 1
-_orchid_entry_restore_operator_path
 
 rt="$(orchid_runtime "$repo")"
+if [ "$pump_service_log" -eq 1 ]; then
+  # Keep a service log strictly inside the acknowledged checkout. The
+  # scheduler must never open a target-controlled path: doing so would let a
+  # revoked/replaced repo, or a pump.log symlink, write before this gate ran.
+  # Reject symlinked/outside runtime directories and aliased/non-regular log
+  # files as well, so the post-gate append cannot escape through a static
+  # target-controlled filesystem object.
+  repo_physical="$(cd "$repo" 2>/dev/null && pwd -P)" || {
+    echo "pump: service logging refused: cannot resolve repository path" >&2
+    exit 1
+  }
+  rt_physical="$(cd "$rt" 2>/dev/null && pwd -P)" || {
+    echo "pump: service logging refused: cannot resolve runtime directory" >&2
+    exit 1
+  }
+  case "$rt_physical/" in
+    "$repo_physical/"*) ;;
+    *)
+      echo "pump: service logging refused: runtime directory resolves outside the repository" >&2
+      exit 1
+      ;;
+  esac
+
+  pump_log="$rt/pump.log"
+  if [ -L "$pump_log" ]; then
+    echo "pump: service logging refused: pump.log must not be a symbolic link" >&2
+    exit 1
+  fi
+  if [ -e "$pump_log" ]; then
+    if [ ! -f "$pump_log" ] || [ ! -O "$pump_log" ]; then
+      echo "pump: service logging refused: pump.log must be an operator-owned regular file" >&2
+      exit 1
+    fi
+    pump_log_meta="$(_unattended_file_security_metadata "$pump_log")" || {
+      echo "pump: service logging refused: cannot inspect pump.log" >&2
+      exit 1
+    }
+    if [ "${pump_log_meta%% *}" != 1 ]; then
+      echo "pump: service logging refused: pump.log must not have hard-link aliases" >&2
+      exit 1
+    fi
+  else
+    # noclobber makes the initial creation fail closed if another filesystem
+    # object appears after the checks above. The following append preserves
+    # logs across ordinary scheduled invocations.
+    (
+      umask 077
+      set -o noclobber
+      : > "$pump_log"
+    ) 2>/dev/null || {
+      echo "pump: service logging refused: cannot safely create pump.log" >&2
+      exit 1
+    }
+  fi
+  exec >> "$pump_log" 2>&1
+fi
+
+_orchid_entry_restore_operator_path
 
 # 4. Lease staleness. `iso_to_epoch` is replicated here (not shared via
 # lib/) rather than sourced from libexec/orchid-jobs: runners can't source
