@@ -29,6 +29,11 @@
 ORCHID_UNATTENDED_TRUST_POLICY_VERSION=1
 ORCHID_UNATTENDED_TRUST_RECORD_SCHEMA=2
 ORCHID_UNATTENDED_IDENTITY_WITNESS_NAME=description
+# Keep exact-payload verification bounded without letting an inherited
+# environment trade integrity for speed. Each batch uses one long-lived
+# cat-file process and one long-lived hash-object process, regardless of the
+# number of commits in the batch.
+ORCHID_UNATTENDED_COMMIT_BATCH_SIZE=256
 # Git 2.45 introduced the client-side --no-lazy-fetch control. Older clients
 # ignore GIT_NO_LAZY_FETCH during ordinary object access, so they cannot safely
 # walk a promisor repository before its unattended boundary has been accepted.
@@ -578,28 +583,6 @@ _unattended_oid_is_valid() {
   esac
 }
 
-# Recompute one commit's object ID from the exact payload Git reads locally.
-# `cat-file <type> <oid>` emits the stored object payload without its loose or
-# pack representation; `hash-object -t commit` restores Git's canonical
-# "commit <size>\0" framing and uses the repository's storage hash (SHA-1 or
-# SHA-256). Neither command writes an object, and both retain the explicit
-# no-lazy-fetch boundary. pipefail is scoped to this subshell so a cat-file
-# failure cannot be hidden by hash-object successfully hashing a partial or
-# empty stream.
-_unattended_hash_commit_stream() (
-  set -o pipefail
-  _unattended_git --no-lazy-fetch -C "$1" cat-file commit "$2" 2>/dev/null \
-    | _unattended_git --no-lazy-fetch -C "$1" \
-        hash-object --no-filters -t commit --stdin 2>/dev/null
-)
-
-_unattended_hash_commit_object() {
-  local target="$1" repo="$2" oid="$3" actual
-  _unattended_capture_line actual \
-    _unattended_hash_commit_stream "$repo" "$oid" || return 1
-  printf -v "$target" '%s' "$actual"
-}
-
 _unattended_join_root_set() (
   set -o pipefail
   printf '%s' "$1" \
@@ -610,9 +593,9 @@ _unattended_join_root_set() (
 
 # _unattended_root_commit <result-variable> <repo>
 #
-# Derive the root set only from a complete local parent walk whose every
-# reachable commit has been independently re-hashed. Git normally trusts that
-# loose bytes found below objects/aa/bb... belong to the advertised aa... OID;
+# Derive the root set only from one complete local parent walk whose every
+# reachable commit is independently re-hashed. Git normally trusts that loose
+# bytes found below objects/aa/bb... belong to the advertised aa... OID;
 # rev-list consequently keeps reporting that filename OID even if the payload
 # was replaced with a different valid commit. Comparing cat-file's exact
 # payload with hash-object's result closes that gap before a root can be
@@ -624,44 +607,105 @@ _unattended_join_root_set() (
 # remain disabled by _unattended_git. The success sentinel prevents a partial
 # rev-list result from being mistaken for a complete history when a local
 # object is missing or unreadable.
-_unattended_root_commit() {
-  local target="$1" repo="$2"
-  local object_format oid_length line commit parents parent computed
+# The worker runs in a subshell so its signal/EXIT cleanup cannot replace a
+# caller's traps. Its single protocol line is framed by
+# _unattended_root_commit below. Scratch data is always outside the target and
+# is removed before the worker returns.
+_unattended_root_commit_compute() (
+  local repo="$1" object_format oid_length head line commit parents parent oid
   local roots="" joined="" commit_count=0 complete=0
+  local stage="" manifest batch_oids batch_output batch_paths batch_hashes
+  local temp_base
+  local batch_count processed=0 expected advertised object_type object_size
+  local object_extra payload remaining chunk_size chunk separator actual extra
   local sentinel="orchid-unattended-commit-walk-complete-v1"
+  local LC_ALL=C
+  ORCHID_UNATTENDED_COMMIT_STAGE=""
 
-  ORCHID_UNATTENDED_ROOT_ERROR=""
+  _unattended_commit_compute_cleanup() {
+    local cleanup_stage="${ORCHID_UNATTENDED_COMMIT_STAGE:-}"
+    [ -n "$cleanup_stage" ] || return 0
+    rm -f "$cleanup_stage/commits.oids" "$cleanup_stage/batch.oids" \
+      "$cleanup_stage/batch.output" "$cleanup_stage/batch.paths" \
+      "$cleanup_stage/batch.hashes" "$cleanup_stage"/payload.* \
+      2>/dev/null || true
+    rmdir "$cleanup_stage" 2>/dev/null || true
+  }
+  _unattended_commit_compute_fail() {
+    printf 'error\t%s\n' "$1"
+    exit 0
+  }
+  trap '_unattended_commit_compute_cleanup' EXIT
+  trap 'exit 1' HUP INT TERM
 
   # Check again at the exact object-walk boundary. The earlier inspection gate
   # produces the usual version diagnostic; this repeated guard also covers a
   # changed PATH/executable during a concurrent inspection.
   if ! _unattended_git_supports_local_object_walk; then
-    ORCHID_UNATTENDED_ROOT_ERROR="side-effect-free commit verification requires Git $ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN or newer (found ${ORCHID_UNATTENDED_GIT_VERSION:-an unrecognized version})"
-    return 1
+    _unattended_commit_compute_fail \
+      "side-effect-free commit verification requires Git $ORCHID_UNATTENDED_OBJECT_WALK_GIT_MIN or newer (found ${ORCHID_UNATTENDED_GIT_VERSION:-an unrecognized version})"
   fi
   if ! _unattended_capture_line object_format \
       _unattended_git --no-lazy-fetch -C "$repo" \
         rev-parse --show-object-format=storage 2>/dev/null; then
-    ORCHID_UNATTENDED_ROOT_ERROR="cannot determine the repository object format before verifying commit history"
-    return 1
+    _unattended_commit_compute_fail \
+      "cannot determine the repository object format before verifying commit history"
   fi
   case "$object_format" in
     sha1) oid_length=40 ;;
     sha256) oid_length=64 ;;
     *)
-      ORCHID_UNATTENDED_ROOT_ERROR="unsupported repository object format '${object_format:-unknown}' while verifying commit history"
-      return 1
+      _unattended_commit_compute_fail \
+        "unsupported repository object format '${object_format:-unknown}' while verifying commit history"
       ;;
   esac
+  if ! _unattended_capture_line head \
+      _unattended_git --no-lazy-fetch -C "$repo" \
+        rev-parse --verify HEAD 2>/dev/null \
+     || ! _unattended_oid_is_valid "$head" "$oid_length"; then
+    _unattended_commit_compute_fail \
+      "cannot resolve a valid local HEAD object before verifying commit history"
+  fi
 
+  # /tmp is operator-machine scratch state, not a caller-selectable repository
+  # path. Refuse the unusual case where it is itself inside any worktree
+  # registered under this common directory, so read-only trust inspection
+  # never creates even transient repository-controlled content.
+  if ! _unattended_capture_line temp_base _unattended_repo_canon /tmp \
+     || ! _unattended_trust_store_outside_registered_worktrees \
+       "$ORCHID_UNATTENDED_COMMON_DIR" "$temp_base"; then
+    _unattended_commit_compute_fail \
+      "cannot batch-verify commit payloads because /tmp is inside a registered worktree"
+  fi
+  stage="$(mktemp -d "$temp_base/orchid-unattended-commit-verify.XXXXXX")" \
+    || _unattended_commit_compute_fail \
+      "cannot create private scratch space for batched commit verification"
+  ORCHID_UNATTENDED_COMMIT_STAGE="$stage"
+  [ ! -L "$stage" ] && [ -d "$stage" ] && [ -O "$stage" ] \
+    || _unattended_commit_compute_fail \
+      "private scratch space for batched commit verification is not canonical"
+
+  manifest="$stage/commits.oids"
+  batch_oids="$stage/batch.oids"
+  batch_output="$stage/batch.output"
+  batch_paths="$stage/batch.paths"
+  batch_hashes="$stage/batch.hashes"
+  : >"$manifest" || _unattended_commit_compute_fail \
+    "cannot stage the reachable commit manifest for verification"
+  exec 3>"$manifest" || _unattended_commit_compute_fail \
+    "cannot open the reachable commit manifest for verification"
+
+  # Bind the walk to the exact HEAD resolved above. A later lightweight final
+  # identity check compares symbolic HEAD with this OID, so one inspection
+  # cannot combine a graph from one ref state with identity from another.
   while IFS= read -r line; do
     if [ "$line" = "$sentinel" ]; then
       complete=1
       continue
     fi
     if [ "$complete" -eq 1 ] || [ -z "$line" ]; then
-      ORCHID_UNATTENDED_ROOT_ERROR="Git returned a malformed reachable-commit graph while deriving the unattended trust root"
-      return 1
+      _unattended_commit_compute_fail \
+        "Git returned a malformed reachable-commit graph while deriving the unattended trust root"
     fi
 
     commit="${line%% *}"
@@ -671,13 +715,13 @@ _unattended_root_commit() {
       parents="${line#* }"
     fi
     if ! _unattended_oid_is_valid "$commit" "$oid_length"; then
-      ORCHID_UNATTENDED_ROOT_ERROR="Git returned an invalid commit OID while deriving the unattended trust root"
-      return 1
+      _unattended_commit_compute_fail \
+        "Git returned an invalid commit OID while deriving the unattended trust root"
     fi
 
     # Validate every advertised edge as well as every commit row. A successful
-    # complete rev-list walk emits each reachable parent as its own row, where
-    # its stored payload is re-hashed below.
+    # complete rev-list walk emits each reachable parent as its own row, whose
+    # exact stored payload is re-hashed in the bounded batches below.
     parent="$parents"
     while [ -n "$parent" ]; do
       case "$parent" in
@@ -691,50 +735,212 @@ _unattended_root_commit() {
           ;;
       esac
       if ! _unattended_oid_is_valid "$oid" "$oid_length"; then
-        ORCHID_UNATTENDED_ROOT_ERROR="Git returned an invalid parent OID for commit $commit while deriving the unattended trust root"
-        return 1
+        _unattended_commit_compute_fail \
+          "Git returned an invalid parent OID for commit $commit while deriving the unattended trust root"
       fi
     done
 
-    if ! _unattended_hash_commit_object computed "$repo" "$commit"; then
-      ORCHID_UNATTENDED_ROOT_ERROR="cannot locally read and hash advertised commit object $commit; the object may be missing, malformed, or unavailable without a fetch"
-      return 1
-    fi
-    if ! _unattended_oid_is_valid "$computed" "$oid_length"; then
-      ORCHID_UNATTENDED_ROOT_ERROR="Git returned an invalid recomputed object ID for advertised commit $commit"
-      return 1
-    fi
-    if [ "$computed" != "$commit" ]; then
-      ORCHID_UNATTENDED_ROOT_ERROR="commit object integrity mismatch: advertised OID $commit hashes to $computed; repair or replace the repository before acknowledging unattended trust"
-      return 1
-    fi
-
+    printf '%s\n' "$commit" >&3 || _unattended_commit_compute_fail \
+      "cannot stage advertised commit $commit for verification"
     if [ -z "$parents" ]; then
       roots="${roots}${commit}"$'\n'
     fi
     commit_count=$((commit_count + 1))
   done < <(
     if _unattended_git --no-lazy-fetch -C "$repo" \
-        rev-list --parents HEAD 2>/dev/null; then
+        rev-list --parents "$head" 2>/dev/null; then
       printf '%s\n' "$sentinel"
     fi
   )
+  exec 3>&-
 
   if [ "$complete" -ne 1 ]; then
-    ORCHID_UNATTENDED_ROOT_ERROR="cannot completely walk locally reachable commit history; a commit may be missing or unreadable"
-    return 1
+    _unattended_commit_compute_fail \
+      "cannot completely walk locally reachable commit history; a commit may be missing or unreadable"
   fi
   if [ "$commit_count" -eq 0 ] || [ -z "$roots" ]; then
-    ORCHID_UNATTENDED_ROOT_ERROR="repository has no reachable root commit at HEAD"
-    return 1
+    _unattended_commit_compute_fail \
+      "repository has no reachable root commit at HEAD"
   fi
   if ! _unattended_capture_line joined _unattended_join_root_set "$roots" \
      || [ -z "$joined" ]; then
-    ORCHID_UNATTENDED_ROOT_ERROR="cannot normalize the verified repository root commit set"
-    return 1
+    _unattended_commit_compute_fail \
+      "cannot normalize the verified repository root commit set"
   fi
 
-  printf -v "$target" '%s' "$joined"
+  # cat-file --batch emits one size-framed raw payload per advertised OID.
+  # Bash 3.2's read -n, under the byte-oriented C locale, stages those payloads
+  # without one cat-file process per commit. hash-object --stdin-paths then
+  # re-hashes every staged payload in the same order with the repository's
+  # storage hash. Valid commit objects cannot contain NUL; encountering one
+  # shortens read -d '' and therefore fails closed before hashing.
+  exec 3<"$manifest" || _unattended_commit_compute_fail \
+    "cannot reopen the reachable commit manifest for verification"
+  while [ "$processed" -lt "$commit_count" ]; do
+    : >"$batch_oids" || _unattended_commit_compute_fail \
+      "cannot stage a commit-verification batch"
+    exec 4>"$batch_oids" || _unattended_commit_compute_fail \
+      "cannot open a commit-verification batch"
+    batch_count=0
+    while [ "$batch_count" -lt "$ORCHID_UNATTENDED_COMMIT_BATCH_SIZE" ] \
+          && IFS= read -r expected <&3; do
+      printf '%s\n' "$expected" >&4 || _unattended_commit_compute_fail \
+        "cannot stage advertised commit $expected for batched verification"
+      batch_count=$((batch_count + 1))
+    done
+    exec 4>&-
+    [ "$batch_count" -gt 0 ] || _unattended_commit_compute_fail \
+      "the reachable commit manifest ended before every commit was verified"
+
+    if ! _unattended_git --no-lazy-fetch -C "$repo" \
+        cat-file --batch='%(objectname) %(objecttype) %(objectsize)' \
+        <"$batch_oids" >"$batch_output" 2>/dev/null; then
+      _unattended_commit_compute_fail \
+        "cannot locally read a batch of advertised commit objects; an object may be missing or unavailable without a fetch"
+    fi
+
+    : >"$batch_paths" || _unattended_commit_compute_fail \
+      "cannot stage commit payload paths for batched hashing"
+    exec 4<"$batch_oids" 5<"$batch_output" 6>"$batch_paths" \
+      || _unattended_commit_compute_fail \
+        "cannot parse locally read commit payloads"
+    batch_count=0
+    while IFS= read -r expected <&4; do
+      advertised=""
+      object_type=""
+      object_size=""
+      object_extra=""
+      if ! IFS=' ' read -r advertised object_type object_size object_extra <&5 \
+         || [ -n "$object_extra" ] \
+         || [ "$advertised" != "$expected" ] \
+         || [ "$object_type" != commit ]; then
+        _unattended_commit_compute_fail \
+          "cannot locally read advertised commit object $expected; the object may be missing, malformed, or unavailable without a fetch"
+      fi
+      case "$object_size" in
+        ''|*[!0-9]*)
+          _unattended_commit_compute_fail \
+            "Git returned an invalid payload size for advertised commit $expected"
+          ;;
+      esac
+      [ "${#object_size}" -le 18 ] || _unattended_commit_compute_fail \
+        "Git returned an unsupported payload size for advertised commit $expected"
+
+      batch_count=$((batch_count + 1))
+      payload="$stage/payload.$batch_count"
+      : >"$payload" || _unattended_commit_compute_fail \
+        "cannot stage the exact payload for advertised commit $expected"
+      exec 7>"$payload" || _unattended_commit_compute_fail \
+        "cannot open exact-payload scratch space for advertised commit $expected"
+      remaining=$((10#$object_size))
+      while [ "$remaining" -gt 0 ]; do
+        if [ "$remaining" -gt 65536 ]; then
+          chunk_size=65536
+        else
+          chunk_size="$remaining"
+        fi
+        chunk=""
+        IFS= read -r -d '' -n "$chunk_size" chunk <&5 || true
+        if [ "${#chunk}" -ne "$chunk_size" ]; then
+          _unattended_commit_compute_fail \
+            "Git returned a truncated or malformed payload for advertised commit $expected"
+        fi
+        printf '%s' "$chunk" >&7 || _unattended_commit_compute_fail \
+          "cannot stage the complete payload for advertised commit $expected"
+        remaining=$((remaining - chunk_size))
+      done
+      exec 7>&-
+      separator=invalid
+      if ! IFS= read -r separator <&5 || [ -n "$separator" ]; then
+        _unattended_commit_compute_fail \
+          "Git returned invalid batch framing for advertised commit $expected"
+      fi
+      printf '%s\n' "$payload" >&6 || _unattended_commit_compute_fail \
+        "cannot stage the hash input for advertised commit $expected"
+    done
+    extra=""
+    if IFS= read -r extra <&5 || [ -n "$extra" ]; then
+      _unattended_commit_compute_fail \
+        "Git returned extra data after the requested commit payload batch"
+    fi
+    exec 4<&- 5<&- 6>&-
+    [ "$batch_count" -gt 0 ] || _unattended_commit_compute_fail \
+      "Git returned no locally readable commit payloads for a non-empty batch"
+
+    if ! _unattended_git --no-lazy-fetch -C "$repo" \
+        hash-object --no-filters -t commit --stdin-paths \
+        <"$batch_paths" >"$batch_hashes" 2>/dev/null; then
+      _unattended_commit_compute_fail \
+        "cannot locally hash a batch of advertised commit payloads; an object may be malformed"
+    fi
+
+    exec 4<"$batch_oids" 5<"$batch_hashes" \
+      || _unattended_commit_compute_fail \
+        "cannot compare advertised and recomputed commit object IDs"
+    while IFS= read -r expected <&4; do
+      actual=""
+      if ! IFS= read -r actual <&5; then
+        _unattended_commit_compute_fail \
+          "Git returned too few recomputed commit object IDs"
+      fi
+      if ! _unattended_oid_is_valid "$actual" "$oid_length"; then
+        _unattended_commit_compute_fail \
+          "Git returned an invalid recomputed object ID for advertised commit $expected"
+      fi
+      if [ "$actual" != "$expected" ]; then
+        _unattended_commit_compute_fail \
+          "commit object integrity mismatch: advertised OID $expected hashes to $actual; repair or replace the repository before acknowledging unattended trust"
+      fi
+      processed=$((processed + 1))
+    done
+    extra=""
+    if IFS= read -r extra <&5 || [ -n "$extra" ]; then
+      _unattended_commit_compute_fail \
+        "Git returned too many recomputed commit object IDs"
+    fi
+    exec 4<&- 5<&-
+  done
+  extra=""
+  if IFS= read -r extra <&3 || [ -n "$extra" ]; then
+    _unattended_commit_compute_fail \
+      "the reachable commit manifest changed during verification"
+  fi
+  exec 3<&-
+
+  printf 'ok\t%s\t%s\n' "$joined" "$head"
+)
+
+_unattended_root_commit() {
+  local target="$1" repo="$2" result payload root head
+  ORCHID_UNATTENDED_ROOT_ERROR=""
+  ORCHID_UNATTENDED_HEAD_OID=""
+
+  if ! _unattended_capture_line result \
+      _unattended_root_commit_compute "$repo"; then
+    ORCHID_UNATTENDED_ROOT_ERROR="cannot complete batched local commit verification"
+    return 1
+  fi
+  case "$result" in
+    error$'\t'*)
+      ORCHID_UNATTENDED_ROOT_ERROR="${result#error$'\t'}"
+      return 1
+      ;;
+    ok$'\t'*$'\t'*)
+      payload="${result#ok$'\t'}"
+      root="${payload%%$'\t'*}"
+      head="${payload#*$'\t'}"
+      [ -n "$root" ] && [ -n "$head" ] && [ "$head" != "$payload" ] || {
+        ORCHID_UNATTENDED_ROOT_ERROR="batched commit verification returned a malformed result"
+        return 1
+      }
+      printf -v "$target" '%s' "$root"
+      ORCHID_UNATTENDED_HEAD_OID="$head"
+      ;;
+    *)
+      ORCHID_UNATTENDED_ROOT_ERROR="batched commit verification returned a malformed result"
+      return 1
+      ;;
+  esac
 }
 
 _unattended_one_line() {
@@ -747,7 +953,7 @@ _unattended_one_line() {
 # directory/device observation from one repository state with root history
 # read from a replacement state.
 _unattended_identity_still_matches() {
-  local common ident root worktree expected_kind expected_gitdir
+  local common ident head worktree expected_kind expected_gitdir
   # Fail before any target-repository Git query if the executable changed to a
   # version that cannot guarantee local-only object access.
   _unattended_git_supports_local_object_walk || return 1
@@ -768,8 +974,10 @@ _unattended_identity_still_matches() {
     "$ORCHID_UNATTENDED_TRUST_DIR" || return 1
   _unattended_capture_line ident _unattended_fs_identity "$common" || return 1
   [ "$ident" = "$ORCHID_UNATTENDED_DEVICE $ORCHID_UNATTENDED_INODE" ] || return 1
-  _unattended_root_commit root "$ORCHID_UNATTENDED_REPO" || return 1
-  [ "$root" = "$ORCHID_UNATTENDED_ROOT_COMMIT" ] || return 1
+  _unattended_capture_line head \
+    _unattended_git --no-lazy-fetch -C "$ORCHID_UNATTENDED_REPO" \
+      rev-parse --verify HEAD 2>/dev/null || return 1
+  [ "$head" = "$ORCHID_UNATTENDED_HEAD_OID" ] || return 1
   _unattended_identity_anchor_matches
 }
 
@@ -812,6 +1020,7 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_DEVICE=""
   ORCHID_UNATTENDED_INODE=""
   ORCHID_UNATTENDED_ROOT_COMMIT=""
+  ORCHID_UNATTENDED_HEAD_OID=""
   ORCHID_UNATTENDED_TRUST_DIR=""
   ORCHID_UNATTENDED_RECORD=""
   ORCHID_UNATTENDED_IDENTITY_ANCHOR=""

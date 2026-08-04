@@ -945,6 +945,63 @@ assert_match '^unattended trust: trusted$' "$out" \
 assert_match "^root_commit: $sha256_root$" "$out" \
   "SHA-256 root derivation preserves the verified repository root"
 
+# A trusted inspection must not amplify Git process count with history length
+# or repeat the full parent walk during its final identity recheck. Count
+# commands deterministically around a history large enough to distinguish one
+# batch from the former per-commit cat-file/hash-object pipelines; do not use a
+# wall-clock assertion, which would be host-load dependent.
+batch_repo="$WORK/batched-commit-verification-repo"
+mk_repo "$batch_repo"
+batch_n=0
+while [ "$batch_n" -lt 32 ]; do
+  batch_n=$((batch_n + 1))
+  git -C "$batch_repo" commit -q --allow-empty -m "batch fixture $batch_n"
+done
+trust_repo "$batch_repo" "batched commit verification fixture"
+
+batch_git_bin="$WORK/batched-commit-verification-bin"
+batch_git_log="$WORK/batched-commit-verification.log"
+batch_real_git="$(command -v git)"
+mkdir -p "$batch_git_bin"
+cat > "$batch_git_bin/git" <<'EOF'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in
+    rev-list|cat-file|hash-object)
+      printf '%s\n' "$arg" >> "$ORCHID_TEST_BATCH_GIT_LOG"
+      break
+      ;;
+  esac
+done
+exec "$ORCHID_TEST_BATCH_REAL_GIT" "$@"
+EOF
+chmod +x "$batch_git_bin/git"
+: > "$batch_git_log"
+out="$(
+  HOME="$home" PATH="$batch_git_bin:$PATH" \
+  ORCHID_ROOT="$REPO_ROOT" \
+  ORCHID_TEST_BATCH_REPO="$batch_repo" \
+  ORCHID_TEST_BATCH_GIT_LOG="$batch_git_log" \
+  ORCHID_TEST_BATCH_REAL_GIT="$batch_real_git" \
+  /bin/bash -c '
+    set -euo pipefail
+    source "$ORCHID_ROOT/lib/common.sh"
+    source "$ORCHID_ROOT/lib/trust.sh"
+    unattended_trust_show "$ORCHID_TEST_BATCH_REPO"
+  '
+)"
+assert_match '^unattended trust: trusted$' "$out" \
+  "batched exact-payload verification preserves a trusted history"
+batch_walks="$(grep -c '^rev-list$' "$batch_git_log" || true)"
+batch_reads="$(grep -c '^cat-file$' "$batch_git_log" || true)"
+batch_hashes="$(grep -c '^hash-object$' "$batch_git_log" || true)"
+assert_eq 1 "$batch_walks" \
+  "one trusted inspection performs exactly one complete parent walk"
+assert_eq 1 "$batch_reads" \
+  "one sub-limit history uses one batched cat-file process"
+assert_eq 1 "$batch_hashes" \
+  "one sub-limit history uses one batched hash-object process"
+
 # Commit-graph parent edges are repository-controlled acceleration metadata,
 # not the underlying commit history. Forge a graph in which a real replacement
 # root falsely names the acknowledged root as its parent. Ordinary Git accepts
