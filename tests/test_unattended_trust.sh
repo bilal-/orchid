@@ -741,37 +741,85 @@ assert_entry_path_clean \
 [ ! -e "$entry_new_record" ] \
   || fail "dispatched revoke must remove the direct-entry identity record"
 
-# Explain status keeps the fixed helper path for the entire report. Text and
-# HTML modes must expose the same denied gate and honest pending-root
-# provenance through both dispatch surfaces, exactly as the runners below
-# enforce it.
-assert_entry_path_clean \
-  "dispatched status --explain" 0 \
+# Explain status pins the fixed helper path across exactly the trust work --
+# the gate inspection, the provenance it renders, and the kernel-tool probe --
+# then restores the operator PATH before the ledger/jobs/report work, the same
+# boundary libexec/orchid-doctor draws below. Report-stage shims may therefore
+# execute; what they must not be able to do is change a verdict that was
+# already decided and rendered off the fixed path. The target-local git shim
+# answers with the OLD root commit, so text and HTML modes reporting the denied
+# gate and honest pending-root provenance -- through both dispatch surfaces,
+# and exactly once -- is precisely the proof that nothing on the operator PATH
+# reached the decision.
+ENTRY_STATUS_OUT=""
+assert_status_entry_gate() {
+  local label="$1" expected="$2" target_repo="$3"
+  local rc=0
+  shift 3
+  rm -f "$entry_shim_log"
+  ENTRY_STATUS_OUT="$(
+    HOME="$home" PATH="$entry_shim_bin:$PATH" BASH_ENV="$entry_bash_env" \
+      ORCHID_ROOT="$entry_fresh" ORCHID_REPO="$target_repo" \
+      "$@" 2>&1
+  )" || rc=$?
+  assert_eq 0 "$rc" "$label exit status"
+  assert_match "$expected" "$ENTRY_STATUS_OUT" \
+    "$label reports the real gate/provenance"
+}
+
+# assert_entry_verdict_once <label> <regex> <text> -- the rendered gate is
+# emitted once and only once, so a report-stage shim cannot append a second,
+# contradicting verdict after the real one.
+assert_entry_verdict_once() {
+  case "$(printf '%s\n' "$3" | grep -Ec "$2")" in
+    1) ;;
+    *) fail "$1 must report exactly one unattended trust verdict" ;;
+  esac
+}
+
+assert_status_entry_gate \
+  "dispatched status --explain" \
   '^unattended: denied.*root pending' "$entry_replaced" \
   "$ORCHID_BIN" status --explain
-assert_entry_path_clean \
-  "direct status --explain" 0 \
+assert_entry_verdict_once \
+  "dispatched status --explain" '^unattended: ' "$ENTRY_STATUS_OUT"
+assert_status_entry_gate \
+  "direct status --explain" \
   '^unattended: denied.*root pending' "$entry_replaced" \
   "$REPO_ROOT/libexec/orchid-status" --explain
-assert_entry_path_clean \
-  "dispatched status --html --explain" 0 \
+assert_entry_verdict_once \
+  "direct status --explain" '^unattended: ' "$ENTRY_STATUS_OUT"
+
+# --html's gate lives in the page it wrote, not on stdout; read it back from
+# the path stdout reported.
+assert_status_entry_gate \
+  "dispatched status --html --explain" \
   '\.orchid/runtime/status\.html$' "$entry_replaced" \
   "$ORCHID_BIN" status --html --explain
-entry_status_page="$ENTRY_PATH_OUT"
+entry_status_page="$(
+  printf '%s\n' "$ENTRY_STATUS_OUT" | grep -E '\.orchid/runtime/status\.html$'
+)"
 entry_status_content="$(/bin/cat "$entry_status_page")"
 assert_match '<strong>gate:</strong> denied' "$entry_status_content" \
   "dispatched HTML status reports the denied runner gate"
 assert_match 'root pending' "$entry_status_content" \
   "dispatched HTML status reports that replacement-root verification is pending"
-assert_entry_path_clean \
-  "direct status --html --explain" 0 \
+assert_entry_verdict_once \
+  "dispatched HTML status" '<strong>gate:</strong>' "$entry_status_content"
+assert_status_entry_gate \
+  "direct status --html --explain" \
   '\.orchid/runtime/status\.html$' "$entry_replaced" \
   "$REPO_ROOT/libexec/orchid-status" --html --explain
-entry_status_content="$(/bin/cat "$ENTRY_PATH_OUT")"
+entry_status_page="$(
+  printf '%s\n' "$ENTRY_STATUS_OUT" | grep -E '\.orchid/runtime/status\.html$'
+)"
+entry_status_content="$(/bin/cat "$entry_status_page")"
 assert_match '<strong>gate:</strong> denied' "$entry_status_content" \
   "direct HTML status reports the denied runner gate"
 assert_match 'root pending' "$entry_status_content" \
   "direct HTML status reports that replacement-root verification is pending"
+assert_entry_verdict_once \
+  "direct HTML status" '<strong>gate:</strong>' "$entry_status_content"
 
 # Doctor prints its trust verdict before restoring the operator PATH needed by
 # later readiness/binary checks. Those later shims may run, but cannot change
