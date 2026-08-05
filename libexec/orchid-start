@@ -18,9 +18,12 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 #      operator (`--verify`, or an already-configured `verify=`); a repo that
 #      configures neither is refused, never sniffed for a test runner.
 #   2. It never OVERWRITES anything the operator owns -- not orchid.config
-#      (one `verify=` line is APPENDED, and only when nothing configures one),
-#      not a directory that is not exactly this repository's integration
-#      worktree, not a requirements snapshot that is already identical.
+#      (one `verify=` line is APPENDED, and only when that file carries none;
+#      it is then committed onto the integration branch, because a setup that
+#      hands back homework is not one command and a dirty integration
+#      checkout is dogfood finding F16), not a directory that is not exactly
+#      this repository's integration worktree, not a requirements snapshot
+#      that is already identical.
 #   3. It never RESUMES or STEALS a session. Against existing run state it
 #      demands the run still be in `planning`, no live lease, no live run/verb
 #      lock, and proof (`ORCHID_EPOCH`) that the caller owns the CURRENT
@@ -43,10 +46,11 @@ setup, requirements import, and a handoff into PLANNING.
 
   <requirements-file>  operator-authored requirements, imported verbatim into
                        .orchid/requirements.md under the validated epoch.
-  --verify <command>   the project's verification command. Recorded as a
-                       `verify=` line in the integration checkout's
-                       orchid.config only when nothing configures one yet;
-                       an already-configured command is never replaced.
+  --verify <command>   the project's verification command. Appended as a
+                       `verify=` line to the integration checkout's
+                       orchid.config -- and committed onto the integration
+                       branch -- only when that file configures none yet;
+                       a `verify=` line already there is never replaced.
                        orchid start never guesses a verification command.
   --worktree <path>    where the integration worktree lives (default:
                        ../<repo>-orchid). An existing path is reused only
@@ -184,6 +188,24 @@ _start_validate_config() {
     grep -qxF "$key" "$ORCHID_ROOT/lib/config-keys.txt" \
       || echo "warn: $file line $n sets '$key', which is not a config key orchid $ORCHID_VERSION knows about (it will simply be ignored)"
   done < "$file"
+}
+
+# _start_committed_verify <checkout> <branch> -- the `verify=` line as
+# COMMITTED on <branch>, or empty when that branch's orchid.config carries
+# none (or has no orchid.config at all). The committed blob, never the
+# working copy, is what a fresh checkout of this run -- another machine, a
+# task worktree, a headless pump -- will actually read, so it is the only
+# honest answer to "does this run have a durable verification command?".
+# Written to a temp file and read back with the same _cfg_file_get every
+# other config layer uses (rather than `git show | grep`, whose early-
+# exiting grep SIGPIPEs git under this file's pipefail -- lesson L005).
+_start_committed_verify() {
+  local co="$1" branch="$2" tmp v
+  tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-start-cfg.XXXXXX")"
+  git -C "$co" show "refs/heads/$branch:orchid.config" > "$tmp" 2>/dev/null || : > "$tmp"
+  v="$(_cfg_file_get "$tmp" verify)"
+  rm -f "$tmp"
+  printf '%s\n' "$v"
 }
 
 # -- arguments --------------------------------------------------------------
@@ -420,14 +442,40 @@ if [ "$epoch_action" = created ]; then
     printf '%s\n' "$epoch" | atomic_write "$rt/epoch"
   fi
 fi
+# Exported, not just passed per-command: every fenced child from here on runs
+# under the epoch validated above -- including the `journal add` that
+# orchid_commit_durable writes from INSIDE itself on a CAS failure, which has
+# no other way to be handed one.
+export ORCHID_EPOCH="$epoch"
 
-# The verification command, recorded where the run will read it. APPEND-only,
-# and only when the integration checkout configures none: a `verify=` line
-# already present there (or in ~/.orchid/config, or the environment) is the
-# operator's and is left exactly as it is.
+# The verification command, recorded where the run will read it -- DURABLY.
+#
+# "Durably" is the whole point, and it is decided against the integration
+# checkout's own `orchid.config` FILE, not against the effective (merged)
+# value config_get returns: the env layer (`ORCHID_VERIFY`) and the user
+# layer (`~/.orchid/config`) are machine-local and do not survive a fresh
+# checkout, another machine, or a headless pump started from a different
+# shell. A run whose only verification command lives in one of those layers
+# has, from the integration branch's point of view, no verification command
+# at all -- so an absent `verify=` LINE, not an empty effective value, is
+# what makes this verb record one.
+#
+# Rule 2 still holds exactly: APPEND-only, never a replacement. A `verify=`
+# line already in that file is the operator's and is never rewritten, and an
+# explicit `--verify` that disagrees with what the integration checkout
+# already resolves is refused rather than silently ignored (that refusal is
+# re-checked HERE because on a repo whose integration branch existed with no
+# checkout of it, this worktree -- the run's real config source -- did not
+# exist yet when the same check ran against $cfg_repo above).
 verify_note=""
 wt_verify="$(config_get "$wt" verify)"
-if [ -z "$wt_verify" ]; then
+wt_verify_line="$(_cfg_file_get "$wt/orchid.config" verify)"
+committed_verify_line="$(_start_committed_verify "$wt" "$integ")"
+if [ "$have_verify_opt" -eq 1 ] && [ -n "$wt_verify" ] && [ "$wt_verify" != "$verify_opt" ]; then
+  orchid_die "a verification command is already configured as '$wt_verify' (source: $(config_provenance "$wt" verify)) in the integration checkout $wt — orchid start never replaces it. Re-run without --verify, or change that setting yourself first"
+fi
+verify_action=none
+if [ -z "$wt_verify_line" ]; then
   # A file whose last byte is not a newline would otherwise swallow this
   # append into its final line (`tail -c 1` in a command substitution is
   # empty exactly when that last byte IS a newline).
@@ -435,10 +483,68 @@ if [ -z "$wt_verify" ]; then
     printf '\n' >> "$wt/orchid.config"
   fi
   printf 'verify=%s\n' "$verify_cmd" >> "$wt/orchid.config"
-  verify_note="recorded in $wt/orchid.config (uncommitted — 'orchid config commit --reason \"...\"' lands it on $integ)"
   wt_verify="$verify_cmd"
-else
+  verify_action=recorded
+elif [ -z "$committed_verify_line" ]; then
+  # The line is on disk but has never landed on $integ -- an earlier `orchid
+  # start` whose commit lost the CAS race and died, or an operator edit made
+  # in this checkout. Either way the run's verification command still does
+  # not survive a fresh checkout, so finishing that job (never rewriting the
+  # line itself) is what makes a re-run CONVERGE rather than report a
+  # durability hole as "already configured".
+  verify_action=committed
+fi
+if [ "$verify_action" = none ]; then
   verify_note="already configured (source: $(config_provenance "$wt" verify))"
+else
+  # Landed on $integ as part of THIS setup, not left as homework: a
+  # mandatory `orchid config commit` afterwards would make this verb no
+  # longer one command, and would leave the integration checkout dirty
+  # (v1-m4 dogfood finding F16 -- the quickstart failing as written). The
+  # commit goes through orchid_commit_durable (lib/common.sh), the same
+  # path `orchid config commit` and `orchid run accept` use: it stages this
+  # file's on-disk bytes inside a fresh temp worktree built from $integ's
+  # CURRENT head, so the live checkout's index is never touched (the r-001
+  # stale-checkout hazard) -- and it must be a plain statement, never
+  # `$(...)`, because it composes this script's EXIT trap.
+  #
+  # Committing durable state mid-run would be harmful (lesson L008: it can
+  # invalidate an in-flight candidate's base_sha). It is safe HERE, and only
+  # here, because `orchid start` runs before any task is in flight: the run
+  # is still in `planning`, there is no live lease and no live lock (both
+  # refused above), so there is no candidate whose base this can move.
+  #
+  # Granularity is the whole file, as it is for `orchid config commit`: an
+  # edit the operator had already made to THIS checkout's orchid.config and
+  # not yet committed rides along. That is only reachable on an existing
+  # run's checkout (a fresh one is created from the branch two steps above,
+  # and `mode=new` refuses a dirty tree outright), the run is still in
+  # planning, and the resulting commit is named in this verb's output.
+  orchid_commit_durable "$wt" "orchid: start (verify command recorded)" orchid.config
+  # `update-ref` above advanced the branch without touching THIS checkout's
+  # per-worktree index, which still holds the pre-commit entry -- `git
+  # status` here would then report orchid.config as modified (and, for a
+  # file the commit ADDED, `git diff --cached` would show a `D` row, which
+  # is precisely lib/common.sh's orchid_stale_checkout signature, i.e.
+  # doctor and status would both start calling this brand-new checkout
+  # stale). `git reset <tree-ish> -- <path>` (the same path-scoped, index-
+  # only form `orchid init`'s own cleanup uses) refreshes that one entry to
+  # the new HEAD and never reads or writes the working tree, so no operator
+  # byte can be lost through it.
+  git -C "$wt" reset -q HEAD -- orchid.config
+  # Journaled the same way `orchid config commit` journals its own commit,
+  # and for the same reason: a durable-state commit that no journal entry
+  # accounts for is exactly what the r-001 incident was. Written AFTER the
+  # commit it describes (a CAS failure above already journals its own
+  # `intervention` entry and dies, so a "committed" line can never outlive a
+  # commit that did not happen).
+  ORCHID_REPO="$wt" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \
+    "config committed by orchid start: verify command recorded ($ORCHID_COMMIT_DURABLE_SHA)"
+  if [ "$verify_action" = recorded ]; then
+    verify_note="recorded in $wt/orchid.config and committed on $integ ($ORCHID_COMMIT_DURABLE_SHA)"
+  else
+    verify_note="already in $wt/orchid.config, now committed on $integ ($ORCHID_COMMIT_DURABLE_SHA)"
+  fi
 fi
 
 # Requirements import, under the epoch validated above. Skipped when the

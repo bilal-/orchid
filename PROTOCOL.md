@@ -294,10 +294,16 @@ integration checkout, and never resumes or takes over a run — against
 existing state it requires `run_status: planning`, no fresh unreleased
 lease, no live run/verb lock, and `ORCHID_EPOCH` proving ownership of the
 CURRENT epoch (it mints an epoch only where none exists yet, at `0`).
-Unattended trust stays off unless both `--ack-unattended` and a non-empty
-`--reason` are given, which invokes the machine-local `orchid trust`
-acknowledgement. Nothing below depends on it: every verb it calls remains
-individually callable, and the manual sequence in
+A `--verify` command is appended to the integration checkout's
+`orchid.config` and COMMITTED onto the integration branch by that same
+command — only when that file (as committed on the branch, not merely as
+resolved through the machine-local env/user layers) configures none yet, and
+never as a replacement — so setup needs no follow-up `orchid config commit`
+and leaves the integration checkout clean. Unattended trust stays off unless
+both `--ack-unattended` and a non-empty `--reason` are given, which invokes
+the machine-local `orchid trust` acknowledgement. Nothing below depends on
+it: every verb it calls remains individually callable, and the manual
+sequence in
 [docs/quickstart.md](./docs/quickstart.md) is unchanged.
 
 1. `orchid requirements import <file>` — snapshot the operator-authored

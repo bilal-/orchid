@@ -107,20 +107,31 @@ initializes, creates the integration worktree, sets up the epoch, imports
 state, and the planning handoff. Then **skip to [step 4](#4-plan)** — from the
 worktree it just printed, with the `ORCHID_EPOCH` it just told you to export.
 
-Options: `--verify <command>`, recorded as a `verify=` line in the integration
-checkout's `orchid.config` and only when nothing configures one yet — omit the
-flag if you already set `verify=` in step 2; `--worktree <path>`, which
-defaults to `../<repo>-orchid`; and `--ack-unattended --reason "..."`, both
-together, to also make the machine-local unattended acknowledgement of
+Options: `--verify <command>`, appended as a `verify=` line to the integration
+checkout's `orchid.config` and committed onto the integration branch by that
+same run, but only when that file configures none yet — omit the flag if you
+already set `verify=` in step 2; `--worktree <path>`, which defaults to
+`../<repo>-orchid`; and `--ack-unattended --reason "..."`, both together, to
+also make the machine-local unattended acknowledgement of
 [step 5](#5-start-the-orchestrator-and-walk-away).
+
+Committing that one line is part of the same command on purpose: there is no
+follow-up step to remember, and the integration checkout is not handed back
+dirty. A command that only your environment or your machine-local
+`~/.orchid/config` supplies counts as "none yet" — it would not survive a
+fresh checkout of the integration branch (a task worktree, another machine, a
+headless pump), so it is recorded there too rather than left to vanish. A
+`verify=` line already committed on that branch is never replaced or
+duplicated.
 
 What it will not do, by design:
 
 - **never guess a verification command** — no `--verify`, no configured
   `verify=`, no setup;
-- **never overwrite your files** — it appends at most one `verify=` line, and
-  refuses any worktree path that is not empty or is not exactly this
-  repository's integration checkout;
+- **never overwrite your files** — it appends at most one `verify=` line (and
+  commits exactly that one file), never replaces a `verify=` line already on
+  the integration branch, and refuses any worktree path that is not empty or
+  is not exactly this repository's integration checkout;
 - **never resume or take over a run** — against existing state it refuses if
   the run has left `planning`, if another session's lease is still fresh, if a
   run/verb lock is live, or if you cannot prove you hold the current epoch

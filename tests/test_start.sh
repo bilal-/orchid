@@ -85,6 +85,23 @@ grep -q '^verify=true$' "$wt1/orchid.config" \
 grep -q "requirements imported from requirements.md" "$wt1/.orchid/journal.md" \
   || fail "the import is journaled by the requirements verb itself"
 
+# ONE command means no mandatory follow-up: the recorded verify command is
+# committed onto the integration branch by this same run, so it survives a
+# fresh checkout (a task worktree, another machine, a headless pump) and the
+# integration checkout is not handed back dirty (dogfood finding F16).
+assert_match "^verify: true — recorded in $wt1/orchid.config and committed on orchid/integration" \
+  "$out1" "start commits the verify command it recorded, rather than leaving homework"
+assert_match '^verify=true$' "$(git -C "$r1" show orchid/integration:orchid.config)" \
+  "the verify= line is committed on the integration branch, not just written to the checkout"
+assert_eq "" "$(git -C "$wt1" status --porcelain -- orchid.config)" \
+  "recording the verify command leaves the integration checkout's orchid.config clean"
+# Nor may that commit leave the checkout looking STALE to doctor/status: a
+# branch pointer advanced over an unrefreshed per-worktree index is exactly
+# lib/common.sh's orchid_stale_checkout signature (any HEAD-vs-index row
+# while parked on the integration branch).
+assert_eq "" "$(git -C "$wt1" diff --cached --name-status)" \
+  "start's own commit must not leave a stale index behind in the integration checkout"
+
 # "orchid never touches user work": the operator's own branch and working
 # tree are exactly as they were.
 assert_eq "$r1_branch" "$(git -C "$r1" rev-parse --abbrev-ref HEAD)" \
@@ -144,6 +161,62 @@ assert_eq 1 "$(grep -c '^verify=' "$r4/orchid.config")" "no second verify= line 
 out4b="$(ORCHID_REPO="$r4" "$ORCHID_BIN" start "$REQ" --verify 'make test' 2>&1)" \
   || fail "start must accept a --verify identical to the configured one: $out4b"
 assert_match "^verify: make test — already configured" "$out4b" "a matching --verify changes nothing"
+assert_eq 1 "$(grep -c '^verify=' "$W/r4-orchid/orchid.config")" \
+  "an already-configured command is never duplicated into the integration checkout"
+
+# "Already configured" is judged by the `verify=` LINE the integration branch
+# actually carries, never by the merged value: a command that resolves only
+# from a MACHINE-LOCAL layer (~/.orchid/config, or ORCHID_VERIFY) does not
+# survive a fresh checkout, so it is recorded and committed like any other.
+r15="$W/r15"; mk_repo "$r15"
+printf 'verify=true\n' > "$HOME/.orchid/config"
+rc=0; out15="$(ORCHID_REPO="$r15" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+rm -f "$HOME/.orchid/config"
+[ "$rc" -eq 0 ] || fail "a machine-local verify command must be enough to set up: $out15"
+assert_match "committed on orchid/integration" "$out15" \
+  "a verify command that only a machine-local layer supplies is recorded durably"
+assert_match '^verify=true$' "$(git -C "$r15" show orchid/integration:orchid.config)" \
+  "the run's verification command survives a fresh checkout of the integration branch"
+
+# A verify command already committed on the integration branch is the run's,
+# even when the operator's OWN branch configures none and no integration
+# checkout exists yet to compare against up front: refused, never silently
+# ignored in favor of the configured one.
+r16="$W/r16"; mk_repo "$r16" 'verify=make test'
+ORCHID_REPO="$r16" "$ORCHID_BIN" init >/dev/null || fail "fixture: orchid init must succeed on r16"
+grep -v '^verify=' "$r16/orchid.config" > "$r16/config.tmp"
+mv "$r16/config.tmp" "$r16/orchid.config"
+git -C "$r16" commit -qam "fixture: the operator's own branch drops verify=" \
+  || fail "fixture: committing the operator's own branch must succeed"
+rc=0; out16="$(ORCHID_REPO="$r16" "$ORCHID_BIN" start "$REQ" --verify 'npm test' 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must refuse to replace the integration branch's own verify command"
+assert_match "already configured as 'make test'" "$out16" "the refusal quotes the command the run actually uses"
+assert_match "never replaces it" "$out16" "the refusal states the rule"
+assert_match '^verify=make test$' "$(cat "$W/r16-orchid/orchid.config")" \
+  "the integration checkout's own config is left exactly as it was"
+assert_match '^verify=make test$' "$(git -C "$r16" show orchid/integration:orchid.config)" \
+  "and nothing was committed over it"
+
+# Convergence: a `verify=` line sitting in the integration checkout that never
+# landed on the branch (an earlier setup whose commit lost its CAS race, or an
+# operator edit made there) is FINISHED on a re-run -- reporting it as
+# "already configured" would leave a run whose verification command still
+# vanishes on a fresh checkout. The line itself is never rewritten.
+r17="$W/r17"; mk_repo "$r17"
+ORCHID_REPO="$r17" "$ORCHID_BIN" init >/dev/null || fail "fixture: orchid init must succeed on r17"
+git -C "$r17" worktree add -q "$W/r17-orchid" orchid/integration \
+  || fail "fixture: the integration worktree must be creatable"
+printf 'verify=true\n' >> "$W/r17-orchid/orchid.config"
+out17="$(ORCHID_REPO="$r17" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must finish an uncommitted verify= line rather than refuse: $out17"
+assert_match "^verify: true — already in .*orchid.config, now committed on orchid/integration" "$out17" \
+  "the uncommitted line is committed by this run, and said to be"
+assert_match '^verify=true$' "$(git -C "$r17" show orchid/integration:orchid.config)" \
+  "the line the operator already wrote is what landed on the branch"
+assert_eq 1 "$(grep -c '^verify=' "$W/r17-orchid/orchid.config")" \
+  "the existing line is committed, never rewritten or duplicated"
+assert_eq "" "$(git -C "$W/r17-orchid" status --porcelain -- orchid.config)" \
+  "and the integration checkout is left clean"
 
 # ===========================================================================
 # 4 -- a clean existing repo is required, and a malformed repo config is
