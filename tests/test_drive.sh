@@ -35,7 +35,10 @@ CAND=1111111111111111111111111111111111111111
 
 # mk_policy_task <id> <risk_tier> <blocking_severity> [candidate]
 mk_policy_task() {
-  local id="$1" tier="$2" bsev="$3" cand="${4:-$CAND}"
+  # `${4-...}`, not `${4:-...}`: omitting the argument still defaults to $CAND,
+  # but an explicitly empty one stays empty -- that is how P01 builds a task
+  # with no candidate_sha at all.
+  local id="$1" tier="$2" bsev="$3" cand="${4-$CAND}"
   printf -- '---\nschema: 1\nid: %s\nstatus: arbitrating\narchetype: feature\nattempts: 0\nrisk_tier: %s\nblocking_severity: %s\ncandidate_sha: %s\n---\nbody\n' \
     "$id" "$tier" "$bsev" "$cand" > "$POLICY/.orchid/tasks/$id.md"
 }
