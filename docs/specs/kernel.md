@@ -677,3 +677,83 @@ semantic correctness beyond declared verification commands.
 - INV-11 `verify` evidence is the only path to a passing `testing` state
 - INV-12 non-truncatable inputs over budget fail with `input_overflow`,
   never silently truncate
+- INV-13 the deterministic driver mutates durable/cross-process state only
+  through named verbs, and decides only on structured fields
+- INV-14 no kernel source branches on any discovered engine identifier
+
+## Command surfaces (v1.1)
+
+**NOT guaranteed** above still says there is no enforceable command allowlist
+for a shell-capable orchestrator. That is now true only of adapters whose
+vendor CLI cannot express one. Each `kind=engine` manifest declares
+`command_surface`:
+
+- `brokered` — the adapter restricts its orchestrator to
+  `runners/orchid-orchestrator-command`, a default-deny broker that validates
+  argv against an enumerated set of judgment-only forms (exact reads, `orchid
+  task arbitrate`, `journal add`, `lessons add`, `notify`, `run boundary
+  clear`) and refuses everything else with exit 17. Vendor-enforced on WHICH
+  command runs; still not OS containment, and the broker itself is
+  unsandboxed. Commands only: the shipped brokered adapter's `acceptEdits`
+  permission mode leaves the vendor's file-write tools open over every
+  reachable path, `.orchid/` and (where `ORCHID_ROOT` is inside the driven
+  repo) the broker script included — "never hand-edit `.orchid/`" is prompt
+  policy, not enforcement.
+- `soft` — no enforceable restriction; the orchestrator's reach is bounded
+  only by launcher environment hygiene and by the operator's machine-local
+  unattended acknowledgement. An absent label reads as `soft`: this field may
+  weaken its own claim by omission, never strengthen it.
+
+Both remain gated behind `orchid trust unattended`. Every headless tick
+prints the resolved engine's label.
+
+## Judgment boundaries (v1.1)
+
+`orchid drive` executes THE TICK's mechanical steps deterministically and
+stops at a named boundary rather than making a free-form judgment. The record
+is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
+`task`, `reason`, `epoch`, `at`), and 16 is the dedicated judgment-boundary
+exit code — returned by `drive` when a pass stopped at one, and by `run
+boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
+`review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
+`run-complete`, `operator-decision`. `orchid task arbitrate` is the sole
+explicit judgment-result verb; see PROTOCOL.md's "Judgment boundaries"
+section for the non-overlapping arbitration truth table.
+
+One boundary is recorded per pass, chosen by whether a woken orchestrator
+could actually SETTLE it ahead of the ones only an operator can, then by
+task-id order — so a `blocked` task, whose boundary recurs every pass until a
+human runs `task unblock`/`task retry`, cannot mask another task's arbitrable
+one.
+
+"Could settle" is never read off the kind alone. It is the conjunction of the
+verb that records the result (`orchid task arbitrate` for the two review
+kinds, `orchid plan apply` for `planning`, `orchid run accept` for
+`run-complete`, none for the rest), the resolved orchestrator adapter's
+`command_surface` (a `brokered` adapter can run only the broker, whose one
+state-changing judgment verb is `task arbitrate`; a `soft` adapter has no
+enforceable restriction; an unrecognized label reads as `brokered`), and the
+named task's CURRENT status (`task arbitrate` refuses anything but
+`arbitrating`, exit 3). The pump asks the identical question before waking a
+model; anything that fails it wakes nobody and the driver raises one `orchid
+notify` blocker per distinct record instead.
+
+`run-complete` is the driver's own COMPLETION hand-off: a pass that reads
+every task as `done` makes COMPLETION's mechanical first call (`orchid run
+advance accepting`) and stops there, because the acceptance checks and the
+evidence file `orchid run accept` requires are judgment work. Against a
+`brokered` orchestrator it is a blocker for a human rather than a hand-off to
+a model — the broker refuses `orchid run accept`, so nothing woken could
+close the run.
+
+The driver's deterministic-approval arm gates on `findings[]` severity
+against the task's `blocking_severity`, and that gate is only as live as the
+reviewer adapter feeding it: the shipped `review` adapters ask for a
+`VERDICT:` line only and always write `findings: []` (`FINDING:` lines belong
+to the `critique` prompt), so with them approval turns on `verdict` and
+`scope_complete` alone.
+
+Exit-code registry: 2 unknown verb, 3 illegal transition, 5
+`rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
+failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
+boundary, 17 brokered command refused.

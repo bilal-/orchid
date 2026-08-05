@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
-source "$ORCHID_ROOT/lib/lessons.sh"
+source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/drive.sh"
 repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_state "$repo")"
 
 # run_status transition table (kernel.md's normative table, v0b2 ownership
@@ -81,6 +81,117 @@ case "$sub" in
     jq -n --arg e "$e" --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       '{epoch:($e|tonumber), refreshed_at:$t, released:true}' | atomic_write "$rt/lease.json"
     echo "lease released"
+    ;;
+  boundary)
+    # v1.1 Track 2: the JUDGMENT BOUNDARY record -- the single, named place
+    # where "deterministic policy deliberately refused to decide this" is
+    # written down. `runners/orchid-drive` is its only routine writer, and it
+    # writes it through THIS verb rather than touching the file, so the record
+    # is fenced, journaled and single-writer-owned exactly like every other
+    # cross-process piece of `.orchid/` state (kernel.md, "no hand-editing,
+    # ever"). `runners/orchid-pump` is its only routine reader, and it reads
+    # it through `show` for the same reason.
+    #
+    # The record lives under runtime/ rather than in the durable tree on
+    # purpose: it is a statement about THIS pass of THIS run's local
+    # coordination between the driver and whatever wakes next, not a
+    # historical fact worth committing. Every boundary is journaled when it is
+    # set, so the durable record of "we stopped here, and why" survives
+    # regardless.
+    #
+    # Schema (schema: 1): {schema, kind, task, reason, epoch, at}. `kind` is
+    # one of the kernel-owned set in lib/drive.sh (planning, blocked-task,
+    # review-evidence, review-conflict, hook-failure, worktree-conflict,
+    # run-complete, operator-decision) -- anything else is refused, so a
+    # boundary can never be minted for a condition this kernel has no defined
+    # meaning for.
+    #
+    # Exit codes: `show` exits 16 (the dedicated judgment-boundary code) when
+    # a boundary IS recorded, and 0 when none is -- so "is this run parked on
+    # a judgment call?" is answerable from an exit status alone, with no
+    # output parsing anywhere.
+    bsub="${1:-}"; shift || true
+    bfile="$rt/boundary.json"
+    case "$bsub" in
+      show)
+        if [ -f "$bfile" ] && jq -e '.schema == 1' "$bfile" >/dev/null 2>&1; then
+          cat "$bfile"
+          exit 16
+        fi
+        echo "boundary: none"
+        exit 0
+        ;;
+      set)
+        verb_lock_guard "$repo"
+        epoch_require "$repo"; export ORCHID_EPOCH
+        bkind=""; btask=""; breason=""
+        while [ $# -gt 0 ]; do case "$1" in
+          --kind)
+            [ -n "${2:-}" ] || orchid_die "--kind requires a value"
+            bkind="$2"; shift 2 ;;
+          --task)
+            [ -n "${2:-}" ] || orchid_die "--task requires a value"
+            btask="$2"; shift 2 ;;
+          --reason)
+            [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+            breason="$2"; shift 2 ;;
+          *) shift ;;
+        esac; done
+        [ -n "$bkind" ] || orchid_die "usage: orchid run boundary set --kind <kind> [--task <id>] --reason \"...\""
+        drive_boundary_kind_valid "$bkind" || orchid_die "unknown boundary kind '$bkind' (one of: planning, blocked-task, review-evidence, review-conflict, hook-failure, worktree-conflict, run-complete, operator-decision)"
+        [ -n "$breason" ] || orchid_die "run boundary set requires --reason (INV-08)"
+        if [ -n "$btask" ] && [ ! -f "$state/tasks/$btask.md" ]; then
+          orchid_die "no task $btask"
+        fi
+        # Idempotent by content: the driver re-derives the same boundary on
+        # every pass for as long as the underlying condition holds, so an
+        # unchanged record must not re-journal it once per pass.
+        bprev_kind=""; bprev_task=""; bprev_reason=""
+        if [ -f "$bfile" ]; then
+          bprev_kind="$(jq -r '.kind // ""' "$bfile" 2>/dev/null || echo "")"
+          bprev_task="$(jq -r '.task // ""' "$bfile" 2>/dev/null || echo "")"
+          bprev_reason="$(jq -r '.reason // ""' "$bfile" 2>/dev/null || echo "")"
+        fi
+        if [ "$bprev_kind" = "$bkind" ] && [ "$bprev_task" = "$btask" ] && [ "$bprev_reason" = "$breason" ]; then
+          echo "boundary unchanged: $bkind${btask:+ ($btask)}"
+          exit 0
+        fi
+        jq -n --arg k "$bkind" --arg t "$btask" --arg r "$breason" \
+          --arg e "$(epoch_current "$repo")" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          '{schema:1, kind:$k, task:$t, reason:$r, epoch:($e|tonumber? // 0), at:$at}' \
+          | atomic_write "$bfile"
+        bjargs=(--kind blocker)
+        [ -z "$btask" ] || bjargs=(--task "$btask" --kind blocker)
+        ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "${bjargs[@]}" \
+          "judgment boundary [$bkind]: $breason"
+        echo "boundary: $bkind${btask:+ ($btask)}"
+        ;;
+      clear)
+        verb_lock_guard "$repo"
+        epoch_require "$repo"; export ORCHID_EPOCH
+        breason=""
+        while [ $# -gt 0 ]; do case "$1" in
+          --reason)
+            [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+            breason="$2"; shift 2 ;;
+          *) shift ;;
+        esac; done
+        [ -n "$breason" ] || orchid_die "run boundary clear requires --reason (INV-08)"
+        if [ ! -f "$bfile" ]; then
+          echo "boundary: none"
+          exit 0
+        fi
+        bprev_kind="$(jq -r '.kind // ""' "$bfile" 2>/dev/null || echo "")"
+        bprev_task="$(jq -r '.task // ""' "$bfile" 2>/dev/null || echo "")"
+        rm -f "$bfile"
+        bjargs=(--kind intervention)
+        [ -z "$bprev_task" ] || bjargs=(--task "$bprev_task" --kind intervention)
+        ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "${bjargs[@]}" \
+          "judgment boundary cleared [${bprev_kind:-unknown}]: $breason"
+        echo "boundary cleared: ${bprev_kind:-unknown}"
+        ;;
+      *) orchid_die "usage: orchid run boundary set|clear|show" ;;
+    esac
     ;;
   advance)
     verb_lock_guard "$repo"
@@ -459,5 +570,5 @@ case "$sub" in
 
     echo "run rolled over: $old_run_id -> $new_run_id (archived to runs/$old_run_id/)"
     ;;
-  *) orchid_die "usage: orchid run start|resume|refresh-lease|release-lease|advance|accept|new" ;;
+  *) orchid_die "usage: orchid run start|resume|refresh-lease|release-lease|boundary|advance|accept|new" ;;
 esac

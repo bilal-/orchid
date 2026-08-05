@@ -304,11 +304,14 @@ runner_count="$(grep -c 'runners/orchid-launch' "$PROTOCOL")"
 [ "$runner_count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/orchid-launch"
 [ -x "$REPO_ROOT/runners/orchid-launch" ] || fail "runners/orchid-launch named in PROTOCOL.md but missing/not executable"
 
-# v1-m2 (Task 10): PROTOCOL.md's HEADLESS OPERATION section names the other
-# two runners by their full `runners/orchid-<name>` path (never bare, unlike
-# libexec verbs, which is why the top-level regex above can't already catch
-# these) — same existence check as orchid-launch just above, one per runner.
-for runner in orchid-tick orchid-pump; do
+# v1-m2 (Task 10), extended v1.1: PROTOCOL.md's HEADLESS OPERATION section
+# names the other runners by their full `runners/orchid-<name>` path (never
+# bare, unlike libexec verbs, which is why the top-level regex above can't
+# already catch these) -- same existence check as orchid-launch just above,
+# one per runner. The deterministic driver and the brokered command surface
+# join the list: both are named normatively by that section, so a rename that
+# left the prose behind would be caught here.
+for runner in orchid-tick orchid-pump orchid-drive orchid-orchestrator-command; do
   count="$(grep -c "runners/$runner" "$PROTOCOL")"
   [ "$count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/$runner"
   [ -x "$REPO_ROOT/runners/$runner" ] || fail "runners/$runner named in PROTOCOL.md but missing/not executable"

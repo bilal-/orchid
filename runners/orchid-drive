@@ -1,0 +1,1101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-2: the DETERMINISTIC one-pass driver (Track 2). Executes exactly one
+# pass of PROTOCOL.md's THE TICK -- lease refresh, reconcile/check/gc in that
+# order, safe dispatch, implementer reconciliation, verification, reviewer
+# routing and reconciliation, deterministic approval where policy is
+# unambiguous, one serialized merge, status regeneration, final lease refresh
+# -- and then exits. It is a RUNNER, not a tier-1 verb, for one reason: a pass
+# legitimately spawns role jobs, and only tier-2 may spawn (INV-01/INV-06).
+# `orchid drive` (libexec/orchid-drive) is a bare handoff to this file.
+#
+# THE TWO RULES THIS FILE EXISTS TO KEEP:
+#
+#   1. It never makes a free-form judgment. Every decision below reads a
+#      STRUCTURED FIELD (a frontmatter key, an envelope field the kernel
+#      already validates, an archetype's declared transitions, a schedule
+#      predicate, an exit code) -- never prose. There is no summary parsing,
+#      no "looks approved to me", nothing that could be nudged by text a
+#      target repository or an engine reply happens to contain. Where policy
+#      is ambiguous it STOPS at a named judgment boundary instead of guessing.
+#   2. It never writes `.orchid/` itself. Every durable or cross-process
+#      mutation -- task status, candidate/base sha, worktree registration,
+#      journal entries, the boundary record, the merge -- goes through a named
+#      verb with single-writer ownership. The only files this runner creates
+#      anywhere are the ones `git worktree add` makes for a dispatch checkout,
+#      outside `.orchid/` entirely. INV-13 statically enforces both rules.
+#
+# Unattended trust: this runner does NOT gate on the machine-local
+# acknowledgement, deliberately. It is an operator-invokable verb in exactly
+# the sense `orchid merge` or the tier-2 role spawner already are -- it starts
+# role adapters against a task's own worktree, but it never hands a shell-
+# capable orchestrator the whole repository and a free-form prompt. The gate
+# that does exist stays where that risk is: `runners/orchid-pump` refuses
+# before it ever reaches this file, and `runners/orchid-tick` refuses before
+# it wakes an LLM.
+
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
+source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
+source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
+source "$ORCHID_ROOT/lib/drive.sh"
+
+usage() {
+  cat <<'EOF'
+usage: orchid drive [--help]
+
+Runs exactly ONE deterministic pass of THE TICK against $ORCHID_REPO (or the
+current directory): refresh the lease, reconcile -> check -> gc, walk every
+task through whatever edge its archetype declares, regenerate the status page,
+refresh the lease again.
+
+The only decision it makes on its own is an unambiguous arbitration: every
+required review valid and bound to the task's current candidate_sha, every
+verdict `approve`, every review scope-complete, and no finding at or above the
+task's blocking_severity. That last clause is inert for a reviewer whose
+adapter never fills findings[] -- the shipped review adapters ask for a
+VERDICT line only -- so with them approval rests on verdict + scope_complete.
+
+At most one judgment boundary is recorded per pass. A boundary a woken
+orchestrator could actually settle outranks one only an operator can, and
+task-id order decides among equals. "Could settle" is computed per boundary,
+not per kind: it needs a verb that records the result, an adapter whose
+command surface admits that verb, and a task status that verb accepts -- so a
+review boundary is arbitrable from `arbitrating` and operator-only from
+`reviewing`. Every boundary the pass meets is printed either way, and one no
+admitted verb can settle also raises one `orchid notify` blocker per distinct
+record, because runners/orchid-pump deliberately wakes no model for it.
+
+A pass that reads every task as `done` takes COMPLETION's mechanical first
+step (`orchid run advance accepting`) and stops at a `run-complete` boundary,
+so a finished headless run hands off instead of polling forever. Against a
+brokered orchestrator that boundary is a blocker for a human: the broker
+refuses `orchid run accept`, so no model can close the run.
+
+Exit codes:
+  0   the pass completed; nothing is waiting on a human judgment call
+  16  the pass stopped at a judgment boundary (see: orchid run boundary show)
+  1   a precondition failed (uninitialized, split-brain, or a verb refused)
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    *) echo "drive: unknown argument '$1'" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+ORCHID_BIN="$ORCHID_ROOT/bin/orchid"
+repo="${ORCHID_REPO:-$PWD}"
+state="$(orchid_state "$repo")"
+
+drive_note() { printf 'drive: %s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# Preflight. The same three side-effect-free diagnostics runners/orchid-pump
+# makes (uninitialized / split-brain / already complete), re-made here because
+# this runner is directly invokable and must never seed runtime state into a
+# directory that is not an Orchid repository.
+# ---------------------------------------------------------------------------
+if [ ! -d "$state/tasks" ] && [ ! -f "$state/journal.md" ] && [ ! -f "$state/roadmap.md" ]; then
+  orchid_die "not initialized — run orchid init"
+fi
+if orchid_split_brain "$repo"; then
+  orchid_die "no roadmap in this checkout (split-brain — run from the integration branch)"
+fi
+run_status="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
+if [ "$run_status" = complete ]; then
+  drive_note "run_status complete, nothing to do"
+  exit 0
+fi
+
+rt="$(orchid_runtime "$repo")"
+
+# ---------------------------------------------------------------------------
+# Epoch. An interactive session that already fenced one (ORCHID_EPOCH exported
+# and still current) keeps it -- `drive` is then one more pass inside that
+# session, not a competing owner. Anything else fences a fresh epoch through
+# `orchid run resume`, exactly like runners/orchid-tick, so a pump-woken pass
+# and a stale session can never both mutate state (INV-02).
+# ---------------------------------------------------------------------------
+current_epoch="$(epoch_current "$repo")"
+if [ -n "${ORCHID_EPOCH:-}" ] && [ "$ORCHID_EPOCH" = "$current_epoch" ] && [ "$current_epoch" != 0 ]; then
+  epoch="$current_epoch"
+  drive_note "continuing under epoch $epoch"
+else
+  resume_out="$("$ORCHID_BIN" run resume)"
+  epoch="${resume_out#epoch: }"
+  drive_note "fenced epoch $epoch"
+fi
+export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
+export ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"
+
+# ---------------------------------------------------------------------------
+# Boundary accumulation. At most ONE boundary is recorded per pass, and the
+# walk always continues: a task parked on a judgment call must never stall
+# the tasks beside it.
+#
+# WHICH one, when a pass meets several: the highest-priority kind
+# (drive_boundary_priority -- could a woken orchestrator settle THIS boundary,
+# on THIS task, right now?), and within one priority the first encountered, so
+# task-id order still decides among equals. Without that ranking a `blocked`
+# task -- which raises the same operator-only boundary on EVERY pass until a
+# human runs `task unblock`/`task retry`, verbs the broker refuses -- would
+# permanently mask a later task's arbitrable review boundary, burning one LLM
+# wakeup per pump cycle on a decision the model has no verb to make. Every
+# boundary the walk meets is still NOTED, so the pass output never hides one.
+#
+# The ranking reads the task's status AT THE MOMENT the boundary is raised,
+# together with the command surface of the adapter the pump would actually
+# wake. Both matter: `orchid task arbitrate` is the only write the brokered
+# surface admits, and it refuses any status but `arbitrating` -- so the same
+# review-evidence condition is arbitrable from `arbitrating` and operator-only
+# from `reviewing`, and a boundary whose settling verb the surface refuses at
+# all (a finished run's `orchid run accept`) is operator-only everywhere.
+# ---------------------------------------------------------------------------
+boundary_kind=""; boundary_task=""; boundary_reason=""; boundary_status=""
+
+# Which adapter would the pump wake, and what can it actually run? Resolved
+# once per pass, just after the lease refresh below (step 1 stays literally
+# first). `brokered` when no orchestrator engine resolves at all -- then
+# nobody is woken for anything and every boundary belongs to a human.
+orchestrator_surface=brokered
+
+# drive_task_status <task> -- the task's current status, or empty for a
+# run-level boundary (no task) or a task file that is not there.
+drive_task_status() {
+  local id="$1"
+  [ -n "$id" ] || return 0
+  [ -f "$state/tasks/$id.md" ] || return 0
+  fm_get "$state/tasks/$id.md" status
+}
+
+# Pass-local record of every OPTIONAL hook point whose job was found dead
+# without an envelope this pass, as " <task>:<point> " atoms. Read by
+# drive_hook_gate below: a hook that can never gate must not park the step it
+# guards just because its handler fell over. Deliberately pass-local -- it is
+# a fact about jobs THIS pass reconciled, not durable state, so it needs no
+# verb and leaves nothing behind.
+optional_hooks_died=" "
+set_boundary() {
+  local kind="$1" task="$2" reason="$3" note tstatus
+  if [ -n "$task" ]; then
+    note="boundary [$kind] $task: $reason"
+  else
+    note="boundary [$kind]: $reason"
+  fi
+  tstatus="$(drive_task_status "$task")"
+  if [ -n "$boundary_kind" ] && \
+     [ "$(drive_boundary_priority "$kind" "$tstatus" "$orchestrator_surface")" -le \
+       "$(drive_boundary_priority "$boundary_kind" "$boundary_status" "$orchestrator_surface")" ]; then
+    drive_note "$note (held: [$boundary_kind] is already this pass's recorded boundary)"
+    return 0
+  fi
+  if [ -n "$boundary_kind" ]; then
+    drive_note "$note (supersedes [$boundary_kind]: no admitted verb resolves that one)"
+  else
+    drive_note "$note"
+  fi
+  boundary_kind="$kind"; boundary_task="$task"; boundary_reason="$reason"
+  boundary_status="$tstatus"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# THE TICK step 1 -- refresh the lease, first thing, every pass.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" run refresh-lease
+
+orchestrator_surface="$(drive_orchestrator_surface "$repo")"
+
+if [ "$run_status" = planning ]; then
+  # Plan drafting is judgment work by definition (PROTOCOL.md PLANNING): a
+  # requirements import, a task breakdown and a critique loop are exactly the
+  # things deterministic policy has no business inventing.
+  set_boundary planning "" "run_status is planning — drafting and critiquing the roadmap is judgment work (PROTOCOL.md PLANNING)"
+fi
+
+# ---------------------------------------------------------------------------
+# THE TICK step 2 -- reconcile, THEN check, THEN gc. The ordering is load
+# bearing (PROTOCOL.md spells out why): reconcile drains everything that
+# already finished before anything is judged stuck, check reports (and kills)
+# what is genuinely stalled, and only then does gc reap the manifests check
+# has already had its pass over.
+# ---------------------------------------------------------------------------
+reconcile_out=""; check_out=""; gc_out=""; reap_out=""
+escalations=""
+if [ "$run_status" != planning ]; then
+  reconcile_out="$("$ORCHID_BIN" jobs reconcile)"
+  [ -z "$reconcile_out" ] || printf '%s\n' "$reconcile_out"
+  check_out="$("$ORCHID_BIN" jobs check)"
+  [ -z "$check_out" ] || printf '%s\n' "$check_out"
+
+  # Escalation candidates are read off the MANIFESTS, not off `jobs check`'s
+  # text: a manifest still on disk after reconcile, whose pid really was
+  # launched and is no longer alive, is precisely "a job that died without
+  # leaving an acceptable envelope" -- including the case `jobs check` just
+  # killed for stalling or timing out. Collected BEFORE gc (which is about to
+  # reap exactly these manifests) together with the role/operation a relaunch
+  # needs.
+  for _mf in "$rt/jobs"/*.json; do
+    [ -e "$_mf" ] || continue
+    _mpid="$(jq -r '.pid' "$_mf" 2>/dev/null || echo 0)"
+    [ "$_mpid" != 0 ] || continue
+    if kill -0 "$_mpid" 2>/dev/null; then continue; fi
+    escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // "")] | @tsv' "$_mf")
+"
+  done
+
+  gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+  [ -z "$gc_out" ] || printf '%s\n' "$gc_out"
+
+  # ...and the SEPARATE mode ordinary gc deliberately skips: the `pid: 0`
+  # manifests `jobs prepare` minted for a launch that never spawned. Nothing
+  # else ever reaps them (the escalation sweep above skips pid 0, ordinary gc
+  # skips pid 0), and drive_job_outstanding below refuses to read one as a
+  # live job -- so without this pass a crashed launch would leave a manifest
+  # sitting in `jobs check`'s `prepared` column for the rest of the run.
+  #
+  # BOUNDED, never `--older-than-s 0`: a manifest younger than the bound may
+  # belong to a launch that is between `jobs prepare` and its own spawn line
+  # right now, and reaping that one would delete the pack and request document
+  # out from under a live launcher. `stall_minutes` is the bound -- the
+  # kernel's existing "this job has shown no sign of life for long enough to
+  # be called stuck" knob, and orders of magnitude longer than the
+  # prepare->spawn window it has to clear.
+  reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared \
+    --older-than-s "$(( $(config_get "$repo" stall_minutes 10) * 60 ))")"
+  [ -z "$reap_out" ] || printf '%s\n' "$reap_out"
+fi
+
+# ---------------------------------------------------------------------------
+# Lease heartbeat around the pass's LONG SYNCHRONOUS steps.
+#
+# Steps 1 and 5 of THE TICK refresh the lease at the two ends of a pass, which
+# is enough only while everything between them is quick. It is not: `orchid
+# verify` runs the task's whole verification suite in this pass's own
+# foreground, and `orchid merge` re-runs it again on the integration checkout.
+# On this very repository that suite takes about fifteen minutes, against a
+# `pump_stale_s` that defaults to 900 -- so a headless pass would have its own
+# lease read as stale WHILE IT WAS STILL WORKING, a second pump would fence a
+# fresh epoch, and the first would then die on the next verb's `epoch_require`
+# under `set -e`. No pass could ever complete on such a repository.
+#
+# So the lease is refreshed immediately before and after each long step, and a
+# background heartbeat keeps refreshing it throughout at a third of the
+# staleness window (three refreshes per window: one may be lost to a slow
+# filesystem and the lease still never reads stale). `run refresh-lease` is a
+# named verb and takes no verb lock, so this neither breaks rule 2 nor can
+# deadlock against the step it is covering.
+# ---------------------------------------------------------------------------
+# Two details of the subshell below are load bearing, not style:
+#
+#   >/dev/null 2>&1 ON THE SUBSHELL. A caller that captures this pass with
+#   `out="$(orchid drive)"` is reading a pipe, and a background child that
+#   inherited it holds the write end open -- the substitution would then block
+#   until the heartbeat (and its own `sleep`) exited, up to one whole interval
+#   after the pass finished. Detaching its descriptors removes that entirely.
+#
+#   A PARENT-LIVENESS CHECK. A heartbeat that outlived a pass killed mid-step
+#   would keep refreshing the lease of a run nobody is driving, which is worse
+#   than the staleness it exists to prevent: the pump would never pick the run
+#   back up. Checking the parent pid bounds an orphan's life to one interval.
+drive_lease_hb_pid=""
+drive_lease_heartbeat_start() {
+  local interval parent=$$
+  interval=$(( $(config_get "$repo" pump_stale_s 900) / 3 ))
+  [ "$interval" -ge 1 ] || interval=1
+  "$ORCHID_BIN" run refresh-lease
+  ( while :; do
+      sleep "$interval"
+      kill -0 "$parent" 2>/dev/null || exit 0
+      "$ORCHID_BIN" run refresh-lease >/dev/null 2>&1 || exit 0
+    done ) >/dev/null 2>&1 &
+  drive_lease_hb_pid=$!
+}
+drive_lease_heartbeat_stop() {
+  if [ -n "$drive_lease_hb_pid" ]; then
+    kill "$drive_lease_hb_pid" 2>/dev/null || true
+    wait "$drive_lease_hb_pid" 2>/dev/null || true
+    drive_lease_hb_pid=""
+  fi
+  "$ORCHID_BIN" run refresh-lease
+}
+
+# ---------------------------------------------------------------------------
+# Launch helper. Exit 14 (`no eligible engine`) is a WAIT, never a failure:
+# the ledger window reopens on its own and the identical dispatch succeeds on
+# a later pass with no operator action (PROTOCOL.md's Failover paragraph).
+# ---------------------------------------------------------------------------
+drive_launch() {
+  local task="$1" role="$2" op="$3" engine="${4:-}" point="${5:-}" rc=0
+  local -a largs
+  largs=("$task" "$role" "$op")
+  [ -z "$engine" ] || largs+=(--engine "$engine")
+  [ -z "$point" ] || largs+=(--hook "$point")
+  "$ORCHID_ROOT/runners/orchid-launch" "${largs[@]}" || rc=$?
+  if [ "$rc" -eq 14 ]; then
+    drive_note "$task: no eligible engine for role '$role' — waiting for the ledger window to reopen"
+    return 14
+  fi
+  if [ "$rc" -ne 0 ]; then
+    drive_note "$task: launch failed (role '$role', operation '$op', exit $rc)"
+  fi
+  return "$rc"
+}
+
+# drive_job_outstanding <task> <operation> [hook-point] -- 0 iff a LIVE job
+# for that task/operation (and, for hooks, that point) is still on disk.
+#
+# A `pid: 0` manifest is deliberately NOT one. `orchid jobs prepare` mints
+# every manifest with pid 0 and runners/orchid-launch stamps the real pid only
+# after the spawn, so a pid-0 manifest means exactly one thing: a launch died
+# between minting the job and starting it, and nothing is running. Nothing
+# else in the kernel treats it as live either -- the escalation sweep above
+# skips pid 0, and ordinary `jobs gc` skips it by design -- so adopting one
+# here would advance a task into an active status behind a job that will never
+# produce an envelope: no `jobs check` finding, no infra-fail, no boundary,
+# just a task parked in `implementing` forever. That is precisely the
+# LAUNCH-FIRST-ADVANCE-ONLY-ON-A-SPAWN invariant drive_dispatch documents, so
+# a never-spawned manifest reads as "no job": the caller relaunches, and the
+# `gc --reap-prepared` pass above clears the orphan once it is old enough to
+# be certain no launch is still mid-flight over it.
+drive_job_outstanding() {
+  local task="$1" op="$2" point="${3:-}" mf
+  for mf in "$rt/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task' "$mf" 2>/dev/null || echo)" = "$task" ] || continue
+    [ "$(jq -r '.operation' "$mf" 2>/dev/null || echo)" = "$op" ] || continue
+    if [ -n "$point" ]; then
+      [ "$(jq -r '.hook_point // ""' "$mf" 2>/dev/null || echo)" = "$point" ] || continue
+    fi
+    [ "$(jq -r '.pid // 0' "$mf" 2>/dev/null || echo 0)" != 0 ] || continue
+    return 0
+  done
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Hook gating. A hook is a JOB: it is launched, it reconciles on a later pass,
+# and only then can its artifact be read. A one-pass driver therefore DEFERS
+# the step a hook point guards rather than blocking on it -- that step simply
+# happens next pass, once the envelope has landed. This keeps a pass bounded
+# (nothing here ever sleeps on an engine) without letting a `:required`
+# binding be skipped.
+#
+# A point bound only `optional` therefore defers a step at most until its job
+# RESOLVES -- an envelope lands, or the job dies without one. It never parks
+# the step past that: an optional handler that dies leaving nothing behind is
+# noted and stepped over, exactly as lib/drive.sh's satisfaction rule already
+# says optional entries never gate anything. Only a `:required` binding can
+# hold a transition indefinitely, and only ever as a NAMED boundary.
+#
+# Returns: 0 satisfied (or the point is unbound, or bound only `optional`)
+#          1 pending -- just dispatched, or still running; do nothing yet
+#          2 a `:required` entry failed -- a hook-failure boundary is raised
+#            and the guarded transition is NOT taken
+# ---------------------------------------------------------------------------
+drive_hook_gate() {
+  local id="$1" point="$2" attempt="$3" cand="$4"
+  local bindings n_env unsat line hid first lrc
+  bindings="$(hooks_for "$repo" "$point")"
+  [ -n "$bindings" ] || return 0
+
+  if drive_job_outstanding "$id" hook "$point"; then
+    drive_note "$id: awaiting the $point hook envelope"
+    return 1
+  fi
+
+  # Envelopes are counted IN SCOPE for the current candidate: one left behind
+  # by a candidate that has since moved (within this same attempt) is not
+  # evidence for the one on the task now, and counting it would leave the
+  # point launched-never-again and the step it guards gated forever.
+  n_env="$(drive_hook_envelope_count "$repo" "$id" "$point" "$attempt" "$cand")"
+
+  if [ "$n_env" -eq 0 ]; then
+    if ! drive_hook_has_required "$repo" "$point"; then
+      case "$optional_hooks_died" in
+        *" $id:$point "*)
+          drive_note "$id: the optional $point hook produced no envelope — stepping over it (optional never gates)"
+          return 0 ;;
+      esac
+    fi
+    first=1
+    while IFS= read -r line; do
+      [ -n "$line" ] || continue
+      hid="$(printf '%s' "$line" | cut -f1)"
+      lrc=0
+      if [ "$first" -eq 1 ]; then
+        drive_launch "$id" hook hook "" "$point" || lrc=$?
+        first=0
+      else
+        drive_launch "$id" hook hook "$hid" "$point" || lrc=$?
+      fi
+      [ "$lrc" -eq 0 ] || break
+    done <<< "$bindings"
+    drive_note "$id: dispatched the $point hook — deferring the step it guards to the next pass"
+    return 1
+  fi
+
+  unsat="$(drive_hook_unsatisfied "$repo" "$id" "$point" "$attempt" "$cand")"
+  if [ -n "$unsat" ]; then
+    set_boundary hook-failure "$id" "required $point hook binding(s) without an ok envelope for this candidate: $(printf '%s' "$unsat" | tr '\n' ' ')"
+    return 2
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# pending / rework -> whichever active status the archetype declares.
+# ---------------------------------------------------------------------------
+drive_dispatch() {
+  local id="$1" arch="$2" from="$3"
+  local tf target outcome blockers plan action path branch integ integ_head arc lrc role_line role op
+  tf="$state/tasks/$id.md"
+  target="$(drive_dispatch_target "$arch" "$from")"
+  if [ -z "$target" ]; then
+    set_boundary operator-decision "$id" "archetype '$arch' declares no dispatch transition out of $from"
+    return 0
+  fi
+
+  blockers="$(schedule_dispatch_blockers "$repo" "$id" 2>/dev/null || true)"
+  if [ -n "$blockers" ]; then
+    drive_note "$id: not dispatchable yet — $(printf '%s' "$blockers" | tr '\n' ';')"
+    return 0
+  fi
+
+  integ="$(config_get "$repo" integration_branch orchid/integration)"
+  if ! integ_head="$(git -C "$repo" rev-parse --verify -q "refs/heads/$integ" 2>/dev/null)"; then
+    set_boundary operator-decision "$id" "integration branch '$integ' does not exist"
+    return 0
+  fi
+
+  outcome="$(archetype_outcome "$arch")"
+  if [ "$outcome" = code ]; then
+    # A code-producing archetype needs an isolated checkout to build a
+    # candidate in. Idempotent and crash-safe by construction: the plan below
+    # never creates a second worktree for a task, and never adopts a path it
+    # cannot prove belongs to this task, this branch and this repository.
+    plan="$(drive_worktree_plan "$repo" "$id")"
+    action="$(printf '%s' "$plan" | cut -f1)"
+    path="$(printf '%s' "$plan" | cut -f2-)"
+    branch="$(fm_get "$tf" branch)"
+    case "$action" in
+      refuse)
+        set_boundary worktree-conflict "$id" "$path"
+        return 0 ;;
+      create)
+        if ! git -C "$repo" worktree add -q "$path" -b "$branch" "$integ_head" >/dev/null 2>&1; then
+          set_boundary worktree-conflict "$id" "git worktree add failed for branch $branch at $path"
+          return 0
+        fi
+        drive_note "$id: created the dispatch worktree $path on $branch"
+        "$ORCHID_BIN" task set "$id" worktree "$path"
+        ;;
+      adopt)
+        drive_note "$id: adopted the orphan dispatch worktree $path (created before its field was recorded)"
+        "$ORCHID_BIN" task set "$id" worktree "$path"
+        ;;
+      reuse)
+        drive_note "$id: reusing the registered dispatch worktree $path"
+        ;;
+      *)
+        set_boundary worktree-conflict "$id" "unrecognized worktree plan '$action'"
+        return 0 ;;
+    esac
+    # base_sha is only ever STAMPED, never re-stamped: a rework re-dispatch
+    # keeps the base its candidate was actually built on, so `orchid merge`'s
+    # stale-base detection (and INV-07's forced re-verify) stays truthful.
+    if [ -z "$(fm_get "$tf" base_sha)" ]; then
+      "$ORCHID_BIN" task set "$id" base_sha "$integ_head"
+    fi
+  else
+    # An outcome=report archetype produces no commits, so it needs no worktree
+    # and builds no candidate: it reports on what the integration branch
+    # already holds. Both shas are pinned to that head so its review envelopes
+    # still bind to something concrete -- the reviewing -> arbitrating gate is
+    # sha-bound for every archetype, not just code-producing ones.
+    if [ -z "$(fm_get "$tf" base_sha)" ]; then
+      "$ORCHID_BIN" task set "$id" base_sha "$integ_head"
+    fi
+    if [ -z "$(fm_get "$tf" candidate_sha)" ]; then
+      "$ORCHID_BIN" task set "$id" candidate_sha "$integ_head"
+    fi
+  fi
+
+  # LAUNCH FIRST, ADVANCE ONLY ON A SPAWN. The order is the whole point: a
+  # task advanced into an active status by a dispatch whose launch never
+  # minted a manifest waits forever for an envelope nobody is producing --
+  # `jobs check` sees no job, `drive_implementing` sees no envelope, and the
+  # pass exits 0 with no boundary and nothing to escalate. Exit 14 (no
+  # eligible engine) makes that ordinary rather than exotic: the ledger
+  # window closes for minutes at a time. PROTOCOL.md's Failover paragraph
+  # requires the task to stay in its PRIOR status through exactly that, so
+  # the identical dispatch simply succeeds on a later pass.
+  #
+  # The reviewer target is the exception, and only because it needs none of
+  # this: `drive_reviewing` recomputes the routing table and relaunches the
+  # slots that are missing on EVERY pass, so a reviewing task with no job is
+  # always picked back up.
+  role_line="$(drive_role_for_status "$target")"
+  role=""; op=""
+  if [ -n "$role_line" ]; then
+    role="$(printf '%s' "$role_line" | cut -f1)"
+    op="$(printf '%s' "$role_line" | cut -f2)"
+  fi
+  if [ -n "$role" ] && [ "$role" != reviewer ]; then
+    if drive_job_outstanding "$id" "$op"; then
+      # A pass that died between the spawn and the advance below already left
+      # the job running: adopt it rather than spawning a second one.
+      drive_note "$id: adopting the $op job an earlier pass already spawned"
+    else
+      lrc=0
+      drive_launch "$id" "$role" "$op" || lrc=$?
+      if [ "$lrc" -eq 14 ]; then
+        # The documented WAIT. No boundary: nothing is wrong, and the window
+        # reopens without anyone doing anything.
+        drive_note "$id: staying in $from — nothing was spawned, so there is nothing to wait for"
+        return 0
+      fi
+      if [ "$lrc" -ne 0 ]; then
+        # Any OTHER launch failure is broken infrastructure, not a wait. The
+        # task still stays dispatchable, but silently retrying it every pass
+        # forever is the same disappearing-act this ordering exists to end.
+        set_boundary operator-decision "$id" \
+          "dispatch launch for role '$role' failed (exit $lrc); $id stays in $from and nothing was spawned"
+        return 0
+      fi
+    fi
+  fi
+
+  arc=0
+  "$ORCHID_BIN" task advance "$id" "$target" \
+    --reason "dispatching: deps satisfied ($from -> $target)" >/dev/null || arc=$?
+  if [ "$arc" -ne 0 ]; then
+    set_boundary operator-decision "$id" "dispatch advance $from -> $target refused (exit $arc)"
+    return 0
+  fi
+  drive_note "$id: $from -> $target"
+
+  if [ -z "$role" ]; then
+    drive_note "$id: no launch is defined for status $target — nothing spawned"
+    return 0
+  fi
+  if [ "$role" = reviewer ]; then
+    drive_reviewing "$id" "$arch"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# implementing -- turn the implementer's own envelope into a candidate.
+# ---------------------------------------------------------------------------
+drive_implementing() {
+  local id="$1" arch="$2" tf envf wt cand arc
+  tf="$state/tasks/$id.md"
+  envf="$(drive_implement_envelope "$repo" "$id")"
+  if [ -z "$envf" ]; then
+    if drive_implement_failed "$repo" "$id"; then
+      drive_escalate "$id" implementer implement "" "implement envelope reconciled with a non-ok status"
+      return 0
+    fi
+    drive_note "$id: awaiting the implementer envelope"
+    return 0
+  fi
+  if ! drive_has_transition "$arch" implementing testing; then
+    set_boundary operator-decision "$id" "archetype '$arch' declares no implementing -> testing edge"
+    return 0
+  fi
+  wt="$(fm_get "$tf" worktree)"; [ -n "$wt" ] || wt="$repo"
+  if ! cand="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"; then
+    set_boundary worktree-conflict "$id" "cannot read HEAD of the task worktree $wt"
+    return 0
+  fi
+  "$ORCHID_BIN" task set "$id" candidate_sha "$cand"
+  arc=0
+  "$ORCHID_BIN" task advance "$id" testing --reason "implementer envelope ok" >/dev/null || arc=$?
+  if [ "$arc" -ne 0 ]; then
+    set_boundary operator-decision "$id" "implementing -> testing refused (exit $arc) — inspect the candidate's own commits"
+    return 0
+  fi
+  drive_note "$id: implementing -> testing (candidate $cand)"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# testing -- `orchid verify` runs synchronously, in this pass's own
+# foreground. There is no job here for check/reconcile to see.
+# ---------------------------------------------------------------------------
+drive_testing() {
+  local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts arc
+  tf="$state/tasks/$id.md"
+  vrc=0
+  drive_lease_heartbeat_start
+  "$ORCHID_BIN" verify "$id" >/dev/null 2>&1 || vrc=$?
+  drive_lease_heartbeat_stop
+  if [ "$vrc" -eq 0 ]; then
+    if ! drive_has_transition "$arch" testing reviewing; then
+      set_boundary operator-decision "$id" "archetype '$arch' declares no testing -> reviewing edge"
+      return 0
+    fi
+    arc=0
+    "$ORCHID_BIN" task advance "$id" reviewing --reason "verify passed" >/dev/null || arc=$?
+    if [ "$arc" -ne 0 ]; then
+      set_boundary operator-decision "$id" "testing -> reviewing refused (exit $arc) — the verify evidence is not bound to the current candidate"
+      return 0
+    fi
+    drive_note "$id: verify PASS, testing -> reviewing"
+    drive_reviewing "$id" "$arch"
+    return 0
+  fi
+
+  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+  cand="$(fm_get "$tf" candidate_sha)"
+  hg=0
+  drive_hook_gate "$id" on_verify_fail "$attempt" "$cand" || hg=$?
+  [ "$hg" -eq 0 ] || return 0
+  guidance="$(drive_hook_guidance "$repo" "$id" on_verify_fail "$attempt")"
+  if [ -n "$guidance" ]; then
+    "$ORCHID_BIN" task set "$id" hook_guidance "$guidance"
+    drive_note "$id: attached the on_verify_fail hook's guidance to the task"
+  fi
+
+  # The <=3 rework budget is orchestrator-enforced (docs/specs/kernel.md), not
+  # a verb gate: no verb refuses a fourth rework on its own, so the driver is
+  # what stops retrying and hands the task to a human.
+  attempts="$(fm_get "$tf" attempts)"
+  if [ "$attempts" -ge 3 ]; then
+    "$ORCHID_BIN" notify --task "$id" "attempts exhausted: see .orchid/reviews/$id-verify.log" >/dev/null
+    "$ORCHID_BIN" task advance "$id" blocked --reason "attempts exhausted" >/dev/null
+    drive_note "$id: verify FAIL, attempts exhausted — testing -> blocked"
+    set_boundary operator-decision "$id" "attempts exhausted after $attempts rework round(s): see .orchid/reviews/$id-verify.log"
+    return 0
+  fi
+  if ! drive_has_transition "$arch" testing rework; then
+    set_boundary operator-decision "$id" "verify failed and archetype '$arch' declares no testing -> rework edge"
+    return 0
+  fi
+  arc=0
+  "$ORCHID_BIN" task advance "$id" rework \
+    --reason "verify failed: see .orchid/reviews/$id-verify.log" >/dev/null || arc=$?
+  if [ "$arc" -ne 0 ]; then
+    set_boundary operator-decision "$id" "testing -> rework refused (exit $arc)"
+    return 0
+  fi
+  drive_note "$id: verify FAIL, testing -> rework"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# reviewing -- route slots off `orchid jobs review-plan`, then advance once
+# the kernel's own envelope count is satisfiable.
+# ---------------------------------------------------------------------------
+drive_reviewing() {
+  local id="$1" arch="$2" tf tier need have routing unsat line slot eng label lrc arc
+  tf="$state/tasks/$id.md"
+  [ "$(fm_get "$tf" status)" = reviewing ] || return 0
+  tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
+  need="$(review_required_count "$tier")"
+  have="$(drive_reviewer_envelope_count "$repo" "$id")"
+
+  # The routing table is the SLOT LEDGER, not just a dispatch list: which
+  # slots exist, which engine each was routed to, and therefore which of them
+  # a filed review can and cannot be credited to.
+  routing="$("$ORCHID_BIN" jobs review-plan "$id" 2>/dev/null || true)"
+  unsat=""
+  if [ -n "$routing" ]; then
+    unsat="$(drive_review_slots_unsatisfied "$repo" "$id" "$routing")"
+  fi
+
+  if [ "$have" -ge "$need" ] && [ -n "$unsat" ]; then
+    # Enough envelopes for the kernel's own count, but a routed slot still has
+    # none of its own -- two reviews from ONE engine where the table routed
+    # two DIFFERENT ones. Relaunching would only add a third review to a set
+    # the kernel already counts as complete, so this stops instead, at a
+    # boundary a woken orchestrator can settle by reading the evidence.
+    set_boundary review-evidence "$id" \
+      "$have of $need review envelope(s) bound to the current candidate, but slot(s) $(printf '%s' "$unsat" | cut -f1 | tr '\n' ' ')have no review of their own — the tier's engine independence is unproven"
+    return 0
+  fi
+
+  if [ "$have" -ge "$need" ]; then
+    if ! drive_has_transition "$arch" reviewing arbitrating; then
+      set_boundary operator-decision "$id" "archetype '$arch' declares no reviewing -> arbitrating edge"
+      return 0
+    fi
+    arc=0
+    "$ORCHID_BIN" task advance "$id" arbitrating \
+      --reason "review reconciled: $have of $need required envelope(s) bound to the current candidate" >/dev/null || arc=$?
+    if [ "$arc" -ne 0 ]; then
+      set_boundary review-evidence "$id" "reviewing -> arbitrating refused by the kernel envelope gate (exit $arc)"
+      return 0
+    fi
+    drive_note "$id: reviewing -> arbitrating ($have/$need reviews reconciled)"
+    drive_arbitrating "$id" "$arch"
+    return 0
+  fi
+
+  if drive_job_outstanding "$id" review; then
+    drive_note "$id: awaiting review envelopes ($have/$need)"
+    return 0
+  fi
+
+  if [ -z "$routing" ]; then
+    set_boundary operator-decision "$id" "no reviewer routing table could be computed"
+    return 0
+  fi
+  if [ -z "$unsat" ]; then
+    # Short of the tier's count, yet every routed slot is already credited:
+    # the table and the count disagree, and dispatching "some slot" to make up
+    # the difference would be guessing. Named, not silently retried forever.
+    set_boundary review-evidence "$id" \
+      "$have of $need review envelope(s) bound to the current candidate, but the routing table has no unfilled slot to dispatch"
+    return 0
+  fi
+  # Dispatch exactly the slots that have no review of their own -- never
+  # "every slot numbered above the count", which re-dispatches the wrong slot
+  # the moment a relaunched one lands out of order.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    slot="$(printf '%s' "$line" | cut -f1)"
+    eng="$(printf '%s' "$line" | cut -f2)"
+    label="$(printf '%s' "$line" | cut -f3)"
+    case "$slot" in
+      ''|*[!0-9]*) continue ;;
+    esac
+    if [ "$label" = session-independent ]; then
+      # Never let a degraded independence pass silently -- the journal line IS
+      # the record (PROTOCOL.md's risk-tiered review policy).
+      "$ORCHID_BIN" journal add --task "$id" \
+        "reviewer slot $slot is session-independent only: $eng, same as the implementer's" >/dev/null
+    fi
+    lrc=0
+    drive_launch "$id" reviewer review "$eng" || lrc=$?
+    [ "$lrc" -eq 0 ] || break
+  done <<< "$unsat"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# arbitrating -- the one place a decision is actually made, and the only place
+# this driver will ever refuse to make one.
+# ---------------------------------------------------------------------------
+drive_arbitrating() {
+  local id="$1" arch="$2" tf attempt cand hg decision verdict detail arc
+  tf="$state/tasks/$id.md"
+  [ "$(fm_get "$tf" status)" = arbitrating ] || return 0
+  [ -n "$arch" ] || arch=feature
+  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+  cand="$(fm_get "$tf" candidate_sha)"
+
+  hg=0
+  drive_hook_gate "$id" before_arbitration "$attempt" "$cand" || hg=$?
+  [ "$hg" -eq 0 ] || return 0
+
+  decision="$(drive_review_decision "$repo" "$id")"
+  verdict="$(printf '%s' "$decision" | cut -f1)"
+  detail="$(printf '%s' "$decision" | cut -f2-)"
+  case "$verdict" in
+    approve)
+      arc=0
+      "$ORCHID_BIN" task arbitrate "$id" --result approve \
+        --reason "deterministic approval: $detail" >/dev/null || arc=$?
+      if [ "$arc" -ne 0 ]; then
+        set_boundary operator-decision "$id" "task arbitrate --result approve refused (exit $arc)"
+        return 0
+      fi
+      drive_note "$id: arbitrated approve — $detail"
+      ;;
+    evidence)
+      set_boundary review-evidence "$id" "$detail"
+      ;;
+    conflict)
+      set_boundary review-conflict "$id" "$detail"
+      ;;
+    *)
+      set_boundary operator-decision "$id" "the review policy returned an unrecognized decision '$verdict'"
+      ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# blocked -- always a boundary. The on_blocker hook runs once per attempt so
+# its artifact is on hand for whoever resolves the block.
+# ---------------------------------------------------------------------------
+drive_blocked() {
+  local id="$1" tf attempt cand hg
+  tf="$state/tasks/$id.md"
+  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+  cand="$(fm_get "$tf" candidate_sha)"
+  hg=0
+  drive_hook_gate "$id" on_blocker "$attempt" "$cand" || hg=$?
+  [ "$hg" -ne 2 ] || return 0
+  set_boundary blocked-task "$id" "task is blocked — only an operator (orchid task unblock|retry) resolves it"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# The escalation ladder, rendered deterministically. PROTOCOL.md's prose
+# ladder spends its first occurrence on a free relaunch that touches no
+# counter; a driver has no per-attempt memory outside `.orchid`, and inventing
+# a private retry-counter file would be exactly the un-verbed cross-process
+# state rule 2 above forbids. So EVERY occurrence goes through `orchid task
+# infra-fail` -- the kernel-owned counter, which journals its own reason and
+# auto-blocks at `infra_max` -- and the relaunch happens for as long as that
+# cap has not blocked the task. Same ladder, same bound, one counter, no
+# hidden state.
+# ---------------------------------------------------------------------------
+drive_escalate() {
+  local id="$1" role="$2" op="$3" point="$4" why="$5" tf
+  tf="$state/tasks/$id.md"
+  if [ ! -f "$tf" ]; then
+    drive_note "$id: $why (no task file — nothing to escalate)"
+    return 0
+  fi
+  "$ORCHID_BIN" task infra-fail "$id" --reason "$why (role $role, operation $op)"
+  if [ "$(fm_get "$tf" status)" = blocked ]; then
+    drive_note "$id: infra_failures cap reached — now blocked"
+    return 0
+  fi
+  # A reviewer job is the one relaunch this ladder does NOT make. A review
+  # belongs to a SLOT, and a slot's engine is decided by the routing table --
+  # relaunching here would go back through the role's default chain and could
+  # land a second review from the slot that already reported, which is exactly
+  # the same-engine pair drive_review_slots_unsatisfied exists to refuse. The
+  # `reviewing` walk relaunches the slot that is actually missing, with its own
+  # engine, on this same pass.
+  if [ "$role" = reviewer ]; then
+    drive_note "$id: leaving the relaunch to the reviewing walk, which knows which SLOT is missing"
+    return 0
+  fi
+  drive_launch "$id" "$role" "$op" "" "$point" || true
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Escalate whatever died since the last pass, before the walk reads status.
+# ---------------------------------------------------------------------------
+if [ -n "$escalations" ]; then
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _etask="$(printf '%s' "$_line" | cut -f1)"
+    _erole="$(printf '%s' "$_line" | cut -f2)"
+    _eop="$(printf '%s' "$_line" | cut -f3)"
+    _epoint="$(printf '%s' "$_line" | cut -f4)"
+    [ "$_etask" != plan ] || continue
+    # An OPTIONAL hook point's handler dying is not an infrastructure failure
+    # of the TASK: the binding gates nothing, so it must not spend the task's
+    # infra_failures budget (which auto-blocks at the cap) nor be relaunched
+    # into the same wall pass after pass. Recorded for drive_hook_gate, which
+    # steps over the point instead.
+    if [ "$_erole" = hook ] && [ -n "$_epoint" ] && ! drive_hook_has_required "$repo" "$_epoint"; then
+      optional_hooks_died="$optional_hooks_died$_etask:$_epoint "
+      drive_note "$_etask: the optional $_epoint hook died without an envelope — not escalating (it gates nothing)"
+      continue
+    fi
+    drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "job died without an acceptable envelope"
+  done <<< "$escalations"
+fi
+
+# ---------------------------------------------------------------------------
+# `jobs check`'s wallclock backstop is report-only by design; acting on it is
+# this driver's job, and the action is always the same: tell a human.
+# ---------------------------------------------------------------------------
+if [ -n "$check_out" ]; then
+  while IFS= read -r _line; do
+    [ -n "$_line" ] || continue
+    _bstatus="$(printf '%s' "$_line" | cut -f2)"
+    [ "$_bstatus" = budget-exceeded ] || continue
+    _btask="$(printf '%s' "$_line" | cut -f1)"
+    [ -f "$state/tasks/$_btask.md" ] || continue
+    [ "$(fm_get "$state/tasks/$_btask.md" status)" != blocked ] || continue
+    "$ORCHID_BIN" notify --task "$_btask" "task wallclock budget exceeded" >/dev/null
+    "$ORCHID_BIN" task advance "$_btask" blocked --reason "wallclock budget exceeded" >/dev/null
+    drive_note "$_btask: wallclock budget exceeded — blocked"
+  done <<< "$check_out"
+fi
+
+# ---------------------------------------------------------------------------
+# THE TICK step 3 -- the walk. Every task, in id order, routed purely off its
+# CURRENT status and its archetype's DECLARED edges. There is no branch on an
+# archetype's name anywhere below: `feature`, the shipped `review` archetype
+# and a repository's own custom archetype all take the same code path and
+# differ only in what their manifests declare.
+# ---------------------------------------------------------------------------
+merging_ids=""
+walk_n=0; walk_done_n=0
+if [ "$run_status" != planning ]; then
+  while IFS= read -r _row; do
+    [ -n "$_row" ] || continue
+    _id="$(printf '%s' "$_row" | cut -f1)"
+    _tstatus="$(printf '%s' "$_row" | cut -f2)"
+    [ -n "$_id" ] || continue
+    _tf="$state/tasks/$_id.md"
+    [ -f "$_tf" ] || continue
+    walk_n=$(( walk_n + 1 ))
+    [ "$_tstatus" != done ] || walk_done_n=$(( walk_done_n + 1 ))
+    _arch="$(fm_get "$_tf" archetype)"; [ -n "$_arch" ] || _arch=feature
+    if ! archetype_validate "$_arch" >/dev/null 2>&1; then
+      set_boundary operator-decision "$_id" "archetype '$_arch' failed validation (rejected, fail closed)"
+      continue
+    fi
+    case "$_tstatus" in
+      done) ;;
+      blocked) drive_blocked "$_id" ;;
+      pending|rework) drive_dispatch "$_id" "$_arch" "$_tstatus" ;;
+      implementing) drive_implementing "$_id" "$_arch" ;;
+      testing) drive_testing "$_id" "$_arch" ;;
+      reviewing) drive_reviewing "$_id" "$_arch" ;;
+      arbitrating) drive_arbitrating "$_id" "$_arch" ;;
+      merging) merging_ids="$merging_ids $_id" ;;
+      *) set_boundary operator-decision "$_id" "unrecognized task status '$_tstatus'" ;;
+    esac
+  done < <("$ORCHID_BIN" task list | LC_ALL=C sort)
+fi
+
+# ---------------------------------------------------------------------------
+# COMPLETION (PROTOCOL.md's procedure of that name). A run whose tasks are ALL
+# done has nothing left for the walk above to move, and `done` is the one
+# status that raises no boundary -- so without this, a finished headless run
+# would poll forever: every pass clean, exit 0, run_status never leaving
+# `running`, and nobody woken to notice the run is over.
+#
+# The mechanical half is taken here (step 1: `run advance accepting`, a
+# transition whose entire precondition is the fact just counted). The judgment
+# half is NOT: requirement coverage and the operator's acceptance commands are
+# an orchestrator's evidence-producing work, and `orchid run accept` demands
+# that evidence file, so the pass stops at a named boundary and hands it over.
+#
+# Counted from the statuses the walk READ, i.e. as of the start of this pass:
+# the pass that merges the last task exits 0 on its own progress, and the
+# boundary is raised by the next one. A boundary never lands in the same
+# breath as the work that produced the state it names.
+# ---------------------------------------------------------------------------
+if [ "$walk_n" -gt 0 ] && [ "$walk_done_n" -eq "$walk_n" ]; then
+  if [ "$run_status" = running ]; then
+    accept_rc=0
+    "$ORCHID_BIN" run advance accepting --reason "all tasks done" >/dev/null || accept_rc=$?
+    if [ "$accept_rc" -eq 0 ]; then
+      drive_note "every task is done — run_status running -> accepting"
+    else
+      drive_note "every task is done, but run advance accepting was refused (exit $accept_rc)"
+    fi
+  fi
+  set_boundary run-complete "" \
+    "every task is done — the acceptance checks and 'orchid run accept --evidence' behind PROTOCOL.md's COMPLETION are judgment work no verb decides"
+fi
+
+# ---------------------------------------------------------------------------
+# merging -- at most ONE per pass, lowest task id first. `orchid merge` is
+# transactional and CAS-guarded, so serializing here is a throughput choice,
+# not a safety one; the verb would refuse a second concurrent merge anyway.
+# ---------------------------------------------------------------------------
+if [ -n "$merging_ids" ]; then
+  merge_id=""
+  for _cand in $merging_ids; do
+    if [ -z "$merge_id" ]; then merge_id="$_cand"; fi
+  done
+  merge_tf="$state/tasks/$merge_id.md"
+  merge_attempt=$(( $(fm_get "$merge_tf" attempts) + 1 ))
+  merge_cand="$(fm_get "$merge_tf" candidate_sha)"
+  merge_hg=0
+  drive_hook_gate "$merge_id" before_merge "$merge_attempt" "$merge_cand" || merge_hg=$?
+  if [ "$merge_hg" -eq 0 ]; then
+    merge_rc=0
+    # Same heartbeat as `verify` above, and for the same reason: `orchid
+    # merge` re-runs the task's whole verification suite on the integration
+    # checkout before it touches a ref.
+    drive_lease_heartbeat_start
+    merge_out="$("$ORCHID_BIN" merge "$merge_id" 2>&1)" || merge_rc=$?
+    drive_lease_heartbeat_stop
+    [ -z "$merge_out" ] || printf '%s\n' "$merge_out"
+    # Branch on the POST-MERGE STATUS, never on the exit code alone: exit 1 is
+    # ambiguous between two genuinely different outcomes (PROTOCOL.md's
+    # merging bullet).
+    merge_status="$(fm_get "$merge_tf" status)"
+    case "$merge_status" in
+      done)
+        drive_note "$merge_id: merged" ;;
+      rework)
+        drive_note "$merge_id: merge validation failed — back to rework for the next pass" ;;
+      testing)
+        "$ORCHID_BIN" journal add --task "$merge_id" \
+          "re-review scope: full — the rebase minted a new candidate, so prior evidence is invalid" >/dev/null
+        drive_note "$merge_id: base moved — rebased; re-verify and re-review required (INV-07)" ;;
+      merging)
+        if [ "$merge_rc" -eq 15 ]; then
+          set_boundary hook-failure "$merge_id" "merge refused: a required before_merge hook has no ok envelope for this candidate"
+        else
+          "$ORCHID_BIN" notify --task "$merge_id" \
+            "merge left task in merging: see .orchid/reviews/$merge_id-merge.log" >/dev/null
+          set_boundary operator-decision "$merge_id" "merge left the task in merging (exit $merge_rc) — a config/CAS problem, not a candidate defect"
+        fi ;;
+      *)
+        set_boundary operator-decision "$merge_id" "merge left the task in an unexpected status '$merge_status'" ;;
+    esac
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Record (or release) the boundary through its own verb -- the single writer
+# of that record -- so the pump reads the same fact back through `orchid run
+# boundary show` instead of inspecting a file.
+# ---------------------------------------------------------------------------
+if [ -n "$boundary_kind" ]; then
+  # A boundary no orchestrator procedure resolves is one runners/orchid-pump
+  # deliberately will NOT wake a model for, so the only way it reaches a human
+  # is a notification. Sent exactly once per distinct record: the previous
+  # record is read back through the same verb and compared field by field, so
+  # a condition that persists for a hundred passes raises one blocker, not a
+  # hundred.
+  if ! drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" "$orchestrator_surface"; then
+    prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+    prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
+    prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
+    prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
+    if [ "$prev_kind" != "$boundary_kind" ] || [ "$prev_task" != "$boundary_task" ] || \
+       [ "$prev_reason" != "$boundary_reason" ]; then
+      if [ -n "$boundary_task" ]; then
+        "$ORCHID_BIN" notify --task "$boundary_task" \
+          "judgment boundary [$boundary_kind] needs an operator: $boundary_reason" >/dev/null
+      else
+        "$ORCHID_BIN" notify \
+          "judgment boundary [$boundary_kind] needs an operator: $boundary_reason" >/dev/null
+      fi
+      drive_note "notified: [$boundary_kind] is operator-only, so no orchestrator will be woken for it"
+    fi
+  fi
+  if [ -n "$boundary_task" ]; then
+    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --task "$boundary_task" \
+      --reason "$boundary_reason" >/dev/null
+  else
+    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --reason "$boundary_reason" >/dev/null
+  fi
+else
+  "$ORCHID_BIN" run boundary clear --reason "deterministic drive resolved every step this pass" >/dev/null
+fi
+
+# ---------------------------------------------------------------------------
+# THE TICK step 5 -- before sleeping. Both status calls are best effort: a
+# broken status page must never fail a pass that actually made progress.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" status --explain || true
+"$ORCHID_BIN" status --html >/dev/null 2>&1 || drive_note "status --html failed (left for the next pass)"
+"$ORCHID_BIN" run refresh-lease
+
+if [ -n "$boundary_kind" ]; then
+  exit 16
+fi
+exit 0

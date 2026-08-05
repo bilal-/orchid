@@ -29,7 +29,16 @@ export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-$GIT_AUTHOR_EMAIL}"
 
 fail()        { echo "  FAIL: $*"; FAILS=$((FAILS+1)); }
 assert_eq()   { [ "$1" = "$2" ] || fail "$3 (expected '$1', got '$2')"; }
-assert_match(){ echo "$2" | grep -Eq "$1" || fail "$3 (no match '$1')"; }
+# A HERESTRING, never `echo "$2" | grep -Eq`: this file runs under `set -o
+# pipefail` (line 2), and `grep -Eq` exits at its FIRST match, which SIGPIPEs
+# the upstream `echo` mid-write (`write error: Broken pipe`, exit 141).
+# pipefail then promotes that 141 to the pipeline's status, so the assertion
+# reports "no match" for a pattern it DID find. It only fires when `$2` is
+# long enough that `echo` is still writing when `grep` exits, which made it a
+# silent, size-dependent coin flip across all 892 call sites rather than an
+# obvious break. `<<<` feeds grep from a temp file, so there is no pipe, no
+# SIGPIPE, and the exit status is the matcher's alone.
+assert_match(){ grep -Eq "$1" <<<"$2" || fail "$3 (no match '$1')"; }
 # list_dir_entries <dir> / list_dir_files <dir> -- depth-1 entry names
 # (dotfiles included, `.`/`..` never; _files keeps regular files only), one
 # per line. Plain bash globbing, not find(1) depth primaries -- limiting a

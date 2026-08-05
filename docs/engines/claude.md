@@ -59,23 +59,56 @@ claude -p                                  # review/critique (no edit permission
 **Orchestrate (headless tick):**
 
 ```sh
-claude -p --permission-mode acceptEdits --allowedTools Bash
+claude -p --permission-mode acceptEdits \
+  --allowedTools "Bash(<orchid-root>/runners/orchid-orchestrator-command:*)"
 ```
 
-`--allowedTools Bash` is required in addition to `acceptEdits` — a real
+An `--allowedTools` entry is required in addition to `acceptEdits` — a real
 pump-driven tick was found to execute **zero** verbs under `acceptEdits`
 alone (`docs/dogfood-notes.md`'s F8): claude politely explained it lacked
-permission to run Bash and exited 0 having done nothing. Since every
-`orchid` verb invocation goes through Bash (there is no other way to invoke
-one), the orchestrator role's entire job requires this flag. This does not
-remove the launcher's environment allowlist, stdin `/dev/null`, or private
-output path, but it does grant a general Bash tool. Claude's flag does not
-provide an Orchid-command-only allowlist, filesystem jail, or network
-namespace. The fixed "use only Orchid verbs; never contact a remote" text is
-prompt policy. For that reason, direct/pump-driven headless ticks are
-separately denied until `orchid trust unattended` records the operator's
-machine-local acknowledgement of the target repository's prompt-injection
-risk.
+permission to run Bash and exited 0 having done nothing. Since every command
+goes through the Bash tool (there is no other way to invoke one), the
+orchestrator role's job requires it.
+
+What that entry admits is now narrow. It is scoped to a **single
+executable**: `runners/orchid-orchestrator-command`, the default-deny,
+argument-validating broker. The broker admits a short list of exact read
+forms (`task show`, `task list`, `status [--explain]`, `jobs review-plan`,
+`journal tail`, `journal show`, `lessons list --active`, `run boundary
+show`), the one judgment-result verb (`task arbitrate`), `journal add`,
+`lessons add`, `notify`, and `run boundary clear` — and refuses `trust`,
+`service`, `config`, `plugins`, `init`, `start`, every tier-2 runner, every
+vendor CLI, and anything a shell would interpret. This adapter's manifest
+therefore declares `command_surface=brokered`; adapters whose vendor CLI
+offers no equivalent restriction declare `command_surface=soft`, and every
+tick prints which of the two it just resolved.
+
+This is a vendor-enforced restriction on **which command may run**, not
+prompt policy — but it is not OS containment: the broker itself runs
+unsandboxed, and the launcher's environment allowlist, stdin `/dev/null`
+and private output path are what bound the rest. There is still no
+filesystem jail or network namespace.
+
+**What it does not cover: file writes.** `--allowedTools "Bash(<broker>:*)"`
+scopes the Bash tool; `--permission-mode acceptEdits` leaves the vendor's own
+file-write tools auto-approved. A woken orchestrator can therefore create and
+edit files anywhere this process can reach — including paths under
+`.orchid/`, and, when `ORCHID_ROOT` lives inside the driven repository (the
+layout Orchid dogfoods itself in), including the broker script itself and the
+rest of the Orchid tree. Reads are unrestricted too. The prompt tells the
+orchestrator never to hand-edit `.orchid/` and never to touch a remote; those
+are **prompt policy**, not enforcement. `brokered` claims exactly one thing —
+that no command outside the broker can be executed — and nothing more.
+
+For all of those reasons, direct/pump-driven
+headless ticks remain separately denied until `orchid trust unattended`
+records the operator's machine-local acknowledgement of the target
+repository's prompt-injection risk — for `brokered` and `soft` adapters
+alike.
+
+The mechanical tick is no longer this model's job at all: `orchid drive`
+(`runners/orchid-drive`) runs it deterministically, and the pump wakes an
+orchestrator only for a named judgment boundary it refused to resolve.
 
 `orchid_run_engine_cli` (`lib/heartbeat.sh`) backgrounds claude directly
 (same reasoning as codex's adapter — real claude was also found to buffer
