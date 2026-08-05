@@ -1,0 +1,316 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# tier-2: the BROKERED orchestrator command surface (Track 1 + Track 2).
+#
+# An LLM orchestrator woken for a judgment boundary needs to read a handful of
+# facts and record exactly one decision. It does NOT need to run the tick --
+# `runners/orchid-drive` already did every mechanical step -- and it must not
+# be able to reach the verbs that reconfigure the machine, install schedules,
+# grant trust, execute plugins, or spawn engines. This file is the only
+# command such an orchestrator is allowlisted to run, and it is DEFAULT-DENY:
+# an invocation is refused unless it matches one of the exact argument forms
+# enumerated below, argument by argument.
+#
+# Ordering note (deliberate): this broker exists only because `orchid drive`
+# and `orchid task arbitrate` exist first. Without a deterministic driver
+# there would be no way to keep the mechanical work out of the LLM's hands,
+# and without a single judgment-result verb the admitted write surface could
+# not be one narrow, structured form.
+#
+# ADMITTED -- exact reads:
+#     task show <id>
+#     task list
+#     status [--explain]
+#     jobs review-plan <id>
+#     journal tail [-n <count>]
+#     journal show --task <id>
+#     lessons list --active
+#     run boundary show
+# ADMITTED -- the one judgment result:
+#     task arbitrate <id> --result approve|request-changes --reason <text>
+#                         [--waive-attempt]
+# ADMITTED -- recording what was learned, and telling a human:
+#     journal add [--task <id>] --kind <kind> <text>
+#     lessons add --scope <repo|engine:<id>> --invalidate-when <text> <text>
+#     notify [--task <id>] <text>
+# ADMITTED -- releasing the boundary once judged:
+#     run boundary clear --reason <text>
+#
+# REFUSED, structurally (they are simply not in the table above): every
+# `trust`, `service`, `config`, `plugins`, `init`, `start`, `doctor`, `plan`,
+# `requirements`, `answer`, `merge`, `verify`, `jobs prepare|reconcile|gc`,
+# `run advance|accept|new|start|resume|boundary set`, `task
+# advance|set|create|unblock|retry|infra-fail` form; every tier-2 runner
+# (nothing here can start an engine); every vendor CLI; and anything that
+# would be interpreted by a shell. This file never builds a shell string and
+# never evaluates one -- it validates argv, then `exec`s `bin/orchid` with the
+# caller's own argv vector, so there is no quoting seam to escape through.
+#
+# Refusals exit 17 (kernel exit-code registry: ... 15 hook handler failure,
+# 16 judgment boundary, 17 brokered command refused).
+
+self="$0"
+while [ -L "$self" ]; do
+  t="$(readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd -P)"
+ORCHID_BIN="$ORCHID_ROOT/bin/orchid"
+
+usage() {
+  cat <<'EOF'
+usage: orchid-orchestrator-command <admitted orchid verb form>
+
+The brokered, judgment-only command surface. Admitted forms:
+
+  task show <id>                     task list
+  status [--explain]                 jobs review-plan <id>
+  journal tail [-n <count>]          journal show --task <id>
+  lessons list --active              run boundary show
+  task arbitrate <id> --result approve|request-changes --reason <text>
+                                     [--waive-attempt]
+  journal add [--task <id>] --kind <kind> <text>
+  lessons add --scope <repo|engine:<id>> --invalidate-when <text> <text>
+  notify [--task <id>] <text>
+  run boundary clear --reason <text>
+
+Anything else is refused (exit 17).
+EOF
+}
+
+refuse() {
+  echo "orchestrator-command: refused: $*" >&2
+  echo "orchestrator-command: this surface admits judgment work only; the deterministic driver (orchid drive) owns every mechanical step" >&2
+  exit 17
+}
+
+# The kernel's journal entry kinds this surface admits. `acceptance`,
+# `plan_revision`, `risk_change` and `attempt_waiver` are deliberately absent:
+# each is owned by a specific verb that writes it as part of its own
+# transaction, so a free-standing entry claiming one would be a forgery.
+_BROKER_KINDS=" note arbitration blocker blocker_resolved intervention lesson kill rebase_review "
+
+is_kind() {
+  case "$_BROKER_KINDS" in
+    *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Task and lesson identifiers: a conservative, path-safe shape. No slashes, no
+# dots, so nothing here can ever be steered into a traversal by a verb that
+# builds a path out of it.
+is_id() {
+  printf '%s' "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+}
+
+is_count() {
+  printf '%s' "$1" | grep -qE '^[1-9][0-9]{0,3}$'
+}
+
+# Free text: any non-empty single argument WITHOUT a newline. The newline ban
+# matches `orchid lessons add`'s own `_no_newline` guard and keeps a single
+# journal/notify entry from forging extra lines in a line-oriented file.
+is_text() {
+  [ -n "$1" ] || return 1
+  case "$1" in
+    *"
+"*) return 1 ;;
+  esac
+  return 0
+}
+
+is_scope() {
+  case "$1" in
+    repo) return 0 ;;
+    engine:*)
+      if is_id "${1#engine:}"; then return 0; fi
+      return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
+if [ "$#" -eq 0 ]; then
+  usage >&2
+  exit 17
+fi
+case "$1" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+argv=("$@")
+verb="$1"
+
+case "$verb" in
+  task)
+    case "${2:-}" in
+      show)
+        [ "$#" -eq 3 ] || refuse "task show takes exactly one task id"
+        is_id "$3" || refuse "'$3' is not a valid task id"
+        ;;
+      list)
+        [ "$#" -eq 2 ] || refuse "task list takes no arguments"
+        ;;
+      arbitrate)
+        [ "$#" -ge 3 ] || refuse "task arbitrate requires a task id"
+        is_id "$3" || refuse "'$3' is not a valid task id"
+        a_result=""; a_reason=""; a_seen_waive=0
+        shift 3
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --result)
+              [ "$#" -ge 2 ] || refuse "--result requires a value"
+              case "$2" in
+                approve|request-changes) ;;
+                *) refuse "--result must be approve or request-changes" ;;
+              esac
+              [ -z "$a_result" ] || refuse "--result given more than once"
+              a_result="$2"; shift 2 ;;
+            --reason)
+              [ "$#" -ge 2 ] || refuse "--reason requires a value"
+              is_text "$2" || refuse "--reason must be one non-empty line"
+              [ -z "$a_reason" ] || refuse "--reason given more than once"
+              a_reason="$2"; shift 2 ;;
+            --waive-attempt)
+              [ "$a_seen_waive" -eq 0 ] || refuse "--waive-attempt given more than once"
+              a_seen_waive=1; shift ;;
+            *) refuse "unexpected argument '$1' to task arbitrate" ;;
+          esac
+        done
+        [ -n "$a_result" ] || refuse "task arbitrate requires --result"
+        [ -n "$a_reason" ] || refuse "task arbitrate requires --reason"
+        ;;
+      *) refuse "task ${2:-<missing>} is not admitted (only show, list, arbitrate)" ;;
+    esac
+    ;;
+  status)
+    if [ "$#" -eq 2 ]; then
+      [ "$2" = --explain ] || refuse "status accepts only --explain"
+    elif [ "$#" -ne 1 ]; then
+      refuse "status accepts at most --explain"
+    fi
+    ;;
+  jobs)
+    [ "${2:-}" = review-plan ] || refuse "jobs ${2:-<missing>} is not admitted (only review-plan)"
+    [ "$#" -eq 3 ] || refuse "jobs review-plan takes exactly one task id"
+    is_id "$3" || refuse "'$3' is not a valid task id"
+    ;;
+  journal)
+    case "${2:-}" in
+      tail)
+        if [ "$#" -eq 4 ]; then
+          [ "$3" = -n ] || refuse "journal tail accepts only -n <count>"
+          is_count "$4" || refuse "journal tail -n takes a small positive count"
+        elif [ "$#" -ne 2 ]; then
+          refuse "journal tail accepts only -n <count>"
+        fi
+        ;;
+      show)
+        [ "$#" -eq 4 ] || refuse "journal show takes exactly --task <id>"
+        [ "$3" = --task ] || refuse "journal show takes exactly --task <id>"
+        is_id "$4" || refuse "'$4' is not a valid task id"
+        ;;
+      add)
+        j_task=""; j_kind=""; j_text=""
+        shift 2
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --task)
+              [ "$#" -ge 2 ] || refuse "--task requires a value"
+              is_id "$2" || refuse "'$2' is not a valid task id"
+              [ -z "$j_task" ] || refuse "--task given more than once"
+              j_task="$2"; shift 2 ;;
+            --kind)
+              [ "$#" -ge 2 ] || refuse "--kind requires a value"
+              is_kind "$2" || refuse "journal kind '$2' is not admitted here"
+              [ -z "$j_kind" ] || refuse "--kind given more than once"
+              j_kind="$2"; shift 2 ;;
+            --*) refuse "unexpected flag '$1' to journal add" ;;
+            *)
+              [ "$#" -eq 1 ] || refuse "journal add takes exactly one text argument, last"
+              is_text "$1" || refuse "journal text must be one non-empty line"
+              j_text="$1"; shift ;;
+          esac
+        done
+        [ -n "$j_kind" ] || refuse "journal add requires --kind"
+        [ -n "$j_text" ] || refuse "journal add requires one text argument"
+        ;;
+      *) refuse "journal ${2:-<missing>} is not admitted (only add, show, tail)" ;;
+    esac
+    ;;
+  lessons)
+    case "${2:-}" in
+      list)
+        [ "$#" -eq 3 ] || refuse "lessons list is admitted only as: lessons list --active"
+        [ "$3" = --active ] || refuse "lessons list is admitted only as: lessons list --active"
+        ;;
+      add)
+        l_scope=""; l_inv=""; l_text=""
+        shift 2
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --scope)
+              [ "$#" -ge 2 ] || refuse "--scope requires a value"
+              is_scope "$2" || refuse "--scope must be 'repo' or 'engine:<id>'"
+              [ -z "$l_scope" ] || refuse "--scope given more than once"
+              l_scope="$2"; shift 2 ;;
+            --invalidate-when)
+              [ "$#" -ge 2 ] || refuse "--invalidate-when requires a value"
+              is_text "$2" || refuse "--invalidate-when must be one non-empty line"
+              [ -z "$l_inv" ] || refuse "--invalidate-when given more than once"
+              l_inv="$2"; shift 2 ;;
+            --*) refuse "unexpected flag '$1' to lessons add" ;;
+            *)
+              [ "$#" -eq 1 ] || refuse "lessons add takes exactly one statement argument, last"
+              is_text "$1" || refuse "a lesson statement must be one non-empty line"
+              l_text="$1"; shift ;;
+          esac
+        done
+        [ -n "$l_scope" ] || refuse "lessons add requires --scope"
+        [ -n "$l_inv" ] || refuse "lessons add requires --invalidate-when"
+        [ -n "$l_text" ] || refuse "lessons add requires one statement argument"
+        ;;
+      *) refuse "lessons ${2:-<missing>} is not admitted (only add, list --active)" ;;
+    esac
+    ;;
+  notify)
+    n_task=""; n_text=""
+    shift
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --task)
+          [ "$#" -ge 2 ] || refuse "--task requires a value"
+          is_id "$2" || refuse "'$2' is not a valid task id"
+          [ -z "$n_task" ] || refuse "--task given more than once"
+          n_task="$2"; shift 2 ;;
+        --*) refuse "unexpected flag '$1' to notify" ;;
+        *)
+          [ "$#" -eq 1 ] || refuse "notify takes exactly one text argument, last"
+          is_text "$1" || refuse "notify text must be one non-empty line"
+          n_text="$1"; shift ;;
+      esac
+    done
+    [ -n "$n_text" ] || refuse "notify requires one text argument"
+    ;;
+  run)
+    [ "${2:-}" = boundary ] || refuse "run ${2:-<missing>} is not admitted (only boundary show|clear)"
+    case "${3:-}" in
+      show)
+        [ "$#" -eq 3 ] || refuse "run boundary show takes no arguments"
+        ;;
+      clear)
+        [ "$#" -eq 5 ] || refuse "run boundary clear takes exactly --reason <text>"
+        [ "$4" = --reason ] || refuse "run boundary clear takes exactly --reason <text>"
+        is_text "$5" || refuse "--reason must be one non-empty line"
+        ;;
+      *) refuse "run boundary ${3:-<missing>} is not admitted (only show, clear)" ;;
+    esac
+    ;;
+  *)
+    refuse "'$verb' is not an admitted command"
+    ;;
+esac
+
+# Validated. Hand the caller's OWN argv vector to the dispatcher -- never a
+# reconstructed string, and never through a shell.
+exec "$ORCHID_BIN" "${argv[@]}"

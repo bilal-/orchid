@@ -64,7 +64,13 @@ accept path this way in 13m19s
 holds `role.orchestrator`'s tested-default **headless** binding — a
 pump-driven `claude -p --allowedTools Bash` tick ran the full COMPLETION
 procedure unattended after F8's fix (`docs/dogfood-notes.md`'s v1-m2 (c),
-"the autonomy loop is real"). See [engines/claude.md](./engines/claude.md).
+"the autonomy loop is real"). Since v1.1 that wholesale `Bash` grant is
+gone: the headless tick allowlists only the brokered command surface
+(`runners/orchid-orchestrator-command`), which is why this adapter's
+manifest declares `command_surface=brokered`. It is also woken far less
+often — `orchid drive` runs the mechanical tick deterministically, and the
+pump reaches an LLM only at a named judgment boundary. See
+[engines/claude.md](./engines/claude.md).
 
 ### codex
 

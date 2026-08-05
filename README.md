@@ -413,11 +413,17 @@ three rework attempts exhausts to `blocked`; no tier-1 verb ever spawns a
 long-lived process (INV-01). Orchid's deterministic verbs provide no push,
 deploy, or publish operation, and PROTOCOL.md instructs engines to treat
 external mutation as a blocker. The absent verb is Orchid's enforced
-boundary; the blocker instruction is prompt policy. With no command broker
-or OS containment, Orchid cannot prohibit external mutation outright: a
-shell-capable engine process with external credentials, network access, or
-other host capabilities could invoke another executable and mutate an
-external system.
+boundary; the blocker instruction is prompt policy. For a role engine
+(implementer, reviewer) there is still no command broker or OS containment,
+so Orchid cannot prohibit external mutation outright: a shell-capable engine
+process with external credentials, network access, or other host
+capabilities could invoke another executable and mutate an external system.
+The headless ORCHESTRATOR seat is narrower: `orchid drive` runs the routine
+tick deterministically with no model at all, and an adapter declaring
+`command_surface=brokered` confines the model it does wake to a single
+argument-validating broker admitting judgment-only forms — a real
+vendor-enforced command allowlist for that one seat, and still not OS
+containment.
 
 **Operator verbs** (no hand-editing `.orchid/` ever needed):
 `orchid task unblock/retry <id> --reason "..."`, `orchid answer <qid>

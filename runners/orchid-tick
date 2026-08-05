@@ -85,6 +85,27 @@ export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 # (the pump's next pass retries once ledger/capsuite state has moved on).
 engine="$(resolve_role_available "$repo" orchestrator)"
 
+# Command-surface label (v1.1, Track 1). `brokered` means this adapter runs
+# its orchestrator against the argument-validating broker
+# (runners/orchid-orchestrator-command) and nothing else; `soft` means its
+# vendor CLI offers no enforceable per-command restriction, so the only thing
+# between a prompt-injecting repository and the host is the machine-local
+# unattended acknowledgement this runner already required above. Printed on
+# every tick, from the manifest rather than from documentation, so an
+# operator reading a pump log can always see which of the two just ran. An
+# absent or unrecognized label reads as `soft`: this field may weaken its own
+# claim by omission, never strengthen it.
+tick_engine_dir="$(resolve_engine_dir "$engine" 2>/dev/null || true)"
+command_surface=soft
+if [ -n "$tick_engine_dir" ]; then
+  command_surface="$(manifest_get "$tick_engine_dir" command_surface soft)"
+fi
+case "$command_surface" in
+  brokered|soft) ;;
+  *) command_surface=soft ;;
+esac
+echo "tick: orchestrator $engine command_surface=$command_surface"
+
 # Actor identity for this tick's journal entries: rides ORCHID_* into the
 # spawned adapter's stripped environment (spawn_child_env's allowlist,
 # below), and from there into the orchestrator engine's own `orchid`

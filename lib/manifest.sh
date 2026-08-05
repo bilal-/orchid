@@ -6,9 +6,22 @@
 # Keys understood at manifest_version=1; anything else is an unknown key
 # (warn, still valid) rather than a hard failure. `outcome`/`transitions`
 # are kind=archetype-only keys (lib/archetype.sh's meta-contract validator);
-# listed here rather than a kind-scoped allowlist since this file has no
-# such per-kind mechanism today and unknown-key warnings are advisory only.
-_MANIFEST_KNOWN_KEYS=" manifest_version id version kind api_version requires_orchid capabilities permissions requires_binaries platforms entrypoint outcome transitions "
+# `command_surface` is a kind=engine-only key (see below); all are listed
+# here rather than in a kind-scoped allowlist since this file has no such
+# per-kind mechanism today and unknown-key warnings are advisory only.
+#
+# `command_surface` (v1.1, Track 1) is an HONEST LABEL, not a capability:
+#   brokered -- this adapter runs its orchestrator against the
+#               argument-validating broker (runners/orchid-orchestrator-
+#               command) and nothing else, because its vendor CLI supports an
+#               enforceable per-command allowlist.
+#   soft     -- this adapter's vendor CLI offers no enforceable command
+#               restriction Orchid can rely on, so its orchestrator's reach is
+#               bounded only by the process environment and by the operator's
+#               machine-local unattended acknowledgement.
+# Absent reads as `soft`: the label may only ever make a weaker claim by
+# omission, never a stronger one.
+_MANIFEST_KNOWN_KEYS=" manifest_version id version kind api_version requires_orchid capabilities permissions requires_binaries platforms entrypoint outcome transitions command_surface "
 
 # This file's own directory, regardless of who sources it or their cwd —
 # BASH_SOURCE[0] inside a function is the file the function is DEFINED in,

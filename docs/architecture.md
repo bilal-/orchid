@@ -65,7 +65,23 @@ implemented edge into an engine adapter originates at a tier-2 runner, and
 the adapter contract returns a file envelope (plus implementer commits in
 its task worktree). INV-01/INV-06 statically test those Orchid-owned launch
 sites. They do not inspect or jail every subprocess a shell-capable engine
-might invoke; the diagram is not OS containment or a command broker.
+might invoke; the diagram is not OS containment.
+
+**Who drives those edges.** Since v1.1 the routine pass is deterministic
+shell, not a model: `orchid drive` (`runners/orchid-drive`) executes THE
+TICK's mechanical steps — lease, reconcile/check/gc, dispatch, verify, review
+routing, unambiguous approval, one merge, status — deciding only on
+structured fields and mutating durable state only through named verbs
+(INV-13). It stops at a named judgment boundary and exits 16 rather than
+guessing; `orchid run boundary set|clear|show` owns that record. The pump
+runs the driver first and wakes an LLM orchestrator only when the driver
+exits exactly 16 AND the boundary reads back through its verb. When one is
+woken, an adapter that declares `command_surface=brokered` confines it to
+`runners/orchid-orchestrator-command`, a default-deny argument-validating
+broker admitting judgment-only forms — a real command allowlist for that
+adapter, though still not a filesystem jail or network namespace. Adapters
+that cannot enforce one declare `command_surface=soft` and say so on every
+tick.
 
 ## 2. The task lifecycle
 
@@ -228,7 +244,7 @@ committed files.
 - [PROTOCOL.md](../PROTOCOL.md) — the tick procedure every front-end
   executes; the normative walk behind diagram 2.
 - [specs/kernel.md](./specs/kernel.md) — tiers, transition table,
-  invariants INV-01..INV-12.
+  invariants INV-01..INV-14, command surfaces, judgment boundaries.
 - [specs/plugins.md](./specs/plugins.md) — adapter contract, trust model,
   notify channels.
 - [frontends.md](./frontends.md) — which agent products can drive the

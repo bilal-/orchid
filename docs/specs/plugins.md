@@ -150,8 +150,31 @@ capabilities=structured_text,workspace_write,shell,git
 permissions=               # env vars / secrets requested (opt-in)
 requires_binaries=codex,jq
 platforms=macos,linux
+command_surface=soft       # kind=engine only: brokered | soft (v1.1)
 entrypoint=run
 ```
+
+**`command_surface` (v1.1, kind=engine only) — an honest label, not a
+capability.** It answers exactly one question: when this adapter runs the
+ORCHESTRATOR role headlessly, can it enforce which commands the model may
+execute?
+
+- `brokered` — yes. The adapter restricts its orchestrator to
+  `runners/orchid-orchestrator-command`, the default-deny,
+  argument-validating broker that admits judgment-only forms (exact reads,
+  `orchid task arbitrate`, `journal add`, `lessons add`, `notify`, `run
+  boundary clear`) and refuses everything else with exit 17. This is
+  vendor-enforced on WHICH command runs; it is not OS containment, and the
+  broker itself is unsandboxed.
+- `soft` — no. The vendor CLI offers no restriction Orchid can rely on, so
+  the orchestrator's reach is bounded only by launcher environment hygiene
+  and by the operator's machine-local unattended acknowledgement.
+
+An absent value reads as `soft`: this field may weaken its own claim by
+omission, never strengthen it. `runners/orchid-tick` prints the resolved
+engine's label on every headless tick, so the distinction is visible in a
+pump log rather than only in documentation. Both kinds stay gated behind
+`orchid trust unattended`.
 
 Unknown keys in a known `manifest_version`: warn. Unknown
 `manifest_version`/`api_version`: reject (fail closed). `requires_orchid`

@@ -185,11 +185,13 @@ assert_eq "dryrun" "$(jq -r .summary "$d/out/envelope.json")" "dryrun orchestrat
 assert_eq "[]" "$(jq -c .actions "$d/out/envelope.json")" "dryrun orchestrate: actions empty array"
 
 # --- 7c. orchestrate stub prints one ORCHID-ACTION line -> actions=["..."] --
-# argv shape asserted too: F8 fix, the orchestrator role's whole job is
-# running `orchid` verbs through Bash, so this branch must allowlist the
-# Bash tool explicitly (`--allowedTools Bash`) alongside acceptEdits, and
-# the instruction text must tell claude to invoke the verb by its ABSOLUTE
-# binary path (bare `orchid` may not be on PATH in a dev checkout).
+# argv shape asserted too. F8 established that the Bash tool must be
+# allowlisted at all (acceptEdits alone authorizes edits, not commands).
+# v1.1 Track 1 narrows WHAT it may run: the allowlist entry is scoped to the
+# brokered command surface (runners/orchid-orchestrator-command) rather than
+# the whole shell, and the instruction text must name that broker by absolute
+# path (bare `orchid` may not be on PATH in a dev checkout, and the broker is
+# the only executable this branch is permitted to invoke).
 d="$(build_request orchone orchestrate '#!/usr/bin/env bash
 printf "%s" "$#" > "'"$WORK"'/orchone.argc"
 i=0
@@ -207,13 +209,15 @@ assert_eq "tick complete" "$(jq -r .summary "$d/out/envelope.json")" "orchestrat
 stdin_content="$(cat "$WORK/orchone.stdin")"
 assert_match "ORCHID-ACTION: <command>" "$stdin_content" "orchestrate one-action stub: the fixed instruction block arrives on stdin"
 argc="$(cat "$WORK/orchone.argc")"
-assert_eq "5" "$argc" "orchestrate stub: acceptEdits + allowedTools Bash, exactly five argv (no prompt argv)"
+assert_eq "5" "$argc" "orchestrate stub: acceptEdits + a scoped allowedTools entry, exactly five argv (no prompt argv)"
 assert_eq "-p" "$(cat "$WORK/orchone.argv.1")" "orchestrate stub: -p is first argv"
 assert_eq "--permission-mode" "$(cat "$WORK/orchone.argv.2")" "orchestrate stub: --permission-mode is second argv"
 assert_eq "acceptEdits" "$(cat "$WORK/orchone.argv.3")" "orchestrate stub: acceptEdits is third argv"
-assert_eq "--allowedTools" "$(cat "$WORK/orchone.argv.4")" "orchestrate stub: --allowedTools is fourth argv (F8: orchestrator's whole job is running orchid verbs through Bash)"
-assert_eq "Bash" "$(cat "$WORK/orchone.argv.5")" "orchestrate stub: Bash is fifth argv"
-assert_match "/bin/orchid" "$stdin_content" "orchestrate one-action stub: instructions name the absolute orchid binary path"
+assert_eq "--allowedTools" "$(cat "$WORK/orchone.argv.4")" "orchestrate stub: --allowedTools is fourth argv (F8: orchestrator's whole job is running commands)"
+assert_match '^Bash\(/.*/runners/orchid-orchestrator-command:\*\)$' "$(cat "$WORK/orchone.argv.5")" \
+  "orchestrate stub: the allowlist entry is scoped to the brokered command surface by absolute path, never a bare Bash grant"
+assert_match "runners/orchid-orchestrator-command" "$stdin_content" \
+  "orchestrate one-action stub: instructions name the absolute brokered-command path"
 
 # --- 7d. orchestrate stub prints NO ORCHID-ACTION lines, exits 0 ->
 # actions == [] and status is STILL ok (never a crash). Regression test for a

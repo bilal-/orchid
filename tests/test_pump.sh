@@ -222,6 +222,40 @@ assert_eq "pump: run not running (planning), no lease yet" "$out" \
 [ -f "$WORK/marker-stubplanning" ] && fail "pump must NEVER autonomously tick during planning, even with a healthy engine configured"
 
 # ===========================================================================
+# B3 -- v1.1 Track 2, the headline change: the pump runs the DETERMINISTIC
+# DRIVER first and wakes an LLM only for a named judgment boundary. With a
+# stale lease, a healthy orchestrator engine configured, and nothing for
+# deterministic policy to stop on, the driver completes the pass and NO
+# engine is spawned at all -- the quota is simply not spent.
+# ===========================================================================
+printf -- '---\nrun_status: running\nrun_id: r-pump\n---\n# Roadmap\n' > .orchid/roadmap.md
+mk_stub_engine stubnodrive
+printf 'role.orchestrator=stubnodrive\n' > orchid.config
+write_lease 1000
+rm -f "$WORK/marker-stubnodrive"
+
+out="$("$PUMP" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "pump exits 0 when the deterministic driver completed the pass"
+assert_match "pump: deterministic drive completed the pass, no judgment boundary" "$out" \
+  "the pump says the driver handled it, in so many words"
+[ -f "$WORK/marker-stubnodrive" ] \
+  && fail "an LLM orchestrator must NOT be woken when deterministic policy resolved the pass"
+
+# From here on the fixture carries a blocked task, which is a judgment
+# boundary by definition (only an operator resolves a block). That is what
+# lets the arms below go on exercising the LLM hand-off itself.
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+"$ORCHID_BIN" task create T001 "needs a human" >/dev/null
+"$ORCHID_BIN" task advance T001 blocked --reason "fixture: parked for a human" >/dev/null
+unset ORCHID_EPOCH
+
+# Sanity: the driver really does stop on it, with the dedicated exit code.
+rc=0; drive_out="$(ORCHID_REPO="$WORK" "$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_eq 16 "$rc" "a blocked task parks the deterministic driver at a judgment boundary"
+assert_match "boundary \[blocked-task\] T001" "$drive_out" "the boundary names the blocked task"
+
+# ===========================================================================
 # C -- fresh lease: run_status running, lease refreshed moments ago -- a live
 # orchestrator owns this run; the pump must not spawn the tick.
 # ===========================================================================
@@ -335,4 +369,9 @@ assert_match 'stubprime2' "$out" "the no-capable-orchestrator message names the 
 assert_match 'stubfallback2' "$out" "the no-capable-orchestrator message names the unverified fallback"
 [ -f "$WORK/marker-stubprime2" ] && fail "no engine must be spawned when none is eligible"
 [ -f "$WORK/marker-stubfallback2" ] && fail "the unverified fallback must never be spawned"
-[ "$epoch_after" -eq "$epoch_before" ] || fail "no tick ran, so no fresh epoch should have been fenced"
+# The deterministic driver needs no orchestrator engine at all, so it still
+# ran (and fenced its own epoch) before the pump discovered there was nobody
+# to wake for the boundary it found. That is the v1.1 ordering working as
+# intended: mechanical progress never waits on model availability.
+[ "$epoch_after" -gt "$epoch_before" ] \
+  || fail "the deterministic driver runs regardless of orchestrator availability, so it fences an epoch ($epoch_before -> $epoch_after)"

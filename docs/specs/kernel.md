@@ -677,3 +677,46 @@ semantic correctness beyond declared verification commands.
 - INV-11 `verify` evidence is the only path to a passing `testing` state
 - INV-12 non-truncatable inputs over budget fail with `input_overflow`,
   never silently truncate
+- INV-13 the deterministic driver mutates durable/cross-process state only
+  through named verbs, and decides only on structured fields
+- INV-14 no kernel source branches on any discovered engine identifier
+
+## Command surfaces (v1.1)
+
+**NOT guaranteed** above still says there is no enforceable command allowlist
+for a shell-capable orchestrator. That is now true only of adapters whose
+vendor CLI cannot express one. Each `kind=engine` manifest declares
+`command_surface`:
+
+- `brokered` — the adapter restricts its orchestrator to
+  `runners/orchid-orchestrator-command`, a default-deny broker that validates
+  argv against an enumerated set of judgment-only forms (exact reads, `orchid
+  task arbitrate`, `journal add`, `lessons add`, `notify`, `run boundary
+  clear`) and refuses everything else with exit 17. Vendor-enforced on WHICH
+  command runs; still not OS containment, and the broker itself is
+  unsandboxed.
+- `soft` — no enforceable restriction; the orchestrator's reach is bounded
+  only by launcher environment hygiene and by the operator's machine-local
+  unattended acknowledgement. An absent label reads as `soft`: this field may
+  weaken its own claim by omission, never strengthen it.
+
+Both remain gated behind `orchid trust unattended`. Every headless tick
+prints the resolved engine's label.
+
+## Judgment boundaries (v1.1)
+
+`orchid drive` executes THE TICK's mechanical steps deterministically and
+stops at a named boundary rather than making a free-form judgment. The record
+is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
+`task`, `reason`, `epoch`, `at`), and 16 is the dedicated judgment-boundary
+exit code — returned by `drive` when a pass stopped at one, and by `run
+boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
+`review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
+`operator-decision`. `orchid task arbitrate` is the sole explicit
+judgment-result verb; see PROTOCOL.md's "Judgment boundaries" section for the
+non-overlapping arbitration truth table.
+
+Exit-code registry: 2 unknown verb, 3 illegal transition, 5
+`rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
+failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
+boundary, 17 brokered command refused.

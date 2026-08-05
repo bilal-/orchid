@@ -1,12 +1,20 @@
 #!/bin/bash -p
 set -euo pipefail
 # tier-2, LLM-free: the pump is the cron/launchd-friendly front gate in front
-# of runners/orchid-tick (Task 7). It NEVER builds a prompt or reads an
-# envelope's contents -- only exit codes -- and does exactly one shot per
-# invocation (recurring packaging is v1-m4). Every no-op outcome below exits
-# 0 (cron-friendly: "nothing to do right now" is a normal poll result, never
-# an error); only when it hands off to the tick does its exit code become
-# the tick's own.
+# of runners/orchid-drive and (only sometimes) runners/orchid-tick. It NEVER
+# builds a prompt or reads an envelope's contents -- only exit codes -- and
+# does exactly one shot per invocation. Every no-op outcome below exits 0
+# (cron-friendly: "nothing to do right now" is a normal poll result, never an
+# error); only when it hands off does its exit code become the driver's or the
+# tick's own.
+#
+# v1.1 Track 2 changed WHAT it hands off to. The deterministic driver
+# (`orchid drive`) now gets the pass first and does nearly all of it. An LLM
+# orchestrator is woken only when two independent facts agree: the driver
+# exited with exactly 16, the dedicated judgment-boundary code, AND `orchid
+# run boundary show` reads a recorded boundary back through its own verb.
+# Anything else -- a clean pass, a generic failure, or a boundary the driver
+# reported without recording -- ends the invocation without spending a token.
 #
 # Mutual exclusion with a live orchestrator is EXACTLY the lease-staleness
 # test below (spec: "mutual exclusion via lease staleness, not flock") -- a
@@ -409,7 +417,42 @@ if [ "$age" -lt "$stale_s" ]; then
   exit 0
 fi
 
-# 5. Dry-check only: is an orchestrator engine currently resolvable at all?
+# 5. DETERMINISTIC DRIVE FIRST (Track 2). Before any thought is given to
+# waking an LLM, the deterministic driver gets the whole pass: lease refresh,
+# reconcile/check/gc, dispatch, verification, review routing, unambiguous
+# approval, one merge, status regeneration. That is nearly all of THE TICK,
+# and none of it needs a model. The pump stays LLM-free itself -- it reads the
+# driver's EXIT CODE, never its output, exactly as it has always read the
+# tick's.
+export ORCHID_REPO="$repo"
+drive_rc=0
+"$ORCHID_ROOT/runners/orchid-drive" || drive_rc=$?
+if [ "$drive_rc" -eq 0 ]; then
+  echo "pump: deterministic drive completed the pass, no judgment boundary"
+  exit 0
+fi
+if [ "$drive_rc" -ne 16 ]; then
+  echo "pump: deterministic drive failed (exit $drive_rc)" >&2
+  exit "$drive_rc"
+fi
+
+# 5b. An LLM is woken for EXACTLY ONE reason: a named judgment boundary the
+# deterministic policy refused to resolve. Two independent facts must agree
+# before that happens -- the driver's exit code must be exactly 16 (the
+# dedicated judgment-boundary code, never a generic nonzero), AND the boundary
+# must be readable back through its own verb. The verb read is not
+# belt-and-braces: exit 16 alone would also be produced by a boundary the
+# driver deliberately reports without recording, and a recorded boundary is
+# what actually names the task and the reason an orchestrator would be woken
+# to judge. No boundary record, no LLM.
+boundary_rc=0
+"$ORCHID_ROOT/bin/orchid" run boundary show >/dev/null 2>&1 || boundary_rc=$?
+if [ "$boundary_rc" -ne 16 ]; then
+  echo "pump: drive reported a judgment boundary but none is recorded — not waking an orchestrator"
+  exit 0
+fi
+
+# 6. Dry-check only: is an orchestrator engine currently resolvable at all?
 # The engine name itself is discarded -- the tick performs its own
 # `resolve_role_available` call once it actually runs, so this is purely a
 # GO/NO-GO probe against the exact same ledger/capsuite state the tick will
@@ -424,10 +467,9 @@ else
   exit 0
 fi
 
-# 6. Hand off. The tick does its own `run resume` (fencing a fresh epoch and
+# 7. Hand off. The tick does its own `run resume` (fencing a fresh epoch and
 # refreshing the lease), engine pick, adapter spawn, and ledger marking --
 # the pump's job ends here. `exec`, not a plain call: no pump-side work
 # remains afterward, so the tick simply replaces this process and its exit
 # code becomes the pump's own, verbatim.
-export ORCHID_REPO="$repo"
 exec "$ORCHID_ROOT/runners/orchid-tick"

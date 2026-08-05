@@ -332,3 +332,11 @@ assert_match "no command broker.*or OS containment" "$guardrails_one_line" \
 assert_match "engine process with external credentials, network access, or.*host capabilities could invoke another executable" \
   "$guardrails_one_line" \
   "README guardrails must disclose residual engine-process capabilities"
+# v1.1: the orchestrator seat IS narrowed now, and the summary must say so --
+# under-claiming an implemented guardrail is as much a documentation defect as
+# over-claiming an absent one. Both halves are required: the narrowing, and
+# the limit of that narrowing.
+assert_match "command_surface=brokered" "$guardrails_one_line" \
+  "README guardrails must name the brokered orchestrator command surface"
+assert_match "still not OS containment" "$guardrails_one_line" \
+  "README guardrails must state the limit of the brokered surface"
