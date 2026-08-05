@@ -66,10 +66,13 @@ drive_threshold_rank() {
 #   hook-failure      -- a `:required` hook binding has no ok, current envelope
 #   worktree-conflict -- a dispatch worktree cannot be proven to belong to
 #                        this task/repo/branch
+#   run-complete      -- every task is `done`; PROTOCOL.md's COMPLETION
+#                        procedure (acceptance checks, then `orchid run
+#                        accept --evidence`) is the orchestrator's work
 #   operator-decision -- everything else this policy deliberately refuses to
 #                        decide (attempts exhausted, wallclock budget, a
 #                        status/archetype combination with no declared edge)
-_DRIVE_BOUNDARY_KINDS=" planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-decision "
+_DRIVE_BOUNDARY_KINDS=" planning blocked-task review-evidence review-conflict hook-failure worktree-conflict run-complete operator-decision "
 
 drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
   case "$_DRIVE_BOUNDARY_KINDS" in
@@ -99,6 +102,40 @@ drive_boundary_priority() {
   case "$1" in
     review-evidence|review-conflict) echo 1 ;;
     *) echo 0 ;;
+  esac
+}
+
+# drive_boundary_wakes_orchestrator <kind> -- 0 iff waking an ORCHESTRATOR can
+# move this boundary at all, i.e. PROTOCOL.md hands the procedure behind it to
+# an orchestrator rather than to a human at a terminal:
+#
+#   planning         -- PROTOCOL.md PLANNING (import, breakdown, critique)
+#   review-evidence  -- the arbitration truth table, settled by one
+#   review-conflict     `orchid task arbitrate`
+#   run-complete     -- PROTOCOL.md COMPLETION (acceptance checks, then
+#                       `orchid run accept --reason --evidence`)
+#
+# Everything else -- a `blocked` task (`task unblock`/`task retry`), a failed
+# required hook (its handler or its binding is broken), a worktree that cannot
+# be proven to belong to this task, and the operator-decision catch-all --
+# needs a human: no orchestrator procedure resolves it, so waking a model for
+# it burns a wakeup per pump cycle and changes nothing. runners/orchid-pump is
+# the caller: no LLM is woken for a boundary this returns 1 for.
+#
+# DELIBERATELY NOT the same question drive_boundary_priority answers. That one
+# ranks CONCURRENT boundaries by whether the BROKERED command surface
+# (runners/orchid-orchestrator-command) admits a verb that settles them in one
+# call, which only the two review kinds do. This one asks whether an
+# orchestrator has any procedure at all -- a wider set, because PLANNING and
+# COMPLETION are orchestrator procedures whose recording verbs (`orchid plan
+# apply`, `orchid run accept`) the broker deliberately refuses. Under the
+# brokered surface a woken orchestrator's move on those two is to journal and
+# notify rather than to record the result itself; that is a real asymmetry, and
+# naming it here is the point of keeping the two functions apart.
+drive_boundary_wakes_orchestrator() {
+  case "$1" in
+    planning|review-evidence|review-conflict|run-complete) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -289,6 +326,57 @@ drive_review_decision() {
     "$approve_n" "$blocking"
 }
 
+# drive_hook_has_required <repo> <point> -- 0 iff the point's binding carries
+# at least one `:required` entry. A point bound only `optional` never gates
+# anything, on any point (see drive_hook_unsatisfied below), so the driver
+# must not park a task on one either: this is what tells it apart.
+drive_hook_has_required() {
+  local repo="$1" point="$2" line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "$(printf '%s' "$line" | cut -f2)" = required ] || continue
+    return 0
+  done <<< "$(hooks_for "$repo" "$point")"
+  return 1
+}
+
+# drive_hook_envelope_count <repo> <task> <point> <attempt> <candidate_sha> --
+# how many hook envelopes filed for this point/attempt are still IN SCOPE for
+# the current candidate. An envelope is counted unless it can be PROVEN
+# superseded: it reports a candidate_sha, that sha is readable, and it is not
+# the task's current one.
+#
+# This is what makes a hook re-runnable when candidate_sha moves WITHIN one
+# attempt (the merging->testing rebase edge, or an implementer re-dispatch
+# after a waived rework). drive_hook_unsatisfied below binds a `:required`
+# entry's satisfaction to the CURRENT candidate, so counting the superseded
+# envelope as evidence-on-hand would leave the point permanently unsatisfiable
+# -- launched never again, gated forever, with no verb able to release it. Not
+# counting it makes the point look unstarted for the new candidate, which is
+# exactly what it is, so the driver dispatches it again.
+#
+# Fail-closed in the other direction, deliberately: an envelope carrying no
+# readable candidate_sha cannot be proven superseded, so it still counts. A
+# hook adapter that omits the field can therefore leave a required binding
+# unsatisfiable -- but that surfaces as a NAMED hook-failure boundary an
+# operator sees, never as a silent relaunch loop.
+drive_hook_envelope_count() {
+  local repo="$1" id="$2" point="$3" attempt="$4" cand="$5" state ef ecand n
+  state="$(orchid_state "$repo")"
+  n=0
+  for ef in "$state/reviews/$id-a$attempt-hook-$point"*.json; do
+    [ -e "$ef" ] || continue
+    if [ -n "$cand" ]; then
+      ecand="$(envelope_field "$ef" '.candidate_sha // empty' 2>/dev/null || true)"
+      if [ -n "$ecand" ] && [ "$ecand" != "$cand" ]; then
+        continue
+      fi
+    fi
+    n=$(( n + 1 ))
+  done
+  printf '%s\n' "$n"
+}
+
 # drive_hook_unsatisfied <repo> <task> <point> <attempt> <candidate_sha> --
 # one line per `:required` binding entry on <point> that has NO reconciled
 # `ok` envelope for this attempt (and, when <candidate_sha> is non-empty,
@@ -414,6 +502,97 @@ drive_reviewer_envelope_count() {
     done
   fi
   printf '%s\n' "$n"
+}
+
+# drive_reviewer_envelope_engines <repo> <task> -- one line per reviewer
+# envelope counted by drive_reviewer_envelope_count above (current attempt,
+# `ok`, bound to the current candidate_sha): the QUALIFIED engine id that
+# envelope reports, or a bare `-` when it reports none.
+#
+# `.engine` is the only durable record of WHICH engine produced a filed
+# review: `orchid jobs reconcile` cross-checks it against the job manifest's
+# own engine (so it cannot be forged past reconcile) and then deletes the
+# manifest, leaving the envelope as the sole survivor. Adapters that omit the
+# field -- it is optional, and today's fixtures exercise that -- yield `-`,
+# which drive_review_slots_unsatisfied treats as attributable to any slot.
+drive_reviewer_envelope_engines() {
+  local repo="$1" id="$2" state tf attempt cand f e
+  state="$(orchid_state "$repo")"; tf="$state/tasks/$id.md"
+  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+  cand="$(fm_get "$tf" candidate_sha)"
+  [ -n "$cand" ] || return 0
+  for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
+    [ -e "$f" ] || continue
+    [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
+    [ "$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)" = "$cand" ] || continue
+    e="$(envelope_field "$f" '.engine // empty' 2>/dev/null || true)"
+    printf '%s\n' "${e:--}"
+  done
+}
+
+# _drive_pool_take <pool> <want> -- prints <pool> minus the FIRST line equal
+# to <want>; exit 1 (pool printed unchanged) when there is none. Consuming
+# rather than merely testing is what gives the matching below multiplicity:
+# one envelope can satisfy exactly one slot.
+_drive_pool_take() {
+  local want="$2" line found=0 out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "$found" -eq 0 ] && [ "$line" = "$want" ]; then found=1; continue; fi
+    out="$out$line
+"
+  done <<< "$1"
+  printf '%s' "$out"
+  [ "$found" -eq 1 ]
+}
+
+# drive_review_slots_unsatisfied <repo> <task> <routing> -- the rows of
+# <routing> (`orchid jobs review-plan`'s "<slot><TAB><engine><TAB><label>"
+# table) that have NO review of their own yet. Empty output means every routed
+# slot is covered.
+#
+# Keyed on SLOT IDENTITY, never on a count. A count is the wrong key the
+# moment a slot is relaunched: with slot 1 routed to engine A and slot 2 to
+# engine B, a relaunch that lands a SECOND A review takes the count to the
+# tier's required number, and a count-keyed driver would then both stop
+# dispatching slot 2 and hand `drive_review_decision` two reviews from one
+# engine to approve unanimously -- defeating the engine independence the whole
+# risk-tiered review policy exists to enforce (docs/specs/kernel.md,
+# "Independence"). Here A's second review can only ever satisfy a slot the
+# routing table itself routed to A, which is exactly the degraded case
+# `review_routing` already labels `session-independent` and journals.
+#
+# Envelopes that name no engine (`-`) are matched LAST, after every exact
+# attribution has been made, and can stand in for any remaining slot: an
+# adapter that omits `.engine` leaves nothing to attribute by, and refusing to
+# credit its review would relaunch a slot forever.
+drive_review_slots_unsatisfied() {
+  local repo="$1" id="$2" routing="$3" pool line eng qid unmatched out
+  pool="$(drive_reviewer_envelope_engines "$repo" "$id")"
+
+  unmatched=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    eng="$(printf '%s' "$line" | cut -f2)"
+    qid="$(resolve_engine_qualified_id "$eng" 2>/dev/null || true)"
+    [ -n "$qid" ] || qid="$eng"
+    if pool="$(_drive_pool_take "$pool" "$qid")"; then
+      continue
+    fi
+    unmatched="$unmatched$line
+"
+  done <<< "$routing"
+
+  out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if pool="$(_drive_pool_take "$pool" -)"; then
+      continue
+    fi
+    out="$out$line
+"
+  done <<< "$unmatched"
+  printf '%s' "$out"
 }
 
 # -- worktree identity ------------------------------------------------------

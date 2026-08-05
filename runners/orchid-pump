@@ -55,6 +55,11 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/spawn.sh"
 source "$ORCHID_ROOT/lib/trust.sh"
+# For drive_boundary_wakes_orchestrator alone: the pump must not keep its own
+# copy of which boundary kinds an orchestrator can act on. lib/drive.sh is
+# pure policy (it reads and prints; it never mutates), so sourcing it costs
+# the pump nothing and keeps that classification in ONE place.
+source "$ORCHID_ROOT/lib/drive.sh"
 
 # `orchid service install` invokes the pump with this internal flag while the
 # scheduler itself sends stdout/stderr to /dev/null. The pump does not open the
@@ -437,18 +442,34 @@ if [ "$drive_rc" -ne 16 ]; then
 fi
 
 # 5b. An LLM is woken for EXACTLY ONE reason: a named judgment boundary the
-# deterministic policy refused to resolve. Two independent facts must agree
-# before that happens -- the driver's exit code must be exactly 16 (the
-# dedicated judgment-boundary code, never a generic nonzero), AND the boundary
-# must be readable back through its own verb. The verb read is not
+# deterministic policy refused to resolve. Three independent facts must agree
+# before that happens (the third is 5c, just below) -- the driver's exit code
+# must be exactly 16 (the dedicated judgment-boundary code, never a generic
+# nonzero), AND the boundary must be readable back through its own verb, AND
+# an orchestrator must have a procedure that moves it. The verb read is not
 # belt-and-braces: exit 16 alone would also be produced by a boundary the
 # driver deliberately reports without recording, and a recorded boundary is
 # what actually names the task and the reason an orchestrator would be woken
 # to judge. No boundary record, no LLM.
 boundary_rc=0
-"$ORCHID_ROOT/bin/orchid" run boundary show >/dev/null 2>&1 || boundary_rc=$?
+boundary_json="$("$ORCHID_ROOT/bin/orchid" run boundary show 2>/dev/null)" || boundary_rc=$?
 if [ "$boundary_rc" -ne 16 ]; then
   echo "pump: drive reported a judgment boundary but none is recorded — not waking an orchestrator"
+  exit 0
+fi
+
+# 5c. And exactly one MORE fact has to hold: waking an orchestrator must be
+# able to move this boundary. A `blocked` task, a failed required hook, a
+# worktree that cannot be proven to belong to its task -- these recur
+# identically on every pass until a HUMAN acts, and PROTOCOL.md hands none of
+# them to an orchestrator. Waking a model for one spends a wakeup per pump
+# cycle to re-read a record and change nothing; the driver has already
+# notified the operator through `orchid notify`, which is what that condition
+# actually needs. Only the KIND is read here (a structured field of a record
+# this pump never writes), never the reason text.
+boundary_kind="$(printf '%s' "$boundary_json" | jq -r '.kind // ""' 2>/dev/null || echo "")"
+if ! drive_boundary_wakes_orchestrator "$boundary_kind"; then
+  echo "pump: judgment boundary [${boundary_kind:-unknown}] is operator-only — not waking an orchestrator"
   exit 0
 fi
 

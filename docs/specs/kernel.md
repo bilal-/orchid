@@ -716,9 +716,9 @@ is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
 exit code — returned by `drive` when a pass stopped at one, and by `run
 boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
-`operator-decision`. `orchid task arbitrate` is the sole explicit
-judgment-result verb; see PROTOCOL.md's "Judgment boundaries" section for the
-non-overlapping arbitration truth table.
+`run-complete`, `operator-decision`. `orchid task arbitrate` is the sole
+explicit judgment-result verb; see PROTOCOL.md's "Judgment boundaries"
+section for the non-overlapping arbitration truth table.
 
 One boundary is recorded per pass, chosen by whether a woken orchestrator can
 resolve it with the verbs the broker admits (`review-evidence` and
@@ -726,6 +726,22 @@ resolve it with the verbs the broker admits (`review-evidence` and
 kinds, then by task-id order — so a `blocked` task, whose boundary recurs
 every pass until a human runs `task unblock`/`task retry`, cannot mask
 another task's arbitrable one.
+
+Whether a recorded boundary WAKES an orchestrator is a separate, wider
+question, asked once by the pump against the record's `kind`: `planning`,
+`review-evidence`, `review-conflict` and `run-complete` are procedures
+PROTOCOL.md hands to an orchestrator; the rest recur identically until a
+human acts, so no model is woken for them and the driver raises one `orchid
+notify` blocker per distinct record instead. The two sets differ because
+PLANNING and COMPLETION are orchestrator procedures whose recording verbs
+(`orchid plan apply`, `orchid run accept`) the brokered command surface still
+refuses — under that surface the woken orchestrator journals and notifies
+rather than recording the result itself.
+
+`run-complete` is the driver's own COMPLETION hand-off: a pass that reads
+every task as `done` makes COMPLETION's mechanical first call (`orchid run
+advance accepting`) and stops there, because the acceptance checks and the
+evidence file `orchid run accept` requires are judgment work.
 
 The driver's deterministic-approval arm gates on `findings[]` severity
 against the task's `blocking_severity`, and that gate is only as live as the

@@ -69,7 +69,13 @@ VERDICT line only -- so with them approval rests on verdict + scope_complete.
 At most one judgment boundary is recorded per pass: the kinds a woken
 orchestrator can actually resolve (review-evidence, review-conflict) outrank
 the operator-only kinds, and task-id order decides among equals. Every
-boundary the pass meets is printed either way.
+boundary the pass meets is printed either way. A boundary no orchestrator
+procedure resolves also raises one `orchid notify` blocker per distinct
+record, because runners/orchid-pump deliberately wakes no model for it.
+
+A pass that reads every task as `done` takes COMPLETION's mechanical first
+step (`orchid run advance accepting`) and stops at a `run-complete` boundary,
+so a finished headless run hands off instead of polling forever.
 
 Exit codes:
   0   the pass completed; nothing is waiting on a human judgment call
@@ -146,6 +152,14 @@ export ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"
 # boundary the walk meets is still NOTED, so the pass output never hides one.
 # ---------------------------------------------------------------------------
 boundary_kind=""; boundary_task=""; boundary_reason=""
+
+# Pass-local record of every OPTIONAL hook point whose job was found dead
+# without an envelope this pass, as " <task>:<point> " atoms. Read by
+# drive_hook_gate below: a hook that can never gate must not park the step it
+# guards just because its handler fell over. Deliberately pass-local -- it is
+# a fact about jobs THIS pass reconciled, not durable state, so it needs no
+# verb and leaves nothing behind.
+optional_hooks_died=" "
 set_boundary() {
   local kind="$1" task="$2" reason="$3" note
   if [ -n "$task" ]; then
@@ -260,6 +274,13 @@ drive_job_outstanding() {
 # (nothing here ever sleeps on an engine) without letting a `:required`
 # binding be skipped.
 #
+# A point bound only `optional` therefore defers a step at most until its job
+# RESOLVES -- an envelope lands, or the job dies without one. It never parks
+# the step past that: an optional handler that dies leaving nothing behind is
+# noted and stepped over, exactly as lib/drive.sh's satisfaction rule already
+# says optional entries never gate anything. Only a `:required` binding can
+# hold a transition indefinitely, and only ever as a NAMED boundary.
+#
 # Returns: 0 satisfied (or the point is unbound, or bound only `optional`)
 #          1 pending -- just dispatched, or still running; do nothing yet
 #          2 a `:required` entry failed -- a hook-failure boundary is raised
@@ -267,7 +288,7 @@ drive_job_outstanding() {
 # ---------------------------------------------------------------------------
 drive_hook_gate() {
   local id="$1" point="$2" attempt="$3" cand="$4"
-  local bindings ef n_env unsat line hid first lrc
+  local bindings n_env unsat line hid first lrc
   bindings="$(hooks_for "$repo" "$point")"
   [ -n "$bindings" ] || return 0
 
@@ -276,13 +297,20 @@ drive_hook_gate() {
     return 1
   fi
 
-  n_env=0
-  for ef in "$state/reviews/$id-a$attempt-hook-$point"*.json; do
-    [ -e "$ef" ] || continue
-    n_env=$(( n_env + 1 ))
-  done
+  # Envelopes are counted IN SCOPE for the current candidate: one left behind
+  # by a candidate that has since moved (within this same attempt) is not
+  # evidence for the one on the task now, and counting it would leave the
+  # point launched-never-again and the step it guards gated forever.
+  n_env="$(drive_hook_envelope_count "$repo" "$id" "$point" "$attempt" "$cand")"
 
   if [ "$n_env" -eq 0 ]; then
+    if ! drive_hook_has_required "$repo" "$point"; then
+      case "$optional_hooks_died" in
+        *" $id:$point "*)
+          drive_note "$id: the optional $point hook produced no envelope — stepping over it (optional never gates)"
+          return 0 ;;
+      esac
+    fi
     first=1
     while IFS= read -r line; do
       [ -n "$line" ] || continue
@@ -313,7 +341,7 @@ drive_hook_gate() {
 # ---------------------------------------------------------------------------
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
-  local tf target outcome blockers plan action path branch integ integ_head arc role_line role op
+  local tf target outcome blockers plan action path branch integ integ_head arc lrc role_line role op
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
@@ -386,6 +414,51 @@ drive_dispatch() {
     fi
   fi
 
+  # LAUNCH FIRST, ADVANCE ONLY ON A SPAWN. The order is the whole point: a
+  # task advanced into an active status by a dispatch whose launch never
+  # minted a manifest waits forever for an envelope nobody is producing --
+  # `jobs check` sees no job, `drive_implementing` sees no envelope, and the
+  # pass exits 0 with no boundary and nothing to escalate. Exit 14 (no
+  # eligible engine) makes that ordinary rather than exotic: the ledger
+  # window closes for minutes at a time. PROTOCOL.md's Failover paragraph
+  # requires the task to stay in its PRIOR status through exactly that, so
+  # the identical dispatch simply succeeds on a later pass.
+  #
+  # The reviewer target is the exception, and only because it needs none of
+  # this: `drive_reviewing` recomputes the routing table and relaunches the
+  # slots that are missing on EVERY pass, so a reviewing task with no job is
+  # always picked back up.
+  role_line="$(drive_role_for_status "$target")"
+  role=""; op=""
+  if [ -n "$role_line" ]; then
+    role="$(printf '%s' "$role_line" | cut -f1)"
+    op="$(printf '%s' "$role_line" | cut -f2)"
+  fi
+  if [ -n "$role" ] && [ "$role" != reviewer ]; then
+    if drive_job_outstanding "$id" "$op"; then
+      # A pass that died between the spawn and the advance below already left
+      # the job running: adopt it rather than spawning a second one.
+      drive_note "$id: adopting the $op job an earlier pass already spawned"
+    else
+      lrc=0
+      drive_launch "$id" "$role" "$op" || lrc=$?
+      if [ "$lrc" -eq 14 ]; then
+        # The documented WAIT. No boundary: nothing is wrong, and the window
+        # reopens without anyone doing anything.
+        drive_note "$id: staying in $from — nothing was spawned, so there is nothing to wait for"
+        return 0
+      fi
+      if [ "$lrc" -ne 0 ]; then
+        # Any OTHER launch failure is broken infrastructure, not a wait. The
+        # task still stays dispatchable, but silently retrying it every pass
+        # forever is the same disappearing-act this ordering exists to end.
+        set_boundary operator-decision "$id" \
+          "dispatch launch for role '$role' failed (exit $lrc); $id stays in $from and nothing was spawned"
+        return 0
+      fi
+    fi
+  fi
+
   arc=0
   "$ORCHID_BIN" task advance "$id" "$target" \
     --reason "dispatching: deps satisfied ($from -> $target)" >/dev/null || arc=$?
@@ -395,18 +468,13 @@ drive_dispatch() {
   fi
   drive_note "$id: $from -> $target"
 
-  role_line="$(drive_role_for_status "$target")"
-  if [ -z "$role_line" ]; then
+  if [ -z "$role" ]; then
     drive_note "$id: no launch is defined for status $target — nothing spawned"
     return 0
   fi
-  role="$(printf '%s' "$role_line" | cut -f1)"
-  op="$(printf '%s' "$role_line" | cut -f2)"
   if [ "$role" = reviewer ]; then
     drive_reviewing "$id" "$arch"
-    return 0
   fi
-  drive_launch "$id" "$role" "$op" || true
   return 0
 }
 
@@ -512,12 +580,32 @@ drive_testing() {
 # the kernel's own envelope count is satisfiable.
 # ---------------------------------------------------------------------------
 drive_reviewing() {
-  local id="$1" arch="$2" tf tier need have routing line slot eng label lrc arc
+  local id="$1" arch="$2" tf tier need have routing unsat line slot eng label lrc arc
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = reviewing ] || return 0
   tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
   need="$(review_required_count "$tier")"
   have="$(drive_reviewer_envelope_count "$repo" "$id")"
+
+  # The routing table is the SLOT LEDGER, not just a dispatch list: which
+  # slots exist, which engine each was routed to, and therefore which of them
+  # a filed review can and cannot be credited to.
+  routing="$("$ORCHID_BIN" jobs review-plan "$id" 2>/dev/null || true)"
+  unsat=""
+  if [ -n "$routing" ]; then
+    unsat="$(drive_review_slots_unsatisfied "$repo" "$id" "$routing")"
+  fi
+
+  if [ "$have" -ge "$need" ] && [ -n "$unsat" ]; then
+    # Enough envelopes for the kernel's own count, but a routed slot still has
+    # none of its own -- two reviews from ONE engine where the table routed
+    # two DIFFERENT ones. Relaunching would only add a third review to a set
+    # the kernel already counts as complete, so this stops instead, at a
+    # boundary a woken orchestrator can settle by reading the evidence.
+    set_boundary review-evidence "$id" \
+      "$have of $need review envelope(s) bound to the current candidate, but slot(s) $(printf '%s' "$unsat" | cut -f1 | tr '\n' ' ')have no review of their own — the tier's engine independence is unproven"
+    return 0
+  fi
 
   if [ "$have" -ge "$need" ]; then
     if ! drive_has_transition "$arch" reviewing arbitrating; then
@@ -541,11 +629,21 @@ drive_reviewing() {
     return 0
   fi
 
-  routing="$("$ORCHID_BIN" jobs review-plan "$id" 2>/dev/null || true)"
   if [ -z "$routing" ]; then
     set_boundary operator-decision "$id" "no reviewer routing table could be computed"
     return 0
   fi
+  if [ -z "$unsat" ]; then
+    # Short of the tier's count, yet every routed slot is already credited:
+    # the table and the count disagree, and dispatching "some slot" to make up
+    # the difference would be guessing. Named, not silently retried forever.
+    set_boundary review-evidence "$id" \
+      "$have of $need review envelope(s) bound to the current candidate, but the routing table has no unfilled slot to dispatch"
+    return 0
+  fi
+  # Dispatch exactly the slots that have no review of their own -- never
+  # "every slot numbered above the count", which re-dispatches the wrong slot
+  # the moment a relaunched one lands out of order.
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     slot="$(printf '%s' "$line" | cut -f1)"
@@ -554,7 +652,6 @@ drive_reviewing() {
     case "$slot" in
       ''|*[!0-9]*) continue ;;
     esac
-    [ "$slot" -gt "$have" ] || continue
     if [ "$label" = session-independent ]; then
       # Never let a degraded independence pass silently -- the journal line IS
       # the record (PROTOCOL.md's risk-tiered review policy).
@@ -564,7 +661,7 @@ drive_reviewing() {
     lrc=0
     drive_launch "$id" reviewer review "$eng" || lrc=$?
     [ "$lrc" -eq 0 ] || break
-  done <<< "$routing"
+  done <<< "$unsat"
   return 0
 }
 
@@ -650,6 +747,17 @@ drive_escalate() {
     drive_note "$id: infra_failures cap reached — now blocked"
     return 0
   fi
+  # A reviewer job is the one relaunch this ladder does NOT make. A review
+  # belongs to a SLOT, and a slot's engine is decided by the routing table --
+  # relaunching here would go back through the role's default chain and could
+  # land a second review from the slot that already reported, which is exactly
+  # the same-engine pair drive_review_slots_unsatisfied exists to refuse. The
+  # `reviewing` walk relaunches the slot that is actually missing, with its own
+  # engine, on this same pass.
+  if [ "$role" = reviewer ]; then
+    drive_note "$id: leaving the relaunch to the reviewing walk, which knows which SLOT is missing"
+    return 0
+  fi
   drive_launch "$id" "$role" "$op" "" "$point" || true
   return 0
 }
@@ -665,6 +773,16 @@ if [ -n "$escalations" ]; then
     _eop="$(printf '%s' "$_line" | cut -f3)"
     _epoint="$(printf '%s' "$_line" | cut -f4)"
     [ "$_etask" != plan ] || continue
+    # An OPTIONAL hook point's handler dying is not an infrastructure failure
+    # of the TASK: the binding gates nothing, so it must not spend the task's
+    # infra_failures budget (which auto-blocks at the cap) nor be relaunched
+    # into the same wall pass after pass. Recorded for drive_hook_gate, which
+    # steps over the point instead.
+    if [ "$_erole" = hook ] && [ -n "$_epoint" ] && ! drive_hook_has_required "$repo" "$_epoint"; then
+      optional_hooks_died="$optional_hooks_died$_etask:$_epoint "
+      drive_note "$_etask: the optional $_epoint hook died without an envelope — not escalating (it gates nothing)"
+      continue
+    fi
     drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "job died without an acceptable envelope"
   done <<< "$escalations"
 fi
@@ -695,6 +813,7 @@ fi
 # differ only in what their manifests declare.
 # ---------------------------------------------------------------------------
 merging_ids=""
+walk_n=0; walk_done_n=0
 if [ "$run_status" != planning ]; then
   while IFS= read -r _row; do
     [ -n "$_row" ] || continue
@@ -703,6 +822,8 @@ if [ "$run_status" != planning ]; then
     [ -n "$_id" ] || continue
     _tf="$state/tasks/$_id.md"
     [ -f "$_tf" ] || continue
+    walk_n=$(( walk_n + 1 ))
+    [ "$_tstatus" != done ] || walk_done_n=$(( walk_done_n + 1 ))
     _arch="$(fm_get "$_tf" archetype)"; [ -n "$_arch" ] || _arch=feature
     if ! archetype_validate "$_arch" >/dev/null 2>&1; then
       set_boundary operator-decision "$_id" "archetype '$_arch' failed validation (rejected, fail closed)"
@@ -720,6 +841,38 @@ if [ "$run_status" != planning ]; then
       *) set_boundary operator-decision "$_id" "unrecognized task status '$_tstatus'" ;;
     esac
   done < <("$ORCHID_BIN" task list | LC_ALL=C sort)
+fi
+
+# ---------------------------------------------------------------------------
+# COMPLETION (PROTOCOL.md's procedure of that name). A run whose tasks are ALL
+# done has nothing left for the walk above to move, and `done` is the one
+# status that raises no boundary -- so without this, a finished headless run
+# would poll forever: every pass clean, exit 0, run_status never leaving
+# `running`, and nobody woken to notice the run is over.
+#
+# The mechanical half is taken here (step 1: `run advance accepting`, a
+# transition whose entire precondition is the fact just counted). The judgment
+# half is NOT: requirement coverage and the operator's acceptance commands are
+# an orchestrator's evidence-producing work, and `orchid run accept` demands
+# that evidence file, so the pass stops at a named boundary and hands it over.
+#
+# Counted from the statuses the walk READ, i.e. as of the start of this pass:
+# the pass that merges the last task exits 0 on its own progress, and the
+# boundary is raised by the next one. A boundary never lands in the same
+# breath as the work that produced the state it names.
+# ---------------------------------------------------------------------------
+if [ "$walk_n" -gt 0 ] && [ "$walk_done_n" -eq "$walk_n" ]; then
+  if [ "$run_status" = running ]; then
+    accept_rc=0
+    "$ORCHID_BIN" run advance accepting --reason "all tasks done" >/dev/null || accept_rc=$?
+    if [ "$accept_rc" -eq 0 ]; then
+      drive_note "every task is done — run_status running -> accepting"
+    else
+      drive_note "every task is done, but run advance accepting was refused (exit $accept_rc)"
+    fi
+  fi
+  set_boundary run-complete "" \
+    "every task is done — the acceptance checks and 'orchid run accept --evidence' behind PROTOCOL.md's COMPLETION are judgment work no verb decides"
 fi
 
 # ---------------------------------------------------------------------------
@@ -774,6 +927,29 @@ fi
 # boundary show` instead of inspecting a file.
 # ---------------------------------------------------------------------------
 if [ -n "$boundary_kind" ]; then
+  # A boundary no orchestrator procedure resolves is one runners/orchid-pump
+  # deliberately will NOT wake a model for, so the only way it reaches a human
+  # is a notification. Sent exactly once per distinct record: the previous
+  # record is read back through the same verb and compared field by field, so
+  # a condition that persists for a hundred passes raises one blocker, not a
+  # hundred.
+  if ! drive_boundary_wakes_orchestrator "$boundary_kind"; then
+    prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+    prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
+    prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
+    prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
+    if [ "$prev_kind" != "$boundary_kind" ] || [ "$prev_task" != "$boundary_task" ] || \
+       [ "$prev_reason" != "$boundary_reason" ]; then
+      if [ -n "$boundary_task" ]; then
+        "$ORCHID_BIN" notify --task "$boundary_task" \
+          "judgment boundary [$boundary_kind] needs an operator: $boundary_reason" >/dev/null
+      else
+        "$ORCHID_BIN" notify \
+          "judgment boundary [$boundary_kind] needs an operator: $boundary_reason" >/dev/null
+      fi
+      drive_note "notified: [$boundary_kind] is operator-only, so no orchestrator will be woken for it"
+    fi
+  fi
   if [ -n "$boundary_task" ]; then
     "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --task "$boundary_task" \
       --reason "$boundary_reason" >/dev/null

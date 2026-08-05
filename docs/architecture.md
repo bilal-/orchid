@@ -80,9 +80,16 @@ shipped review adapters, which never populate `findings[]` (they ask a
 `verdict` + `scope_complete`. It stops at a named judgment boundary and exits
 16 rather than guessing; `orchid run boundary set|clear|show` owns that
 record, one per pass, preferring a boundary a woken orchestrator's admitted
-verbs can actually resolve over an operator-only one. The pump
+verbs can actually resolve over an operator-only one. A run whose tasks are
+all `done` is a boundary too (`run-complete`): the driver takes COMPLETION's
+mechanical `run advance accepting` and hands the acceptance judgment over,
+so a finished headless run is never left polling. The pump
 runs the driver first and wakes an LLM orchestrator only when the driver
-exits exactly 16 AND the boundary reads back through its verb. When one is
+exits exactly 16, the boundary reads back through its verb, AND that
+boundary's kind is one an orchestrator procedure can move (`planning`, the
+two review kinds, `run-complete`) — an operator-only kind is left to the
+blocker the driver raised, rather than spending a model wakeup per pump cycle
+on a decision no admitted verb can make. When one is
 woken, an adapter that declares `command_surface=brokered` confines it to
 `runners/orchid-orchestrator-command`, a default-deny argument-validating
 broker admitting judgment-only forms — a real command allowlist for that

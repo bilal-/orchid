@@ -148,7 +148,24 @@ The kernel-owned boundary kinds:
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
 | `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository |
+| `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
 | `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem |
+
+**Recording one is not the same question as waking a model for one.** The
+precedence above answers "which of several boundaries goes into the record".
+A second, independent question is asked once — by `runners/orchid-pump`,
+against the recorded kind: can waking an ORCHESTRATOR move this at all?
+`planning` (PLANNING below), `review-evidence`/`review-conflict` (the truth
+table), and `run-complete` (COMPLETION below) are procedures this file hands
+to an orchestrator. `blocked-task`, `hook-failure`, `worktree-conflict` and
+`operator-decision` are not: they recur identically until a HUMAN acts, so
+the pump refuses to spend a wakeup per cycle re-reading them, and the driver
+instead raises one `orchid notify` blocker per distinct record — the surface
+that condition actually needs. The two sets differ deliberately: PLANNING and
+COMPLETION are orchestrator work whose recording verbs (`orchid plan apply`,
+`orchid run accept`) the brokered command surface still refuses, so under a
+`brokered` adapter a woken orchestrator's move on those two is to journal and
+notify rather than to record the result itself.
 
 **The arbitration truth table.** At `arbitrating`, exactly one of three arms
 applies — they are mutually exclusive and evaluated in this order, so an
@@ -592,8 +609,9 @@ elsewhere in the loop. Then `orchid run refresh-lease` once more (so a
 concurrent resumer never mistakes this pass for a stalled one).
 
 **How `orchid drive` renders the five steps above.** The mechanized pass is
-the same procedure; four points are worth stating because it must be
-decidable without a model:
+the same procedure; the points below are worth stating because it must be
+decidable without a model — and because every one of them is a place a
+one-pass driver could otherwise stop progressing in silence:
 
 - **Archetype-driven, never archetype-named.** The walk routes on the task's
   CURRENT status plus its archetype's DECLARED `transitions=`/`outcome=`. A
@@ -614,16 +632,63 @@ decidable without a model:
   branch mismatch, a path another task claims, a branch already checked out
   elsewhere) is REFUSED as a `worktree-conflict` boundary. A duplicate
   worktree is never created to work around any of these.
-- **Hooks are deferred, never skipped.** A hook is a job: it is launched,
-  reconciles on a later pass, and only then can its artifact be read. So the
-  driver dispatches a bound point's entries (the first with no `--engine`,
-  each additional one named explicitly) and DEFERS the step that point
-  guards to the next pass, rather than blocking a pass on an engine. Once
-  envelopes exist, an `optional` entry never gates anything, and a
-  `:required` entry with no `ok` envelope for the current candidate raises a
-  `hook-failure` boundary and takes no transition. `on_verify_fail`'s
-  guidance is attached via `orchid task set <id> hook_guidance` before the
-  rework advance, exactly as above.
+- **A dispatch launches BEFORE it advances.** The queued task's status is the
+  only record that it still needs dispatching, so it is not given up until a
+  job has actually been spawned. `no eligible engine` (exit 14) is the case
+  this exists for: it is a WAIT, the ledger window reopens on its own, and
+  Failover above requires the task to stay in its PRIOR status
+  (`pending`/`rework`) so the identical dispatch simply succeeds on a later
+  pass. Advancing first and discarding the launch's result would strand the
+  task in an active status with no job, no envelope and no boundary — a run
+  that polls forever on work nobody is doing. A job already outstanding for
+  that task and operation (a pass that died between the spawn and the
+  advance) is adopted, never spawned a second time.
+- **Hooks are deferred, never skipped — and never gated past their job.** A
+  hook is a job: it is launched, reconciles on a later pass, and only then
+  can its artifact be read. So the driver dispatches a bound point's entries
+  (the first with no `--engine`, each additional one named explicitly) and
+  DEFERS the step that point guards to the next pass, rather than blocking a
+  pass on an engine. Three rules keep that deferral bounded:
+  - Once envelopes exist, an `optional` entry never gates anything, and a
+    `:required` entry with no `ok` envelope for the current candidate raises
+    a `hook-failure` boundary and takes no transition.
+  - Envelopes are counted IN SCOPE for the task's current `candidate_sha`:
+    one left behind by a candidate that has since moved *within the same
+    attempt* (the `merging`→`testing` rebase edge) is not evidence for the
+    candidate on the task now, so the point is dispatched again for the new
+    one instead of being treated as answered-but-unsatisfiable forever.
+  - An `optional` point whose handler dies leaving NO envelope is noted and
+    stepped over — it gates nothing, so it also never spends the task's
+    `infra_failures` budget nor gets relaunched into the same wall pass after
+    pass.
+  `on_verify_fail`'s guidance is attached via `orchid task set <id>
+  hook_guidance` before the rework advance, exactly as above.
+- **A reviewer relaunch is keyed on the SLOT, never on a count.** `orchid
+  jobs review-plan`'s table is the slot ledger: which slots exist and which
+  engine each was routed to. A filed review is credited to a slot only when
+  its own `.engine` is that slot's engine (an envelope naming no engine is
+  credited last, to whatever slot is still open), and each review is credited
+  exactly once. Counting instead would let a relaunch that landed a SECOND
+  review from slot 1's engine both satisfy the tier's count and stop slot 2
+  from ever being dispatched — handing the truth table two reviews from one
+  engine to approve unanimously, which is precisely the independence the
+  risk-tiered policy exists to enforce. When the count is met but a routed
+  slot still has no review of its own, the pass stops at a `review-evidence`
+  boundary rather than adding a third review to a set the kernel already
+  counts as complete. The one relaunch the escalation ladder below does NOT
+  make is a reviewer's, for the same reason: it would go back through the
+  role's default chain rather than the slot's engine.
+- **A finished run is handed off, not left polling.** When every task is
+  `done`, the driver takes COMPLETION's step 1 itself (`orchid run advance
+  accepting --reason "all tasks done"` — a transition whose whole
+  precondition is that fact) and stops at a `run-complete` boundary for the
+  rest: requirement coverage, the operator's acceptance commands, and the
+  evidence file `orchid run accept` demands are judgment work. Without it a
+  finished headless run would poll forever — every pass clean, exit 0,
+  `run_status` never leaving `running`, nobody woken to notice it is over.
+  The count is taken from the statuses the walk READ, so the pass that
+  finishes the last task exits 0 on its own progress and the boundary is
+  raised by the next one.
 - **One counter for the escalation ladder.** The prose ladder in step 2
   spends its first occurrence on a free relaunch that touches no counter; a
   driver has no per-attempt memory outside `.orchid/`, and a private
@@ -777,7 +842,15 @@ is normal, never an error:
   agree before an orchestrator is woken — the exit code says "policy
   stopped", the record says which task and why, and a boundary the driver
   reported without recording (a state no orchestrator is entitled to resolve
-  autonomously) deliberately fails this second test. With both satisfied, the
+  autonomously) deliberately fails this second test. A third fact is then
+  read off the record: its `kind` must be one an orchestrator procedure can
+  actually move (`planning`, `review-evidence`, `review-conflict`,
+  `run-complete` — see "Recording one is not the same question as waking a
+  model for one" above). An operator-only kind ends the invocation with
+  `pump: judgment boundary [<kind>] is operator-only — not waking an
+  orchestrator`, exit 0: it would recur identically on every pass until a
+  human acted, and the driver has already raised the blocker that reaches
+  one. With all three satisfied, the
   pump probes `resolve_role_available orchestrator` and `exec`s
   `runners/orchid-tick` — the only path that reaches it, since a pass the
   deterministic policy can resolve on its own goes through
@@ -851,7 +924,13 @@ to be running.
 
 Once `orchid status --explain` shows every task `done`:
 
-1. `orchid run advance accepting --reason "all tasks done"`.
+1. `orchid run advance accepting --reason "all tasks done"`. Under `orchid
+   drive` this step is already taken for you: a pass that reads every task as
+   `done` makes exactly this call and then stops at a `run-complete`
+   boundary, which is what wakes an orchestrator for steps 2–3 (the pump
+   never wakes one for a run it believes is still working). Arriving here at
+   `run_status: accepting` with the boundary already recorded is therefore
+   the normal headless path, not an anomaly.
 2. Run acceptance checks: requirement coverage against
    `.orchid/requirements.md` plus whatever end-to-end acceptance command(s)
    the operator configured. This is an orchestrator-executed check, not a

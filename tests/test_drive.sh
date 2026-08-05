@@ -16,6 +16,8 @@ source "$REPO_ROOT/lib/common.sh"
 source "$REPO_ROOT/lib/frontmatter.sh"
 source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/envelope.sh"
+source "$REPO_ROOT/lib/roles.sh"
+source "$REPO_ROOT/lib/resolver.sh"
 source "$REPO_ROOT/lib/review.sh"
 source "$REPO_ROOT/lib/drive.sh"
 
@@ -78,6 +80,20 @@ assert_eq 0 "$(drive_boundary_priority blocked-task)" \
   "a blocked task is operator-only — unblock/retry are verbs the broker refuses"
 assert_eq 0 "$(drive_boundary_priority operator-decision)" "operator decisions rank below arbitrable ones"
 assert_eq 0 "$(drive_boundary_priority planning)" "planning ranks below arbitrable ones"
+
+# --- and the SEPARATE question: can waking an orchestrator move it at all? --
+# Wider than the ranking above on purpose: PLANNING and COMPLETION are
+# orchestrator procedures whose recording verbs the broker still refuses, so
+# they wake a model without being the kind the broker settles in one call.
+for kind in planning review-evidence review-conflict run-complete; do
+  drive_boundary_wakes_orchestrator "$kind" \
+    || fail "a $kind boundary is an orchestrator procedure — waking one can move it"
+done
+for kind in blocked-task hook-failure worktree-conflict operator-decision; do
+  if drive_boundary_wakes_orchestrator "$kind"; then
+    fail "a $kind boundary needs a human — waking a model for it changes nothing"
+  fi
+done
 
 # --- evidence arm ----------------------------------------------------------
 mk_policy_task P01 low high ""
@@ -198,6 +214,91 @@ assert_eq conflict "$(decision_of P25)" "an unrecognized finding severity is tre
 mk_policy_task P26 low nonsense
 mk_review P26 "" approve true '[{"severity":"medium","title":"still blocks"}]'
 assert_eq conflict "$(decision_of P26)" "an unrecognized blocking_severity falls back to medium, never to 'nothing blocks'"
+
+# ===========================================================================
+# Part A2 -- slot attribution. Which SLOT a filed review belongs to is what
+# decides whether the tier's independence requirement is met, and it is
+# decided by the envelope's own `.engine` (cross-checked against the job
+# manifest by `orchid jobs reconcile` before filing, then the only surviving
+# record of who produced it) -- never by counting envelopes.
+# ===========================================================================
+
+# mk_review_eng <id> <suffix> <verdict> <engine-qualified-id> -- an ok,
+# scope-complete, finding-free review for the current candidate that NAMES the
+# engine that produced it. `""` means an adapter that omitted the field.
+mk_review_eng() {
+  local id="$1" suffix="$2" verdict="$3" eng="$4"
+  jq -n --arg jid "j-fixture-$id-$suffix" --arg task "$id" --arg cand "$CAND" \
+        --arg v "$verdict" --arg e "$eng" \
+    '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
+      verdict:$v, scope_complete:true, summary:"policy fixture",
+      candidate_sha:$cand, findings:[]}
+     + (if $e == "" then {} else {engine:$e} end)' \
+    > "$POLICY/.orchid/reviews/$id-a1-reviewer$suffix.json"
+}
+
+# Engine names in a routing row are plugin NAMES; an unresolvable one
+# qualifies to `orchid/<name>` (resolve_engine_qualified_id's documented
+# fallback), which is what these fixtures write into `.engine`.
+TWO_SLOTS="$(printf '1\talpha\tengine-independent\n2\tbeta\tengine-independent\n')"
+
+mk_policy_task P30 medium high
+mk_review_eng P30 "" approve orchid/alpha
+mk_review_eng P30 ".2" approve orchid/alpha
+assert_eq 2 "$(drive_review_slots_unsatisfied "$POLICY" P30 "$TWO_SLOTS" | cut -f1)" \
+  "two reviews from ONE engine leave the slot routed to the OTHER engine unsatisfied"
+assert_eq 2 "$(drive_reviewer_envelope_count "$POLICY" P30)" \
+  "...even though the raw envelope count the kernel gate uses is already met"
+
+mk_policy_task P31 medium high
+mk_review_eng P31 "" approve orchid/alpha
+mk_review_eng P31 ".2" approve orchid/beta
+assert_eq "" "$(drive_review_slots_unsatisfied "$POLICY" P31 "$TWO_SLOTS")" \
+  "one review per routed engine satisfies both slots"
+
+# The DEGRADED routing `review_routing` already labels session-independent:
+# one engine really was asked for both slots, so two of its reviews are
+# exactly what was ordered.
+mk_policy_task P32 medium high
+mk_review_eng P32 "" approve orchid/alpha
+mk_review_eng P32 ".2" approve orchid/alpha
+assert_eq "" "$(drive_review_slots_unsatisfied "$POLICY" P32 \
+  "$(printf '1\talpha\tengine-independent\n2\talpha\tsession-independent\n')")" \
+  "a routing table that asks ONE engine for both slots is satisfied by two of its reviews"
+
+# An adapter that names no engine cannot be attributed, so it is credited
+# last, to whatever slot is still open -- refusing it outright would relaunch
+# that slot forever.
+mk_policy_task P33 medium high
+mk_review_eng P33 "" approve orchid/alpha
+mk_review_eng P33 ".2" approve ""
+assert_eq "" "$(drive_review_slots_unsatisfied "$POLICY" P33 "$TWO_SLOTS")" \
+  "a review that names no engine still covers a slot nothing else claims"
+
+mk_policy_task P34 medium high
+mk_review_eng P34 "" approve orchid/beta
+assert_eq 1 "$(drive_review_slots_unsatisfied "$POLICY" P34 "$TWO_SLOTS" | cut -f1)" \
+  "attribution is by engine, not by slot order: beta's review covers SLOT 2"
+
+# --- hook evidence is scoped to the current candidate, same as review ------
+mk_hook_env() {  # <id> <suffix> <candidate|-> -- a filed hook envelope
+  local id="$1" suffix="$2" cand="$3"
+  jq -n --arg jid "j-fixture-$id$suffix" --arg task "$id" --arg cand "$cand" \
+    '{contract:1, job_id:$jid, task:$task, operation:"hook", status:"ok",
+      engine:"orchid/alpha", summary:"hook fixture"}
+     + (if $cand == "-" then {} else {candidate_sha:$cand} end)' \
+    > "$POLICY/.orchid/reviews/$id-a1-hook-before_arbitration$suffix.json"
+}
+mk_policy_task P40 low high
+mk_hook_env P40 "" "$CAND"
+assert_eq 1 "$(drive_hook_envelope_count "$POLICY" P40 before_arbitration 1 "$CAND")" \
+  "an envelope bound to the current candidate is evidence on hand"
+assert_eq 0 "$(drive_hook_envelope_count "$POLICY" P40 before_arbitration 1 4444444444444444444444444444444444444444)" \
+  "one left behind by a candidate that has since moved is not — the point is dispatched again"
+mk_policy_task P41 low high
+mk_hook_env P41 "" -
+assert_eq 1 "$(drive_hook_envelope_count "$POLICY" P41 before_arbitration 1 "$CAND")" \
+  "an envelope with no candidate_sha cannot be PROVEN superseded, so it still counts (fail closed)"
 
 # ===========================================================================
 # Part B -- end to end, real stub engines, no model anywhere: pending ->
@@ -512,3 +613,205 @@ rc=0; out="$(env -u ORCHID_EPOCH "$DRIVE" 2>&1)" || rc=$?
 epoch_after="$(cat "$REPO/.orchid/runtime/epoch")"
 [ "$epoch_after" -gt "$epoch_before" ] || fail "a pass with no epoch of its own must fence a fresh one ($epoch_before -> $epoch_after)"
 assert_match "fenced epoch $epoch_after" "$out" "the pass says which epoch it fenced"
+
+# ===========================================================================
+# Part F -- a dispatch whose LAUNCH cannot spawn must leave the task
+# dispatchable. `no eligible engine` (exit 14) is a WAIT: the ledger window
+# reopens on its own and the identical dispatch succeeds later with no
+# operator action (PROTOCOL.md's Failover paragraph). A task advanced into an
+# active status by a dispatch that never spawned would instead wait forever on
+# an envelope nobody is producing -- no job for `jobs check` to see, no
+# envelope for the walk to read, no boundary, exit 0, silence.
+# ===========================================================================
+WAITREPO="$WORK/dispatchwait"
+mkdir -p "$WAITREPO"
+cd "$WAITREPO" || exit 1
+git init -q .
+printf 'role.implementer=stubwait\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$WAITREPO" "$ORCHID_BIN" init >/dev/null || fail "orchid init (dispatch-wait fixture)"
+git checkout -q orchid/integration
+
+# The implementer engine starts INELIGIBLE for its role (it declares none of
+# implementer.role's required capabilities), which is exactly what an empty
+# failover chain looks like from `jobs prepare`: exit 14, no manifest minted,
+# nothing spawned.
+mkdir -p "$WORK/eng/stubwait"
+printf 'manifest_version=1\nid=test/stubwait\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubwait/plugin.conf"
+cat > "$WORK/eng/stubwait/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+worktree="$(jq -r .worktree "$req")"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+cd "$worktree" || exit 1
+echo "stub implementation for $task" > stub_feature.txt
+git add stub_feature.txt
+git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "stub: implement $task"
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"stub implemented"}' > "$out"
+EOF
+chmod +x "$WORK/eng/stubwait/run"
+
+WEPOCH="$(ORCHID_REPO="$WAITREPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+worchid() { ORCHID_REPO="$WAITREPO" ORCHID_EPOCH="$WEPOCH" "$ORCHID_BIN" "$@"; }
+worchid requirements import "$WORK/requirements.md" >/dev/null
+worchid task create W010 "dispatch must wait for an engine" >/dev/null
+worchid task set W010 verification_commands "test -f stub_feature.txt" >/dev/null
+worchid plan apply --reason "initial plan" >/dev/null
+
+WDRIVE_RC=0; WDRIVE_OUT=""
+run_wdrive() {
+  WDRIVE_RC=0
+  WDRIVE_OUT="$(ORCHID_REPO="$WAITREPO" ORCHID_EPOCH="$WEPOCH" "$DRIVE" 2>&1)" || WDRIVE_RC=$?
+}
+wstatus_of() { ORCHID_REPO="$WAITREPO" "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
+
+run_wdrive
+assert_eq 0 "$WDRIVE_RC" "no eligible engine is a WAIT state, not a judgment boundary"
+assert_eq pending "$(wstatus_of W010)" \
+  "a dispatch whose launch never spawned leaves the task in its PRIOR status, still dispatchable"
+assert_match "no eligible engine for role 'implementer'" "$WDRIVE_OUT" \
+  "the pass names what it is waiting for"
+assert_match "staying in pending" "$WDRIVE_OUT" \
+  "and says it took no transition, so nothing is waiting on an envelope nobody will produce"
+[ -z "$(list_dir_files "$WAITREPO/.orchid/runtime/jobs")" ] \
+  || fail "an exit-14 dispatch must leave no job manifest behind"
+
+# The window reopens (here: the engine becomes role-eligible). The IDENTICAL
+# dispatch, with no operator action of any kind, now succeeds.
+printf 'manifest_version=1\nid=test/stubwait\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubwait/plugin.conf"
+run_wdrive
+assert_eq implementing "$(wstatus_of W010)" \
+  "the next pass dispatches the very same task — the wait cost nothing but a pass (rc=$WDRIVE_RC, out: $WDRIVE_OUT)"
+[ -n "$(list_dir_files "$WAITREPO/.orchid/runtime/jobs")" ] \
+  || fail "the advance into implementing must be backed by a job that really spawned"
+
+# ===========================================================================
+# Part G -- a run whose tasks are ALL done hands off instead of polling.
+# `done` is the one status the walk decides nothing about, so without this a
+# finished headless run would poll forever: every pass clean, exit 0,
+# run_status never leaving `running`, and nobody woken to notice the run is
+# over. COMPLETION's mechanical first step is taken here; its judgment half
+# (acceptance checks, then `orchid run accept --evidence`) is the boundary.
+# ===========================================================================
+FINISHED="$WORK/finished"
+mkdir -p "$FINISHED"
+cd "$FINISHED" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$FINISHED" "$ORCHID_BIN" init >/dev/null || fail "orchid init (finished-run fixture)"
+git checkout -q orchid/integration
+FEPOCH="$(ORCHID_REPO="$FINISHED" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+forchid() { ORCHID_REPO="$FINISHED" ORCHID_EPOCH="$FEPOCH" "$ORCHID_BIN" "$@"; }
+forchid requirements import "$WORK/requirements.md" >/dev/null
+forchid task create F010 "the only task, and it is finished" >/dev/null
+forchid plan apply --reason "initial plan" >/dev/null
+fm_set "$FINISHED/.orchid/tasks/F010.md" status done
+
+FDRIVE_RC=0
+fboundary() { ORCHID_REPO="$FINISHED" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+frun_status() { fm_get "$FINISHED/.orchid/roadmap.md" run_status; }
+
+FDRIVE_OUT="$(ORCHID_REPO="$FINISHED" ORCHID_EPOCH="$FEPOCH" "$DRIVE" 2>&1)" || FDRIVE_RC=$?
+assert_eq 16 "$FDRIVE_RC" "a run with nothing left to do stops at a judgment boundary (out: $FDRIVE_OUT)"
+assert_eq run-complete "$(fboundary | jq -r .kind)" "the boundary names the run's completion, not a generic operator decision"
+assert_eq "" "$(fboundary | jq -r .task)" "it is a RUN-level boundary: no task is named"
+assert_eq accepting "$(frun_status)" \
+  "COMPLETION's mechanical first step (run advance accepting) is taken deterministically"
+
+# Stable on repetition: the run_status advance happens once, the hand-off
+# keeps being offered until an orchestrator actually accepts the run.
+FDRIVE_RC=0
+FDRIVE_OUT="$(ORCHID_REPO="$FINISHED" ORCHID_EPOCH="$FEPOCH" "$DRIVE" 2>&1)" || FDRIVE_RC=$?
+assert_eq 16 "$FDRIVE_RC" "a repeated pass over a finished run reports the same boundary"
+assert_eq accepting "$(frun_status)" "and does not try to advance run_status a second time"
+assert_eq run-complete "$(fboundary | jq -r .kind)" "the recorded boundary is unchanged"
+
+# ===========================================================================
+# Part H -- reviewer slots are keyed on IDENTITY, never on a count. A
+# relaunch that lands a second review from the slot that already reported
+# must never satisfy an engine-independent requirement: counting would both
+# stop the missing slot from ever being dispatched AND hand the truth table
+# two reviews from one engine to approve unanimously.
+# ===========================================================================
+SLOTS="$WORK/slots"
+mkdir -p "$SLOTS"
+cd "$SLOTS" || exit 1
+git init -q .
+mkdir -p "$WORK/eng/revalpha" "$WORK/eng/revbeta"
+for e in revalpha revbeta; do
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$e" > "$WORK/eng/$e/plugin.conf"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/eng/$e/run"
+  chmod +x "$WORK/eng/$e/run"
+done
+printf 'role.implementer=stubimpl\nrole.reviewer=revalpha\nreview.medium=revalpha,revbeta\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$SLOTS" "$ORCHID_BIN" init >/dev/null || fail "orchid init (slot fixture)"
+git checkout -q orchid/integration
+LEPOCH="$(ORCHID_REPO="$SLOTS" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+lorchid() { ORCHID_REPO="$SLOTS" ORCHID_EPOCH="$LEPOCH" "$ORCHID_BIN" "$@"; }
+lorchid requirements import "$WORK/requirements.md" >/dev/null
+lorchid task create L010 "two slots, two engines" >/dev/null
+lorchid plan apply --reason "initial plan" >/dev/null
+lorchid task set L010 risk_tier medium --reason "fixture: two reviewer slots" >/dev/null
+
+LCAND=7777777777777777777777777777777777777777
+fm_set "$SLOTS/.orchid/tasks/L010.md" status reviewing
+fm_set "$SLOTS/.orchid/tasks/L010.md" candidate_sha "$LCAND"
+
+# Sanity: the routing table really does ask for two DIFFERENT engines.
+routing="$(ORCHID_REPO="$SLOTS" "$ORCHID_BIN" jobs review-plan L010)"
+assert_eq revalpha "$(printf '%s\n' "$routing" | sed -n 1p | cut -f2)" "slot 1 routes to the first eligible reviewer engine"
+assert_eq revbeta "$(printf '%s\n' "$routing" | sed -n 2p | cut -f2)" "slot 2 routes to a DIFFERENT engine (engine independence)"
+
+# Both reviews come from slot 1's engine -- the shape a relaunch through the
+# role's default chain produces. Unanimous, scope-complete, finding-free: the
+# only thing wrong with them is that they are the same reviewer twice.
+mk_slot_review() {  # <suffix> <engine> <verdict>
+  jq -n --arg jid "j-fixture-L010-$1" --arg cand "$LCAND" --arg e "$2" --arg v "$3" \
+    '{contract:1, job_id:$jid, task:"L010", operation:"review", status:"ok",
+      verdict:$v, scope_complete:true, summary:"slot fixture",
+      candidate_sha:$cand, engine:$e, findings:[]}' \
+    > "$SLOTS/.orchid/reviews/L010-a1-reviewer$1.json"
+}
+mkdir -p "$SLOTS/.orchid/reviews"
+mk_slot_review "" test/revalpha approve
+mk_slot_review ".2" test/revalpha approve
+
+LDRIVE_RC=0
+LDRIVE_OUT="$(ORCHID_REPO="$SLOTS" ORCHID_EPOCH="$LEPOCH" "$DRIVE" 2>&1)" || LDRIVE_RC=$?
+lboundary() { ORCHID_REPO="$SLOTS" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+lstatus() { ORCHID_REPO="$SLOTS" "$ORCHID_BIN" task show L010 | grep '^status: ' | cut -d' ' -f2; }
+
+assert_eq 16 "$LDRIVE_RC" "two reviews from one engine stop the pass at a boundary (out: $LDRIVE_OUT)"
+assert_eq reviewing "$(lstatus)" \
+  "the task does NOT advance: an engine-independent requirement is not met by the same reviewer twice"
+assert_eq review-evidence "$(lboundary | jq -r .kind)" "the boundary names the evidence problem"
+assert_match "independence is unproven" "$(lboundary | jq -r .reason)" \
+  "the reason says which requirement the evidence fails, in structured terms"
+if grep -q 'arbitrate(approve)' "$SLOTS/.orchid/journal.md"; then
+  fail "two same-engine reviews must never reach a deterministic approval"
+fi
+
+# One review per routed engine, and the same evidence set advances. (Both are
+# request-changes here so the walk stops at `arbitrating` instead of running
+# on into a merge, which this fixture has no real candidate for.)
+mk_slot_review "" test/revalpha request-changes
+mk_slot_review ".2" test/revbeta request-changes
+LDRIVE_RC=0
+LDRIVE_OUT="$(ORCHID_REPO="$SLOTS" ORCHID_EPOCH="$LEPOCH" "$DRIVE" 2>&1)" || LDRIVE_RC=$?
+assert_eq arbitrating "$(lstatus)" \
+  "with each routed slot covered by its OWN engine, the gate passes (rc=$LDRIVE_RC, out: $LDRIVE_OUT)"
+assert_eq review-conflict "$(lboundary | jq -r .kind)" \
+  "and the pass then stops on the verdicts themselves, not on the evidence set"

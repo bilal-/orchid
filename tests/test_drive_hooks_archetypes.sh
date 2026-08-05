@@ -66,6 +66,15 @@ jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
 EOF
 chmod +x "$WORK/eng/hookbad/run"
 
+# `hookmute` runs and exits cleanly WITHOUT writing an envelope at all -- the
+# handler that dies (or is killed, or was misconfigured) leaving nothing
+# behind. Distinct from hookbad, which reports a failure in a valid envelope.
+mkdir -p "$WORK/eng/hookmute"
+printf 'manifest_version=1\nid=test/hookmute\nversion=0.1.0\nkind=hook\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/hookmute/plugin.conf"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/eng/hookmute/run"
+chmod +x "$WORK/eng/hookmute/run"
+
 # --- a stub reviewer, for the archetype walks ------------------------------
 mkdir -p "$WORK/eng/stubreview" "$WORK/eng/stubimpl"
 printf 'manifest_version=1\nid=test/stubreview\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
@@ -202,6 +211,72 @@ printf 'hook.before_arbitration=hookbad\n' > orchid.config
 to_arbitrating H3
 drive_settle merging H3 || fail "a failing OPTIONAL hook must never block (last rc=$DRIVE_RC, out: $DRIVE_OUT)"
 assert_eq merging "$(status_of H3)" "an optional hook's failure is read and moved past"
+
+# ===========================================================================
+# H3b -- ...and neither does an optional hook that files NO envelope at all.
+# H3 above covers the handler that reports a failure; this is the handler that
+# dies leaving nothing behind, which is the shape that could loop forever: no
+# envelope means "nothing has run yet", so a driver that cannot tell required
+# from optional here re-dispatches the point on every pass and walks the
+# task's infra_failures counter to its auto-block cap while the step it guards
+# never happens.
+# ===========================================================================
+use_repo h3b
+printf 'hook.before_arbitration=hookmute\n' > orchid.config
+to_arbitrating H3B
+drive_settle merging H3B \
+  || fail "an OPTIONAL hook that files no envelope must never gate the step it guards (last rc=$DRIVE_RC, out: $DRIVE_OUT)"
+assert_eq merging "$(status_of H3B)" "the guarded step is taken once the hook's job has resolved, envelope or not"
+assert_eq 0 "$(field_of H3B infra_failures)" \
+  "a binding that gates nothing must not spend the task's infra_failures budget either"
+[ ! -e .orchid/reviews/H3B-a1-hook-before_arbitration.json ] \
+  || fail "fixture sanity: hookmute must really file no envelope"
+
+# ===========================================================================
+# H5 -- a `:required` hook must stay RE-RUNNABLE when candidate_sha moves
+# WITHIN one attempt (the merging->testing rebase edge does exactly that).
+# Satisfaction is bound to the current candidate, so evidence from the
+# previous one is not evidence here; counting it as "the point already
+# answered" would leave the binding permanently unsatisfiable and the guarded
+# step gated forever, with no verb able to release it.
+# ===========================================================================
+use_repo h5
+printf 'hook.before_arbitration=hookok:required\n' > orchid.config
+
+# plant_review <id> <candidate> <verdict> <suffix>
+plant_review() {
+  jq -n --arg jid "j-fixture-$1-$4" --arg task "$1" --arg cand "$2" --arg v "$3" \
+    '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
+      verdict:$v, scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
+    > ".orchid/reviews/$1-a1-reviewer$4.json"
+}
+
+to_arbitrating H5
+# Contested, so the pass stops in `arbitrating` instead of running on: what
+# this phase proves is that the required hook was SATISFIED for this
+# candidate (an unsatisfied one would raise hook-failure instead).
+plant_review H5 "$edge_sha" request-changes ""
+i=0
+while [ "$i" -lt 25 ]; do
+  run_drive
+  [ "$DRIVE_RC" -eq 16 ] && [ "$("$ORCHID_BIN" run boundary show 2>/dev/null | jq -r .kind)" = review-conflict ] && break
+  i=$((i + 1)); sleep 0.3
+done
+assert_eq review-conflict "$("$ORCHID_BIN" run boundary show 2>/dev/null | jq -r .kind)" \
+  "the required hook is satisfied for the first candidate, so the pass gets as far as the verdicts (out: $DRIVE_OUT)"
+assert_eq arbitrating "$(status_of H5)" "and takes no transition on a contested review"
+
+# The candidate moves under the same attempt, and the reviews are re-planted
+# against it. The hook's earlier envelope belongs to the old candidate.
+new_cand="feedfacefeedfacefeedfacefeedface00000000"
+fm_set .orchid/tasks/H5.md candidate_sha "$new_cand"
+plant_review H5 "$new_cand" approve ".2"
+
+drive_settle merging H5 \
+  || fail "a required hook must be dispatched again for the NEW candidate, not gated forever on the old one's envelope (last rc=$DRIVE_RC, out: $DRIVE_OUT)"
+assert_eq merging "$(status_of H5)" "once the hook has an ok envelope for the current candidate, the approval proceeds"
+ls .orchid/reviews/H5-a1-hook-before_arbitration.2.json >/dev/null 2>&1 \
+  || fail "the point must have been dispatched a SECOND time, filing a second hook envelope"
 
 # ===========================================================================
 # H4 -- on_verify_fail: the hook's guidance is attached to the task through
