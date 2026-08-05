@@ -750,8 +750,11 @@ is normal, never an error:
   stopped", the record says which task and why, and a boundary the driver
   reported without recording (a state no orchestrator is entitled to resolve
   autonomously) deliberately fails this second test. With both satisfied, the
-  pump probes `resolve_role_available orchestrator` and `exec`s the tick,
-  which resolves that role again (exit 14 propagates verbatim, for the next
+  pump probes `resolve_role_available orchestrator` and `exec`s
+  `runners/orchid-tick` — the only path that reaches it, since a pass the
+  deterministic policy can resolve on its own goes through
+  `runners/orchid-drive` above and never wakes a model — which resolves that
+  role again (exit 14 propagates verbatim, for the next
   pump pass to retry), prints the resolved engine's `command_surface` label
   (`brokered` or `soft`, from its manifest), and spawns it SYNCHRONOUSLY with
   an `orchestrate` request. The adapter reports which actions it took
