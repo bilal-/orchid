@@ -340,3 +340,40 @@ assert_match "command_surface=brokered" "$guardrails_one_line" \
   "README guardrails must name the brokered orchestrator command surface"
 assert_match "still not OS containment" "$guardrails_one_line" \
   "README guardrails must state the limit of the brokered surface"
+# Track 1 honesty, the other direction: `brokered` restricts COMMANDS. The
+# adapter runs under acceptEdits, which leaves the vendor's file-write tools
+# open over every reachable path -- `.orchid/` and, in a dogfood layout, the
+# broker script itself. Describing a prompt-level constraint as structural
+# enforcement is exactly what this section exists to catch.
+assert_match "COMMANDS only" "$guardrails_one_line" \
+  "README guardrails must scope the brokered allowlist to commands"
+assert_match "acceptEdits" "$guardrails_one_line" \
+  "README guardrails must name the permission mode that leaves file writes open"
+assert_match "prompt policy" "$guardrails_one_line" \
+  "README guardrails must label 'never hand-edit .orchid/' as prompt policy, not enforcement"
+
+# The same honesty, at the source of truth for the adapter and for the label.
+claude_doc_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/engines/claude.md" | tr -s '[:space:]' ' ')"
+assert_match "does not cover: file writes" "$claude_doc_one_line" \
+  "docs/engines/claude.md must state what the brokered surface does NOT cover"
+assert_match "acceptEdits.*leaves the vendor's own file-write tools auto-approved" \
+  "$claude_doc_one_line" \
+  "docs/engines/claude.md must say precisely why file writes stay open"
+
+plugins_spec_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/plugins.md" | tr -s '[:space:]' ' ')"
+assert_match "says nothing about FILE WRITES" "$plugins_spec_one_line" \
+  "the command_surface spec must bound its own claim to command execution"
+
+# Lesson L006: the driver's findings[]-severity gate is inert for a reviewer
+# whose adapter never populates findings[] -- which the shipped `review`
+# adapters never do. Wherever the deterministic approval path is documented,
+# that has to be said, or the gate reads as a protection nobody is getting.
+protocol_one_line="$(tr '\n' ' ' < "$REPO_ROOT/PROTOCOL.md" | tr -s '[:space:]' ' ')"
+assert_match "the \`blocking_severity\` gate is \*\*inert\*\*" "$protocol_one_line" \
+  "PROTOCOL.md's approval arm must say the severity gate is inert for verdict-only review adapters"
+for adapter in claude codex; do
+  grep -q "findings" "$REPO_ROOT/plugins/engines/$adapter/run" \
+    || fail "plugins/engines/$adapter/run: findings[] handling vanished — re-check the L006 claim in the docs"
+  grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/$adapter/run" \
+    || fail "plugins/engines/$adapter/run no longer scrapes FINDING: lines for critique only — PROTOCOL.md's L006 note is now wrong"
+done

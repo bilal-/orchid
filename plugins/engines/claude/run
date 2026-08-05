@@ -99,6 +99,16 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # machine-local unattended-trust gate is what makes an operator acknowledge
 # that residual risk before this branch can be reached at all. See
 # tests/probes/probe-claude-tick.sh for the real round-trip.
+#
+# And it is a restriction on COMMANDS ONLY -- Track 1 honesty, so nobody
+# reads more into the label than it earns. `--allowedTools` scopes the Bash
+# tool; `acceptEdits` leaves the vendor's own file-write tools auto-approved,
+# so this model can create/edit files anywhere the process can reach:
+# `.orchid/` included, and -- when ORCHID_ROOT sits inside the driven
+# repository, as it does when Orchid drives itself -- the broker script
+# below included. The "Never hand-edit anything under .orchid/" and "never
+# contact any remote" lines in the instructions are PROMPT POLICY, not
+# enforcement, and are written here as such.
 if [ "$operation" = orchestrate ]; then
   broker="$ORCHID_ROOT/runners/orchid-orchestrator-command"
   protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"

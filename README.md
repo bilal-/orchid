@@ -423,7 +423,11 @@ tick deterministically with no model at all, and an adapter declaring
 `command_surface=brokered` confines the model it does wake to a single
 argument-validating broker admitting judgment-only forms — a real
 vendor-enforced command allowlist for that one seat, and still not OS
-containment.
+containment. That allowlist covers COMMANDS only: the adapter's `acceptEdits`
+permission mode leaves the vendor's file-write tools open over every path the
+process can reach, `.orchid/` and (when `ORCHID_ROOT` sits inside the driven
+repo) the broker script included, so "never hand-edit `.orchid/`" remains
+prompt policy.
 
 **Operator verbs** (no hand-editing `.orchid/` ever needed):
 `orchid task unblock/retry <id> --reason "..."`, `orchid answer <qid>

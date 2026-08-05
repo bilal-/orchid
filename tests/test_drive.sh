@@ -69,6 +69,16 @@ assert_eq 2 "$(drive_threshold_rank high)" "a high threshold ranks 2"
 assert_eq 1 "$(drive_threshold_rank nonsense)" \
   "an unrecognized THRESHOLD falls back to medium — never to 'nothing blocks'"
 
+# --- boundary priority: can an admitted verb actually resolve this kind? ---
+assert_eq 1 "$(drive_boundary_priority review-conflict)" \
+  "a review conflict is resolvable by the one verb the broker admits (task arbitrate)"
+assert_eq 1 "$(drive_boundary_priority review-evidence)" \
+  "a review-evidence boundary is likewise arbitrable"
+assert_eq 0 "$(drive_boundary_priority blocked-task)" \
+  "a blocked task is operator-only — unblock/retry are verbs the broker refuses"
+assert_eq 0 "$(drive_boundary_priority operator-decision)" "operator decisions rank below arbitrable ones"
+assert_eq 0 "$(drive_boundary_priority planning)" "planning ranks below arbitrable ones"
+
 # --- evidence arm ----------------------------------------------------------
 mk_policy_task P01 low high ""
 assert_eq evidence "$(decision_of P01)" "no candidate_sha at all is an evidence boundary"
@@ -88,16 +98,55 @@ mk_review P04 "" approve true '[]' "$CAND" failed
 assert_eq evidence "$(decision_of P04)" "a non-ok reviewer envelope is an evidence boundary"
 assert_match "status failed, not ok" "$(detail_of P04)" "the detail names the offending status"
 
+# Scoping: an envelope bound to another candidate is SUPERSEDED, not evidence
+# at all. It is ignored (exactly as the kernel's own reviewing->arbitrating
+# gate ignores it), so what remains is an EMPTY evidence set -- incomplete,
+# not "stale". Boundarying it instead would pin the task in `arbitrating`
+# with no verb able to release it.
 mk_policy_task P05 low high
 mk_review P05 "" approve true '[]' 2222222222222222222222222222222222222222
-assert_eq evidence "$(decision_of P05)" "a review bound to a different candidate is STALE, an evidence boundary"
-assert_match "stale" "$(detail_of P05)" "the detail says the evidence is stale"
+assert_eq evidence "$(decision_of P05)" "a review bound to a different candidate leaves NO evidence for the current one"
+assert_match "incomplete review evidence: 0 of 1" "$(detail_of P05)" \
+  "the superseded envelope is not counted, and the detail says the set is incomplete"
+assert_match "bound to candidate $CAND" "$(detail_of P05)" \
+  "the detail names the candidate the evidence has to be bound to"
 
 mk_policy_task P06 medium high
 mk_review P06 "" approve true '[]'
 assert_eq evidence "$(decision_of P06)" "one review where the tier requires two is INCOMPLETE, an evidence boundary"
 assert_match "incomplete review evidence: 1 of 2 required for risk_tier medium" "$(detail_of P06)" \
   "the detail names the shortfall and the tier that set the bar"
+
+# --- evidence-set SCOPING, both shapes ------------------------------------
+# A reviewer slot relaunched after a rebase (or the merging->testing rebase
+# edge moving candidate_sha) leaves a sibling envelope behind under the same
+# attempt. The set is scoped to the current candidate FIRST, so the sibling
+# is ignored and the valid current approval still decides. Anything else
+# would pin the task in `arbitrating` permanently.
+mk_policy_task P07 low high
+mk_review P07 "" approve true '[]' 3333333333333333333333333333333333333333
+mk_review P07 ".2" approve true '[]'
+assert_eq approve "$(decision_of P07)" \
+  "a SUPERSEDED sibling (different candidate_sha, same attempt) is ignored when the current evidence is complete"
+assert_match "unanimous scope-complete approval from 1 review" "$(detail_of P07)" \
+  "only the envelopes bound to the current candidate are counted toward the approval"
+
+# ...and scoping does NOT weaken fail-closed: a non-ok envelope bound to the
+# CURRENT candidate is still a boundary, even beside a valid approval.
+mk_policy_task P08 low high
+mk_review P08 "" approve true '[]'
+mk_review P08 ".2" approve true '[]' "$CAND" failed
+assert_eq evidence "$(decision_of P08)" \
+  "a non-ok envelope for the CURRENT candidate still fails closed to an evidence boundary"
+assert_match "status failed, not ok" "$(detail_of P08)" "the detail names the offending status"
+
+# A malformed envelope cannot be proven superseded, so it fails closed too.
+mk_policy_task P09 low high
+mk_review P09 "" approve true '[]'
+printf '{"contract":1,"status":"ok"\n' > "$POLICY/.orchid/reviews/P09-a1-reviewer.2.json"
+assert_eq evidence "$(decision_of P09)" \
+  "an envelope with no readable candidate_sha cannot be scoped, so it fails closed"
+assert_match "malformed" "$(detail_of P09)" "the detail names it malformed rather than silently dropping it"
 
 # --- approval arm ----------------------------------------------------------
 mk_policy_task P10 low high
@@ -339,6 +388,92 @@ printf 'approve\n' > "$WORK/ctl/verdict"
 run_drive
 rc=0; "$ORCHID_BIN" run boundary show >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "once the judgment is recorded, the next pass clears the boundary"
+
+# ===========================================================================
+# Part C2 -- a blocked task must not STARVE another task's arbitrable
+# boundary. `blocked` raises the same boundary on EVERY pass until a human
+# runs `task unblock`/`task retry` — verbs the broker refuses — so if the
+# first boundary in task-id order simply won, a low-numbered blocked task
+# would mask every later task's review boundary indefinitely, spending one
+# LLM wakeup per pump cycle on a decision the woken model cannot make.
+#
+# Its own repository, and no engine is ever launched: both fixture tasks are
+# parked in states the walk decides on frontmatter and envelopes alone.
+# ===========================================================================
+STARVE="$WORK/starve"
+mkdir -p "$STARVE"
+cd "$STARVE" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$STARVE" "$ORCHID_BIN" init >/dev/null || fail "orchid init (starvation fixture)"
+git checkout -q orchid/integration
+
+SEPOCH="$(ORCHID_REPO="$STARVE" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+sorchid() { ORCHID_REPO="$STARVE" ORCHID_EPOCH="$SEPOCH" "$ORCHID_BIN" "$@"; }
+
+cat > "$WORK/requirements-starve.md" <<'EOF'
+# Requirements
+- REQ-1: a parked task never hides a decidable one.
+EOF
+sorchid requirements import "$WORK/requirements-starve.md" >/dev/null
+sorchid task create S010 "parked by an operator" >/dev/null
+sorchid task create S020 "contested, and later in id order" >/dev/null
+sorchid plan apply --reason "initial plan" >/dev/null
+sorchid task advance S010 blocked --reason "fixture: an operator must resolve this" >/dev/null
+sorchid task advance S020 blocked --reason "fixture: parked for now" >/dev/null
+
+SDRIVE_RC=0
+SDRIVE_OUT=""
+run_sdrive() {
+  SDRIVE_RC=0
+  SDRIVE_OUT="$(ORCHID_REPO="$STARVE" ORCHID_EPOCH="$SEPOCH" "$DRIVE" 2>&1)" || SDRIVE_RC=$?
+}
+sboundary() { ORCHID_REPO="$STARVE" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+
+# Pass 1 -- nothing arbitrable in play. A blocked task is STILL a recorded
+# boundary (PROTOCOL requires it: that record is how an operator learns the
+# run is parked); among equals the first in task-id order wins.
+run_sdrive
+assert_eq 16 "$SDRIVE_RC" "a pass with only blocked tasks still stops at a judgment boundary"
+assert_eq blocked-task "$(sboundary | jq -r .kind)" \
+  "with nothing arbitrable in play, the blocked task IS the recorded boundary — this is precedence, not suppression"
+assert_eq S010 "$(sboundary | jq -r .task)" "and among equal-priority boundaries the lowest task id wins"
+
+# Pass 2 -- S020 now sits at `arbitrating` over a request-changes review: an
+# arbitrable boundary, on a HIGHER task id than the blocked one. The reviewer
+# envelope and the frontmatter are written directly, so the pass is decided
+# purely by structured fields with no engine in the loop.
+SCAND=5555555555555555555555555555555555555555
+fm_set "$STARVE/.orchid/tasks/S020.md" status arbitrating
+fm_set "$STARVE/.orchid/tasks/S020.md" candidate_sha "$SCAND"
+mkdir -p "$STARVE/.orchid/reviews"
+jq -n --arg cand "$SCAND" \
+  '{contract:1, job_id:"j-fixture-S020", task:"S020", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:"fixture review",
+    candidate_sha:$cand, findings:[]}' > "$STARVE/.orchid/reviews/S020-a1-reviewer.json"
+
+run_sdrive
+assert_eq 16 "$SDRIVE_RC" "the pass still stops at a boundary"
+assert_eq review-conflict "$(sboundary | jq -r .kind)" \
+  "the RECORDED boundary is the one an admitted verb can resolve, not the blocked task ahead of it in id order"
+assert_eq S020 "$(sboundary | jq -r .task)" \
+  "a blocked task never masks a later task's arbitrable boundary"
+assert_match "boundary \[blocked-task\] S010" "$SDRIVE_OUT" \
+  "the blocked task is still NOTED on the pass — deprioritized, never hidden"
+assert_eq blocked "$(ORCHID_REPO="$STARVE" "$ORCHID_BIN" task show S010 | grep '^status: ' | cut -d' ' -f2)" \
+  "the blocked task is untouched: ranking a boundary is not resolving it"
+assert_eq arbitrating "$(ORCHID_REPO="$STARVE" "$ORCHID_BIN" task show S020 | grep '^status: ' | cut -d' ' -f2)" \
+  "and the contested task still takes NO transition"
+
+# Repeating the pass is stable: the same arbitrable boundary wins again.
+run_sdrive
+assert_eq review-conflict "$(sboundary | jq -r .kind)" "a repeated pass ranks the same way"
+assert_eq S020 "$(sboundary | jq -r .task)" "and names the same task"
+
+cd "$REPO" || exit 1
+export ORCHID_REPO="$REPO"
 
 # ===========================================================================
 # Part D -- preflight. `drive` must be safe to point at anything.

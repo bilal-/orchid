@@ -165,7 +165,12 @@ execute?
   `orchid task arbitrate`, `journal add`, `lessons add`, `notify`, `run
   boundary clear`) and refuses everything else with exit 17. This is
   vendor-enforced on WHICH command runs; it is not OS containment, and the
-  broker itself is unsandboxed.
+  broker itself is unsandboxed. It says nothing about FILE WRITES: the
+  shipped brokered adapter runs under `--permission-mode acceptEdits`, whose
+  file-write tools stay open over every path the process can reach —
+  `.orchid/` and, in a layout where `ORCHID_ROOT` sits inside the driven
+  repository, the broker script itself. The prompt's "never hand-edit
+  `.orchid/`" is policy, not enforcement.
 - `soft` — no. The vendor CLI offers no restriction Orchid can rely on, so
   the orchestrator's reach is bounded only by launcher environment hygiene
   and by the operator's machine-local unattended acknowledgement.

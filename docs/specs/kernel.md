@@ -694,7 +694,11 @@ vendor CLI cannot express one. Each `kind=engine` manifest declares
   task arbitrate`, `journal add`, `lessons add`, `notify`, `run boundary
   clear`) and refuses everything else with exit 17. Vendor-enforced on WHICH
   command runs; still not OS containment, and the broker itself is
-  unsandboxed.
+  unsandboxed. Commands only: the shipped brokered adapter's `acceptEdits`
+  permission mode leaves the vendor's file-write tools open over every
+  reachable path, `.orchid/` and (where `ORCHID_ROOT` is inside the driven
+  repo) the broker script included — "never hand-edit `.orchid/`" is prompt
+  policy, not enforcement.
 - `soft` — no enforceable restriction; the orchestrator's reach is bounded
   only by launcher environment hygiene and by the operator's machine-local
   unattended acknowledgement. An absent label reads as `soft`: this field may
@@ -715,6 +719,20 @@ boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `operator-decision`. `orchid task arbitrate` is the sole explicit
 judgment-result verb; see PROTOCOL.md's "Judgment boundaries" section for the
 non-overlapping arbitration truth table.
+
+One boundary is recorded per pass, chosen by whether a woken orchestrator can
+resolve it with the verbs the broker admits (`review-evidence` and
+`review-conflict`, via `orchid task arbitrate`) ahead of the operator-only
+kinds, then by task-id order — so a `blocked` task, whose boundary recurs
+every pass until a human runs `task unblock`/`task retry`, cannot mask
+another task's arbitrable one.
+
+The driver's deterministic-approval arm gates on `findings[]` severity
+against the task's `blocking_severity`, and that gate is only as live as the
+reviewer adapter feeding it: the shipped `review` adapters ask for a
+`VERDICT:` line only and always write `findings: []` (`FINDING:` lines belong
+to the `critique` prompt), so with them approval turns on `verdict` and
+`scope_complete` alone.
 
 Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation

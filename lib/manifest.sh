@@ -14,7 +14,9 @@
 #   brokered -- this adapter runs its orchestrator against the
 #               argument-validating broker (runners/orchid-orchestrator-
 #               command) and nothing else, because its vendor CLI supports an
-#               enforceable per-command allowlist.
+#               enforceable per-command allowlist. COMMANDS only: it makes no
+#               claim about file writes, which the shipped brokered adapter
+#               leaves open (acceptEdits) over every reachable path.
 #   soft     -- this adapter's vendor CLI offers no enforceable command
 #               restriction Orchid can rely on, so its orchestrator's reach is
 #               bounded only by the process environment and by the operator's

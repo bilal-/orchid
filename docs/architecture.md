@@ -72,16 +72,27 @@ shell, not a model: `orchid drive` (`runners/orchid-drive`) executes THE
 TICK's mechanical steps — lease, reconcile/check/gc, dispatch, verify, review
 routing, unambiguous approval, one merge, status — deciding only on
 structured fields and mutating durable state only through named verbs
-(INV-13). It stops at a named judgment boundary and exits 16 rather than
-guessing; `orchid run boundary set|clear|show` owns that record. The pump
+(INV-13). "Unambiguous approval" means unanimous `approve` verdicts, every
+review `scope_complete`, and no finding at or above the task's
+`blocking_severity` — with the caveat that the severity half is inert for the
+shipped review adapters, which never populate `findings[]` (they ask a
+`review` reply for a `VERDICT:` line only), so there approval rests on
+`verdict` + `scope_complete`. It stops at a named judgment boundary and exits
+16 rather than guessing; `orchid run boundary set|clear|show` owns that
+record, one per pass, preferring a boundary a woken orchestrator's admitted
+verbs can actually resolve over an operator-only one. The pump
 runs the driver first and wakes an LLM orchestrator only when the driver
 exits exactly 16 AND the boundary reads back through its verb. When one is
 woken, an adapter that declares `command_surface=brokered` confines it to
 `runners/orchid-orchestrator-command`, a default-deny argument-validating
 broker admitting judgment-only forms — a real command allowlist for that
-adapter, though still not a filesystem jail or network namespace. Adapters
-that cannot enforce one declare `command_surface=soft` and say so on every
-tick.
+adapter, though still not a filesystem jail or network namespace. It restricts
+COMMANDS only: the adapter's `acceptEdits` permission mode leaves the vendor's
+file-write tools open over anything the process can reach, `.orchid/` and (in
+a dogfood layout, where `ORCHID_ROOT` sits inside the driven repo) the broker
+script included, so "never hand-edit `.orchid/`" stays prompt policy. Adapters
+that cannot enforce a command allowlist declare `command_surface=soft` and say
+so on every tick.
 
 ## 2. The task lifecycle
 

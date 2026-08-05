@@ -59,6 +59,18 @@ current directory): refresh the lease, reconcile -> check -> gc, walk every
 task through whatever edge its archetype declares, regenerate the status page,
 refresh the lease again.
 
+The only decision it makes on its own is an unambiguous arbitration: every
+required review valid and bound to the task's current candidate_sha, every
+verdict `approve`, every review scope-complete, and no finding at or above the
+task's blocking_severity. That last clause is inert for a reviewer whose
+adapter never fills findings[] -- the shipped review adapters ask for a
+VERDICT line only -- so with them approval rests on verdict + scope_complete.
+
+At most one judgment boundary is recorded per pass: the kinds a woken
+orchestrator can actually resolve (review-evidence, review-conflict) outrank
+the operator-only kinds, and task-id order decides among equals. Every
+boundary the pass meets is printed either way.
+
 Exit codes:
   0   the pass completed; nothing is waiting on a human judgment call
   16  the pass stopped at a judgment boundary (see: orchid run boundary show)
@@ -119,19 +131,39 @@ export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 export ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"
 
 # ---------------------------------------------------------------------------
-# Boundary accumulation. At most ONE boundary is recorded per pass -- the
-# first one encountered, in task-id order -- but the walk always continues: a
-# task parked on a judgment call must never stall the tasks beside it.
+# Boundary accumulation. At most ONE boundary is recorded per pass, and the
+# walk always continues: a task parked on a judgment call must never stall
+# the tasks beside it.
+#
+# WHICH one, when a pass meets several: the highest-priority kind
+# (drive_boundary_priority -- can a woken orchestrator resolve it with a verb
+# the broker admits?), and within one priority the first encountered, so
+# task-id order still decides among equals. Without that ranking a `blocked`
+# task -- which raises the same operator-only boundary on EVERY pass until a
+# human runs `task unblock`/`task retry`, verbs the broker refuses -- would
+# permanently mask a later task's arbitrable review boundary, burning one LLM
+# wakeup per pump cycle on a decision the model has no verb to make. Every
+# boundary the walk meets is still NOTED, so the pass output never hides one.
 # ---------------------------------------------------------------------------
 boundary_kind=""; boundary_task=""; boundary_reason=""
 set_boundary() {
-  [ -z "$boundary_kind" ] || return 0
-  boundary_kind="$1"; boundary_task="$2"; boundary_reason="$3"
-  if [ -n "$2" ]; then
-    drive_note "boundary [$1] $2: $3"
+  local kind="$1" task="$2" reason="$3" note
+  if [ -n "$task" ]; then
+    note="boundary [$kind] $task: $reason"
   else
-    drive_note "boundary [$1]: $3"
+    note="boundary [$kind]: $reason"
   fi
+  if [ -n "$boundary_kind" ] && \
+     [ "$(drive_boundary_priority "$kind")" -le "$(drive_boundary_priority "$boundary_kind")" ]; then
+    drive_note "$note (held: [$boundary_kind] is already this pass's recorded boundary)"
+    return 0
+  fi
+  if [ -n "$boundary_kind" ]; then
+    drive_note "$note (supersedes [$boundary_kind]: no admitted verb resolves that one)"
+  else
+    drive_note "$note"
+  fi
+  boundary_kind="$kind"; boundary_task="$task"; boundary_reason="$reason"
   return 0
 }
 

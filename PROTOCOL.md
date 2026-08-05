@@ -128,13 +128,23 @@ and itself exits 16 when one is recorded, 0 when none is. `orchid run boundary
 clear --reason "..."` releases it. That verb is the record's single writer;
 nothing else may create, edit or delete it.
 
+When one pass meets several boundaries, the one RECORDED is the one a woken
+orchestrator can actually resolve with the verbs its broker admits —
+`review-evidence` and `review-conflict`, both settled by one `orchid task
+arbitrate` — ahead of the kinds only an operator can resolve; among equals,
+the first in task-id order. The walk still notes every boundary it meets.
+Without that precedence a `blocked` task, which raises the same operator-only
+boundary on every pass until a human runs `task unblock`/`task retry`, would
+permanently mask a later task's arbitrable one and spend an LLM wakeup per
+pump cycle on a decision the woken model has no verb to make.
+
 The kernel-owned boundary kinds:
 
 | kind | raised when |
 | --- | --- |
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
 | `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry` resolves it |
-| `review-evidence` | review evidence is missing, malformed, non-`ok`, stale (bound to a different `candidate_sha`), or incomplete for the task's `risk_tier` |
+| `review-evidence` | review evidence bound to the task's current `candidate_sha` is missing, malformed, non-`ok`, or incomplete for the task's `risk_tier` |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
 | `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository |
@@ -144,16 +154,34 @@ The kernel-owned boundary kinds:
 applies — they are mutually exclusive and evaluated in this order, so an
 incomplete review set is never also reported as a conflict, and vice versa:
 
-1. **Evidence** — any reviewer envelope for the current attempt fails to
-   validate, reports a status other than `ok`, or is bound to a
-   `candidate_sha` other than the task's current one; or fewer than
-   `review_required_count(risk_tier)` valid ones exist; or the task has no
-   `candidate_sha` at all. → boundary `review-evidence`, **no transition**.
+1. **Evidence** — the evidence set is SCOPED FIRST, exactly as the kernel's
+   own `reviewing`→`arbitrating` gate scopes it: the reviewer envelopes for
+   the current attempt that are bound to the task's CURRENT `candidate_sha`.
+   An envelope bound to a different one is **superseded** — a sibling left by
+   a relaunched reviewer slot, or by the `merging`→`testing` rebase edge
+   moving `candidate_sha` under a review that already landed — and is
+   **ignored**, never a boundary (boundarying it would pin the task in
+   `arbitrating` with no verb able to release it, and would make two arms
+   match the same state). Within that scoped set, any envelope that fails to
+   validate, whose `candidate_sha` cannot be read at all, or that reports a
+   status other than `ok` is a boundary; so is having fewer than
+   `review_required_count(risk_tier)` valid ones, or no `candidate_sha` on
+   the task at all. → boundary `review-evidence`, **no transition**.
 2. **Deterministic approval** — every required review is valid and current,
    every verdict is `approve`, every review reports `scope_complete: true`,
    and no finding reaches the task's `blocking_severity` (a finding whose
    severity the kernel does not recognize counts as blocking, fail closed).
    → `orchid task arbitrate <id> --result approve --reason "..."`.
+   **What the severity gate actually gates:** it reads `findings[]`, which
+   only an adapter that populates it can trigger. The shipped `review`
+   adapters do not — `plugins/engines/claude/run` and
+   `plugins/engines/codex/run` ask a `review` reply for a `VERDICT:` line
+   only and write `findings: []` verbatim (`FINDING:` lines are requested by
+   the `critique` prompt alone). For those reviewers the `blocking_severity`
+   gate is **inert**, and a deterministic approval rests on `verdict` and
+   `scope_complete` alone. Treat it as a contract available to reviewer
+   adapters that report findings, not as a second opinion you are already
+   getting.
 3. **Conflict** — anything else: a `request-changes` verdict, a blocking
    finding, mixed verdicts, or a non-scope-complete review. → boundary
    `review-conflict`, **no transition**. Deciding what to do about a real
@@ -784,6 +812,21 @@ honest label, not a capability, and an absent label reads as `soft`. Both
 kinds remain gated behind the machine-local unattended acknowledgement above:
 a brokered surface narrows what a woken model may run, it is not OS
 containment.
+
+**Exactly what `brokered` does and does not enforce.** It is a restriction on
+COMMAND EXECUTION only. The shipped brokered adapter runs `claude -p
+--permission-mode acceptEdits --allowedTools "Bash(<broker>:*)"`, so the
+vendor CLI genuinely refuses every command that is not that one executable.
+It does NOT restrict FILE WRITES: `acceptEdits` auto-approves the vendor's
+own file-write tools, so the woken model can create and edit files anywhere
+the process can reach — including paths under `.orchid/`, and, when
+`ORCHID_ROOT` sits inside the driven repository (the layout Orchid dogfoods
+itself in), including the broker script and the rest of the Orchid tree. Nor
+does it restrict reads. "Never hand-edit anything under `.orchid/`" is a
+PROMPT instruction to the orchestrator, not an enforced boundary; the
+enforced boundaries around a woken orchestrator are the command allowlist,
+the launcher's environment allowlist, `/dev/null` stdin, the private output
+path, and the unattended-trust acknowledgement.
 
 **High-risk arbitration prefers a specific engine.** Arbitration itself is
 never a launched job — it is inline judgment (Preamble; kernel.md's

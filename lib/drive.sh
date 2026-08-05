@@ -78,6 +78,30 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
   esac
 }
 
+# drive_boundary_priority <kind> -- 1 when a woken orchestrator can actually
+# RESOLVE a boundary of this kind with the verbs its brokered command surface
+# admits (runners/orchid-orchestrator-command: exact reads plus `orchid task
+# arbitrate`, journal/lesson, notify, `run boundary clear`), 0 when only an
+# operator can.
+#
+# Only the two review kinds are resolvable: they are settled by reading the
+# evidence and recording one `orchid task arbitrate`. `blocked-task` is the
+# case this exists for -- `orchid task unblock`/`task retry` are operator
+# verbs the broker refuses, so a blocked task raises the SAME boundary on
+# every pass, forever, until a human intervenes. With one boundary recorded
+# per pass in task-id order, an unresolvable boundary on a low-numbered task
+# would otherwise mask every later task's arbitrable one indefinitely, at one
+# LLM wakeup per pump cycle spent on a decision the woken model has no verb
+# to make. Ranking, not suppression: PROTOCOL.md requires a blocked task to
+# be a boundary (it is how an operator learns the run is parked), so it is
+# still recorded whenever nothing arbitrable outranks it.
+drive_boundary_priority() {
+  case "$1" in
+    review-evidence|review-conflict) echo 1 ;;
+    *) echo 0 ;;
+  esac
+}
+
 # drive_has_transition <archetype> <from> <to> -- 0 iff the archetype
 # literally declares that edge. `blocked` is deliberately NOT special-cased
 # here the way libexec/orchid-task's `legal()` does: the driver never routes
@@ -157,8 +181,8 @@ drive_envelope_has_blocking_finding() {
 #                           whole scope, and no finding reaches the task's
 #                           blocking_severity -- the ONLY deterministic
 #                           approval this policy will ever make.
-#   evidence<TAB><detail>   missing, malformed, non-ok, stale (bound to a
-#                           different candidate) or incomplete evidence.
+#   evidence<TAB><detail>   missing, malformed, non-ok or incomplete evidence
+#                           FOR THE CURRENT candidate_sha.
 #   conflict<TAB><detail>   a request-changes verdict, a finding at or above
 #                           blocking_severity, mixed verdicts, or a review
 #                           that reports scope_complete false.
@@ -167,6 +191,28 @@ drive_envelope_has_blocking_finding() {
 # incomplete review set is never also reported as a conflict (and vice
 # versa). No prose is parsed anywhere: every input is a structured envelope
 # field the kernel already validates.
+#
+# SCOPING FIRST, exactly like the kernel's own reviewing->arbitrating gate
+# (libexec/orchid-task): the evidence set is the envelopes BOUND TO THE
+# TASK'S CURRENT candidate_sha, and every malformed/non-ok/incomplete test
+# below is applied WITHIN that set. An envelope carrying a different
+# candidate_sha is SUPERSEDED -- a sibling left behind by a relaunched
+# reviewer slot, or by the merging->testing rebase edge moving candidate_sha
+# under a review that already landed -- and is ignored, never boundaried.
+# Boundarying it would contradict the kernel gate (which counts the current
+# ones and ignores the rest), make two truth-table arms match the same state,
+# and pin the task in `arbitrating` with no verb able to release it. Anything
+# that IS bound to the current candidate and is not a valid `ok` envelope
+# still fails closed to a boundary.
+#
+# HONEST LABELING (lesson L006): the blocking_severity gate below reads
+# `findings[]`, and findings[] is only ever populated by an adapter that
+# fills it. The shipped review adapters do NOT: plugins/engines/claude/run
+# and plugins/engines/codex/run ask a `review` reply for a VERDICT line only
+# and write `findings: []` verbatim (`FINDING:` lines are requested by the
+# CRITIQUE prompt alone). For those reviewers the severity gate is INERT and
+# deterministic approval rests on `verdict` + `scope_complete` alone; it
+# bites only for an adapter that genuinely reports findings.
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n conflicts base verdict scope status ecand
@@ -191,6 +237,18 @@ drive_review_decision() {
   for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
+    # Step 1 -- scope. An envelope whose candidate_sha cannot be read at all
+    # cannot be proven superseded, so it fails closed as malformed rather
+    # than being silently dropped from the set.
+    ecand="$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)"
+    if [ -z "$ecand" ]; then
+      printf 'evidence\tmalformed review envelope %s: no readable candidate_sha to scope it by\n' "$base"
+      return 0
+    fi
+    # Superseded sibling: bound to some OTHER candidate. Ignored outright.
+    [ "$ecand" = "$cand" ] || continue
+    # Step 2 -- everything below judges only envelopes bound to the CURRENT
+    # candidate, and every one of them must be a valid `ok` envelope.
     if ! envelope_validate "$f" 2>/dev/null; then
       printf 'evidence\tmalformed review envelope %s\n' "$base"
       return 0
@@ -198,12 +256,6 @@ drive_review_decision() {
     status="$(envelope_field "$f" '.status // empty' 2>/dev/null || true)"
     if [ "$status" != ok ]; then
       printf 'evidence\treview envelope %s reports status %s, not ok\n' "$base" "${status:-none}"
-      return 0
-    fi
-    ecand="$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)"
-    if [ "$ecand" != "$cand" ]; then
-      printf 'evidence\treview envelope %s is stale (candidate %s, task is at %s)\n' \
-        "$base" "${ecand:-none}" "$cand"
       return 0
     fi
     n=$(( n + 1 ))
@@ -223,8 +275,8 @@ drive_review_decision() {
   done
 
   if [ "$n" -lt "$need" ]; then
-    printf 'evidence\tincomplete review evidence: %s of %s required for risk_tier %s\n' \
-      "$n" "$need" "$tier"
+    printf 'evidence\tincomplete review evidence: %s of %s required for risk_tier %s bound to candidate %s\n' \
+      "$n" "$need" "$tier" "$cand"
     return 0
   fi
 

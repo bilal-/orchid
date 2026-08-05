@@ -87,7 +87,20 @@ This is a vendor-enforced restriction on **which command may run**, not
 prompt policy — but it is not OS containment: the broker itself runs
 unsandboxed, and the launcher's environment allowlist, stdin `/dev/null`
 and private output path are what bound the rest. There is still no
-filesystem jail or network namespace. For that reason, direct/pump-driven
+filesystem jail or network namespace.
+
+**What it does not cover: file writes.** `--allowedTools "Bash(<broker>:*)"`
+scopes the Bash tool; `--permission-mode acceptEdits` leaves the vendor's own
+file-write tools auto-approved. A woken orchestrator can therefore create and
+edit files anywhere this process can reach — including paths under
+`.orchid/`, and, when `ORCHID_ROOT` lives inside the driven repository (the
+layout Orchid dogfoods itself in), including the broker script itself and the
+rest of the Orchid tree. Reads are unrestricted too. The prompt tells the
+orchestrator never to hand-edit `.orchid/` and never to touch a remote; those
+are **prompt policy**, not enforcement. `brokered` claims exactly one thing —
+that no command outside the broker can be executed — and nothing more.
+
+For all of those reasons, direct/pump-driven
 headless ticks remain separately denied until `orchid trust unattended`
 records the operator's machine-local acknowledgement of the target
 repository's prompt-injection risk — for `brokered` and `soft` adapters
