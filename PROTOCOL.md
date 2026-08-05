@@ -281,6 +281,25 @@ product tests that cannot exist until this task creates them — resolving
 the bootstrap paradox of testing a test-runner that doesn't exist yet. Every
 task after it drafts normally.
 
+**One-command setup (existing repo).** Everything mechanical that precedes
+step 1 below — preflight, repo-config validation, `orchid init`, the
+integration worktree, the epoch, and the import in step 1 itself — is also
+available as a single operator-run command, outside this loop:
+`orchid start <requirements-file> [--verify <command>] [--worktree <path>]
+[--ack-unattended --reason "..."]`. It is a sequencer over exactly those
+verbs and refuses whatever it cannot do safely, printing the exact recovery
+command: it never guesses a verification command, never overwrites an
+operator file or a directory that is not exactly this repository's
+integration checkout, and never resumes or takes over a run — against
+existing state it requires `run_status: planning`, no fresh unreleased
+lease, no live run/verb lock, and `ORCHID_EPOCH` proving ownership of the
+CURRENT epoch (it mints an epoch only where none exists yet, at `0`).
+Unattended trust stays off unless both `--ack-unattended` and a non-empty
+`--reason` are given, which invokes the machine-local `orchid trust`
+acknowledgement. Nothing below depends on it: every verb it calls remains
+individually callable, and the manual sequence in
+[docs/quickstart.md](./docs/quickstart.md) is unchanged.
+
 1. `orchid requirements import <file>` — snapshot the operator-authored
    requirements into `.orchid/requirements.md` (refused once `run_status`
    has left `planning`: requirements are immutable after a plan exists).

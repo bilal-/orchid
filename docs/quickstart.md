@@ -92,6 +92,50 @@ git add -A
 git commit -m "orchid: requirements + config for orchid init"
 ```
 
+### One command: `orchid start`
+
+Everything left in this step is mechanical, so there is a single command for
+it:
+
+```sh
+orchid start requirements.md --verify "<your test command>"
+```
+
+It runs the full preflight (`orchid doctor`), validates your `orchid.config`,
+initializes, creates the integration worktree, sets up the epoch, imports
+`requirements.md` under that epoch, and prints the epoch, the paths, the run
+state, and the planning handoff. Then **skip to [step 4](#4-plan)** — from the
+worktree it just printed, with the `ORCHID_EPOCH` it just told you to export.
+
+Options: `--verify <command>`, recorded as a `verify=` line in the integration
+checkout's `orchid.config` and only when nothing configures one yet — omit the
+flag if you already set `verify=` in step 2; `--worktree <path>`, which
+defaults to `../<repo>-orchid`; and `--ack-unattended --reason "..."`, both
+together, to also make the machine-local unattended acknowledgement of
+[step 5](#5-start-the-orchestrator-and-walk-away).
+
+What it will not do, by design:
+
+- **never guess a verification command** — no `--verify`, no configured
+  `verify=`, no setup;
+- **never overwrite your files** — it appends at most one `verify=` line, and
+  refuses any worktree path that is not empty or is not exactly this
+  repository's integration checkout;
+- **never resume or take over a run** — against existing state it refuses if
+  the run has left `planning`, if another session's lease is still fresh, if a
+  run/verb lock is live, or if you cannot prove you hold the current epoch
+  (`export ORCHID_EPOCH=<n>`; it never mints one over an existing one);
+- **never turn on unattended trust implicitly** — that needs both
+  `--ack-unattended` and a non-empty `--reason`.
+
+Re-running it with the same requirements file and the epoch it printed is a
+no-op that just re-reports; anything it cannot do safely is refused with the
+exact command to recover. It is a convenience over the verbs below, not a
+replacement: everything in the rest of this step keeps working exactly as
+written, and is what to reach for when you want to see each step.
+
+### Or, step by step
+
 ```sh
 orchid init
 ```
