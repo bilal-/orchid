@@ -160,7 +160,29 @@ done
 # role eligibility + config-driven role binding
 role_eligibility_reason reviewer "$WORK/eng/$NEUTRAL" >/dev/null \
   || fail "an unknown engine is judged eligible by capability, not by name"
-printf 'role.reviewer=%s\nrole.implementer=%s\n' "$NEUTRAL" "$NEUTRAL" > "$WORK/orchid.config"
+
+# The implementer is bound to a DIFFERENT engine than the reviewer, discovered
+# from the shipped plugin tree rather than named here (this file may not
+# contain an engine name any more than the kernel may).
+#
+# Review routing's slot 1 is required to be engine-independent, so it skips any
+# candidate equal to the implementer's engine. Binding both roles to $NEUTRAL
+# would disqualify the neutral engine from the very slot this section exists to
+# observe, and routing would fall through to the tier chain for a reason that
+# has nothing to do with the engine being unknown -- the fixture would then
+# pass or fail on independence policy while claiming to measure neutrality.
+impl_engine=""
+for d in "$REPO_ROOT"/plugins/engines/*/; do
+  [ -d "$d" ] || continue
+  cand="$(basename "${d%/}")"
+  [ "$cand" != "$NEUTRAL" ] || continue
+  impl_dir="$(resolve_engine_dir "$cand" 2>/dev/null)" || continue
+  role_eligibility_reason implementer "$impl_dir" >/dev/null 2>&1 || continue
+  impl_engine="$cand"; break
+done
+[ -n "$impl_engine" ] || fail "INV-14: no shipped engine is implementer-eligible to bind against"
+
+printf 'role.reviewer=%s\nrole.implementer=%s\n' "$NEUTRAL" "$impl_engine" > "$WORK/orchid.config"
 assert_eq "$NEUTRAL" "$(resolve_role "$WORK" reviewer)" "role binding resolves an unknown engine name"
 assert_eq "$NEUTRAL" "$(resolve_role_available "$WORK" reviewer)" "availability resolution accepts an unknown engine name"
 
@@ -170,3 +192,9 @@ export ORCHID_EPOCH
 "$ORCHID_BIN" task create N001 "neutral routing" >/dev/null
 routing="$("$ORCHID_BIN" jobs review-plan N001)"
 assert_match "$NEUTRAL" "$routing" "review routing selects an unknown engine on capability and config alone"
+# ...and selects it for the ENGINE-INDEPENDENT slot specifically. Matching the
+# name alone would also be satisfied by a session-independent fallback, i.e. by
+# routing settling on $NEUTRAL because nothing else was left rather than
+# because an unknown engine is a first-class candidate.
+assert_match "^1[[:space:]]+$NEUTRAL[[:space:]]+engine-independent\$" "$routing" \
+  "an unknown engine fills the engine-independent slot, not a degraded fallback"
