@@ -20,6 +20,17 @@ POLICY="$REPO_ROOT/lib/drive.sh"
 # hazards they are forbidden from open-coding.
 code_of() { grep -vE '^[[:space:]]*#' "$1"; }
 
+# Every POSITIVE assertion below matches against this capture, never against a
+# live `code_of ... | grep -q` pipeline. Under helpers.sh's `set -uo pipefail`,
+# `grep -q` exits at its FIRST match and SIGPIPEs the upstream `grep -vE`; with
+# the driver's earliest hit hundreds of lines from the end, that upstream death
+# is a race, pipefail promotes its 141 to the pipeline's status, and the
+# assertion fails (or, in an `if` form, silently reports "no match") on a file
+# that is in fact correct. Capturing once removes the pipe, so the exit status
+# is the matcher's alone. The NEGATIVE checks use `grep -n`, which reads its
+# input to EOF and so has never been exposed to this.
+drv_code="$(code_of "$DRIVER")"
+
 # ===========================================================================
 # 1 -- lib/drive.sh is a PURE POLICY library: it reads and prints verdicts.
 # It may never mutate anything, and it may never invoke a verb (which would
@@ -75,15 +86,17 @@ done < <(code_of "$DRIVER" | grep -oE '\$ORCHID_BIN"?[[:space:]]+[a-z-]+' | sed 
 [ -n "$used" ] || fail "INV-13: no verb invocations found in the driver — the extraction regex broke"
 
 for forbidden in trust service config plugins init start plan requirements answer doctor lessons; do
-  if code_of "$DRIVER" | grep -qE "\\\$ORCHID_BIN\"?[[:space:]]+$forbidden([[:space:]]|\$)"; then
+  if grep -qE "\\\$ORCHID_BIN\"?[[:space:]]+$forbidden([[:space:]]|\$)" <<<"$drv_code"; then
     fail "INV-13: the driver invokes the forbidden verb '$forbidden'"
   fi
 done
 
 # The one judgment result it may record, it records through the one verb for
 # recording judgments -- never a bare `task advance` out of arbitrating.
-code_of "$DRIVER" | grep -q 'task arbitrate' \
-  || fail "INV-13: the driver must record approvals through orchid task arbitrate"
+case "$drv_code" in
+  *'task arbitrate'*) ;;
+  *) fail "INV-13: the driver must record approvals through orchid task arbitrate" ;;
+esac
 if code_of "$DRIVER" | grep -nE 'task advance[^\n]*(merging|"done")'; then
   fail "INV-13: the driver must not hand-pick an arbitration destination — that is task arbitrate's job"
 fi
@@ -98,8 +111,10 @@ fi
 if code_of "$POLICY" | grep -nE '\.summary|\.actions'; then
   fail "INV-13: the policy library reads an engine's prose summary"
 fi
-code_of "$DRIVER" | grep -q 'drive_review_decision' \
-  || fail "INV-13: the driver must route arbitration through the structured policy function"
+case "$drv_code" in
+  *drive_review_decision*) ;;
+  *) fail "INV-13: the driver must route arbitration through the structured policy function" ;;
+esac
 
 # The policy function's own inputs are all validated envelope fields.
 for field in '.status' '.verdict' '.scope_complete' '.candidate_sha' '.findings'; do
@@ -114,5 +129,7 @@ done
 if code_of "$DRIVER" | grep -nE 'plugins/engines'; then
   fail "INV-13: the driver references a plugin path directly instead of the tier-2 spawner"
 fi
-code_of "$DRIVER" | grep -q 'runners/orchid-launch' \
-  || fail "INV-13: the driver must spawn role jobs through the tier-2 spawner"
+case "$drv_code" in
+  *runners/orchid-launch*) ;;
+  *) fail "INV-13: the driver must spawn role jobs through the tier-2 spawner" ;;
+esac
