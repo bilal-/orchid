@@ -236,8 +236,9 @@
 Private at implementation start; public at end of v1 after dogfooding
 produces real screenshots. MIT. README: hero + screenshot; how-it-works
 diagram + one task's journey — including an explicit **"who runs whom"**
-panel: engines never spawn engines; the deterministic kernel launches every
-engine and brokers all results as files; the orchestrating engine needs
+panel: Orchid's source routes engine launches through tier-2 runners and
+brokers results as files (a topology invariant, not OS containment); the
+orchestrating engine needs
 exactly one power — running a bash CLI — and every other role×engine combo
 is disabled until the capability suite proves it; why this design; **any engine, any role**
 matrix (capability table, tested defaults, degraded-independence labeling,

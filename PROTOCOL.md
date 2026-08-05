@@ -14,8 +14,10 @@ part of the architecture; this file never changes to suit one.*
   the operator alone moves anything to origin. `orchid init` also installs
   a `.git/hooks/pre-push` guard (`push_guard`, config, default true) as
   defense-in-depth: it refuses any push of a `task/*` branch or the
-  integration branch unless `ORCHID_ALLOW_PUSH=1`, so a session violating
-  this rule (deliberately or by accident) still cannot push either.
+  integration branch unless `ORCHID_ALLOW_PUSH=1`. This bullet is prompt
+  policy and the hook is a bypassable backstop (it may also be absent when
+  an operator hook already exists); neither is OS/network containment for a
+  shell-capable orchestrator.
 - **You are the orchestrator.** Your only interface to run state is `orchid
   <verb>` and, for spawning engine work, `runners/orchid-launch`. Never
   hand-edit anything under `.orchid/` — no frontmatter, no journal, no
@@ -516,6 +518,65 @@ concurrent resumer never mistakes this pass for a stalled one).
 
 ## HEADLESS OPERATION
 
+**Machine-local acknowledgement is mandatory.** Before either headless entry
+point may act, the operator must run:
+
+```sh
+orchid trust unattended <repo> --reason "<why this target is trusted for unattended execution>"
+```
+
+The JSON record and identity anchor are outside the repository. Validation
+binds Git's shared common-directory device/inode, the inode of Git's stable
+untracked `description` witness, the root commit(s) reachable from `HEAD`, and
+the trust-policy version compiled into Orchid. The anchor is an outside hard
+link to that witness; it keeps the witness inode allocated after repository
+replacement, so reuse of the common-directory device/inode cannot resurrect
+an acknowledgement. This requires the trust store and common directory to be
+on one filesystem. Linked worktrees share an acknowledgement and a
+same-filesystem move preserves it; a clone, copy, recreated/replaced `.git`,
+root-history replacement, or policy-version change does not. Repository
+content, origin URLs, Git config, and `orchid.config` cannot grant it.
+With no identity-keyed acknowledgement candidate, inspection stops after
+side-effect-free common-directory identity discovery, reports root
+verification as pending, and performs no Git query, worktree enumeration,
+history walk, or scratch-file creation. Explicit acknowledgement and an
+existing structurally eligible candidate take the bounded local-only history
+verification path.
+Identity queries ignore ambient Git repository-selection or object-view
+variables, disable replacement refs, legacy grafts, and shallow boundaries,
+and do not lazy-fetch missing history. A shallow repository therefore cannot
+be acknowledged until its commit ancestry is locally complete.
+Trust-boundary paths are captured and compared losslessly, including literal
+newlines. Store containment is checked against the physical checkout marker
+rather than a configurable Git worktree path. A linked marker must point back
+to the exact caller-selected path registered under the common directory;
+copying a linked checkout and its `.git` pointer is denied. A `HOME` layout
+that resolves the trust store inside the target or any registered sibling
+worktree is refused. The JSON record must be an operator-owned, single-link
+regular file without group/other write permission; record symlinks, hard-link
+aliases, and non-files fail closed. `orchid trust show <repo>` displays the
+decision, anchor binding, and operator-authored reason/timestamp; `orchid
+trust revoke <repo>` removes the outside record and anchor (or a rejected
+symlink itself, without following it). Revocation resolves that record with
+the same bounded on-disk identity derivation and no Git version, ref,
+history, object, root, or scratch check, so an unsupported Git or a
+mismatched, shallow, object-missing, or corrupt-history repository can never
+strand an acknowledgement that would apply again later.
+Root verification is never cached: acknowledgement and every later gate re-walk
+the reachable history and re-hash each commit's exact stored payload, so a
+rewritten, removed, or corrupted object is re-detected even when refs and the
+anchor are untouched. Reuse keyed on identity plus `HEAD` would miss exactly
+that, and no portable filesystem witness can prove an object store unchanged
+more cheaply than reading it. `show` reports `root_verification: walked`; the
+cost is bounded by batching the walk, not by skipping it.
+A scheduled invocation's output is discarded by the scheduler and the
+repo-local service log is not opened until after the gate, so its refusals are
+also appended to `~/.orchid/unattended-trust/refusals.log`, which `orchid
+doctor` surfaces. A missing `jq` keeps the gate closed and names the missing
+tool rather than reporting the record as malformed.
+Interactive sessions, planning, manual verbs, and read-only commands do not
+require or create this record.
+
 The interactive session above is one front-end for this file;
 `runners/orchid-pump` (cron/launchd-invoked, or run by hand) is the other. The pump
 never builds a prompt and never reads an envelope's contents — only exit
@@ -524,6 +585,14 @@ codes — and it does at most one thing per invocation: hand off to
 epoch and refreshing the lease via its own `orchid run resume` call, same as
 RESUME step 1 above) and exits. Every other outcome below is a no-op, exit
 0 — a cron poll finding nothing to do is normal, never an error:
+
+- **Trust denied:** after the side-effect-free uninitialized, split-brain,
+  and already-complete checks, the pump refuses before it creates
+  `runtime/`, drains the outbox, or hands off. The tick independently checks
+  the same record before `run resume` or any spawn, so invoking the tick
+  directly is not a bypass. Service installation is gated too; service
+  status/uninstall remain available so an operator can inspect or remove a
+  schedule after revocation.
 
 - **Uninitialized, or the run is already `complete`:** the pump exits
   immediately, touching nothing (it will not even create `runtime/` on an
@@ -543,8 +612,9 @@ RESUME step 1 above) and exits. Every other outcome below is a no-op, exit
   IS the mutual-exclusion mechanism between an interactive session and the
   pump: lease STALENESS, not a lock file. An interactive session already
   refreshes the lease every pass (THE TICK step 1 and step 5 above), so the
-  pump only ever wakes an ABANDONED run (crashed, or a session that quit
-  without a graceful stop). Combined with epoch fencing — `orchid run
+  pump treats the run as abandoned (crashed, or a session that quit without
+  a graceful stop). A live but delayed session can still cross that time
+  threshold. Combined with epoch fencing — `orchid run
   resume` mints a fresh epoch on every invocation, interactive or headless —
   a tick that wakes a stale run and a session that was actually still alive
   can never both mutate state: whichever call mints the newer epoch wins,

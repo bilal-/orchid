@@ -158,10 +158,12 @@ else
 fi
 pid=$!
 set +m
-# With job control enabled for the spawn, Bash makes the background leader's
-# process-group ID equal to its PID. Record that deterministic value directly;
-# querying ps adds a platform/sandbox permission dependency and can race a
-# very short-lived adapter.
+# With job control enabled above, this single background command is the
+# leader of the process group Bash created for it, so its PGID is its PID.
+# Derive that value from the spawn operation itself instead of consulting
+# the host process table: hardened/vendor sandboxes commonly deny `ps`
+# even though process-group signalling remains available, and a `ps` query
+# could race a very short-lived adapter.
 pgid="$pid"
 
 jq --argjson pid "$pid" --argjson pgid "$pgid" --argjson started_at "$(date +%s)" \

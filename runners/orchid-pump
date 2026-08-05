@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 # tier-2, LLM-free: the pump is the cron/launchd-friendly front gate in front
 # of runners/orchid-tick (Task 7). It NEVER builds a prompt or reads an
@@ -12,16 +12,54 @@ set -euo pipefail
 # test below (spec: "mutual exclusion via lease staleness, not flock") -- a
 # live orchestrator refreshes runtime/lease.json every tick (`orchid run
 # resume`/`refresh-lease`), so the pump only ever acts on an ABANDONED run.
+
+# Capture the scheduler/operator PATH as inert data when this is a direct
+# entry. A bin/orchid handoff already carries the original value without
+# restoring it. Exclude either value before resolving this script's symlinks.
+# The fixed directories are
+# machine-local system/package-manager locations supported by Orchid; target
+# checkout directories and arbitrary inherited PATH entries are never searched
+# while the unattended acknowledgement is being evaluated.  Privileged Bash
+# mode in the shebang also suppresses BASH_ENV and imported shell functions.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+
 self="$0"
 while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+__orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/spawn.sh"
+source "$ORCHID_ROOT/lib/trust.sh"
+
+# `orchid service install` invokes the pump with this internal flag while the
+# scheduler itself sends stdout/stderr to /dev/null. The pump does not open the
+# repo-local service log until unattended trust has succeeded below. A direct
+# invocation has no flag and keeps its diagnostics on the caller's terminal.
+pump_service_log=0
+case "${1:-}" in
+  --service-log) pump_service_log=1; shift ;;
+esac
+if [ "$#" -ne 0 ]; then
+  echo "pump: unknown argument '$1'" >&2
+  exit 2
+fi
 
 repo="${ORCHID_REPO:-$PWD}"
 state="$(orchid_state "$repo")"
@@ -72,7 +110,83 @@ if [ "$rs" = complete ]; then
   exit 0
 fi
 
+# The first potentially effectful operation below is orchid_runtime (which
+# creates .orchid/runtime), followed later by an outbox drain and possibly a
+# headless tick. Require the operator-authored MACHINE-LOCAL acknowledgement
+# before any of those can happen. The side-effect-free "not a repo",
+# split-brain, and already-complete diagnostics above remain available on an
+# untrusted target.
+#
+# Under --service-log this is a scheduler invocation whose stdout and stderr
+# the cron line / launchd agent send to /dev/null, and the repo-local pump.log
+# below cannot be opened before the gate has passed. Tell the gate so it also
+# records the refusal in the machine-local trust store, where `orchid doctor`
+# will surface it.
+if [ "$pump_service_log" -eq 1 ]; then
+  unattended_trust_require "$repo" "unattended pump" scheduled || exit 1
+else
+  unattended_trust_require "$repo" "unattended pump" || exit 1
+fi
+
 rt="$(orchid_runtime "$repo")"
+if [ "$pump_service_log" -eq 1 ]; then
+  # Keep a service log strictly inside the acknowledged checkout. The
+  # scheduler must never open a target-controlled path: doing so would let a
+  # revoked/replaced repo, or a pump.log symlink, write before this gate ran.
+  # Reject symlinked/outside runtime directories and aliased/non-regular log
+  # files as well, so the post-gate append cannot escape through a static
+  # target-controlled filesystem object.
+  repo_physical="$(cd "$repo" 2>/dev/null && pwd -P)" || {
+    echo "pump: service logging refused: cannot resolve repository path" >&2
+    exit 1
+  }
+  rt_physical="$(cd "$rt" 2>/dev/null && pwd -P)" || {
+    echo "pump: service logging refused: cannot resolve runtime directory" >&2
+    exit 1
+  }
+  case "$rt_physical/" in
+    "$repo_physical/"*) ;;
+    *)
+      echo "pump: service logging refused: runtime directory resolves outside the repository" >&2
+      exit 1
+      ;;
+  esac
+
+  pump_log="$rt/pump.log"
+  if [ -L "$pump_log" ]; then
+    echo "pump: service logging refused: pump.log must not be a symbolic link" >&2
+    exit 1
+  fi
+  if [ -e "$pump_log" ]; then
+    if [ ! -f "$pump_log" ] || [ ! -O "$pump_log" ]; then
+      echo "pump: service logging refused: pump.log must be an operator-owned regular file" >&2
+      exit 1
+    fi
+    pump_log_meta="$(_unattended_file_security_metadata "$pump_log")" || {
+      echo "pump: service logging refused: cannot inspect pump.log" >&2
+      exit 1
+    }
+    if [ "${pump_log_meta%% *}" != 1 ]; then
+      echo "pump: service logging refused: pump.log must not have hard-link aliases" >&2
+      exit 1
+    fi
+  else
+    # noclobber makes the initial creation fail closed if another filesystem
+    # object appears after the checks above. The following append preserves
+    # logs across ordinary scheduled invocations.
+    (
+      umask 077
+      set -o noclobber
+      : > "$pump_log"
+    ) 2>/dev/null || {
+      echo "pump: service logging refused: cannot safely create pump.log" >&2
+      exit 1
+    }
+  fi
+  exec >> "$pump_log" 2>&1
+fi
+
+_orchid_entry_restore_operator_path
 
 # 4. Lease staleness. `iso_to_epoch` is replicated here (not shared via
 # lib/) rather than sourced from libexec/orchid-jobs: runners can't source

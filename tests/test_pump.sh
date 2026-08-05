@@ -11,7 +11,7 @@ source "$REPO_ROOT/lib/capsuite.sh"; source "$REPO_ROOT/lib/ledger.sh"
 export ORCHID_ROOT="$REPO_ROOT"
 
 cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ENGINES_DIR="$WORK/eng"; mkdir -p "$WORK/eng"
 PUMP="$REPO_ROOT/runners/orchid-pump"
 
@@ -161,6 +161,59 @@ mk_stub_engine stubplanning
 printf -- '---\nrun_status: planning\nrun_id: r-pump\n---\n# Roadmap\n' > .orchid/roadmap.md
 printf 'role.orchestrator=stubplanning\n' > orchid.config
 rm -f .orchid/runtime/lease.json "$WORK/marker-stubplanning"
+
+rc=0
+out="$("$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "pump must refuse a runnable repo without unattended trust"
+assert_match 'unattended pump refused: unattended trust is denied' "$out" \
+  "pump refusal names the unattended trust gate"
+[ -f "$WORK/marker-stubplanning" ] && fail "untrusted pump must never spawn an engine"
+
+rm -f .orchid/runtime/pump.log
+rc=0
+out="$("$PUMP" --service-log 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "service-mode pump must refuse a runnable repo without unattended trust"
+assert_match 'unattended pump refused: unattended trust is denied' "$out" \
+  "service-mode refusal is still available before its internal log is opened"
+[ ! -e .orchid/runtime/pump.log ] \
+  || fail "untrusted service-mode pump must not create or open pump.log"
+
+# A real scheduler discards this stderr (`>> /dev/null 2>&1` in the cron line,
+# /dev/null StandardOutPath+StandardErrorPath in the launchd agent) and the
+# repo-local pump.log above is deliberately not opened before the gate. Without
+# a machine-local copy the operator would see a service that runs on schedule
+# and silently does nothing. Assert the copy exists, is outside the repository,
+# and names the surface and the reason.
+refusal_log="$MACHINE_HOME/.orchid/unattended-trust/refusals.log"
+[ -f "$refusal_log" ] \
+  || fail "a scheduled refusal must be recorded in the machine-local trust store"
+refusal_entry="$(tail -n 1 "$refusal_log")"
+assert_match 'unattended pump' "$refusal_entry" \
+  "the machine-local refusal names the refused surface"
+assert_match 'unattended trust' "$refusal_entry" \
+  "the machine-local refusal carries the gate's own reason"
+[ ! -e "$WORK/.orchid/runtime/refusals.log" ] \
+  || fail "refusal diagnostics must never be written inside the untrusted target"
+
+# The interactive pump prints to the caller's terminal and must NOT append to
+# the machine-local log: an operator who can see the refusal does not need it
+# duplicated into shared machine state.
+refusal_lines_before="$(wc -l < "$refusal_log")"
+rc=0
+"$PUMP" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "interactive pump must still refuse an untrusted repo"
+assert_eq "$refusal_lines_before" "$(wc -l < "$refusal_log")" \
+  "an interactive refusal does not append to the machine-local diagnostic log"
+
+HOME="$HOME" "$ORCHID_BIN" trust unattended "$WORK" --reason "pump test fixture" >/dev/null \
+  || fail "pump fixture acknowledgement must succeed"
+
+out="$("$PUMP" --service-log 2>&1)"; rc=$?
+assert_eq 0 "$rc" "trusted service-mode pump exits 0 when planning has no lease"
+assert_eq "" "$out" "trusted service-mode diagnostics move from scheduler output into pump.log"
+assert_match '^pump: run not running \(planning\), no lease yet$' \
+  "$(cat .orchid/runtime/pump.log)" \
+  "service-mode pump begins repo-local logging after trust succeeds"
 
 out="$("$PUMP" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "pump exits 0 when run_status is planning and no lease exists"

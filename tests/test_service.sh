@@ -10,10 +10,16 @@
 # scheduler mutation/query itself is printed instead of run).
 source "$(dirname "$0")/helpers.sh"
 SERVICE="$REPO_ROOT/runners/orchid-service"
+PUMP="$REPO_ROOT/runners/orchid-pump"
 
 cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ROOT="$REPO_ROOT"
+
+trust_repo() {
+  HOME="$HOME" "$ORCHID_BIN" trust unattended "$1" --reason "service test fixture" >/dev/null \
+    || fail "service fixture acknowledgement failed for $1"
+}
 
 # $WORK (from mktemp -d) commonly has a symlinked component on macOS
 # (/var/folders/... -> /private/var/folders/...) -- the service always
@@ -23,6 +29,13 @@ export ORCHID_ROOT="$REPO_ROOT"
 # raw $WORK string. Plain file-existence checks against "$WORK/..." remain
 # fine as-is -- the OS resolves the symlink either way when opening a path.
 repo_canon="$(cd "$WORK" && pwd -P)"
+
+# The same rule applies to the CHECKOUT under test: helpers.sh must hand this
+# suite a physically-resolved REPO_ROOT, or the assertions below that compare
+# against a path the service baked in (ProgramArguments) fail on exactly the
+# symlinked checkouts -- a /var/folders merge-validation worktree -- that a
+# non-symlinked developer checkout never reproduces.
+assert_eq "$(cd "$REPO_ROOT" && pwd -P)" "$REPO_ROOT" "REPO_ROOT must be physically canonical"
 
 label_re='com\.orchid\.pump\.[0-9a-f]{12}'
 
@@ -36,11 +49,26 @@ assert_match 'uninitialized|no \.orchid' "$out" "install names the uninitialized
 
 mkdir -p .orchid/tasks
 
+# An initialized repo is still denied until acknowledged. Dry-run is gated
+# too because it places real scheduler artifacts.
+rc=0
+out="$("$SERVICE" install --repo "$WORK" --dry-run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "install must refuse an initialized but unacknowledged repo"
+assert_match 'service installation refused: unattended trust is denied' "$out" \
+  "service refusal names the unattended trust gate"
+[ ! -d "$HOME/Library/LaunchAgents" ] \
+  || fail "trust-refused install must not place a launchd artifact"
+[ ! -d "$WORK/.orchid/runtime" ] \
+  || fail "trust-refused install must not create runtime state"
+
+trust_repo "$WORK"
+
 # ===========================================================================
 # B -- macOS (default host branch, no ORCHID_SERVICE_OS override): install
 # renders the launchd plist template with the correct label, ORCHID_REPO,
 # TMPDIR (the repo's PARENT dir -- the live-run TMPDIR incident), interval,
-# and pump.log path, then PRINTS (never runs) the launchctl load command.
+# a scheduler-safe output sink, then PRINTS (never runs) the launchctl load
+# command. The pump itself starts repo-local logging only after trust succeeds.
 # ===========================================================================
 parent="$(cd "$WORK/.." && pwd -P)"
 out="$("$SERVICE" install --repo "$WORK" --interval-s 300 --dry-run 2>&1)"; rc=$?
@@ -54,7 +82,11 @@ grep -qF "<string>$repo_canon</string>" "$plist" || fail "plist ORCHID_REPO does
 grep -qF "<string>$parent</string>" "$plist" || fail "plist TMPDIR is not the repo's parent directory"
 grep -qF "<integer>300</integer>" "$plist" || fail "plist StartInterval does not match --interval-s 300"
 grep -qF "<string>$REPO_ROOT/runners/orchid-pump</string>" "$plist" || fail "plist ProgramArguments does not point at runners/orchid-pump"
-grep -qF "<string>$repo_canon/.orchid/runtime/pump.log</string>" "$plist" || fail "plist Std{Out,Err}Path does not point at runtime/pump.log"
+grep -qF -- "<string>--service-log</string>" "$plist" || fail "plist does not ask the trusted pump to begin service logging"
+assert_eq 2 "$(grep -cF '<string>/dev/null</string>' "$plist")" \
+  "plist sends both scheduler-owned output streams to /dev/null"
+grep -qF 'pump.log' "$plist" \
+  && fail "launchd must never open the target-controlled pump.log path before the pump trust gate"
 assert_match 'DRY-RUN:.*launchctl load' "$out" "install --dry-run prints the launchctl load command"
 
 # IMPORTANT fix (final review #1): a launchd agent gets only launchd's own
@@ -85,6 +117,7 @@ if command -v python3 >/dev/null 2>&1; then
   mkdir -p "$WORKX"
   ( cd "$WORKX" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
   WORKX_canon="$(cd "$WORKX" && pwd -P)"
+  trust_repo "$WORKX"
 
   outx="$("$SERVICE" install --repo "$WORKX" --dry-run 2>&1)"; rcx=$?
   assert_eq 0 "$rcx" "install --dry-run exits 0 even when --repo contains & < >"
@@ -142,6 +175,8 @@ rm -f orchid.config
 # ===========================================================================
 mkdir -p .orchid/runtime
 printf 'pump: run complete\npump: run complete\n' > .orchid/runtime/pump.log
+HOME="$HOME" "$ORCHID_BIN" trust revoke "$WORK" >/dev/null \
+  || fail "service fixture revocation must succeed"
 out="$("$SERVICE" status --repo "$WORK" --dry-run 2>&1)"; rc=$?
 assert_eq 0 "$rc" "status always exits 0"
 assert_match "$label_re" "$out" "status names the label"
@@ -187,6 +222,7 @@ assert_match 'pump: run complete' "$out" "status still tails an existing pump.lo
 # the interval to whole minutes; uninstall reverses it; status parses it.
 # ===========================================================================
 export ORCHID_SERVICE_OS=Linux
+trust_repo "$WORK"
 out="$("$SERVICE" install --repo "$WORK" --interval-s 150 --dry-run 2>&1)"; rc=$?
 assert_eq 0 "$rc" "linux install --dry-run exits 0"
 assert_match "$label_re" "$out" "linux install prints a label"
@@ -198,7 +234,10 @@ line="$(cat "$record")"
 assert_match '^\*/2 \* \* \* \*' "$line" "150s floors to 2 minutes (150/60=2, integer division)"
 assert_match "ORCHID_REPO='$repo_canon'" "$line" "cron line carries ORCHID_REPO (canonical), single-quoted"
 assert_match "TMPDIR='$parent'" "$line" "cron line carries TMPDIR set to the repo's parent (same rationale as the plist), single-quoted"
-assert_match "$repo_canon/.orchid/runtime/pump.log" "$line" "cron line redirects into runtime/pump.log"
+assert_match ' --service-log >> /dev/null 2>&1 ' "$line" \
+  "cron sends scheduler-owned output to /dev/null and delegates logging to the gated pump"
+echo "$line" | grep -qF 'pump.log' \
+  && fail "cron must never open the target-controlled pump.log path before the pump trust gate"
 assert_match "# orchid-service:$label" "$line" "cron line carries the marker comment used to find/remove it later"
 assert_match 'DRY-RUN:.*crontab' "$out" "linux install --dry-run prints (never runs) the crontab pipeline"
 
@@ -239,6 +278,7 @@ WORKP="$(mktemp -d)/repo%with%percent"
 mkdir -p "$WORKP"
 ( cd "$WORKP" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
 WORKP_canon="$(cd "$WORKP" && pwd -P)"
+trust_repo "$WORKP"
 
 _outp="$("$SERVICE" install --repo "$WORKP" --interval-s 120 --dry-run 2>&1)"; rcp=$?
 assert_eq 0 "$rcp" "linux install --dry-run exits 0 even when --repo contains %"
@@ -292,6 +332,138 @@ unset ORCHID_SERVICE_DEBUG_CRON_CMD_FILE
 unset ORCHID_SERVICE_OS
 
 # ===========================================================================
+# H4 -- unattended-boundary regression: installed launchd/cron artifacts must
+# send their own stdout/stderr to a no-effect sink. Only orchid-pump may open
+# pump.log, after trust succeeds. Exercise the artifacts against all three
+# adversarial states from the review: a trusted repo with a pump.log symlink,
+# revoked trust, and a fresh repo replacing the acknowledged target path.
+# ===========================================================================
+ATTACK_ROOT="$(mktemp -d)"
+ATTACK_REPO="$ATTACK_ROOT/repo"
+ATTACK_OLD="$ATTACK_ROOT/original-repo"
+ATTACK_VICTIM="$ATTACK_ROOT/outside.log"
+mkdir -p "$ATTACK_REPO"
+(
+  cd "$ATTACK_REPO" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks
+  printf -- '---\nrun_status: planning\nrun_id: service-boundary\n---\n# Roadmap\n' \
+    > .orchid/roadmap.md
+)
+ATTACK_REPO_CANON="$(cd "$ATTACK_REPO" && pwd -P)"
+ATTACK_PARENT="$(cd "$ATTACK_REPO/.." && pwd -P)"
+trust_repo "$ATTACK_REPO"
+
+export ORCHID_SERVICE_OS=Darwin
+attack_launchd_out="$("$SERVICE" install --repo "$ATTACK_REPO" --dry-run 2>&1)"
+attack_label="$(printf '%s\n' "$attack_launchd_out" | grep -oE "$label_re" | head -n1)"
+attack_plist="$HOME/Library/LaunchAgents/$attack_label.plist"
+[ -f "$attack_plist" ] \
+  || fail "adversarial launchd fixture must retain its installed plist"
+attack_launchd_stdout="$(
+  awk '/<key>StandardOutPath<\/key>/{getline; gsub(/^.*<string>|<\/string>.*$/, ""); print; exit}' \
+    "$attack_plist"
+)"
+attack_launchd_stderr="$(
+  awk '/<key>StandardErrorPath<\/key>/{getline; gsub(/^.*<string>|<\/string>.*$/, ""); print; exit}' \
+    "$attack_plist"
+)"
+assert_eq /dev/null "$attack_launchd_stdout" \
+  "installed launchd stdout is scheduler-owned /dev/null"
+assert_eq /dev/null "$attack_launchd_stderr" \
+  "installed launchd stderr is scheduler-owned /dev/null"
+
+export ORCHID_SERVICE_OS=Linux
+attack_cron_out="$("$SERVICE" install --repo "$ATTACK_REPO" --interval-s 60 --dry-run 2>&1)"
+attack_record="$ATTACK_REPO/.orchid/runtime/pump.cron"
+[ -f "$attack_record" ] \
+  || fail "adversarial cron fixture must retain its installed record"
+attack_cron_line="$(cat "$attack_record")"
+assert_match ' --service-log >> /dev/null 2>&1 ' "$attack_cron_line" \
+  "installed cron firing has no target-controlled pre-gate output path"
+
+# Run the command portion of the exact installed cron line. Five schedule
+# fields precede it; the final marker comment is service bookkeeping, not part
+# of the command cron gives /bin/sh.
+fire_installed_cron() {
+  local installed_line="$1" installed_command
+  installed_command="$(printf '%s\n' "$installed_line" | cut -d' ' -f6-)"
+  installed_command="${installed_command% # orchid-service:*}"
+  eval "$installed_command"
+}
+
+# Reproduce launchd's pre-exec stream handling from the paths parsed out of the
+# installed plist, then invoke its exact pump mode and environment contract.
+fire_installed_launchd() {
+  HOME="$HOME" ORCHID_REPO="$ATTACK_REPO_CANON" TMPDIR="$ATTACK_PARENT" PATH="$PATH" \
+    "$PUMP" --service-log \
+    >> "$attack_launchd_stdout" 2>> "$attack_launchd_stderr"
+}
+
+printf 'trusted-symlink-sentinel\n' > "$ATTACK_VICTIM"
+ln -s "$ATTACK_VICTIM" "$ATTACK_REPO/.orchid/runtime/pump.log"
+if fire_installed_launchd; then
+  fail "trusted service-mode pump must refuse a pump.log symlink"
+fi
+if fire_installed_cron "$attack_cron_line"; then
+  fail "trusted cron firing must refuse a pump.log symlink"
+fi
+assert_eq trusted-symlink-sentinel "$(cat "$ATTACK_VICTIM")" \
+  "installed scheduler firings never append through a trusted repo's pump.log symlink"
+
+rc=0
+out="$(ORCHID_REPO="$ATTACK_REPO" "$PUMP" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "manual pump remains available when service logging is unsafe"
+assert_match '^pump: run not running \(planning\), no lease yet$' "$out" \
+  "manual pump preserves terminal diagnostics without opening the service log"
+assert_eq trusted-symlink-sentinel "$(cat "$ATTACK_VICTIM")" \
+  "manual diagnostics do not follow the service-log symlink"
+
+HOME="$HOME" "$ORCHID_BIN" trust revoke "$ATTACK_REPO" >/dev/null \
+  || fail "adversarial service fixture revocation must succeed"
+printf 'revoked-sentinel\n' > "$ATTACK_VICTIM"
+if fire_installed_launchd; then
+  fail "installed launchd firing must be denied after trust revocation"
+fi
+if fire_installed_cron "$attack_cron_line"; then
+  fail "installed cron firing must be denied after trust revocation"
+fi
+assert_eq revoked-sentinel "$(cat "$ATTACK_VICTIM")" \
+  "revoked installed-service firings have no pre-gate symlink write"
+
+# Re-acknowledge the original incarnation, leave both installed artifacts in
+# place, then replace the target at the same canonical path. The old schedule
+# must not lend trust or a writable log stream to the replacement.
+trust_repo "$ATTACK_REPO"
+mv "$ATTACK_REPO" "$ATTACK_OLD"
+mkdir -p "$ATTACK_REPO"
+(
+  cd "$ATTACK_REPO" || exit 1
+  git init -q .
+  git commit -q --allow-empty -m root
+  mkdir -p .orchid/tasks .orchid/runtime
+  printf -- '---\nrun_status: planning\nrun_id: service-replacement\n---\n# Roadmap\n' \
+    > .orchid/roadmap.md
+)
+ln -s "$ATTACK_VICTIM" "$ATTACK_REPO/.orchid/runtime/pump.log"
+printf 'replacement-sentinel\n' > "$ATTACK_VICTIM"
+if fire_installed_launchd; then
+  fail "installed launchd firing must deny a replacement repository"
+fi
+if fire_installed_cron "$attack_cron_line"; then
+  fail "installed cron firing must deny a replacement repository"
+fi
+assert_eq replacement-sentinel "$(cat "$ATTACK_VICTIM")" \
+  "replacement-repo installed-service firings have no pre-gate symlink write"
+assert_eq pump.log "$(list_dir_entries "$ATTACK_REPO/.orchid/runtime")" \
+  "denied replacement firings leave target runtime state untouched"
+
+rm -f "$attack_plist"
+rm -rf "$ATTACK_ROOT"
+unset ORCHID_SERVICE_OS
+
+# ===========================================================================
 # I -- multiple repos = multiple distinct labels, never colliding, and each
 # repo's own uninstall never disturbs the other's.
 # ===========================================================================
@@ -301,6 +473,7 @@ unset ORCHID_SERVICE_OS
 # at the end of this section instead.
 WORK2="$(mktemp -d)"
 ( cd "$WORK2" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
+trust_repo "$WORK2"
 
 out1="$("$SERVICE" install --repo "$WORK" --dry-run 2>&1)"
 out2="$("$SERVICE" install --repo "$WORK2" --dry-run 2>&1)"
@@ -326,3 +499,4 @@ assert_match 'uninstall' "$out" "help mentions uninstall"
 assert_match 'status' "$out" "help mentions status"
 assert_match 'idempotent' "$out" "help documents install/uninstall idempotence"
 assert_match 'dry-run' "$out" "help documents --dry-run"
+assert_match 'trust unattended' "$out" "help documents the unattended acknowledgement prerequisite"

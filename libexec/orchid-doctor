@@ -1,12 +1,59 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
+
+# Resolve direct and dispatched entry through the same privileged interpreter
+# and fixed helper path used by unattended runners. The operator PATH remains
+# inert until the trust gate and its provenance have been printed; doctor then
+# restores it for ordinary environment/plugin readiness checks.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+__orchid_entry_defer_restore=1
+
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
-source "$ORCHID_ROOT/lib/hooks.sh"
+source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
+
+# Inspect and render the gate before making the operator PATH executable
+# again. Later readiness checks intentionally use that PATH (for example,
+# capsuite required-binary discovery), but cannot retroactively alter this
+# already-emitted decision or its trusted identity provenance.
+unattended_trust_inspect "$repo"
+if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
+  printf 'ok: unattended trust: '
+else
+  printf 'WARN: unattended trust (headless execution gated): '
+fi
+unattended_trust_summary_loaded
+# A scheduled pump discards its own stdout and stderr, and cannot open the
+# repo-local service log until after the gate. Its refusals land in the
+# machine-local trust store instead; this is where an operator finds them.
+if unattended_refusal_log="$(unattended_trust_refusal_log_path)"; then
+  echo "WARN: unattended trust denied a scheduled/service invocation on this machine; most recent entries (time, surface, repo, state, why) from $unattended_refusal_log:"
+  tail -n 5 "$unattended_refusal_log" | sed 's/^/  /'
+fi
+_orchid_entry_restore_operator_path
 
 # --greenfield (v1-m2 Task 9): the ONLY flag. Skips exactly the two checks
 # that cannot hold pre-scaffold -- everything else below runs unchanged.
@@ -49,8 +96,25 @@ perm_warnings="$(echo "$validate_out" | grep -E '^warn:.*permission .* requested
 [ -z "$perm_warnings" ] || echo "$perm_warnings" | sed 's/^/  /'
 [ "$validate_rc" -eq 0 ] && ok "plugin manifests: validate clean" || bad "plugin manifests: validate failed (see above)"
 git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && ok "git repository" || bad "git repository"
-command -v jq >/dev/null && ok jq || bad "jq missing"
+# jq readiness is two questions, not one. This check runs after the operator
+# PATH has been restored above, but the unattended gate printed further up
+# resolves tools on the fixed PATH the runners pin -- so a bare `command -v`
+# here could report `ok jq` about a jq the gate cannot see, and did. Ask both
+# questions through the same helper the gate uses (lib/trust.sh), and when the
+# two PATHs disagree say which surface is short instead of leaving the
+# contradiction for the operator to discover from a denied scheduled run.
+if unattended_tool_probe jq; then
+  ok jq
+elif [ "$ORCHID_UNATTENDED_TOOL_STATE" = interactive-only ]; then
+  # Interactive orchid works; only headless execution is affected, and the
+  # unattended gate is a warning here, never a doctor failure.
+  ok "jq (operator PATH)"
+  echo "WARN: $ORCHID_UNATTENDED_TOOL_DETAIL"
+else
+  bad "jq missing: $ORCHID_UNATTENDED_TOOL_DETAIL"
+fi
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
+
 if [ "$greenfield" -eq 1 ]; then
   echo "note: greenfield: verify command deferred to scaffold task"
 else

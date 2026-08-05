@@ -168,13 +168,18 @@ commands shown throughout this page.
 **Headless, right now:**
 
 ```sh
+orchid trust unattended "$PWD" --reason "reviewed this repository for unattended execution"
 orchid run start
 runners/orchid-tick
 ```
 
-**Headless, unattended (recommended once you trust the loop):** install the
-pump as a background service so ticks continue even after you close the
-terminal:
+The first command is an explicit acknowledgement of the target repository's
+prompt-injection risk. It is machine-local state, not a tracked config knob;
+neither cloning a repository nor accepting a repository-supplied
+`orchid.config` can opt you in.
+
+**Headless, unattended:** after that acknowledgement, install the pump as a
+background service so ticks continue even after you close the terminal:
 
 ```sh
 orchid service install
@@ -186,6 +191,7 @@ or skip straight to it now if you don't want to babysit a terminal.
 ## 6. Keep it running unattended
 
 ```sh
+orchid trust show "$PWD"
 orchid service install
 ```
 
@@ -196,13 +202,38 @@ interactive session's lease has gone stale. `orchid service status` reports
 whether it's loaded and when it last ran; `orchid service uninstall`
 reverses it.
 
+The pump and direct `runners/orchid-tick` entry point re-check trust on every
+invocation, before creating runtime state, draining the notification outbox,
+or spawning an engine. `orchid trust show "$PWD"` includes the operator's
+reason/timestamp and the current binding: Git common-directory device/inode,
+a non-reusable hard-link witness identity, root commit, and trust-policy
+version. Linked worktrees share the record, and a same-filesystem move keeps
+it; a clone, copy, recreated/replaced `.git`, root-history replacement, or
+policy-version change does not. The trust store and Git common directory must
+be on the same filesystem for the witness anchor. Trust inspection also
+returns immediately with root verification `pending` when no identity-keyed
+record exists. Acknowledgement and verification of an existing candidate
+require Git 2.45 or newer so any required history walk can reliably forbid
+promisor/lazy fetching; older Git remains usable manually, but the unattended
+gate stays denied before inspecting repository objects. Re-acknowledge only
+after reviewing the changed boundary:
+
+```sh
+orchid trust unattended "$PWD" --reason "reviewed the new repository identity/history"
+orchid trust revoke "$PWD"       # fail closed on future pump/tick passes
+```
+
+Revocation does not uninstall an existing schedule; `orchid service status`
+and `orchid service uninstall` intentionally remain available.
+
 ## 7. Check in
 
 ```sh
 orchid status               # task table, engines, open questions
-orchid status --explain     # + why each pending/rework task isn't dispatching
+orchid status --explain     # + unattended gate/provenance and dispatch reasons
 orchid status --html        # writes a static page to runtime/status.html —
                              # open it directly, "check from another room"
+orchid status --html --explain # + gate/provenance in page; stdout remains its path
 ```
 
 A genuine blocker raises a question in `BLOCKERS.md` and (if you configured
@@ -221,8 +252,10 @@ Once every task is `done`, the orchestrator runs the acceptance procedure
 itself (`orchid run advance accepting`, coverage + acceptance checks,
 `orchid run accept --reason ... --evidence ...`) and `orchid status` shows
 `run_status: complete`. The integration branch now holds your finished
-product — pushing or deploying it from there is entirely up to you; orchid
-never pushes anywhere on its own.
+product — pushing or deploying it from there is entirely up to you. Orchid's
+supported verbs do not push; see the
+[threat model](./specs/plugins.md#threat-model-consolidated) before treating
+that prompt policy as containment.
 
 ## Next
 

@@ -22,6 +22,121 @@ early), there is no override verb — the ledger window is time-based by
 design, so waiting it out or configuring a fallback chain
 (`role.<role>=<primary>,<fallback>`) is the supported path.
 
+## Unattended trust refusal
+
+**Symptom:** the pump, direct headless tick, or `orchid service install`
+prints `unattended trust is denied` and exits before acting.
+
+```sh
+orchid trust show "$PWD"
+orchid status --explain
+```
+
+Read the `why` field. With no record, review the target repository as
+potentially prompt-injecting input, then acknowledge it with an honest reason:
+
+```sh
+orchid trust unattended "$PWD" --reason "reviewed target and accept unattended prompt risk"
+```
+
+A root-commit or policy mismatch is deliberately not auto-updated; inspect
+the changed history/policy and run the same acknowledgement command again
+only if the new boundary is acceptable. A clone, copy, or recreated `.git`
+needs its own decision. Normally its Git common-directory device/inode is
+different; even if the filesystem reuses those numbers, its common-directory
+witness cannot match the old machine-local hard-link anchor.
+`orchid trust revoke "$PWD"` denies future pump/tick invocations. It does not
+remove a scheduler entry, so use `orchid service status` and `orchid service
+uninstall` as needed; both remain available while denied. Revocation only
+needs the repository's on-disk identity, so it also works when `orchid trust
+show` cannot finish — an unsupported Git, or a mismatched, shallow,
+object-missing, or corrupt history. Revoke in that situation rather than
+leaving the record in place: it would apply again once the repository is
+readable. Revocation still needs a usable `.git` marker to know which record
+applies; if a linked worktree's own marker or registration is broken, revoke
+from the main checkout, which shares the same record.
+
+## An installed service runs on schedule but nothing happens
+
+**Symptom:** `orchid service status` looks healthy, the scheduler fires, and
+`.orchid/runtime/pump.log` is empty or missing.
+
+The pump is being denied at the unattended gate. Its output goes to
+`/dev/null` (that is what the installed cron line and launchd agent specify),
+and it deliberately does not open the repo-local `pump.log` until after the
+gate passes — so a refusal leaves no repo-local trace by design. Look at the
+machine-local record instead:
+
+```sh
+orchid doctor
+tail ~/.orchid/unattended-trust/refusals.log
+```
+
+Each line carries the time, the refused surface, the repository, the binding
+state, and the gate's own reason — `unattended trust is denied — <why>`, the
+wording the refused invocation would have printed, where `<why>` is the same
+text `orchid trust show` reports. Fix the cause above and the next scheduled
+invocation proceeds; nothing needs to be cleared.
+
+If the `why` names a missing `jq`, `jq`'s location — not the scheduler's
+environment — is the problem. Every unattended entry point (the pump and the
+headless tick runner) overwrites `PATH` with a fixed list of system prefixes
+at entry, so whatever `PATH` a scheduler hands it is never consulted, and
+re-running `orchid service install` cannot change the answer.
+The gate prints the exact list it searched; install `jq` into one of those
+directories (`/usr/local/bin`, `/opt/homebrew/bin` and `/usr/bin` are on it)
+or symlink it there. A `jq` in `~/.local/bin`, a nix profile, or an
+asdf/cargo shim is invisible to headless runs by design.
+
+`orchid doctor` and `orchid status --explain` evaluate the same probe on the
+same fixed `PATH`, so they now agree with the gate instead of reporting `ok
+jq` about a `jq` no scheduled run can reach. When the two `PATH`s disagree
+they say so explicitly: doctor prints a `WARN:` line naming the surface that
+is short, and `status --explain` prints an `unattended_tools: WARNING:` line.
+
+## Unattended trust breaks after a machine-wide deduplication pass
+
+**Symptom:** repositories that were acknowledged and working start reporting
+
+```
+binding_state: mismatch
+why: repository incarnation anchor does not match the machine-local
+     acknowledgement, and Git's common-directory identity witness
+     <repo>/.git/description carries N hard links ...
+```
+
+and re-acknowledging fails with `unexpected hard-link alias`.
+
+A disk-space deduplicator — `jdupes -L`, `rdfind -makehardlinks`,
+`hardlink(1)`, and some backup/sync tools — replaces byte-identical files
+with hard links to one copy. Git's stock `.git/description` is identical in
+every repository on the machine, so such a pass links them all together.
+
+Orchid binds each acknowledgement to a two-link pair: `.git/description` and
+a second link to that same inode under `~/.orchid/unattended-trust/`. A
+foreign third link breaks the pair, and that refusal is deliberate — the
+gate cannot tell a deduplicator's link from an attacker's, so it fails
+closed both at the gate and at re-acknowledgement.
+
+The fix is cheap and lossless, because Orchid never reads the witness's
+contents and Git does not track them. Give the file an inode of its own
+again, then acknowledge the repository once more:
+
+```sh
+cp .git/description .git/description.orchid-new
+mv .git/description.orchid-new .git/description
+orchid trust unattended "$PWD" --reason "reviewed target and accept unattended prompt risk"
+```
+
+From a linked worktree, `.git` is a file rather than a directory: use the
+path `orchid trust show` prints as `identity_witness`, which is the shared
+common directory's `description`. Linked worktrees share one record, so one
+repair covers them all.
+
+Do this per affected repository. To keep it from recurring, exclude
+`.git/description` (or the whole `.git` directory) from the deduplicator's
+scan.
+
 ## Resume (crash / restart)
 
 **Symptom:** the interactive session died mid-run (crash, closed terminal,
@@ -45,7 +160,7 @@ for the full capsule-loading walk a resuming session performs before
 touching any task.
 
 **Headless equivalent:** you don't need to do any of this by hand at all —
-`runners/orchid-pump` (installed as a service, see
+`runners/orchid-pump` (acknowledged and installed as a service, see
 [quickstart.md](./quickstart.md)) detects an abandoned run itself (a lease
 older than `pump_stale_s`, default `900`) and runs the exact same resume
 sequence via `runners/orchid-tick` on its own.
@@ -240,7 +355,11 @@ at install time) into the rendered plist's `EnvironmentVariables` /
 the cron line's `PATH=` prefix — re-run `orchid service install` after
 changing your `$PATH` (e.g. installing a new engine CLI) so the scheduled
 pump picks up the change; editing the shell's profile alone does not touch
-an already-installed schedule.
+an already-installed schedule. For safety, the pump holds that captured value
+without searching it while unattended trust is checked; pre-gate Git/jq and
+filesystem helpers resolve only from fixed system, Homebrew/Linuxbrew, or
+MacPorts directories. The captured operator path becomes active only after
+trust succeeds, in time for engine/plugin discovery and execution.
 
 ## See also
 

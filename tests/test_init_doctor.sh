@@ -1,13 +1,73 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME/.orchid"
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME/.orchid"
 printf 'verify=true\n' > orchid.config
 mkdir -p "$WORK/eng/fake"; printf '#!/usr/bin/env bash\n' > "$WORK/eng/fake/run"; chmod +x "$WORK/eng/fake/run"
 printf 'role.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' >> orchid.config
 
 out0="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || fail "doctor passes with resolvable fake engines"
 assert_match "integration branch exists or creatable" "$out0" "doctor pre-init: integration branch creatable from HEAD"
+assert_match "WARN: unattended trust \\(headless execution gated\\): denied" "$out0" \
+  "doctor reports the default-denied unattended gate without blocking interactive readiness"
+
+trust_out="$("$ORCHID_BIN" trust unattended "$WORK" --reason "doctor test fixture")" \
+  || fail "doctor fixture acknowledgement must succeed"
+assert_match "reason: doctor test fixture" "$trust_out" \
+  "trust acknowledgement records operator provenance"
+trusted_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
+  || fail "doctor remains healthy after unattended acknowledgement"
+assert_match "^ok: unattended trust: allowed" "$trusted_doctor" \
+  "doctor reports the allowed gate with machine-local provenance"
+echo "$trusted_doctor" | grep -q "scheduled/service invocation" \
+  && fail "doctor must not report scheduled refusals when none were recorded"
+
+# A scheduled pump/tick has nowhere to print: the cron line and the launchd
+# agent both discard its output, and the repo-local service log is not opened
+# until after the gate. Those refusals are recorded machine-locally instead,
+# and doctor is where an operator finds them.
+doctor_refusal_log="$HOME/.orchid/unattended-trust/refusals.log"
+[ -d "$(dirname "$doctor_refusal_log")" ] \
+  || fail "the acknowledgement above must have created the machine-local store"
+printf '2026-01-01T00:00:00Z\tunattended pump\t%s\tuntrusted\tno machine-local acknowledgement\n' \
+  "$WORK" > "$doctor_refusal_log"
+refusal_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
+  || fail "recorded refusals are a warning, not a doctor failure"
+assert_match "WARN: unattended trust denied a scheduled/service invocation" \
+  "$refusal_doctor" "doctor surfaces refusals the scheduler discarded"
+assert_match "unattended pump" "$refusal_doctor" \
+  "doctor shows which surface was refused"
+rm -f "$doctor_refusal_log"
+
+# doctor probes jq after restoring the operator PATH, while the unattended
+# gate it printed above resolves tools on the fixed PATH the runners pin. The
+# two must never disagree silently -- a bare `command -v` here reported `ok
+# jq` about a jq no scheduled run could reach. Build the current PATH minus jq
+# (a symlink farm, so by construction nothing ELSE goes missing) and check
+# that doctor names the surface that is short.
+assert_match '^ok: jq$' "$out0" \
+  "doctor reports jq ready when the operator and unattended PATHs agree"
+nojq_bin="$WORK/doctor-no-jq-bin"
+mkdir -p "$nojq_bin"
+(
+  IFS=:
+  for nojq_dir in $PATH; do
+    [ -n "$nojq_dir" ] && [ -d "$nojq_dir" ] || continue
+    for nojq_exe in "$nojq_dir"/*; do
+      [ -f "$nojq_exe" ] && [ -x "$nojq_exe" ] || continue
+      nojq_name="${nojq_exe##*/}"
+      if [ "$nojq_name" != jq ] && [ ! -e "$nojq_bin/$nojq_name" ]; then
+        ln -s "$nojq_exe" "$nojq_bin/$nojq_name"
+      fi
+    done
+  done
+)
+nojq_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" PATH="$nojq_bin" "$ORCHID_BIN" doctor 2>&1)" || true
+assert_match 'jq missing: jq is reachable on the fixed PATH' "$nojq_doctor" \
+  "doctor names the PATH that is short rather than a bare 'jq missing'"
+assert_match 'not on the operator PATH' "$nojq_doctor" \
+  "doctor says which of the two PATHs cannot reach jq"
+
 mkdir -p .orchid/plugins/engines/evil
 out="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" || true
 assert_match "repo-local plugins.*trust" "$out" "repo-local plugin note"
@@ -254,7 +314,7 @@ cfg_bare="$WORK/cfg-bare"; mkdir -p "$cfg_bare"
 ORCHID_REPO="$cfg_bare" "$ORCHID_BIN" init >/dev/null
 cfg_wt="$WORK/cfg-wt"
 git -C "$cfg_bare" worktree add -q "$cfg_wt" orchid/integration
-cfg_epoch="$(ORCHID_REPO="$cfg_wt" HOME="$WORK/home" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+cfg_epoch="$(ORCHID_REPO="$cfg_wt" HOME="$MACHINE_HOME" "$ORCHID_BIN" run start | sed 's/epoch: //')"
 
 # Advance the ref from OUTSIDE $cfg_wt (same technique as the stale-checkout
 # fixture above): $cfg_wt's own index/working tree are never touched by this.
@@ -283,7 +343,7 @@ pre_cfg_wt_index="$(git -C "$cfg_wt" ls-files --stage)"
 pre_cfg_wt_config="$(cat "$cfg_wt/orchid.config")"
 pre_cfg_journal="$(cat "$cfg_wt/.orchid/journal.md")"
 
-cfg_commit_out="$(ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$WORK/home" "$ORCHID_BIN" config commit --reason "add implementer role binding")"
+cfg_commit_out="$(ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$MACHINE_HOME" "$ORCHID_BIN" config commit --reason "add implementer role binding")"
 assert_match "^committed: " "$cfg_commit_out" "config commit prints the new commit sha"
 
 # The edited config landed on the integration branch...
@@ -317,7 +377,7 @@ grep -q "add implementer role binding" "$cfg_wt/.orchid/journal.md" || fail "con
 
 # --reason is required (INV-08); refused before anything is touched.
 rc=0
-ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$WORK/home" "$ORCHID_BIN" config commit >/dev/null 2>&1 || rc=$?
+ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$MACHINE_HOME" "$ORCHID_BIN" config commit >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "config commit without --reason must be refused"
 
 # `config list` remains read-only/unaffected by the new subverb.

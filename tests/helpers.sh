@@ -1,14 +1,32 @@
 #!/usr/bin/env bash
 set -uo pipefail
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# `pwd -P`, never logical `pwd`: the runners resolve their own ORCHID_ROOT
+# physically (runners/orchid-service, runners/orchid-pump), so a checkout
+# reached through a symlinked path -- a macOS `mktemp -d` merge-validation
+# worktree under /var/folders/... -> /private/var/folders/... is the case
+# that caught this -- would otherwise give tests a LOGICAL repo root that
+# never matches the physical path a runner bakes into a rendered artifact
+# (the launchd plist's ProgramArguments). Canonicalize once, here.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ORCHID_BIN="$REPO_ROOT/bin/orchid"
 FAILS=0
+
+# A self-hosted test run can inherit the OUTER Orchid session's identity.
+# Fixtures create and export their own repo/epoch as needed; an inherited
+# actor would otherwise misattribute every fixture journal entry (and an
+# inherited repo/epoch can bind early setup commands to the outer run).
+# Keep dry-run available because adapter tests intentionally exercise that
+# public seam, but never inherit durable-run identity into a disposable repo.
+unset ORCHID_ACTOR ORCHID_REPO ORCHID_EPOCH
+
+# Fixtures deliberately replace HOME to isolate machine-local Orchid state.
 # Disposable fixture commits must not depend on an operator's global Git
-# identity (hosted CI and extracted archives intentionally have none).
+# identity, which may be absent in hosted CI and extracted archives.
 export GIT_AUTHOR_NAME="${GIT_AUTHOR_NAME:-Orchid Tests}"
 export GIT_AUTHOR_EMAIL="${GIT_AUTHOR_EMAIL:-orchid-tests@example.invalid}"
 export GIT_COMMITTER_NAME="${GIT_COMMITTER_NAME:-$GIT_AUTHOR_NAME}"
 export GIT_COMMITTER_EMAIL="${GIT_COMMITTER_EMAIL:-$GIT_AUTHOR_EMAIL}"
+
 fail()        { echo "  FAIL: $*"; FAILS=$((FAILS+1)); }
 assert_eq()   { [ "$1" = "$2" ] || fail "$3 (expected '$1', got '$2')"; }
 assert_match(){ echo "$2" | grep -Eq "$1" || fail "$3 (no match '$1')"; }
@@ -44,7 +62,16 @@ WORK="$(mktemp -d)"
   echo "FATAL: helpers.sh: mktemp -d failed to produce a usable scratch dir (WORK='$WORK') -- refusing to run any cd/git" >&2
   exit 1
 }
-trap 'rm -rf "$WORK"; exit $((FAILS>0))' EXIT
+
+# Trust/config/plugin state models machine-local HOME state and must not live
+# beneath a target repository. Trust-boundary fixtures use this independent
+# disposable directory instead of the historical "$WORK/home" shortcut.
+MACHINE_HOME="$(mktemp -d)"
+[ -n "$MACHINE_HOME" ] && [ -d "$MACHINE_HOME" ] || {
+  echo "FATAL: helpers.sh: mktemp -d failed to produce a machine HOME (MACHINE_HOME='$MACHINE_HOME')" >&2
+  exit 1
+}
+trap 'rm -rf "$WORK" "$MACHINE_HOME"; exit $((FAILS>0))' EXIT
 
 # plant_reviewer_envelope <task-id> [attempt] -- v1-m2's kernel envelope-
 # count gate (reviewing->arbitrating) requires review_required_count(risk_

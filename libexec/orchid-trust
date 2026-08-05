@@ -1,0 +1,118 @@
+#!/bin/bash -p
+set -euo pipefail
+
+# Direct libexec invocation is a supported entry surface, so do not rely on
+# bin/orchid to have selected Bash, sanitized PATH, or supplied ORCHID_ROOT.
+# A dispatched invocation already carries the original operator PATH as inert
+# data; a direct invocation captures it here. Trust acknowledgement,
+# inspection, and revocation intentionally never restore it.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+__orchid_entry_defer_restore=1
+
+source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/trust.sh"
+
+_trust_usage() {
+  cat <<'EOF'
+usage:
+  orchid trust unattended <repo> --reason <reason>
+  orchid trust show [<repo>]
+  orchid trust revoke [<repo>]
+
+Unattended trust is an operator-authored, machine-local acknowledgement of
+the prompt-injection risk presented by a target repository. Records and their
+identity anchors live outside the repository. Validation binds Git
+common-directory device/inode, a hard-linked common-directory witness inode,
+the repository root commit, and the current trust-policy version. Linked
+worktrees share a record; repository paths, origins, tracked content, Git
+config, and orchid.config never grant trust. The trust store and repository
+must be on one filesystem so the non-reusable anchor can be hard-linked. A
+usable JSON record is an operator-owned, single-link regular file without
+group/other write permission; record symlinks and hard-link aliases fail
+closed. With no identity-keyed candidate, inspection denies with root
+verification pending and does not invoke Git or create scratch files.
+Acknowledgement and verification of an existing candidate require Git 2.45
+or newer so object access can reliably forbid lazy fetching from a promisor
+remote. Revocation uses only that bounded identity derivation: it removes
+this repository's record and anchor without any version, ref, history,
+object, root, or scratch-space check, so an unsupported Git, a mismatched,
+shallow, object-missing, or corrupt history cannot strand an acknowledgement
+on disk.
+
+Root verification is never cached or reused. Every acknowledgement and every
+gate re-reads each reachable commit and re-hashes its exact stored payload,
+so a rewritten, removed, or corrupted object is re-detected even when the
+ref values and the anchor are untouched; `show` reports this as
+`root_verification: walked`. The cost is bounded by batching, not by
+skipping: one cat-file and one hash-object process per batch. Refusals from a
+scheduled/service invocation, whose output the scheduler discards, are also
+appended to `~/.orchid/unattended-trust/refusals.log` and shown by `orchid
+doctor`. jq is required to read or author a record; without it the gate stays
+closed and says which tool is missing.
+EOF
+}
+
+sub="${1:-}"; [ "$#" -gt 0 ] && shift
+case "$sub" in
+  -h|--help|help|"")
+    _trust_usage
+    exit 0
+    ;;
+  unattended)
+    repo="${1:-}"
+    [ -n "$repo" ] || orchid_die "usage: orchid trust unattended <repo> --reason <reason>"
+    shift
+    reason=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --reason)
+          [ -n "${2:-}" ] || orchid_die "--reason requires a non-empty value"
+          reason="$2"; shift 2 ;;
+        *) orchid_die "orchid trust unattended: unknown argument '$1'" ;;
+      esac
+    done
+    [ -n "$reason" ] || orchid_die "usage: orchid trust unattended <repo> --reason <reason>"
+    unattended_trust_acknowledge "$repo" "$reason"
+    echo "unattended trust acknowledged:"
+    unattended_trust_show "$repo" | sed 's/^/  /'
+    ;;
+  show)
+    [ "$#" -le 1 ] || orchid_die "usage: orchid trust show [<repo>]"
+    repo="${1:-${ORCHID_REPO:-$PWD}}"
+    unattended_trust_show "$repo"
+    ;;
+  revoke)
+    [ "$#" -le 1 ] || orchid_die "usage: orchid trust revoke [<repo>]"
+    repo="${1:-${ORCHID_REPO:-$PWD}}"
+    # Do not inspect first: revocation must stay available when inspection
+    # cannot complete. The revoke call itself resolves the repository identity
+    # it acted on.
+    if unattended_trust_revoke "$repo"; then
+      echo "unattended trust revoked: ${ORCHID_UNATTENDED_REPO:-$repo}"
+    else
+      echo "unattended trust already absent: ${ORCHID_UNATTENDED_REPO:-$repo}"
+    fi
+    ;;
+  *)
+    orchid_die "unknown trust subcommand '$sub' (expected unattended, show, or revoke)"
+    ;;
+esac

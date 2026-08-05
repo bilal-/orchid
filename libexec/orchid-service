@@ -1,5 +1,31 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
+
+# This libexec file is a bare tier handoff, but it is also directly
+# executable. Resolve its own installed location under the same fixed helper
+# path as the runner rather than trusting an inherited ORCHID_ROOT. Preserve
+# the original operator PATH only as inert data for runners/orchid-service.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+
 # tier-1 -> tier-2 boundary (mirrors bin/orchid's own generic dispatch, and
 # the docs/specs/kernel.md determinism-boundary split behind `orchid jobs
 # launch`'s relationship to runners/orchid-launch): `service` is inherently
@@ -10,4 +36,4 @@ set -euo pipefail
 # the handoff: no subverb parsing, no validation, no epoch fencing (service
 # installs sit outside the run/epoch model entirely -- they configure the
 # SCHEDULER, not a run). `runners/orchid-service` (tier 2) owns all of it.
-exec "$ORCHID_ROOT/runners/orchid-service" "$@"
+exec /bin/bash -p "$ORCHID_ROOT/runners/orchid-service" "$@"
