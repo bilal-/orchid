@@ -129,14 +129,40 @@ clear --reason "..."` releases it. That verb is the record's single writer;
 nothing else may create, edit or delete it.
 
 When one pass meets several boundaries, the one RECORDED is the one a woken
-orchestrator can actually resolve with the verbs its broker admits —
-`review-evidence` and `review-conflict`, both settled by one `orchid task
-arbitrate` — ahead of the kinds only an operator can resolve; among equals,
-the first in task-id order. The walk still notes every boundary it meets.
-Without that precedence a `blocked` task, which raises the same operator-only
-boundary on every pass until a human runs `task unblock`/`task retry`, would
-permanently mask a later task's arbitrable one and spend an LLM wakeup per
-pump cycle on a decision the woken model has no verb to make.
+orchestrator could actually SETTLE, ahead of the ones only an operator can;
+among equals, the first in task-id order. The walk still notes every boundary
+it meets. Without that precedence a `blocked` task, which raises the same
+operator-only boundary on every pass until a human runs `task
+unblock`/`task retry`, would permanently mask a later task's arbitrable one
+and spend an LLM wakeup per pump cycle on a decision the woken model has no
+verb to make.
+
+**"Could settle" is never a property of the kind alone.** It is the
+conjunction of three facts, and each of them is read from structured data:
+
+1. **Which verb records the result.** `review-evidence`/`review-conflict` →
+   `orchid task arbitrate`. `planning` → `orchid plan apply`. `run-complete`
+   → `orchid run accept --evidence`. `blocked-task`, `hook-failure`,
+   `worktree-conflict` and `operator-decision` name none — no procedure an
+   orchestrator can run resolves them.
+2. **Whether the resolved adapter's `command_surface` admits that verb.** A
+   `brokered` adapter can run only the broker
+   (`runners/orchid-orchestrator-command`), whose single state-changing
+   judgment verb is `orchid task arbitrate`; it refuses `plan apply`, `run
+   accept`, `task unblock` and every other write. A `soft` adapter has no
+   enforceable restriction, so every verb is reachable from it. An
+   unrecognized label reads as `brokered` — the narrower surface, so an
+   unknown label can only ever route more boundaries to a human.
+3. **Whether the task's CURRENT status lets that verb run.** `orchid task
+   arbitrate` refuses any status but `arbitrating` (exit 3), so a review
+   boundary raised while the task is still `reviewing` — which is exactly
+   what the reviewing walk's own slot-independence boundary is — is not
+   arbitrable, however arbitrable the same kind becomes one transition later.
+
+Both consequences are load bearing. A `run-complete` boundary against a
+`brokered` orchestrator is a HUMAN's job: no model can run the verb that
+closes the run. And a review boundary raised from `reviewing` must not
+outrank a genuine operator-only one with a verb that would have exited 3.
 
 The kernel-owned boundary kinds:
 
@@ -144,46 +170,63 @@ The kernel-owned boundary kinds:
 | --- | --- |
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
 | `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry` resolves it |
-| `review-evidence` | review evidence bound to the task's current `candidate_sha` is missing, malformed, non-`ok`, or incomplete for the task's `risk_tier` |
+| `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
 | `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
 | `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem |
 
-**Recording one is not the same question as waking a model for one.** The
-precedence above answers "which of several boundaries goes into the record".
-A second, independent question is asked once — by `runners/orchid-pump`,
-against the recorded kind: can waking an ORCHESTRATOR move this at all?
-`planning` (PLANNING below), `review-evidence`/`review-conflict` (the truth
-table), and `run-complete` (COMPLETION below) are procedures this file hands
-to an orchestrator. `blocked-task`, `hook-failure`, `worktree-conflict` and
-`operator-decision` are not: they recur identically until a HUMAN acts, so
-the pump refuses to spend a wakeup per cycle re-reading them, and the driver
-instead raises one `orchid notify` blocker per distinct record — the surface
-that condition actually needs. The two sets differ deliberately: PLANNING and
-COMPLETION are orchestrator work whose recording verbs (`orchid plan apply`,
-`orchid run accept`) the brokered command surface still refuses, so under a
-`brokered` adapter a woken orchestrator's move on those two is to journal and
-notify rather than to record the result itself.
+**Waking a model for one asks the SAME question.** The precedence above
+decides which of several boundaries goes into the record;
+`runners/orchid-pump` then asks whether to wake an orchestrator for the one
+that did — and it is the identical three-fact test, re-derived from the
+recorded `kind`, the named task's current status, and the resolved adapter's
+`command_surface`. A boundary no admitted verb can settle wakes nobody: it
+would recur identically until a HUMAN acts, so the pump refuses to spend a
+wakeup per cycle re-reading it, and the driver instead raises one `orchid
+notify` blocker per distinct record — the surface that condition actually
+needs. The pump prints `pump: judgment boundary [<kind>] is operator-only —
+not waking an orchestrator` and exits 0.
+
+These two questions used to differ, and the gap was a defect rather than a
+nuance: `run-complete` was classed as orchestrator-resolvable even though the
+broker refuses `orchid run accept`, so a finished run woke a model every
+staleness window forever — and because the notify path is suppressed for
+anything an orchestrator can settle, the operator was never told to run the
+acceptance step at all. They are now one function.
 
 **The arbitration truth table.** At `arbitrating`, exactly one of three arms
 applies — they are mutually exclusive and evaluated in this order, so an
 incomplete review set is never also reported as a conflict, and vice versa:
 
-1. **Evidence** — the evidence set is SCOPED FIRST, exactly as the kernel's
-   own `reviewing`→`arbitrating` gate scopes it: the reviewer envelopes for
-   the current attempt that are bound to the task's CURRENT `candidate_sha`.
-   An envelope bound to a different one is **superseded** — a sibling left by
-   a relaunched reviewer slot, or by the `merging`→`testing` rebase edge
-   moving `candidate_sha` under a review that already landed — and is
-   **ignored**, never a boundary (boundarying it would pin the task in
-   `arbitrating` with no verb able to release it, and would make two arms
-   match the same state). Within that scoped set, any envelope that fails to
-   validate, whose `candidate_sha` cannot be read at all, or that reports a
-   status other than `ok` is a boundary; so is having fewer than
-   `review_required_count(risk_tier)` valid ones, or no `candidate_sha` on
-   the task at all. → boundary `review-evidence`, **no transition**.
+1. **Evidence** — the evidence set is EXACTLY the one the kernel's own
+   `reviewing`→`arbitrating` gate counts, and this arm mirrors that gate
+   rather than second-guessing it. An envelope for the current attempt counts
+   only when it is bound to the task's CURRENT `candidate_sha`, validates,
+   and reports status `ok`. Everything else is **skipped, never a boundary**:
+   an envelope bound to a different candidate (a sibling left by a relaunched
+   reviewer slot, or by the `merging`→`testing` rebase edge), one whose
+   `candidate_sha` cannot be read at all, one that fails to validate, and one
+   whose status is not `ok`. The kernel gate says so in its own words — "Only
+   status==ok envelopes count; anything else is silently skipped, same as an
+   sha mismatch". This arm then fires on the COUNT alone: fewer than
+   `review_required_count(risk_tier)` surviving envelopes, or no
+   `candidate_sha` on the task at all. → boundary `review-evidence`, **no
+   transition**.
+
+   **Why skipping, not failing closed.** The ordinary recovery path is a
+   reviewer slot that errors, `orchid jobs reconcile` filing the adapter's own
+   non-`ok` envelope bound to the current candidate, and the relaunch filing a
+   good one. The kernel gate ignores the dead envelope and admits the task to
+   `arbitrating` with a complete unanimous set. A driver that boundaried on
+   that dead envelope would then refuse deterministic approval forever, over a
+   file no verb can remove. A boundary must never be reachable only through a
+   state the kernel itself calls fine. This is not a weakening: the driver
+   adds `envelope_validate` on top of the gate's own two tests, so it can only
+   ever count FEWER envelopes than the gate — a shortfall still stops the
+   pass, and it stops it at `arbitrating`, where `orchid task arbitrate` is
+   exactly the verb that settles it.
 2. **Deterministic approval** — every required review is valid and current,
    every verdict is `approve`, every review reports `scope_complete: true`,
    and no finding reaches the task's `blocking_severity` (a finding whose
@@ -643,6 +686,21 @@ one-pass driver could otherwise stop progressing in silence:
   that polls forever on work nobody is doing. A job already outstanding for
   that task and operation (a pass that died between the spawn and the
   advance) is adopted, never spawned a second time.
+
+  **A `pid: 0` manifest is not an outstanding job.** `orchid jobs prepare`
+  mints every manifest with `pid: 0` and the launcher stamps the real pid
+  only after the spawn, so a `pid: 0` manifest means a launch died in
+  between and nothing is running. Adopting one would defeat the whole rule
+  above — the task advances behind a job that will never file an envelope,
+  and nothing else in the kernel reads it as live either (the driver's
+  escalation sweep skips `pid: 0`; ordinary `orchid jobs gc` skips it by
+  design). So the driver treats it as no job and relaunches, and its
+  reconcile/check/gc step additionally runs `orchid jobs gc --reap-prepared
+  --older-than-s <stall_minutes×60>` to clear the orphan. That reap is
+  BOUNDED, never `--older-than-s 0`: a manifest younger than the bound may
+  belong to a launcher that is between `jobs prepare` and its own spawn line
+  right now, and reaping it would delete the pack and request document out
+  from under a live launch.
 - **Hooks are deferred, never skipped — and never gated past their job.** A
   hook is a job: it is launched, reconciles on a later pass, and only then
   can its artifact be read. So the driver dispatches a bound point's entries
@@ -688,7 +746,23 @@ one-pass driver could otherwise stop progressing in silence:
   `run_status` never leaving `running`, nobody woken to notice it is over.
   The count is taken from the statuses the walk READ, so the pass that
   finishes the last task exits 0 on its own progress and the boundary is
-  raised by the next one.
+  raised by the next one. Against a `brokered` orchestrator that boundary is
+  a blocker for a HUMAN, not a hand-off to a model: the broker refuses
+  `orchid run accept`, so no woken model can close the run.
+- **The lease is refreshed THROUGH the pass's long steps, not just at its
+  ends.** `orchid verify` runs the task's whole suite in the pass's own
+  foreground, and `orchid merge` re-runs it on the integration checkout.
+  Steps 1 and 5 above refresh the lease at the two ends of a pass, which is
+  enough only while everything between them is quick — on a repository whose
+  suite runs longer than `pump_stale_s` (default 900) the running pass's own
+  lease would read as stale, a second pump would start and fence a fresh
+  epoch, and the first pass would then die on the next verb's `epoch_require`.
+  No pass could ever complete there. So the driver refreshes the lease
+  immediately before and after each of those two steps and keeps a background
+  heartbeat refreshing it throughout, at a third of the staleness window.
+  `orchid run refresh-lease` is a named verb and takes no verb lock, so this
+  neither writes state outside a verb nor can deadlock against the step it
+  covers.
 - **One counter for the escalation ladder.** The prose ladder in step 2
   spends its first occurrence on a free relaunch that touches no counter; a
   driver has no per-attempt memory outside `.orchid/`, and a private
@@ -843,14 +917,14 @@ is normal, never an error:
   stopped", the record says which task and why, and a boundary the driver
   reported without recording (a state no orchestrator is entitled to resolve
   autonomously) deliberately fails this second test. A third fact is then
-  read off the record: its `kind` must be one an orchestrator procedure can
-  actually move (`planning`, `review-evidence`, `review-conflict`,
-  `run-complete` — see "Recording one is not the same question as waking a
-  model for one" above). An operator-only kind ends the invocation with
-  `pump: judgment boundary [<kind>] is operator-only — not waking an
-  orchestrator`, exit 0: it would recur identically on every pass until a
-  human acted, and the driver has already raised the blocker that reaches
-  one. With all three satisfied, the
+  derived from the record: some verb must settle this boundary, the resolved
+  orchestrator adapter's `command_surface` must admit that verb, and the
+  named task's current status must let it run (see "Could settle is never a
+  property of the kind alone" above). A boundary failing any of those ends
+  the invocation with `pump: judgment boundary [<kind>] is operator-only —
+  not waking an orchestrator`, exit 0: it would recur identically on every
+  pass until a human acted, and the driver has already raised the blocker
+  that reaches one. With all three satisfied, the
   pump probes `resolve_role_available orchestrator` and `exec`s
   `runners/orchid-tick` — the only path that reaches it, since a pass the
   deterministic policy can resolve on its own goes through

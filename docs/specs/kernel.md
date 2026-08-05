@@ -720,28 +720,31 @@ boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 explicit judgment-result verb; see PROTOCOL.md's "Judgment boundaries"
 section for the non-overlapping arbitration truth table.
 
-One boundary is recorded per pass, chosen by whether a woken orchestrator can
-resolve it with the verbs the broker admits (`review-evidence` and
-`review-conflict`, via `orchid task arbitrate`) ahead of the operator-only
-kinds, then by task-id order — so a `blocked` task, whose boundary recurs
-every pass until a human runs `task unblock`/`task retry`, cannot mask
-another task's arbitrable one.
+One boundary is recorded per pass, chosen by whether a woken orchestrator
+could actually SETTLE it ahead of the ones only an operator can, then by
+task-id order — so a `blocked` task, whose boundary recurs every pass until a
+human runs `task unblock`/`task retry`, cannot mask another task's arbitrable
+one.
 
-Whether a recorded boundary WAKES an orchestrator is a separate, wider
-question, asked once by the pump against the record's `kind`: `planning`,
-`review-evidence`, `review-conflict` and `run-complete` are procedures
-PROTOCOL.md hands to an orchestrator; the rest recur identically until a
-human acts, so no model is woken for them and the driver raises one `orchid
-notify` blocker per distinct record instead. The two sets differ because
-PLANNING and COMPLETION are orchestrator procedures whose recording verbs
-(`orchid plan apply`, `orchid run accept`) the brokered command surface still
-refuses — under that surface the woken orchestrator journals and notifies
-rather than recording the result itself.
+"Could settle" is never read off the kind alone. It is the conjunction of the
+verb that records the result (`orchid task arbitrate` for the two review
+kinds, `orchid plan apply` for `planning`, `orchid run accept` for
+`run-complete`, none for the rest), the resolved orchestrator adapter's
+`command_surface` (a `brokered` adapter can run only the broker, whose one
+state-changing judgment verb is `task arbitrate`; a `soft` adapter has no
+enforceable restriction; an unrecognized label reads as `brokered`), and the
+named task's CURRENT status (`task arbitrate` refuses anything but
+`arbitrating`, exit 3). The pump asks the identical question before waking a
+model; anything that fails it wakes nobody and the driver raises one `orchid
+notify` blocker per distinct record instead.
 
 `run-complete` is the driver's own COMPLETION hand-off: a pass that reads
 every task as `done` makes COMPLETION's mechanical first call (`orchid run
 advance accepting`) and stops there, because the acceptance checks and the
-evidence file `orchid run accept` requires are judgment work.
+evidence file `orchid run accept` requires are judgment work. Against a
+`brokered` orchestrator it is a blocker for a human rather than a hand-off to
+a model — the broker refuses `orchid run accept`, so nothing woken could
+close the run.
 
 The driver's deterministic-approval arm gates on `findings[]` severity
 against the task's `blocking_severity`, and that gate is only as live as the

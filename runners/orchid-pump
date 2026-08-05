@@ -465,10 +465,24 @@ fi
 # them to an orchestrator. Waking a model for one spends a wakeup per pump
 # cycle to re-read a record and change nothing; the driver has already
 # notified the operator through `orchid notify`, which is what that condition
-# actually needs. Only the KIND is read here (a structured field of a record
-# this pump never writes), never the reason text.
+# actually needs.
+#
+# That question is not answerable from the boundary KIND alone. It also needs
+# the task's CURRENT STATUS (`orchid task arbitrate`, the one write the
+# brokered surface admits, refuses anything but `arbitrating`) and the
+# `command_surface` of the adapter that would actually be woken (a brokered
+# adapter cannot run `orchid run accept` at all, so a finished run is a human's
+# job however much COMPLETION reads like an orchestrator procedure). All three
+# are structured facts -- a record field, a frontmatter key, a manifest key --
+# and none of them is the boundary's reason text.
 boundary_kind="$(printf '%s' "$boundary_json" | jq -r '.kind // ""' 2>/dev/null || echo "")"
-if ! drive_boundary_wakes_orchestrator "$boundary_kind"; then
+boundary_task="$(printf '%s' "$boundary_json" | jq -r '.task // ""' 2>/dev/null || echo "")"
+boundary_status=""
+if [ -n "$boundary_task" ] && [ -f "$state/tasks/$boundary_task.md" ]; then
+  boundary_status="$(fm_get "$state/tasks/$boundary_task.md" status)"
+fi
+if ! drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" \
+     "$(drive_orchestrator_surface "$repo")"; then
   echo "pump: judgment boundary [${boundary_kind:-unknown}] is operator-only — not waking an orchestrator"
   exit 0
 fi

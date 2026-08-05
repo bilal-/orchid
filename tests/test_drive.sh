@@ -19,6 +19,10 @@ source "$REPO_ROOT/lib/envelope.sh"
 source "$REPO_ROOT/lib/roles.sh"
 source "$REPO_ROOT/lib/resolver.sh"
 source "$REPO_ROOT/lib/review.sh"
+# capsuite + ledger: drive_orchestrator_surface resolves the orchestrator the
+# same way the pump would, and resolve_role_available consults both.
+source "$REPO_ROOT/lib/capsuite.sh"
+source "$REPO_ROOT/lib/ledger.sh"
 source "$REPO_ROOT/lib/drive.sh"
 
 DRIVE="$REPO_ROOT/runners/orchid-drive"
@@ -71,29 +75,57 @@ assert_eq 2 "$(drive_threshold_rank high)" "a high threshold ranks 2"
 assert_eq 1 "$(drive_threshold_rank nonsense)" \
   "an unrecognized THRESHOLD falls back to medium — never to 'nothing blocks'"
 
-# --- boundary priority: can an admitted verb actually resolve this kind? ---
-assert_eq 1 "$(drive_boundary_priority review-conflict)" \
-  "a review conflict is resolvable by the one verb the broker admits (task arbitrate)"
-assert_eq 1 "$(drive_boundary_priority review-evidence)" \
-  "a review-evidence boundary is likewise arbitrable"
-assert_eq 0 "$(drive_boundary_priority blocked-task)" \
-  "a blocked task is operator-only — unblock/retry are verbs the broker refuses"
-assert_eq 0 "$(drive_boundary_priority operator-decision)" "operator decisions rank below arbitrable ones"
-assert_eq 0 "$(drive_boundary_priority planning)" "planning ranks below arbitrable ones"
+# --- boundary resolvability: kind AND task status AND command surface ------
+# Never the kind alone. A boundary is settleable by a woken orchestrator only
+# when some verb records its result, the resolved adapter's command surface
+# admits that verb, and the task's current status lets the verb run.
+assert_eq 1 "$(drive_boundary_priority review-conflict arbitrating brokered)" \
+  "a review conflict on an ARBITRATING task is resolvable by the one write the broker admits"
+assert_eq 1 "$(drive_boundary_priority review-evidence arbitrating brokered)" \
+  "a review-evidence boundary on an arbitrating task is likewise arbitrable"
 
-# --- and the SEPARATE question: can waking an orchestrator move it at all? --
-# Wider than the ranking above on purpose: PLANNING and COMPLETION are
-# orchestrator procedures whose recording verbs the broker still refuses, so
-# they wake a model without being the kind the broker settles in one call.
-for kind in planning review-evidence review-conflict run-complete; do
-  drive_boundary_wakes_orchestrator "$kind" \
-    || fail "a $kind boundary is an orchestrator procedure — waking one can move it"
-done
+# The confirmed defect: the reviewing walk raises review-evidence boundaries
+# while the task is still `reviewing`, where `orchid task arbitrate` refuses
+# outright (libexec/orchid-task, exit 3). Ranking those as arbitrable let them
+# outrank genuine operator-only boundaries with a verb that could not run.
+assert_eq 0 "$(drive_boundary_priority review-evidence reviewing brokered)" \
+  "the SAME kind on a REVIEWING task is not arbitrable — task arbitrate exits 3 there"
+assert_eq 0 "$(drive_boundary_priority review-conflict reviewing soft)" \
+  "and the status gate is the verb's own, so it holds on a soft surface too"
+if drive_boundary_wakes_orchestrator review-evidence reviewing brokered; then
+  fail "waking a model for a review boundary it cannot yet arbitrate changes nothing"
+fi
+
+# The other confirmed defect: `run-complete` is settled by `orchid run accept
+# --evidence`, which runners/orchid-orchestrator-command does not admit. A
+# brokered orchestrator woken for a finished run can do nothing about it.
+if drive_boundary_wakes_orchestrator run-complete "" brokered; then
+  fail "a brokered adapter cannot run 'orchid run accept' — a finished run is a human's job"
+fi
+drive_boundary_wakes_orchestrator run-complete "" soft \
+  || fail "a soft adapter has no command restriction, so COMPLETION is reachable from it"
+if drive_boundary_wakes_orchestrator planning "" brokered; then
+  fail "a brokered adapter cannot run 'orchid plan apply' either"
+fi
+drive_boundary_wakes_orchestrator planning "" soft \
+  || fail "a soft adapter can run PLANNING's own recording verb"
+
+# Kinds no verb settles at all are operator-only on EVERY surface.
 for kind in blocked-task hook-failure worktree-conflict operator-decision; do
-  if drive_boundary_wakes_orchestrator "$kind"; then
-    fail "a $kind boundary needs a human — waking a model for it changes nothing"
-  fi
+  for surface in brokered soft; do
+    assert_eq 0 "$(drive_boundary_priority "$kind" arbitrating "$surface")" \
+      "a $kind boundary ranks below arbitrable ones on a $surface surface"
+    if drive_boundary_wakes_orchestrator "$kind" arbitrating "$surface"; then
+      fail "a $kind boundary needs a human — no verb records its result"
+    fi
+  done
 done
+
+# An unrecognized surface label reads as the NARROWER one, so it can only ever
+# route more boundaries to a human, never fewer.
+if drive_boundary_wakes_orchestrator run-complete "" nonsense; then
+  fail "an unrecognized command_surface must fall back to brokered, never to soft"
+fi
 
 # --- evidence arm ----------------------------------------------------------
 mk_policy_task P01 low high ""
@@ -106,13 +138,15 @@ assert_match "incomplete review evidence: 0 of 1" "$(detail_of P02)" "the detail
 
 mk_policy_task P03 low high
 printf 'not json at all\n' > "$POLICY/.orchid/reviews/P03-a1-reviewer.json"
-assert_eq evidence "$(decision_of P03)" "a malformed reviewer envelope is an evidence boundary"
-assert_match "malformed" "$(detail_of P03)" "the detail names the malformed envelope"
+assert_eq evidence "$(decision_of P03)" "a malformed reviewer envelope carries no verdict, so the set is still empty"
+assert_match "incomplete review evidence: 0 of 1" "$(detail_of P03)" \
+  "it is skipped exactly as the kernel gate skips it, and the shortfall is what stops the pass"
 
 mk_policy_task P04 low high
 mk_review P04 "" approve true '[]' "$CAND" failed
-assert_eq evidence "$(decision_of P04)" "a non-ok reviewer envelope is an evidence boundary"
-assert_match "status failed, not ok" "$(detail_of P04)" "the detail names the offending status"
+assert_eq evidence "$(decision_of P04)" "a non-ok reviewer envelope likewise leaves the set empty"
+assert_match "incomplete review evidence: 0 of 1" "$(detail_of P04)" \
+  "the detail counts what is on hand against what the tier requires"
 
 # Scoping: an envelope bound to another candidate is SUPERSEDED, not evidence
 # at all. It is ignored (exactly as the kernel's own reviewing->arbitrating
@@ -147,22 +181,50 @@ assert_eq approve "$(decision_of P07)" \
 assert_match "unanimous scope-complete approval from 1 review" "$(detail_of P07)" \
   "only the envelopes bound to the current candidate are counted toward the approval"
 
-# ...and scoping does NOT weaken fail-closed: a non-ok envelope bound to the
-# CURRENT candidate is still a boundary, even beside a valid approval.
+# THE ORDINARY RECOVERY PATH, and the reason the arms below count rather
+# than fail closed on a dead sibling (lesson L007). A reviewer slot errors,
+# `orchid jobs reconcile` files the adapter's own non-ok envelope (`failed`,
+# `timeout`, `rate_limited` — all of them valid envelopes, all of them BOUND
+# TO THE CURRENT CANDIDATE), and the relaunch then files a good one. The
+# kernel's own
+# reviewing->arbitrating gate ignores the dead envelope and counts the live
+# one -- its comment says so verbatim: "Only status==ok envelopes count;
+# anything else is silently skipped, same as an sha mismatch" -- so the task
+# reaches `arbitrating` with a complete unanimous set. If this policy
+# boundaried on the dead envelope instead, that task would be permanently
+# refused deterministic approval over a file NO VERB CAN REMOVE.
 mk_policy_task P08 low high
-mk_review P08 "" approve true '[]'
-mk_review P08 ".2" approve true '[]' "$CAND" failed
+mk_review P08 "" approve true '[]' "$CAND" timeout
 assert_eq evidence "$(decision_of P08)" \
-  "a non-ok envelope for the CURRENT candidate still fails closed to an evidence boundary"
-assert_match "status failed, not ok" "$(detail_of P08)" "the detail names the offending status"
+  "before the relaunch lands, the dead envelope counts for nothing: the set is short"
+assert_match "incomplete review evidence: 0 of 1" "$(detail_of P08)" \
+  "and the shortfall is the reason, not the dead envelope"
+mk_review P08 ".2" approve true '[]'
+assert_eq approve "$(decision_of P08)" \
+  "the relaunch's own review completes the set, and the dead sibling never blocks approval"
+assert_match "unanimous scope-complete approval from 1 review" "$(detail_of P08)" \
+  "only the valid ok current envelopes are counted toward the approval"
 
-# A malformed envelope cannot be proven superseded, so it fails closed too.
+# Same for a malformed sibling: it carries no verdict to weigh, and no verb
+# can delete it, so it is skipped rather than made permanent.
 mk_policy_task P09 low high
 mk_review P09 "" approve true '[]'
 printf '{"contract":1,"status":"ok"\n' > "$POLICY/.orchid/reviews/P09-a1-reviewer.2.json"
-assert_eq evidence "$(decision_of P09)" \
-  "an envelope with no readable candidate_sha cannot be scoped, so it fails closed"
-assert_match "malformed" "$(detail_of P09)" "the detail names it malformed rather than silently dropping it"
+assert_eq approve "$(decision_of P09)" \
+  "an unreadable envelope is skipped exactly as the kernel gate skips it, never boundaried forever"
+
+# The count this policy uses can only ever be LOWER than the kernel gate's --
+# it adds envelope_validate on top of the gate's own two tests -- so a
+# shortfall still stops the pass, and it stops it at `arbitrating`, which is
+# exactly where `orchid task arbitrate` can settle it.
+mk_policy_task P09b medium high
+mk_review P09b "" approve true '[]'
+printf '{"contract":1,"status":"ok","candidate_sha":"%s"}\n' "$CAND" \
+  > "$POLICY/.orchid/reviews/P09b-a1-reviewer.2.json"
+assert_eq evidence "$(decision_of P09b)" \
+  "an envelope the kernel gate counts but envelope_validate rejects leaves the policy short, not silently approving"
+assert_match "incomplete review evidence: 1 of 2" "$(detail_of P09b)" \
+  "and the shortfall says so in counts"
 
 # --- approval arm ----------------------------------------------------------
 mk_policy_task P10 low high
@@ -475,6 +537,14 @@ assert_eq review-conflict "$(printf '%s' "$boundary" | jq -r .kind)" "the bounda
 assert_eq T002 "$(printf '%s' "$boundary" | jq -r .task)" "the boundary names the task awaiting judgment"
 assert_match "verdict=request-changes" "$(printf '%s' "$boundary" | jq -r .reason)" \
   "the boundary reason quotes the structured field that produced it, never prose from the review"
+
+# ...and because the task really is `arbitrating`, `orchid task arbitrate`
+# would run: this is the one shape a woken orchestrator settles in one call,
+# so no operator blocker is raised for it.
+case "$DRIVE_OUT" in
+  *"notified: [review-conflict]"*)
+    fail "a review conflict on an ARBITRATING task is arbitrable — it must not be routed to a human" ;;
+esac
 
 # Re-driving is stable: the same boundary, the same non-transition, no drift.
 run_drive
@@ -804,6 +874,22 @@ if grep -q 'arbitrate(approve)' "$SLOTS/.orchid/journal.md"; then
   fail "two same-engine reviews must never reach a deterministic approval"
 fi
 
+# THE REVIEWING CASE. This boundary was raised while L010 is still
+# `reviewing`, and `orchid task arbitrate` refuses any status but
+# `arbitrating` (libexec/orchid-task, exit 3). So no verb an orchestrator can
+# run settles it, whatever its command surface -- it must be ranked
+# operator-only AND routed to the `orchid notify` blocker path, or the
+# condition would wake a model every staleness window forever with nobody
+# ever told.
+assert_eq reviewing "$(lstatus)" "precondition: the boundary really is raised while the task is reviewing"
+assert_eq 0 "$(drive_boundary_priority review-evidence reviewing brokered)" \
+  "a review boundary on a reviewing task ranks operator-only"
+assert_match "notified: \[review-evidence\] is operator-only" "$LDRIVE_OUT" \
+  "so the pass says it routed this one to a human instead of to a model"
+assert_match "judgment boundary \[review-evidence\] needs an operator" \
+  "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
+  "and the blocker really is recorded where an operator reads it"
+
 # One review per routed engine, and the same evidence set advances. (Both are
 # request-changes here so the walk stops at `arbitrating` instead of running
 # on into a merge, which this fixture has no real candidate for.)
@@ -815,3 +901,290 @@ assert_eq arbitrating "$(lstatus)" \
   "with each routed slot covered by its OWN engine, the gate passes (rc=$LDRIVE_RC, out: $LDRIVE_OUT)"
 assert_eq review-conflict "$(lboundary | jq -r .kind)" \
   "and the pass then stops on the verdicts themselves, not on the evidence set"
+
+# ===========================================================================
+# Part I -- THE RUN-COMPLETE CASE. `orchid run accept --evidence` is the only
+# verb that closes a finished run, and runners/orchid-orchestrator-command
+# does not admit it. So against a `command_surface=brokered` orchestrator a
+# finished run is a HUMAN's job: waking a model for it would spend one wakeup
+# per staleness window on a verb the model cannot reach, and -- because the
+# notify path is suppressed for anything an orchestrator can settle -- the
+# operator would never be told to run the acceptance step at all.
+#
+# The orchestrator engine is PINNED here (role.orchestrator=), never left to
+# the default chain: the whole point is that the assertion depends on the
+# resolved adapter's declared surface, so the fixture must decide it.
+# ===========================================================================
+mk_surface_engine() {  # <name> <brokered|soft>
+  local dir="$WORK/eng/$1"
+  mkdir -p "$dir"
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=shell,git\nrequires_binaries=jq\nentrypoint=run\ncommand_surface=%s\n' \
+    "$1" "$2" > "$dir/plugin.conf"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/run"
+  chmod +x "$dir/run"
+}
+mk_surface_engine stubbrokered brokered
+mk_surface_engine stubsoft soft
+
+# Sanity, straight off the manifests the fixture just wrote: the label really
+# is what the classification below is reading.
+assert_eq brokered "$(manifest_get "$WORK/eng/stubbrokered" command_surface soft)" \
+  "the brokered fixture engine declares the restricted surface"
+assert_eq soft "$(manifest_get "$WORK/eng/stubsoft" command_surface soft)" \
+  "and the soft one declares the unrestricted one"
+
+# ...and the resolution the driver and the pump both make really does read
+# the PINNED orchestrator's own label, all three ways.
+SURF="$WORK/surfaceprobe"
+mkdir -p "$SURF"
+printf 'role.orchestrator=stubsoft\n' > "$SURF/orchid.config"
+assert_eq soft "$(drive_orchestrator_surface "$SURF")" \
+  "the surface is read off the orchestrator this repo would actually wake"
+printf 'role.orchestrator=stubbrokered\n' > "$SURF/orchid.config"
+assert_eq brokered "$(drive_orchestrator_surface "$SURF")" \
+  "...and follows the binding when it changes, never a hardcoded default"
+printf 'role.orchestrator=zqxwv-no-such-engine\n' > "$SURF/orchid.config"
+assert_eq brokered "$(drive_orchestrator_surface "$SURF")" \
+  "when no orchestrator resolves at all, nobody is woken — so the narrowest surface is the honest answer"
+
+BROK="$WORK/brokeredrun"
+mkdir -p "$BROK"
+cd "$BROK" || exit 1
+git init -q .
+printf 'role.orchestrator=stubbrokered\nrole.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$BROK" "$ORCHID_BIN" init >/dev/null || fail "orchid init (brokered-completion fixture)"
+git checkout -q orchid/integration
+BEPOCH="$(ORCHID_REPO="$BROK" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+borchid() { ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$ORCHID_BIN" "$@"; }
+borchid requirements import "$WORK/requirements.md" >/dev/null
+borchid task create B010 "the only task, and it is finished" >/dev/null
+borchid plan apply --reason "initial plan" >/dev/null
+fm_set "$BROK/.orchid/tasks/B010.md" status done
+
+assert_eq brokered "$(drive_orchestrator_surface "$BROK")" \
+  "the pinned orchestrator's own manifest decides which surface this repo would wake"
+
+BDRIVE_RC=0
+BDRIVE_OUT="$(ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$DRIVE" 2>&1)" || BDRIVE_RC=$?
+bboundary() { ORCHID_REPO="$BROK" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+
+assert_eq 16 "$BDRIVE_RC" "a finished run still stops at a judgment boundary (out: $BDRIVE_OUT)"
+assert_eq run-complete "$(bboundary | jq -r .kind)" "and the boundary still names the run's completion"
+assert_match "notified: \[run-complete\] is operator-only" "$BDRIVE_OUT" \
+  "but against a brokered orchestrator it is routed to a human, not held for a model"
+assert_match "judgment boundary \[run-complete\] needs an operator" \
+  "$(cat "$BROK/.orchid/BLOCKERS.md")" \
+  "and the blocker that tells the operator to run the acceptance step is really raised"
+if drive_boundary_wakes_orchestrator run-complete "" "$(drive_orchestrator_surface "$BROK")"; then
+  fail "no model may be woken for a boundary whose only settling verb its adapter refuses"
+fi
+
+# Repeating the pass raises no SECOND blocker: the record is unchanged, and
+# the notify is sent once per distinct record, not once per pass.
+b_blockers_before="$(wc -l < "$BROK/.orchid/BLOCKERS.md")"
+BDRIVE_RC=0
+BDRIVE_OUT="$(ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$DRIVE" 2>&1)" || BDRIVE_RC=$?
+assert_eq 16 "$BDRIVE_RC" "a repeated pass over the finished run reports the same boundary"
+assert_eq "$b_blockers_before" "$(wc -l < "$BROK/.orchid/BLOCKERS.md")" \
+  "and raises no second blocker for a record that has not changed"
+
+# The same run, driven for a SOFT orchestrator, is the other half of the
+# classification: nothing restricts that adapter's commands, so COMPLETION is
+# reachable from it and the boundary is left for the model rather than a
+# human. Same kind, same record, opposite routing -- which is exactly why the
+# decision cannot be made from the kind alone.
+if ! drive_boundary_wakes_orchestrator run-complete "" soft; then
+  fail "a soft adapter can run 'orchid run accept', so COMPLETION is an orchestrator procedure there"
+fi
+
+# ===========================================================================
+# Part I2 -- the ordinary reviewer-slot recovery, end to end (lesson L007).
+# A slot errors, `orchid jobs reconcile` files the adapter's own non-ok
+# envelope BOUND TO THE CURRENT CANDIDATE, and the relaunch files a good one.
+# The kernel's reviewing->arbitrating gate ignores the dead envelope and
+# counts the live one, so the task arrives at `arbitrating` with a complete
+# unanimous set. Deterministic approval must then happen: the dead envelope
+# is a file no verb can delete, so refusing over it would park the task
+# forever.
+# ===========================================================================
+RECOV="$WORK/recovery"
+mkdir -p "$RECOV"
+cd "$RECOV" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$RECOV" "$ORCHID_BIN" init >/dev/null || fail "orchid init (recovery fixture)"
+git checkout -q orchid/integration
+REPOCH="$(ORCHID_REPO="$RECOV" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+rorchid() { ORCHID_REPO="$RECOV" ORCHID_EPOCH="$REPOCH" "$ORCHID_BIN" "$@"; }
+rorchid requirements import "$WORK/requirements.md" >/dev/null
+rorchid task create R010 "a reviewer slot died and was relaunched" >/dev/null
+rorchid plan apply --reason "initial plan" >/dev/null
+
+RCAND=8888888888888888888888888888888888888888
+fm_set "$RECOV/.orchid/tasks/R010.md" status arbitrating
+fm_set "$RECOV/.orchid/tasks/R010.md" candidate_sha "$RCAND"
+mkdir -p "$RECOV/.orchid/reviews"
+mk_recov_review() {  # <suffix> <status> <verdict>
+  jq -n --arg jid "j-fixture-R010-$1" --arg cand "$RCAND" --arg st "$2" --arg v "$3" \
+    '{contract:1, job_id:$jid, task:"R010", operation:"review", status:$st,
+      verdict:$v, scope_complete:true, summary:"recovery fixture",
+      candidate_sha:$cand, findings:[]}' \
+    > "$RECOV/.orchid/reviews/R010-a1-reviewer$1.json"
+}
+# The dead slot's own envelope: valid, current, and NOT ok -- exactly what
+# reconcile files when an adapter reports timeout/failure.
+mk_recov_review "" timeout approve
+# ...and the relaunch's real review.
+mk_recov_review ".2" ok approve
+
+assert_eq 1 "$(drive_reviewer_envelope_count "$RECOV" R010)" \
+  "the kernel's own gate counts only the live envelope — the dead one is skipped, not fatal"
+assert_eq approve "$(drive_review_decision "$RECOV" R010 | cut -f1)" \
+  "and the policy agrees with the gate: a complete unanimous set approves over a dead sibling"
+
+RDRIVE_RC=0
+RDRIVE_OUT="$(ORCHID_REPO="$RECOV" ORCHID_EPOCH="$REPOCH" "$DRIVE" 2>&1)" || RDRIVE_RC=$?
+rstatus() { ORCHID_REPO="$RECOV" "$ORCHID_BIN" task show R010 | grep '^status: ' | cut -d' ' -f2; }
+if [ "$(rstatus)" = arbitrating ]; then
+  fail "a task whose live evidence is complete must not be parked in arbitrating over a dead envelope (rc=$RDRIVE_RC, out: $RDRIVE_OUT)"
+fi
+assert_match "arbitrate\(approve\): deterministic approval" "$(cat "$RECOV/.orchid/journal.md")" \
+  "the approval was recorded through the judgment verb despite the dead sibling"
+
+# ===========================================================================
+# Part J -- a PREPARED-BUT-NEVER-SPAWNED job manifest is not a live job.
+# `orchid jobs prepare` mints every manifest with `pid: 0` and
+# runners/orchid-launch stamps the real pid only after the spawn, so a pid-0
+# manifest means a launch died in between and nothing is running. Nothing
+# else in the kernel reads one as live -- the escalation sweep skips pid 0,
+# ordinary `jobs gc` skips pid 0 -- so adopting one would advance a task into
+# `implementing` behind a job that will never produce an envelope: no
+# `jobs check` finding, no infra-fail, no boundary, silence forever.
+# ===========================================================================
+PREP="$WORK/prepared"
+mkdir -p "$PREP"
+cd "$PREP" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$PREP" "$ORCHID_BIN" init >/dev/null || fail "orchid init (prepared-manifest fixture)"
+git checkout -q orchid/integration
+PEPOCH="$(ORCHID_REPO="$PREP" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+porchid() { ORCHID_REPO="$PREP" ORCHID_EPOCH="$PEPOCH" "$ORCHID_BIN" "$@"; }
+porchid requirements import "$WORK/requirements.md" >/dev/null
+porchid task create P010 "a crashed launch left a prepared manifest" >/dev/null
+porchid task set P010 verification_commands "test -f stub_feature.txt" >/dev/null
+porchid plan apply --reason "initial plan" >/dev/null
+
+# Exactly the shape `jobs prepare` mints and `orchid-launch` never got to
+# stamp: pid 0, pgid 0, started_at 0.
+ORPHAN="$PREP/.orchid/runtime/jobs/j-e1-P010-a1-beef.json"
+mkdir -p "$PREP/.orchid/runtime/jobs"
+jq -n '{job_id:"j-e1-P010-a1-beef", task:"P010", attempt:1, role:"implementer",
+        operation:"implement", engine:"stubimpl", pid:0, pgid:0, started_at:0,
+        log:"/dev/null", output:"/dev/null", base_sha:"", candidate_sha:"",
+        hook_point:""}' > "$ORPHAN"
+
+PDRIVE_RC=0
+PDRIVE_OUT="$(ORCHID_REPO="$PREP" ORCHID_EPOCH="$PEPOCH" "$DRIVE" 2>&1)" || PDRIVE_RC=$?
+pstatus() { ORCHID_REPO="$PREP" "$ORCHID_BIN" task show P010 | grep '^status: ' | cut -d' ' -f2; }
+
+case "$PDRIVE_OUT" in
+  *"adopting the implement job"*)
+    fail "a pid-0 manifest is not a spawned job — adopting one advances a task behind nothing (out: $PDRIVE_OUT)" ;;
+esac
+assert_eq implementing "$(pstatus)" \
+  "the task still advances, but only because the pass RELAUNCHED (rc=$PDRIVE_RC, out: $PDRIVE_OUT)"
+live_pids="$(for _m in "$PREP/.orchid/runtime/jobs"/*.json; do
+               [ -e "$_m" ] || continue
+               jq -r 'select((.pid // 0) != 0) | .job_id' "$_m"
+             done)"
+[ -n "$live_pids" ] \
+  || fail "the advance into implementing must be backed by a manifest that carries a real pid"
+
+# The orphan is still there: the reap is BOUNDED, so a manifest younger than
+# stall_minutes is left alone in case a launcher is mid-flight over it.
+[ -f "$ORPHAN" ] \
+  || fail "a freshly-prepared manifest must not be reaped — a live launcher may still be between prepare and spawn"
+
+# Age it past the bound, and the pass reaps it through the verb's own
+# --reap-prepared mode. Nothing else in the kernel ever would.
+touch -t 202001010000 "$ORPHAN"
+PDRIVE_RC=0
+PDRIVE_OUT="$(ORCHID_REPO="$PREP" ORCHID_EPOCH="$PEPOCH" "$DRIVE" 2>&1)" || PDRIVE_RC=$?
+assert_match "gc-prepared j-e1-P010-a1-beef" "$PDRIVE_OUT" \
+  "an aged prepared manifest is reaped through orchid jobs gc --reap-prepared"
+[ ! -f "$ORPHAN" ] \
+  || fail "the reaped manifest must leave the jobs dir (out: $PDRIVE_OUT)"
+
+# ===========================================================================
+# Part K -- the lease must stay fresh THROUGH a long synchronous verify.
+# `orchid verify` runs the task's whole suite in the pass's own foreground.
+# With the lease refreshed only at the two ends of a pass, a suite longer
+# than `pump_stale_s` makes the running pass's own lease read as stale: a
+# second pump starts, fences a fresh epoch, and the first pass then dies on
+# the next verb's `epoch_require`. On a repository whose suite takes longer
+# than the staleness window, NO pass could ever complete.
+#
+# The assertion is the pump's own gate arithmetic, applied at a moment when
+# the pass has already been running longer than the window it is measured
+# against.
+# ===========================================================================
+HB="$WORK/heartbeat"
+mkdir -p "$HB"
+cd "$HB" || exit 1
+git init -q .
+HB_STALE_S=3
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\npump_stale_s=%s\n' "$HB_STALE_S" > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$HB" "$ORCHID_BIN" init >/dev/null || fail "orchid init (heartbeat fixture)"
+git checkout -q orchid/integration
+HEPOCH="$(ORCHID_REPO="$HB" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+horchid() { ORCHID_REPO="$HB" ORCHID_EPOCH="$HEPOCH" "$ORCHID_BIN" "$@"; }
+horchid requirements import "$WORK/requirements.md" >/dev/null
+horchid task create H010 "its suite outlives the staleness window" >/dev/null
+horchid task set H010 verification_commands "sleep $(( HB_STALE_S * 4 )); exit 1" >/dev/null
+horchid plan apply --reason "initial plan" >/dev/null
+
+# Parked at `testing` with a suite that runs for ~4x pump_stale_s and then
+# fails, so the pass stops at `rework` without spawning anything.
+HCAND="$(git -C "$HB" rev-parse HEAD)"
+fm_set "$HB/.orchid/tasks/H010.md" status testing
+fm_set "$HB/.orchid/tasks/H010.md" candidate_sha "$HCAND"
+
+# The pump's own two-line GNU/BSD parse, verbatim (runners/orchid-pump's
+# _pump_iso_to_epoch), so this measures exactly what the pump would.
+hb_lease_age() {
+  local iso ep
+  iso="$(jq -r '.refreshed_at // ""' "$HB/.orchid/runtime/lease.json" 2>/dev/null || echo "")"
+  [ -n "$iso" ] || { echo 999999; return 0; }
+  ep="$(date -u -d "$iso" +%s 2>/dev/null || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$iso" +%s 2>/dev/null || echo 0)"
+  [ "$ep" -gt 0 ] || { echo 999999; return 0; }
+  echo $(( $(date -u +%s) - ep ))
+}
+
+hb_epoch_before="$(cat "$HB/.orchid/runtime/epoch")"
+( ORCHID_REPO="$HB" ORCHID_EPOCH="$HEPOCH" "$DRIVE" > "$WORK/hb-drive.out" 2>&1
+  echo "$?" > "$WORK/hb-drive.rc" ) &
+hb_bg=$!
+# Well past pump_stale_s, and well short of the suite's own runtime: the pass
+# is provably still inside `orchid verify` here.
+sleep $(( HB_STALE_S * 2 ))
+hb_age="$(hb_lease_age)"
+[ "$hb_age" -lt "$HB_STALE_S" ] \
+  || fail "the lease went stale ($hb_age s >= $HB_STALE_S s) while its own pass was still verifying — a second pump would fence over it"
+wait "$hb_bg"
+
+assert_eq "$hb_epoch_before" "$(cat "$HB/.orchid/runtime/epoch")" \
+  "and the pass ran to completion under its own epoch, never fenced out from under itself"
+assert_eq rework "$(ORCHID_REPO="$HB" "$ORCHID_BIN" task show H010 | grep '^status: ' | cut -d' ' -f2)" \
+  "the long verify really did run to its failing exit (drive out: $(cat "$WORK/hb-drive.out"))"
+hb_rc="$(cat "$WORK/hb-drive.rc")"
+[ "$hb_rc" -eq 0 ] || [ "$hb_rc" -eq 16 ] \
+  || fail "the heartbeat-covered pass must complete normally (rc=$hb_rc): $(cat "$WORK/hb-drive.out")"

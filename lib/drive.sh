@@ -60,7 +60,9 @@ drive_threshold_rank() {
 #
 #   planning          -- run_status is `planning`; drafting is operator work
 #   blocked-task      -- a task sits in `blocked`; only an operator resolves it
-#   review-evidence   -- missing/malformed/non-ok/stale/incomplete evidence
+#   review-evidence   -- fewer valid, ok, current-candidate reviews on hand
+#                        than the risk_tier requires; or the tier's count is
+#                        met while a routed reviewer slot has none of its own
 #   review-conflict   -- request-changes, blocking finding, mixed verdicts,
 #                        or a review that did not cover the whole scope
 #   hook-failure      -- a `:required` hook binding has no ok, current envelope
@@ -68,7 +70,7 @@ drive_threshold_rank() {
 #                        this task/repo/branch
 #   run-complete      -- every task is `done`; PROTOCOL.md's COMPLETION
 #                        procedure (acceptance checks, then `orchid run
-#                        accept --evidence`) is the orchestrator's work
+#                        accept --evidence`) is still to be run
 #   operator-decision -- everything else this policy deliberately refuses to
 #                        decide (attempts exhausted, wallclock budget, a
 #                        status/archetype combination with no declared edge)
@@ -81,62 +83,147 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
   esac
 }
 
-# drive_boundary_priority <kind> -- 1 when a woken orchestrator can actually
-# RESOLVE a boundary of this kind with the verbs its brokered command surface
-# admits (runners/orchid-orchestrator-command: exact reads plus `orchid task
-# arbitrate`, journal/lesson, notify, `run boundary clear`), 0 when only an
-# operator can.
+# -- boundary resolvability -------------------------------------------------
+# Whether a woken orchestrator can actually SETTLE a boundary is NEVER a
+# property of the boundary kind alone. It is the conjunction of three facts,
+# and getting any one of them wrong burns an LLM wakeup per pump cycle on a
+# decision the model has no verb to make -- or, worse, suppresses the
+# `orchid notify` blocker that is the only way a human ever hears about it:
 #
-# Only the two review kinds are resolvable: they are settled by reading the
-# evidence and recording one `orchid task arbitrate`. `blocked-task` is the
-# case this exists for -- `orchid task unblock`/`task retry` are operator
-# verbs the broker refuses, so a blocked task raises the SAME boundary on
-# every pass, forever, until a human intervenes. With one boundary recorded
-# per pass in task-id order, an unresolvable boundary on a low-numbered task
-# would otherwise mask every later task's arbitrable one indefinitely, at one
-# LLM wakeup per pump cycle spent on a decision the woken model has no verb
-# to make. Ranking, not suppression: PROTOCOL.md requires a blocked task to
-# be a boundary (it is how an operator learns the run is parked), so it is
-# still recorded whenever nothing arbitrable outranks it.
-drive_boundary_priority() {
-  case "$1" in
-    review-evidence|review-conflict) echo 1 ;;
-    *) echo 0 ;;
+#   1. WHICH VERB settles this kind at all (drive_boundary_settling_verb).
+#   2. Whether the RESOLVED ADAPTER's command surface admits that verb. A
+#      `command_surface=brokered` adapter (plugins/engines/claude) can run
+#      nothing but runners/orchid-orchestrator-command, whose table admits
+#      exactly one state-changing judgment verb -- `orchid task arbitrate` --
+#      and refuses `plan apply`, `run accept`, `task unblock` and every other
+#      write outright. A `soft` adapter has no enforceable restriction, so
+#      every verb is reachable from it.
+#   3. Whether the TASK'S CURRENT STATUS lets that verb run. `orchid task
+#      arbitrate` refuses anything but `arbitrating` (libexec/orchid-task,
+#      exit 3), so a review boundary raised while the task is still
+#      `reviewing` is NOT arbitrable, however arbitrable the same kind
+#      becomes one transition later.
+#
+# Two live defects made this explicit rather than implicit. A `run-complete`
+# boundary was classified as orchestrator-resolvable even though the broker
+# refuses `orchid run accept`, so a FINISHED run woke a model every staleness
+# window forever and -- because the notify path is suppressed for anything
+# orchestrator-resolvable -- never told the human to run `orchid run accept
+# --evidence`. And the reviewing walk's own review-evidence boundaries ranked
+# as arbitrable while the task was still `reviewing`, outranking genuine
+# operator-only boundaries with a verb that would have exited 3.
+
+# The write verbs runners/orchid-orchestrator-command admits, as verb-phrase
+# atoms. Kept as data beside the broker's own table, not inferred from it.
+_DRIVE_BROKERED_WRITE_VERBS=" task-arbitrate journal-add lessons-add notify run-boundary-clear "
+
+# drive_surface_admits <command_surface> <verb-phrase> -- 0 iff an adapter
+# declaring <command_surface> can actually run that verb. `soft` is the
+# absence of an enforceable restriction, so it admits everything; anything
+# unrecognized is treated as `brokered`, the NARROWER surface, so an unknown
+# label can only ever route more boundaries to a human, never fewer.
+drive_surface_admits() {
+  local surface="$1" verb="$2"
+  case "$surface" in
+    soft) return 0 ;;
+    *)
+      case "$_DRIVE_BROKERED_WRITE_VERBS" in
+        *" $verb "*) return 0 ;;
+        *) return 1 ;;
+      esac ;;
   esac
 }
 
-# drive_boundary_wakes_orchestrator <kind> -- 0 iff waking an ORCHESTRATOR can
-# move this boundary at all, i.e. PROTOCOL.md hands the procedure behind it to
-# an orchestrator rather than to a human at a terminal:
+# drive_boundary_settling_verb <kind> -- the ONE verb that records the result
+# behind this boundary kind, or nothing when no verb does and only a human at
+# a terminal can act:
 #
-#   planning         -- PROTOCOL.md PLANNING (import, breakdown, critique)
-#   review-evidence  -- the arbitration truth table, settled by one
-#   review-conflict     `orchid task arbitrate`
-#   run-complete     -- PROTOCOL.md COMPLETION (acceptance checks, then
-#                       `orchid run accept --reason --evidence`)
+#   review-evidence  -- `orchid task arbitrate` (the arbitration truth table)
+#   review-conflict
+#   planning         -- `orchid plan apply` (PROTOCOL.md PLANNING)
+#   run-complete     -- `orchid run accept --evidence` (PROTOCOL.md COMPLETION)
 #
-# Everything else -- a `blocked` task (`task unblock`/`task retry`), a failed
-# required hook (its handler or its binding is broken), a worktree that cannot
-# be proven to belong to this task, and the operator-decision catch-all --
-# needs a human: no orchestrator procedure resolves it, so waking a model for
-# it burns a wakeup per pump cycle and changes nothing. runners/orchid-pump is
-# the caller: no LLM is woken for a boundary this returns 1 for.
-#
-# DELIBERATELY NOT the same question drive_boundary_priority answers. That one
-# ranks CONCURRENT boundaries by whether the BROKERED command surface
-# (runners/orchid-orchestrator-command) admits a verb that settles them in one
-# call, which only the two review kinds do. This one asks whether an
-# orchestrator has any procedure at all -- a wider set, because PLANNING and
-# COMPLETION are orchestrator procedures whose recording verbs (`orchid plan
-# apply`, `orchid run accept`) the broker deliberately refuses. Under the
-# brokered surface a woken orchestrator's move on those two is to journal and
-# notify rather than to record the result itself; that is a real asymmetry, and
-# naming it here is the point of keeping the two functions apart.
-drive_boundary_wakes_orchestrator() {
+# `blocked-task` (`task unblock`/`task retry`), `hook-failure` (its handler or
+# its binding is broken), `worktree-conflict` (a checkout that cannot be proven
+# to belong to this task) and the `operator-decision` catch-all deliberately
+# name none: no procedure an orchestrator can run resolves them.
+drive_boundary_settling_verb() {
   case "$1" in
-    planning|review-evidence|review-conflict|run-complete) return 0 ;;
-    *) return 1 ;;
+    review-evidence|review-conflict) printf 'task-arbitrate\n' ;;
+    planning) printf 'plan-apply\n' ;;
+    run-complete) printf 'run-accept\n' ;;
+    *) return 0 ;;
   esac
+}
+
+# drive_boundary_resolvable <kind> <task-status> <command_surface> -- 0 iff a
+# woken orchestrator could settle this exact boundary, right now, with a verb
+# its adapter admits and the task's current status allows. Fail-closed on
+# every axis: no settling verb, a surface that refuses it, or a status that
+# would make it exit 3, all mean "a human has to be told".
+drive_boundary_resolvable() {
+  local kind="$1" status="${2:-}" surface="${3:-brokered}" verb
+  verb="$(drive_boundary_settling_verb "$kind")"
+  [ -n "$verb" ] || return 1
+  drive_surface_admits "$surface" "$verb" || return 1
+  case "$verb" in
+    task-arbitrate) [ "$status" = arbitrating ] || return 1 ;;
+  esac
+  return 0
+}
+
+# drive_boundary_priority <kind> <task-status> <command_surface> -- 1 for a
+# boundary a woken orchestrator can settle now, 0 for one only an operator can.
+#
+# This is the RANKING key runners/orchid-drive uses when a pass meets several
+# boundaries and may record only one. Without it a `blocked` task -- which
+# raises the same operator-only boundary on EVERY pass until a human runs
+# `task unblock`/`task retry` -- would permanently mask a later task's
+# arbitrable one, spending one LLM wakeup per pump cycle on a decision the
+# woken model has no verb to make. Ranking, not suppression: PROTOCOL.md
+# requires a blocked task to be a boundary (it is how an operator learns the
+# run is parked), so it is still recorded whenever nothing outranks it.
+drive_boundary_priority() {
+  if drive_boundary_resolvable "$@"; then echo 1; else echo 0; fi
+}
+
+# drive_boundary_wakes_orchestrator <kind> <task-status> <command_surface> --
+# 0 iff waking an orchestrator can move this boundary at all. Exactly the same
+# question drive_boundary_priority ranks by, and deliberately so: the two used
+# to disagree (planning and run-complete woke a model without being settleable
+# by any verb the broker admits), and that gap is precisely what left a
+# finished run polling a model forever with the human never notified.
+# runners/orchid-pump is the caller for the wake decision; runners/orchid-drive
+# is the caller for the mirror-image one -- a boundary this returns 1 for is
+# routed to `orchid notify` instead, so it reaches a human.
+drive_boundary_wakes_orchestrator() {
+  drive_boundary_resolvable "$@"
+}
+
+# drive_orchestrator_surface <repo> -- the `command_surface` label of the
+# adapter the pump would actually wake for a boundary in THIS repository, or
+# `brokered` when no orchestrator engine resolves at all (nobody will be woken,
+# so the narrowest surface is the honest answer and every boundary falls to the
+# notify path). An engine that declares no label reads as `soft`, matching
+# runners/orchid-tick and INV-14: the field may weaken its own claim by
+# omission, never strengthen it.
+#
+# Read-only, like everything else in this file: resolve_role_available walks
+# the chain, the ledger and the capsuite and mutates none of them.
+drive_orchestrator_surface() {
+  local repo="$1" engine dir surface
+  engine="$(resolve_role_available "$repo" orchestrator 2>/dev/null)" || {
+    printf 'brokered\n'; return 0
+  }
+  [ -n "$engine" ] || { printf 'brokered\n'; return 0; }
+  dir="$(resolve_engine_dir "$engine" 2>/dev/null || true)"
+  [ -n "$dir" ] || { printf 'brokered\n'; return 0; }
+  surface="$(manifest_get "$dir" command_surface soft)"
+  case "$surface" in
+    brokered|soft) ;;
+    *) surface=soft ;;
+  esac
+  printf '%s\n' "$surface"
 }
 
 # drive_has_transition <archetype> <from> <to> -- 0 iff the archetype
@@ -218,8 +305,8 @@ drive_envelope_has_blocking_finding() {
 #                           whole scope, and no finding reaches the task's
 #                           blocking_severity -- the ONLY deterministic
 #                           approval this policy will ever make.
-#   evidence<TAB><detail>   missing, malformed, non-ok or incomplete evidence
-#                           FOR THE CURRENT candidate_sha.
+#   evidence<TAB><detail>   fewer valid, `ok`, current-candidate reviews on
+#                           hand than the task's risk_tier requires.
 #   conflict<TAB><detail>   a request-changes verdict, a finding at or above
 #                           blocking_severity, mixed verdicts, or a review
 #                           that reports scope_complete false.
@@ -229,18 +316,36 @@ drive_envelope_has_blocking_finding() {
 # versa). No prose is parsed anywhere: every input is a structured envelope
 # field the kernel already validates.
 #
-# SCOPING FIRST, exactly like the kernel's own reviewing->arbitrating gate
-# (libexec/orchid-task): the evidence set is the envelopes BOUND TO THE
-# TASK'S CURRENT candidate_sha, and every malformed/non-ok/incomplete test
-# below is applied WITHIN that set. An envelope carrying a different
-# candidate_sha is SUPERSEDED -- a sibling left behind by a relaunched
-# reviewer slot, or by the merging->testing rebase edge moving candidate_sha
-# under a review that already landed -- and is ignored, never boundaried.
-# Boundarying it would contradict the kernel gate (which counts the current
-# ones and ignores the rest), make two truth-table arms match the same state,
-# and pin the task in `arbitrating` with no verb able to release it. Anything
-# that IS bound to the current candidate and is not a valid `ok` envelope
-# still fails closed to a boundary.
+# THE EVIDENCE SET IS EXACTLY THE ONE THE KERNEL GATE COUNTS, and this
+# function's job is to mirror libexec/orchid-task's reviewing->arbitrating
+# gate rather than to second-guess it. That gate counts an envelope only when
+# its candidate_sha equals the task's current one AND its status is `ok`, and
+# it SILENTLY SKIPS everything else -- its own comment says so: "Only
+# status==ok envelopes count; anything else is silently skipped, same as an
+# sha mismatch." So here too, an envelope is skipped, never boundaried, when
+# it is bound to some other candidate (a superseded sibling left behind by a
+# relaunched reviewer slot, or by the merging->testing rebase edge), when its
+# candidate_sha cannot be read at all (it cannot be proven to be in the
+# current set), when it fails envelope_validate, or when its status is not
+# `ok`. Sufficiency is then purely the COUNT of surviving envelopes against
+# review_required_count, and the evidence arm fires on that count alone.
+#
+# WHY IT MUST BE SKIP AND NOT FAIL-CLOSED (lesson L007). The ordinary
+# recovery path is: a reviewer slot errors, `orchid jobs reconcile` files the
+# adapter's own non-ok envelope (`failed`, `timeout`, `rate_limited` -- all
+# valid envelopes) BOUND TO THE CURRENT CANDIDATE, and the relaunched slot
+# then files a good one. The kernel gate ignores the dead envelope,
+# counts the live one, and admits the task to `arbitrating` with a complete
+# unanimous set. If this function instead boundaried on the dead envelope,
+# that task would be permanently refused deterministic approval over a file
+# no verb can remove -- parked in `arbitrating` forever. A boundary must
+# never be reachable only through a state the kernel itself calls fine.
+#
+# Not a weakening of fail-closed: this function can only ever count FEWER
+# envelopes than the kernel gate (it adds envelope_validate on top of the
+# gate's own two tests), so a shortfall still stops at an evidence boundary
+# -- and one raised while the task is `arbitrating`, where `orchid task
+# arbitrate` is exactly the verb that settles it.
 #
 # HONEST LABELING (lesson L006): the blocking_severity gate below reads
 # `findings[]`, and findings[] is only ever populated by an adapter that
@@ -274,27 +379,20 @@ drive_review_decision() {
   for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
-    # Step 1 -- scope. An envelope whose candidate_sha cannot be read at all
-    # cannot be proven superseded, so it fails closed as malformed rather
-    # than being silently dropped from the set.
+    # Step 1 -- scope, exactly as the kernel gate scopes: only envelopes
+    # bound to the CURRENT candidate are evidence at all. An unreadable
+    # candidate_sha cannot be proven to be in that set, so it is skipped for
+    # the same reason a mismatched one is.
     ecand="$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)"
-    if [ -z "$ecand" ]; then
-      printf 'evidence\tmalformed review envelope %s: no readable candidate_sha to scope it by\n' "$base"
-      return 0
-    fi
-    # Superseded sibling: bound to some OTHER candidate. Ignored outright.
+    [ -n "$ecand" ] || continue
     [ "$ecand" = "$cand" ] || continue
-    # Step 2 -- everything below judges only envelopes bound to the CURRENT
-    # candidate, and every one of them must be a valid `ok` envelope.
-    if ! envelope_validate "$f" 2>/dev/null; then
-      printf 'evidence\tmalformed review envelope %s\n' "$base"
-      return 0
-    fi
+    # Step 2 -- within that set, only a VALID, `ok` envelope carries a
+    # verdict. A malformed or non-ok one is skipped, never boundaried: it is
+    # the residue of a slot that errored, and the relaunch that replaces it
+    # is what the count below is waiting for.
+    envelope_validate "$f" 2>/dev/null || continue
     status="$(envelope_field "$f" '.status // empty' 2>/dev/null || true)"
-    if [ "$status" != ok ]; then
-      printf 'evidence\treview envelope %s reports status %s, not ok\n' "$base" "${status:-none}"
-      return 0
-    fi
+    [ "$status" = ok ] || continue
     n=$(( n + 1 ))
     verdict="$(envelope_field "$f" '.verdict // empty' 2>/dev/null || true)"
     scope="$(envelope_field "$f" '.scope_complete // false' 2>/dev/null || true)"
