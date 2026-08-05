@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -uo pipefail
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# `pwd -P`, never logical `pwd`: the runners resolve their own ORCHID_ROOT
+# physically (runners/orchid-service, runners/orchid-pump), so a checkout
+# reached through a symlinked path -- a macOS `mktemp -d` merge-validation
+# worktree under /var/folders/... -> /private/var/folders/... is the case
+# that caught this -- would otherwise give tests a LOGICAL repo root that
+# never matches the physical path a runner bakes into a rendered artifact
+# (the launchd plist's ProgramArguments). Canonicalize once, here.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 ORCHID_BIN="$REPO_ROOT/bin/orchid"
 FAILS=0
 

@@ -30,6 +30,13 @@ trust_repo() {
 # fine as-is -- the OS resolves the symlink either way when opening a path.
 repo_canon="$(cd "$WORK" && pwd -P)"
 
+# The same rule applies to the CHECKOUT under test: helpers.sh must hand this
+# suite a physically-resolved REPO_ROOT, or the assertions below that compare
+# against a path the service baked in (ProgramArguments) fail on exactly the
+# symlinked checkouts -- a /var/folders merge-validation worktree -- that a
+# non-symlinked developer checkout never reproduces.
+assert_eq "$(cd "$REPO_ROOT" && pwd -P)" "$REPO_ROOT" "REPO_ROOT must be physically canonical"
+
 label_re='com\.orchid\.pump\.[0-9a-f]{12}'
 
 # ===========================================================================
