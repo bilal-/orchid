@@ -192,10 +192,41 @@ rc=0; out16="$(ORCHID_REPO="$r16" "$ORCHID_BIN" start "$REQ" --verify 'npm test'
 [ "$rc" -ne 0 ] || fail "start must refuse to replace the integration branch's own verify command"
 assert_match "already configured as 'make test'" "$out16" "the refusal quotes the command the run actually uses"
 assert_match "never replaces it" "$out16" "the refusal states the rule"
-assert_match '^verify=make test$' "$(cat "$W/r16-orchid/orchid.config")" \
-  "the integration checkout's own config is left exactly as it was"
 assert_match '^verify=make test$' "$(git -C "$r16" show orchid/integration:orchid.config)" \
   "and nothing was committed over it"
+# The refusal has to land ABOVE the mutation boundary: refusing after the
+# worktree exists and an epoch has been minted would print a recovery that the
+# epoch-ownership guard then rejects on the very next run.
+[ -e "$W/r16-orchid" ] && fail "the conflict must be refused before any worktree is created (and so before any epoch is minted)"
+
+# ...and the recovery it prints has to actually WORK -- re-running without
+# --verify keeps the branch's own command rather than dying or pinning the run
+# to something else.
+out16b="$(ORCHID_REPO="$r16" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "the recovery the refusal prints (re-run without --verify) must succeed: $out16b"
+assert_match "^verify: make test — already configured" "$out16b" \
+  "the re-run keeps the integration branch's own verification command"
+assert_match '^verify=make test$' "$(git -C "$r16" show orchid/integration:orchid.config)" \
+  "and still never replaces it"
+assert_eq 1 "$(grep -c '^verify=' "$W/r16-orchid/orchid.config")" \
+  "no second verify= line was appended to the integration checkout"
+
+# A MACHINE-LOCAL layer is not the run's verification command either, so an
+# explicit --verify is not "replacing" one and is taken as given. Refusing here
+# would be actively backwards: the recovery it printed ("re-run without
+# --verify") would then commit the machine-local command onto the integration
+# branch -- pinning the run to the exact command the operator just overrode.
+r18="$W/r18"; mk_repo "$r18"
+printf 'verify=make check\n' > "$HOME/.orchid/config"
+rc=0; out18="$(ORCHID_REPO="$r18" "$ORCHID_BIN" start "$REQ" --verify 'npm test' 2>&1)" || rc=$?
+rm -f "$HOME/.orchid/config"
+[ "$rc" -eq 0 ] || fail "--verify must be accepted when only a machine-local layer configures one: $out18"
+assert_match "^verify: npm test — recorded in $W/r18-orchid/orchid.config and committed on orchid/integration" \
+  "$out18" "the operator's explicit command is the one recorded"
+assert_match '^verify=npm test$' "$(git -C "$r18" show orchid/integration:orchid.config)" \
+  "the branch carries the operator's command, never the machine-local one"
+assert_eq 1 "$(grep -c '^verify=' "$W/r18-orchid/orchid.config")" \
+  "exactly one verify= line is written"
 
 # Convergence: a `verify=` line sitting in the integration checkout that never
 # landed on the branch (an earlier setup whose commit lost its CAS race, or an

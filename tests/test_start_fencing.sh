@@ -130,6 +130,32 @@ assert_eq "$(cat "$INTRUDER")" "$(cat "$wt/.orchid/requirements.md")" \
 assert_match "^  export ORCHID_EPOCH=1$" "$out" "the handoff names the epoch that is actually current"
 
 # ---------------------------------------------------------------------------
+# A lock DIRECTORY carrying no owner.json at all -- a crash in the few
+# milliseconds between the winner's mkdir and its owner-record write. Inside
+# the grace window it reads live (never race a claim that is still landing);
+# past it, it must NOT read live forever, or a single crash would brick
+# `orchid start` permanently, blaming a pid that never existed. Both acquirers
+# in lib/common.sh break exactly this shape on exactly this floor.
+# ---------------------------------------------------------------------------
+vlock="$wt/.orchid/runtime/verb-lock"
+mkdir -p "$vlock"
+rc=0
+out="$(ORCHID_REPO="$repo" ORCHID_EPOCH=1 "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a lock claimed moments ago, owner record not written yet, must still be refused"
+assert_match "verb lock" "$out" "the refusal names the verb lock"
+assert_match "no owner record yet" "$out" "the refusal describes the shape it actually found"
+assert_match "remove it" "$out" "the refusal names a recovery that does not depend on a pid"
+assert_eq "$(cat "$INTRUDER")" "$(cat "$wt/.orchid/requirements.md")" \
+  "a refused orchid start (owner-less verb lock) must not import anything"
+
+# Older than that grace window: an abandoned claim, not a race.
+touch -t 200001010000 "$vlock"
+out="$(ORCHID_REPO="$repo" ORCHID_EPOCH=1 "$ORCHID_BIN" start "$INTRUDER" 2>&1)" \
+  || fail "an owner-less lock older than the grace window must not brick setup forever: $out"
+assert_match "^epoch: 1 \(reused\)$" "$out" "setup proceeds under the epoch the caller proved it owns"
+rm -rf "$vlock"
+
+# ---------------------------------------------------------------------------
 # Once the run leaves planning, setup is over: requirements are immutable and
 # orchid start is not a resume.
 # ---------------------------------------------------------------------------

@@ -120,9 +120,12 @@ follow-up step to remember, and the integration checkout is not handed back
 dirty. A command that only your environment or your machine-local
 `~/.orchid/config` supplies counts as "none yet" — it would not survive a
 fresh checkout of the integration branch (a task worktree, another machine, a
-headless pump), so it is recorded there too rather than left to vanish. A
+headless pump), so it is recorded there too rather than left to vanish — and,
+for the same reason, an explicit `--verify` overrides it without complaint. A
 `verify=` line already committed on that branch is never replaced or
-duplicated.
+duplicated: `--verify` with a different command there is refused up front,
+before anything is created, and re-running without the flag keeps the branch's
+own command.
 
 What it will not do, by design:
 

@@ -104,22 +104,55 @@ _start_integ_checkout() {
   return 1
 }
 
-# _start_lock_live <lock-dir> -- true when a lock directory (runtime/lock or
-# runtime/verb-lock) is held by a process that is genuinely alive on THIS
-# host, using the same pid/host/pid-start triple lock_acquire itself records
-# (lib/common.sh). Deliberately fails CLOSED on anything it cannot read: a
-# claimed directory whose owner.json is missing or unparseable is the few-ms
-# window right after a winner's mkdir, and `orchid start` -- a setup command
-# with no deadline pressure -- must never race that.
+# _start_lock_live <lock-dir> <grace-s> -- true when a lock directory
+# (runtime/lock or runtime/verb-lock) is held by a process that is genuinely
+# alive on THIS host, using the same pid/host/pid-start triple lock_acquire
+# itself records (lib/common.sh).
+#
+# A claimed directory whose owner.json is missing or unparseable fails CLOSED
+# -- it is the few-ms window right after a winner's mkdir, and `orchid start`,
+# a setup command with no deadline pressure, must never race that -- but only
+# for <grace-s> of the directory's own age. Past that it is no longer a race:
+# it is a crash between the winner's mkdir and its owner write (the shape
+# lib/common.sh:527-545 documents, and which BOTH acquirers break for exactly
+# this reason -- verb_lock_acquire after verb_lock_wait_s, lock_acquire after
+# lock_break_s). Failing closed forever there would brick `orchid start`
+# permanently, with no pid to wait for and no verb to blame, so the same
+# escape valve the acquirers have applies here: pass the caller the acquirer's
+# own floor and stop calling an owner-less directory live once it is older.
+#
+# ORCHID_START_LOCK_PID is the owner pid when one was actually read, and EMPTY
+# for a live-but-owner-less directory -- the refusals below print a different
+# recovery for each, because "wait for pid ?" is not one.
 _start_lock_live() {
-  local lock="$1" owner fields pid host pstart
+  local lock="$1" grace="$2" owner fields pid host pstart now mt age
+  ORCHID_START_LOCK_PID=""
   [ -d "$lock" ] || return 1
   owner="$(cat "$lock/owner.json" 2>/dev/null || true)"
-  [ -n "$owner" ] || return 0
-  fields="$(printf '%s' "$owner" | jq -r \
+  fields=""
+  [ -z "$owner" ] || fields="$(printf '%s' "$owner" | jq -r \
     '"pid=" + (.pid|tostring) + "; host=" + (.hostname|@sh) + "; pstart=" + (.pid_start|@sh)' \
     2>/dev/null || true)"
-  [ -n "$fields" ] || return 0
+  if [ -z "$fields" ]; then
+    now="$(date +%s)"
+    # Same BSD-then-GNU mtime probe lock_acquire uses, but selected on the
+    # RESULT rather than on the exit status alone: a stat that does not
+    # understand the other platform's directive can print `?` and still exit 0,
+    # and a non-numeric `mt` would make the arithmetic below a syntax error
+    # under `set -e` -- crashing the very refusal path this branch exists to
+    # make survivable. An unreadable mtime falls back to "just now", i.e. to
+    # the conservative "still live" answer.
+    mt="$(stat -f %m "$lock" 2>/dev/null || true)"
+    case "$mt" in
+      ''|*[!0-9]*) mt="$(stat -c %Y "$lock" 2>/dev/null || true)" ;;
+    esac
+    case "$mt" in
+      ''|*[!0-9]*) mt="$now" ;;
+    esac
+    age=$(( now - mt ))
+    [ "$age" -lt "$grace" ] || return 1
+    return 0
+  fi
   pid=0; host='?'; pstart='?'
   eval "$fields"
   [ "$host" = "$(hostname)" ] || return 1
@@ -127,6 +160,20 @@ _start_lock_live() {
   [ "$(_pid_start "$pid")" = "$pstart" ] || return 1
   ORCHID_START_LOCK_PID="$pid"
   return 0
+}
+
+# _start_lock_refusal <what> <lock-dir> <mid-flight> -- the refusal text for a
+# lock _start_lock_live just reported live, naming the recovery that actually
+# applies to the shape it found.
+_start_lock_refusal() {
+  local what="$1" lock="$2" mid="$3"
+  if [ -n "${ORCHID_START_LOCK_PID:-}" ]; then
+    printf "the %s is held by a live process (pid %s, %s) — %s; wait for it to finish" \
+      "$what" "$ORCHID_START_LOCK_PID" "$lock" "$mid"
+  else
+    printf "the %s directory %s was claimed moments ago and carries no owner record yet — that is the instant right after another orchid command took it, and setup waits rather than races it. Re-run in a moment; if no orchid command is running at all, that directory is a crashed claim: remove it (rm -rf %s) and re-run" \
+      "$what" "$lock" "$lock"
+  fi
 }
 
 # _start_lease_live <runtime-dir> <repo> -- true when runtime/lease.json says
@@ -163,8 +210,13 @@ _start_lease_live() {
 # an unrecognized key is a warning only -- `role.<custom-id>` bindings are
 # legitimately absent from that file, and a config written for a newer orchid
 # must not brick setup on an older one.
+#
+# <label> names the config in every message, so a blob extracted to a temp
+# file (the config COMMITTED on the integration branch, which is what a run
+# with no checkout yet will actually read) can be validated by the same code
+# without reporting a mktemp path at the operator.
 _start_validate_config() {
-  local file="$1" n=0 line lead key
+  local file="$1" label="${2:-$1}" n=0 line lead key
   [ -f "$file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
@@ -179,14 +231,14 @@ _start_validate_config() {
     esac
     case "$line" in
       *=*) key="${line%%=*}" ;;
-      *) orchid_die "$file line $n is not a 'key=value' line: '$line' — repo config is refused rather than silently ignored" ;;
+      *) orchid_die "$label line $n is not a 'key=value' line: '$line' — repo config is refused rather than silently ignored" ;;
     esac
-    [ -n "$key" ] || orchid_die "$file line $n has an empty config key: '$line'"
+    [ -n "$key" ] || orchid_die "$label line $n has an empty config key: '$line'"
     case "$key" in
       role.*) continue ;;
     esac
     grep -qxF "$key" "$ORCHID_ROOT/lib/config-keys.txt" \
-      || echo "warn: $file line $n sets '$key', which is not a config key orchid $ORCHID_VERSION knows about (it will simply be ignored)"
+      || echo "warn: $label line $n sets '$key', which is not a config key orchid $ORCHID_VERSION knows about (it will simply be ignored)"
   done < "$file"
 }
 
@@ -282,7 +334,16 @@ if ! existing_wt="$(_start_integ_checkout "$repo" "$integ")"; then existing_wt="
 if [ "$have_worktree_opt" -eq 1 ]; then
   wt_target="$(_start_abs "$worktree_opt")"
   if [ -n "$existing_wt" ] && [ "$existing_wt" != "$wt_target" ]; then
-    orchid_die "branch $integ is already checked out at $existing_wt, not at the requested $wt_target — re-run with --worktree $existing_wt (or 'git worktree remove $existing_wt' first). orchid start never moves or steals an existing checkout"
+    # `git worktree remove` only ever applies to a LINKED worktree (whose
+    # `.git` is a file); offering it for a branch checked out in the MAIN
+    # working tree would be nonsense advice. The --worktree alternative works
+    # either way, so it is what the main-worktree case leads with.
+    if [ -d "$existing_wt/.git" ]; then
+      wt_hint="re-run with --worktree $existing_wt (that checkout is this repository's main working tree, so 'git worktree remove' does not apply to it — to free the branch, check out another branch there yourself)"
+    else
+      wt_hint="re-run with --worktree $existing_wt (or 'git worktree remove $existing_wt' first)"
+    fi
+    orchid_die "branch $integ is already checked out at $existing_wt, not at the requested $wt_target — $wt_hint. orchid start never moves or steals an existing checkout"
   fi
 else
   if [ -n "$existing_wt" ]; then
@@ -313,20 +374,73 @@ cfg_repo="$repo"; [ -z "$existing_wt" ] || cfg_repo="$existing_wt"
 
 # -- verification command: explicit, never guessed --------------------------
 
-cur_verify="$(config_get "$cfg_repo" verify)"
+# The DURABLE `verify=` line -- the one this run actually carries, read from a
+# config FILE and never from config_get's merged value. The env layer
+# (ORCHID_VERIFY) and the user layer (~/.orchid/config) are machine-local: they
+# do not survive a fresh checkout, another machine, or a headless pump, so from
+# the run's point of view they are not its verification command at all. That is
+# already this file's doctrine where the command is RECORDED (see the block
+# after the mutation boundary below); the guard below has to agree with it, or
+# `--verify` would be refused against a value that is not the run's, and the
+# "re-run without --verify" recovery it prints would then COMMIT that
+# machine-local value onto the integration branch -- pinning the run to the
+# exact command the operator had just overridden.
+#
+# Which file is the run's depends on how far setup has got: the integration
+# checkout's own orchid.config once one exists (that is the file the record
+# step appends to and commits), else the config COMMITTED on $integ when the
+# branch exists with no checkout of it yet, else -- nothing initialized at all
+# -- this repo's own orchid.config, which is what `orchid init` will branch
+# from. Reading all three HERE, above the mutation boundary, is also what makes
+# the conflict refusal land before anything is created: it used to be re-checked
+# after `git worktree add` and after the epoch was written, so the refusal
+# arrived with an epoch already minted and printed a recovery that then died on
+# the epoch-ownership guard.
+if [ -n "$existing_wt" ]; then
+  durable_verify="$(_cfg_file_get "$existing_wt/orchid.config" verify)"
+  durable_verify_src="$existing_wt/orchid.config"
+  if [ -z "$durable_verify" ]; then
+    durable_verify="$(_start_committed_verify "$existing_wt" "$integ")"
+    durable_verify_src="orchid.config as committed on $integ"
+  fi
+elif [ "$mode" = existing ]; then
+  durable_verify="$(_start_committed_verify "$repo" "$integ")"
+  durable_verify_src="orchid.config as committed on $integ"
+else
+  durable_verify="$(_cfg_file_get "$repo/orchid.config" verify)"
+  durable_verify_src="$repo/orchid.config"
+fi
+
 if [ "$have_verify_opt" -eq 1 ]; then
-  if [ -n "$cur_verify" ] && [ "$cur_verify" != "$verify_opt" ]; then
-    orchid_die "a verification command is already configured as '$cur_verify' (source: $(config_provenance "$cfg_repo" verify)) — orchid start never replaces it. Re-run without --verify, or change that setting yourself first"
+  if [ -n "$durable_verify" ] && [ "$durable_verify" != "$verify_opt" ]; then
+    orchid_die "a verification command is already configured as '$durable_verify' (source: $durable_verify_src) — orchid start never replaces it. Re-run without --verify, or change that setting yourself first"
   fi
   verify_cmd="$verify_opt"
 else
-  verify_cmd="$cur_verify"
+  # The run's own command wins over any machine-local layer; a machine-local
+  # one is still accepted as the SOURCE of a command to record (that is how a
+  # `verify=` in ~/.orchid/config sets up a repo that configures none), it just
+  # never counts as one the run already has.
+  verify_cmd="$durable_verify"
+  [ -n "$verify_cmd" ] || verify_cmd="$(config_get "$cfg_repo" verify)"
   [ -n "$verify_cmd" ] || orchid_die "no verification command configured — pass --verify '<command>' (e.g. --verify 'npm test'), or set 'verify=' in $cfg_repo/orchid.config. orchid start never guesses one"
 fi
 
 # -- repo config validation + full preflight --------------------------------
 
 _start_validate_config "$cfg_repo/orchid.config"
+if [ "$mode" = existing ] && [ -z "$existing_wt" ]; then
+  # No checkout of $integ yet, so $cfg_repo above is the operator's OWN
+  # branch -- a config that the run itself will never read. The one it will
+  # read is the blob committed on $integ (the worktree created below is a
+  # checkout of exactly that), and a malformed line there is just as invisible
+  # to config_get as one in the working copy.
+  committed_cfg="$(mktemp "${TMPDIR:-/tmp}/orchid-start-cfg.XXXXXX")"
+  git -C "$repo" show "refs/heads/$integ:orchid.config" > "$committed_cfg" 2>/dev/null \
+    || : > "$committed_cfg"
+  _start_validate_config "$committed_cfg" "orchid.config as committed on $integ"
+  rm -f "$committed_cfg"
+fi
 
 # A dirty tree is `orchid init`'s own refusal ("orchid never touches user
 # work"), re-checked HERE so it is reported before the preflight spends time
@@ -380,11 +494,15 @@ if [ "$mode" = existing ]; then
     if _start_lease_live "$rt" "$existing_wt"; then
       orchid_die "an orchestrator session may still be driving this run (lease refreshed ${ORCHID_START_LEASE_AGE}s ago at $rt/lease.json) — orchid start never takes a run over. Stop that session (it ends with 'orchid run release-lease'), or wait for the lease to lapse"
     fi
-    if _start_lock_live "$rt/lock"; then
-      orchid_die "the run lock is held by a live process (pid ${ORCHID_START_LOCK_PID:-?}, $rt/lock) — 'orchid run start|resume' is mid-flight; wait for it to finish"
+    # The grace each owner-less lock directory gets is the very floor its own
+    # acquirer applies before breaking one (lib/common.sh), read from the same
+    # config: nothing `orchid start` refuses on here is a directory the next
+    # verb would not have taken for itself anyway.
+    if _start_lock_live "$rt/lock" "${ORCHID_LOCK_BREAK_S:-$(config_get "$existing_wt" lock_break_s 900)}"; then
+      orchid_die "$(_start_lock_refusal "run lock" "$rt/lock" "'orchid run start|resume' is mid-flight")"
     fi
-    if _start_lock_live "$rt/verb-lock"; then
-      orchid_die "the verb lock is held by a live process (pid ${ORCHID_START_LOCK_PID:-?}, $rt/verb-lock) — another verb is mid-transaction; wait for it to finish"
+    if _start_lock_live "$rt/verb-lock" "$(config_get "$existing_wt" verb_lock_wait_s 10)"; then
+      orchid_die "$(_start_lock_refusal "verb lock" "$rt/verb-lock" "another verb is mid-transaction")"
     fi
     if [ -f "$rt/epoch" ]; then
       # A materialized epoch means a session has already fenced this run.
@@ -422,7 +540,12 @@ fi
 if [ "$wt_action" = created ]; then
   if ! wt_add_out="$(git -C "$repo" worktree add "$wt_target" "$integ" 2>&1)"; then
     echo "$wt_add_out" >&2
-    orchid_die "could not create the integration worktree at $wt_target — the repository itself is initialized; re-run orchid start (optionally with --worktree <path>) once the path is usable"
+    # The one failure a bare re-run can never clear: git still has $integ
+    # registered to a worktree directory that no longer exists (moved or
+    # deleted by hand), so it reports the branch as checked out somewhere this
+    # verb could not find. `git worktree prune` drops that dead registration --
+    # naming it here is the difference between a recovery and a loop.
+    orchid_die "could not create the integration worktree at $wt_target — the repository itself is initialized. If git says $integ is already checked out at a path that no longer exists, clear that stale registration with 'git worktree prune' first; then re-run orchid start (optionally with --worktree <path>)"
   fi
 fi
 wt="$(cd "$wt_target" && pwd -P)"
@@ -462,18 +585,14 @@ export ORCHID_EPOCH="$epoch"
 #
 # Rule 2 still holds exactly: APPEND-only, never a replacement. A `verify=`
 # line already in that file is the operator's and is never rewritten, and an
-# explicit `--verify` that disagrees with what the integration checkout
-# already resolves is refused rather than silently ignored (that refusal is
-# re-checked HERE because on a repo whose integration branch existed with no
-# checkout of it, this worktree -- the run's real config source -- did not
-# exist yet when the same check ran against $cfg_repo above).
+# explicit `--verify` that disagrees with the run's durable command was already
+# refused above -- against these same file/committed lines, and BEFORE this
+# worktree and the epoch existed. There is deliberately no second refusal
+# here: a `--verify` conflict detected below this boundary would abort with an
+# epoch already minted, so the only honest place for that check is above it.
 verify_note=""
-wt_verify="$(config_get "$wt" verify)"
 wt_verify_line="$(_cfg_file_get "$wt/orchid.config" verify)"
 committed_verify_line="$(_start_committed_verify "$wt" "$integ")"
-if [ "$have_verify_opt" -eq 1 ] && [ -n "$wt_verify" ] && [ "$wt_verify" != "$verify_opt" ]; then
-  orchid_die "a verification command is already configured as '$wt_verify' (source: $(config_provenance "$wt" verify)) in the integration checkout $wt — orchid start never replaces it. Re-run without --verify, or change that setting yourself first"
-fi
 verify_action=none
 if [ -z "$wt_verify_line" ]; then
   # A file whose last byte is not a newline would otherwise swallow this
@@ -483,10 +602,10 @@ if [ -z "$wt_verify_line" ]; then
     printf '\n' >> "$wt/orchid.config"
   fi
   printf 'verify=%s\n' "$verify_cmd" >> "$wt/orchid.config"
-  wt_verify="$verify_cmd"
+  wt_verify_line="$verify_cmd"
   verify_action=recorded
-elif [ -z "$committed_verify_line" ]; then
-  # The line is on disk but has never landed on $integ -- an earlier `orchid
+elif [ "$committed_verify_line" != "$wt_verify_line" ]; then
+  # The line is on disk but is not what $integ carries -- an earlier `orchid
   # start` whose commit lost the CAS race and died, or an operator edit made
   # in this checkout. Either way the run's verification command still does
   # not survive a fresh checkout, so finishing that job (never rewriting the
@@ -495,7 +614,7 @@ elif [ -z "$committed_verify_line" ]; then
   verify_action=committed
 fi
 if [ "$verify_action" = none ]; then
-  verify_note="already configured (source: $(config_provenance "$wt" verify))"
+  verify_note="already configured in $wt/orchid.config and committed on $integ"
 else
   # Landed on $integ as part of THIS setup, not left as homework: a
   # mandatory `orchid config commit` afterwards would make this verb no
@@ -595,7 +714,7 @@ echo "integration worktree: $wt ($wt_action)"
 echo "epoch: $epoch ($epoch_action)"
 echo "run: ${run_id:-r-001} ($run_status)"
 echo "requirements: $req_note"
-echo "verify: $wt_verify — $verify_note"
+echo "verify: $wt_verify_line — $verify_note"
 echo "unattended trust: $trust_state$trust_note"
 echo
 echo "next — durable orchid state lives only on $integ, so work from the worktree:"
