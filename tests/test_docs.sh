@@ -424,8 +424,18 @@ assert_match "Use low for anything you would call a nit" \
 drive_help="$("$ORCHID_BIN" drive --help)" \
   || fail "orchid drive --help must exit 0 without a repo"
 drive_help_one_line="$(printf '%s' "$drive_help" | tr -s '[:space:]' ' ')"
-assert_match "plugins/engines/claude/run" "$drive_help_one_line" \
-  "orchid drive --help must name the adapter that makes the severity clause live, not describe every reviewer as verdict-only"
+# Asserted by CAPABILITY, not by naming a plugin: INV-13 forbids the driver
+# from referencing a plugin path at all and INV-14 from branching on an engine
+# identifier, so an assertion demanding the literal `plugins/engines/claude/run`
+# in this file's own help text would put two of this suite's tests in direct
+# contradiction -- and it did, until this line was rewritten. What actually
+# matters to an operator is that the help distinguishes an adapter that REQUESTS
+# AND PARSES findings from one that does not, so the live gate is discoverable
+# for whatever adapter they have bound.
+assert_match "FINDING: <low\|medium\|high>: <title>" "$drive_help_one_line" \
+  "orchid drive --help must state which adapter shape makes the severity clause live"
+assert_match "LIVE" "$drive_help_one_line" \
+  "orchid drive --help must say the clause is live for such an adapter, not describe every reviewer as verdict-only"
 assert_match "empty findings\[\] blocks nothing" "$drive_help_one_line" \
   "orchid drive --help must keep the other half: an empty findings[] is a valid review, not a missing one"
 grep -q "the shipped review adapters ask for a VERDICT line only" <<<"$drive_help_one_line" \
