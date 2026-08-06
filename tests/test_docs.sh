@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 # v1-m4 Task 8: docs suite lint. Three independent, purely mechanical
-# checks over the published documentation set -- no repo/run state, no git,
-# nothing spawned -- mirroring test_config_keys.sh's own annotation-driven
+# checks over the published documentation set -- no repo/run state, no git --
+# mirroring test_config_keys.sh's own annotation-driven
 # approach (grep-only, no prose heuristics) so this suite carries zero
 # false-positive risk from trying to parse free text:
 #
@@ -364,16 +364,149 @@ plugins_spec_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/plugins.md" | tr -
 assert_match "says nothing about FILE WRITES" "$plugins_spec_one_line" \
   "the command_surface spec must bound its own claim to command execution"
 
-# Lesson L006: the driver's findings[]-severity gate is inert for a reviewer
-# whose adapter never populates findings[] -- which the shipped `review`
-# adapters never do. Wherever the deterministic approval path is documented,
-# that has to be said, or the gate reads as a protection nobody is getting.
+# Lesson L006: the driver's findings[]-severity gate is only as live as the
+# reviewer adapter feeding it -- it stays inert for a reviewer whose adapter
+# never populates findings[]. Wherever the deterministic approval path is
+# documented, that has to be said, or the gate reads as a protection nobody
+# is getting. v1-m4 T006 split the shipped adapters into two camps, so the
+# docs claim is now per-adapter and this check is too.
 protocol_one_line="$(tr '\n' ' ' < "$REPO_ROOT/PROTOCOL.md" | tr -s '[:space:]' ' ')"
 assert_match "the \`blocking_severity\` gate is \*\*inert\*\*" "$protocol_one_line" \
   "PROTOCOL.md's approval arm must say the severity gate is inert for verdict-only review adapters"
-for adapter in claude codex; do
-  grep -q "findings" "$REPO_ROOT/plugins/engines/$adapter/run" \
-    || fail "plugins/engines/$adapter/run: findings[] handling vanished — re-check the L006 claim in the docs"
-  grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/$adapter/run" \
-    || fail "plugins/engines/$adapter/run no longer scrapes FINDING: lines for critique only — PROTOCOL.md's L006 note is now wrong"
+assert_match "plugins/engines/claude/run" "$protocol_one_line" \
+  "PROTOCOL.md's approval arm must name which shipped adapters do and do not populate findings[]"
+# claude (v1-m4 T006): its `review` prompt asks for FINDING: lines and its
+# parser is NOT gated to critique, so findings[] is genuinely populated for
+# reviews. If either half regresses, PROTOCOL.md's per-adapter note is wrong.
+grep -q "findings" "$REPO_ROOT/plugins/engines/claude/run" \
+  || fail "plugins/engines/claude/run: findings[] handling vanished — re-check the L006 claim in the docs"
+# Twice, deliberately: once in the review prompt, once in the critique
+# prompt. A single occurrence means one of the two branches dropped it, and
+# a `grep -q` would not notice which.
+[ "$(grep -c "One line per issue found, exactly: FINDING:" "$REPO_ROOT/plugins/engines/claude/run")" -ge 2 ] \
+  || fail "plugins/engines/claude/run: both the review and critique prompts must ask for FINDING: lines — PROTOCOL.md now over-claims for this adapter"
+grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/claude/run" \
+  && fail "plugins/engines/claude/run scrapes FINDING: lines for critique only again — review findings would be silently dropped"
+# codex: still verdict-only on `review` (FINDING: lines requested by the
+# critique prompt alone), which is exactly what PROTOCOL.md's inert-gate
+# sentence must keep covering.
+grep -q "findings" "$REPO_ROOT/plugins/engines/codex/run" \
+  || fail "plugins/engines/codex/run: findings[] handling vanished — re-check the L006 claim in the docs"
+grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/codex/run" \
+  || fail "plugins/engines/codex/run no longer scrapes FINDING: lines for critique only — PROTOCOL.md's L006 note is now wrong"
+
+# The OTHER half of a live gate, and the one that will actually surprise an
+# operator: now that a claude review populates findings[], a NON-empty one
+# blocks an otherwise-approving review (blocking_severity defaults to
+# medium). Every doc sentence stressing that an EMPTY array blocks nothing is
+# only half the contract; the halting half has to be written down too, or the
+# first approve-with-one-medium-nit review reads as a broken driver.
+assert_match "blocks an otherwise-approving review" "$protocol_one_line" \
+  "PROTOCOL.md must state that a non-empty findings[] halts an approving review, not just that an empty one blocks nothing"
+kernel_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/kernel.md" | tr -s '[:space:]' ' ')"
+assert_match "one \`medium\` finding turns an all-\`approve\`" "$kernel_one_line" \
+  "docs/specs/kernel.md must state the same halting half of the severity gate"
+# And the prompt has to define severity by CONSEQUENCE, or a reviewer files
+# nits as `medium` and stops runs nobody meant to stop.
+assert_match "Use low for anything you would call a nit" \
+  "$(tr '\n' ' ' < "$REPO_ROOT/plugins/engines/claude/run" | tr -s '[:space:]' ' ')" \
+  "the review prompt must give severity explicit blocking semantics, not just a line format"
+# ...and it must name THIS task's threshold. The shipped archetypes disagree
+# (templates/task.md and task-test.md ship `high`; task-migrate and
+# task-refactor ship `medium`), so any hardcoded default in the prompt is
+# wrong for some of them -- on the very gate this milestone made live.
+# Squeezed to one line first: the offending text was WRAPPED in the source
+# ("blocking_severity (medium by\ndefault)"), so a line-oriented grep for it
+# would never have fired -- a guard that cannot fail is not a guard.
+claude_run_one_line="$(tr '\n' ' ' < "$REPO_ROOT/plugins/engines/claude/run" | tr -s '[:space:]' ' ')"
+grep -qF 'blocking_severity (medium by default)' <<<"$claude_run_one_line" \
+  && fail "plugins/engines/claude/run hardcodes a blocking_severity default in the review prompt — the shipped templates do not agree on one"
+grep -qF 'fm_get "$input_pack/task.md" blocking_severity' <<<"$claude_run_one_line" \
+  || fail "plugins/engines/claude/run no longer reads the task's own blocking_severity — docs/engines/claude.md's per-task-threshold claim is now wrong"
+# The doc's claim is concrete and checkable: it names templates/task.md and
+# task-test.md as `high` and task-migrate/task-refactor as `medium`. Check
+# each against the template it describes, so re-pinning a template's severity
+# without touching the doc fails here instead of silently making it a lie.
+# `claude_doc_one_line` is already built above, from the same file.
+for bsev_pair in task:high task-test:high task-migrate:medium task-refactor:medium; do
+  bsev_tmpl="${bsev_pair%%:*}"; bsev_want="${bsev_pair#*:}"
+  bsev_val="$(grep -m1 '^blocking_severity:' "$REPO_ROOT/templates/$bsev_tmpl.md" 2>/dev/null | sed 's/^blocking_severity:[[:space:]]*//')"
+  assert_eq "$bsev_want" "$bsev_val" \
+    "templates/$bsev_tmpl.md's blocking_severity changed — docs/engines/claude.md still describes it as $bsev_want"
+  assert_match "templates/$bsev_tmpl\\.md" "$claude_doc_one_line" \
+    "docs/engines/claude.md must name templates/$bsev_tmpl.md when explaining why no default is hardcoded"
 done
+assert_match "ship \`high\`" "$claude_doc_one_line" \
+  "docs/engines/claude.md must state the high-threshold archetypes' actual value"
+assert_match "ship \`medium\`" "$claude_doc_one_line" \
+  "docs/engines/claude.md must state the medium-threshold archetypes' actual value"
+
+# USAGE TEXT IS DOCUMENTATION TOO, and it is the copy an operator reads at
+# the moment it matters. Every prose site above was updated when one shipped
+# review adapter started filling findings[]; `orchid drive --help` was not,
+# and nothing here noticed, so for a full milestone the runner told operators
+# the severity clause "is inert for a reviewer whose adapter never fills
+# findings[] -- the shipped review adapters ask for a VERDICT line only". A
+# stale help string that denies the existence of a gate which WILL halt a run
+# is worse than no help at all. `--help` is parsed before any repo lookup, so
+# this spawns nothing beyond one process and needs no fixture.
+drive_help="$("$ORCHID_BIN" drive --help)" \
+  || fail "orchid drive --help must exit 0 without a repo"
+drive_help_one_line="$(printf '%s' "$drive_help" | tr -s '[:space:]' ' ')"
+# Asserted by CAPABILITY, not by naming a plugin: INV-13 forbids the driver
+# from referencing a plugin path at all and INV-14 from branching on an engine
+# identifier, so an assertion demanding the literal `plugins/engines/claude/run`
+# in this file's own help text would put two of this suite's tests in direct
+# contradiction -- and it did, until this line was rewritten. What actually
+# matters to an operator is that the help distinguishes an adapter that REQUESTS
+# AND PARSES findings from one that does not, so the live gate is discoverable
+# for whatever adapter they have bound.
+#
+# Plain-substring shapes only, carrying no ERE metacharacters at all.
+# `assert_match` is `grep -E`, and the help's `<low|medium|high>` token is an
+# ALTERNATION there unless every `|` in it is backslash-escaped. Escaping is
+# one keystroke from silently useless: drop a single backslash and the
+# pattern becomes `FINDING: <low` OR `medium` OR `high>: <title>`, whose
+# middle arm this same help text satisfies independently where it explains
+# that `medium` is only the fallback threshold -- so the assertion would keep
+# passing with the FINDING line shape deleted outright, which is the one
+# regression it exists to catch.
+# Nothing here should hinge on a backslash nobody re-reads.
+# tests/test_engine_claude.sh documents the same hazard and takes the same
+# way out: assert the metacharacter-free prefix instead.
+assert_match "adapter that asks a review for \`FINDING:" "$drive_help_one_line" \
+  "orchid drive --help must state which adapter shape makes the severity clause live"
+assert_match "parses them makes the clause LIVE" "$drive_help_one_line" \
+  "orchid drive --help must say the clause is live for such an adapter, not describe every reviewer as verdict-only"
+assert_match "empty findings\[\] blocks nothing" "$drive_help_one_line" \
+  "orchid drive --help must keep the other half: an empty findings[] is a valid review, not a missing one"
+grep -q "the shipped review adapters ask for a VERDICT line only" <<<"$drive_help_one_line" \
+  && fail "orchid drive --help still calls every shipped review adapter verdict-only — one shipped review adapter has not been since v1-m4 T006"
+# ...and it must not over-correct into the opposite false claim, which is
+# where it landed next: for one round this help asserted the shipped DEFAULT
+# reviewer parses FINDING lines. lib/resolver.sh's `reviewer` default resolves
+# to an adapter that writes no findings key at all, so that read as a promise
+# of a gate most operators are not getting. INV-13/INV-14 want this drawn by
+# CAPABILITY anyway — the help states what each adapter SHAPE does and claims
+# nothing about which one is bound.
+grep -qi "default reviewer" <<<"$drive_help_one_line" \
+  && fail "orchid drive --help asserts what the DEFAULT reviewer's adapter does — lib/resolver.sh's reviewer default populates no findings[], and the help is supposed to distinguish adapters by capability, not by which is default"
+# ...and the same claim must not survive in any other shipped usage text.
+stale_help="$(grep -rln "adapter never fills findings" "$REPO_ROOT/runners" "$REPO_ROOT/libexec" "$REPO_ROOT/bin" 2>/dev/null || true)"
+[ -z "$stale_help" ] || fail "stale L006 severity-gate claim still shipped in: $stale_help"
+
+# v1-m4 T006, the notify return leg: the two manifest keys doctor's check
+# reads are a plugin CONTRACT, so they belong in the plugin spec — an
+# operator writing a notify plugin has nowhere else to learn them.
+assert_match "The inbound probe" "$plugins_spec_one_line" \
+  "docs/specs/plugins.md must document the optional inbound-probe contract notify plugins may declare"
+assert_match "requires_config" "$plugins_spec_one_line" \
+  "docs/specs/plugins.md must document requires_config, which gates doctor's outbound ok"
+for k in inbound_probe requires_config; do
+  grep -q "$k" "$REPO_ROOT/lib/manifest.sh" \
+    || fail "lib/manifest.sh no longer knows the manifest key '$k' — docs/specs/plugins.md documents it as valid"
+done
+grep -q "inbound_probe=--inbound-probe" "$REPO_ROOT/plugins/notify/openclaw/plugin.conf" \
+  || fail "the openclaw notify plugin must declare an inbound probe — docs promise doctor actually probes the return leg for it"
+grep -q "^inbound_probe" "$REPO_ROOT/plugins/notify/hermes/plugin.conf" \
+  && fail "plugins/notify/hermes declares an inbound probe, but hermes.md documents (and the hermes CLI supports) no inbound-liveness query"

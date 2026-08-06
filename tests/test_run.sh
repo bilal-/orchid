@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 # Fixture correction (Plan-A backlog step 2): `run start` now refuses an
 # uninitialized repo (neither .orchid/tasks/ nor .orchid/roadmap.md present).
 # This fixture predates that guard and only created the bare .orchid/ dir —

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK" || exit 1; git init -q .; echo a > f.txt; git add f.txt; git commit -q -m base
+cd_scratch "$WORK" || exit 1; git init -q .; echo a > f.txt; git add f.txt; git commit -q -m base
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'verify=true\nrole.implementer=fake\n' > orchid.config
 mkdir -p "$WORK/eng/fake"
@@ -169,7 +169,7 @@ assert_eq "$WORK" "$(jq -r .worktree "$plan_req")" "plan critique request worktr
 base_wt="$(git -C "$WORK" rev-parse HEAD)"
 big_wt_content="$(printf 'w%.0s' $(seq 1 300000))"
 printf '%s\n' "$big_wt_content" > "$WORK/big.txt"
-(cd "$WORK" && git add big.txt && git commit -q -m "big change")
+(cd_scratch "$WORK" && git add big.txt && git commit -q -m "big change")
 cand_wt="$(git -C "$WORK" rev-parse HEAD)"
 
 "$ORCHID_BIN" task create TWT demo >/dev/null

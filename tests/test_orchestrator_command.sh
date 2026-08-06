@@ -14,7 +14,7 @@ source "$(dirname "$0")/helpers.sh"
 BROKER="$REPO_ROOT/runners/orchid-orchestrator-command"
 [ -x "$BROKER" ] || fail "runners/orchid-orchestrator-command must exist and be executable"
 
-cd "$WORK" || exit 1
+cd_scratch "$WORK" || exit 1
 git init -q .
 git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews

@@ -49,6 +49,21 @@ One-level directory listings use plain bash globbing instead:
 `orchid_list_dir` in `lib/common.sh` for shipped code, `list_dir_entries` /
 `list_dir_files` in `tests/helpers.sh` for tests.
 
+## Test fixtures and scratch directories
+
+A test file never `cd`s into a scratch root with plain `cd`. Use
+`cd_scratch "$WORK"` (and `make_scratch VAR` to mint a further root), both from
+`tests/helpers.sh`. `cd ""` is a silent bash no-op — exit 0, cwd unchanged — so
+a fixture whose scratch variable arrived empty would run its `git init` and
+commits against the caller's checkout, which has happened twice and once
+rewrote a real `orchid.config`. `cd_scratch` refuses an empty path, a
+non-directory, and any path outside a directory the run itself created; and
+because it is an *undefined command* when `helpers.sh` failed to load, the
+fixture's `|| exit 1` also covers a copied test file whose `source` never
+resolved. Paths built from a root (`"$WORK/repo"`) may keep plain `cd` — they
+cannot come out empty. `tests/test_helpers.sh` proves the guard and lints the
+suite for the plain-`cd` shape.
+
 ## Release rehearsal
 
 Release identity lives in `release/metadata.conf` and is cross-checked with the

@@ -237,6 +237,67 @@ from a raised question (`orchid notify`), answer it first
 [docs/engines/openclaw.md](./engines/openclaw.md#inbox-hardening-orchid-answer))
 so the guidance text exists before `unblock` folds it in.
 
+## Answers sent on a channel never arrive
+
+**Symptom:** blockers reach your phone, you answer them there, and the run
+stays blocked — no `blocker_resolved` entry in the journal, no `.answer`
+file, no trace at all locally.
+
+Sending and receiving are **different legs with different requirements**.
+Outbound needs only a CLI on this machine (the pump runs the notify plugin's
+`send`). Inbound needs a persistent agent on the *channel* side that turns
+your reply into an actual `orchid answer` invocation against this repo —
+orchid ships no inbound listener and neither starts nor supervises that
+agent. A gateway that is down (or a skill that was never installed there)
+loses every answer silently, because nothing local is involved in the
+attempt.
+
+```sh
+orchid doctor            # read the "notify outbound" / "notify inbound" lines
+```
+
+Doctor reports the two separately and never infers the second from the
+first.
+
+**Outbound** is `ok` only when the plugin resolves, its required binaries are
+on PATH, *and* the config that plugin declares it cannot send without is set
+(`requires_config=` in its manifest — `notify.to` is mandatory for openclaw
+and optional for hermes). An unset one is called out here rather than
+discovered as five silent retries and a quarantined message.
+
+**Inbound** is genuinely probed when the configured plugin ships a probe
+(`inbound_probe=` in its manifest — openclaw does, via `openclaw channels
+status`): doctor runs it with a 10s deadline and reports REACHABLE, NOT
+REACHABLE, or UNDETERMINED as the plugin itself determined. A gateway that is
+down shows up here as NOT REACHABLE — that is the line that would have caught
+the outage above on day one. Note what a REACHABLE result does *not* claim:
+the transport your reply travels over is up, which is not proof that a
+channel-side agent exists there to turn the reply into an `orchid answer`
+call. For a plugin that declares no probe, doctor says NOT VERIFIED for that
+plugin rather than pretending nothing could ever be known.
+
+Alongside either, doctor shows local evidence: blockers still *waiting* for
+an answer. Several you believe you already answered is the signature of a
+broken return leg. Exactly one class is excluded and counted separately —
+questions that expired past `answer_expiry_s` — because that is the one
+refusal `orchid answer` itself enforces, so no answer can ever arrive and a
+permanent warning would only train you to skim past the line. Task status is
+*not* a filter: `orchid answer` never reads it, so a question raised on a task
+now in `merging`, `arbitrating` or `rework` is still answerable and its
+silence is still evidence. A task resolved locally with `orchid task unblock`
+does leave its question answer-less by design; that one ages out through the
+same expiry rather than being dropped on sight.
+
+When nothing is waiting, doctor reports the *absence* — "no question is
+currently unanswered" — and says so as an absence. It is not an all-clear on
+the return leg: a channel that drops every reply looks identical to a healthy
+one until something is actually asked. The probe above is the line that
+speaks to liveness; this one only tells you whether anything is outstanding.
+
+Every line here is advisory — a run with no channel at all is legitimate and
+stays green. To answer while the return leg is down, run the command
+`BLOCKERS.md` prints for the question directly on this machine.
+
 ## Stale checkout
 
 **Symptom:** `orchid doctor`/`orchid status` warns `integration checkout is

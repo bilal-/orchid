@@ -59,28 +59,110 @@ list_dir_files() (
     if [ -f "$entry" ]; then printf '%s\n' "${entry##*/}"; fi
   done
 )
-WORK="$(mktemp -d)"
-# v1-m3 (m2 ledger finding, the stray-commit mishap): if mktemp -d ever
-# fails, WORK ends up "" -- NOT unset, so `set -u` above never catches it.
-# `cd ""` is a silent bash no-op (exit 0, cwd unchanged), so every test
-# file's `cd "$WORK" || exit 1; git init -q .; git commit ...` would then run against
-# whatever the CALLER's cwd happens to be -- typically the real repo
-# checkout under test. Die loudly here, before any test file gets to run a
-# single cd/git command against a bogus WORK.
-[ -n "$WORK" ] && [ -d "$WORK" ] || {
-  echo "FATAL: helpers.sh: mktemp -d failed to produce a usable scratch dir (WORK='$WORK') -- refusing to run any cd/git" >&2
+# --------------------------------------------------------------------------
+# Scratch-directory registry. THE hazard this exists for (m2's stray-commit
+# mishap, and v1-m4 T006's repeat of it): a test file opens with
+#
+#     cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+#
+# and `cd ""` is a silent bash no-op -- exit 0, cwd unchanged -- so the
+# instant $WORK is EMPTY (or unset, in a shell where `set -u` is not in
+# force), that git init and those commits land in whatever the CALLER's cwd
+# happens to be. On a task worktree that means git-writing the real checkout
+# under test; T006's incident rewrote its orchid.config to a fixture's
+# `verify=true`, which would have made every later `orchid verify` pass
+# WITHOUT running a test.
+#
+# $WORK can reach a test file empty two ways, and both are covered here:
+#   (a) `mktemp -d` failed (disk full, TMPDIR misconfigured, sandboxing) --
+#       plain `WORK="$(mktemp -d)"` then leaves WORK="", not unset, so `set
+#       -u` never fires. register_scratch below dies loudly instead.
+#   (b) this file never loaded at all -- an INSTRUMENTED COPY of a test file
+#       run from a directory where `$(dirname "$0")/helpers.sh` does not
+#       resolve. `source` prints "No such file" and keeps going, WORK is
+#       simply unset, and (a)'s guard never even ran. That is why the
+#       fixtures call `cd_scratch "$WORK" || exit 1` rather than plain `cd`:
+#       with helpers.sh missing, cd_scratch is an undefined command, bash
+#       exits 127, and `|| exit 1` stops the file BEFORE the first git write.
+#
+# Only BARE scratch roots (the whole value is one `mktemp -d` result) need
+# cd_scratch. A path built as "$WORK/repo" cannot come out empty even when
+# WORK is -- it degrades to "/repo", which `cd` rejects, so the existing
+# `|| exit 1` already fails closed there.
+_SCRATCH_ROOTS=""
+
+# _scratch_die <message> -- print and stop the test file. It ALSO counts a
+# FAILS, because the EXIT trap installed below ends with `exit $((FAILS>0))`:
+# a bare `exit 1` from here would be laundered back to 0 by that trap and the
+# runner would score a file that refused to run as a PASS -- precisely the
+# silent outcome this guard exists to prevent. (In a subshell the count is
+# lost with the subshell, but so is the git write it stopped, and the
+# fixture's own assertions then fail.)
+_scratch_die() {
+  echo "FATAL: $*" >&2
+  FAILS=$((FAILS+1))
   exit 1
 }
+
+# register_scratch <dir> -- validate a directory this run just created and
+# record it as a legal cd_scratch target. Physical path (`pwd -P`), because
+# macOS hands out /var/folders/... symlinks for /private/var/folders/... and
+# the prefix test below has to compare like with like.
+register_scratch() {
+  local d="${1:-}" p
+  [ -n "$d" ] && [ -d "$d" ] \
+    || _scratch_die "helpers.sh: mktemp -d failed to produce a usable scratch dir (got '$d') -- refusing to run any cd/git"
+  p="$(cd "$d" && pwd -P)" \
+    || _scratch_die "helpers.sh: cannot resolve scratch dir '$d' -- refusing to run any cd/git"
+  _SCRATCH_ROOTS="${_SCRATCH_ROOTS}${p}"$'\n'
+}
+
+# make_scratch <varname> -- assign a fresh, registered scratch root to a
+# caller-named variable. NOT `X="$(make_scratch)"`: command substitution runs
+# in a subshell, so the registration would be thrown away with it.
+make_scratch() {
+  local __ms_var="${1:?make_scratch <varname>}" __ms_dir
+  __ms_dir="$(mktemp -d)"
+  register_scratch "$__ms_dir"
+  printf -v "$__ms_var" '%s' "$__ms_dir"
+}
+
+# cd_scratch <dir> -- `cd` into a scratch directory THIS run created, or die
+# without changing directory. Refuses empty, refuses non-directories, and
+# refuses any path outside a registered root, so a fixture can never reach
+# its `git init` line with the caller's checkout as cwd.
+cd_scratch() {
+  local d="${1:-}" p root
+  [ -n "$d" ] \
+    || _scratch_die "cd_scratch: empty scratch path -- refusing to cd (cd '' is a silent no-op, and the git writes that follow would hit the caller's checkout)"
+  [ -d "$d" ] || _scratch_die "cd_scratch: '$d' is not a directory -- refusing to cd"
+  p="$(cd "$d" && pwd -P)" || _scratch_die "cd_scratch: cannot resolve '$d' -- refusing to cd"
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    case "$p" in
+      "$root"|"$root"/*)
+        cd "$d" || _scratch_die "cd_scratch: cd '$d' failed"
+        return 0 ;;
+    esac
+  done <<<"$_SCRATCH_ROOTS"
+  _scratch_die "cd_scratch: '$d' is not inside a scratch directory this run created -- refusing to cd/git there"
+}
+
+_scratch_cleanup() {
+  local root
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    rm -rf "$root"
+  done <<<"$_SCRATCH_ROOTS"
+}
+
+make_scratch WORK
 
 # Trust/config/plugin state models machine-local HOME state and must not live
 # beneath a target repository. Trust-boundary fixtures use this independent
 # disposable directory instead of the historical "$WORK/home" shortcut.
-MACHINE_HOME="$(mktemp -d)"
-[ -n "$MACHINE_HOME" ] && [ -d "$MACHINE_HOME" ] || {
-  echo "FATAL: helpers.sh: mktemp -d failed to produce a machine HOME (MACHINE_HOME='$MACHINE_HOME')" >&2
-  exit 1
-}
-trap 'rm -rf "$WORK" "$MACHINE_HOME"; exit $((FAILS>0))' EXIT
+make_scratch MACHINE_HOME
+trap '_scratch_cleanup; exit $((FAILS>0))' EXIT
 
 # plant_reviewer_envelope <task-id> [attempt] -- v1-m2's kernel envelope-
 # count gate (reviewing->arbitrating) requires review_required_count(risk_

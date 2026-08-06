@@ -233,15 +233,35 @@ incomplete review set is never also reported as a conflict, and vice versa:
    severity the kernel does not recognize counts as blocking, fail closed).
    → `orchid task arbitrate <id> --result approve --reason "..."`.
    **What the severity gate actually gates:** it reads `findings[]`, which
-   only an adapter that populates it can trigger. The shipped `review`
-   adapters do not — `plugins/engines/claude/run` and
-   `plugins/engines/codex/run` ask a `review` reply for a `VERDICT:` line
-   only and write `findings: []` verbatim (`FINDING:` lines are requested by
-   the `critique` prompt alone). For those reviewers the `blocking_severity`
-   gate is **inert**, and a deterministic approval rests on `verdict` and
-   `scope_complete` alone. Treat it as a contract available to reviewer
-   adapters that report findings, not as a second opinion you are already
-   getting.
+   only an adapter that populates it can trigger — and the shipped adapters
+   are split on that. `plugins/engines/claude/run` asks a `review` reply for
+   `FINDING: <low|medium|high>: <title>` lines alongside the `VERDICT:` line
+   and parses them into `findings[]`, so for a claude reviewer the gate is
+   live (a review that reports nothing still writes `findings: []`, which
+   blocks nothing — an engine reporting no findings is a valid review, not
+   evidence of a broken gate). `plugins/engines/codex/run` and the other
+   shipped `review` adapters still ask for a `VERDICT:` line only and write
+   `findings: []` verbatim (`FINDING:` lines are requested by the `critique`
+   prompt alone). For those reviewers the `blocking_severity` gate is
+   **inert**, and a deterministic approval rests on `verdict` and
+   `scope_complete` alone. Check which adapter reviewed before reading a
+   clean gate as a second opinion you are already getting.
+   **And read the live case the other way round, because it is the one that
+   will surprise you:** where `findings[]` IS populated, a **non-empty** one
+   blocks an otherwise-approving review. Read the TASK's own
+   `blocking_severity` (`orchid task show <id>`) rather than assuming one:
+   `medium` is only the fallback the gate applies when the field is absent,
+   and the shipped archetypes disagree — `templates/task.md` and
+   `templates/task-test.md` ship `high`, `task-migrate`/`task-refactor` ship
+   `medium`. On a `medium`-threshold task a single `medium` finding on a
+   review whose verdict is `approve` is not "approved with a
+   note" — it is arm 3, a `review-conflict` boundary that halts the run for
+   arbitration. That is the intended behavior, not a bug to route around:
+   the arbiter decides, and `orchid task arbitrate --result approve` settles
+   it in one verb. Reviewers habitually approve-with-nits, so the reviewer
+   prompt defines the three severities by CONSEQUENCE (`low` = worth saying,
+   not worth stopping for) rather than by emphasis — a nit filed as `medium`
+   stops a run nobody meant to stop.
 3. **Conflict** — anything else: a `request-changes` verdict, a blocking
    finding, mixed verdicts, or a non-scope-complete review. → boundary
    `review-conflict`, **no transition**. Deciding what to do about a real

@@ -58,7 +58,7 @@ $tick"
   fail "timed out waiting for both $t1 and $t2 to reconcile ok (accumulated: $acc)"
 }
 
-cd "$WORK" || exit 1; git init -q .
+cd_scratch "$WORK" || exit 1; git init -q .
 
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nconcurrency=2\n' > orchid.config

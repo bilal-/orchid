@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'verify=true\n' > orchid.config
 # init now refuses a dirty tree (Task 8 safety fix): commit the fixture's

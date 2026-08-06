@@ -11,7 +11,7 @@ source "$REPO_ROOT/lib/roles.sh"; source "$REPO_ROOT/lib/resolver.sh"
 source "$REPO_ROOT/lib/capsuite.sh"; source "$REPO_ROOT/lib/ledger.sh"
 export ORCHID_ROOT="$REPO_ROOT"
 
-cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ENGINES_DIR="$WORK/eng"; mkdir -p "$WORK/eng"
 PUMP="$REPO_ROOT/runners/orchid-pump"

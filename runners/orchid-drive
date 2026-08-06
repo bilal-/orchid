@@ -62,9 +62,22 @@ refresh the lease again.
 The only decision it makes on its own is an unambiguous arbitration: every
 required review valid and bound to the task's current candidate_sha, every
 verdict `approve`, every review scope-complete, and no finding at or above the
-task's blocking_severity. That last clause is inert for a reviewer whose
-adapter never fills findings[] -- the shipped review adapters ask for a
-VERDICT line only -- so with them approval rests on verdict + scope_complete.
+task's blocking_severity. How much that last clause does depends on the
+reviewer's adapter, and this file deliberately names none of them -- INV-13
+forbids the driver from referencing a plugin path, and INV-14 from branching on
+an engine identifier, so the distinction below is drawn by CAPABILITY. An
+adapter that asks a review for `FINDING: <low|medium|high>: <title>` lines and
+parses them makes the clause LIVE: one finding at or above the task's own
+blocking_severity (`orchid task show <id>`; `medium` is only the fallback when
+the field is absent, and the shipped archetypes do not agree on one) stops the
+pass at a judgment boundary even though every verdict said `approve`. An adapter that asks for a VERDICT line only always
+writes findings[] empty, and for it approval rests on verdict + scope_complete.
+The shipped review adapters are split between those two shapes, and this text
+claims nothing about which shape the reviewer YOU have bound is: read that
+adapter's own reply contract, or PROTOCOL.md's deterministic-approval arm,
+before reading a clean gate as a second opinion you are already getting. An
+empty findings[] blocks nothing either way -- a reviewer that found nothing is
+a valid review, not a missing one.
 
 At most one judgment boundary is recorded per pass. A boundary a woken
 orchestrator could actually settle outranks one only an operator can, and

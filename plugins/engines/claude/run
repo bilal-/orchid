@@ -259,7 +259,44 @@ manifest_line="$(jq -r '"pack manifest: items=" + ([.items[].name] | join(",")) 
 if [ -f "$input_pack/task.md" ]; then
   ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
   stop="$(fm_get "$input_pack/task.md" stop_condition)"
+  # THIS task's threshold, read from the pack's own task.md (lib/pack.sh
+  # copies the file whole, frontmatter included) -- never a hardcoded
+  # default. The shipped archetypes disagree: templates/task.md and
+  # templates/task-test.md set `blocking_severity: high`, task-migrate and
+  # task-refactor set `medium`. A prompt that says "medium by default" is
+  # therefore simply wrong for some archetypes, on the very gate this
+  # milestone made live -- it would push a reviewer to spend `medium` on
+  # something that will not stop a `high`-threshold task, or to withhold one
+  # believing it will. The `[ -n ]` fallback is the SAME default
+  # lib/drive.sh's own gate applies when the key is absent, so the prompt and
+  # the gate can never state different thresholds.
+  bsev="$(fm_get "$input_pack/task.md" blocking_severity)"; [ -n "$bsev" ] || bsev=medium
   diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
+  # Reply contract (v1-m4 T006): VERDICT **plus** the same `FINDING:
+  # <low|medium|high>: <title>` line shape the critique prompt below already
+  # specifies. The verdict contract itself is unchanged (still the exact
+  # last-line-match `verdict_line` grep below reads); the FINDING lines are
+  # purely additive, and a reply carrying none is still a well-formed review.
+  #
+  # Why (dogfood finding): reviews used to be asked for a VERDICT line ONLY,
+  # so every review envelope carried `findings: []` verbatim and the
+  # reviewer's actual reasoning survived only if it happened to land in prose
+  # in the engine log -- which is reaped. One T003 round lost three reported
+  # findings that way. findings[] is the only durable, structured place a
+  # review's reasoning lives (lib/envelope.sh's review/critique union), and
+  # it is what the driver's blocking_severity gate reads (lib/drive.sh).
+  #
+  # SEVERITY IS A GATE, NOT A LABEL -- and the prompt has to say so. Populated
+  # findings[] make that gate live: ONE finding at or above this task's own
+  # `blocking_severity` (read above, never assumed) on an otherwise-approving
+  # review is a `review-conflict` boundary that HALTS the run. Reviewers
+  # habitually approve-with-nits, and "one line per issue found" alone invites
+  # exactly that -- a severity spent on a nit stops a run that nobody meant to
+  # stop. So the three severities are defined in the prompt in terms of what
+  # each one DOES, phrased against the threshold rather than assuming it, and
+  # `low` is named as the home for anything worth mentioning but not worth
+  # blocking on. The parser and the envelope schema are unchanged; this only
+  # tells the model what it is choosing.
   prompt="Acceptance criteria: $ac
 Stop condition: $stop
 $manifest_line
@@ -267,7 +304,19 @@ $manifest_line
 Diff:
 $diff
 
-End your reply with exactly: VERDICT: approve OR request-changes"
+Reply with:
+VERDICT: approve OR request-changes
+One line per issue found, exactly: FINDING: <low|medium|high>: <title>
+(omit FINDING lines entirely when there are none).
+
+Severity decides what happens next, so pick it for consequence, not for
+emphasis. This task's blocking_severity is $bsev: a finding at or above $bsev
+STOPS the run for human arbitration even when your verdict is approve.
+- high: must not ship as written — correctness, safety, or data loss.
+- medium: a real defect or a missed acceptance criterion — worth halting the
+  run over wherever the threshold above reaches it.
+- low: worth telling the author, never worth stopping for — style, naming,
+  wording, optional cleanups. Use low for anything you would call a nit."
 else
   # v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
   # diff.patch at all -- lib/pack.sh's _pack_build_plan builds
@@ -356,27 +405,32 @@ fi
 any_trunc="$(jq '[.items[]?.truncated // false] | any' "$input_pack/pack.json")"
 scope_complete=true; [ "$any_trunc" = "true" ] && scope_complete=false
 
-# findings[] (v1-m3): only `critique` replies are asked for `FINDING:` lines
-# (see the prompt above) -- `review` keeps its existing verdict-only
-# contract, findings stays the literal empty array it always was. Each
-# matched line is `FINDING: <low|medium|high>: <title>`; cut -f2- (not a
-# second split on ":") so a title containing its own colon is kept intact.
-# A line whose severity token doesn't match exactly one of the three, or
-# whose title is empty, is silently dropped rather than failing the whole
-# reply -- this is a best-effort scrape of free text, not a strict parser.
+# findings[] (v1-m3; extended to `review` in v1-m4 T006): BOTH operations
+# that reach this point -- `review` and `critique` -- are asked for `FINDING:`
+# lines by their own prompt above, so both parse them here. Each matched line
+# is `FINDING: <low|medium|high>: <title>`; cut -f2- (not a second split on
+# ":") so a title containing its own colon is kept intact. A line whose
+# severity token doesn't match exactly one of the three, or whose title is
+# empty, is silently dropped rather than failing the whole reply -- this is a
+# best-effort scrape of free text, not a strict parser (which is also why a
+# reply that merely echoes the instruction line back, severity token
+# `<low|medium|high>` and all, contributes nothing).
+#
+# An empty result stays the literal `[]` and is NOT an error: a reviewer that
+# genuinely found nothing to report is a valid, still-`ok` review, and the
+# driver's blocking_severity gate (lib/drive.sh) reads an empty findings[] as
+# "nothing blocking", exactly as it always has.
 findings_json='[]'
-if [ "$operation" = critique ]; then
-  findings_ndjson=""
-  while IFS= read -r rest; do
-    [ -n "$rest" ] || continue
-    sev="$(printf '%s' "$rest" | cut -d: -f1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-    title="$(printf '%s' "$rest" | cut -d: -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-    case "$sev" in low|medium|high) ;; *) continue ;; esac
-    [ -n "$title" ] || continue
-    findings_ndjson="$findings_ndjson$(jq -n --arg s "$sev" --arg t "$title" '{severity:$s, title:$t}')"$'\n'
-  done < <(printf '%s\n' "$stdout" | grep '^FINDING:' | sed 's/^FINDING:[[:space:]]*//')
-  [ -z "$findings_ndjson" ] || findings_json="$(printf '%s' "$findings_ndjson" | jq -s -c '.')"
-fi
+findings_ndjson=""
+while IFS= read -r rest; do
+  [ -n "$rest" ] || continue
+  sev="$(printf '%s' "$rest" | cut -d: -f1 | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  title="$(printf '%s' "$rest" | cut -d: -f2- | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  case "$sev" in low|medium|high) ;; *) continue ;; esac
+  [ -n "$title" ] || continue
+  findings_ndjson="$findings_ndjson$(jq -n --arg s "$sev" --arg t "$title" '{severity:$s, title:$t}')"$'\n'
+done < <(printf '%s\n' "$stdout" | grep '^FINDING:' | sed 's/^FINDING:[[:space:]]*//')
+[ -z "$findings_ndjson" ] || findings_json="$(printf '%s' "$findings_ndjson" | jq -s -c '.')"
 
 write_envelope ok "$(jq -n --arg v "$verdict" --argjson sc "$scope_complete" --argjson f "$findings_json" '{verdict:$v, scope_complete:$sc, findings:$f}')"
 exit 0

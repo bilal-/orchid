@@ -250,6 +250,31 @@ available and never create an acknowledgement.
   allowlist, and expiry before recording — no listener daemon; the tick
   polls the inbox. Telegram fallback uses the same three-actor shape. An
   unanswered question is just a blocked task.
+- **The return leg is a separate fact from the send leg (v1-m4 T006):**
+  actor (1) needs only a CLI on the orchid machine, while an ANSWER depends
+  entirely on actor (2) — a persistent agent orchid neither starts nor
+  supervises. When that agent is down, blockers still arrive and every reply
+  to them is lost with no local trace (observed: a gateway down for a day,
+  a phone answer gone). `orchid doctor` therefore reports outbound and
+  inbound as two separate lines and never infers the second from the first.
+  Outbound is `ok` only when the plugin resolves, its `requires_binaries`
+  are on PATH, AND the config it declares in `requires_config=` is set.
+  Inbound is **actually probed** where the configured plugin declares an
+  `inbound_probe=` mode (docs/specs/plugins.md): doctor runs it and reports
+  reachable / not reachable / undetermined as the plugin itself determined,
+  bounded honestly — a reachable transport is not proof that a channel-side
+  agent exists to run `orchid answer`. A plugin that declares no probe is
+  reported **NOT VERIFIED** *for that plugin*, never as a claim that liveness
+  is unknowable in general. Alongside either, doctor reports local evidence:
+  blockers still WAITING for an answer. The only exclusion is expiry (past
+  `answer_expiry_s`), mirroring the one refusal `orchid answer` itself
+  enforces — nothing can ever write an answer for those, and a permanent
+  warning is what teaches an operator to ignore the line. Task status is NOT
+  an exclusion: `orchid answer` never reads it, so a question is evidence
+  whatever status its task holds. When nothing is waiting, doctor reports
+  that as an ABSENCE and names its bound — no question outstanding is not
+  proof the return leg works. Every line here is advisory; a run with no
+  channel configured is legitimate and stays green.
 - **API-billing exception, stated plainly:** API-backed engines are metered
   per call, unlike subscription CLIs; their role BINDINGS carry call budgets
   and retry ceilings. **Dropped, per the v1-m4 escape hatch (roadmap.md):**

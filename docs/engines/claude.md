@@ -114,6 +114,52 @@ orchestrator only for a named judgment boundary it refused to resolve.
 (same reasoning as codex's adapter — real claude was also found to buffer
 all output until exit) and runs a liveness heartbeat alongside it.
 
+## Reviewer: the reply contract carries findings, not just a verdict
+
+A `review` reply is asked for the same two line shapes a `critique` reply is:
+
+```
+VERDICT: approve OR request-changes
+FINDING: <low|medium|high>: <title>      # zero or more; omit entirely if none
+```
+
+The adapter parses those `FINDING:` lines into the envelope's `findings[]`
+(a line whose severity token is not exactly one of the three, or whose title
+is empty, is dropped — this is a best-effort scrape, not a strict parser).
+Before v1-m4 a review was asked for the `VERDICT:` line alone, so every
+review envelope carried `findings: []` and the reviewer's reasoning survived
+only if it happened to appear in prose in the engine log, which is reaped —
+a real run lost three reported findings from a single review round that way.
+The verdict contract is unchanged, and a review that reports no findings
+still writes `findings: []`; that empty array blocks nothing, in the
+driver's `blocking_severity` gate or anywhere else. Other shipped review
+adapters remain verdict-only — see PROTOCOL.md's deterministic-approval arm
+for which reviewer makes that gate live.
+
+**Severity is a gate, so the prompt spells out what each one does.** Because
+this adapter populates `findings[]`, the driver's `blocking_severity` gate is
+live for it. A finding at or above that threshold on a review whose verdict is
+`approve` is therefore not an approval with a note: it is a `review-conflict`
+boundary that halts the run until an arbiter settles it.
+
+**The prompt states the task's own threshold, never a hardcoded default.**
+The adapter reads `blocking_severity` from the pack's `task.md` and names that
+value in the prompt, falling back to `medium` only when the field is absent —
+the same fallback `lib/drive.sh`'s gate applies, so the prompt and the gate
+can never disagree. This matters because the shipped archetypes do not agree:
+`templates/task.md` and `templates/task-test.md` ship `high`, while
+`templates/task-migrate.md` and `templates/task-refactor.md` ship `medium`. A
+prompt claiming "medium by default" would tell a reviewer on a `high`-threshold
+task that a `medium` finding halts the run when it does not.
+
+Reviewers approve-with-nits by habit, so the review prompt defines the three
+severities by consequence, phrased against that threshold rather than
+assuming it — `high` must not ship, `medium` is a real defect worth halting
+over wherever the threshold reaches it, `low` is worth telling the author and
+explicitly never worth stopping for ("use low for anything you would call a
+nit"). Nothing about the parser or the envelope schema encodes this; it is the
+prompt's job to make the model choose a severity for what it triggers.
+
 ## Implementer: review-only in practice (adapter commits when it can)
 
 `claude -p --permission-mode acceptEdits` creates/edits files but does
