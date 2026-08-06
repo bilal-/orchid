@@ -921,6 +921,29 @@ tool rather than reporting the record as malformed.
 Interactive sessions, planning, manual verbs, and read-only commands do not
 require or create this record.
 
+**Qualify a repository before acknowledging it.** The acknowledgement opens the
+gate; it does not make the target drivable. Three failure modes only appear on a
+real codebase, and each one stalls a headless run with no actor able to move it:
+
+- a verification suite whose single run approaches `pump_stale_s` — the driver
+  holds no lease refresh across a synchronous verification and the merge
+  re-verifies after its rebase, so one pass costs roughly twice that duration
+  with the lease untouched, after which another pump treats the run as
+  abandoned;
+- an implementer that cannot execute a command, for which running a repository
+  script and changing a file mode are operator hand-offs no in-loop actor can
+  perform;
+- a committed artifact derived from the tree's exact content, which the merge
+  rebase invalidates and which then has no in-loop actor able to regenerate it.
+
+`scripts/beta-qualify.sh` probes all three locally, read-only against the
+target, and records anonymized evidence — check identities, durations, exit
+codes, and outcomes, never repository content. It never acknowledges trust on
+the operator's behalf and never contacts a remote. What it cannot settle
+locally, including the inbound half of the blocker round trip, it records as
+`not-tested` with the reason rather than as a pass. See
+[docs/beta-qualification.md](./docs/beta-qualification.md).
+
 The interactive session above is one front-end for this file;
 `runners/orchid-pump` (cron/launchd-invoked, or run by hand) is the other. The pump
 never builds a prompt and never reads an envelope's contents — only exit

@@ -140,11 +140,31 @@ from the source archive, avoiding a checksum self-reference.
    `info/attributes` cannot change the bytes. It never reads payload files
    from the working tree and never pushes or publishes.
 
-5. Inspect the emitted archive, checksum file, and formula. Uploading the
-   archive, pushing the tag, and updating a tap remain separate, explicit
-   operator actions; neither CI nor the release script performs them.
+5. Rehearse the whole operator story locally, inside a single private
+   temporary root, with every network tool, vendor CLI, and remote-capable
+   `git` subcommand shadowed by a `PATH` tripwire that logs and fails:
 
-6. After those operator-owned publication steps are complete, install from
+   ```sh
+   /bin/bash tests/test_e2e_release_rehearsal.sh
+   ```
+
+   It covers one-command setup, the unattended refusal, an explicit
+   acknowledgement, beta qualification, a deterministic drive, the release
+   gate's accept and refuse paths, and installer wiring — then asserts that no
+   tripwire fired, that no repository acquired a remote or a remote ref, that
+   the source checkout is byte-identical afterwards, and that removing the root
+   leaves the machine as it found it. Qualify each candidate repository with
+   `scripts/beta-qualify.sh` and work through
+   [beta-qualification.md](./beta-qualification.md)'s operator checklist before
+   handing a build to anyone.
+
+6. Inspect the emitted archive, checksum file, and formula. Uploading the
+   archive, pushing the tag, and updating a tap remain separate, explicit
+   operator actions; neither CI nor the release script performs them. A genuine
+   third-party beta run is likewise operator-owned: nothing in this repository
+   performs one or records that one happened.
+
+7. After those operator-owned publication steps are complete, install from
    the tap with:
 
    ```sh

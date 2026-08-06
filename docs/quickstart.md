@@ -343,8 +343,31 @@ supported verbs do not push; see the
 [threat model](./specs/plugins.md#threat-model-consolidated) before treating
 that prompt policy as containment.
 
+## Before you hand this to someone else
+
+If you are about to point Orchid at a repository you do not already know it can
+drive — someone else's project, or your own before a beta — qualify it first:
+
+```sh
+/bin/bash scripts/beta-qualify.sh --repo "$PWD" \
+  --output "$(mktemp -d)/qualification" --bash /bin/bash
+```
+
+It times your verification command against `pump_stale_s`, checks whether the
+configured implementer can run a command at all (two of the deadlocks that only
+show up on a real codebase), reports the unattended trust gate without changing
+it, and writes anonymized local evidence — check identities, durations, exit
+codes, and outcomes, never contents, paths, prompts, diffs, or secrets. What it
+cannot test locally, including the inbound half of the blocker round trip, it
+records as `not-tested` with the reason rather than as a pass.
+
+Full checklist, including the manual steps no harness can perform:
+[beta-qualification.md](./beta-qualification.md).
+
 ## Next
 
+- [beta-qualification.md](./beta-qualification.md) — qualifying a repository
+  before a beta, and the local release rehearsal.
 - [configuration.md](./configuration.md) — every key, its default, and
   which layer to set it in.
 - [troubleshooting.md](./troubleshooting.md) — rate limits, resume, stale

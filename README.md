@@ -452,6 +452,39 @@ prompt policy.
 release-lease`, `orchid jobs gc --reap-prepared`. Full incident-by-incident
 detail: [troubleshooting.md](./docs/troubleshooting.md).
 
+## Before you point it at someone else's repo
+
+`scripts/beta-qualify.sh` qualifies one operator-supplied repository against
+this build, locally, before a beta tester finds the answer the hard way. It
+runs the repository's own verification command once to time it against
+`pump_stale_s`, checks whether the configured implementer can run a command at
+all, and reports the machine-local unattended trust gate without ever changing
+it.
+
+```sh
+/bin/bash scripts/beta-qualify.sh --repo /path/to/repo \
+  --output "$(mktemp -d)/qualification" --bash /bin/bash
+```
+
+Evidence is anonymized by construction: no subprocess output is ever copied
+into a record, so the emitted JSON and text carry check identities, durations,
+exit codes, bucketed size bands, and outcomes — never contents, paths,
+filenames, prompts, diffs, or secrets. Each record states what was executed,
+why the check exists, and why that outcome was reached; a check the harness
+cannot perform is recorded as `not-tested` with the reason, never as a pass.
+The verdict names its own scope and enumerates what it does not certify.
+
+`tests/test_e2e_release_rehearsal.sh` rehearses the whole story once inside a
+single private temporary root — setup, unattended refusal, acknowledgement,
+qualification, a deterministic drive, and the release gate — with every network
+tool, vendor CLI, and remote-capable `git` subcommand shadowed by a `PATH`
+tripwire that logs and fails, and with the source checkout proven unchanged
+afterwards.
+
+**A genuine third-party beta run and any publication remain operator-owned.**
+Neither has happened, and nothing in this repository claims otherwise. Full
+checklist: [docs/beta-qualification.md](./docs/beta-qualification.md).
+
 ## Extending orchid
 
 Everything outside the kernel is a plugin — **the built-ins are plugins

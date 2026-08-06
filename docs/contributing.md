@@ -84,3 +84,19 @@ config-isolated `git archive --format=tar.gz` backend. With archive-command
 overrides excluded, Git uses its internal gzip implementation; a host `gzip`
 found on `PATH` cannot influence the pinned bytes. Linux and macOS CI each
 recompute and compare those bytes with the same committed formula checksum.
+
+`tests/test_e2e_release_rehearsal.sh` runs the whole operator story once inside
+one private temporary root — setup, unattended refusal, acknowledgement, beta
+qualification, a deterministic drive, the release gate, and installer wiring —
+with every network tool, vendor CLI, and remote-capable `git` subcommand
+shadowed by a `PATH` tripwire that logs and fails. It is part of the suite the
+gate above runs, so a change that reaches outside that root, moves a remote ref,
+or modifies the source checkout fails CI rather than a tester's machine.
+
+## Beta qualification
+
+`scripts/beta-qualify.sh` qualifies one operator-supplied repository against
+this build and writes anonymized local evidence. Genuine third-party beta runs
+and publication remain operator-owned; this repository performs neither and
+claims neither. See [beta-qualification.md](./beta-qualification.md) for the
+probe list, the evidence rule, and the manual checklist.

@@ -60,6 +60,7 @@ docs_suite_files() {
            "$REPO_ROOT/docs/configuration.md" \
            "$REPO_ROOT/docs/troubleshooting.md" \
            "$REPO_ROOT/docs/research.md" \
+           "$REPO_ROOT/docs/beta-qualification.md" \
            "$REPO_ROOT/docs/frontends.md"; do
     [ -f "$f" ] && echo "$f"
   done
@@ -81,6 +82,7 @@ docs/quickstart-greenfield.md
 docs/configuration.md
 docs/troubleshooting.md
 docs/research.md
+docs/beta-qualification.md
 docs/frontends.md
 docs/engines/codex.md
 docs/engines/claude.md
@@ -510,3 +512,77 @@ grep -q "inbound_probe=--inbound-probe" "$REPO_ROOT/plugins/notify/openclaw/plug
   || fail "the openclaw notify plugin must declare an inbound probe — docs promise doctor actually probes the return leg for it"
 grep -q "^inbound_probe" "$REPO_ROOT/plugins/notify/hermes/plugin.conf" \
   && fail "plugins/notify/hermes declares an inbound probe, but hermes.md documents (and the hermes CLI supports) no inbound-liveness query"
+
+# ===========================================================================
+# 7 -- beta qualification and the release rehearsal: the tooling exists, and
+# every surface that mentions it keeps the two claims this repository is not
+# allowed to blur. A third-party beta run and any publication are OPERATOR-
+# owned, have not happened, and must never be described as if they had; and
+# the qualification evidence is anonymized, which is a promise a tester reads
+# before pointing this at a repository they cannot show anyone.
+#
+# grep -qF against fixed strings throughout (no regex): these are exact
+# sentences the docs own, and a metacharacter in one of them would quietly
+# change what is being asserted.
+# ===========================================================================
+QUALIFY_SH="$REPO_ROOT/scripts/beta-qualify.sh"
+REHEARSAL_SH="$REPO_ROOT/tests/test_e2e_release_rehearsal.sh"
+BETA_MD="$REPO_ROOT/docs/beta-qualification.md"
+[ -f "$QUALIFY_SH" ] || fail "scripts/beta-qualify.sh missing — the beta docs describe a harness that does not exist"
+[ -f "$REHEARSAL_SH" ] || fail "tests/test_e2e_release_rehearsal.sh missing — the release docs describe a rehearsal that does not exist"
+
+# The harness's own --help is part of the documentation surface: it is what an
+# operator reads before running it against a repository they cannot share.
+grep -qF 'It never pushes, publishes, deploys, tags, or contacts a remote' "$QUALIFY_SH" \
+  || fail "scripts/beta-qualify.sh --help must state that it never publishes or contacts a remote"
+grep -qF 'never copies repository content into the evidence' "$QUALIFY_SH" \
+  || fail "scripts/beta-qualify.sh --help must state the anonymization rule"
+grep -qF 'Genuine third-party beta runs and public release remain operator-owned' "$QUALIFY_SH" \
+  || fail "scripts/beta-qualify.sh --help must name third-party beta and release as operator-owned"
+
+# The checklist page must carry the anonymization promise, the not-tested
+# discipline, and the unclaimed operator-owned work.
+grep -qF 'never contents, paths, filenames,' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must say exactly what the evidence never contains"
+grep -qF 'both of its output streams discarded unread' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that the verify command's output is never recorded"
+grep -qF 'never as a pass' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that an unperformed check is recorded as not-tested, never as a pass"
+grep -qF 'Still operator-owned, and not claimed anywhere in this repository' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must keep its operator-owned section heading"
+grep -qF 'genuine third-party beta run' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must name a genuine third-party beta run as operator-owned"
+grep -qF 'no file in this repository records' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state plainly that no third-party beta run is recorded here"
+# `expires_when` is what keeps a non-blocking gap from becoming a permanent,
+# meaningless warning. If the docs stop describing it, the discipline is gone.
+grep -qF 'expires_when' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must explain that every non-blocking gap states what makes it expire"
+grep -qF 'a warning that can never expire is noise' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must say why a non-expiring warning is not evidence"
+# The two asymmetries a tester will otherwise meet as "the product is broken".
+grep -qF 'persistent answering agent' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must explain that the inbound answer leg needs a persistent agent"
+grep -qF 'no command allowlist' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must explain why a manifest capability is not a grant"
+
+# README's own summary must not soften either claim.
+grep -qF 'A genuine third-party beta run and any publication remain operator-owned.' "$REPO_ROOT/README.md" \
+  || fail "README.md must state that a third-party beta run and publication remain operator-owned"
+grep -qF 'Neither has happened, and nothing in this repository claims otherwise.' "$REPO_ROOT/README.md" \
+  || fail "README.md must state that neither has happened"
+
+# The threat model owns the one thing the harness really does execute inside a
+# candidate repository.
+grep -qF 'scripts/beta-qualify.sh' "$REPO_ROOT/docs/specs/plugins.md" \
+  || fail "docs/specs/plugins.md's threat model must cover the beta qualification harness"
+
+# PROTOCOL.md's headless section must tell an operator to qualify before
+# acknowledging: the acknowledgement opens the gate, it does not make a
+# repository drivable.
+grep -qF 'Qualify a repository before acknowledging it' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md's HEADLESS OPERATION section must tell an operator to qualify before acknowledging"
+
+# The release-day checklist must include the local rehearsal.
+grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
+  || fail "docs/install.md's release-day steps must include the local rehearsal"
