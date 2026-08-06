@@ -283,6 +283,27 @@ if grep -Eq "warn: .*role\." <<<"$out7"; then
   fail "a role.* binding must never be reported as an unknown config key"
 fi
 
+# The config the RUN reads is the blob COMMITTED on the integration branch --
+# what a fresh checkout, another machine, or a headless pump gets -- not the
+# integration checkout's working copy, which legitimately differs from it (an
+# uncommitted `verify=` line is exactly that case). A malformed line there is
+# just as invisible to config_get, so it is validated on its own terms even
+# when a checkout is sitting right there to look at instead.
+r19="$W/r19"; mk_repo "$r19" 'verify=true'
+ORCHID_REPO="$r19" "$ORCHID_BIN" start "$REQ" >/dev/null \
+  || fail "fixture: the initial start on r19 must succeed"
+r19wt="$W/r19-orchid"
+printf 'pump_stale_s 900\n' >> "$r19wt/orchid.config"
+ORCHID_REPO="$r19wt" ORCHID_EPOCH=0 "$ORCHID_BIN" config commit \
+  --reason "fixture: land a malformed line on the branch" >/dev/null \
+  || fail "fixture: config commit must land the malformed line"
+grep -v '^pump_stale_s ' "$r19wt/orchid.config" > "$r19wt/config.tmp"
+mv "$r19wt/config.tmp" "$r19wt/orchid.config"
+rc=0; out19="$(ORCHID_REPO="$r19" ORCHID_EPOCH=0 "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must refuse a malformed line in the config COMMITTED on the integration branch"
+assert_match "orchid.config as committed on orchid/integration line [0-9]+ is not a 'key=value' line" \
+  "$out19" "the refusal names the committed copy, not the checkout's clean one"
+
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
 # checkout, never adopt or overwrite anything else.

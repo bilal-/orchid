@@ -294,6 +294,16 @@ integration checkout, and never resumes or takes over a run — against
 existing state it requires `run_status: planning`, no fresh unreleased
 lease, no live run/verb lock, and `ORCHID_EPOCH` proving ownership of the
 CURRENT epoch (it mints an epoch only where none exists yet, at `0`).
+`planning` must hold on every copy that exists, not just the nearest one:
+the integration checkout's `.orchid/roadmap.md`, the roadmap COMMITTED on
+the integration branch (those two lag each other in opposite directions —
+durable state only reaches the branch at `plan apply`/`run accept`, and a
+`plan apply` killed between its `update-ref` and its sync-back leaves the
+branch ahead of the checkout), and that branch carrying no committed
+`.orchid/tasks/`, which only `orchid plan apply` ever puts there. It holds
+the per-verb transactional lock across everything it mutates and re-checks
+all three underneath it, so the commit below cannot land on a branch whose
+run is already in flight and move a candidate's `base_sha`.
 A `--verify` command is appended to the integration checkout's
 `orchid.config` and COMMITTED onto the integration branch by that same
 command — only when that file (as committed on the branch, not merely as

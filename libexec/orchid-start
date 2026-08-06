@@ -25,9 +25,13 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 #      this repository's integration worktree, not a requirements snapshot
 #      that is already identical.
 #   3. It never RESUMES or STEALS a session. Against existing run state it
-#      demands the run still be in `planning`, no live lease, no live run/verb
-#      lock, and proof (`ORCHID_EPOCH`) that the caller owns the CURRENT
-#      epoch. It mints an epoch only where none exists yet.
+#      demands the run still be in `planning` -- in the integration
+#      checkout's roadmap, in the roadmap COMMITTED on the integration
+#      branch, and by that branch carrying no committed tasks -- plus no live
+#      lease, no live run/verb lock, and proof (`ORCHID_EPOCH`) that the
+#      caller owns the CURRENT epoch. It mints an epoch only where none
+#      exists yet, and it HOLDS the verb lock across everything it mutates,
+#      re-checking the planning precondition underneath it.
 #
 # Greenfield (unborn HEAD) is deliberately out of scope -- `orchid init
 # --greenfield` plus docs/quickstart-greenfield.md own that path, which has a
@@ -260,6 +264,92 @@ _start_committed_verify() {
   printf '%s\n' "$v"
 }
 
+# _start_read_run_state <repo> <branch> <live-roadmap-or-empty> -- the run's
+# state, read from every witness there is, into globals (the same pattern
+# ORCHID_START_LOCK_PID above uses):
+#
+#   ORCHID_START_ROADMAP       "1" when EITHER roadmap copy was found at all
+#   ORCHID_START_RS_LIVE       run_status in the integration CHECKOUT's
+#                              working-tree roadmap.md ("" when there is no
+#                              checkout, or it carries no roadmap)
+#   ORCHID_START_RS_COMMITTED  run_status in the roadmap COMMITTED on <branch>
+#                              ("" when that branch carries no roadmap.md)
+#   ORCHID_START_RUN_ID        run_id, preferring the live copy
+#   ORCHID_START_TASKS         "1" when <branch> carries committed
+#                              .orchid/tasks/ entries
+#
+# Reading BOTH roadmap copies is the whole point. Neither is authoritative on
+# its own, and they can genuinely disagree in EITHER direction:
+#
+#   * committed BEHIND live -- durable .orchid/ state only rides onto the
+#     branch at `plan apply`/`run accept`, so a run can be live at `running`
+#     while the branch's committed roadmap still reads `planning`. That is
+#     what a checkout-less repo (the `git show` fallback is then the only
+#     copy there is) would otherwise be judged on.
+#   * live BEHIND committed -- orchid_commit_durable advances the branch with
+#     `update-ref` and only THEN syncs the committed state back into the
+#     checkout (lib/common.sh), so a `plan apply` killed inside that window
+#     leaves the branch at `running` with this checkout's roadmap.md still
+#     reading `planning`. That is the stale-checkout shape orchid_stale_
+#     checkout describes, and its detector only catches the subset that
+#     leaves a staged `D` row behind -- so the doctor preflight above is not
+#     a substitute for reading the branch itself.
+#
+# ORCHID_START_TASKS is a third, independent witness, and the only one that
+# speaks directly to what the durable commit further below actually risks:
+# whether any candidate's base_sha can be moved by advancing this branch.
+# Task files reach the integration branch ONLY through `orchid plan apply`
+# (kernel.md's sole writer of the planning->running edge); `orchid init` and
+# `orchid run new` both leave .orchid/tasks/ empty, and git tracks no empty
+# directory. A branch carrying task files has a plan on it, whatever its
+# roadmap frontmatter happens to say.
+_start_read_run_state() {
+  local repo="$1" branch="$2" live="$3" tmp
+  ORCHID_START_ROADMAP=""; ORCHID_START_RS_LIVE=""; ORCHID_START_RS_COMMITTED=""
+  ORCHID_START_RUN_ID=""; ORCHID_START_TASKS=""
+  if [ -n "$live" ] && [ -f "$live" ]; then
+    ORCHID_START_ROADMAP=1
+    ORCHID_START_RS_LIVE="$(fm_get "$live" run_status)"
+    ORCHID_START_RUN_ID="$(fm_get "$live" run_id)"
+  fi
+  # Extracted to a temp file and read back with the same fm_get every other
+  # roadmap read uses, rather than piping `git show` into awk: fm_get's awk
+  # exits at the closing `---`, which SIGPIPEs git -- a size-dependent
+  # failure under this file's pipefail (lesson L005).
+  tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-start-roadmap.XXXXXX")"
+  if git -C "$repo" show "refs/heads/$branch:.orchid/roadmap.md" > "$tmp" 2>/dev/null; then
+    ORCHID_START_ROADMAP=1
+    ORCHID_START_RS_COMMITTED="$(fm_get "$tmp" run_status)"
+    [ -n "$ORCHID_START_RUN_ID" ] || ORCHID_START_RUN_ID="$(fm_get "$tmp" run_id)"
+  fi
+  # Removed inline, before any refusal can fire, so this helper needs no EXIT
+  # trap of its own -- which matters: the verb lock taken below the mutation
+  # boundary installs one, and a competing `trap ... EXIT` here would clobber
+  # it rather than compose with it (lib/common.sh's verb_lock_guard note).
+  rm -f "$tmp"
+  [ -z "$(git -C "$repo" ls-tree --name-only "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)" ] \
+    || ORCHID_START_TASKS=1
+}
+
+# _start_require_planning <when> <branch> -- refuse unless EVERY witness
+# _start_read_run_state just gathered still says this run is in `planning`.
+# <when> names the moment for the operator, because this runs twice: once
+# above the mutation boundary (so a refusal costs nothing), and once under
+# the verb lock immediately before the durable commit (which is the only
+# reading that is a real precondition rather than a sample).
+_start_require_planning() {
+  local when="$1" branch="$2" rid rs
+  rid="${ORCHID_START_RUN_ID:-r-001}"
+  rs="${ORCHID_START_RS_LIVE:-$ORCHID_START_RS_COMMITTED}"
+  [ "$rs" = planning ] \
+    || orchid_die "run $rid has already left planning (run_status: $rs) — orchid start is a SETUP command, not a resume: requirements are immutable after a plan exists. Resume with 'orchid run resume' (or the orchid-resume skill), or roll over with 'orchid run new --reason ...' once the run is complete/blocked"
+  if [ -n "$ORCHID_START_RS_COMMITTED" ] && [ "$ORCHID_START_RS_COMMITTED" != planning ]; then
+    orchid_die "run $rid reads run_status: planning in the integration checkout, but the roadmap COMMITTED on $branch says run_status: $ORCHID_START_RS_COMMITTED ($when) — the branch has left planning and this checkout has not caught up (a 'plan apply'/'run accept' that advanced the branch and died before syncing back, or a checkout the branch moved out from under). Committing here would move the head of a branch whose run is already in flight and invalidate any candidate's base_sha, so orchid start refuses: compare the two ('git show $branch:.orchid/roadmap.md' against the checkout's own .orchid/roadmap.md), then resume with 'orchid run resume' (or the orchid-resume skill) rather than setting up again"
+  fi
+  [ -z "$ORCHID_START_TASKS" ] \
+    || orchid_die "run $rid reads run_status: planning, but $branch already carries committed .orchid/tasks/ ($when) — task files reach the integration branch only through 'orchid plan apply', so this run has a plan on it and a candidate's base_sha can be moved by committing here. orchid start is a SETUP command, not a resume: resume with 'orchid run resume' (or the orchid-resume skill), or roll over with 'orchid run new --reason ...' once the run is complete/blocked"
+}
+
 # -- arguments --------------------------------------------------------------
 
 req=""; verify_opt=""; worktree_opt=""; ack_unattended=0; reason=""
@@ -429,16 +519,24 @@ fi
 # -- repo config validation + full preflight --------------------------------
 
 _start_validate_config "$cfg_repo/orchid.config"
-if [ "$mode" = existing ] && [ -z "$existing_wt" ]; then
-  # No checkout of $integ yet, so $cfg_repo above is the operator's OWN
-  # branch -- a config that the run itself will never read. The one it will
-  # read is the blob committed on $integ (the worktree created below is a
-  # checkout of exactly that), and a malformed line there is just as invisible
-  # to config_get as one in the working copy.
+if [ "$mode" = existing ]; then
+  # The file above is whichever copy is nearest to hand: the operator's OWN
+  # branch when no checkout of $integ exists yet (a config the run itself will
+  # never read), or the integration checkout's working copy when one does.
+  # Neither is necessarily what the run READS. That is the blob committed on
+  # $integ -- what a fresh checkout, another machine, or a headless pump gets
+  # -- and the two legitimately differ (an uncommitted `verify=` line in the
+  # checkout is exactly the convergence case below the mutation boundary). A
+  # malformed line there is just as invisible to config_get's `grep -E
+  # "^key="` as one in the working copy, so it is validated on its own terms,
+  # whether or not a checkout exists. Skipped only when the two are
+  # byte-identical -- validating the same bytes twice would just print every
+  # unknown-key warning twice.
   committed_cfg="$(mktemp "${TMPDIR:-/tmp}/orchid-start-cfg.XXXXXX")"
   git -C "$repo" show "refs/heads/$integ:orchid.config" > "$committed_cfg" 2>/dev/null \
     || : > "$committed_cfg"
-  _start_validate_config "$committed_cfg" "orchid.config as committed on $integ"
+  cmp -s "$committed_cfg" "$cfg_repo/orchid.config" \
+    || _start_validate_config "$committed_cfg" "orchid.config as committed on $integ"
   rm -f "$committed_cfg"
 fi
 
@@ -469,25 +567,20 @@ fi
 
 epoch=0; epoch_action=created; run_status=""; run_id=""
 if [ "$mode" = existing ]; then
-  roadmap_file=""
-  if [ -n "$existing_wt" ] && [ -f "$existing_wt/.orchid/roadmap.md" ]; then
-    roadmap_file="$existing_wt/.orchid/roadmap.md"
-  else
-    # No checkout yet (an `orchid init` that stopped before its worktree
-    # step): the committed roadmap on the integration branch is the only copy
-    # there is, and reading it costs nothing durable.
-    roadmap_committed="$(mktemp "${TMPDIR:-/tmp}/orchid-start-roadmap.XXXXXX")"
-    trap 'rm -f "$roadmap_committed"' EXIT
-    if git -C "$repo" show "refs/heads/$integ:.orchid/roadmap.md" > "$roadmap_committed" 2>/dev/null; then
-      roadmap_file="$roadmap_committed"
-    fi
-  fi
-  [ -n "$roadmap_file" ] \
+  # Both roadmap copies, never just the one nearest to hand: the checkout's
+  # working-tree roadmap.md when a checkout exists, AND the roadmap committed
+  # on $integ (which, when no checkout exists yet -- an `orchid init` that
+  # stopped before its worktree step -- is the only copy there is). See
+  # _start_read_run_state for why either one alone can lie, and in which
+  # direction.
+  live_roadmap=""
+  [ -z "$existing_wt" ] || live_roadmap="$existing_wt/.orchid/roadmap.md"
+  _start_read_run_state "$repo" "$integ" "$live_roadmap"
+  [ -n "$ORCHID_START_ROADMAP" ] \
     || orchid_die "branch $integ exists but carries no .orchid/roadmap.md — this is not an orchid-initialized branch; set integration_branch in orchid.config to a free name, or inspect that branch yourself"
-  run_status="$(fm_get "$roadmap_file" run_status)"
-  run_id="$(fm_get "$roadmap_file" run_id)"
-  [ "$run_status" = planning ] \
-    || orchid_die "run ${run_id:-r-001} has already left planning (run_status: $run_status) — orchid start is a SETUP command, not a resume: requirements are immutable after a plan exists. Resume with 'orchid run resume' (or the orchid-resume skill), or roll over with 'orchid run new --reason ...' once the run is complete/blocked"
+  _start_require_planning "as of the start of setup" "$integ"
+  run_status="${ORCHID_START_RS_LIVE:-$ORCHID_START_RS_COMMITTED}"
+  run_id="$ORCHID_START_RUN_ID"
 
   if [ -n "$existing_wt" ]; then
     rt="$existing_wt/.orchid/runtime"
@@ -549,6 +642,59 @@ if [ "$wt_action" = created ]; then
   fi
 fi
 wt="$(cd "$wt_target" && pwd -P)"
+
+# From here on this verb performs a DURABLE transaction on $integ (the
+# orchid.config commit further below), so it runs under the same per-verb
+# transactional lock every other durable-mutating verb takes: `orchid config
+# commit` wraps this exact commit in it, and `orchid plan apply`, `orchid run
+# accept` and `orchid run new` all hold it across theirs.
+#
+# The read-only lock probe above the mutation boundary is NOT this, and never
+# was: it samples the lock at one instant and then lets go, so a verb that
+# begins its own transaction a millisecond later would run concurrently with
+# this one -- and on the path where $integ exists with no checkout of it, that
+# probe did not run at all, because there was no runtime directory to probe.
+# It stays because it turns the common case into a refusal WITH a recovery,
+# above the boundary, rather than a die from inside verb_lock_acquire with a
+# worktree already created.
+#
+# verb_lock_guard (not a hand-composed trap): nothing has installed an EXIT
+# trap by this point -- _start_read_run_state cleans up its own temp file
+# inline for exactly this reason -- and orchid_commit_durable below composes
+# its temp-worktree cleanup ONTO this trap rather than replacing it, the same
+# pairing `orchid config commit` uses. verb_lock_acquire exports
+# ORCHID_VERB_LOCK_HELD, so every child verb run from here (`requirements
+# import`, `journal add`, `trust unattended`) reuses this one transaction
+# instead of taking its own: lib/common.sh's documented reentrant case, where
+# the outer transaction is what serializes the nested sequence.
+verb_lock_guard "$wt" \
+  || orchid_die "could not take the verb lock in $wt/.orchid/runtime — another verb is mid-transaction; wait for it to finish and re-run orchid start"
+
+# The precondition every mutation below argues from -- "this run is still in
+# planning, so there is no candidate whose base_sha this can move" --
+# re-established HERE, under that lock, from all three witnesses. Above the
+# boundary the same reading was only ever a sample: since then `orchid init`
+# may have run and a worktree may have been created, and now that the lock is
+# held the answer stays true for the length of this transaction (`plan apply`,
+# the sole writer of the planning->running edge, cannot start while it is
+# held). Unconditional, `mode=new` included: a branch this verb just created
+# must pass it too, or the assumption is wrong somewhere else.
+_start_read_run_state "$repo" "$integ" "$wt/.orchid/roadmap.md"
+[ -n "$ORCHID_START_ROADMAP" ] \
+  || orchid_die "no .orchid/roadmap.md on $integ or in $wt after setup — refusing to commit anything onto a branch that carries no run state; inspect that branch yourself"
+if [ "$mode" = new ]; then
+  # The tasks witness does not apply to a branch THIS invocation just created:
+  # `orchid init` branched it from the operator's own HEAD moments ago, so any
+  # committed .orchid/tasks/ on it came from their history rather than from a
+  # `plan apply` -- there was no run at all until a moment ago, and so no
+  # candidate whose base this commit could move. Firing it here would be a
+  # false refusal, and the most expensive kind: it would land after init had
+  # already run. The two roadmap witnesses still apply (init writes and
+  # commits `run_status: planning` itself, so anything else is a real
+  # surprise).
+  ORCHID_START_TASKS=""
+fi
+_start_require_planning "re-checked under the verb lock, before anything was committed" "$integ"
 
 # The epoch this run is fenced at from here on. `orchid init` leaves none
 # behind (epoch_current reads an absent file as 0, which is why the manual
@@ -628,10 +774,24 @@ else
   # `$(...)`, because it composes this script's EXIT trap.
   #
   # Committing durable state mid-run would be harmful (lesson L008: it can
-  # invalidate an in-flight candidate's base_sha). It is safe HERE, and only
-  # here, because `orchid start` runs before any task is in flight: the run
-  # is still in `planning`, there is no live lease and no live lock (both
-  # refused above), so there is no candidate whose base this can move.
+  # invalidate an in-flight candidate's base_sha). It is safe HERE because
+  # `orchid start` runs before any task is in flight -- and that is now a
+  # precondition this script HOLDS rather than one it merely sampled on the
+  # way past. Concretely: the verb lock is held (taken right after the
+  # worktree was resolved, released only at exit), so `plan apply` -- the
+  # sole writer of the planning->running edge, and the only verb that can
+  # put a plan on this branch -- cannot start while this transaction runs;
+  # and under that lock the run was re-checked against all three witnesses
+  # _start_read_run_state gathers: the checkout's roadmap.md, the roadmap
+  # COMMITTED on $integ (the two lag each other in opposite directions), and
+  # $integ's own committed .orchid/tasks/, empty until a plan lands. A branch
+  # with no plan on it has no candidate whose base this commit can move.
+  #
+  # The lease is deliberately NOT part of that argument: it is refused above
+  # where a checkout exists, but it is advisory (an orchestrator session's
+  # heartbeat), it cannot be held by this verb, and on the checkout-less path
+  # there is no runtime directory for one to live in at all. The three
+  # witnesses above are what this commit's safety actually rests on.
   #
   # Granularity is the whole file, as it is for `orchid config commit`: an
   # edit the operator had already made to THIS checkout's orchid.config and

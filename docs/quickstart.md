@@ -138,7 +138,13 @@ What it will not do, by design:
 - **never resume or take over a run** — against existing state it refuses if
   the run has left `planning`, if another session's lease is still fresh, if a
   run/verb lock is live, or if you cannot prove you hold the current epoch
-  (`export ORCHID_EPOCH=<n>`; it never mints one over an existing one);
+  (`export ORCHID_EPOCH=<n>`; it never mints one over an existing one).
+  `planning` has to hold on every copy that exists — your integration
+  checkout's `.orchid/roadmap.md`, the roadmap as *committed* on the
+  integration branch, and that branch carrying no committed `.orchid/tasks/`
+  — because the two roadmaps can lag each other in opposite directions, and
+  because committing onto a branch whose run is already in flight would move
+  the head that every candidate's `base_sha` is pinned against;
 - **never turn on unattended trust implicitly** — that needs both
   `--ack-unattended` and a non-empty `--reason`.
 
