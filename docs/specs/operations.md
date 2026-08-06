@@ -250,6 +250,17 @@ available and never create an acknowledgement.
   allowlist, and expiry before recording — no listener daemon; the tick
   polls the inbox. Telegram fallback uses the same three-actor shape. An
   unanswered question is just a blocked task.
+- **The return leg is a separate fact from the send leg (v1-m4 T006):**
+  actor (1) needs only a CLI on the orchid machine, while an ANSWER depends
+  entirely on actor (2) — a persistent agent orchid neither starts nor
+  supervises. When that agent is down, blockers still arrive and every reply
+  to them is lost with no local trace (observed: a gateway down for a day,
+  a phone answer gone). `orchid doctor` therefore reports outbound and
+  inbound as two separate lines and never infers the second from the first:
+  inbound is reported **NOT VERIFIED** (no portable liveness probe exists
+  for an off-machine agent) plus whatever local evidence exists — blockers
+  raised with no answer recorded beside them. Both lines are advisory; a run
+  with no channel configured is legitimate and stays green.
 - **API-billing exception, stated plainly:** API-backed engines are metered
   per call, unlike subscription CLIs; their role BINDINGS carry call budgets
   and retry ceilings. **Dropped, per the v1-m4 escape hatch (roadmap.md):**

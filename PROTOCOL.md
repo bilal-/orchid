@@ -233,15 +233,19 @@ incomplete review set is never also reported as a conflict, and vice versa:
    severity the kernel does not recognize counts as blocking, fail closed).
    → `orchid task arbitrate <id> --result approve --reason "..."`.
    **What the severity gate actually gates:** it reads `findings[]`, which
-   only an adapter that populates it can trigger. The shipped `review`
-   adapters do not — `plugins/engines/claude/run` and
-   `plugins/engines/codex/run` ask a `review` reply for a `VERDICT:` line
-   only and write `findings: []` verbatim (`FINDING:` lines are requested by
-   the `critique` prompt alone). For those reviewers the `blocking_severity`
-   gate is **inert**, and a deterministic approval rests on `verdict` and
-   `scope_complete` alone. Treat it as a contract available to reviewer
-   adapters that report findings, not as a second opinion you are already
-   getting.
+   only an adapter that populates it can trigger — and the shipped adapters
+   are split on that. `plugins/engines/claude/run` asks a `review` reply for
+   `FINDING: <low|medium|high>: <title>` lines alongside the `VERDICT:` line
+   and parses them into `findings[]`, so for a claude reviewer the gate is
+   live (a review that reports nothing still writes `findings: []`, which
+   blocks nothing — an engine reporting no findings is a valid review, not
+   evidence of a broken gate). `plugins/engines/codex/run` and the other
+   shipped `review` adapters still ask for a `VERDICT:` line only and write
+   `findings: []` verbatim (`FINDING:` lines are requested by the `critique`
+   prompt alone). For those reviewers the `blocking_severity` gate is
+   **inert**, and a deterministic approval rests on `verdict` and
+   `scope_complete` alone. Check which adapter reviewed before reading a
+   clean gate as a second opinion you are already getting.
 3. **Conflict** — anything else: a `request-changes` verdict, a blocking
    finding, mixed verdicts, or a non-scope-complete review. → boundary
    `review-conflict`, **no transition**. Deciding what to do about a real

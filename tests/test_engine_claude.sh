@@ -70,7 +70,49 @@ assert_eq "1" "$argc" "approve stub: review is read-only prompting, exactly one 
 assert_eq "-p" "$(cat "$WORK/approve.argv.1")" "approve stub: -p is the only argv"
 stdin_content="$(cat "$WORK/approve.stdin")"
 assert_match "VERDICT: approve" "$stdin_content" "approve stub: prompt (carrying the reply contract) arrives on stdin"
-assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "approve stub: findings placeholder empty array"
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "approve stub: a review reply with no FINDING lines still yields an empty findings[]"
+# Plain-substring shape (no ERE metacharacters — assert_match is `grep -E`,
+# where the literal `<low|medium|high>` token would read as alternation and
+# match almost anything).
+assert_match "One line per issue found, exactly: FINDING:" "$stdin_content" \
+  "approve stub: the review prompt asks for the same FINDING line shape the critique prompt does"
+
+# --- 1b. v1-m4 T006: a REVIEW reply's `FINDING:` lines must reach findings[]
+# exactly as a critique's do. Before this, review asked for a VERDICT line
+# only and every review envelope carried `findings: []` verbatim -- the
+# reviewer's reasoning survived only in the reaped engine log (a real T003
+# round lost three reported findings that way). The VERDICT contract itself
+# is unchanged: this stub still request-changes through the same line shape.
+d="$(build_request reviewfindings review '#!/usr/bin/env bash
+echo "reviewed the diff"
+echo "FINDING: high: doctor claims inbound ok from an outbound-only fact"
+echo "FINDING: low: comment says v1-m3 but the change is v1-m4"
+echo "FINDING: bogus: severity token is not one of the three"
+echo "FINDING: <low|medium|high>: <title>"
+echo "FINDING: medium: "
+echo "VERDICT: request-changes"')"
+run_adapter "$d" || fail "review findings stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "review findings stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "review findings stub: status ok"
+assert_eq "request-changes" "$(jq -r .verdict "$d/out/envelope.json")" "review findings stub: VERDICT contract unchanged"
+assert_eq "2" "$(jq '.findings | length' "$d/out/envelope.json")" \
+  "review findings stub: FINDING lines parsed into findings[] (unknown severity, echoed instruction line and empty title all dropped)"
+assert_eq "high" "$(jq -r '.findings[0].severity' "$d/out/envelope.json")" "review findings stub: first finding severity"
+assert_eq "doctor claims inbound ok from an outbound-only fact" \
+  "$(jq -r '.findings[0].title' "$d/out/envelope.json")" "review findings stub: first finding title"
+assert_eq "low" "$(jq -r '.findings[1].severity' "$d/out/envelope.json")" "review findings stub: second finding severity"
+
+# --- 1c. a review that reports NO findings is still a valid, ok review with a
+# literally empty findings[] -- the driver's blocking_severity gate reads that
+# as "nothing blocking", exactly as it always has.
+d="$(build_request reviewnofindings review '#!/usr/bin/env bash
+echo "nothing to report"
+echo "VERDICT: approve"')"
+run_adapter "$d" || fail "review no-findings stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "review no-findings stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "review no-findings stub: status ok"
+assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "review no-findings stub: verdict approve"
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "review no-findings stub: findings[] is the empty array"
 
 # --- 2. failing stub: rate limit on stderr ----------------------------------
 d="$(build_request ratelimit review '#!/usr/bin/env bash
@@ -347,8 +389,8 @@ case "$actions_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked i
 # diff.patch at all -- lib/pack.sh's _pack_build_plan builds requirements.md
 # + roadmap.md + tasks.md instead). The prompt must be built from those
 # files, not the diff-based review prompt, and a critique reply's `FINDING:
-# <severity>: <title>` lines must parse into findings[] (review's contract
-# stays verdict-only, unaffected -- see the approve-review test above).
+# <severity>: <title>` lines must parse into findings[] (unchanged by T006's
+# extension of the same line shape to `review` -- see tests 1b/1c above).
 build_plan_request() {  # name stub -> prints path to request.json's dir
   local name="$1" stub="$2"
   local d="$WORK/$name"

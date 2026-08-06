@@ -349,12 +349,16 @@ drive_envelope_has_blocking_finding() {
 #
 # HONEST LABELING (lesson L006): the blocking_severity gate below reads
 # `findings[]`, and findings[] is only ever populated by an adapter that
-# fills it. The shipped review adapters do NOT: plugins/engines/claude/run
-# and plugins/engines/codex/run ask a `review` reply for a VERDICT line only
-# and write `findings: []` verbatim (`FINDING:` lines are requested by the
-# CRITIQUE prompt alone). For those reviewers the severity gate is INERT and
-# deterministic approval rests on `verdict` + `scope_complete` alone; it
-# bites only for an adapter that genuinely reports findings.
+# fills it. The shipped review adapters are split on that (v1-m4 T006):
+# plugins/engines/claude/run now asks a `review` reply for `FINDING:
+# <low|medium|high>: <title>` lines as well as the VERDICT line and parses
+# them, so the gate is LIVE for a claude reviewer. plugins/engines/codex/run
+# (and the other shipped review adapters) still ask for a VERDICT line only
+# and write `findings: []` verbatim (`FINDING:` lines are requested by their
+# CRITIQUE prompt alone) -- for those reviewers the severity gate is INERT
+# and deterministic approval rests on `verdict` + `scope_complete` alone.
+# Either way an EMPTY findings[] blocks nothing: an engine that reports no
+# findings is a valid review, and this gate has always read `[]` that way.
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n conflicts base verdict scope status ecand

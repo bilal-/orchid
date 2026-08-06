@@ -227,6 +227,92 @@ if [ -f "$lockfile" ]; then
     echo "$lock_out" | sed 's/^/  /'
   fi
 fi
+# -- notify return leg (v1-m4 T006) -----------------------------------------
+# Doctor already validates the notify plugin the way it validates any other
+# plugin (the `plugins list`/`plugins validate --all` sections above): its
+# manifest parses, its required binary exists. That answers ONE question --
+# can this repo SEND a blocker to a channel. It has never answered the other
+# one: can an ANSWER get back.
+#
+# Those are different facts, and this run learned the difference the
+# expensive way: a channel gateway was down for a day, blockers still
+# reached the operator's phone, the operator answered, and every answer
+# vanished with no local trace -- because outbound needs only a CLI on this
+# machine, while inbound needs a persistent agent on the channel side that
+# runs `orchid answer` against this repo. Orchid ships no inbound listener of
+# its own and neither starts nor supervises that agent, so its liveness is
+# not portably observable from here.
+#
+# So this block reports the two facts SEPARATELY and never derives the second
+# from the first. Everything here is ADVISORY -- WARN/note only, never `bad`:
+# a run with no channel at all is entirely legitimate (BLOCKERS.md + the
+# terminal is a complete surface), and an unreachable return leg is a thing
+# an operator must SEE, not a reason to refuse to work.
+notify_channel="$(config_get "$repo" notify.channel "")"
+notify_allowlist="$(config_get "$repo" answer_allowlist "")"
+if [ -z "$notify_channel" ] && [ -z "$notify_allowlist" ]; then
+  ok "notify return leg: no notify channel configured (notify.channel unset) — blockers surface in BLOCKERS.md and the terminal only; nothing sends off-machine and nothing is expected to answer from off-machine"
+else
+  notify_plugin="$(config_get "$repo" notify.plugin openclaw)"
+  # Fact 1 -- OUTBOUND. Deliberately worded as send capability alone. Only
+  # `notify.channel` puts a plugin on the sending path at all (runners/
+  # orchid-pump drains nothing without it), so a repo that set only
+  # `answer_allowlist` is not misreported against a plugin it never picked.
+  if [ -z "$notify_channel" ]; then
+    echo "note: notify outbound: notify.channel is unset, so nothing is ever sent off-machine (answer_allowlist alone only affects who may answer)"
+  elif notify_dir="$(resolve_notify_dir "$notify_plugin" 2>/dev/null)"; then
+    notify_ep="$(manifest_get "$notify_dir" entrypoint send)"
+    if [ -x "$notify_dir/$notify_ep" ]; then
+      notify_missing=""
+      while IFS= read -r nbin; do
+        [ -n "$nbin" ] || continue
+        command -v "$nbin" >/dev/null 2>&1 || notify_missing="$notify_missing $nbin"
+      done < <(_manifest_split_csv "$(manifest_get "$notify_dir" requires_binaries)")
+      if [ -z "$notify_missing" ]; then
+        ok "notify outbound: '$notify_plugin' resolves and its required binaries are present ($notify_dir/$notify_ep) — SEND capability only: no send is attempted here, and this says nothing about whether a reply can come back"
+      else
+        echo "WARN: notify outbound: '$notify_plugin' resolves ($notify_dir) but required binaries are missing from PATH:$notify_missing — blockers will queue in runtime/outbox and retry until send_retry_max"
+      fi
+    else
+      echo "WARN: notify outbound: '$notify_plugin' resolves ($notify_dir) but its entrypoint '$notify_ep' is not executable — nothing can be sent"
+    fi
+  else
+    echo "WARN: notify outbound: notify.plugin '$notify_plugin' does not resolve to a plugin on the search path — nothing can be sent"
+  fi
+  # Fact 2 -- INBOUND. Never `ok`: doctor cannot prove a listener exists, and
+  # this run's Track 1 forbids describing something unproven as working.
+  echo "WARN: notify inbound (the return leg): NOT VERIFIED — orchid runs no inbound listener, so this cannot be proven from here. An answer reaches this repo only when something on the CHANNEL side runs 'ORCHID_REPO=\"$repo\" orchid answer <qid> <choice> --nonce <n>' on this machine; that agent is not started, supervised, or observable by orchid, and there is no portable way to test its liveness. Outbound send capability is a separate fact above and does not imply this one."
+  # Local evidence -- the only thing that IS observable here: whether answers
+  # have ever actually landed. A .question with no .answer beside it is a
+  # blocker this repo raised and never heard back about; if the operator
+  # believes they answered it, the return leg is exactly what failed.
+  notify_answers_dir="$repo/.orchid/runtime/answers"
+  notify_q_total=0; notify_q_open=0; notify_oldest=0; notify_now="$(date -u +%s)"
+  if [ -d "$notify_answers_dir" ]; then
+    for notify_qf in "$notify_answers_dir"/*.question; do
+      [ -f "$notify_qf" ] || continue
+      notify_q_total=$(( notify_q_total + 1 ))
+      notify_qid="$(basename "$notify_qf" .question)"
+      [ -f "$notify_answers_dir/$notify_qid.answer" ] && continue
+      notify_q_open=$(( notify_q_open + 1 ))
+      notify_m="$(stat -f %m "$notify_qf" 2>/dev/null || stat -c %Y "$notify_qf" 2>/dev/null || echo 0)"
+      if [ "$notify_m" -gt 0 ]; then
+        notify_age=$(( notify_now - notify_m ))
+        [ "$notify_age" -gt "$notify_oldest" ] && notify_oldest="$notify_age"
+      fi
+    done
+  fi
+  if [ "$notify_q_open" -gt 0 ]; then
+    echo "WARN: notify inbound: $notify_q_open blocker(s) in $notify_answers_dir have no recorded answer (oldest unanswered: ${notify_oldest}s). If any of them were already answered on the channel, nothing delivered that answer back here — check the channel-side agent before answering again."
+  elif [ "$notify_q_total" -gt 0 ]; then
+    echo "note: notify inbound: all $notify_q_total blocker(s) on record have an answer file — an answer did arrive, though that alone does not distinguish a channel delivery from an operator typing 'orchid answer' locally"
+  else
+    echo "note: notify inbound: no blocker has been raised in this repo yet, so there is no local evidence either way"
+  fi
+  if [ -n "$notify_channel" ] && [ -z "$notify_allowlist" ]; then
+    echo "note: notify inbound: answer_allowlist is unset, so no remote answering identity has been declared here and 'orchid answer' requires no nonce from anyone (libexec/orchid-answer) — set it if a channel-side agent is meant to answer"
+  fi
+fi
 integ="$(config_get "$repo" integration_branch orchid/integration)"
 if git -C "$repo" rev-parse --verify -q "$integ" >/dev/null 2>&1 || \
    git -C "$repo" rev-parse --verify -q HEAD >/dev/null 2>&1; then

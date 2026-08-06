@@ -766,10 +766,14 @@ close the run.
 
 The driver's deterministic-approval arm gates on `findings[]` severity
 against the task's `blocking_severity`, and that gate is only as live as the
-reviewer adapter feeding it: the shipped `review` adapters ask for a
-`VERDICT:` line only and always write `findings: []` (`FINDING:` lines belong
-to the `critique` prompt), so with them approval turns on `verdict` and
-`scope_complete` alone.
+reviewer adapter feeding it. `plugins/engines/claude/run` asks a `review`
+reply for `FINDING: <low|medium|high>: <title>` lines alongside the
+`VERDICT:` line and parses them into `findings[]` (v1-m4), so the gate bites
+there; the other shipped `review` adapters ask for a `VERDICT:` line only and
+always write `findings: []` (`FINDING:` lines belong to the `critique`
+prompt), so with them approval turns on `verdict` and `scope_complete` alone.
+An empty `findings[]` is never itself a signal — a reviewer that found
+nothing to report writes the same empty array.
 
 Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation

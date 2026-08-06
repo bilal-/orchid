@@ -237,6 +237,37 @@ from a raised question (`orchid notify`), answer it first
 [docs/engines/openclaw.md](./engines/openclaw.md#inbox-hardening-orchid-answer))
 so the guidance text exists before `unblock` folds it in.
 
+## Answers sent on a channel never arrive
+
+**Symptom:** blockers reach your phone, you answer them there, and the run
+stays blocked — no `blocker_resolved` entry in the journal, no `.answer`
+file, no trace at all locally.
+
+Sending and receiving are **different legs with different requirements**.
+Outbound needs only a CLI on this machine (the pump runs the notify plugin's
+`send`). Inbound needs a persistent agent on the *channel* side that turns
+your reply into an actual `orchid answer` invocation against this repo —
+orchid ships no inbound listener and neither starts nor supervises that
+agent. A gateway that is down (or a skill that was never installed there)
+loses every answer silently, because nothing local is involved in the
+attempt.
+
+```sh
+orchid doctor            # read the "notify outbound" / "notify inbound" lines
+```
+
+Doctor reports the two separately and never infers the second from the
+first: outbound is `ok` when the plugin and its binaries resolve, while the
+return leg is always reported as **NOT VERIFIED** — its liveness is not
+portably observable from here, so doctor states that rather than implying
+it. What doctor *can* show is local evidence: blockers raised with no answer
+recorded beside them. Several unanswered blockers you believe you already
+answered is the signature of a broken return leg.
+
+Both lines are advisory — a run with no channel at all is legitimate and
+stays green. To answer while the return leg is down, run the command
+`BLOCKERS.md` prints for the question directly on this machine.
+
 ## Stale checkout
 
 **Symptom:** `orchid doctor`/`orchid status` warns `integration checkout is

@@ -382,3 +382,91 @@ ORCHID_REPO="$cfg_wt" ORCHID_EPOCH="$cfg_epoch" HOME="$MACHINE_HOME" "$ORCHID_BI
 
 # `config list` remains read-only/unaffected by the new subverb.
 ORCHID_REPO="$cfg_wt" "$ORCHID_BIN" config list >/dev/null || fail "config list still works"
+
+# ---------------------------------------------------------------------------
+# v1-m4 T006: doctor's NOTIFY RETURN LEG check. Doctor used to validate the
+# notify plugin and its binary -- outbound send capability -- and stop there,
+# so an operator could wire a channel, watch blockers arrive on their phone,
+# answer them, and have every answer go nowhere (which is exactly what
+# happened: a gateway was down all day and a phone answer was lost with no
+# local trace). The check below reports outbound and inbound as SEPARATE
+# facts, never claims inbound liveness it cannot prove, and stays advisory.
+# ---------------------------------------------------------------------------
+nfy="$WORK/notify-repo"; mkdir -p "$nfy"
+(cd "$nfy" && git init -q . && git commit -q --allow-empty -m root)
+printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' \
+  > "$nfy/orchid.config"
+# A fixture notify plugin whose required binary (git) is certainly present,
+# so the outbound branch is deterministic on any machine. Created up front so
+# every run below sees the same ORCHID_PLUGIN_PATH surface.
+mkdir -p "$WORK/notify-plugins/notify/fixchan"
+printf 'manifest_version=1\nid=orchid-test/fixchan\nversion=0.1.0\nkind=notify\napi_version=1\nrequires_orchid=>=1.0\nentrypoint=send\nrequires_binaries=git\n' \
+  > "$WORK/notify-plugins/notify/fixchan/plugin.conf"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$WORK/notify-plugins/notify/fixchan/send"
+chmod +x "$WORK/notify-plugins/notify/fixchan/send"
+
+nfy_doctor() {  # -> combined output in $nfy_out, exit code in $nfy_rc
+  nfy_rc=0
+  nfy_out="$(ORCHID_REPO="$nfy" HOME="$MACHINE_HOME" ORCHID_ENGINES_DIR="$WORK/eng" \
+    ORCHID_PLUGIN_PATH="$WORK/notify-plugins" "$ORCHID_BIN" doctor 2>&1)" || nfy_rc=$?
+}
+
+# 1. No channel configured at all -- a completely legitimate setup. Green,
+#    and explicit that nothing is expected to answer.
+nfy_doctor
+assert_eq "0" "$nfy_rc" "no notify channel configured must keep doctor green"
+assert_match "^ok: notify return leg: no notify channel configured" "$nfy_out" \
+  "doctor states plainly when there is no channel and nothing to receive a reply"
+
+# 2. Channel configured and sendable. Outbound is `ok` -- inbound is NOT, and
+#    the two must never be conflated.
+printf 'notify.plugin=fixchan\nnotify.channel=telegram\n' >> "$nfy/orchid.config"
+nfy_doctor
+assert_eq "0" "$nfy_rc" "the notify return-leg check is advisory: it must never fail doctor"
+assert_match "^ok: notify outbound: 'fixchan' resolves and its required binaries are present" "$nfy_out" \
+  "doctor confirms send capability when the plugin and its binaries resolve"
+assert_match "SEND capability only" "$nfy_out" \
+  "doctor labels the outbound fact as send capability alone"
+assert_match "^WARN: notify inbound \\(the return leg\\): NOT VERIFIED" "$nfy_out" \
+  "doctor reports the inbound leg as unverified rather than implying it from outbound"
+assert_match "orchid runs no inbound listener" "$nfy_out" \
+  "doctor says WHY inbound cannot be proven, instead of reporting ok"
+# Herestring, never `echo | grep -q`: same SIGPIPE/pipefail trap helpers.sh
+# documents for assert_match — a matching grep exiting early would poison the
+# pipeline status and silently skip this `fail`.
+grep -q "^ok: notify inbound" <<<"$nfy_out" \
+  && fail "doctor must never report the inbound return leg as ok -- it cannot prove a listener exists"
+assert_match "no blocker has been raised in this repo yet" "$nfy_out" \
+  "with no questions on record doctor says there is no local evidence either way"
+assert_match "answer_allowlist is unset" "$nfy_out" \
+  "a configured channel with no declared answering identity is called out"
+
+# 3. Local evidence: a raised blocker with no answer beside it is the exact
+#    signature of a broken return leg, and doctor must surface it.
+mkdir -p "$nfy/.orchid/runtime/answers"
+printf 'task: T001\nnonce: deadbeefdeadbeef\nwhich way?\n' > "$nfy/.orchid/runtime/answers/q-1-aaaa.question"
+nfy_doctor
+assert_eq "0" "$nfy_rc" "an unanswered blocker is a warning, never a doctor failure"
+assert_match "WARN: notify inbound: 1 blocker\\(s\\)" "$nfy_out" \
+  "doctor counts blockers that were raised and never answered"
+assert_match "nothing delivered that answer back here" "$nfy_out" \
+  "doctor names the lost-answer failure mode the operator actually hit"
+
+# 4. Once answered, the count clears -- and the note stays honest about what
+#    an .answer file does and does not prove.
+printf 'yes\n' > "$nfy/.orchid/runtime/answers/q-1-aaaa.answer"
+nfy_doctor
+assert_eq "0" "$nfy_rc" "answered blockers keep doctor green"
+assert_match "note: notify inbound: all 1 blocker\\(s\\) on record have an answer" "$nfy_out" \
+  "doctor clears the unanswered warning once an answer is recorded"
+assert_match "does not distinguish a channel delivery from an operator typing" "$nfy_out" \
+  "doctor does not read a local answer as proof the channel delivered it"
+
+# 5. A configured channel whose plugin does not resolve: outbound is broken
+#    and said so, still advisory.
+sed 's/^notify.plugin=fixchan$/notify.plugin=nosuchchan/' "$nfy/orchid.config" > "$nfy/orchid.config.tmp"
+mv "$nfy/orchid.config.tmp" "$nfy/orchid.config"
+nfy_doctor
+assert_eq "0" "$nfy_rc" "an unresolvable notify plugin is a warning, never a doctor failure"
+assert_match "WARN: notify outbound: notify.plugin 'nosuchchan' does not resolve" "$nfy_out" \
+  "doctor names an unresolvable notify plugin"

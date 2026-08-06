@@ -364,16 +364,33 @@ plugins_spec_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/plugins.md" | tr -
 assert_match "says nothing about FILE WRITES" "$plugins_spec_one_line" \
   "the command_surface spec must bound its own claim to command execution"
 
-# Lesson L006: the driver's findings[]-severity gate is inert for a reviewer
-# whose adapter never populates findings[] -- which the shipped `review`
-# adapters never do. Wherever the deterministic approval path is documented,
-# that has to be said, or the gate reads as a protection nobody is getting.
+# Lesson L006: the driver's findings[]-severity gate is only as live as the
+# reviewer adapter feeding it -- it stays inert for a reviewer whose adapter
+# never populates findings[]. Wherever the deterministic approval path is
+# documented, that has to be said, or the gate reads as a protection nobody
+# is getting. v1-m4 T006 split the shipped adapters into two camps, so the
+# docs claim is now per-adapter and this check is too.
 protocol_one_line="$(tr '\n' ' ' < "$REPO_ROOT/PROTOCOL.md" | tr -s '[:space:]' ' ')"
 assert_match "the \`blocking_severity\` gate is \*\*inert\*\*" "$protocol_one_line" \
   "PROTOCOL.md's approval arm must say the severity gate is inert for verdict-only review adapters"
-for adapter in claude codex; do
-  grep -q "findings" "$REPO_ROOT/plugins/engines/$adapter/run" \
-    || fail "plugins/engines/$adapter/run: findings[] handling vanished — re-check the L006 claim in the docs"
-  grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/$adapter/run" \
-    || fail "plugins/engines/$adapter/run no longer scrapes FINDING: lines for critique only — PROTOCOL.md's L006 note is now wrong"
-done
+assert_match "plugins/engines/claude/run" "$protocol_one_line" \
+  "PROTOCOL.md's approval arm must name which shipped adapters do and do not populate findings[]"
+# claude (v1-m4 T006): its `review` prompt asks for FINDING: lines and its
+# parser is NOT gated to critique, so findings[] is genuinely populated for
+# reviews. If either half regresses, PROTOCOL.md's per-adapter note is wrong.
+grep -q "findings" "$REPO_ROOT/plugins/engines/claude/run" \
+  || fail "plugins/engines/claude/run: findings[] handling vanished — re-check the L006 claim in the docs"
+# Twice, deliberately: once in the review prompt, once in the critique
+# prompt. A single occurrence means one of the two branches dropped it, and
+# a `grep -q` would not notice which.
+[ "$(grep -c "One line per issue found, exactly: FINDING:" "$REPO_ROOT/plugins/engines/claude/run")" -ge 2 ] \
+  || fail "plugins/engines/claude/run: both the review and critique prompts must ask for FINDING: lines — PROTOCOL.md now over-claims for this adapter"
+grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/claude/run" \
+  && fail "plugins/engines/claude/run scrapes FINDING: lines for critique only again — review findings would be silently dropped"
+# codex: still verdict-only on `review` (FINDING: lines requested by the
+# critique prompt alone), which is exactly what PROTOCOL.md's inert-gate
+# sentence must keep covering.
+grep -q "findings" "$REPO_ROOT/plugins/engines/codex/run" \
+  || fail "plugins/engines/codex/run: findings[] handling vanished — re-check the L006 claim in the docs"
+grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/codex/run" \
+  || fail "plugins/engines/codex/run no longer scrapes FINDING: lines for critique only — PROTOCOL.md's L006 note is now wrong"
