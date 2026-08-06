@@ -958,7 +958,7 @@ if [ "$run_status" != planning ]; then
     _tf="$state/tasks/$_id.md"
     [ -f "$_tf" ] || continue
     walk_n=$(( walk_n + 1 ))
-    [ "$_tstatus" != done ] || walk_done_n=$(( walk_done_n + 1 ))
+    [ "$_tstatus" != "done" ] || walk_done_n=$(( walk_done_n + 1 ))
     _arch="$(fm_get "$_tf" archetype)"; [ -n "$_arch" ] || _arch=feature
     if ! archetype_validate "$_arch" >/dev/null 2>&1; then
       set_boundary operator-decision "$_id" "archetype '$_arch' failed validation (rejected, fail closed)"

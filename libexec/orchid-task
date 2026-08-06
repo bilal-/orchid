@@ -416,8 +416,8 @@ case "$sub" in
     if [ "$result" = approve ]; then
       if legal arbitrating merging "$arch"; then
         to=merging
-      elif legal arbitrating done "$arch"; then
-        to=done
+      elif legal arbitrating "done" "$arch"; then
+        to="done"
       fi
     else
       if legal arbitrating rework "$arch"; then

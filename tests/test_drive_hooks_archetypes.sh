@@ -332,11 +332,11 @@ integ_head="$(git rev-parse orchid/integration)"
 i=0
 while [ "$i" -lt 30 ]; do
   run_drive
-  [ "$(status_of A1)" = done ] && break
+  [ "$(status_of A1)" = "done" ] && break
   [ "$DRIVE_RC" -eq 0 ] || break
   i=$((i + 1)); sleep 0.3
 done
-assert_eq done "$(status_of A1)" "a report archetype reaches done under the deterministic driver (rc=$DRIVE_RC, out: $DRIVE_OUT)"
+assert_eq "done" "$(status_of A1)" "a report archetype reaches done under the deterministic driver (rc=$DRIVE_RC, out: $DRIVE_OUT)"
 assert_eq "" "$(field_of A1 worktree)" "an outcome=report task never gets a dispatch worktree"
 assert_eq "$integ_head" "$(field_of A1 candidate_sha)" \
   "its candidate pins to the integration head so review envelopes still bind to something concrete"
@@ -359,8 +359,8 @@ assert_eq "" "$(field_of C1 worktree)" "the custom report archetype builds no wo
 i=0
 while [ "$i" -lt 30 ]; do
   run_drive
-  [ "$(status_of C1)" = done ] && break
+  [ "$(status_of C1)" = "done" ] && break
   [ "$DRIVE_RC" -eq 0 ] || break
   i=$((i + 1)); sleep 0.3
 done
-assert_eq done "$(status_of C1)" "the custom archetype completes with no code that knows its name (rc=$DRIVE_RC, out: $DRIVE_OUT)"
+assert_eq "done" "$(status_of C1)" "the custom archetype completes with no code that knows its name (rc=$DRIVE_RC, out: $DRIVE_OUT)"

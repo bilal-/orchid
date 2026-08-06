@@ -196,5 +196,5 @@ assert_match "$NEUTRAL" "$routing" "review routing selects an unknown engine on 
 # name alone would also be satisfied by a session-independent fallback, i.e. by
 # routing settling on $NEUTRAL because nothing else was left rather than
 # because an unknown engine is a first-class candidate.
-assert_match "^1[[:space:]]+$NEUTRAL[[:space:]]+engine-independent\$" "$routing" \
+assert_match "^1[[:space:]]+${NEUTRAL}[[:space:]]+engine-independent\$" "$routing" \
   "an unknown engine fills the engine-independent slot, not a degraded fallback"

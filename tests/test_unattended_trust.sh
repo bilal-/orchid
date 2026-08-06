@@ -1216,6 +1216,8 @@ while [ "$graph_chunk_index" -lt "$graph_chunk_count" ]; do
       | tr -d ' \n'
   )"
   if [ "$graph_chunk_id" = 43444154 ]; then
+    # ShellCheck rationale: od prints the eight offset bytes as separate fields, and splitting them into positional parameters is the point.
+    # shellcheck disable=SC2046
     set -- $(od -An -t u1 -j $((graph_lookup_offset + 4)) -N 8 "$graph_file")
     graph_cdat_offset=$(( $5 * 16777216 + $6 * 65536 + $7 * 256 + $8 ))
     break
