@@ -77,18 +77,33 @@ away — a warning that can never expire is noise, not evidence.
 
 ### Why two probes for one implementer question
 
-`implementer-shell` reads the manifest. That declaration and the grant the
-adapter actually makes are different facts, and they disagree in the shipped
-tree: `plugins/engines/claude/plugin.conf` lists `shell`, while that adapter's
-implement path launches the vendor CLI with a file-edit permission mode and no
-command allowlist. A `claude` implementer edits files happily and cannot run one
+`implementer-shell` reads the manifest, and a manifest `capabilities=` entry is
+a **declaration by the plugin, not a grant**. Orchid uses those atoms to decide
+which plugin is *eligible* for a role (`lib/roles.sh`); nothing derives a
+runtime permission from them. There is no command allowlist anywhere that turns
+a declared `shell` into a session that may actually execute a command. So
+`shell` in a manifest means "this plugin says its work needs a shell" — never
+"the engine's session will be permitted to run one".
+
+The two facts already disagree in the shipped tree.
+`plugins/engines/claude/plugin.conf` declares `shell`, but that adapter's
+implement path launches the vendor CLI with a file-edit permission mode
+(`--permission-mode acceptEdits`) and no `--allowedTools` argument at all — and
+`acceptEdits` authorizes file edits only, so the Bash tool is never admitted.
+Nothing reads the manifest's `shell` atom on that path. (The same
+adapter's *orchestrate* path does pass `--allowedTools`, scoped to the brokered
+command surface. That is a different launch, and an implementer never reaches
+it.) A `claude` implementer therefore edits files happily and cannot run one
 command — so `scripts/pin-formula.sh` and `chmod +x` on a new `libexec` verb are
 both silent, recurring operator hand-offs on that profile.
 
-Proving the grant needs a live vendor round trip with real quota, which this
-harness will neither spend nor contact, so `implementer-command-execution` is
-recorded as `not-tested` with the manual procedure attached. **Do that manual
-step once per implementer profile** (see the checklist below).
+That asymmetry is why `implementer-shell` is only a floor: a *missing* `shell`
+declaration is decisive, because the profile certainly cannot run commands, while
+a *present* one settles nothing. Proving the grant needs a live vendor round trip
+with real quota, which this harness will neither spend nor contact, so
+`implementer-command-execution` is recorded as `not-tested` with the manual
+procedure attached. **Do that manual step once per implementer profile** (see the
+checklist below).
 
 ### Why the notify probe never says "working"
 
