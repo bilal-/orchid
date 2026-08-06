@@ -466,7 +466,7 @@ drive_until_done() {
   while [ "$i" -lt 40 ]; do
     DRIVE_RC=0
     DRIVE_OUT="$("$BASH" "$DRIVE" 2>&1)" || DRIVE_RC=$?
-    [ "$(status_of T001)" = done ] && return 0
+    [ "$(status_of T001)" = "done" ] && return 0
     [ "$DRIVE_RC" -ne 0 ] && return 1
     i=$((i + 1))
     sleep 0.3
@@ -475,7 +475,7 @@ drive_until_done() {
 }
 drive_until_done \
   || fail "the deterministic driver must walk T001 to done with no model in the loop (rc=$DRIVE_RC, output: $DRIVE_OUT)"
-assert_eq done "$(status_of T001)" "T001 reached done under deterministic passes alone"
+assert_eq "done" "$(status_of T001)" "T001 reached done under deterministic passes alone"
 git -C "$DRIVEN" show "orchid/integration:rehearsal_feature.txt" >/dev/null 2>&1 \
   || fail "the integration branch must carry the commit the stub implementer made"
 unset ORCHID_REPO ORCHID_EPOCH
