@@ -145,6 +145,11 @@ GITSHIM
 } > "$TRIPWIRE_DIR/git"
 chmod +x "$TRIPWIRE_DIR/git"
 
+# Kept so the tripwires can be stood down once the rehearsal is over. They
+# live INSIDE the root and therefore stop existing the moment cleanup removes
+# it, so the post-cleanup snapshots -- which are instrumentation, not part of
+# the rehearsal -- must not still be looking for them (step 9).
+ORIGINAL_PATH="$PATH"
 export PATH="$TRIPWIRE_DIR:$PATH"
 [ "$(command -v curl)" = "$TRIPWIRE_DIR/curl" ] || fail "the curl tripwire is not first on PATH"
 [ "$(command -v git)" = "$TRIPWIRE_DIR/git" ] || fail "the git tripwire is not first on PATH"
@@ -632,9 +637,35 @@ assert_snapshot_unchanged \
 # snapshots on purpose: restoring the ambient Git config first could change
 # what `git status` reports about the source checkout and turn a clean
 # comparison into a false alarm.
+#
+# PATH is the one exception, and it has to be. The tripwires live INSIDE the
+# root, so `rm -rf "$R"` deletes the very shims PATH points at -- including the
+# git shim, which every snapshot function calls. The tripwires have already
+# done their job: step 8 asserted the log is empty, no fixture acquired a
+# remote, and nothing outside the root changed, all while the shims were still
+# in place. What follows is instrumentation ABOUT the cleanup, not a phase of
+# the rehearsal, so it must run against a git that still exists.
 # ===========================================================================
 rm -rf "$R"
 [ -e "$R" ] && fail "the private rehearsal root must be removable in one step"
+# Stand the tripwires down. `hash -r` is not optional: bash caches the full
+# path of every command it has already resolved, and with `checkhash` off (the
+# default) it re-uses that path WITHOUT re-checking that the file is still
+# there. Restoring PATH alone would therefore leave `git` bound to the deleted
+# "$TRIPWIRE_DIR/git" and every snapshot below would silently come back empty.
+export PATH="$ORIGINAL_PATH"
+hash -r
+# Prove the re-resolution really happened rather than assuming it: a `git` that
+# still resolves under the deleted root would turn the two comparisons below
+# into a confusing "everything vanished" diff instead of a clear failure.
+resolved_git="$(command -v git 2>/dev/null || true)"
+case "$resolved_git" in
+  ""|"$R"/*)
+    fail "post-cleanup git must re-resolve outside the removed root, got '$resolved_git'" ;;
+  *)
+    [ -x "$resolved_git" ] \
+      || fail "post-cleanup git re-resolved to '$resolved_git', which is not executable" ;;
+esac
 # The two config files just went with it. Repoint both scopes at /dev/null
 # rather than at a now-missing path: an empty file and /dev/null are the same
 # input to git, while restoring the ambient machine config here could change
