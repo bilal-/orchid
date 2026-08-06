@@ -59,8 +59,8 @@ setup, requirements import, and a handoff into PLANNING.
                        checkout's orchid.config -- and committed onto the
                        integration branch -- only when that file configures
                        none yet; a `verify=` line already there is never
-                       replaced. orchid start never guesses a verification
-                       command.
+                       replaced.
+                       orchid start never guesses a verification command.
   --worktree <path>    where the integration worktree lives (default:
                        ../<repo>-orchid). An existing path is reused only
                        when it is exactly this repository's
