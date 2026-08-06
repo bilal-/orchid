@@ -75,6 +75,15 @@ a property of the build rather than of the candidate repository, and every one
 of them carries an `expires_when` line stating exactly what makes the warning go
 away — a warning that can never expire is noise, not evidence.
 
+A gate is only evidence once something actually runs it, and that is a separate
+fact from whether it exists and works. This repository proved the point on
+itself: `scripts/ci-local.sh` was built and passing, then went unrun for an
+entire run because no task afterwards listed it among its verification
+commands, and warnings across nine files accumulated behind a gate that existed
+and worked the whole time. So qualify a gate the way you qualify a repository —
+confirm it rejects a change you know it must reject, *and* confirm the command
+that runs it sits in the path every change travels.
+
 ### Why two probes for one implementer question
 
 `implementer-shell` reads the manifest, and a manifest `capabilities=` entry is
