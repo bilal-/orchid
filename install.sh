@@ -35,8 +35,8 @@ set -euo pipefail
 # cross-checks them against release/metadata.conf, the tag, and the formula.
 # ShellCheck rationale: release tooling reads this public metadata assignment from the tagged file.
 # shellcheck disable=SC2034
-ORCHID_INSTALL_VERSION="1.0.0"
-ORCHID_INSTALL_REF="v1.0.0"
+ORCHID_INSTALL_VERSION="1.0.0-beta.1"
+ORCHID_INSTALL_REF="v1.0.0-beta.1"
 ORCHID_INSTALL_REPOSITORY="https://github.com/bilal-/orchid.git"
 
 BOOTSTRAP_CHANNEL="stable"
@@ -62,8 +62,11 @@ case "$BOOTSTRAP_CHANNEL" in
   *) echo "orchid: install.sh: --channel must be stable or development" >&2; exit 2 ;;
 esac
 if [ "$BOOTSTRAP_CHANNEL" = stable ]; then
+  # Same shape rule scripts/release.sh enforces on the tag: vMAJOR.MINOR.PATCH
+  # with an optional semver prerelease suffix (the shipped 1.0.0-beta.1), and
+  # nothing that could name a moving ref.
   printf '%s\n' "$ORCHID_INSTALL_REF" \
-    | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' || {
+    | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$' || {
       echo "orchid: stable installer ref is not version-pinned: $ORCHID_INSTALL_REF" >&2
       exit 1
     }

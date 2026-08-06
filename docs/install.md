@@ -9,8 +9,14 @@ for what happens after any of them.
 ## One-line install (recommended)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
+
+**The shipped version is `1.0.0-beta.1`, a prerelease.** Nothing outside this
+repository has run orchid, and no external beta has happened; `1.0.0` would
+claim a hardened, in-use kernel, and that is what an external beta is meant to
+earn. Everything below installs and behaves the same way a `1.0.0` would —
+only the version string is different.
 
 **This goes live once the repo is public.** `raw.githubusercontent.com`
 cannot serve a file out of a private repository, so until then this
@@ -25,8 +31,8 @@ the command from inside another, even dirty, Orchid checkout never installs
 from that checkout: piped Bash has no installer pathname, so the current
 directory is never accepted as source. The stable channel never resolves
 `HEAD`, a branch name, or another moving ref. Re-running the same command
-re-selects `v1.0.0`; it does not silently upgrade. To upgrade, run the URL for
-the new release version.
+re-selects `v1.0.0-beta.1`; it does not silently upgrade. To upgrade, run the
+URL for the new release version.
 
 The development channel is deliberately more conspicuous because it follows
 the moving `main` branch:
@@ -41,8 +47,8 @@ Do not use the development channel when you need a reproducible install.
 put them after `-s --`:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash -s -- --prefix /usr/local
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash -s -- --uninstall
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash -s -- --prefix /usr/local
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash -s -- --uninstall
 ```
 
 `--uninstall` this way removes the symlinks the canonical clone created,
@@ -73,6 +79,11 @@ from the source archive, avoiding a checksum self-reference.
    two `ORCHID_INSTALL_*` assignments in `install.sh`, and the formula's
    version and URL. Commit the release payload while the tree is clean.
 
+   The version may be a plain `MAJOR.MINOR.PATCH` or carry a semver
+   prerelease suffix (`1.0.0-beta.1`, `1.1.0-rc.2`) — `scripts/release.sh`,
+   `install.sh`'s stable-channel gate, and the checks below all accept both.
+   Build metadata (`+…`) is not accepted anywhere.
+
 2. Re-pin the formula checksum with the canonical tool (the same fixed
    mtime, prefix, and tree inputs the verifier uses — it snapshots current
    content through a disposable, config-isolated Git repository and rewrites
@@ -92,7 +103,7 @@ from the source archive, avoiding a checksum self-reference.
    ```sh
    version="$(sed -n 's/^version=//p' release/metadata.conf)"
    tag="$(sed -n 's/^tag=//p' release/metadata.conf)"
-   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
      echo "invalid release metadata version: $version" >&2
      exit 1
    fi
@@ -108,7 +119,7 @@ from the source archive, avoiding a checksum self-reference.
    ```sh
    version="$(sed -n 's/^version=//p' release/metadata.conf)"
    tag="$(sed -n 's/^tag=//p' release/metadata.conf)"
-   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+   if ! printf '%s\n' "$version" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$'; then
      echo "invalid release metadata version: $version" >&2
      exit 1
    fi

@@ -348,6 +348,30 @@ rm "$fixture/untracked"
 run_release_failure "$fixture" main 'moving refs|semantic-version' moving-ref
 run_release_failure "$fixture" v9.9.9 'does not exist' missing-tag
 
+# T008: the tag gate admits a semver PRERELEASE (the shipped 1.0.0-beta.1)
+# and nothing looser. Both directions are checked on shape alone, so the
+# widened pattern cannot rot into accepting an arbitrary string:
+#
+#   - a well-formed prerelease that is simply not tagged in this fixture must
+#     fail on tag EXISTENCE, which is only reachable once the shape gate has
+#     already admitted it;
+#   - moving refs, malformed suffixes, and anything carrying path syntax must
+#     still be refused on shape, before any Git object is resolved.
+#
+# Refusal arrives from one of two gates -- the cheap glob (which names moving
+# refs) or the authoritative grep (which names vMAJOR.MINOR.PATCH) -- and
+# either one means the tag was rejected for its shape, so both messages count.
+shape_refused='moving refs|vMAJOR\.MINOR\.PATCH'
+run_release_failure "$fixture" v9.9.9-beta.1 'does not exist' shape-prerelease-simple
+run_release_failure "$fixture" v9.9.9-rc.2.alpha-3 'does not exist' shape-prerelease-multi
+run_release_failure "$fixture" HEAD "$shape_refused" shape-head
+run_release_failure "$fixture" release-v1.2.3 "$shape_refused" shape-branch-name
+run_release_failure "$fixture" v1.2.3- "$shape_refused" shape-empty-suffix
+run_release_failure "$fixture" v1.2.3-beta..1 "$shape_refused" shape-empty-identifier
+run_release_failure "$fixture" v1.2.3-01 "$shape_refused" shape-leading-zero
+run_release_failure "$fixture" v1.2.3+build.1 "$shape_refused" shape-build-metadata
+run_release_failure "$fixture" v1.2.3-beta.1/../evil "$shape_refused" shape-path-syntax
+
 clone_fixture() {
   local name="$1" destination
   destination="$WORK/$name"
@@ -487,5 +511,98 @@ GIT_CONFIG_VALUE_1="$hostile_attributes" \
   || fail "pin-formula --check rejects the checksum it just pinned"
 assert_eq "$pin_objects_before" "$(git -C "$pin_repo" count-objects -v)" \
   "pin-formula leaves the repository object database untouched"
+
+# ===========================================================================
+# T008: admitting a prerelease TAG is only half the job -- every downstream
+# agreement check has to hold for a prerelease VERSION too. tag = v$version,
+# archive = orchid-<version>.tar.gz, prefix = orchid-<version>/, and the
+# lib/common.sh / install.sh / formula cross-checks all interpolate the
+# version verbatim, so a suffix that broke any of them would surface only at
+# real tag time. Build one end to end instead of trusting that. The version
+# is deliberately not the shipped one: this pins the SHAPE, not 1.0.0-beta.1.
+# ===========================================================================
+pre_version="2.0.0-beta.1"
+pre="$WORK/prerelease-fixture"
+mkdir -p "$pre"/{Formula,bin,docs,lib,release,scripts,.orchid}
+cp "$RELEASE" "$pre/scripts/release.sh"
+cat > "$pre/.gitattributes" <<'EOF'
+/.orchid export-ignore
+/Formula export-ignore
+EOF
+cat > "$pre/release/metadata.conf" <<EOF
+version=$pre_version
+tag=v$pre_version
+archive=orchid-$pre_version.tar.gz
+prefix=orchid-$pre_version/
+installer_ref=v$pre_version
+EOF
+cat > "$pre/lib/common.sh" <<EOF
+#!/usr/bin/env bash
+ORCHID_VERSION="$pre_version"
+EOF
+cat > "$pre/install.sh" <<EOF
+#!/usr/bin/env bash
+ORCHID_INSTALL_VERSION="$pre_version"
+ORCHID_INSTALL_REF="v$pre_version"
+ORCHID_INSTALL_REPOSITORY="https://github.com/bilal-/orchid.git"
+exit 0
+EOF
+cat > "$pre/bin/orchid" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat > "$pre/scripts/ci-local.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+[ "${ORCHID_RELEASE_ARCHIVE_TEST:-0}" = 1 ]
+[ "$1" = --bash ]
+[ -x "$2" ]
+[ ! -e .git ]
+[ ! -e .orchid ]
+[ ! -e Formula ]
+[ -f release/metadata.conf ]
+echo "prerelease archive fixture CI PASS"
+EOF
+printf '%s\n' '# Release fixture' > "$pre/README.md"
+printf '%s\n' '# Install fixture' > "$pre/docs/install.md"
+printf '%s\n' '# Quickstart fixture' > "$pre/docs/quickstart.md"
+printf '%s\n' 'private run state' > "$pre/.orchid/private"
+write_formula "$pre" "$pre_version" "0000000000000000000000000000000000000000000000000000000000000000"
+
+git init -q "$pre"
+git -C "$pre" config user.email test@example.com
+git -C "$pre" config user.name "Release Test"
+commit_fixture "$pre" "prerelease fixture payload"
+
+# Same export-ignored-formula trick as the baseline fixture: snapshot the
+# payload tree, pin that checksum in a formula-only commit, then tag. The
+# pinned digest stays valid for the tagged commit precisely because Formula/
+# never reaches the archive.
+pre_probe="$WORK/prerelease-probe.tar.gz"
+git -C "$pre" archive --format=tar.gz --mtime=1970-01-01T00:00:00Z \
+  --prefix="orchid-$pre_version/" --output="$pre_probe" 'HEAD^{tree}'
+pre_sha="$(sha256_file "$pre_probe")"
+write_formula "$pre" "$pre_version" "$pre_sha"
+commit_fixture "$pre" "pin prerelease formula checksum"
+git -C "$pre" tag "v$pre_version"
+
+pre_out="$WORK/prerelease-out"
+pre_output="$("$BASH" "$pre/scripts/release.sh" \
+  --tag "v$pre_version" --output "$pre_out" --bash "$BASH" 2>&1)" \
+  || fail "release builder rejected a valid clean prerelease tag: $pre_output"
+assert_match "release verified: v$pre_version" "$pre_output" \
+  "prerelease release success names the verified prerelease tag"
+[ -f "$pre_out/orchid-$pre_version.tar.gz" ] \
+  || fail "prerelease archive not emitted under its suffixed name"
+[ -f "$pre_out/orchid-$pre_version.tar.gz.sha256" ] \
+  || fail "prerelease archive checksum not emitted"
+[ -f "$pre_out/Formula/orchid.rb" ] || fail "prerelease formula not emitted"
+assert_eq "$pre_sha" "$(sha256_file "$pre_out/orchid-$pre_version.tar.gz")" \
+  "prerelease archive checksum matches the pinned formula input"
+pre_list="$(tar -tzf "$pre_out/orchid-$pre_version.tar.gz")"
+printf '%s\n' "$pre_list" | grep -v "^orchid-$pre_version/" \
+  && fail "prerelease archive contains an entry outside its suffixed prefix"
+printf '%s\n' "$pre_list" | grep -qxF "orchid-$pre_version/release/metadata.conf" \
+  || fail "prerelease archive is missing release/metadata.conf under its suffixed prefix"
 
 exit 0

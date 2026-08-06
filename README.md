@@ -11,15 +11,24 @@ Works with **Claude Code · Codex · Antigravity · Hermes · OpenClaw**
 unaffiliated tool that shells out to each vendor's own CLI).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-That command stays on the immutable `v1.0.0` release, independent of the
-caller's current directory (including inside a dirty Orchid checkout). To
+That command stays on the immutable `v1.0.0-beta.1` release, independent of
+the caller's current directory (including inside a dirty Orchid checkout). To
 upgrade, use the new version's equally pinned URL; following `main` is an
 explicitly labeled development channel. Flags, channels, `--uninstall`, the
 prepared Homebrew tap, and the git-clone method:
 [docs/install.md](./docs/install.md).
+
+> **This ships as `1.0.0-beta.1`, not `1.0.0`.** A `1.0.0` would claim the
+> kernel is hardened and in use; neither is true yet. Nothing outside this
+> repository has run orchid, and no external beta has happened. The hardening
+> pass that produced this version found, among other defects, a shell
+> injection reachable from repository content, a headless deadlock, two
+> concurrent implementers dispatched into one worktree, a release gate nothing
+> was invoking, and orchid executing pre-merge code from a stale checkout.
+> `1.0.0` is what an external beta earns.
 
 > Orchid is in final private dogfooding — the one-liner goes live the day
 > this repo does. Until then, install from a clone
