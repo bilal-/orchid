@@ -4,7 +4,15 @@
 # Run this against an operator-supplied repository to find out whether THIS
 # Orchid build can actually drive THAT repository unattended, before a beta
 # tester spends a day discovering it cannot. It contacts nothing, publishes
-# nothing, and writes nothing inside the target repository.
+# nothing, and writes nothing OF ITS OWN inside the target repository -- with
+# one exception, stated here rather than discovered later: by default this
+# harness runs the target repository's own configured `verify=` command once,
+# IN PLACE, to time it. That command is the operator's code, chosen by the
+# operator, and whatever it writes it writes; this harness neither sandboxes
+# it nor makes it safe. Running it is what makes the timing probe a
+# measurement instead of a guess, which is why the exception exists rather
+# than the promise being quietly weakened. `--no-run-verify` skips it and
+# records the timing probe as `not-tested`, never as a pass.
 #
 # ---------------------------------------------------------------------------
 # THE EVIDENCE RULE (the reason this file is shaped the way it is)
@@ -75,7 +83,8 @@ usage: scripts/beta-qualify.sh --repo DIR --output DIR [options]
 Qualifies one operator-supplied repository against this Orchid build and writes
 anonymized local evidence to DIR/qualification.json and DIR/qualification.txt.
 
-  --repo DIR             the repository to qualify (read-only; never written to)
+  --repo DIR             the repository to qualify (read-only input, apart from
+                         the one in-place verify= run described below)
   --output DIR           where to write the evidence pair (never overwritten)
   --label NAME           name for this repository in the evidence
                          ([A-Za-z0-9._-], 1-32 chars; default "candidate")
@@ -85,13 +94,22 @@ anonymized local evidence to DIR/qualification.json and DIR/qualification.txt.
                          duration probe is then recorded as not-tested
   -h, --help             this text
 
-It never pushes, publishes, deploys, tags, or contacts a remote, never writes
-inside --repo, and never copies repository content into the evidence. The
-verify= command's own output is discarded unread: its exit code and wall-clock
-duration are the only things recorded about it. The recorded toolchain versions
-and platform name are matched against fixed patterns authored in this script;
-anything that does not match is recorded as "unrecognized"/"other" rather than
-verbatim, and never changes an outcome.
+It never pushes, publishes, deploys, tags, or contacts a remote, writes nothing
+of its own inside --repo, and never copies repository content into the evidence.
+
+ONE EXCEPTION to "writes nothing inside --repo", and it is deliberate: unless
+you pass --no-run-verify, this harness executes --repo's own configured verify=
+command once, IN PLACE, to time it. That is the operator's own code running in
+the operator's own repository -- whatever it writes, it writes, and this harness
+neither sandboxes it nor makes it safe. Timing it any other way would be a
+guess. With --no-run-verify the duration probe is recorded as not-tested, never
+as a pass.
+
+The verify= command's own output is discarded unread: its exit code and
+wall-clock duration are the only things recorded about it. The recorded
+toolchain versions and platform name are matched against fixed patterns
+authored in this script; anything that does not match is recorded as
+"unrecognized"/"other" rather than verbatim, and never changes an outcome.
 
 Genuine third-party beta runs and public release remain operator-owned. This
 harness does not perform them and never records that they happened.
@@ -147,14 +165,14 @@ REPO="$(cd "$REPO" && pwd -P)" || die "cannot resolve --repo"
 # that later refusal removes the directory it just made when it is still empty.
 case "$OUTPUT" in /*) output_logical="$OUTPUT" ;; *) output_logical="$PWD/$OUTPUT" ;; esac
 case "$output_logical/" in
-  "$REPO"/*) die "--output must not live inside --repo (this harness never writes into the target repository)" ;;
+  "$REPO"/*) die "--output must not live inside --repo (this harness never places evidence inside the target repository)" ;;
 esac
 mkdir -p "$OUTPUT" || die "cannot create --output"
 OUTPUT="$(cd "$OUTPUT" && pwd -P)" || die "cannot resolve --output"
 case "$OUTPUT/" in
   "$REPO"/*)
     rmdir "$OUTPUT" 2>/dev/null
-    die "--output must not live inside --repo (this harness never writes into the target repository)" ;;
+    die "--output must not live inside --repo (this harness never places evidence inside the target repository)" ;;
 esac
 JSON_OUT="$OUTPUT/qualification.json"
 TEXT_OUT="$OUTPUT/qualification.txt"

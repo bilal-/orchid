@@ -482,7 +482,8 @@ git show "$integ:stub_feature.txt" >/dev/null 2>&1 \
   || fail "the integration branch must carry the file the stub implementer committed"
 
 # Worktree: the deterministic sibling path, registered to this repository.
-WORKP="$(cd_scratch "$WORK" && pwd -P)"
+WORKP="$(cd_scratch "$WORK" && pwd -P)" \
+  || { fail "cd_scratch refused the scratch root"; exit 1; }
 recorded_wt="$("$ORCHID_BIN" task show T001 | grep '^worktree: ' | cut -d' ' -f2-)"
 assert_eq "$WORKP/repo-T001" "$recorded_wt" "the dispatch worktree sits at the deterministic <repo>-<task> sibling path"
 [ -d "$recorded_wt" ] || fail "the recorded dispatch worktree must exist on disk"

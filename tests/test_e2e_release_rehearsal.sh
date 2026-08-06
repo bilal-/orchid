@@ -67,13 +67,30 @@ TICK="$REPO_ROOT/runners/orchid-tick"
 
 REAL_HOME="$HOME"
 REAL_GIT="$(command -v git)" || fail "git is required"
+# May legitimately be empty -- a host without openssl is fine, because
+# lib/common.sh only reaches for it when `shasum` is absent, and at least one
+# of the two exists everywhere this runs. The shim below handles both cases.
+REAL_OPENSSL="$(command -v openssl 2>/dev/null || true)"
 REAL_TMPDIR="${TMPDIR:-/tmp}"
 
 # ===========================================================================
 # 0 -- the one private root, and every environment variable that could
 # otherwise let a step reach outside it.
 # ===========================================================================
-R="$(cd_scratch "$WORK" && pwd -P)/rehearsal"
+# CAPTURE, CHECK, THEN COMPOSE -- never `R="$(cd_scratch "$WORK" && pwd -P)/rehearsal"`
+# in one breath. This suite runs under `set -uo pipefail` WITHOUT -e, so a
+# failing assignment halts nothing: cd_scratch dies inside the command
+# substitution, the substitution yields the empty string, and R silently becomes
+# "/rehearsal" -- every path below then hangs off the real filesystem root and
+# the L014 guard this file's header claims to apply is inert. That is the exact
+# shape of the bug cd_scratch exists to prevent, reintroduced by composing its
+# output before checking its status. `fail` alone would not do either: it only
+# counts a FAILS, so the `exit 1` is what actually stops the file. (The FAILS
+# increment inside the substitution's subshell is lost with the subshell, which
+# is why it is re-counted here.)
+scratch_root="$(cd_scratch "$WORK" && pwd -P)" \
+  || { fail "cd_scratch refused the scratch root — refusing to run the rehearsal against an unresolved path"; exit 1; }
+R="$scratch_root/rehearsal"
 mkdir -p "$R"/{home,tmp,eng,plugins,prefix,out,fixtures}
 mkdir -p "$R/home/.config" "$R/home/.local/share" "$R/home/.claude/skills"
 
@@ -114,7 +131,7 @@ mk_tripwire() {
 
 # Network clients, remote copy/shell, vendor engine CLIs, notify senders, and
 # package/network tooling. None of these has any business running here.
-for tool in curl wget ssh scp sftp rsync nc netcat telnet ftp openssl \
+for tool in curl wget ssh scp sftp rsync nc netcat telnet ftp \
             claude codex agy hermes openclaw \
             npm npx pip pip3 brew apt apt-get yum dnf pacman gem cargo go \
             docker kubectl gh hub aws gcloud az; do
@@ -165,6 +182,52 @@ GITSHIM
 } > "$TRIPWIRE_DIR/git"
 chmod +x "$TRIPWIRE_DIR/git"
 
+# openssl is not shadowed wholesale either, and for a reason that is easy to
+# miss: it is a network client (`s_client`, `s_server`, `s_time`, `ocsp`, `ts`)
+# AND this repository's documented digest fallback. lib/common.sh's
+# `_orchid_file_sha256`/`_orchid_symlink_sha256`/`_orchid_stream_sha256` each
+# use `shasum -a 256` when it exists and `openssl dgst -sha256` when it does
+# not -- so a blanket openssl tripwire would report "the rehearsal contacted
+# the network" on any host without shasum, when what actually happened was
+# plugin_digest taking the fallback the code says it may take. A tripwire that
+# fires on documented, entirely local behaviour teaches operators to ignore
+# tripwire output, which is worse than not having one. So: the remote-capable
+# subcommands are refused and logged exactly as before, and everything else --
+# `dgst` above all -- is delegated to the real binary. Literal paths, same
+# `env -i` reason as the git shim.
+{
+  echo '#!/bin/bash'
+  printf 'LOG=%s\n' "$(printf '%q' "$TRIPWIRE_LOG")"
+  printf 'REAL=%s\n' "$(printf '%q' "$REAL_OPENSSL")"
+  cat <<'SSLSHIM'
+ALL_ARGS="$*"
+sub=""
+for a in "$@"; do
+  case "$a" in
+    -*) continue ;;
+    *) sub="$a"; break ;;
+  esac
+done
+refuse() {
+  printf 'openssl %s [%s]\n' "$1" "$ALL_ARGS" >> "$LOG"
+  echo "tripwire: openssl $1 must never run during the release rehearsal" >&2
+  exit 97
+}
+case "$sub" in
+  s_client|s_server|s_time|ocsp|ts) refuse "$sub" ;;
+esac
+# No real openssl on this host: nothing local to delegate to. Refusing (rather
+# than exiting 0) keeps a would-be caller's failure visible instead of handing
+# it a silently empty digest.
+if [ -z "$REAL" ]; then
+  echo "tripwire: openssl is not installed on this host" >&2
+  exit 127
+fi
+exec "$REAL" "$@"
+SSLSHIM
+} > "$TRIPWIRE_DIR/openssl"
+chmod +x "$TRIPWIRE_DIR/openssl"
+
 # Kept so the tripwires can be stood down once the rehearsal is over. They
 # live INSIDE the root and therefore stop existing the moment cleanup removes
 # it, so the post-cleanup snapshots -- which are instrumentation, not part of
@@ -200,6 +263,21 @@ assert_eq 97 "$tripwire_rc" "the git tripwire must refuse 'git submodule update'
 tripwire_rc=0
 git send-pack >/dev/null 2>&1 || tripwire_rc=$?
 assert_eq 97 "$tripwire_rc" "the git tripwire must refuse 'git send-pack'"
+# The openssl shim, both halves. The refusal half is a tripwire like any other;
+# the delegation half is what stops this rehearsal from failing on a host that
+# has no shasum and therefore takes lib/common.sh's documented openssl fallback.
+[ "$(command -v openssl)" = "$TRIPWIRE_DIR/openssl" ] || fail "the openssl tripwire is not first on PATH"
+tripwire_rc=0
+openssl s_client -connect example.invalid:443 >/dev/null 2>&1 || tripwire_rc=$?
+assert_eq 97 "$tripwire_rc" "the openssl tripwire must refuse a network subcommand"
+grep -qF 'openssl s_client' "$TRIPWIRE_LOG" || fail "the openssl tripwire must LOG the refused subcommand"
+if [ -n "$REAL_OPENSSL" ]; then
+  ssl_digest="$(printf 'rehearsal\n' | openssl dgst -sha256 2>/dev/null | awk '{print $NF}')"
+  assert_match '^[0-9a-f]{64}$' "$ssl_digest" \
+    "the openssl shim must pass 'dgst' through to the real binary -- lib/common.sh falls back to it when shasum is absent"
+  grep -qF 'openssl dgst' "$TRIPWIRE_LOG" \
+    && fail "the openssl shim logged a local 'dgst' as a tripwire hit -- the documented shasum fallback would read as a network contact"
+fi
 : > "$TRIPWIRE_LOG"
 
 # ===========================================================================
@@ -217,7 +295,11 @@ assert_eq 97 "$tripwire_rc" "the git tripwire must refuse 'git send-pack'"
 # doing. So each snapshot watches only what this rehearsal could itself
 # change, at names this file can write down in advance.
 # ===========================================================================
-WORKP="$(cd_scratch "$WORK" && pwd -P)"
+# Captured and checked before use, for the reason spelled out at step 0: an
+# unchecked substitution here would leave WORKP empty and point every snapshot
+# below at the filesystem root.
+WORKP="$(cd_scratch "$WORK" && pwd -P)" \
+  || { fail "cd_scratch refused the scratch root — refusing to snapshot an unresolved path"; exit 1; }
 list_names() {
   if [ ! -e "$1" ]; then printf 'ABSENT %s\n' "$1"; return 0; fi
   find "$1" 2>/dev/null | LC_ALL=C sort

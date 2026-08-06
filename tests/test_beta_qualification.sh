@@ -34,7 +34,12 @@ source "$(dirname "$0")/helpers.sh"
 QUALIFY="$REPO_ROOT/scripts/beta-qualify.sh"
 [ -f "$QUALIFY" ] || fail "scripts/beta-qualify.sh missing"
 
-W="$(cd_scratch "$WORK" && pwd -P)"
+# Checked, not just captured: this file runs under `set -uo pipefail` without
+# -e, so a cd_scratch that dies inside the substitution would leave W empty and
+# every "$W/..." path below rooted at "/". See the longer note at
+# tests/test_e2e_release_rehearsal.sh's step 0.
+W="$(cd_scratch "$WORK" && pwd -P)" \
+  || { fail "cd_scratch refused the scratch root — refusing to build fixtures under an unresolved path"; exit 1; }
 export HOME="$MACHINE_HOME"
 mkdir -p "$HOME/.orchid"
 
@@ -348,7 +353,7 @@ run_refusal "existing evidence" "refusing to overwrite" \
   --repo "$A_REPO" --output "$A_OUT" --bash "$BASH"
 run_refusal "path-shaped label" "--label must be" \
   --repo "$A_REPO" --output "$W/out-badlabel" --label "../escape" --bash "$BASH"
-run_refusal "output inside the target" "never writes into the target repository" \
+run_refusal "output inside the target" "never places evidence inside the target repository" \
   --repo "$A_REPO" --output "$A_REPO/evidence" --bash "$BASH"
 run_refusal "missing repo" "--repo is required" --output "$W/out-norepo"
 

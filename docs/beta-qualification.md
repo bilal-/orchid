@@ -57,7 +57,8 @@ reasoning left in some engine log is the evidence gap this exists to close.
 ```
 
 It writes `qualification.json` and `qualification.txt` into `--output`, never
-overwrites either, never writes inside `--repo`, and never contacts a remote.
+overwrites either, writes nothing of its own inside `--repo` (see the exception
+immediately below), and never contacts a remote.
 Exit `0` means qualified, `1` means not qualified, `2` means a usage or
 precondition failure. `--help` lists every option.
 
@@ -182,7 +183,13 @@ worktree, and output path:
 Throughout, every network client, remote copy/shell tool, vendor CLI, notify
 sender, package manager, and remote-capable `git` subcommand — `push`, `fetch`,
 `pull`, `clone`, `ls-remote`, `remote update`, `submodule update`, `send-pack` —
-is shadowed on `PATH` by a tripwire that logs and fails. The rehearsal asserts
+is shadowed on `PATH` by a tripwire that logs and fails. `git` and `openssl` are
+shadowed by *subcommand*, not wholesale, for the same reason: the rehearsal is
+made of local `git` work, and `openssl dgst` is the digest fallback
+`lib/common.sh` takes on a host without `shasum`. Only the remote-capable
+subcommands are refused; the rest are delegated to the real binary. A tripwire
+that fired on documented local behaviour would teach an operator to ignore
+tripwire output. The rehearsal asserts
 the log is empty, that no repository acquired a remote or a remote ref, that the
 source checkout is unchanged afterwards, and that removing the root leaves the
 machine exactly as it found it.

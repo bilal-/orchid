@@ -142,7 +142,9 @@ from the source archive, avoiding a checksum self-reference.
 
 5. Rehearse the whole operator story locally, inside a single private
    temporary root, with every network tool, vendor CLI, and remote-capable
-   `git` subcommand shadowed by a `PATH` tripwire that logs and fails:
+   `git`/`openssl` subcommand shadowed by a `PATH` tripwire that logs and
+   fails (those two are shadowed per-subcommand, so local `git` work and the
+   `openssl dgst` digest fallback still reach the real binary):
 
    ```sh
    /bin/bash tests/test_e2e_release_rehearsal.sh

@@ -88,8 +88,10 @@ recompute and compare those bytes with the same committed formula checksum.
 `tests/test_e2e_release_rehearsal.sh` runs the whole operator story once inside
 one private temporary root — setup, unattended refusal, acknowledgement, beta
 qualification, a deterministic drive, the release gate, and installer wiring —
-with every network tool, vendor CLI, and remote-capable `git` subcommand
-shadowed by a `PATH` tripwire that logs and fails. It is part of the suite the
+with every network tool, vendor CLI, and remote-capable `git`/`openssl`
+subcommand shadowed by a `PATH` tripwire that logs and fails (those two are
+shadowed per-subcommand, so local `git` work and the `openssl dgst` digest
+fallback still reach the real binary). It is part of the suite the
 gate above runs, so a change that reaches outside that root, moves a remote ref,
 or modifies the source checkout fails CI rather than a tester's machine.
 

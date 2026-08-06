@@ -532,13 +532,43 @@ BETA_MD="$REPO_ROOT/docs/beta-qualification.md"
 [ -f "$REHEARSAL_SH" ] || fail "tests/test_e2e_release_rehearsal.sh missing — the release docs describe a rehearsal that does not exist"
 
 # The harness's own --help is part of the documentation surface: it is what an
-# operator reads before running it against a repository they cannot share.
-grep -qF 'It never pushes, publishes, deploys, tags, or contacts a remote' "$QUALIFY_SH" \
+# operator reads before running it against a repository they cannot share. So
+# it is asserted against the text `--help` ACTUALLY PRINTS, not against the
+# file's bytes: a promise moved into a comment, or into a branch --help never
+# reaches, would still satisfy a grep over the source. `--help` is parsed
+# before --repo is required, so this costs one process and needs no fixture.
+qualify_help="$("$BASH" "$QUALIFY_SH" --help)" \
+  || fail "scripts/beta-qualify.sh --help must exit 0 without a repo"
+grep -qF 'It never pushes, publishes, deploys, tags, or contacts a remote' <<<"$qualify_help" \
   || fail "scripts/beta-qualify.sh --help must state that it never publishes or contacts a remote"
-grep -qF 'never copies repository content into the evidence' "$QUALIFY_SH" \
+grep -qF 'never copies repository content into the evidence' <<<"$qualify_help" \
   || fail "scripts/beta-qualify.sh --help must state the anonymization rule"
-grep -qF 'Genuine third-party beta runs and public release remain operator-owned' "$QUALIFY_SH" \
+grep -qF 'Genuine third-party beta runs and public release remain operator-owned' <<<"$qualify_help" \
   || fail "scripts/beta-qualify.sh --help must name third-party beta and release as operator-owned"
+
+# THE PROMISE AND ITS EXCEPTION MUST NOT DRIFT APART. "writes nothing inside
+# --repo" is false on its own: by default this harness runs the target's own
+# verify= command IN PLACE, which is the right design for a timing probe and is
+# already stated in docs/beta-qualification.md. The document a tester actually
+# reads before pointing this at a repository they cannot show anyone is the
+# header comment and --help -- so both have to carry the exception in the same
+# breath as the promise, and these assertions are what keeps them together.
+grep -qF 'ONE EXCEPTION to "writes nothing inside --repo"' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help states 'writes nothing inside --repo' without naming the in-place verify= run that contradicts it"
+grep -qF 'IN PLACE' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help must say the verify= command runs IN PLACE inside --repo"
+grep -qF '--no-run-verify' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help must name the flag that opts out of the in-place verify= run"
+# ...and the same pairing at the top of the file, which is what a reader of the
+# source meets first.
+qualify_header="$(awk '/^set -uo pipefail$/ { exit } { print }' "$QUALIFY_SH" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+grep -qF 'writes nothing OF ITS OWN inside the target repository' <<<"$qualify_header" \
+  || fail "scripts/beta-qualify.sh's header must scope its no-write promise to what the harness itself writes"
+grep -qF 'IN PLACE, to time it' <<<"$qualify_header" \
+  || fail "scripts/beta-qualify.sh's header must state the in-place verify= exception in the same breath as the no-write promise"
+# The bare, unqualified form is the claim that must never come back.
+grep -qF 'and writes nothing inside the target repository' <<<"$qualify_header" \
+  && fail "scripts/beta-qualify.sh's header promises it writes nothing inside the target repository — it runs that repository's verify= command in place by default"
 
 # The checklist page must carry the anonymization promise, the not-tested
 # discipline, and the unclaimed operator-owned work.
