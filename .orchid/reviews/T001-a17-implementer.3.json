@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e24-T001-a17-f578",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "ba354e44e1330ea13a35492ac08ef5a717a0f60a",
+  "summary": "- Nothing is committed; the work is in the worktree (`git diff --check` is clean, 7 files, no `.orchid/` paths touched).",
+  "commits": [
+    "ba354e44e1330ea13a35492ac08ef5a717a0f60a"
+  ]
+}

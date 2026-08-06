@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a1-b4e2",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "7e46b874a439fb39e9e74d2fa09997bd7559a8aa",
+  "candidate_sha": "76e6e6e0cea8329be06a7cd9970ff427ccc345c1",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The `orchid start` implementation cleanly fulfills all acceptance criteria with robust error handling, exact fencing and lease validation, safe worktree reuse/creation, and thorough test coverage."
+}

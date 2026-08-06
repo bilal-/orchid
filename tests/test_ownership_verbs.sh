@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 
@@ -15,7 +15,8 @@ echo "# Journal" > .orchid/journal.md
 echo "# Blockers" > .orchid/BLOCKERS.md
 echo "# Baseline" > .orchid/baseline.md
 
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 user_branch_before="$(git rev-parse --abbrev-ref HEAD)"
 user_head_before="$(git rev-parse HEAD)"

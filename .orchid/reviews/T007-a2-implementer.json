@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T007-a2-29d0",
+  "task": "T007",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "aab94a72ca061fd4fc6e5c228949e4dd71a4a26b",
+  "candidate_sha": "50b66617191f7c730bcffceae1cc137226a61a83",
+  "summary": "**I could not run the gate.** This session's Bash tool is restricted to a read-only subset — `bash tests/run.sh`, `bash scripts/ci-local.sh --bash /bin/bash`, `shellcheck`, and even `git add`/`git com",
+  "commits": [
+    "50b66617191f7c730bcffceae1cc137226a61a83"
+  ]
+}

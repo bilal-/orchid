@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 # tier-2, effectful: the headless tick. Fences a fresh epoch, resolves the
 # orchestrator role's available engine, builds a one-shot `orchestrate`
@@ -12,19 +12,42 @@ set -euo pipefail
 # rather than a jobs-prepare call): a tick is not a task job, and its
 # envelope must never enter `jobs reconcile`'s manifest-matching path --
 # ledger_mark below is this runner's own, private disposal of the envelope.
+
+# The direct tick is an unattended entry point, not merely a pump
+# implementation detail. Capture the operator PATH without consulting it when
+# direct; a bin/orchid handoff already carries the original value as inert
+# data. Then use only fixed machine-local system/package-manager directories
+# for self-resolution and the complete trust decision. The shebang's
+# privileged mode also prevents BASH_ENV and imported functions from running
+# first.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+
 self="$0"
 while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+__orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
-source "$ORCHID_ROOT/lib/spawn.sh"
+source "$ORCHID_ROOT/lib/spawn.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 
-repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
 # Never spend quota on a finished run: no roadmap (uninitialized) reads as
 # "" here, which also just falls through to the resume step below and lets
@@ -34,6 +57,14 @@ if [ "$rs" = complete ]; then
   echo "tick: run_status complete, nothing to do"
   exit 0
 fi
+
+# This direct runner is an unattended entry point in its own right (the pump
+# is not assumed to be its only caller). Gate before orchid_runtime creates a
+# directory, before `run resume` fences an epoch, and before any adapter is
+# resolved or spawned.
+unattended_trust_require "$repo" "headless tick" || exit 1
+_orchid_entry_restore_operator_path
+rt="$(orchid_runtime "$repo")"
 
 # `orchid run resume` fences a fresh epoch (breaking a stale lock per
 # policy) and requires initialized state -- its own guard, not re-checked
@@ -53,6 +84,27 @@ export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 # assignment aborts the script with that same code, not a rewritten 1
 # (the pump's next pass retries once ledger/capsuite state has moved on).
 engine="$(resolve_role_available "$repo" orchestrator)"
+
+# Command-surface label (v1.1, Track 1). `brokered` means this adapter runs
+# its orchestrator against the argument-validating broker
+# (runners/orchid-orchestrator-command) and nothing else; `soft` means its
+# vendor CLI offers no enforceable per-command restriction, so the only thing
+# between a prompt-injecting repository and the host is the machine-local
+# unattended acknowledgement this runner already required above. Printed on
+# every tick, from the manifest rather than from documentation, so an
+# operator reading a pump log can always see which of the two just ran. An
+# absent or unrecognized label reads as `soft`: this field may weaken its own
+# claim by omission, never strengthen it.
+tick_engine_dir="$(resolve_engine_dir "$engine" 2>/dev/null || true)"
+command_surface=soft
+if [ -n "$tick_engine_dir" ]; then
+  command_surface="$(manifest_get "$tick_engine_dir" command_surface soft)"
+fi
+case "$command_surface" in
+  brokered|soft) ;;
+  *) command_surface=soft ;;
+esac
+echo "tick: orchestrator $engine command_surface=$command_surface"
 
 # Actor identity for this tick's journal entries: rides ORCHID_* into the
 # spawned adapter's stripped environment (spawn_child_env's allowlist,

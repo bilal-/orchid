@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e6-T001-a5-7209",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "9ade732db4a1c19e4d34aae867183e2a92793c59",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Device/inode reuse can let a recreated clone with the same root match a stale trust record and bypass fresh acknowledgement."
+}

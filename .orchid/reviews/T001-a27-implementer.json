@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e25-T001-a27-bee2",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "35ea94b9fd63f6118f640d6f662e20bb36e94157",
+  "summary": "Someone with commit permission needs to run `git add Formula/orchid.rb && git commit` on `task/T001` to land it — this is the same block recorded in the last several attempt messages, so re-running th",
+  "commits": [
+    "35ea94b9fd63f6118f640d6f662e20bb36e94157"
+  ]
+}

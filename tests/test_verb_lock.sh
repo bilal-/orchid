@@ -21,10 +21,11 @@
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"
 
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # ---------------------------------------------------------------------------
 # 1. 30 parallel `orchid journal add` invocations.

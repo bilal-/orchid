@@ -60,15 +60,55 @@ flowchart TD
     PHONE -->|"reply runs orchid answer, nonce-verified"| VERBS
 ```
 
-**What this proves: one-way launch authority.** Every edge into an engine
-adapter originates at `runners/orchid-launch`; an adapter's only outputs
-are files (a result envelope into the spool, commits inside its own task
-worktree). No engine holds a channel to any other engine — the orchestrator
-included, whose entire interface is running `orchid` verbs under bash. That
-is INV-01 (no tier-1 verb spawns a long-lived process) and INV-06 (no
-engine process is spawned except by the tier-2 launcher) in
-[specs/kernel.md](./specs/kernel.md)'s conformance invariants — enforced by
-the test suite, not just drawn here.
+**What this proves: one-way launch topology in Orchid's source.** Every
+implemented edge into an engine adapter originates at a tier-2 runner, and
+the adapter contract returns a file envelope (plus implementer commits in
+its task worktree). INV-01/INV-06 statically test those Orchid-owned launch
+sites. They do not inspect or jail every subprocess a shell-capable engine
+might invoke; the diagram is not OS containment.
+
+**Who drives those edges.** Since v1.1 the routine pass is deterministic
+shell, not a model: `orchid drive` (`runners/orchid-drive`) executes THE
+TICK's mechanical steps — lease, reconcile/check/gc, dispatch, verify, review
+routing, unambiguous approval, one merge, status — deciding only on
+structured fields and mutating durable state only through named verbs
+(INV-13). "Unambiguous approval" means unanimous `approve` verdicts, every
+review `scope_complete`, and no finding at or above the task's
+`blocking_severity` — with the caveat that the severity half is only as live
+as the reviewing adapter: `plugins/engines/claude/run` asks a `review` reply
+for `FINDING:` lines and populates `findings[]`, while the other shipped
+review adapters ask for a `VERDICT:` line only and never populate it, so
+there approval rests on `verdict` + `scope_complete`. Where it is populated
+the gate cuts both ways: an empty `findings[]` blocks nothing, and one
+finding at or above the task's own `blocking_severity` turns an otherwise
+unanimous `approve` into a `review-conflict` for the arbiter to settle.
+It stops at a named judgment boundary and exits
+16 rather than guessing; `orchid run boundary set|clear|show` owns that
+record, one per pass, preferring a boundary a woken orchestrator could
+actually settle over an operator-only one. A run whose tasks are
+all `done` is a boundary too (`run-complete`): the driver takes COMPLETION's
+mechanical `run advance accepting` and hands the acceptance judgment over,
+so a finished headless run is never left polling. The pump
+runs the driver first and wakes an LLM orchestrator only when the driver
+exits exactly 16, the boundary reads back through its verb, AND that boundary
+is settleable — some verb records its result, the resolved adapter's
+`command_surface` admits that verb, and the named task's current status lets
+it run. All three matter: `orchid task arbitrate` is the only write the
+broker admits and it refuses any status but `arbitrating`, and no brokered
+adapter can run `orchid run accept`, so a finished run is a human's job.
+Anything that fails the test is left to the
+blocker the driver raised, rather than spending a model wakeup per pump cycle
+on a decision no admitted verb can make. When one is
+woken, an adapter that declares `command_surface=brokered` confines it to
+`runners/orchid-orchestrator-command`, a default-deny argument-validating
+broker admitting judgment-only forms — a real command allowlist for that
+adapter, though still not a filesystem jail or network namespace. It restricts
+COMMANDS only: the adapter's `acceptEdits` permission mode leaves the vendor's
+file-write tools open over anything the process can reach, `.orchid/` and (in
+a dogfood layout, where `ORCHID_ROOT` sits inside the driven repo) the broker
+script included, so "never hand-edit `.orchid/`" stays prompt policy. Adapters
+that cannot enforce a command allowlist declare `command_surface=soft` and say
+so on every tick.
 
 ## 2. The task lifecycle
 
@@ -218,9 +258,11 @@ a verb bearing a stale epoch refuses to run, so a zombie session from
 before a crash can never mutate state (INV-02) — the newer epoch wins, the
 older is fenced out. Layered under that, the single-writer rule gives every
 durable file exactly one writing verb ([specs/kernel.md](./specs/kernel.md),
-"Single-writer rule"), and the pump's lease-staleness check means an
-interactive session and a headless tick never both act on a live run
-(PROTOCOL.md, HEADLESS OPERATION). Kill anything, any time: the next
+"Single-writer rule"). The pump's lease-staleness check avoids the ordinary
+overlap case; if a delayed-but-live session crosses the stale threshold,
+epoch fencing makes its next stale verb refuse after the headless tick
+mints a newer epoch (PROTOCOL.md, HEADLESS OPERATION). Kill anything, any
+time: the next
 `orchid run resume` reconciles jobs first, then picks up the walk from
 committed files.
 
@@ -229,7 +271,7 @@ committed files.
 - [PROTOCOL.md](../PROTOCOL.md) — the tick procedure every front-end
   executes; the normative walk behind diagram 2.
 - [specs/kernel.md](./specs/kernel.md) — tiers, transition table,
-  invariants INV-01..INV-12.
+  invariants INV-01..INV-14, command surfaces, judgment boundaries.
 - [specs/plugins.md](./specs/plugins.md) — adapter contract, trust model,
   notify channels.
 - [frontends.md](./frontends.md) — which agent products can drive the

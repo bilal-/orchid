@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a1-c17f",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "e597ad1b3ff46bff28e0da1d7401a972da5cf93e",
+  "summary": "- `.orchid/` untouched.",
+  "commits": [
+    "e597ad1b3ff46bff28e0da1d7401a972da5cf93e"
+  ]
+}

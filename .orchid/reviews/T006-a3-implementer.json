@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a3-cc13",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "a0bada3256534d07e366998b7082aa1a0da338f4",
+  "summary": "**Verification status: not run.** This session is restricted — every attempt to execute the test scripts (`bash tests/test_init_doctor.sh`, and even `bash -n` for a syntax check) was refused as requir",
+  "commits": [
+    "a0bada3256534d07e366998b7082aa1a0da338f4"
+  ]
+}

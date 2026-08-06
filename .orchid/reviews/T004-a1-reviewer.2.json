@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e1-T004-a1-b44d",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "ed5fa40a808578d340de299cc0578f96d5dac21f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The pre-first-command SC2034 directive in lib/common.sh is file-wide, so the gate accepts a broad suppression despite requiring narrow inline exceptions."
+}

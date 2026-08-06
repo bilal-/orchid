@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e10-T001-a9-7a70",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "f32e615c6d4126c5810e478f34902be2a7b3fc81",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The gate executes PATH-resolved bash, awk, git, stat, and jq before authorization, allowing a fresh or replacement checkout referenced by the service’s captured PATH to run tracked shims or spoof the "
+}

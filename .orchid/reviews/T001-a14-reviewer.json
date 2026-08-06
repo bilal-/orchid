@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e21-T001-a14-2aaa",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "082358f7d9e2a8338fd3386f76e1041b5f9ab6b7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The gate spawns two Git processes per reachable commit and repeats the full history walk, already taking 4.6 seconds for 204 commits and making unattended operation impractical on large repositories."
+}

@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a6-3817",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "dfe1088942f8454517cff80345a4c85d7c823ea7",
+  "candidate_sha": "6061517553009d563fb84027ebf02e072ee53e36",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "beta-qualify's help and header promise \"never writes inside --repo\" while it runs the repo's `verify=` in place by default"
+    },
+    {
+      "severity": "medium",
+      "title": "`cd_scratch` failure is swallowed by command substitution when deriving the rehearsal root, defeating the L014 guard the file claims to apply"
+    },
+    {
+      "severity": "low",
+      "title": "shadowing `openssl` can false-trip the rehearsal on a host without `shasum`, which `lib/common.sh` falls back from"
+    }
+  ]
+}

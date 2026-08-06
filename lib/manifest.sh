@@ -6,9 +6,39 @@
 # Keys understood at manifest_version=1; anything else is an unknown key
 # (warn, still valid) rather than a hard failure. `outcome`/`transitions`
 # are kind=archetype-only keys (lib/archetype.sh's meta-contract validator);
-# listed here rather than a kind-scoped allowlist since this file has no
-# such per-kind mechanism today and unknown-key warnings are advisory only.
-_MANIFEST_KNOWN_KEYS=" manifest_version id version kind api_version requires_orchid capabilities permissions requires_binaries platforms entrypoint outcome transitions "
+# `command_surface` is a kind=engine-only key (see below); all are listed
+# here rather than in a kind-scoped allowlist since this file has no such
+# per-kind mechanism today and unknown-key warnings are advisory only.
+#
+# `command_surface` (v1.1, Track 1) is an HONEST LABEL, not a capability:
+#   brokered -- this adapter runs its orchestrator against the
+#               argument-validating broker (runners/orchid-orchestrator-
+#               command) and nothing else, because its vendor CLI supports an
+#               enforceable per-command allowlist. COMMANDS only: it makes no
+#               claim about file writes, which the shipped brokered adapter
+#               leaves open (acceptEdits) over every reachable path.
+#   soft     -- this adapter's vendor CLI offers no enforceable command
+#               restriction Orchid can rely on, so its orchestrator's reach is
+#               bounded only by the process environment and by the operator's
+#               machine-local unattended acknowledgement.
+# Absent reads as `soft`: the label may only ever make a weaker claim by
+# omission, never a stronger one.
+#
+# `requires_config` and `inbound_probe` (v1-m4 T006) are kind=notify keys,
+# both OPTIONAL, both consumed by `orchid doctor`'s notify return-leg check:
+#   requires_config -- comma list of CONFIG KEYS this plugin's entrypoint
+#                      cannot run without (e.g. plugins/notify/openclaw's
+#                      `send` does `to=${ORCHID_NOTIFY_TO:?...}`, so it
+#                      declares notify.to; hermes treats the same value as
+#                      optional and does not). Absent = the plugin needs no
+#                      config beyond what the kernel already gates on.
+#   inbound_probe   -- the single ARGV TOKEN that puts this plugin's own
+#                      entrypoint into a read-only inbound-liveness probe
+#                      mode (see docs/specs/plugins.md, "The inbound probe").
+#                      Absent = this plugin cannot determine inbound
+#                      liveness, which doctor then reports as exactly that
+#                      rather than inventing a verdict.
+_MANIFEST_KNOWN_KEYS=" manifest_version id version kind api_version requires_orchid capabilities permissions requires_binaries platforms entrypoint outcome transitions command_surface requires_config inbound_probe "
 
 # This file's own directory, regardless of who sources it or their cwd —
 # BASH_SOURCE[0] inside a function is the file the function is DEFINED in,
@@ -220,6 +250,27 @@ manifest_validate() {  # plugin-dir
       fi
       ;;
   esac
+
+  # kind=notify's two optional keys (v1-m4 T006). Both are ADVISORY-ONLY
+  # inputs to `orchid doctor`'s notify return-leg check, so a malformed one
+  # warns and never fails: a channel that can still SEND must not be made
+  # un-runnable by a bad probe declaration, and doctor's own inbound branch
+  # already degrades honestly ("this plugin declares a probe but ...") when
+  # it cannot use what it finds.
+  if [ "$kind" = notify ]; then
+    local probe_arg
+    probe_arg="$(manifest_get "$dir" inbound_probe)"
+    if [ -n "$probe_arg" ]; then
+      # ONE argv token, passed to the entrypoint verbatim -- never split, so
+      # embedded whitespace could only ever arrive as a single (wrong)
+      # argument rather than as the two words the author meant.
+      case "$probe_arg" in
+        *[[:space:]]*) echo "warn: $dir: inbound_probe '$probe_arg' contains whitespace (it is passed to the entrypoint as ONE argument, never word-split)" >&2 ;;
+      esac
+    fi
+  elif [ -n "$(manifest_get "$dir" inbound_probe)" ]; then
+    echo "warn: $dir: inbound_probe is a kind=notify key and is ignored for kind=$kind" >&2
+  fi
 
   # kind=role (v1-m3 Task 7): a custom role plugin has no entrypoint/
   # capabilities of its own (it is data describing a ROLE, not something

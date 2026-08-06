@@ -265,10 +265,11 @@ role_eligible implementer "$WORK/p16" || fail "role_eligible must still recogniz
 # -- requires_orchid (Task 8) -------------------------------------------
 # `requires_orchid=>=X.Y` is checked against the running kernel's
 # ORCHID_VERSION (lib/common.sh), major.minor only. p1's mk_valid already
-# carries `requires_orchid=>=1.0` and passes (ORCHID_VERSION=1.0.0
-# satisfies it) -- covered implicitly above. Here: an unsatisfiable
-# requirement must reject fail-closed, same exit code (13) as an unknown
-# manifest_version/api_version.
+# carries `requires_orchid=>=1.0` and passes (ORCHID_VERSION=1.0.0-beta.1
+# satisfies it -- _manifest_version_mm strips the `-beta.1` prerelease
+# suffix before extracting major.minor) -- covered implicitly above, and
+# asserted directly below. Here: an unsatisfiable requirement must reject
+# fail-closed, same exit code (13) as an unknown manifest_version/api_version.
 mk_conf "$WORK/p17" 'manifest_version=1
 id=orchid/sample
 version=0.1.0
@@ -280,7 +281,7 @@ entrypoint=run
 '
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p17/run"; chmod +x "$WORK/p17/run"
 out="$(manifest_validate "$WORK/p17" 2>&1)"
-assert_eq 13 "$?" "requires_orchid '>=2.0' unmet by orchid 1.0.0 rejects with exit 13"
+assert_eq 13 "$?" "requires_orchid '>=2.0' unmet by orchid 1.0.0-beta.1 rejects with exit 13"
 assert_match "FAIL.*requires_orchid" "$out" "FAIL printed naming requires_orchid"
 
 # a manifest with no requires_orchid key at all is unaffected (optional key)
@@ -297,10 +298,10 @@ out="$(manifest_validate "$WORK/p18" 2>&1)"; rc=$?
 [ "$rc" -eq 0 ] || fail "no requires_orchid key at all must still validate clean (rc=$rc): $out"
 
 # -- requires_orchid: numeric (not lexical) minor-version compare -----------
-# p17 above only exercised a major-version bump (>=2.0 vs 1.0.0), which
-# rejects the same way under numeric OR naive string comparison. Cover a
+# p17 above only exercised a major-version bump (>=2.0 vs 1.0.0-beta.1),
+# which rejects the same way under numeric OR naive string comparison. Cover a
 # two-digit minor version too: requires_orchid=>=1.10 against the running
-# ORCHID_VERSION 1.0.0 (minor 0) must still reject (0 < 10 numerically).
+# ORCHID_VERSION 1.0.0-beta.1 (minor 0) must still reject (0 < 10 numerically).
 mk_conf "$WORK/p19" 'manifest_version=1
 id=orchid/sample
 version=0.1.0
@@ -312,7 +313,7 @@ entrypoint=run
 '
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/p19/run"; chmod +x "$WORK/p19/run"
 out="$(manifest_validate "$WORK/p19" 2>&1)"
-assert_eq 13 "$?" "requires_orchid '>=1.10' unmet by orchid 1.0.0 rejects with exit 13"
+assert_eq 13 "$?" "requires_orchid '>=1.10' unmet by orchid 1.0.0-beta.1 rejects with exit 13"
 assert_match "FAIL.*requires_orchid" "$out" "FAIL printed naming requires_orchid for '>=1.10'"
 
 # -- _manifest_orchid_satisfies: prove the compare is NUMERIC, not lexical ---
@@ -328,6 +329,22 @@ fi
 if ! ( ORCHID_VERSION="1.10.0"; _manifest_orchid_satisfies ">=1.9" ); then
   fail "_manifest_orchid_satisfies: orchid 1.10 must satisfy '>=1.9' (numeric 10 >= 9; a lexical bug would wrongly reject since string '10' < '9')"
 fi
+
+# -- prerelease suffixes never gate compatibility (T008) ---------------------
+# The shipped ORCHID_VERSION is a semver prerelease (1.0.0-beta.1), so every
+# plugin manifest carrying `requires_orchid=>=1.0` depends on the suffix being
+# stripped before major.minor is extracted. Asserted directly rather than only
+# through today's ORCHID_VERSION, so it stays covered when that value moves --
+# and so a "prereleases sort below their release" rule can never be smuggled
+# in here, where requires_orchid is documented as major.minor ONLY.
+if ! ( ORCHID_VERSION="1.0.0-beta.1"; _manifest_orchid_satisfies ">=1.0" ); then
+  fail "_manifest_orchid_satisfies: orchid 1.0.0-beta.1 must satisfy '>=1.0' (the prerelease suffix is stripped before comparing)"
+fi
+if ( ORCHID_VERSION="1.0.0-beta.1"; _manifest_orchid_satisfies ">=1.1" ); then
+  fail "_manifest_orchid_satisfies: orchid 1.0.0-beta.1 must NOT satisfy '>=1.1' (stripping the suffix must not also loosen the minor compare)"
+fi
+assert_eq "1 0" "$(_manifest_version_mm 1.0.0-beta.1)" \
+  "_manifest_version_mm strips a semver prerelease suffix before major.minor"
 
 # ============================================================================
 # v1-m3 (m2 ledger finding, flagged in m2 Task 2): _manifest_split_csv's

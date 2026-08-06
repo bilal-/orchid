@@ -37,7 +37,7 @@ mk_task T002 testing false "" ""
 mk_task T003 reviewing false "" ""
 mk_task T004 arbitrating false "" ""
 mk_task T005 merging false "" ""
-mk_task T006 done false "" ""
+mk_task T006 "done" false "" ""
 mk_task T007 blocked false "" ""
 mk_task T008 rework false "" ""
 active="$(schedule_active_tasks "$repo" | sort)"
@@ -133,7 +133,7 @@ blockers="$(schedule_dispatch_blockers "$repo" G001)"
 assert_match "^waiting-deps \(G000\)$" "$blockers" "unmet dep G000 (not done) blocks G001"
 
 # once the dep is done, waiting-deps must disappear
-mk_task G000 done false "" ""
+mk_task G000 "done" false "" ""
 blockers="$(schedule_dispatch_blockers "$repo" G001)"
 echo "$blockers" | grep -q "waiting-deps" && fail "a done dependency must no longer appear in waiting-deps"
 assert_eq "" "$blockers" "no deps outstanding, no cap/exclusive/resource issues: fully dispatchable"
@@ -159,7 +159,8 @@ repo2="$WORK/integ"; mkdir -p "$repo2/.orchid/tasks"
 (cd "$repo2" && git init -q . && git commit -q --allow-empty -m root)
 export ORCHID_REPO="$repo2" HOME="$WORK/home2"; mkdir -p "$HOME"
 printf 'concurrency=1\n' > "$repo2/orchid.config"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 "$ORCHID_BIN" task create H001 "first" >/dev/null
 "$ORCHID_BIN" task create H002 "second" >/dev/null
@@ -221,7 +222,8 @@ assert_match "concurrency-cap \(1/1\)" "$err3" "second refusal also names concur
 repo3="$WORK/integ3"; mkdir -p "$repo3/.orchid/tasks"
 (cd "$repo3" && git init -q . && git commit -q --allow-empty -m root)
 export ORCHID_REPO="$repo3" HOME="$WORK/home3"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 repo3_sha="$(git -C "$repo3" rev-parse HEAD)"
 
 "$ORCHID_BIN" task create K001 "occupies the cap" >/dev/null
@@ -266,8 +268,8 @@ jq -n --arg jid "j-fixture-K004-a1" --arg cand "$repo3_sha" \
     verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
   > "$repo3/.orchid/reviews/K004-a1-reviewer.json"
 "$ORCHID_BIN" task advance K004 arbitrating --reason "single reviewer approved" >/dev/null
-"$ORCHID_BIN" task advance K004 done --reason "accepted" >/dev/null
-assert_eq done "$("$ORCHID_BIN" task show K004 | grep '^status: ' | cut -d' ' -f2)" "K004 reached done"
+"$ORCHID_BIN" task advance K004 "done" --reason "accepted" >/dev/null
+assert_eq "done" "$("$ORCHID_BIN" task show K004 | grep '^status: ' | cut -d' ' -f2)" "K004 reached done"
 
 # (c) cap free + deps met -> K002's pending -> reviewing now proceeds.
 "$ORCHID_BIN" task set K002 depends_on K004 >/dev/null
@@ -307,7 +309,8 @@ assert_eq rework "$("$ORCHID_BIN" task show K002 | grep '^status: ' | cut -d' ' 
 repo4="$WORK/integ4"; mkdir -p "$repo4/.orchid/tasks"
 (cd "$repo4" && git init -q . && git commit -q --allow-empty -m root)
 export ORCHID_REPO="$repo4" HOME="$WORK/home4"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 repo4_sha="$(git -C "$repo4" rev-parse HEAD)"
 
 "$ORCHID_BIN" task create M001 "occupies the cap, ordinary feature task" >/dev/null

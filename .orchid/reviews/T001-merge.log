@@ -1,0 +1,396 @@
+date: 2026-08-05T00:58:07Z
+sha: 5032e90a4890bb9f1dfaa83ef8b4645b382b6f20
+cwd: /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T//orchid-merge.D4fMbc
+command: find . -type f '(' -name '*.sh' -o -perm -111 ')' -not -path './.git/*' -print0 | xargs -0 /bin/bash -n && /bin/bash tests/test_unattended_trust.sh && /bin/bash tests/test_init_doctor.sh && /bin/bash tests/test_service.sh && /bin/bash tests/test_tick.sh && /bin/bash tests/test_pump.sh && /bin/bash tests/test_status.sh && /bin/bash tests/run.sh
+---
+Deleted branch orchid/integration (was d37d982).
+== tests/test_archetype.sh
+R001: pending -> reviewing
+R001: reviewing -> arbitrating
+R001: arbitrating -> done
+R003: pending -> reviewing
+R003: reviewing -> arbitrating
+R003: arbitrating -> rework
+R003: rework -> reviewing
+R003: reviewing -> arbitrating
+R003: arbitrating -> done
+== tests/test_archetype_suite.sh
+W001: pending -> implementing
+W001: implementing -> testing
+W001: testing -> rework
+W001: rework -> implementing
+W001: implementing -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> rework
+W001: rework -> implementing
+W001: implementing -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> merging
+W001: merging -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> merging
+W001: merging -> rework
+W001: rework -> implementing
+W001: implementing -> testing
+W001: testing -> reviewing
+W001: reviewing -> arbitrating
+W001: arbitrating -> merging
+W001: merging -> done
+W002: pending -> implementing
+W002: implementing -> testing
+W002: testing -> rework
+W002: rework -> implementing
+W002: implementing -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> rework
+W002: rework -> implementing
+W002: implementing -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> merging
+W002: merging -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> merging
+W002: merging -> rework
+W002: rework -> implementing
+W002: implementing -> testing
+W002: testing -> reviewing
+W002: reviewing -> arbitrating
+W002: arbitrating -> merging
+W002: merging -> done
+W003: pending -> implementing
+W003: implementing -> testing
+W003: testing -> rework
+W003: rework -> implementing
+W003: implementing -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> rework
+W003: rework -> implementing
+W003: implementing -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> merging
+W003: merging -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> merging
+W003: merging -> rework
+W003: rework -> implementing
+W003: implementing -> testing
+W003: testing -> reviewing
+W003: reviewing -> arbitrating
+W003: arbitrating -> merging
+W003: merging -> done
+== tests/test_ci_release.sh
+== tests/test_common.sh
+== tests/test_config_keys.sh
+== tests/test_config_resolver.sh
+== tests/test_conform.sh
+== tests/test_custom_roles.sh
+== tests/test_dispatcher.sh
+== tests/test_docs.sh
+== tests/test_e2e_concurrency.sh
+e2e concurrency: OK
+== tests/test_e2e_crash_fence.sh
+WARNING: integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid'" before committing anything here
+== tests/test_e2e_lifecycle.sh
+WARNING: integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid'" before committing anything here
+WARNING: integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid'" before committing anything here
+== tests/test_engine_agy.sh
+looks fine
+VERDICT: approve
+VERDICT: approve
+VERDICT: approve (draft, ignore)
+one more look...
+VERDICT: request-changes
+rambling, no reply contract
+orchid/agy: malformed reply (no VERDICT line); raw output follows:
+rambling, no reply contract
+429 usage limit exceeded
+orchid/agy: diff.patch is 200000 bytes (> agy_max_bytes=100000); route to a worktree-capable reviewer
+orchid/agy: diff.patch is 500 bytes (> agy_max_bytes=100); route to a worktree-capable reviewer
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/agy: malformed reply (no VERDICT line); raw output follows:
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/agy: unsupported operation 'implement' (review|critique only)
+orchid/agy: unsupported operation 'implement' (review|critique only)
+VERDICT: approve
+REASON: tests pass and the diff is scoped tightly
+== tests/test_engine_claude.sh
+looks fine
+VERDICT: approve
+429 usage limit exceeded
+Unauthorized: please login
+some rambling output with no reply contract
+working...
+
+Implemented the feature end to end.
+working...
+
+Implemented the feature end to end.
+working...
+Nothing to do here.
+advancing the task
+ORCHID-ACTION: orchid task advance T001 implementing --reason tick
+tick complete
+nothing to do this tick
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/claude: unsupported operation 'research'
+orchid/claude: unsupported operation 'research'
+tick complete
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+FINDING: low: acceptance criteria too vague on T003
+VERDICT: approve
+== tests/test_engine_codex.sh
+looks fine
+VERDICT: approve
+429 usage limit exceeded
+Unauthorized: please login
+some rambling output with no reply contract
+working...
+
+Implemented the feature end to end.
+Implemented the caching layer end to end.
+```
+- `git diff --check` passes.
+```
+```
+working...
+Nothing to do here.
+Implemented and committed.
+advancing the task
+ORCHID-ACTION: orchid task advance T001 implementing --reason tick
+tick complete
+nothing to do this tick
+thinking it over...
+VERDICT: approve OR request-changes
+Implemented via stdin.
+VERDICT: approve
+orchid/codex: unsupported operation 'research'
+orchid/codex: unsupported operation 'research'
+looks fine
+VERDICT: approve
+orchid/codex-review: operation 'implement' not permitted for orchid/codex-review
+Implemented via plain codex.
+VERDICT: approve
+REASON: tests pass and the diff is scoped tightly
+VERDICT: approve
+REASON: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+VERDICT: approve
+tick complete
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+FINDING: low: acceptance criteria too vague on T003
+VERDICT: approve
+== tests/test_engine_hermes.sh
+looks fine
+VERDICT: approve
+VERDICT: approve
+VERDICT: approve (draft, ignore)
+one more look...
+VERDICT: request-changes
+rambling, no reply contract
+orchid/hermes: malformed reply (no VERDICT line); raw output follows:
+rambling, no reply contract
+429 usage limit exceeded
+Unauthorized: please login
+orchid/hermes: diff.patch is 200000 bytes (> hermes_max_bytes=100000); route to a worktree-capable reviewer
+orchid/hermes: diff.patch is 500 bytes (> hermes_max_bytes=100); route to a worktree-capable reviewer
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/hermes: malformed reply (no VERDICT line); raw output follows:
+thinking it over...
+VERDICT: approve OR request-changes
+orchid/hermes: unsupported operation 'implement' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'orchestrate' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'research' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'bogus' (review|critique only -- see docs/engines/hermes.md)
+orchid/hermes: unsupported operation 'implement' (review|critique only -- see docs/engines/hermes.md)
+VERDICT: approve
+REASON: tests pass and the diff is scoped tightly
+VERDICT: approve
+REASON: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+FINDING: low: acceptance criteria too vague on T003
+FINDING: bogus-severity: should be dropped
+VERDICT: request-changes
+FINDING: medium: missing rollback plan for T002
+VERDICT: approve
+VERDICT: approve
+FINDING: high: ignored for review
+== tests/test_envelope.sh
+== tests/test_failover.sh
+== tests/test_frontmatter.sh
+== tests/test_greenfield.sh
+greenfield: OK
+== tests/test_helpers.sh
+helpers.sh WORK guard: OK
+== tests/test_hooks.sh
+== tests/test_init_doctor.sh
+Deleted branch orchid/integration (was 612b77b).
+== tests/test_install.sh
+== tests/test_jobs.sh
+tests/test_jobs.sh: line 51:  1818 Terminated: 15          sleep 100
+PGID_GUARD: caller survived jobs check
+tests/test_jobs.sh: line 150:  1884 Terminated: 15          sleep 100
+TBUDGET: pending -> implementing
+TOKBUDGET: pending -> implementing
+== tests/test_launch.sh
+== tests/test_ledger.sh
+WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)
+== tests/test_lessons.sh
+L001: added
+L002: added
+L001: updated
+L002: updated
+L002: active -> retired
+== tests/test_manifest.sh
+== tests/test_merge.sh
+T001: pending -> implementing
+T001: implementing -> testing
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+T002: pending -> implementing
+T002: implementing -> testing
+T002: testing -> reviewing
+T002: reviewing -> arbitrating
+T002: arbitrating -> merging
+T003: pending -> implementing
+T003: implementing -> testing
+T003: testing -> reviewing
+T003: reviewing -> arbitrating
+T003: arbitrating -> merging
+T004: pending -> implementing
+T004: implementing -> testing
+T004: testing -> reviewing
+T004: reviewing -> arbitrating
+T004: arbitrating -> merging
+T005: pending -> implementing
+T005: implementing -> testing
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+T005: arbitrating -> merging
+T005: testing -> reviewing
+T005: reviewing -> arbitrating
+T005: arbitrating -> merging
+T006: pending -> implementing
+T006: implementing -> testing
+T006: testing -> reviewing
+T006: reviewing -> arbitrating
+T006: arbitrating -> merging
+== tests/test_notify_answer.sh
+q-2-4ef1: no
+q-2-0f94: sure
+== tests/test_notify_channel.sh
+== tests/test_notify_hermes_channel.sh
+== tests/test_ownership_verbs.sh
+== tests/test_pack.sh
+== tests/test_plugins_lifecycle.sh
+== tests/test_plugins_list.sh
+== tests/test_plugins_lock.sh
+orchid: plugins lock: engine 'agy' for role 'reviewer' not found on search path (skipped)
+== tests/test_plugins_test.sh
+== tests/test_plugins_trust.sh
+orchid: engine 'repoeng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.8yob4AHqDl/repo/.orchid/plugins/engines/repoeng' to enable it (skipped, INV-09)
+orchid: engine 'repoeng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.8yob4AHqDl/repo/.orchid/plugins/engines/repoeng' to enable it (skipped, INV-09)
+orchid: engine 'repoeng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.8yob4AHqDl/repo/.orchid/plugins/engines/repoeng' to enable it (skipped, INV-09)
+== tests/test_pump.sh
+== tests/test_review_routing.sh
+== tests/test_roles.sh
+== tests/test_run.sh
+run rolled over: r-001 -> r-002 (archived to runs/r-001/)
+imported: requirements.md -> requirements.md
+applied: orchid/integration -> 15d94c9b7a53514581073234fcdc2343f629a05a
+lease released
+== tests/test_schedule.sh
+unit: schedule_dispatch_blockers predicates OK
+WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)
+WARNING: split-brain checkout (.orchid state without roadmap.md — run from the integration branch)
+== tests/test_service.sh
+== tests/test_status.sh
+== tests/test_task.sh
+T001: pending -> implementing
+T001: implementing -> blocked
+T001: blocked -> rework
+T003: pending -> implementing
+T003: implementing -> blocked
+T003: blocked -> rework
+T004: pending -> implementing
+T004: implementing -> blocked
+T004: blocked -> rework
+T004: rework -> implementing
+T006: pending -> implementing
+T006: infra_failures 1/3
+T006: infra_failures 2/3
+T007: pending -> implementing
+T007: implementing -> testing
+T007: testing -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> rework
+T007: rework -> implementing
+T007: implementing -> testing
+T007: testing -> reviewing
+T007: reviewing -> arbitrating
+T007: arbitrating -> merging
+T007: merging -> done
+T009: pending -> implementing
+T009: implementing -> testing
+T009: testing -> reviewing
+T009: reviewing -> arbitrating
+== tests/test_tick.sh
+== tests/test_unattended_trust.sh
+== tests/test_verb_lock.sh
+verb lock: OK
+== tests/test_verify.sh
+== tests/inv/test_INV-01_no_spawn_in_tier1.sh
+== tests/inv/test_INV-02_epoch_fencing.sh
+== tests/inv/test_INV-03_envelope_binding.sh
+== tests/inv/test_INV-04_state_guard.sh
+== tests/inv/test_INV-05_no_name_branching.sh
+== tests/inv/test_INV-06_launcher_only.sh
+== tests/inv/test_INV-07_rebase_reverify.sh
+T001: pending -> implementing
+T001: implementing -> testing
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+T001: testing -> reviewing
+T001: reviewing -> arbitrating
+T001: arbitrating -> merging
+== tests/inv/test_INV-08_reasons.sh
+T001: arbitrating -> merging
+== tests/inv/test_INV-09_repo_local_trust.sh
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.NlxRIPbKDv/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.NlxRIPbKDv/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.NlxRIPbKDv/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'inveng' found in <repo>/.orchid/plugins/engines but is untrusted -- run 'orchid plugins trust /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.NlxRIPbKDv/repo/.orchid/plugins/engines/inveng' to enable it (skipped, INV-09)
+orchid: engine 'symeng' found in <repo>/.orchid/plugins/engines but is mismatch -- run 'orchid plugins trust --update /var/folders/78/nq9t6wjn0px4x18prnmd7t240000gn/T/tmp.NlxRIPbKDv/sym-repo/.orchid/plugins/engines/symeng' to enable it (skipped, INV-09)
+== tests/inv/test_INV-10_no_shadow.sh
+== tests/inv/test_INV-11_verify_evidence.sh
+== tests/inv/test_INV-12_pack_overflow.sh
+exit: 0

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/pack.sh"
-cd "$WORK"; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
+cd_scratch "$WORK" || exit 1; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
 base="$(git rev-parse HEAD)"
 printf 'y%.0s' $(seq 1 9000) > f.txt; git add f.txt; git commit -q -m big
 cand="$(git rev-parse HEAD)"

@@ -70,7 +70,84 @@ assert_eq "1" "$argc" "approve stub: review is read-only prompting, exactly one 
 assert_eq "-p" "$(cat "$WORK/approve.argv.1")" "approve stub: -p is the only argv"
 stdin_content="$(cat "$WORK/approve.stdin")"
 assert_match "VERDICT: approve" "$stdin_content" "approve stub: prompt (carrying the reply contract) arrives on stdin"
-assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "approve stub: findings placeholder empty array"
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "approve stub: a review reply with no FINDING lines still yields an empty findings[]"
+# Plain-substring shape (no ERE metacharacters — assert_match is `grep -E`,
+# where the literal `<low|medium|high>` token would read as alternation and
+# match almost anything).
+assert_match "One line per issue found, exactly: FINDING:" "$stdin_content" \
+  "approve stub: the review prompt asks for the same FINDING line shape the critique prompt does"
+# This fixture's task.md carries no blocking_severity, so the prompt must
+# state the SAME fallback lib/drive.sh's own gate applies (medium).
+assert_match "This task's blocking_severity is medium" "$stdin_content" \
+  "approve stub: with the key absent the prompt states the gate's own default"
+# Squeezed first: the text this guards against was WRAPPED in the prompt
+# ("(medium by\ndefault)"), so a line-oriented grep for it could never have
+# fired.
+grep -qF "medium by default" <<<"$(tr '\n' ' ' <<<"$stdin_content" | tr -s '[:space:]' ' ')" \
+  && fail "approve stub: the prompt must not hardcode a default threshold — templates/task.md and task-test.md ship blocking_severity: high"
+
+# --- 1b. v1-m4 T006: a REVIEW reply's `FINDING:` lines must reach findings[]
+# exactly as a critique's do. Before this, review asked for a VERDICT line
+# only and every review envelope carried `findings: []` verbatim -- the
+# reviewer's reasoning survived only in the reaped engine log (a real T003
+# round lost three reported findings that way). The VERDICT contract itself
+# is unchanged: this stub still request-changes through the same line shape.
+d="$(build_request reviewfindings review '#!/usr/bin/env bash
+echo "reviewed the diff"
+echo "FINDING: high: doctor claims inbound ok from an outbound-only fact"
+echo "FINDING: low: comment says v1-m3 but the change is v1-m4"
+echo "FINDING: bogus: severity token is not one of the three"
+echo "FINDING: <low|medium|high>: <title>"
+echo "FINDING: medium: "
+echo "VERDICT: request-changes"')"
+run_adapter "$d" || fail "review findings stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "review findings stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "review findings stub: status ok"
+assert_eq "request-changes" "$(jq -r .verdict "$d/out/envelope.json")" "review findings stub: VERDICT contract unchanged"
+assert_eq "2" "$(jq '.findings | length' "$d/out/envelope.json")" \
+  "review findings stub: FINDING lines parsed into findings[] (unknown severity, echoed instruction line and empty title all dropped)"
+assert_eq "high" "$(jq -r '.findings[0].severity' "$d/out/envelope.json")" "review findings stub: first finding severity"
+assert_eq "doctor claims inbound ok from an outbound-only fact" \
+  "$(jq -r '.findings[0].title' "$d/out/envelope.json")" "review findings stub: first finding title"
+assert_eq "low" "$(jq -r '.findings[1].severity' "$d/out/envelope.json")" "review findings stub: second finding severity"
+
+# --- 1c. a review that reports NO findings is still a valid, ok review with a
+# literally empty findings[] -- the driver's blocking_severity gate reads that
+# as "nothing blocking", exactly as it always has.
+d="$(build_request reviewnofindings review '#!/usr/bin/env bash
+echo "nothing to report"
+echo "VERDICT: approve"')"
+run_adapter "$d" || fail "review no-findings stub: adapter should exit 0"
+envelope_validate "$d/out/envelope.json" || fail "review no-findings stub: envelope invalid"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "review no-findings stub: status ok"
+assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "review no-findings stub: verdict approve"
+assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "review no-findings stub: findings[] is the empty array"
+
+# --- 1d. v1-m4 T006: the prompt must state THIS task's blocking_severity, not
+# a hardcoded default. The shipped archetypes genuinely disagree
+# (templates/task.md and templates/task-test.md ship `high`; task-migrate and
+# task-refactor ship `medium`), so a prompt asserting "medium by default"
+# tells a reviewer on a test/default task the wrong threshold for the very
+# gate this milestone made live -- inviting a `medium` finding believing it
+# will halt the run when lib/drive.sh will let it through.
+d="$(build_request reviewbsevhigh review '#!/usr/bin/env bash
+cat > "'"$WORK"'/bsevhigh.stdin"
+echo "VERDICT: approve"')"
+printf -- '---\nschema: 1\nid: T001\nacceptance_criteria: does the thing\nstop_condition: one pass only\nblocking_severity: high\n---\nDo the thing.\n' \
+  > "$d/pack/task.md"
+run_adapter "$d" || fail "blocking_severity=high stub: adapter should exit 0"
+bsev_stdin="$(cat "$WORK/bsevhigh.stdin")"
+assert_match "This task's blocking_severity is high" "$bsev_stdin" \
+  "blocking_severity=high stub: the prompt reports the task's actual threshold"
+assert_match "a finding at or above high" "$bsev_stdin" \
+  "blocking_severity=high stub: the consequence sentence uses the same threshold, not a default"
+grep -q "blocking_severity is medium" <<<"$bsev_stdin" \
+  && fail "blocking_severity=high stub: the prompt must not state medium for a high-threshold task"
+# The severity menu must stay true under either threshold: `medium` may or may
+# not block depending on the task, so it must not be described as one that
+# always does.
+grep -q "medium: should block this candidate" <<<"$bsev_stdin" \
+  && fail "blocking_severity=high stub: the severity menu must not claim medium always blocks"
 
 # --- 2. failing stub: rate limit on stderr ----------------------------------
 d="$(build_request ratelimit review '#!/usr/bin/env bash
@@ -159,7 +236,7 @@ assert_eq "engine produced no changes" "$(jq -r .summary "$d/out/envelope.json")
 
 # --- 6. DRYRUN: implement, no spawn (no claude on PATH at all) -------------
 d="$(build_request dryimpl implement "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun implement: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "dryrun implement: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun implement: status ok"
@@ -167,7 +244,7 @@ assert_eq "dryrun" "$(jq -r .summary "$d/out/envelope.json")" "dryrun implement:
 
 # --- 7. DRYRUN: review, no spawn --------------------------------------------
 d="$(build_request dryreview review "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun review: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "dryrun review: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status ok"
@@ -177,7 +254,7 @@ assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "dryrun review: findi
 
 # --- 7b. DRYRUN: orchestrate, no spawn --------------------------------------
 d="$(build_request dryorch orchestrate "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun orchestrate: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "dryrun orchestrate: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun orchestrate: status ok"
@@ -185,11 +262,13 @@ assert_eq "dryrun" "$(jq -r .summary "$d/out/envelope.json")" "dryrun orchestrat
 assert_eq "[]" "$(jq -c .actions "$d/out/envelope.json")" "dryrun orchestrate: actions empty array"
 
 # --- 7c. orchestrate stub prints one ORCHID-ACTION line -> actions=["..."] --
-# argv shape asserted too: F8 fix, the orchestrator role's whole job is
-# running `orchid` verbs through Bash, so this branch must allowlist the
-# Bash tool explicitly (`--allowedTools Bash`) alongside acceptEdits, and
-# the instruction text must tell claude to invoke the verb by its ABSOLUTE
-# binary path (bare `orchid` may not be on PATH in a dev checkout).
+# argv shape asserted too. F8 established that the Bash tool must be
+# allowlisted at all (acceptEdits alone authorizes edits, not commands).
+# v1.1 Track 1 narrows WHAT it may run: the allowlist entry is scoped to the
+# brokered command surface (runners/orchid-orchestrator-command) rather than
+# the whole shell, and the instruction text must name that broker by absolute
+# path (bare `orchid` may not be on PATH in a dev checkout, and the broker is
+# the only executable this branch is permitted to invoke).
 d="$(build_request orchone orchestrate '#!/usr/bin/env bash
 printf "%s" "$#" > "'"$WORK"'/orchone.argc"
 i=0
@@ -207,13 +286,15 @@ assert_eq "tick complete" "$(jq -r .summary "$d/out/envelope.json")" "orchestrat
 stdin_content="$(cat "$WORK/orchone.stdin")"
 assert_match "ORCHID-ACTION: <command>" "$stdin_content" "orchestrate one-action stub: the fixed instruction block arrives on stdin"
 argc="$(cat "$WORK/orchone.argc")"
-assert_eq "5" "$argc" "orchestrate stub: acceptEdits + allowedTools Bash, exactly five argv (no prompt argv)"
+assert_eq "5" "$argc" "orchestrate stub: acceptEdits + a scoped allowedTools entry, exactly five argv (no prompt argv)"
 assert_eq "-p" "$(cat "$WORK/orchone.argv.1")" "orchestrate stub: -p is first argv"
 assert_eq "--permission-mode" "$(cat "$WORK/orchone.argv.2")" "orchestrate stub: --permission-mode is second argv"
 assert_eq "acceptEdits" "$(cat "$WORK/orchone.argv.3")" "orchestrate stub: acceptEdits is third argv"
-assert_eq "--allowedTools" "$(cat "$WORK/orchone.argv.4")" "orchestrate stub: --allowedTools is fourth argv (F8: orchestrator's whole job is running orchid verbs through Bash)"
-assert_eq "Bash" "$(cat "$WORK/orchone.argv.5")" "orchestrate stub: Bash is fifth argv"
-assert_match "/bin/orchid" "$stdin_content" "orchestrate one-action stub: instructions name the absolute orchid binary path"
+assert_eq "--allowedTools" "$(cat "$WORK/orchone.argv.4")" "orchestrate stub: --allowedTools is fourth argv (F8: orchestrator's whole job is running commands)"
+assert_match '^Bash\(/.*/runners/orchid-orchestrator-command:\*\)$' "$(cat "$WORK/orchone.argv.5")" \
+  "orchestrate stub: the allowlist entry is scoped to the brokered command surface by absolute path, never a bare Bash grant"
+assert_match "runners/orchid-orchestrator-command" "$stdin_content" \
+  "orchestrate one-action stub: instructions name the absolute brokered-command path"
 
 # --- 7d. orchestrate stub prints NO ORCHID-ACTION lines, exits 0 ->
 # actions == [] and status is STILL ok (never a crash). Regression test for a
@@ -242,7 +323,7 @@ assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruct
 
 # --- 9. unsupported operation ------------------------------------------------
 d="$(build_request badop research "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "badop: adapter should exit nonzero"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status failed"
@@ -250,7 +331,7 @@ assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status fail
 # --- 9. DRYRUN + unsupported operation: operation gate precedes DRYRUN, so
 # this still fails (no dryrun short-circuit for unknown operations) --------
 d="$(build_request dryimplbadop research "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 rc=0; ORCHID_DRYRUN=1 run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "dryrun badop: adapter should exit nonzero"
 envelope_validate "$d/out/envelope.json" || fail "dryrun badop: envelope invalid"
@@ -343,8 +424,8 @@ case "$actions_val" in *'[hb '*) fail "heartbeat stub: a heartbeat line leaked i
 # diff.patch at all -- lib/pack.sh's _pack_build_plan builds requirements.md
 # + roadmap.md + tasks.md instead). The prompt must be built from those
 # files, not the diff-based review prompt, and a critique reply's `FINDING:
-# <severity>: <title>` lines must parse into findings[] (review's contract
-# stays verdict-only, unaffected -- see the approve-review test above).
+# <severity>: <title>` lines must parse into findings[] (unchanged by T006's
+# extension of the same line shape to `review` -- see tests 1b/1c above).
 build_plan_request() {  # name stub -> prints path to request.json's dir
   local name="$1" stub="$2"
   local d="$WORK/$name"

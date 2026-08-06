@@ -25,15 +25,16 @@ procedure..."*). There are exactly two shapes this takes:
 - **Headless tick** — `runners/orchid-pump` wakes an abandoned run and hands
   off to `runners/orchid-tick`, which resolves the orchestrator role to a
   vendor CLI and feeds it PROTOCOL.md's text plus a fixed instruction block,
-  exactly once, no human in the loop (`PROTOCOL.md`'s **HEADLESS OPERATION**
-  section).
+  exactly once, no human in the loop. Both runners require the separate
+  machine-local `orchid trust unattended` acknowledgement (`PROTOCOL.md`'s
+  **HEADLESS OPERATION** section).
 
 Neither mode is more "real" than the other — they're the same procedure, two
 different callers. See `PROTOCOL.md` itself for the full THE TICK / RESUME /
-HEADLESS OPERATION procedures this page never restates. Both modes drive
-the same one-way topology — the kernel launches every engine, engines never
-launch anything — drawn in [architecture.md](./architecture.md) (diagram 1,
-"Who runs whom").
+HEADLESS OPERATION procedures this page never restates. Orchid's supported
+source paths use the one-way topology drawn in
+[architecture.md](./architecture.md) (diagram 1, "Who runs whom"). That
+diagram is not an OS sandbox or command broker for a shell-capable engine.
 
 ## Per-engine status
 
@@ -63,7 +64,13 @@ accept path this way in 13m19s
 holds `role.orchestrator`'s tested-default **headless** binding — a
 pump-driven `claude -p --allowedTools Bash` tick ran the full COMPLETION
 procedure unattended after F8's fix (`docs/dogfood-notes.md`'s v1-m2 (c),
-"the autonomy loop is real"). See [engines/claude.md](./engines/claude.md).
+"the autonomy loop is real"). Since v1.1 that wholesale `Bash` grant is
+gone: the headless tick allowlists only the brokered command surface
+(`runners/orchid-orchestrator-command`), which is why this adapter's
+manifest declares `command_surface=brokered`. It is also woken far less
+often — `orchid drive` runs the mechanical tick deterministically, and the
+pump reaches an LLM only at a named judgment boundary. See
+[engines/claude.md](./engines/claude.md).
 
 ### codex
 

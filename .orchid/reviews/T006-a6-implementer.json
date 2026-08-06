@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a6-88d2",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "bcdbba02e386e2708e984e7c541b57971ff0966e",
+  "summary": "While fixing (2)'s test I found two guards I'd written that could never have fired: the offending prompt text wraps across source lines, so a line-oriented `grep` for `medium by default` would pass re",
+  "commits": [
+    "bcdbba02e386e2708e984e7c541b57971ff0966e"
+  ]
+}

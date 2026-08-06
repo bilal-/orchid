@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
 # tier-2, effectful: schedules the ALREADY one-shot, lease-gated pump
 # (runners/orchid-pump, v1-m2 Task 8) via the host's own scheduler -- a
@@ -19,13 +19,38 @@ set -euo pipefail
 # under --dry-run (never touches a real launchctl/crontab), and still needs
 # to assert real template rendering, real file placement, and real
 # install/uninstall/status bookkeeping against that placement.
+
+# Service installation is itself an unattended trust boundary. Preserve the
+# installing operator's PATH only as data for the scheduler artifact, capturing
+# it here for a direct entry or accepting the inert value carried by the generic
+# bin/orchid dispatcher. Use a fixed machine-local system/package-manager
+# search path from the first instruction onward. Thus bash, self-resolution
+# helpers, and every identity tool run before acknowledgement cannot come from
+# a target-controlled PATH entry. Privileged Bash mode also ignores
+# BASH_ENV/imported functions.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+
 self="$0"
 while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+__orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"
+source "$ORCHID_ROOT/lib/trust.sh"
 
 PUMP_LOG_TAIL_LINES=20
 
@@ -41,6 +66,8 @@ a crontab line.
 
   install    render + install (or replace) the schedule for --repo.
                refuses when --repo has no .orchid/ (not an orchid repo).
+               also refuses until this machine has an acknowledgement from
+               `orchid trust unattended <repo> --reason <reason>`.
                idempotent: re-running install for the same repo REPLACES
                its existing schedule (same label/marker) in place -- it
                never stacks a second launchd job or a second crontab line.
@@ -153,18 +180,20 @@ _svc_plist_value() { _svc_sed_escape "$(_svc_xml_escape "$1")"; }
 # reasonable composition only in the degenerate case of $PATH being unset/
 # empty (never expected interactively, but cheap to guard).
 _svc_install_path() {
-  local p="${PATH:-}"
+  local p=""
+  if [ "${__orchid_entry_path_was_set:-}" = x ]; then
+    p="${__orchid_entry_operator_path-}"
+  fi
   [ -n "$p" ] || p="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin"
   echo "$p"
 }
 
 _svc_render_plist() {
-  local label="$1" repo="$2" parent="$3" interval="$4" log="$5" pump_exe="$6" path_val="$7"
+  local label="$1" repo="$2" parent="$3" interval="$4" pump_exe="$5" path_val="$6"
   sed -e "s|__LABEL__|$(_svc_plist_value "$label")|g" \
       -e "s|__REPO__|$(_svc_plist_value "$repo")|g" \
       -e "s|__TMPDIR__|$(_svc_plist_value "$parent")|g" \
       -e "s|__INTERVAL__|$(_svc_plist_value "$interval")|g" \
-      -e "s|__LOG__|$(_svc_plist_value "$log")|g" \
       -e "s|__ORCHID_PUMP__|$(_svc_plist_value "$pump_exe")|g" \
       -e "s|__PATH__|$(_svc_plist_value "$path_val")|g" \
       "$ORCHID_ROOT/templates/launchd.orchid-pump.plist"
@@ -205,15 +234,14 @@ _svc_cron_escape() { printf '%s' "$1" | sed -e 's/%/\\%/g'; }
 _svc_shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 _svc_render_cron_line() {
-  local label="$1" repo="$2" parent="$3" interval_s="$4" log="$5" pump_exe="$6" path_val="$7" mins
-  local repo_e parent_e log_e pump_e path_e
+  local label="$1" repo="$2" parent="$3" interval_s="$4" pump_exe="$5" path_val="$6" mins
+  local repo_e parent_e pump_e path_e
   mins="$(_svc_cron_minutes "$interval_s")"
   repo_e="$(_svc_shq "$(_svc_cron_escape "$repo")")"
   parent_e="$(_svc_shq "$(_svc_cron_escape "$parent")")"
-  log_e="$(_svc_shq "$(_svc_cron_escape "$log")")"
   pump_e="$(_svc_shq "$(_svc_cron_escape "$pump_exe")")"
   path_e="$(_svc_shq "$(_svc_cron_escape "$path_val")")"
-  echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e >> $log_e 2>&1 # orchid-service:$label"
+  echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e --service-log >> /dev/null 2>&1 # orchid-service:$label"
 }
 
 _svc_print_log_tail() {
@@ -246,7 +274,7 @@ _svc_install_darwin() {
 
   mkdir -p "$agents_dir"
   local tmp="$plist_path.tmp.$$"
-  _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val" > "$tmp"
+  _svc_render_plist "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val" > "$tmp"
   mv "$tmp" "$plist_path"
 
   # Idempotent re-install: unload the PRIOR load (best-effort -- if it was
@@ -374,7 +402,7 @@ _svc_install_linux() {
   pump_exe="$ORCHID_ROOT/runners/orchid-pump"
   path_val="$(_svc_install_path)"
   record="$(_svc_cron_record_path "$repo")"
-  line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$log" "$pump_exe" "$path_val")"
+  line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val")"
   marker="# orchid-service:$label"
 
   printf '%s\n' "$line" > "$record"
@@ -486,6 +514,11 @@ case "$sub" in
   install)
     [ -d "$repo/.orchid" ] \
       || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
+    # Dry-run still renders and places scheduler artifacts, so it crosses the
+    # same unattended boundary as a real install and is gated identically.
+    # Status/uninstall remain available after revocation so an operator can
+    # always inspect or remove an existing schedule.
+    unattended_trust_require "$repo" "service installation" || exit 1
     interval_s="${interval_arg:-$(config_get "$repo" pump_interval_s 240)}"
     case "$interval_s" in
       ''|*[!0-9]*) orchid_die "--interval-s must be a positive integer (got '$interval_s')" ;;

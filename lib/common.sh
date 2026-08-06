@@ -1,17 +1,69 @@
 #!/usr/bin/env bash
 
+# orchid_die stays the FIRST command in this file on purpose: a ShellCheck
+# directive that precedes a file's first command applies to the ENTIRE file,
+# so the SC2034 suppression under it (ORCHID_VERSION) needs a real command
+# ahead of it to stay scoped to that one assignment -- a file-wide SC2034
+# would silently hide every genuinely-unused variable added to this library
+# later (T004 rework; scripts/ci-local.sh's exception policy now rejects the
+# file-wide placement outright).
+orchid_die() { echo "orchid: $*" >&2; exit 1; }
+
+# bin/orchid resolves itself and selects a libexec target while PATH is limited
+# to fixed machine-local system/package-manager directories. It carries the
+# caller's original PATH as inert environment data rather than restoring it
+# before the handoff. Ordinary/manual verbs recover that PATH here, before any
+# of their other libraries or helpers run. A trust-boundary entry point sets
+# __orchid_entry_defer_restore=1 before sourcing this file and calls the helper
+# only after its authorization decision when later work genuinely needs the
+# operator PATH.
+_orchid_entry_restore_operator_path() {
+  [ "${__orchid_entry_context:-}" = 1 ] || return 0
+  if [ "${__orchid_entry_path_was_set:-}" = x ]; then
+    PATH="${__orchid_entry_operator_path-}"
+    export PATH
+  else
+    unset PATH
+  fi
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path __orchid_entry_defer_restore
+}
+if [ "${__orchid_entry_defer_restore:-0}" != 1 ]; then
+  _orchid_entry_restore_operator_path
+fi
+
 # The kernel version. `orchid version` (libexec/orchid-version) prints it
 # verbatim; `manifest_validate` (lib/manifest.sh) compares a plugin's
 # `requires_orchid=>=X.Y` against it (major.minor only -- semver-ish, per
 # docs/specs/plugins.md's Manifest section). Bump alongside a milestone,
-# never mid-milestone. v1-m4: the release version -- the `-mN` milestone
-# suffix era ends here; there is no `1.0.0-m4` intermediate.
-ORCHID_VERSION="1.0.0"
-
-orchid_die() { echo "orchid: $*" >&2; exit 1; }
+# never mid-milestone. The `-mN` milestone-suffix era ended at v1-m4; what
+# ships now is the semver prerelease `1.0.0-beta.1`. A bare `1.0.0` would
+# claim the kernel is hardened and in use, and neither is true yet: nothing
+# outside this repository has run orchid, and no external beta has happened.
+# 1.0.0 is what that beta earns. `_manifest_version_mm` (lib/manifest.sh)
+# strips the `-beta.1` suffix before comparing, so `requires_orchid=>=1.0`
+# is still satisfied by this value.
+# ShellCheck rationale: this public constant is consumed by scripts that source this library.
+# shellcheck disable=SC2034
+ORCHID_VERSION="1.0.0-beta.1"
 atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv "$t" "$d"; }
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }
+
+# orchid_list_dir <dir> -- every depth-1 entry NAME in <dir> (dotfiles
+# included, `.`/`..` never), one per line. Plain bash globbing, not find(1)
+# depth primaries: limiting find to one level needs primaries that are not
+# in POSIX find at all (T004 rework; scripts/ci-local.sh's portability
+# policy now rejects them repo-wide), while `*` under dotglob is exactly
+# "one level, hidden entries included" everywhere bash 3.2 runs. Subshell
+# function body, so the shopt changes never leak into the caller.
+orchid_list_dir() (
+  shopt -s nullglob dotglob
+  local entry
+  for entry in "$1"/*; do
+    printf '%s\n' "${entry##*/}"
+  done
+)
 
 # commit_subject_from_output <stdout-text> <fallback-title> -- turns a
 # model reply's own text into a sane git-commit-subject fragment. Shared by
@@ -248,8 +300,12 @@ orchid_commit_durable() {
       prev_cmd="${prev_trap#trap -- \'}"; prev_cmd="${prev_cmd%\' EXIT}" ;;
   esac
   if [ -n "$prev_cmd" ]; then
+    # ShellCheck rationale: quoted local paths and the prior trap are intentionally captured before locals leave scope.
+    # shellcheck disable=SC2064
     trap "_ocd_cleanup_wt $wt_q $repo_q; $prev_cmd" EXIT
   else
+    # ShellCheck rationale: the quoted local paths must be captured before locals leave scope.
+    # shellcheck disable=SC2064
     trap "_ocd_cleanup_wt $wt_q $repo_q" EXIT
   fi
 
@@ -285,12 +341,20 @@ orchid_commit_durable() {
     elif [ -d "$wt/$p" ]; then
       _ocd_sync_dir_atomic "$repo/$p" "$wt/$p"
     else
-      rm -rf "$repo/$p"
+      rm -rf "${repo:?}/$p"
     fi
   done
 
   _ocd_cleanup_wt "$wt" "$repo"
-  if [ -n "$prev_cmd" ]; then trap "$prev_cmd" EXIT; else trap - EXIT; fi
+  if [ -n "$prev_cmd" ]; then
+    # ShellCheck rationale: this restores the exact previously captured EXIT command.
+    # shellcheck disable=SC2064
+    trap "$prev_cmd" EXIT
+  else
+    trap - EXIT
+  fi
+  # ShellCheck rationale: this public result is read by callers after this sourced function returns.
+  # shellcheck disable=SC2034
   ORCHID_COMMIT_DURABLE_SHA="$new_sha"
 }
 
@@ -370,6 +434,25 @@ config_provenance() {
 }
 
 _pid_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || true; }
+
+# _owner_field <owner-json> <field> -- print ONE field of a lock owner record,
+# reading from a SNAPSHOT string (never re-reading the file), so callers that
+# `cat` owner.json once keep the single-read atomicity they depend on: a naive
+# per-field re-read could straddle two generations of owner and misjudge a
+# genuinely live new owner as dead. Prints nothing and returns non-zero when
+# the snapshot does not parse, so callers can keep their own defaults.
+#
+# Deliberately one variable per call rather than one jq that emits a shell
+# fragment for `eval`. owner.json is REPOSITORY-CONTROLLED input: .orchid's
+# gitignore does not stop `git add -f`, and a clone carries whatever the
+# remote committed, so a hostile repo can hand any lock-taking verb the bytes
+# of its choice. Under `eval` that was arbitrary command execution as the
+# operator, needing no unattended-trust acknowledgement -- @sh-quoting each
+# field only narrowed it, and one unquoted `tostring` reopened it. Nothing
+# read here reaches the shell as code at all.
+_owner_field() {
+  printf '%s' "$1" | jq -er --arg f "$2" '.[$f]|tostring' 2>/dev/null
+}
 lock_acquire() {
   local repo="$1" rt lock brk
   rt="$(orchid_runtime "$repo")"; lock="$rt/lock"
@@ -485,10 +568,13 @@ verb_lock_acquire() {
         continue
       fi
       empty_since=""
-      pid=0; host='?'; pstart='?'
-      eval "$(printf '%s' "$owner_json" | jq -r \
-        '"pid=" + (.pid|tostring) + "; host=" + (.hostname|@sh) + "; pstart=" + (.pid_start|@sh)' \
-        2>/dev/null)"
+      # One field per variable, all three off the SAME snapshot -- see
+      # _owner_field for why this must never be an `eval`ed shell fragment.
+      # The fallbacks are the same ones the old defaults gave when jq failed
+      # to parse the record at all: host='?' alone already reads dead/foreign.
+      pid="$(_owner_field "$owner_json" pid || printf 0)"
+      host="$(_owner_field "$owner_json" hostname || printf '?')"
+      pstart="$(_owner_field "$owner_json" pid_start || printf '?')"
       alive=1
       if [ "$host" != "$myhost" ]; then alive=0
       elif ! kill -0 "$pid" 2>/dev/null; then alive=0
@@ -603,6 +689,8 @@ verb_lock_guard() {
   local repo="$1" q
   verb_lock_acquire "$repo" || return 1
   printf -v q '%q' "$repo"
+  # ShellCheck rationale: the safely shell-quoted local path must be captured before the function returns.
+  # shellcheck disable=SC2064
   trap "verb_lock_release $q" EXIT
 }
 

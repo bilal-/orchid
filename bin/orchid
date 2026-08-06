@@ -1,11 +1,32 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
+
+# Security bootstrap for every dispatched command. The dispatcher may itself
+# be reached through an operator PATH containing a target-repository shim. Its
+# interpreter and the helpers used to resolve an installed symlink therefore
+# come from machine-local, fixed locations. Keep the original PATH only as
+# inert data for lib/common.sh: ordinary/manual verbs restore it at their first
+# source of that library, while trust-boundary verbs hold the fixed path until
+# they have inspected and reported authorization. The dispatcher remains
+# deliberately verb-agnostic.
+unset __orchid_entry_context __orchid_entry_path_was_set
+unset __orchid_entry_operator_path __orchid_entry_defer_restore
+__orchid_entry_context=1
+__orchid_entry_path_was_set="${PATH+x}"
+__orchid_entry_operator_path="${PATH-}"
+export __orchid_entry_context __orchid_entry_path_was_set
+export __orchid_entry_operator_path
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+
 self="$0"
 while [ -L "$self" ]; do
-  t="$(readlink "$self")"
-  case "$t" in /*) self="$t" ;; *) self="$(dirname "$self")/$t" ;; esac
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
 done
-ORCHID_ROOT="$(cd "$(dirname "$self")/.." && pwd)"; export ORCHID_ROOT
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"; export ORCHID_ROOT
+
 cmd="${1:-help}"; [ $# -gt 0 ] && shift
 if [ "$cmd" = help ] || [ "$cmd" = -h ] || [ "$cmd" = --help ]; then
   echo "usage: orchid <command> [args]"; echo "commands:"
@@ -25,4 +46,4 @@ fi
 # work actually happens one hop further down.
 exe="$ORCHID_ROOT/libexec/orchid-$cmd"
 [ -x "$exe" ] || { echo "orchid: unknown command '$cmd'" >&2; exit 2; }
-exec "$exe" "$@"
+exec /bin/bash -p "$exe" "$@"

@@ -42,6 +42,11 @@ bin/
 libexec/                    # TIER 1 — deterministic verbs: state transitions
   orchid-doctor             #   only. Never invoke an LLM, never block on the
   orchid-init               #   network, never spawn long-lived processes.
+  orchid-start              #   one-command existing-repo setup (v1.1): it only
+                            #   SEQUENCES doctor/init/worktree/requirements
+                            #   import, refusing with an exact recovery
+                            #   anything it cannot do safely; every verb it
+                            #   composes stays callable on its own
   orchid-run                #   start/resume/advance/accept/new — epochs, runs
   orchid-task               #   create/show/list/set/advance/unblock/retry
   orchid-requirements       #   import (operator-owned exception)
@@ -65,6 +70,19 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
                             #   happen?" surface
   orchid-notify             #   user questions out
   orchid-answer             #   user answers in (idempotent inbox)
+  orchid-trust              #   unattended <repo>/show/revoke — the machine-
+                            #   local acknowledgement the headless seats
+                            #   require; never inferred, never in-repo
+  orchid-version            #   prints the installed version
+  orchid-drive              #   bare TIER HANDOFFS: argument-free dispatch to
+  orchid-service            #   runners/orchid-drive and runners/orchid-service
+                            #   respectively. Both are directly executable
+                            #   entry surfaces, so each resolves its own
+                            #   installed location rather than trusting an
+                            #   inherited ORCHID_ROOT. The effectful work
+                            #   (long-lived processes, launchd/crontab) lives
+                            #   in tier 2, which is why these two are handoffs
+                            #   and not implementations.
 runners/                    # TIER 2 — effectful: launch processes.
   orchid-launch             #   the kernel launcher: spawns engine adapters
   orchid-tick  orchid-pump  #   headless tick; LLM-free heartbeat
@@ -118,8 +136,10 @@ and `reconcile`.
    crash can never mutate state. Per-verb transactional locking (each verb
    taking its own lock for its own transaction) is a Plan B deliverable,
    arriving alongside the tick loop.
-4. Engines are launched ONLY by the tier-2 launcher, which writes the
-   manifest via tier-1 `jobs prepare` first. Engines never spawn engines.
+4. Every engine launch site implemented by Orchid lives in a tier-2 runner,
+   which writes the manifest via tier-1 `jobs prepare` first. This is a
+   source-level topology invariant, not a jail around a shell-capable engine
+   process.
 
 **Single-writer rule with a complete ownership table** — every durable file
 has exactly one writing verb; anything not listed is read-only for everyone:
@@ -191,8 +211,9 @@ yet.
 `.git/info/exclude`, implementer prompts forbid touching it, and
 `orchid task advance` REFUSES entry to `testing` while any commit in
 `base_sha..candidate_sha` touches `.orchid/` paths (the orchestrator strips
-such commits and re-verifies). State corruption via task branches is
-structurally impossible.
+such commits and re-verifies). Thus a candidate containing a committed
+`.orchid/` change cannot cross this kernel transition; this does not claim
+general filesystem containment of the engine process.
 
 ## The loop
 
@@ -450,15 +471,17 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   crashes leave at most orphan journal entries (benign, re-runnable), never
   unjournaled state changes. This is INV-08's guarantee: no state change occurs
   without an already-journaled reason. Actor identity (`engine/role/session`),
-  run, epoch, job, and SHAs are derived from KERNEL context — never
-  caller-supplied, so the audit trail is not forgeable. **Exception, stated
-  plainly:** the lock-break `intervention` entry is written AFTER the new
+  run, epoch, job, and SHAs are derived from KERNEL context rather than
+  supplied as transition arguments, so Orchid-owned transition records use
+  kernel context rather than model prose. This is not a host-level
+  tamper-proof log. **Exception, stated plainly:** the lock-break
+  `intervention` entry is written AFTER the new
   epoch is minted (it must journal under a valid fenced epoch, per the epoch
   write ordering in `orchid run start|resume`), not before any state
   change — it is informational (no state mutation depends on it), so this is
   the one journal write that follows epoch-mint rather than preceding a state
-  change. A decision without a
-  recorded why is structurally impossible.
+  change. Reason-bearing transition verbs refuse the state change when the
+  required reason is absent.
 - **Read surface:** `orchid journal tail [-n N]`,
   `orchid journal show --task T007` (that task's full decision history).
   Entries are prose for successors and humans; NEVER parsed for control
@@ -542,7 +565,7 @@ derived cache, rebuildable from it.
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
-| Blocked on prompt | structurally impossible: launcher stdin `/dev/null` + `approval_policy=never` + never-prompt flags |
+| Blocked on an interactive terminal prompt | supported adapters receive stdin `/dev/null` plus their documented noninteractive/never-approval flags; a vendor regression can still fail or hang and is bounded by timeout |
 | Spinning | deterministic FIRST, with a false-positive guard: duplicate-line checks apply to the ADAPTER's own output, use a sliding window (≥5 min identical lines AND no CPU/disk delta AND no new commits) — build tools legitimately repeat progress lines and are never judged by line content alone; LLM log-tail judgment is the ESCALATION tier |
 
 Write-ahead manifests keyed by job_id (task, attempt, role, engine id +
@@ -581,14 +604,34 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
 
 ## Execution policy (the autonomy boundary)
 
-Per enabled role×engine pair, enforced by the kernel launcher (env
-allowlist, stdin `/dev/null`, private output path) plus vendor-CLI sandbox
-flags: implementer worktree-write + `approval_policy=never` + no secrets +
-network only in declared install phases; reviewers read-only; orchestrator
-repo+`.orchid/` scope. **External mutations prohibited in v0/v1** (no push,
-deploy, publish, prod-data) — blockers instead. `orchid.config` and
-`plugin.conf` are parsed data, never sourced. **Defense in depth (v1-m4 —
-SHIPPED):** `orchid init` installs a pre-push hook (`templates/pre-push.sh`,
+The boundary has five distinct layers; none should be described as another:
+
+1. **Launcher environment hygiene (kernel-enforced):** an environment
+   allowlist, stdin `/dev/null`, and a kernel-chosen private output path
+   reduce ambient credentials, hidden prompts, and output confusion. They do
+   not restrict syscalls or which commands a shell-capable child may run.
+2. **Vendor sandboxing (vendor-enforced, adapter-specific):** for example,
+   Codex review is read-only and its implement/orchestrate path uses
+   `workspace-write` plus `approval_policy=never`. Claude's headless
+   orchestrator instead receives Bash tool access; that is permission to use
+   a tool, not a per-command sandbox. Guarantees vary by CLI.
+3. **Prompt policy (advisory to the model):** PROTOCOL.md requires
+   repo-local mutation only, no push/fetch/deploy, and use of Orchid's
+   launcher. Target-repository requirements, tasks, diffs, filenames, and
+   source may contain prompt injection, especially dangerous when the
+   orchestrator has Bash. The machine-local unattended acknowledgement makes
+   the operator accept that residual risk; it does not sanitize the prompt.
+4. **Command brokerage (not available yet):** the current orchestrator calls
+   Bash directly. No broker enforces an Orchid-only command vocabulary or
+   mediates every subprocess. That work belongs to T002 and is intentionally
+   not wired here.
+5. **OS containment (not provided):** adapters/plugins are trusted host code;
+   Orchid v1 does not jail their process trees, apply an OS sandbox profile,
+   or provide a network namespace.
+
+`orchid.config` and `plugin.conf` are parsed data, never sourced.
+**Defense in depth (v1-m4 — SHIPPED):** `orchid init` installs a pre-push
+hook (`templates/pre-push.sh`,
 `push_guard` config, default true; never overwrites a pre-existing user
 hook) refusing any push whose destination ref is a task branch or the
 integration branch (the name baked in at install time, not read from
@@ -623,10 +666,13 @@ replacement for it.
 
 **Guaranteed:** single writer per durable file; validated transitions only;
 epoch-fenced mutation; envelopes bound to launches (quarantine otherwise);
-tests pass only via `orchid verify`; unreviewed trees never merge; engines
-never spawn engines; a decision without a journaled reason cannot occur on
-reason-bearing verbs; crash loses at most the current uncommitted tick.
+tests pass only via `orchid verify`; unreviewed trees never merge; Orchid's
+own engine launch sites route through tier-2 runners; a decision without a
+journaled reason cannot occur on reason-bearing verbs; crash loses at most
+the current uncommitted tick.
 **NOT guaranteed:** plugin containment (plugins are trusted code);
+an enforceable command allowlist for a shell-capable orchestrator;
+immunity to prompt injection from target-repository content;
 engine output quality (reviews/arbitration mitigate, never prove);
 wall-clock progress when required engines are unavailable (work queues);
 semantic correctness beyond declared verification commands.
@@ -638,7 +684,7 @@ semantic correctness beyond declared verification commands.
 - INV-03 envelope mismatch/replay/oversize → quarantine, never acceptance
 - INV-04 a commit touching `.orchid/` blocks entry to `testing`
 - INV-05 kernel code never branches on a plugin's name
-- INV-06 no engine process is spawned except by the tier-2 launcher
+- INV-06 Orchid source contains no engine-spawn site outside tier-2 runners
 - INV-07 a candidate whose SHA changed cannot merge without re-verify +
   re-review (rebase included)
 - INV-08 reason-bearing transitions fail without `--reason`; actor identity
@@ -649,3 +695,101 @@ semantic correctness beyond declared verification commands.
 - INV-11 `verify` evidence is the only path to a passing `testing` state
 - INV-12 non-truncatable inputs over budget fail with `input_overflow`,
   never silently truncate
+- INV-13 the deterministic driver mutates durable/cross-process state only
+  through named verbs, and decides only on structured fields
+- INV-14 no kernel source branches on any discovered engine identifier
+
+## Command surfaces (v1.1)
+
+**NOT guaranteed** above still says there is no enforceable command allowlist
+for a shell-capable orchestrator. That is now true only of adapters whose
+vendor CLI cannot express one. Each `kind=engine` manifest declares
+`command_surface`:
+
+- `brokered` — the adapter restricts its orchestrator to
+  `runners/orchid-orchestrator-command`, a default-deny broker that validates
+  argv against an enumerated set of judgment-only forms (exact reads, `orchid
+  task arbitrate`, `journal add`, `lessons add`, `notify`, `run boundary
+  clear`) and refuses everything else with exit 17. Vendor-enforced on WHICH
+  command runs; still not OS containment, and the broker itself is
+  unsandboxed. Commands only: the shipped brokered adapter's `acceptEdits`
+  permission mode leaves the vendor's file-write tools open over every
+  reachable path, `.orchid/` and (where `ORCHID_ROOT` is inside the driven
+  repo) the broker script included — "never hand-edit `.orchid/`" is prompt
+  policy, not enforcement.
+- `soft` — no enforceable restriction; the orchestrator's reach is bounded
+  only by launcher environment hygiene and by the operator's machine-local
+  unattended acknowledgement. An absent label reads as `soft`: this field may
+  weaken its own claim by omission, never strengthen it.
+
+Both remain gated behind `orchid trust unattended`. Every headless tick
+prints the resolved engine's label.
+
+## Judgment boundaries (v1.1)
+
+`orchid drive` executes THE TICK's mechanical steps deterministically and
+stops at a named boundary rather than making a free-form judgment. The record
+is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
+`task`, `reason`, `epoch`, `at`), and 16 is the dedicated judgment-boundary
+exit code — returned by `drive` when a pass stopped at one, and by `run
+boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
+`review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
+`run-complete`, `operator-decision`. `orchid task arbitrate` is the sole
+explicit judgment-result verb; see PROTOCOL.md's "Judgment boundaries"
+section for the non-overlapping arbitration truth table.
+
+One boundary is recorded per pass, chosen by whether a woken orchestrator
+could actually SETTLE it ahead of the ones only an operator can, then by
+task-id order — so a `blocked` task, whose boundary recurs every pass until a
+human runs `task unblock`/`task retry`, cannot mask another task's arbitrable
+one.
+
+"Could settle" is never read off the kind alone. It is the conjunction of the
+verb that records the result (`orchid task arbitrate` for the two review
+kinds, `orchid plan apply` for `planning`, `orchid run accept` for
+`run-complete`, none for the rest), the resolved orchestrator adapter's
+`command_surface` (a `brokered` adapter can run only the broker, whose one
+state-changing judgment verb is `task arbitrate`; a `soft` adapter has no
+enforceable restriction; an unrecognized label reads as `brokered`), and the
+named task's CURRENT status (`task arbitrate` refuses anything but
+`arbitrating`, exit 3). The pump asks the identical question before waking a
+model; anything that fails it wakes nobody and the driver raises one `orchid
+notify` blocker per distinct record instead.
+
+`run-complete` is the driver's own COMPLETION hand-off: a pass that reads
+every task as `done` makes COMPLETION's mechanical first call (`orchid run
+advance accepting`) and stops there, because the acceptance checks and the
+evidence file `orchid run accept` requires are judgment work. Against a
+`brokered` orchestrator it is a blocker for a human rather than a hand-off to
+a model — the broker refuses `orchid run accept`, so nothing woken could
+close the run.
+
+The driver's deterministic-approval arm gates on `findings[]` severity
+against the task's `blocking_severity`, and that gate is only as live as the
+reviewer adapter feeding it. `plugins/engines/claude/run` asks a `review`
+reply for `FINDING: <low|medium|high>: <title>` lines alongside the
+`VERDICT:` line and parses them into `findings[]` (v1-m4), so the gate bites
+there; the other shipped `review` adapters ask for a `VERDICT:` line only and
+always write `findings: []` (`FINDING:` lines belong to the `critique`
+prompt), so with them approval turns on `verdict` and `scope_complete` alone.
+An empty `findings[]` is never itself a signal — a reviewer that found
+nothing to report writes the same empty array. A NON-empty one, though, is
+decisive on its own: on a task whose `blocking_severity` is `medium` — the
+fallback when the field is absent, and what `templates/task-migrate.md` and
+`templates/task-refactor.md` ship, though `templates/task.md` and
+`templates/task-test.md` ship `high` — one `medium`
+finding turns an all-`approve`, all-`scope_complete` review set into a
+`review-conflict` boundary. Approve-with-a-nit is not a state this gate has;
+that is what arbitration is for.
+
+To RELAX the threshold, set the field itself: `orchid task set <id>
+blocking_severity high`, a plain settable key. `risk_tier` cannot do it —
+it is monotonic, so `orchid task set <id> risk_tier low` is refused outright
+on a task already at `medium` or above, and raising `risk_tier` only ever
+tightens the derived threshold (low tier → `high`, medium/high tier →
+`medium`).
+
+Exit-code registry: 2 unknown verb, 3 illegal transition, 5
+`rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
+failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
+boundary, 17 brokered command refused.

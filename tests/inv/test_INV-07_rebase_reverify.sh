@@ -3,7 +3,7 @@ source "$(dirname "$0")/../helpers.sh"
 # INV-07: a candidate whose SHA changed cannot merge without re-verify +
 # re-review. Exercised via the stale-base rebase path of `orchid merge`:
 # a parallel commit lands on integration first, forcing rebase-reverify.
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 
@@ -11,7 +11,8 @@ integ=orchid/integration
 git branch "$integ"
 echo "integration_branch=$integ" > orchid.config
 
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 "$ORCHID_BIN" task create T001 "rebase-reverify demo"
 git checkout -q -b task/T001 "$integ"
@@ -105,7 +106,7 @@ rc=0; out2="$WORK/merge2.out"
 "$ORCHID_BIN" merge T001 >"$out2" 2>&1 || rc=$?
 assert_eq 0 "$rc" "merge succeeds on the new base"
 assert_match "^merged T001: $integ -> " "$(cat "$out2")" "prints merged message on second attempt"
-assert_eq done "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task reaches done"
 
 final_integ="$(git rev-parse "$integ")"
 git show "$final_integ:feature.txt" >/dev/null 2>&1 || fail "final integ contains the (rebased) feature commit"

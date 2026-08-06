@@ -9,11 +9,13 @@ echo hi | atomic_write "$WORK/f"; assert_eq hi "$(cat "$WORK/f")" "atomic write"
 # against lib/common.sh (tests/test_dispatcher.sh covers the same fact
 # through the CLI's `orchid version` verb; this is the library-level source
 # of truth both that verb and every manifest's `requires_orchid` check read).
-# v1-m4: bumped to the release version 1.0.0 (no more `-mN` suffix).
-assert_eq "1.0.0" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0"
+# T008: the shipped version is the semver prerelease 1.0.0-beta.1. A bare
+# 1.0.0 is what an external beta earns; nothing outside this repository has
+# run orchid yet. Asserted exactly, so a silent re-bump to 1.0.0 fails here.
+assert_eq "1.0.0-beta.1" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0-beta.1"
 
 # layered config
-mkdir -p "$WORK/repo"; cd "$WORK/repo"; git init -q .
+mkdir -p "$WORK/repo"; cd_scratch "$WORK/repo" || exit 1; git init -q .
 printf 'role.implementer=codex\n' > "$HOME/.orchid/config"
 assert_eq codex "$(config_get "$WORK/repo" role.implementer)" "user layer"
 printf 'role.implementer=claude\n' > "$WORK/repo/orchid.config"
@@ -101,8 +103,8 @@ trust_store_set "$spaced" "deadbeef"
 assert_eq "deadbeef $spaced" "$(cat "$HOME/.orchid/trust")" "trust record is '<digest> <path>' (digest first field)"
 assert_eq deadbeef "$(trust_lookup "$spaced")" "trust_lookup resolves a path containing spaces"
 trust_store_set "$spaced" "deadbeef"
-lines="$(wc -l < "$HOME/.orchid/trust" | tr -d ' ')"
-assert_eq 1 "$lines" "re-setting the same spaced path does not duplicate the record"
+trust_line_count="$(wc -l < "$HOME/.orchid/trust" | tr -d ' ')"
+assert_eq 1 "$trust_line_count" "re-setting the same spaced path does not duplicate the record"
 trust_store_remove "$spaced"
 [ -z "$(trust_lookup "$spaced")" ] || fail "trust_store_remove clears a spaced-path record"
 [ ! -s "$HOME/.orchid/trust" ] || fail "trust file is empty after removing its only (spaced-path) record"

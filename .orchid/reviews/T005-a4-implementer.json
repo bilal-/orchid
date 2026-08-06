@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a4-ec73",
+  "task": "T005",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "04a899cf2f8bb13b93a3c78b8ff58eab407738d9",
+  "summary": "Worth recording beyond the doc paragraph: `scripts/ci-local.sh` was built by T004, passed at T004's merge, and then T001, T002 and T003 all merged behind it without any of them listing it in `verifica",
+  "commits": [
+    "04a899cf2f8bb13b93a3c78b8ff58eab407738d9"
+  ]
+}

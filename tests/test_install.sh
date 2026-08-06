@@ -43,10 +43,10 @@ assert_eq "$direct_out" "$linked_out" "orchid via the installed symlink resolves
 path_out="$(PATH="$HOME/.local/bin:$PATH" command -v orchid)"
 assert_eq "$bin_link" "$path_out" "orchid is found on PATH at the installed symlink"
 
-[ -d "$HOME/.orchid/plugins/engines" ] || fail "~/.orchid/plugins/engines not created"
+[ -d "$HOME/.orchid/plugins/engines" ] || fail "user plugin engine directory not created"
 [ -e "$HOME/.orchid/trust" ] && fail "install must not pre-create ~/.orchid/trust (store FILE, made on demand by the trust verbs)"
-[ -f "$HOME/.orchid/config" ] || fail "~/.orchid/config not created"
-grep -q '^# integration_branch=' "$HOME/.orchid/config" || fail "~/.orchid/config missing a commented key (integration_branch)"
+[ -f "$HOME/.orchid/config" ] || fail "user orchid config not created"
+grep -q '^# integration_branch=' "$HOME/.orchid/config" || fail "user orchid config missing a commented key (integration_branch)"
 
 # Re-running install.sh must never clobber an already-customized user config.
 printf '\nrole.implementer=my-custom-engine\n' >> "$HOME/.orchid/config"
@@ -81,11 +81,11 @@ rm -f "$HOME/.local/bin/orchid"; ln -sfn "$REPO_ROOT/bin/orchid" "$HOME/.local/b
 # everything"); re-running with the same --prefix must stay idempotent, the
 # same way the default-prefix path above already proved for ORCHID_BIN_DIR.
 customprefix="$WORK/customprefix"
-out_prefix="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix exits 0"
+_out_prefix="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix exits 0"
 [ -L "$customprefix/bin/orchid" ] || fail "install.sh --prefix did not create a bin symlink under <prefix>/bin"
 [ "$(readlink "$customprefix/bin/orchid")" = "$REPO_ROOT/bin/orchid" ] || fail "install.sh --prefix's bin symlink does not resolve to $REPO_ROOT/bin/orchid"
 [ -L "$HOME/.local/bin/orchid" ] || fail "install.sh --prefix must not remove the previously-linked default-prefix symlink"
-out_prefix2="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix re-run exits 0"
+_out_prefix2="$(cd "$nogit" && "$INSTALL" --prefix "$customprefix" 2>&1)" || fail "install.sh --prefix re-run exits 0"
 [ "$(readlink "$customprefix/bin/orchid")" = "$REPO_ROOT/bin/orchid" ] || fail "install.sh --prefix re-run left the bin symlink intact"
 
 # --- Uninstall: removes exactly the symlinks it created; leaves config/trust.
@@ -152,7 +152,7 @@ assert_match "skip Hermes skills" "$fe3_out" "front-end detection: neither-prese
 # symlinks it created (mirrors the Claude uninstall checks above) and leave
 # the orchestration category directory itself in place (install.sh owns the
 # symlinks it placed inside it, never the directory).
-fe2_uninstall_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" --uninstall 2>&1)" || fail "install.sh --uninstall (front-end detection, hermes-only HOME) failed"
+_fe2_uninstall_out="$(cd "$fe_nogit" && HOME="$fe2_home" "$INSTALL" --uninstall 2>&1)" || fail "install.sh --uninstall (front-end detection, hermes-only HOME) failed"
 for name in orchid orchid-plan orchid-resume; do
   [ -e "$fe2_home/.hermes/skills/orchestration/$name" ] && fail "uninstall left Hermes skill symlink: $name"
 done
@@ -192,18 +192,28 @@ grep -q "/nowhere/example" "$f17_home/.orchid/trust" || fail "install.sh (F17 re
 # never tapped, installed, or built by this suite (no `brew` invocation
 # anywhere below; outward-facing actions are for the release-day operator,
 # per docs/install.md, not this test). Lint only: valid Ruby syntax, and the
-# placeholders/URL the release-day steps key off of are actually present.
+# pinned version, release-asset URL, and checksum are concrete.
 FORMULA="$REPO_ROOT/Formula/orchid.rb"
-[ -f "$FORMULA" ] || fail "Formula/orchid.rb missing"
-if command -v ruby >/dev/null 2>&1; then
-  ruby_err="$(ruby -c "$FORMULA" 2>&1)" || fail "Formula/orchid.rb fails 'ruby -c' syntax check: $ruby_err"
+if [ "${ORCHID_RELEASE_ARCHIVE_TEST:-0}" = 1 ]; then
+  [ ! -e "$FORMULA" ] || fail "release archive must keep the external tap formula export-ignored"
 else
-  echo "  SKIP: ruby not present on this machine -- Formula/orchid.rb syntax not linted"
+  [ -f "$FORMULA" ] || fail "Formula/orchid.rb missing"
+  if command -v ruby >/dev/null 2>&1; then
+    ruby_err="$(ruby -c "$FORMULA" 2>&1)" || fail "Formula/orchid.rb fails 'ruby -c' syntax check: $ruby_err"
+  else
+    echo "  SKIP: ruby not present on this machine -- Formula/orchid.rb syntax not linted"
+  fi
+  grep -q 'version "1.0.0-beta.1"' "$FORMULA" \
+    || fail "Formula/orchid.rb version is not pinned to 1.0.0-beta.1"
+  grep -q 'releases/download/v1.0.0-beta.1/orchid-1.0.0-beta.1.tar.gz' "$FORMULA" \
+    || fail "Formula/orchid.rb does not reference the version-pinned release asset"
+  grep -Eq 'sha256 "[0-9a-f]{64}"' "$FORMULA" || fail "Formula/orchid.rb does not contain a concrete SHA-256"
+  grep -Eq 'VERSION-PLACEHOLDER|SHA256-PLACEHOLDER' "$FORMULA" \
+    && fail "Formula/orchid.rb still contains a release placeholder"
+  grep -qE 'class +Orchid *< *Formula' "$FORMULA" || fail "Formula/orchid.rb does not define 'class Orchid < Formula'"
 fi
-grep -q 'VERSION-PLACEHOLDER' "$FORMULA" || fail "Formula/orchid.rb missing the VERSION-PLACEHOLDER token"
-grep -q 'SHA256-PLACEHOLDER' "$FORMULA" || fail "Formula/orchid.rb missing the SHA256-PLACEHOLDER token"
-grep -q 'bilal-/orchid' "$FORMULA" || fail "Formula/orchid.rb does not reference the bilal-/orchid tarball URL"
-grep -qE 'class +Orchid *< *Formula' "$FORMULA" || fail "Formula/orchid.rb does not define 'class Orchid < Formula'"
+grep -q '^ORCHID_INSTALL_VERSION="1.0.0-beta.1"$' "$INSTALL" || fail "install.sh release version metadata mismatch"
+grep -q '^ORCHID_INSTALL_REF="v1.0.0-beta.1"$' "$INSTALL" || fail "install.sh stable ref is not version-pinned"
 
 # --- Wrapper resolution: simulate exactly the directory shape Formula/
 # orchid.rb's `install` block produces (bin/, libexec/, lib/, runners/,
@@ -295,11 +305,14 @@ runner_count="$(grep -c 'runners/orchid-launch' "$PROTOCOL")"
 [ "$runner_count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/orchid-launch"
 [ -x "$REPO_ROOT/runners/orchid-launch" ] || fail "runners/orchid-launch named in PROTOCOL.md but missing/not executable"
 
-# v1-m2 (Task 10): PROTOCOL.md's HEADLESS OPERATION section names the other
-# two runners by their full `runners/orchid-<name>` path (never bare, unlike
-# libexec verbs, which is why the top-level regex above can't already catch
-# these) — same existence check as orchid-launch just above, one per runner.
-for runner in orchid-tick orchid-pump; do
+# v1-m2 (Task 10), extended v1.1: PROTOCOL.md's HEADLESS OPERATION section
+# names the other runners by their full `runners/orchid-<name>` path (never
+# bare, unlike libexec verbs, which is why the top-level regex above can't
+# already catch these) -- same existence check as orchid-launch just above,
+# one per runner. The deterministic driver and the brokered command surface
+# join the list: both are named normatively by that section, so a rename that
+# left the prose behind would be caught here.
+for runner in orchid-tick orchid-pump orchid-drive orchid-orchestrator-command; do
   count="$(grep -c "runners/$runner" "$PROTOCOL")"
   [ "$count" -gt 0 ] || fail "PROTOCOL.md never mentions runners/$runner"
   [ -x "$REPO_ROOT/runners/$runner" ] || fail "runners/$runner named in PROTOCOL.md but missing/not executable"
@@ -374,26 +387,30 @@ printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must nev
 # fake checkout: bin/orchid + lib/common.sh (the two anchor files
 # install.sh's own bootstrap-detection checks for) plus a stub install.sh
 # that records the args IT was exec'd with. This proves several things with
-# no network at all: (1) git is invoked as `clone --depth 1 <url> <tmp
-# sibling of ORCHID_HOME>`, never ORCHID_HOME directly (the atomic
+# no network at all: (1) git is invoked as `clone --depth 1 --branch <ref>
+# --single-branch <url> <tmp sibling of ORCHID_HOME>`, never ORCHID_HOME
+# directly (the atomic
 # clone-then-mv pattern -- installer-review.md Finding 1: a `git clone`
 # interrupted partway through, network drop/Ctrl-C/disk full, must never
 # leave ORCHID_HOME itself half-populated, since real git creates .git/
 # before it has fetched every object); (2) the cloned installer is exec'd
 # with the original pass-through args (--prefix, --uninstall); (3) an
-# already-cloned $home takes the `git pull --ff-only` branch instead of
-# cloning again; (4) a STALE/PARTIAL $home (exists on disk but isn't a
-# valid checkout -- exactly what a prior interrupted clone leaves behind)
-# is cleaned up and re-cloned into, rather than failing forever with
-# git's own "destination path already exists and is not an empty
-# directory" -- this is what makes docs/install.md's "run the same line
-# again" retry story actually true after a dropped connection.
+# already-cloned $home fetches and detaches at the selected channel's exact
+# commit instead of cloning again; (4) ANY $home that exists on disk but
+# isn't a usable checkout -- whatever put it there -- is REFUSED with a
+# nonzero exit and left completely intact, never auto-deleted. The
+# "run the same line again" retry story after a dropped connection holds
+# without any cleanup step because the clone targets a temp sibling and
+# only ever lands at $home via mv after git fully succeeds, so an
+# interrupted clone leaves $home absent, not half-populated. Existing
+# clones select an exact fetched commit for either the stable tag or the
+# explicitly requested moving development channel.
 # ===========================================================================
 
 # fake_git_bin DIR: writes an executable `git` into DIR that logs every
 # invocation to DIR/../gitlog.txt, fabricates a fake orchid checkout on
-# `clone`, and answers `-C <dir> rev-parse --git-dir` / `-C <dir> pull
-# --ff-only` against whatever fake checkouts already exist on disk (no
+# `clone`, and answers the bootstrap's `-C <dir>` metadata/fetch/checkout
+# calls against whatever fake checkouts already exist on disk (no
 # state of its own -- the filesystem IS the state, same as real git).
 # `-C <dir> config ...` (used by install.sh's stale-clone safety check,
 # review-round-2 fix) delegates to REAL git instead of being faked, so it
@@ -403,8 +420,8 @@ printf '%s' "$deny_line" | grep -q hook_guidance && fail "hook_guidance must nev
 # real git against a real repo. Anything else (bare `rev-parse`,
 # `worktree`, etc. -- the calls install.sh makes for its OWN unrelated "am
 # I inside a repo to orchestrate" check) also delegates to the real git so
-# the rest of install.sh's behavior stays correct; only clone/-C
-# rev-parse/-C pull (bootstrap's own faked shapes) are faked.
+# the rest of install.sh's behavior stays correct; only clone and bootstrap's
+# own `-C` command shapes are faked.
 fake_git_bin() {
   local dir="$1" gitlog="$2" real_git
   real_git="$(command -v git)"
@@ -427,8 +444,32 @@ INNER
   -C)
     fedir="\$2"; sub="\$3"
     case "\$sub" in
-      rev-parse) [ -d "\$fedir/.git" ] && exit 0 || exit 1 ;;
-      pull) exit 0 ;;
+      rev-parse)
+        [ -d "\$fedir/.git" ] || exit 1
+        case "\${4:-}" in
+          --git-dir) printf '%s\n' .git ;;
+          --verify)
+            case "\${5:-}" in
+              refs/tags/*)
+                [ "\${FAKE_GIT_NO_TAG:-0}" != 1 ] || exit 1
+                printf '%s\n' 1111111111111111111111111111111111111111
+                ;;
+              'FETCH_HEAD^{commit}') printf '%s\n' 2222222222222222222222222222222222222222 ;;
+              'HEAD^{commit}') printf '%s\n' 2222222222222222222222222222222222222222 ;;
+              *) exit 1 ;;
+            esac
+            ;;
+          *) exit 1 ;;
+        esac
+        ;;
+      config)
+        if [ -f "\$fedir/bin/orchid" ] && [ -f "\$fedir/lib/common.sh" ]; then
+          printf '%s\n' 'https://github.com/bilal-/orchid.git'
+          exit 0
+        fi
+        exec "$real_git" "\$@"
+        ;;
+      fetch|checkout|pull|status) exit 0 ;;
       *) exec "$real_git" "\$@" ;;
     esac
     ;;
@@ -455,8 +496,12 @@ bs_out="$(PATH="$bs_gitbin:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/in
 bs_rc=$?
 [ "$bs_rc" -eq 0 ] || fail "bootstrap (fresh clone): install.sh exits 0 (got rc=$bs_rc, output: $bs_out)"
 bs_clone_line="$(grep '^clone' "$bs_gitlog")"
-assert_match '^clone --depth 1 https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
-  "bootstrap (fresh clone): git invoked as clone --depth 1 <url> <dest>"
+assert_match '^clone --depth 1 --branch v1\.0\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
+  "bootstrap (fresh clone): git invoked with the immutable stable tag"
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0-beta\.1\^\{commit\}' "$(cat "$bs_gitlog")" \
+  "bootstrap (fresh clone): resolves the stable name specifically through refs/tags"
+assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog")" \
+  "bootstrap (fresh clone): detaches at the stable tag's peeled commit"
 bs_clone_dest="$(printf '%s' "$bs_clone_line" | awk '{print $NF}')"
 [ "$(dirname "$bs_clone_dest")" = "$(dirname "$bs_home")" ] \
   || fail "bootstrap (fresh clone): git clone target's parent must be ORCHID_HOME's own parent dir (clone target: $bs_clone_dest)"
@@ -470,50 +515,105 @@ assert_eq "--prefix
 $bs_work/customprefix" "$(cat "$bs_work/record1.txt")" \
   "bootstrap (fresh clone): cloned installer exec'd with the original pass-through args (--prefix DIR)"
 
+# A real curl-to-bash invocation has no BASH_SOURCE filename. Its $0 names
+# bash, so dirname "$0" is just the caller's cwd. Make that cwd adversarial:
+# it looks exactly like an Orchid checkout, is backed by Git, and is dirty.
+# The piped stable installer must ignore it completely, clone v1.0.0-beta.1
+# into the canonical ORCHID_HOME, peel the tag, and execute only that cloned
+# installer.
+bs_pipe_cwd="$bs_work/dirty-caller-checkout"
+mkdir -p "$bs_pipe_cwd/bin" "$bs_pipe_cwd/lib"
+touch "$bs_pipe_cwd/bin/orchid" "$bs_pipe_cwd/lib/common.sh"
+git init -q "$bs_pipe_cwd"
+printf '%s\n' 'dirty caller content' > "$bs_pipe_cwd/untracked"
+[ -n "$(git -C "$bs_pipe_cwd" status --porcelain --untracked-files=all)" ] \
+  || fail "bootstrap (piped from dirty checkout): adversarial caller fixture is not dirty"
+
+bs_pipe_gitlog="$bs_work/gitlog-pipe.txt"; : > "$bs_pipe_gitlog"
+bs_pipe_gitbin="$bs_work/gitbin-pipe"; fake_git_bin "$bs_pipe_gitbin" "$bs_pipe_gitlog"
+bs_pipe_home="$bs_work/home-pipe"
+export STUB_INSTALL_RECORD="$bs_work/record-pipe.txt"; rm -f "$STUB_INSTALL_RECORD"
+bs_pipe_out="$(
+  cd "$bs_pipe_cwd" &&
+    PATH="$bs_pipe_gitbin:$PATH" ORCHID_HOME="$bs_pipe_home" \
+      "$BASH" -s -- --prefix "$bs_work/prefix-pipe" < "$INSTALL" 2>&1
+)"
+bs_pipe_rc=$?
+[ "$bs_pipe_rc" -eq 0 ] \
+  || fail "bootstrap (piped from dirty checkout): stable install exits 0 (rc=$bs_pipe_rc, output: $bs_pipe_out)"
+bs_pipe_clone_line="$(grep '^clone' "$bs_pipe_gitlog")"
+assert_match '^clone --depth 1 --branch v1\.0\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_pipe_clone_line" \
+  "bootstrap (piped from dirty checkout): ignores cwd and clones immutable v1.0.0-beta.1"
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0-beta\.1\^\{commit\}' "$(cat "$bs_pipe_gitlog")" \
+  "bootstrap (piped from dirty checkout): peels the stable tag"
+assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_pipe_gitlog")" \
+  "bootstrap (piped from dirty checkout): detaches at the pinned commit"
+[ -f "$STUB_INSTALL_RECORD" ] \
+  || fail "bootstrap (piped from dirty checkout): immutable clone's installer was not executed"
+assert_eq "--prefix
+$bs_work/prefix-pipe" "$(cat "$STUB_INSTALL_RECORD")" \
+  "bootstrap (piped from dirty checkout): cloned installer receives pass-through args"
+
+# `git clone --branch vX.Y.Z` also accepts a branch with that name. A stable
+# bootstrap must prove refs/tags/vX.Y.Z exists before promoting the clone.
+bs_gitlog_notag="$bs_work/gitlog-notag.txt"; : > "$bs_gitlog_notag"
+bs_gitbin_notag="$bs_work/gitbin-notag"; fake_git_bin "$bs_gitbin_notag" "$bs_gitlog_notag"
+bs_home_notag="$bs_work/home-notag"
+export STUB_INSTALL_RECORD="$bs_work/record-notag.txt"; rm -f "$bs_work/record-notag.txt"
+bs_out_notag="$(FAKE_GIT_NO_TAG=1 PATH="$bs_gitbin_notag:$PATH" ORCHID_HOME="$bs_home_notag" \
+  "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc_notag=$?
+[ "$bs_rc_notag" -ne 0 ] || fail "bootstrap (same-named branch): stable install accepted a clone with no version tag"
+assert_match 'refs/tags' "$bs_out_notag" \
+  "bootstrap (same-named branch): refusal explains that the stable tag ref is missing"
+[ ! -e "$bs_home_notag" ] || fail "bootstrap (same-named branch): refused clone must not be promoted into ORCHID_HOME"
+[ ! -e "$STUB_INSTALL_RECORD" ] || fail "bootstrap (same-named branch): refused clone's installer must not execute"
+
 # ===========================================================================
-# review-round-2 fix: auto-removal of a non-checkout $home must require
-# POSITIVE proof it is dead wreckage from orchid's OWN bootstrap -- (a)
-# $home/.git exists, (b) that .git's remote.origin.url is EXACTLY this
-# repo's clone URL, (c) it's still incomplete (anchor files missing, or
-# rev-parse fails). Anything short of all three must be refused loudly
-# (named path, nonzero exit, both remedies) and left completely intact --
-# never deleted on a merely negative "isn't a checkout" signal. Three
-# shapes at the SAME kind of path ($ORCHID_HOME, user-settable), only one
-# of which may ever be auto-cleaned:
-#   2b. a genuinely dead ORCHID clone (real .git, origin.url matches,
-#       anchor files missing)        -> cleaned + recloned
+# T004 rework (destructive-install prevention): a $home that exists but
+# isn't a usable checkout is NEVER auto-deleted -- not even with "positive
+# proof" that its .git's remote.origin.url matches this repo's clone URL.
+# An expected-origin repo missing an anchor file is still routinely a
+# user-controlled checkout (a contributor's own clone with uncommitted
+# work, or bin/orchid deleted mid-edit); a prior round of this fix rm
+# -rf'd exactly that shape. install.sh now fails closed for EVERY
+# non-usable shape: nonzero exit, path named in the message, both
+# remedies printed, contents (including .git) left completely intact, no
+# clone attempted. Three shapes at the SAME kind of path ($ORCHID_HOME,
+# user-settable), all refused identically:
+#   2b. an expected-origin orchid clone missing its anchor files, with
+#       local (dirty/user) content on disk -> REFUSED, intact, nonzero
 #   2c. a plain directory of unrelated user files (no .git at all)
-#                                    -> REFUSED, intact, nonzero exit
+#                                          -> REFUSED, intact, nonzero
 #   2d. the user's own unrelated git repo (real .git, no matching origin)
-#                                    -> REFUSED, intact, nonzero exit
+#                                          -> REFUSED, intact, nonzero
 # ===========================================================================
 
-# --- 2b: dead orchid clone (positive proof present) -> cleaned + recloned.
+# --- 2b: expected-origin clone lacking anchor files, with user content ->
+# REFUSED and left intact. This is the exact shape the reverted fix used to
+# rm -rf: real .git, remote.origin.url matching the hardcoded clone URL,
+# anchor files absent, plus a local file a deletion would destroy.
 bs_gitlog2b="$bs_work/gitlog2b.txt"; : > "$bs_gitlog2b"
 bs_gitbin2b="$bs_work/gitbin2b"; fake_git_bin "$bs_gitbin2b" "$bs_gitlog2b"
 bs_home_partial="$bs_work/home-partial"
 mkdir -p "$bs_home_partial"
-# Real git init + a real remote.origin.url matching the hardcoded clone
-# URL -- genuine positive proof, not a guess -- with the anchor files
-# deliberately absent (exactly what an interrupted `git clone` leaves:
-# .git/ created before every object was fetched).
 git init -q "$bs_home_partial"
 git -C "$bs_home_partial" remote add origin https://github.com/bilal-/orchid.git
-touch "$bs_home_partial/some-partial-clone-leftover"
+echo "uncommitted local work" > "$bs_home_partial/dirty-user-file.txt"
 export STUB_INSTALL_RECORD="$bs_work/record2b.txt"; rm -f "$bs_work/record2b.txt"
 bs_out2b="$(PATH="$bs_gitbin2b:$PATH" ORCHID_HOME="$bs_home_partial" "$bs_work/bare/nogit/install.sh" 2>&1)"
 bs_rc2b=$?
-[ "$bs_rc2b" -eq 0 ] || fail "bootstrap (dead orchid clone): install.sh exits 0 on retry after an interrupted clone (got rc=$bs_rc2b, output: $bs_out2b)"
-assert_match "removing incomplete clone" "$bs_out2b" "bootstrap (dead orchid clone): prints a note naming what was verified before removing it"
-[ -e "$bs_home_partial/some-partial-clone-leftover" ] && fail "bootstrap (dead orchid clone): the stale leftover file must be gone after cleanup+reclone"
-[ -f "$bs_home_partial/bin/orchid" ] && [ -f "$bs_home_partial/lib/common.sh" ] \
-  || fail "bootstrap (dead orchid clone): a fresh checkout must be cloned into place after cleanup"
-[ -f "$bs_work/record2b.txt" ] || fail "bootstrap (dead orchid clone): cloned install.sh was never exec'd after recovery"
-bs_clone_line2b="$(grep '^clone' "$bs_gitlog2b")"
-[ -n "$bs_clone_line2b" ] || fail "bootstrap (dead orchid clone): no git clone call recorded after cleanup (log: $(cat "$bs_gitlog2b"))"
-bs_clone_dest2b="$(printf '%s' "$bs_clone_line2b" | awk '{print $NF}')"
-[ "$bs_clone_dest2b" != "$bs_home_partial" ] \
-  || fail "bootstrap (dead orchid clone): must still clone to a TEMP sibling, never directly to ORCHID_HOME"
+[ "$bs_rc2b" -ne 0 ] || fail "bootstrap (expected-origin clone, anchors missing): install.sh must exit nonzero rather than delete or proceed (output: $bs_out2b)"
+assert_match "$bs_home_partial" "$bs_out2b" "bootstrap (expected-origin clone, anchors missing): refusal message names the exact path"
+assert_match "refusing" "$bs_out2b" "bootstrap (expected-origin clone, anchors missing): refusal message says it is refusing, not repairing"
+[ -f "$bs_home_partial/dirty-user-file.txt" ] || fail "bootstrap (expected-origin clone, anchors missing): local user file was deleted -- must be left completely intact"
+[ "$(cat "$bs_home_partial/dirty-user-file.txt")" = "uncommitted local work" ] \
+  || fail "bootstrap (expected-origin clone, anchors missing): local user file content was altered"
+[ -d "$bs_home_partial/.git" ] || fail "bootstrap (expected-origin clone, anchors missing): the repo's .git was deleted -- must be left completely intact"
+[ "$(git -C "$bs_home_partial" config --get remote.origin.url)" = "https://github.com/bilal-/orchid.git" ] \
+  || fail "bootstrap (expected-origin clone, anchors missing): the repo's own remote must be untouched"
+grep -q '^clone' "$bs_gitlog2b" && fail "bootstrap (expected-origin clone, anchors missing): must never attempt a clone against a refused path"
+[ ! -e "$bs_work/record2b.txt" ] || fail "bootstrap (expected-origin clone, anchors missing): no installer may execute after a refusal"
 
 # --- 2c: plain directory of unrelated user files (no .git at all) ->
 # REFUSED: nonzero exit, files untouched, message names the path, no
@@ -556,17 +656,38 @@ assert_match "$bs_home_userrepo" "$bs_out2d" "bootstrap (user's own git repo): r
   || fail "bootstrap (user's own git repo): the repo's own remote must be untouched"
 grep -q '^clone' "$bs_gitlog2d" && fail "bootstrap (user's own git repo): must never attempt a clone against a refused path"
 
-# --- already-cloned: same $home already looks like an orchid checkout ->
-# git pull --ff-only, no second clone, and the (stub) installer is still
-# exec'd with the current call's own args.
+# --- already-cloned stable: re-fetch the exact version-tag ref, verify that
+# its object did not move, and detach at that object without re-cloning.
+bs_gitlog_stable="$bs_work/gitlog-stable.txt"; : > "$bs_gitlog_stable"
+bs_gitbin_stable="$bs_work/gitbin-stable"; fake_git_bin "$bs_gitbin_stable" "$bs_gitlog_stable"
+export STUB_INSTALL_RECORD="$bs_work/record-stable.txt"; rm -f "$bs_work/record-stable.txt"
+bs_out_stable="$(PATH="$bs_gitbin_stable:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_rc_stable=$?
+[ "$bs_rc_stable" -eq 0 ] || fail "bootstrap (existing stable clone): install.sh exits 0 (got rc=$bs_rc_stable, output: $bs_out_stable)"
+grep -q '^clone' "$bs_gitlog_stable" && fail "bootstrap (existing stable clone): must not re-clone"
+assert_match '\-C .* fetch --depth 1 origin refs/tags/v1\.0\.0-beta\.1:refs/tags/v1\.0\.0-beta\.1' "$(cat "$bs_gitlog_stable")" \
+  "bootstrap (existing stable clone): fetches only the immutable stable tag"
+assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog_stable")" \
+  "bootstrap (existing stable clone): detaches at the verified tag object"
+[ -f "$bs_work/record-stable.txt" ] || fail "bootstrap (existing stable clone): cloned installer was not exec'd"
+
+# --- already-cloned development: this starts from the stable clone above,
+# which is detached at a tag. Fetch main explicitly and detach at FETCH_HEAD's
+# exact commit so switching channels never depends on `git pull` having an
+# attached/upstream-configured branch.
 bs_gitlog2="$bs_work/gitlog2.txt"; : > "$bs_gitlog2"
 bs_gitbin2="$bs_work/gitbin2"; fake_git_bin "$bs_gitbin2" "$bs_gitlog2"
 export STUB_INSTALL_RECORD="$bs_work/record2.txt"; rm -f "$bs_work/record2.txt"
-bs_out2="$(PATH="$bs_gitbin2:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" 2>&1)"
+bs_out2="$(PATH="$bs_gitbin2:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/install.sh" --channel development 2>&1)"
 bs_rc2=$?
 [ "$bs_rc2" -eq 0 ] || fail "bootstrap (already cloned): install.sh exits 0 (got rc=$bs_rc2, output: $bs_out2)"
 grep -q '^clone' "$bs_gitlog2" && fail "bootstrap (already cloned): must not re-clone an existing checkout ($(cat "$bs_gitlog2"))"
-assert_match '\-C .*pull --ff-only' "$(cat "$bs_gitlog2")" "bootstrap (already cloned): git pull --ff-only run against the existing checkout"
+assert_match '\-C .* fetch --depth 1 origin refs/heads/main' "$(cat "$bs_gitlog2")" \
+  "bootstrap (already cloned): development channel fetches moving main explicitly"
+assert_match '\-C .* checkout --detach 2222222222222222222222222222222222222222' "$(cat "$bs_gitlog2")" \
+  "bootstrap (already cloned): development channel detaches at the exact fetched commit"
+grep -q 'pull --ff-only' "$bs_gitlog2" \
+  && fail "bootstrap (already cloned): development switch must not pull from a detached stable checkout"
 [ -f "$bs_work/record2.txt" ] || fail "bootstrap (already cloned): cloned install.sh was never exec'd on the update path"
 
 # --- bootstrap --uninstall: operates against the canonical clone if
@@ -606,6 +727,6 @@ bs_gitbin5="$bs_work/gitbin5"; fake_git_bin "$bs_gitbin5" "$bs_gitlog5"
 bs_insidecheckout_home="$bs_work/should-never-exist"
 insidecheckout_nogit="$bs_work/insidecheckout-nogit"; mkdir -p "$insidecheckout_nogit"
 bs_out5="$(cd "$insidecheckout_nogit" && PATH="$bs_gitbin5:$PATH" ORCHID_HOME="$bs_insidecheckout_home" "$INSTALL" 2>&1)"
-grep -qE '^clone|pull --ff-only' "$bs_gitlog5" && fail "inside-checkout install.sh must never invoke bootstrap's clone/pull (git calls seen: $(cat "$bs_gitlog5"))"
+grep -qE '^clone|fetch --depth|checkout --detach' "$bs_gitlog5" && fail "inside-checkout install.sh must never invoke bootstrap's clone/fetch/checkout (git calls seen: $(cat "$bs_gitlog5"))"
 [ -e "$bs_insidecheckout_home" ] && fail "inside-checkout install.sh must never create/touch ORCHID_HOME -- bootstrap must not have triggered"
 assert_match "[Nn]ext steps" "$bs_out5" "inside-checkout install.sh (with bootstrap's fake git on PATH) still runs its normal flow, not bootstrap"

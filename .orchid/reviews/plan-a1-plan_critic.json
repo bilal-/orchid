@@ -1,0 +1,46 @@
+{
+  "contract": 1,
+  "job_id": "j-e0-plan-a1-1901",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Every task verifies only `bash tests/run.sh`; no commands cover Bash 3.2 confirmation, focused tests, shipped-script syntax, ShellCheck, documentation, release negatives, or qualification rehearsal"
+    },
+    {
+      "severity": "high",
+      "title": "T002 runs the deterministic driver “before” an LLM but does not require LLM invocation only after a named judgment boundary"
+    },
+    {
+      "severity": "medium",
+      "title": "T002 lacks structured decision inputs and explicit plan-drafting, blocker, and conflicting-review boundaries, leaving room for forbidden prose heuristics"
+    },
+    {
+      "severity": "medium",
+      "title": "T001 defines no actionable acknowledgement verb for existing repositories and does not explicitly test that read-only and planning commands remain ungated"
+    },
+    {
+      "severity": "medium",
+      "title": "T001 does not require explicit disclosure when vendor sandboxing or OS-level containment is unavailable"
+    },
+    {
+      "severity": "medium",
+      "title": "T003 omits explicit full preflight, repo-local configuration validation, and the guarantee never to overwrite user files"
+    },
+    {
+      "severity": "high",
+      "title": "T004 omits explicit failures for placeholder versions, dirty archives, moving release references, installer-behavior mismatches, and undocumented ShellCheck exceptions"
+    },
+    {
+      "severity": "medium",
+      "title": "T005 does not explicitly require anonymized concise evidence, and its end-to-end rehearsal omits the beta-qualification step"
+    }
+  ]
+}

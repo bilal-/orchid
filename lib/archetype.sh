@@ -158,7 +158,7 @@ archetype_validate() {
     [ "$line" = "reviewing:arbitrating" ] && has_reviewing_arbitrating=1
     [ "$line" = "merging:done" ] && has_merging_done=1
     { [ "$from" = merging ] || [ "$to" = merging ]; } && mentions_merging=1
-    [ "$to" = done ] && has_done_terminal=1
+    [ "$to" = "done" ] && has_done_terminal=1
   done <<< "$transitions"
 
   if [ "$outcome" = code ]; then

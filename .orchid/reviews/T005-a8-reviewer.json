@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a8-7d8a",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "dfe1088942f8454517cff80345a4c85d7c823ea7",
+  "candidate_sha": "ccc635155216c146bd0b1ce632dea236615df6b3",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "acceptance criterion \"Run local CI under Bash 3.2\" is unmet — ~2,700 new lines, including two new integration suites, were never executed"
+    },
+    {
+      "severity": "low",
+      "title": "`merge-rebase-regeneration` records a blocking `pass` inferred from the manifest, duplicating `implementer-shell` rather than testing anything"
+    },
+    {
+      "severity": "low",
+      "title": "`scripts/beta-qualify.sh` ships mode 100644 while sibling `scripts/release.sh` and `scripts/ci-local.sh` are 755"
+    }
+  ]
+}

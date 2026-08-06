@@ -15,8 +15,12 @@ set -euo pipefail
 # version` and `<abs>/bin/orchid config list` in it, printing an
 # ORCHID-ACTION marker for each, then inspects the transcript for BOTH the
 # marker lines AND independent evidence each verb actually ran: `version`'s
-# own output string ("1.0.0") appearing in the reply. A marker with no
-# matching output is treated as a hallucinated no-op, not a pass.
+# own output string (e.g. "orchid 1.0.0-beta.1") appearing in the reply. A
+# marker with no matching output is treated as a hallucinated no-op, not a
+# pass. That expected string is READ FROM THIS CHECKOUT at probe start rather
+# than hard-coded -- a hard-coded one silently rotted to the long-dead
+# `1.0.0-m2` across two version bumps, which made this probe unable to report
+# YES at all.
 #
 # Caveat: containing claude to $scratch is instruction-level only, same
 # caveat as probe-claude-implement.sh — review the probe's aftermath before
@@ -74,7 +78,13 @@ if ! git -C "$scratch" init -q . 2>/dev/null || \
 fi
 mkdir -p "$scratch/.orchid/tasks"
 
-PROMPT="Run the shell command \`$ORCHID_BIN version\` in this directory (its output looks like \"orchid 1.0.0\") and paste its output. Then, on its own line, print exactly: ORCHID-ACTION: orchid version
+if ! expected_version_output="$("$ORCHID_BIN" version 2>/dev/null)" \
+   || [ -z "$expected_version_output" ]; then
+  echo "PROBE-RESULT: ENV-UNAVAILABLE (orchid version did not run in this checkout)"
+  exit 0
+fi
+
+PROMPT="Run the shell command \`$ORCHID_BIN version\` in this directory (its output looks like \"$expected_version_output\") and paste its output. Then, on its own line, print exactly: ORCHID-ACTION: orchid version
 Then run the shell command \`$ORCHID_BIN config list\` in this directory and paste its output. Then, on its own line, print exactly: ORCHID-ACTION: orchid config list
 Do this now; do not ask questions."
 
@@ -98,13 +108,13 @@ printf '%s\n' "$stdout" | grep -qE '^ORCHID-ACTION: orchid config list$' && mark
 # printed the marker without the command behind it actually running
 # (hallucinated no-op) — that is NO, not YES, per this probe's whole point.
 output_version=false
-printf '%s\n' "$stdout" | grep -qE '1\.0\.0-m2' && output_version=true
+printf '%s\n' "$stdout" | grep -qF "$expected_version_output" && output_version=true
 output_config=false
 printf '%s\n' "$stdout" | grep -qiE 'integration_branch' && output_config=true
 
 if [ "$marker_version" = true ] && [ "$output_version" = true ] \
    && [ "$marker_config" = true ] && [ "$output_config" = true ]; then
-  echo "PROBE-RESULT: YES (flags: --permission-mode acceptEdits --allowedTools Bash; both markers present AND real command output (1.0.0 / integration_branch) seen in reply — verbs actually ran headless via Bash) [claude rc=$rc]"
+  echo "PROBE-RESULT: YES (flags: --permission-mode acceptEdits --allowedTools Bash; both markers present AND real command output ($expected_version_output / integration_branch) seen in reply — verbs actually ran headless via Bash) [claude rc=$rc]"
   exit 0
 fi
 

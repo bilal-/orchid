@@ -1,0 +1,20 @@
+{
+  "contract": 1,
+  "job_id": "j-e8-T001-a7-e40a",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "9e08ac805405936cf5f778cdbf58158a3d77fc1f",
+  "summary": "- Worktree is clean; no `.orchid/` paths were modified.",
+  "commits": [
+    "9e08ac805405936cf5f778cdbf58158a3d77fc1f",
+    "9cb9758ef3c32c44a31f1bb29bbe87952d09ac17",
+    "9ade732db4a1c19e4d34aae867183e2a92793c59",
+    "3bb9f9f8f64003cb0449c808cbdc96898714f16e",
+    "f47e49f33bdd2a752fe388b6ed2e73a22ca63a0b",
+    "788829e8488dd99b21256d538402ac4983930fa7",
+    "dccb3d4afaeff6cda7349b1aa7d513a4954eb232"
+  ]
+}

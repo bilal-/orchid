@@ -37,7 +37,16 @@ differences are declared capabilities.
   (secrets are opt-in per plugin via manifest `permissions`), a
   kernel-chosen private output location, and the invocation request document
   below. Vendor-CLI sandbox flags (workspace-write, read-only) remain the
-  engine-level second layer.
+  engine-level second layer. Hygiene is not syscall, network, or command
+  containment.
+- **Whole-repository unattended trust is separate from plugin trust.**
+  `orchid trust unattended <repo> --reason <reason>` records an
+  operator-authored acknowledgement under
+  `~/.orchid/unattended-trust/`, never in tracked content. It binds Git
+  common-directory device/inode, a non-reusable hard-link witness identity,
+  root commit(s), and policy version. It gates the pump, direct headless tick,
+  and service installation; it does not enable a repo-local plugin or assert
+  that repository prompts are safe.
 
 ### Extension points and contracts
 
@@ -141,8 +150,40 @@ capabilities=structured_text,workspace_write,shell,git
 permissions=               # env vars / secrets requested (opt-in)
 requires_binaries=codex,jq
 platforms=macos,linux
+command_surface=soft       # kind=engine only: brokered | soft (v1.1)
 entrypoint=run
+requires_config=           # kind=notify only: config keys the entrypoint
+                           # cannot run without (v1-m4)
+inbound_probe=             # kind=notify only: argv token for the read-only
+                           # inbound probe mode (v1-m4, optional)
 ```
+
+**`command_surface` (v1.1, kind=engine only) — an honest label, not a
+capability.** It answers exactly one question: when this adapter runs the
+ORCHESTRATOR role headlessly, can it enforce which commands the model may
+execute?
+
+- `brokered` — yes. The adapter restricts its orchestrator to
+  `runners/orchid-orchestrator-command`, the default-deny,
+  argument-validating broker that admits judgment-only forms (exact reads,
+  `orchid task arbitrate`, `journal add`, `lessons add`, `notify`, `run
+  boundary clear`) and refuses everything else with exit 17. This is
+  vendor-enforced on WHICH command runs; it is not OS containment, and the
+  broker itself is unsandboxed. It says nothing about FILE WRITES: the
+  shipped brokered adapter runs under `--permission-mode acceptEdits`, whose
+  file-write tools stay open over every path the process can reach —
+  `.orchid/` and, in a layout where `ORCHID_ROOT` sits inside the driven
+  repository, the broker script itself. The prompt's "never hand-edit
+  `.orchid/`" is policy, not enforcement.
+- `soft` — no. The vendor CLI offers no restriction Orchid can rely on, so
+  the orchestrator's reach is bounded only by launcher environment hygiene
+  and by the operator's machine-local unattended acknowledgement.
+
+An absent value reads as `soft`: this field may weaken its own claim by
+omission, never strengthen it. `runners/orchid-tick` prints the resolved
+engine's label on every headless tick, so the distinction is visible in a
+pump log rather than only in documentation. Both kinds stay gated behind
+`orchid trust unattended`.
 
 Unknown keys in a known `manifest_version`: warn. Unknown
 `manifest_version`/`api_version`: reject (fail closed). `requires_orchid`
@@ -294,10 +335,55 @@ stays a target address, unchanged by this selector; `notify.channel` stays
 each PLUGIN's OWN inner enum/target string (OpenClaw's own channel name, or
 a hermes platform name) — a separate axis from which plugin sends it.
 
+**`requires_config=` (optional, v1-m4 T006):** a comma list of CONFIG KEYS
+this plugin's entrypoint cannot run without. The kernel gates on
+`notify.channel` alone (nothing is ever sent without it), but what else a
+send needs is per-plugin and only the plugin knows it: `plugins/notify/
+openclaw`'s `send` does `to=${ORCHID_NOTIFY_TO:?…}` and declares
+`requires_config=notify.channel,notify.to`, while `plugins/notify/hermes`
+treats an empty `notify.to` as "the platform's home channel" and declares
+only `notify.channel`. `orchid doctor` checks the declared keys before
+reporting outbound `ok`, so a missing one is caught where an operator can
+see it rather than as five silent retries and a quarantined message.
+
+**The inbound probe (`inbound_probe=`, optional, v1-m4 T006):** sending and
+receiving are different facts with different requirements, and doctor must
+never infer the second from the first (see docs/specs/operations.md's
+remote-interaction seam). A plugin that CAN determine whether its channel is
+reachable declares the single ARGV TOKEN that puts its own `entrypoint` into
+a read-only probe mode:
+
+```
+inbound_probe=--inbound-probe     # doctor runs: <entrypoint> --inbound-probe
+```
+
+The mode takes no other arguments, gets the same kernel-hygienic environment
+`send` does (`env -i` + the launcher's `spawn_child_env`, stdin `/dev/null`,
+`ORCHID_NOTIFY_CHANNEL`/`ORCHID_NOTIFY_TO` exported), must not send
+anything, and answers with its EXIT CODE plus one line of human-readable
+detail on stdout:
+
+| exit | meaning |
+| --- | --- |
+| `0` | reachable — positively determined the channel transport is up |
+| `1` | unreachable — positively determined it is down |
+| `2` (or anything else, or doctor's 10s timeout) | undetermined, with a reason |
+
+It is a mode of the existing entrypoint rather than a second executable on
+purpose: the entrypoint is the one file whose executable bit orchid already
+validates, and a mode-644 helper is invisible until the feature silently
+stops working. A plugin that cannot determine liveness simply OMITS the key,
+and doctor then reports "not verified" for that plugin specifically —
+"there is no way to tell" must never be asserted on behalf of a plugin that
+can in fact tell. Even exit `0` is bounded: it proves the transport a reply
+travels over, never that a channel-side agent exists there to turn a reply
+into an `orchid answer` call.
+
 ### Named patterns (the codebase vocabulary)
 
 Verb kernel · Envelope · Adapter · Runner · Archetype · Ledger · Spool ·
-Lease · Request document · Trust record · Hook.
+Lease · Request document · Plugin trust record · Unattended trust record ·
+Hook.
 
 ## Engine availability & role failover (v1-m2 — SHIPPED)
 
@@ -334,8 +420,10 @@ Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
 | Untrusted input | Boundary | Mitigation |
 |---|---|---|
 | cloned repo content (incl. `.orchid/plugins/`) | plugin discovery | repo-local disabled by default; digest-pinned trust records outside the repo; no silent shadowing |
+| target-repository requirements, tasks, diffs, filenames, and source | unattended orchestrator prompt + shell tool | machine-local per-repository acknowledgement before pump/tick/service; explicit prompt-injection warning; vendor sandbox where available; no command broker yet (T002) and no claim that prompt policy is enforcement |
 | plugin executables | trust decision at install | trusted-code classification (stated plainly); launcher hygiene; containment roadmap post-v1 |
 | engine output (envelopes) | reconciliation | job_id binding to manifests; schema fail-closed; quarantine on mismatch/replay |
-| task/diff content in prompts | reviewer/arbiter judgment | prompt injection is assumed possible; verdicts are advisory to the arbiter, which reads high-risk diffs itself; verification is deterministic and immune to prompt content (`orchid verify`) |
+| task/diff content in reviewer prompts | reviewer/arbiter judgment | prompt injection is assumed possible; verdicts are advisory to the arbiter, which reads high-risk diffs itself; verification commands are selected by the operator and their recorded exit/evidence is deterministic, but the commands themselves are repository-specific code and are not made safe by Orchid |
 | inbound answers | `orchid answer` | question-id + idempotency; channel adapters get no shell/repo access; nonce + sender allowlist (v1-m4 — SHIPPED): `answer_allowlist` unconfigured leaves the lenient v0 behavior (no nonce, no allowlist check) since no remote answer path exists to attack; once configured, EVERY caller (local or remote) must supply a matching `--nonce`, closing the prior bypass of simply omitting `ORCHID_ANSWER_SENDER` — that env var, when set, additionally requires the identity to appear in the allowlist |
 | implementer commits | merge path | worktree contamination guard; review immutability; transactional merge |
+| an operator-supplied candidate repository under beta qualification | `scripts/beta-qualify.sh` | read-only against the target; its ONE execution there is the operator's own configured `verify=` command, run to time it with both output streams discarded unread — that command is repository-specific code and this harness does not make it safe, exactly as the reviewer-prompt row above says of verification generally. Evidence is anonymized by construction: no subprocess output is ever copied into a record, so only harness-authored strings, measured numbers, and closed-vocabulary tokens are emitted — the single class of value another program chooses the characters of, a toolchain version or the platform name, must match a pattern authored in the harness or is recorded as `unrecognized`/`other` — and both files are re-scanned for the target/home/scratch/output paths before being left on disk. The harness never acknowledges unattended trust, never writes inside the target, never contacts a remote, and records what it could not settle as `not-tested` rather than as a pass |

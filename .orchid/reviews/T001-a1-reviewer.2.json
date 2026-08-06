@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e1-T001-a1-881f",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "dccb3d4afaeff6cda7349b1aa7d513a4954eb232",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Inherited Git state such as `GIT_DIR` can redirect the trust probe to an acknowledged repository, allowing pump, tick, and service installation for a different unacknowledged target."
+}

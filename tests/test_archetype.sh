@@ -171,9 +171,10 @@ assert_match "dupname" "$dup_err" "duplicate archetype id error names the archet
 # Integration level: `orchid task create/advance/set` and `orchid merge`
 # driving a real `review`-archetype task end to end.
 # ============================================================================
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # -- task create --archetype review writes archetype: review ---------------
 "$ORCHID_BIN" task create R001 "review demo" --archetype review
@@ -220,12 +221,12 @@ assert_eq arbitrating "$("$ORCHID_BIN" task show R001 | grep '^status: ' | cut -
 
 # -- review task: arbitrating -> done requires --reason and journals kind
 # arbitration (the report-accept edge is an arbitration outcome) -----------
-rc=0; "$ORCHID_BIN" task advance R001 done 2>/dev/null || rc=$?
+rc=0; "$ORCHID_BIN" task advance R001 "done" 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "review archetype: arbitrating -> done without --reason must fail (INV-08)"
 assert_eq arbitrating "$("$ORCHID_BIN" task show R001 | grep '^status: ' | cut -d' ' -f2)" "R001 stays in arbitrating after the refused reason-less done"
 
-"$ORCHID_BIN" task advance R001 done --reason "accepted: findings addressed upstream"
-assert_eq done "$("$ORCHID_BIN" task show R001 | grep '^status: ' | cut -d' ' -f2)" "review archetype: arbitrating -> done with --reason succeeds"
+"$ORCHID_BIN" task advance R001 "done" --reason "accepted: findings addressed upstream"
+assert_eq "done" "$("$ORCHID_BIN" task show R001 | grep '^status: ' | cut -d' ' -f2)" "review archetype: arbitrating -> done with --reason succeeds"
 assert_match "arbitration" "$(cat .orchid/journal.md)" "arbitrating -> done journals kind=arbitration"
 assert_match "accepted: findings addressed upstream" "$(cat .orchid/journal.md)" "arbitrating -> done journals the supplied reason"
 
@@ -293,8 +294,8 @@ plant_reviewer_envelope R003 2
 assert_eq arbitrating "$(r003_status)" "R003 rework cycle: reviewing -> arbitrating (round 2, attempt-2 envelope present)"
 
 # arbitrating -> done (needs --reason; journals kind=arbitration)
-"$ORCHID_BIN" task advance R003 done --reason "accepted after rework"
-assert_eq done "$(r003_status)" "R003 rework cycle: arbitrating -> done"
+"$ORCHID_BIN" task advance R003 "done" --reason "accepted after rework"
+assert_eq "done" "$(r003_status)" "R003 rework cycle: arbitrating -> done"
 
 # Both arbitration OUTCOMES (the rework decision and the final done
 # acceptance) journaled with kind=arbitration, each with its own reason.

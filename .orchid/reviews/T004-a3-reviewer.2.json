@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e4-T004-a3-cc13",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "c07d38efce88c735e4a85a4f712d684e056bfe54",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "At lib/common.sh:10, the SC2034 directive precedes the first command, so ShellCheck applies it file-wide and can hide unrelated warnings."
+}

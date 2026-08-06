@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a1-50e6",
+  "task": "T005",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "346795c2f61875d93b95cc9ebf9e655ee1616cc4",
+  "summary": "One deviation worth flagging: lesson L014 says to use `cd_scratch`, but that helper was introduced on the unmerged `task/T006` branch and does not exist at this base. Rather than duplicate it into `te",
+  "commits": [
+    "346795c2f61875d93b95cc9ebf9e655ee1616cc4"
+  ]
+}

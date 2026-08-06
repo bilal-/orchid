@@ -114,7 +114,7 @@ role_forbids() {  # role -> forbidden capability atoms, one per line
 # known key -- this is the one place that needs to discover WHICH custom
 # role ids even exist in config at all.
 _role_custom_names() {
-  local repo="$1" f all rid
+  local repo="$1" all rid
   # `[a-zA-Z0-9_-]+` (WITH the hyphen): a custom role id like
   # `role.code-reviewer=...` is a perfectly legal config key (plugin/role
   # NAMEs elsewhere in this codebase already allow hyphens -- e.g. shipped

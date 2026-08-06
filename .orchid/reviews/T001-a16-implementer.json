@@ -1,0 +1,10 @@
+{
+  "contract": 1,
+  "job_id": "j-e23-T001-a16-fb50",
+  "task": "T001",
+  "operation": "implement",
+  "status": "failed",
+  "engine": "orchid/codex",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "85677cfda63d85e80ce9e819d62707f6314517d8"
+}

@@ -278,10 +278,13 @@ _conform_check_no_output_pollution() {
   reqfile="$(mktemp)"
   _conform_reqdoc "conform-no_output_pollution" conform "$op" "$outfile" > "$reqfile"
 
-  before="$(find "$scratch" -mindepth 1 | sort)"
+  # Both snapshots include the "$scratch" root line itself (excluding it
+  # would need a find depth primary that is not POSIX); identical in both,
+  # it cancels out of the comm(1) diff below.
+  before="$(find "$scratch" | sort)"
   rc=0
   ( cd "$scratch" && ORCHID_DRYRUN=1 "$dir/$ep" "$reqfile" </dev/null >/dev/null 2>&1 ) || rc=$?
-  after="$(find "$scratch" -mindepth 1 | sort)"
+  after="$(find "$scratch" | sort)"
   rm -f "$reqfile"
 
   # -vxF (exact whole-line match), NOT -vF (substring): a plain -vF would

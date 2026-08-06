@@ -102,7 +102,8 @@ orchid plan apply --reason "initial plan"
 
 From here, follow [quickstart.md](./quickstart.md) starting at
 [step 5](./quickstart.md#5-start-the-orchestrator-and-walk-away) — starting
-the orchestrator, `orchid service install` for unattended operation,
+the orchestrator, explicitly acknowledging the new repository with `orchid
+trust unattended`, then `orchid service install` for unattended operation,
 `orchid status`/`orchid status --html` to check in, and answering any
 genuine blocker via `orchid answer`/`orchid task unblock`.
 

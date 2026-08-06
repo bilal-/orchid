@@ -103,7 +103,8 @@ printf 'manifest_version=1\nid=test/acme\nversion=0.1.0\nkind=engine\napi_versio
   > "$HOME/.orchid/plugins/engines/acme/plugin.conf"
 printf '#!/usr/bin/env bash\ntrue\n' > "$HOME/.orchid/plugins/engines/acme/run"
 chmod +x "$HOME/.orchid/plugins/engines/acme/run"
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create T001 demo
 
 m="$("$ORCHID_BIN" jobs prepare T001 implementer implement)"

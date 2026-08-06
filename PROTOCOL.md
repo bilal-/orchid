@@ -14,14 +14,30 @@ part of the architecture; this file never changes to suit one.*
   the operator alone moves anything to origin. `orchid init` also installs
   a `.git/hooks/pre-push` guard (`push_guard`, config, default true) as
   defense-in-depth: it refuses any push of a `task/*` branch or the
-  integration branch unless `ORCHID_ALLOW_PUSH=1`, so a session violating
-  this rule (deliberately or by accident) still cannot push either.
+  integration branch unless `ORCHID_ALLOW_PUSH=1`. This bullet is prompt
+  policy and the hook is a bypassable backstop (it may also be absent when
+  an operator hook already exists); neither is OS/network containment for a
+  shell-capable orchestrator.
 - **You are the orchestrator.** Your only interface to run state is `orchid
   <verb>` and, for spawning engine work, `runners/orchid-launch`. Never
   hand-edit anything under `.orchid/` — no frontmatter, no journal, no
   roadmap — even when you can see exactly what line would need to change.
   Every mutation goes through a verb so it is fenced, journaled, and legal by
   construction.
+- **Most of this file is now executable.** `orchid drive` (v1.1) runs ONE
+  deterministic pass of THE TICK below — steps 1, 2, 3 and 5 — in shell, with
+  no model involved: lease refresh, reconcile/check/gc ordering, safe
+  dispatch, implementer reconciliation, verification, reviewer routing and
+  reconciliation, deterministic approval where policy is unambiguous, one
+  serialized merge, status regeneration, final lease refresh. It never makes
+  a free-form judgment: every decision it takes reads a structured field (a
+  frontmatter key, a validated envelope field, an archetype's declared
+  transitions, a schedule predicate, an exit code), never prose. Where policy
+  is ambiguous it stops at a named JUDGMENT BOUNDARY (see "Judgment
+  boundaries" below) and exits 16 rather than guessing. A human or an LLM
+  front-end executing this file by hand is still fully supported and is what
+  the prose below describes; `orchid drive` is the same procedure, mechanized,
+  and the two are interchangeable pass by pass.
 - **Every judgment carries `--reason`.** The kernel only hard-requires
   `--reason` on a subset of edges (`orchid run advance`/`run accept` always;
   `orchid task advance` on `*→merging`, `*→blocked`, and `arbitrating→rework`
@@ -100,6 +116,171 @@ part of the architecture; this file never changes to suit one.*
   as if it had passed. An `optional` entry's failure is never blocking, on
   any of the five points — read it if it reconciled, move on if it didn't.
 
+## Judgment boundaries (`orchid drive`, `orchid run boundary`, `orchid task arbitrate`)
+
+A **judgment boundary** is the one thing deterministic policy is allowed to
+do instead of deciding: stop, name why, and hand the decision to someone who
+may make it. `orchid drive` records at most one per pass through its own
+verb — `orchid run boundary set --kind <kind> [--task <id>] --reason "..."` —
+and exits 16, the dedicated judgment-boundary exit code. `orchid run boundary
+show` prints the record (schema 1: `kind`, `task`, `reason`, `epoch`, `at`)
+and itself exits 16 when one is recorded, 0 when none is. `orchid run boundary
+clear --reason "..."` releases it. That verb is the record's single writer;
+nothing else may create, edit or delete it.
+
+When one pass meets several boundaries, the one RECORDED is the one a woken
+orchestrator could actually SETTLE, ahead of the ones only an operator can;
+among equals, the first in task-id order. The walk still notes every boundary
+it meets. Without that precedence a `blocked` task, which raises the same
+operator-only boundary on every pass until a human runs `task
+unblock`/`task retry`, would permanently mask a later task's arbitrable one
+and spend an LLM wakeup per pump cycle on a decision the woken model has no
+verb to make.
+
+**"Could settle" is never a property of the kind alone.** It is the
+conjunction of three facts, and each of them is read from structured data:
+
+1. **Which verb records the result.** `review-evidence`/`review-conflict` →
+   `orchid task arbitrate`. `planning` → `orchid plan apply`. `run-complete`
+   → `orchid run accept --evidence`. `blocked-task`, `hook-failure`,
+   `worktree-conflict` and `operator-decision` name none — no procedure an
+   orchestrator can run resolves them.
+2. **Whether the resolved adapter's `command_surface` admits that verb.** A
+   `brokered` adapter can run only the broker
+   (`runners/orchid-orchestrator-command`), whose single state-changing
+   judgment verb is `orchid task arbitrate`; it refuses `plan apply`, `run
+   accept`, `task unblock` and every other write. A `soft` adapter has no
+   enforceable restriction, so every verb is reachable from it. An
+   unrecognized label reads as `brokered` — the narrower surface, so an
+   unknown label can only ever route more boundaries to a human.
+3. **Whether the task's CURRENT status lets that verb run.** `orchid task
+   arbitrate` refuses any status but `arbitrating` (exit 3), so a review
+   boundary raised while the task is still `reviewing` — which is exactly
+   what the reviewing walk's own slot-independence boundary is — is not
+   arbitrable, however arbitrable the same kind becomes one transition later.
+
+Both consequences are load bearing. A `run-complete` boundary against a
+`brokered` orchestrator is a HUMAN's job: no model can run the verb that
+closes the run. And a review boundary raised from `reviewing` must not
+outrank a genuine operator-only one with a verb that would have exited 3.
+
+The kernel-owned boundary kinds:
+
+| kind | raised when |
+| --- | --- |
+| `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
+| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry` resolves it |
+| `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
+| `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
+| `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
+| `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository |
+| `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
+| `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem |
+
+**Waking a model for one asks the SAME question.** The precedence above
+decides which of several boundaries goes into the record;
+`runners/orchid-pump` then asks whether to wake an orchestrator for the one
+that did — and it is the identical three-fact test, re-derived from the
+recorded `kind`, the named task's current status, and the resolved adapter's
+`command_surface`. A boundary no admitted verb can settle wakes nobody: it
+would recur identically until a HUMAN acts, so the pump refuses to spend a
+wakeup per cycle re-reading it, and the driver instead raises one `orchid
+notify` blocker per distinct record — the surface that condition actually
+needs. The pump prints `pump: judgment boundary [<kind>] is operator-only —
+not waking an orchestrator` and exits 0.
+
+These two questions used to differ, and the gap was a defect rather than a
+nuance: `run-complete` was classed as orchestrator-resolvable even though the
+broker refuses `orchid run accept`, so a finished run woke a model every
+staleness window forever — and because the notify path is suppressed for
+anything an orchestrator can settle, the operator was never told to run the
+acceptance step at all. They are now one function.
+
+**The arbitration truth table.** At `arbitrating`, exactly one of three arms
+applies — they are mutually exclusive and evaluated in this order, so an
+incomplete review set is never also reported as a conflict, and vice versa:
+
+1. **Evidence** — the evidence set is EXACTLY the one the kernel's own
+   `reviewing`→`arbitrating` gate counts, and this arm mirrors that gate
+   rather than second-guessing it. An envelope for the current attempt counts
+   only when it is bound to the task's CURRENT `candidate_sha`, validates,
+   and reports status `ok`. Everything else is **skipped, never a boundary**:
+   an envelope bound to a different candidate (a sibling left by a relaunched
+   reviewer slot, or by the `merging`→`testing` rebase edge), one whose
+   `candidate_sha` cannot be read at all, one that fails to validate, and one
+   whose status is not `ok`. The kernel gate says so in its own words — "Only
+   status==ok envelopes count; anything else is silently skipped, same as an
+   sha mismatch". This arm then fires on the COUNT alone: fewer than
+   `review_required_count(risk_tier)` surviving envelopes, or no
+   `candidate_sha` on the task at all. → boundary `review-evidence`, **no
+   transition**.
+
+   **Why skipping, not failing closed.** The ordinary recovery path is a
+   reviewer slot that errors, `orchid jobs reconcile` filing the adapter's own
+   non-`ok` envelope bound to the current candidate, and the relaunch filing a
+   good one. The kernel gate ignores the dead envelope and admits the task to
+   `arbitrating` with a complete unanimous set. A driver that boundaried on
+   that dead envelope would then refuse deterministic approval forever, over a
+   file no verb can remove. A boundary must never be reachable only through a
+   state the kernel itself calls fine. This is not a weakening: the driver
+   adds `envelope_validate` on top of the gate's own two tests, so it can only
+   ever count FEWER envelopes than the gate — a shortfall still stops the
+   pass, and it stops it at `arbitrating`, where `orchid task arbitrate` is
+   exactly the verb that settles it.
+2. **Deterministic approval** — every required review is valid and current,
+   every verdict is `approve`, every review reports `scope_complete: true`,
+   and no finding reaches the task's `blocking_severity` (a finding whose
+   severity the kernel does not recognize counts as blocking, fail closed).
+   → `orchid task arbitrate <id> --result approve --reason "..."`.
+   **What the severity gate actually gates:** it reads `findings[]`, which
+   only an adapter that populates it can trigger — and the shipped adapters
+   are split on that. `plugins/engines/claude/run` asks a `review` reply for
+   `FINDING: <low|medium|high>: <title>` lines alongside the `VERDICT:` line
+   and parses them into `findings[]`, so for a claude reviewer the gate is
+   live (a review that reports nothing still writes `findings: []`, which
+   blocks nothing — an engine reporting no findings is a valid review, not
+   evidence of a broken gate). `plugins/engines/codex/run` and the other
+   shipped `review` adapters still ask for a `VERDICT:` line only and write
+   `findings: []` verbatim (`FINDING:` lines are requested by the `critique`
+   prompt alone). For those reviewers the `blocking_severity` gate is
+   **inert**, and a deterministic approval rests on `verdict` and
+   `scope_complete` alone. Check which adapter reviewed before reading a
+   clean gate as a second opinion you are already getting.
+   **And read the live case the other way round, because it is the one that
+   will surprise you:** where `findings[]` IS populated, a **non-empty** one
+   blocks an otherwise-approving review. Read the TASK's own
+   `blocking_severity` (`orchid task show <id>`) rather than assuming one:
+   `medium` is only the fallback the gate applies when the field is absent,
+   and the shipped archetypes disagree — `templates/task.md` and
+   `templates/task-test.md` ship `high`, `task-migrate`/`task-refactor` ship
+   `medium`. On a `medium`-threshold task a single `medium` finding on a
+   review whose verdict is `approve` is not "approved with a
+   note" — it is arm 3, a `review-conflict` boundary that halts the run for
+   arbitration. That is the intended behavior, not a bug to route around:
+   the arbiter decides, and `orchid task arbitrate --result approve` settles
+   it in one verb. Reviewers habitually approve-with-nits, so the reviewer
+   prompt defines the three severities by CONSEQUENCE (`low` = worth saying,
+   not worth stopping for) rather than by emphasis — a nit filed as `medium`
+   stops a run nobody meant to stop.
+3. **Conflict** — anything else: a `request-changes` verdict, a blocking
+   finding, mixed verdicts, or a non-scope-complete review. → boundary
+   `review-conflict`, **no transition**. Deciding what to do about a real
+   disagreement is judgment, and a driver that auto-reworked on it would be
+   making exactly the call it is not entitled to make.
+
+**`orchid task arbitrate` is the sole explicit judgment-result verb.**
+`orchid task arbitrate <id> --result approve|request-changes --reason "..."
+[--waive-attempt]` records an arbitration outcome in one structured shape and
+DERIVES the destination from the archetype's declared transitions: an
+approval takes `arbitrating:merging` when the archetype declares it, else
+`arbitrating:done`; a request-changes takes `arbitrating:rework`. It performs
+the move through `task advance`, so every existing gate (reason requirement,
+attempt accounting, evidence invalidation, the `arbitration` journal kind)
+applies unchanged. `orchid task advance` from `arbitrating` remains legal for
+an operator and for the hand-executed walk below — but the driver and the
+brokered orchestrator surface only ever use `task arbitrate`, which is what
+makes "who decided this, and what did they decide" one greppable fact.
+
 ## PLANNING (pre-run, before THE TICK ever runs)
 
 Before `run_status` leaves `planning`, there is no active task to walk — this
@@ -119,6 +300,50 @@ scaffold true`), whose `verification_commands` are structural assertions
 product tests that cannot exist until this task creates them — resolving
 the bootstrap paradox of testing a test-runner that doesn't exist yet. Every
 task after it drafts normally.
+
+**One-command setup (existing repo).** Everything mechanical that precedes
+step 1 below — preflight, repo-config validation, `orchid init`, the
+integration worktree, the epoch, and the import in step 1 itself — is also
+available as a single operator-run command, outside this loop:
+`orchid start <requirements-file> [--verify <command>] [--worktree <path>]
+[--ack-unattended --reason "..."]`. It is a sequencer over exactly those
+verbs and refuses whatever it cannot do safely, printing the exact recovery
+command: it never guesses a verification command, never overwrites an
+operator file or a directory that is not exactly this repository's
+integration checkout, and never resumes or takes over a run — against
+existing state it requires `run_status: planning`, no fresh unreleased
+lease, no live run/verb lock, and `ORCHID_EPOCH` proving ownership of the
+CURRENT epoch (it mints an epoch only where none exists yet, at `0`).
+`planning` must hold on every copy that exists, not just the nearest one:
+the integration checkout's `.orchid/roadmap.md`, the roadmap COMMITTED on
+the integration branch (those two lag each other in opposite directions —
+durable state only reaches the branch at `plan apply`/`run accept`, and a
+`plan apply` killed between its `update-ref` and its sync-back leaves the
+branch ahead of the checkout), and that branch carrying no committed
+`.orchid/tasks/`, which only `orchid plan apply` ever puts there. It holds
+the per-verb transactional lock across everything it mutates and re-checks
+all three underneath it, so the commit below cannot land on a branch whose
+run is already in flight and move a candidate's `base_sha`.
+A `--verify` command (a single line — `orchid.config` is a line-oriented
+`key=value` file, so a value carrying a newline or any other control
+character is refused rather than recorded truncated) is appended to the
+integration checkout's `orchid.config` and COMMITTED onto the integration
+branch by that same command — only when that file (as committed on the
+branch, not merely as resolved through the machine-local env/user layers)
+configures none yet, and never as a replacement — so setup needs no follow-up
+`orchid config commit` and leaves the integration checkout clean. That commit
+is whole-file, so append-only holds against the BRANCH and not merely against
+the file on disk: a checkout whose `verify=` line differs from the branch's,
+or which is missing any other line the branch carries, is refused above the
+mutation boundary (naming both ways to reconcile it) rather than committed
+over, and an `orchid.config` that `.gitignore` excludes and no commit tracks
+is refused there too, since `git add` cannot stage it and setup will not
+force it past a rule the operator wrote. Unattended trust stays off unless
+both `--ack-unattended` and a non-empty `--reason` are given, which invokes
+the machine-local `orchid trust` acknowledgement. Nothing below depends on
+it: every verb it calls remains individually callable, and the manual
+sequence in
+[docs/quickstart.md](./docs/quickstart.md) is unchanged.
 
 1. `orchid requirements import <file>` — snapshot the operator-authored
    requirements into `.orchid/requirements.md` (refused once `run_status`
@@ -490,6 +715,127 @@ left for the next pass to retry, exactly like a transient engine hiccup
 elsewhere in the loop. Then `orchid run refresh-lease` once more (so a
 concurrent resumer never mistakes this pass for a stalled one).
 
+**How `orchid drive` renders the five steps above.** The mechanized pass is
+the same procedure; the points below are worth stating because it must be
+decidable without a model — and because every one of them is a place a
+one-pass driver could otherwise stop progressing in silence:
+
+- **Archetype-driven, never archetype-named.** The walk routes on the task's
+  CURRENT status plus its archetype's DECLARED `transitions=`/`outcome=`. A
+  queued task dispatches into the first active status its archetype declares
+  an edge to — `implementing` for `feature`, `reviewing` for the shipped
+  `review` archetype, whatever a custom archetype declares for itself — and
+  `outcome=report` means no worktree and no candidate is built (both shas
+  pin to the integration head so review envelopes still bind to something
+  concrete). No branch anywhere reads an archetype's, or an engine's, name.
+- **Worktree dispatch is idempotent and crash-safe.** The dispatch worktree
+  has one deterministic path, a sibling of the repository named
+  `<repo>-<task-id>`. It is REUSED only when the recorded path, the task's
+  own `branch`, the Git common directory and the owning task all agree and
+  no other task claims it; an exact orphan at that path with no recorded
+  field yet — the signature of a pass that died between `git worktree add`
+  and `orchid task set <id> worktree <path>` — is ADOPTED rather than
+  recreated. Anything else (a vanished recorded path, a foreign checkout, a
+  branch mismatch, a path another task claims, a branch already checked out
+  elsewhere) is REFUSED as a `worktree-conflict` boundary. A duplicate
+  worktree is never created to work around any of these.
+- **A dispatch launches BEFORE it advances.** The queued task's status is the
+  only record that it still needs dispatching, so it is not given up until a
+  job has actually been spawned. `no eligible engine` (exit 14) is the case
+  this exists for: it is a WAIT, the ledger window reopens on its own, and
+  Failover above requires the task to stay in its PRIOR status
+  (`pending`/`rework`) so the identical dispatch simply succeeds on a later
+  pass. Advancing first and discarding the launch's result would strand the
+  task in an active status with no job, no envelope and no boundary — a run
+  that polls forever on work nobody is doing. A job already outstanding for
+  that task and operation (a pass that died between the spawn and the
+  advance) is adopted, never spawned a second time.
+
+  **A `pid: 0` manifest is not an outstanding job.** `orchid jobs prepare`
+  mints every manifest with `pid: 0` and the launcher stamps the real pid
+  only after the spawn, so a `pid: 0` manifest means a launch died in
+  between and nothing is running. Adopting one would defeat the whole rule
+  above — the task advances behind a job that will never file an envelope,
+  and nothing else in the kernel reads it as live either (the driver's
+  escalation sweep skips `pid: 0`; ordinary `orchid jobs gc` skips it by
+  design). So the driver treats it as no job and relaunches, and its
+  reconcile/check/gc step additionally runs `orchid jobs gc --reap-prepared
+  --older-than-s <stall_minutes×60>` to clear the orphan. That reap is
+  BOUNDED, never `--older-than-s 0`: a manifest younger than the bound may
+  belong to a launcher that is between `jobs prepare` and its own spawn line
+  right now, and reaping it would delete the pack and request document out
+  from under a live launch.
+- **Hooks are deferred, never skipped — and never gated past their job.** A
+  hook is a job: it is launched, reconciles on a later pass, and only then
+  can its artifact be read. So the driver dispatches a bound point's entries
+  (the first with no `--engine`, each additional one named explicitly) and
+  DEFERS the step that point guards to the next pass, rather than blocking a
+  pass on an engine. Three rules keep that deferral bounded:
+  - Once envelopes exist, an `optional` entry never gates anything, and a
+    `:required` entry with no `ok` envelope for the current candidate raises
+    a `hook-failure` boundary and takes no transition.
+  - Envelopes are counted IN SCOPE for the task's current `candidate_sha`:
+    one left behind by a candidate that has since moved *within the same
+    attempt* (the `merging`→`testing` rebase edge) is not evidence for the
+    candidate on the task now, so the point is dispatched again for the new
+    one instead of being treated as answered-but-unsatisfiable forever.
+  - An `optional` point whose handler dies leaving NO envelope is noted and
+    stepped over — it gates nothing, so it also never spends the task's
+    `infra_failures` budget nor gets relaunched into the same wall pass after
+    pass.
+  `on_verify_fail`'s guidance is attached via `orchid task set <id>
+  hook_guidance` before the rework advance, exactly as above.
+- **A reviewer relaunch is keyed on the SLOT, never on a count.** `orchid
+  jobs review-plan`'s table is the slot ledger: which slots exist and which
+  engine each was routed to. A filed review is credited to a slot only when
+  its own `.engine` is that slot's engine (an envelope naming no engine is
+  credited last, to whatever slot is still open), and each review is credited
+  exactly once. Counting instead would let a relaunch that landed a SECOND
+  review from slot 1's engine both satisfy the tier's count and stop slot 2
+  from ever being dispatched — handing the truth table two reviews from one
+  engine to approve unanimously, which is precisely the independence the
+  risk-tiered policy exists to enforce. When the count is met but a routed
+  slot still has no review of its own, the pass stops at a `review-evidence`
+  boundary rather than adding a third review to a set the kernel already
+  counts as complete. The one relaunch the escalation ladder below does NOT
+  make is a reviewer's, for the same reason: it would go back through the
+  role's default chain rather than the slot's engine.
+- **A finished run is handed off, not left polling.** When every task is
+  `done`, the driver takes COMPLETION's step 1 itself (`orchid run advance
+  accepting --reason "all tasks done"` — a transition whose whole
+  precondition is that fact) and stops at a `run-complete` boundary for the
+  rest: requirement coverage, the operator's acceptance commands, and the
+  evidence file `orchid run accept` demands are judgment work. Without it a
+  finished headless run would poll forever — every pass clean, exit 0,
+  `run_status` never leaving `running`, nobody woken to notice it is over.
+  The count is taken from the statuses the walk READ, so the pass that
+  finishes the last task exits 0 on its own progress and the boundary is
+  raised by the next one. Against a `brokered` orchestrator that boundary is
+  a blocker for a HUMAN, not a hand-off to a model: the broker refuses
+  `orchid run accept`, so no woken model can close the run.
+- **The lease is refreshed THROUGH the pass's long steps, not just at its
+  ends.** `orchid verify` runs the task's whole suite in the pass's own
+  foreground, and `orchid merge` re-runs it on the integration checkout.
+  Steps 1 and 5 above refresh the lease at the two ends of a pass, which is
+  enough only while everything between them is quick — on a repository whose
+  suite runs longer than `pump_stale_s` (default 900) the running pass's own
+  lease would read as stale, a second pump would start and fence a fresh
+  epoch, and the first pass would then die on the next verb's `epoch_require`.
+  No pass could ever complete there. So the driver refreshes the lease
+  immediately before and after each of those two steps and keeps a background
+  heartbeat refreshing it throughout, at a third of the staleness window.
+  `orchid run refresh-lease` is a named verb and takes no verb lock, so this
+  neither writes state outside a verb nor can deadlock against the step it
+  covers.
+- **One counter for the escalation ladder.** The prose ladder in step 2
+  spends its first occurrence on a free relaunch that touches no counter; a
+  driver has no per-attempt memory outside `.orchid/`, and a private
+  retry-counter file would be exactly the un-verbed cross-process state this
+  file forbids. So every dead/stalled/timed-out job goes through `orchid task
+  infra-fail` — the kernel-owned counter, which journals its own reason and
+  auto-blocks at `infra_max` — and relaunches for as long as that cap has not
+  blocked the task. Same ladder, same bound, one counter, no hidden state.
+
 ## RESUME
 
 1. `orchid run resume` — fences a new epoch; if the previous run's lock is
@@ -516,14 +862,105 @@ concurrent resumer never mistakes this pass for a stalled one).
 
 ## HEADLESS OPERATION
 
+**Machine-local acknowledgement is mandatory.** Before either headless entry
+point may act, the operator must run:
+
+```sh
+orchid trust unattended <repo> --reason "<why this target is trusted for unattended execution>"
+```
+
+The JSON record and identity anchor are outside the repository. Validation
+binds Git's shared common-directory device/inode, the inode of Git's stable
+untracked `description` witness, the root commit(s) reachable from `HEAD`, and
+the trust-policy version compiled into Orchid. The anchor is an outside hard
+link to that witness; it keeps the witness inode allocated after repository
+replacement, so reuse of the common-directory device/inode cannot resurrect
+an acknowledgement. This requires the trust store and common directory to be
+on one filesystem. Linked worktrees share an acknowledgement and a
+same-filesystem move preserves it; a clone, copy, recreated/replaced `.git`,
+root-history replacement, or policy-version change does not. Repository
+content, origin URLs, Git config, and `orchid.config` cannot grant it.
+With no identity-keyed acknowledgement candidate, inspection stops after
+side-effect-free common-directory identity discovery, reports root
+verification as pending, and performs no Git query, worktree enumeration,
+history walk, or scratch-file creation. Explicit acknowledgement and an
+existing structurally eligible candidate take the bounded local-only history
+verification path.
+Identity queries ignore ambient Git repository-selection or object-view
+variables, disable replacement refs, legacy grafts, and shallow boundaries,
+and do not lazy-fetch missing history. A shallow repository therefore cannot
+be acknowledged until its commit ancestry is locally complete.
+Trust-boundary paths are captured and compared losslessly, including literal
+newlines. Store containment is checked against the physical checkout marker
+rather than a configurable Git worktree path. A linked marker must point back
+to the exact caller-selected path registered under the common directory;
+copying a linked checkout and its `.git` pointer is denied. A `HOME` layout
+that resolves the trust store inside the target or any registered sibling
+worktree is refused. The JSON record must be an operator-owned, single-link
+regular file without group/other write permission; record symlinks, hard-link
+aliases, and non-files fail closed. `orchid trust show <repo>` displays the
+decision, anchor binding, and operator-authored reason/timestamp; `orchid
+trust revoke <repo>` removes the outside record and anchor (or a rejected
+symlink itself, without following it). Revocation resolves that record with
+the same bounded on-disk identity derivation and no Git version, ref,
+history, object, root, or scratch check, so an unsupported Git or a
+mismatched, shallow, object-missing, or corrupt-history repository can never
+strand an acknowledgement that would apply again later.
+Root verification is never cached: acknowledgement and every later gate re-walk
+the reachable history and re-hash each commit's exact stored payload, so a
+rewritten, removed, or corrupted object is re-detected even when refs and the
+anchor are untouched. Reuse keyed on identity plus `HEAD` would miss exactly
+that, and no portable filesystem witness can prove an object store unchanged
+more cheaply than reading it. `show` reports `root_verification: walked`; the
+cost is bounded by batching the walk, not by skipping it.
+A scheduled invocation's output is discarded by the scheduler and the
+repo-local service log is not opened until after the gate, so its refusals are
+also appended to `~/.orchid/unattended-trust/refusals.log`, which `orchid
+doctor` surfaces. A missing `jq` keeps the gate closed and names the missing
+tool rather than reporting the record as malformed.
+Interactive sessions, planning, manual verbs, and read-only commands do not
+require or create this record.
+
+**Qualify a repository before acknowledging it.** The acknowledgement opens the
+gate; it does not make the target drivable. Three failure modes only appear on a
+real codebase, and each one stalls a headless run with no actor able to move it:
+
+- a verification suite whose single run approaches `pump_stale_s` — the driver
+  holds no lease refresh across a synchronous verification and the merge
+  re-verifies after its rebase, so one pass costs roughly twice that duration
+  with the lease untouched, after which another pump treats the run as
+  abandoned;
+- an implementer that cannot execute a command, for which running a repository
+  script and changing a file mode are operator hand-offs no in-loop actor can
+  perform;
+- a committed artifact derived from the tree's exact content, which the merge
+  rebase invalidates and which then has no in-loop actor able to regenerate it.
+
+`scripts/beta-qualify.sh` probes all three locally and records anonymized
+evidence — check identities, durations, exit codes, and outcomes, never
+repository content. It writes nothing of its own into the target; the one
+thing it executes there is the target's own configured `verify=` command, run
+once in place to time it (`--no-run-verify` skips it and records that probe as
+`not-tested`). It never acknowledges trust on the operator's behalf and never
+contacts a remote. What it cannot settle
+locally, including the inbound half of the blocker round trip, it records as
+`not-tested` with the reason rather than as a pass. See
+[docs/beta-qualification.md](./docs/beta-qualification.md).
+
 The interactive session above is one front-end for this file;
 `runners/orchid-pump` (cron/launchd-invoked, or run by hand) is the other. The pump
 never builds a prompt and never reads an envelope's contents — only exit
-codes — and it does at most one thing per invocation: hand off to
-`runners/orchid-tick`, which executes THE TICK exactly once (fencing a fresh
-epoch and refreshing the lease via its own `orchid run resume` call, same as
-RESUME step 1 above) and exits. Every other outcome below is a no-op, exit
-0 — a cron poll finding nothing to do is normal, never an error:
+codes — and it does at most one thing per invocation. Every outcome below
+other than a hand-off is a no-op, exit 0 — a cron poll finding nothing to do
+is normal, never an error:
+
+- **Trust denied:** after the side-effect-free uninitialized, split-brain,
+  and already-complete checks, the pump refuses before it creates
+  `runtime/`, drains the outbox, or hands off. The tick independently checks
+  the same record before `run resume` or any spawn, so invoking the tick
+  directly is not a bypass. Service installation is gated too; service
+  status/uninstall remain available so an operator can inspect or remove a
+  schedule after revocation.
 
 - **Uninitialized, or the run is already `complete`:** the pump exits
   immediately, touching nothing (it will not even create `runtime/` on an
@@ -543,8 +980,9 @@ RESUME step 1 above) and exits. Every other outcome below is a no-op, exit
   IS the mutual-exclusion mechanism between an interactive session and the
   pump: lease STALENESS, not a lock file. An interactive session already
   refreshes the lease every pass (THE TICK step 1 and step 5 above), so the
-  pump only ever wakes an ABANDONED run (crashed, or a session that quit
-  without a graceful stop). Combined with epoch fencing — `orchid run
+  pump treats the run as abandoned (crashed, or a session that quit without
+  a graceful stop). A live but delayed session can still cross that time
+  threshold. Combined with epoch fencing — `orchid run
   resume` mints a fresh epoch on every invocation, interactive or headless —
   a tick that wakes a stale run and a session that was actually still alive
   can never both mutate state: whichever call mints the newer epoch wins,
@@ -554,16 +992,78 @@ RESUME step 1 above) and exits. Every other outcome below is a no-op, exit
   the go/no-go) before ever handing off; a `no eligible engine` verdict here
   means the pump exits 0 and simply tries again next invocation, rather than
   crash-looping a cron job over an outage it cannot fix.
-- **Otherwise:** the pump `exec`s the tick, which resolves the orchestrator
-  role via `resolve_role_available` (exit 14 propagates verbatim if that
-  fails, for the next pump pass to retry) and spawns that engine
-  SYNCHRONOUSLY with an `orchestrate` request — the adapter is expected to
-  execute THE TICK's own verb sequence itself and report which actions it
-  took (`.actions[]`) plus a `.summary` in its envelope. The tick marks the
-  ledger from that envelope's status exactly like `jobs reconcile` marks any
-  other job's engine, and exits non-zero whenever the status wasn't `ok` —
-  so a cron scheduler's own failure signal reflects a genuinely bad tick,
-  not a benign no-op.
+- **Deterministic drive (the normal case, v1.1):** the pump runs
+  `runners/orchid-drive` — one full deterministic pass of THE TICK, no model
+  involved — and reads only its exit code. Exit 0 means the pass completed
+  with nothing waiting on a human: the pump prints `pump: deterministic drive
+  completed the pass, no judgment boundary` and exits 0, having spent no
+  quota at all. Any exit other than 0 or 16 is a real failure and propagates
+  verbatim.
+
+- **Judgment boundary → and only then, an LLM:** exit 16 alone is not enough.
+  The pump additionally re-reads the boundary through its own verb (`orchid
+  run boundary show`, itself exiting 16 when a record exists). BOTH must
+  agree before an orchestrator is woken — the exit code says "policy
+  stopped", the record says which task and why, and a boundary the driver
+  reported without recording (a state no orchestrator is entitled to resolve
+  autonomously) deliberately fails this second test. A third fact is then
+  derived from the record: some verb must settle this boundary, the resolved
+  orchestrator adapter's `command_surface` must admit that verb, and the
+  named task's current status must let it run (see "Could settle is never a
+  property of the kind alone" above). A boundary failing any of those ends
+  the invocation with `pump: judgment boundary [<kind>] is operator-only —
+  not waking an orchestrator`, exit 0: it would recur identically on every
+  pass until a human acted, and the driver has already raised the blocker
+  that reaches one. With all three satisfied, the
+  pump probes `resolve_role_available orchestrator` and `exec`s
+  `runners/orchid-tick` — the only path that reaches it, since a pass the
+  deterministic policy can resolve on its own goes through
+  `runners/orchid-drive` above and never wakes a model — which resolves that
+  role again (exit 14 propagates verbatim, for the next
+  pump pass to retry), prints the resolved engine's `command_surface` label
+  (`brokered` or `soft`, from its manifest), and spawns it SYNCHRONOUSLY with
+  an `orchestrate` request. The adapter reports which actions it took
+  (`.actions[]`) plus a `.summary` in its envelope. The tick marks the ledger
+  from that envelope's status exactly like `jobs reconcile` marks any other
+  job's engine, and exits non-zero whenever the status wasn't `ok` — so a
+  cron scheduler's own failure signal reflects a genuinely bad tick, not a
+  benign no-op.
+
+**The brokered command surface.** An orchestrator woken for a boundary has
+one job: read the record, read the task and its reviews, record one decision.
+An adapter whose vendor CLI supports an enforceable per-command allowlist
+declares `command_surface=brokered` in its manifest and restricts its
+orchestrator to exactly one executable —
+`runners/orchid-orchestrator-command`, a default-deny, argument-validating
+broker. It admits a short list of exact read forms (`task show`, `task list`,
+`status [--explain]`, `jobs review-plan`, `journal tail`, `journal show`,
+`lessons list --active`, `run boundary show`), the one judgment-result verb
+(`orchid task arbitrate`), `journal add`, `lessons add`, `notify`, and `run
+boundary clear`; it refuses `trust`, `service`, `config`, `plugins`, `init`,
+`start`, every tier-2 runner, every vendor CLI, and anything a shell would
+interpret, with exit 17. It validates argv and then `exec`s the dispatcher
+with the caller's own argument vector — it never builds or evaluates a shell
+string, so there is no quoting seam to escape through. An adapter whose CLI
+offers no equivalent restriction declares `command_surface=soft`; that is an
+honest label, not a capability, and an absent label reads as `soft`. Both
+kinds remain gated behind the machine-local unattended acknowledgement above:
+a brokered surface narrows what a woken model may run, it is not OS
+containment.
+
+**Exactly what `brokered` does and does not enforce.** It is a restriction on
+COMMAND EXECUTION only. The shipped brokered adapter runs `claude -p
+--permission-mode acceptEdits --allowedTools "Bash(<broker>:*)"`, so the
+vendor CLI genuinely refuses every command that is not that one executable.
+It does NOT restrict FILE WRITES: `acceptEdits` auto-approves the vendor's
+own file-write tools, so the woken model can create and edit files anywhere
+the process can reach — including paths under `.orchid/`, and, when
+`ORCHID_ROOT` sits inside the driven repository (the layout Orchid dogfoods
+itself in), including the broker script and the rest of the Orchid tree. Nor
+does it restrict reads. "Never hand-edit anything under `.orchid/`" is a
+PROMPT instruction to the orchestrator, not an enforced boundary; the
+enforced boundaries around a woken orchestrator are the command allowlist,
+the launcher's environment allowlist, `/dev/null` stdin, the private output
+path, and the unattended-trust acknowledgement.
 
 **High-risk arbitration prefers a specific engine.** Arbitration itself is
 never a launched job — it is inline judgment (Preamble; kernel.md's
@@ -588,7 +1088,13 @@ to be running.
 
 Once `orchid status --explain` shows every task `done`:
 
-1. `orchid run advance accepting --reason "all tasks done"`.
+1. `orchid run advance accepting --reason "all tasks done"`. Under `orchid
+   drive` this step is already taken for you: a pass that reads every task as
+   `done` makes exactly this call and then stops at a `run-complete`
+   boundary, which is what wakes an orchestrator for steps 2–3 (the pump
+   never wakes one for a run it believes is still working). Arriving here at
+   `run_status: accepting` with the boundary already recorded is therefore
+   the normal headless path, not an anomaly.
 2. Run acceptance checks: requirement coverage against
    `.orchid/requirements.md` plus whatever end-to-end acceptance command(s)
    the operator configured. This is an orchestrator-executed check, not a

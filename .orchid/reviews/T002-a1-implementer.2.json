@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e31-T002-a1-60f2",
+  "task": "T002",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "5032e90a4890bb9f1dfaa83ef8b4645b382b6f20",
+  "candidate_sha": "3cbf75cba696ebd2d7297cadedbb18328ee2e7ee",
+  "summary": "Two deliberate deviations worth your eye: the driver renders PROTOCOL's escalation ladder with `task infra-fail` on *every* occurrence rather than spending a free first relaunch (a private retry count",
+  "commits": [
+    "3cbf75cba696ebd2d7297cadedbb18328ee2e7ee"
+  ]
+}

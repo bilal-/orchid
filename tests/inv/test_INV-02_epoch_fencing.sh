@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
 [ -x "$REPO_ROOT/libexec/orchid-task" ] || { echo "  SKIP: orchid-task not yet implemented (activates in Task 6)"; exit 0; }
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 cur="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
-export ORCHID_EPOCH="$cur"
+ORCHID_EPOCH="$cur"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create T001 demo || fail "current epoch mutates"
 "$ORCHID_BIN" run resume >/dev/null      # epoch moves on; we are now stale
 rc=0; "$ORCHID_BIN" task set T001 title X 2>/dev/null || rc=$?
@@ -28,10 +29,11 @@ bare="$WORK/inv02-bare"; mkdir -p "$bare"
 rn_wt="$WORK/inv02-wt"
 ORCHID_REPO="$bare" HOME="$WORK/home" "$ORCHID_BIN" init >/dev/null
 git -C "$bare" worktree add -q "$rn_wt" orchid/integration
-cd "$rn_wt"
+cd "$rn_wt" || exit 1
 export ORCHID_REPO="$rn_wt" HOME="$WORK/home"
 stale_epoch="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
-export ORCHID_EPOCH="$stale_epoch"
+ORCHID_EPOCH="$stale_epoch"
+export ORCHID_EPOCH
 "$ORCHID_BIN" run advance blocked --reason "inv02 fixture" >/dev/null
 "$ORCHID_BIN" run resume >/dev/null   # epoch moves on; ORCHID_EPOCH is now stale
 rc=0; "$ORCHID_BIN" run new --reason "should be refused" 2>/dev/null || rc=$?

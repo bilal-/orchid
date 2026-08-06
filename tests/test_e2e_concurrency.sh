@@ -58,7 +58,7 @@ $tick"
   fail "timed out waiting for both $t1 and $t2 to reconcile ok (accumulated: $acc)"
 }
 
-cd "$WORK"; git init -q .
+cd_scratch "$WORK" || exit 1; git init -q .
 
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nconcurrency=2\n' > orchid.config
@@ -92,7 +92,7 @@ jid="$(jq -r .job_id "$req")"
 task="$(jq -r .task "$req")"
 op="$(jq -r .operation "$req")"
 [ "$op" = implement ] || exit 1
-cd "$worktree"
+cd "$worktree" || exit 1
 echo "stub implementation for $task" > "stub_${task}.txt"
 git add "stub_${task}.txt"
 git -c user.email=stub-implementer@example.com -c user.name="stub implementer" \
@@ -120,7 +120,8 @@ jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
 EOF
 chmod +x "$WORK/eng/stubreview/run"
 
-export ORCHID_EPOCH="$(run_ok "orchid run start" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$(run_ok "orchid run start" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 cat > "$WORK/requirements-v1.md" <<'EOF'
 # Requirements
@@ -240,7 +241,7 @@ run_ok "advance T2 merging" "$ORCHID_BIN" task advance T2 merging --reason "appr
 rc=0; merge_t1_out="$("$ORCHID_BIN" merge T1 2>&1)" || rc=$?
 assert_eq 0 "$rc" "T1 merge exits 0"
 assert_match "^merged T1: $integ -> " "$merge_t1_out" "T1 merge prints the merged message"
-assert_eq done "$(fm_get "$WORK/.orchid/tasks/T1.md" status)" "T1 reaches done"
+assert_eq "done" "$(fm_get "$WORK/.orchid/tasks/T1.md" status)" "T1 reaches done"
 
 post_t1_integ="$(git rev-parse "$integ")"
 [ "$post_t1_integ" != "$integ_head" ] || fail "integration ref must have advanced after T1's merge"
@@ -287,7 +288,7 @@ run_ok "advance T2 merging (re-review)" "$ORCHID_BIN" task advance T2 merging \
 rc=0; merge_t2b_out="$("$ORCHID_BIN" merge T2 2>&1)" || rc=$?
 assert_eq 0 "$rc" "T2 second merge attempt exits 0 (INV-07 satisfied)"
 assert_match "^merged T2: $integ -> " "$merge_t2b_out" "T2 merge prints the merged message"
-assert_eq done "$(fm_get "$WORK/.orchid/tasks/T2.md" status)" "T2 reaches done"
+assert_eq "done" "$(fm_get "$WORK/.orchid/tasks/T2.md" status)" "T2 reaches done"
 
 git show "$integ:stub_T1.txt" >/dev/null 2>&1 || fail "integration branch tree contains T1's stub file"
 git show "$integ:stub_T2.txt" >/dev/null 2>&1 || fail "integration branch tree contains T2's stub file"

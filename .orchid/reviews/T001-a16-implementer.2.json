@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e23-T001-a16-49bb",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "4fa993bdb35d0af8d09a4395a5a9b24eb33ac479",
+  "summary": "The exact prescribed verification chain, `git diff --check`, and formula checksum check all pass. No workspace `.orchid/` changes were made.",
+  "commits": [
+    "4fa993bdb35d0af8d09a4395a5a9b24eb33ac479"
+  ]
+}

@@ -1,8 +1,39 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 set -euo pipefail
+
+# Resolve direct and dispatched entry through the same privileged interpreter
+# and fixed helper path used by unattended runners. Explain mode holds that
+# path across exactly the trust work -- the gate inspection, the provenance it
+# renders, and the kernel-tool probe -- so target-local helper shims cannot
+# make status provenance disagree with the runner gate, then restores the
+# operator PATH before any of the report itself, mirroring libexec/orchid-
+# doctor. Plain status restores it right after argument parsing because it
+# does not inspect unattended trust.
+unset __orchid_entry_defer_restore
+if [ "${__orchid_entry_context:-}" != 1 ]; then
+  unset __orchid_entry_context __orchid_entry_path_was_set
+  unset __orchid_entry_operator_path
+  __orchid_entry_context=1
+  __orchid_entry_path_was_set="${PATH+x}"
+  __orchid_entry_operator_path="${PATH-}"
+  export __orchid_entry_context __orchid_entry_path_was_set
+  export __orchid_entry_operator_path
+fi
+PATH="/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/.linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+export PATH
+unset CDPATH
+self="$0"
+while [ -L "$self" ]; do
+  t="$(command readlink "$self")"
+  case "$t" in /*) self="$t" ;; *) self="$(command dirname "$self")/$t" ;; esac
+done
+ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
+export ORCHID_ROOT
+__orchid_entry_defer_restore=1
+
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
-source "$ORCHID_ROOT/lib/schedule.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
 # --explain and --html are independent flags (either, neither, or both may
@@ -17,6 +48,30 @@ for _status_arg in "$@"; do
     --html) html=1 ;;
   esac
 done
+
+# The trust work -- and only the trust work -- runs on the fixed unattended
+# PATH: the gate inspection, the provenance line it renders, and the kernel-
+# tool probe, exactly the three things `orchid doctor` and `orchid trust show`
+# also answer from that PATH. All three are resolved here rather than beside
+# the lines that print them, so a helper shim on the operator PATH can neither
+# rewrite the provenance an operator reads nor make the probe answer a
+# different question from the gate. Both verdicts are rendered now and printed
+# below, in the same place, order, and wording as before.
+explain_unattended_summary=""
+explain_tool_warning=""
+if [ "$explain" -eq 1 ]; then
+  unattended_trust_inspect "$repo"
+  explain_unattended_summary="$(unattended_trust_summary_loaded)"
+  unattended_tool_probe jq || explain_tool_warning="$ORCHID_UNATTENDED_TOOL_DETAIL"
+fi
+# Everything from here on is report work -- ledger_show, `jobs check`, the
+# --html page -- and it runs on the operator's own PATH. Leaving the fixed
+# PATH pinned through the report made `status --explain` disagree with plain
+# `status` on the same repository: an operator whose jq lives outside that
+# fixed list (nix, asdf, ~/.local/bin) got "(no engine events yet)" printed
+# over a perfectly good ledger. The gate decision and its provenance are
+# already loaded into shell variables, so nothing on this PATH can revise them.
+_orchid_entry_restore_operator_path
 
 # _status_task_why <repo> <status> <id> -- the ONE home for the "why isn't
 # this task moving" predicate string (v1-m2 Task 5's schedule.sh already
@@ -213,6 +268,26 @@ if [ "$html" -eq 1 ]; then
   [ -n "$journal_html" ] || journal_html='<p>(no journal entries yet)</p>
 '
 
+  # --html remains a one-line stdout data mode. When --explain is combined
+  # with it, put the unattended gate and its full provenance in the generated
+  # page instead of printing another stdout line (or skipping inspection at
+  # this mode's early exit, as the old flow did).
+  unattended_html=""
+  if [ "$explain" -eq 1 ]; then
+    if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
+      unattended_gate=allowed
+    else
+      unattended_gate=denied
+    fi
+    unattended_summary="$explain_unattended_summary"
+    unattended_html="<h2>Unattended trust</h2>
+<div class=\"meta\">
+<div><strong>gate:</strong> $(orchid_html_escape "$unattended_gate")</div>
+<div><strong>provenance:</strong> $(orchid_html_escape "$unattended_summary")</div>
+</div>
+"
+  fi
+
   content="<h1>orchid status</h1>
 <div class=\"meta\">
 <div><strong>repo:</strong> <code>$(orchid_html_escape "$repo")</code></div>
@@ -222,6 +297,7 @@ if [ "$html" -eq 1 ]; then
 <div><strong>lease:</strong> $(orchid_html_escape "$lease_desc")</div>
 </div>
 
+$unattended_html
 <h2>Tasks</h2>
 <table>
 <tr><th>id</th><th>status</th><th>title</th><th>why</th></tr>
@@ -257,6 +333,16 @@ $journal_html"
 fi
 
 echo "run_status: ${rs:-(uninitialized)}"
+if [ "$explain" -eq 1 ]; then
+  printf 'unattended: %s\n' "$explain_unattended_summary"
+  # The probe above ran while the fixed unattended PATH was still pinned, so
+  # it answers exactly the question the gate answers -- the same helper doctor
+  # uses. Printed only when the two PATHs disagree or the tool is missing
+  # outright: a discrepancy an operator cannot see is one they meet as an
+  # unexplained denial from a scheduled pump.
+  [ -z "$explain_tool_warning" ] \
+    || printf 'unattended_tools: WARNING: %s\n' "$explain_tool_warning"
+fi
 echo "== tasks"
 for f in "$state/tasks"/*.md; do
   [ -e "$f" ] || continue

@@ -119,14 +119,14 @@ assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruct
 
 # --- 7. unsupported operation -----------------------------------------------
 d="$(build_request badop implement "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "badop: adapter should exit nonzero"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status failed"
 
 # --- 8. DRYRUN: review, no spawn (no agy on PATH at all) --------------------
 d="$(build_request dryreview review "")"
-rm -rf "$d/bin"
+rm -rf "${d:?}/bin"
 ORCHID_DRYRUN=1 run_adapter "$d" || fail "dryrun review: adapter should exit 0"
 envelope_validate "$d/out/envelope.json" || fail "dryrun review: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "dryrun review: status ok"

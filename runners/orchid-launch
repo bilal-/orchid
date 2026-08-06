@@ -158,8 +158,13 @@ else
 fi
 pid=$!
 set +m
-pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0)"
-[ -n "$pgid" ] || pgid=0
+# With job control enabled above, this single background command is the
+# leader of the process group Bash created for it, so its PGID is its PID.
+# Derive that value from the spawn operation itself instead of consulting
+# the host process table: hardened/vendor sandboxes commonly deny `ps`
+# even though process-group signalling remains available, and a `ps` query
+# could race a very short-lived adapter.
+pgid="$pid"
 
 jq --argjson pid "$pid" --argjson pgid "$pgid" --argjson started_at "$(date +%s)" \
   '.pid=$pid | .pgid=$pgid | .started_at=$started_at' "$manifest" | atomic_write "$manifest"

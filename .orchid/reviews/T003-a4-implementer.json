@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a4-b24a",
+  "task": "T003",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "7e46b874a439fb39e9e74d2fa09997bd7559a8aa",
+  "candidate_sha": "72f440a6de4c4656fa27578cae12e6d721509359",
+  "summary": "`tests/test_start_fencing.sh`: the branch-ahead-of-checkout direction (asserting the branch head is unmoved), the committed-tasks witness (fabricated in a detached worktree, since no supported verb pr",
+  "commits": [
+    "72f440a6de4c4656fa27578cae12e6d721509359"
+  ]
+}

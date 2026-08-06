@@ -30,7 +30,7 @@
 integ="__INTEGRATION_BRANCH__"
 
 blocked=0
-while read -r local_ref local_sha remote_ref remote_sha; do
+while read -r _local_ref _local_sha remote_ref _remote_sha; do
   case "$remote_ref" in
     refs/heads/task/*) blocked=1; blocked_ref="$remote_ref" ;;
     "refs/heads/$integ") blocked=1; blocked_ref="$remote_ref" ;;

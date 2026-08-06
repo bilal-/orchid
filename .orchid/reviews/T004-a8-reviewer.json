@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e9-T004-a8-9781",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "284628ddd48a55ad7ed8cb1c7240355a05dfde7c",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The change satisfies the canonical cross-platform CI, lint, reproducible release, installer pinning, metadata validation, and no-publish requirements."
+}

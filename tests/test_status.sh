@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'verify=true\n' > orchid.config
 # init now refuses a dirty tree (Task 8 safety fix): commit the fixture's
@@ -13,7 +13,8 @@ git add -A && git commit -q -m "fixture: config"
 # touching task/status state — mirrors the real operator workflow
 # (docs/specs/operations.md: "Integration branch holds the product").
 git checkout -q orchid/integration
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 "$ORCHID_BIN" task create T001 demo
 "$ORCHID_BIN" task create T002 dep
 "$ORCHID_BIN" task set T002 depends_on T001
@@ -54,8 +55,12 @@ echo "$("$ORCHID_BIN" status)" | grep -q "split-brain" && fail "status must not 
 # existing `status --explain` TEXT output (still on the $WORK fixture above:
 # T001 pending/ready, T002 pending/waiting-deps, no engine events).
 expected_explain="$(printf 'run_status: planning\n== tasks\nT001\tpending\tdemo\tready-to-dispatch\nT002\tpending\tdep\twaiting-deps (T001)\n== jobs\n== engines\n(no engine events yet)')"
-assert_eq "$expected_explain" "$("$ORCHID_BIN" status --explain)" \
-  "status --explain text output is byte-identical after the --html refactor"
+actual_explain="$("$ORCHID_BIN" status --explain)"
+assert_match '^unattended: denied' "$actual_explain" \
+  "status --explain reports the unacknowledged headless gate"
+actual_explain_without_trust="$(printf '%s\n' "$actual_explain" | grep -v '^unattended: ')"
+assert_eq "$expected_explain" "$actual_explain_without_trust" \
+  "apart from the required unattended gate line, status --explain text is byte-identical after the --html refactor"
 
 # Plant an escaping hazard: a task title containing raw HTML.
 "$ORCHID_BIN" task create T003 '<script>alert(1)</script>' >/dev/null
@@ -94,9 +99,43 @@ echo "$content" | grep -qF 'T001' || fail "task table must list T001 in the page
 echo "$content" | grep -qF 'T002' || fail "task table must list T002 in the page"
 echo "$content" | grep -qF 'waiting-deps (T001)' || fail "task table must include T002's explain predicate"
 
+# Candidate-bound regression: --html and --explain are a supported
+# combination. Trust inspection must land in the page before the --html path
+# exits, while stdout remains exactly the generated page path.
+combo_stdout="$("$ORCHID_BIN" status --html --explain)"
+combo_stdout_lines="$(printf '%s\n' "$combo_stdout" | wc -l | tr -d ' ')"
+assert_eq 1 "$combo_stdout_lines" \
+  "status --html --explain stdout is exactly one page-path line"
+[ -f "$combo_stdout" ] \
+  || fail "status --html --explain must write the page named on stdout"
+combo_content="$(cat "$combo_stdout")"
+echo "$combo_content" | grep -qF '<h2>Unattended trust</h2>' \
+  || fail "status --html --explain must include the unattended trust section"
+echo "$combo_content" | grep -qF '<strong>gate:</strong> denied' \
+  || fail "status --html --explain must surface a denied unattended gate"
+echo "$combo_content" | grep -qF 'acknowledge with: orchid trust unattended' \
+  || fail "the denied HTML explanation must include actionable provenance"
+
+combo_reason='reviewed for status HTML provenance coverage'
+HOME="$MACHINE_HOME" "$ORCHID_BIN" trust unattended "$WORK" \
+  --reason "$combo_reason" >/dev/null
+trusted_combo_stdout="$(HOME="$MACHINE_HOME" "$ORCHID_BIN" status --html --explain)"
+trusted_combo_lines="$(printf '%s\n' "$trusted_combo_stdout" | wc -l | tr -d ' ')"
+assert_eq 1 "$trusted_combo_lines" \
+  "trusted status --html --explain stdout remains exactly one page-path line"
+trusted_combo_content="$(cat "$trusted_combo_stdout")"
+echo "$trusted_combo_content" | grep -qF '<strong>gate:</strong> allowed' \
+  || fail "status --html --explain must surface an allowed unattended gate"
+echo "$trusted_combo_content" | grep -qF "$combo_reason" \
+  || fail "status --html --explain must surface operator-authored provenance"
+echo "$trusted_combo_content" | grep -qF 'acknowledged at' \
+  || fail "status --html --explain must surface the acknowledgement timestamp"
+HOME="$MACHINE_HOME" "$ORCHID_BIN" trust revoke "$WORK" >/dev/null
+
 # Atomic write: no leftover tmp artifact beside the page (atomic_write's
 # own mktemp+mv idiom -- confirms the --html path actually used it).
-ls -a "$(dirname "$page")" | grep -q '\.tmp\.' && fail "status --html must not leave a stray atomic-write tmp file behind"
+list_dir_entries "$(dirname "$page")" | grep -q '\.tmp\.' \
+  && fail "status --html must not leave a stray atomic-write tmp file behind"
 
 # Answering a blocker must drop it from the "open blockers" section on the
 # NEXT --html regeneration (it still legitimately appears elsewhere, e.g.

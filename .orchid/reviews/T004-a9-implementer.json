@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e10-T004-a9-32b1",
+  "task": "T004",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "21da12f6d80cd5c65f1d5e4f26f4cbea24a12690",
+  "summary": "The exact required verification chain passed with exit code 0. `pin-formula.sh --check` and `git diff --check` also pass. No publishing or tag operations were performed.",
+  "commits": [
+    "21da12f6d80cd5c65f1d5e4f26f4cbea24a12690"
+  ]
+}

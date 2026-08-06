@@ -5,13 +5,14 @@
 # (dry-check only) whether an orchestrator engine is currently resolvable,
 # then `exec`s runners/orchid-tick (Task 7) to do the real work.
 source "$(dirname "$0")/helpers.sh"
-source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/manifest.sh"
+source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
+source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/roles.sh"; source "$REPO_ROOT/lib/resolver.sh"
 source "$REPO_ROOT/lib/capsuite.sh"; source "$REPO_ROOT/lib/ledger.sh"
 export ORCHID_ROOT="$REPO_ROOT"
 
-cd "$WORK"; git init -q .; git commit -q --allow-empty -m root
-export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ENGINES_DIR="$WORK/eng"; mkdir -p "$WORK/eng"
 PUMP="$REPO_ROOT/runners/orchid-pump"
 
@@ -162,11 +163,144 @@ printf -- '---\nrun_status: planning\nrun_id: r-pump\n---\n# Roadmap\n' > .orchi
 printf 'role.orchestrator=stubplanning\n' > orchid.config
 rm -f .orchid/runtime/lease.json "$WORK/marker-stubplanning"
 
+rc=0
+out="$("$PUMP" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "pump must refuse a runnable repo without unattended trust"
+assert_match 'unattended pump refused: unattended trust is denied' "$out" \
+  "pump refusal names the unattended trust gate"
+[ -f "$WORK/marker-stubplanning" ] && fail "untrusted pump must never spawn an engine"
+
+rm -f .orchid/runtime/pump.log
+rc=0
+out="$("$PUMP" --service-log 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "service-mode pump must refuse a runnable repo without unattended trust"
+assert_match 'unattended pump refused: unattended trust is denied' "$out" \
+  "service-mode refusal is still available before its internal log is opened"
+[ ! -e .orchid/runtime/pump.log ] \
+  || fail "untrusted service-mode pump must not create or open pump.log"
+
+# A real scheduler discards this stderr (`>> /dev/null 2>&1` in the cron line,
+# /dev/null StandardOutPath+StandardErrorPath in the launchd agent) and the
+# repo-local pump.log above is deliberately not opened before the gate. Without
+# a machine-local copy the operator would see a service that runs on schedule
+# and silently does nothing. Assert the copy exists, is outside the repository,
+# and names the surface and the reason.
+refusal_log="$MACHINE_HOME/.orchid/unattended-trust/refusals.log"
+[ -f "$refusal_log" ] \
+  || fail "a scheduled refusal must be recorded in the machine-local trust store"
+refusal_entry="$(tail -n 1 "$refusal_log")"
+assert_match 'unattended pump' "$refusal_entry" \
+  "the machine-local refusal names the refused surface"
+assert_match 'unattended trust' "$refusal_entry" \
+  "the machine-local refusal carries the gate's own reason"
+[ ! -e "$WORK/.orchid/runtime/refusals.log" ] \
+  || fail "refusal diagnostics must never be written inside the untrusted target"
+
+# The interactive pump prints to the caller's terminal and must NOT append to
+# the machine-local log: an operator who can see the refusal does not need it
+# duplicated into shared machine state.
+refusal_lines_before="$(wc -l < "$refusal_log")"
+rc=0
+"$PUMP" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "interactive pump must still refuse an untrusted repo"
+assert_eq "$refusal_lines_before" "$(wc -l < "$refusal_log")" \
+  "an interactive refusal does not append to the machine-local diagnostic log"
+
+HOME="$HOME" "$ORCHID_BIN" trust unattended "$WORK" --reason "pump test fixture" >/dev/null \
+  || fail "pump fixture acknowledgement must succeed"
+
+out="$("$PUMP" --service-log 2>&1)"; rc=$?
+assert_eq 0 "$rc" "trusted service-mode pump exits 0 when planning has no lease"
+assert_eq "" "$out" "trusted service-mode diagnostics move from scheduler output into pump.log"
+assert_match '^pump: run not running \(planning\), no lease yet$' \
+  "$(cat .orchid/runtime/pump.log)" \
+  "service-mode pump begins repo-local logging after trust succeeds"
+
 out="$("$PUMP" 2>&1)"; rc=$?
 assert_eq 0 "$rc" "pump exits 0 when run_status is planning and no lease exists"
 assert_eq "pump: run not running (planning), no lease yet" "$out" \
   "pump names the non-running run_status rather than treating a missing lease as stale"
 [ -f "$WORK/marker-stubplanning" ] && fail "pump must NEVER autonomously tick during planning, even with a healthy engine configured"
+
+# ===========================================================================
+# B3 -- v1.1 Track 2, the headline change: the pump runs the DETERMINISTIC
+# DRIVER first and wakes an LLM only for a named judgment boundary. With a
+# stale lease, a healthy orchestrator engine configured, and nothing for
+# deterministic policy to stop on, the driver completes the pass and NO
+# engine is spawned at all -- the quota is simply not spent.
+# ===========================================================================
+printf -- '---\nrun_status: running\nrun_id: r-pump\n---\n# Roadmap\n' > .orchid/roadmap.md
+mk_stub_engine stubnodrive
+printf 'role.orchestrator=stubnodrive\n' > orchid.config
+write_lease 1000
+rm -f "$WORK/marker-stubnodrive"
+
+out="$("$PUMP" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "pump exits 0 when the deterministic driver completed the pass"
+assert_match "pump: deterministic drive completed the pass, no judgment boundary" "$out" \
+  "the pump says the driver handled it, in so many words"
+[ -f "$WORK/marker-stubnodrive" ] \
+  && fail "an LLM orchestrator must NOT be woken when deterministic policy resolved the pass"
+
+# ===========================================================================
+# B4 -- a boundary an ORCHESTRATOR cannot move must not wake one. A `blocked`
+# task raises the same record on every pass until a human runs `task
+# unblock`/`task retry` — verbs the broker refuses — so waking a model for it
+# spends a wakeup per pump cycle re-reading a record and changing nothing. The
+# driver still records the boundary AND raises the blocker that actually
+# reaches a human; the pump simply declines the hand-off.
+# ===========================================================================
+mk_stub_engine stubparked
+printf 'role.orchestrator=stubparked\n' > orchid.config
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+"$ORCHID_BIN" task create T000 "needs a human" >/dev/null
+"$ORCHID_BIN" task advance T000 blocked --reason "fixture: parked for a human" >/dev/null
+unset ORCHID_EPOCH
+write_lease 1000
+rm -f "$WORK/marker-stubparked"
+
+out="$("$PUMP" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "pump exits 0 on an operator-only boundary (a wait state, not an error)"
+assert_match "pump: judgment boundary \[blocked-task\] is operator-only — not waking an orchestrator" "$out" \
+  "the pump says which boundary it declined to wake a model for"
+[ -f "$WORK/marker-stubparked" ] \
+  && fail "no LLM may be woken for a decision no admitted verb can make"
+rc=0; "$ORCHID_BIN" run boundary show >/dev/null 2>&1 || rc=$?
+assert_eq 16 "$rc" "the boundary stays recorded — declining to wake a model is not resolving it"
+assert_match "judgment boundary \[blocked-task\]" "$(cat .orchid/BLOCKERS.md)" \
+  "the driver raised the blocker that does reach a human, exactly once for this record"
+blockers_after_first="$(wc -l < .orchid/BLOCKERS.md)"
+write_lease 1000   # the driver refreshed it; re-stale so the pass really re-runs
+out="$("$PUMP" 2>&1)"; rc=$?
+assert_eq 0 "$rc" "a repeated pump pass over the same operator-only boundary is still a no-op"
+assert_eq "$blockers_after_first" "$(wc -l < .orchid/BLOCKERS.md)" \
+  "and raises no second blocker for a record that has not changed"
+
+# From here on the fixture ALSO carries a task parked at `arbitrating` over a
+# request-changes review: a `review-conflict` boundary, the kind one `orchid
+# task arbitrate` settles and the broker admits. It outranks the blocked task
+# above (which is never hidden, just deprioritized), and it is what lets the
+# arms below go on exercising the LLM hand-off itself.
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+"$ORCHID_BIN" task create T001 "contested review" >/dev/null
+unset ORCHID_EPOCH
+PUMP_CAND=6666666666666666666666666666666666666666
+fm_set "$WORK/.orchid/tasks/T001.md" status arbitrating
+fm_set "$WORK/.orchid/tasks/T001.md" candidate_sha "$PUMP_CAND"
+mkdir -p "$WORK/.orchid/reviews"
+jq -n --arg cand "$PUMP_CAND" \
+  '{contract:1, job_id:"j-fixture-T001", task:"T001", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:"fixture review",
+    candidate_sha:$cand, findings:[]}' > "$WORK/.orchid/reviews/T001-a1-reviewer.json"
+
+# Sanity: the driver really does stop on it, with the dedicated exit code.
+rc=0; drive_out="$(ORCHID_REPO="$WORK" "$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_eq 16 "$rc" "a contested review parks the deterministic driver at a judgment boundary"
+assert_match "boundary \[review-conflict\] T001" "$drive_out" "the boundary names the contested task"
+assert_match "boundary \[blocked-task\] T000" "$drive_out" \
+  "the blocked task is still noted on the pass — deprioritized, never hidden"
 
 # ===========================================================================
 # C -- fresh lease: run_status running, lease refreshed moments ago -- a live
@@ -282,4 +416,9 @@ assert_match 'stubprime2' "$out" "the no-capable-orchestrator message names the 
 assert_match 'stubfallback2' "$out" "the no-capable-orchestrator message names the unverified fallback"
 [ -f "$WORK/marker-stubprime2" ] && fail "no engine must be spawned when none is eligible"
 [ -f "$WORK/marker-stubfallback2" ] && fail "the unverified fallback must never be spawned"
-[ "$epoch_after" -eq "$epoch_before" ] || fail "no tick ran, so no fresh epoch should have been fenced"
+# The deterministic driver needs no orchestrator engine at all, so it still
+# ran (and fenced its own epoch) before the pump discovered there was nobody
+# to wake for the boundary it found. That is the v1.1 ordering working as
+# intended: mechanical progress never waits on model availability.
+[ "$epoch_after" -gt "$epoch_before" ] \
+  || fail "the deterministic driver runs regardless of orchestrator availability, so it fences an epoch ($epoch_before -> $epoch_after)"

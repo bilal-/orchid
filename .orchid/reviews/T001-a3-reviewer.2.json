@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e3-T001-a3-82bd",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "f47e49f33bdd2a752fe388b6ed2e73a22ca63a0b",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "lib/trust.sh checks the trust-store path against only the selected worktree and Git common directory, so HOME inside another linked worktree can let tracked content supply or restore the supposedly ma"
+}

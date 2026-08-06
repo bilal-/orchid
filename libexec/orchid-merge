@@ -270,7 +270,7 @@ if [ "$rc" -eq 0 ]; then
       "merge CAS failed: update-ref refs/heads/$integ expected $integ_head but it moved concurrently; task remains in merging for retry"
     orchid_die "update-ref CAS failed: integration branch '$integ' changed concurrently (expected $integ_head) — retry orchid merge $id"
   fi
-  "$ORCHID_ROOT/bin/orchid" task advance "$id" done
+  "$ORCHID_ROOT/bin/orchid" task advance "$id" "done"
   echo "merged $id: $integ -> $merged_sha"
   exit 0
 fi

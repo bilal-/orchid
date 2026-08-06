@@ -354,6 +354,84 @@ case "$sub" in
     fi
     fm_set "$f" status "$to"; fm_set "$f" updated "$(now)"
     echo "$id: $from -> $to" ;;
+  arbitrate)
+    # v1.1 Track 2: the SOLE explicit judgment-result verb. Everything that
+    # decides an arbitration -- the deterministic driver's unanimous-approval
+    # arm, an operator at the terminal, or an LLM the pump woke for a judgment
+    # boundary (through the brokered command surface, which admits `task
+    # arbitrate` and refuses `task advance` outright) -- records that decision
+    # HERE, in one structured shape, instead of hand-picking a destination
+    # status. That is what makes "who decided this, and what did they decide"
+    # a single greppable fact rather than something reconstructed from which
+    # edge happened to be taken.
+    #
+    # The destination is DERIVED from the archetype's declared transitions,
+    # never from the caller and never from the archetype's name: an approval
+    # takes `arbitrating:merging` when the archetype declares it (an
+    # outcome=code archetype), otherwise `arbitrating:done` (an outcome=report
+    # archetype, which by meta-contract can never mention `merging`); a
+    # request-changes takes `arbitrating:rework`. An archetype declaring none
+    # of the relevant edges is an illegal transition (exit 3), not an
+    # improvised one.
+    #
+    # The transition itself still goes through `task advance`, so every
+    # existing gate (reason requirement, attempt accounting, evidence
+    # invalidation, the arbitration journal kind) applies unchanged -- this
+    # verb adds a judgment vocabulary on top of that machinery, it does not
+    # fork it. `task advance` remains available for operators and for the
+    # pre-existing documented walk; backward compatibility is untouched.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    result=""; reason=""; waive=0
+    while [ $# -gt 0 ]; do case "$1" in
+      --result)
+        [ -n "${2:-}" ] || orchid_die "--result requires a value"
+        result="$2"; shift 2 ;;
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      --waive-attempt) waive=1; shift ;;
+      *) orchid_die "usage: orchid task arbitrate <id> --result approve|request-changes --reason \"...\" [--waive-attempt]" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task arbitrate <id> --result approve|request-changes --reason \"...\" [--waive-attempt]"
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    case "$result" in
+      approve|request-changes) ;;
+      *) orchid_die "task arbitrate requires --result approve|request-changes (got '${result:-none}')" ;;
+    esac
+    [ -n "$reason" ] || orchid_die "task arbitrate requires --reason (INV-08)"
+    from="$(fm_get "$f" status)"
+    if [ "$from" != arbitrating ]; then
+      echo "orchid: $id is not arbitrating (status: $from)" >&2
+      exit 3
+    fi
+    arch="$(fm_get "$f" archetype)"; [ -n "$arch" ] || arch=feature
+    if ! archetype_validate "$arch" >/dev/null 2>&1; then
+      echo "orchid: archetype '$arch' failed validation (rejected, fail closed)" >&2
+      exit 13
+    fi
+    to=""
+    if [ "$result" = approve ]; then
+      if legal arbitrating merging "$arch"; then
+        to=merging
+      elif legal arbitrating "done" "$arch"; then
+        to="done"
+      fi
+    else
+      if legal arbitrating rework "$arch"; then
+        to=rework
+      fi
+    fi
+    if [ -z "$to" ]; then
+      echo "orchid: archetype '$arch' declares no arbitrating edge for result '$result'" >&2
+      exit 3
+    fi
+    adv_args=("$id" "$to" --reason "arbitrate($result): $reason")
+    [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
+    echo "arbitrated $id: result=$result from=$from to=$to" ;;
   unblock)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
@@ -433,5 +511,5 @@ case "$sub" in
     else
       echo "$id: infra_failures $n/$max"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|unblock|retry|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|unblock|retry|infra-fail" ;;
 esac

@@ -59,22 +59,106 @@ claude -p                                  # review/critique (no edit permission
 **Orchestrate (headless tick):**
 
 ```sh
-claude -p --permission-mode acceptEdits --allowedTools Bash
+claude -p --permission-mode acceptEdits \
+  --allowedTools "Bash(<orchid-root>/runners/orchid-orchestrator-command:*)"
 ```
 
-`--allowedTools Bash` is required in addition to `acceptEdits` — a real
+An `--allowedTools` entry is required in addition to `acceptEdits` — a real
 pump-driven tick was found to execute **zero** verbs under `acceptEdits`
 alone (`docs/dogfood-notes.md`'s F8): claude politely explained it lacked
-permission to run Bash and exited 0 having done nothing. Since every
-`orchid` verb invocation goes through Bash (there is no other way to invoke
-one), the orchestrator role's entire job requires this flag. This does not
-widen the autonomy boundary — the kernel launcher's env allowlist, stdin
-`/dev/null`, and private output path are unchanged; only the specific tool
-already needed to do this role's job is unblocked.
+permission to run Bash and exited 0 having done nothing. Since every command
+goes through the Bash tool (there is no other way to invoke one), the
+orchestrator role's job requires it.
+
+What that entry admits is now narrow. It is scoped to a **single
+executable**: `runners/orchid-orchestrator-command`, the default-deny,
+argument-validating broker. The broker admits a short list of exact read
+forms (`task show`, `task list`, `status [--explain]`, `jobs review-plan`,
+`journal tail`, `journal show`, `lessons list --active`, `run boundary
+show`), the one judgment-result verb (`task arbitrate`), `journal add`,
+`lessons add`, `notify`, and `run boundary clear` — and refuses `trust`,
+`service`, `config`, `plugins`, `init`, `start`, every tier-2 runner, every
+vendor CLI, and anything a shell would interpret. This adapter's manifest
+therefore declares `command_surface=brokered`; adapters whose vendor CLI
+offers no equivalent restriction declare `command_surface=soft`, and every
+tick prints which of the two it just resolved.
+
+This is a vendor-enforced restriction on **which command may run**, not
+prompt policy — but it is not OS containment: the broker itself runs
+unsandboxed, and the launcher's environment allowlist, stdin `/dev/null`
+and private output path are what bound the rest. There is still no
+filesystem jail or network namespace.
+
+**What it does not cover: file writes.** `--allowedTools "Bash(<broker>:*)"`
+scopes the Bash tool; `--permission-mode acceptEdits` leaves the vendor's own
+file-write tools auto-approved. A woken orchestrator can therefore create and
+edit files anywhere this process can reach — including paths under
+`.orchid/`, and, when `ORCHID_ROOT` lives inside the driven repository (the
+layout Orchid dogfoods itself in), including the broker script itself and the
+rest of the Orchid tree. Reads are unrestricted too. The prompt tells the
+orchestrator never to hand-edit `.orchid/` and never to touch a remote; those
+are **prompt policy**, not enforcement. `brokered` claims exactly one thing —
+that no command outside the broker can be executed — and nothing more.
+
+For all of those reasons, direct/pump-driven
+headless ticks remain separately denied until `orchid trust unattended`
+records the operator's machine-local acknowledgement of the target
+repository's prompt-injection risk — for `brokered` and `soft` adapters
+alike.
+
+The mechanical tick is no longer this model's job at all: `orchid drive`
+(`runners/orchid-drive`) runs it deterministically, and the pump wakes an
+orchestrator only for a named judgment boundary it refused to resolve.
 
 `orchid_run_engine_cli` (`lib/heartbeat.sh`) backgrounds claude directly
 (same reasoning as codex's adapter — real claude was also found to buffer
 all output until exit) and runs a liveness heartbeat alongside it.
+
+## Reviewer: the reply contract carries findings, not just a verdict
+
+A `review` reply is asked for the same two line shapes a `critique` reply is:
+
+```
+VERDICT: approve OR request-changes
+FINDING: <low|medium|high>: <title>      # zero or more; omit entirely if none
+```
+
+The adapter parses those `FINDING:` lines into the envelope's `findings[]`
+(a line whose severity token is not exactly one of the three, or whose title
+is empty, is dropped — this is a best-effort scrape, not a strict parser).
+Before v1-m4 a review was asked for the `VERDICT:` line alone, so every
+review envelope carried `findings: []` and the reviewer's reasoning survived
+only if it happened to appear in prose in the engine log, which is reaped —
+a real run lost three reported findings from a single review round that way.
+The verdict contract is unchanged, and a review that reports no findings
+still writes `findings: []`; that empty array blocks nothing, in the
+driver's `blocking_severity` gate or anywhere else. Other shipped review
+adapters remain verdict-only — see PROTOCOL.md's deterministic-approval arm
+for which reviewer makes that gate live.
+
+**Severity is a gate, so the prompt spells out what each one does.** Because
+this adapter populates `findings[]`, the driver's `blocking_severity` gate is
+live for it. A finding at or above that threshold on a review whose verdict is
+`approve` is therefore not an approval with a note: it is a `review-conflict`
+boundary that halts the run until an arbiter settles it.
+
+**The prompt states the task's own threshold, never a hardcoded default.**
+The adapter reads `blocking_severity` from the pack's `task.md` and names that
+value in the prompt, falling back to `medium` only when the field is absent —
+the same fallback `lib/drive.sh`'s gate applies, so the prompt and the gate
+can never disagree. This matters because the shipped archetypes do not agree:
+`templates/task.md` and `templates/task-test.md` ship `high`, while
+`templates/task-migrate.md` and `templates/task-refactor.md` ship `medium`. A
+prompt claiming "medium by default" would tell a reviewer on a `high`-threshold
+task that a `medium` finding halts the run when it does not.
+
+Reviewers approve-with-nits by habit, so the review prompt defines the three
+severities by consequence, phrased against that threshold rather than
+assuming it — `high` must not ship, `medium` is a real defect worth halting
+over wherever the threshold reaches it, `low` is worth telling the author and
+explicitly never worth stopping for ("use low for anything you would call a
+nit"). Nothing about the parser or the envelope schema encodes this; it is the
+prompt's job to make the model choose a severity for what it triggers.
 
 ## Implementer: review-only in practice (adapter commits when it can)
 
@@ -100,7 +184,9 @@ The adapter feeds claude PROTOCOL.md's full text plus a fixed instruction
 block naming the concrete `$worktree`/`$ORCHID_ROOT` paths (absolute —
 dev checkouts may not have `orchid` on `PATH` at all) and greps the
 transcript for `ORCHID-ACTION: <command>` lines into the envelope's
-`actions[]`.
+`actions[]`. Those transcript lines are observability, not proof that no
+other command ran; there is no command broker in this release (T002 owns
+that boundary).
 
 ## Known gotchas
 

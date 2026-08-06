@@ -3,7 +3,7 @@ source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/hooks.sh"; source "$REPO_ROOT/lib/envelope.sh"
 
-cd "$WORK"; mkdir -p .orchid
+cd_scratch "$WORK" || exit 1; mkdir -p .orchid
 export ORCHID_REPO="$WORK"
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ envelope_validate "$WORK/e-failed.json" || fail "hook failed status needs no pay
 # ===========================================================================
 # CLI-level fixture: jobs prepare/reconcile + orchid-launch round trip.
 # ===========================================================================
-cd "$WORK"; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
+cd_scratch "$WORK" || exit 1; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
 base_sha="$(git rev-parse HEAD)"
 echo change >> f.txt; git add f.txt; git commit -q -m change
 cand_sha="$(git rev-parse HEAD)"
@@ -93,7 +93,8 @@ mkdir -p .orchid/tasks .orchid/reviews
 export HOME="$WORK/home"; mkdir -p "$HOME"
 export ORCHID_ENGINES_DIR="$WORK/eng"
 printf 'verify=true\n' > orchid.config
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 "$ORCHID_BIN" task create T001 demo >/dev/null
 "$ORCHID_BIN" task set T001 base_sha "$base_sha" >/dev/null
@@ -212,7 +213,8 @@ mkdir -p "$WORK/.orchid/runtime/spool" "$WORK/.orchid/runtime/quarantine"
 printf '{"contract":1,"job_id":"j-bad-hook","task":"T001","operation":"hook","status":"ok","summary":"no artifact here"}' \
   > "$WORK/.orchid/runtime/spool/j-bad-hook.json"
 "$ORCHID_BIN" jobs reconcile >/dev/null
-ls "$WORK/.orchid/runtime/quarantine/" 2>/dev/null | grep -q "j-bad-hook.json.reason-malformed" \
+list_dir_files "$WORK/.orchid/runtime/quarantine" \
+  | grep -q "j-bad-hook.json.reason-malformed" \
   || fail "malformed hook envelope (missing artifact) quarantined"
 
 # ---------------------------------------------------------------------------
@@ -243,7 +245,8 @@ jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
 "$ORCHID_BIN" jobs reconcile >/dev/null
 [ -f "$WORK/.orchid/reviews/T001-a9-reviewer.json" ] \
   || fail "a third-party publisher envelope (.engine=acme/foo, dir=foo) reconciles cleanly, not quarantined"
-ls "$WORK/.orchid/runtime/quarantine/" 2>/dev/null | grep -q "j-thirdparty.json.reason-mismatch" \
+list_dir_files "$WORK/.orchid/runtime/quarantine" \
+  | grep -q "j-thirdparty.json.reason-mismatch" \
   && fail "a third-party publisher envelope (.engine=acme/foo) must NOT be quarantined as a mismatch"
 
 # Existing first-party fixtures stay green: a plain-name engine (no manifest
@@ -351,8 +354,8 @@ assert_eq "retry with a smaller diff" \
 # branch + a full pending->merging walk, which nothing earlier in this file
 # set up.
 # ===========================================================================
-MWORK="$(mktemp -d)"
-cd "$MWORK"; git init -q .; git commit -q --allow-empty -m root
+make_scratch MWORK
+cd_scratch "$MWORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$MWORK" HOME="$MWORK/home"; mkdir -p "$HOME"
 # unset: ORCHID_ENGINES_DIR is a resolver-only test hook (lib/resolver.sh)
@@ -367,7 +370,8 @@ unset ORCHID_ENGINES_DIR
 hg_integ=orchid/integration
 git branch "$hg_integ"
 printf 'integration_branch=%s\nverify=true\nconcurrency=10\n' "$hg_integ" > orchid.config
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 # Local walk-to-merging helper -- same shape as tests/test_merge.sh's own
 # (not importable across test files; duplicated under a distinct name).
@@ -433,7 +437,7 @@ _hg_walk_to_merging HG2 task/HG2 "$hg2_base" "$hg2_cand"
 _hg_plant_hook_envelope HG2 1 ok "orchid/stubmerge" "$hg2_cand"
 rc=0; "$ORCHID_BIN" merge HG2 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "before_merge required binding with a matching ok envelope -> merge proceeds"
-assert_eq done "$("$ORCHID_BIN" task show HG2 | grep '^status: ' | cut -d' ' -f2)" "HG2 reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show HG2 | grep '^status: ' | cut -d' ' -f2)" "HG2 reaches done"
 
 # --- HG3: an optional binding (no :required), no envelope at all -> proceeds. ---
 read -r hg3_base hg3_cand <<< "$(_hg_new_candidate HG3)"
@@ -441,7 +445,7 @@ _hg_walk_to_merging HG3 task/HG3 "$hg3_base" "$hg3_cand"
 printf 'integration_branch=%s\nverify=true\nconcurrency=10\nhook.before_merge=stubmerge\n' "$hg_integ" > orchid.config
 rc=0; "$ORCHID_BIN" merge HG3 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "an optional before_merge binding never gates merge, envelope or not"
-assert_eq done "$("$ORCHID_BIN" task show HG3 | grep '^status: ' | cut -d' ' -f2)" "HG3 reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show HG3 | grep '^status: ' | cut -d' ' -f2)" "HG3 reaches done"
 
 # --- HG4: required binding, an envelope bound to the WRONG candidate (a
 # stale envelope) -> treated the same as missing, exit 15. ---
@@ -470,7 +474,7 @@ assert_eq merging "$("$ORCHID_BIN" task show HG5 | grep '^status: ' | cut -d' ' 
 _hg_plant_hook_envelope HG5 1 ok "orchid/beta" "$hg5_cand" ".2"
 rc=0; "$ORCHID_BIN" merge HG5 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "once BOTH required bindings have their own matching ok envelope, merge proceeds"
-assert_eq done "$("$ORCHID_BIN" task show HG5 | grep '^status: ' | cut -d' ' -f2)" "HG5 reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show HG5 | grep '^status: ' | cut -d' ' -f2)" "HG5 reaches done"
 
 # --- HG6: a THIRD-PARTY publisher's engine bound `:required` -- dir name
 # "foo", manifest `id=acme/foo`, adapter echoes its OWN qualified id back
@@ -489,11 +493,11 @@ read -r hg6_base hg6_cand <<< "$(_hg_new_candidate HG6)"
 _hg_walk_to_merging HG6 task/HG6 "$hg6_base" "$hg6_cand"
 printf 'integration_branch=%s\nverify=true\nconcurrency=10\nhook.before_merge=foo:required\n' "$hg_integ" > orchid.config
 _hg_plant_hook_envelope HG6 1 ok "acme/foo" "$hg6_cand"
-rc=0; hg6_out="$("$ORCHID_BIN" merge HG6 2>&1)" || rc=$?
+rc=0; _hg6_out="$("$ORCHID_BIN" merge HG6 2>&1)" || rc=$?
 assert_eq 0 "$rc" "a required binding to a third-party engine (manifest id=acme/foo) is satisfied by its OWN qualified id"
-assert_eq done "$("$ORCHID_BIN" task show HG6 | grep '^status: ' | cut -d' ' -f2)" "HG6 reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show HG6 | grep '^status: ' | cut -d' ' -f2)" "HG6 reaches done"
 
-cd "$WORK"; rm -rf "$MWORK"
+cd_scratch "$WORK" || exit 1; rm -rf "$MWORK"
 
 # ===========================================================================
 # Stub-driven tick-walk: on_verify_fail guidance attach. Simulates the
@@ -504,15 +508,16 @@ cd "$WORK"; rm -rf "$MWORK"
 # advance, then the rework advance itself -- and confirms hook_guidance
 # survives (is "carried") across that advance rather than being reset by it.
 # ===========================================================================
-TWORK="$(mktemp -d)"
-cd "$TWORK"; git init -q .; git commit -q --allow-empty -m root
+make_scratch TWORK
+cd_scratch "$TWORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 base_tw="$(git rev-parse HEAD)"
 echo x > x.txt && git add x.txt && git commit -q -m "candidate"
 cand_tw="$(git rev-parse HEAD)"
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$TWORK" HOME="$TWORK/home"; mkdir -p "$HOME"
 printf 'hook.on_verify_fail=stubguide:required\n' > orchid.config
-export ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 
 "$ORCHID_BIN" task create TW1 "on_verify_fail tick-walk" >/dev/null
 "$ORCHID_BIN" task set TW1 base_sha "$base_tw" >/dev/null
@@ -554,4 +559,4 @@ assert_eq "shrink the diff and retry" \
 assert_eq 1 "$("$ORCHID_BIN" task show TW1 | grep '^attempts: ' | cut -d' ' -f2)" \
   "the (non-waived) rework advance consumed an attempt, same as any other rework entry"
 
-cd "$WORK"; rm -rf "$TWORK"
+cd_scratch "$WORK" || exit 1; rm -rf "$TWORK"

@@ -10,15 +10,25 @@ Works with **Claude Code · Codex · Antigravity · Hermes · OpenClaw**
 (compatibility, not endorsement or partnership — orchid is an independent,
 unaffiliated tool that shells out to each vendor's own CLI).
 
-<!-- SCREENSHOT: hero — orchid status --html open in a browser, a run mid-flight -->
-
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
-Running the same line again later is the upgrade command. Flags,
-`--uninstall`, the Homebrew tap, and the git-clone method (for hacking
-on orchid itself): [docs/install.md](./docs/install.md).
+That command stays on the immutable `v1.0.0-beta.1` release, independent of
+the caller's current directory (including inside a dirty Orchid checkout). To
+upgrade, use the new version's equally pinned URL; following `main` is an
+explicitly labeled development channel. Flags, channels, `--uninstall`, the
+prepared Homebrew tap, and the git-clone method:
+[docs/install.md](./docs/install.md).
+
+> **This ships as `1.0.0-beta.1`, not `1.0.0`.** A `1.0.0` would claim the
+> kernel is hardened and in use; neither is true yet. Nothing outside this
+> repository has run orchid, and no external beta has happened. The hardening
+> pass that produced this version found, among other defects, a shell
+> injection reachable from repository content, a headless deadlock, two
+> concurrent implementers dispatched into one worktree, a release gate nothing
+> was invoking, and orchid executing pre-merge code from a stale checkout.
+> `1.0.0` is what an external beta earns.
 
 > Orchid is in final private dogfooding — the one-liner goes live the day
 > this repo does. Until then, install from a clone
@@ -33,9 +43,19 @@ on orchid itself): [docs/install.md](./docs/install.md).
    creates an integration branch. Your own branches are never touched.
 3. Write `requirements.md`: goal, constraints, acceptance criteria. A
    second engine critiques the plan before it becomes real work.
-4. `orchid run start` — or `orchid service install` — and walk away.
-   Engines implement, independent engines review, `orchid verify` runs
-   your real test command, and merges land only after re-verification.
+
+   Steps 2–3's mechanical half is also one command:
+   `orchid start requirements.md --verify "<your test command>"` runs the
+   full preflight, initializes, creates the integration worktree, sets up
+   the epoch, imports your requirements, and hands off to planning. It
+   never guesses a verification command, never overwrites your files, and
+   refuses (with the exact recovery command) anything it cannot do safely —
+   the lower-level verbs above stay exactly as they are.
+4. For a headless tick/service, review the target and run `orchid trust
+   unattended "$PWD" --reason "..."`; then `orchid run start` or `orchid
+   service install`. Engines implement, independent engines review, `orchid
+   verify` runs your real test command, and merges land only after
+   re-verification. Interactive/manual operation needs no acknowledgement.
 5. When something genuinely needs a human, one Telegram message arrives on
    your phone. You reply; the answer lands nonce-verified.
 6. Come back to merged, verified code on the integration branch, with
@@ -51,17 +71,15 @@ Full walkthrough: [quickstart.md](./docs/quickstart.md) (existing repo) ·
 [quickstart-greenfield.md](./docs/quickstart-greenfield.md) (new product,
 no code yet).
 
-<!-- SCREENSHOT: phone — Telegram blocker question and the nonce-verified reply -->
-
 ## What makes orchid different
 
 - **Runs on the subscriptions you already pay for.** Engines are vendor
   CLIs in their own first-party headless modes. Orchid never holds an API
   key, never meters tokens, never proxies a request — billing stays on
   whatever plan each CLI is already logged into.
-- **A deterministic kernel, not an agent framework.** Engines never spawn
-  engines. A small bash state machine launches every engine and brokers
-  every result as a file; each state change is a git commit on the
+- **A deterministic kernel, not an agent framework.** Orchid's supported
+  launch path routes engine jobs through a small bash state machine and
+  brokers every result as a file; each state change is a git commit on the
   integration branch with its evidence attached — verify output, review
   verdicts, an append-only journal. See [Who runs whom](#who-runs-whom).
 - **Any engine, any role.** Implementer, reviewer, orchestrator, plan
@@ -92,11 +110,11 @@ no code yet).
 
 ## How it works
 
-Who runs whom, top to bottom. The one structural fact to read off this
-diagram: **every arrow into an engine adapter comes from the kernel's own
-launcher** — there is no engine-to-engine edge anywhere in the system, so
-"engines never spawn engines" is the shape of the graph, not a policy
-statement.
+Who runs whom, top to bottom. Every arrow Orchid itself implements into an
+engine adapter comes from a tier-2 runner. This is a property of Orchid's
+source and supported control flow, not OS containment: a shell-capable,
+prompt-injected orchestrator is still an operating-system process and there
+is no command broker preventing it from invoking some other executable.
 
 <!-- Diagram grounding: docs/specs/kernel.md "Architecture" (tier split,
      normative process model, INV-01/INV-06) and PROTOCOL.md (the tick).
@@ -215,18 +233,16 @@ The same walk, in verbs:
 This is the one design decision every other choice in this project follows
 from, stated exactly:
 
-> **Engines never spawn engines.** The deterministic kernel launches every
-> engine and brokers all results as files. The orchestrating engine needs
-> exactly one power — running a bash CLI — and every other role×engine
-> combination is disabled until the capability suite proves it.
+> **Orchid routes engine launches through its tier-2 runners.** The
+> deterministic kernel brokers their results as files, and every non-default
+> role×engine combination is disabled until the capability suite proves it.
 
-Concretely: there is no LLM anywhere in this system that is permitted to
-decide to invoke another LLM directly. An "orchestrator" engine (by
-default, an interactive Claude Code session) does nothing more privileged
-than run `orchid` verbs and `runners/orchid-launch` — the same commands
-shown throughout this README — under a bash shell. It cannot reach an
-implementer or reviewer engine except by asking the kernel to launch one on
-its behalf, exactly the way a human operator would. Every OTHER
+Concretely, the protocol tells an orchestrator engine (by default, an
+interactive Claude Code session) to use only `orchid` verbs and
+`runners/orchid-launch`, the same commands shown throughout this README.
+INV-01/INV-06 test that Orchid's own tier-1 and adapter launch sites follow
+that topology. They do not jail the orchestrator's Bash process or turn the
+prompt instruction into an enforceable command allowlist. Every other
 role×engine pairing beyond the tested defaults is disabled at resolution
 time until `orchid plugins test <engine> <role>` (the capability suite)
 proves it eligible — see [any-engine-any-role](#any-engine-any-role) below.
@@ -379,10 +395,21 @@ the full explanation of exactly what gets linked where.
 To run continuously without babysitting a terminal:
 
 ```sh
+orchid trust unattended "$PWD" --reason "reviewed this repository for unattended execution"
 orchid service install     # launchd agent (macOS) or crontab line (Linux)
 orchid service status
 orchid service uninstall
 ```
+
+`orchid trust show "$PWD"` displays the machine-local acknowledgement and
+its identity/root/policy provenance; without an identity-keyed record it
+reports root verification as pending and returns denied without walking
+history. `orchid trust revoke "$PWD"` disables future pump/tick runs without
+removing an already-installed schedule; it needs only the on-disk identity,
+so it still works when Orchid cannot inspect the repository. Acknowledgement
+and verification of an existing candidate require Git 2.45 or newer; older
+Git remains usable for manual operation, but is denied before any repository
+object walk.
 
 ## State files, guardrails, operator verbs
 
@@ -400,14 +427,66 @@ frontmatter), `reviews/` (envelopes + verify/merge evidence), `journal.md`
 detected by pgid+start-time liveness, a hung one by log-mtime/size
 stalling, a spinning one by a false-positive-guarded duplicate-line check;
 three rework attempts exhausts to `blocked`; no tier-1 verb ever spawns a
-long-lived process (INV-01); external mutation — push, deploy, publish — is
-prohibited outright, always a blocker instead of an action.
+long-lived process (INV-01). Orchid's deterministic verbs provide no push,
+deploy, or publish operation, and PROTOCOL.md instructs engines to treat
+external mutation as a blocker. The absent verb is Orchid's enforced
+boundary; the blocker instruction is prompt policy. For a role engine
+(implementer, reviewer) there is still no command broker or OS containment,
+so Orchid cannot prohibit external mutation outright: a shell-capable engine
+process with external credentials, network access, or other host
+capabilities could invoke another executable and mutate an external system.
+The headless ORCHESTRATOR seat is narrower: `orchid drive` runs the routine
+tick deterministically with no model at all, and an adapter declaring
+`command_surface=brokered` confines the model it does wake to a single
+argument-validating broker admitting judgment-only forms — a real
+vendor-enforced command allowlist for that one seat, and still not OS
+containment. That allowlist covers COMMANDS only: the adapter's `acceptEdits`
+permission mode leaves the vendor's file-write tools open over every path the
+process can reach, `.orchid/` and (when `ORCHID_ROOT` sits inside the driven
+repo) the broker script included, so "never hand-edit `.orchid/`" remains
+prompt policy.
 
 **Operator verbs** (no hand-editing `.orchid/` ever needed):
 `orchid task unblock/retry <id> --reason "..."`, `orchid answer <qid>
 <choice>`, `orchid config commit --reason "..."`, `orchid run
 release-lease`, `orchid jobs gc --reap-prepared`. Full incident-by-incident
 detail: [troubleshooting.md](./docs/troubleshooting.md).
+
+## Before you point it at someone else's repo
+
+`scripts/beta-qualify.sh` qualifies one operator-supplied repository against
+this build, locally, before a beta tester finds the answer the hard way. It
+runs the repository's own verification command once to time it against
+`pump_stale_s`, checks whether the configured implementer can run a command at
+all, and reports the machine-local unattended trust gate without ever changing
+it.
+
+```sh
+/bin/bash scripts/beta-qualify.sh --repo /path/to/repo \
+  --output "$(mktemp -d)/qualification" --bash /bin/bash
+```
+
+Evidence is anonymized by construction: no subprocess output is ever copied
+into a record, so the emitted JSON and text carry check identities, durations,
+exit codes, bucketed size bands, and outcomes — never contents, paths,
+filenames, prompts, diffs, or secrets. The one thing another program chooses
+the characters of — a toolchain version, the platform name — is matched against
+a pattern the harness authors and recorded as `unrecognized`/`other` when it
+does not match, never verbatim. Each record states what was executed,
+why the check exists, and why that outcome was reached; a check the harness
+cannot perform is recorded as `not-tested` with the reason, never as a pass.
+The verdict names its own scope and enumerates what it does not certify.
+
+`tests/test_e2e_release_rehearsal.sh` rehearses the whole story once inside a
+single private temporary root — setup, unattended refusal, acknowledgement,
+qualification, a deterministic drive, and the release gate — with every network
+tool, vendor CLI, and remote-capable `git` subcommand shadowed by a `PATH`
+tripwire that logs and fails, and with the source checkout proven unchanged
+afterwards.
+
+**A genuine third-party beta run and any publication remain operator-owned.**
+Neither has happened, and nothing in this repository claims otherwise. Full
+checklist: [docs/beta-qualification.md](./docs/beta-qualification.md).
 
 ## Extending orchid
 
@@ -447,27 +526,39 @@ wiring up a real CLI: [docs/engines/](./docs/engines/).
 - **Lease** — the orchestrator's ownership heartbeat (`runtime/lease.json`).
 - **Request document / Envelope / Input pack** — invocation contract /
   result contract / materialized per-job memory.
-- **Trust record** — a digest-pinned entry outside the repo that enables a
-  repo-local plugin.
+- **Plugin trust record** — a digest-pinned entry outside the repo that
+  enables one repo-local plugin.
+- **Unattended trust record** — an operator-authored machine-local
+  acknowledgement, bound to Git common-directory and non-reusable witness
+  filesystem identities, root history, and policy version; it enables the
+  pump/tick boundary, not code safety.
 - **Hook** — a named lifecycle extension point with a typed payload.
 
 ## FAQ
 
-**Can an engine spawn another engine?** No — structurally impossible
-(INV-01: no tier-1 verb spawns a long-lived process; every engine launch
-goes through the kernel's own launcher, never through another engine).
+**Can an engine spawn another engine?** Orchid never does so in its supported
+launch flow: INV-01/INV-06 statically test that kernel launch sites use the
+tier-2 runners. That is source-level mediation, not OS containment. A
+shell-capable engine process is not jailed by those invariants, and no
+command broker is wired yet.
 
 **Is this sandboxed?** Plugins (including the built-ins) are **trusted
 code** — orchid v1 doesn't containerize them and says so plainly rather
 than implying protection it doesn't have. Vendor-CLI sandbox flags
 (`--sandbox workspace-write`, read-only modes, etc.) are a real second
-layer; full OS-level plugin containment is post-v1 roadmap.
+layer. The launcher's stripped environment is hygiene, PROTOCOL.md's
+command restrictions are prompt policy, no command broker is wired yet,
+and full OS-level plugin/process containment is post-v1 roadmap. The
+unattended acknowledgement makes this residual target-repository
+prompt-injection risk explicit; it does not remove it.
 
-**Does orchid push, deploy, or touch anything outside my machine?** No.
-External mutation (push/deploy/publish/prod-data) is prohibited outright in
-every stage shipped so far — it surfaces as a blocker, never an action.
-Moving the integration branch to `origin` is entirely your call, done by
-you, outside orchid.
+**Does orchid push or deploy?** Orchid's shipped verbs and adapters do not
+intentionally perform those actions; PROTOCOL.md requires external mutation
+to become a blocker, and the installed pre-push hook is defense in depth.
+That policy is not a network sandbox for a prompt-injected, Bash-capable
+orchestrator. Review the target and explicitly acknowledge that residual
+risk before enabling unattended mode. Moving the integration branch to
+`origin` remains an operator action.
 
 **What if my engine's own CLI changes its flags?** Each adapter documents
 the exact invocation it verified and why (`docs/engines/*.md`) — a drifted
@@ -501,13 +592,10 @@ own v1-m4 milestone, not carried over from memory. Summary:
 
 ## Contributing
 
-Community contributions (third-party plugins, an `awesome-orchid` listing,
-issue/PR conventions) are welcomed from public launch — see
-`CONTRIBUTING.md` (published alongside the public repository) once this
-project leaves private dogfooding. Until then, third-party engine/hook/
-role/archetype/notify-channel authorship is fully supported today via the
-[extension points above](#extending-orchid) — you don't need to wait for
-a public listing to build and use your own plugin locally.
+Community contributions are welcome. Start with the deterministic local gate
+and lint policy in [docs/contributing.md](./docs/contributing.md). Third-party
+engine, hook, role, archetype, and notification-channel authorship is fully
+supported through the [extension points above](#extending-orchid).
 
 ## License
 

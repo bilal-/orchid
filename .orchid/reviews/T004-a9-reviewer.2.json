@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e10-T004-a9-100d",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "21da12f6d80cd5c65f1d5e4f26f4cbea24a12690",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The patch meets the stated CI, lint, release, installer, and documentation criteria with no medium-or-higher findings."
+}

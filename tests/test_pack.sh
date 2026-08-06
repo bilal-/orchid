@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/pack.sh"
-cd "$WORK"; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
+cd_scratch "$WORK" || exit 1; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
 base="$(git rev-parse HEAD)"; echo change > f.txt; git add f.txt; git commit -q -m c
 cand="$(git rev-parse HEAD)"
 mkdir -p .orchid/tasks
@@ -16,7 +16,7 @@ assert_eq "false" "$(jq -r '.items[] | select(.name=="task.md") | .truncated' "$
 
 # context trimming under tight budget (non-truncatables still fit)
 big_ctx="$(printf 'x%.0s' $(seq 1 5000))"; echo "$big_ctx" > .orchid/context.md
-tight=$(( $(wc -c < .orchid/tasks/T001.md) + $(cd "$WORK" && git diff "$base".."$cand" | wc -c) + 200 ))
+tight=$(( $(wc -c < .orchid/tasks/T001.md) + $(cd_scratch "$WORK" && git diff "$base".."$cand" | wc -c) + 200 ))
 printf 'pack_budget_bytes=%s\n' "$tight" > orchid.config
 pack_build "$WORK" T001 review "$WORK/p2" || fail "pack build with trim"
 assert_eq "true" "$(jq -r '.items[] | select(.name=="context.md") | .truncated' "$WORK/p2/pack.json")" "context trimmed"
@@ -102,7 +102,7 @@ EOF
 # keeps its full content while context.md is squeezed to zero.
 big_ctx="$(printf 'x%.0s' $(seq 1 500))"; echo "$big_ctx" > .orchid/context.md
 lessons_active_bytes="$(lessons_active_only .orchid/lessons.md | wc -c)"
-tight_lessons=$(( $(wc -c < .orchid/tasks/T001.md) + $(cd "$WORK" && git diff "$base".."$cand" | wc -c) + lessons_active_bytes ))
+tight_lessons=$(( $(wc -c < .orchid/tasks/T001.md) + $(cd_scratch "$WORK" && git diff "$base".."$cand" | wc -c) + lessons_active_bytes ))
 printf 'pack_budget_bytes=%s\n' "$tight_lessons" > orchid.config
 pack_build "$WORK" T001 review "$WORK/ptight_lessons" || fail "reviewer pack build (tight budget, lessons priority)"
 [ -f "$WORK/ptight_lessons/lessons.md" ] || fail "lessons.md present under a budget sized for it"

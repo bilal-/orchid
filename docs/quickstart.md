@@ -15,17 +15,22 @@ never manages vendor auth itself; see
 [docs/engines/](./engines/) for the per-engine login flow. `git`, `jq`,
 and bash 3.2+ (macOS's shipped `/bin/bash` is fine).
 
-<!-- SCREENSHOT: terminal — orchid doctor's readiness report after install -->
-
 ## 1. Clone and install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/bilal-/orchid/v1.0.0-beta.1/install.sh | bash
 ```
 
 (goes live once the repo is public; see [docs/install.md](./install.md#one-line-install-recommended)
 for the exact caveat and how flags like `--prefix`/`--uninstall` pass
-through). Running this exact line again later is the upgrade command too.
+through). The pinned install is independent of your current directory, even
+if it is a dirty Orchid checkout. The URL is immutable: running this exact
+line later reselects `v1.0.0-beta.1`; it does not upgrade Orchid. To upgrade, select
+the install URL for a newer immutable released tag.
+
+The shipped version is a prerelease on purpose: no one outside this
+repository has run orchid yet, and no external beta has happened. `1.0.0` is
+what that beta earns.
 
 **Developing on orchid itself?** Clone it instead, so `install.sh` runs
 from — and `orchid` resolves to — your own checkout:
@@ -91,6 +96,88 @@ git add -A
 git commit -m "orchid: requirements + config for orchid init"
 ```
 
+### One command: `orchid start`
+
+Everything left in this step is mechanical, so there is a single command for
+it:
+
+```sh
+orchid start requirements.md --verify "<your test command>"
+```
+
+It runs the full preflight (`orchid doctor`), validates your `orchid.config`,
+initializes, creates the integration worktree, sets up the epoch, imports
+`requirements.md` under that epoch, and prints the epoch, the paths, the run
+state, and the planning handoff. Then **skip to [step 4](#4-plan)** — from the
+worktree it just printed, with the `ORCHID_EPOCH` it just told you to export.
+
+Options: `--verify <command>`, one line, appended as a `verify=` line to the
+integration checkout's `orchid.config` and committed onto the integration
+branch by that same run, but only when that file configures none yet — omit
+the flag if you already set `verify=` in step 2. (One line because
+`orchid.config` is a line-oriented `key=value` file: a multi-line command
+would be read back truncated at its first line, so it is refused rather than
+half-recorded. Put a multi-step command in a script and pass that.)
+`--worktree <path>`, which defaults to
+`../<repo>-orchid`; and `--ack-unattended --reason "..."`, both together, to
+also make the machine-local unattended acknowledgement of
+[step 5](#5-start-the-orchestrator-and-walk-away).
+
+Committing that one line is part of the same command on purpose: there is no
+follow-up step to remember, and the integration checkout is not handed back
+dirty. A command that only your environment or your machine-local
+`~/.orchid/config` supplies counts as "none yet" — it would not survive a
+fresh checkout of the integration branch (a task worktree, another machine, a
+headless pump), so it is recorded there too rather than left to vanish — and,
+for the same reason, an explicit `--verify` overrides it without complaint. A
+`verify=` line already committed on that branch is never replaced or
+duplicated: `--verify` with a different command there is refused up front,
+before anything is created, and re-running without the flag keeps the branch's
+own command.
+
+That commit is whole-file (the same granularity as `orchid config commit`), so
+"append-only" is enforced against the branch too, not just against the file on
+disk. If your integration checkout's `orchid.config` carries a *different*
+`verify=` line from the one the branch already has, or is missing any other
+line the branch has, committing it would replace or delete settings the run
+reads — so that is refused up front as well, naming both ways out: take the
+branch's copy back (`git -C <worktree> checkout -- orchid.config`), or land
+your edit deliberately with `orchid config commit --reason "..."` from the
+worktree. Additions ride along; removals never do. And because that commit is
+how the command becomes durable at all, an `orchid.config` your `.gitignore`
+excludes and no commit tracks is refused too — `git add` cannot stage it, and
+`orchid start` will not force it past a rule you wrote.
+
+What it will not do, by design:
+
+- **never guess a verification command** — no `--verify`, no configured
+  `verify=`, no setup;
+- **never overwrite your files** — it appends at most one `verify=` line (and
+  commits exactly that one file), never replaces a `verify=` line already on
+  the integration branch, never commits an `orchid.config` that would drop a
+  line that branch already carries, and refuses any worktree path that is not
+  empty or is not exactly this repository's integration checkout;
+- **never resume or take over a run** — against existing state it refuses if
+  the run has left `planning`, if another session's lease is still fresh, if a
+  run/verb lock is live, or if you cannot prove you hold the current epoch
+  (`export ORCHID_EPOCH=<n>`; it never mints one over an existing one).
+  `planning` has to hold on every copy that exists — your integration
+  checkout's `.orchid/roadmap.md`, the roadmap as *committed* on the
+  integration branch, and that branch carrying no committed `.orchid/tasks/`
+  — because the two roadmaps can lag each other in opposite directions, and
+  because committing onto a branch whose run is already in flight would move
+  the head that every candidate's `base_sha` is pinned against;
+- **never turn on unattended trust implicitly** — that needs both
+  `--ack-unattended` and a non-empty `--reason`.
+
+Re-running it with the same requirements file and the epoch it printed is a
+no-op that just re-reports; anything it cannot do safely is refused with the
+exact command to recover. It is a convenience over the verbs below, not a
+replacement: everything in the rest of this step keeps working exactly as
+written, and is what to reach for when you want to see each step.
+
+### Or, step by step
+
 ```sh
 orchid init
 ```
@@ -154,8 +241,6 @@ orchid jobs reconcile
 orchid plan apply --reason "initial plan"
 ```
 
-<!-- SCREENSHOT: terminal — orchid plan apply committing the first roadmap -->
-
 ## 5. Start the orchestrator and walk away
 
 Two equivalent front-ends execute the same `PROTOCOL.md` procedure — pick
@@ -169,13 +254,18 @@ commands shown throughout this page.
 **Headless, right now:**
 
 ```sh
+orchid trust unattended "$PWD" --reason "reviewed this repository for unattended execution"
 orchid run start
 runners/orchid-tick
 ```
 
-**Headless, unattended (recommended once you trust the loop):** install the
-pump as a background service so ticks continue even after you close the
-terminal:
+The first command is an explicit acknowledgement of the target repository's
+prompt-injection risk. It is machine-local state, not a tracked config knob;
+neither cloning a repository nor accepting a repository-supplied
+`orchid.config` can opt you in.
+
+**Headless, unattended:** after that acknowledgement, install the pump as a
+background service so ticks continue even after you close the terminal:
 
 ```sh
 orchid service install
@@ -187,6 +277,7 @@ or skip straight to it now if you don't want to babysit a terminal.
 ## 6. Keep it running unattended
 
 ```sh
+orchid trust show "$PWD"
 orchid service install
 ```
 
@@ -197,16 +288,39 @@ interactive session's lease has gone stale. `orchid service status` reports
 whether it's loaded and when it last ran; `orchid service uninstall`
 reverses it.
 
+The pump and direct `runners/orchid-tick` entry point re-check trust on every
+invocation, before creating runtime state, draining the notification outbox,
+or spawning an engine. `orchid trust show "$PWD"` includes the operator's
+reason/timestamp and the current binding: Git common-directory device/inode,
+a non-reusable hard-link witness identity, root commit, and trust-policy
+version. Linked worktrees share the record, and a same-filesystem move keeps
+it; a clone, copy, recreated/replaced `.git`, root-history replacement, or
+policy-version change does not. The trust store and Git common directory must
+be on the same filesystem for the witness anchor. Trust inspection also
+returns immediately with root verification `pending` when no identity-keyed
+record exists. Acknowledgement and verification of an existing candidate
+require Git 2.45 or newer so any required history walk can reliably forbid
+promisor/lazy fetching; older Git remains usable manually, but the unattended
+gate stays denied before inspecting repository objects. Re-acknowledge only
+after reviewing the changed boundary:
+
+```sh
+orchid trust unattended "$PWD" --reason "reviewed the new repository identity/history"
+orchid trust revoke "$PWD"       # fail closed on future pump/tick passes
+```
+
+Revocation does not uninstall an existing schedule; `orchid service status`
+and `orchid service uninstall` intentionally remain available.
+
 ## 7. Check in
 
 ```sh
 orchid status               # task table, engines, open questions
-orchid status --explain     # + why each pending/rework task isn't dispatching
+orchid status --explain     # + unattended gate/provenance and dispatch reasons
 orchid status --html        # writes a static page to runtime/status.html —
                              # open it directly, "check from another room"
+orchid status --html --explain # + gate/provenance in page; stdout remains its path
 ```
-
-<!-- SCREENSHOT: orchid status --html rendered in a browser -->
 
 A genuine blocker raises a question in `BLOCKERS.md` and (if you configured
 [a notify channel](./engines/openclaw.md)) pings you outside the terminal.
@@ -224,11 +338,36 @@ Once every task is `done`, the orchestrator runs the acceptance procedure
 itself (`orchid run advance accepting`, coverage + acceptance checks,
 `orchid run accept --reason ... --evidence ...`) and `orchid status` shows
 `run_status: complete`. The integration branch now holds your finished
-product — pushing or deploying it from there is entirely up to you; orchid
-never pushes anywhere on its own.
+product — pushing or deploying it from there is entirely up to you. Orchid's
+supported verbs do not push; see the
+[threat model](./specs/plugins.md#threat-model-consolidated) before treating
+that prompt policy as containment.
+
+## Before you hand this to someone else
+
+If you are about to point Orchid at a repository you do not already know it can
+drive — someone else's project, or your own before a beta — qualify it first:
+
+```sh
+/bin/bash scripts/beta-qualify.sh --repo "$PWD" \
+  --output "$(mktemp -d)/qualification" --bash /bin/bash
+```
+
+It times your verification command against `pump_stale_s`, checks whether the
+configured implementer can run a command at all (two of the deadlocks that only
+show up on a real codebase), reports the unattended trust gate without changing
+it, and writes anonymized local evidence — check identities, durations, exit
+codes, and outcomes, never contents, paths, prompts, diffs, or secrets. What it
+cannot test locally, including the inbound half of the blocker round trip, it
+records as `not-tested` with the reason rather than as a pass.
+
+Full checklist, including the manual steps no harness can perform:
+[beta-qualification.md](./beta-qualification.md).
 
 ## Next
 
+- [beta-qualification.md](./beta-qualification.md) — qualifying a repository
+  before a beta, and the local release rehearsal.
 - [configuration.md](./configuration.md) — every key, its default, and
   which layer to set it in.
 - [troubleshooting.md](./troubleshooting.md) — rate limits, resume, stale

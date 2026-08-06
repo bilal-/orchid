@@ -40,7 +40,7 @@ reconcile_until_ok() {
   fail "timed out waiting for $task to reconcile ok (last reconcile output: $out)"
 }
 
-cd "$WORK"; git init -q .
+cd_scratch "$WORK" || exit 1; git init -q .
 
 # ---------------------------------------------------------------------------
 # init: fixture config committed first (init refuses a dirty tree).
@@ -84,7 +84,7 @@ jid="$(jq -r .job_id "$req")"
 task="$(jq -r .task "$req")"
 op="$(jq -r .operation "$req")"
 [ "$op" = implement ] || exit 1
-cd "$worktree"
+cd "$worktree" || exit 1
 echo "stub implementation" > stub_feature.txt
 git add stub_feature.txt
 git -c user.email=stub-implementer@example.com -c user.name="stub implementer" \
@@ -115,7 +115,8 @@ chmod +x "$WORK/eng/stubreview/run"
 # ---------------------------------------------------------------------------
 # run start: mints the epoch this whole walk operates under.
 # ---------------------------------------------------------------------------
-export ORCHID_EPOCH="$(run_ok "orchid run start" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+ORCHID_EPOCH="$(run_ok "orchid run start" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
 [ -n "$ORCHID_EPOCH" ] || fail "epoch minted by run start"
 
 # ---------------------------------------------------------------------------
@@ -217,7 +218,7 @@ assert_match "^merged T001: $integ -> " "$merge_out" "merge prints the merged me
 
 post_integ="$(git rev-parse "$integ")"
 [ "$post_integ" != "$pre_integ" ] || fail "integration ref must have advanced"
-assert_eq done "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task T001 reaches done"
+assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task T001 reaches done"
 
 git merge-base --is-ancestor "$cand1" "$integ" \
   || fail "integration branch must contain the stub's own commit ($cand1)"
