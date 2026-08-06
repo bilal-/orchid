@@ -80,7 +80,7 @@ for `FINDING:` lines and populates `findings[]`, while the other shipped
 review adapters ask for a `VERDICT:` line only and never populate it, so
 there approval rests on `verdict` + `scope_complete`. Where it is populated
 the gate cuts both ways: an empty `findings[]` blocks nothing, and one
-`medium` finding (the default `blocking_severity`) turns an otherwise
+finding at or above the task's own `blocking_severity` turns an otherwise
 unanimous `approve` into a `review-conflict` for the arbiter to settle.
 It stops at a named judgment boundary and exits
 16 rather than guessing; `orchid run boundary set|clear|show` owns that

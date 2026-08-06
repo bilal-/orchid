@@ -138,15 +138,27 @@ for which reviewer makes that gate live.
 
 **Severity is a gate, so the prompt spells out what each one does.** Because
 this adapter populates `findings[]`, the driver's `blocking_severity` gate is
-live for it — and that default is `medium`. One `medium` finding on a review
-whose verdict is `approve` is therefore not an approval with a note: it is a
-`review-conflict` boundary that halts the run until an arbiter settles it.
+live for it. A finding at or above that threshold on a review whose verdict is
+`approve` is therefore not an approval with a note: it is a `review-conflict`
+boundary that halts the run until an arbiter settles it.
+
+**The prompt states the task's own threshold, never a hardcoded default.**
+The adapter reads `blocking_severity` from the pack's `task.md` and names that
+value in the prompt, falling back to `medium` only when the field is absent —
+the same fallback `lib/drive.sh`'s gate applies, so the prompt and the gate
+can never disagree. This matters because the shipped archetypes do not agree:
+`templates/task.md` and `templates/task-test.md` ship `high`, while
+`templates/task-migrate.md` and `templates/task-refactor.md` ship `medium`. A
+prompt claiming "medium by default" would tell a reviewer on a `high`-threshold
+task that a `medium` finding halts the run when it does not.
+
 Reviewers approve-with-nits by habit, so the review prompt defines the three
-severities by consequence — `high` must not ship, `medium` should block this
-candidate, `low` is worth telling the author and explicitly not worth
-stopping for ("use low for anything you would call a nit"). Nothing about the
-parser or the envelope schema encodes this; it is the prompt's job to make
-the model choose a severity for what it triggers.
+severities by consequence, phrased against that threshold rather than
+assuming it — `high` must not ship, `medium` is a real defect worth halting
+over wherever the threshold reaches it, `low` is worth telling the author and
+explicitly never worth stopping for ("use low for anything you would call a
+nit"). Nothing about the parser or the envelope schema encodes this; it is the
+prompt's job to make the model choose a severity for what it triggers.
 
 ## Implementer: review-only in practice (adapter commits when it can)
 

@@ -411,6 +411,35 @@ assert_match "one \`medium\` finding turns an all-\`approve\`" "$kernel_one_line
 assert_match "Use low for anything you would call a nit" \
   "$(tr '\n' ' ' < "$REPO_ROOT/plugins/engines/claude/run" | tr -s '[:space:]' ' ')" \
   "the review prompt must give severity explicit blocking semantics, not just a line format"
+# ...and it must name THIS task's threshold. The shipped archetypes disagree
+# (templates/task.md and task-test.md ship `high`; task-migrate and
+# task-refactor ship `medium`), so any hardcoded default in the prompt is
+# wrong for some of them -- on the very gate this milestone made live.
+# Squeezed to one line first: the offending text was WRAPPED in the source
+# ("blocking_severity (medium by\ndefault)"), so a line-oriented grep for it
+# would never have fired -- a guard that cannot fail is not a guard.
+claude_run_one_line="$(tr '\n' ' ' < "$REPO_ROOT/plugins/engines/claude/run" | tr -s '[:space:]' ' ')"
+grep -qF 'blocking_severity (medium by default)' <<<"$claude_run_one_line" \
+  && fail "plugins/engines/claude/run hardcodes a blocking_severity default in the review prompt — the shipped templates do not agree on one"
+grep -qF 'fm_get "$input_pack/task.md" blocking_severity' <<<"$claude_run_one_line" \
+  || fail "plugins/engines/claude/run no longer reads the task's own blocking_severity — docs/engines/claude.md's per-task-threshold claim is now wrong"
+# The doc's claim is concrete and checkable: it names templates/task.md and
+# task-test.md as `high` and task-migrate/task-refactor as `medium`. Check
+# each against the template it describes, so re-pinning a template's severity
+# without touching the doc fails here instead of silently making it a lie.
+# `claude_doc_one_line` is already built above, from the same file.
+for bsev_pair in task:high task-test:high task-migrate:medium task-refactor:medium; do
+  bsev_tmpl="${bsev_pair%%:*}"; bsev_want="${bsev_pair#*:}"
+  bsev_val="$(grep -m1 '^blocking_severity:' "$REPO_ROOT/templates/$bsev_tmpl.md" 2>/dev/null | sed 's/^blocking_severity:[[:space:]]*//')"
+  assert_eq "$bsev_want" "$bsev_val" \
+    "templates/$bsev_tmpl.md's blocking_severity changed — docs/engines/claude.md still describes it as $bsev_want"
+  assert_match "templates/$bsev_tmpl\\.md" "$claude_doc_one_line" \
+    "docs/engines/claude.md must name templates/$bsev_tmpl.md when explaining why no default is hardcoded"
+done
+assert_match "ship \`high\`" "$claude_doc_one_line" \
+  "docs/engines/claude.md must state the high-threshold archetypes' actual value"
+assert_match "ship \`medium\`" "$claude_doc_one_line" \
+  "docs/engines/claude.md must state the medium-threshold archetypes' actual value"
 
 # USAGE TEXT IS DOCUMENTATION TOO, and it is the copy an operator reads at
 # the moment it matters. Every prose site above was updated when one shipped
@@ -438,9 +467,10 @@ drive_help_one_line="$(printf '%s' "$drive_help" | tr -s '[:space:]' ' ')"
 # ALTERNATION there unless every `|` in it is backslash-escaped. Escaping is
 # one keystroke from silently useless: drop a single backslash and the
 # pattern becomes `FINDING: <low` OR `medium` OR `high>: <title>`, whose
-# middle arm this same help text satisfies independently in "(medium, by
-# default)" -- so the assertion would keep passing with the FINDING line
-# shape deleted outright, which is the one regression it exists to catch.
+# middle arm this same help text satisfies independently where it explains
+# that `medium` is only the fallback threshold -- so the assertion would keep
+# passing with the FINDING line shape deleted outright, which is the one
+# regression it exists to catch.
 # Nothing here should hinge on a backslash nobody re-reads.
 # tests/test_engine_claude.sh documents the same hazard and takes the same
 # way out: assert the metacharacter-free prefix instead.

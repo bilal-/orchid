@@ -266,11 +266,14 @@ available and never create an acknowledgement.
   agent exists to run `orchid answer`. A plugin that declares no probe is
   reported **NOT VERIFIED** *for that plugin*, never as a claim that liveness
   is unknowable in general. Alongside either, doctor reports local evidence:
-  blockers still WAITING for an answer — expired ones (past
-  `answer_expiry_s`, which `orchid answer` refuses anyway) and ones whose
-  task was resolved by `orchid task unblock` are excluded, since nothing will
-  ever write an answer for those and a permanent warning is what teaches an
-  operator to ignore the line. Every line here is advisory; a run with no
+  blockers still WAITING for an answer. The only exclusion is expiry (past
+  `answer_expiry_s`), mirroring the one refusal `orchid answer` itself
+  enforces — nothing can ever write an answer for those, and a permanent
+  warning is what teaches an operator to ignore the line. Task status is NOT
+  an exclusion: `orchid answer` never reads it, so a question is evidence
+  whatever status its task holds. When nothing is waiting, doctor reports
+  that as an ABSENCE and names its bound — no question outstanding is not
+  proof the return leg works. Every line here is advisory; a run with no
   channel configured is legitimate and stays green.
 - **API-billing exception, stated plainly:** API-backed engines are metered
   per call, unlike subscription CLIs; their role BINDINGS carry call budgets

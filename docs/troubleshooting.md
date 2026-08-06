@@ -278,11 +278,21 @@ plugin rather than pretending nothing could ever be known.
 
 Alongside either, doctor shows local evidence: blockers still *waiting* for
 an answer. Several you believe you already answered is the signature of a
-broken return leg. Questions that expired past `answer_expiry_s` (which
-`orchid answer` refuses anyway) and questions whose task was already resolved
-with `orchid task unblock` are excluded and counted separately — nothing will
-ever write an answer for those, so warning about them forever would only
-train you to skim past the line.
+broken return leg. Exactly one class is excluded and counted separately —
+questions that expired past `answer_expiry_s` — because that is the one
+refusal `orchid answer` itself enforces, so no answer can ever arrive and a
+permanent warning would only train you to skim past the line. Task status is
+*not* a filter: `orchid answer` never reads it, so a question raised on a task
+now in `merging`, `arbitrating` or `rework` is still answerable and its
+silence is still evidence. A task resolved locally with `orchid task unblock`
+does leave its question answer-less by design; that one ages out through the
+same expiry rather than being dropped on sight.
+
+When nothing is waiting, doctor reports the *absence* — "no question is
+currently unanswered" — and says so as an absence. It is not an all-clear on
+the return leg: a channel that drops every reply looks identical to a healthy
+one until something is actually asked. The probe above is the line that
+speaks to liveness; this one only tells you whether anything is outstanding.
 
 Every line here is advisory — a run with no channel at all is legitimate and
 stays green. To answer while the return leg is down, run the command

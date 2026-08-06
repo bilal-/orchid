@@ -774,11 +774,20 @@ always write `findings: []` (`FINDING:` lines belong to the `critique`
 prompt), so with them approval turns on `verdict` and `scope_complete` alone.
 An empty `findings[]` is never itself a signal — a reviewer that found
 nothing to report writes the same empty array. A NON-empty one, though, is
-decisive on its own: with `blocking_severity` at its `medium` default
-(`orchid task set <id> risk_tier low` relaxes it to `high`), one `medium`
+decisive on its own: on a task whose `blocking_severity` is `medium` — the
+fallback when the field is absent, and what `templates/task-migrate.md` and
+`templates/task-refactor.md` ship, though `templates/task.md` and
+`templates/task-test.md` ship `high` — one `medium`
 finding turns an all-`approve`, all-`scope_complete` review set into a
 `review-conflict` boundary. Approve-with-a-nit is not a state this gate has;
 that is what arbitration is for.
+
+To RELAX the threshold, set the field itself: `orchid task set <id>
+blocking_severity high`, a plain settable key. `risk_tier` cannot do it —
+it is monotonic, so `orchid task set <id> risk_tier low` is refused outright
+on a task already at `medium` or above, and raising `risk_tier` only ever
+tightens the derived threshold (low tier → `high`, medium/high tier →
+`medium`).
 
 Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation

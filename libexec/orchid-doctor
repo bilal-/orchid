@@ -31,11 +31,10 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
-# v1-m4 T006, both for the notify return-leg check below: spawn.sh for the
+# v1-m4 T006, for the notify return-leg check below: spawn.sh for the
 # launcher's own env hygiene around the inbound probe (never re-invented
-# here), frontmatter.sh to read a blocked task's status when deciding whether
-# an unanswered question is still genuinely waiting.
-source "$ORCHID_ROOT/lib/spawn.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+# here).
+source "$ORCHID_ROOT/lib/spawn.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
@@ -398,17 +397,28 @@ else
   # about; if the operator believes they answered it, the return leg is
   # exactly what failed.
   #
-  # Only questions that are still genuinely WAITING count. Two whole classes
-  # of question are not evidence of anything and used to warn forever,
-  # because nothing ever writes an .answer for them:
-  #   - EXPIRED past `answer_expiry_s` -- libexec/orchid-answer refuses these
-  #     outright, so no answer can ever arrive and the warning could not be
-  #     acted on even in principle;
-  #   - resolved LOCALLY -- `orchid task unblock` moves a blocked task to
-  #     rework without ever touching runtime/answers, so its question sits
-  #     answer-less by design.
-  # A permanent warning is worse than no warning: it is what teaches an
-  # operator to skim past the one line that would have caught a real outage.
+  # ONE exclusion, and it mirrors `orchid answer`'s own refusal exactly:
+  # a question EXPIRED past `answer_expiry_s` can never be answered
+  # (libexec/orchid-answer dies on it), so warning about one forever is the
+  # false alarm that teaches an operator to skim past the line that would
+  # have caught a real outage.
+  #
+  # This deliberately does NOT filter on the originating task's status.
+  # An earlier pass excluded any question whose task was not `blocked`, aimed
+  # at `orchid task unblock` (which moves a blocked task to rework without
+  # ever writing runtime/answers, leaving its question answer-less by design).
+  # That filter was wrong, and wrong in the dangerous direction:
+  # libexec/orchid-answer NEVER READS TASK STATUS -- it gates on the question
+  # file, expiry, nonce/allowlist and no prior answer, and nothing else. A
+  # question on a task sitting in `merging` or `arbitrating` is fully
+  # answerable, and those are exactly the ones runners/orchid-drive's boundary
+  # notifier raises (hook-failure, worktree-conflict, operator-decision, and
+  # non-arbitrable review-conflict all notify with the task in whatever status
+  # it holds). Excluding them dropped the majority of real lost-answer
+  # evidence. `not blocked` is far wider than `was blocked, then locally
+  # resolved`; the locally-resolved case is left to age out through the same
+  # expiry above, which bounds the stale warning to answer_expiry_s instead of
+  # buying that quiet by discarding answerable blockers.
   notify_answers_dir="$repo/.orchid/runtime/answers"
   notify_expiry="$(config_get "$repo" answer_expiry_s 86400)"
   case "$notify_expiry" in ''|*[!0-9]*) notify_expiry=86400 ;; esac
@@ -430,18 +440,6 @@ else
       if [ "$notify_m" -le 0 ] || [ $(( notify_now - notify_m )) -gt "$notify_expiry" ]; then
         notify_q_stale=$(( notify_q_stale + 1 )); continue
       fi
-      # The originating task ("task: <id|none>", libexec/orchid-notify's own
-      # first line). Read defensively: this is a runtime file, so a value
-      # that could traverse out of the tasks dir is treated as no task at
-      # all rather than used to build a path.
-      notify_qtask="$(head -n1 "$notify_qf" 2>/dev/null || true)"
-      notify_qtask="${notify_qtask#task: }"
-      case "$notify_qtask" in task:*|none|'') notify_qtask="" ;; */*|*..*) notify_qtask="" ;; esac
-      if [ -n "$notify_qtask" ] && [ -f "$repo/.orchid/tasks/$notify_qtask.md" ]; then
-        if [ "$(fm_get "$repo/.orchid/tasks/$notify_qtask.md" status)" != blocked ]; then
-          notify_q_stale=$(( notify_q_stale + 1 )); continue
-        fi
-      fi
       notify_q_live=$(( notify_q_live + 1 ))
       notify_age=$(( notify_now - notify_m ))
       # A full `if`, not `[ ... ] && ...`: this is the LAST command in the
@@ -451,13 +449,19 @@ else
     done
   fi
   notify_stale_note=""
-  [ "$notify_q_stale" -gt 0 ] && notify_stale_note=" ($notify_q_stale further question(s) ignored as no longer answerable: expired past answer_expiry_s=${notify_expiry}s, or their task is no longer blocked — 'orchid answer' would refuse the first and 'orchid task unblock' resolves the second without ever writing an answer)"
+  [ "$notify_q_stale" -gt 0 ] && notify_stale_note=" ($notify_q_stale further question(s) ignored as unanswerable: expired past answer_expiry_s=${notify_expiry}s, which is the one refusal 'orchid answer' itself enforces)"
+  # NEVER a positive all-clear. The strongest true statement available here is
+  # an ABSENCE -- no question is currently unanswered -- and the absence of
+  # waiting questions is not evidence the return leg works: a channel that
+  # drops every reply looks identical to a healthy one until something is
+  # actually asked. Say the absence, then name what it does not prove.
+  notify_inbound_bound="that is an absence, not a working return leg: it does not prove a reply sent on the channel would arrive, only that nothing is outstanding to prove it with"
   if [ "$notify_q_live" -gt 0 ]; then
     echo "WARN: notify inbound: $notify_q_live blocker(s) in $notify_answers_dir are still waiting for an answer (oldest: ${notify_oldest}s, still within answer_expiry_s=${notify_expiry}s). If any of them were already answered on the channel, nothing delivered that answer back here — check the channel-side agent before answering again.$notify_stale_note"
   elif [ "$notify_q_answered" -gt 0 ]; then
-    echo "note: notify inbound: no blocker is waiting for an answer; $notify_q_answered of $notify_q_total on record have one — an answer did arrive, though that alone does not distinguish a channel delivery from an operator typing 'orchid answer' locally.$notify_stale_note"
+    echo "note: notify inbound: no question is currently unanswered and still answerable; $notify_q_answered of $notify_q_total on record have an .answer — $notify_inbound_bound, and a recorded answer does not distinguish a channel delivery from an operator typing 'orchid answer' locally.$notify_stale_note"
   elif [ "$notify_q_total" -gt 0 ]; then
-    echo "note: notify inbound: no blocker is waiting for an answer.$notify_stale_note"
+    echo "note: notify inbound: no question is currently unanswered and still answerable — $notify_inbound_bound.$notify_stale_note"
   else
     echo "note: notify inbound: no blocker has been raised in this repo yet, so there is no local evidence either way"
   fi

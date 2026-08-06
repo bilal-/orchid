@@ -76,6 +76,15 @@ assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "approve stub: a revi
 # match almost anything).
 assert_match "One line per issue found, exactly: FINDING:" "$stdin_content" \
   "approve stub: the review prompt asks for the same FINDING line shape the critique prompt does"
+# This fixture's task.md carries no blocking_severity, so the prompt must
+# state the SAME fallback lib/drive.sh's own gate applies (medium).
+assert_match "This task's blocking_severity is medium" "$stdin_content" \
+  "approve stub: with the key absent the prompt states the gate's own default"
+# Squeezed first: the text this guards against was WRAPPED in the prompt
+# ("(medium by\ndefault)"), so a line-oriented grep for it could never have
+# fired.
+grep -qF "medium by default" <<<"$(tr '\n' ' ' <<<"$stdin_content" | tr -s '[:space:]' ' ')" \
+  && fail "approve stub: the prompt must not hardcode a default threshold — templates/task.md and task-test.md ship blocking_severity: high"
 
 # --- 1b. v1-m4 T006: a REVIEW reply's `FINDING:` lines must reach findings[]
 # exactly as a critique's do. Before this, review asked for a VERDICT line
@@ -113,6 +122,32 @@ envelope_validate "$d/out/envelope.json" || fail "review no-findings stub: envel
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "review no-findings stub: status ok"
 assert_eq "approve" "$(jq -r .verdict "$d/out/envelope.json")" "review no-findings stub: verdict approve"
 assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "review no-findings stub: findings[] is the empty array"
+
+# --- 1d. v1-m4 T006: the prompt must state THIS task's blocking_severity, not
+# a hardcoded default. The shipped archetypes genuinely disagree
+# (templates/task.md and templates/task-test.md ship `high`; task-migrate and
+# task-refactor ship `medium`), so a prompt asserting "medium by default"
+# tells a reviewer on a test/default task the wrong threshold for the very
+# gate this milestone made live -- inviting a `medium` finding believing it
+# will halt the run when lib/drive.sh will let it through.
+d="$(build_request reviewbsevhigh review '#!/usr/bin/env bash
+cat > "'"$WORK"'/bsevhigh.stdin"
+echo "VERDICT: approve"')"
+printf -- '---\nschema: 1\nid: T001\nacceptance_criteria: does the thing\nstop_condition: one pass only\nblocking_severity: high\n---\nDo the thing.\n' \
+  > "$d/pack/task.md"
+run_adapter "$d" || fail "blocking_severity=high stub: adapter should exit 0"
+bsev_stdin="$(cat "$WORK/bsevhigh.stdin")"
+assert_match "This task's blocking_severity is high" "$bsev_stdin" \
+  "blocking_severity=high stub: the prompt reports the task's actual threshold"
+assert_match "a finding at or above high" "$bsev_stdin" \
+  "blocking_severity=high stub: the consequence sentence uses the same threshold, not a default"
+grep -q "blocking_severity is medium" <<<"$bsev_stdin" \
+  && fail "blocking_severity=high stub: the prompt must not state medium for a high-threshold task"
+# The severity menu must stay true under either threshold: `medium` may or may
+# not block depending on the task, so it must not be described as one that
+# always does.
+grep -q "medium: should block this candidate" <<<"$bsev_stdin" \
+  && fail "blocking_severity=high stub: the severity menu must not claim medium always blocks"
 
 # --- 2. failing stub: rate limit on stderr ----------------------------------
 d="$(build_request ratelimit review '#!/usr/bin/env bash
