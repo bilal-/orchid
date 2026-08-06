@@ -1,0 +1,1098 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+
+# v1.1 Track 2: `orchid start <requirements-file>` -- the ONE-COMMAND
+# existing-repo setup. Everything it does is already a supported lower-level
+# verb (`doctor`, `init`, `requirements import`, `trust unattended`) plus the
+# one raw git command the quickstart prints by hand (`git worktree add`);
+# this verb only SEQUENCES them, validates the preconditions each of them
+# assumes, and refuses -- with the exact recovery command -- anything it
+# cannot do safely. It replaces nothing: every verb below stays callable on
+# its own, and docs/quickstart.md's manual walkthrough keeps working exactly
+# as written.
+#
+# Three rules shape every decision in this file:
+#
+#   1. It never GUESSES a verification command. `verify` comes from the
+#      operator (`--verify`, or an already-configured `verify=`); a repo that
+#      configures neither is refused, never sniffed for a test runner.
+#   2. It never OVERWRITES anything the operator owns -- not orchid.config
+#      (one `verify=` line is APPENDED, and only when that file carries none;
+#      it is then committed onto the integration branch, because a setup that
+#      hands back homework is not one command and a dirty integration
+#      checkout is dogfood finding F16), not a directory that is not exactly
+#      this repository's integration worktree, not a requirements snapshot
+#      that is already identical. That commit is whole-file, so "append-only"
+#      has to hold against the branch too, not just against the file on disk:
+#      a checkout whose orchid.config would REPLACE the `verify=` line $integ
+#      already carries, or DROP any other line it carries, is refused above
+#      the mutation boundary rather than committed over.
+#   3. It never RESUMES or STEALS a session. Against existing run state it
+#      demands the run still be in `planning` -- in the integration
+#      checkout's roadmap, in the roadmap COMMITTED on the integration
+#      branch, and by that branch carrying no committed tasks -- plus no live
+#      lease, no live run/verb lock, and proof (`ORCHID_EPOCH`) that the
+#      caller owns the CURRENT epoch. It mints an epoch only where none
+#      exists yet, and it HOLDS the verb lock across everything it mutates,
+#      re-checking the planning precondition underneath it.
+#
+# Greenfield (unborn HEAD) is deliberately out of scope -- `orchid init
+# --greenfield` plus docs/quickstart-greenfield.md own that path, which has a
+# scaffold task and a deferred verify command this verb's rule 1 would have
+# to special-case.
+
+_start_usage() {
+  cat <<'EOF'
+usage:
+  orchid start <requirements-file> [--verify <command>] [--worktree <path>]
+                                   [--ack-unattended --reason <text>]
+
+One-command setup for an EXISTING repository: full preflight, repo-config
+validation, safe initialization, integration-worktree creation/reuse, epoch
+setup, requirements import, and a handoff into PLANNING.
+
+  <requirements-file>  operator-authored requirements, imported verbatim into
+                       .orchid/requirements.md under the validated epoch.
+  --verify <command>   the project's verification command, on ONE line.
+                       Appended as a `verify=` line to the integration
+                       checkout's orchid.config -- and committed onto the
+                       integration branch -- only when that file configures
+                       none yet; a `verify=` line already there is never
+                       replaced.
+                       orchid start never guesses a verification command.
+  --worktree <path>    where the integration worktree lives (default:
+                       ../<repo>-orchid). An existing path is reused only
+                       when it is exactly this repository's
+                       integration-branch checkout.
+  --ack-unattended     also acknowledge unattended (headless) trust for this
+                       repository by invoking `orchid trust unattended`.
+                       Requires --reason. Without both flags trust stays off
+                       and headless ticks stay gated.
+  --reason <text>      non-empty operator reason for that acknowledgement.
+
+Every step is a lower-level verb; none of them is replaced. Repositories with
+no commits yet are out of scope: use `orchid init --greenfield` and
+docs/quickstart-greenfield.md.
+EOF
+}
+
+# -- helpers ----------------------------------------------------------------
+
+# _start_abs <path> -- absolute, symlink-resolved form of <path>. The path
+# itself need not exist yet (the integration worktree usually does not), but
+# its PARENT must: canonicalizing the parent and appending the basename is
+# what makes two spellings of the same worktree ("../x", "$PWD/../x", a
+# symlinked /var vs /private/var on macOS) comparable at all, and every
+# reuse/refusal decision below is a path comparison.
+_start_abs() {
+  local p="$1" parent base
+  while [ "${p%/}" != "$p" ] && [ "$p" != / ]; do p="${p%/}"; done
+  if [ -d "$p" ]; then ( cd "$p" && pwd -P ); return; fi
+  parent="$(dirname "$p")"; base="$(basename "$p")"
+  [ -d "$parent" ] || orchid_die "cannot place a worktree at '$1': its parent directory '$parent' does not exist"
+  printf '%s/%s\n' "$(cd "$parent" && pwd -P)" "$base"
+}
+
+# _start_integ_checkout <repo> <branch> -- the ONE checkout of <branch> in
+# this repository (the main working tree or a linked worktree), or nonzero
+# when the branch is checked out nowhere. Git allows a branch to be checked
+# out in at most one worktree, so this is single-valued by construction --
+# which is exactly why "reuse only an EXACT integration worktree" is
+# decidable rather than a guess: if a checkout exists, it is THE one.
+_start_integ_checkout() {
+  local repo="$1" branch="$2" line wt=""
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) wt="${line#worktree }" ;;
+      "branch refs/heads/$branch")
+        [ -d "$wt" ] || return 1
+        ( cd "$wt" && pwd -P ); return 0 ;;
+    esac
+  done < <(git -C "$repo" worktree list --porcelain 2>/dev/null)
+  return 1
+}
+
+# _start_lock_live <lock-dir> <grace-s> -- true when a lock directory
+# (runtime/lock or runtime/verb-lock) is held by a process that is genuinely
+# alive on THIS host, using the same pid/host/pid-start triple lock_acquire
+# itself records (lib/common.sh).
+#
+# A claimed directory whose owner.json is missing or unparseable fails CLOSED
+# -- it is the few-ms window right after a winner's mkdir, and `orchid start`,
+# a setup command with no deadline pressure, must never race that -- but only
+# for <grace-s> of the directory's own age. Past that it is no longer a race:
+# it is a crash between the winner's mkdir and its owner write (the shape
+# lib/common.sh:546-564 documents, and which BOTH acquirers break for exactly
+# this reason -- verb_lock_acquire after verb_lock_wait_s, lock_acquire after
+# lock_break_s). Failing closed forever there would brick `orchid start`
+# permanently, with no pid to wait for and no verb to blame, so the same
+# escape valve the acquirers have applies here: pass the caller the acquirer's
+# own floor and stop calling an owner-less directory live once it is older.
+#
+# ORCHID_START_LOCK_PID is the owner pid when one was actually read, and EMPTY
+# for a live-but-owner-less directory -- the refusals below print a different
+# recovery for each, because "wait for pid ?" is not one.
+_start_lock_live() {
+  local lock="$1" grace="$2" owner parsed pid host pstart now mt age
+  ORCHID_START_LOCK_PID=""
+  [ -d "$lock" ] || return 1
+  # Read owner.json ONCE, then take each field out of that snapshot with its
+  # own jq call into its own variable -- lib/common.sh's _owner_field, and
+  # never a shell fragment handed to `eval`: a lock owner record is
+  # repository-controlled input (see _owner_field for the full reasoning).
+  # An unparseable record leaves $parsed empty and falls into the owner-less
+  # grace window below -- the same branch it has always taken.
+  owner="$(cat "$lock/owner.json" 2>/dev/null || true)"
+  pid=0; host='?'; pstart='?'; parsed=""
+  if [ -n "$owner" ] && pid="$(_owner_field "$owner" pid)"; then
+    host="$(_owner_field "$owner" hostname || printf '?')"
+    pstart="$(_owner_field "$owner" pid_start || printf '?')"
+    parsed=1
+  fi
+  if [ -z "$parsed" ]; then
+    now="$(date +%s)"
+    # Same BSD-then-GNU mtime probe lock_acquire uses, but selected on the
+    # RESULT rather than on the exit status alone: a stat that does not
+    # understand the other platform's directive can print `?` and still exit 0,
+    # and a non-numeric `mt` would make the arithmetic below a syntax error
+    # under `set -e` -- crashing the very refusal path this branch exists to
+    # make survivable. An unreadable mtime falls back to "just now", i.e. to
+    # the conservative "still live" answer.
+    mt="$(stat -f %m "$lock" 2>/dev/null || true)"
+    case "$mt" in
+      ''|*[!0-9]*) mt="$(stat -c %Y "$lock" 2>/dev/null || true)" ;;
+    esac
+    case "$mt" in
+      ''|*[!0-9]*) mt="$now" ;;
+    esac
+    age=$(( now - mt ))
+    [ "$age" -lt "$grace" ] || return 1
+    return 0
+  fi
+  [ "$host" = "$(hostname)" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$(_pid_start "$pid")" = "$pstart" ] || return 1
+  ORCHID_START_LOCK_PID="$pid"
+  return 0
+}
+
+# _start_lock_refusal <what> <lock-dir> <mid-flight> -- the refusal text for a
+# lock _start_lock_live just reported live, naming the recovery that actually
+# applies to the shape it found.
+_start_lock_refusal() {
+  local what="$1" lock="$2" mid="$3"
+  if [ -n "${ORCHID_START_LOCK_PID:-}" ]; then
+    printf "the %s is held by a live process (pid %s, %s) — %s; wait for it to finish" \
+      "$what" "$ORCHID_START_LOCK_PID" "$lock" "$mid"
+  else
+    printf "the %s directory %s was claimed moments ago and carries no owner record yet — that is the instant right after another orchid command took it, and setup waits rather than races it. Re-run in a moment; if no orchid command is running at all, that directory is a crashed claim: remove it (rm -rf %s) and re-run" \
+      "$what" "$lock" "$lock"
+  fi
+}
+
+# _start_lease_live <runtime-dir> <repo> -- true when runtime/lease.json says
+# another orchestrator session is still driving this run. Same three-part
+# reading `orchid run new` and runners/orchid-pump already share: a
+# `released: true` lease is a clean session exit and reads stale immediately,
+# an unparseable/absent refreshed_at reads as "no live session", and anything
+# else is live until `pump_stale_s` (config, default 900) has passed. The
+# two-line GNU/BSD `date` parse is duplicated here for the same reason those
+# two duplicate it -- there is no shared iso_to_epoch helper in lib/.
+_start_lease_live() {
+  local rt="$1" repo="$2" lease released refreshed_at refreshed_epoch stale_s
+  lease="$rt/lease.json"
+  [ -f "$lease" ] || return 1
+  released="$(jq -r '.released // false' "$lease" 2>/dev/null || echo false)"
+  [ "$released" != true ] || return 1
+  refreshed_at="$(jq -r '.refreshed_at // ""' "$lease" 2>/dev/null || echo "")"
+  [ -n "$refreshed_at" ] || return 1
+  refreshed_epoch="$(date -u -d "$refreshed_at" +%s 2>/dev/null \
+    || date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$refreshed_at" +%s 2>/dev/null \
+    || echo 0)"
+  [ "$refreshed_epoch" -gt 0 ] || return 1
+  stale_s="$(config_get "$repo" pump_stale_s 900)"
+  ORCHID_START_LEASE_AGE=$(( $(date -u +%s) - refreshed_epoch ))
+  [ "$ORCHID_START_LEASE_AGE" -lt "$stale_s" ]
+}
+
+# _start_validate_config <file> -- repo-config validation, the mechanical
+# half doctor does not do: every non-blank, non-comment line must be
+# `key=value` with a non-empty key (a malformed line is silently INVISIBLE to
+# config_get's `grep -E "^key="`, so a typo'd `verify: npm test` would leave
+# the run with no verification command and no complaint), and every key
+# should be one lib/config-keys.txt knows about. Malformed lines are fatal;
+# an unrecognized key is a warning only -- `role.<custom-id>` bindings are
+# legitimately absent from that file, and a config written for a newer orchid
+# must not brick setup on an older one.
+#
+# <label> names the config in every message, so a blob extracted to a temp
+# file (the config COMMITTED on the integration branch, which is what a run
+# with no checkout yet will actually read) can be validated by the same code
+# without reporting a mktemp path at the operator. <fix> is the recovery that
+# actually applies to the copy being read -- every other refusal in this file
+# names one, and the committed copy needs it MOST: those bytes live in a git
+# blob the operator cannot open and edit, so "line 4 is malformed" without a
+# route to line 4 is a dead end.
+_start_validate_config() {
+  local file="$1" label="${2:-$1}" fix="${3:-}" n=0 line lead key
+  [ -n "$fix" ] || fix="Fix that line in $file (a 'key=value' setting, or a '#' comment) and re-run"
+  [ -f "$file" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1))
+    # Leading whitespace is stripped before anything is judged, so an
+    # indented comment stays a comment. `%%[![:space:]]*` yields the leading-
+    # whitespace run; removing it as a literal prefix is the bash 3.2 way to
+    # ltrim without a fork.
+    lead="${line%%[![:space:]]*}"
+    line="${line#"$lead"}"
+    case "$line" in
+      ''|'#'*) continue ;;
+    esac
+    case "$line" in
+      *=*) key="${line%%=*}" ;;
+      *) orchid_die "$label line $n is not a 'key=value' line: '$line' — repo config is refused rather than silently ignored. $fix" ;;
+    esac
+    [ -n "$key" ] || orchid_die "$label line $n has an empty config key: '$line'. $fix"
+    # Whitespace inside the key is fatal for the same reason a missing `=`
+    # is, and is far easier to write by accident: config_get matches
+    # `^key=` literally, so `verify = true` sets nothing at all while
+    # LOOKING like it sets the most important line in the file. Judged
+    # before the role.* exemption below, which is about UNKNOWN keys, not
+    # about unreadable ones.
+    case "$key" in
+      *[[:space:]]*)
+        orchid_die "$label line $n puts whitespace in its config key: '$line' — settings are matched as '^$key=' exactly, so this line configures nothing while looking like it does. Write it with no spaces around the '=' (e.g. 'verify=true'). $fix" ;;
+    esac
+    case "$key" in
+      role.*) continue ;;
+    esac
+    grep -qxF "$key" "$ORCHID_ROOT/lib/config-keys.txt" \
+      || echo "warn: $label line $n sets '$key', which is not a config key orchid $ORCHID_VERSION knows about (it will simply be ignored)"
+  done < "$file"
+}
+
+# _start_committed_verify <checkout> <branch> -- the `verify=` line as
+# COMMITTED on <branch>, or empty when that branch's orchid.config carries
+# none (or has no orchid.config at all). The committed blob, never the
+# working copy, is what a fresh checkout of this run -- another machine, a
+# task worktree, a headless pump -- will actually read, so it is the only
+# honest answer to "does this run have a durable verification command?".
+# Written to a temp file and read back with the same _cfg_file_get every
+# other config layer uses (rather than `git show | grep`, whose early-
+# exiting grep SIGPIPEs git under this file's pipefail -- lesson L005).
+_start_committed_verify() {
+  local co="$1" branch="$2" tmp v
+  tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-start-cfg.XXXXXX")"
+  git -C "$co" show "refs/heads/$branch:orchid.config" > "$tmp" 2>/dev/null || : > "$tmp"
+  v="$(_cfg_file_get "$tmp" verify)"
+  rm -f "$tmp"
+  printf '%s\n' "$v"
+}
+
+# _start_config_is_committed <checkout> <branch> -- true when <checkout>'s
+# orchid.config is byte-identical to the blob committed on <branch>, i.e. when
+# there is genuinely nothing for the record step's commit to carry.
+_start_config_is_committed() {
+  local co="$1" branch="$2" tmp rc=0
+  tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-start-cfg.XXXXXX")"
+  git -C "$co" show "refs/heads/$branch:orchid.config" > "$tmp" 2>/dev/null || : > "$tmp"
+  cmp -s "$tmp" "$co/orchid.config" || rc=1
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# _start_require_single_line <value> <what> -- refuse a verification command
+# that orchid.config cannot hold.
+#
+# That file is a LINE-ORIENTED `key=value` store: `_cfg_file_get` reads a
+# setting back with `grep -E "^key=" | cut -d= -f2-`, one line at a time. A
+# value carrying a newline therefore writes `verify=<first line>` plus one or
+# more ORPHAN lines -- the run would then verify with a truncated command
+# while this verb's own report prints the whole value as recorded, and every
+# later config read (including _start_validate_config above, which runs BEFORE
+# the append and so cannot see the damage in the run that causes it) would die
+# on the orphans. Checked at argument-parsing time, above the mutation
+# boundary, and again on whatever value is finally resolved -- `ORCHID_VERIFY`
+# reaches the same append through config_get. Any control character is
+# refused, not just a newline: none of them belongs in a config line, and a
+# `\r` or a bare `\t` at the end of a command is far likelier to be a paste
+# accident than an intention.
+#
+# Only the verification command needs this. `--reason` is handed to `orchid
+# trust unattended`, which stores it in a jq-authored JSON record where a
+# newline is just an escape sequence.
+_start_require_single_line() {
+  case "$1" in
+    *[[:cntrl:]]*)
+      orchid_die "$2 must be a single line, and this one contains a control character (a newline, tab or similar) — orchid.config holds it as one 'verify=<command>' LINE, so a multi-line command would be recorded truncated at its first line, silently verify with less than you asked for, and leave every later config read tripping over the leftovers. Put the command in a script and pass that instead (e.g. --verify './scripts/verify.sh')" ;;
+  esac
+}
+
+# _start_require_committable_config <workdir> <repo> <rev> <branch> -- refuse,
+# above the mutation boundary, a repository whose orchid.config git will not
+# let this verb commit.
+#
+# The `verify=` line is recorded DURABLY by committing orchid.config onto
+# <branch> (see the record step below), and `git add -- orchid.config` FAILS
+# outright on a path that .gitignore excludes and that no commit tracks yet.
+# Below the boundary that failure lands after `orchid init` has run, after the
+# worktree exists and after the epoch is minted, as git's own raw error with
+# none of this file's recovery framing -- and every re-run reproduces it.
+# `git add -f` is deliberately NOT the answer: force-committing a file the
+# operator's own .gitignore excludes is precisely the "never overwrites
+# anything the operator owns" rule inverted, and the choice of whether
+# repository configuration belongs in history is theirs to make.
+#
+# Tracked beats ignored: .gitignore has no say over a path some commit already
+# carries, so this only fires when <rev> does not carry orchid.config at all.
+# On the `mode=new` path that is exactly the shape a clean tree can still
+# hide -- an UNtracked, unignored orchid.config makes `git status --porcelain`
+# dirty and is refused for that instead.
+_start_require_committable_config() {
+  local wd="$1" repo="$2" rev="$3" branch="$4" rule
+  # `if`, not `cmd && return 0`: a failing AND-list is a failing statement
+  # under this file's `set -e`, so the tracked case -- the common one -- would
+  # kill the script instead of returning from this function.
+  if git -C "$repo" cat-file -e "$rev:orchid.config" 2>/dev/null; then return 0; fi
+  git -C "$wd" check-ignore -q -- orchid.config 2>/dev/null || return 0
+  rule="$(git -C "$wd" check-ignore -v -- orchid.config 2>/dev/null || true)"
+  orchid_die "orchid.config is excluded by .gitignore here and is not tracked on $branch${rule:+ ($rule)} — orchid start records this run's verification command by COMMITTING that file onto $branch (a verify= line that lives only in an ignored working file vanishes on every fresh checkout: a task worktree, another machine, a headless pump), and git refuses to add an ignored path. Either stop ignoring it — orchid.config is repository configuration, meant to be committed — or, if it must stay out of the default set, track it deliberately on your own branch first ('git add -f orchid.config && git commit -m \"orchid: track orchid.config\"'); then re-run orchid start"
+}
+
+# _start_require_no_config_clobber <checkout> <branch> <verify-cmd> -- refuse,
+# above the mutation boundary, a commit that would REMOVE from <branch> a
+# config line it already carries.
+#
+# The record step's commit is whole-file (orchid_commit_durable stages the
+# checkout's orchid.config as it stands, exactly as `orchid config commit`
+# does), while this verb's only sanctioned edit to that file is APPENDING one
+# `verify=` line. Those two agree only while the checkout's copy is the
+# branch's copy plus at most that append; if the copy on disk is missing a
+# line the branch carries -- an operator edit made in the checkout, a stale
+# checkout, an orchid.config deleted there entirely -- committing it would
+# silently delete settings the RUN reads. Rule 2, and the invariant
+# docs/quickstart.md and PROTOCOL.md both state.
+#
+# The comparison is against the bytes the commit would actually carry, append
+# included, so the one case that legitimately looks like a deletion -- a
+# checkout carrying no `verify=` line while the branch does, where the append
+# below writes that same line straight back -- is not mistaken for one.
+# Line-order and duplicate lines are deliberately not judged: only the
+# disappearance of a line is a loss, and a set comparison is what says so
+# without inventing a diff opinion.
+_start_require_no_config_clobber() {
+  local co="$1" branch="$2" vcmd="$3" blob want missing
+  blob="$(mktemp "${TMPDIR:-/tmp}/orchid-start-blob.XXXXXX")"
+  want="$(mktemp "${TMPDIR:-/tmp}/orchid-start-want.XXXXXX")"
+  git -C "$co" show "refs/heads/$branch:orchid.config" > "$blob" 2>/dev/null || : > "$blob"
+  : > "$want"
+  [ ! -f "$co/orchid.config" ] || cat "$co/orchid.config" > "$want"
+  if [ -z "$(_cfg_file_get "$co/orchid.config" verify)" ]; then
+    [ ! -s "$want" ] || [ -z "$(tail -c 1 "$want")" ] || printf '\n' >> "$want"
+    printf 'verify=%s\n' "$vcmd" >> "$want"
+  fi
+  # awk, never `head`: an early-exiting consumer SIGPIPEs `comm`/`sort`, which
+  # under this file's pipefail turns a found difference into a fatal pipeline
+  # status (lesson L005). Blank lines are not losses worth naming.
+  missing="$(comm -23 <(sort "$blob") <(sort "$want") \
+    | awk 'NF && n < 3 { printf "%s%s", (n ? "; " : ""), $0; n++ }')"
+  rm -f "$blob" "$want"
+  [ -n "$missing" ] || return 0
+  orchid_die "the orchid.config in $co is missing config lines that $branch already carries ($missing) — orchid start commits that file onto $branch to record the verification command, and the commit is whole-file, so committing it as it stands would DELETE those settings from the run. orchid start only ever appends to that file; it never removes from it. Reconcile the two yourself and re-run: take the branch's copy back with 'git -C $co checkout -- orchid.config', or land your edits deliberately with 'orchid config commit --reason \"...\"' from $co"
+}
+
+# _start_read_run_state <repo> <branch> <live-roadmap-or-empty> -- the run's
+# state, read from every witness there is, into globals (the same pattern
+# ORCHID_START_LOCK_PID above uses):
+#
+#   ORCHID_START_ROADMAP       "1" when EITHER roadmap copy was found at all
+#   ORCHID_START_RS_LIVE       run_status in the integration CHECKOUT's
+#                              working-tree roadmap.md ("" when there is no
+#                              checkout, or it carries no roadmap)
+#   ORCHID_START_RS_COMMITTED  run_status in the roadmap COMMITTED on <branch>
+#                              ("" when that branch carries no roadmap.md)
+#   ORCHID_START_RUN_ID        run_id, preferring the live copy
+#   ORCHID_START_TASKS         "1" when <branch> carries committed
+#                              .orchid/tasks/ entries
+#
+# Reading BOTH roadmap copies is the whole point. Neither is authoritative on
+# its own, and they can genuinely disagree in EITHER direction:
+#
+#   * committed BEHIND live -- durable .orchid/ state only rides onto the
+#     branch at `plan apply`/`run accept`, so a run can be live at `running`
+#     while the branch's committed roadmap still reads `planning`. That is
+#     what a checkout-less repo (the `git show` fallback is then the only
+#     copy there is) would otherwise be judged on.
+#   * live BEHIND committed -- orchid_commit_durable advances the branch with
+#     `update-ref` and only THEN syncs the committed state back into the
+#     checkout (lib/common.sh), so a `plan apply` killed inside that window
+#     leaves the branch at `running` with this checkout's roadmap.md still
+#     reading `planning`. That is the stale-checkout shape orchid_stale_
+#     checkout describes, and its detector only catches the subset that
+#     leaves a staged `D` row behind -- so the doctor preflight above is not
+#     a substitute for reading the branch itself.
+#
+# ORCHID_START_TASKS is a third, independent witness, and the only one that
+# speaks directly to what the durable commit further below actually risks:
+# whether any candidate's base_sha can be moved by advancing this branch.
+# Task files reach the integration branch ONLY through `orchid plan apply`
+# (kernel.md's sole writer of the planning->running edge); `orchid init` and
+# `orchid run new` both leave .orchid/tasks/ empty, and git tracks no empty
+# directory. A branch carrying task files has a plan on it, whatever its
+# roadmap frontmatter happens to say.
+_start_read_run_state() {
+  local repo="$1" branch="$2" live="$3" tmp
+  ORCHID_START_ROADMAP=""; ORCHID_START_RS_LIVE=""; ORCHID_START_RS_COMMITTED=""
+  ORCHID_START_RUN_ID=""; ORCHID_START_TASKS=""
+  if [ -n "$live" ] && [ -f "$live" ]; then
+    ORCHID_START_ROADMAP=1
+    ORCHID_START_RS_LIVE="$(fm_get "$live" run_status)"
+    ORCHID_START_RUN_ID="$(fm_get "$live" run_id)"
+  fi
+  # Extracted to a temp file and read back with the same fm_get every other
+  # roadmap read uses, rather than piping `git show` into awk: fm_get's awk
+  # exits at the closing `---`, which SIGPIPEs git -- a size-dependent
+  # failure under this file's pipefail (lesson L005).
+  tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-start-roadmap.XXXXXX")"
+  if git -C "$repo" show "refs/heads/$branch:.orchid/roadmap.md" > "$tmp" 2>/dev/null; then
+    ORCHID_START_ROADMAP=1
+    ORCHID_START_RS_COMMITTED="$(fm_get "$tmp" run_status)"
+    [ -n "$ORCHID_START_RUN_ID" ] || ORCHID_START_RUN_ID="$(fm_get "$tmp" run_id)"
+  fi
+  # Removed inline, before any refusal can fire, so this helper needs no EXIT
+  # trap of its own -- which matters: the verb lock taken below the mutation
+  # boundary installs one, and a competing `trap ... EXIT` here would clobber
+  # it rather than compose with it (lib/common.sh's verb_lock_guard note).
+  rm -f "$tmp"
+  [ -z "$(git -C "$repo" ls-tree --name-only "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)" ] \
+    || ORCHID_START_TASKS=1
+}
+
+# _start_require_planning <when> <branch> -- refuse unless EVERY witness
+# _start_read_run_state just gathered still says this run is in `planning`.
+# <when> names the moment for the operator, because this runs twice: once
+# above the mutation boundary (so a refusal costs nothing), and once under
+# the verb lock immediately before the durable commit (which is the only
+# reading that is a real precondition rather than a sample).
+_start_require_planning() {
+  local when="$1" branch="$2" rid rs
+  rid="${ORCHID_START_RUN_ID:-r-001}"
+  rs="${ORCHID_START_RS_LIVE:-$ORCHID_START_RS_COMMITTED}"
+  [ "$rs" = planning ] \
+    || orchid_die "run $rid has already left planning (run_status: $rs) — orchid start is a SETUP command, not a resume: requirements are immutable after a plan exists. Resume with 'orchid run resume' (or the orchid-resume skill), or roll over with 'orchid run new --reason ...' once the run is complete/blocked"
+  if [ -n "$ORCHID_START_RS_COMMITTED" ] && [ "$ORCHID_START_RS_COMMITTED" != planning ]; then
+    orchid_die "run $rid reads run_status: planning in the integration checkout, but the roadmap COMMITTED on $branch says run_status: $ORCHID_START_RS_COMMITTED ($when) — the branch has left planning and this checkout has not caught up (a 'plan apply'/'run accept' that advanced the branch and died before syncing back, or a checkout the branch moved out from under). Committing here would move the head of a branch whose run is already in flight and invalidate any candidate's base_sha, so orchid start refuses: compare the two ('git show $branch:.orchid/roadmap.md' against the checkout's own .orchid/roadmap.md), then resume with 'orchid run resume' (or the orchid-resume skill) rather than setting up again"
+  fi
+  [ -z "$ORCHID_START_TASKS" ] \
+    || orchid_die "run $rid reads run_status: planning, but $branch already carries committed .orchid/tasks/ ($when) — task files reach the integration branch only through 'orchid plan apply', so this run has a plan on it and a candidate's base_sha can be moved by committing here. orchid start is a SETUP command, not a resume: resume with 'orchid run resume' (or the orchid-resume skill), or roll over with 'orchid run new --reason ...' once the run is complete/blocked"
+}
+
+# -- arguments --------------------------------------------------------------
+
+req=""; verify_opt=""; worktree_opt=""; ack_unattended=0; reason=""
+have_verify_opt=0; have_worktree_opt=0
+# The bare-word `help` alias, and ONLY as the first argument: matched anywhere
+# in argv (as it was) it also swallows a requirements FILE named `help`,
+# printing usage instead of the setup that was asked for. `-h`/`--help` stay
+# positional-independent -- no requirements file is spelled like an option.
+[ "${1:-}" != help ] || { _start_usage; exit 0; }
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help) _start_usage; exit 0 ;;
+    --verify)
+      [ -n "${2:-}" ] || orchid_die "--verify requires a non-empty command"
+      _start_require_single_line "$2" "--verify"
+      verify_opt="$2"; have_verify_opt=1; shift 2 ;;
+    --worktree)
+      [ -n "${2:-}" ] || orchid_die "--worktree requires a path"
+      worktree_opt="$2"; have_worktree_opt=1; shift 2 ;;
+    --ack-unattended) ack_unattended=1; shift ;;
+    --reason)
+      [ -n "${2:-}" ] || orchid_die "--reason requires a non-empty value"
+      reason="$2"; shift 2 ;;
+    -*) orchid_die "orchid start: unknown option '$1' (see: orchid start --help)" ;;
+    *)
+      [ -z "$req" ] || orchid_die "orchid start takes exactly one requirements file (already given: $req)"
+      req="$1"; shift ;;
+  esac
+done
+[ -n "$req" ] || { _start_usage >&2; exit 1; }
+
+# The unattended acknowledgement is a SEPARATE, two-part opt-in, never a side
+# effect of setup: both flags or neither. A bare --reason is refused rather
+# than ignored, so an operator who meant to acknowledge and mistyped the
+# other half is told, instead of walking away believing headless ticks are
+# armed when the gate is still closed.
+if [ "$ack_unattended" -eq 1 ]; then
+  # Whitespace-only is empty here (the trust verb applies the same rule to
+  # the record it writes). Trimmed with parameter expansion rather than
+  # `printf ... | grep -q`: an early-exiting `grep -q` SIGPIPEs its producer,
+  # which under this file's `set -o pipefail` turns a matched pattern into a
+  # size-dependent failure (lesson L005).
+  reason_lead="${reason%%[![:space:]]*}"
+  [ -n "${reason#"$reason_lead"}" ] \
+    || orchid_die "--ack-unattended requires a non-empty --reason (it is an operator acknowledgement of this repository's prompt-injection risk)"
+elif [ -n "$reason" ]; then
+  orchid_die "--reason is only meaningful with --ack-unattended; orchid start never acknowledges unattended trust on its own"
+fi
+
+# -- repository and requirements file ---------------------------------------
+
+repo="${ORCHID_REPO:-$PWD}"
+[ -d "$repo" ] || orchid_die "no such directory: $repo"
+repo="$(cd "$repo" && pwd -P)"
+git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || orchid_die "not a git repository: $repo"
+[ "$(git -C "$repo" rev-parse --is-bare-repository)" = false ] \
+  || orchid_die "$repo is a bare repository — orchid start needs a working tree"
+git -C "$repo" rev-parse -q --verify HEAD >/dev/null 2>&1 \
+  || orchid_die "no commits yet (unborn HEAD) — orchid start is the EXISTING-repo path; use 'orchid init --greenfield' and docs/quickstart-greenfield.md"
+
+[ -e "$req" ] || orchid_die "no such requirements file: $req"
+[ -f "$req" ] || orchid_die "requirements path is not a regular file: $req"
+[ -r "$req" ] || orchid_die "cannot read requirements file: $req"
+[ -s "$req" ] || orchid_die "requirements file is empty: $req — orchid start imports it verbatim and never invents requirements"
+req="$(_start_abs "$req")"
+
+integ="$(config_get "$repo" integration_branch orchid/integration)"
+if git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1; then
+  mode=existing
+else
+  mode=new
+fi
+
+# -- worktree target: reuse only an EXACT integration checkout --------------
+
+if ! existing_wt="$(_start_integ_checkout "$repo" "$integ")"; then existing_wt=""; fi
+
+if [ "$have_worktree_opt" -eq 1 ]; then
+  wt_target="$(_start_abs "$worktree_opt")"
+  if [ -n "$existing_wt" ] && [ "$existing_wt" != "$wt_target" ]; then
+    # `git worktree remove` only ever applies to a LINKED worktree (whose
+    # `.git` is a file); offering it for a branch checked out in the MAIN
+    # working tree would be nonsense advice. The --worktree alternative works
+    # either way, so it is what the main-worktree case leads with.
+    if [ -d "$existing_wt/.git" ]; then
+      wt_hint="re-run with --worktree $existing_wt (that checkout is this repository's main working tree, so 'git worktree remove' does not apply to it — to free the branch, check out another branch there yourself)"
+    else
+      wt_hint="re-run with --worktree $existing_wt (or 'git worktree remove $existing_wt' first)"
+    fi
+    orchid_die "branch $integ is already checked out at $existing_wt, not at the requested $wt_target — $wt_hint. orchid start never moves or steals an existing checkout"
+  fi
+else
+  if [ -n "$existing_wt" ]; then
+    wt_target="$existing_wt"
+  else
+    wt_target="$(dirname "$repo")/$(basename "$repo")-orchid"
+    wt_target="$(_start_abs "$wt_target")"
+  fi
+fi
+
+if [ -n "$existing_wt" ]; then
+  wt_action=reused
+else
+  wt_action=created
+  # A path that already holds ANYTHING is refused outright rather than
+  # inspected further: an empty directory is the one shape `git worktree add`
+  # can adopt without touching a single existing byte.
+  if [ -e "$wt_target" ]; then
+    [ -d "$wt_target" ] || orchid_die "$wt_target already exists and is not a directory — pass --worktree <path> for the integration worktree"
+    [ -z "$(orchid_list_dir "$wt_target")" ] \
+      || orchid_die "$wt_target already exists and is not empty, and is not this repository's $integ checkout — pass --worktree <path>, or remove/relocate that directory yourself. orchid start never overwrites an existing directory"
+  fi
+fi
+
+# The checkout whose orchid.config IS the run's config: the integration
+# checkout once one exists, the repo we are about to initialize otherwise.
+cfg_repo="$repo"; [ -z "$existing_wt" ] || cfg_repo="$existing_wt"
+
+# -- verification command: explicit, never guessed --------------------------
+
+# The DURABLE `verify=` line -- the one this run actually carries, read from a
+# config FILE and never from config_get's merged value. The env layer
+# (ORCHID_VERIFY) and the user layer (~/.orchid/config) are machine-local: they
+# do not survive a fresh checkout, another machine, or a headless pump, so from
+# the run's point of view they are not its verification command at all. That is
+# already this file's doctrine where the command is RECORDED (see the block
+# after the mutation boundary below); the guard below has to agree with it, or
+# `--verify` would be refused against a value that is not the run's, and the
+# "re-run without --verify" recovery it prints would then COMMIT that
+# machine-local value onto the integration branch -- pinning the run to the
+# exact command the operator had just overridden.
+#
+# Which file is the run's depends on how far setup has got: the integration
+# checkout's own orchid.config once one exists (that is the file the record
+# step appends to and commits), else the config COMMITTED on $integ when the
+# branch exists with no checkout of it yet, else -- nothing initialized at all
+# -- this repo's own orchid.config, which is what `orchid init` will branch
+# from. Reading all three HERE, above the mutation boundary, is also what makes
+# the conflict refusal land before anything is created: it used to be re-checked
+# after `git worktree add` and after the epoch was written, so the refusal
+# arrived with an epoch already minted and printed a recovery that then died on
+# the epoch-ownership guard.
+wt_cfg_commit_expected=0
+if [ -n "$existing_wt" ]; then
+  wt_cfg_verify="$(_cfg_file_get "$existing_wt/orchid.config" verify)"
+  committed_cfg_verify="$(_start_committed_verify "$existing_wt" "$integ")"
+  # Two DIFFERENT `verify=` lines -- one in the checkout, one on the branch --
+  # is the one shape the record step below cannot honor. Its commit is
+  # whole-file, so committing this checkout's copy would replace the branch's
+  # line with the checkout's: rule 2's "never replaces a `verify=` line
+  # already on the integration branch" broken by the very step that exists to
+  # make the command durable. Refused HERE, above every mutation and above the
+  # `--verify` conflict check below, because the recovery that check prints
+  # ("re-run without --verify") is exactly the run that would perform the
+  # replacement -- a refusal whose own advice does the damage is worse than no
+  # refusal at all.
+  if [ -n "$committed_cfg_verify" ] && [ -n "$wt_cfg_verify" ] \
+     && [ "$committed_cfg_verify" != "$wt_cfg_verify" ]; then
+    orchid_die "the integration checkout configures verify='$wt_cfg_verify' ($existing_wt/orchid.config), but $integ CARRIES verify='$committed_cfg_verify' — orchid start appends a verify= line, never replaces one already committed on the integration branch, and the commit that records it is whole-file, so it will not put the checkout's command over the branch's. Decide which one is this run's and re-run: keep the branch's with 'git -C $existing_wt checkout -- orchid.config', or make the checkout's the run's deliberately with 'orchid config commit --reason \"...\"' from $existing_wt"
+  fi
+  # Whether the record step below will commit THIS ALREADY-EXISTING checkout's
+  # orchid.config -- the only copy that can differ from the branch's at all (a
+  # worktree this verb creates is a fresh checkout OF that branch). Decided
+  # from the same two lines the record step decides from, and nothing between
+  # here and there can change either: an existing checkout is never
+  # re-created, and `orchid init` does not run on this path. What it gates is
+  # the clobber check further down, which must not refuse a re-run that
+  # commits nothing at all.
+  if [ -z "$wt_cfg_verify" ] || [ "$committed_cfg_verify" != "$wt_cfg_verify" ]; then
+    wt_cfg_commit_expected=1
+  fi
+  durable_verify="$wt_cfg_verify"
+  durable_verify_src="$existing_wt/orchid.config"
+  if [ -z "$durable_verify" ]; then
+    durable_verify="$committed_cfg_verify"
+    durable_verify_src="orchid.config as committed on $integ"
+  fi
+elif [ "$mode" = existing ]; then
+  durable_verify="$(_start_committed_verify "$repo" "$integ")"
+  durable_verify_src="orchid.config as committed on $integ"
+else
+  durable_verify="$(_cfg_file_get "$repo/orchid.config" verify)"
+  durable_verify_src="$repo/orchid.config"
+fi
+
+if [ "$have_verify_opt" -eq 1 ]; then
+  if [ -n "$durable_verify" ] && [ "$durable_verify" != "$verify_opt" ]; then
+    orchid_die "a verification command is already configured as '$durable_verify' (source: $durable_verify_src) — orchid start never replaces it. Re-run without --verify, or change that setting yourself first"
+  fi
+  verify_cmd="$verify_opt"
+else
+  # The run's own command wins over any machine-local layer; a machine-local
+  # one is still accepted as the SOURCE of a command to record (that is how a
+  # `verify=` in ~/.orchid/config sets up a repo that configures none), it just
+  # never counts as one the run already has.
+  verify_cmd="$durable_verify"
+  [ -n "$verify_cmd" ] || verify_cmd="$(config_get "$cfg_repo" verify)"
+  [ -n "$verify_cmd" ] || orchid_die "no verification command configured — pass --verify '<command>' (e.g. --verify 'npm test'), or set 'verify=' in $cfg_repo/orchid.config. orchid start never guesses one"
+fi
+# The same single-line rule the flag is held to, applied to whatever value was
+# actually resolved: `ORCHID_VERIFY` is a config layer like any other, and it
+# reaches the same append.
+_start_require_single_line "$verify_cmd" "the verification command"
+
+# -- repo config validation + full preflight --------------------------------
+
+_start_validate_config "$cfg_repo/orchid.config"
+if [ "$mode" = existing ]; then
+  # The file above is whichever copy is nearest to hand: the operator's OWN
+  # branch when no checkout of $integ exists yet (a config the run itself will
+  # never read), or the integration checkout's working copy when one does.
+  # Neither is necessarily what the run READS. That is the blob committed on
+  # $integ -- what a fresh checkout, another machine, or a headless pump gets
+  # -- and the two legitimately differ (an uncommitted `verify=` line in the
+  # checkout is exactly the convergence case below the mutation boundary). A
+  # malformed line there is just as invisible to config_get's `grep -E
+  # "^key="` as one in the working copy, so it is validated on its own terms,
+  # whether or not a checkout exists. Skipped only when the two are
+  # byte-identical -- validating the same bytes twice would just print every
+  # unknown-key warning twice.
+  committed_cfg="$(mktemp "${TMPDIR:-/tmp}/orchid-start-cfg.XXXXXX")"
+  git -C "$repo" show "refs/heads/$integ:orchid.config" > "$committed_cfg" 2>/dev/null \
+    || : > "$committed_cfg"
+  cmp -s "$committed_cfg" "$cfg_repo/orchid.config" \
+    || _start_validate_config "$committed_cfg" "orchid.config as committed on $integ" \
+         "Those bytes are in a git blob, not in a file you can open: read them with 'git show $integ:orchid.config', fix the line in the integration checkout's orchid.config (create that checkout with 'git worktree add <path> $integ' if there is none yet), land the fix with 'orchid config commit --reason \"fix malformed orchid.config line\"' from there, then re-run orchid start"
+  rm -f "$committed_cfg"
+fi
+
+# orchid.config has to be committable onto $integ, and committing this
+# checkout's copy has to be an ADDITION to what that branch already carries.
+# Both are preconditions of the record step far below, and both are checked
+# here, above the mutation boundary, where a refusal still costs nothing.
+cfg_rev=HEAD; [ "$mode" != existing ] || cfg_rev="refs/heads/$integ"
+_start_require_committable_config "$cfg_repo" "$repo" "$cfg_rev" "$integ"
+[ "$wt_cfg_commit_expected" -eq 0 ] \
+  || _start_require_no_config_clobber "$existing_wt" "$integ" "$verify_cmd"
+
+# A dirty tree is `orchid init`'s own refusal ("orchid never touches user
+# work"), re-checked HERE so it is reported before the preflight spends time
+# on plugin discovery -- and only on the path that actually calls init. An
+# existing run's integration checkout legitimately carries uncommitted
+# .orchid/ state all through planning, so it is never held to this.
+if [ "$mode" = new ] && [ -n "$(git -C "$repo" status --porcelain)" ]; then
+  orchid_die "working tree not clean at $repo — commit or stash first (orchid never touches user work); requirements.md and any orchid.config edit belong on your own branch before setup"
+fi
+
+echo "preflight: orchid doctor ($cfg_repo)"
+# ORCHID_VERIFY (the env layer of config_get) makes the preflight judge the
+# configuration this run will ACTUALLY have -- `--verify` is recorded further
+# below, in the integration checkout, which on a fresh repo does not exist
+# yet. Without it, doctor would fail its verify check on exactly the input
+# the operator just supplied.
+if doctor_out="$(ORCHID_REPO="$cfg_repo" ORCHID_VERIFY="$verify_cmd" \
+    "$ORCHID_ROOT/bin/orchid" doctor 2>&1)"; then
+  echo "$doctor_out" | sed 's/^/  /'
+else
+  echo "$doctor_out" | sed 's/^/  /'
+  orchid_die "preflight failed — fix the FAIL lines above and re-run (orchid start refuses to build on an unhealthy repo)"
+fi
+
+# -- existing run state: refuse, never resume or steal -----------------------
+
+epoch=0; epoch_action=created
+if [ "$mode" = existing ]; then
+  # Both roadmap copies, never just the one nearest to hand: the checkout's
+  # working-tree roadmap.md when a checkout exists, AND the roadmap committed
+  # on $integ (which, when no checkout exists yet -- an `orchid init` that
+  # stopped before its worktree step -- is the only copy there is). See
+  # _start_read_run_state for why either one alone can lie, and in which
+  # direction.
+  live_roadmap=""
+  [ -z "$existing_wt" ] || live_roadmap="$existing_wt/.orchid/roadmap.md"
+  _start_read_run_state "$repo" "$integ" "$live_roadmap"
+  [ -n "$ORCHID_START_ROADMAP" ] \
+    || orchid_die "branch $integ exists but carries no .orchid/roadmap.md — this is not an orchid-initialized branch; set integration_branch in orchid.config to a free name, or inspect that branch yourself"
+  _start_require_planning "as of the start of setup" "$integ"
+
+  if [ -n "$existing_wt" ]; then
+    rt="$existing_wt/.orchid/runtime"
+    if _start_lease_live "$rt" "$existing_wt"; then
+      orchid_die "an orchestrator session may still be driving this run (lease refreshed ${ORCHID_START_LEASE_AGE}s ago at $rt/lease.json) — orchid start never takes a run over. Stop that session (it ends with 'orchid run release-lease'), or wait for the lease to lapse"
+    fi
+    # The grace each owner-less lock directory gets is the very floor its own
+    # acquirer applies before breaking one (lib/common.sh), read from the same
+    # config: nothing `orchid start` refuses on here is a directory the next
+    # verb would not have taken for itself anyway.
+    if _start_lock_live "$rt/lock" "${ORCHID_LOCK_BREAK_S:-$(config_get "$existing_wt" lock_break_s 900)}"; then
+      orchid_die "$(_start_lock_refusal "run lock" "$rt/lock" "'orchid run start|resume' is mid-flight")"
+    fi
+    if _start_lock_live "$rt/verb-lock" "$(config_get "$existing_wt" verb_lock_wait_s 10)"; then
+      orchid_die "$(_start_lock_refusal "verb lock" "$rt/verb-lock" "another verb is mid-transaction")"
+    fi
+    if [ -f "$rt/epoch" ]; then
+      # A materialized epoch means a session has already fenced this run.
+      # Proving ownership of the CURRENT one is the whole point of INV-02:
+      # orchid start neither mints a fresh epoch (which would silently fence
+      # out whoever holds this one) nor proceeds unfenced.
+      epoch="$(cat "$rt/epoch")"
+      epoch_action=reused
+      [ -n "${ORCHID_EPOCH:-}" ] \
+        || orchid_die "this run is already fenced at epoch $epoch and ORCHID_EPOCH is unset — orchid start never mints a fresh epoch over an existing one (INV-02). Prove ownership first: export ORCHID_EPOCH=$epoch"
+      [ "${ORCHID_EPOCH:-}" = "$epoch" ] \
+        || orchid_die "stale epoch '${ORCHID_EPOCH:-unset}' (current $epoch) — refused (INV-02). If you own this run: export ORCHID_EPOCH=$epoch"
+    fi
+  fi
+fi
+if [ "$epoch_action" = created ] && [ -n "${ORCHID_EPOCH:-}" ] && [ "${ORCHID_EPOCH:-}" != 0 ]; then
+  # Nothing on disk is fenced yet, so a caller carrying a non-zero epoch is
+  # carrying one from somewhere else (a previous run whose runtime/ was
+  # wiped, another repo's session). Refused rather than quietly overridden.
+  orchid_die "ORCHID_EPOCH is set to '${ORCHID_EPOCH}' but this run has no epoch yet (a fresh setup starts at 0) — unset ORCHID_EPOCH and re-run"
+fi
+
+# ===========================================================================
+# Everything above this line is read-only. Everything below mutates.
+# ===========================================================================
+
+if [ "$mode" = new ]; then
+  # init's own stdout (the worktree hint it prints for the manual path) is
+  # dropped: this verb performs that step itself and reports it below.
+  ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" init >/dev/null \
+    || orchid_die "orchid init failed — nothing else was done; the messages above say why"
+  echo "initialized: $integ"
+fi
+
+if [ "$wt_action" = created ]; then
+  if ! wt_add_out="$(git -C "$repo" worktree add "$wt_target" "$integ" 2>&1)"; then
+    echo "$wt_add_out" >&2
+    # The one failure a bare re-run can never clear: git still has $integ
+    # registered to a worktree directory that no longer exists (moved or
+    # deleted by hand), so it reports the branch as checked out somewhere this
+    # verb could not find. `git worktree prune` drops that dead registration --
+    # naming it here is the difference between a recovery and a loop.
+    orchid_die "could not create the integration worktree at $wt_target — the repository itself is initialized. If git says $integ is already checked out at a path that no longer exists, clear that stale registration with 'git worktree prune' first; then re-run orchid start (optionally with --worktree <path>)"
+  fi
+fi
+wt="$(cd "$wt_target" && pwd -P)"
+
+# From here on this verb performs a DURABLE transaction on $integ (the
+# orchid.config commit further below), so it runs under the same per-verb
+# transactional lock every other durable-mutating verb takes: `orchid config
+# commit` wraps this exact commit in it, and `orchid plan apply`, `orchid run
+# accept` and `orchid run new` all hold it across theirs.
+#
+# The read-only lock probe above the mutation boundary is NOT this, and never
+# was: it samples the lock at one instant and then lets go, so a verb that
+# begins its own transaction a millisecond later would run concurrently with
+# this one -- and on the path where $integ exists with no checkout of it, that
+# probe did not run at all, because there was no runtime directory to probe.
+# It stays because it turns the common case into a refusal WITH a recovery,
+# above the boundary, rather than a die from inside verb_lock_acquire with a
+# worktree already created.
+#
+# verb_lock_guard (not a hand-composed trap): nothing has installed an EXIT
+# trap by this point -- _start_read_run_state cleans up its own temp file
+# inline for exactly this reason -- and orchid_commit_durable below composes
+# its temp-worktree cleanup ONTO this trap rather than replacing it, the same
+# pairing `orchid config commit` uses. verb_lock_acquire exports
+# ORCHID_VERB_LOCK_HELD, so every child verb run from here (`requirements
+# import`, `journal add`, `trust unattended`) reuses this one transaction
+# instead of taking its own: lib/common.sh's documented reentrant case, where
+# the outer transaction is what serializes the nested sequence.
+# No `|| orchid_die` arm: verb_lock_acquire dies internally on every failure
+# it can have (contention past verb_lock_wait_s, or an unresolved claim race),
+# with its own message naming the pid and the seconds waited -- an arm here
+# would be unreachable, and reading as if it were the handler would be worse
+# than none. The refusal WITH a recovery, for the common case, is the
+# read-only probe above the boundary.
+verb_lock_guard "$wt"
+
+# The precondition every mutation below argues from -- "this run is still in
+# planning, so there is no candidate whose base_sha this can move" --
+# re-established HERE, under that lock, from all three witnesses. Above the
+# boundary the same reading was only ever a sample: since then `orchid init`
+# may have run and a worktree may have been created, and now that the lock is
+# held the answer stays true for the length of this transaction (`plan apply`,
+# the sole writer of the planning->running edge, cannot start while it is
+# held). Unconditional, `mode=new` included: a branch this verb just created
+# must pass it too, or the assumption is wrong somewhere else.
+_start_read_run_state "$repo" "$integ" "$wt/.orchid/roadmap.md"
+[ -n "$ORCHID_START_ROADMAP" ] \
+  || orchid_die "no .orchid/roadmap.md on $integ or in $wt after setup — refusing to commit anything onto a branch that carries no run state; inspect that branch yourself"
+if [ "$mode" = new ]; then
+  # The tasks witness does not apply to a branch THIS invocation just created:
+  # `orchid init` branched it from the operator's own HEAD moments ago, so any
+  # committed .orchid/tasks/ on it came from their history rather than from a
+  # `plan apply` -- there was no run at all until a moment ago, and so no
+  # candidate whose base this commit could move. Firing it here would be a
+  # false refusal, and the most expensive kind: it would land after init had
+  # already run. The two roadmap witnesses still apply (init writes and
+  # commits `run_status: planning` itself, so anything else is a real
+  # surprise).
+  ORCHID_START_TASKS=""
+fi
+_start_require_planning "re-checked under the verb lock, before anything was committed" "$integ"
+
+# The epoch this run is fenced at from here on. `orchid init` leaves none
+# behind (epoch_current reads an absent file as 0, which is why the manual
+# quickstart tells the operator to `export ORCHID_EPOCH=0` by hand); writing
+# that 0 down makes it visible to `orchid status`, to a later `cat
+# .orchid/runtime/epoch`, and to the handoff printed below. It is only ever
+# WRITTEN when absent -- an existing epoch is read, never reset.
+if [ "$epoch_action" = created ]; then
+  rt="$(orchid_runtime "$wt")"
+  if [ -f "$rt/epoch" ]; then
+    epoch="$(cat "$rt/epoch")"; epoch_action=reused
+  else
+    epoch=0
+    printf '%s\n' "$epoch" | atomic_write "$rt/epoch"
+  fi
+fi
+# Exported, not just passed per-command: every fenced child from here on runs
+# under the epoch validated above -- including the `journal add` that
+# orchid_commit_durable writes from INSIDE itself on a CAS failure, which has
+# no other way to be handed one.
+export ORCHID_EPOCH="$epoch"
+
+# The verification command, recorded where the run will read it -- DURABLY.
+#
+# "Durably" is the whole point, and it is decided against the integration
+# checkout's own `orchid.config` FILE, not against the effective (merged)
+# value config_get returns: the env layer (`ORCHID_VERIFY`) and the user
+# layer (`~/.orchid/config`) are machine-local and do not survive a fresh
+# checkout, another machine, or a headless pump started from a different
+# shell. A run whose only verification command lives in one of those layers
+# has, from the integration branch's point of view, no verification command
+# at all -- so an absent `verify=` LINE, not an empty effective value, is
+# what makes this verb record one.
+#
+# Rule 2 still holds exactly: APPEND-only, never a replacement -- and, because
+# the commit is whole-file, that has to hold against the BRANCH as well as
+# against the file on disk. Three refusals above the mutation boundary are
+# what make it hold here, all of them read from these same file/committed
+# lines and all of them settled BEFORE this worktree and the epoch existed:
+# an explicit `--verify` disagreeing with the run's durable command; a
+# checkout whose `verify=` line differs from the one $integ already carries
+# (whose commit would REPLACE it); and a checkout missing any other line the
+# branch carries (whose commit would DELETE it). There is deliberately no
+# second refusal down here: one detected below this boundary would abort with
+# an epoch already minted, so above it is the only honest place for all three.
+# What that leaves reachable here is exactly two shapes -- no `verify=` line
+# in the checkout at all (append it), or one the branch does not carry yet
+# (commit it, unchanged).
+verify_note=""
+wt_verify_line="$(_cfg_file_get "$wt/orchid.config" verify)"
+committed_verify_line="$(_start_committed_verify "$wt" "$integ")"
+verify_action=none
+if [ -z "$wt_verify_line" ]; then
+  # A file whose last byte is not a newline would otherwise swallow this
+  # append into its final line (`tail -c 1` in a command substitution is
+  # empty exactly when that last byte IS a newline).
+  if [ -s "$wt/orchid.config" ] && [ -n "$(tail -c 1 "$wt/orchid.config")" ]; then
+    printf '\n' >> "$wt/orchid.config"
+  fi
+  printf 'verify=%s\n' "$verify_cmd" >> "$wt/orchid.config"
+  wt_verify_line="$verify_cmd"
+  verify_action=recorded
+elif [ "$committed_verify_line" != "$wt_verify_line" ]; then
+  # The line is on disk and $integ carries NO `verify=` line of its own (a
+  # branch carrying a DIFFERENT one was refused above the boundary, never
+  # converged over) -- an earlier `orchid start` whose commit lost the CAS
+  # race and died, or an operator edit made in this checkout. Either way the
+  # run's verification command still does not survive a fresh checkout, so
+  # finishing that job (never rewriting the line itself) is what makes a
+  # re-run CONVERGE rather than report a durability hole as "already
+  # configured".
+  verify_action=committed
+fi
+# One shape survives both branches with nothing left to do: a checkout whose
+# only divergence from $integ was the very `verify=` line just appended back
+# (the operator deleted it from this checkout and re-ran), so the file on disk
+# is now byte-identical to the blob. orchid_commit_durable would correctly die
+# there -- "nothing to commit" -- below the mutation boundary, with an epoch
+# already minted. It is not a failure: the run's command IS configured and IS
+# committed, which is exactly what `none` reports.
+if [ "$verify_action" != none ] && _start_config_is_committed "$wt" "$integ"; then
+  verify_action=none
+fi
+if [ "$verify_action" = none ]; then
+  verify_note="already configured in $wt/orchid.config and committed on $integ"
+else
+  # Landed on $integ as part of THIS setup, not left as homework: a
+  # mandatory `orchid config commit` afterwards would make this verb no
+  # longer one command, and would leave the integration checkout dirty
+  # (v1-m4 dogfood finding F16 -- the quickstart failing as written). The
+  # commit goes through orchid_commit_durable (lib/common.sh), the same
+  # path `orchid config commit` and `orchid run accept` use: it stages this
+  # file's on-disk bytes inside a fresh temp worktree built from $integ's
+  # CURRENT head, so the live checkout's index is never touched (the r-001
+  # stale-checkout hazard) -- and it must be a plain statement, never
+  # `$(...)`, because it composes this script's EXIT trap.
+  #
+  # Committing durable state mid-run would be harmful (lesson L008: it can
+  # invalidate an in-flight candidate's base_sha). It is safe HERE because
+  # `orchid start` runs before any task is in flight -- and that is now a
+  # precondition this script HOLDS rather than one it merely sampled on the
+  # way past. Concretely: the verb lock is held (taken right after the
+  # worktree was resolved, released only at exit), so `plan apply` -- the
+  # sole writer of the planning->running edge, and the only verb that can
+  # put a plan on this branch -- cannot start while this transaction runs;
+  # and under that lock the run was re-checked against all three witnesses
+  # _start_read_run_state gathers: the checkout's roadmap.md, the roadmap
+  # COMMITTED on $integ (the two lag each other in opposite directions), and
+  # $integ's own committed .orchid/tasks/, empty until a plan lands. A branch
+  # with no plan on it has no candidate whose base this commit can move.
+  #
+  # The lease is deliberately NOT part of that argument: it is refused above
+  # where a checkout exists, but it is advisory (an orchestrator session's
+  # heartbeat), it cannot be held by this verb, and on the checkout-less path
+  # there is no runtime directory for one to live in at all. The three
+  # witnesses above are what this commit's safety actually rests on.
+  #
+  # Granularity is the whole file, as it is for `orchid config commit`, so an
+  # ADDITION the operator had already made to THIS checkout's orchid.config
+  # and not yet committed rides along: only reachable on an existing run's
+  # checkout (a fresh one is created from the branch two steps above, and
+  # `mode=new` refuses a dirty tree outright), the run is still in planning,
+  # and the resulting commit is named in this verb's output. A REMOVAL or a
+  # replaced `verify=` line does not ride along in either direction -- both
+  # were refused above the boundary, because whole-file granularity would
+  # otherwise turn "append one line" into deleting settings the run reads.
+  orchid_commit_durable "$wt" "orchid: start (verify command recorded)" orchid.config
+  # `update-ref` above advanced the branch without touching THIS checkout's
+  # per-worktree index, which still holds the pre-commit entry -- `git
+  # status` here would then report orchid.config as modified (and, for a
+  # file the commit ADDED, `git diff --cached` would show a `D` row, which
+  # is precisely lib/common.sh's orchid_stale_checkout signature, i.e.
+  # doctor and status would both start calling this brand-new checkout
+  # stale). `git reset <tree-ish> -- <path>` (the same path-scoped, index-
+  # only form `orchid init`'s own cleanup uses) refreshes that one entry to
+  # the new HEAD and never reads or writes the working tree, so no operator
+  # byte can be lost through it.
+  git -C "$wt" reset -q HEAD -- orchid.config
+  # Journaled the same way `orchid config commit` journals its own commit,
+  # and for the same reason: a durable-state commit that no journal entry
+  # accounts for is exactly what the r-001 incident was. Written AFTER the
+  # commit it describes (a CAS failure above already journals its own
+  # `intervention` entry and dies, so a "committed" line can never outlive a
+  # commit that did not happen).
+  ORCHID_REPO="$wt" "$ORCHID_ROOT/bin/orchid" journal add --kind intervention \
+    "config committed by orchid start: verify command recorded ($ORCHID_COMMIT_DURABLE_SHA)"
+  if [ "$verify_action" = recorded ]; then
+    verify_note="recorded in $wt/orchid.config and committed on $integ ($ORCHID_COMMIT_DURABLE_SHA)"
+  else
+    verify_note="already in $wt/orchid.config, now committed on $integ ($ORCHID_COMMIT_DURABLE_SHA)"
+  fi
+fi
+
+# Requirements import, under the epoch validated above. Skipped when the
+# snapshot is already byte-identical to the source -- that is what makes a
+# second `orchid start` with the same file a genuine no-op instead of a
+# second journal entry claiming a revision that did not happen.
+req_note=""
+if [ -f "$wt/.orchid/requirements.md" ] && cmp -s "$req" "$wt/.orchid/requirements.md"; then
+  req_note="unchanged (already imported verbatim)"
+else
+  ORCHID_REPO="$wt" ORCHID_EPOCH="$epoch" "$ORCHID_ROOT/bin/orchid" requirements import "$req" >/dev/null \
+    || orchid_die "requirements import failed — the repository and worktree are set up; re-run 'orchid requirements import $req' from $wt with ORCHID_EPOCH=$epoch"
+  req_note="imported from $req"
+fi
+
+# Unattended trust: still a separate, explicit, machine-local acknowledgement,
+# performed by the trust verb itself and never by this one. Nothing above
+# depends on it; setup is complete either way.
+if [ "$ack_unattended" -eq 1 ]; then
+  "$ORCHID_ROOT/bin/orchid" trust unattended "$wt" --reason "$reason" >/dev/null \
+    || orchid_die "unattended trust acknowledgement failed — setup itself is complete; re-run 'orchid trust unattended $wt --reason \"...\"' once the reason above is addressed"
+fi
+# Report-only, and never fatal: a trust store this verb cannot inspect (an
+# unsupported git, an unreadable record) must not fail a setup that never
+# needed the gate open in the first place -- hence `|| true` on the pipeline
+# and the untrusted default below.
+trust_state="$("$ORCHID_ROOT/bin/orchid" trust show "$wt" 2>/dev/null \
+  | sed -n 's/^unattended trust: //p' || true)"
+[ -n "$trust_state" ] || trust_state=untrusted
+
+# -- report + planning handoff ----------------------------------------------
+
+roadmap="$wt/.orchid/roadmap.md"
+run_status="$(fm_get "$roadmap" run_status)"
+run_id="$(fm_get "$roadmap" run_id)"
+
+mode_note="reused existing run state"
+[ "$mode" != new ] || mode_note="initialized a new run"
+trust_note=""
+[ "$trust_state" = trusted ] \
+  || trust_note=" (headless ticks gated; acknowledge with: orchid trust unattended $wt --reason \"...\")"
+
+echo
+echo "orchid start: $mode_note"
+echo "repo: $repo"
+echo "integration branch: $integ"
+echo "integration worktree: $wt ($wt_action)"
+echo "epoch: $epoch ($epoch_action)"
+echo "run: ${run_id:-r-001} ($run_status)"
+echo "requirements: $req_note"
+echo "verify: $wt_verify_line — $verify_note"
+echo "unattended trust: $trust_state$trust_note"
+echo
+echo "next — durable orchid state lives only on $integ, so work from the worktree:"
+echo "  cd $wt"
+echo "  export ORCHID_EPOCH=$epoch"
+echo "draft the plan against the imported requirements (PROTOCOL.md's PLANNING"
+echo "procedure, or the orchid-plan skill): create each task with 'orchid task"
+echo "create <id> <title>' + 'orchid task set <id> <key> <value>', run the"
+echo "plan-critique loop until nothing at or above medium severity remains,"
+echo "then commit it with 'orchid plan apply --reason \"initial plan\"'."

@@ -281,6 +281,50 @@ product tests that cannot exist until this task creates them — resolving
 the bootstrap paradox of testing a test-runner that doesn't exist yet. Every
 task after it drafts normally.
 
+**One-command setup (existing repo).** Everything mechanical that precedes
+step 1 below — preflight, repo-config validation, `orchid init`, the
+integration worktree, the epoch, and the import in step 1 itself — is also
+available as a single operator-run command, outside this loop:
+`orchid start <requirements-file> [--verify <command>] [--worktree <path>]
+[--ack-unattended --reason "..."]`. It is a sequencer over exactly those
+verbs and refuses whatever it cannot do safely, printing the exact recovery
+command: it never guesses a verification command, never overwrites an
+operator file or a directory that is not exactly this repository's
+integration checkout, and never resumes or takes over a run — against
+existing state it requires `run_status: planning`, no fresh unreleased
+lease, no live run/verb lock, and `ORCHID_EPOCH` proving ownership of the
+CURRENT epoch (it mints an epoch only where none exists yet, at `0`).
+`planning` must hold on every copy that exists, not just the nearest one:
+the integration checkout's `.orchid/roadmap.md`, the roadmap COMMITTED on
+the integration branch (those two lag each other in opposite directions —
+durable state only reaches the branch at `plan apply`/`run accept`, and a
+`plan apply` killed between its `update-ref` and its sync-back leaves the
+branch ahead of the checkout), and that branch carrying no committed
+`.orchid/tasks/`, which only `orchid plan apply` ever puts there. It holds
+the per-verb transactional lock across everything it mutates and re-checks
+all three underneath it, so the commit below cannot land on a branch whose
+run is already in flight and move a candidate's `base_sha`.
+A `--verify` command (a single line — `orchid.config` is a line-oriented
+`key=value` file, so a value carrying a newline or any other control
+character is refused rather than recorded truncated) is appended to the
+integration checkout's `orchid.config` and COMMITTED onto the integration
+branch by that same command — only when that file (as committed on the
+branch, not merely as resolved through the machine-local env/user layers)
+configures none yet, and never as a replacement — so setup needs no follow-up
+`orchid config commit` and leaves the integration checkout clean. That commit
+is whole-file, so append-only holds against the BRANCH and not merely against
+the file on disk: a checkout whose `verify=` line differs from the branch's,
+or which is missing any other line the branch carries, is refused above the
+mutation boundary (naming both ways to reconcile it) rather than committed
+over, and an `orchid.config` that `.gitignore` excludes and no commit tracks
+is refused there too, since `git add` cannot stage it and setup will not
+force it past a rule the operator wrote. Unattended trust stays off unless
+both `--ack-unattended` and a non-empty `--reason` are given, which invokes
+the machine-local `orchid trust` acknowledgement. Nothing below depends on
+it: every verb it calls remains individually callable, and the manual
+sequence in
+[docs/quickstart.md](./docs/quickstart.md) is unchanged.
+
 1. `orchid requirements import <file>` — snapshot the operator-authored
    requirements into `.orchid/requirements.md` (refused once `run_status`
    has left `planning`: requirements are immutable after a plan exists).

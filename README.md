@@ -34,6 +34,14 @@ prepared Homebrew tap, and the git-clone method:
    creates an integration branch. Your own branches are never touched.
 3. Write `requirements.md`: goal, constraints, acceptance criteria. A
    second engine critiques the plan before it becomes real work.
+
+   Steps 2–3's mechanical half is also one command:
+   `orchid start requirements.md --verify "<your test command>"` runs the
+   full preflight, initializes, creates the integration worktree, sets up
+   the epoch, imports your requirements, and hands off to planning. It
+   never guesses a verification command, never overwrites your files, and
+   refuses (with the exact recovery command) anything it cannot do safely —
+   the lower-level verbs above stay exactly as they are.
 4. For a headless tick/service, review the target and run `orchid trust
    unattended "$PWD" --reason "..."`; then `orchid run start` or `orchid
    service install`. Engines implement, independent engines review, `orchid

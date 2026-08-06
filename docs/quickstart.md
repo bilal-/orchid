@@ -92,6 +92,88 @@ git add -A
 git commit -m "orchid: requirements + config for orchid init"
 ```
 
+### One command: `orchid start`
+
+Everything left in this step is mechanical, so there is a single command for
+it:
+
+```sh
+orchid start requirements.md --verify "<your test command>"
+```
+
+It runs the full preflight (`orchid doctor`), validates your `orchid.config`,
+initializes, creates the integration worktree, sets up the epoch, imports
+`requirements.md` under that epoch, and prints the epoch, the paths, the run
+state, and the planning handoff. Then **skip to [step 4](#4-plan)** — from the
+worktree it just printed, with the `ORCHID_EPOCH` it just told you to export.
+
+Options: `--verify <command>`, one line, appended as a `verify=` line to the
+integration checkout's `orchid.config` and committed onto the integration
+branch by that same run, but only when that file configures none yet — omit
+the flag if you already set `verify=` in step 2. (One line because
+`orchid.config` is a line-oriented `key=value` file: a multi-line command
+would be read back truncated at its first line, so it is refused rather than
+half-recorded. Put a multi-step command in a script and pass that.)
+`--worktree <path>`, which defaults to
+`../<repo>-orchid`; and `--ack-unattended --reason "..."`, both together, to
+also make the machine-local unattended acknowledgement of
+[step 5](#5-start-the-orchestrator-and-walk-away).
+
+Committing that one line is part of the same command on purpose: there is no
+follow-up step to remember, and the integration checkout is not handed back
+dirty. A command that only your environment or your machine-local
+`~/.orchid/config` supplies counts as "none yet" — it would not survive a
+fresh checkout of the integration branch (a task worktree, another machine, a
+headless pump), so it is recorded there too rather than left to vanish — and,
+for the same reason, an explicit `--verify` overrides it without complaint. A
+`verify=` line already committed on that branch is never replaced or
+duplicated: `--verify` with a different command there is refused up front,
+before anything is created, and re-running without the flag keeps the branch's
+own command.
+
+That commit is whole-file (the same granularity as `orchid config commit`), so
+"append-only" is enforced against the branch too, not just against the file on
+disk. If your integration checkout's `orchid.config` carries a *different*
+`verify=` line from the one the branch already has, or is missing any other
+line the branch has, committing it would replace or delete settings the run
+reads — so that is refused up front as well, naming both ways out: take the
+branch's copy back (`git -C <worktree> checkout -- orchid.config`), or land
+your edit deliberately with `orchid config commit --reason "..."` from the
+worktree. Additions ride along; removals never do. And because that commit is
+how the command becomes durable at all, an `orchid.config` your `.gitignore`
+excludes and no commit tracks is refused too — `git add` cannot stage it, and
+`orchid start` will not force it past a rule you wrote.
+
+What it will not do, by design:
+
+- **never guess a verification command** — no `--verify`, no configured
+  `verify=`, no setup;
+- **never overwrite your files** — it appends at most one `verify=` line (and
+  commits exactly that one file), never replaces a `verify=` line already on
+  the integration branch, never commits an `orchid.config` that would drop a
+  line that branch already carries, and refuses any worktree path that is not
+  empty or is not exactly this repository's integration checkout;
+- **never resume or take over a run** — against existing state it refuses if
+  the run has left `planning`, if another session's lease is still fresh, if a
+  run/verb lock is live, or if you cannot prove you hold the current epoch
+  (`export ORCHID_EPOCH=<n>`; it never mints one over an existing one).
+  `planning` has to hold on every copy that exists — your integration
+  checkout's `.orchid/roadmap.md`, the roadmap as *committed* on the
+  integration branch, and that branch carrying no committed `.orchid/tasks/`
+  — because the two roadmaps can lag each other in opposite directions, and
+  because committing onto a branch whose run is already in flight would move
+  the head that every candidate's `base_sha` is pinned against;
+- **never turn on unattended trust implicitly** — that needs both
+  `--ack-unattended` and a non-empty `--reason`.
+
+Re-running it with the same requirements file and the epoch it printed is a
+no-op that just re-reports; anything it cannot do safely is refused with the
+exact command to recover. It is a convenience over the verbs below, not a
+replacement: everything in the rest of this step keeps working exactly as
+written, and is what to reach for when you want to see each step.
+
+### Or, step by step
+
 ```sh
 orchid init
 ```
