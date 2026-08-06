@@ -257,14 +257,34 @@ orchid doctor            # read the "notify outbound" / "notify inbound" lines
 ```
 
 Doctor reports the two separately and never infers the second from the
-first: outbound is `ok` when the plugin and its binaries resolve, while the
-return leg is always reported as **NOT VERIFIED** — its liveness is not
-portably observable from here, so doctor states that rather than implying
-it. What doctor *can* show is local evidence: blockers raised with no answer
-recorded beside them. Several unanswered blockers you believe you already
-answered is the signature of a broken return leg.
+first.
 
-Both lines are advisory — a run with no channel at all is legitimate and
+**Outbound** is `ok` only when the plugin resolves, its required binaries are
+on PATH, *and* the config that plugin declares it cannot send without is set
+(`requires_config=` in its manifest — `notify.to` is mandatory for openclaw
+and optional for hermes). An unset one is called out here rather than
+discovered as five silent retries and a quarantined message.
+
+**Inbound** is genuinely probed when the configured plugin ships a probe
+(`inbound_probe=` in its manifest — openclaw does, via `openclaw channels
+status`): doctor runs it with a 10s deadline and reports REACHABLE, NOT
+REACHABLE, or UNDETERMINED as the plugin itself determined. A gateway that is
+down shows up here as NOT REACHABLE — that is the line that would have caught
+the outage above on day one. Note what a REACHABLE result does *not* claim:
+the transport your reply travels over is up, which is not proof that a
+channel-side agent exists there to turn the reply into an `orchid answer`
+call. For a plugin that declares no probe, doctor says NOT VERIFIED for that
+plugin rather than pretending nothing could ever be known.
+
+Alongside either, doctor shows local evidence: blockers still *waiting* for
+an answer. Several you believe you already answered is the signature of a
+broken return leg. Questions that expired past `answer_expiry_s` (which
+`orchid answer` refuses anyway) and questions whose task was already resolved
+with `orchid task unblock` are excluded and counted separately — nothing will
+ever write an answer for those, so warning about them forever would only
+train you to skim past the line.
+
+Every line here is advisory — a run with no channel at all is legitimate and
 stays green. To answer while the return leg is down, run the command
 `BLOCKERS.md` prints for the question directly on this machine.
 

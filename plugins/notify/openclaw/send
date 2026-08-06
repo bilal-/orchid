@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # kind=notify entrypoint. Contract (docs/specs/plugins.md, "notify channel"
-# row): `send <question-id> <text>`. No repo access, no stdin, no exit-code
+# row): `send <question-id> <text>`, plus the OPTIONAL read-only
+# `--inbound-probe` mode this plugin declares in its manifest (see that
+# branch's own header below). No repo access, no stdin, no exit-code
 # guessing -- this script's own exit code IS the send outcome the pump acts
 # on (0 -> outbox file removed; nonzero -> left for retry, see runners/
 # orchid-pump's outbox drain). Launched ONLY by runners/orchid-pump (tier-2,
@@ -36,6 +38,128 @@ set -euo pipefail
 #   a channel; PENDING-VALIDATION: this invocation has not yet been run
 #   against a live, configured OpenClaw gateway -- that is the live
 #   hero-demo dogfood (a later controller task), not this build task.
+
+# -- inbound probe mode (v1-m4 T006, manifest `inbound_probe=--inbound-probe`)
+# The ONE argument that puts this entrypoint into a read-only liveness probe
+# instead of a send (docs/specs/plugins.md, "The inbound probe"). Handled
+# before the `send <qid> <text>` argument contract below, which is otherwise
+# completely unchanged -- runners/orchid-pump never passes this flag (a qid
+# is always `q-<epoch>-<hex>`), so the send path cannot reach this branch.
+#
+# One executable rather than a second, separate probe script: a plugin's
+# entrypoint is the one file whose executable bit orchid already validates
+# (manifest_validate/`plugins conform`), and shipping a second executable is
+# a recurring packaging footgun (a mode-644 helper is invisible until the
+# feature silently stops working). The mode is declared in the manifest, so
+# a plugin that cannot probe simply omits the key and is never invoked this
+# way.
+#
+# Exit code IS the verdict; one line of detail on stdout is what `orchid
+# doctor` prints beside it:
+#   0  reachable      -- POSITIVELY determined the inbound transport is up
+#   1  unreachable    -- POSITIVELY determined it is down
+#   2  undetermined   -- could not tell (and says why)
+# Anything else, or doctor's own timeout, is also read as undetermined.
+#
+# WHAT THIS PROVES, EXACTLY. It probes the CHANNEL TRANSPORT -- whether
+# OpenClaw currently has the configured channel connected -- because that is
+# the leg an operator's reply must physically traverse, and it is the leg
+# that actually failed in the outage this probe exists for (the gateway was
+# down for a day; blockers raised before it went down still reached the
+# phone, and every answer typed back was lost with no local trace). It does
+# NOT prove that a channel-side agent is installed and will turn a reply into
+# a real `orchid answer` invocation against this repo -- orchid ships no
+# inbound listener and neither starts nor supervises that agent, so nothing
+# here can observe it. Doctor labels those two facts apart; this branch's
+# own wording must never imply the second.
+#
+# PENDING-VALIDATION: like the send shape above, `openclaw channels status`
+# comes from help-text research (docs/engines/openclaw.md) and has NOT been
+# run against a live, configured gateway. Its OUTPUT format is therefore
+# treated as untrusted: only tokens this branch can recognize with
+# confidence produce a 0/1 verdict, and anything unfamiliar exits 2 with the
+# raw line quoted rather than guessing. A wrong "unreachable" is a false
+# alarm that teaches an operator to ignore the line; a wrong "reachable" is
+# exactly the unproven-ok this probe exists to remove.
+if [ "${1:-}" = --inbound-probe ]; then
+  [ $# -eq 1 ] || { echo "--inbound-probe takes no further arguments"; exit 2; }
+  probe_channel="${ORCHID_NOTIFY_CHANNEL:-}"
+  [ -n "$probe_channel" ] || { echo "notify.channel is unset, so there is no channel to probe"; exit 2; }
+  command -v openclaw >/dev/null 2>&1 \
+    || { echo "the openclaw CLI is not on PATH, so nothing here can query channel state"; exit 2; }
+
+  # Never `exec`, never let `set -e` fire: a nonzero exit here is DATA.
+  probe_rc=0
+  probe_out="$(openclaw channels status 2>&1)" || probe_rc=$?
+
+  # First line only, by parameter expansion rather than `| head -n1`: the
+  # caller gets one line of detail, and a pipeline here would be one more
+  # SIGPIPE/pipefail hazard inside a script that runs under `set -o pipefail`.
+  probe_first="${probe_out%%$'\n'*}"
+
+  if [ "$probe_rc" -ne 0 ]; then
+    # An unrecognized subcommand is a CLI-VERSION difference, not evidence
+    # about the gateway -- reporting "down" for it would be a false alarm on
+    # a perfectly healthy system. Everything else that makes `channels
+    # status` itself fail (gateway unreachable, auth expired, daemon not
+    # running) IS a determination: the transport a reply must come back
+    # through cannot currently be queried at all.
+    case "$probe_out" in
+      *"nknown command"*|*"nrecognized"*|*"nknown subcommand"*|*"o such command"*|*[Uu]sage:*)
+        echo "this openclaw build does not support 'channels status' (exit $probe_rc: $probe_first)"
+        exit 2 ;;
+    esac
+    echo "'openclaw channels status' failed (exit $probe_rc: $probe_first) -- the gateway your replies travel back through is not answering"
+    exit 1
+  fi
+
+  # The configured channel's own line, matched case-insensitively as a whole
+  # word so `telegram` never matches a row that merely contains it. The
+  # channel name comes from config and is interpolated into an ERE, so a name
+  # carrying regex metacharacters falls back to a FIXED-string match instead
+  # -- an invalid-regex error from grep would otherwise end up quoted back to
+  # the operator as if it were openclaw's own status output.
+  case "$probe_channel" in
+    *[!A-Za-z0-9_-]*)
+      probe_line="$(printf '%s\n' "$probe_out" | grep -iF -- "$probe_channel" | head -n1 || true)" ;;
+    *)
+      probe_line="$(printf '%s\n' "$probe_out" | grep -iE "(^|[^[:alnum:]_-])${probe_channel}([^[:alnum:]_-]|$)" | head -n1 || true)" ;;
+  esac
+  if [ -z "$probe_line" ]; then
+    # openclaw answered and does not list this channel at all -- itself a
+    # determination, and a common real misconfiguration: notify.channel
+    # names a channel that was never connected, so no reply can return over
+    # it.
+    echo "openclaw does not report a channel named '$probe_channel' (connect it with 'openclaw onboard'/'openclaw configure')"
+    exit 1
+  fi
+
+  probe_lower="$(printf '%s' "$probe_line" | tr '[:upper:]' '[:lower:]')"
+  # Negatives FIRST: "not connected" contains "connected", so a
+  # positive-first order would read a disconnected channel as up -- the one
+  # mistake this probe must never make.
+  case "$probe_lower" in
+    *"not connected"*|*disconnect*|*offline*|*unauthor*|*expired*|*down*)
+      echo "openclaw reports channel '$probe_channel' as NOT connected: $probe_line"
+      exit 1 ;;
+  esac
+  # Deliberately NARROW, in both directions. No bare `*ok*`/`*fail*`/`*error*`
+  # substring tests: `*ok*` matches "broken" (and "token expired"), and a
+  # healthy row reading "connected, 0 errors" would trip `*error*`. Either
+  # way a substring that loose invents a verdict out of a word fragment. A
+  # line matching neither list falls through to exit 2 below with its own
+  # text quoted, which is the honest answer for output nobody has verified
+  # against a live gateway yet. A truly down gateway is caught by the
+  # nonzero-exit branch above, not by string matching.
+  case "$probe_lower" in
+    *connected*|*online*|*ready*|*active*)
+      echo "openclaw reports channel '$probe_channel' connected: $probe_line"
+      exit 0 ;;
+  esac
+  echo "openclaw's status line for channel '$probe_channel' is not one this probe recognizes: $probe_line"
+  exit 2
+fi
+
 qid="${1:?usage: send <question-id> <text>}"
 text="${2:?usage: send <question-id> <text>}"
 : "$qid"   # accepted per the notify-channel contract; not otherwise used --

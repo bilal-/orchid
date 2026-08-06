@@ -31,6 +31,11 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
+# v1-m4 T006, both for the notify return-leg check below: spawn.sh for the
+# launcher's own env hygiene around the inbound probe (never re-invented
+# here), frontmatter.sh to read a blocked task's status when deciding whether
+# an unanswered question is still genuinely waiting.
+source "$ORCHID_ROOT/lib/spawn.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
@@ -248,64 +253,211 @@ fi
 # a run with no channel at all is entirely legitimate (BLOCKERS.md + the
 # terminal is a complete surface), and an unreachable return leg is a thing
 # an operator must SEE, not a reason to refuse to work.
+#
+# THE INBOUND LEG IS ACTUALLY PROBED, not guessed at from local files. A
+# plugin MAY declare an `inbound_probe=<argv-token>` in its manifest (docs/
+# specs/plugins.md, "The inbound probe"); doctor then runs its entrypoint in
+# that read-only mode and reports what the plugin ITSELF determined. Where no
+# probe is declared, doctor says so plainly -- but "no way to tell" must
+# never be asserted on behalf of a plugin that can in fact tell.
 notify_channel="$(config_get "$repo" notify.channel "")"
 notify_allowlist="$(config_get "$repo" answer_allowlist "")"
 if [ -z "$notify_channel" ] && [ -z "$notify_allowlist" ]; then
   ok "notify return leg: no notify channel configured (notify.channel unset) — blockers surface in BLOCKERS.md and the terminal only; nothing sends off-machine and nothing is expected to answer from off-machine"
 else
   notify_plugin="$(config_get "$repo" notify.plugin openclaw)"
+  notify_to="$(config_get "$repo" notify.to "")"
+  notify_dir=""; notify_ep=""
   # Fact 1 -- OUTBOUND. Deliberately worded as send capability alone. Only
   # `notify.channel` puts a plugin on the sending path at all (runners/
   # orchid-pump drains nothing without it), so a repo that set only
   # `answer_allowlist` is not misreported against a plugin it never picked.
   if [ -z "$notify_channel" ]; then
     echo "note: notify outbound: notify.channel is unset, so nothing is ever sent off-machine (answer_allowlist alone only affects who may answer)"
-  elif notify_dir="$(resolve_notify_dir "$notify_plugin" 2>/dev/null)"; then
-    notify_ep="$(manifest_get "$notify_dir" entrypoint send)"
-    if [ -x "$notify_dir/$notify_ep" ]; then
-      notify_missing=""
-      while IFS= read -r nbin; do
-        [ -n "$nbin" ] || continue
-        command -v "$nbin" >/dev/null 2>&1 || notify_missing="$notify_missing $nbin"
-      done < <(_manifest_split_csv "$(manifest_get "$notify_dir" requires_binaries)")
-      if [ -z "$notify_missing" ]; then
-        ok "notify outbound: '$notify_plugin' resolves and its required binaries are present ($notify_dir/$notify_ep) — SEND capability only: no send is attempted here, and this says nothing about whether a reply can come back"
-      else
-        echo "WARN: notify outbound: '$notify_plugin' resolves ($notify_dir) but required binaries are missing from PATH:$notify_missing — blockers will queue in runtime/outbox and retry until send_retry_max"
-      fi
+  elif ! notify_resolve="$(resolve_notify_dir "$notify_plugin" 2>&1)"; then
+    # 2>&1, not 2>/dev/null: resolve_notify_dir has THREE distinct failures
+    # and only one of them is "not installed". An INV-10 duplicate (the same
+    # plugin name under two roots) and a rejected traversing name both
+    # explain themselves on stderr, and discarding that left an operator
+    # chasing a missing plugin that is in fact installed twice.
+    if [ -n "$notify_resolve" ]; then
+      echo "WARN: notify outbound: notify.plugin '$notify_plugin' is not usable — nothing can be sent: $notify_resolve"
     else
-      echo "WARN: notify outbound: '$notify_plugin' resolves ($notify_dir) but its entrypoint '$notify_ep' is not executable — nothing can be sent"
+      echo "WARN: notify outbound: notify.plugin '$notify_plugin' does not resolve to a plugin on the search path — nothing can be sent"
     fi
   else
-    echo "WARN: notify outbound: notify.plugin '$notify_plugin' does not resolve to a plugin on the search path — nothing can be sent"
+    notify_dir="$notify_resolve"
+    notify_ep="$(manifest_get "$notify_dir" entrypoint send)"
+    notify_problems=0
+    if [ ! -x "$notify_dir/$notify_ep" ]; then
+      echo "WARN: notify outbound: '$notify_plugin' resolves ($notify_dir) but its entrypoint '$notify_ep' is not executable — nothing can be sent (fix: chmod +x $notify_dir/$notify_ep)"
+      notify_problems=1
+    fi
+    notify_missing=""
+    while IFS= read -r nbin; do
+      [ -n "$nbin" ] || continue
+      command -v "$nbin" >/dev/null 2>&1 || notify_missing="$notify_missing $nbin"
+    done < <(_manifest_split_csv "$(manifest_get "$notify_dir" requires_binaries)")
+    if [ -n "$notify_missing" ]; then
+      echo "WARN: notify outbound: '$notify_plugin' resolves ($notify_dir) but required binaries are missing from PATH:$notify_missing — blockers will queue in runtime/outbox and retry until send_retry_max, then quarantine"
+      notify_problems=1
+    fi
+    # CONFIG the resolved plugin actually requires (`requires_config=`, its
+    # own manifest's declaration -- not a hardcoded key list here, since the
+    # two shipped plugins genuinely differ: openclaw's send does
+    # `to=${ORCHID_NOTIFY_TO:?...}` and declares notify.to, while hermes
+    # treats an empty notify.to as "home channel" and does not). Without
+    # this, doctor reported outbound `ok` on a resolvable plugin with a
+    # present binary while EVERY queued blocker failed on an unset key,
+    # retried to send_retry_max and quarantined -- green doctor, zero
+    # delivered messages, which is precisely the unproven-ok this task
+    # exists to remove.
+    notify_cfg_missing=""
+    while IFS= read -r nkey; do
+      [ -n "$nkey" ] || continue
+      [ -n "$(config_get "$repo" "$nkey" "")" ] || notify_cfg_missing="$notify_cfg_missing $nkey"
+    done < <(_manifest_split_csv "$(manifest_get "$notify_dir" requires_config)")
+    if [ -n "$notify_cfg_missing" ]; then
+      echo "WARN: notify outbound: '$notify_plugin' declares config it cannot send without, and it is unset:$notify_cfg_missing — every queued blocker will fail, retry to send_retry_max and quarantine (set it in orchid.config)"
+      notify_problems=1
+    fi
+    if [ "$notify_problems" -eq 0 ]; then
+      ok "notify outbound: '$notify_plugin' resolves, its required binaries are present, and the config it declares is set ($notify_dir/$notify_ep) — SEND capability only: no send is attempted here, and this says nothing about whether a reply can come back"
+    fi
   fi
-  # Fact 2 -- INBOUND. Never `ok`: doctor cannot prove a listener exists, and
-  # this run's Track 1 forbids describing something unproven as working.
-  echo "WARN: notify inbound (the return leg): NOT VERIFIED — orchid runs no inbound listener, so this cannot be proven from here. An answer reaches this repo only when something on the CHANNEL side runs 'ORCHID_REPO=\"$repo\" orchid answer <qid> <choice> --nonce <n>' on this machine; that agent is not started, supervised, or observable by orchid, and there is no portable way to test its liveness. Outbound send capability is a separate fact above and does not imply this one."
-  # Local evidence -- the only thing that IS observable here: whether answers
-  # have ever actually landed. A .question with no .answer beside it is a
-  # blocker this repo raised and never heard back about; if the operator
-  # believes they answered it, the return leg is exactly what failed.
+
+  # Fact 2 -- INBOUND, the return leg. Reported from the PLUGIN's own probe
+  # where one exists, and from nothing at all where one doesn't.
+  notify_probe=""
+  [ -n "$notify_dir" ] && notify_probe="$(manifest_get "$notify_dir" inbound_probe)"
+  if [ -z "$notify_channel" ]; then
+    echo "note: notify inbound (the return leg): nothing to probe — notify.channel is unset, so no channel carries a reply in either direction"
+  elif [ -z "$notify_dir" ]; then
+    echo "WARN: notify inbound (the return leg): NOT PROBED — the configured notify plugin did not resolve (see the outbound line above), so there is nothing here to ask about the return path."
+  elif [ -z "$notify_probe" ]; then
+    echo "WARN: notify inbound (the return leg): NOT VERIFIED — notify plugin '$notify_plugin' declares no inbound probe (no 'inbound_probe=' in $notify_dir/plugin.conf) and orchid runs no inbound listener of its own, so nothing here can tell whether a reply can get back. An answer reaches this repo only when something on the CHANNEL side runs 'ORCHID_REPO=\"$repo\" orchid answer <qid> <choice> --nonce <n>' on this machine. Outbound send capability is a separate fact above and does not imply this one."
+  elif [ ! -x "$notify_dir/$notify_ep" ]; then
+    echo "WARN: notify inbound (the return leg): NOT PROBED — '$notify_plugin' declares an inbound probe but its entrypoint '$notify_ep' is not executable (see the outbound line above)."
+  else
+    # Short-lived, bounded subprocess -- the same INV-01-fine pattern as the
+    # `plugins list`/`plugins validate` shell-outs above, under the launcher's
+    # own env hygiene (env -i + spawn_child_env, stdin /dev/null) so a probe
+    # sees exactly what `send` would. The 10s deadline is fixed, not
+    # configurable: doctor is an interactive command and a hung gateway must
+    # never hang it -- a probe that cannot answer in 10s has answered
+    # "undetermined" for this purpose.
+    notify_probe_env=()
+    while IFS= read -r nline; do
+      [ -n "$nline" ] || continue
+      notify_probe_env+=("$nline")
+    done < <(ORCHID_NOTIFY_CHANNEL="$notify_channel" ORCHID_NOTIFY_TO="$notify_to" spawn_child_env "$notify_dir")
+    # Output goes to a FILE, not through `$(with_timeout ...)`: with_timeout
+    # runs both the child and its watcher under `set -m`, and a command
+    # substitution would capture the shell's own job-control chatter about
+    # killing that watcher along with the probe's line. Same helper-function
+    # + redirect + `set +e` shape runners/orchid-tick uses around the very
+    # same helper, for the same reason.
+    notify_probe_tmp="$(mktemp)"
+    _notify_run_probe() {
+      if [ "${#notify_probe_env[@]}" -gt 0 ]; then
+        env -i "${notify_probe_env[@]}" "$notify_dir/$notify_ep" "$notify_probe" \
+          </dev/null > "$notify_probe_tmp" 2>&1
+      else
+        env -i "$notify_dir/$notify_ep" "$notify_probe" \
+          </dev/null > "$notify_probe_tmp" 2>&1
+      fi
+    }
+    set +e
+    with_timeout 10 _notify_run_probe
+    notify_probe_rc=$?
+    set -e
+    notify_probe_out="$(head -n1 "$notify_probe_tmp" 2>/dev/null || true)"
+    rm -f "$notify_probe_tmp"
+    case "$notify_probe_rc" in
+      0)
+        # `ok` is earned here and nowhere else in this block: the plugin
+        # POSITIVELY determined its own transport is up. The second sentence
+        # is not decoration -- it is the honest bound on what was proven.
+        ok "notify inbound (the return leg): '$notify_plugin' probed its channel and reports it REACHABLE — ${notify_probe_out:-(no detail)}. That proves the transport your reply travels back over is up; it does NOT prove a channel-side agent is installed there that turns your reply into an 'orchid answer' call against this repo, which orchid neither starts nor supervises."
+        ;;
+      1)
+        echo "WARN: notify inbound (the return leg): '$notify_plugin' probed its channel and reports it NOT REACHABLE — ${notify_probe_out:-(no detail)}. Answers sent on this channel are being lost with no local trace; answer on this machine with the command BLOCKERS.md prints until it is back."
+        ;;
+      124)
+        echo "WARN: notify inbound (the return leg): UNDETERMINED — '$notify_plugin''s inbound probe did not answer within 10s and was killed. That is not evidence either way; a channel that slow to answer doctor is worth checking by hand."
+        ;;
+      *)
+        echo "WARN: notify inbound (the return leg): UNDETERMINED — '$notify_plugin''s inbound probe could not tell (exit $notify_probe_rc): ${notify_probe_out:-(no detail)}. Reported as unknown rather than ok, deliberately."
+        ;;
+    esac
+  fi
+
+  # Local evidence -- separate from the probe, and about a different thing:
+  # whether answers have ever actually LANDED here. A .question with no
+  # .answer beside it is a blocker this repo raised and never heard back
+  # about; if the operator believes they answered it, the return leg is
+  # exactly what failed.
+  #
+  # Only questions that are still genuinely WAITING count. Two whole classes
+  # of question are not evidence of anything and used to warn forever,
+  # because nothing ever writes an .answer for them:
+  #   - EXPIRED past `answer_expiry_s` -- libexec/orchid-answer refuses these
+  #     outright, so no answer can ever arrive and the warning could not be
+  #     acted on even in principle;
+  #   - resolved LOCALLY -- `orchid task unblock` moves a blocked task to
+  #     rework without ever touching runtime/answers, so its question sits
+  #     answer-less by design.
+  # A permanent warning is worse than no warning: it is what teaches an
+  # operator to skim past the one line that would have caught a real outage.
   notify_answers_dir="$repo/.orchid/runtime/answers"
-  notify_q_total=0; notify_q_open=0; notify_oldest=0; notify_now="$(date -u +%s)"
+  notify_expiry="$(config_get "$repo" answer_expiry_s 86400)"
+  case "$notify_expiry" in ''|*[!0-9]*) notify_expiry=86400 ;; esac
+  notify_q_total=0; notify_q_live=0; notify_q_answered=0; notify_q_stale=0
+  notify_oldest=0; notify_now="$(date -u +%s)"
   if [ -d "$notify_answers_dir" ]; then
     for notify_qf in "$notify_answers_dir"/*.question; do
       [ -f "$notify_qf" ] || continue
       notify_q_total=$(( notify_q_total + 1 ))
       notify_qid="$(basename "$notify_qf" .question)"
-      [ -f "$notify_answers_dir/$notify_qid.answer" ] && continue
-      notify_q_open=$(( notify_q_open + 1 ))
-      notify_m="$(stat -f %m "$notify_qf" 2>/dev/null || stat -c %Y "$notify_qf" 2>/dev/null || echo 0)"
-      if [ "$notify_m" -gt 0 ]; then
-        notify_age=$(( notify_now - notify_m ))
-        [ "$notify_age" -gt "$notify_oldest" ] && notify_oldest="$notify_age"
+      if [ -f "$notify_answers_dir/$notify_qid.answer" ]; then
+        notify_q_answered=$(( notify_q_answered + 1 )); continue
       fi
+      # Age, by the SAME portable stat idiom and the SAME config key
+      # libexec/orchid-answer's own expiry check uses -- an unreadable mtime
+      # is bucketed with expired for the same reason `answer` refuses it:
+      # unanswerable either way.
+      notify_m="$(stat -f %m "$notify_qf" 2>/dev/null || stat -c %Y "$notify_qf" 2>/dev/null || echo 0)"
+      if [ "$notify_m" -le 0 ] || [ $(( notify_now - notify_m )) -gt "$notify_expiry" ]; then
+        notify_q_stale=$(( notify_q_stale + 1 )); continue
+      fi
+      # The originating task ("task: <id|none>", libexec/orchid-notify's own
+      # first line). Read defensively: this is a runtime file, so a value
+      # that could traverse out of the tasks dir is treated as no task at
+      # all rather than used to build a path.
+      notify_qtask="$(head -n1 "$notify_qf" 2>/dev/null || true)"
+      notify_qtask="${notify_qtask#task: }"
+      case "$notify_qtask" in task:*|none|'') notify_qtask="" ;; */*|*..*) notify_qtask="" ;; esac
+      if [ -n "$notify_qtask" ] && [ -f "$repo/.orchid/tasks/$notify_qtask.md" ]; then
+        if [ "$(fm_get "$repo/.orchid/tasks/$notify_qtask.md" status)" != blocked ]; then
+          notify_q_stale=$(( notify_q_stale + 1 )); continue
+        fi
+      fi
+      notify_q_live=$(( notify_q_live + 1 ))
+      notify_age=$(( notify_now - notify_m ))
+      # A full `if`, not `[ ... ] && ...`: this is the LAST command in the
+      # loop body, so a false test would make the whole `for` (and the `if`
+      # around it) return 1 under this script's `set -e`.
+      if [ "$notify_age" -gt "$notify_oldest" ]; then notify_oldest="$notify_age"; fi
     done
   fi
-  if [ "$notify_q_open" -gt 0 ]; then
-    echo "WARN: notify inbound: $notify_q_open blocker(s) in $notify_answers_dir have no recorded answer (oldest unanswered: ${notify_oldest}s). If any of them were already answered on the channel, nothing delivered that answer back here — check the channel-side agent before answering again."
+  notify_stale_note=""
+  [ "$notify_q_stale" -gt 0 ] && notify_stale_note=" ($notify_q_stale further question(s) ignored as no longer answerable: expired past answer_expiry_s=${notify_expiry}s, or their task is no longer blocked — 'orchid answer' would refuse the first and 'orchid task unblock' resolves the second without ever writing an answer)"
+  if [ "$notify_q_live" -gt 0 ]; then
+    echo "WARN: notify inbound: $notify_q_live blocker(s) in $notify_answers_dir are still waiting for an answer (oldest: ${notify_oldest}s, still within answer_expiry_s=${notify_expiry}s). If any of them were already answered on the channel, nothing delivered that answer back here — check the channel-side agent before answering again.$notify_stale_note"
+  elif [ "$notify_q_answered" -gt 0 ]; then
+    echo "note: notify inbound: no blocker is waiting for an answer; $notify_q_answered of $notify_q_total on record have one — an answer did arrive, though that alone does not distinguish a channel delivery from an operator typing 'orchid answer' locally.$notify_stale_note"
   elif [ "$notify_q_total" -gt 0 ]; then
-    echo "note: notify inbound: all $notify_q_total blocker(s) on record have an answer file — an answer did arrive, though that alone does not distinguish a channel delivery from an operator typing 'orchid answer' locally"
+    echo "note: notify inbound: no blocker is waiting for an answer.$notify_stale_note"
   else
     echo "note: notify inbound: no blocker has been raised in this repo yet, so there is no local evidence either way"
   fi

@@ -394,3 +394,36 @@ grep -q "findings" "$REPO_ROOT/plugins/engines/codex/run" \
   || fail "plugins/engines/codex/run: findings[] handling vanished — re-check the L006 claim in the docs"
 grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/codex/run" \
   || fail "plugins/engines/codex/run no longer scrapes FINDING: lines for critique only — PROTOCOL.md's L006 note is now wrong"
+
+# The OTHER half of a live gate, and the one that will actually surprise an
+# operator: now that a claude review populates findings[], a NON-empty one
+# blocks an otherwise-approving review (blocking_severity defaults to
+# medium). Every doc sentence stressing that an EMPTY array blocks nothing is
+# only half the contract; the halting half has to be written down too, or the
+# first approve-with-one-medium-nit review reads as a broken driver.
+assert_match "blocks an otherwise-approving review" "$protocol_one_line" \
+  "PROTOCOL.md must state that a non-empty findings[] halts an approving review, not just that an empty one blocks nothing"
+kernel_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/kernel.md" | tr -s '[:space:]' ' ')"
+assert_match "one \`medium\` finding turns an all-\`approve\`" "$kernel_one_line" \
+  "docs/specs/kernel.md must state the same halting half of the severity gate"
+# And the prompt has to define severity by CONSEQUENCE, or a reviewer files
+# nits as `medium` and stops runs nobody meant to stop.
+assert_match "Use low for anything you would call a nit" \
+  "$(tr '\n' ' ' < "$REPO_ROOT/plugins/engines/claude/run" | tr -s '[:space:]' ' ')" \
+  "the review prompt must give severity explicit blocking semantics, not just a line format"
+
+# v1-m4 T006, the notify return leg: the two manifest keys doctor's check
+# reads are a plugin CONTRACT, so they belong in the plugin spec — an
+# operator writing a notify plugin has nowhere else to learn them.
+assert_match "The inbound probe" "$plugins_spec_one_line" \
+  "docs/specs/plugins.md must document the optional inbound-probe contract notify plugins may declare"
+assert_match "requires_config" "$plugins_spec_one_line" \
+  "docs/specs/plugins.md must document requires_config, which gates doctor's outbound ok"
+for k in inbound_probe requires_config; do
+  grep -q "$k" "$REPO_ROOT/lib/manifest.sh" \
+    || fail "lib/manifest.sh no longer knows the manifest key '$k' — docs/specs/plugins.md documents it as valid"
+done
+grep -q "inbound_probe=--inbound-probe" "$REPO_ROOT/plugins/notify/openclaw/plugin.conf" \
+  || fail "the openclaw notify plugin must declare an inbound probe — docs promise doctor actually probes the return leg for it"
+grep -q "^inbound_probe" "$REPO_ROOT/plugins/notify/hermes/plugin.conf" \
+  && fail "plugins/notify/hermes declares an inbound probe, but hermes.md documents (and the hermes CLI supports) no inbound-liveness query"

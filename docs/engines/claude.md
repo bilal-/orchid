@@ -136,6 +136,18 @@ driver's `blocking_severity` gate or anywhere else. Other shipped review
 adapters remain verdict-only — see PROTOCOL.md's deterministic-approval arm
 for which reviewer makes that gate live.
 
+**Severity is a gate, so the prompt spells out what each one does.** Because
+this adapter populates `findings[]`, the driver's `blocking_severity` gate is
+live for it — and that default is `medium`. One `medium` finding on a review
+whose verdict is `approve` is therefore not an approval with a note: it is a
+`review-conflict` boundary that halts the run until an arbiter settles it.
+Reviewers approve-with-nits by habit, so the review prompt defines the three
+severities by consequence — `high` must not ship, `medium` should block this
+candidate, `low` is worth telling the author and explicitly not worth
+stopping for ("use low for anything you would call a nit"). Nothing about the
+parser or the envelope schema encodes this; it is the prompt's job to make
+the model choose a severity for what it triggers.
+
 ## Implementer: review-only in practice (adapter commits when it can)
 
 `claude -p --permission-mode acceptEdits` creates/edits files but does

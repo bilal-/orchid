@@ -80,7 +80,11 @@ the adapter and this doc can never drift on which flags are real.
   stays on this plugin — nothing below changes behavior on its own.
 - `notify.channel` (default empty — no channel configured, `orchid notify`
   never writes an outbox file at all) — OpenClaw's channel enum, see above.
-- `notify.to` (default empty) — the `--target` recipient.
+- `notify.to` (default empty) — the `--target` recipient. **Required for this
+  plugin**: `send` dies without it, so the manifest declares
+  `requires_config=notify.channel,notify.to` and `orchid doctor` refuses to
+  report outbound `ok` while either is unset — otherwise every queued blocker
+  fails, retries to `send_retry_max` and quarantines behind a green doctor.
 - `answer_allowlist` (default empty) — comma-separated sender identifiers.
   Configuring this at all turns inbox hardening ON: every `orchid answer`
   then requires `--nonce` (see "Inbox hardening" below), and a caller that
@@ -131,6 +135,48 @@ AgentSkill bundle exposing exactly two operations, `orchid status`
 `ORCHID_ANSWER_SENDER`). See that directory's own `README.md` for
 registration and the full security posture (allowlist, nonce, no shell/repo
 access beyond those two commands).
+
+## The inbound probe (`orchid doctor` checks the return leg)
+
+The AgentSkill above is the half orchid cannot see: it lives on the OpenClaw
+side, orchid neither starts nor supervises it, and when it (or the gateway
+under it) is down, blockers still go out and every answer typed back is lost
+with **no local trace at all**. That is not hypothetical — it cost this
+project a full day and one lost answer.
+
+So this plugin declares an inbound probe in its manifest
+(`inbound_probe=--inbound-probe`, see docs/specs/plugins.md), and `orchid
+doctor` runs it:
+
+```sh
+plugins/notify/openclaw/send --inbound-probe    # what doctor invokes; sends nothing
+openclaw channels status                        # what the probe asks
+```
+
+- **exit 0 — REACHABLE.** OpenClaw reports the configured `notify.channel`
+  connected.
+- **exit 1 — NOT REACHABLE.** `openclaw channels status` failed (gateway
+  down, auth expired, daemon not running), or it answered and reported that
+  channel disconnected, or it does not list that channel at all.
+- **exit 2 — UNDETERMINED.** The `openclaw` CLI isn't on `PATH`,
+  `notify.channel` is unset, this build has no `channels status` subcommand,
+  or the status line isn't one the probe recognizes. Doctor prints
+  "undetermined" and the raw line — never `ok`.
+
+**What a REACHABLE result does and does not prove.** It proves the
+*transport* your reply travels over is up. It does **not** prove the
+AgentSkill is registered on the other side, or that anything there will turn
+your reply into an actual `orchid answer` invocation against this repo —
+nothing local can observe that. Doctor's own wording keeps those two apart;
+so does the probe's. Unrecognized output always exits 2 rather than guessing:
+a wrong "not reachable" is a false alarm that teaches you to ignore the line,
+and a wrong "reachable" is the unproven-ok the check exists to remove.
+
+The probe is a mode of `send` rather than a second script on purpose — the
+entrypoint is the one file whose executable bit orchid already validates, and
+a mode-644 helper would be invisible until the feature silently stopped
+working. `runners/orchid-pump` never passes this flag (a qid is always
+`q-<epoch>-<hex>`), so the send path can't reach it.
 
 ## Inbox hardening (`orchid answer`)
 
@@ -184,6 +230,11 @@ purely decorative (nothing outside this machine could present it anyway).
   dogfood (a later controller task) is where this gets a real round trip
   against a configured channel — revisit this doc and
   `plugins/notify/openclaw/send` together if that turns up a surprise.
+- **So is the probe's `openclaw channels status`.** Its *output format* has
+  never been seen by this code against a live gateway, which is exactly why
+  every unrecognized shape exits 2 (undetermined) instead of guessing a
+  verdict. The same live dogfood is where its token matching gets confirmed
+  or corrected.
 - **`--dry-run` exists on the real CLI** (prints the payload, skips
   sending) but this adapter never passes it — a real send is exactly what
   its entrypoint exists to perform once an operator has genuinely

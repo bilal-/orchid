@@ -256,11 +256,22 @@ available and never create an acknowledgement.
   supervises. When that agent is down, blockers still arrive and every reply
   to them is lost with no local trace (observed: a gateway down for a day,
   a phone answer gone). `orchid doctor` therefore reports outbound and
-  inbound as two separate lines and never infers the second from the first:
-  inbound is reported **NOT VERIFIED** (no portable liveness probe exists
-  for an off-machine agent) plus whatever local evidence exists — blockers
-  raised with no answer recorded beside them. Both lines are advisory; a run
-  with no channel configured is legitimate and stays green.
+  inbound as two separate lines and never infers the second from the first.
+  Outbound is `ok` only when the plugin resolves, its `requires_binaries`
+  are on PATH, AND the config it declares in `requires_config=` is set.
+  Inbound is **actually probed** where the configured plugin declares an
+  `inbound_probe=` mode (docs/specs/plugins.md): doctor runs it and reports
+  reachable / not reachable / undetermined as the plugin itself determined,
+  bounded honestly — a reachable transport is not proof that a channel-side
+  agent exists to run `orchid answer`. A plugin that declares no probe is
+  reported **NOT VERIFIED** *for that plugin*, never as a claim that liveness
+  is unknowable in general. Alongside either, doctor reports local evidence:
+  blockers still WAITING for an answer — expired ones (past
+  `answer_expiry_s`, which `orchid answer` refuses anyway) and ones whose
+  task was resolved by `orchid task unblock` are excluded, since nothing will
+  ever write an answer for those and a permanent warning is what teaches an
+  operator to ignore the line. Every line here is advisory; a run with no
+  channel configured is legitimate and stays green.
 - **API-billing exception, stated plainly:** API-backed engines are metered
   per call, unlike subscription CLIs; their role BINDINGS carry call budgets
   and retry ceilings. **Dropped, per the v1-m4 escape hatch (roadmap.md):**

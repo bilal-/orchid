@@ -228,7 +228,22 @@ is mandatory (its `send` dies without a `--target`). Hermes has its own
 notion of a "home channel" per platform (`~/.hermes/config.yaml`), so
 `notify.to` is **optional** for this plugin — when empty, `send` passes the
 bare platform name as `--to` and hermes routes to that platform's home
-channel; when set, `send` composes `<channel>:<to>`.
+channel; when set, `send` composes `<channel>:<to>`. That difference is
+declared, not assumed: this plugin's manifest carries
+`requires_config=notify.channel` while openclaw's carries
+`notify.channel,notify.to`, and `orchid doctor` checks whichever plugin is
+actually configured against its own declaration before reporting outbound
+`ok`.
+
+**This plugin ships no inbound probe, deliberately.** A `kind=notify` plugin
+MAY declare an `inbound_probe=` mode that tells `orchid doctor` whether its
+channel is reachable (openclaw does, via `openclaw channels status`). The
+`hermes` CLI has no equivalent inbound-liveness query — `hermes send --list`
+enumerates *configured platform credentials*, which is an outbound-config
+fact and would prove nothing about whether a reply can get back. Rather than
+dress that up as a liveness check, the key is omitted, and doctor then says
+plainly that this plugin cannot determine the return leg. Omission is the
+honest answer; a probe that always answers "fine" would be worse than none.
 
 ```
 notify.plugin=hermes    # selects THIS plugin (default is openclaw -- see below)

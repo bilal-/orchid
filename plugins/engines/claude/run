@@ -273,6 +273,17 @@ if [ -f "$input_pack/task.md" ]; then
   # findings that way. findings[] is the only durable, structured place a
   # review's reasoning lives (lib/envelope.sh's review/critique union), and
   # it is what the driver's blocking_severity gate reads (lib/drive.sh).
+  #
+  # SEVERITY IS A GATE, NOT A LABEL -- and the prompt has to say so. Populated
+  # findings[] make that gate live: `blocking_severity` defaults to `medium`
+  # (lib/drive.sh), so ONE medium finding on an otherwise-approving review is
+  # a `review-conflict` boundary that HALTS the run for arbitration. Reviewers
+  # habitually approve-with-nits, and "one line per issue found" alone invites
+  # exactly that -- a `medium` spent on a nit stops a run that nobody meant to
+  # stop. So the three severities are defined in the prompt in terms of what
+  # each one DOES, and `low` is named as the home for anything worth
+  # mentioning but not worth blocking on. The parser and the envelope schema
+  # are unchanged; this only tells the model what it is choosing.
   prompt="Acceptance criteria: $ac
 Stop condition: $stop
 $manifest_line
@@ -283,7 +294,17 @@ $diff
 Reply with:
 VERDICT: approve OR request-changes
 One line per issue found, exactly: FINDING: <low|medium|high>: <title>
-(omit FINDING lines entirely when there are none)."
+(omit FINDING lines entirely when there are none).
+
+Severity decides what happens next, so pick it for consequence, not for
+emphasis. A finding at or above this task's blocking_severity (medium by
+default) STOPS the run for human arbitration even when your verdict is
+approve.
+- high: must not ship as written — correctness, safety, or data loss.
+- medium: should block this candidate — a real defect or a missed
+  acceptance criterion, worth halting the run over.
+- low: worth telling the author, not worth stopping for — style, naming,
+  wording, optional cleanups. Use low for anything you would call a nit."
 else
   # v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
   # diff.patch at all -- lib/pack.sh's _pack_build_plan builds

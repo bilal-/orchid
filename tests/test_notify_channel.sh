@@ -350,3 +350,113 @@ assert_eq "1" "$(cat ".orchid/runtime/outbox/$qidT.tries")" "traversal notify.pl
 [ -f ".orchid/runtime/outbox/$qidT" ] && fail "traversal notify.plugin, attempt 2 (= send_retry_max): must quarantine, same as a real send failure would"
 [ -f ".orchid/runtime/outbox/$qidT.reason-send-failed" ] || fail "traversal notify.plugin: quarantine must write a .reason-send-failed sidecar"
 assert_match "invalid notify plugin name" "$(cat ".orchid/runtime/outbox/$qidT.reason-send-failed")" "the quarantine reason names the traversal refusal, not a generic 'not found'"
+
+# ===========================================================================
+# 9 -- THE INBOUND PROBE (v1-m4 T006). Everything above this line is about
+# the SEND leg. None of it says anything about whether an answer can get
+# back, and for a full day this project shipped blockers to a phone whose
+# gateway was down and lost every reply with no local trace.
+#
+# So this plugin declares `inbound_probe=--inbound-probe` in its manifest and
+# `orchid doctor` runs it. The mode lives in the EXISTING entrypoint rather
+# than a second script (the entrypoint is the one file whose executable bit
+# orchid already validates), so the send contract above must stay exactly as
+# it was -- that is asserted here too, not assumed.
+# ===========================================================================
+assert_eq "--inbound-probe" "$(manifest_get "$REPO_ROOT/plugins/notify/openclaw" inbound_probe)" \
+  "the openclaw plugin must declare its probe in the manifest -- doctor never guesses a probe argument"
+assert_eq "notify.channel,notify.to" "$(manifest_get "$REPO_ROOT/plugins/notify/openclaw" requires_config)" \
+  "openclaw's send dies without ORCHID_NOTIFY_TO, so its manifest must declare notify.to as required config"
+
+SEND_OC="$REPO_ROOT/plugins/notify/openclaw/send"
+[ -x "$SEND_OC" ] || fail "the openclaw entrypoint must be executable -- the probe mode ships inside it precisely because this bit is already validated"
+
+# A second openclaw stub whose stdout and exit code are both scripted, so
+# every branch of the probe is reachable without a live gateway.
+PROBEBIN="$WORK/probebin"; mkdir -p "$PROBEBIN"
+OC_STATUS_OUT="$WORK/openclaw-status-out"; OC_STATUS_RC="$WORK/openclaw-status-rc"
+OC_PROBE_LOG="$WORK/openclaw-probe-calls.log"; : > "$OC_PROBE_LOG"
+cat > "$PROBEBIN/openclaw" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$OC_PROBE_LOG"
+cat "$OC_STATUS_OUT"
+exit "\$(cat "$OC_STATUS_RC")"
+EOF
+chmod +x "$PROBEBIN/openclaw"
+
+# probe <channel> <stub-stdout> <stub-exit> -> $probe_out / $probe_rc
+probe() {
+  printf '%s\n' "$2" > "$OC_STATUS_OUT"; printf '%s\n' "$3" > "$OC_STATUS_RC"
+  probe_rc=0
+  probe_out="$(PATH="$PROBEBIN:$PATH" ORCHID_NOTIFY_CHANNEL="$1" ORCHID_NOTIFY_TO="" \
+    "$SEND_OC" --inbound-probe 2>&1)" || probe_rc=$?
+}
+
+# Connected -> 0 (reachable). The ONLY path to a green inbound line.
+probe telegram "telegram   connected   (gateway 2026.7.1-2)" 0
+assert_eq "0" "$probe_rc" "a connected channel must probe as reachable"
+assert_match "connected" "$probe_out" "the probe echoes the status line it decided on"
+
+# Disconnected -> 1. "not connected" CONTAINS "connected", so this is the
+# case a positive-first matcher would silently invert into a green line.
+probe telegram "telegram   not connected   (gateway unreachable)" 0
+assert_eq "1" "$probe_rc" "a disconnected channel must probe as NOT reachable, not as connected"
+assert_match "NOT connected" "$probe_out" "the probe says which way it decided"
+
+# The gateway outage this task exists for: the CLI itself fails.
+probe telegram "error: could not reach the openclaw gateway" 1
+assert_eq "1" "$probe_rc" "a gateway that cannot even answer 'channels status' is a down return leg"
+assert_match "not answering" "$probe_out" "the probe names what failed, in the operator's terms"
+
+# A channel openclaw has never heard of -> 1: it ANSWERED, and this channel
+# is not among the ones it knows, so a reply can never come back over it.
+probe telegram "discord   connected" 0
+assert_eq "1" "$probe_rc" "a channel openclaw does not list at all cannot carry a reply back"
+assert_match "does not report a channel named 'telegram'" "$probe_out" \
+  "the probe names the configured channel that is missing"
+
+# A CLI without the subcommand is a VERSION difference, not evidence about
+# the gateway -- reporting "down" for it would be a false alarm on a healthy
+# machine, and false alarms are what teach an operator to ignore this line.
+probe telegram "Unknown command: channels" 1
+assert_eq "2" "$probe_rc" "an unsupported subcommand is undetermined, never 'down'"
+assert_match "does not support 'channels status'" "$probe_out" "the probe says why it could not tell"
+
+# Output shaped in a way this probe has never seen against a live gateway ->
+# undetermined, with the raw line quoted. Never guessed either way.
+probe telegram "telegram   broken" 0
+assert_eq "2" "$probe_rc" "an unrecognized status line is undetermined -- 'broken' must not match a positive substring"
+assert_match "not one this probe recognizes" "$probe_out" "the probe admits what it does not know"
+
+# No channel configured, and no CLI at all: both undetermined, both explained.
+probe_rc=0
+probe_out="$(PATH="$PROBEBIN:$PATH" ORCHID_NOTIFY_CHANNEL="" "$SEND_OC" --inbound-probe 2>&1)" || probe_rc=$?
+assert_eq "2" "$probe_rc" "with no channel configured there is nothing to probe"
+assert_match "no channel to probe" "$probe_out" "the probe explains the unset-channel case"
+
+# PATH keeps the real shell's own directory (the script's `#!/usr/bin/env
+# bash` shebang resolves `bash` through PATH), and drops only the stub dirs
+# this file put in front -- so `command -v openclaw` genuinely finds nothing.
+EMPTYBIN="$WORK/emptybin"; mkdir -p "$EMPTYBIN"
+probe_rc=0
+probe_out="$(PATH="$EMPTYBIN:$(dirname "$BASH")" ORCHID_NOTIFY_CHANNEL="telegram" \
+  "$SEND_OC" --inbound-probe 2>&1)" || probe_rc=$?
+assert_eq "2" "$probe_rc" "a missing openclaw CLI is undetermined, not 'down'"
+assert_match "not on PATH" "$probe_out" "the probe explains the missing-CLI case"
+
+# The probe must SEND NOTHING, ever -- it is invoked by a read-only doctor
+# check, so the ONLY thing the CLI may ever be asked is its status.
+: > "$OC_PROBE_LOG"
+probe telegram "telegram connected" 0
+assert_eq "channels status" "$(cat "$OC_PROBE_LOG")" \
+  "the probe asks openclaw exactly one read-only question and nothing else"
+
+# And the send contract is untouched: two arguments still send, and the
+# probe flag is unreachable from the pump's own invocation shape (a qid is
+# always q-<epoch>-<hex>).
+: > "$OC_LOG"
+PATH="$STUBBIN:$PATH" ORCHID_NOTIFY_CHANNEL=telegram ORCHID_NOTIFY_TO="#ops" \
+  "$SEND_OC" q-9-abcd "q-9-abcd: still a normal send" >/dev/null 2>&1 \
+  || fail "adding the probe mode must not break the ordinary send path"
+assert_match "message send --channel telegram --target #ops" "$(cat "$OC_LOG")" \
+  "the ordinary two-argument send still invokes the verified openclaw shape"

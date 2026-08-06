@@ -773,7 +773,12 @@ there; the other shipped `review` adapters ask for a `VERDICT:` line only and
 always write `findings: []` (`FINDING:` lines belong to the `critique`
 prompt), so with them approval turns on `verdict` and `scope_complete` alone.
 An empty `findings[]` is never itself a signal — a reviewer that found
-nothing to report writes the same empty array.
+nothing to report writes the same empty array. A NON-empty one, though, is
+decisive on its own: with `blocking_severity` at its `medium` default
+(`orchid task set <id> risk_tier low` relaxes it to `high`), one `medium`
+finding turns an all-`approve`, all-`scope_complete` review set into a
+`review-conflict` boundary. Approve-with-a-nit is not a state this gate has;
+that is what arbitration is for.
 
 Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation

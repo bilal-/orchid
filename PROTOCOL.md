@@ -246,6 +246,18 @@ incomplete review set is never also reported as a conflict, and vice versa:
    **inert**, and a deterministic approval rests on `verdict` and
    `scope_complete` alone. Check which adapter reviewed before reading a
    clean gate as a second opinion you are already getting.
+   **And read the live case the other way round, because it is the one that
+   will surprise you:** where `findings[]` IS populated, a **non-empty** one
+   blocks an otherwise-approving review. `blocking_severity` defaults to
+   `medium` (`low` risk_tier relaxes it to `high`), so a single `medium`
+   finding on a review whose verdict is `approve` is not "approved with a
+   note" — it is arm 3, a `review-conflict` boundary that halts the run for
+   arbitration. That is the intended behavior, not a bug to route around:
+   the arbiter decides, and `orchid task arbitrate --result approve` settles
+   it in one verb. Reviewers habitually approve-with-nits, so the reviewer
+   prompt defines the three severities by CONSEQUENCE (`low` = worth saying,
+   not worth stopping for) rather than by emphasis — a nit filed as `medium`
+   stops a run nobody meant to stop.
 3. **Conflict** — anything else: a `request-changes` verdict, a blocking
    finding, mixed verdicts, or a non-scope-complete review. → boundary
    `review-conflict`, **no transition**. Deciding what to do about a real

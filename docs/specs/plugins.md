@@ -152,6 +152,10 @@ requires_binaries=codex,jq
 platforms=macos,linux
 command_surface=soft       # kind=engine only: brokered | soft (v1.1)
 entrypoint=run
+requires_config=           # kind=notify only: config keys the entrypoint
+                           # cannot run without (v1-m4)
+inbound_probe=             # kind=notify only: argv token for the read-only
+                           # inbound probe mode (v1-m4, optional)
 ```
 
 **`command_surface` (v1.1, kind=engine only) — an honest label, not a
@@ -330,6 +334,50 @@ hermes`, precisely so this selector never confuses the two). `notify.to`
 stays a target address, unchanged by this selector; `notify.channel` stays
 each PLUGIN's OWN inner enum/target string (OpenClaw's own channel name, or
 a hermes platform name) — a separate axis from which plugin sends it.
+
+**`requires_config=` (optional, v1-m4 T006):** a comma list of CONFIG KEYS
+this plugin's entrypoint cannot run without. The kernel gates on
+`notify.channel` alone (nothing is ever sent without it), but what else a
+send needs is per-plugin and only the plugin knows it: `plugins/notify/
+openclaw`'s `send` does `to=${ORCHID_NOTIFY_TO:?…}` and declares
+`requires_config=notify.channel,notify.to`, while `plugins/notify/hermes`
+treats an empty `notify.to` as "the platform's home channel" and declares
+only `notify.channel`. `orchid doctor` checks the declared keys before
+reporting outbound `ok`, so a missing one is caught where an operator can
+see it rather than as five silent retries and a quarantined message.
+
+**The inbound probe (`inbound_probe=`, optional, v1-m4 T006):** sending and
+receiving are different facts with different requirements, and doctor must
+never infer the second from the first (see docs/specs/operations.md's
+remote-interaction seam). A plugin that CAN determine whether its channel is
+reachable declares the single ARGV TOKEN that puts its own `entrypoint` into
+a read-only probe mode:
+
+```
+inbound_probe=--inbound-probe     # doctor runs: <entrypoint> --inbound-probe
+```
+
+The mode takes no other arguments, gets the same kernel-hygienic environment
+`send` does (`env -i` + the launcher's `spawn_child_env`, stdin `/dev/null`,
+`ORCHID_NOTIFY_CHANNEL`/`ORCHID_NOTIFY_TO` exported), must not send
+anything, and answers with its EXIT CODE plus one line of human-readable
+detail on stdout:
+
+| exit | meaning |
+| --- | --- |
+| `0` | reachable — positively determined the channel transport is up |
+| `1` | unreachable — positively determined it is down |
+| `2` (or anything else, or doctor's 10s timeout) | undetermined, with a reason |
+
+It is a mode of the existing entrypoint rather than a second executable on
+purpose: the entrypoint is the one file whose executable bit orchid already
+validates, and a mode-644 helper is invisible until the feature silently
+stops working. A plugin that cannot determine liveness simply OMITS the key,
+and doctor then reports "not verified" for that plugin specifically —
+"there is no way to tell" must never be asserted on behalf of a plugin that
+can in fact tell. Even exit `0` is bounded: it proves the transport a reply
+travels over, never that a channel-side agent exists there to turn a reply
+into an `orchid answer` call.
 
 ### Named patterns (the codebase vocabulary)
 
