@@ -34,7 +34,7 @@ source "$(dirname "$0")/helpers.sh"
 QUALIFY="$REPO_ROOT/scripts/beta-qualify.sh"
 [ -f "$QUALIFY" ] || fail "scripts/beta-qualify.sh missing"
 
-W="$(cd "$WORK" && pwd -P)"
+W="$(cd_scratch "$WORK" && pwd -P)"
 export HOME="$MACHINE_HOME"
 mkdir -p "$HOME/.orchid"
 

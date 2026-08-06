@@ -138,7 +138,17 @@ for f in "$REPO_ROOT"/tests/*.sh "$REPO_ROOT"/tests/inv/*.sh; do
     grep -oE 'make_scratch [A-Za-z_][A-Za-z0-9_]*' "$f" | cut -d' ' -f2
   )
   for v in "${roots[@]}"; do
-    hit="$(grep -nE '(^|[;&|(])[[:space:]]*cd "\$'"$v"'"' "$f" || true)"
+    # COMMENT LINES ARE EXCLUDED. The pattern's `[;&|(]` arm deliberately
+    # catches `$(cd "$WORK" && pwd -P)`, which is the same hazard in a
+    # subshell -- an empty $WORK makes `cd ""` a silent no-op and `pwd -P`
+    # then reports the CALLER's directory, so the variable ends up pointing
+    # at the real checkout. But that arm also matches the idiom written
+    # inside a comment EXPLAINING it, so a fixture that documents why it uses
+    # cd_scratch fails this lint for saying so. A lint that fires on its own
+    # documentation trains people to delete the documentation; INV-13 already
+    # solves this by stripping comments before scanning, and so does this.
+    hit="$(grep -nE '(^|[;&|(])[[:space:]]*cd "\$'"$v"'"' "$f" \
+      | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
     [ -z "$hit" ] || lint_hits="$lint_hits
 ${f#"$REPO_ROOT"/}:$hit"
   done

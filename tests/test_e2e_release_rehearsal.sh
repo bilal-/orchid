@@ -67,7 +67,7 @@ REAL_TMPDIR="${TMPDIR:-/tmp}"
 # 0 -- the one private root, and every environment variable that could
 # otherwise let a step reach outside it.
 # ===========================================================================
-R="$(cd "$WORK" && pwd -P)/rehearsal"
+R="$(cd_scratch "$WORK" && pwd -P)/rehearsal"
 mkdir -p "$R"/{home,tmp,eng,plugins,prefix,out,fixtures}
 mkdir -p "$R/home/.config" "$R/home/.local/share" "$R/home/.claude/skills"
 
@@ -200,7 +200,7 @@ assert_eq 97 "$tripwire_rc" "the git tripwire must refuse 'git send-pack'"
 # 0c -- outside-the-root snapshots. Taken AFTER the root exists so the root
 # itself is already accounted for, and re-taken at the very end.
 # ===========================================================================
-WORKP="$(cd "$WORK" && pwd -P)"
+WORKP="$(cd_scratch "$WORK" && pwd -P)"
 list_names() {
   if [ ! -e "$1" ]; then printf 'ABSENT %s\n' "$1"; return 0; fi
   find "$1" 2>/dev/null | LC_ALL=C sort
