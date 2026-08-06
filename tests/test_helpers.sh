@@ -107,7 +107,62 @@ rc3=$?
 echo "$out3" | grep -q 'reached-git-commit' && fail "execution must never reach the git lines after a refused cd_scratch"
 [ ! -d "$outsider/.git" ] || fail "cd_scratch cd'd into an unregistered directory and git-initialized it"
 [ ! -d "$cwd3/.git" ] || fail "a refused cd_scratch let git run against the caller's cwd ($cwd3)"
-rm -rf "$outsider" "$cwd3" "$(dirname "$foreign")" "$(dirname "$unsourced")" "$cwd2"
+
+# ---------------------------------------------------------------------------
+# v1-m4 T005: the THIRD way the guard goes inert -- cd_scratch used purely to
+# CANONICALIZE, in a command substitution whose status nobody checks:
+#
+#     R="$(cd_scratch "$WORK" && pwd -P)/rehearsal"
+#
+# helpers.sh runs under `set -uo pipefail` and deliberately NOT `-e`, so a
+# failing assignment halts nothing. cd_scratch dies inside the subshell, the
+# substitution yields "", and R becomes "/rehearsal" -- the fixture then
+# operates on the real filesystem root while its header claims cd_scratch is
+# protecting it. Same shape as the bug cd_scratch was written to fix: a guard
+# that reads as protection and is not. Prove BOTH halves -- that the composed
+# form really does swallow the refusal (or this section is guarding a
+# non-problem), and that capture-check-then-compose really does stop the file.
+canon_out="$(mktemp -d)"
+cwd4="$(mktemp -d)"
+outsider4="$(mktemp -d)"
+
+# (a) the hazard, demonstrated rather than asserted from memory.
+cat > "$canon_out/composed.sh" <<EOF
+#!/usr/bin/env bash
+source "$REPO_ROOT/tests/helpers.sh"
+R="\$(cd_scratch "$outsider4" && pwd -P)/rehearsal"
+echo "COMPOSED_R=\$R"
+echo "reached-next-line"
+EOF
+out4="$(cd "$cwd4" && bash "$canon_out/composed.sh" 2>&1)"
+grep -q 'COMPOSED_R=/rehearsal' <<<"$out4" \
+  || fail "the composed form no longer collapses to '/rehearsal' on a refused cd_scratch -- re-check what this section is guarding (got: $out4)"
+grep -q 'reached-next-line' <<<"$out4" \
+  || fail "the composed form no longer continues past a refused cd_scratch -- re-check what this section is guarding (got: $out4)"
+
+# (b) the fix: capture, CHECK, then compose. The `fail` is what re-counts the
+# FAILS lost with the substitution's subshell; the `exit 1` is what stops the
+# file, because `fail` alone only increments a counter.
+cat > "$canon_out/checked.sh" <<EOF
+#!/usr/bin/env bash
+source "$REPO_ROOT/tests/helpers.sh"
+root="\$(cd_scratch "$outsider4" && pwd -P)" \\
+  || { fail "cd_scratch refused the scratch root"; exit 1; }
+R="\$root/rehearsal"
+echo "CHECKED_R=\$R"
+echo "reached-next-line"
+EOF
+out5="$(cd "$cwd4" && bash "$canon_out/checked.sh" 2>&1)"
+rc5=$?
+[ "$rc5" -ne 0 ] || fail "a checked canonicalization must stop the fixture when cd_scratch refuses, not continue"
+grep -q 'reached-next-line' <<<"$out5" \
+  && fail "execution must never reach the lines after a refused cd_scratch canonicalization"
+grep -q 'CHECKED_R=' <<<"$out5" \
+  && fail "a refused cd_scratch must not leave a composed path in hand at all, let alone one rooted at '/'"
+[ ! -d "$cwd4/.git" ] || fail "a refused cd_scratch canonicalization let work run against the caller's cwd ($cwd4)"
+
+rm -rf "$outsider" "$cwd3" "$(dirname "$foreign")" "$(dirname "$unsourced")" "$cwd2" \
+       "$canon_out" "$cwd4" "$outsider4"
 
 # ---------------------------------------------------------------------------
 # Suite-wide lint, so the shape cannot come back one file at a time: no test
@@ -138,12 +193,60 @@ for f in "$REPO_ROOT"/tests/*.sh "$REPO_ROOT"/tests/inv/*.sh; do
     grep -oE 'make_scratch [A-Za-z_][A-Za-z0-9_]*' "$f" | cut -d' ' -f2
   )
   for v in "${roots[@]}"; do
-    hit="$(grep -nE '(^|[;&|(])[[:space:]]*cd "\$'"$v"'"' "$f" || true)"
+    # COMMENT LINES ARE EXCLUDED. The pattern's `[;&|(]` arm deliberately
+    # catches `$(cd "$WORK" && pwd -P)`, which is the same hazard in a
+    # subshell -- an empty $WORK makes `cd ""` a silent no-op and `pwd -P`
+    # then reports the CALLER's directory, so the variable ends up pointing
+    # at the real checkout. But that arm also matches the idiom written
+    # inside a comment EXPLAINING it, so a fixture that documents why it uses
+    # cd_scratch fails this lint for saying so. A lint that fires on its own
+    # documentation trains people to delete the documentation; INV-13 already
+    # solves this by stripping comments before scanning, and so does this.
+    hit="$(grep -nE '(^|[;&|(])[[:space:]]*cd "\$'"$v"'"' "$f" \
+      | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
     [ -z "$hit" ] || lint_hits="$lint_hits
 ${f#"$REPO_ROOT"/}:$hit"
   done
 done
 [ -z "$lint_hits" ] || fail "these fixtures cd into a bare scratch root with plain \`cd\` -- use cd_scratch, which refuses an empty or foreign path:$lint_hits"
+
+# ---------------------------------------------------------------------------
+# The companion lint, for the canonicalization shape proven inert above: no
+# test file may assign `VAR="$(cd_scratch ... )"` without checking the status
+# on the same logical line. This suite has no `-e`, so an unchecked assignment
+# is a refusal thrown away -- the variable ends up "" (or "/sub" once something
+# is appended) and every path built from it points at the filesystem root.
+#
+# Accepted shapes, both of which stop the file:
+#   VAR="$(cd_scratch "$WORK" && pwd -P)" || { fail "..."; exit 1; }
+#   VAR="$(cd_scratch "$WORK" && pwd -P)" \    <- continued; the `||` is then
+#     || { fail "..."; exit 1; }                  on the NEXT line, which is
+#                                                 the form that fits 80 columns
+# awk, not a grep pipeline, for exactly that second shape: a line-oriented
+# matcher cannot see an operator that lives on the following line, so it would
+# have to treat every continued line as checked and would then miss
+# `VAR="$(cd_scratch ...)" \` continued into something that is not a check.
+# Here a continuation sets `pending` and the NEXT line has to carry the `||`.
+# Comment lines are skipped, for the same reason as the lint above: a fixture
+# that documents the hazard must not be failed for describing it.
+canon_hits=""
+for f in "$REPO_ROOT"/tests/*.sh "$REPO_ROOT"/tests/inv/*.sh; do
+  [ -f "$f" ] || continue
+  [ "${f##*/}" = test_helpers.sh ] && continue
+  hit="$(awk '
+    pending && index($0, "||") == 0 { print pending ":" pendtext }
+    { pending = 0 }
+    /^[[:space:]]*#/ { next }
+    /=[^ ]*\$\(cd_scratch / {
+      if (index($0, "||") > 0) next
+      if ($0 ~ /\\[[:space:]]*$/) { pending = NR; pendtext = $0; next }
+      print NR ":" $0
+    }
+  ' "$f")"
+  [ -z "$hit" ] || canon_hits="$canon_hits
+${f#"$REPO_ROOT"/}:$hit"
+done
+[ -z "$canon_hits" ] || fail "these fixtures capture cd_scratch's output without checking its status -- a refusal is then silently discarded and the path is rooted at '/'; use \`VAR=\"\$(cd_scratch ...)\" || { fail ...; exit 1; }\`:$canon_hits"
 
 [ "$FAILS" -eq 0 ] && echo "helpers.sh WORK guard: OK"
 exit $((FAILS > 0))

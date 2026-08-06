@@ -10,7 +10,8 @@
 # exits 2 with "unknown command 'start'".
 source "$(dirname "$0")/helpers.sh"
 
-W="$(cd_scratch "$WORK" && pwd -P)"
+W="$(cd_scratch "$WORK" && pwd -P)" \
+  || { fail "cd_scratch refused the scratch root"; exit 1; }
 export HOME="$MACHINE_HOME"; mkdir -p "$HOME/.orchid"
 export ORCHID_ENGINES_DIR="$W/eng"
 mkdir -p "$W/eng/fake"

@@ -60,6 +60,7 @@ docs_suite_files() {
            "$REPO_ROOT/docs/configuration.md" \
            "$REPO_ROOT/docs/troubleshooting.md" \
            "$REPO_ROOT/docs/research.md" \
+           "$REPO_ROOT/docs/beta-qualification.md" \
            "$REPO_ROOT/docs/frontends.md"; do
     [ -f "$f" ] && echo "$f"
   done
@@ -81,6 +82,7 @@ docs/quickstart-greenfield.md
 docs/configuration.md
 docs/troubleshooting.md
 docs/research.md
+docs/beta-qualification.md
 docs/frontends.md
 docs/engines/codex.md
 docs/engines/claude.md
@@ -510,3 +512,129 @@ grep -q "inbound_probe=--inbound-probe" "$REPO_ROOT/plugins/notify/openclaw/plug
   || fail "the openclaw notify plugin must declare an inbound probe — docs promise doctor actually probes the return leg for it"
 grep -q "^inbound_probe" "$REPO_ROOT/plugins/notify/hermes/plugin.conf" \
   && fail "plugins/notify/hermes declares an inbound probe, but hermes.md documents (and the hermes CLI supports) no inbound-liveness query"
+
+# ===========================================================================
+# 7 -- beta qualification and the release rehearsal: the tooling exists, and
+# every surface that mentions it keeps the two claims this repository is not
+# allowed to blur. A third-party beta run and any publication are OPERATOR-
+# owned, have not happened, and must never be described as if they had; and
+# the qualification evidence is anonymized, which is a promise a tester reads
+# before pointing this at a repository they cannot show anyone.
+#
+# grep -qF against fixed strings throughout (no regex): these are exact
+# sentences the docs own, and a metacharacter in one of them would quietly
+# change what is being asserted.
+# ===========================================================================
+QUALIFY_SH="$REPO_ROOT/scripts/beta-qualify.sh"
+REHEARSAL_SH="$REPO_ROOT/tests/test_e2e_release_rehearsal.sh"
+BETA_MD="$REPO_ROOT/docs/beta-qualification.md"
+[ -f "$QUALIFY_SH" ] || fail "scripts/beta-qualify.sh missing — the beta docs describe a harness that does not exist"
+[ -f "$REHEARSAL_SH" ] || fail "tests/test_e2e_release_rehearsal.sh missing — the release docs describe a rehearsal that does not exist"
+
+# The harness's own --help is part of the documentation surface: it is what an
+# operator reads before running it against a repository they cannot share. So
+# it is asserted against the text `--help` ACTUALLY PRINTS, not against the
+# file's bytes: a promise moved into a comment, or into a branch --help never
+# reaches, would still satisfy a grep over the source. `--help` is parsed
+# before --repo is required, so this costs one process and needs no fixture.
+qualify_help="$("$BASH" "$QUALIFY_SH" --help)" \
+  || fail "scripts/beta-qualify.sh --help must exit 0 without a repo"
+grep -qF 'It never pushes, publishes, deploys, tags, or contacts a remote' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help must state that it never publishes or contacts a remote"
+grep -qF 'never copies repository content into the evidence' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help must state the anonymization rule"
+grep -qF 'Genuine third-party beta runs and public release remain operator-owned' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help must name third-party beta and release as operator-owned"
+
+# THE PROMISE AND ITS EXCEPTION MUST NOT DRIFT APART. "writes nothing inside
+# --repo" is false on its own: by default this harness runs the target's own
+# verify= command IN PLACE, which is the right design for a timing probe and is
+# already stated in docs/beta-qualification.md. The document a tester actually
+# reads before pointing this at a repository they cannot show anyone is the
+# header comment and --help -- so both have to carry the exception in the same
+# breath as the promise, and these assertions are what keeps them together.
+grep -qF 'ONE EXCEPTION to "writes nothing inside --repo"' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help states 'writes nothing inside --repo' without naming the in-place verify= run that contradicts it"
+grep -qF 'IN PLACE' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help must say the verify= command runs IN PLACE inside --repo"
+# `-e` is REQUIRED here, not stylistic: the pattern begins with `--`, so grep
+# parses it as an OPTION and exits 2 with "invalid option" before ever looking
+# at the input. The assertion then fails against help text that does contain
+# the flag -- a test that can only ever report absence.
+grep -qF -e '--no-run-verify' <<<"$qualify_help" \
+  || fail "scripts/beta-qualify.sh --help must name the flag that opts out of the in-place verify= run"
+# ...and the same pairing at the top of the file, which is what a reader of the
+# source meets first.
+qualify_header="$(awk '/^set -uo pipefail$/ { exit } { print }' "$QUALIFY_SH" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+grep -qF 'writes nothing OF ITS OWN inside the target repository' <<<"$qualify_header" \
+  || fail "scripts/beta-qualify.sh's header must scope its no-write promise to what the harness itself writes"
+grep -qF 'IN PLACE, to time it' <<<"$qualify_header" \
+  || fail "scripts/beta-qualify.sh's header must state the in-place verify= exception in the same breath as the no-write promise"
+# The bare, unqualified form is the claim that must never come back.
+grep -qF 'and writes nothing inside the target repository' <<<"$qualify_header" \
+  && fail "scripts/beta-qualify.sh's header promises it writes nothing inside the target repository — it runs that repository's verify= command in place by default"
+
+# The checklist page must carry the anonymization promise, the not-tested
+# discipline, and the unclaimed operator-owned work.
+grep -qF 'never contents, paths, filenames,' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must say exactly what the evidence never contains"
+grep -qF 'both of its output streams discarded unread' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that the verify command's output is never recorded"
+grep -qF 'never as a pass' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that an unperformed check is recorded as not-tested, never as a pass"
+grep -qF 'Still operator-owned, and not claimed anywhere in this repository' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must keep its operator-owned section heading"
+grep -qF 'genuine third-party beta run' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must name a genuine third-party beta run as operator-owned"
+grep -qF 'no file in this repository records' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state plainly that no third-party beta run is recorded here"
+# `expires_when` is what keeps a non-blocking gap from becoming a permanent,
+# meaningless warning. If the docs stop describing it, the discipline is gone.
+grep -qF 'expires_when' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must explain that every non-blocking gap states what makes it expire"
+grep -qF 'a warning that can never expire is noise' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must say why a non-expiring warning is not evidence"
+# "No subprocess output reaches a record" has exactly one exception -- the
+# toolchain version and platform strings -- and a promise with an unstated
+# exception is not a promise. Both the code and every page that repeats the
+# rule have to carry it, or they drift apart silently.
+grep -qF 'version_token' "$QUALIFY_SH" \
+  || fail "scripts/beta-qualify.sh must validate the version strings it records instead of copying them"
+grep -qF 'unrecognized' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that a version outside the harness's pattern is recorded as 'unrecognized'"
+grep -qF 'unrecognized' "$REPO_ROOT/README.md" \
+  || fail "README.md's anonymization summary must state the version-string rule"
+grep -qF 'unrecognized' "$REPO_ROOT/docs/specs/plugins.md" \
+  || fail "docs/specs/plugins.md's threat model must state the version-string rule"
+
+# The rehearsal's isolation claim is only as good as its scope. The page must
+# keep saying what the snapshots watch and what they deliberately do not.
+grep -qF 'has no business' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that the rehearsal never reads an operator's real trust records"
+
+# The two asymmetries a tester will otherwise meet as "the product is broken".
+grep -qF 'persistent answering agent' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must explain that the inbound answer leg needs a persistent agent"
+grep -qF 'no command allowlist' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must explain why a manifest capability is not a grant"
+
+# README's own summary must not soften either claim.
+grep -qF 'A genuine third-party beta run and any publication remain operator-owned.' "$REPO_ROOT/README.md" \
+  || fail "README.md must state that a third-party beta run and publication remain operator-owned"
+grep -qF 'Neither has happened, and nothing in this repository claims otherwise.' "$REPO_ROOT/README.md" \
+  || fail "README.md must state that neither has happened"
+
+# The threat model owns the one thing the harness really does execute inside a
+# candidate repository.
+grep -qF 'scripts/beta-qualify.sh' "$REPO_ROOT/docs/specs/plugins.md" \
+  || fail "docs/specs/plugins.md's threat model must cover the beta qualification harness"
+
+# PROTOCOL.md's headless section must tell an operator to qualify before
+# acknowledging: the acknowledgement opens the gate, it does not make a
+# repository drivable.
+grep -qF 'Qualify a repository before acknowledging it' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md's HEADLESS OPERATION section must tell an operator to qualify before acknowledging"
+
+# The release-day checklist must include the local rehearsal.
+grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
+  || fail "docs/install.md's release-day steps must include the local rehearsal"

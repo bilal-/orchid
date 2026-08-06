@@ -28,7 +28,8 @@ trust_repo() {
 # baked into a rendered artifact compares against $repo_canon, never the
 # raw $WORK string. Plain file-existence checks against "$WORK/..." remain
 # fine as-is -- the OS resolves the symlink either way when opening a path.
-repo_canon="$(cd_scratch "$WORK" && pwd -P)"
+repo_canon="$(cd_scratch "$WORK" && pwd -P)" \
+  || { fail "cd_scratch refused the scratch root"; exit 1; }
 
 # The same rule applies to the CHECKOUT under test: helpers.sh must hand this
 # suite a physically-resolved REPO_ROOT, or the assertions below that compare
