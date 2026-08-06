@@ -21,6 +21,18 @@ vocabulary it defines (`pass` / `fail` / `blocked` / `not-tested`, `allowed` /
 `denied`, `present` / `absent`). Repository output is inspected only long
 enough to derive one of those tokens, then discarded.
 
+The one exception is stated rather than hidden, because a rule with a quiet
+exception is not a rule. The recorded **toolchain versions and platform name**
+are strings another program chose the characters of, and a vendor build is free
+to append a build path or a packager's tag to its own version. So they are
+*validated, not trusted*: a version must match a pattern authored in the
+harness — dotted digits, at most 32 characters — or it is recorded as the
+closed token `unrecognized`, and `uname -s` is mapped onto a closed set of
+platform names or recorded as `other`. Whether a tool is *present* is derived
+separately from the raw output, so an unusual version spelling never changes an
+outcome. The build's own `ORCHID_VERSION` is also recorded; it describes the
+harness, not the repository under test.
+
 So the evidence contains check identities, durations, exit codes, order-of-
 magnitude size bands, and outcomes — and never contents, paths, filenames,
 prompts, diffs, command lines, or secrets. In particular the `verify=` command
@@ -172,8 +184,29 @@ sender, package manager, and remote-capable `git` subcommand — `push`, `fetch`
 `pull`, `clone`, `ls-remote`, `remote update`, `submodule update`, `send-pack` —
 is shadowed on `PATH` by a tripwire that logs and fails. The rehearsal asserts
 the log is empty, that no repository acquired a remote or a remote ref, that the
-source checkout is byte-identical afterwards (refs included), and that removing
-the root leaves the machine exactly as it found it.
+source checkout is unchanged afterwards, and that removing the root leaves the
+machine exactly as it found it.
+
+Those last two claims are deliberately **narrow**, which is what makes them
+mean anything on a real machine. The suite runs from a live Orchid worktree,
+under an outer run that writes its own state as the tests execute:
+
+- The source checkout is compared on its working tree (with `.orchid`, the
+  outer run's live state, excluded), its file listing, its `HEAD`, and its
+  **remote** refs. Local branches are shared with every other worktree of the
+  same checkout and move through no act of the rehearsal's.
+- Machine-local state is compared path by path, at names the rehearsal writes
+  down in advance — the skill symlinks `install.sh` wires, the entry point it
+  links into its default prefix, the per-user config and data directories, the
+  trust store, the launch-agent directory — and each one is recorded as a
+  single token (`absent` / `dir` / `file` / `symlink` / `other`). The rehearsal
+  never enumerates or reads what an operator already has there: a harness whose
+  promise is *nothing outside the private root was touched* has no business
+  reading real trust records to prove it. The one entry it could add to a
+  directory an operator already owns is an unattended-trust record, whose name
+  `lib/trust.sh` derives from the target's Git common directory — so the
+  rehearsal derives that same name, proves the derivation against its own
+  isolated store, and watches only that one path in the operator's.
 
 Because `bin/orchid` deliberately pins a fixed `PATH` across each trust-boundary
 decision before restoring the operator's, the tripwires cannot cover literally

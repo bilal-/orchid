@@ -209,6 +209,69 @@ assert_bucket "$(jq -r .repo.commits "$A_JSON")" \
 assert_bucket "$(jq -r .repo.tracked_files "$A_JSON")" \
   "tracked-file count is recorded as an order-of-magnitude band"
 
+# ===========================================================================
+# VERSION AND PLATFORM STRINGS -- the one class of recorded value another
+# program chooses the characters of. The harness must validate them rather
+# than copy them: a vendor build is free to put a build path or a packager's
+# tag in its own version string.
+# ===========================================================================
+# The build's own version is read from lib/common.sh, never written down here:
+# this repository's version moves, and a pinned literal would fail the moment
+# it did. A `while read` loop rather than `grep | head`: this file runs under
+# pipefail, where a reader that exits early SIGPIPEs its producer.
+ORCHID_VERSION_SHIPPED=""
+while IFS= read -r line; do
+  case "$line" in
+    ORCHID_VERSION=*) ORCHID_VERSION_SHIPPED="${line#ORCHID_VERSION=}"; break ;;
+  esac
+done < "$REPO_ROOT/lib/common.sh"
+ORCHID_VERSION_SHIPPED="${ORCHID_VERSION_SHIPPED%\"}"
+ORCHID_VERSION_SHIPPED="${ORCHID_VERSION_SHIPPED#\"}"
+[ -n "$ORCHID_VERSION_SHIPPED" ] || fail "cannot read ORCHID_VERSION from lib/common.sh"
+assert_eq "$ORCHID_VERSION_SHIPPED" "$(jq -r .orchid_version "$A_JSON")" \
+  "the evidence names the build that produced it, whatever that build's version currently is"
+
+# Shape, not value: dotted digits, or the closed token the harness substitutes.
+for tool in bash git jq; do
+  tool_version="$(jq -r --arg t "$tool" '.environment[$t]' "$A_JSON")"
+  case "$tool_version" in
+    unrecognized) ;;
+    ""|*[!0-9.]*|.*|*.|*..*)
+      fail "the recorded $tool version is neither dotted digits nor the closed token 'unrecognized' (got '$tool_version')" ;;
+  esac
+done
+case "$(jq -r .environment.os "$A_JSON")" in
+  Darwin|Linux|FreeBSD|OpenBSD|NetBSD|SunOS|Windows-POSIX-layer|other) ;;
+  *) fail "the platform name must come from the harness's closed set (got '$(jq -r .environment.os "$A_JSON")')" ;;
+esac
+
+# Adversarially: an interpreter that reports a PATH-SHAPED version. The harness
+# runs whatever --bash names to read its version, so this is the real leak
+# channel, not a hypothetical one.
+CANARY_VERSION="CANARY-VERSION-$CANARY_PATH-8f4d"
+FAKE_BIN="$W/fakebin"
+mkdir -p "$FAKE_BIN"
+cat > "$FAKE_BIN/bash" <<EOF
+#!/bin/bash
+printf '%s' "$CANARY_VERSION"
+exit 0
+EOF
+chmod +x "$FAKE_BIN/bash"
+D_OUT="$W/out-fakeversion"
+"$BASH" "$QUALIFY" --repo "$A_REPO" --output "$D_OUT" --label fakeversion \
+  --bash "$FAKE_BIN/bash" --no-run-verify >/dev/null 2>&1 || true
+D_JSON="$D_OUT/qualification.json"
+D_TEXT="$D_OUT/qualification.txt"
+[ -f "$D_JSON" ] || fail "the harness emitted no evidence for the fake-version run"
+assert_eq unrecognized "$(jq -r .environment.bash "$D_JSON")" \
+  "a version string outside the harness's authored pattern is recorded as the closed token"
+for f in "$D_JSON" "$D_TEXT"; do
+  assert_absent "$CANARY_VERSION" "$f" \
+    "a version string another program chose must never reach the evidence verbatim"
+  assert_absent "$CANARY_PATH" "$f" \
+    "a path component smuggled in through a version string must never reach the evidence"
+done
+
 # The harness never claims the operator-owned work happened.
 assert_present "OPERATOR-OWNED, NOT PERFORMED HERE" "$A_TEXT" \
   "the report separates what it did from what only an operator can do"

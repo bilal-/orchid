@@ -18,11 +18,20 @@
 #   * a number this file measured (a duration, an exit code, a bucketed count),
 #     or
 #   * a value drawn from a CLOSED vocabulary this file defines (pass/fail/
-#     blocked/not-tested, allowed/denied, present/absent).
-# Subprocess output is inspected only to derive one of those closed values and
-# is then discarded. `_scrub_guard` re-checks the finished evidence for the
-# target, home, scratch, and output PATHS and refuses to leave the files on
-# disk if any appears.
+#     blocked/not-tested, allowed/denied, present/absent, and the platform
+#     names `os_token` maps `uname -s` onto), or
+#   * a toolchain version that MATCHED a pattern authored here -- dotted digits
+#     and nothing else, see `version_token`, which replaces anything else with
+#     the closed token `unrecognized`. This is the one class of recorded value
+#     another program chose the characters of, which is exactly why it is
+#     validated rather than trusted: a vendor build is free to append a build
+#     path or a packager's tag to its own version string, or
+#   * this build's own version constant (`ORCHID_VERSION`, lib/common.sh),
+#     which describes the harness rather than the target repository.
+# Subprocess output is otherwise inspected only to derive one of those closed
+# values and is then discarded. `_scrub_guard` re-checks the finished evidence
+# for the target, home, scratch, and output PATHS and refuses to leave the
+# files on disk if any appears.
 #
 # ---------------------------------------------------------------------------
 # PROBE, DO NOT INFER
@@ -79,7 +88,10 @@ anonymized local evidence to DIR/qualification.json and DIR/qualification.txt.
 It never pushes, publishes, deploys, tags, or contacts a remote, never writes
 inside --repo, and never copies repository content into the evidence. The
 verify= command's own output is discarded unread: its exit code and wall-clock
-duration are the only things recorded about it.
+duration are the only things recorded about it. The recorded toolchain versions
+and platform name are matched against fixed patterns authored in this script;
+anything that does not match is recorded as "unrecognized"/"other" rather than
+verbatim, and never changes an outcome.
 
 Genuine third-party beta runs and public release remain operator-owned. This
 harness does not perform them and never records that they happened.
@@ -213,6 +225,43 @@ bucket() {
   else echo "10000+"; fi
 }
 
+# version_token <string> -- the only class of value in the emitted evidence
+# whose characters another program chose. Which toolchain a candidate runs is
+# legitimate qualification metadata, but the reporting program owns the whole
+# string and vendor builds routinely append a build path, a distribution tag,
+# or a packager's suffix to it -- `git --version` on a Homebrew or Apple build
+# is the standing example. So the string is matched against a pattern authored
+# HERE (dotted digits, at most 32 characters, no leading, trailing, or doubled
+# dot) and anything else is recorded as the closed token `unrecognized`.
+# Case patterns, not grep: no subprocess, so nothing can be leaked by the
+# matcher itself. PRESENCE is derived separately, from the raw output, so an
+# unusual version spelling never turns a working toolchain into a failed probe.
+version_token() {
+  local v="$1"
+  [ "${#v}" -le 32 ] || { echo unrecognized; return 0; }
+  case "$v" in
+    ""|*[!0-9.]*|.*|*.|*..*) echo unrecognized; return 0 ;;
+  esac
+  printf '%s\n' "$v"
+}
+
+# os_token -- the same discipline for the platform name. `uname -s` is another
+# string this file does not author, and a kernel is free to report whatever it
+# likes there. Map it onto the closed set this repository's portability policy
+# actually distinguishes, and record anything else as `other`.
+os_token() {
+  case "$(uname -s 2>/dev/null || true)" in
+    Darwin)  echo Darwin ;;
+    Linux)   echo Linux ;;
+    FreeBSD) echo FreeBSD ;;
+    OpenBSD) echo OpenBSD ;;
+    NetBSD)  echo NetBSD ;;
+    SunOS)   echo SunOS ;;
+    CYGWIN*|MINGW*|MSYS*) echo Windows-POSIX-layer ;;
+    *)       echo other ;;
+  esac
+}
+
 # run_quiet <cmd...> -- run, discard BOTH streams, return the exit code. This
 # is how the harness executes anything it does not own: nothing the command
 # prints can reach a probe record.
@@ -232,6 +281,7 @@ first_line() { printf '%s' "${1%%$'\n'*}"; }
 
 STARTED_AT="$(now_utc)"
 STARTED_S="$(now_s)"
+OS_TOKEN="$(os_token)"
 
 # ===========================================================================
 # toolchain -- Orchid's stated floor is Bash 3.2, Git, and jq, with no daemon,
@@ -239,24 +289,28 @@ STARTED_S="$(now_s)"
 # this as an unrelated verb failure three commands later.
 # ===========================================================================
 probe_start
-bash_version="$("$BASH_BIN" -c 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"' 2>/dev/null || true)"
+bash_version="$(version_token "$("$BASH_BIN" -c 'printf "%s.%s" "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"' 2>/dev/null || true)")"
 bash_ok=0
 if run_quiet "$BASH_BIN" -c '[ -n "${BASH_VERSION:-}" ] && (( BASH_VERSINFO[0] > 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] >= 2) ))'; then
   bash_ok=1
 fi
-git_version="$(git --version 2>/dev/null | awk '{print $3}')"
-jq_version="$(jq --version 2>/dev/null | sed 's/^jq-//')"
+# Presence from the RAW output, the recorded string from the validated token:
+# a version this harness cannot parse still counts as a present tool.
+git_raw="$(git --version 2>/dev/null | awk '{print $3}')"
+jq_raw="$(jq --version 2>/dev/null | sed 's/^jq-//')"
+git_state=absent; [ -n "$git_raw" ] && git_state=present
+jq_state=absent;  [ -n "$jq_raw" ]  && jq_state=present
+git_version="$(version_token "$git_raw")"
+jq_version="$(version_token "$jq_raw")"
 TOOLCHAIN_TESTED="ran the named Bash with a BASH_VERSINFO floor check, then 'git --version' and 'jq --version'"
 TOOLCHAIN_WHY="Orchid is Bash 3.2 plus Git plus jq with no daemon, database, or language runtime; a short toolchain surfaces later as an unrelated verb failure whose real cause is invisible"
 probe_stop
-if [ "$bash_ok" -eq 1 ] && [ -n "$git_version" ] && [ -n "$jq_version" ]; then
+if [ "$bash_ok" -eq 1 ] && [ "$git_state" = present ] && [ "$jq_state" = present ]; then
   record toolchain "interpreter and tool floor" pass true \
     "$TOOLCHAIN_TESTED" "$TOOLCHAIN_WHY" \
-    "bash $bash_version is at or above 3.2; git $git_version present; jq $jq_version present"
+    "bash is at or above 3.2 (version $bash_version); git present (version $git_version); jq present (version $jq_version); a version outside this harness's authored pattern reads 'unrecognized' and never affects the outcome"
 else
   bash_state=absent; [ "$bash_ok" -eq 1 ] && bash_state=present
-  git_state=absent;  [ -n "$git_version" ] && git_state=present
-  jq_state=absent;   [ -n "$jq_version" ] && jq_state=present
   record toolchain "interpreter and tool floor" fail true \
     "$TOOLCHAIN_TESTED" "$TOOLCHAIN_WHY" \
     "bash at or above 3.2: $bash_state; git: $git_state; jq: $jq_state"
@@ -572,7 +626,7 @@ jq -s \
   --arg label "$LABEL" \
   --arg started_at "$STARTED_AT" \
   --argjson duration_s "$DURATION_S" \
-  --arg os "$(uname -s 2>/dev/null || echo unknown)" \
+  --arg os "$OS_TOKEN" \
   --arg bash_version "$bash_version" \
   --arg git_version "$git_version" \
   --arg jq_version "$jq_version" \
@@ -614,7 +668,7 @@ jq -s \
   printf 'harness:      scripts/beta-qualify.sh (schema %s, orchid %s)\n' "$QUALIFY_SCHEMA" "$ORCHID_VERSION"
   printf 'started:      %s (%ss)\n' "$STARTED_AT" "$DURATION_S"
   printf 'environment:  %s / bash %s / git %s / jq %s\n' \
-    "$(uname -s 2>/dev/null || echo unknown)" "$bash_version" "$git_version" "$jq_version"
+    "$OS_TOKEN" "$bash_version" "$git_version" "$jq_version"
   printf 'repo shape:   commits %s, tracked files %s (bucketed: an exact count is a fingerprint)\n' \
     "$commit_bucket" "$file_bucket"
   printf '\nPROBES\n'

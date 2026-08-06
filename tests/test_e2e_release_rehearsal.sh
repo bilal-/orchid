@@ -6,7 +6,9 @@
 # install prefix, the plugin/engine search paths, Git's global and system
 # config files, and every fixture, worktree, and output path. Nothing outside
 # that root may change; the source checkout is read-only input and is proven
-# unchanged, refs included.
+# unchanged -- working tree, file listing, HEAD, and remote refs (see step 0c
+# for what each snapshot deliberately leaves out, and why watching less is what
+# makes the claim mean something on a live machine).
 #
 # It walks the whole operator story once, with no network and no external
 # mutation anywhere:
@@ -28,24 +30,28 @@
 # PATH at all: no remote ref anywhere moved, and nothing outside the root
 # changed.
 #
-# LESSON L014 -- "use cd_scratch, never a bare `cd`, in any fixture that runs
-# git" -- deliberate deviation, in ONE place. The rehearsal proper needs no cwd
-# at all: every git call is `git -C <absolute path>` and every Orchid verb gets
-# an explicit ORCHID_REPO. The exception is step 7, the installer phase, which
-# runs `cd "$R" && ... install.sh` inside a command substitution, because
-# install.sh ends by offering `orchid doctor` against the CURRENT directory --
-# from an unrelated cwd that would reach outside the private root, the one thing
-# this rehearsal must not do.
+# CWD DISCIPLINE (lesson L014 -- "use cd_scratch, never a bare `cd`, in any
+# fixture that runs git"). No exception, and nothing to remember: every
+# directory change in this file, canonicalisation included, goes through
+# tests/helpers.sh's cd_scratch, which refuses an empty path, a
+# non-directory, and any path outside a scratch root THIS run created. The
+# hazard it exists for is that `cd ""` is a silent bash no-op -- exit 0, cwd
+# unchanged -- so an empty scratch root would leave the git work that follows
+# pointed at the caller's real checkout.
 #
-# What L014 exists to prevent needs a cd target that can be the EMPTY string:
-# `cd ""` is a silent no-op (exit 0, cwd unchanged), so the git work that
-# follows lands on whatever the caller's cwd was, typically the real checkout
-# under test. `$R` cannot be empty -- it is constructed as
-# `"$(cd "$WORK" && pwd -P)/rehearsal"`, so it always ends in `/rehearsal`, and
-# `mkdir -p "$R"` proves it exists before anything runs. The cd is also confined
-# to a `$( ... )` subshell, so it cannot leak into any later phase. (The same
-# reasoning covers the two `cd "$WORK" && pwd -P` subshells, which run no git.)
-# tests/helpers.sh in this tree ships no cd_scratch helper to call instead.
+# The rehearsal proper needs no cwd at all: every git call is `git -C
+# <absolute path>` and every Orchid verb gets an explicit ORCHID_REPO. Exactly
+# one step changes directory, step 7's installer phase, and it has to:
+# install.sh ends by offering `orchid doctor` against the CURRENT directory,
+# so from an unrelated cwd that offer would reach outside the private root --
+# the one thing this rehearsal must not do. It uses `cd_scratch "$R"` inside a
+# `$( ... )` subshell, so the target is validated against this run's roots and
+# the change cannot leak into any later phase.
+#
+# (The one other `cd` in this file's TEXT is not this file's: it sits inside
+# the stub engine adapter written out in step 0d, which Orchid runs as a
+# separate process against the worktree named in its own request JSON, exactly
+# as a real adapter does.)
 #
 # RED before this task: scripts/beta-qualify.sh does not exist, so phase 4
 # cannot run.
@@ -199,6 +205,17 @@ assert_eq 97 "$tripwire_rc" "the git tripwire must refuse 'git send-pack'"
 # ===========================================================================
 # 0c -- outside-the-root snapshots. Taken AFTER the root exists so the root
 # itself is already accounted for, and re-taken at the very end.
+#
+# Both are deliberately NARROW, for the same reason. This suite runs from a
+# live Orchid worktree, under an outer run that writes its own state while the
+# tests execute, on an operator's real machine. A snapshot that walked either
+# wholesale would report the CALLER's bookkeeping -- a lease refresh, a branch
+# another worktree moved, a skill some other tool installed -- as a rehearsal
+# that touched what it must not; and to prove it never wrote a trust record it
+# would have to READ the operator's real ones, which a harness whose whole
+# promise is "nothing outside the private root is touched" has no business
+# doing. So each snapshot watches only what this rehearsal could itself
+# change, at names this file can write down in advance.
 # ===========================================================================
 WORKP="$(cd_scratch "$WORK" && pwd -P)"
 list_names() {
@@ -225,29 +242,81 @@ assert_snapshot_unchanged() {
   fail "$label -- changed:
 $delta"
 }
-# The source checkout is read-only input: content changes show up in git's own
-# porcelain, ref movement (remote refs included) in show-ref, and any new or
-# removed untracked file in both the porcelain and the name listing.
+# The source checkout is read-only input. Three questions, each scoped to
+# something this rehearsal actually controls:
+#
+#  * WORKING TREE -- git's own porcelain, `.orchid` excluded. That directory
+#    is the OUTER run's live state (its journal, task records, and runtime
+#    lease), rewritten by the kernel that invoked this suite while the suite
+#    runs, so including it makes the caller's own progress look like damage.
+#    It is not a channel this rehearsal can write through either: every verb
+#    it runs is handed an explicit ORCHID_REPO under the private root, and no
+#    step ever names the source checkout as a repository.
+#  * REFS -- REMOTE refs only, which is exactly the promise ("no remote ref
+#    moved") and the only part of the ref namespace nothing local can disturb.
+#    Local branches live in a Git common directory shared with every other
+#    worktree of this checkout, so an outer commit or merge moves them mid-run
+#    through no act of this file's. HEAD is kept: it answers "did anything
+#    commit into the checkout under test".
+#  * NAMES -- the file listing with `.git` and `.orchid` pruned, which catches
+#    a file created or removed beside the checkout's own content.
 snapshot_source() {
-  git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all
-  echo "--refs--"
-  git -C "$REPO_ROOT" show-ref
+  git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all -- ':!.orchid'
+  echo "--remote-refs--"
+  git -C "$REPO_ROOT" for-each-ref --format='%(refname) %(objectname)' refs/remotes
   echo "--head--"
   git -C "$REPO_ROOT" rev-parse HEAD
   echo "--names--"
-  find "$REPO_ROOT" -name .git -prune -o -print 2>/dev/null | LC_ALL=C sort
+  find "$REPO_ROOT" -name .git -prune -o -name .orchid -prune -o -print 2>/dev/null \
+    | LC_ALL=C sort
 }
-# Machine-local state an installer or a scheduler could plausibly reach. Names
-# only -- this must not read an operator's real trust records to prove it did
-# not write them.
+# path_state <path> -- one token from a closed set, and nothing about what a
+# directory CONTAINS. A path this process cannot even test reads `absent` both
+# times, which is honest: a path unreachable to this uid is one the rehearsal
+# could not have created either. Symlink first, because that is what install.sh
+# makes and a symlink to a directory would otherwise read `dir`.
+path_state() {
+  local p="$1" state=absent
+  if   [ -L "$p" ]; then state=symlink
+  elif [ -d "$p" ]; then state=dir
+  elif [ -f "$p" ]; then state=file
+  elif [ -e "$p" ]; then state=other
+  fi
+  printf '%s %s\n' "$state" "$p"
+}
+# Machine-local state a step could reach if one of the isolation variables
+# above failed to take. Every path here is one ORCHID ITSELF creates, at a name
+# this file writes down in advance: the skill symlinks install.sh wires
+# (install.sh:225-334), the entry point it links into its default prefix
+# (install.sh:228), the per-user config and data directories, the machine-local
+# trust store (lib/trust.sh), and the launch-agent directory a service install
+# would write into (runners/orchid-service). Nothing here enumerates, recurses
+# into, or reads what the operator already has, and no line changes when
+# another process writes inside one of these directories -- ~/.claude/skills
+# and ~/.orchid genuinely are written by other tools while this runs.
+#
+# The blind spot a per-path state leaves is a NEW entry inside a directory the
+# operator already has. The only such entry this rehearsal could produce is an
+# unattended-trust record, whose name is derivable -- step 3 derives it, proves
+# the derivation against the isolated store, and watches that one path in the
+# operator's store across the acknowledgement, without listing either store.
 snapshot_machine() {
-  local p
-  for p in "$REAL_HOME/.orchid" "$REAL_HOME/.claude/skills" \
-           "$REAL_HOME/.hermes/skills" "$REAL_HOME/.openclaw" \
-           "$REAL_HOME/.config/orchid" "$REAL_HOME/.local/share/orchid" \
-           "$REAL_HOME/.local/bin/orchid" "$REAL_HOME/Library/LaunchAgents"; do
-    list_names "$p"
+  local name
+  for name in orchid orchid-plan orchid-resume; do
+    path_state "$REAL_HOME/.claude/skills/$name"
+    path_state "$REAL_HOME/.hermes/skills/orchestration/$name"
   done
+  # The containers too, so a machine that has neither front end still catches
+  # an install.sh that created one.
+  path_state "$REAL_HOME/.claude/skills"
+  path_state "$REAL_HOME/.hermes/skills/orchestration"
+  path_state "$REAL_HOME/.openclaw"
+  path_state "$REAL_HOME/.local/bin/orchid"
+  path_state "$REAL_HOME/.orchid"
+  path_state "$REAL_HOME/.orchid/unattended-trust"
+  path_state "$REAL_HOME/.config/orchid"
+  path_state "$REAL_HOME/.local/share/orchid"
+  path_state "$REAL_HOME/Library/LaunchAgents"
   echo "--siblings--"
   sibling_entries
   echo "--machine-home--"
@@ -389,6 +458,26 @@ ORCHID_REPO="$WT" "$ORCHID_BIN" status >/dev/null 2>&1 \
 # ===========================================================================
 # 3 -- EXPLICIT ACKNOWLEDGEMENT, WITH A REASON. No reason, no acknowledgement.
 # ===========================================================================
+# lib/trust.sh keys a record by the filesystem identity of the target's Git
+# common directory (<device>-<inode>.json), so the name this acknowledgement
+# will use is derivable BEFORE it happens. That is what lets the machine
+# snapshot stay out of the operator's real store: instead of listing what is
+# there, this watches the one name the rehearsal could add, from before the
+# first acknowledgement attempt to after the successful one. Watching the state
+# rather than asserting absence also survives the operator already having a
+# record under that name -- inodes are recycled, and a stale record for a
+# repository that no longer exists is not this rehearsal's doing.
+fs_identity() {  # <path> -> "<device>-<inode>", exactly lib/trust.sh's key
+  local out
+  out="$(stat -f '%d %i' "$1" 2>/dev/null)" || out="$(stat -c '%d %i' "$1" 2>/dev/null)" || return 1
+  case "$out" in ""|*[!0-9\ ]*) return 1 ;; esac
+  printf '%s-%s\n' "${out%% *}" "${out#* }"
+}
+TRUST_KEY="$(fs_identity "$PROJ/.git")" \
+  || fail "cannot derive the trust record name for the rehearsal fixture"
+REAL_RECORD="$REAL_HOME/.orchid/unattended-trust/$TRUST_KEY.json"
+REAL_RECORD_BEFORE="$(path_state "$REAL_RECORD")"
+
 noreason_rc=0
 "$ORCHID_BIN" trust unattended "$WT" >/dev/null 2>&1 || noreason_rc=$?
 [ "$noreason_rc" -ne 0 ] || fail "acknowledgement without --reason must be refused"
@@ -418,6 +507,15 @@ assert_match "^gate: allowed$" "$proj_show" \
 # It really is machine-local: nothing about it was written into the repository.
 [ -e "$WT/.orchid/unattended-trust" ] \
   && fail "unattended trust must never be recorded inside the target repository"
+
+# ...and it landed in the ISOLATED store under the derived name. The POSITIVE
+# half comes first, and is what keeps the negative half honest: a derivation
+# that had drifted from lib/trust.sh's would otherwise leave the check below
+# watching a name nothing ever writes, and passing forever.
+[ -f "$HOME/.orchid/unattended-trust/$TRUST_KEY.json" ] \
+  || fail "the acknowledgement is not recorded where lib/trust.sh keys it ($TRUST_KEY.json): this file's derivation has drifted from the kernel's, so the operator-store check proves nothing"
+assert_eq "$REAL_RECORD_BEFORE" "$(path_state "$REAL_RECORD")" \
+  "an acknowledgement for a rehearsal fixture must not appear in the operator's own machine-local trust store"
 
 # ===========================================================================
 # 4 -- BETA QUALIFICATION against the integration checkout, with its evidence
@@ -606,15 +704,16 @@ assert_release_refusal placeholder "placeholder" "$PLACEHOLDER" v1.2.3
 # Run from inside the root. install.sh ends by offering to run `orchid doctor`
 # against the CURRENT directory when that directory is a repository other than
 # its own source checkout -- from an unrelated cwd that would reach outside the
-# root, which is the one thing this rehearsal must not do. $R is a constructed
-# path, never a bare scratch root, so this cd cannot degrade to a no-op.
+# root, which is the one thing this rehearsal must not do. cd_scratch, not a
+# bare `cd`: it checks the target against the roots this run created, so the
+# only directory this file ever moves into is one it owns.
 inst_rc=0
-inst_out="$( cd "$R" && "$BASH" "$REPO_ROOT/install.sh" --prefix "$R/prefix" 2>&1 )" || inst_rc=$?
+inst_out="$( cd_scratch "$R" && "$BASH" "$REPO_ROOT/install.sh" --prefix "$R/prefix" 2>&1 )" || inst_rc=$?
 assert_eq 0 "$inst_rc" "install.sh must wire an isolated prefix without touching a network: $inst_out"
 [ -L "$R/prefix/bin/orchid" ] || fail "install.sh must link the orchid entry point into the prefix"
 [ -L "$CLAUDE_SKILLS_DIR/orchid" ] || fail "install.sh must wire the skills directory it was pointed at"
 uninst_rc=0
-uninst_out="$( cd "$R" && "$BASH" "$REPO_ROOT/install.sh" --prefix "$R/prefix" --uninstall 2>&1 )" || uninst_rc=$?
+uninst_out="$( cd_scratch "$R" && "$BASH" "$REPO_ROOT/install.sh" --prefix "$R/prefix" --uninstall 2>&1 )" || uninst_rc=$?
 assert_eq 0 "$uninst_rc" "install.sh --uninstall must reverse cleanly: $uninst_out"
 [ -e "$R/prefix/bin/orchid" ] && fail "--uninstall must remove the symlink it created"
 [ -e "$CLAUDE_SKILLS_DIR/orchid" ] && fail "--uninstall must remove the skill symlink it created"
@@ -638,7 +737,7 @@ for repo in "$PROJ" "$WT" "$DRIVEN" "$RELFIX" "$PLACEHOLDER"; do
 done
 
 assert_snapshot_unchanged \
-  "the source checkout is read-only input: no file, ref, or working-tree state may change" \
+  "the source checkout is read-only input: no file, remote ref, or working-tree state may change" \
   "$SOURCE_BEFORE" "$(snapshot_source)"
 assert_snapshot_unchanged \
   "nothing outside the private rehearsal root may change" \

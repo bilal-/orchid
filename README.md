@@ -469,7 +469,10 @@ it.
 Evidence is anonymized by construction: no subprocess output is ever copied
 into a record, so the emitted JSON and text carry check identities, durations,
 exit codes, bucketed size bands, and outcomes — never contents, paths,
-filenames, prompts, diffs, or secrets. Each record states what was executed,
+filenames, prompts, diffs, or secrets. The one thing another program chooses
+the characters of — a toolchain version, the platform name — is matched against
+a pattern the harness authors and recorded as `unrecognized`/`other` when it
+does not match, never verbatim. Each record states what was executed,
 why the check exists, and why that outcome was reached; a check the harness
 cannot perform is recorded as `not-tested` with the reason, never as a pass.
 The verdict names its own scope and enumerates what it does not certify.

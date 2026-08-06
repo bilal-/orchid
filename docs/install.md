@@ -152,8 +152,9 @@ from the source archive, avoiding a checksum self-reference.
    acknowledgement, beta qualification, a deterministic drive, the release
    gate's accept and refuse paths, and installer wiring — then asserts that no
    tripwire fired, that no repository acquired a remote or a remote ref, that
-   the source checkout is byte-identical afterwards, and that removing the root
-   leaves the machine as it found it. Qualify each candidate repository with
+   the source checkout is unchanged afterwards (working tree, file listing,
+   `HEAD`, and remote refs), and that removing the root leaves the machine as
+   it found it. Qualify each candidate repository with
    `scripts/beta-qualify.sh` and work through
    [beta-qualification.md](./beta-qualification.md)'s operator checklist before
    handing a build to anyone.

@@ -560,6 +560,24 @@ grep -qF 'expires_when' "$BETA_MD" \
   || fail "docs/beta-qualification.md must explain that every non-blocking gap states what makes it expire"
 grep -qF 'a warning that can never expire is noise' "$BETA_MD" \
   || fail "docs/beta-qualification.md must say why a non-expiring warning is not evidence"
+# "No subprocess output reaches a record" has exactly one exception -- the
+# toolchain version and platform strings -- and a promise with an unstated
+# exception is not a promise. Both the code and every page that repeats the
+# rule have to carry it, or they drift apart silently.
+grep -qF 'version_token' "$QUALIFY_SH" \
+  || fail "scripts/beta-qualify.sh must validate the version strings it records instead of copying them"
+grep -qF 'unrecognized' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that a version outside the harness's pattern is recorded as 'unrecognized'"
+grep -qF 'unrecognized' "$REPO_ROOT/README.md" \
+  || fail "README.md's anonymization summary must state the version-string rule"
+grep -qF 'unrecognized' "$REPO_ROOT/docs/specs/plugins.md" \
+  || fail "docs/specs/plugins.md's threat model must state the version-string rule"
+
+# The rehearsal's isolation claim is only as good as its scope. The page must
+# keep saying what the snapshots watch and what they deliberately do not.
+grep -qF 'has no business' "$BETA_MD" \
+  || fail "docs/beta-qualification.md must state that the rehearsal never reads an operator's real trust records"
+
 # The two asymmetries a tester will otherwise meet as "the product is broken".
 grep -qF 'persistent answering agent' "$BETA_MD" \
   || fail "docs/beta-qualification.md must explain that the inbound answer leg needs a persistent agent"
