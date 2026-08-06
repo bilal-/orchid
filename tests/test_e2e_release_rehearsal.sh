@@ -28,10 +28,24 @@
 # PATH at all: no remote ref anywhere moved, and nothing outside the root
 # changed.
 #
-# This file never cds. Every git call is `git -C <absolute path>` and every
-# Orchid verb gets an explicit ORCHID_REPO, so there is no bare `cd` that an
-# empty scratch root could silently turn into a `git init`/`git commit` against
-# the real checkout under test.
+# LESSON L014 -- "use cd_scratch, never a bare `cd`, in any fixture that runs
+# git" -- deliberate deviation, in ONE place. The rehearsal proper needs no cwd
+# at all: every git call is `git -C <absolute path>` and every Orchid verb gets
+# an explicit ORCHID_REPO. The exception is step 7, the installer phase, which
+# runs `cd "$R" && ... install.sh` inside a command substitution, because
+# install.sh ends by offering `orchid doctor` against the CURRENT directory --
+# from an unrelated cwd that would reach outside the private root, the one thing
+# this rehearsal must not do.
+#
+# What L014 exists to prevent needs a cd target that can be the EMPTY string:
+# `cd ""` is a silent no-op (exit 0, cwd unchanged), so the git work that
+# follows lands on whatever the caller's cwd was, typically the real checkout
+# under test. `$R` cannot be empty -- it is constructed as
+# `"$(cd "$WORK" && pwd -P)/rehearsal"`, so it always ends in `/rehearsal`, and
+# `mkdir -p "$R"` proves it exists before anything runs. The cd is also confined
+# to a `$( ... )` subshell, so it cannot leak into any later phase. (The same
+# reasoning covers the two `cd "$WORK" && pwd -P` subshells, which run no git.)
+# tests/helpers.sh in this tree ships no cd_scratch helper to call instead.
 #
 # RED before this task: scripts/beta-qualify.sh does not exist, so phase 4
 # cannot run.
