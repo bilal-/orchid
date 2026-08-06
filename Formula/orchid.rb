@@ -7,7 +7,7 @@ class Orchid < Formula
   desc "Deterministic multi-agent orchestrator for AI coding CLIs"
   homepage "https://github.com/bilal-/orchid"
   url "https://github.com/bilal-/orchid/releases/download/v1.0.0/orchid-1.0.0.tar.gz"
-  sha256 "46885a13cb2cf96c901042e749b5a2c1408ba5e1591b558fa9ad9765388d1053"
+  sha256 "e470c2860dd5dfae7cf311a742a028e1bada9886477755f40e0709bb78afd66e"
   license "MIT"
   version "1.0.0"
 
