@@ -40,7 +40,7 @@ reconcile_until_ok() {
   fail "timed out waiting for $task to reconcile ok (last reconcile output: $out)"
 }
 
-cd "$WORK" || exit 1; git init -q .
+cd_scratch "$WORK" || exit 1; git init -q .
 
 # ---------------------------------------------------------------------------
 # init: fixture config committed first (init refuses a dirty tree).

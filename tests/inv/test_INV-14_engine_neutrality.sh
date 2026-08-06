@@ -118,7 +118,7 @@ probe_assign_hit="$(grep -nE "[[:space:]](=|==|!=)[[:space:]]*\"?$first_id\"?([^
 # be routed to, exactly like a shipped one. If any layer had a name table,
 # this fixture is what would fall through it.
 # ===========================================================================
-cd "$WORK" || exit 1
+cd_scratch "$WORK" || exit 1
 git init -q .
 git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks

@@ -3,7 +3,7 @@ source "$(dirname "$0")/../helpers.sh"
 # INV-07: a candidate whose SHA changed cannot merge without re-verify +
 # re-review. Exercised via the stale-base rebase path of `orchid merge`:
 # a parallel commit lands on integration first, forcing rebase-reverify.
-cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 

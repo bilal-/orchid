@@ -104,8 +104,14 @@ if [ "${1:-}" = --inbound-probe ]; then
     # status` itself fail (gateway unreachable, auth expired, daemon not
     # running) IS a determination: the transport a reply must come back
     # through cannot currently be queried at all.
+    # `usage:` only where a CLI actually prints it -- at the start of a line.
+    # As a bare substring it would also swallow a gateway error that merely
+    # quotes the word, and answer "this build has no channels status" for a
+    # transport that is genuinely down. That misread fails SAFE (undetermined
+    # rather than a false alarm), which is why it is anchored rather than
+    # dropped.
     case "$probe_out" in
-      *"nknown command"*|*"nrecognized"*|*"nknown subcommand"*|*"o such command"*|*[Uu]sage:*)
+      *"nknown command"*|*"nrecognized"*|*"nknown subcommand"*|*"o such command"*|[Uu]sage:*|*$'\n'[Uu]sage:*)
         echo "this openclaw build does not support 'channels status' (exit $probe_rc: $probe_first)"
         exit 2 ;;
     esac
@@ -138,11 +144,23 @@ if [ "${1:-}" = --inbound-probe ]; then
   # Negatives FIRST: "not connected" contains "connected", so a
   # positive-first order would read a disconnected channel as up -- the one
   # mistake this probe must never make.
-  case "$probe_lower" in
-    *"not connected"*|*disconnect*|*offline*|*unauthor*|*expired*|*down*)
-      echo "openclaw reports channel '$probe_channel' as NOT connected: $probe_line"
-      exit 1 ;;
-  esac
+  #
+  # But each negative is matched as a WHOLE WORD, and against the row with
+  # the channel's OWN NAME elided, because these run against the entire
+  # status row -- name included. Bare substrings here fail in exactly the way
+  # this file already refuses to fail for `*ok*`/`*error*` below: `*down*`
+  # calls a channel named `downtime-alerts` dead, and reads a healthy
+  # "telegram connected (last shutdown 2d ago)" as NOT connected. Either one
+  # makes doctor print "Answers sent on this channel are being lost" about a
+  # row that says connected -- the false alarm that teaches an operator to
+  # ignore this line, on the one check whose whole job is to be believed.
+  probe_channel_lower="$(printf '%s' "$probe_channel" | tr '[:upper:]' '[:lower:]')"
+  probe_status="${probe_lower//"$probe_channel_lower"/ }"
+  if grep -qE '(^|[^a-z0-9_-])(not connected|disconnect(ed|ing)?|offline|unauthor[a-z]*|expired|down|unreachable)([^a-z0-9_-]|$)' \
+       <<<"$probe_status"; then
+    echo "openclaw reports channel '$probe_channel' as NOT connected: $probe_line"
+    exit 1
+  fi
   # Deliberately NARROW, in both directions. No bare `*ok*`/`*fail*`/`*error*`
   # substring tests: `*ok*` matches "broken" (and "token expired"), and a
   # healthy row reading "connected, 0 errors" would trip `*error*`. Either

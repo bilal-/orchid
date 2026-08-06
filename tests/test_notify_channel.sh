@@ -22,7 +22,7 @@ source "$REPO_ROOT/lib/capsuite.sh"; source "$REPO_ROOT/lib/ledger.sh"
 export ORCHID_ROOT="$REPO_ROOT"
 PUMP="$REPO_ROOT/runners/orchid-pump"
 
-cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks
 export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 
@@ -427,6 +427,35 @@ assert_match "does not support 'channels status'" "$probe_out" "the probe says w
 probe telegram "telegram   broken" 0
 assert_eq "2" "$probe_rc" "an unrecognized status line is undetermined -- 'broken' must not match a positive substring"
 assert_match "not one this probe recognizes" "$probe_out" "the probe admits what it does not know"
+
+# The negatives are matched as WHOLE WORDS against the row with the channel
+# name elided, for the same reason the positives refuse a bare `*ok*`: as
+# plain substrings they run against the ENTIRE status row, name included. A
+# channel called `downtime-alerts` and a healthy row mentioning a past
+# `shutdown` both contain "down"; either one, read as a negative, makes
+# doctor print "Answers sent on this channel are being lost" about a row that
+# says connected.
+probe downtime-alerts "downtime-alerts   connected" 0
+assert_eq "0" "$probe_rc" "a channel whose NAME contains 'down' is still connected -- the name is not a status word"
+probe telegram "telegram   connected   (last shutdown 2d ago)" 0
+assert_eq "0" "$probe_rc" "'shutdown' inside a connected row must not be read as the status word 'down'"
+probe expired-queue "expired-queue   connected" 0
+assert_eq "0" "$probe_rc" "a channel whose NAME contains 'expired' is still connected"
+# ...and the words this probe exists to catch still catch, as words.
+probe telegram "telegram   is down   (gateway restarting)" 0
+assert_eq "1" "$probe_rc" "a row whose status word IS 'down' is still NOT reachable"
+assert_match "NOT connected" "$probe_out" "the probe says which way it decided"
+probe telegram "telegram   connected, credential expired" 0
+assert_eq "1" "$probe_rc" "an expired credential still fails the return leg, whole-word matching notwithstanding"
+probe telegram "telegram   disconnected" 0
+assert_eq "1" "$probe_rc" "a disconnected row is still NOT reachable"
+
+# A usage banner counts as a version difference only where a CLI prints one:
+# at the start of a line. A gateway error that merely quotes the word must
+# stay a determination about the transport, not a shrug about the CLI.
+probe telegram "error: gateway refused the request (see usage: openclaw channels)" 1
+assert_eq "1" "$probe_rc" "a gateway failure that merely mentions 'usage:' mid-line is still a failing return leg"
+assert_match "not answering" "$probe_out" "the probe names what failed, in the operator's terms"
 
 # No channel configured, and no CLI at all: both undetermined, both explained.
 probe_rc=0

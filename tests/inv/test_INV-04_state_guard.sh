@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
-cd "$WORK" || exit 1; git init -q .; echo a > a.txt; git add a.txt; git commit -q -m base
+cd_scratch "$WORK" || exit 1; git init -q .; echo a > a.txt; git add a.txt; git commit -q -m base
 # .orchid/runtime/ is machine-local, volatile state (per kernel.md) and must
 # never be committed; without this, `git add .orchid` below would sweep the
 # live epoch/lease files onto task/T001, and checking back out to main would

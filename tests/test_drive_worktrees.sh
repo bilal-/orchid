@@ -29,7 +29,7 @@ export ORCHID_REPO="$REPO" HOME="$MACHINE_HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH
 
-WORKP="$(cd "$WORK" && pwd -P)"
+WORKP="$(cd_scratch "$WORK" && pwd -P)"
 HEAD_SHA="$(git rev-parse HEAD)"
 
 plan_action() { drive_worktree_plan "$REPO" "$1" | cut -f1; }

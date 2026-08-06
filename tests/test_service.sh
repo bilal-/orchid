@@ -12,7 +12,7 @@ source "$(dirname "$0")/helpers.sh"
 SERVICE="$REPO_ROOT/runners/orchid-service"
 PUMP="$REPO_ROOT/runners/orchid-pump"
 
-cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"; mkdir -p "$HOME"
 export ORCHID_ROOT="$REPO_ROOT"
 
@@ -28,7 +28,7 @@ trust_repo() {
 # baked into a rendered artifact compares against $repo_canon, never the
 # raw $WORK string. Plain file-existence checks against "$WORK/..." remain
 # fine as-is -- the OS resolves the symlink either way when opening a path.
-repo_canon="$(cd "$WORK" && pwd -P)"
+repo_canon="$(cd_scratch "$WORK" && pwd -P)"
 
 # The same rule applies to the CHECKOUT under test: helpers.sh must hand this
 # suite a physically-resolved REPO_ROOT, or the assertions below that compare
@@ -338,7 +338,7 @@ unset ORCHID_SERVICE_OS
 # adversarial states from the review: a trusted repo with a pump.log symlink,
 # revoked trust, and a fresh repo replacing the acknowledged target path.
 # ===========================================================================
-ATTACK_ROOT="$(mktemp -d)"
+make_scratch ATTACK_ROOT
 ATTACK_REPO="$ATTACK_ROOT/repo"
 ATTACK_OLD="$ATTACK_ROOT/original-repo"
 ATTACK_VICTIM="$ATTACK_ROOT/outside.log"
@@ -471,8 +471,8 @@ unset ORCHID_SERVICE_OS
 # FAILS-based exit code); a second `trap ... EXIT` in this file would
 # silently REPLACE it, not chain, dropping both. WORK2 is removed by hand
 # at the end of this section instead.
-WORK2="$(mktemp -d)"
-( cd "$WORK2" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
+make_scratch WORK2
+( cd_scratch "$WORK2" && git init -q . && git commit -q --allow-empty -m root && mkdir -p .orchid/tasks )
 trust_repo "$WORK2"
 
 out1="$("$SERVICE" install --repo "$WORK" --dry-run 2>&1)"

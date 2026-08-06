@@ -12,7 +12,7 @@ source "$(dirname "$0")/helpers.sh"
 # $WORK itself may be a symlinked path (macOS /var -> /private/var). Every
 # path orchid start prints is canonical (`pwd -P`), so the fixture has to be
 # too, or every path assertion below compares two spellings of one directory.
-W="$(cd "$WORK" && pwd -P)"
+W="$(cd_scratch "$WORK" && pwd -P)"
 export HOME="$MACHINE_HOME"; mkdir -p "$HOME/.orchid"
 
 # A resolvable engine for every role, so the full preflight (`orchid doctor`)

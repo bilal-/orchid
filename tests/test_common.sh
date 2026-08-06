@@ -13,7 +13,7 @@ echo hi | atomic_write "$WORK/f"; assert_eq hi "$(cat "$WORK/f")" "atomic write"
 assert_eq "1.0.0" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0"
 
 # layered config
-mkdir -p "$WORK/repo"; cd "$WORK/repo" || exit 1; git init -q .
+mkdir -p "$WORK/repo"; cd_scratch "$WORK/repo" || exit 1; git init -q .
 printf 'role.implementer=codex\n' > "$HOME/.orchid/config"
 assert_eq codex "$(config_get "$WORK/repo" role.implementer)" "user layer"
 printf 'role.implementer=claude\n' > "$WORK/repo/orchid.config"

@@ -3,7 +3,7 @@ source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/hooks.sh"; source "$REPO_ROOT/lib/envelope.sh"
 
-cd "$WORK" || exit 1; mkdir -p .orchid
+cd_scratch "$WORK" || exit 1; mkdir -p .orchid
 export ORCHID_REPO="$WORK"
 
 # ---------------------------------------------------------------------------
@@ -85,7 +85,7 @@ envelope_validate "$WORK/e-failed.json" || fail "hook failed status needs no pay
 # ===========================================================================
 # CLI-level fixture: jobs prepare/reconcile + orchid-launch round trip.
 # ===========================================================================
-cd "$WORK" || exit 1; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
+cd_scratch "$WORK" || exit 1; git init -q .; echo base > f.txt; git add f.txt; git commit -q -m base
 base_sha="$(git rev-parse HEAD)"
 echo change >> f.txt; git add f.txt; git commit -q -m change
 cand_sha="$(git rev-parse HEAD)"
@@ -354,8 +354,8 @@ assert_eq "retry with a smaller diff" \
 # branch + a full pending->merging walk, which nothing earlier in this file
 # set up.
 # ===========================================================================
-MWORK="$(mktemp -d)"
-cd "$MWORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+make_scratch MWORK
+cd_scratch "$MWORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$MWORK" HOME="$MWORK/home"; mkdir -p "$HOME"
 # unset: ORCHID_ENGINES_DIR is a resolver-only test hook (lib/resolver.sh)
@@ -497,7 +497,7 @@ rc=0; _hg6_out="$("$ORCHID_BIN" merge HG6 2>&1)" || rc=$?
 assert_eq 0 "$rc" "a required binding to a third-party engine (manifest id=acme/foo) is satisfied by its OWN qualified id"
 assert_eq "done" "$("$ORCHID_BIN" task show HG6 | grep '^status: ' | cut -d' ' -f2)" "HG6 reaches done"
 
-cd "$WORK" || exit 1; rm -rf "$MWORK"
+cd_scratch "$WORK" || exit 1; rm -rf "$MWORK"
 
 # ===========================================================================
 # Stub-driven tick-walk: on_verify_fail guidance attach. Simulates the
@@ -508,8 +508,8 @@ cd "$WORK" || exit 1; rm -rf "$MWORK"
 # advance, then the rework advance itself -- and confirms hook_guidance
 # survives (is "carried") across that advance rather than being reset by it.
 # ===========================================================================
-TWORK="$(mktemp -d)"
-cd "$TWORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+make_scratch TWORK
+cd_scratch "$TWORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 base_tw="$(git rev-parse HEAD)"
 echo x > x.txt && git add x.txt && git commit -q -m "candidate"
 cand_tw="$(git rev-parse HEAD)"
@@ -559,4 +559,4 @@ assert_eq "shrink the diff and retry" \
 assert_eq 1 "$("$ORCHID_BIN" task show TW1 | grep '^attempts: ' | cut -d' ' -f2)" \
   "the (non-waived) rework advance consumed an attempt, same as any other rework entry"
 
-cd "$WORK" || exit 1; rm -rf "$TWORK"
+cd_scratch "$WORK" || exit 1; rm -rf "$TWORK"

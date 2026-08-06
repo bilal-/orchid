@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 # v1-m4 Task 8: docs suite lint. Three independent, purely mechanical
-# checks over the published documentation set -- no repo/run state, no git,
-# nothing spawned -- mirroring test_config_keys.sh's own annotation-driven
+# checks over the published documentation set -- no repo/run state, no git --
+# mirroring test_config_keys.sh's own annotation-driven
 # approach (grep-only, no prose heuristics) so this suite carries zero
 # false-positive risk from trying to parse free text:
 #
@@ -411,6 +411,28 @@ assert_match "one \`medium\` finding turns an all-\`approve\`" "$kernel_one_line
 assert_match "Use low for anything you would call a nit" \
   "$(tr '\n' ' ' < "$REPO_ROOT/plugins/engines/claude/run" | tr -s '[:space:]' ' ')" \
   "the review prompt must give severity explicit blocking semantics, not just a line format"
+
+# USAGE TEXT IS DOCUMENTATION TOO, and it is the copy an operator reads at
+# the moment it matters. Every prose site above was updated when the default
+# reviewer started filling findings[]; `orchid drive --help` was not, and
+# nothing here noticed, so for a full milestone the runner told operators the
+# severity clause "is inert for a reviewer whose adapter never fills
+# findings[] -- the shipped review adapters ask for a VERDICT line only". A
+# stale help string that denies the existence of a gate which WILL halt a run
+# is worse than no help at all. `--help` is parsed before any repo lookup, so
+# this spawns nothing beyond one process and needs no fixture.
+drive_help="$("$ORCHID_BIN" drive --help)" \
+  || fail "orchid drive --help must exit 0 without a repo"
+drive_help_one_line="$(printf '%s' "$drive_help" | tr -s '[:space:]' ' ')"
+assert_match "plugins/engines/claude/run" "$drive_help_one_line" \
+  "orchid drive --help must name the adapter that makes the severity clause live, not describe every reviewer as verdict-only"
+assert_match "empty findings\[\] blocks nothing" "$drive_help_one_line" \
+  "orchid drive --help must keep the other half: an empty findings[] is a valid review, not a missing one"
+grep -q "the shipped review adapters ask for a VERDICT line only" <<<"$drive_help_one_line" \
+  && fail "orchid drive --help still calls every shipped review adapter verdict-only — plugins/engines/claude/run has not been since v1-m4 T006"
+# ...and the same claim must not survive in any other shipped usage text.
+stale_help="$(grep -rln "adapter never fills findings" "$REPO_ROOT/runners" "$REPO_ROOT/libexec" "$REPO_ROOT/bin" 2>/dev/null || true)"
+[ -z "$stale_help" ] || fail "stale L006 severity-gate claim still shipped in: $stale_help"
 
 # v1-m4 T006, the notify return leg: the two manifest keys doctor's check
 # reads are a plugin CONTRACT, so they belong in the plugin spec — an

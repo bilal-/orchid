@@ -33,7 +33,7 @@ reconcile_until_ok() {
   fail "timed out waiting for $task to reconcile ok (last reconcile output: $out)"
 }
 
-cd "$WORK" || exit 1; git init -q .
+cd_scratch "$WORK" || exit 1; git init -q .
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'role.implementer=stubslow\nrole.reviewer=stubreview\n' > orchid.config
 git add -A && git commit -q -m "fixture: config"

@@ -171,7 +171,7 @@ assert_match "dupname" "$dup_err" "duplicate archetype id error names the archet
 # Integration level: `orchid task create/advance/set` and `orchid merge`
 # driving a real `review`-archetype task end to end.
 # ============================================================================
-cd "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
+cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH

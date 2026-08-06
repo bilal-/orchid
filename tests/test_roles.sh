@@ -32,7 +32,7 @@ for role in orchestrator implementer reviewer arbiter plan_critic; do
 done
 
 # -- resolve_role_checked gates resolve_role on eligibility ------------------
-cd "$WORK" || exit 1; git init -q .
+cd_scratch "$WORK" || exit 1; git init -q .
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME/.orchid"
 
 out="$(resolve_role_checked "$WORK" implementer)"; rc=$?
