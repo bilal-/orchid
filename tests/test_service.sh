@@ -281,7 +281,7 @@ WORKP_canon="$(cd "$WORKP" && pwd -P)"
 trust_repo "$WORKP"
 
 _outp="$("$SERVICE" install --repo "$WORKP" --interval-s 120 --dry-run 2>&1)"; rcp=$?
-assert_eq 0 "$rcp" "linux install --dry-run exits 0 even when --repo contains %"
+assert_eq 0 "$rcp" "linux install --dry-run exits 0 even when --repo contains % (out: $_outp)"
 recordp="$WORKP/.orchid/runtime/pump.cron"
 [ -f "$recordp" ] || fail "linux install must render + place a pump.cron record even when --repo contains %"
 linep="$(cat "$recordp")"
@@ -378,7 +378,7 @@ export ORCHID_SERVICE_OS=Linux
 attack_cron_out="$("$SERVICE" install --repo "$ATTACK_REPO" --interval-s 60 --dry-run 2>&1)"
 attack_record="$ATTACK_REPO/.orchid/runtime/pump.cron"
 [ -f "$attack_record" ] \
-  || fail "adversarial cron fixture must retain its installed record"
+  || fail "adversarial cron fixture must retain its installed record (out: $attack_cron_out)"
 attack_cron_line="$(cat "$attack_record")"
 assert_match ' --service-log >> /dev/null 2>&1 ' "$attack_cron_line" \
   "installed cron firing has no target-controlled pre-gate output path"

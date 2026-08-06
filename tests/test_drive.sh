@@ -473,8 +473,8 @@ drive_until() {
   return 1
 }
 
-drive_until T001 done || fail "T001 must reach done under repeated deterministic passes alone (last rc=$DRIVE_RC, output: $DRIVE_OUT)"
-assert_eq done "$(status_of T001)" "the deterministic driver walked T001 from pending to done with no model in the loop"
+drive_until T001 "done" || fail "T001 must reach done under repeated deterministic passes alone (last rc=$DRIVE_RC, output: $DRIVE_OUT)"
+assert_eq "done" "$(status_of T001)" "the deterministic driver walked T001 from pending to done with no model in the loop"
 assert_eq 0 "$DRIVE_RC" "the pass that completed the walk exits 0 (no judgment boundary)"
 
 # The integration branch really moved, and really carries the stub's commit.
@@ -785,7 +785,7 @@ forchid() { ORCHID_REPO="$FINISHED" ORCHID_EPOCH="$FEPOCH" "$ORCHID_BIN" "$@"; }
 forchid requirements import "$WORK/requirements.md" >/dev/null
 forchid task create F010 "the only task, and it is finished" >/dev/null
 forchid plan apply --reason "initial plan" >/dev/null
-fm_set "$FINISHED/.orchid/tasks/F010.md" status done
+fm_set "$FINISHED/.orchid/tasks/F010.md" status "done"
 
 FDRIVE_RC=0
 fboundary() { ORCHID_REPO="$FINISHED" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
@@ -961,7 +961,7 @@ borchid() { ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$ORCHID_BIN" "$@"; }
 borchid requirements import "$WORK/requirements.md" >/dev/null
 borchid task create B010 "the only task, and it is finished" >/dev/null
 borchid plan apply --reason "initial plan" >/dev/null
-fm_set "$BROK/.orchid/tasks/B010.md" status done
+fm_set "$BROK/.orchid/tasks/B010.md" status "done"
 
 assert_eq brokered "$(drive_orchestrator_surface "$BROK")" \
   "the pinned orchestrator's own manifest decides which surface this repo would wake"

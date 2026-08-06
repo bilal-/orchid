@@ -97,7 +97,7 @@ rc=0; out="$("$ORCHID_BIN" task arbitrate T004 --result approve --reason "report
 assert_eq 0 "$rc" "task arbitrate --result approve exits 0 on an outcome=report archetype"
 assert_eq "arbitrated T004: result=approve from=arbitrating to=done" "$out" \
   "an approval on an archetype that declares no merging edge lands in done"
-assert_eq done "$(status_of T004)" "the report archetype's task is done, never merged"
+assert_eq "done" "$(status_of T004)" "the report archetype's task is done, never merged"
 
 # ===========================================================================
 # 4 -- refusals. Every one of these must leave the task exactly where it was.
