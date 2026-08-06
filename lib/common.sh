@@ -36,11 +36,16 @@ fi
 # verbatim; `manifest_validate` (lib/manifest.sh) compares a plugin's
 # `requires_orchid=>=X.Y` against it (major.minor only -- semver-ish, per
 # docs/specs/plugins.md's Manifest section). Bump alongside a milestone,
-# never mid-milestone. v1-m4: the release version -- the `-mN` milestone
-# suffix era ends here; there is no `1.0.0-m4` intermediate.
+# never mid-milestone. The `-mN` milestone-suffix era ended at v1-m4; what
+# ships now is the semver prerelease `1.0.0-beta.1`. A bare `1.0.0` would
+# claim the kernel is hardened and in use, and neither is true yet: nothing
+# outside this repository has run orchid, and no external beta has happened.
+# 1.0.0 is what that beta earns. `_manifest_version_mm` (lib/manifest.sh)
+# strips the `-beta.1` suffix before comparing, so `requires_orchid=>=1.0`
+# is still satisfied by this value.
 # ShellCheck rationale: this public constant is consumed by scripts that source this library.
 # shellcheck disable=SC2034
-ORCHID_VERSION="1.0.0"
+ORCHID_VERSION="1.0.0-beta.1"
 atomic_write() { local d="$1" t; t="$(mktemp "${d}.tmp.XXXXXX")"; cat >"$t"; mv "$t" "$d"; }
 orchid_state()   { echo "$1/.orchid"; }
 orchid_runtime() { local r="$1/.orchid/runtime"; mkdir -p "$r"; echo "$r"; }

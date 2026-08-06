@@ -9,8 +9,10 @@ echo hi | atomic_write "$WORK/f"; assert_eq hi "$(cat "$WORK/f")" "atomic write"
 # against lib/common.sh (tests/test_dispatcher.sh covers the same fact
 # through the CLI's `orchid version` verb; this is the library-level source
 # of truth both that verb and every manifest's `requires_orchid` check read).
-# v1-m4: bumped to the release version 1.0.0 (no more `-mN` suffix).
-assert_eq "1.0.0" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0"
+# T008: the shipped version is the semver prerelease 1.0.0-beta.1. A bare
+# 1.0.0 is what an external beta earns; nothing outside this repository has
+# run orchid yet. Asserted exactly, so a silent re-bump to 1.0.0 fails here.
+assert_eq "1.0.0-beta.1" "$ORCHID_VERSION" "ORCHID_VERSION is 1.0.0-beta.1"
 
 # layered config
 mkdir -p "$WORK/repo"; cd_scratch "$WORK/repo" || exit 1; git init -q .

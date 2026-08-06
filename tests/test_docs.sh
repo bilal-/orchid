@@ -238,11 +238,11 @@ done
 QUICKSTART_MD="$REPO_ROOT/docs/quickstart.md"
 quickstart_text="$(tr '\n' ' ' < "$QUICKSTART_MD" | tr -s '[:space:]' ' ')"
 printf '%s\n' "$quickstart_text" | grep -qF \
-  'The URL is immutable: running this exact line later reselects `v1.0.0`; it does not upgrade Orchid. To upgrade, select the install URL for a newer immutable released tag.' \
+  'The URL is immutable: running this exact line later reselects `v1.0.0-beta.1`; it does not upgrade Orchid. To upgrade, select the install URL for a newer immutable released tag.' \
   || fail "docs/quickstart.md must explain that upgrading requires a newer immutable released tag"
 printf '%s\n' "$quickstart_text" | grep -qF \
   'Running this exact line again later is the upgrade command too.' \
-  && fail "docs/quickstart.md falsely calls the immutable v1.0.0 URL an upgrade command"
+  && fail "docs/quickstart.md falsely calls the immutable v1.0.0-beta.1 URL an upgrade command"
 
 INSTALL_MD="$REPO_ROOT/docs/install.md"
 release_command_audit="$(awk '

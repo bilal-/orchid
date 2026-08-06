@@ -42,12 +42,24 @@ done
 
 [ -n "$TAG" ] || { usage >&2; die "--tag is required"; }
 [ -n "$OUTPUT" ] || { usage >&2; die "--output is required"; }
+# Two gates, cheapest first. The glob's purpose is to refuse anything not
+# shaped like a version tag at all -- a moving ref such as `main` or `HEAD`,
+# or any branch name -- with a message that names the real requirement; its
+# trailing `*` already tolerated a prerelease suffix. The grep is
+# authoritative: exactly vMAJOR.MINOR.PATCH, optionally followed by a semver
+# prerelease (`-beta.1`, `-rc.2`), whose identifiers are dot-separated,
+# non-empty, drawn from [0-9A-Za-z-], and never a numeric field with a
+# leading zero. Build metadata (`+...`) stays refused: no release uses it,
+# and it is not part of a tag's identity. Widened for 1.0.0-beta.1;
+# tests/test_ci_release.sh pins both halves so it cannot rot into accepting
+# an arbitrary string.
 case "$TAG" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
-  *) die "tag must be an immutable semantic-version tag such as v1.2.3 (moving refs such as main or HEAD are refused)" ;;
+  *) die "tag must be an immutable semantic-version tag such as v1.2.3 or v1.2.3-beta.1 (moving refs such as main or HEAD are refused)" ;;
 esac
-printf '%s\n' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$' \
-  || die "tag must be exactly vMAJOR.MINOR.PATCH"
+printf '%s\n' "$TAG" \
+  | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*)(\.((0|[1-9][0-9]*)|[0-9]*[A-Za-z-][0-9A-Za-z-]*))*)?$' \
+  || die "tag must be exactly vMAJOR.MINOR.PATCH with an optional semver prerelease suffix such as -beta.1"
 [ -x "$BASH_BIN" ] || die "Bash interpreter is not executable: $BASH_BIN"
 if ! "$BASH_BIN" -c '[ -n "${BASH_VERSION:-}" ] && (( BASH_VERSINFO[0] > 3 || (BASH_VERSINFO[0] == 3 && BASH_VERSINFO[1] >= 2) ))'; then
   die "--bash must name Bash 3.2 or newer: $BASH_BIN"

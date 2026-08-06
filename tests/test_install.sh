@@ -203,16 +203,17 @@ else
   else
     echo "  SKIP: ruby not present on this machine -- Formula/orchid.rb syntax not linted"
   fi
-  grep -q 'version "1.0.0"' "$FORMULA" || fail "Formula/orchid.rb version is not pinned to 1.0.0"
-  grep -q 'releases/download/v1.0.0/orchid-1.0.0.tar.gz' "$FORMULA" \
+  grep -q 'version "1.0.0-beta.1"' "$FORMULA" \
+    || fail "Formula/orchid.rb version is not pinned to 1.0.0-beta.1"
+  grep -q 'releases/download/v1.0.0-beta.1/orchid-1.0.0-beta.1.tar.gz' "$FORMULA" \
     || fail "Formula/orchid.rb does not reference the version-pinned release asset"
   grep -Eq 'sha256 "[0-9a-f]{64}"' "$FORMULA" || fail "Formula/orchid.rb does not contain a concrete SHA-256"
   grep -Eq 'VERSION-PLACEHOLDER|SHA256-PLACEHOLDER' "$FORMULA" \
     && fail "Formula/orchid.rb still contains a release placeholder"
   grep -qE 'class +Orchid *< *Formula' "$FORMULA" || fail "Formula/orchid.rb does not define 'class Orchid < Formula'"
 fi
-grep -q '^ORCHID_INSTALL_VERSION="1.0.0"$' "$INSTALL" || fail "install.sh release version metadata mismatch"
-grep -q '^ORCHID_INSTALL_REF="v1.0.0"$' "$INSTALL" || fail "install.sh stable ref is not version-pinned"
+grep -q '^ORCHID_INSTALL_VERSION="1.0.0-beta.1"$' "$INSTALL" || fail "install.sh release version metadata mismatch"
+grep -q '^ORCHID_INSTALL_REF="v1.0.0-beta.1"$' "$INSTALL" || fail "install.sh stable ref is not version-pinned"
 
 # --- Wrapper resolution: simulate exactly the directory shape Formula/
 # orchid.rb's `install` block produces (bin/, libexec/, lib/, runners/,
@@ -495,9 +496,9 @@ bs_out="$(PATH="$bs_gitbin:$PATH" ORCHID_HOME="$bs_home" "$bs_work/bare/nogit/in
 bs_rc=$?
 [ "$bs_rc" -eq 0 ] || fail "bootstrap (fresh clone): install.sh exits 0 (got rc=$bs_rc, output: $bs_out)"
 bs_clone_line="$(grep '^clone' "$bs_gitlog")"
-assert_match '^clone --depth 1 --branch v1\.0\.0 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
+assert_match '^clone --depth 1 --branch v1\.0\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_clone_line" \
   "bootstrap (fresh clone): git invoked with the immutable stable tag"
-assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0\^\{commit\}' "$(cat "$bs_gitlog")" \
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0-beta\.1\^\{commit\}' "$(cat "$bs_gitlog")" \
   "bootstrap (fresh clone): resolves the stable name specifically through refs/tags"
 assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog")" \
   "bootstrap (fresh clone): detaches at the stable tag's peeled commit"
@@ -517,8 +518,9 @@ $bs_work/customprefix" "$(cat "$bs_work/record1.txt")" \
 # A real curl-to-bash invocation has no BASH_SOURCE filename. Its $0 names
 # bash, so dirname "$0" is just the caller's cwd. Make that cwd adversarial:
 # it looks exactly like an Orchid checkout, is backed by Git, and is dirty.
-# The piped stable installer must ignore it completely, clone v1.0.0 into the
-# canonical ORCHID_HOME, peel the tag, and execute only that cloned installer.
+# The piped stable installer must ignore it completely, clone v1.0.0-beta.1
+# into the canonical ORCHID_HOME, peel the tag, and execute only that cloned
+# installer.
 bs_pipe_cwd="$bs_work/dirty-caller-checkout"
 mkdir -p "$bs_pipe_cwd/bin" "$bs_pipe_cwd/lib"
 touch "$bs_pipe_cwd/bin/orchid" "$bs_pipe_cwd/lib/common.sh"
@@ -540,9 +542,9 @@ bs_pipe_rc=$?
 [ "$bs_pipe_rc" -eq 0 ] \
   || fail "bootstrap (piped from dirty checkout): stable install exits 0 (rc=$bs_pipe_rc, output: $bs_pipe_out)"
 bs_pipe_clone_line="$(grep '^clone' "$bs_pipe_gitlog")"
-assert_match '^clone --depth 1 --branch v1\.0\.0 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_pipe_clone_line" \
-  "bootstrap (piped from dirty checkout): ignores cwd and clones immutable v1.0.0"
-assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0\^\{commit\}' "$(cat "$bs_pipe_gitlog")" \
+assert_match '^clone --depth 1 --branch v1\.0\.0-beta\.1 --single-branch https://github\.com/bilal-/orchid\.git ' "$bs_pipe_clone_line" \
+  "bootstrap (piped from dirty checkout): ignores cwd and clones immutable v1.0.0-beta.1"
+assert_match '\-C .* rev-parse --verify refs/tags/v1\.0\.0-beta\.1\^\{commit\}' "$(cat "$bs_pipe_gitlog")" \
   "bootstrap (piped from dirty checkout): peels the stable tag"
 assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_pipe_gitlog")" \
   "bootstrap (piped from dirty checkout): detaches at the pinned commit"
@@ -663,7 +665,7 @@ bs_out_stable="$(PATH="$bs_gitbin_stable:$PATH" ORCHID_HOME="$bs_home" "$bs_work
 bs_rc_stable=$?
 [ "$bs_rc_stable" -eq 0 ] || fail "bootstrap (existing stable clone): install.sh exits 0 (got rc=$bs_rc_stable, output: $bs_out_stable)"
 grep -q '^clone' "$bs_gitlog_stable" && fail "bootstrap (existing stable clone): must not re-clone"
-assert_match '\-C .* fetch --depth 1 origin refs/tags/v1\.0\.0:refs/tags/v1\.0\.0' "$(cat "$bs_gitlog_stable")" \
+assert_match '\-C .* fetch --depth 1 origin refs/tags/v1\.0\.0-beta\.1:refs/tags/v1\.0\.0-beta\.1' "$(cat "$bs_gitlog_stable")" \
   "bootstrap (existing stable clone): fetches only the immutable stable tag"
 assert_match '\-C .* checkout --detach 1111111111111111111111111111111111111111' "$(cat "$bs_gitlog_stable")" \
   "bootstrap (existing stable clone): detaches at the verified tag object"
