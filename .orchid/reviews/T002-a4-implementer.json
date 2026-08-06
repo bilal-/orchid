@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e32-T002-a4-7f60",
+  "task": "T002",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "5032e90a4890bb9f1dfaa83ef8b4645b382b6f20",
+  "candidate_sha": "32e5b8b6fdab57bd4cc187a8ff5bf21dc30b5630",
+  "summary": "2. **`Formula/orchid.rb`'s pin is now stale again.** Editing a tracked, non-export-ignored file changes the release-archive bytes, so the sha256 re-pinned in `61e7e9f` no longer matches. `tests/test_c",
+  "commits": [
+    "32e5b8b6fdab57bd4cc187a8ff5bf21dc30b5630"
+  ]
+}

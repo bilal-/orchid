@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e20-T001-a12-5a84",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "18f2bd79357a0b213c5a49699ef96929c4f1b07c",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "`lib/trust.sh` uses plain `git rev-list`, which skips object-hash verification, allowing replaced commit data under an acknowledged OID to preserve trust after root-history replacement ([Git source](h"
+}

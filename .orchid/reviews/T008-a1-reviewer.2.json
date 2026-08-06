@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T008-a1-70e0",
+  "task": "T008",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9c5c3a363d469cb26a83d42a586ad1fc0f5e91ee",
+  "candidate_sha": "99112dbe5a7e223c7f24faa4838f01222af99e4d",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "probe-claude-tick.sh feeds the exact expected `orchid version` string into the prompt and then greps the reply for that same string, so the version half of its \"real output, not a hallucinated marker\" evidence can be satisfied by echoing the prompt back (only the independent `integration_branch` check still discriminates); a generic hint plus the checkout-derived grep would keep them independent"
+    },
+    {
+      "severity": "low",
+      "title": "`tests/test_manifest.sh:320` still says \"ORCHID_VERSION is fixed at 1.0.0 for the rest of this suite\" while the neighbouring comments at 267/304 were updated to 1.0.0-beta.1"
+    },
+    {
+      "severity": "low",
+      "title": "the identical widened regex now exists in four hand-synced copies (`scripts/release.sh:61`, `install.sh:69`, `docs/install.md:106,122`), but only release.sh's copy gained shape tests — install.sh's stable-channel gate has no negative coverage, so a future loosening there is undetected"
+    }
+  ]
+}

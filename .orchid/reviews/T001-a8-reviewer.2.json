@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e9-T001-a8-4b1b",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "94cb9db45db610e1c642c2bf8f05557c4841249b",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The implementation satisfies the unattended trust, identity binding, provenance, gating, documentation, exemption, and focused testing requirements without a medium-severity defect."
+}

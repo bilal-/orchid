@@ -1,0 +1,85 @@
+# Run acceptance evidence — orchid self-hosting hardening run
+
+Integration head at acceptance: `a6bc7f8420c0ebe0b836ec27aa856253f38ab6ae`
+Shipped version at acceptance: `1.0.0-beta.1`
+
+## How this was checked
+
+`bash scripts/ci-local.sh --bash /bin/bash`, run against the MERGED
+integration checkout — not against any individual task candidate. `orchid
+verify` is task-scoped; the criteria below are run-scoped, so they are proven
+on the tree as it will be merged to main. Result: **CI PASS**, 0 failures
+across 433 lines of output.
+
+## Run-level acceptance criteria, one by one
+
+- **`bash tests/run.sh` passes** — PASS. Included in the ci-local gate above.
+- **All new focused tests pass independently** — PASS. `tests/run.sh`
+  auto-discovers by glob, so every suite added by this run (test_drive*,
+  test_task_arbitrate, test_run_boundary, test_orchestrator_command,
+  test_start*, test_beta_qualification, test_e2e_release_rehearsal,
+  INV-13, INV-14) is executed by the same pass.
+- **`bash -n` passes for every shipped shell script under Bash 3.2** — PASS.
+  ci-local's first stage: 145 shipped scripts, `/bin/bash`.
+- **The configured ShellCheck gate passes** — PASS, at zero warnings. This
+  criterion was FAILING for most of the run behind a gate nothing invoked
+  (see L016); T007 cleared 17 inherited findings and it has been green since.
+- **Documentation and CLI help agree with implemented behavior** — PASS.
+  ci-local's Documentation checks stage.
+- **A local end-to-end rehearsal demonstrates the unattended trust refusal,
+  acknowledged deterministic drive, one-command setup, and beta qualification
+  path without any network or external mutation** — PASS, via
+  `tests/test_e2e_release_rehearsal.sh`, which walks all seven phases with
+  every network tool, vendor CLI, notify sender and remote-capable git
+  subcommand shimmed to log-and-fail, and asserts the tripwire log is empty
+  at the end. Its self-test now stands on a disposable repository inside the
+  private root with no remote, so a total shim failure reaches a scratch
+  directory rather than a real origin.
+
+## What this evidence does NOT claim
+
+Stated explicitly because the requirements forbid implying otherwise:
+
+- **No third-party beta run has occurred.** The harness and checklist exist
+  and are exercised against local fixtures only. Genuine external
+  qualification remains operator-owned follow-up work.
+- **Nothing was published, pushed, tagged, deployed, or sent to a remote** at
+  any point in this run.
+- **Reviewer independence was DEGRADED for most tasks.** codex and
+  codex-review were credit-exhausted throughout; agy is an inline diff-only
+  reviewer whose adapter refuses a diff over `agy_max_bytes`, so it was
+  structurally excluded from every task whose diff exceeded ~100KB. T001,
+  T002, T003, T005 and T006 landed with session-independent review only
+  (claude reviewing claude). T007 and T008 had genuine engine-independent
+  review. This is recorded, not papered over.
+- **Known defects ship.** Accepted deliberately, each with an arbitration
+  entry: T002's HIGH (`drive_implementing` lacks the liveness guard its
+  sibling arms carry, so a failed implementer can spawn duplicate concurrent
+  implementers into one worktree) plus seven further findings; T003's four
+  mediums including an `.orchid/tasks/` idempotence break against an explicit
+  acceptance criterion; and T005's six ledger items, notably that the
+  rehearsal now runs inside `release.sh`'s extracted archive where its
+  source-checkout snapshots pass vacuously.
+
+## What this run found in orchid itself
+
+18 lessons recorded (L001–L018). The five that would matter most to anyone
+picking this up:
+
+- **L013** — shell injection in shipped 1.0.0: `verb_lock_acquire` eval'd a
+  jq-authored shell fragment built from a lock's `owner.json` with `.pid`
+  unquoted. Reproduced with a working payload; fixed at both call sites with
+  a test that fails on the vulnerable form.
+- **L009** — headless deadlock: `orchid merge`'s rebase invalidates the
+  formula pin, and no in-loop actor can re-pin it.
+- **L018** — orchid executes whatever is in the working tree, so a stale
+  integration checkout silently runs pre-merge code. It cost this run a full
+  day of its own merged improvements before it was noticed.
+- **L016** — the release gate T004 built was never invoked by any task
+  dispatched after it. "It exists in the repo" and "it runs" are different
+  facts.
+- **L005** — `assert_match` piped into `grep -q` under `pipefail` across 892
+  call sites, in the shared helper every test in the suite stands on.
+
+None of these were findable by reading. Each surfaced because the system was
+driven hard against itself.

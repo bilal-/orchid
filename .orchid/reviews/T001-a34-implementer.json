@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e28-T001-a34-6106",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "ff8f2cf7d388364994fdc62e5d4c25dc4921d261",
+  "summary": "To finish, either the harness commits the working-tree change, or `git add`/`git commit` needs to be allowlisted for this session.",
+  "commits": [
+    "ff8f2cf7d388364994fdc62e5d4c25dc4921d261"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e5-T001-a4-bceb",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "3bb9f9f8f64003cb0449c808cbdc96898714f16e",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The containment check ignores sibling linked worktrees, allowing HOME inside another worktree of the same repository to produce a tracked trust record."
+}

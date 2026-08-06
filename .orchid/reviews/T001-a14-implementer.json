@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e21-T001-a14-55d4",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "082358f7d9e2a8338fd3386f76e1041b5f9ab6b7",
+  "summary": "The complete prescribed verification chain passes, along with `git diff --check` and formula fixed-point validation. Only these three files changed; no `.orchid/` files were modified.",
+  "commits": [
+    "082358f7d9e2a8338fd3386f76e1041b5f9ab6b7"
+  ]
+}

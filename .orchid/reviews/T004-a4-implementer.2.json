@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e5-T004-a4-12a1",
+  "task": "T004",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "e4b52d05149f91e68554c2ad1befb4c530ef6d27",
+  "summary": "T004: portable one-level listings, line-scoped SC2034, CI gates added",
+  "commits": [
+    "e4b52d05149f91e68554c2ad1befb4c530ef6d27"
+  ]
+}

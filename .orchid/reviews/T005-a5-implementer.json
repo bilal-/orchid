@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a5-bb83",
+  "task": "T005",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "849ded8fe8fb8a1c9678553963ba1c9a6cfbec56",
+  "summary": "- I ran none of `verification_commands`; every one of them starts with `/bin/bash`, which this session denies.",
+  "commits": [
+    "849ded8fe8fb8a1c9678553963ba1c9a6cfbec56"
+  ]
+}

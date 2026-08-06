@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e6-T004-a5-a23d",
+  "task": "T004",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "52c93b20d3dbd6ede2d0498be80de23941980f2c",
+  "summary": "**The one open item — expected first-run verification failure:** `Formula/orchid.rb` still carries the pre-rework sha (`660e7e…`), which is stale for this tree, and I had no execution path to compute ",
+  "commits": [
+    "52c93b20d3dbd6ede2d0498be80de23941980f2c"
+  ]
+}

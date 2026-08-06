@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a3-665a",
+  "task": "T005",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "c5627daac02b0ef3743ff285dd3155af01f61f93",
+  "summary": "If that reasoning holds, L014 wants a stated exception: *a fixture whose assertion is about the absence of external change must be permitted read-only observation outside the scratch registry, and mus",
+  "commits": [
+    "c5627daac02b0ef3743ff285dd3155af01f61f93"
+  ]
+}

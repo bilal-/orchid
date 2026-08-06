@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a2-69c8",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "7e46b874a439fb39e9e74d2fa09997bd7559a8aa",
+  "candidate_sha": "8589ab1424905af086b6ad0ab9dd4be91b6bfbf3",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The patch fully satisfies all acceptance criteria by introducing `orchid start` with strict validation, epoch fencing, safe worktree reuse, explicit non-guessed verification, documentation updates, an"
+}

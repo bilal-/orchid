@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e11-T001-a10-71d4",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "5e5cae14580098ff2c19d91dd4bebc93358166e4",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The implementation satisfies the trust, identity-binding, refusal-ordering, provenance, exemption, documentation, and focused-test criteria without a medium-or-higher finding."
+}

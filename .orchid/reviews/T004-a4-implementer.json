@@ -1,0 +1,16 @@
+{
+  "contract": 1,
+  "job_id": "j-e5-T004-a4-ad3d",
+  "task": "T004",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "c07d38efce88c735e4a85a4f712d684e056bfe54",
+  "summary": "The exact five-command verification sequence passed. `git diff --check` also passes, the formula checksum matches the deterministic `HEAD` archive, and the worktree is clean.",
+  "commits": [
+    "c07d38efce88c735e4a85a4f712d684e056bfe54",
+    "a89f810c6862fbdd9421782af37f77ac3ab5a889",
+    "ed5fa40a808578d340de299cc0578f96d5dac21f"
+  ]
+}

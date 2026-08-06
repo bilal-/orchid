@@ -1,0 +1,26 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a7-3048",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "dfe1088942f8454517cff80345a4c85d7c823ea7",
+  "candidate_sha": "0152117c3af390edb7d87e79eed97d5d4dcbd88f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "tripwire self-test runs real `git push`/`fetch`/`pull`/`ls-remote origin`/`remote update` with cwd on the operator's live checkout, which has a real `origin`"
+    },
+    {
+      "severity": "medium",
+      "title": "none of the 2,600 added lines were executed — the acceptance criterion \"run local CI under Bash 3.2\" is unmet and no verification evidence exists on the branch"
+    },
+    {
+      "severity": "low",
+      "title": "`stale-run-lock-visibility` records `fail` when `orchid status --explain` may have bailed out for an unrelated reason on the uninitialized scratch repo, so an untested check becomes a recorded build gap"
+    }
+  ]
+}

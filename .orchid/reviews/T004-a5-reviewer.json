@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e6-T004-a5-bbd8",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "ffa36cf1cddd7513da07d887ac1b7f54934a2f51",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Both archive scripts inherit ambient Git configuration and `$GIT_DIR/info/attributes`, which [`git archive` honors](https://git-scm.com/docs/git-archive/2.46.0.html), so a clean exact commit can produ"
+}

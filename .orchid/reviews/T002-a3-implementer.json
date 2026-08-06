@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e31-T002-a3-98b1",
+  "task": "T002",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "5032e90a4890bb9f1dfaa83ef8b4645b382b6f20",
+  "candidate_sha": "c9b78174733b78393774f9323b1ceb41c3c4371f",
+  "summary": "`Formula/orchid.rb`'s pinned sha256 is stale on this candidate and was already stale before my change — T002 changed 34 shipped files across `5032e90..280f786` and never re-pinned, and only `/.orchid`",
+  "commits": [
+    "c9b78174733b78393774f9323b1ceb41c3c4371f"
+  ]
+}

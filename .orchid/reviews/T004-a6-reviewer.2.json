@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e7-T004-a6-dbe2",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "b735ead926cb791446a1c3d4d2e5861e74b68863",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "Release-day commands use an undefined $version, while quickstart falsely claims rerunning the pinned v1.0.0 URL performs an upgrade."
+}

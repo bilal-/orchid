@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a4-f0be",
+  "task": "T006",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "e0b4f8745c361ac8a739092bd7d1dde24218f202",
+  "summary": "- **`Formula/orchid.rb` is stale** for this candidate — I did not re-pin it per your instruction. `tests/test_ci_release.sh` runs `scripts/pin-formula.sh --check` on the live checkout, so it will fail",
+  "commits": [
+    "e0b4f8745c361ac8a739092bd7d1dde24218f202"
+  ]
+}

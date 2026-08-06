@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a7-497c",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "dfe1088942f8454517cff80345a4c85d7c823ea7",
+  "candidate_sha": "0152117c3af390edb7d87e79eed97d5d4dcbd88f",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "low",
+      "title": "unattended-gate probe reads the gate twice but never compares the two reads, so its `result` asserts \"is unchanged after inspection\" while printing a differing `gate_after`"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e3-T004-a3-4f4e",
+  "task": "T004",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "c07d38efce88c735e4a85a4f712d684e056bfe54",
+  "summary": "All five specified verification commands passed in one chained run. A clean disposable tagged release rehearsal also rebuilt, extracted, and tested the archive successfully with the same checksum. `gi",
+  "commits": [
+    "c07d38efce88c735e4a85a4f712d684e056bfe54"
+  ]
+}

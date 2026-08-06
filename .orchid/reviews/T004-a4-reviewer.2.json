@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e5-T004-a4-25a9",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "e4b52d05149f91e68554c2ad1befb4c530ef6d27",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The formula checksum is stale for HEAD, and install.sh can recursively delete a dirty user-controlled ORCHID_HOME when an expected-origin clone merely lacks an anchor file."
+}

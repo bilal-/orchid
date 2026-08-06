@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e2-T001-a2-4404",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "788829e8488dd99b21256d538402ac4983930fa7",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The root-history check honors Git replacement/graft metadata, so a replaced root can retain the old acknowledgement unless identity queries disable replacement objects."
+}

@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a3-a982",
+  "task": "T003",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "7e46b874a439fb39e9e74d2fa09997bd7559a8aa",
+  "candidate_sha": "d21053e7c19f0eff9e1348c115e35d2d94f107bf",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The diff cleanly implements `orchid start` with all required preflight checks, repo validation, worktree handling, epoch fencing, unattended trust controls, and comprehensive tests adhering strictly t"
+}

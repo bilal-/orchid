@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a6-7ff4",
+  "task": "T005",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9c5c3a363d469cb26a83d42a586ad1fc0f5e91ee",
+  "candidate_sha": "cc9f22fdde7dd5d8b10c9095f576f555757886bc",
+  "summary": "- **`Formula/orchid.rb` is now stale** — these edits change shipped bytes, and per your instruction I did not re-pin. `tests/test_ci_release.sh`'s freshness gate will fail until `scripts/pin-formula.s",
+  "commits": [
+    "cc9f22fdde7dd5d8b10c9095f576f555757886bc"
+  ]
+}

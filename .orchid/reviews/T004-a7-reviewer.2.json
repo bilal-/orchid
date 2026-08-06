@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e8-T004-a7-36a3",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "0a77a6cc40bb7264455dd34dee9ca9f21cff7e00",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "ShellCheck lacks `--norc`, allowing an ambient parent/global `.shellcheckrc` to suppress warnings outside the audited inline-exception policy."
+}

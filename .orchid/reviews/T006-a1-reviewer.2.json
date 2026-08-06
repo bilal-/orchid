@@ -1,0 +1,13 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a1-fc4d",
+  "task": "T006",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/agy",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "fb7abbcd3b76df4548775846c1f1f858b58e054e",
+  "verdict": "approve",
+  "scope_complete": true,
+  "summary": "The diff cleanly enables review finding extraction in the Claude engine adapter while preserving the verdict contract, and adds an advisory doctor check for the notify inbound return leg without intro"
+}

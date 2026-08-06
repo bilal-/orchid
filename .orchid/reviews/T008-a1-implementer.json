@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T008-a1-2837",
+  "task": "T008",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "9c5c3a363d469cb26a83d42a586ad1fc0f5e91ee",
+  "candidate_sha": "ff223623baa9061621f0bb2f64caf54762f60194",
+  "summary": "Set the shipped version to 1.0.0-beta.1 and widen the release tag gate to accept semver prereleases",
+  "commits": [
+    "ff223623baa9061621f0bb2f64caf54762f60194"
+  ]
+}

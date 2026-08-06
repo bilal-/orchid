@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e22-T001-a15-e81d",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "85677cfda63d85e80ce9e819d62707f6314517d8",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "lib/trust.sh materializes every reachable commit in /tmp before checking for a trust record, letting an unacknowledged or replaced repo impose unbounded CPU and disk effects during pump/tick gating."
+}

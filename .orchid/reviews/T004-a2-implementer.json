@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e2-T004-a2-c892",
+  "task": "T004",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "a89f810c6862fbdd9421782af37f77ac3ab5a889",
+  "summary": "All specified verification commands passed. A clean disposable `v1.0.0` rehearsal also built, rebuilt, extracted, and tested the final archive with the matching checksum. `git diff --check` passes. No",
+  "commits": [
+    "a89f810c6862fbdd9421782af37f77ac3ab5a889"
+  ]
+}

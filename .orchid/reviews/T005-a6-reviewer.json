@@ -1,0 +1,18 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a6-15f8",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "dfe1088942f8454517cff80345a4c85d7c823ea7",
+  "candidate_sha": "6061517553009d563fb84027ebf02e072ee53e36",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "beta-qualify's header and `--help` claim \"contacts nothing / never writes inside --repo\" without the verify= exception the rest of the docs state"
+    }
+  ]
+}

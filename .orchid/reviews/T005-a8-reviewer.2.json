@@ -1,0 +1,30 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T005-a8-cefa",
+  "task": "T005",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "dfe1088942f8454517cff80345a4c85d7c823ea7",
+  "candidate_sha": "ccc635155216c146bd0b1ce632dea236615df6b3",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "medium",
+      "title": "beta-qualify.sh executes the candidate repo's config-declared `verify=` by default, with no trust acknowledgement"
+    },
+    {
+      "severity": "low",
+      "title": "a symlinked `--output` inside `--repo` leaves harness-created directories in the target it refuses to write to"
+    },
+    {
+      "severity": "low",
+      "title": "adding the rehearsal to tests/run.sh makes release.sh re-run it inside the extracted archive, where the source-checkout snapshots pass vacuously"
+    },
+    {
+      "severity": "low",
+      "title": "the `--uninstall` symlink assertions use `[ -e ]`, which is false for a dangling symlink"
+    }
+  ]
+}

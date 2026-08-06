@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e28-T001-a32-72e1",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "4295365368990cc89e4f60580b90f74b8d015d8d",
+  "summary": "**Not done: `Formula/orchid.rb`.** My edits change shipped bytes, so the pinned sha256 is now stale and `tests/test_ci_release.sh` (via `tests/run.sh`) will fail. The fix is `scripts/pin-formula.sh` f",
+  "commits": [
+    "4295365368990cc89e4f60580b90f74b8d015d8d"
+  ]
+}

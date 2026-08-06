@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e25-T001-a21-2f24",
+  "task": "T001",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "25f103c24a634600fbeadba04fe1db6fd543c6b6",
+  "candidate_sha": "2cd46ccfaa5e9bca8fd2e17b1afc6cbcf543f4a2",
+  "summary": "- **`Formula/orchid.rb` is stale.** Pinning needs `scripts/pin-formula.sh`, which requires `git archive` + `shasum`; both are denied here, and the correct value cannot be derived from the pre-rework `",
+  "commits": [
+    "2cd46ccfaa5e9bca8fd2e17b1afc6cbcf543f4a2"
+  ]
+}

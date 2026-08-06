@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e3-T004-a2-aa59",
+  "task": "T004",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "a89f810c6862fbdd9421782af37f77ac3ab5a889",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "ShellCheck can honor unpoliced ancestor or user shellcheckrc files without --norc, and quickstart falsely says rerunning the pinned v1.0.0 installer upgrades it."
+}

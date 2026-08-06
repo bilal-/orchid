@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e7-T001-a6-d851",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "9cb9758ef3c32c44a31f1bb29bbe87952d09ac17",
+  "verdict": "approve",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The patch satisfies the unattended-trust gates, identity bindings, provenance reporting, exemptions, documentation, and focused test coverage."
+}

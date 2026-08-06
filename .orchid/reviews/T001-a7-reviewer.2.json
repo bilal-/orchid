@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e8-T001-a7-e5c4",
+  "task": "T001",
+  "operation": "review",
+  "status": "ok",
+  "engine": "orchid/codex-review",
+  "base_sha": "d49df2338e03d43fdb13842b643fd0f3be998690",
+  "candidate_sha": "9e08ac805405936cf5f778cdbf58158a3d77fc1f",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [],
+  "summary": "The trust check assumes Git 2.45+ supports `GIT_NO_LAZY_FETCH` without enforcing that minimum, so older Git may contact a promisor remote before denial."
+}

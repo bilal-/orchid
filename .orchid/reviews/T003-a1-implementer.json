@@ -1,0 +1,14 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T003-a1-b7cd",
+  "task": "T003",
+  "operation": "implement",
+  "status": "ok",
+  "engine": "orchid/claude",
+  "base_sha": "7e46b874a439fb39e9e74d2fa09997bd7559a8aa",
+  "candidate_sha": "3da7b5f93b8b3dd018d5c6f41d1de8232e7277bb",
+  "summary": "- **Design decision worth flagging:** `--verify` writes into the *integration checkout's* `orchid.config` and leaves it uncommitted, printing the `orchid config commit --reason \"...\"` follow-up. Writi",
+  "commits": [
+    "3da7b5f93b8b3dd018d5c6f41d1de8232e7277bb"
+  ]
+}

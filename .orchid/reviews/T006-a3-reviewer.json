@@ -1,0 +1,10 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-T006-a3-250e",
+  "task": "T006",
+  "operation": "review",
+  "status": "failed",
+  "engine": "orchid/agy",
+  "base_sha": "713121adfbff4e160fa985bd37cbedad89d7dae0",
+  "candidate_sha": "1e5c548b818e573f2e1ec26ec292593f0c667406"
+}
