@@ -67,10 +67,14 @@ reviewer's adapter, and this file deliberately names none of them -- INV-13
 forbids the driver from referencing a plugin path, and INV-14 from branching on
 an engine identifier, so the distinction below is drawn by CAPABILITY. An
 adapter that asks a review for `FINDING: <low|medium|high>: <title>` lines and
-parses them -- which the shipped default reviewer now does -- makes the clause
-LIVE: one finding at or above blocking_severity (medium, by default) stops the
-pass at a judgment boundary even though every verdict said `approve`. An adapter that asks for a VERDICT line only always writes
-findings[] empty, and for it approval rests on verdict + scope_complete. An
+parses them makes the clause LIVE: one finding at or above blocking_severity
+(medium, by default) stops the pass at a judgment boundary even though every
+verdict said `approve`. An adapter that asks for a VERDICT line only always
+writes findings[] empty, and for it approval rests on verdict + scope_complete.
+The shipped review adapters are split between those two shapes, and this text
+claims nothing about which shape the reviewer YOU have bound is: read that
+adapter's own reply contract, or PROTOCOL.md's deterministic-approval arm,
+before reading a clean gate as a second opinion you are already getting. An
 empty findings[] blocks nothing either way -- a reviewer that found nothing is
 a valid review, not a missing one.
 

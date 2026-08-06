@@ -413,10 +413,10 @@ assert_match "Use low for anything you would call a nit" \
   "the review prompt must give severity explicit blocking semantics, not just a line format"
 
 # USAGE TEXT IS DOCUMENTATION TOO, and it is the copy an operator reads at
-# the moment it matters. Every prose site above was updated when the default
-# reviewer started filling findings[]; `orchid drive --help` was not, and
-# nothing here noticed, so for a full milestone the runner told operators the
-# severity clause "is inert for a reviewer whose adapter never fills
+# the moment it matters. Every prose site above was updated when one shipped
+# review adapter started filling findings[]; `orchid drive --help` was not,
+# and nothing here noticed, so for a full milestone the runner told operators
+# the severity clause "is inert for a reviewer whose adapter never fills
 # findings[] -- the shipped review adapters ask for a VERDICT line only". A
 # stale help string that denies the existence of a gate which WILL halt a run
 # is worse than no help at all. `--help` is parsed before any repo lookup, so
@@ -432,14 +432,35 @@ drive_help_one_line="$(printf '%s' "$drive_help" | tr -s '[:space:]' ' ')"
 # matters to an operator is that the help distinguishes an adapter that REQUESTS
 # AND PARSES findings from one that does not, so the live gate is discoverable
 # for whatever adapter they have bound.
-assert_match "FINDING: <low\|medium\|high>: <title>" "$drive_help_one_line" \
+#
+# Plain-substring shapes only, carrying no ERE metacharacters at all.
+# `assert_match` is `grep -E`, and the help's `<low|medium|high>` token is an
+# ALTERNATION there unless every `|` in it is backslash-escaped. Escaping is
+# one keystroke from silently useless: drop a single backslash and the
+# pattern becomes `FINDING: <low` OR `medium` OR `high>: <title>`, whose
+# middle arm this same help text satisfies independently in "(medium, by
+# default)" -- so the assertion would keep passing with the FINDING line
+# shape deleted outright, which is the one regression it exists to catch.
+# Nothing here should hinge on a backslash nobody re-reads.
+# tests/test_engine_claude.sh documents the same hazard and takes the same
+# way out: assert the metacharacter-free prefix instead.
+assert_match "adapter that asks a review for \`FINDING:" "$drive_help_one_line" \
   "orchid drive --help must state which adapter shape makes the severity clause live"
-assert_match "LIVE" "$drive_help_one_line" \
+assert_match "parses them makes the clause LIVE" "$drive_help_one_line" \
   "orchid drive --help must say the clause is live for such an adapter, not describe every reviewer as verdict-only"
 assert_match "empty findings\[\] blocks nothing" "$drive_help_one_line" \
   "orchid drive --help must keep the other half: an empty findings[] is a valid review, not a missing one"
 grep -q "the shipped review adapters ask for a VERDICT line only" <<<"$drive_help_one_line" \
-  && fail "orchid drive --help still calls every shipped review adapter verdict-only — plugins/engines/claude/run has not been since v1-m4 T006"
+  && fail "orchid drive --help still calls every shipped review adapter verdict-only — one shipped review adapter has not been since v1-m4 T006"
+# ...and it must not over-correct into the opposite false claim, which is
+# where it landed next: for one round this help asserted the shipped DEFAULT
+# reviewer parses FINDING lines. lib/resolver.sh's `reviewer` default resolves
+# to an adapter that writes no findings key at all, so that read as a promise
+# of a gate most operators are not getting. INV-13/INV-14 want this drawn by
+# CAPABILITY anyway — the help states what each adapter SHAPE does and claims
+# nothing about which one is bound.
+grep -qi "default reviewer" <<<"$drive_help_one_line" \
+  && fail "orchid drive --help asserts what the DEFAULT reviewer's adapter does — lib/resolver.sh's reviewer default populates no findings[], and the help is supposed to distinguish adapters by capability, not by which is default"
 # ...and the same claim must not survive in any other shipped usage text.
 stale_help="$(grep -rln "adapter never fills findings" "$REPO_ROOT/runners" "$REPO_ROOT/libexec" "$REPO_ROOT/bin" 2>/dev/null || true)"
 [ -z "$stale_help" ] || fail "stale L006 severity-gate claim still shipped in: $stale_help"

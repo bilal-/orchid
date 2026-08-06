@@ -154,9 +154,13 @@ if [ "${1:-}" = --inbound-probe ]; then
   # makes doctor print "Answers sent on this channel are being lost" about a
   # row that says connected -- the false alarm that teaches an operator to
   # ignore this line, on the one check whose whole job is to be believed.
+  #
+  # Each negated form is spelled out here rather than left to the positive
+  # test: "not ready" contains the whole word "ready", so a row openclaw
+  # writes that way is a negation the positives would otherwise read as up.
   probe_channel_lower="$(printf '%s' "$probe_channel" | tr '[:upper:]' '[:lower:]')"
   probe_status="${probe_lower//"$probe_channel_lower"/ }"
-  if grep -qE '(^|[^a-z0-9_-])(not connected|disconnect(ed|ing)?|offline|unauthor[a-z]*|expired|down|unreachable)([^a-z0-9_-]|$)' \
+  if grep -qE '(^|[^a-z0-9_-])((not|never)[[:space:]]+(connected|online|ready|active)|disconnect(ed|ing)?|offline|unauthor[a-z]*|expired|down|unreachable)([^a-z0-9_-]|$)' \
        <<<"$probe_status"; then
     echo "openclaw reports channel '$probe_channel' as NOT connected: $probe_line"
     exit 1
@@ -169,11 +173,19 @@ if [ "${1:-}" = --inbound-probe ]; then
   # text quoted, which is the honest answer for output nobody has verified
   # against a live gateway yet. A truly down gateway is caught by the
   # nonzero-exit branch above, not by string matching.
-  case "$probe_lower" in
-    *connected*|*online*|*ready*|*active*)
-      echo "openclaw reports channel '$probe_channel' connected: $probe_line"
-      exit 0 ;;
-  esac
+  #
+  # And matched with the negatives' own two disciplines, WHOLE WORDS against
+  # the NAME-ELIDED row, because the same two failures mirror exactly onto
+  # this side: a bare `*active*` reads "inactive" as up, and a channel named
+  # `ready-queue` or `online-ops` would invent a verdict out of its own name.
+  # This direction is the worse one to get wrong -- a false NOT-reachable
+  # only cries wolf, while a false REACHABLE tells an operator their answers
+  # are getting through on a channel that is dropping every one of them.
+  if grep -qE '(^|[^a-z0-9_-])(connected|online|ready|active)([^a-z0-9_-]|$)' \
+       <<<"$probe_status"; then
+    echo "openclaw reports channel '$probe_channel' connected: $probe_line"
+    exit 0
+  fi
   echo "openclaw's status line for channel '$probe_channel' is not one this probe recognizes: $probe_line"
   exit 2
 fi

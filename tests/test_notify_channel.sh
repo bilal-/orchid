@@ -450,6 +450,21 @@ assert_eq "1" "$probe_rc" "an expired credential still fails the return leg, who
 probe telegram "telegram   disconnected" 0
 assert_eq "1" "$probe_rc" "a disconnected row is still NOT reachable"
 
+# The POSITIVES carry the same two disciplines, and this is the direction
+# where a mistake does the greater damage: a false "not reachable" only cries
+# wolf, while a false REACHABLE tells an operator their answers are arriving
+# on a channel that is dropping every one of them.
+probe ready-queue "ready-queue   flapping" 0
+assert_eq "2" "$probe_rc" "a channel whose NAME contains 'ready' must not invent a REACHABLE verdict out of its own name"
+probe telegram "telegram   inactive" 0
+assert_eq "2" "$probe_rc" "'inactive' must not match the status word 'active'"
+probe telegram "telegram   not ready   (gateway starting)" 0
+assert_eq "1" "$probe_rc" "'not ready' is a negation -- the whole word 'ready' inside it must not read as up"
+assert_match "NOT connected" "$probe_out" "the probe says which way it decided"
+# ...and the positive words this probe does recognize still decide, as words.
+probe telegram "telegram   online   (gateway 2026.7.1-2)" 0
+assert_eq "0" "$probe_rc" "an 'online' row is reachable"
+
 # A usage banner counts as a version difference only where a CLI prints one:
 # at the start of a line. A gateway error that merely quotes the word must
 # stay a determination about the transport, not a shrug about the CLI.
