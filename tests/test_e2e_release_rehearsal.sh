@@ -276,11 +276,15 @@ snapshot_source() {
 # could not have created either. Symlink first, because that is what install.sh
 # makes and a symlink to a directory would otherwise read `dir`.
 path_state() {
-  local p="$1" state=absent
-  if   [ -L "$p" ]; then state=symlink
-  elif [ -d "$p" ]; then state=dir
-  elif [ -f "$p" ]; then state=file
-  elif [ -e "$p" ]; then state=other
+  # Every value quoted: `state=file` and `state=dir` are bare words that name
+  # real commands, which ShellCheck reads as an attempt to capture their output
+  # (SC2209). Quoting says "string", which is what is meant, and keeps the
+  # zero-warning gate green.
+  local p="$1" state="absent"
+  if   [ -L "$p" ]; then state="symlink"
+  elif [ -d "$p" ]; then state="dir"
+  elif [ -f "$p" ]; then state="file"
+  elif [ -e "$p" ]; then state="other"
   fi
   printf '%s %s\n' "$state" "$p"
 }
