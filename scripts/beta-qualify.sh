@@ -384,17 +384,26 @@ gate_state() {
 }
 gate_before="$(gate_state)"
 gate_after="$(gate_state)"
-GATE_TESTED="ran 'orchid trust show' against the target twice and extracted only the gate token from its output"
+GATE_TESTED="ran 'orchid trust show' against the target twice, extracted only the gate token from each, and compared the two"
 GATE_WHY="headless ticks and background-service installation stay refused until an operator acknowledges the prompt-injection risk of this specific repository; a tester who cannot read that gate cannot tell a deliberate refusal from a hang"
 probe_stop
-if [ "$gate_before" = unreadable ]; then
+if [ "$gate_before" = unreadable ] || [ "$gate_after" = unreadable ]; then
   record unattended-gate "machine-local unattended trust gate" fail true \
     "$GATE_TESTED" "$GATE_WHY" \
     "the gate state could not be read, so it is reported as unreadable rather than assumed to be either state"
+elif [ "$gate_before" != "$gate_after" ]; then
+  # The second read is only worth taking if its answer can change the outcome.
+  # Two different answers mean the gate moved WHILE this harness was looking at
+  # it -- and since this harness never acknowledges, whatever moved it was
+  # something else on this machine. Reporting either token as "the" gate state
+  # would be reporting a state that had already stopped being true.
+  record unattended-gate "machine-local unattended trust gate" fail true \
+    "$GATE_TESTED" "$GATE_WHY" \
+    "the gate read '$gate_before' and then '$gate_after': it changed between two back-to-back inspections, so no single state can be reported for it; this harness never acknowledges, so something else on this machine moved it and the target's gate must be settled before its qualification means anything"
 else
   record unattended-gate "machine-local unattended trust gate" pass true \
     "$GATE_TESTED" "$GATE_WHY" \
-    "the gate reads '$gate_before' and is unchanged after inspection ('$gate_after'); this harness never acknowledges, so an unattended run stays refused until the operator runs 'orchid trust unattended <repo> --reason ...' themselves"
+    "the gate reads '$gate_before' and both back-to-back reads agree, so it is unchanged across inspection; this harness never acknowledges, so an unattended run stays refused until the operator runs 'orchid trust unattended <repo> --reason ...' themselves"
 fi
 
 # ===========================================================================
@@ -543,35 +552,64 @@ fi
 # scratch repository, so the target's lock state is never touched. NON-blocking:
 # this is a property of the BUILD, not of the candidate repository, and it
 # carries an explicit expiry so it cannot outlive its cause.
+#
+# "No lock line in the output" is evidence of a build gap ONLY if the command
+# actually got as far as producing a report. On a bare scratch repository it
+# might not -- and a check that could not run is not a check that failed, so
+# recording one as a gap would put a defect this build may not have on a list
+# an operator is meant to work through. The probe therefore establishes its own
+# preconditions and records `not-tested` when one is missing, the same
+# distinction the notify and command-execution probes already draw.
 # ===========================================================================
 probe_start
 lock_probe="$SCRATCH/lock-probe"
 lock_report=absent
+lock_ran=0
+lock_untested_why=""
 mkdir -p "$lock_probe"
 if run_quiet git -C "$lock_probe" init; then
   mkdir -p "$lock_probe/.orchid/runtime/lock"
   jq -n '{pid:21474836, pid_start:"stale", hostname:"orchid-qualify.invalid", epoch:0}' \
     > "$lock_probe/.orchid/runtime/lock/owner.json" 2>/dev/null
-  lock_out="$(ORCHID_REPO="$lock_probe" "$ORCHID_BIN" status --explain 2>&1)"
-  # A closed set of phrases, never the bare substring "lock": "blocked"
-  # contains it, and matching that would report a lock the operator was never
-  # actually told about. Herestring, not a pipe, for the SIGPIPE reason above.
-  # The captured output is discarded either way.
-  if grep -Eqi 'run lock|lock held|lock_break_s' <<<"$lock_out"; then
-    lock_report=present
+  lock_rc=0
+  lock_out="$(ORCHID_REPO="$lock_probe" "$ORCHID_BIN" status --explain 2>&1)" || lock_rc=$?
+  # PRECONDITION, then the question. `run_status:` is the first line of every
+  # text status report, printed whether or not the repository has ever been
+  # initialized, so its presence is what separates "the command reported, and
+  # said nothing about the lock" from "the command never got that far". Only
+  # the first of those two is a statement about this build.
+  if grep -Eq '^run_status:' <<<"$lock_out"; then
+    lock_ran=1
+    # A closed set of phrases, never the bare substring "lock": "blocked"
+    # contains it, and matching that would report a lock the operator was never
+    # actually told about. Herestring, not a pipe, for the SIGPIPE reason above.
+    # The captured output is discarded either way.
+    if grep -Eqi 'run lock|lock held|lock_break_s' <<<"$lock_out"; then
+      lock_report=present
+    fi
+  else
+    lock_untested_why="'orchid status --explain' exited $lock_rc without printing a status report, so its silence about the lock says nothing about whether the report would have named one"
   fi
+else
+  lock_untested_why="a disposable scratch Git repository could not be created here, so there was nowhere to plant a lock to look for"
 fi
 probe_stop
-LOCK_TESTED="planted a dead-owner run lock in this harness's own disposable scratch repository and ran 'orchid status --explain' against it"
 LOCK_WHY="a killed merge leaves the run lock on disk; if no read-only command reports it, an operator sees a run that has simply stopped, with no indication that anything is breakable or when"
-if [ "$lock_report" = present ]; then
+if [ "$lock_ran" -eq 0 ]; then
+  record stale-run-lock-visibility "a held run lock is visible to a read-only command" not-tested false \
+    "attempted to plant a dead-owner run lock in this harness's own disposable scratch repository and read a status report back from it; the attempt did not get far enough to ask the question" \
+    "$LOCK_WHY" \
+    "the check could not be performed on this machine: $lock_untested_why; it is recorded as untested rather than as a build gap, because an unrun check is not evidence that the behaviour is missing"
+elif [ "$lock_report" = present ]; then
   record stale-run-lock-visibility "a held run lock is visible to a read-only command" pass false \
-    "$LOCK_TESTED" "$LOCK_WHY" \
+    "planted a dead-owner run lock in this harness's own disposable scratch repository and ran 'orchid status --explain' against it, which returned a status report" \
+    "$LOCK_WHY" \
     "the read-only status report names the held lock, so an operator can see it without reading .orchid by hand"
 else
   record stale-run-lock-visibility "a held run lock is visible to a read-only command" fail false \
-    "$LOCK_TESTED" "$LOCK_WHY" \
-    "no read-only command reported the planted lock: the next verb that wants it refuses with the owner pid alone, and nothing states that a dead owner becomes breakable after lock_break_s; an operator meets this as a run that stopped for no stated reason" \
+    "planted a dead-owner run lock in this harness's own disposable scratch repository and ran 'orchid status --explain' against it, which returned a status report" \
+    "$LOCK_WHY" \
+    "the status report came back and said nothing about the planted lock: the next verb that wants it refuses with the owner pid alone, and nothing states that a dead owner becomes breakable after lock_break_s; an operator meets this as a run that stopped for no stated reason" \
     "a read-only Orchid command reports a held run lock, its owner's liveness, and the age after which it becomes breakable"
 fi
 

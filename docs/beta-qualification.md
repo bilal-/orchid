@@ -75,12 +75,12 @@ guess. Pass `--no-run-verify` to skip it — the timing probe is then recorded a
 |---|---|---|
 | `toolchain` | yes | Runs the named Bash with a version floor check, plus `git --version` and `jq --version`. |
 | `repo-config` | yes | Confirms a Git worktree with a configured `verify=` command; buckets commit and tracked-file counts. |
-| `unattended-gate` | yes | **Reports** the machine-local unattended trust gate, twice, and never changes it. A harness that acknowledged would be granting itself trust. |
+| `unattended-gate` | yes | **Reports** the machine-local unattended trust gate, and never changes it. A harness that acknowledged would be granting itself trust. It reads the gate twice and compares the two: matching reads are reported as the gate's state, and a gate that moved between two back-to-back reads fails the probe rather than being reported as either state. |
 | `implementer-shell` | yes | Resolves `role.implementer` and reads the winning plugin's declared `capabilities=`. No `shell` means running a repository script and changing a file mode are operator hand-offs no in-loop actor can perform — a headless deadlock. |
 | `implementer-command-execution` | no (`not-tested`) | Whether the adapter *actually grants* command execution, which is a different fact from the manifest declaration. See below. |
 | `verify-duration` | yes | Times one real `verify=` run against `pump_stale_s`. The driver holds no lease refresh across a synchronous verification and the merge re-verifies after its rebase, so one pass costs roughly twice the verify duration with the lease untouched. |
 | `merge-rebase-regeneration` | yes | The merge rebase invalidates any committed artifact derived from the tree's exact content (a checksum pin, a lockfile, a generated file). Regenerating one needs an actor that can run a command. |
-| `stale-run-lock-visibility` | no | Plants a dead-owner run lock in the harness's own disposable scratch repository and checks whether a read-only command reports it. |
+| `stale-run-lock-visibility` | no | Plants a dead-owner run lock in the harness's own disposable scratch repository and checks whether a read-only command reports it. Recorded as `not-tested` — not as a gap — if the scratch repository could not be created or `orchid status --explain` never returned a report, because a check that could not run is not evidence that the behaviour is missing. |
 | `notify-return-leg` | no (`not-tested`) | Records whether an outbound channel is *configured*; never that it works. See below. |
 
 A **blocking** probe decides the repository's verdict. A non-blocking failure is
@@ -193,6 +193,18 @@ tripwire output. The rehearsal asserts
 the log is empty, that no repository acquired a remote or a remote ref, that the
 source checkout is unchanged afterwards, and that removing the root leaves the
 machine exactly as it found it.
+
+An empty tripwire log only means *nothing ran* if the tripwires are known to
+fire and to log, so the rehearsal proves that first: it invokes each refused
+shape — `curl`, `git push`, `git fetch`, `git pull`, `git clone`, `git
+ls-remote origin`, `git remote update`, `git submodule update`, `git
+send-pack`, `openssl s_client` — and asserts each one exits 97 *and* records
+the invocation. That self-test runs from a throwaway repository created inside
+the private root, with no remote and no history, and the rehearsal stays off
+the caller's checkout from then on. The `PATH` shim is what should stop those
+commands; it must not be the only thing that does. Standing on ground with no
+remote means that even a total shim failure reaches a scratch directory with
+nothing to push to and no `origin` to resolve.
 
 Those last two claims are deliberately **narrow**, which is what makes them
 mean anything on a real machine. The suite runs from a live Orchid worktree,

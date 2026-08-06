@@ -40,13 +40,20 @@
 # pointed at the caller's real checkout.
 #
 # The rehearsal proper needs no cwd at all: every git call is `git -C
-# <absolute path>` and every Orchid verb gets an explicit ORCHID_REPO. Exactly
-# one step changes directory, step 7's installer phase, and it has to:
-# install.sh ends by offering `orchid doctor` against the CURRENT directory,
-# so from an unrelated cwd that offer would reach outside the private root --
-# the one thing this rehearsal must not do. It uses `cd_scratch "$R"` inside a
-# `$( ... )` subshell, so the target is validated against this run's roots and
-# the change cannot leak into any later phase.
+# <absolute path>` and every Orchid verb gets an explicit ORCHID_REPO. Two
+# steps change directory, both through cd_scratch:
+#
+#  * step 0b's tripwire self-test, which INVOKES `git push`, `git fetch`, and
+#    the rest of the remote-capable set to prove the shim refuses and logs
+#    them. It moves onto a throwaway repository under the private root first,
+#    and stays off the caller's checkout for the rest of the file: the shim is
+#    what SHOULD stop those commands, but it must not be the only thing that
+#    does. See the long note there.
+#  * step 7's installer phase, which has to: install.sh ends by offering
+#    `orchid doctor` against the CURRENT directory, so from an unrelated cwd
+#    that offer would reach outside the private root -- the one thing this
+#    rehearsal must not do. It uses `cd_scratch "$R"` inside a `$( ... )`
+#    subshell, so the change cannot leak into any later phase.
 #
 # (The one other `cd` in this file's TEXT is not this file's: it sits inside
 # the stub engine adapter written out in step 0d, which Orchid runs as a
@@ -236,6 +243,53 @@ ORIGINAL_PATH="$PATH"
 export PATH="$TRIPWIRE_DIR:$PATH"
 [ "$(command -v curl)" = "$TRIPWIRE_DIR/curl" ] || fail "the curl tripwire is not first on PATH"
 [ "$(command -v git)" = "$TRIPWIRE_DIR/git" ] || fail "the git tripwire is not first on PATH"
+
+# ---------------------------------------------------------------------------
+# The self-test's GROUND, before any of the self-test itself.
+#
+# What follows invokes the real shapes -- `git push`, `git fetch`, `git pull`,
+# `git clone`, `git ls-remote origin`, `git remote update`, `git submodule
+# update`, `git send-pack` -- because an empty tripwire log at step 8 means
+# "nothing ran" only if the tripwires are known to fire AND to log. That is the
+# right design and it stays. But it decides WHERE it stands from, and the
+# obvious place is wrong: this file runs from the operator's live checkout,
+# which has a real `origin`. Standing there, the only thing between `git push`
+# and that remote is the PATH assertion two lines above. One assertion is a
+# fine check and a poor floor, and this is the file that certifies "never
+# contact a remote" for the whole build -- the shape of the guarantee matters
+# as much as the outcome, because an operator reading it has to be able to see
+# that it holds without having to trust the shim first.
+#
+# So the self-test runs from a throwaway repository created here, inside the
+# private root, with no remote and no history. If the shim were removed
+# outright, every command below would reach a scratch directory with nothing
+# to push to, nothing to fetch from, and no `origin` to resolve -- the failure
+# mode of a total shim failure is "a scratch repo declines", not "the
+# operator's work is published". Real git creates it (`init` is not a refused
+# subcommand, but setup must not depend on the thing under test), and the
+# no-remote property is asserted through real git too, for the same reason.
+# ---------------------------------------------------------------------------
+SELFTEST_REPO="$R/tripwire-selftest"
+mkdir -p "$SELFTEST_REPO"
+"$REAL_GIT" -C "$SELFTEST_REPO" init -q >/dev/null 2>&1 \
+  || fail "cannot create the disposable repository the tripwire self-test stands on"
+selftest_remotes="$("$REAL_GIT" -C "$SELFTEST_REPO" remote 2>/dev/null)"
+[ -z "$selftest_remotes" ] \
+  || fail "the tripwire self-test repository must have no remote, got '$selftest_remotes'"
+# cd_scratch, not `cd` (L014): it refuses an empty path and anything outside a
+# root this run created, so the self-test cannot silently end up running from
+# the caller's checkout after all -- which is the entire point of moving it.
+cd_scratch "$SELFTEST_REPO"
+# Belt and braces: ask git itself which repository the following commands would
+# act on, and refuse to run them anywhere but the throwaway one. Compared
+# against "$SELFTEST_REPO" as-is, with no second canonicalisation step: "$R"
+# hangs off a `pwd -P` result, so this path is already physical, and git's own
+# answer comes from getcwd(), which is physical too. (A bare `cd` to
+# re-canonicalise here would be exactly the L014 violation the header forbids.)
+selftest_toplevel="$("$REAL_GIT" rev-parse --show-toplevel 2>/dev/null)"
+[ "$selftest_toplevel" = "$SELFTEST_REPO" ] \
+  || fail "the tripwire self-test must run against its throwaway repository ($SELFTEST_REPO), not '$selftest_toplevel'"
+
 # The git shim must be transparent for ordinary local work, or every phase
 # below would be testing the shim rather than Orchid.
 git --version >/dev/null 2>&1 || fail "the git tripwire broke ordinary 'git --version'"
@@ -279,6 +333,14 @@ if [ -n "$REAL_OPENSSL" ]; then
     && fail "the openssl shim logged a local 'dgst' as a tripwire hit -- the documented shasum fallback would read as a network contact"
 fi
 : > "$TRIPWIRE_LOG"
+# Off the self-test ground, and NOT back to the caller's checkout: the
+# rehearsal proper needs no cwd (every git call is `git -C <absolute path>`,
+# every verb gets an explicit ORCHID_REPO), so the safest place to leave it is
+# the scratch root -- a plain directory with no repository above it, where an
+# accidental bare `git` finds nothing rather than the operator's work. Not
+# "$R" itself: step 9 removes that while snapshots are still running, and a
+# process whose cwd has been deleted is a confusing way to fail.
+cd_scratch "$scratch_root"
 
 # ===========================================================================
 # 0c -- outside-the-root snapshots. Taken AFTER the root exists so the root
