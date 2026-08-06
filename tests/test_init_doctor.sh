@@ -582,6 +582,20 @@ assert_match "WARN: notify outbound: notify.plugin 'fixchan' is not usable" "$nf
   "a duplicate notify plugin is reported as unusable, not as missing"
 assert_match "duplicate notify plugin 'fixchan'" "$nfy_dup_out" \
   "doctor surfaces resolve_notify_dir's own INV-10 explanation instead of discarding it"
+# ...and the notify WARN above is only HALF the verdict. A duplicate id is an
+# INV-10 collision, which orchid-doctor's plugin-discovery check calls "a
+# doctor FAIL, not a warning" in its own words -- so this is the one notify
+# case where the advisory invariant does NOT apply, and asserting only the
+# WARN wording would let a notify duplicate silently degrade to warn-only.
+# `$nfy_dup_rc` is safe to assert here where it is not elsewhere: the fixture
+# was pinned doctor-clean in case 1 and cases 2-5 each restored what they
+# changed, so this run's failure is attributable to the duplicate. Both
+# halves, since rc alone would not say WHICH check failed: test_plugins_list
+# covers collision-FAIL for engine plugins; what is covered here is that a
+# kind=notify duplicate reaches the same discovery check at all.
+[ "$nfy_dup_rc" -ne 0 ] || fail "an INV-10 duplicate notify plugin must FAIL doctor, not merely warn"
+assert_match "^FAIL: plugin discovery: collision" "$nfy_dup_out" \
+  "a duplicate notify plugin fails doctor via the plugin-discovery collision check"
 rm -rf "$WORK/notify-plugins-2"
 
 # 7. Local evidence: a raised blocker with no answer beside it is the exact

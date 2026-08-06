@@ -417,7 +417,7 @@ case "$sub" in
       if legal arbitrating merging "$arch"; then
         to=merging
       elif legal arbitrating "done" "$arch"; then
-        to=done
+        to="done"
       fi
     else
       if legal arbitrating rework "$arch"; then

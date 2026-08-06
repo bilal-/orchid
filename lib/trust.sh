@@ -733,10 +733,10 @@ unattended_tool_probe() {
     state=both
     detail="$tool is reachable on both the operator PATH and the fixed PATH unattended runs pin"
   elif [ "$unattended" -eq 1 ]; then
-    state=unattended-only
+    state="unattended-only"
     detail="$tool is reachable on the fixed PATH unattended runs pin but not on the operator PATH, so interactive verbs will report it missing; put the directory holding $tool on your PATH"
   elif [ "$interactive" -eq 1 ]; then
-    state=interactive-only
+    state="interactive-only"
     detail="$tool is on the operator PATH but not on the fixed PATH unattended runs pin ($ORCHID_UNATTENDED_PATH), so the unattended gate reports it missing; $(unattended_tool_path_remedy "$tool")"
   else
     state=neither
