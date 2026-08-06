@@ -304,12 +304,21 @@ branch ahead of the checkout), and that branch carrying no committed
 the per-verb transactional lock across everything it mutates and re-checks
 all three underneath it, so the commit below cannot land on a branch whose
 run is already in flight and move a candidate's `base_sha`.
-A `--verify` command is appended to the integration checkout's
-`orchid.config` and COMMITTED onto the integration branch by that same
-command — only when that file (as committed on the branch, not merely as
-resolved through the machine-local env/user layers) configures none yet, and
-never as a replacement — so setup needs no follow-up `orchid config commit`
-and leaves the integration checkout clean. Unattended trust stays off unless
+A `--verify` command (a single line — `orchid.config` is a line-oriented
+`key=value` file, so a value carrying a newline or any other control
+character is refused rather than recorded truncated) is appended to the
+integration checkout's `orchid.config` and COMMITTED onto the integration
+branch by that same command — only when that file (as committed on the
+branch, not merely as resolved through the machine-local env/user layers)
+configures none yet, and never as a replacement — so setup needs no follow-up
+`orchid config commit` and leaves the integration checkout clean. That commit
+is whole-file, so append-only holds against the BRANCH and not merely against
+the file on disk: a checkout whose `verify=` line differs from the branch's,
+or which is missing any other line the branch carries, is refused above the
+mutation boundary (naming both ways to reconcile it) rather than committed
+over, and an `orchid.config` that `.gitignore` excludes and no commit tracks
+is refused there too, since `git add` cannot stage it and setup will not
+force it past a rule the operator wrote. Unattended trust stays off unless
 both `--ack-unattended` and a non-empty `--reason` are given, which invokes
 the machine-local `orchid trust` acknowledgement. Nothing below depends on
 it: every verb it calls remains individually callable, and the manual

@@ -23,7 +23,11 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 #      hands back homework is not one command and a dirty integration
 #      checkout is dogfood finding F16), not a directory that is not exactly
 #      this repository's integration worktree, not a requirements snapshot
-#      that is already identical.
+#      that is already identical. That commit is whole-file, so "append-only"
+#      has to hold against the branch too, not just against the file on disk:
+#      a checkout whose orchid.config would REPLACE the `verify=` line $integ
+#      already carries, or DROP any other line it carries, is refused above
+#      the mutation boundary rather than committed over.
 #   3. It never RESUMES or STEALS a session. Against existing run state it
 #      demands the run still be in `planning` -- in the integration
 #      checkout's roadmap, in the roadmap COMMITTED on the integration
@@ -50,12 +54,13 @@ setup, requirements import, and a handoff into PLANNING.
 
   <requirements-file>  operator-authored requirements, imported verbatim into
                        .orchid/requirements.md under the validated epoch.
-  --verify <command>   the project's verification command. Appended as a
-                       `verify=` line to the integration checkout's
-                       orchid.config -- and committed onto the integration
-                       branch -- only when that file configures none yet;
-                       a `verify=` line already there is never replaced.
-                       orchid start never guesses a verification command.
+  --verify <command>   the project's verification command, on ONE line.
+                       Appended as a `verify=` line to the integration
+                       checkout's orchid.config -- and committed onto the
+                       integration branch -- only when that file configures
+                       none yet; a `verify=` line already there is never
+                       replaced. orchid start never guesses a verification
+                       command.
   --worktree <path>    where the integration worktree lives (default:
                        ../<repo>-orchid). An existing path is reused only
                        when it is exactly this repository's
@@ -218,9 +223,14 @@ _start_lease_live() {
 # <label> names the config in every message, so a blob extracted to a temp
 # file (the config COMMITTED on the integration branch, which is what a run
 # with no checkout yet will actually read) can be validated by the same code
-# without reporting a mktemp path at the operator.
+# without reporting a mktemp path at the operator. <fix> is the recovery that
+# actually applies to the copy being read -- every other refusal in this file
+# names one, and the committed copy needs it MOST: those bytes live in a git
+# blob the operator cannot open and edit, so "line 4 is malformed" without a
+# route to line 4 is a dead end.
 _start_validate_config() {
-  local file="$1" label="${2:-$1}" n=0 line lead key
+  local file="$1" label="${2:-$1}" fix="${3:-}" n=0 line lead key
+  [ -n "$fix" ] || fix="Fix that line in $file (a 'key=value' setting, or a '#' comment) and re-run"
   [ -f "$file" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     n=$((n + 1))
@@ -235,9 +245,19 @@ _start_validate_config() {
     esac
     case "$line" in
       *=*) key="${line%%=*}" ;;
-      *) orchid_die "$label line $n is not a 'key=value' line: '$line' — repo config is refused rather than silently ignored" ;;
+      *) orchid_die "$label line $n is not a 'key=value' line: '$line' — repo config is refused rather than silently ignored. $fix" ;;
     esac
-    [ -n "$key" ] || orchid_die "$label line $n has an empty config key: '$line'"
+    [ -n "$key" ] || orchid_die "$label line $n has an empty config key: '$line'. $fix"
+    # Whitespace inside the key is fatal for the same reason a missing `=`
+    # is, and is far easier to write by accident: config_get matches
+    # `^key=` literally, so `verify = true` sets nothing at all while
+    # LOOKING like it sets the most important line in the file. Judged
+    # before the role.* exemption below, which is about UNKNOWN keys, not
+    # about unreadable ones.
+    case "$key" in
+      *[[:space:]]*)
+        orchid_die "$label line $n puts whitespace in its config key: '$line' — settings are matched as '^$key=' exactly, so this line configures nothing while looking like it does. Write it with no spaces around the '=' (e.g. 'verify=true'). $fix" ;;
+    esac
     case "$key" in
       role.*) continue ;;
     esac
@@ -262,6 +282,118 @@ _start_committed_verify() {
   v="$(_cfg_file_get "$tmp" verify)"
   rm -f "$tmp"
   printf '%s\n' "$v"
+}
+
+# _start_config_is_committed <checkout> <branch> -- true when <checkout>'s
+# orchid.config is byte-identical to the blob committed on <branch>, i.e. when
+# there is genuinely nothing for the record step's commit to carry.
+_start_config_is_committed() {
+  local co="$1" branch="$2" tmp rc=0
+  tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-start-cfg.XXXXXX")"
+  git -C "$co" show "refs/heads/$branch:orchid.config" > "$tmp" 2>/dev/null || : > "$tmp"
+  cmp -s "$tmp" "$co/orchid.config" || rc=1
+  rm -f "$tmp"
+  return "$rc"
+}
+
+# _start_require_single_line <value> <what> -- refuse a verification command
+# that orchid.config cannot hold.
+#
+# That file is a LINE-ORIENTED `key=value` store: `_cfg_file_get` reads a
+# setting back with `grep -E "^key=" | cut -d= -f2-`, one line at a time. A
+# value carrying a newline therefore writes `verify=<first line>` plus one or
+# more ORPHAN lines -- the run would then verify with a truncated command
+# while this verb's own report prints the whole value as recorded, and every
+# later config read (including _start_validate_config above, which runs BEFORE
+# the append and so cannot see the damage in the run that causes it) would die
+# on the orphans. Checked at argument-parsing time, above the mutation
+# boundary, and again on whatever value is finally resolved -- `ORCHID_VERIFY`
+# reaches the same append through config_get. Any control character is
+# refused, not just a newline: none of them belongs in a config line, and a
+# `\r` or a bare `\t` at the end of a command is far likelier to be a paste
+# accident than an intention.
+#
+# Only the verification command needs this. `--reason` is handed to `orchid
+# trust unattended`, which stores it in a jq-authored JSON record where a
+# newline is just an escape sequence.
+_start_require_single_line() {
+  case "$1" in
+    *[[:cntrl:]]*)
+      orchid_die "$2 must be a single line, and this one contains a control character (a newline, tab or similar) — orchid.config holds it as one 'verify=<command>' LINE, so a multi-line command would be recorded truncated at its first line, silently verify with less than you asked for, and leave every later config read tripping over the leftovers. Put the command in a script and pass that instead (e.g. --verify './scripts/verify.sh')" ;;
+  esac
+}
+
+# _start_require_committable_config <workdir> <repo> <rev> <branch> -- refuse,
+# above the mutation boundary, a repository whose orchid.config git will not
+# let this verb commit.
+#
+# The `verify=` line is recorded DURABLY by committing orchid.config onto
+# <branch> (see the record step below), and `git add -- orchid.config` FAILS
+# outright on a path that .gitignore excludes and that no commit tracks yet.
+# Below the boundary that failure lands after `orchid init` has run, after the
+# worktree exists and after the epoch is minted, as git's own raw error with
+# none of this file's recovery framing -- and every re-run reproduces it.
+# `git add -f` is deliberately NOT the answer: force-committing a file the
+# operator's own .gitignore excludes is precisely the "never overwrites
+# anything the operator owns" rule inverted, and the choice of whether
+# repository configuration belongs in history is theirs to make.
+#
+# Tracked beats ignored: .gitignore has no say over a path some commit already
+# carries, so this only fires when <rev> does not carry orchid.config at all.
+# On the `mode=new` path that is exactly the shape a clean tree can still
+# hide -- an UNtracked, unignored orchid.config makes `git status --porcelain`
+# dirty and is refused for that instead.
+_start_require_committable_config() {
+  local wd="$1" repo="$2" rev="$3" branch="$4" rule
+  # `if`, not `cmd && return 0`: a failing AND-list is a failing statement
+  # under this file's `set -e`, so the tracked case -- the common one -- would
+  # kill the script instead of returning from this function.
+  if git -C "$repo" cat-file -e "$rev:orchid.config" 2>/dev/null; then return 0; fi
+  git -C "$wd" check-ignore -q -- orchid.config 2>/dev/null || return 0
+  rule="$(git -C "$wd" check-ignore -v -- orchid.config 2>/dev/null || true)"
+  orchid_die "orchid.config is excluded by .gitignore here and is not tracked on $branch${rule:+ ($rule)} — orchid start records this run's verification command by COMMITTING that file onto $branch (a verify= line that lives only in an ignored working file vanishes on every fresh checkout: a task worktree, another machine, a headless pump), and git refuses to add an ignored path. Either stop ignoring it — orchid.config is repository configuration, meant to be committed — or, if it must stay out of the default set, track it deliberately on your own branch first ('git add -f orchid.config && git commit -m \"orchid: track orchid.config\"'); then re-run orchid start"
+}
+
+# _start_require_no_config_clobber <checkout> <branch> <verify-cmd> -- refuse,
+# above the mutation boundary, a commit that would REMOVE from <branch> a
+# config line it already carries.
+#
+# The record step's commit is whole-file (orchid_commit_durable stages the
+# checkout's orchid.config as it stands, exactly as `orchid config commit`
+# does), while this verb's only sanctioned edit to that file is APPENDING one
+# `verify=` line. Those two agree only while the checkout's copy is the
+# branch's copy plus at most that append; if the copy on disk is missing a
+# line the branch carries -- an operator edit made in the checkout, a stale
+# checkout, an orchid.config deleted there entirely -- committing it would
+# silently delete settings the RUN reads. Rule 2, and the invariant
+# docs/quickstart.md and PROTOCOL.md both state.
+#
+# The comparison is against the bytes the commit would actually carry, append
+# included, so the one case that legitimately looks like a deletion -- a
+# checkout carrying no `verify=` line while the branch does, where the append
+# below writes that same line straight back -- is not mistaken for one.
+# Line-order and duplicate lines are deliberately not judged: only the
+# disappearance of a line is a loss, and a set comparison is what says so
+# without inventing a diff opinion.
+_start_require_no_config_clobber() {
+  local co="$1" branch="$2" vcmd="$3" blob want missing
+  blob="$(mktemp "${TMPDIR:-/tmp}/orchid-start-blob.XXXXXX")"
+  want="$(mktemp "${TMPDIR:-/tmp}/orchid-start-want.XXXXXX")"
+  git -C "$co" show "refs/heads/$branch:orchid.config" > "$blob" 2>/dev/null || : > "$blob"
+  : > "$want"
+  [ ! -f "$co/orchid.config" ] || cat "$co/orchid.config" > "$want"
+  if [ -z "$(_cfg_file_get "$co/orchid.config" verify)" ]; then
+    [ ! -s "$want" ] || [ -z "$(tail -c 1 "$want")" ] || printf '\n' >> "$want"
+    printf 'verify=%s\n' "$vcmd" >> "$want"
+  fi
+  # awk, never `head`: an early-exiting consumer SIGPIPEs `comm`/`sort`, which
+  # under this file's pipefail turns a found difference into a fatal pipeline
+  # status (lesson L005). Blank lines are not losses worth naming.
+  missing="$(comm -23 <(sort "$blob") <(sort "$want") \
+    | awk 'NF && n < 3 { printf "%s%s", (n ? "; " : ""), $0; n++ }')"
+  rm -f "$blob" "$want"
+  [ -n "$missing" ] || return 0
+  orchid_die "the orchid.config in $co is missing config lines that $branch already carries ($missing) — orchid start commits that file onto $branch to record the verification command, and the commit is whole-file, so committing it as it stands would DELETE those settings from the run. orchid start only ever appends to that file; it never removes from it. Reconcile the two yourself and re-run: take the branch's copy back with 'git -C $co checkout -- orchid.config', or land your edits deliberately with 'orchid config commit --reason \"...\"' from $co"
 }
 
 # _start_read_run_state <repo> <branch> <live-roadmap-or-empty> -- the run's
@@ -354,11 +486,17 @@ _start_require_planning() {
 
 req=""; verify_opt=""; worktree_opt=""; ack_unattended=0; reason=""
 have_verify_opt=0; have_worktree_opt=0
+# The bare-word `help` alias, and ONLY as the first argument: matched anywhere
+# in argv (as it was) it also swallows a requirements FILE named `help`,
+# printing usage instead of the setup that was asked for. `-h`/`--help` stay
+# positional-independent -- no requirements file is spelled like an option.
+[ "${1:-}" != help ] || { _start_usage; exit 0; }
 while [ $# -gt 0 ]; do
   case "$1" in
-    -h|--help|help) _start_usage; exit 0 ;;
+    -h|--help) _start_usage; exit 0 ;;
     --verify)
       [ -n "${2:-}" ] || orchid_die "--verify requires a non-empty command"
+      _start_require_single_line "$2" "--verify"
       verify_opt="$2"; have_verify_opt=1; shift 2 ;;
     --worktree)
       [ -n "${2:-}" ] || orchid_die "--worktree requires a path"
@@ -486,11 +624,39 @@ cfg_repo="$repo"; [ -z "$existing_wt" ] || cfg_repo="$existing_wt"
 # after `git worktree add` and after the epoch was written, so the refusal
 # arrived with an epoch already minted and printed a recovery that then died on
 # the epoch-ownership guard.
+wt_cfg_commit_expected=0
 if [ -n "$existing_wt" ]; then
-  durable_verify="$(_cfg_file_get "$existing_wt/orchid.config" verify)"
+  wt_cfg_verify="$(_cfg_file_get "$existing_wt/orchid.config" verify)"
+  committed_cfg_verify="$(_start_committed_verify "$existing_wt" "$integ")"
+  # Two DIFFERENT `verify=` lines -- one in the checkout, one on the branch --
+  # is the one shape the record step below cannot honor. Its commit is
+  # whole-file, so committing this checkout's copy would replace the branch's
+  # line with the checkout's: rule 2's "never replaces a `verify=` line
+  # already on the integration branch" broken by the very step that exists to
+  # make the command durable. Refused HERE, above every mutation and above the
+  # `--verify` conflict check below, because the recovery that check prints
+  # ("re-run without --verify") is exactly the run that would perform the
+  # replacement -- a refusal whose own advice does the damage is worse than no
+  # refusal at all.
+  if [ -n "$committed_cfg_verify" ] && [ -n "$wt_cfg_verify" ] \
+     && [ "$committed_cfg_verify" != "$wt_cfg_verify" ]; then
+    orchid_die "the integration checkout configures verify='$wt_cfg_verify' ($existing_wt/orchid.config), but $integ CARRIES verify='$committed_cfg_verify' — orchid start appends a verify= line, never replaces one already committed on the integration branch, and the commit that records it is whole-file, so it will not put the checkout's command over the branch's. Decide which one is this run's and re-run: keep the branch's with 'git -C $existing_wt checkout -- orchid.config', or make the checkout's the run's deliberately with 'orchid config commit --reason \"...\"' from $existing_wt"
+  fi
+  # Whether the record step below will commit THIS ALREADY-EXISTING checkout's
+  # orchid.config -- the only copy that can differ from the branch's at all (a
+  # worktree this verb creates is a fresh checkout OF that branch). Decided
+  # from the same two lines the record step decides from, and nothing between
+  # here and there can change either: an existing checkout is never
+  # re-created, and `orchid init` does not run on this path. What it gates is
+  # the clobber check further down, which must not refuse a re-run that
+  # commits nothing at all.
+  if [ -z "$wt_cfg_verify" ] || [ "$committed_cfg_verify" != "$wt_cfg_verify" ]; then
+    wt_cfg_commit_expected=1
+  fi
+  durable_verify="$wt_cfg_verify"
   durable_verify_src="$existing_wt/orchid.config"
   if [ -z "$durable_verify" ]; then
-    durable_verify="$(_start_committed_verify "$existing_wt" "$integ")"
+    durable_verify="$committed_cfg_verify"
     durable_verify_src="orchid.config as committed on $integ"
   fi
 elif [ "$mode" = existing ]; then
@@ -515,6 +681,10 @@ else
   [ -n "$verify_cmd" ] || verify_cmd="$(config_get "$cfg_repo" verify)"
   [ -n "$verify_cmd" ] || orchid_die "no verification command configured — pass --verify '<command>' (e.g. --verify 'npm test'), or set 'verify=' in $cfg_repo/orchid.config. orchid start never guesses one"
 fi
+# The same single-line rule the flag is held to, applied to whatever value was
+# actually resolved: `ORCHID_VERIFY` is a config layer like any other, and it
+# reaches the same append.
+_start_require_single_line "$verify_cmd" "the verification command"
 
 # -- repo config validation + full preflight --------------------------------
 
@@ -536,9 +706,19 @@ if [ "$mode" = existing ]; then
   git -C "$repo" show "refs/heads/$integ:orchid.config" > "$committed_cfg" 2>/dev/null \
     || : > "$committed_cfg"
   cmp -s "$committed_cfg" "$cfg_repo/orchid.config" \
-    || _start_validate_config "$committed_cfg" "orchid.config as committed on $integ"
+    || _start_validate_config "$committed_cfg" "orchid.config as committed on $integ" \
+         "Those bytes are in a git blob, not in a file you can open: read them with 'git show $integ:orchid.config', fix the line in the integration checkout's orchid.config (create that checkout with 'git worktree add <path> $integ' if there is none yet), land the fix with 'orchid config commit --reason \"fix malformed orchid.config line\"' from there, then re-run orchid start"
   rm -f "$committed_cfg"
 fi
+
+# orchid.config has to be committable onto $integ, and committing this
+# checkout's copy has to be an ADDITION to what that branch already carries.
+# Both are preconditions of the record step far below, and both are checked
+# here, above the mutation boundary, where a refusal still costs nothing.
+cfg_rev=HEAD; [ "$mode" != existing ] || cfg_rev="refs/heads/$integ"
+_start_require_committable_config "$cfg_repo" "$repo" "$cfg_rev" "$integ"
+[ "$wt_cfg_commit_expected" -eq 0 ] \
+  || _start_require_no_config_clobber "$existing_wt" "$integ" "$verify_cmd"
 
 # A dirty tree is `orchid init`'s own refusal ("orchid never touches user
 # work"), re-checked HERE so it is reported before the preflight spends time
@@ -565,7 +745,7 @@ fi
 
 # -- existing run state: refuse, never resume or steal -----------------------
 
-epoch=0; epoch_action=created; run_status=""; run_id=""
+epoch=0; epoch_action=created
 if [ "$mode" = existing ]; then
   # Both roadmap copies, never just the one nearest to hand: the checkout's
   # working-tree roadmap.md when a checkout exists, AND the roadmap committed
@@ -579,8 +759,6 @@ if [ "$mode" = existing ]; then
   [ -n "$ORCHID_START_ROADMAP" ] \
     || orchid_die "branch $integ exists but carries no .orchid/roadmap.md — this is not an orchid-initialized branch; set integration_branch in orchid.config to a free name, or inspect that branch yourself"
   _start_require_planning "as of the start of setup" "$integ"
-  run_status="${ORCHID_START_RS_LIVE:-$ORCHID_START_RS_COMMITTED}"
-  run_id="$ORCHID_START_RUN_ID"
 
   if [ -n "$existing_wt" ]; then
     rt="$existing_wt/.orchid/runtime"
@@ -729,13 +907,20 @@ export ORCHID_EPOCH="$epoch"
 # at all -- so an absent `verify=` LINE, not an empty effective value, is
 # what makes this verb record one.
 #
-# Rule 2 still holds exactly: APPEND-only, never a replacement. A `verify=`
-# line already in that file is the operator's and is never rewritten, and an
-# explicit `--verify` that disagrees with the run's durable command was already
-# refused above -- against these same file/committed lines, and BEFORE this
-# worktree and the epoch existed. There is deliberately no second refusal
-# here: a `--verify` conflict detected below this boundary would abort with an
-# epoch already minted, so the only honest place for that check is above it.
+# Rule 2 still holds exactly: APPEND-only, never a replacement -- and, because
+# the commit is whole-file, that has to hold against the BRANCH as well as
+# against the file on disk. Three refusals above the mutation boundary are
+# what make it hold here, all of them read from these same file/committed
+# lines and all of them settled BEFORE this worktree and the epoch existed:
+# an explicit `--verify` disagreeing with the run's durable command; a
+# checkout whose `verify=` line differs from the one $integ already carries
+# (whose commit would REPLACE it); and a checkout missing any other line the
+# branch carries (whose commit would DELETE it). There is deliberately no
+# second refusal down here: one detected below this boundary would abort with
+# an epoch already minted, so above it is the only honest place for all three.
+# What that leaves reachable here is exactly two shapes -- no `verify=` line
+# in the checkout at all (append it), or one the branch does not carry yet
+# (commit it, unchanged).
 verify_note=""
 wt_verify_line="$(_cfg_file_get "$wt/orchid.config" verify)"
 committed_verify_line="$(_start_committed_verify "$wt" "$integ")"
@@ -751,13 +936,25 @@ if [ -z "$wt_verify_line" ]; then
   wt_verify_line="$verify_cmd"
   verify_action=recorded
 elif [ "$committed_verify_line" != "$wt_verify_line" ]; then
-  # The line is on disk but is not what $integ carries -- an earlier `orchid
-  # start` whose commit lost the CAS race and died, or an operator edit made
-  # in this checkout. Either way the run's verification command still does
-  # not survive a fresh checkout, so finishing that job (never rewriting the
-  # line itself) is what makes a re-run CONVERGE rather than report a
-  # durability hole as "already configured".
+  # The line is on disk and $integ carries NO `verify=` line of its own (a
+  # branch carrying a DIFFERENT one was refused above the boundary, never
+  # converged over) -- an earlier `orchid start` whose commit lost the CAS
+  # race and died, or an operator edit made in this checkout. Either way the
+  # run's verification command still does not survive a fresh checkout, so
+  # finishing that job (never rewriting the line itself) is what makes a
+  # re-run CONVERGE rather than report a durability hole as "already
+  # configured".
   verify_action=committed
+fi
+# One shape survives both branches with nothing left to do: a checkout whose
+# only divergence from $integ was the very `verify=` line just appended back
+# (the operator deleted it from this checkout and re-ran), so the file on disk
+# is now byte-identical to the blob. orchid_commit_durable would correctly die
+# there -- "nothing to commit" -- below the mutation boundary, with an epoch
+# already minted. It is not a failure: the run's command IS configured and IS
+# committed, which is exactly what `none` reports.
+if [ "$verify_action" != none ] && _start_config_is_committed "$wt" "$integ"; then
+  verify_action=none
 fi
 if [ "$verify_action" = none ]; then
   verify_note="already configured in $wt/orchid.config and committed on $integ"
@@ -793,12 +990,15 @@ else
   # there is no runtime directory for one to live in at all. The three
   # witnesses above are what this commit's safety actually rests on.
   #
-  # Granularity is the whole file, as it is for `orchid config commit`: an
-  # edit the operator had already made to THIS checkout's orchid.config and
-  # not yet committed rides along. That is only reachable on an existing
-  # run's checkout (a fresh one is created from the branch two steps above,
-  # and `mode=new` refuses a dirty tree outright), the run is still in
-  # planning, and the resulting commit is named in this verb's output.
+  # Granularity is the whole file, as it is for `orchid config commit`, so an
+  # ADDITION the operator had already made to THIS checkout's orchid.config
+  # and not yet committed rides along: only reachable on an existing run's
+  # checkout (a fresh one is created from the branch two steps above, and
+  # `mode=new` refuses a dirty tree outright), the run is still in planning,
+  # and the resulting commit is named in this verb's output. A REMOVAL or a
+  # replaced `verify=` line does not ride along in either direction -- both
+  # were refused above the boundary, because whole-file granularity would
+  # otherwise turn "append one line" into deleting settings the run reads.
   orchid_commit_durable "$wt" "orchid: start (verify command recorded)" orchid.config
   # `update-ref` above advanced the branch without touching THIS checkout's
   # per-worktree index, which still holds the pre-commit entry -- `git

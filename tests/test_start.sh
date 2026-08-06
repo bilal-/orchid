@@ -249,6 +249,83 @@ assert_eq 1 "$(grep -c '^verify=' "$W/r17-orchid/orchid.config")" \
 assert_eq "" "$(git -C "$W/r17-orchid" status --porcelain -- orchid.config)" \
   "and the integration checkout is left clean"
 
+# ...but convergence stops exactly where it would REPLACE the branch's own
+# command. The commit that records a verify= line is whole-file, so an
+# integration checkout whose verify= line disagrees with the one $integ
+# already carries would put the checkout's command over the branch's -- the
+# one thing this verb promises never to do (docs/quickstart.md, PROTOCOL.md).
+# It is refused above the mutation boundary, and refused on the path that
+# reaches it: `--verify` conflicts print "re-run without --verify", and that
+# re-run is precisely the one that used to perform the replacement.
+r20="$W/r20"; mk_repo "$r20" 'verify=make test'
+ORCHID_REPO="$r20" "$ORCHID_BIN" init >/dev/null || fail "fixture: orchid init must succeed on r20"
+r20wt="$W/r20-orchid"
+git -C "$r20" worktree add -q "$r20wt" orchid/integration \
+  || fail "fixture: the integration worktree must be creatable"
+grep -v '^verify=' "$r20wt/orchid.config" > "$r20wt/config.tmp"
+mv "$r20wt/config.tmp" "$r20wt/orchid.config"
+printf 'verify=npm test\n' >> "$r20wt/orchid.config"
+
+rc=0; out20="$(ORCHID_REPO="$r20" "$ORCHID_BIN" start "$REQ" --verify 'npm test' 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must refuse a --verify that the branch's own command disagrees with"
+assert_match "never replaces one already committed" "$out20" "the refusal states the rule"
+assert_match "make test" "$out20" "the refusal quotes the branch's command"
+
+# The same refusal WITHOUT the flag -- this is the run the old "re-run without
+# --verify" recovery leads to, and the one that would have done the replacing.
+rc=0; out20b="$(ORCHID_REPO="$r20" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must refuse to commit the checkout's verify= line over the branch's own"
+assert_match "never replaces one already committed" "$out20b" "the bare re-run states the same rule"
+assert_match '^verify=make test$' "$(git -C "$r20" show orchid/integration:orchid.config)" \
+  "and the branch's own command still stands"
+assert_eq "verify=npm test" "$(grep '^verify=' "$r20wt/orchid.config")" \
+  "the operator's own uncommitted edit is left exactly as they wrote it"
+[ -e "$r20wt/.orchid/runtime/epoch" ] \
+  && fail "the conflict must be refused before any epoch is minted"
+
+# The recovery it names has to actually work.
+git -C "$r20wt" checkout -- orchid.config || fail "fixture: restoring the branch's copy must succeed"
+out20c="$(ORCHID_REPO="$r20" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "the recovery the refusal prints (restore the branch's copy) must succeed: $out20c"
+assert_match "^verify: make test — already configured" "$out20c" \
+  "the re-run keeps the integration branch's own verification command"
+
+# The same rule for every OTHER line the branch carries: whole-file
+# granularity means a checkout copy that has lost one would delete a setting
+# the run reads, so that commit is refused too, above the boundary.
+r21="$W/r21"; mk_repo "$r21" 'pump_stale_s=600'
+ORCHID_REPO="$r21" "$ORCHID_BIN" init >/dev/null || fail "fixture: orchid init must succeed on r21"
+r21wt="$W/r21-orchid"
+git -C "$r21" worktree add -q "$r21wt" orchid/integration \
+  || fail "fixture: the integration worktree must be creatable"
+grep -v '^pump_stale_s=' "$r21wt/orchid.config" > "$r21wt/config.tmp"
+mv "$r21wt/config.tmp" "$r21wt/orchid.config"
+printf 'verify=true\n' >> "$r21wt/orchid.config"
+rc=0; out21="$(ORCHID_REPO="$r21" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must refuse a commit that would drop a committed config line"
+assert_match "pump_stale_s=600" "$out21" "the refusal names the line that would be lost"
+assert_match "never removes from it" "$out21" "the refusal states the rule"
+assert_match '^pump_stale_s=600$' "$(git -C "$r21" show orchid/integration:orchid.config)" \
+  "and the branch still carries that line"
+
+# A checkout carrying no verify= line at all while the branch does is NOT that
+# case: the append below writes the branch's own line straight back, so the
+# commit adds nothing and removes nothing.
+git -C "$r21wt" checkout -- orchid.config || fail "fixture: restoring the branch's copy must succeed"
+printf 'verify=true\n' >> "$r21wt/orchid.config"
+out21b="$(ORCHID_REPO="$r21" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "an append-only checkout copy must still be committable: $out21b"
+grep -v '^verify=' "$r21wt/orchid.config" > "$r21wt/config.tmp"
+mv "$r21wt/config.tmp" "$r21wt/orchid.config"
+out21c="$(ORCHID_REPO="$r21" ORCHID_EPOCH=0 "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "re-appending the branch's own verify= line must not be read as a deletion: $out21c"
+assert_eq 1 "$(grep -c '^verify=true$' "$r21wt/orchid.config")" \
+  "the branch's own command is written back, exactly once"
+assert_match "^verify: true — already configured" "$out21c" \
+  "restoring a line the branch already carries commits nothing, and says so"
+assert_eq "" "$(git -C "$r21wt" status --porcelain -- orchid.config)" \
+  "and leaves the integration checkout clean"
+
 # ===========================================================================
 # 4 -- a clean existing repo is required, and a malformed repo config is
 # refused rather than silently ignored.
@@ -268,6 +345,20 @@ git -C "$r6" add -A; git -C "$r6" commit -q -m "fixture: malformed config line"
 rc=0; out6="$(ORCHID_REPO="$r6" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "start must refuse a malformed orchid.config line"
 assert_match "is not a 'key=value' line" "$out6" "the refusal names the malformed line shape"
+assert_match "Fix that line in $r6/orchid.config" "$out6" "and names the file to fix"
+
+# `verify = true` is the same defect wearing a plausible face: config lookups
+# match `^verify=` literally, so the spaces make the most important line in
+# the file configure nothing at all while looking like it configures
+# everything. Fatal, not a warning.
+r6b="$W/r6b"; mk_repo "$r6b" 'verify=true'
+printf 'pump_stale_s = 900\n' >> "$r6b/orchid.config"
+git -C "$r6b" add -A; git -C "$r6b" commit -q -m "fixture: spaces around ="
+rc=0; out6b="$(ORCHID_REPO="$r6b" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must refuse a config key with whitespace in it"
+assert_match "whitespace in its config key" "$out6b" "the refusal names what is wrong"
+git -C "$r6b" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
+  && fail "a config refusal must not initialize anything"
 
 # An unknown key is a warning, never a refusal: a config written for a newer
 # orchid, or a custom role binding, must not brick setup.
@@ -303,6 +394,45 @@ rc=0; out19="$(ORCHID_REPO="$r19" ORCHID_EPOCH=0 "$ORCHID_BIN" start "$REQ" 2>&1
 [ "$rc" -ne 0 ] || fail "start must refuse a malformed line in the config COMMITTED on the integration branch"
 assert_match "orchid.config as committed on orchid/integration line [0-9]+ is not a 'key=value' line" \
   "$out19" "the refusal names the committed copy, not the checkout's clean one"
+# Those bytes are in a git blob the operator cannot open and edit, so naming
+# the defect without naming the route to it is a dead end -- every other
+# refusal in this verb names its recovery, and this one needs it most.
+assert_match "git show orchid/integration:orchid.config" "$out19" \
+  "the refusal says how to read the offending bytes"
+assert_match "orchid config commit" "$out19" "and how to land the fix"
+
+# orchid.config has to be COMMITTABLE onto the integration branch, because
+# that commit is how the run's verification command becomes durable. A
+# .gitignore that excludes it makes `git add` fail outright -- below the
+# mutation boundary that is git's raw error, after init has run and the epoch
+# is minted, on every re-run. Refused above it instead, with the recovery.
+r22="$W/r22"; mkdir -p "$r22"; git -C "$r22" init -q
+printf 'orchid.config\n' > "$r22/.gitignore"
+{
+  printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\n'
+  printf 'role.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n'
+} > "$r22/orchid.config"
+printf 'print("hello")\n' > "$r22/app.py"
+git -C "$r22" add -A
+git -C "$r22" commit -q -m "fixture: project with an ignored orchid.config"
+assert_eq "" "$(git -C "$r22" status --porcelain)" \
+  "fixture: an ignored orchid.config leaves the tree looking clean"
+rc=0; out22="$(ORCHID_REPO="$r22" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must refuse a repo whose orchid.config it cannot commit"
+assert_match "excluded by .gitignore" "$out22" "the refusal names why the file cannot be committed"
+assert_match "git add -f orchid.config" "$out22" "the refusal names a way out"
+git -C "$r22" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
+  && fail "the refusal must land above the mutation boundary"
+[ -e "$W/r22-orchid" ] && fail "and before any worktree is created"
+
+# ...and the recovery works: a tracked orchid.config is committable whatever
+# .gitignore says about it.
+git -C "$r22" add -f orchid.config
+git -C "$r22" commit -q -m "fixture: track orchid.config deliberately"
+out22b="$(ORCHID_REPO="$r22" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "the recovery the refusal prints must succeed: $out22b"
+assert_match '^verify=true$' "$(git -C "$r22" show orchid/integration:orchid.config)" \
+  "and the run's verification command lands on the branch"
 
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
@@ -397,6 +527,21 @@ rc=0; out12c="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$REQ" --bogus 2>&1)" || 
 [ "$rc" -ne 0 ] || fail "start must reject an unknown option"
 assert_match "unknown option '--bogus'" "$out12c" "the refusal names the unknown option"
 
+# orchid.config is a LINE-ORIENTED key=value store, so a multi-line --verify
+# would be recorded truncated at its first line -- the run verifying with less
+# than was asked for, the report printing the whole value as recorded, and
+# every later config read dying on the orphan lines. Rejected at
+# argument-parsing time, before anything is read, let alone written.
+rc=0; out12e="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$REQ" --verify 'make lint
+make test' 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must reject a multi-line --verify"
+assert_match "must be a single line" "$out12e" "the refusal names the rule"
+assert_match "pass that instead" "$out12e" "and says what to do instead"
+
+rc=0; out12f="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$REQ" --verify "$(printf 'make test\t')" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "start must reject a control character in --verify"
+assert_match "must be a single line" "$out12f" "any control character is refused, not just a newline"
+
 rc=0; out12d="$(ORCHID_REPO="$r12" "$ORCHID_BIN" start "$REQ" "$req2" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "start must reject two requirements files"
 assert_match "exactly one requirements file" "$out12d" "the refusal names the arity"
@@ -425,6 +570,19 @@ assert_match "[-]-ack-unattended" "$help_out" "help documents the unattended opt
 assert_match "[-]-worktree" "$help_out" "help documents the worktree option"
 
 assert_match "start" "$("$ORCHID_BIN" help)" "the dispatcher lists the new verb"
+
+# The bare-word alias is the FIRST argument only. Matched anywhere in argv it
+# also swallows a requirements file that happens to be named `help`, printing
+# usage (and exiting 0) instead of the setup that was asked for.
+assert_match "usage:" "$("$ORCHID_BIN" start help)" "'help' as the first argument still prints usage"
+r24="$W/r24"; mk_repo "$r24" 'verify=true'
+cp "$REQ" "$W/help"
+out24="$(cd "$W" && ORCHID_REPO="$r24" "$ORCHID_BIN" start --verify true help 2>&1)" \
+  || fail "a requirements file named 'help' must be read as a file: $out24"
+assert_match "^orchid start: initialized a new run$" "$out24" \
+  "a requirements file named 'help' is a file, not a request for usage"
+assert_eq "$(cat "$REQ")" "$(cat "$W/r24-orchid/.orchid/requirements.md")" \
+  "and it is the file that gets imported"
 
 # The manual path is unchanged: doctor/init/requirements import still work on
 # their own, against a repo orchid start never touched.

@@ -107,10 +107,14 @@ initializes, creates the integration worktree, sets up the epoch, imports
 state, and the planning handoff. Then **skip to [step 4](#4-plan)** — from the
 worktree it just printed, with the `ORCHID_EPOCH` it just told you to export.
 
-Options: `--verify <command>`, appended as a `verify=` line to the integration
-checkout's `orchid.config` and committed onto the integration branch by that
-same run, but only when that file configures none yet — omit the flag if you
-already set `verify=` in step 2; `--worktree <path>`, which defaults to
+Options: `--verify <command>`, one line, appended as a `verify=` line to the
+integration checkout's `orchid.config` and committed onto the integration
+branch by that same run, but only when that file configures none yet — omit
+the flag if you already set `verify=` in step 2. (One line because
+`orchid.config` is a line-oriented `key=value` file: a multi-line command
+would be read back truncated at its first line, so it is refused rather than
+half-recorded. Put a multi-step command in a script and pass that.)
+`--worktree <path>`, which defaults to
 `../<repo>-orchid`; and `--ack-unattended --reason "..."`, both together, to
 also make the machine-local unattended acknowledgement of
 [step 5](#5-start-the-orchestrator-and-walk-away).
@@ -127,14 +131,28 @@ duplicated: `--verify` with a different command there is refused up front,
 before anything is created, and re-running without the flag keeps the branch's
 own command.
 
+That commit is whole-file (the same granularity as `orchid config commit`), so
+"append-only" is enforced against the branch too, not just against the file on
+disk. If your integration checkout's `orchid.config` carries a *different*
+`verify=` line from the one the branch already has, or is missing any other
+line the branch has, committing it would replace or delete settings the run
+reads — so that is refused up front as well, naming both ways out: take the
+branch's copy back (`git -C <worktree> checkout -- orchid.config`), or land
+your edit deliberately with `orchid config commit --reason "..."` from the
+worktree. Additions ride along; removals never do. And because that commit is
+how the command becomes durable at all, an `orchid.config` your `.gitignore`
+excludes and no commit tracks is refused too — `git add` cannot stage it, and
+`orchid start` will not force it past a rule you wrote.
+
 What it will not do, by design:
 
 - **never guess a verification command** — no `--verify`, no configured
   `verify=`, no setup;
 - **never overwrite your files** — it appends at most one `verify=` line (and
   commits exactly that one file), never replaces a `verify=` line already on
-  the integration branch, and refuses any worktree path that is not empty or
-  is not exactly this repository's integration checkout;
+  the integration branch, never commits an `orchid.config` that would drop a
+  line that branch already carries, and refuses any worktree path that is not
+  empty or is not exactly this repository's integration checkout;
 - **never resume or take over a run** — against existing state it refuses if
   the run has left `planning`, if another session's lease is still fresh, if a
   run/verb lock is live, or if you cannot prove you hold the current epoch
