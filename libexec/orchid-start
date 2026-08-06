@@ -123,7 +123,7 @@ _start_integ_checkout() {
 # a setup command with no deadline pressure, must never race that -- but only
 # for <grace-s> of the directory's own age. Past that it is no longer a race:
 # it is a crash between the winner's mkdir and its owner write (the shape
-# lib/common.sh:527-545 documents, and which BOTH acquirers break for exactly
+# lib/common.sh:546-564 documents, and which BOTH acquirers break for exactly
 # this reason -- verb_lock_acquire after verb_lock_wait_s, lock_acquire after
 # lock_break_s). Failing closed forever there would brick `orchid start`
 # permanently, with no pid to wait for and no verb to blame, so the same
@@ -134,15 +134,23 @@ _start_integ_checkout() {
 # for a live-but-owner-less directory -- the refusals below print a different
 # recovery for each, because "wait for pid ?" is not one.
 _start_lock_live() {
-  local lock="$1" grace="$2" owner fields pid host pstart now mt age
+  local lock="$1" grace="$2" owner parsed pid host pstart now mt age
   ORCHID_START_LOCK_PID=""
   [ -d "$lock" ] || return 1
+  # Read owner.json ONCE, then take each field out of that snapshot with its
+  # own jq call into its own variable -- lib/common.sh's _owner_field, and
+  # never a shell fragment handed to `eval`: a lock owner record is
+  # repository-controlled input (see _owner_field for the full reasoning).
+  # An unparseable record leaves $parsed empty and falls into the owner-less
+  # grace window below -- the same branch it has always taken.
   owner="$(cat "$lock/owner.json" 2>/dev/null || true)"
-  fields=""
-  [ -z "$owner" ] || fields="$(printf '%s' "$owner" | jq -r \
-    '"pid=" + (.pid|tostring) + "; host=" + (.hostname|@sh) + "; pstart=" + (.pid_start|@sh)' \
-    2>/dev/null || true)"
-  if [ -z "$fields" ]; then
+  pid=0; host='?'; pstart='?'; parsed=""
+  if [ -n "$owner" ] && pid="$(_owner_field "$owner" pid)"; then
+    host="$(_owner_field "$owner" hostname || printf '?')"
+    pstart="$(_owner_field "$owner" pid_start || printf '?')"
+    parsed=1
+  fi
+  if [ -z "$parsed" ]; then
     now="$(date +%s)"
     # Same BSD-then-GNU mtime probe lock_acquire uses, but selected on the
     # RESULT rather than on the exit status alone: a stat that does not
@@ -162,8 +170,6 @@ _start_lock_live() {
     [ "$age" -lt "$grace" ] || return 1
     return 0
   fi
-  pid=0; host='?'; pstart='?'
-  eval "$fields"
   [ "$host" = "$(hostname)" ] || return 1
   kill -0 "$pid" 2>/dev/null || return 1
   [ "$(_pid_start "$pid")" = "$pstart" ] || return 1
@@ -845,8 +851,13 @@ wt="$(cd "$wt_target" && pwd -P)"
 # import`, `journal add`, `trust unattended`) reuses this one transaction
 # instead of taking its own: lib/common.sh's documented reentrant case, where
 # the outer transaction is what serializes the nested sequence.
-verb_lock_guard "$wt" \
-  || orchid_die "could not take the verb lock in $wt/.orchid/runtime — another verb is mid-transaction; wait for it to finish and re-run orchid start"
+# No `|| orchid_die` arm: verb_lock_acquire dies internally on every failure
+# it can have (contention past verb_lock_wait_s, or an unresolved claim race),
+# with its own message naming the pid and the seconds waited -- an arm here
+# would be unreachable, and reading as if it were the handler would be worse
+# than none. The refusal WITH a recovery, for the common case, is the
+# read-only probe above the boundary.
+verb_lock_guard "$wt"
 
 # The precondition every mutation below argues from -- "this run is still in
 # planning, so there is no candidate whose base_sha this can move" --

@@ -135,6 +135,67 @@ assert_match "^  export ORCHID_EPOCH=1$" "$out" "the handoff names the epoch tha
   || fail "a completed orchid start must not leave the verb lock behind"
 
 # ---------------------------------------------------------------------------
+# A lock owner record is REPOSITORY-CONTROLLED input. .orchid/runtime being
+# gitignored does not stop `git add -f`, and a clone carries whatever the
+# remote committed, so a hostile repository can hand any lock-taking verb the
+# owner.json bytes of its choice -- with no unattended-trust acknowledgement
+# anywhere in the path. Both readers of that record used to build a shell
+# fragment with jq and `eval` it: this verb's own read-only probe
+# (_start_lock_live) and lib/common.sh's verb_lock_acquire, the place it was
+# copied from. .pid went in via `tostring`, UNQUOTED, so `{"pid":"0; touch X"}`
+# executed X as the operator.
+#
+# Both sites are exercised here, under two owner shapes: one naming THIS host
+# (so the host check passes and the pid is genuinely reached) and one whose
+# hostname is itself a quote-breaking payload. Neither may execute a byte, and
+# both must still JUDGE the lock correctly -- an owner whose pid is not a pid
+# is dead, so the lock breaks and the verb proceeds.
+#
+# RED (against the `eval` form): the sentinel files below exist.
+# ---------------------------------------------------------------------------
+sent="$W/injection"; mkdir -p "$sent"
+q="'"
+vlock="$wt/.orchid/runtime/verb-lock"
+
+payload_owner() {  # <hostname>
+  mkdir -p "$vlock"
+  jq -n --arg d "$sent" --arg h "$1" --arg q "$q" \
+    '{pid:       ("0; touch " + $d + "/pid-fired"),
+      hostname:  $h,
+      pid_start: ($q + "; touch " + $d + "/pstart-fired; :" + $q)}' \
+    > "$vlock/owner.json"
+}
+nothing_executed() {  # <label>
+  local fired="" f
+  # `if`, not `&&`: with the directory empty (the passing case) the glob stays
+  # literal, the test is false, and a trailing `&&` would make the whole loop
+  # -- and this function -- exit non-zero under `set -e`.
+  for f in "$sent"/*; do
+    if [ -e "$f" ]; then fired="$fired ${f##*/}"; fi
+  done
+  [ -z "$fired" ] || fail "$1: a lock owner record's bytes were EXECUTED (fired:$fired)"
+}
+
+for host_case in "$(hostname)" "${q}; touch $sent/host-fired; :${q}"; do
+  # This verb's own probe, above the mutation boundary.
+  payload_owner "$host_case"
+  out="$(ORCHID_REPO="$repo" ORCHID_EPOCH=1 "$ORCHID_BIN" start "$INTRUDER" 2>&1)" \
+    || fail "start's lock probe must judge a payload-carrying owner dead, not obey it: $out"
+  nothing_executed "orchid start's lock probe"
+  assert_match "^epoch: 1 \(reused\)$" "$out" \
+    "the payload-owner lock is broken and setup proceeds normally"
+
+  # lib/common.sh's verb_lock_acquire, reached by ANY lock-taking verb --
+  # `journal add` here, chosen because it is the smallest one that takes it.
+  payload_owner "$host_case"
+  ORCHID_REPO="$wt" ORCHID_EPOCH=1 "$ORCHID_BIN" journal add --kind note "injection probe" >/dev/null \
+    || fail "verb_lock_acquire must break a payload-carrying owner record, not obey it"
+  nothing_executed "verb_lock_acquire"
+  [ ! -d "$vlock" ] || fail "the verb lock must be released after the payload owner is broken"
+done
+rm -rf "$vlock"
+
+# ---------------------------------------------------------------------------
 # A lock DIRECTORY carrying no owner.json at all -- a crash in the few
 # milliseconds between the winner's mkdir and its owner-record write. Inside
 # the grace window it reads live (never race a claim that is still landing);

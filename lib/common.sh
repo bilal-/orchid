@@ -429,6 +429,25 @@ config_provenance() {
 }
 
 _pid_start() { ps -o lstart= -p "$1" 2>/dev/null | tr -d ' ' || true; }
+
+# _owner_field <owner-json> <field> -- print ONE field of a lock owner record,
+# reading from a SNAPSHOT string (never re-reading the file), so callers that
+# `cat` owner.json once keep the single-read atomicity they depend on: a naive
+# per-field re-read could straddle two generations of owner and misjudge a
+# genuinely live new owner as dead. Prints nothing and returns non-zero when
+# the snapshot does not parse, so callers can keep their own defaults.
+#
+# Deliberately one variable per call rather than one jq that emits a shell
+# fragment for `eval`. owner.json is REPOSITORY-CONTROLLED input: .orchid's
+# gitignore does not stop `git add -f`, and a clone carries whatever the
+# remote committed, so a hostile repo can hand any lock-taking verb the bytes
+# of its choice. Under `eval` that was arbitrary command execution as the
+# operator, needing no unattended-trust acknowledgement -- @sh-quoting each
+# field only narrowed it, and one unquoted `tostring` reopened it. Nothing
+# read here reaches the shell as code at all.
+_owner_field() {
+  printf '%s' "$1" | jq -er --arg f "$2" '.[$f]|tostring' 2>/dev/null
+}
 lock_acquire() {
   local repo="$1" rt lock brk
   rt="$(orchid_runtime "$repo")"; lock="$rt/lock"
@@ -544,10 +563,13 @@ verb_lock_acquire() {
         continue
       fi
       empty_since=""
-      pid=0; host='?'; pstart='?'
-      eval "$(printf '%s' "$owner_json" | jq -r \
-        '"pid=" + (.pid|tostring) + "; host=" + (.hostname|@sh) + "; pstart=" + (.pid_start|@sh)' \
-        2>/dev/null)"
+      # One field per variable, all three off the SAME snapshot -- see
+      # _owner_field for why this must never be an `eval`ed shell fragment.
+      # The fallbacks are the same ones the old defaults gave when jq failed
+      # to parse the record at all: host='?' alone already reads dead/foreign.
+      pid="$(_owner_field "$owner_json" pid || printf 0)"
+      host="$(_owner_field "$owner_json" hostname || printf '?')"
+      pstart="$(_owner_field "$owner_json" pid_start || printf '?')"
       alive=1
       if [ "$host" != "$myhost" ]; then alive=0
       elif ! kill -0 "$pid" 2>/dev/null; then alive=0

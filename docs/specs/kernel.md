@@ -42,6 +42,11 @@ bin/
 libexec/                    # TIER 1 — deterministic verbs: state transitions
   orchid-doctor             #   only. Never invoke an LLM, never block on the
   orchid-init               #   network, never spawn long-lived processes.
+  orchid-start              #   one-command existing-repo setup (v1.1): it only
+                            #   SEQUENCES doctor/init/worktree/requirements
+                            #   import, refusing with an exact recovery
+                            #   anything it cannot do safely; every verb it
+                            #   composes stays callable on its own
   orchid-run                #   start/resume/advance/accept/new — epochs, runs
   orchid-task               #   create/show/list/set/advance/unblock/retry
   orchid-requirements       #   import (operator-owned exception)
@@ -65,6 +70,19 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
                             #   happen?" surface
   orchid-notify             #   user questions out
   orchid-answer             #   user answers in (idempotent inbox)
+  orchid-trust              #   unattended <repo>/show/revoke — the machine-
+                            #   local acknowledgement the headless seats
+                            #   require; never inferred, never in-repo
+  orchid-version            #   prints the installed version
+  orchid-drive              #   bare TIER HANDOFFS: argument-free dispatch to
+  orchid-service            #   runners/orchid-drive and runners/orchid-service
+                            #   respectively. Both are directly executable
+                            #   entry surfaces, so each resolves its own
+                            #   installed location rather than trusting an
+                            #   inherited ORCHID_ROOT. The effectful work
+                            #   (long-lived processes, launchd/crontab) lives
+                            #   in tier 2, which is why these two are handoffs
+                            #   and not implementations.
 runners/                    # TIER 2 — effectful: launch processes.
   orchid-launch             #   the kernel launcher: spawns engine adapters
   orchid-tick  orchid-pump  #   headless tick; LLM-free heartbeat
