@@ -557,7 +557,11 @@ grep -qF 'ONE EXCEPTION to "writes nothing inside --repo"' <<<"$qualify_help" \
   || fail "scripts/beta-qualify.sh --help states 'writes nothing inside --repo' without naming the in-place verify= run that contradicts it"
 grep -qF 'IN PLACE' <<<"$qualify_help" \
   || fail "scripts/beta-qualify.sh --help must say the verify= command runs IN PLACE inside --repo"
-grep -qF '--no-run-verify' <<<"$qualify_help" \
+# `-e` is REQUIRED here, not stylistic: the pattern begins with `--`, so grep
+# parses it as an OPTION and exits 2 with "invalid option" before ever looking
+# at the input. The assertion then fails against help text that does contain
+# the flag -- a test that can only ever report absence.
+grep -qF -e '--no-run-verify' <<<"$qualify_help" \
   || fail "scripts/beta-qualify.sh --help must name the flag that opts out of the in-place verify= run"
 # ...and the same pairing at the top of the file, which is what a reader of the
 # source meets first.
