@@ -449,3 +449,84 @@ phone→orchid answer leg of the hero demo is now proven end-to-end over
 hermes-telegram. (The suite flake seen once during this branch's gate —
 test_engine_claude's midpoint-liveness assertion — passed 3/3 isolated and
 is unrelated to this diff.)
+
+## webBooks — Pathway to Peace enrichment run (external production repo, 2026-08-05 → 08)
+
+Six tasks (schema change, three content-authoring tasks, a shared-visibility
+fix, a bootstrap) driven to `done` on a real app repo, but only by heavy
+operator hand-driving of the state machine: every one of the six needed manual
+`task advance` / `arbitrate` / `merge` calls, and two needed conflict surgery.
+Codex ran out of vendor credits at the start, so the whole run executed on
+claude (implementer) + agy (reviewer). The findings below are what that
+exposed.
+
+### F19 (data loss, HIGH) — `orchid task set` with a multi-line value truncates the task file
+`orchid task set T001 acceptance_criteria "line1<newline>line2"` fails with
+`awk: newline in string` and leaves `.orchid/tasks/T001.md` **0 bytes**. The
+whole record — status, attempts, candidate_sha, base_sha, worktree — is gone.
+`orchid task show` then prints nothing and exits **0**, so it reads as "task
+vanished" rather than "write rejected". Recovery is `git checkout <last plan
+apply> -- .orchid/tasks/<id>.md`, which restores a pre-run copy and silently
+resets the escalation counters (attempts 3 → 0). Suggested fix: validate the
+value before writing, reject newlines with a clear error, and write via a
+temp-file rename so a failed write can never truncate the record.
+
+### F20 (failover gap, HIGH) — the per-task `engine` field pins a dead engine forever
+Tasks record `engine:` at creation time and it is never re-resolved against the
+role chain. This run created T001–T005 while `role.implementer` was codex;
+rebinding the role to claude afterwards changed nothing, because each task
+still said `engine: codex`. With codex out of credits the drive simply declined
+to dispatch T004 — correctly, per the task record — while the pump kept waking
+an orchestrator that had no legal transition. Eight consecutive wakeups, the
+interval shrinking to ~31s, all no-ops. T006, created after the rebinding, ran
+fine on claude: same run, same engines, different creation time. Suggested fix:
+treat the task's `engine` as a *preference* and re-resolve through the role
+chain at dispatch when the pinned engine is unavailable, or have `doctor` /
+`status` flag tasks pinned to an engine the ledger shows as unavailable.
+
+### F21 (config trap, HIGH — silent) — a gitignored `.orchid/` wedges the run in `planning`
+`orchid plan apply` commits `.orchid/` to the integration branch. This repo
+gitignored `.orchid/` as "local orchestration state", so the plain `git add`
+refused the ignored path and plan apply exited 1 — printing only git's generic
+"paths are ignored" hint, with no mention of orchid. `run_status` stayed
+`planning`, and because the state machine walk is skipped outside `running`,
+every subsequent tick was a legitimate, silent no-op. Suggested fix: a `doctor`
+check for `git check-ignore .orchid` — it is a one-line test that would have
+saved a long debugging session, and the failure mode is otherwise invisible.
+
+### F22 (review-loop cost, medium) — re-review is demanded for a base-only change
+After resolving a rebase conflict by hand, `orchid merge` detected the base had
+moved (`199fec9 → bae4947`, the parent task's merge) and sent the task back for
+re-review with `rebase_rereview_required` — even though `candidate_sha` was
+byte-identical. The prior review envelopes were bound to the old base, so both
+had to be re-run: for `risk_tier: medium` that is two more agy dispatches per
+merge, ~90s each, on an unchanged tree. Legitimate as an invariant, expensive
+in a dependency chain where every task's merge moves the next one's base.
+Worth considering: carry review envelopes forward when the candidate tree hash
+is unchanged and only the base advanced cleanly.
+
+### F23 (pack budget, medium) — a regenerated artifact overflows the reviewer pack
+`orchid-launch T003 reviewer review` died with `input_overflow —
+non-truncatable inputs (74693 bytes) exceed pack budget (65536)`. The diff was
+not large in human terms; it was one committed generated artifact
+(`books.json`, the parse mirror the verify chain regenerates). Raising
+`pack_budget_bytes` to 262144 fixed it. Generated-but-tracked artifacts are
+common in app repos, and the reviewer does not need to read them. Worth
+considering: a `pack_exclude` glob, or excluding paths the verify command is
+known to regenerate.
+
+### Observations (no fix proposed)
+- **The orchestrator's own reporting was excellent.** It correctly refused to
+  transition when no transition was legal, identified the pid-0 ghost job as a
+  known false positive rather than escalating it, and named the pinned-engine
+  problem itself before I found it. The tick logs were the most useful
+  diagnostic surface in the run.
+- **agy as reviewer worked well** once inside the pack budget: five review
+  dispatches, all returning structured verdicts, and one genuine
+  `request-changes` that caught a real scope question (it flagged a generated
+  artifact and a provenance doc as out-of-scope — the task's acceptance
+  criteria were at fault, not the work).
+- **Claude implement dispatches remain edits-only** (`--permission-mode
+  acceptEdits`, no `Bash`), so every task ended with "verification not run" and
+  the operator had to run `verify-full.sh` and commit the regenerated artifact
+  by hand. This is the single biggest source of manual work in the run.
