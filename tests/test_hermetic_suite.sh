@@ -18,6 +18,12 @@
 # on the author's machine, at the same commit -- rather than on a runner, three
 # pushes later.
 #
+# On a machine that has no vendor CLI installed, the suite run already in
+# progress around this file IS that run, so there is nothing to launch and
+# section 4b skips it rather than doubling every CI job to re-answer the same
+# question. The skip is recorded, never silent, and it never applies where the
+# two PATHs actually differ.
+#
 # WHY A MIRROR AND NOT A PRUNED PATH. Removing whole directories from PATH is
 # not an option: on macOS `codex` and `jq` routinely live in the same Homebrew
 # bin. So each PATH entry that actually contains a vendor CLI is replaced by a
@@ -32,12 +38,12 @@
 # happens -- before helpers.sh is even sourced. It is not enough to write the
 # guard and trust it: a refactor that renamed this file out of the glob, or
 # dropped the marker from the child environment, would leave a guard that
-# guards nothing and a proof that proves nothing. So the guard is exercised
-# twice. Once directly, against a synthetic re-entry. Once for real: the marked
-# child run appends one line per re-entry to a log this file then reads, and
-# the count must be exactly one -- 0 means this file left the glob and is no
-# longer part of the suite it claims to certify, 2+ means the guard stopped
-# working and the loop is back.
+# guards nothing and a proof that proves nothing. So both halves are asserted.
+# The guard itself is exercised twice -- once directly, against a synthetic
+# re-entry (section 3), and once for real, by counting the marked child run's
+# re-entries, which must be exactly one (section 5). Glob membership, the half
+# that must hold even when no nested run happens, is asked of tests/run.sh's
+# actual glob instead (section 4a).
 
 # ---------------------------------------------------------------------------
 # THE GUARD ITSELF. First statement in the file, deliberately: nothing above it
@@ -142,7 +148,7 @@ done
 echo "  vendor-CLI-free PATH: $mirrored_count of ${#path_entries[@]} PATH entries needed mirroring"
 if [ "$mirrored_count" -eq 0 ]; then
   not_tested "vendor-cli-removal" \
-    "this machine has none of ${VENDOR_CLIS[*]} installed, so the PATH below is the ambient PATH and the mirroring code path did not run here. The guarantee the nested run then proves is still the real one -- a runner is in exactly this state -- but the mirror itself is exercised only where a vendor CLI is actually installed"
+    "the PATH-mirroring code path. This machine has none of ${VENDOR_CLIS[*]} installed, so nothing needed removing and the PATH below is the ambient PATH unchanged. The no-vendor-CLI guarantee itself still holds here -- a hosted runner is in exactly this state, which is why section 4b can lean on the surrounding suite run instead of launching a duplicate -- but the mirror is exercised only on a machine that actually has a vendor CLI installed"
 fi
 
 # ===========================================================================
@@ -181,13 +187,58 @@ grep -q 'vendor-CLI-free PATH' <<<"$guard_out" \
   && fail "a guarded re-entry reached the PATH-building phase -- the guard is not the first thing this file does"
 
 # ===========================================================================
-# 4 -- THE PROOF: the whole suite, on the vendor-CLI-free PATH.
+# 4a -- this file is still part of the suite it claims to certify.
+#
+# Asked of tests/run.sh's ACTUAL glob, not inferred from anything downstream:
+# a rename or a move out of tests/ would leave a file that still passes on its
+# own while the guarantee it carries has silently stopped being executed by
+# the suite and by CI. That is the one failure this file must never report as
+# a pass, so it is checked directly and unconditionally, in both of the modes
+# below.
+# ===========================================================================
+in_suite_glob=0
+for test_file in "$REPO_ROOT"/tests/test_*.sh; do
+  if [ "$test_file" = "$SELF" ]; then in_suite_glob=1; fi
+done
+[ "$in_suite_glob" -eq 1 ] \
+  || fail "tests/run.sh globs tests/test_*.sh and this file is not among the matches, so the no-vendor-CLI guarantee is no longer executed by the suite or by CI even though this file still passes -- keep it in tests/ under a test_*.sh name"
+
+# ===========================================================================
+# 4b -- THE PROOF: the whole suite, on the vendor-CLI-free PATH.
 #
 # The full suite, not a hand-picked subset. A subset would have to be kept in
 # step with which tests happen to touch a vendor CLI today, and the failure
 # mode of forgetting is silence -- which is the failure mode this whole file
 # exists to remove.
+#
+# WHEN THE NESTED RUN IS LAUNCHED, AND WHY NOT ALWAYS. mirrored_count is 0
+# exactly when this machine has no vendor CLI installed anywhere on PATH --
+# which is the state of every hosted runner. HERMETIC_PATH is then the ambient
+# PATH byte for byte, so a suite launched from here would be an identical copy
+# of the one already in progress around this file: it answers nothing the
+# outer run is not already answering, and it doubles the wall clock of every
+# CI job on a repository whose CI problem is the entire reason this file
+# exists. So the nested run is launched in the two cases where it is not a
+# duplicate:
+#
+#   * a vendor CLI IS installed (mirrored_count > 0) -- HERMETIC_PATH really
+#     differs from the ambient one, and this is the developer machine the
+#     divergence was hiding on in the first place; or
+#   * there is no surrounding suite run to lean on (ORCHID_SUITE_RUN unset,
+#     i.e. this file was invoked on its own rather than through tests/run.sh).
+#
+# Skipping is never silent: the branch below records what carried the
+# guarantee instead, in the same not-tested vocabulary as everything else here.
 # ===========================================================================
+not_tested "vendor-cli-behaviour" \
+  "what the real codex/claude/agy CLIs DO. This proof removes them; it does not exercise them. Whether a vendor CLI is installed, authenticated and answers correctly stays an operator-owned, out-of-band qualification (\`orchid plugins test --all-defaults\` on a machine that has them), deliberately outside the deterministic suite"
+
+if [ "$mirrored_count" -eq 0 ] && [ -n "${ORCHID_SUITE_RUN:-}" ]; then
+  not_tested "nested-vendor-cli-free-run" \
+    "a SECOND suite run launched from here. It would have been byte-for-byte identical to the one now executing this file: none of ${VENDOR_CLIS[*]} is installed on this machine, so the vendor-CLI-free PATH built above IS the ambient PATH, and the surrounding tests/run.sh (ORCHID_SUITE_RUN=1) is already the vendor-CLI-free run -- if the suite depends on a vendor CLI, THAT run goes red, without this file paying for a duplicate of it. The nested run still happens wherever it can differ: on a machine that has a vendor CLI installed, and whenever this file is invoked on its own outside tests/run.sh"
+  exit 0
+fi
+
 reentry_log="$WORK/reentry.log"
 : > "$reentry_log"
 suite_log="$WORK/hermetic-suite.log"
@@ -226,22 +277,19 @@ assert_eq "$expected_files" \
 # ===========================================================================
 # 5 -- and the guard held, for real rather than in the synthetic probe above.
 #
-# Exactly one re-entry. Not zero: zero means tests/run.sh no longer globs this
-# file, so the no-vendor-CLI guarantee has quietly stopped being part of the
-# suite and of CI, even though this file still passes. Not two or more: that
-# means the guard stopped stopping, and the infinite loop is back.
+# EXACTLY ONE re-entry. Not zero: the nested run globs this file the same way
+# the outer one does, so a zero here means the marker never reached the child
+# and the guard is being satisfied by something else -- the loop is one
+# refactor away even though everything still passes. Not two or more: that
+# means the guard stopped stopping, and the loop is already back. (Whether
+# this file is still IN that glob at all is a separate question, asked
+# directly of the glob in 4a above, because it has to hold in the skipped
+# branch too.)
 # ===========================================================================
 reentries="$(grep -c . "$reentry_log")"
-if [ "$reentries" -eq 0 ]; then
-  fail "the nested run never re-entered this file: tests/run.sh does not glob tests/test_hermetic_suite.sh any more, so the no-vendor-CLI guarantee is no longer executed by the suite or by CI -- put it back in tests/ under a test_*.sh name"
-else
-  assert_eq 1 "$reentries" \
-    "the recursion guard must stop re-entry at the first nested run (got $reentries re-entries -- more than one means the guard no longer prevents the loop)"
-fi
+assert_eq 1 "$reentries" \
+  "the recursion guard must let the nested run re-enter this file exactly once (got $reentries -- 0 means ORCHID_HERMETIC_PROOF never reached the child and nothing was actually guarded; 2 or more means the guard no longer prevents the loop)"
 grep -qxF 1 "$reentry_log" \
   || fail "the nested run's re-entry did not carry this run's depth marker -- ORCHID_HERMETIC_PROOF is not reaching the child environment, so the guard is being satisfied by something else"
-
-not_tested "vendor-cli-behaviour" \
-  "what the real codex/claude/agy CLIs DO. This proof removes them; it does not exercise them. Whether a vendor CLI is installed, authenticated and answers correctly stays an operator-owned, out-of-band qualification (\`orchid plugins test --all-defaults\` on a machine that has them), deliberately outside the deterministic suite"
 
 exit 0

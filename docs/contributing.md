@@ -136,11 +136,23 @@ entry that contains one is replaced by a scratch directory of symlinks to
 everything else in it, so `jq` living beside `codex` in the same Homebrew bin
 survives — and then runs the whole suite on it. It is a `tests/test_*.sh` file,
 so `tests/run.sh` and therefore `scripts/ci-local.sh` and hosted CI run it too.
-That nesting is why one gate run executes the suite twice; the recursion guard
-(`ORCHID_HERMETIC_PROOF`) stops the nested run from re-launching a third, and
-the file asserts both that the guard fires and that it is re-entered exactly
-once — a zero there means this file has fallen out of the glob and the
-guarantee has silently stopped being enforced.
+
+That nesting means one gate run can execute the suite twice, so the second run
+is launched only when it can differ from the first. On a machine that has a
+vendor CLI installed — a developer laptop, which is where the divergence hides
+— it always runs. On a machine that has none, the vendor-CLI-free `PATH` *is*
+the ambient `PATH`, the surrounding `tests/run.sh` (`ORCHID_SUITE_RUN`) is
+already the vendor-CLI-free run, and launching a byte-identical copy would just
+double every CI job; the skip is printed as a `NOT-TESTED:` line rather than
+passing quietly. Invoked on its own, outside `tests/run.sh`, there is no
+surrounding run to lean on and the nested run happens regardless.
+
+The recursion guard (`ORCHID_HERMETIC_PROOF`) stops a nested run from
+re-launching a third. The file asserts the guard fires against a synthetic
+re-entry, that a real nested run re-enters exactly once, and — separately, and
+in both modes, because it has to hold even when nothing is nested — that
+`tests/run.sh`'s glob still reaches this file at all. That last one failing
+means the guarantee has silently stopped being enforced.
 
 A test that genuinely needs a vendor CLI present plants a stub on `PATH`
 (`tests/test_plugins_test.sh`) rather than asking the machine. Weakening the
