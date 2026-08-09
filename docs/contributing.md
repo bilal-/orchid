@@ -53,9 +53,10 @@ One-level directory listings use plain bash globbing instead:
 one through `file_mtime` in `lib/common.sh` and never name either format in a
 shipped shell script — the gate rejects that, and `lib/common.sh` is the only
 shell file it exempts. The gate is not keyed to one spelling: it matches with
-or without a space, quoted or bare, and covers GNU's `--format=`/`--printf=`
-long options too, so there is no spacing that quietly gets through. (This page
-is prose, not a shell script, which is why it may write the formats out.)
+or without a space, quoted or bare, and covers GNU's `--format`/`--printf`
+long options too, each with or without its `=` — so no spacing of the option
+and its format quietly gets through. (This page is prose, not a shell script,
+which is why it may write the formats out.)
 Bridging the two by exit status (`stat -f … || stat -c …`) looks
 right and is wrong: GNU's `-f` is `--file-system` and takes no argument, so
 the format becomes a second FILE operand, GNU `stat` succeeds on the real path

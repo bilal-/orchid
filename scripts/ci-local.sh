@@ -177,9 +177,12 @@ done
 #
 # The match is deliberately wider than the single spelling that broke CI: the
 # separator between the option and the format is optional and may be quoted,
-# and GNU's long-option spellings are covered alongside -c. A gate that only
-# rejects the exact text of the last outage is not a gate -- the next author
-# reaches for whichever spacing they habitually type, and it sails through.
+# and GNU's long-option spellings are covered alongside -c -- with their `=`
+# optional too, because getopt_long takes the value as a separate argument
+# just as happily, so a bare `--format <fmt>` is the same command written a
+# different way. A gate that only rejects the exact text of the last outage
+# is not a gate -- the next author reaches for whichever spacing they
+# habitually type, and it sails through.
 # As with the find gate above, the pattern is assembled -- here around the `%`
 # -- so this file never contains either directive literally and cannot flag
 # itself. That is also why the prose above says "the mtime format" rather than
@@ -187,7 +190,7 @@ done
 echo "== Portability policy (mtime via lib/common.sh file_mtime)"
 mtime_sep="[[:space:]'\"]*"
 raw_mtime_idiom="stat[^;|&]*[-]f${mtime_sep}%"
-raw_mtime_idiom="${raw_mtime_idiom}m|stat[^;|&]*[-](c|-format=|-printf=)${mtime_sep}%"
+raw_mtime_idiom="${raw_mtime_idiom}m|stat[^;|&]*[-](c|-format|-printf)=?${mtime_sep}%"
 raw_mtime_idiom="${raw_mtime_idiom}Y"
 for rel in "${SHELL_FILES[@]}"; do
   case "$rel" in lib/common.sh) continue ;; esac
