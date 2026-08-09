@@ -18,11 +18,14 @@
 # on the author's machine, at the same commit -- rather than on a runner, three
 # pushes later.
 #
-# On a machine that has no vendor CLI installed, the suite run already in
-# progress around this file IS that run, so there is nothing to launch and
-# section 4b skips it rather than doubling every CI job to re-answer the same
-# question. The skip is recorded, never silent, and it never applies where the
-# two PATHs actually differ.
+# Where no vendor CLI resolves at all, the suite run already in progress around
+# this file IS that run, so there is nothing to launch and section 4b skips it
+# rather than doubling every CI job to re-answer the same question. Whether one
+# resolves is measured against the ambient PATH (section 2), never inferred
+# from how much mirroring the PATH needed -- an empty PATH element means the
+# current directory and cannot be mirrored at all, so the two answers come
+# apart exactly where a skip would be unsafe. The skip is recorded, never
+# silent.
 #
 # WHY A MIRROR AND NOT A PRUNED PATH. Removing whole directories from PATH is
 # not an option: on macOS `codex` and `jq` routinely live in the same Homebrew
@@ -148,7 +151,7 @@ done
 echo "  vendor-CLI-free PATH: $mirrored_count of ${#path_entries[@]} PATH entries needed mirroring"
 if [ "$mirrored_count" -eq 0 ]; then
   not_tested "vendor-cli-removal" \
-    "the PATH-mirroring code path. This machine has none of ${VENDOR_CLIS[*]} installed, so nothing needed removing and the PATH below is the ambient PATH unchanged. The no-vendor-CLI guarantee itself still holds here -- a hosted runner is in exactly this state, which is why section 4b can lean on the surrounding suite run instead of launching a duplicate -- but the mirror is exercised only on a machine that actually has a vendor CLI installed"
+    "the PATH-mirroring code path. No PATH entry on this machine holds any of ${VENDOR_CLIS[*]}, so nothing needed removing and the PATH below is the ambient PATH minus only entries that are not directories. A hosted runner is in exactly this state. The no-vendor-CLI guarantee itself still holds here and is still asserted below; only the mirror -- the part that has work to do on a machine that DOES have a vendor CLI installed -- goes unexercised"
 fi
 
 # ===========================================================================
@@ -167,6 +170,27 @@ done
 for required_tool in "${REQUIRED_TOOLS[@]}"; do
   resolves_under_hermetic_path "$required_tool" \
     || fail "filtering the vendor CLIs out of PATH also removed '$required_tool', which the suite legitimately needs"
+done
+
+# The AMBIENT PATH -- the one the run AROUND this file is using -- gets the
+# same question asked of it directly, because section 4b's skip leans on the
+# answer: it stands down only when the surrounding run is ALREADY a
+# vendor-CLI-free run, and that is a fact about the ambient PATH, not about
+# the mirror built from it. mirrored_count is not that fact. It is close, and
+# it was what the skip used to be gated on, but it is INFERRED, and it is
+# inferred from a loop that discards exactly the PATH entries the mirror
+# cannot represent: an EMPTY PATH element means the CURRENT DIRECTORY and is
+# dropped above, so a `codex` in the cwd of a suite run whose PATH ends in `:`
+# resolves for the surrounding run while HERMETIC_PATH proves it does not --
+# and the skip would then hand the guarantee to a run that does not carry it.
+# It is also wrong in the harmless direction: a vendor CLI present but not
+# executable makes mirrored_count non-zero while nothing can actually resolve
+# it. Measure the thing the skip depends on instead of a proxy for it.
+AMBIENT_IS_HERMETIC=1
+for vendor_cli in "${VENDOR_CLIS[@]}"; do
+  if "$BASH" -c 'command -v "$1" >/dev/null 2>&1' _ "$vendor_cli"; then
+    AMBIENT_IS_HERMETIC=0
+  fi
 done
 
 # ===========================================================================
@@ -211,21 +235,29 @@ done
 # mode of forgetting is silence -- which is the failure mode this whole file
 # exists to remove.
 #
-# WHEN THE NESTED RUN IS LAUNCHED, AND WHY NOT ALWAYS. mirrored_count is 0
-# exactly when this machine has no vendor CLI installed anywhere on PATH --
-# which is the state of every hosted runner. HERMETIC_PATH is then the ambient
-# PATH byte for byte, so a suite launched from here would be an identical copy
-# of the one already in progress around this file: it answers nothing the
-# outer run is not already answering, and it doubles the wall clock of every
-# CI job on a repository whose CI problem is the entire reason this file
-# exists. So the nested run is launched in the two cases where it is not a
-# duplicate:
+# WHEN THE NESTED RUN IS LAUNCHED, AND WHY NOT ALWAYS. AMBIENT_IS_HERMETIC is
+# 1 exactly when none of the vendor CLIs resolves on the PATH this file was
+# invoked with -- which is the state of every hosted runner. The run already
+# in progress around this file is then ITSELF a vendor-CLI-free run of the
+# whole suite: if any test depends on an installed vendor CLI, THAT run goes
+# red. A suite launched from here would answer nothing it is not already
+# answering, and it would double the wall clock of every CI job on a
+# repository whose CI problem is the entire reason this file exists. So the
+# nested run is launched in the two cases where it is not a duplicate:
 #
-#   * a vendor CLI IS installed (mirrored_count > 0) -- HERMETIC_PATH really
-#     differs from the ambient one, and this is the developer machine the
-#     divergence was hiding on in the first place; or
+#   * a vendor CLI really does resolve here (AMBIENT_IS_HERMETIC = 0) -- the
+#     surrounding run is NOT the run this file is supposed to certify, and
+#     this is the developer machine the divergence was hiding on in the first
+#     place; or
 #   * there is no surrounding suite run to lean on (ORCHID_SUITE_RUN unset,
 #     i.e. this file was invoked on its own rather than through tests/run.sh).
+#
+# Note which of the two questions each half answers. "Is this run
+# vendor-CLI-free" is measured, not inferred (section 2). "Is there a
+# surrounding whole-suite run" is what ORCHID_SUITE_RUN carries, and nothing
+# else in this file trusts it: on the standalone path the nested run happens
+# regardless, so a lost or forged marker costs a duplicate run, never a
+# skipped proof.
 #
 # Skipping is never silent: the branch below records what carried the
 # guarantee instead, in the same not-tested vocabulary as everything else here.
@@ -233,9 +265,24 @@ done
 not_tested "vendor-cli-behaviour" \
   "what the real codex/claude/agy CLIs DO. This proof removes them; it does not exercise them. Whether a vendor CLI is installed, authenticated and answers correctly stays an operator-owned, out-of-band qualification (\`orchid plugins test --all-defaults\` on a machine that has them), deliberately outside the deterministic suite"
 
-if [ "$mirrored_count" -eq 0 ] && [ -n "${ORCHID_SUITE_RUN:-}" ]; then
+# The honest boundary of a PATH-based proof, named rather than left implicit.
+# bin/orchid does not INHERIT PATH for its own bootstrap: it replaces it with a
+# fixed machine-local list (/opt/homebrew/bin:/usr/local/bin:/home/linuxbrew/
+# .linuxbrew/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin) and carries the
+# caller's as inert data, which lib/common.sh restores at each verb's first
+# source -- so everything that resolves a required binary today, capsuite's
+# binaries_present included, runs on the PATH this file restricted. A
+# trust-boundary verb DEFERS that restore, and on a developer machine those
+# fixed directories are exactly where an installed codex/claude/agy lives. No
+# binary lookup sits on the deferred side today. One added there would be
+# machine-dependent again and this proof would not see it, because the list is
+# a literal in bin/orchid rather than anything reachable from PATH.
+not_tested "bootstrap-path-vendor-clis" \
+  "whether a vendor CLI is reachable through bin/orchid's FIXED bootstrap PATH. This proof restricts PATH, and that list is not built from PATH, so it is outside what any PATH restriction can reach. It is empty of consequence only for as long as no binary lookup runs ahead of lib/common.sh's _orchid_entry_restore_operator_path; a lookup placed there would find a developer's installed CLI and not a runner's, which is the divergence class this file exists to close"
+
+if [ "$AMBIENT_IS_HERMETIC" -eq 1 ] && [ -n "${ORCHID_SUITE_RUN:-}" ]; then
   not_tested "nested-vendor-cli-free-run" \
-    "a SECOND suite run launched from here. It would have been byte-for-byte identical to the one now executing this file: none of ${VENDOR_CLIS[*]} is installed on this machine, so the vendor-CLI-free PATH built above IS the ambient PATH, and the surrounding tests/run.sh (ORCHID_SUITE_RUN=1) is already the vendor-CLI-free run -- if the suite depends on a vendor CLI, THAT run goes red, without this file paying for a duplicate of it. The nested run still happens wherever it can differ: on a machine that has a vendor CLI installed, and whenever this file is invoked on its own outside tests/run.sh"
+    "a SECOND suite run launched from here. It would have answered exactly what the run now executing this file is already answering: none of ${VENDOR_CLIS[*]} resolves on this run's PATH (measured in section 2, not assumed), and the surrounding tests/run.sh (ORCHID_SUITE_RUN=1) is therefore already the vendor-CLI-free whole-suite run -- if the suite depends on a vendor CLI, THAT run goes red, without this file paying for a duplicate of it. The nested run still happens wherever it can differ: on a machine where a vendor CLI does resolve, and whenever this file is invoked on its own outside tests/run.sh"
   exit 0
 fi
 

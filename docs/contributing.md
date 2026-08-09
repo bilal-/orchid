@@ -138,14 +138,29 @@ survives — and then runs the whole suite on it. It is a `tests/test_*.sh` file
 so `tests/run.sh` and therefore `scripts/ci-local.sh` and hosted CI run it too.
 
 That nesting means one gate run can execute the suite twice, so the second run
-is launched only when it can differ from the first. On a machine that has a
-vendor CLI installed — a developer laptop, which is where the divergence hides
-— it always runs. On a machine that has none, the vendor-CLI-free `PATH` *is*
-the ambient `PATH`, the surrounding `tests/run.sh` (`ORCHID_SUITE_RUN`) is
-already the vendor-CLI-free run, and launching a byte-identical copy would just
-double every CI job; the skip is printed as a `NOT-TESTED:` line rather than
-passing quietly. Invoked on its own, outside `tests/run.sh`, there is no
-surrounding run to lean on and the nested run happens regardless.
+is launched only when it can differ from the first. On a machine where a vendor
+CLI really does resolve — a developer laptop, which is where the divergence
+hides — it always runs. Where none resolves, the surrounding `tests/run.sh`
+(`ORCHID_SUITE_RUN`) is *itself* the vendor-CLI-free whole-suite run: if any
+test depends on an installed vendor CLI, that run goes red, and a nested copy
+would only double every CI job to reach the same verdict. The skip is printed
+as a `NOT-TESTED:` line rather than passing quietly. Invoked on its own,
+outside `tests/run.sh`, there is no surrounding run to lean on and the nested
+run happens regardless.
+
+Which vendor CLIs resolve is *measured*, against the ambient `PATH`, rather
+than inferred from how many `PATH` entries needed mirroring. The two answers
+differ where it matters: an empty `PATH` element means the current directory
+and cannot be mirrored at all, so the count would report a clean machine while
+the surrounding run could still reach a `codex` in its cwd — and the skip would
+then hand the guarantee to a run that does not carry it.
+
+One boundary the file records rather than covers: `bin/orchid` replaces `PATH`
+with a fixed machine-local list for its own bootstrap and restores the caller's
+at each verb's first `source` of `lib/common.sh`, so every binary lookup that
+exists today — `binaries_present` included — runs on the restricted `PATH`. A
+lookup added *ahead* of that restore would read the fixed list, which no `PATH`
+restriction can reach.
 
 The recursion guard (`ORCHID_HERMETIC_PROOF`) stops a nested run from
 re-launching a third. The file asserts the guard fires against a synthetic
