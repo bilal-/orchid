@@ -49,6 +49,17 @@ One-level directory listings use plain bash globbing instead:
 `orchid_list_dir` in `lib/common.sh` for shipped code, `list_dir_entries` /
 `list_dir_files` in `tests/helpers.sh` for tests.
 
+`stat(1)` is the other split: mtime is `-f %m` on BSD and `-c %Y` on GNU. Read
+one through `file_mtime` in `lib/common.sh` and never name either format
+anywhere else — the gate rejects that, and `file_mtime` is the only file
+allowed to. Bridging the two by exit status (`stat -f … || stat -c …`) looks
+right and is wrong: GNU's `-f` is `--file-system` and takes no argument, so
+the format becomes a second FILE operand, GNU `stat` succeeds on the real path
+anyway, and the caller gets a filesystem block whose first line is `File:`.
+The arithmetic that follows then dies under `set -u` with
+`File: unbound variable`. Select on the *result* — digits or nothing —
+which is what `file_mtime` does.
+
 ## Test fixtures and scratch directories
 
 A test file never `cd`s into a scratch root with plain `cd`. Use

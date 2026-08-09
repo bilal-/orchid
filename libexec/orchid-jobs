@@ -221,7 +221,7 @@ case "$sub" in
       if [ "$pid" = 0 ]; then printf '%s\tprepared\n' "$task"; continue; fi
       if ! kill -0 "$pid" 2>/dev/null; then printf '%s\tdead\n' "$task"; continue; fi
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"
-      log_mtime="$(stat -f %m "$log" 2>/dev/null || stat -c %Y "$log" 2>/dev/null || echo 0)"
+      log_mtime="$(file_mtime "$log")"
       if [ "$log_mtime" -gt 0 ] && [ $(( now - log_mtime )) -gt "$stall_s" ]; then
         kill_stuck "$pgid" "$pid"
         printf '%s\tstalled\n' "$task"
@@ -404,7 +404,7 @@ case "$sub" in
         [ -e "$f" ] || continue
         pid="$(jq -r .pid "$f")"
         [ "$pid" = 0 ] || continue   # only never-launched manifests
-        mtime="$(stat -f %m "$f" 2>/dev/null || stat -c %Y "$f" 2>/dev/null || echo 0)"
+        mtime="$(file_mtime "$f")"
         age=$(( now - mtime ))
         [ "$age" -gt "$older_than_s" ] || continue   # too young: untouched
         job_id="$(jq -r .job_id "$f")"

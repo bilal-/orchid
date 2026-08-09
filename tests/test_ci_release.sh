@@ -94,6 +94,25 @@ assert_match 'non-POSIX find depth primary' "$portability_out" \
   "CI explains why a non-POSIX find depth primary is rejected"
 rm -f "$discovery_fixture/tests/nonportable-find.sh"
 
+# Regression (T014, lesson L019): a shipped script that reads an mtime with a
+# platform-specific stat format must fail the portability policy. The correct
+# BSD/GNU form existed in exactly ONE file for a whole release while five other
+# sites — including the lock acquisition every durable verb runs through — kept
+# the broken exit-status form and took CI down on ubuntu-latest. A good example
+# nobody is forced to follow did not converge them; this gate is what does, so
+# it needs its own regression net. Assembled at runtime, same as the find case,
+# so this test file stays clean under the gate it is testing.
+raw_mtime_use='mt="$(stat -f %'
+raw_mtime_use="${raw_mtime_use}m /tmp 2>/dev/null)\""
+printf '%s\n' '#!/usr/bin/env bash' "$raw_mtime_use" \
+  > "$discovery_fixture/tests/raw-mtime.sh"
+rc=0
+mtime_policy_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "CI accepts a platform-specific stat mtime format outside lib/common.sh"
+assert_match 'file_mtime' "$mtime_policy_out" \
+  "CI names the helper that a rejected stat mtime format should have used"
+rm -f "$discovery_fixture/tests/raw-mtime.sh"
+
 # Regression (T004 attempt 7): ShellCheck normally searches a script's parent
 # directories and the invoking user's home for .shellcheckrc. Neither source
 # may suppress a warning outside the repository's audited inline-directive

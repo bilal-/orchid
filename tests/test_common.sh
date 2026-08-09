@@ -135,3 +135,127 @@ elapsed=$(( $(date +%s) - start ))
 assert_eq 124 "$rc" "with_timeout returns 124 on timeout"
 assert_eq "" "$out" "with_timeout's killed command produces no output"
 [ "$elapsed" -lt 10 ] || fail "with_timeout must return promptly after killing on timeout (took ${elapsed}s)"
+
+# ---------------------------------------------------------------------------
+# T014 (lesson L019): file_mtime chooses between the BSD and GNU spellings of
+# stat on the RESULT, never on the exit status.
+#
+# The idiom this replaced ran both spellings inside ONE command substitution
+# and picked between them with `||`. That is broken on Linux in a way that is
+# invisible on macOS: GNU's -f is --file-system and takes no argument, so the
+# format is parsed as a second FILE operand. GNU stat fails on that operand,
+# SUCCEEDS on the real path, and writes the path's filesystem block -- whose
+# first line begins `File:` -- to stdout. Both commands share the one
+# substitution, so the fallback's number is appended to that block, and the
+# caller does arithmetic on the whole thing. Under `set -u` bash dies with
+# `File: unbound variable`, which is precisely how lock_acquire (and with it
+# every durable verb) went down on ubuntu-latest.
+#
+# The stub below is a shell FUNCTION, so it shadows the real binary inside its
+# subshell and nowhere else. That is deliberate: the point of these cases is
+# that they assert the same thing on a macOS laptop and a Linux runner, so
+# none of them may consult the platform actually underneath. The one case that
+# does run the real stat is the last.
+#
+# The format arguments live in variables so this file never spells the raw
+# idiom out literally -- scripts/ci-local.sh greps every shipped shell script
+# for it, and that gate should not need an exception for its own test.
+# ---------------------------------------------------------------------------
+probe="$WORK/mtime-probe"; : > "$probe"
+bsd_fmt="%m"; gnu_fmt="%Y"
+
+# RED: under a GNU-behaving stat, the old idiom really does yield a non-number.
+# Without this the GREEN cases below would prove nothing -- they would just be
+# asserting that a stub returns what the stub was told to return.
+red_mt="$(
+  stat() {
+    if [ "$1" = "-f" ]; then
+      printf '  File: "%s"\n    ID: 0 Namelen: 255     Type: ext2/ext3\n' "$3"
+      return 1
+    fi
+    printf '1700000000\n'
+  }
+  stat -f "$bsd_fmt" "$probe" 2>/dev/null || stat -c "$gnu_fmt" "$probe" 2>/dev/null
+)"
+case "$red_mt" in
+  ''|*[!0-9]*) : ;;
+  *) fail "RED: the exit-status-selected stat idiom must come out non-numeric against a GNU-behaving stat (got '$red_mt') -- the Linux hazard is not being reproduced here" ;;
+esac
+
+# RED: and that value is fatal the moment it reaches arithmetic under set -u,
+# which is the actual production failure, not a cosmetic one.
+red_rc=0
+( set -u; red_arith="$red_mt"; : $(( 1700000100 - red_arith )) ) 2>/dev/null || red_rc=$?
+[ "$red_rc" -ne 0 ] \
+  || fail "RED: arithmetic on a filesystem-block 'mtime' must fail under set -u -- if it does not, this test is no longer reproducing the CI failure it exists to pin"
+
+# GREEN: the same stub, through file_mtime, produces the GNU mtime.
+green_gnu="$(
+  stat() {
+    if [ "$1" = "-f" ]; then
+      printf '  File: "%s"\n    ID: 0 Namelen: 255     Type: ext2/ext3\n' "$3"
+      return 1
+    fi
+    printf '1700000000\n'
+  }
+  file_mtime "$probe"
+)"
+assert_eq 1700000000 "$green_gnu" \
+  "file_mtime discards a filesystem block and falls through to the GNU spelling"
+
+# GREEN: selection is on the RESULT, so a BSD probe that SUCCEEDS (exit 0)
+# while printing something non-numeric must still fall through. Exit status
+# alone would stop here and hand the caller a literal question mark.
+green_ok="$(
+  stat() {
+    if [ "$1" = "-f" ]; then printf '?\n'; return 0; fi
+    printf '1700000001\n'
+  }
+  file_mtime "$probe"
+)"
+assert_eq 1700000001 "$green_ok" \
+  "file_mtime falls through on a non-numeric result even when that probe exited 0"
+
+# GREEN: a BSD probe that does yield a number wins outright -- the fallback is
+# never consulted, so a machine where only one spelling exists is unaffected.
+green_bsd="$(
+  stat() {
+    if [ "$1" = "-f" ]; then printf '1700000002\n'; return 0; fi
+    printf 'gnu-spelling-should-not-have-been-consulted\n'
+  }
+  file_mtime "$probe"
+)"
+assert_eq 1700000002 "$green_bsd" "file_mtime keeps a numeric BSD result and stops there"
+
+# GREEN: neither spelling usable -> the fallback, defaulting to 0. Callers
+# differ on what that should be and the difference is a safety property:
+# orchid-answer wants 0 so an undatable question is refused (fail closed),
+# while lock_acquire passes the current time so an undatable lock reads as
+# age 0 and cannot be broken (fail safe).
+green_default="$(
+  stat() { return 1; }
+  file_mtime "$probe"
+)"
+assert_eq 0 "$green_default" "file_mtime defaults to 0 when no spelling yields a number"
+green_fallback="$(
+  stat() { printf 'File: not a number\n'; return 0; }
+  file_mtime "$probe" 4242
+)"
+assert_eq 4242 "$green_fallback" "file_mtime honours a caller-supplied fallback"
+
+# GREEN, the invariant the whole task is about: NO result file_mtime can
+# return may blow up in arithmetic under set -u.
+for case_mt in "$green_gnu" "$green_ok" "$green_bsd" "$green_default" "$green_fallback"; do
+  ( set -u; mt="$case_mt"; : $(( 1700000100 - mt )) ) 2>/dev/null \
+    || fail "file_mtime returned '$case_mt', which is not safe in arithmetic under set -u -- that is exactly the 'File: unbound variable' crash this helper exists to make impossible"
+done
+
+# GREEN, unstubbed: whatever stat this platform actually ships, a real file's
+# mtime comes back as a plausible epoch second. This is the case that would
+# catch a helper that is internally consistent but wrong about both platforms.
+real_mt="$(file_mtime "$probe")"
+case "$real_mt" in
+  ''|*[!0-9]*) fail "file_mtime must return digits for a real file on this platform (got '$real_mt')" ;;
+  *) [ "$real_mt" -gt 1600000000 ] \
+       || fail "file_mtime read an implausible mtime for a just-created file (got '$real_mt') -- it is falling back instead of reading either stat spelling" ;;
+esac

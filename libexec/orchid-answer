@@ -50,7 +50,7 @@ qnonce="$(grep -m1 '^nonce: ' "$qf" 2>/dev/null | sed 's/^nonce: //')"
 # as every other write this un-fenced verb makes — see the un-fenced
 # rationale below) so the expiry is visible in the run's history, not just a
 # silent refusal on stderr.
-qf_mtime="$(stat -f %m "$qf" 2>/dev/null || stat -c %Y "$qf" 2>/dev/null || echo 0)"
+qf_mtime="$(file_mtime "$qf")"
 expiry_s="$(config_get "$repo" answer_expiry_s 86400)"
 now="$(date -u +%s)"
 # Review fix (Minor #10): if BOTH `stat` variants fail, `qf_mtime` is 0 --

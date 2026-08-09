@@ -152,20 +152,16 @@ _start_lock_live() {
   fi
   if [ -z "$parsed" ]; then
     now="$(date +%s)"
-    # Same BSD-then-GNU mtime probe lock_acquire uses, but selected on the
-    # RESULT rather than on the exit status alone: a stat that does not
-    # understand the other platform's directive can print `?` and still exit 0,
-    # and a non-numeric `mt` would make the arithmetic below a syntax error
-    # under `set -e` -- crashing the very refusal path this branch exists to
-    # make survivable. An unreadable mtime falls back to "just now", i.e. to
+    # Same BSD-then-GNU mtime probe lock_acquire uses, and now literally the
+    # same code: this file discovered the result-vs-exit-status hazard and
+    # carried the only correct copy of the fix while five other sites kept the
+    # broken idiom, so the fix moved into lib/common.sh's `file_mtime` (which
+    # documents the hazard in full) and every site calls that. A non-numeric
+    # `mt` would make the arithmetic below a syntax error under `set -e` --
+    # crashing the very refusal path this branch exists to make survivable --
+    # so an unreadable mtime falls back to "just now" ($now, age 0), i.e. to
     # the conservative "still live" answer.
-    mt="$(stat -f %m "$lock" 2>/dev/null || true)"
-    case "$mt" in
-      ''|*[!0-9]*) mt="$(stat -c %Y "$lock" 2>/dev/null || true)" ;;
-    esac
-    case "$mt" in
-      ''|*[!0-9]*) mt="$now" ;;
-    esac
+    mt="$(file_mtime "$lock" "$now")"
     age=$(( now - mt ))
     [ "$age" -lt "$grace" ] || return 1
     return 0
