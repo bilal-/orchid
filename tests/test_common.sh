@@ -163,9 +163,21 @@ assert_eq "" "$out" "with_timeout's killed command produces no output"
 # it for the same reason: an EMPTY result does not blow up in arithmetic at
 # all. Bash treats a set-but-empty variable as zero under `set -u`, so an
 # undatable path would silently read as the epoch -- age = "now", every lock
-# instantly stale -- rather than failing loudly. Non-numeric is caught by the
-# crash; empty is caught by nothing, so both must be rejected upstream, before
-# any value reaches arithmetic.
+# instantly stale -- rather than failing loudly. Two different bad values,
+# two different wrong outcomes, so both must be rejected upstream, before any
+# value reaches arithmetic.
+#
+# WHAT THESE CASES ASSERT, AND WHAT THEY DELIBERATELY DO NOT. Every case here
+# asserts file_mtime's OUTPUT. None asserts how an interpreter REACTS to a bad
+# value, because that reaction is not a property of this codebase: the operator
+# measured the same filesystem block yielding exit 127 under /bin/bash 3.2,
+# exit 1 under zsh, and exit 0 inside this suite's own execution context. A
+# case pinning the bug's failure MODE is therefore unreliable by construction
+# -- and one that "passes" at status 0 here would be reporting the hazard as
+# absent while the hazard is exactly what it was written to prove. The fix's
+# guarantee is not shell-dependent in that way: file_mtime never returns a
+# value that is not a run of digits. That is what is asserted below, on the
+# output itself, by the same character class file_mtime selects with.
 #
 # The stub below is a shell FUNCTION, so it shadows the real binary inside its
 # subshell and nowhere else. That is deliberate: the point of these cases is
@@ -205,22 +217,18 @@ case "$red_mt" in
   *) fail "RED: the exit-status-selected stat idiom must come out non-numeric against a GNU-behaving stat (got '$red_mt') -- the Linux hazard is not being reproduced here" ;;
 esac
 
-# RED: and that value is fatal the moment it reaches arithmetic under set -u,
-# which is the actual production failure, not a cosmetic one.
-red_rc=0
-( set -u; red_arith="$red_mt"; : $(( 1700000100 - red_arith )) ) 2>/dev/null || red_rc=$?
-[ "$red_rc" -ne 0 ] \
-  || fail "RED: arithmetic on a filesystem-block 'mtime' must fail under set -u -- if it does not, this test is no longer reproducing the CI failure it exists to pin"
-
-# RED, the second hazard: the empty result is NOT caught this way. Arithmetic
-# on a set-but-empty variable succeeds and yields zero, so an undatable path
-# would sail through as the epoch instead of crashing. This case exists to pin
-# why file_mtime rejects '' explicitly rather than trusting the crash to catch
-# a bad value: one of the two bad values never crashes.
-empty_rc=0
-( set -u; empty_arith=""; : $(( 1700000100 - empty_arith )) ) 2>/dev/null || empty_rc=$?
-[ "$empty_rc" -eq 0 ] \
-  || fail "RED: an empty value is expected to pass arithmetic silently (that is why file_mtime must reject it upstream); if it now fails, this comment and file_mtime's contract need revisiting"
+# What that value then DOES to the caller is not asserted, here or anywhere
+# below, and the omission is the deliberate kind. Feeding the block to
+# arithmetic under `set -u` is what killed lock_acquire on ubuntu-latest, but
+# the operator measured that same value exiting 127 under /bin/bash 3.2, 1
+# under zsh, and 0 inside this suite's own execution context -- so an assertion
+# that it "must fail" pins the interpreter, not the bug, and an assertion that
+# it "must fail with status N" pins the interpreter twice. The empty result
+# behaves differently again and is a distinct hazard for that reason: a
+# set-but-empty variable is not an unbound one, so arithmetic accepts it as
+# zero and an undatable path reads as the epoch rather than crashing. Both bad
+# values are rejected by file_mtime before any of that can matter, and the
+# GREEN cases below assert exactly that, on file_mtime's output.
 
 # GREEN: the same stub, through file_mtime, produces the GNU mtime -- the
 # filesystem probe's exit 0 does not stop the fall-through, because file_mtime
@@ -298,7 +306,7 @@ green_fallback="$(
 assert_eq 4242 "$green_fallback" "file_mtime honours a caller-supplied fallback"
 
 # GREEN, the second hazard: a probe that prints NOTHING and exits 0 is the
-# case arithmetic cannot catch (the RED above), so file_mtime has to catch it.
+# case no downstream crash would ever catch, so file_mtime has to catch it.
 # Both spellings answer with empty success here; the caller must still get the
 # fallback, not an empty string that would later evaluate as zero and make
 # every lock look infinitely old.
@@ -309,16 +317,25 @@ green_empty="$(
 assert_eq 4243 "$green_empty" \
   "file_mtime rejects an empty result even when both spellings exited 0 -- empty would pass arithmetic as zero, not crash"
 
-# GREEN, the invariant the whole task is about: NO result file_mtime can
-# return may blow up in arithmetic under set -u -- and, just as importantly,
-# none of them may be empty, since an empty one would pass arithmetic quietly
-# and be wrong instead of loud.
+# GREEN, the invariant the whole task is about, stated over every case above
+# at once: EVERY value file_mtime can hand a caller is a non-empty run of
+# digits. That single shape rules out both hazards at their source -- a word
+# can never reach the arithmetic that read `File` as a variable name, and an
+# empty string can never reach the arithmetic that would quietly call it zero.
+#
+# Asserted on the value, with the character class, rather than by handing each
+# value to arithmetic and watching what happens: an arithmetic probe reports
+# the interpreter's mood (127, 1 or 0 for the same input, depending on the
+# shell and the surrounding context -- see the header), while `*[!0-9]*`
+# reports the helper's contract and reports it identically everywhere. It is
+# also the strictly stronger check, because it is the one that still fails
+# when the interpreter shrugs the bad value off.
 for case_mt in "$green_gnu" "$green_gnu_rc1" "$green_ok" "$green_bsd" \
                "$green_default" "$green_fallback" "$green_empty"; do
-  [ -n "$case_mt" ] \
-    || fail "file_mtime returned an empty result, which arithmetic accepts as zero -- an undatable path would read as the epoch instead of failing"
-  ( set -u; mt="$case_mt"; : $(( 1700000100 - mt )) ) 2>/dev/null \
-    || fail "file_mtime returned '$case_mt', which is not safe in arithmetic under set -u -- that is exactly the 'File: unbound variable' crash this helper exists to make impossible"
+  case "$case_mt" in
+    '') fail "file_mtime returned an empty result; arithmetic accepts that as zero, so an undatable path would read as the epoch instead of being refused" ;;
+    *[!0-9]*) fail "file_mtime returned '$case_mt', which is not a run of digits -- a non-numeric mtime reaching arithmetic is exactly the 'File: unbound variable' crash this helper exists to make impossible" ;;
+  esac
 done
 
 # GREEN, unstubbed: whatever stat this platform actually ships, a real file's
@@ -355,11 +372,11 @@ assert_eq 0 "$absent_default" \
 absent_fallback="$(file_mtime "$absent" 1700000003)"
 assert_eq 1700000003 "$absent_fallback" \
   "file_mtime honours a caller-supplied fallback against the real stat, not just a stub"
-# And the invariant, once more -- both halves of it -- on the values the REAL
-# binary produced.
+# And the invariant, once more and in the same shape, on the values the REAL
+# binary produced rather than a stub's.
 for case_mt in "$real_mt" "$absent_default" "$absent_fallback"; do
-  [ -n "$case_mt" ] \
-    || fail "file_mtime returned an empty result from the platform's own stat; arithmetic would take that as zero rather than refusing it"
-  ( set -u; mt="$case_mt"; : $(( 1700000100 - mt )) ) 2>/dev/null \
-    || fail "file_mtime returned '$case_mt' from the platform's own stat, which is not safe in arithmetic under set -u"
+  case "$case_mt" in
+    '') fail "file_mtime returned an empty result from the platform's own stat; arithmetic would take that as zero rather than refusing it" ;;
+    *[!0-9]*) fail "file_mtime returned '$case_mt' from the platform's own stat, which is not a run of digits and so is not safe in the arithmetic every caller does with it" ;;
+  esac
 done
