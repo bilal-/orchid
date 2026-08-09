@@ -143,19 +143,36 @@ assert_eq "" "$out" "with_timeout's killed command produces no output"
 # The idiom this replaced ran both spellings inside ONE command substitution
 # and picked between them with `||`. That is broken on Linux in a way that is
 # invisible on macOS: GNU's -f is --file-system and takes no argument, so the
-# format is parsed as a second FILE operand. GNU stat fails on that operand,
-# SUCCEEDS on the real path, and writes the path's filesystem block -- whose
-# first line begins `File:` -- to stdout. Both commands share the one
-# substitution, so the fallback's number is appended to that block, and the
-# caller does arithmetic on the whole thing. Under `set -u` bash dies with
+# format word is parsed as a FILE operand. GNU stat is now in filesystem mode
+# against a path that really does exist, so it writes that path's filesystem
+# block -- whose first line begins `File:` -- to stdout. The caller then does
+# arithmetic on a word, and under `set -u` bash dies with
 # `File: unbound variable`, which is precisely how lock_acquire (and with it
 # every durable verb) went down on ubuntu-latest.
+#
+# What the caller ends up holding depends on an exit status it should never
+# have been reading in the first place: if the filesystem probe exits 0 the
+# `||` short-circuits and `mt` is the block alone; if it exits non-zero the
+# fallback runs into the SAME substitution and glues its digits onto the end
+# of the block. Neither is a number, and that is the whole point -- the exit
+# status is not a reliable signal about the output, so the RED case below
+# models the shape that a status-reading caller gets WRONG most directly: a
+# probe that succeeds while printing something that is not an mtime.
+#
+# There is a second, quieter hazard on the same axis, and file_mtime rejects
+# it for the same reason: an EMPTY result does not blow up in arithmetic at
+# all. Bash treats a set-but-empty variable as zero under `set -u`, so an
+# undatable path would silently read as the epoch -- age = "now", every lock
+# instantly stale -- rather than failing loudly. Non-numeric is caught by the
+# crash; empty is caught by nothing, so both must be rejected upstream, before
+# any value reaches arithmetic.
 #
 # The stub below is a shell FUNCTION, so it shadows the real binary inside its
 # subshell and nowhere else. That is deliberate: the point of these cases is
 # that they assert the same thing on a macOS laptop and a Linux runner, so
-# none of them may consult the platform actually underneath. The one case that
-# does run the real stat is the last.
+# none of them may consult the platform actually underneath -- the Linux bug
+# cannot be provoked out of a BSD stat, so it has to be modelled. The cases
+# that do run the real stat are the last two.
 #
 # The format arguments live in variables so this file never spells the raw
 # idiom out literally -- scripts/ci-local.sh greps every shipped shell script
@@ -167,18 +184,24 @@ bsd_fmt="%m"; gnu_fmt="%Y"
 # RED: under a GNU-behaving stat, the old idiom really does yield a non-number.
 # Without this the GREEN cases below would prove nothing -- they would just be
 # asserting that a stub returns what the stub was told to return.
+#
+# The stub SUCCEEDS on the filesystem probe, because that is what filesystem
+# mode does against a path that exists. A stub that failed there would model
+# the safe half of the hazard: the `||` would fire, the GNU spelling would
+# answer, and the idiom would look serviceable.
 red_mt="$(
   stat() {
     if [ "$1" = "-f" ]; then
       printf '  File: "%s"\n    ID: 0 Namelen: 255     Type: ext2/ext3\n' "$3"
-      return 1
+      return 0
     fi
     printf '1700000000\n'
   }
   stat -f "$bsd_fmt" "$probe" 2>/dev/null || stat -c "$gnu_fmt" "$probe" 2>/dev/null
 )"
 case "$red_mt" in
-  ''|*[!0-9]*) : ;;
+  '') fail "RED: the exit-status-selected stat idiom must produce the filesystem block, not nothing -- the Linux hazard is not being reproduced here" ;;
+  *[!0-9]*) : ;;
   *) fail "RED: the exit-status-selected stat idiom must come out non-numeric against a GNU-behaving stat (got '$red_mt') -- the Linux hazard is not being reproduced here" ;;
 esac
 
@@ -189,12 +212,24 @@ red_rc=0
 [ "$red_rc" -ne 0 ] \
   || fail "RED: arithmetic on a filesystem-block 'mtime' must fail under set -u -- if it does not, this test is no longer reproducing the CI failure it exists to pin"
 
-# GREEN: the same stub, through file_mtime, produces the GNU mtime.
+# RED, the second hazard: the empty result is NOT caught this way. Arithmetic
+# on a set-but-empty variable succeeds and yields zero, so an undatable path
+# would sail through as the epoch instead of crashing. This case exists to pin
+# why file_mtime rejects '' explicitly rather than trusting the crash to catch
+# a bad value: one of the two bad values never crashes.
+empty_rc=0
+( set -u; empty_arith=""; : $(( 1700000100 - empty_arith )) ) 2>/dev/null || empty_rc=$?
+[ "$empty_rc" -eq 0 ] \
+  || fail "RED: an empty value is expected to pass arithmetic silently (that is why file_mtime must reject it upstream); if it now fails, this comment and file_mtime's contract need revisiting"
+
+# GREEN: the same stub, through file_mtime, produces the GNU mtime -- the
+# filesystem probe's exit 0 does not stop the fall-through, because file_mtime
+# reads the result and not the status.
 green_gnu="$(
   stat() {
     if [ "$1" = "-f" ]; then
       printf '  File: "%s"\n    ID: 0 Namelen: 255     Type: ext2/ext3\n' "$3"
-      return 1
+      return 0
     fi
     printf '1700000000\n'
   }
@@ -202,6 +237,25 @@ green_gnu="$(
 )"
 assert_eq 1700000000 "$green_gnu" \
   "file_mtime discards a filesystem block and falls through to the GNU spelling"
+
+# GREEN: the other half of "the status is not a signal" -- the same block, but
+# printed by a probe that exits non-zero. The raw idiom would glue the two
+# outputs together inside its single substitution; file_mtime runs each
+# spelling in its own substitution, so the block is discarded outright and the
+# caller gets the GNU number alone, never the number with a word in front of
+# it.
+green_gnu_rc1="$(
+  stat() {
+    if [ "$1" = "-f" ]; then
+      printf '  File: "%s"\n    ID: 0 Namelen: 255     Type: ext2/ext3\n' "$3"
+      return 1
+    fi
+    printf '1700000004\n'
+  }
+  file_mtime "$probe"
+)"
+assert_eq 1700000004 "$green_gnu_rc1" \
+  "file_mtime never concatenates the two spellings' output, whatever the first one's exit status"
 
 # GREEN: selection is on the RESULT, so a BSD probe that SUCCEEDS (exit 0)
 # while printing something non-numeric must still fall through. Exit status
@@ -243,9 +297,26 @@ green_fallback="$(
 )"
 assert_eq 4242 "$green_fallback" "file_mtime honours a caller-supplied fallback"
 
+# GREEN, the second hazard: a probe that prints NOTHING and exits 0 is the
+# case arithmetic cannot catch (the RED above), so file_mtime has to catch it.
+# Both spellings answer with empty success here; the caller must still get the
+# fallback, not an empty string that would later evaluate as zero and make
+# every lock look infinitely old.
+green_empty="$(
+  stat() { return 0; }
+  file_mtime "$probe" 4243
+)"
+assert_eq 4243 "$green_empty" \
+  "file_mtime rejects an empty result even when both spellings exited 0 -- empty would pass arithmetic as zero, not crash"
+
 # GREEN, the invariant the whole task is about: NO result file_mtime can
-# return may blow up in arithmetic under set -u.
-for case_mt in "$green_gnu" "$green_ok" "$green_bsd" "$green_default" "$green_fallback"; do
+# return may blow up in arithmetic under set -u -- and, just as importantly,
+# none of them may be empty, since an empty one would pass arithmetic quietly
+# and be wrong instead of loud.
+for case_mt in "$green_gnu" "$green_gnu_rc1" "$green_ok" "$green_bsd" \
+               "$green_default" "$green_fallback" "$green_empty"; do
+  [ -n "$case_mt" ] \
+    || fail "file_mtime returned an empty result, which arithmetic accepts as zero -- an undatable path would read as the epoch instead of failing"
   ( set -u; mt="$case_mt"; : $(( 1700000100 - mt )) ) 2>/dev/null \
     || fail "file_mtime returned '$case_mt', which is not safe in arithmetic under set -u -- that is exactly the 'File: unbound variable' crash this helper exists to make impossible"
 done
@@ -284,8 +355,11 @@ assert_eq 0 "$absent_default" \
 absent_fallback="$(file_mtime "$absent" 1700000003)"
 assert_eq 1700000003 "$absent_fallback" \
   "file_mtime honours a caller-supplied fallback against the real stat, not just a stub"
-# And the invariant, once more, on the values the REAL binary produced.
+# And the invariant, once more -- both halves of it -- on the values the REAL
+# binary produced.
 for case_mt in "$real_mt" "$absent_default" "$absent_fallback"; do
+  [ -n "$case_mt" ] \
+    || fail "file_mtime returned an empty result from the platform's own stat; arithmetic would take that as zero rather than refusing it"
   ( set -u; mt="$case_mt"; : $(( 1700000100 - mt )) ) 2>/dev/null \
     || fail "file_mtime returned '$case_mt' from the platform's own stat, which is not safe in arithmetic under set -u"
 done
