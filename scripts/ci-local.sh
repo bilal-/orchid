@@ -158,24 +158,37 @@ for rel in "${SHELL_FILES[@]}"; do
   fi
 done
 
-# The mtime idiom that must not come back. `stat` spells mtime `-f %m` on BSD
-# and `-c %Y` on GNU, and the obvious way to bridge that -- run one, fall back
-# to the other on non-zero exit -- is wrong on Linux: GNU's -f is
-# --file-system and takes no argument, so the format is read as a second FILE.
-# GNU stat then fails on it, succeeds on the real path, prints that path's
-# filesystem block, and the caller's arithmetic dies under set -u with
-# `File: unbound variable`. That is not hypothetical: it took lock_acquire,
-# and with it every durable verb, down on ubuntu-latest.
+# The mtime idiom that must not come back. `stat` spells the mtime format one
+# way on BSD and another on GNU, and the obvious way to bridge that -- run one
+# spelling, fall back to the other on non-zero exit -- is wrong on Linux: GNU's
+# -f is --file-system and takes no argument, so the format word is read as a
+# second FILE operand. GNU stat then fails on it, succeeds on the real path,
+# prints that path's filesystem block, and the caller's arithmetic dies under
+# set -u with `File: unbound variable`. That is not hypothetical: it took
+# lock_acquire, and with it every durable verb, down on ubuntu-latest.
 #
 # lib/common.sh's file_mtime is the one correct implementation -- it selects
 # on the RESULT, not the exit status -- and this gate exists because the fix
 # ALREADY existed once, in libexec/orchid-start, and five other sites kept the
 # broken form anyway (lesson L019, and L016 before it). A correct pattern that
 # nothing forces you to use is not a fix. Call file_mtime; only its own file
-# may name either spelling. As above, the pattern is assembled rather than
-# written out, so this gate does not flag itself.
+# may name either spelling, and docs/contributing.md writes them out for
+# humans -- it is not a shell file, so this gate never scans it.
+#
+# The match is deliberately wider than the single spelling that broke CI: the
+# separator between the option and the format is optional and may be quoted,
+# and GNU's long-option spellings are covered alongside -c. A gate that only
+# rejects the exact text of the last outage is not a gate -- the next author
+# reaches for whichever spacing they habitually type, and it sails through.
+# As with the find gate above, the pattern is assembled -- here around the `%`
+# -- so this file never contains either directive literally and cannot flag
+# itself. That is also why the prose above says "the mtime format" rather than
+# writing it out; docs/contributing.md is where a human reads the real thing.
 echo "== Portability policy (mtime via lib/common.sh file_mtime)"
-raw_mtime_idiom='stat[ ]-f[ ]%m|stat[ ]-c[ ]%Y'
+mtime_sep="[[:space:]'\"]*"
+raw_mtime_idiom="stat[^;|&]*[-]f${mtime_sep}%"
+raw_mtime_idiom="${raw_mtime_idiom}m|stat[^;|&]*[-](c|-format=|-printf=)${mtime_sep}%"
+raw_mtime_idiom="${raw_mtime_idiom}Y"
 for rel in "${SHELL_FILES[@]}"; do
   case "$rel" in lib/common.sh) continue ;; esac
   if grep -En "$raw_mtime_idiom" "$ROOT/$rel" >&2; then

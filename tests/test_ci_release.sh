@@ -102,15 +102,29 @@ rm -f "$discovery_fixture/tests/nonportable-find.sh"
 # nobody is forced to follow did not converge them; this gate is what does, so
 # it needs its own regression net. Assembled at runtime, same as the find case,
 # so this test file stays clean under the gate it is testing.
-raw_mtime_use='mt="$(stat -f %'
-raw_mtime_use="${raw_mtime_use}m /tmp 2>/dev/null)\""
-printf '%s\n' '#!/usr/bin/env bash' "$raw_mtime_use" \
-  > "$discovery_fixture/tests/raw-mtime.sh"
-rc=0
-mtime_policy_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] || fail "CI accepts a platform-specific stat mtime format outside lib/common.sh"
-assert_match 'file_mtime' "$mtime_policy_out" \
-  "CI names the helper that a rejected stat mtime format should have used"
+#
+# All four spellings below are checked, not just the one that broke CI. A gate
+# keyed to the exact text of the last outage catches only the author who
+# reproduces that outage verbatim; the next one omits the space, or reaches for
+# GNU's long option, and walks straight past it. The BSD and GNU forms are both
+# rejected in both spacings because a file may legitimately be developed on
+# either platform -- what makes them wrong is naming a platform at all.
+mtime_pct='%'
+for raw_mtime_use in \
+  "mt=\"\$(stat -f ${mtime_pct}m /tmp 2>/dev/null)\"" \
+  "mt=\"\$(stat -f${mtime_pct}m /tmp 2>/dev/null)\"" \
+  "mt=\"\$(stat -c${mtime_pct}Y /tmp 2>/dev/null)\"" \
+  "mt=\"\$(stat --format='${mtime_pct}Y' /tmp 2>/dev/null)\""
+do
+  printf '%s\n' '#!/usr/bin/env bash' "$raw_mtime_use" \
+    > "$discovery_fixture/tests/raw-mtime.sh"
+  rc=0
+  mtime_policy_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] \
+    || fail "CI accepts a platform-specific stat mtime format outside lib/common.sh: $raw_mtime_use"
+  assert_match 'file_mtime' "$mtime_policy_out" \
+    "CI names the helper that a rejected stat mtime format should have used ($raw_mtime_use)"
+done
 rm -f "$discovery_fixture/tests/raw-mtime.sh"
 
 # Regression (T004 attempt 7): ShellCheck normally searches a script's parent
