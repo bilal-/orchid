@@ -79,8 +79,22 @@ VENDOR_CLIS=(codex claude agy hermes openclaw)
 # Tools the suite legitimately needs and the mirror must therefore preserve.
 # jq is the one that matters: it is a declared dependency of the harness and,
 # on macOS, it lives in the very directory a vendor CLI is most likely to be
-# installed into.
-REQUIRED_TOOLS=(jq git bash env awk sed grep find)
+# installed into. The rest are here because the mirror is the ONLY thing that
+# can lose them, and losing one is not a clean failure: it is dozens of test
+# files failing for reasons that read nothing like "the mirror dropped a
+# tool". ln/readlink/chmod/mktemp/mv/rm/tr/sort are what the fixtures and
+# lib/common.sh's atomic_write and plugin_digest actually shell out to.
+REQUIRED_TOOLS=(jq git bash env awk sed grep find tr sort ln readlink chmod mktemp mv rm)
+
+# plugin_digest (lib/common.sh) hashes with `shasum -a 256` and falls back to
+# `openssl dgst -sha256` when shasum is absent, so EITHER satisfies the suite
+# and neither alone is required. It is called out separately from the list
+# above because it is the highest-consequence tool the mirror could drop and
+# the one whose loss is least legible: capsuite's whole freshness marker and
+# the digest-pinned trust store (INV-09) are built on it, so a mirror that
+# lost it would fail a large fraction of the suite with digest mismatches
+# rather than with anything naming PATH.
+DIGEST_TOOLS=(shasum openssl)
 
 # ===========================================================================
 # 1 -- build the vendor-CLI-free PATH.
@@ -171,6 +185,12 @@ for required_tool in "${REQUIRED_TOOLS[@]}"; do
   resolves_under_hermetic_path "$required_tool" \
     || fail "filtering the vendor CLIs out of PATH also removed '$required_tool', which the suite legitimately needs"
 done
+digest_tool_found=0
+for digest_tool in "${DIGEST_TOOLS[@]}"; do
+  if resolves_under_hermetic_path "$digest_tool"; then digest_tool_found=1; fi
+done
+[ "$digest_tool_found" -eq 1 ] \
+  || fail "the vendor-CLI-free PATH resolves neither ${DIGEST_TOOLS[*]}, so lib/common.sh's plugin_digest has no SHA-256 tool -- every capsuite freshness marker and every digest-pinned trust record in the nested run would fail for a reason that names neither PATH nor this file"
 
 # The AMBIENT PATH -- the one the run AROUND this file is using -- gets the
 # same question asked of it directly, because section 4b's skip leans on the
@@ -227,6 +247,15 @@ done
 [ "$in_suite_glob" -eq 1 ] \
   || fail "tests/run.sh globs tests/test_*.sh and this file is not among the matches, so the no-vendor-CLI guarantee is no longer executed by the suite or by CI even though this file still passes -- keep it in tests/ under a test_*.sh name"
 
+# ...and tests/run.sh still publishes the marker section 4b's skip is keyed
+# on. If it stops, the skip stops firing and every CI job pays for a nested
+# run it does not need -- a cost regression, not a silent one, but one that
+# would otherwise be discovered as a doubled CI bill rather than as a failure.
+# Checked here, unconditionally, alongside the other question about whether
+# the surrounding harness still holds up its end.
+grep -q 'ORCHID_SUITE_RUN=' "$RUNNER" \
+  || fail "tests/run.sh no longer sets ORCHID_SUITE_RUN, so this file can no longer tell a whole-suite run from a lone invocation and will launch a nested duplicate run on every CI job"
+
 # ===========================================================================
 # 4b -- THE PROOF: the whole suite, on the vendor-CLI-free PATH.
 #
@@ -249,15 +278,21 @@ done
 #     surrounding run is NOT the run this file is supposed to certify, and
 #     this is the developer machine the divergence was hiding on in the first
 #     place; or
-#   * there is no surrounding suite run to lean on (ORCHID_SUITE_RUN unset,
-#     i.e. this file was invoked on its own rather than through tests/run.sh).
+#   * there is no surrounding suite run to lean on -- ORCHID_SUITE_RUN does
+#     not name THIS repository's tests/run.sh, i.e. this file was invoked on
+#     its own rather than through the runner.
 #
 # Note which of the two questions each half answers. "Is this run
 # vendor-CLI-free" is measured, not inferred (section 2). "Is there a
-# surrounding whole-suite run" is what ORCHID_SUITE_RUN carries, and nothing
-# else in this file trusts it: on the standalone path the nested run happens
-# regardless, so a lost or forged marker costs a duplicate run, never a
-# skipped proof.
+# surrounding whole-suite run" is what ORCHID_SUITE_RUN carries -- and it is
+# CHECKED, not merely tested for non-emptiness. tests/run.sh sets it to its
+# own physical path and this file compares that against the runner it resolved
+# for itself. A bare truthy value would have been forgeable by accident: an
+# `ORCHID_SUITE_RUN=1` left in an operator's shell, or exported by some
+# unrelated harness, would stand this proof down on a vendor-CLI-free machine
+# with NOTHING having run in its place -- the one direction in which a skip is
+# not merely wasteful but silent. Losing the marker still only costs a
+# duplicate run. That asymmetry is the whole reason the marker is a path.
 #
 # Skipping is never silent: the branch below records what carried the
 # guarantee instead, in the same not-tested vocabulary as everything else here.
@@ -280,9 +315,9 @@ not_tested "vendor-cli-behaviour" \
 not_tested "bootstrap-path-vendor-clis" \
   "whether a vendor CLI is reachable through bin/orchid's FIXED bootstrap PATH. This proof restricts PATH, and that list is not built from PATH, so it is outside what any PATH restriction can reach. It is empty of consequence only for as long as no binary lookup runs ahead of lib/common.sh's _orchid_entry_restore_operator_path; a lookup placed there would find a developer's installed CLI and not a runner's, which is the divergence class this file exists to close"
 
-if [ "$AMBIENT_IS_HERMETIC" -eq 1 ] && [ -n "${ORCHID_SUITE_RUN:-}" ]; then
+if [ "$AMBIENT_IS_HERMETIC" -eq 1 ] && [ "${ORCHID_SUITE_RUN:-}" = "$RUNNER" ]; then
   not_tested "nested-vendor-cli-free-run" \
-    "a SECOND suite run launched from here. It would have answered exactly what the run now executing this file is already answering: none of ${VENDOR_CLIS[*]} resolves on this run's PATH (measured in section 2, not assumed), and the surrounding tests/run.sh (ORCHID_SUITE_RUN=1) is therefore already the vendor-CLI-free whole-suite run -- if the suite depends on a vendor CLI, THAT run goes red, without this file paying for a duplicate of it. The nested run still happens wherever it can differ: on a machine where a vendor CLI does resolve, and whenever this file is invoked on its own outside tests/run.sh"
+    "a SECOND suite run launched from here. It would have answered exactly what the run now executing this file is already answering: none of ${VENDOR_CLIS[*]} resolves on this run's PATH (measured in section 2, not assumed), and ORCHID_SUITE_RUN names this repository's own $RUNNER, so the run around this file IS the vendor-CLI-free whole-suite run -- if the suite depends on a vendor CLI, THAT run goes red, without this file paying for a duplicate of it. The nested run still happens wherever it can differ: on a machine where a vendor CLI does resolve, and whenever this file is invoked outside that runner"
   exit 0
 fi
 

@@ -137,6 +137,14 @@ everything else in it, so `jq` living beside `codex` in the same Homebrew bin
 survives — and then runs the whole suite on it. It is a `tests/test_*.sh` file,
 so `tests/run.sh` and therefore `scripts/ci-local.sh` and hosted CI run it too.
 
+The mirror is the only thing that can lose a tool the suite needs, so it
+asserts, on the rebuilt `PATH`, that each one still resolves — including a
+SHA-256 tool (`shasum`, or `openssl` as `plugin_digest`'s documented fallback).
+Losing that one is the least legible failure available: capsuite's freshness
+marker and the digest-pinned trust store are both built on it, so the nested
+run would fail broadly with digest mismatches that name neither `PATH` nor the
+mirror.
+
 That nesting means one gate run can execute the suite twice, so the second run
 is launched only when it can differ from the first. On a machine where a vendor
 CLI really does resolve — a developer laptop, which is where the divergence
@@ -148,12 +156,17 @@ as a `NOT-TESTED:` line rather than passing quietly. Invoked on its own,
 outside `tests/run.sh`, there is no surrounding run to lean on and the nested
 run happens regardless.
 
-Which vendor CLIs resolve is *measured*, against the ambient `PATH`, rather
-than inferred from how many `PATH` entries needed mirroring. The two answers
-differ where it matters: an empty `PATH` element means the current directory
-and cannot be mirrored at all, so the count would report a clean machine while
-the surrounding run could still reach a `codex` in its cwd — and the skip would
-then hand the guarantee to a run that does not carry it.
+Both halves of that condition are *measured*, never assumed. Which vendor CLIs
+resolve is asked of the ambient `PATH` rather than inferred from how many
+`PATH` entries needed mirroring: an empty `PATH` element means the current
+directory and cannot be mirrored at all, so the count would report a clean
+machine while the surrounding run could still reach a `codex` in its cwd. And
+`ORCHID_SUITE_RUN` carries `tests/run.sh`'s own physical path, which the proof
+compares against the runner it resolved for itself — a bare `1` would be
+forgeable by accident, and a stray one in an operator's environment would stand
+the proof down on a vendor-CLI-free machine with nothing having run in its
+place. Losing the marker only ever costs a duplicate run; that asymmetry is why
+it is a path.
 
 One boundary the file records rather than covers: `bin/orchid` replaces `PATH`
 with a fixed machine-local list for its own bootstrap and restores the caller's
