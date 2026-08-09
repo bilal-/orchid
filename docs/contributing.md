@@ -116,6 +116,45 @@ fallback still reach the real binary). It is part of the suite the
 gate above runs, so a change that reaches outside that root, moves a remote ref,
 or modifies the source checkout fails CI rather than a tester's machine.
 
+## The suite is hermetic: no vendor CLI required
+
+The deterministic suite must pass on a machine with no `codex`, `claude`,
+`agy`, `hermes`, or `openclaw` installed. It did not, once: capsuite's
+`binaries_present` check resolves each engine manifest's `requires_binaries`
+on `PATH`, and `tests/test_plugins_test.sh` asserted those pairs pass — so the
+suite was quietly asserting a fact about the author's laptop. It stayed green
+locally and failed on both hosted runners.
+
+`tests/test_hermetic_suite.sh` is the standing proof:
+
+```sh
+/bin/bash tests/test_hermetic_suite.sh
+```
+
+It builds a `PATH` on which every vendor CLI is *unresolvable* — each `PATH`
+entry that contains one is replaced by a scratch directory of symlinks to
+everything else in it, so `jq` living beside `codex` in the same Homebrew bin
+survives — and then runs the whole suite on it. It is a `tests/test_*.sh` file,
+so `tests/run.sh` and therefore `scripts/ci-local.sh` and hosted CI run it too.
+That nesting is why one gate run executes the suite twice; the recursion guard
+(`ORCHID_HERMETIC_PROOF`) stops the nested run from re-launching a third, and
+the file asserts both that the guard fires and that it is re-entered exactly
+once — a zero there means this file has fallen out of the glob and the
+guarantee has silently stopped being enforced.
+
+A test that genuinely needs a vendor CLI present plants a stub on `PATH`
+(`tests/test_plugins_test.sh`) rather than asking the machine. Weakening the
+check itself is not an option: `capsuite_passed` is what gates failover
+(`resolve_role_available`), and a `binaries_present` that cannot fail would
+make that gate blind. `tests/test_capsuite.sh` pins the check in both
+directions with no vendor name in it at all.
+
+What a stub cannot prove — that a real vendor CLI is installed, authenticated,
+and behaves — is recorded by `not_tested` from `tests/helpers.sh`, which prints
+a `NOT-TESTED:` line in `scripts/beta-qualify.sh`'s vocabulary. Skipping is
+allowed; skipping silently is not. Qualify those claims out of band with
+`orchid plugins test --all-defaults` on a machine that has the CLIs.
+
 ## Beta qualification
 
 `scripts/beta-qualify.sh` qualifies one operator-supplied repository against

@@ -39,6 +39,33 @@ assert_eq()   { [ "$1" = "$2" ] || fail "$3 (expected '$1', got '$2')"; }
 # obvious break. `<<<` feeds grep from a temp file, so there is no pipe, no
 # SIGPIPE, and the exit status is the matcher's alone.
 assert_match(){ grep -Eq "$1" <<<"$2" || fail "$3 (no match '$1')"; }
+
+# not_tested <id> <why> -- record a claim this suite deliberately does NOT
+# examine, in the same closed vocabulary scripts/beta-qualify.sh already uses
+# for its own probes (pass|fail|blocked|not-tested). It is NOT a failure: an
+# absence of evidence is not a defect. What it must never be is SILENT.
+#
+# The hazard is the one that kept hosted CI red from its very first run while
+# `scripts/ci-local.sh` was green on the author's machine: a check whose real
+# subject is a MACHINE FACT (a vendor CLI installed, a network reachable, a
+# credential present) passes wherever that fact happens to hold and fails
+# everywhere else, while reading, in both places, exactly like a check of this
+# repository's code. Skipping such a check quietly is worse than either
+# outcome, because a suite that prints nothing about it is indistinguishable
+# from one that verified it. So the skip gets a line of its own, naming what
+# was not tested and how to qualify it out of band.
+NOT_TESTED=0
+not_tested() {
+  NOT_TESTED=$((NOT_TESTED + 1))
+  echo "  NOT-TESTED: $1 -- $2"
+}
+# Printed from the EXIT trap below, so a file's not-tested count survives even
+# an early exit. Silent when there is nothing to report.
+_not_tested_summary() {
+  [ "${NOT_TESTED:-0}" -eq 0 ] \
+    || echo "  not-tested: $NOT_TESTED claim(s) in this file were recorded as not-tested, never as passes"
+}
+
 # list_dir_entries <dir> / list_dir_files <dir> -- depth-1 entry names
 # (dotfiles included, `.`/`..` never; _files keeps regular files only), one
 # per line. Plain bash globbing, not find(1) depth primaries -- limiting a
@@ -162,7 +189,7 @@ make_scratch WORK
 # beneath a target repository. Trust-boundary fixtures use this independent
 # disposable directory instead of the historical "$WORK/home" shortcut.
 make_scratch MACHINE_HOME
-trap '_scratch_cleanup; exit $((FAILS>0))' EXIT
+trap '_scratch_cleanup; _not_tested_summary; exit $((FAILS>0))' EXIT
 
 # plant_reviewer_envelope <task-id> [attempt] -- v1-m2's kernel envelope-
 # count gate (reviewing->arbitrating) requires review_required_count(risk_
