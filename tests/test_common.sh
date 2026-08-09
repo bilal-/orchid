@@ -259,3 +259,33 @@ case "$real_mt" in
   *) [ "$real_mt" -gt 1600000000 ] \
        || fail "file_mtime read an implausible mtime for a just-created file (got '$real_mt') -- it is falling back instead of reading either stat spelling" ;;
 esac
+
+# GREEN, unstubbed, FAILURE path: every case above that exercises a probe
+# which cannot answer does it against a shell function, so it proves what the
+# stub was told to say and nothing about the binary on this machine. The
+# unreadable path is the one failure the real stat CAN be made to produce
+# identically on both platforms, so run it for real: whatever this box ships,
+# BOTH spellings come back empty-handed and the caller still gets digits.
+#
+# That matters more than it looks. On the platform where the wrong spelling
+# does not merely fail but PRINTS -- GNU's --file-system block for a path that
+# does exist -- the leak into arithmetic is what took CI down; here neither
+# spelling has anything to print, which is the other half of the same
+# guarantee and the half a stub cannot vouch for. This is the hermetic case:
+# it asserts the same thing on a macOS laptop and a Linux runner, and it is
+# the only mtime case whose verdict depends on the real binary's behaviour
+# rather than on a fixture agreeing with itself (lesson L019's first root
+# cause -- a suite that passes because of what the machine happens to have).
+absent="$WORK/mtime-probe-absent"
+[ -e "$absent" ] && fail "test fixture error: $absent must not exist"
+absent_default="$(file_mtime "$absent")"
+assert_eq 0 "$absent_default" \
+  "file_mtime falls back to 0 when the real stat cannot date the path at all"
+absent_fallback="$(file_mtime "$absent" 1700000003)"
+assert_eq 1700000003 "$absent_fallback" \
+  "file_mtime honours a caller-supplied fallback against the real stat, not just a stub"
+# And the invariant, once more, on the values the REAL binary produced.
+for case_mt in "$real_mt" "$absent_default" "$absent_fallback"; do
+  ( set -u; mt="$case_mt"; : $(( 1700000100 - mt )) ) 2>/dev/null \
+    || fail "file_mtime returned '$case_mt' from the platform's own stat, which is not safe in arithmetic under set -u"
+done
