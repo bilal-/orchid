@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/envelope.sh"
+source "$REPO_ROOT/lib/common.sh"   # file_mtime (portable BSD/GNU stat mtime)
 ADAPTER="$REPO_ROOT/plugins/engines/claude/run"
 
 # v1-m3 final review (CRITICAL 1): the orchestrate branch's own instructions=
@@ -399,7 +400,7 @@ sleep 2.2
 echo "ORCHID-ACTION: orchid task advance T001 implementing --reason tick"
 echo "tick complete"')"
 joblog="$d/out/job.log"; : > "$joblog"
-initial_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+initial_mtime="$(file_mtime "$joblog")"
 ( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
 adapter_pid=$!
 # Sampled at 1.3s: comfortably after the first heartbeat (fires once the
@@ -407,7 +408,7 @@ adapter_pid=$!
 # stub's own 2.2s exit -- genuinely mid-run on both sides.
 sleep 1.3
 midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"; midrun_hb_count="${midrun_hb_count:-0}"
-midrun_mtime="$(stat -f %m "$joblog" 2>/dev/null || stat -c %Y "$joblog" 2>/dev/null)"
+midrun_mtime="$(file_mtime "$joblog")"
 wait "$adapter_pid" || fail "heartbeat stub: adapter should exit 0"
 [ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
 [ "$midrun_mtime" -ge "$initial_mtime" ] || fail "heartbeat stub: job log mtime must have advanced mid-run (initial=$initial_mtime midrun=$midrun_mtime)"

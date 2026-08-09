@@ -158,6 +158,105 @@ for rel in "${SHELL_FILES[@]}"; do
   fi
 done
 
+# The mtime idiom that must not come back. `stat` spells the mtime format one
+# way on BSD and another on GNU, and the obvious way to bridge that -- run one
+# spelling, fall back to the other on non-zero exit -- is wrong on Linux: GNU's
+# -f is --file-system and takes no argument, so the format word is read as a
+# second FILE operand. GNU stat then fails on it, succeeds on the real path,
+# prints that path's filesystem block, and the caller's arithmetic dies under
+# set -u with `File: unbound variable`. That is not hypothetical: it took
+# lock_acquire, and with it every durable verb, down on ubuntu-latest.
+#
+# lib/common.sh's file_mtime is the one correct implementation -- it selects
+# on the RESULT, not the exit status -- and this gate exists because the fix
+# ALREADY existed once, in libexec/orchid-start, and five other sites kept the
+# broken form anyway (lesson L019, and L016 before it). A correct pattern that
+# nothing forces you to use is not a fix. Call file_mtime; only `file_mtime`
+# ITSELF may name either spelling, and docs/contributing.md writes them out
+# for humans -- it is not a shell file, so this gate never scans it.
+#
+# That exemption is the helper's own comment-and-body block, NOT the six
+# hundred lines of lib/common.sh around it. A whole-file pass would let the
+# next raw idiom land beside the helper written to prevent it -- L016 and
+# L019 a third time, one file in -- and lib/common.sh is the worst place to
+# allow it, since lock_acquire lives there too.
+#
+# The match is deliberately wider than the single spelling that broke CI: the
+# separator between the option and the format is optional and may be quoted,
+# and GNU's long-option spellings are covered alongside -c -- with their `=`
+# optional too, because getopt_long takes the value as a separate argument
+# just as happily, so a bare `--format <fmt>` is the same command written a
+# different way. A gate that only rejects the exact text of the last outage
+# is not a gate -- the next author reaches for whichever spacing they
+# habitually type, and it sails through.
+# As with the find gate above, the pattern is assembled -- here around the `%`
+# -- so this file never contains either directive literally and cannot flag
+# itself. That is also why the prose above says "the mtime format" rather than
+# writing it out; docs/contributing.md is where a human reads the real thing.
+echo "== Portability policy (mtime via lib/common.sh file_mtime)"
+mtime_sep="[[:space:]'\"]*"
+raw_mtime_idiom="stat[^;|&]*[-]f${mtime_sep}%"
+raw_mtime_idiom="${raw_mtime_idiom}m|stat[^;|&]*[-](c|-format|-printf)=?${mtime_sep}%"
+raw_mtime_idiom="${raw_mtime_idiom}Y"
+
+# Line bounds of file_mtime's documented block in lib/common.sh: its doc
+# header through the closing brace of the function that follows. Both are
+# anchored to column 0, so nothing nested inside the helper can end it early.
+# Returns non-zero when the block cannot be located at all -- the helper was
+# renamed or moved -- which the caller treats as "cannot judge", never as
+# "exempt".
+MTIME_EXEMPT_FIRST=0
+MTIME_EXEMPT_LAST=0
+locate_mtime_helper() {
+  local file="$1" line
+  MTIME_EXEMPT_FIRST=0
+  MTIME_EXEMPT_LAST=0
+  while IFS= read -r line; do
+    MTIME_EXEMPT_FIRST="${line%%:*}"
+    break
+  done < <(grep -n '^# file_mtime <path>' "$file" || true)
+  [ "$MTIME_EXEMPT_FIRST" -gt 0 ] || return 1
+  while IFS= read -r line; do
+    if [ "${line%%:*}" -gt "$MTIME_EXEMPT_FIRST" ]; then
+      MTIME_EXEMPT_LAST="${line%%:*}"
+      break
+    fi
+  done < <(grep -n '^}$' "$file" || true)
+  [ "$MTIME_EXEMPT_LAST" -gt 0 ] || return 1
+}
+
+# lib/common.sh, scanned with the helper's own block carved out.
+check_mtime_helper_file() {
+  local file="$1" line hit=0
+  if ! locate_mtime_helper "$file"; then
+    grep -Eq "$raw_mtime_idiom" "$file" || return 0
+    echo "ci-local: lib/common.sh names a platform-specific stat format but its file_mtime helper cannot be located — the exemption is scoped to that helper, so a hit outside it cannot be judged (see lesson L019)" >&2
+    return 1
+  fi
+  while IFS= read -r line; do
+    if [ "${line%%:*}" -lt "$MTIME_EXEMPT_FIRST" ] || [ "${line%%:*}" -gt "$MTIME_EXEMPT_LAST" ]; then
+      printf '%s\n' "$line" >&2
+      hit=1
+    fi
+  done < <(grep -En "$raw_mtime_idiom" "$file" || true)
+  [ "$hit" -eq 0 ] || {
+    echo "ci-local: lib/common.sh reads an mtime with a platform-specific stat format outside its own file_mtime helper (exempt: lines $MTIME_EXEMPT_FIRST-$MTIME_EXEMPT_LAST) — call file_mtime instead (see lesson L019)" >&2
+    return 1
+  }
+  return 0
+}
+
+for rel in "${SHELL_FILES[@]}"; do
+  if [ "$rel" = lib/common.sh ]; then
+    check_mtime_helper_file "$ROOT/$rel" || exit 1
+    continue
+  fi
+  if grep -En "$raw_mtime_idiom" "$ROOT/$rel" >&2; then
+    echo "ci-local: $rel reads an mtime with a platform-specific stat format — call lib/common.sh's file_mtime instead (it selects on the result, not the exit status; see lesson L019)" >&2
+    exit 1
+  fi
+done
+
 command -v shellcheck >/dev/null 2>&1 || {
   echo "ci-local: shellcheck is required (see docs/contributing.md)" >&2
   exit 1

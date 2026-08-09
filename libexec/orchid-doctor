@@ -432,11 +432,12 @@ else
       if [ -f "$notify_answers_dir/$notify_qid.answer" ]; then
         notify_q_answered=$(( notify_q_answered + 1 )); continue
       fi
-      # Age, by the SAME portable stat idiom and the SAME config key
+      # Age, by the SAME portable mtime probe (lib/common.sh's `file_mtime`,
+      # whose default fallback of 0 this branch relies on) and the SAME key
       # libexec/orchid-answer's own expiry check uses -- an unreadable mtime
       # is bucketed with expired for the same reason `answer` refuses it:
       # unanswerable either way.
-      notify_m="$(stat -f %m "$notify_qf" 2>/dev/null || stat -c %Y "$notify_qf" 2>/dev/null || echo 0)"
+      notify_m="$(file_mtime "$notify_qf")"
       if [ "$notify_m" -le 0 ] || [ $(( notify_now - notify_m )) -gt "$notify_expiry" ]; then
         notify_q_stale=$(( notify_q_stale + 1 )); continue
       fi

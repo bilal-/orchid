@@ -65,6 +65,42 @@ orchid_list_dir() (
   done
 )
 
+# file_mtime <path> [fallback] -- <path>'s mtime as whole seconds since the
+# epoch, portably across BSD (`stat -f %m`) and GNU (`stat -c %Y`) stat.
+#
+# The obvious spelling of this, which this repo carried at six sites, is
+# `stat -f %m PATH 2>/dev/null || stat -c %Y PATH`. That selects the platform
+# on EXIT STATUS, and it is wrong on Linux. GNU's `-f` is `--file-system` and
+# takes no argument, so `%m` is parsed as a second FILE operand: GNU stat then
+# fails on `%m`, SUCCEEDS on PATH, and prints PATH's default filesystem block
+# -- whose first line begins `File:` -- on stdout. Both commands' stdout lands
+# in the one command substitution, so the caller's `mt` becomes that block
+# with a number glued to the end, and the arithmetic that follows reads `File`
+# as a variable name. Under `set -u` that is fatal, and it took down
+# lock_acquire (and with it every durable verb) on ubuntu-latest:
+#   lib/common.sh: line 466: File: unbound variable
+#
+# So select on the RESULT, not the exit status: a run of digits is an mtime
+# and anything else -- empty, `?`, a filesystem block, a permission error's
+# leftovers -- is not, no matter what the exit status claimed.
+#
+# <fallback> is what a wholly unreadable mtime yields, and callers genuinely
+# differ on it, so it is a parameter rather than a baked-in 0: an age check
+# that must fail CLOSED wants 0 ("age unknown, refuse"), while a liveness
+# check that must fail SAFE wants the current time ("assume just touched, i.e.
+# still live"). Defaults to 0.
+file_mtime() {
+  local path="$1" fallback="${2:-0}" mt
+  mt="$(stat -f %m "$path" 2>/dev/null || true)"
+  case "$mt" in
+    ''|*[!0-9]*) mt="$(stat -c %Y "$path" 2>/dev/null || true)" ;;
+  esac
+  case "$mt" in
+    ''|*[!0-9]*) mt="$fallback" ;;
+  esac
+  printf '%s\n' "$mt"
+}
+
 # commit_subject_from_output <stdout-text> <fallback-title> -- turns a
 # model reply's own text into a sane git-commit-subject fragment. Shared by
 # the implement-path self-commit logic in plugins/engines/codex/run and
@@ -462,7 +498,10 @@ lock_acquire() {
     pid="$(jq -r .pid "$lock/owner.json" 2>/dev/null || echo 0)"
     host="$(jq -r .hostname "$lock/owner.json" 2>/dev/null || echo '?')"
     pstart="$(jq -r .pid_start "$lock/owner.json" 2>/dev/null || echo '?')"
-    now="$(date +%s)"; mt="$(stat -f %m "$lock" 2>/dev/null || stat -c %Y "$lock")"
+    # An unreadable lock mtime falls back to `now`, i.e. age 0, i.e. the
+    # conservative "too young to break" answer -- never to a number that
+    # would let this acquirer tear down a lock it cannot actually date.
+    now="$(date +%s)"; mt="$(file_mtime "$lock" "$now")"
     age=$(( now - mt ))
     local alive=1
     if [ "$host" != "$(hostname)" ]; then alive=0

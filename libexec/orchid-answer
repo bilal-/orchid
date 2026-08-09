@@ -44,13 +44,15 @@ qnonce="$(grep -m1 '^nonce: ' "$qf" 2>/dev/null | sed 's/^nonce: //')"
 # -- Expiry (answer_expiry_s, default 86400) --------------------------------
 # Applies UNCONDITIONALLY (local terminal and remote sender alike) — the
 # .question file's own mtime is the only signal on disk for "how long has
-# this sat unanswered," same portable GNU/BSD stat idiom used everywhere
-# else in this codebase (lib/common.sh's lock_acquire, libexec/orchid-jobs'
-# stall/gc checks). Expired -> die AND leave a journal note (unfenced, same
-# as every other write this un-fenced verb makes — see the un-fenced
-# rationale below) so the expiry is visible in the run's history, not just a
-# silent refusal on stderr.
-qf_mtime="$(stat -f %m "$qf" 2>/dev/null || stat -c %Y "$qf" 2>/dev/null || echo 0)"
+# this sat unanswered," read through lib/common.sh's `file_mtime` — the one
+# portable GNU/BSD mtime probe this codebase has, shared with lock_acquire
+# and libexec/orchid-jobs' stall/gc checks. Its default fallback of 0 is what
+# the "cannot date it" branch below keys on.
+#
+# Expired -> die AND leave a journal note (unfenced, same as every other write
+# this un-fenced verb makes — see the un-fenced rationale below) so the expiry
+# is visible in the run's history, not just a silent refusal on stderr.
+qf_mtime="$(file_mtime "$qf")"
 expiry_s="$(config_get "$repo" answer_expiry_s 86400)"
 now="$(date -u +%s)"
 # Review fix (Minor #10): if BOTH `stat` variants fail, `qf_mtime` is 0 --
