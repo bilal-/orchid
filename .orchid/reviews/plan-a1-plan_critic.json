@@ -1,0 +1,54 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-plan-a1-3c75",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Mandatory formula re-pin, chmod, and lint operator hand-offs are optional or absent"
+    },
+    {
+      "severity": "high",
+      "title": "T002 and T013 assign command execution to the non-executing implementer"
+    },
+    {
+      "severity": "high",
+      "title": "T007 can land before T010 makes its lint failures actionable"
+    },
+    {
+      "severity": "high",
+      "title": "T007 does not require a failing candidate gate to prevent ref advancement"
+    },
+    {
+      "severity": "medium",
+      "title": "Every task redundantly runs tests/run.sh after ci-local already runs the full suite"
+    },
+    {
+      "severity": "medium",
+      "title": "T003 lacks focused coverage for the obsolete soft-surface prompt path"
+    },
+    {
+      "severity": "medium",
+      "title": "T005 lacks a deterministic focused test for prompt echo and plausible hallucination"
+    },
+    {
+      "severity": "medium",
+      "title": "T006 lacks explicit dirty-checkout and durable-state preservation cases"
+    },
+    {
+      "severity": "medium",
+      "title": "T009 does not explicitly test doctor's no-inbound-probe result"
+    },
+    {
+      "severity": "medium",
+      "title": "Cross-cutting documentation and final run-level acceptance have no owning task"
+    }
+  ]
+}

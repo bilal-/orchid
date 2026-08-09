@@ -1,0 +1,46 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-plan-a4-371a",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "T002 has no durable stop preventing its unconfirmed first-stage candidate from verifying or merging"
+    },
+    {
+      "severity": "high",
+      "title": "T007 permits recursive ci-local to test_merge to orchid merge execution without requiring a recursion guard"
+    },
+    {
+      "severity": "high",
+      "title": "T010 does not bind operator hand-off edits to a committed candidate_sha or cover merge-created rebases"
+    },
+    {
+      "severity": "medium",
+      "title": "T010 routes lint findings to implementer guidance while declaring lint fixes operator-only"
+    },
+    {
+      "severity": "medium",
+      "title": "T001 and T010 may run concurrently despite modifying the same implementing arm and focused test"
+    },
+    {
+      "severity": "high",
+      "title": "The bootstrap jobs check, safe checkout refresh, and hand-carried lint procedure has no auditable roadmap checkpoint"
+    },
+    {
+      "severity": "medium",
+      "title": "Every task falsely requires reporting and performing chmod even when no executable was added"
+    },
+    {
+      "severity": "medium",
+      "title": "T015 cannot record the required post-merge proof and omits explicit third-party beta and public-release status"
+    }
+  ]
+}

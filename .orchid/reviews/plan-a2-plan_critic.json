@@ -1,0 +1,42 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-plan-a2-3622",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "T015 requires remote GitHub Actions proof despite the explicit prohibition on contacting or updating remotes"
+    },
+    {
+      "severity": "high",
+      "title": "T010 treats exact lint guidance and operator-owned lint fixes as alternatives even though the constraints require both"
+    },
+    {
+      "severity": "high",
+      "title": "T001, T006, and T010 are not bootstrap prerequisites, so other tasks may encounter duplicate jobs, stale code, and unactionable rework before those safeguards land"
+    },
+    {
+      "severity": "high",
+      "title": "Mandatory operator hand-offs and T002's reproduce-before-fix pause have no explicit task phase or blocker before automatic verification and rework"
+    },
+    {
+      "severity": "medium",
+      "title": "T008 can pass while still recording last_status as failed because its focused criterion checks only consecutive_failures"
+    },
+    {
+      "severity": "medium",
+      "title": "T005 and T013 do not name their required offline focused harnesses in verification_commands, leaving independent execution unplanned"
+    },
+    {
+      "severity": "medium",
+      "title": "docs/install.md has no explicit documentation owner despite T004 changing the semantics of its prescribed release-day rehearsal"
+    }
+  ]
+}

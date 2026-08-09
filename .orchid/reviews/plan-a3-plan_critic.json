@@ -1,0 +1,34 @@
+{
+  "contract": 1,
+  "job_id": "j-e33-plan-a3-7900",
+  "task": "plan",
+  "operation": "critique",
+  "status": "ok",
+  "engine": "orchid/codex",
+  "base_sha": "",
+  "candidate_sha": "",
+  "verdict": "request-changes",
+  "scope_complete": true,
+  "findings": [
+    {
+      "severity": "high",
+      "title": "Foundational tasks run before the duplicate-job and stale-checkout protections with no bootstrap safety procedure"
+    },
+    {
+      "severity": "high",
+      "title": "T015 cannot prove and record the merged tree before its own candidate is merged"
+    },
+    {
+      "severity": "high",
+      "title": "T010 defines no durable acknowledgement or resume rule for its operator hand-off boundary"
+    },
+    {
+      "severity": "medium",
+      "title": "T002 conflates operator-only reproduction with the subsequent fix without a staged checkpoint"
+    },
+    {
+      "severity": "medium",
+      "title": "T013 places the full-suite hermetic proof inside the same test glob it must invoke without requiring a recursion guard"
+    }
+  ]
+}
