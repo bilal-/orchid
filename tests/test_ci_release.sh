@@ -35,7 +35,7 @@ printf '%s\n' "$shell_list" | grep -q '^\.orchid/' \
 # only that today's known files happen to be present. The copied gate has no
 # Git metadata, so this also covers the extracted-archive find fallback.
 discovery_fixture="$WORK/discovery-fixture"
-mkdir -p "$discovery_fixture"/{plugins/example,scripts,skills/example/helpers,templates,tests}
+mkdir -p "$discovery_fixture"/{lib,plugins/example,scripts,skills/example/helpers,templates,tests}
 cp "$CI" "$discovery_fixture/scripts/ci-local.sh"
 printf '%s\n' '#!/usr/bin/env sh' 'exit 0' > "$discovery_fixture/root-helper"
 printf '%s\n' '#!/usr/bin/env -S bash -e' 'exit 0' > "$discovery_fixture/skills/example/helpers/check"
@@ -137,6 +137,53 @@ do
     "CI names the helper that a rejected stat mtime format should have used ($raw_mtime_use)"
 done
 rm -f "$discovery_fixture/tests/raw-mtime.sh"
+
+# Regression (T014 rework): lib/common.sh is exempt because it HOLDS the
+# correct implementation — so the exemption is `file_mtime`'s own block, not
+# the six hundred lines around it. Waving the whole file through would let the
+# next raw idiom land beside the helper written to prevent it, in the same
+# file as the lock acquisition that went down on ubuntu-latest: L016 and L019
+# a third time. All three cases below use a stand-in lib/common.sh so the
+# assertions are about the GATE, not about today's contents of the real file.
+mtime_helper_doc='# file_mtime <path> [fallback] -- fixture stand-in for the real helper.'
+mtime_inside="  mt=\"\$(stat -f ${mtime_pct}m \"\$1\" 2>/dev/null || true)\""
+mtime_outside="stale_mtime=\"\$(stat -c${mtime_pct}Y /tmp 2>/dev/null)\""
+
+# Accepted: the helper's own block may name both spellings — that is the whole
+# point of exempting it. Asserted against the refusal's wording rather than the
+# run's exit status, so an unrelated ci-local failure cannot masquerade as this
+# case passing (and cannot make it fail either).
+printf '%s\n' '#!/usr/bin/env bash' "$mtime_helper_doc" 'file_mtime() {' \
+  "$mtime_inside" '  printf %s "$mt"' '}' \
+  > "$discovery_fixture/lib/common.sh"
+scoped_ok_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1 || true)"
+printf '%s\n' "$scoped_ok_out" | grep -q 'platform-specific stat format' \
+  && fail "CI rejects a platform-specific stat format INSIDE lib/common.sh's own file_mtime helper — that block is the one place the format belongs"
+
+# Rejected: the same format one line past the helper's closing brace.
+printf '%s\n' '#!/usr/bin/env bash' "$mtime_helper_doc" 'file_mtime() {' \
+  "$mtime_inside" '  printf %s "$mt"' '}' "$mtime_outside" \
+  > "$discovery_fixture/lib/common.sh"
+rc=0
+scoped_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "CI accepts a platform-specific stat mtime format in lib/common.sh outside its own file_mtime helper"
+assert_match 'outside its own file_mtime helper' "$scoped_out" \
+  "CI explains that lib/common.sh's exemption is the file_mtime helper, not the whole file"
+
+# Rejected: the helper is gone (renamed, moved, deleted) and the format is
+# still there. An unlocatable block must read as "cannot judge", never as
+# "exempt" — otherwise renaming file_mtime silently restores the blanket pass
+# this case exists to remove.
+printf '%s\n' '#!/usr/bin/env bash' "$mtime_outside" \
+  > "$discovery_fixture/lib/common.sh"
+rc=0
+unlocatable_out="$("$BASH" "$discovery_fixture/scripts/ci-local.sh" --bash "$BASH" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "CI accepts a platform-specific stat mtime format in a lib/common.sh with no locatable file_mtime helper — the exemption must not survive the helper it is scoped to"
+assert_match 'cannot be located' "$unlocatable_out" \
+  "CI explains that it refuses rather than exempts when file_mtime cannot be located"
+rm -f "$discovery_fixture/lib/common.sh"
 
 # Regression (T004 attempt 7): ShellCheck normally searches a script's parent
 # directories and the invoking user's home for .shellcheckrc. Neither source
