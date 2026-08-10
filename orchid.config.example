@@ -96,7 +96,9 @@ pack_budget_bytes=65536
 # bound to that task's current candidate_sha, so a resumed session proceeds
 # and a rebase or a fresh rework round invalidates it (INV-07). `off` (the
 # default) never gates anything; any OTHER value reads as `required`, so a
-# typo here can only ever route more work to a human, never less.
+# typo here can only ever route more work to a human, never less. Turning it
+# on is an operator decision, landed like any other config change with
+# `orchid config commit --reason "..."`.
 # handoff_before_verify=off
 
 # v1-m3: kernel-owned hook points (docs/specs/plugins.md, Hooks section).

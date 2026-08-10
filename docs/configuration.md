@@ -119,7 +119,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   engine profile that denies on the command *string* and so can perform none
   of those: a drive pass then stops at an `operator-handoff` boundary instead
   of verifying a candidate that was never going to pass and spending one of
-  its three rework rounds on the failure. Perform the steps, then
+  its three rework rounds on the failure. It ships `off`, and turning it on is
+  an operator decision landed through `orchid config commit --reason "..."`
+  like any other config change — never a line a task's candidate adds to the
+  live `orchid.config` of the run it is executing inside, which would switch a
+  new driver gate on mid-run, for every remaining task, with no reason
+  recorded. Perform the steps, then
   `orchid task handoff <id> --ack --reason "..."` — the acknowledgement is
   bound to that task's current `candidate_sha`, so a resumed session or a
   second driver pass proceeds, and a rebase or a fresh rework round

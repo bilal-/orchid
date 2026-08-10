@@ -264,6 +264,13 @@ rc=0
 {
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "sha: $merged_sha"
+  # sha-binding, same contract as `orchid verify`'s log (T010). `sha:` above
+  # is the MERGED tree, which exists nowhere but this temp worktree and names
+  # no candidate; without this line the log carries no claim about WHICH
+  # candidate's failure it recorded, and a merge log left behind by a
+  # superseded candidate reads exactly like a current one. lib/findings.sh
+  # refuses to quote a log it cannot bind to the task's current candidate_sha.
+  echo "candidate: $candidate_sha"
   echo "cwd: $wt"
   echo "command: $cmd"
   echo "---"

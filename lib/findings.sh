@@ -14,8 +14,10 @@
 # routing except that `file:line: RULE: message` never travelled with it.
 #
 # So on every entry to `rework`, the log the failing gate actually wrote is
-# read for location-bearing diagnostics, and those exact lines are appended to
-# the task body. lib/pack.sh copies that body verbatim into the implementer's
+# read for location-bearing diagnostics -- provided that log's own header
+# binds it to the candidate the task is reworking, since evidence carried into
+# an attempt must belong to the candidate that failed -- and those exact lines
+# are appended to the task body. lib/pack.sh copies that body verbatim into the implementer's
 # input pack as `task.md`, which is the guidance an implementer receives --
 # so the locations arrive with the instruction rather than behind a pointer to
 # a log the recipient may be unable to open, re-run or reproduce.
@@ -133,20 +135,57 @@ findings_log_failed() {
   esac
 }
 
-# findings_brief <state> <task-id> -- the markdown block to append to a task
-# body on entry to `rework`, or NOTHING at all when no failing log carries a
-# location. Reads only the two evidence logs the kernel itself writes, in the
-# order a reader wants them: `orchid verify`'s first (the candidate's own
-# suite), then `orchid merge`'s (the same suite re-run on the merged tree).
+# findings_log_candidate <log> -- the candidate_sha this log's own header
+# claims it was produced against, or the empty string if it makes no claim.
+#
+# Read from the HEADER only: parsing stops at the `---` separator both
+# `orchid verify` and `orchid merge` write before the captured output, so a
+# test that happens to echo a `candidate: <something>` line can never
+# impersonate the header field the binding below trusts.
+findings_log_candidate() {
+  local log="$1"
+  [ -f "$log" ] || return 0
+  awk '/^---$/ { exit } /^candidate: / { sub(/^candidate: /, ""); print; exit }' "$log"
+}
+
+# findings_brief <state> <task-id> <candidate-sha> -- the markdown block to
+# append to a task body on entry to `rework`, or NOTHING at all when no
+# failing log carries a location. Reads only the two evidence logs the kernel
+# itself writes, in the order a reader wants them: `orchid verify`'s first
+# (the candidate's own suite), then `orchid merge`'s (the same suite re-run on
+# the merged tree).
+#
+# EVIDENCE IS BOUND TO THE CANDIDATE IT CAME FROM, and a log that does not
+# match <candidate-sha> is DROPPED rather than quoted. This is the whole point
+# of the mechanism restated as a precondition: the brief exists to carry the
+# CURRENT failure into the next attempt, so re-injecting locations from a
+# candidate that no longer exists is not a lesser version of that -- it is the
+# defect, wearing the fix's heading. A stale log outlives its candidate
+# easily: `orchid merge`'s rebase arm mints a new candidate_sha under a tree
+# whose `<id>-merge.log` is still on disk, and the `merging` arm of
+# `task advance rework` deliberately exempts that log from its rm so the
+# failure it is about to journal keeps its evidence. So the sha compare, not
+# the file's existence, is what decides.
+#
+# Three ways a log fails to bind, all treated identically -- silently skipped:
+#   * its header names a DIFFERENT candidate (superseded, the case above);
+#   * it carries no `candidate:` header at all (written by an older kernel:
+#     unbindable, therefore untrusted -- absence of a claim is not a claim);
+#   * <candidate-sha> is empty or `none` (the task has no candidate to bind
+#     TO, so nothing can match it -- two vacuous sentinels agreeing is not
+#     proof, the same trap `task advance testing->reviewing` avoids by
+#     excluding `none` from its own compare).
 #
 # Emitting nothing rather than an empty block is deliberate: a rework that
 # had no location-bearing failure -- a merge conflict, an arbitration
-# request-changes -- must not gain a heading promising locations it does not
-# have.
+# request-changes, or only unbindable evidence -- must not gain a heading
+# promising locations it does not have.
 findings_brief() {
-  local state="$1" id="$2" log rel lines out=""
+  local state="$1" id="$2" cand="${3:-}" log rel lines out=""
+  [ -n "$cand" ] && [ "$cand" != none ] || return 0
   for log in "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"; do
     findings_log_failed "$log" || continue
+    [ "$(findings_log_candidate "$log")" = "$cand" ] || continue
     lines="$(findings_extract "$log")"
     [ -n "$lines" ] || continue
     rel=".orchid/reviews/$(basename "$log")"

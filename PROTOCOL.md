@@ -747,6 +747,25 @@ ones its archetype never declares.
     promising locations it does not have. Who may run the linter is a
     separate question, answered by the operator hand-off above.
 
+    **The evidence it quotes is bound to the candidate that failed.** Both
+    `orchid verify` and `orchid merge` stamp `candidate: <sha>` into their
+    evidence log's header, and the brief quotes a log only when that header
+    equals the task's CURRENT `candidate_sha`; a log naming a superseded
+    candidate, a log carrying no `candidate:` header at all, and a task with
+    no candidate to bind to are all dropped in silence. This is the same
+    INV-07 rule that invalidates review and verify evidence when the
+    candidate moves, applied to the brief — and it is not a refinement of the
+    mechanism but a precondition of it. The brief exists to carry the CURRENT
+    failure into the next attempt, so re-injecting locations from a candidate
+    that no longer exists is worse than emitting nothing: it hands the next
+    actor line numbers that are confidently wrong, which is the defect this
+    section exists to remove, wearing its heading. `<id>-merge.log` is the
+    log that outlives its candidate most easily — `orchid merge`'s rebase arm
+    mints a new `candidate_sha` under a tree whose merge log is still on
+    disk, and the `merging` arm of the `rework` advance deliberately exempts
+    that log from its deletion so the failure it is journaling keeps its
+    evidence — so the sha compare, not the file's presence, is what decides.
+
     When the rework was caused by
     something `context.md` failed to state — not an actual defect in the
     candidate — this is a lesson-birth moment (docs/specs/kernel.md,

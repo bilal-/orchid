@@ -414,8 +414,10 @@ case "$sub" in
       # rather than a convention someone has to remember. Emits nothing at
       # all when no failing log carried a location (a merge conflict, a
       # request-changes with no gate output), so a rework never gains a
-      # heading promising locations it does not have.
-      brief="$(findings_brief "$state" "$id")"
+      # heading promising locations it does not have. The candidate is passed
+      # in because the brief only quotes evidence BOUND to it: a log whose
+      # header names a superseded candidate is dropped, not carried forward.
+      brief="$(findings_brief "$state" "$id" "$(fm_get "$f" candidate_sha)")"
       if [ -n "$brief" ]; then
         { cat "$f"; printf '\n%s\n' "$brief"; } | atomic_write "$f"
       fi
@@ -605,8 +607,8 @@ case "$sub" in
     # failing gate's exact locations are deleted two lines below. The brief
     # goes in FIRST and the operator's own guidance last, so the guidance
     # reads as the final word on top of the evidence rather than being buried
-    # under it.
-    brief="$(findings_brief "$state" "$id")"
+    # under it. Candidate-bound, as on the advance arm.
+    brief="$(findings_brief "$state" "$id" "$(fm_get "$f" candidate_sha)")"
     { cat "$f"
       [ -z "$brief" ] || printf '\n%s\n' "$brief"
       printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"
@@ -640,8 +642,9 @@ case "$sub" in
     # T010: the same rework brief, lifted before the logs go (see the
     # advance:rework arm). `retry` is the verb an operator reaches for after
     # `attempts exhausted`, which is exactly the moment the last verify log's
-    # locations are most worth carrying forward.
-    brief="$(findings_brief "$state" "$id")"
+    # locations are most worth carrying forward -- if, and only if, that log
+    # is still bound to the candidate being retried.
+    brief="$(findings_brief "$state" "$id" "$(fm_get "$f" candidate_sha)")"
     if [ -n "$brief" ]; then
       { cat "$f"; printf '\n%s\n' "$brief"; } | atomic_write "$f"
     fi

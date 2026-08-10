@@ -146,7 +146,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 
 | File | Sole writer (verb) |
 |---|---|
-| `tasks/*.md` | `orchid task create/set/advance/unblock/retry` |
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/handoff` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
@@ -343,9 +343,20 @@ pending → implementing → testing → reviewing → arbitrating → merging �
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
 implementer_engine_id, base_sha, candidate_sha, risk_tier,
-blocking_severity, stop_condition, hook_guidance, engine, effort,
+blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
 acceptance_criteria, verification_commands, resources, exclusive,
-wallclock_budget_s, started_at, created, updated`. `hook_guidance` (v1-m3):
+wallclock_budget_s, started_at, created, updated`. `handoff_ack` (v1.1):
+kernel-owned and written by `orchid task handoff <id> --ack|--clear --reason
+"..."` ALONE — `orchid task set` refuses it by name, because its only legal
+value is the task's current `candidate_sha` at the moment of the ack and a
+hand-set field is the one way this record could lie. Empty means the
+`operator-handoff` boundary is outstanding; equal to `candidate_sha` means the
+operator performed that candidate's execution-requiring mechanical steps and a
+resumed pass proceeds. It is bound to a candidate, never to a task or a
+moment: entry to `rework` and `orchid merge`'s rebase arm both clear it, the
+same INV-07 invalidation that drops verify evidence, so a rebased tree never
+inherits an acknowledgement made against the tree it replaced.
+`hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
 "..."`, before the rework advance (PROTOCOL.md, THE TICK's `testing` FAIL

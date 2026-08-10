@@ -1441,6 +1441,70 @@ assert_eq "$((FINDINGS_MAX_LINES + 1))" "$(printf '%s\n' "$capped" | wc -l | tr 
 assert_match "and 5 further diagnostic line\(s\)" "$capped" \
   "and the drop is PRINTED, never silent"
 
+# --- evidence is bound to the candidate it came from ------------------------
+# The brief exists to carry the CURRENT failure into the next attempt, so
+# quoting a log left behind by a candidate that no longer exists is not a
+# weaker version of the mechanism -- it is the original defect wearing the
+# fix's heading, and it is worse than no brief at all, because the locations
+# it names are confidently wrong. `<id>-merge.log` is the log that outlives
+# its candidate most easily: the rebase arm mints a new candidate_sha under a
+# tree whose merge log is still on disk, and `advance rework` from `merging`
+# deliberately exempts that log from its rm.
+BINDSTATE="$WORK/bindstate"
+mkdir -p "$BINDSTATE/reviews"
+CUR_CAND=1111111111111111111111111111111111111111
+OLD_CAND=2222222222222222222222222222222222222222
+mk_bindlog() { # <path> <candidate-header-line-or-empty> <diagnostic>
+  { echo "date: 2026-08-10T00:00:00Z"
+    echo "sha: 3333333333333333333333333333333333333333"
+    [ -z "$2" ] || echo "candidate: $2"
+    echo "command: fixture"
+    echo "---"
+    printf '%s\n' "$3"
+    echo "exit: 1"
+  } > "$1"
+}
+
+mk_bindlog "$BINDSTATE/reviews/X010-verify.log" "$CUR_CAND" "lib/current.sh:5: SC2086: from the candidate being reworked"
+mk_bindlog "$BINDSTATE/reviews/X010-merge.log" "$OLD_CAND" "lib/superseded.sh:9: SC2154: from a candidate that no longer exists"
+bound="$(findings_brief "$BINDSTATE" X010 "$CUR_CAND")"
+assert_match "^lib/current\.sh:5: SC2086: from the candidate being reworked$" "$bound" \
+  "a log whose header binds it to the current candidate_sha is carried"
+case "$bound" in
+  *superseded.sh*)
+    fail "a merge log left behind by a SUPERSEDED candidate must not be re-injected — evidence carried into an attempt belongs to the candidate that failed" ;;
+esac
+
+# Absence of a claim is not a claim. A log written by an older kernel carries
+# no `candidate:` header, so nothing binds it to anything; it is dropped for
+# the same reason the mismatched one is, rather than trusted by default.
+mk_bindlog "$BINDSTATE/reviews/X020-verify.log" "" "lib/unbindable.sh:3: SC2086: no candidate header at all"
+case "$(findings_brief "$BINDSTATE" X020 "$CUR_CAND")" in
+  *unbindable.sh*)
+    fail "a log carrying no candidate: header is unbindable and must not be quoted as though it were current" ;;
+esac
+
+# ...and a task with NO candidate to bind TO matches nothing, rather than
+# letting two vacuous sentinels agree (the trap `advance testing->reviewing`
+# avoids by excluding `none` from its own compare).
+mk_bindlog "$BINDSTATE/reviews/X030-verify.log" none "lib/vacuous.sh:1: SC2086: ran with no candidate_sha"
+for nocand in "" none; do
+  case "$(findings_brief "$BINDSTATE" X030 "$nocand")" in
+    *vacuous.sh*)
+      fail "candidate_sha '$nocand' names no candidate — it must match no evidence, not every log that also recorded none" ;;
+  esac
+done
+
+# The header field is read from the HEADER, so captured test output cannot
+# impersonate it: everything after `---` is the gate's own words, quoted, and
+# a suite that prints a `candidate:` line is printing text, not making a claim.
+mk_bindlog "$BINDSTATE/reviews/X040-verify.log" "$OLD_CAND" "candidate: $CUR_CAND
+lib/spoofed.sh:2: SC2086: reached only by trusting output as header"
+case "$(findings_brief "$BINDSTATE" X040 "$CUR_CAND")" in
+  *spoofed.sh*)
+    fail "the candidate binding must read the log HEADER only — output printed after --- must not be able to re-bind a superseded log" ;;
+esac
+
 # --- end to end: the locations reach the implementer's pack ----------------
 BRIEF="$WORK/brief"
 mkdir -p "$BRIEF"
@@ -1514,6 +1578,24 @@ borchid task advance B010 testing --reason "fixture" >/dev/null
 borchid task advance B010 rework --reason "merge conflict" >/dev/null
 assert_eq 1 "$(borchid task show B010 | grep -c 'Rework brief — exact locations')" \
   "a rework with no failing log carrying a location adds no second brief heading"
+
+# ...and the same binding holds on the real verb edge, not just in the unit
+# above: a stale `<id>-merge.log` sitting beside a current `<id>-verify.log`
+# contributes nothing to the brief the implementer is handed.
+borchid task advance B010 implementing --reason "fixture: re-dispatch" >/dev/null
+borchid task set B010 candidate_sha "$BHEAD" >/dev/null
+borchid task advance B010 testing --reason "fixture" >/dev/null
+sed "s|^candidate: .*|candidate: $BHEAD|" "$EXLOG" > "$BRIEF/.orchid/reviews/B010-verify.log"
+mk_bindlog "$BRIEF/.orchid/reviews/B010-merge.log" "$OLD_CAND" \
+  "lib/superseded.sh:9: SC2154: from a candidate that no longer exists"
+borchid task advance B010 rework --reason "verify failed" >/dev/null
+bstale="$(borchid task show B010)"
+assert_eq 2 "$(printf '%s\n' "$bstale" | grep -c 'Rework brief — exact locations')" \
+  "a second brief really was appended on this edge, so the absence check below is about binding and not about an edge that emitted nothing"
+case "$bstale" in
+  *superseded.sh*)
+    fail "the rework edge re-injected a merge log from a superseded candidate into the brief" ;;
+esac
 
 # ===========================================================================
 # Part N -- THE OPERATOR HAND-OFF (T010): a named stop, a durable
