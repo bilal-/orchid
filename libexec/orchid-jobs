@@ -58,6 +58,16 @@ iso_to_epoch() {
 case "$sub" in
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
+    #
+    # DELIBERATELY NOT a concurrency gate: this arm does not refuse a second
+    # manifest for a task+operation that already has one. Duplicates are
+    # legitimate here (a dual-review tier routes two `review` jobs for one
+    # task, a point with two bindings launches two `hook` jobs for one point),
+    # "already outstanding" is a LIVENESS question a pid-0 manifest answers
+    # `no`, and whether to have a second engine running is a tier-2 dispatch
+    # decision this verb is never told about. The single guard lives in
+    # runners/orchid-drive, where every arm asks drive_job_outstanding before
+    # it spawns -- see drive_implementing's own note for the full reasoning.
     verb_lock_guard "$repo"
     epoch_require "$repo"
     task="$1"; role="$2"; operation="$3"; shift 3

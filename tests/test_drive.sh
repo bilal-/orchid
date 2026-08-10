@@ -1189,3 +1189,159 @@ assert_eq rework "$(ORCHID_REPO="$HB" "$ORCHID_BIN" task show H010 | grep '^stat
 hb_rc="$(cat "$WORK/hb-drive.rc")"
 [ "$hb_rc" -eq 0 ] || [ "$hb_rc" -eq 16 ] \
   || fail "the heartbeat-covered pass must complete normally (rc=$hb_rc): $(cat "$WORK/hb-drive.out")"
+
+# ===========================================================================
+# Part L -- a relaunched implementer is ONE implementer.
+#
+# `jobs reconcile` files every implement envelope of an attempt as a SIBLING
+# (-a<n>-implementer.json, .2.json, ...) and removes none of them, so the
+# "the engine reported failure" predicate is true for the whole REST of the
+# attempt once one implementer has reported non-ok -- including the entire
+# lifetime of the relaunch the escalation itself just started. Unguarded, the
+# escalation ladder then runs on the WALL CLOCK instead of on failures: one
+# rung per pass, a SECOND implementer spawned into the same worktree on the
+# same branch while the first is still committing to it, and an auto-block at
+# 3/3 with two or three engines still writing to that checkout.
+#
+# So the ladder is measured here against the two facts that decide it: how
+# many implementers were ever STARTED, and how many rungs were spent. Both
+# halves matter -- the guard must defer escalation while a relaunch is live,
+# and must still count a genuine second failure when one arrives.
+# ===========================================================================
+DUP="$WORK/duplicate"
+DUPCTL="$WORK/dupctl"
+mkdir -p "$DUP" "$DUPCTL" "$WORK/eng/stubdup"
+cd "$DUP" || exit 1
+git init -q .
+# engine_fail_threshold well above the two failures this fixture reports: the
+# subject is the DRIVER's ladder, and a relaunch the ENGINE LEDGER refused
+# would leave the same "no second implementer" reading for the wrong reason.
+printf 'role.implementer=stubdup\nrole.reviewer=stubreview\nengine_fail_threshold=9\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+
+printf 'manifest_version=1\nid=test/stubdup\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubdup/plugin.conf"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -eu'
+  printf 'CTL=%s\n' "$(printf '%q' "$DUPCTL")"
+} > "$WORK/eng/stubdup/run"
+cat >> "$WORK/eng/stubdup/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+# One line per invocation. The test counts implementers HERE, not off the job
+# manifests -- a manifest is runtime litter the driver's own gc may already
+# have reaped, while this file is the engine's own record that it ran.
+echo "$jid" >> "$CTL/starts"
+# Launch #2 -- the relaunch the first failure's escalation makes -- parks
+# until the test releases it, so a whole driver pass provably runs while it is
+# still alive. Bounded, so a fixture that dies early cannot strand it.
+if [ "$(wc -l < "$CTL/starts" | tr -d ' ')" -eq 2 ]; then
+  i=0
+  while [ ! -f "$CTL/release" ] && [ "$i" -lt 300 ]; do sleep 0.2; i=$((i + 1)); done
+fi
+# Written to a sibling and MOVED into place, never redirected straight at the
+# spool path: `jobs reconcile` runs concurrently with this write, and it
+# quarantines a half-written envelope as malformed.
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"failed",
+    summary:"stub implement failure"}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+chmod +x "$WORK/eng/stubdup/run"
+
+ORCHID_REPO="$DUP" "$ORCHID_BIN" init >/dev/null || fail "orchid init (duplicate-implementer fixture)"
+git checkout -q orchid/integration
+DEPOCH="$(ORCHID_REPO="$DUP" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+dorchid() { ORCHID_REPO="$DUP" ORCHID_EPOCH="$DEPOCH" "$ORCHID_BIN" "$@"; }
+dorchid requirements import "$WORK/requirements.md" >/dev/null
+dorchid task create D010 "its first implementer reports failure" >/dev/null
+dorchid task set D010 verification_commands "true" >/dev/null
+dorchid plan apply --reason "initial plan" >/dev/null
+
+DDRIVE_RC=0; DDRIVE_OUT=""
+run_ddrive() {
+  DDRIVE_RC=0
+  DDRIVE_OUT="$(ORCHID_REPO="$DUP" ORCHID_EPOCH="$DEPOCH" "$DRIVE" 2>&1)" || DDRIVE_RC=$?
+}
+dfield() { ORCHID_REPO="$DUP" "$ORCHID_BIN" task show D010 | grep "^$1: " | cut -d' ' -f2-; }
+dstarts() {
+  if [ -f "$DUPCTL/starts" ]; then wc -l < "$DUPCTL/starts" | tr -d ' '; else echo 0; fi
+}
+# The driver's own definition of a live implement job, applied to the same
+# manifests it reads: task, operation, and a pid it really stamped.
+dlive_implement() {
+  local m n=0
+  for m in "$DUP/.orchid/runtime/jobs"/*.json; do
+    [ -e "$m" ] || continue
+    [ "$(jq -r '.task' "$m")" = D010 ] || continue
+    [ "$(jq -r '.operation' "$m")" = implement ] || continue
+    [ "$(jq -r '.pid // 0' "$m")" != 0 ] || continue
+    n=$((n + 1))
+  done
+  echo "$n"
+}
+# `orchid-launch` returns as soon as it has SPAWNED, so the child's own first
+# line can land a moment after the pass that started it. Bounded.
+dwait_starts() {
+  local want="$1" i=0
+  while [ "$(dstarts)" -lt "$want" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done
+}
+
+# Passes until the ladder has counted the first implementer's failure. How
+# many that takes depends only on when the stub's envelope lands -- never on
+# anything the driver decides -- so it is a wait, not an assertion.
+di=0
+while [ "$di" -lt 40 ]; do
+  run_ddrive
+  [ "$(dfield infra_failures)" = 0 ] || break
+  [ "$DDRIVE_RC" -eq 0 ] || break
+  di=$((di + 1))
+  sleep 0.3
+done
+assert_eq 1 "$(dfield infra_failures)" \
+  "a non-ok implement envelope spends exactly one rung of the escalation ladder (rc=$DDRIVE_RC, out: $DDRIVE_OUT)"
+assert_eq implementing "$(dfield status)" \
+  "and the task stays in implementing behind the relaunch"
+dwait_starts 2
+assert_eq 2 "$(dstarts)" \
+  "the escalation really did relaunch -- the ladder still retries (out: $DDRIVE_OUT)"
+assert_eq 1 "$(dlive_implement)" \
+  "and exactly one implement job carries a stamped pid"
+
+# THE PASS UNDER TEST. The relaunched implementer is parked and provably
+# alive, and the attempt's first, non-ok envelope is still on disk beside it.
+run_ddrive
+assert_eq 1 "$(dlive_implement)" \
+  "a pass over a LIVE relaunch must not spawn a second implementer into the worktree the first is still writing to (rc=$DDRIVE_RC, out: $DDRIVE_OUT)"
+assert_eq 1 "$(dfield infra_failures)" \
+  "nor spend a second rung on the failure it already counted"
+assert_eq implementing "$(dfield status)" \
+  "the task simply waits"
+assert_match "awaiting the implementer envelope" "$DDRIVE_OUT" \
+  "and the pass says so, naming what it is waiting for"
+# A second implementer that HAD been spawned would append its own line here;
+# give it the same grace dwait_starts gives a legitimate one before reading.
+sleep 0.5
+assert_eq 2 "$(dstarts)" \
+  "no third engine process was ever started (out: $DDRIVE_OUT)"
+
+# The other half: the guard DEFERS the ladder, it never disables it. Released,
+# the parked implementer files a non-ok envelope of its own -- a genuine
+# second failure -- and the next rung is spent on it.
+: > "$DUPCTL/release"
+di=0
+while [ "$di" -lt 60 ]; do
+  run_ddrive
+  [ "$(dfield infra_failures)" = 1 ] || break
+  di=$((di + 1))
+  sleep 0.3
+done
+assert_eq 2 "$(dfield infra_failures)" \
+  "a SECOND non-ok envelope is a second failure, and the ladder counts it (rc=$DDRIVE_RC, out: $DDRIVE_OUT)"
+dwait_starts 3
+assert_eq 3 "$(dstarts)" \
+  "and relaunches once more, exactly as the ladder says (out: $DDRIVE_OUT)"
