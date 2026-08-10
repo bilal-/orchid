@@ -94,20 +94,43 @@ assert_eq 3 "$rc" "retry from pending must exit 3"
 assert_eq rework "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "retry from blocked -> rework"
 
 # v0b2: `task advance <id> implementing` stamps frontmatter `started_at`
-# (ISO) when it is still empty — the task wall-clock anchor `jobs check`
-# reads for the budget-exceeded backstop.
+# (ISO) — the task wall-clock anchor `jobs check` reads for the
+# budget-exceeded backstop.
 "$ORCHID_BIN" task create T004 "started-at-demo"
 assert_eq "" "$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)" "started_at empty before dispatch"
 "$ORCHID_BIN" task advance T004 implementing
 started1="$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)"
 [ -n "$started1" ] || fail "advance ... implementing must stamp started_at"
 assert_match "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" "$started1" "started_at looks like an ISO-8601 UTC stamp"
+
+# T020: the anchor is PER ATTEMPT, not per task. It used to be stamped only
+# once, ever ("stamp only if empty"), which made `wallclock_budget_s` measure
+# calendar time since a task's first dispatch — every hour of operator
+# downtime and overnight idling between attempts included. Every DISPATCH
+# edge (pending/rework -> an active status) re-anchors it, so the budget
+# bounds the attempt that is about to run. `sleep 1` is what makes the two
+# stamps distinguishable at the ISO stamp's one-second resolution.
 "$ORCHID_BIN" task advance T004 blocked --reason "demo blocker (unrelated)"
 sleep 1
 "$ORCHID_BIN" task unblock T004 --reason "guidance given"
 "$ORCHID_BIN" task advance T004 implementing
 started2="$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)"
-assert_eq "$started1" "$started2" "advance ... implementing never overwrites an already-set started_at"
+assert_match "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" "$started2" "re-dispatch stamps a fresh ISO-8601 UTC started_at"
+[ "$started2" != "$started1" ] || fail "rework -> implementing must RE-anchor started_at (attempt budget, not task budget)"
+
+# ...but the intra-attempt edges are the SAME attempt and must NOT re-anchor:
+# re-stamping at every phase would let one attempt run unbounded, a phase at a
+# time. base_sha/candidate_sha are `testing`'s entry requirement; this
+# fixture's single root commit serves as both, so the INV-04 guard walks an
+# empty (and legal) commit range. The `sleep 1` is what would make an
+# unwanted re-stamp visible at the ISO stamp's one-second resolution.
+head_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task set T004 base_sha "$head_sha"
+"$ORCHID_BIN" task set T004 candidate_sha "$head_sha"
+sleep 1
+"$ORCHID_BIN" task advance T004 testing
+assert_eq "$started2" "$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)" \
+  "implementing -> testing (same attempt) leaves started_at alone"
 
 # v0b2: `task infra-fail <id> --reason "..."` is the dedicated kernel-owned
 # path that bumps `infra_failures` (the general `task set` deny-list blocks
