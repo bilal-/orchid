@@ -175,10 +175,50 @@ exists today — `binaries_present` included — runs on the restricted `PATH`. 
 lookup added *ahead* of that restore would read the fixed list, which no `PATH`
 restriction can reach.
 
+`PATH` is not the only ambient input, so the nested run also gets a **HOME of
+its own** — a scratch directory that did not exist a moment ago, holds no
+Orchid state, and whose path nothing else on the machine knows. Everything
+machine-local the suite reads resolves through `HOME`: user config
+(`$HOME/.orchid/config`), the unattended-trust store, capsuite freshness
+markers, and the home-rooted plugin search paths in `lib/resolver.sh`,
+`lib/roles.sh` and `lib/archetype.sh`. That state is shared with every other
+Orchid on the box, including a drive loop polling the same repository while the
+suite runs — which is how a verification of this very change failed twice on an
+unchanged tree and passed twice more (lesson L024). `XDG_*` goes with `HOME`,
+because git reads its own configuration through those names and they can point
+back inside the operator's home; `ORCHID_ACTOR`/`ORCHID_REPO`/`ORCHID_EPOCH`
+are unset for the reason `tests/run.sh` unsets them.
+
+That isolation is demonstrated rather than asserted, and every probe is paired
+with a control that can fail. A decoy scratch home stands in for the
+operator's, seeded with poisonous machine-local state; the controls prove the
+decoy is a live sink (a write through `HOME` is visible to the fingerprint) and
+a live source (the poison is legible through `HOME`), and the probes then show
+a child launched *through the same function the nested run is launched with*
+writes into the disposable home, leaves the inherited one byte-identical, reads
+none of the poison, and receives no durable run identity. The nested suite then
+runs with a writer concurrently rewriting the decoy's Orchid state for the
+whole duration; the run must pass, the writer must have ticked, and the churn
+must never turn up inside the nested home. What no test file can defend
+against — a second Orchid rebasing, re-pinning or rewriting *this checkout*
+mid-run — is recorded as `NOT-TESTED:` and left as an operator scheduling
+constraint: do not verify this repository while a drive loop is dispatching
+against the same worktree.
+
 The recursion guard (`ORCHID_HERMETIC_PROOF`) stops a nested run from
-re-launching a third. The file asserts the guard fires against a synthetic
-re-entry, that a real nested run re-enters exactly once, and — separately, and
-in both modes, because it has to hold even when nothing is nested — that
+re-launching a third. It is an **exact match against a token literal in the
+file**, never a truthiness test: a bare `-n` check is satisfied by any value,
+so a stray `ORCHID_HERMETIC_PROOF=1` in an operator's shell would make the
+whole proof print one `NOT-TESTED:` line and exit 0 — an unproven-ok in the
+harness built to prevent unproven-oks, and one that is indistinguishable in a
+log from a flaky run. Same asymmetry as `ORCHID_SUITE_RUN`: losing the marker
+costs a duplicate run, forging it costs the guarantee. The file asserts the
+guard fires against a synthetic re-entry carrying the exact token, that a
+battery of stray and near-miss values do *not* satisfy it (`--guard-probe`
+reports which side of the guard an invocation landed on without running the
+proof; the guard is checked ahead of it, so it cannot pre-empt it), that a real
+nested run re-enters exactly once with that token, and — separately, and in
+both modes, because it has to hold even when nothing is nested — that
 `tests/run.sh`'s glob still reaches this file at all. That last one failing
 means the guarantee has silently stopped being enforced.
 
