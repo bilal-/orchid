@@ -70,6 +70,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `pump_stale_s` | `900` | repo | v1-m2 |
 | `pump_interval_s` | `240` | repo | v1-m4 |
 | `arbiter_wait_s` | `14400` | repo | v1-m2 |
+| `handoff_before_verify` | `off` | repo | v1.1 |
 | `hook.after_plan_draft` | *(unbound — no handler)* | repo | v1-m3 |
 | `hook.before_arbitration` | *(unbound)* | repo | v1-m3 |
 | `hook.on_verify_fail` | *(unbound)* | repo | v1-m3 |
@@ -109,6 +110,22 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   (not qualified ids); append `:required` to a handler to make its failure
   block the edge (exit 15). No built-in defaults — an unbound point runs no
   handler at all.
+- **`handoff_before_verify`** (`off` by default) names the OPERATOR HAND-OFF
+  pause in [PROTOCOL.md](../PROTOCOL.md)'s THE TICK: the point, after an
+  implementer's envelope reconciles and before `orchid verify` runs, where a
+  candidate's execution-requiring mechanical work happens — applying a
+  linter's own fix, re-pinning a release checksum, setting the mode bit on a
+  newly added executable. Set it to `required` when your implementer is an
+  engine profile that denies on the command *string* and so can perform none
+  of those: a drive pass then stops at an `operator-handoff` boundary instead
+  of verifying a candidate that was never going to pass and spending one of
+  its three rework rounds on the failure. Perform the steps, then
+  `orchid task handoff <id> --ack --reason "..."` — the acknowledgement is
+  bound to that task's current `candidate_sha`, so a resumed session or a
+  second driver pass proceeds, and a rebase or a fresh rework round
+  invalidates it exactly as INV-07 invalidates verify evidence. Any value
+  other than `off` reads as `required`, so a typo can only route more work to
+  a human, never less.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable
   reviewer/critic (the diff is swapped for a `diff.stat` summary, honestly
   recorded as omitted); an inline-only engine (agy, hermes) still gets the

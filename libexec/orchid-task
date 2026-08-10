@@ -5,7 +5,7 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
-source "$ORCHID_ROOT/lib/schedule.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
@@ -112,6 +112,14 @@ case "$sub" in
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
+      handoff_ack)
+        # T010: an operator hand-off is an assertion that execution-requiring
+        # work was really done AGAINST A COMMITTED CANDIDATE, so the field can
+        # only ever hold the task's own current candidate_sha. A bare `task
+        # set` would let any string land there -- including one copied from a
+        # candidate the rebase arm has already superseded -- which is the one
+        # way this record could lie. `task handoff` derives the value itself.
+        orchid_die "'handoff_ack' is kernel-owned — use task handoff <id> --ack|--clear (it is bound to the current candidate_sha, never set by hand)" ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -391,6 +399,35 @@ case "$sub" in
       # deleting it here would destroy that diagnostic evidence. The
       # rebase-reset path (exit-5) invalidates both logs itself when it
       # mints a new candidate, so it never reaches this arm at all.
+      #
+      # THE REWORK BRIEF (T010, lesson L017) is lifted BEFORE that rm, and
+      # that ordering is the whole point: the verify log is about to be
+      # deleted, and it is the only place the failing gate's exact locations
+      # exist. `findings_brief` copies them into the task BODY, which
+      # lib/pack.sh carries verbatim into the next implementer's pack as
+      # `task.md` -- so `file:line: RULE: message` reaches the actor asked to
+      # fix it, instead of a pointer to a log that actor may be unable to
+      # open, re-run or reproduce. Appended on EVERY rework edge, not just
+      # the driver's: a hand-walked `task advance <id> rework`, `orchid
+      # merge`'s validation-failure arm and `task arbitrate --result
+      # request-changes` all land here, which is what makes this automatic
+      # rather than a convention someone has to remember. Emits nothing at
+      # all when no failing log carried a location (a merge conflict, a
+      # request-changes with no gate output), so a rework never gains a
+      # heading promising locations it does not have.
+      brief="$(findings_brief "$state" "$id")"
+      if [ -n "$brief" ]; then
+        { cat "$f"; printf '\n%s\n' "$brief"; } | atomic_write "$f"
+      fi
+      # An operator hand-off is acknowledged AGAINST a candidate, and a rework
+      # round exists to mint a different one -- so the acknowledgement does
+      # not survive entry to rework, the same INV-07 symmetry the evidence
+      # invalidation just below has. Guarded on being non-empty so this never
+      # appends a `handoff_ack:` line to tasks in repositories that do not use
+      # the gate at all.
+      if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+        fm_set "$f" handoff_ack ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
       [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
     fi
@@ -480,6 +517,69 @@ case "$sub" in
     [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
     ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
     echo "arbitrated $id: result=$result from=$from to=$to" ;;
+  handoff)
+    # T010: the SOLE writer of `handoff_ack` -- the durable record that an
+    # operator really performed this candidate's execution-requiring
+    # mechanical steps (a lint fix, a checksum re-pin, a mode bit on a new
+    # executable), the ones an engine profile that denies on the command
+    # string cannot perform at all (lesson L017). PROTOCOL.md's THE TICK
+    # names the point in the procedure where they happen; this verb is what
+    # makes that point RESUMABLE, and it is why the pause is not an infinite
+    # loop: a second driver pass, or a session restarted an hour later, reads
+    # `handoff_ack` against the task's current `candidate_sha` and can tell
+    # "already performed" from "still outstanding" with no memory of its own.
+    #
+    # BOUND TO A COMMITTED CANDIDATE, NEVER TO A TASK OR A MOMENT. The value
+    # is DERIVED here from the task's current candidate_sha and is never
+    # accepted from the caller, so an acknowledgement cannot be made for a
+    # candidate other than the one on the task right now. It stops counting
+    # the instant that sha moves -- which is exactly how `orchid merge`'s
+    # rebase arm invalidates it (INV-07): a rebased tree is a different
+    # candidate, and work done on the old one is not evidence about it.
+    #
+    # `--clear` withdraws it. Idempotent by content, like `run boundary set`:
+    # clearing a field that is already empty journals nothing, so the rebase
+    # arm can call it unconditionally without one journal line per rebase on
+    # every repository that never uses the gate.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    mode=""; reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --ack) mode=ack; shift ;;
+      --clear) mode=clear; shift ;;
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) orchid_die "usage: orchid task handoff <id> --ack|--clear --reason \"...\"" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task handoff <id> --ack|--clear --reason \"...\""
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    [ -n "$mode" ] || orchid_die "task handoff requires --ack or --clear"
+    [ -n "$reason" ] || orchid_die "task handoff requires --reason (INV-08)"
+    old="$(fm_get "$f" handoff_ack)"
+    if [ "$mode" = clear ]; then
+      if [ -z "$old" ]; then
+        echo "$id: no operator hand-off was recorded"
+        exit 0
+      fi
+      # Journal-first (INV-08 discipline): the reason is recorded before the
+      # field it justifies is written.
+      journal --task "$id" --kind intervention "operator hand-off cleared (was $old): $reason"
+      fm_set "$f" handoff_ack ""; fm_set "$f" updated "$(now)"
+      echo "$id: operator hand-off cleared (was $old)"
+      exit 0
+    fi
+    cand="$(fm_get "$f" candidate_sha)"
+    [ -n "$cand" ] || orchid_die "task $id has no candidate_sha — a hand-off is acknowledged against a committed candidate, never against a task"
+    if [ "$old" = "$cand" ]; then
+      echo "$id: operator hand-off already acknowledged for candidate $cand"
+      exit 0
+    fi
+    journal --task "$id" --kind intervention "operator hand-off acknowledged for candidate $cand: $reason"
+    fm_set "$f" handoff_ack "$cand"; fm_set "$f" updated "$(now)"
+    echo "$id: operator hand-off acknowledged for candidate $cand" ;;
   unblock)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
@@ -500,10 +600,25 @@ case "$sub" in
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
     journal --task "$id" --kind intervention "unblock: $reason"
-    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    # T010: same rework brief the advance:rework arm appends, and for the same
+    # reason -- this is also an entry to rework, and the logs holding the
+    # failing gate's exact locations are deleted two lines below. The brief
+    # goes in FIRST and the operator's own guidance last, so the guidance
+    # reads as the final word on top of the evidence rather than being buried
+    # under it.
+    brief="$(findings_brief "$state" "$id")"
+    { cat "$f"
+      [ -z "$brief" ] || printf '\n%s\n' "$brief"
+      printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"
+    } | atomic_write "$f"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
-    # with the advance:rework arm and orchid-merge's rebase-reset).
+    # with the advance:rework arm and orchid-merge's rebase-reset) -- and, on
+    # the same grounds, any operator hand-off recorded against the candidate
+    # this rework round is about to replace.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+    if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+      fm_set "$f" handoff_ack ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework" ;;
   retry)
@@ -522,9 +637,21 @@ case "$sub" in
       *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
     esac
     journal --task "$id" --kind intervention "retry: $reason"
+    # T010: the same rework brief, lifted before the logs go (see the
+    # advance:rework arm). `retry` is the verb an operator reaches for after
+    # `attempts exhausted`, which is exactly the moment the last verify log's
+    # locations are most worth carrying forward.
+    brief="$(findings_brief "$state" "$id")"
+    if [ -n "$brief" ]; then
+      { cat "$f"; printf '\n%s\n' "$brief"; } | atomic_write "$f"
+    fi
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
-    # with the advance:rework arm and orchid-merge's rebase-reset).
+    # with the advance:rework arm and orchid-merge's rebase-reset) -- and any
+    # operator hand-off bound to the candidate being replaced.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+    if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+      fm_set "$f" handoff_ack ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework" ;;
   infra-fail)
@@ -559,5 +686,5 @@ case "$sub" in
     else
       echo "$id: infra_failures $n/$max"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|unblock|retry|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|unblock|retry|infra-fail" ;;
 esac

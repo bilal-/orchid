@@ -800,9 +800,28 @@ is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
 exit code — returned by `drive` when a pass stopped at one, and by `run
 boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
-`run-complete`, `operator-decision`. `orchid task arbitrate` is the sole
-explicit judgment-result verb; see PROTOCOL.md's "Judgment boundaries"
-section for the non-overlapping arbitration truth table.
+`operator-handoff`, `run-complete`, `operator-decision`. `orchid task
+arbitrate` is the sole explicit judgment-result verb; see PROTOCOL.md's
+"Judgment boundaries" section for the non-overlapping arbitration truth table.
+
+`operator-handoff` (v1.1) is the one raised BETWEEN an implementer's envelope
+reconciling and verification, where `handoff_before_verify` asks for it: some
+mechanical work in a candidate requires EXECUTION — applying a linter's own
+fix, re-pinning a release checksum, setting the mode bit on a newly added
+executable — and an engine profile that denies on the command *string* can
+perform none of it, so verifying first is a guaranteed failure that spends a
+rework attempt on work nobody in that round could do. It is settled by no verb
+an orchestrator can run, deliberately: `orchid task handoff <id> --ack` asserts
+that the work was performed by an actor able to perform it, and it writes
+`handoff_ack` bound to the task's current `candidate_sha`. That binding is the
+whole resume rule — equal means done and the walk proceeds, anything else means
+outstanding and it stops again — and it is invalidated exactly as INV-07
+invalidates verify evidence, so a rebased tree never inherits an
+acknowledgement made against the tree it replaced. The exact `file:line: RULE:
+message` locations of a failing gate travel into the next rework brief
+regardless of who acts on them (see PROTOCOL.md, THE TICK's `testing` arm):
+carrying the locations is what makes a routed fix satisfiable, and the hand-off
+is what stops it being routed to an actor that cannot perform it.
 
 One boundary is recorded per pass, chosen by whether a woken orchestrator
 could actually SETTLE it ahead of the ones only an operator can, then by

@@ -83,6 +83,22 @@ pack_budget_bytes=65536
 # HEADLESS OPERATION).
 # arbiter_wait_s=14400
 
+# v1.1: the OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm).
+# Some candidates need mechanical work that requires EXECUTION -- applying a
+# linter's own fix, re-pinning a release checksum, setting the mode bit on a
+# newly added executable -- and an engine profile that denies on the command
+# STRING can perform none of it. Set this to `required` when your implementer
+# is such a profile: a drive pass then STOPS at an `operator-handoff` boundary
+# after the implementer's envelope reconciles and BEFORE `orchid verify`,
+# instead of verifying a candidate that was never going to pass and spending a
+# rework round on it. Perform the steps, then record them with
+# `orchid task handoff <id> --ack --reason "..."` -- the acknowledgement is
+# bound to that task's current candidate_sha, so a resumed session proceeds
+# and a rebase or a fresh rework round invalidates it (INV-07). `off` (the
+# default) never gates anything; any OTHER value reads as `required`, so a
+# typo here can only ever route more work to a human, never less.
+# handoff_before_verify=off
+
 # v1-m3: kernel-owned hook points (docs/specs/plugins.md, Hooks section).
 # Each hook.<point> is an ordered, comma-separated list of plugin NAMEs (the
 # short discovery name, e.g. "stubhook" -- a qualified id like "acme/stubhook"

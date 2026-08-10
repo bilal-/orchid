@@ -135,7 +135,7 @@ assert_eq "$before" "$(wc -l < .orchid/journal.md)" \
 # ===========================================================================
 # 7 -- every kernel-owned kind is accepted, and only those.
 # ===========================================================================
-for kind in planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-decision; do
+for kind in planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-handoff operator-decision; do
   rc=0; "$ORCHID_BIN" run boundary set --kind "$kind" --reason "kind coverage" >/dev/null 2>&1 || rc=$?
   assert_eq 0 "$rc" "kernel-owned boundary kind '$kind' is accepted"
 done

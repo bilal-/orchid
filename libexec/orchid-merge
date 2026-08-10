@@ -209,6 +209,20 @@ if [ "$integ_head" != "$base_sha" ]; then
   # makes INV-07 kernel-enforced via the INV-11 gate (no log => advance to
   # reviewing dies, forcing an unconditional re-verify).
   rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+  # T010, the same invalidation applied to the OPERATOR HAND-OFF. An
+  # acknowledgement records that a human performed this candidate's
+  # execution-requiring mechanical steps -- a lint fix, a checksum re-pin, a
+  # mode bit. The rebase just minted a DIFFERENT candidate, so that
+  # acknowledgement is a statement about a tree that no longer exists and
+  # must not be inherited by the rebased one, exactly as the verify evidence
+  # above is not. Without this the sha binding alone would already refuse it
+  # (handoff_ack no longer equals candidate_sha), and this call is the
+  # belt-and-braces half: it makes the invalidation an explicit, journalled
+  # event an operator can see, rather than a silent mismatch. Routed through
+  # the verb, never fm_set: `handoff_ack` has exactly one writer, and the
+  # call is a no-op that journals nothing when no hand-off was recorded.
+  "$ORCHID_ROOT/bin/orchid" task handoff "$id" --clear \
+    --reason "rebase minted candidate $new_candidate; a hand-off performed against $candidate_sha does not carry over (INV-07)" >/dev/null
   # Normative per kernel.md's decision-journal table: the rebase-reset is a
   # judgment-bearing event (evidence invalidated, re-review now mandatory) —
   # journal it as `rebase_review` so the decision trail shows why re-verify

@@ -412,9 +412,10 @@ else
   # file, expiry, nonce/allowlist and no prior answer, and nothing else. A
   # question on a task sitting in `merging` or `arbitrating` is fully
   # answerable, and those are exactly the ones runners/orchid-drive's boundary
-  # notifier raises (hook-failure, worktree-conflict, operator-decision, and
-  # non-arbitrable review-conflict all notify with the task in whatever status
-  # it holds). Excluding them dropped the majority of real lost-answer
+  # notifier raises (hook-failure, worktree-conflict, operator-handoff,
+  # operator-decision, and non-arbitrable review-conflict all notify with the
+  # task in whatever status it holds -- operator-handoff always with the task
+  # in `testing`). Excluding them dropped the majority of real lost-answer
   # evidence. `not blocked` is far wider than `was blocked, then locally
   # resolved`; the locally-resolved case is left to age out through the same
   # expiry above, which bounds the stale warning to answer_expiry_s instead of

@@ -102,7 +102,7 @@ case "$sub" in
     # Schema (schema: 1): {schema, kind, task, reason, epoch, at}. `kind` is
     # one of the kernel-owned set in lib/drive.sh (planning, blocked-task,
     # review-evidence, review-conflict, hook-failure, worktree-conflict,
-    # run-complete, operator-decision) -- anything else is refused, so a
+    # operator-handoff, run-complete, operator-decision) -- anything else is refused, so a
     # boundary can never be minted for a condition this kernel has no defined
     # meaning for.
     #
@@ -138,7 +138,7 @@ case "$sub" in
           *) shift ;;
         esac; done
         [ -n "$bkind" ] || orchid_die "usage: orchid run boundary set --kind <kind> [--task <id>] --reason \"...\""
-        drive_boundary_kind_valid "$bkind" || orchid_die "unknown boundary kind '$bkind' (one of: planning, blocked-task, review-evidence, review-conflict, hook-failure, worktree-conflict, run-complete, operator-decision)"
+        drive_boundary_kind_valid "$bkind" || orchid_die "unknown boundary kind '$bkind' (one of: planning, blocked-task, review-evidence, review-conflict, hook-failure, worktree-conflict, operator-handoff, run-complete, operator-decision)"
         [ -n "$breason" ] || orchid_die "run boundary set requires --reason (INV-08)"
         if [ -n "$btask" ] && [ ! -f "$state/tasks/$btask.md" ]; then
           orchid_die "no task $btask"

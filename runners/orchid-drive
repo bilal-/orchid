@@ -48,7 +48,7 @@ source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
-source "$ORCHID_ROOT/lib/drive.sh"
+source "$ORCHID_ROOT/lib/drive.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 
 usage() {
   cat <<'EOF'
@@ -88,6 +88,19 @@ review boundary is arbitrable from `arbitrating` and operator-only from
 `reviewing`. Every boundary the pass meets is printed either way, and one no
 admitted verb can settle also raises one `orchid notify` blocker per distinct
 record, because runners/orchid-pump deliberately wakes no model for it.
+
+Between an implementer's envelope reconciling and `orchid verify` running,
+some candidates need execution-requiring mechanical work an engine profile
+cannot do at all: a lint fix, a release checksum re-pin, the mode bit on a new
+executable. Where `handoff_before_verify` asks for that pause, a pass stops at
+an `operator-handoff` boundary instead of verifying — verifying first would
+spend one of the task's three rework rounds on a failure nobody was going to
+fix in that round. The stop is on a durable acknowledgement bound to the
+task's current candidate_sha (`orchid task handoff <id> --ack --reason "..."`),
+not on the moment, so a resumed session proceeds once it has been made and
+stops again the moment a rebase or a fresh rework round moves the candidate
+out from under it. The boundary is operator-only by design: no verb an
+orchestrator can run performs the work.
 
 A pass that reads every task as `done` takes COMPLETION's mechanical first
 step (`orchid run advance accepting`) and stops at a `run-complete` boundary,
@@ -700,7 +713,35 @@ drive_implementing() {
 # ---------------------------------------------------------------------------
 drive_testing() {
   local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts arc
+  local hstate hdetail
   tf="$state/tasks/$id.md"
+
+  # THE OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm). Between
+  # the implementer's envelope reconciling and `orchid verify` running there
+  # is a point at which execution-requiring mechanical work belongs to an
+  # operator: a lint fix, a release checksum re-pin, the mode bit on a newly
+  # added executable. An engine profile that denies on the command STRING can
+  # perform none of it (lesson L017), so verifying before it has been done is
+  # not merely early -- it is a guaranteed FAIL that spends one of the task's
+  # three rework rounds on work nobody was going to do in that round, and
+  # sends the implementer back a failure it cannot act on.
+  #
+  # Where a repository asks for that pause (`handoff_before_verify`), the pass
+  # STOPS here at a named boundary instead of verifying. The stop is on the
+  # ACKNOWLEDGEMENT, never on the moment: `handoff_ack` bound to this exact
+  # candidate_sha is what a resumed session or a second driver pass reads to
+  # tell "already performed" from "still outstanding". That is what keeps this
+  # from being an infinite loop in one direction and a silent walk-past in the
+  # other -- and it is why the acknowledgement dies with the candidate it was
+  # made against (a rebase, a fresh rework round), rather than with the task.
+  hstate="$(handoff_state "$repo" "$id")"
+  if [ "$(printf '%s' "$hstate" | cut -f1)" = outstanding ]; then
+    hdetail="$(printf '%s' "$hstate" | cut -f2-)"
+    set_boundary operator-handoff "$id" \
+      "verification is held until this candidate's operator-owned mechanical steps are performed and recorded — $hdetail (then: orchid task handoff $id --ack --reason ...)"
+    return 0
+  fi
+
   vrc=0
   drive_lease_heartbeat_start
   "$ORCHID_BIN" verify "$id" >/dev/null 2>&1 || vrc=$?

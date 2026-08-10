@@ -111,7 +111,7 @@ drive_boundary_wakes_orchestrator planning "" soft \
   || fail "a soft adapter can run PLANNING's own recording verb"
 
 # Kinds no verb settles at all are operator-only on EVERY surface.
-for kind in blocked-task hook-failure worktree-conflict operator-decision; do
+for kind in blocked-task hook-failure worktree-conflict operator-handoff operator-decision; do
   for surface in brokered soft; do
     assert_eq 0 "$(drive_boundary_priority "$kind" arbitrating "$surface")" \
       "a $kind boundary ranks below arbitrable ones on a $surface surface"
@@ -1345,3 +1345,334 @@ assert_eq 2 "$(dfield infra_failures)" \
 dwait_starts 3
 assert_eq 3 "$(dstarts)" \
   "and relaunches once more, exactly as the ladder says (out: $DDRIVE_OUT)"
+
+# ===========================================================================
+# Part M -- THE REWORK BRIEF (T010). A lint or verification failure's EXACT
+# locations must reach the guidance the next implementer receives.
+#
+# The defect this covers is not hypothetical (lesson L017). An engine profile
+# that denies on the command STRING can run no verifier -- no `bash -n`, no
+# `shellcheck`, not the repository's own suite -- so "fix the two ShellCheck
+# findings in the file you wrote" names a subject that actor cannot see. In
+# r-001 that produced two consecutive rework rounds on T005 in which neither
+# attempt touched either offending line: one wrote a documentation paragraph,
+# the next edited eighteen unrelated ones. So the assertions here are
+# deliberately about the TEXT -- the gate's own `file:line: RULE: message`,
+# verbatim, in the pack the implementer is actually handed. Not a pointer to
+# a log, and not a paraphrase.
+# ===========================================================================
+source "$REPO_ROOT/lib/findings.sh"
+source "$REPO_ROOT/lib/handoff.sh"
+source "$REPO_ROOT/lib/pack.sh"
+
+# --- the extractor, against every shape it claims to know ------------------
+EXLOG="$WORK/extract.log"
+cat > "$EXLOG" <<'EOF'
+date: 2026-08-10T00:00:00Z
+sha: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+candidate: deadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+cwd: /tmp/fixture
+command: bash scripts/ci-local.sh --bash /bin/bash
+---
+== ShellCheck exception policy
+lib/example.sh:7: ShellCheck suppression lacks an adjacent rationale
+== gcc-format linter
+lib/other.sh:3:14: warning: unreachable code [W0101]
+
+In lib/example.sh line 12:
+foo=$bar
+    ^-- SC2086: Double quote to prevent globbing and word splitting.
+
+In lib/example.sh line 40:
+echo "$undefined"
+      ^--^ SC2154 (warning): undefined is referenced but not assigned.
+
+runners/example: line 3: syntax error near unexpected token `fi'
+ok 1 - a passing case whose name mentions 12:34:56 and lib/example.sh
+exit: 1
+EOF
+
+extracted="$(findings_extract "$EXLOG")"
+assert_match "^lib/example\.sh:7: ShellCheck suppression lacks an adjacent rationale$" "$extracted" \
+  "a bare file:line: message diagnostic is carried VERBATIM (this repo's own ci-local.sh gates print exactly this shape)"
+assert_match "^lib/other\.sh:3:14: warning: unreachable code \[W0101\]$" "$extracted" \
+  "so is the file:line:col: shape every gcc-style linter emits"
+assert_match "^lib/example\.sh:12: SC2086: Double quote to prevent globbing and word splitting\.$" "$extracted" \
+  "ShellCheck's three-line tty report is recomposed into file:line: RULE: message out of its own fields"
+assert_match "^lib/example\.sh:40: SC2154: undefined is referenced but not assigned\.$" "$extracted" \
+  "including the newer '(warning)' severity form, whose parenthetical is not part of the message"
+assert_match "^runners/example: line 3: syntax error" "$extracted" \
+  "and the shell's own 'file: line N:' shape, which is what bash -n prints"
+case "$extracted" in
+  *"a passing case whose name"*)
+    fail "ordinary test output must not be quoted as a finding — a brief mixing noise with locations is read the way one with no locations is" ;;
+esac
+
+# A PASSING log contributes nothing, however location-shaped its output. The
+# `exit:` line is a structured field, and it is what tells a gate's report
+# apart from a test that happens to print a path and a number.
+PASSLOG="$WORK/pass.log"
+cat > "$PASSLOG" <<'EOF'
+command: true
+---
+lib/example.sh:99: this line was printed by a test that PASSED
+exit: 0
+EOF
+findings_log_failed "$PASSLOG" && fail "a log ending 'exit: 0' recorded no failure"
+findings_log_failed "$EXLOG" || fail "a log ending in a nonzero exit recorded a failure"
+
+# The cap is real AND it says so. A silently truncated list reads as "these
+# were all the findings", which is the same information loss the whole
+# mechanism exists to end.
+CAPLOG="$WORK/cap.log"
+{
+  echo "command: fixture"
+  echo "---"
+  capi=1
+  while [ "$capi" -le 25 ]; do
+    printf 'lib/cap%s.sh:%s: SC1000: finding number %s\n' "$capi" "$capi" "$capi"
+    capi=$((capi + 1))
+  done
+  echo "exit: 1"
+} > "$CAPLOG"
+capped="$(findings_extract "$CAPLOG")"
+assert_eq "$((FINDINGS_MAX_LINES + 1))" "$(printf '%s\n' "$capped" | wc -l | tr -d ' ')" \
+  "the brief carries at most FINDINGS_MAX_LINES diagnostics plus its own truncation notice"
+assert_match "and 5 further diagnostic line\(s\)" "$capped" \
+  "and the drop is PRINTED, never silent"
+
+# --- end to end: the locations reach the implementer's pack ----------------
+BRIEF="$WORK/brief"
+mkdir -p "$BRIEF"
+cd "$BRIEF" || exit 1
+git init -q .
+# Deliberately WITHOUT handoff_before_verify: the brief is a property of the
+# `rework` edge itself, not of the hand-off gate, and this part proves it with
+# the gate off. No drive pass runs in Part M at all — every edge below is a
+# verb call, so what is under test is the kernel verb and nothing else.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$BRIEF" "$ORCHID_BIN" init >/dev/null || fail "orchid init (rework-brief fixture)"
+git checkout -q orchid/integration
+BEPOCH="$(ORCHID_REPO="$BRIEF" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+borchid() { ORCHID_REPO="$BRIEF" ORCHID_EPOCH="$BEPOCH" "$ORCHID_BIN" "$@"; }
+bfield() { ORCHID_REPO="$BRIEF" "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
+
+cat > "$WORK/requirements-brief.md" <<'EOF'
+# Requirements
+- REQ-1: a rework brief names the lines that failed.
+EOF
+borchid requirements import "$WORK/requirements-brief.md" >/dev/null
+borchid task create B010 "carries lint locations into the brief" >/dev/null
+borchid plan apply --reason "initial plan" >/dev/null
+
+BHEAD="$(git -C "$BRIEF" rev-parse HEAD)"
+# Hand-walked to `testing` on frontmatter alone -- no engine is launched
+# anywhere in Parts M and N. base_sha == candidate_sha keeps the INV-04
+# ".orchid/ untouched" gate trivially satisfied: there is no commit between
+# them to inspect.
+borchid task advance B010 implementing --reason "fixture dispatch" >/dev/null
+borchid task set B010 base_sha "$BHEAD" >/dev/null
+borchid task set B010 candidate_sha "$BHEAD" >/dev/null
+borchid task advance B010 testing --reason "fixture: implementer envelope ok" >/dev/null
+
+mkdir -p "$BRIEF/.orchid/reviews"
+sed "s|^candidate: .*|candidate: $BHEAD|" "$EXLOG" > "$BRIEF/.orchid/reviews/B010-verify.log"
+
+borchid task advance B010 rework --reason "verify failed: see .orchid/reviews/B010-verify.log" >/dev/null
+assert_eq rework "$(bfield B010 status)" "the fixture really took the testing -> rework edge"
+[ ! -f "$BRIEF/.orchid/reviews/B010-verify.log" ] \
+  || fail "entry to rework still invalidates the verify log — the brief is lifted BEFORE that, not instead of it"
+
+bbody="$(borchid task show B010)"
+assert_match "Rework brief — exact locations reported by the failing gate" "$bbody" \
+  "entry to rework appends the brief to the task body, which IS the guidance an implementer receives"
+assert_match "^lib/example\.sh:12: SC2086: Double quote to prevent globbing and word splitting\.$" "$bbody" \
+  "and the body carries the gate's own file:line: RULE: message text, not a pointer to a log the implementer cannot re-run"
+assert_match "^lib/example\.sh:7: ShellCheck suppression lacks an adjacent rationale$" "$bbody" \
+  "every recognized location shape survives into the body, not just ShellCheck's"
+
+# THE ASSERTION THAT MATTERS: the pack. A task body nobody hands to the
+# implementer would fix nothing -- lib/pack.sh copies task.md verbatim, so
+# this is the exact text the engine's request document is built from.
+PACKOUT="$WORK/packout"
+rm -rf "$PACKOUT"
+pack_build "$BRIEF" B010 implement "$PACKOUT" >/dev/null 2>&1 \
+  || fail "pack_build must succeed for a task carrying a rework brief"
+[ -f "$PACKOUT/task.md" ] || fail "the implementer's pack must contain task.md"
+bpacked="$(cat "$PACKOUT/task.md")"
+assert_match "^lib/example\.sh:12: SC2086: Double quote to prevent globbing and word splitting\.$" "$bpacked" \
+  "the failing gate's exact locations reach the pack the implementer is actually handed (lesson L017)"
+assert_match "^runners/example: line 3: syntax error" "$bpacked" \
+  "including the syntax error a profile that cannot run bash -n could never have found for itself"
+
+# A rework with no location-bearing failure gains no heading promising any.
+borchid task advance B010 implementing --reason "fixture: re-dispatch" >/dev/null
+borchid task set B010 candidate_sha "$BHEAD" >/dev/null
+borchid task advance B010 testing --reason "fixture" >/dev/null
+borchid task advance B010 rework --reason "merge conflict" >/dev/null
+assert_eq 1 "$(borchid task show B010 | grep -c 'Rework brief — exact locations')" \
+  "a rework with no failing log carrying a location adds no second brief heading"
+
+# ===========================================================================
+# Part N -- THE OPERATOR HAND-OFF (T010): a named stop, a durable
+# acknowledgement, and a resume rule.
+#
+# The pause exists because some mechanical work in a candidate requires
+# EXECUTION -- a lint fix, a release checksum re-pin, the mode bit on a newly
+# added executable -- which an engine profile that denies on the command
+# string cannot perform at all. Verifying before it is done is a guaranteed
+# FAIL that spends one of the task's three rework rounds on work nobody was
+# going to do in that round.
+#
+# The two failure modes pinned here are opposite and equally fatal: a stop
+# with no way to record the work is an infinite loop, and a stop that clears
+# itself on elapsed time or on task identity is a silent walk-past.
+# ===========================================================================
+# Its OWN repository, holding exactly one task. Sharing Part M's fixture would
+# have made the assertions below quietly meaningless: `blocked-task` and
+# `operator-handoff` are both operator-only boundaries, so they rank equal and
+# task-id order decides between them — a parked B010 would have taken the
+# record on every pass and `operator-handoff` would never have been the one
+# asserted against. One task, one possible boundary.
+HANDOFF="$WORK/handoff"
+mkdir -p "$HANDOFF"
+cd "$HANDOFF" || exit 1
+git init -q .
+printf 'handoff_before_verify=required\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$HANDOFF" "$ORCHID_BIN" init >/dev/null || fail "orchid init (operator hand-off fixture)"
+git checkout -q orchid/integration
+HEPOCH="$(ORCHID_REPO="$HANDOFF" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+horchid() { ORCHID_REPO="$HANDOFF" ORCHID_EPOCH="$HEPOCH" "$ORCHID_BIN" "$@"; }
+hfield() { ORCHID_REPO="$HANDOFF" "$ORCHID_BIN" task show H010 | grep "^$1: " | cut -d' ' -f2-; }
+
+cat > "$WORK/requirements-handoff.md" <<'EOF'
+# Requirements
+- REQ-1: nothing verifies a candidate whose operator steps are outstanding.
+EOF
+ORCHID_REPO="$HANDOFF" ORCHID_EPOCH="$HEPOCH" "$ORCHID_BIN" requirements import "$WORK/requirements-handoff.md" >/dev/null
+horchid task create H010 "held at the operator hand-off" >/dev/null
+horchid plan apply --reason "initial plan" >/dev/null
+
+# THE PROOF THAT `orchid verify` DID OR DID NOT RUN is a sentinel file the
+# verification command itself creates. The absence of a verify LOG would prove
+# nothing here: `orchid verify` dies before writing one when no command is
+# configured, so a log-based assertion would pass just as happily against a
+# driver with no gate at all. The command also prints one ShellCheck-shaped
+# diagnostic and fails, so the pass that finally does verify exercises the
+# rework brief end to end, through the driver, on the driver's own edge.
+HVERIFY_RAN="$WORK/h010-verify-ran"
+horchid task set H010 verification_commands \
+  "touch $HVERIFY_RAN; echo lib/gate.sh:9: SC2086: Double quote to prevent globbing; exit 1" >/dev/null
+
+HHEAD="$(git -C "$HANDOFF" rev-parse HEAD)"
+horchid task advance H010 implementing --reason "fixture dispatch" >/dev/null
+horchid task set H010 base_sha "$HHEAD" >/dev/null
+horchid task set H010 candidate_sha "$HHEAD" >/dev/null
+horchid task advance H010 testing --reason "fixture: implementer envelope ok" >/dev/null
+
+HDRIVE_RC=0; HDRIVE_OUT=""
+run_hdrive() {
+  HDRIVE_RC=0
+  HDRIVE_OUT="$(ORCHID_REPO="$HANDOFF" ORCHID_EPOCH="$HEPOCH" "$DRIVE" 2>&1)" || HDRIVE_RC=$?
+}
+hboundary() { ORCHID_REPO="$HANDOFF" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+
+assert_eq required "$(handoff_gate_mode "$HANDOFF")" "the fixture repository asks for the pause"
+assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "with nothing acknowledged, the hand-off is outstanding"
+
+# Pass 1 -- the stop.
+run_hdrive
+assert_eq 16 "$HDRIVE_RC" "an unacknowledged hand-off stops the pass at a judgment boundary"
+assert_eq operator-handoff "$(hboundary | jq -r .kind)" \
+  "the boundary NAMES the hand-off — an operator-decision catch-all would not tell anyone what to do"
+assert_eq H010 "$(hboundary | jq -r .task)" "and names the task it is holding"
+assert_eq testing "$(hfield status)" "the task takes NO transition"
+[ ! -f "$HVERIFY_RAN" ] \
+  || fail "the pass ran orchid verify anyway — verifying before the hand-off is the burnt attempt this stop exists to prevent"
+assert_eq 0 "$(hfield attempts)" "and no attempt was spent"
+assert_match "notified: \[operator-handoff\]" "$HDRIVE_OUT" \
+  "no verb an orchestrator can run performs this work, so it reaches a human instead of waking a model"
+assert_match "awaiting-operator-handoff" \
+  "$(ORCHID_REPO="$HANDOFF" "$ORCHID_BIN" status --explain 2>/dev/null)" \
+  "status --explain says the wait is on a person, not 'awaiting-verify'"
+
+# Pass 2, nothing changed -- A SECOND PASS WITHOUT AN ACKNOWLEDGEMENT STOPS
+# AGAIN. The stop never decays into consent with elapsed time or pass count.
+run_hdrive
+assert_eq 16 "$HDRIVE_RC" "a second pass with the hand-off still outstanding stops again"
+assert_eq testing "$(hfield status)" "and still takes no transition"
+[ ! -f "$HVERIFY_RAN" ] || fail "the second pass verified anyway"
+
+# The acknowledgement is DERIVED, never supplied: `task set` refuses the field
+# outright, so no caller can bind one to a candidate of its own choosing.
+hrc=0; horchid task set H010 handoff_ack "$HHEAD" >/dev/null 2>&1 || hrc=$?
+[ "$hrc" -ne 0 ] || fail "task set must refuse handoff_ack — a hand-picked value is the one way this record could lie"
+
+# The operator performs the work and records it.
+horchid task handoff H010 --ack --reason "re-pinned Formula/orchid.rb and set the exec bit" >/dev/null
+assert_eq "$HHEAD" "$(hfield handoff_ack)" "the acknowledgement is bound to the task's CURRENT candidate_sha"
+assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" "which reads as satisfied"
+assert_match "operator hand-off acknowledged for candidate" "$(cat "$HANDOFF/.orchid/journal.md")" \
+  "and it is journalled, so the mechanical steps are part of the durable record"
+
+# Pass 3 -- A SECOND PASS AFTER AN ACKNOWLEDGED HAND-OFF PROCEEDS.
+run_hdrive
+[ -f "$HVERIFY_RAN" ] \
+  || fail "an acknowledged hand-off must let the pass proceed to verification — otherwise the stop is an infinite loop (rc=$HDRIVE_RC, out: $HDRIVE_OUT)"
+assert_eq rework "$(hfield status)" "and the pass takes the verification failure's own edge, exactly as it would have with no gate at all"
+assert_eq 1 "$(hfield attempts)" "spending the attempt on a verification that really ran"
+
+# ...and that pass carried the failing gate's exact location into the brief,
+# through the driver, with no orchestrator step anywhere in it.
+assert_match "^lib/gate\.sh:9: SC2086: Double quote to prevent globbing$" \
+  "$(ORCHID_REPO="$HANDOFF" "$ORCHID_BIN" task show H010)" \
+  "the driver's own rework edge carries the gate's exact file:line: RULE: message into the task body"
+
+# Entry to rework withdrew the acknowledgement: the candidate it was made
+# against is the one this rework round exists to replace.
+assert_eq "" "$(hfield handoff_ack)" "entry to rework clears the acknowledgement (INV-07 symmetry)"
+
+# --- the binding is to a COMMITTED CANDIDATE, not to a task or a moment ----
+# An acknowledgement made for one candidate must never read as satisfied for
+# another. This is the shape `orchid merge`'s rebase arm produces when it moves
+# candidate_sha underneath an acknowledged hand-off.
+horchid task advance H010 implementing --reason "fixture: re-dispatch" >/dev/null
+horchid task set H010 candidate_sha "$HHEAD" >/dev/null
+horchid task advance H010 testing --reason "fixture" >/dev/null
+horchid task handoff H010 --ack --reason "fixture: acknowledged against the pre-rebase candidate" >/dev/null
+assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" "acknowledged for this candidate"
+
+HREBASED=7777777777777777777777777777777777777777
+horchid task set H010 candidate_sha "$HREBASED" >/dev/null
+assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "a moved candidate_sha leaves the hand-off outstanding — a rebased tree never inherits work done on the tree it replaced"
+assert_match "bound to candidate $HHEAD, not the current $HREBASED" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
+  "and the detail names both shas, so an operator can see WHY it stopped"
+
+rm -f "$HVERIFY_RAN"
+run_hdrive
+assert_eq 16 "$HDRIVE_RC" "and a pass over it stops at the boundary again"
+assert_eq operator-handoff "$(hboundary | jq -r .kind)" "with the hand-off named"
+assert_eq testing "$(hfield status)" "taking no transition"
+[ ! -f "$HVERIFY_RAN" ] || fail "nor verifying the candidate the hand-off was never made against"
+
+# `--clear` is the explicit withdrawal `orchid merge`'s rebase arm calls, and
+# it journals nothing when there is nothing to withdraw -- which is what lets
+# that arm call it unconditionally on every rebase.
+horchid task handoff H010 --clear --reason "fixture: withdraw" >/dev/null
+assert_eq "" "$(hfield handoff_ack)" "--clear withdraws the acknowledgement"
+hjournal_n="$(wc -l < "$HANDOFF/.orchid/journal.md" | tr -d ' ')"
+horchid task handoff H010 --clear --reason "fixture: withdraw again" >/dev/null
+assert_eq "$hjournal_n" "$(wc -l < "$HANDOFF/.orchid/journal.md" | tr -d ' ')" \
+  "clearing an already-empty hand-off journals nothing"
+
+# The gate is opt-in: a repository that never asked for the pause is not
+# gated by it and never sees the boundary at all.
+assert_eq off "$(handoff_gate_mode "$REPO")" "the default is off"
+assert_eq off "$(handoff_state "$REPO" T001 | cut -f1)" \
+  "so a repository that never configured it is untouched by everything above"

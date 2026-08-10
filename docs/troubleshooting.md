@@ -237,6 +237,44 @@ from a raised question (`orchid notify`), answer it first
 [docs/engines/openclaw.md](./engines/openclaw.md#inbox-hardening-orchid-answer))
 so the guidance text exists before `unblock` folds it in.
 
+## A task sits in `testing` and nothing verifies it
+
+**Symptom:** `orchid status --explain` shows a task in `testing` as
+`awaiting-operator-handoff`, and every `orchid drive` pass exits 16 with a
+judgment boundary of kind `operator-handoff` without running `orchid verify`.
+
+This is not a fault — it is the operator hand-off doing its job. Your
+repository set `handoff_before_verify=required`, which says the implementer
+here is an engine profile that cannot execute anything (it denies on the
+command *string*), so this candidate's mechanical work — applying a linter's
+own fix, re-pinning a release checksum, setting the mode bit on a newly added
+executable — has to be done by you. The pass stops rather than verifying a
+candidate that was never going to pass and spending one of the task's three
+rework rounds on it.
+
+```sh
+orchid run boundary show           # what is being held, and why
+orchid task show <id>              # candidate_sha, and handoff_ack beside it
+# ...do the mechanical work in the task's worktree and commit it, giving each
+# such commit the trailer "Orchid-Handoff: operator", then:
+orchid task handoff <id> --ack --reason "re-pinned the formula; set the exec bit"
+```
+
+The acknowledgement is bound to the task's **current** `candidate_sha`, which
+is why the next pass proceeds and why nothing has to remember that you did it.
+It is invalidated the same way verify evidence is (INV-07): entry to `rework`,
+`orchid task unblock`, `orchid task retry`, and `orchid merge`'s rebase arm all
+clear it, because a rebased or reworked tree is a different candidate and work
+done on the old one is not evidence about it. If a pass stops again right after
+you acknowledged, compare the two fields — `handoff_ack` naming a sha other
+than `candidate_sha` is exactly that invalidation, and the boundary reason
+prints both.
+
+Set `handoff_before_verify=off` (the default) if your implementer can run the
+repository's own gates itself; nothing then gates and this boundary is never
+raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
+"The operator hand-off".
+
 ## Answers sent on a channel never arrive
 
 **Symptom:** blockers reach your phone, you answer them there, and the run
