@@ -5,6 +5,9 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
+# schedule.sh only for schedule_is_active_status — `check`'s wall-clock
+# backstop reports a budget only while a task is actually mid-attempt.
+source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 sub="${1:-}"; shift || true
@@ -199,6 +202,7 @@ case "$sub" in
     stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
     timeout_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
     now="$(date +%s)"
+    budget_seen=" "
     for f in "$jobs_dir"/*.json; do
       [ -e "$f" ] || continue
       task="$(jq -r .task "$f")"; pid="$(jq -r .pid "$f")"
@@ -207,17 +211,46 @@ case "$sub" in
       # arms below the same manifest also falls into. Report-only: `jobs
       # check` never kills for a budget overrun, the orchestrator escalates
       # it via protocol (`task advance ... blocked`).
-      tf_budget="$state/tasks/$task.md"
-      if [ -f "$tf_budget" ]; then
-        t_started="$(fm_get "$tf_budget" started_at)"
-        t_budget="$(fm_get "$tf_budget" wallclock_budget_s)"
-        if [ -n "$t_started" ] && [ -n "$t_budget" ]; then
-          t_started_epoch="$(iso_to_epoch "$t_started")"
-          if [ "$t_started_epoch" -gt 0 ] && [ $(( now - t_started_epoch )) -gt "$t_budget" ]; then
-            printf '%s\tbudget-exceeded\n' "$task"
-          fi
-        fi
-      fi
+      #
+      # It stays independent of liveness on purpose. `started_at` is now
+      # re-anchored at each dispatch (libexec/orchid-task), so an ALIVE job
+      # whose task is past its budget is exactly the runaway attempt this
+      # backstop exists to catch — suppressing the alive case would leave it
+      # able to report only jobs that had already died some other way, which
+      # is no backstop at all. What the alive case used to mean (webBooks
+      # L006: budget-exceeded reported against a minutes-old running job) was
+      # a symptom of the stale task-level anchor, and is fixed there.
+      #
+      # Gated on the task's status instead: the budget bounds an ATTEMPT, and
+      # a task only has an attempt in flight while it sits in an active
+      # status. A task parked in `rework` (after `task retry`/`task unblock`)
+      # or already `blocked` has no attempt running, so its leftover
+      # manifests must not keep re-reporting a budget — that is what made the
+      # recovery path unconvergent: the operator's own retry verb returned
+      # the task to the loop only for the very next `jobs check` to re-block
+      # it, one wasted implementer dispatch per cycle.
+      #
+      # Evaluated once per TASK, not once per manifest: a task mid-review
+      # legitimately has several manifests (implementer plus one per reviewer
+      # slot), and the budget is a task-level fact — one escalation, not one
+      # per slot.
+      case "$budget_seen" in
+        *" $task "*) ;;   # this task's budget was already evaluated this pass
+        *)
+          budget_seen="$budget_seen$task "
+          tf_budget="$state/tasks/$task.md"
+          if [ -f "$tf_budget" ]; then
+            t_status="$(fm_get "$tf_budget" status)"
+            t_started="$(fm_get "$tf_budget" started_at)"
+            t_budget="$(fm_get "$tf_budget" wallclock_budget_s)"
+            if schedule_is_active_status "$t_status" && [ -n "$t_started" ] && [ -n "$t_budget" ]; then
+              t_started_epoch="$(iso_to_epoch "$t_started")"
+              if [ "$t_started_epoch" -gt 0 ] && [ $(( now - t_started_epoch )) -gt "$t_budget" ]; then
+                printf '%s\tbudget-exceeded\n' "$task"
+              fi
+            fi
+          fi ;;
+      esac
       if [ "$pid" = 0 ]; then printf '%s\tprepared\n' "$task"; continue; fi
       if ! kill -0 "$pid" 2>/dev/null; then printf '%s\tdead\n' "$task"; continue; fi
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"

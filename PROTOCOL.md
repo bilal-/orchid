@@ -462,11 +462,28 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, or
   before continuing the ladder.
 - *`budget-exceeded`* (independent of the ladder above — it can fire
   alongside `running`, not just `dead`/`stalled`/`timeout`): the task's
-  `wallclock_budget_s`, anchored at `started_at` (stamped by `task advance
-  ... implementing`), has been exceeded. `jobs check` only reports this, it
-  never kills on its own. `orchid notify --task <task-id> "task wallclock
-  budget exceeded"` then `orchid task advance <task-id> blocked --reason
-  "wallclock budget exceeded"`.
+  `wallclock_budget_s`, anchored at `started_at`, has been exceeded.
+  **`started_at` is re-stamped on every dispatch** — `task advance
+  <task-id> implementing` (or whatever active status the archetype
+  dispatches into) out of `pending` or `rework` — so the budget bounds the
+  CURRENT attempt, not calendar time since the task was first ever
+  dispatched. Time a task spends waiting between attempts is therefore not
+  charged to it: operator downtime, debugging and overnight idling do not
+  spend a budget meant to catch a runaway attempt. The intra-attempt edges
+  (`implementing -> testing -> reviewing -> ...`) do NOT re-anchor it — one
+  attempt, one clock.
+  Reported once per task per pass, and only while the task is in an active
+  status. A task sitting in `rework` or `blocked` has no attempt running and
+  is never reported, so `orchid task unblock`/`orchid task retry` need no
+  separate re-anchoring step: the dispatch that follows re-stamps the anchor
+  before the attempt it bounds begins. It IS still reported for a task whose
+  job is alive, deliberately — with a per-attempt anchor, an active task
+  past its budget is precisely the runaway attempt this backstop exists to
+  catch, and a version that fired only for already-dead jobs would be no
+  backstop at all. `jobs check` only reports this, it never kills on its
+  own. `orchid notify --task <task-id> "task wallclock budget exceeded"`
+  then `orchid task advance <task-id> blocked --reason "wallclock budget
+  exceeded"`.
 - A `gc <job_id>` reap line printed this pass for a job whose task is still
   mid-flight (not `done`/`blocked`) is itself a signal to re-examine that
   task, not something to scroll past: with gc now running strictly after

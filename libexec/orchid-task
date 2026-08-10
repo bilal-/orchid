@@ -315,12 +315,39 @@ case "$sub" in
       [ "$gate_have" -ge "$gate_need" ] || \
         orchid_die "arbitrating requires $gate_need reconciled review envelope(s) for risk_tier $gate_tier (have $gate_have)"
     fi
-    if [ "$to" = implementing ]; then
-      # v0b2: the task wall-clock anchor. Stamped only the FIRST time a task
-      # ever enters `implementing` (rework re-entries leave it alone) — it
-      # marks when the clock on `wallclock_budget_s` started, not when the
-      # current attempt happened to (re)start.
-      [ -n "$(fm_get "$f" started_at)" ] || fm_set "$f" started_at "$(now)"
+    # The task wall-clock anchor `jobs check` reads for its budget-exceeded
+    # backstop. Re-stamped on every DISPATCH edge — pending/rework INTO an
+    # active status, the exact pair the schedule gate above keys on — so it
+    # marks when the CURRENT attempt started.
+    #
+    # It used to be stamped only the first time a task ever reached
+    # `implementing` (`[ -n "$(fm_get "$f" started_at)" ] || fm_set ...`),
+    # which quietly turned `wallclock_budget_s` into a CALENDAR budget:
+    # every hour of operator downtime, debugging and overnight idling
+    # between attempts was spent against it. r-001's T013 was reported
+    # budget-exceeded on a candidate that had already verified clean,
+    # against an eleven-hour-old anchor, while the job actually running was
+    # three minutes old; the same defect stalled a task in the webBooks run
+    # (its lesson L006). A budget whose whole purpose is to catch a runaway
+    # ATTEMPT has to be anchored to the attempt, and PROTOCOL.md always
+    # described it that way ("stamped by `task advance ... implementing`").
+    #
+    # Keyed on schedule_is_active_status rather than a literal
+    # `to = implementing` for the same INV-05 reason the dispatch gate is: a
+    # `review`-archetype task dispatches pending/rework -> reviewing and
+    # must get the same anchor, with no branch on the archetype's name.
+    #
+    # Deliberately NOT re-stamped on the intra-attempt edges (implementing
+    # -> testing -> reviewing -> arbitrating -> merging): those are all the
+    # same attempt, and re-anchoring there would let one attempt run
+    # unbounded, a phase at a time. And nothing extra is needed on the
+    # operator's recovery verbs (`task unblock`, `task retry`): both land
+    # the task in `rework`, which is not an active status — `jobs check`
+    # therefore reports no budget for it at all (see libexec/orchid-jobs),
+    # and the rework -> active dispatch that follows re-anchors it here,
+    # before the attempt it bounds actually starts.
+    if { [ "$from" = pending ] || [ "$from" = rework ]; } && schedule_is_active_status "$to"; then
+      fm_set "$f" started_at "$(now)"
     fi
     if [ "$to" = rework ]; then
       if [ "$from" != merging ]; then

@@ -161,7 +161,10 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 
 Task/run schemas are versioned (`schema: 1` in frontmatter) and include the
 scheduling and budget fields the loop relies on: `exclusive`, `resources`,
-`wallclock_budget_s`, `started_at`, `run_id`.
+`wallclock_budget_s`, `started_at`, `run_id`. `started_at` is re-stamped on
+every dispatch (pending/rework into an active status), so
+`wallclock_budget_s` bounds the current ATTEMPT rather than calendar time
+since the task's first dispatch — see PROTOCOL.md's `budget-exceeded` bullet.
 
 ### Run state: `<target-repo>/.orchid/`
 

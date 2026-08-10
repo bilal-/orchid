@@ -250,6 +250,83 @@ ok_out="$("$ORCHID_BIN" jobs check)"
 echo "$ok_out" | grep -q "TOKBUDGET	budget-exceeded" && fail "jobs check must not report budget-exceeded for a task within budget"
 
 # ---------------------------------------------------------------------------
+# T020: `wallclock_budget_s` bounds the current ATTEMPT, not calendar time
+# since the task's first dispatch. Three properties, in the order they bit
+# real runs. (`ORCHID_CONCURRENCY` because TBUDGET and TOKBUDGET above are
+# still parked in `implementing` and would otherwise trip the cap of 2 --
+# scheduling is tested in tests/test_dispatcher.sh, not here.)
+#
+#   1. A task idle across a long wall-clock gap is NOT reported over budget:
+#      the re-dispatch that ends the idle re-anchors `started_at`, so hours
+#      spent parked are not charged to the attempt about to run. r-001's
+#      T013 was blocked exactly that way -- an eleven-hour-old task-level
+#      anchor, a three-minute-old job, a candidate that had verified clean.
+#   2. Nothing is reported for a task PARKED in rework by `task retry`: the
+#      operator's own recovery verb used to hand the task back to a `jobs
+#      check` that re-blocked it on the very next pass, burning one
+#      implementer dispatch per cycle without ever converging (the webBooks
+#      run's lesson L006).
+#   3. An attempt that genuinely blows its budget IS still reported, and
+#      deliberately so even while its job is ALIVE -- that is the runaway
+#      attempt this backstop exists to catch. Once per task, not once per
+#      manifest.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TIDLE "idle-across-a-long-gap"
+ORCHID_CONCURRENCY=8 "$ORCHID_BIN" task advance TIDLE implementing
+"$ORCHID_BIN" task set TIDLE wallclock_budget_s 60
+# Stands in for an attempt dispatched long ago and then parked: the anchor is
+# ancient, the task's own work is not.
+"$ORCHID_BIN" task set TIDLE started_at "2000-01-01T00:00:00Z"
+"$ORCHID_BIN" jobs prepare TIDLE implementer implement >/dev/null
+assert_match "TIDLE[[:space:]]budget-exceeded" "$("$ORCHID_BIN" jobs check)" \
+  "an ACTIVE task past its anchor is reported (the stale anchor was the defect, not the report)"
+
+"$ORCHID_BIN" task advance TIDLE blocked --reason "parked overnight"
+"$ORCHID_BIN" task retry TIDLE --reason "operator resumed it"
+assert_eq rework "$("$ORCHID_BIN" task show TIDLE | grep '^status: ' | cut -d' ' -f2)" "retry parks TIDLE in rework"
+retry_out="$("$ORCHID_BIN" jobs check)"
+echo "$retry_out" | grep -q "TIDLE	budget-exceeded" \
+  && fail "a task parked in rework has no attempt in flight — jobs check must not report a budget for it (the unconvergent retry loop)"
+
+ORCHID_CONCURRENCY=8 "$ORCHID_BIN" task advance TIDLE implementing
+idle_started="$("$ORCHID_BIN" task show TIDLE | grep '^started_at: ' | cut -d' ' -f2-)"
+[ "$idle_started" != "2000-01-01T00:00:00Z" ] \
+  || fail "re-dispatch after the idle gap must RE-anchor started_at, not keep the first attempt's"
+idle_out="$("$ORCHID_BIN" jobs check)"
+echo "$idle_out" | grep -q "TIDLE	budget-exceeded" \
+  && fail "a task re-dispatched after a long idle gap must not be over budget on its FIRST second of work"
+
+# A genuine overrun: this attempt's own anchor (no hand-set started_at at
+# all), a one-second budget, and more than a second of elapsed attempt.
+"$ORCHID_BIN" task create TRUNAWAY "attempt-genuinely-over-budget"
+ORCHID_CONCURRENCY=8 "$ORCHID_BIN" task advance TRUNAWAY implementing
+"$ORCHID_BIN" task set TRUNAWAY wallclock_budget_s 1
+sleep 100 &
+runaway_pid=$!
+jq -n --argjson pid "$runaway_pid" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TRUNAWAY-a1-run00001", task:"TRUNAWAY", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:$pid, pgid:0, started_at:$started, log:"/nonexistent.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-runaway.json"
+# A second, concurrent manifest for the SAME task — the shape a real task
+# carries whenever more than one job is outstanding for it (implementer plus
+# one manifest per reviewer slot). The budget is a task-level fact, so it
+# must be reported once per pass, not once per manifest.
+"$ORCHID_BIN" jobs prepare TRUNAWAY implementer implement >/dev/null
+sleep 2
+kill -0 "$runaway_pid" 2>/dev/null || fail "fixture: the runaway job's pid must still be alive at check time"
+# timeout_minutes is 0 in this fixture's config (set far above, for the pgid
+# guard); overridden here only so the live job reports `running` rather than
+# being killed as a timeout — the point of this case is the LIVE arm.
+runaway_out="$(ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check)"
+assert_match "TRUNAWAY[[:space:]]running" "$runaway_out" "the runaway attempt's job is alive at check time"
+assert_match "TRUNAWAY[[:space:]]budget-exceeded" "$runaway_out" \
+  "an attempt genuinely past its own budget is reported even though its job is alive"
+runaway_n="$(grep -cE "TRUNAWAY[[:space:]]budget-exceeded" <<<"$runaway_out" || true)"
+assert_eq 1 "$runaway_n" "budget-exceeded is reported once per task, not once per manifest"
+kill "$runaway_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-runaway.json"
+
+# ---------------------------------------------------------------------------
 # v1-m3: plan-scoped critique jobs -- `orchid jobs prepare plan <role>
 # critique` mints a manifest with NO task file read at all (`plan` is a
 # reserved task id; `orchid task create` refuses it -- tests/test_task.sh).
