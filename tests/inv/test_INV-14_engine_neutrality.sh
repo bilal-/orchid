@@ -124,7 +124,7 @@ printf 'v=%s,other\n' "$first_id" > "$probe_assign"
 probe_assign_hit="$(grep -nE "[[:space:]](=|==|!=)[[:space:]]*\"?$first_id\"?([^A-Za-z0-9_./-]|\$)" "$probe_assign" || true)"
 [ -z "$probe_assign_hit" ] || fail "INV-14 self-check: an assignment (a config default table) must not read as a branch"
 red_case "INV-14's comparison pattern matched a real engine-name branch, so the scan above is capable of finding one"
-green_case "the same pattern left an assignment (`v=<engine>,other`, a config default table) alone, so the match above is detection rather than a pattern that hits every line naming an engine"
+green_case 'the same pattern left an assignment (v=<engine>,other, a config default table) alone, so the match above is detection rather than a pattern that hits every line naming an engine'
 
 # ===========================================================================
 # 3 -- neutrality, behaviourally. An engine whose name appears nowhere in
