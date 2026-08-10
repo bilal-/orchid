@@ -13,11 +13,23 @@ printf 'pack_budget_bytes=100\n' > orchid.config
 #      leave NO destination behind. A pack that silently truncated would hand
 #      a reviewer a partial diff while every downstream check went on reading
 #      like a full review.
-# GREEN: the same inputs under a budget large enough to hold them build a
-#      pack normally; that direction is covered by tests/test_pack.sh, whose
-#      passes are what make this refusal a budget decision rather than
-#      pack_build being broken.
+# GREEN: THE SAME inputs, in this file, under a budget large enough to hold
+#      them must build a pack normally and leave the destination in place.
+#      That direction used to be delegated to tests/test_pack.sh -- which meant
+#      this gate's own acceptance side was never exercised HERE, so a
+#      `pack_build` that had simply stopped working would produce exit 12 for
+#      the wrong reason and this file would still read as a pass. The twin runs
+#      below, on the same repo, the same task and the same operation, with only
+#      the budget changed.
 rc=0; pack_build "$WORK" T001 review "$WORK/p" 2>/dev/null || rc=$?
 assert_eq "12" "$rc" "INV-12: non-truncatable overflow exits 12, never silently truncates"
 [ ! -d "$WORK/p" ] || fail "INV-12: dest removed on overflow"
 red_case "an over-budget, non-truncatable pack exited 12 and left no partial destination behind"
+
+# The GREEN twin: only the budget changes. If this fails, the refusal above was
+# not a budget decision at all.
+printf 'pack_budget_bytes=1000000\n' > orchid.config
+rc=0; pack_build "$WORK" T001 review "$WORK/p-green" || rc=$?
+assert_eq "0" "$rc" "INV-12: the same inputs under a budget large enough to hold them must build normally -- otherwise the exit 12 above says only that pack_build is broken"
+[ -d "$WORK/p-green" ] || fail "INV-12: an accepted build must leave its destination in place"
+green_case "the same repo, task and operation under a budget large enough to hold the diff built a pack and kept its destination, so the exit 12 above is a budget refusal"

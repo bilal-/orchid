@@ -27,7 +27,8 @@ printf '%s\n' \
 probe_legal_hit="$(grep -rnE "$SPAWN_RE" "$probe_ok" | grep -vE "$SPAWN_EXCLUDE" || true)"
 [ -z "$probe_legal_hit" ] \
   || fail "INV-06 self-check: a comment and a resolve_engine_exe call must stay legal -- those exemptions are what let the kernel document and resolve engines at all"
-red_case "INV-06's scan finds a direct engine spawn and exempts a comment and resolve_engine_exe"
+red_case "INV-06's scan found a direct plugins/engines spawn in a synthetic tier-1 file"
+green_case "the same scan exempted a comment and a resolve_engine_exe call -- the legal ways the string appears -- so the hit above is detection rather than a pipeline that flags every mention"
 
 if grep -rnE "$SPAWN_RE" "$REPO_ROOT"/libexec/ "$REPO_ROOT"/lib/ \
    | grep -vE "$SPAWN_EXCLUDE"; then

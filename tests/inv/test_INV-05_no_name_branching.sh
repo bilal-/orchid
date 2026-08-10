@@ -32,7 +32,8 @@ printf 'if [ -n "$(config_get role.implementer codex)" ]; then echo ok; fi\n' > 
 probe_default_hit="$(grep -nE "$NAME_BRANCH_RE" "$probe_default" | grep -v 'config_get.*role\.' || true)"
 [ -z "$probe_default_hit" ] \
   || fail "INV-05 self-check: a config_get default naming an engine must stay legal -- the exemption is what makes this gate usable"
-red_case "INV-05's scan matches a real engine-name branch and skips a config_get default"
+red_case "INV-05's scan matched a real 'if ... = codex' engine-name branch"
+green_case "the same scan let a `config_get role.implementer codex` default through, so the match above is detection rather than a pattern that hits every line naming an engine"
 
 if grep -nE "$NAME_BRANCH_RE" "$REPO_ROOT"/libexec/* "$REPO_ROOT"/lib/*.sh \
    | grep -v 'config_get.*role\.'; then

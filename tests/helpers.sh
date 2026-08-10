@@ -62,8 +62,10 @@ not_tested() {
 
 # --------------------------------------------------------------------------
 # THE RED-CASE RULE (T017). A check that GATES anything must ship a case that
-# demonstrates it DETECTS the failure it exists for, and that case must be
-# exercised by the suite -- not asserted in a comment.
+# demonstrates it DETECTS the failure it exists for, plus the GREEN twin it
+# must ACCEPT, and both must be exercised by the suite IN THE GATE'S OWN FILE
+# -- not asserted in a comment, and not delegated to some other test that
+# happens to cover the accepting direction.
 #
 # Across r-001 and r-002 the repeated defect was the same shape: a check that
 # reported success without having tested anything. A review envelope with an
@@ -75,17 +77,22 @@ not_tested() {
 # log exactly like a check that had passed, and not one of them could fail.
 #
 # red_case <label> -- record that this file has just fed its OWN check an
-# input the check must reject, and watched it fire. The label is printed, so a
-# reader of the log sees WHICH failure was demonstrated rather than inferring
-# that one was.
+# input the check must reject, and watched it fire. green_case <label> is the
+# twin: an input the same check must ACCEPT, watched to pass. Both labels are
+# printed, so a reader of the log sees WHICH failure was demonstrated and
+# against what, rather than inferring that something was.
 #
-# For files under tests/inv/ -- the invariant gates -- recording at least one
-# is MANDATORY: the EXIT trap below fails a file that recorded none. That is
-# what makes the rule mechanical rather than a convention, because a comment
-# claiming a RED case cannot satisfy it. `ORCHID_REQUIRE_RED_CASE` extends the
-# same requirement to a file anywhere else; tests/test_red_case_rule.sh sets
-# it on itself, and passes it to the fixtures it uses to prove this
-# enforcement actually fires.
+# BOTH are mandatory for an enrolled gate file: the EXIT trap below fails a
+# file that records either at zero. A RED case alone proves only that
+# something rejects the input -- possibly everything -- so the pair is what
+# distinguishes detection from noise (docs/specs/kernel.md, "Proof
+# discipline"). And because the trap counts what actually RAN, neither can be
+# satisfied by a comment, by prose about the rule, or by a call sitting in a
+# branch nothing reaches.
+#
+# `ORCHID_REQUIRE_RED_CASE` extends the same requirement to a file anywhere
+# else; tests/test_red_case_rule.sh passes it to the fixtures it uses to prove
+# this enforcement actually fires.
 #
 # Note the direction of that marker, because it is the opposite of
 # tests/test_hermetic_suite.sh's ORCHID_HERMETIC_PROOF and is why this one is
@@ -93,31 +100,104 @@ not_tested() {
 # worst it can cost is a loud, legible failure. There is no value of it that
 # turns a check off.
 RED_CASES=0
+GREEN_CASES=0
 red_case() {
   RED_CASES=$((RED_CASES + 1))
   echo "  RED-CASE: $1"
 }
-# Required for the invariant gates by LOCATION, so an inv file cannot opt out
-# by forgetting; required anywhere else only when the caller asks for it. The
-# match is on `$0`, which is how every caller in this repository invokes a
-# test file -- tests/run.sh and scripts/ci-local.sh both pass a path. Running
-# one as a bare name from inside tests/inv/ would not match, which costs a
-# missing requirement on a manual invocation and never a false failure.
+green_case() {
+  GREEN_CASES=$((GREEN_CASES + 1))
+  echo "  GREEN-CASE: $1"
+}
+
+# WHICH FILE IS RUNNING -- resolved, never taken from `$0`.
+#
+# `$0` is whatever the caller typed, and the very same file arrives under three
+# different spellings depending on how it was invoked:
+#
+#     /abs/path/to/tests/inv/test_INV-12_pack_overflow.sh   (tests/run.sh)
+#     tests/inv/test_INV-12_pack_overflow.sh                (from the repo root)
+#     test_INV-12_pack_overflow.sh                          (from inside tests/inv)
+#
+# Only the FIRST of those matches a `*/tests/inv/test_*.sh` pattern. The second
+# has no path component before `/tests/inv/` for the leading `*` to bind to;
+# the third has no directory at all. So deciding enrolment from `$0` failed
+# OPEN for two of the three ways a person actually runs a test file: the
+# requirement silently did not apply, the summary line was simply absent, and
+# the file passed. A gate that switches itself off depending on how it was
+# typed, and says nothing when it does, is precisely the "reported success
+# without having tested anything" shape this whole rule exists to remove -- so
+# it must not be inferred from the command line at all.
+#
+# The path below is invocation-independent. The OUTERMOST `BASH_SOURCE` entry
+# is the file bash is executing (this file is sourced by it, so it sits at the
+# top of that stack), resolved against the cwd it was invoked from and
+# canonicalized with `pwd -P` -- the same reason REPO_ROOT above is physical,
+# since a scratch checkout under macOS's /var/folders -> /private/var/folders
+# must compare equal to the path a caller derived. Captured HERE, at source
+# time, rather than inside the trap: by the time the trap runs, the file may
+# have `cd`'d somewhere else entirely, and BASH_SOURCE inside a trap describes
+# the trap's own call stack rather than the script's.
+_PROOF_SELF_RAW="${BASH_SOURCE[$(( ${#BASH_SOURCE[@]} - 1 ))]}"
+_PROOF_SELF_DIR="$(cd "$(dirname "$_PROOF_SELF_RAW")" 2>/dev/null && pwd -P)"
+if [ -n "$_PROOF_SELF_DIR" ]; then
+  PROOF_SELF="$_PROOF_SELF_DIR/${_PROOF_SELF_RAW##*/}"
+else
+  PROOF_SELF="$_PROOF_SELF_RAW"
+fi
+
+# Gate files enrolled BY NAME rather than by living under tests/inv/: whole-
+# file proofs that gate something on their own account.
+#
+# They are listed HERE, in the runtime enforcement, and not only in
+# tests/test_red_case_rule.sh's linter, because a linter reads TEXT. A
+# `red_case` call inside a comment, inside a heredoc, or in a branch nothing
+# reaches satisfies a grep while nothing ever fires -- the enrolled file would
+# then be held to the rule by an assertion that is itself unfalsifiable, which
+# is the same defect one level up. Enrolling them by path here means the trap
+# below asks the only question that matters: did a case actually RUN.
+PROOF_ENROLLED_FILES=(
+  tests/test_hermetic_suite.sh
+  tests/test_red_case_rule.sh
+)
+
+# _proof_enrolled <path> -- true when the RED/GREEN-case rule applies to that
+# path. A pure function of the path, so tests/test_red_case_rule.sh can ask it
+# about paths that are not the file asking.
+_proof_enrolled() {
+  case "$1" in */tests/inv/test_*.sh) return 0 ;; esac
+  local enrolled
+  for enrolled in "${PROOF_ENROLLED_FILES[@]}"; do
+    if [ "$1" = "$REPO_ROOT/$enrolled" ]; then return 0; fi
+  done
+  return 1
+}
+
 _red_case_required() {
   if [ -n "${ORCHID_REQUIRE_RED_CASE:-}" ]; then return 0; fi
-  case "$0" in */tests/inv/test_*.sh) return 0 ;; esac
+  if _proof_enrolled "$PROOF_SELF"; then return 0; fi
+  # `$0` as well, and never INSTEAD: should the resolution above ever come back
+  # with something unexpected -- a `dirname` that cannot be entered, an exotic
+  # invocation -- the old spelling can still only ADD a requirement. There is
+  # no path through this function that turns one off.
+  if _proof_enrolled "$0"; then return 0; fi
   return 1
 }
 # Printed from the EXIT trap, ahead of its `exit $((FAILS>0))`, so counting a
 # FAILS here really does fail the file.
-_red_case_summary() {
+_proof_case_summary() {
   _red_case_required || return 0
+  local short=0
   if [ "${RED_CASES:-0}" -eq 0 ]; then
-    echo "  FAIL: $0 gates an invariant but recorded no RED case -- call red_case <label> after feeding this file's own check an input it must reject, so the check is known to be able to fail (docs/specs/kernel.md, 'Proof discipline')"
-    FAILS=$((FAILS+1))
-    return 0
+    echo "  FAIL: $PROOF_SELF gates an invariant but recorded no RED case -- call red_case <label> after feeding this file's own check an input it must reject, so the check is known to be able to fail (docs/specs/kernel.md, 'Proof discipline')"
+    FAILS=$((FAILS+1)); short=1
   fi
-  echo "  red-cases: $RED_CASES demonstrated in this file"
+  if [ "${GREEN_CASES:-0}" -eq 0 ]; then
+    echo "  FAIL: $PROOF_SELF gates an invariant but recorded no GREEN case -- call green_case <label> after feeding the SAME check an input it must accept, so its RED case is evidence of detection rather than of a matcher that rejects everything. The twin has to run inside THIS file; delegating it to another test file leaves this gate's own acceptance side unexercised (docs/specs/kernel.md, 'Proof discipline')"
+    FAILS=$((FAILS+1)); short=1
+  fi
+  [ "$short" -eq 0 ] || return 0
+  echo "  red-cases: $RED_CASES demonstrated in this file (green-cases: $GREEN_CASES)"
 }
 # Printed from the EXIT trap below, so a file's not-tested count survives even
 # an early exit. Silent when there is nothing to report.
@@ -249,7 +329,7 @@ make_scratch WORK
 # beneath a target repository. Trust-boundary fixtures use this independent
 # disposable directory instead of the historical "$WORK/home" shortcut.
 make_scratch MACHINE_HOME
-trap '_scratch_cleanup; _red_case_summary; _not_tested_summary; exit $((FAILS>0))' EXIT
+trap '_scratch_cleanup; _proof_case_summary; _not_tested_summary; exit $((FAILS>0))' EXIT
 
 # plant_reviewer_envelope <task-id> [attempt] -- v1-m2's kernel envelope-
 # count gate (reviewing->arbitrating) requires review_required_count(risk_

@@ -119,6 +119,7 @@ assert_eq 0 "$rc" "merge succeeds on the new base"
 assert_match "^merged T001: $integ -> " "$(cat "$out2")" "prints merged message on second attempt"
 assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task reaches done"
 red_case "a moved candidate SHA made merge exit 5, destroyed the stale verify evidence and blocked re-entry to reviewing until a real re-verify ran"
+green_case "after a real re-verify on the rebased candidate the SAME merge succeeded and the task reached done, so the refusal above is a re-verify requirement rather than a merge that refuses every rebased candidate"
 
 final_integ="$(git rev-parse "$integ")"
 git show "$final_integ:feature.txt" >/dev/null 2>&1 || fail "final integ contains the (rebased) feature commit"

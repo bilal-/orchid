@@ -105,11 +105,15 @@ part of the architecture; this file never changes to suit one.*
   probe an envelope's summary leans on — must ship a RED case demonstrating
   that it DETECTS the failure it exists for, exercised by the suite rather
   than described in a comment, plus the GREEN twin that keeps it from being a
-  matcher that rejects everything. What cannot be demonstrated is recorded as
+  matcher that rejects everything — and the twin has to be exercised inside the
+  gate itself, not delegated to some other check that happens to cover the
+  accepting direction. What cannot be demonstrated is recorded as
   `not-tested` (`orchid notify`, the journal, or `tests/helpers.sh`'s
   `not_tested`), never as a pass. The normative statement, and what is
   mechanically enforced, is docs/specs/kernel.md's "Proof discipline"; new
-  gates live under `tests/inv/`, where `red_case` is required by path.
+  gates live under `tests/inv/`, where `red_case` and `green_case` are both
+  required by location — resolved from the file's real path, so the
+  requirement cannot be shed by invoking the file a different way.
 - **Hook points.** Five kernel-owned edges — `after_plan_draft`,
   `before_arbitration`, `on_verify_fail`, `before_merge`, `on_blocker` — may
   each carry zero or more plugin NAMEs (the short discovery name; a

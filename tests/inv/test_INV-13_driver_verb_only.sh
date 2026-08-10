@@ -36,7 +36,10 @@ printf '%s\n' '# fm_set in a comment is documentation' 'fm_set "$f" status done'
 code_of_probe_out="$(code_of "$code_of_probe")"
 assert_eq 1 "$(grep -c 'fm_set' <<<"$code_of_probe_out")" \
   "INV-13 self-check: code_of must keep a real fm_set line and drop the commented one (kept $(grep -c 'fm_set' <<<"$code_of_probe_out") of 2) -- if it dropped both, every negative scan below would pass over a driver that mutates state directly"
-red_case "INV-13's comment stripper keeps executable code and drops comments, so its negative scans read real code"
+red_case "INV-13's comment stripper KEPT a real fm_set line, so the negative scans below are reading executable code rather than nothing"
+grep -q 'in a comment' <<<"$code_of_probe_out" \
+  && fail "INV-13 self-check: code_of kept a COMMENT line -- the exclusion that lets both files document the hazards they are forbidden from open-coding is gone, and every scan below would flag its own prose"
+green_case "the same stripper DROPPED the commented-out fm_set, so its exclusion still works and the RED case above is not a stripper that keeps everything"
 
 # Every POSITIVE assertion below matches against this capture, never against a
 # live `code_of ... | grep -q` pipeline. Under helpers.sh's `set -uo pipefail`,

@@ -19,6 +19,12 @@ cur="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 ORCHID_EPOCH="$cur"
 export ORCHID_EPOCH
 "$ORCHID_BIN" task create T001 demo || fail "current epoch mutates"
+# The GREEN twin, exercised HERE rather than delegated: the same class of verb,
+# under the CURRENT epoch, must both succeed AND land its durable write. The
+# refusals below are evidence of fencing only if this one got through.
+[ -f .orchid/tasks/T001.md ] \
+  || fail "INV-02: task create under the current epoch produced no task file, so the refusals below prove only that the fixture is broken"
+green_case "a mutating verb under the CURRENT epoch succeeded and its durable write landed"
 "$ORCHID_BIN" run resume >/dev/null      # epoch moves on; we are now stale
 rc=0; "$ORCHID_BIN" task set T001 title X 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-02: stale epoch must not mutate durable state"

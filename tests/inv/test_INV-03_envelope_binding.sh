@@ -41,6 +41,7 @@ assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: task misma
 # replay: accept good, then same job_id again -> quarantine
 printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","status":"ok","summary":"real"}' "$jid" > "$sp/$jid.json"
 assert_match "T001	ok" "$("$ORCHID_BIN" jobs reconcile)" "good envelope accepted"
+green_case "an envelope genuinely bound to its own launch was ACCEPTED, so the quarantines around it are evidence of binding rather than of a reconciler that rejects everything"
 printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","status":"ok","summary":"replay"}' "$jid" > "$sp/$jid-replay.json"
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: replay quarantined"
 red_case "envelope binding quarantined a forged job_id, a task mismatch and a replay, while accepting the one envelope actually bound to its launch"

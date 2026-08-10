@@ -105,25 +105,37 @@ In practice, when you write a gate:
    `red_case "<what fired, and on what>"` from `tests/helpers.sh`. The label is
    printed as a `RED-CASE:` line, so the log shows *which* failure was
    demonstrated.
-2. Pair it with the GREEN twin — an input the same check must accept. A matcher
-   that rejects everything detects nothing.
+2. Pair it with the GREEN twin — an input the same check must accept — and
+   record that with `green_case "<what was accepted>"`. A matcher that rejects
+   everything detects nothing. **The twin has to run inside the gate file
+   itself.** Delegating it ("the accepting direction is covered by
+   `tests/test_pack.sh`") satisfies a reader and leaves this gate's own
+   acceptance side unexercised, so a check that had simply stopped working
+   would produce the rejection for the wrong reason and still read as a pass.
 3. Annotate the file with `# RED:` and `# GREEN:` comments naming both, in a
    sentence rather than a word.
 4. What you cannot demonstrate goes through `not_tested`, never a pass.
 
 Enforcement is in two halves, because structure alone cannot carry a rule about
-proof. `tests/helpers.sh`'s `EXIT` trap fails any file under `tests/inv/` that
-records no RED case *at run time* — by path, so a new invariant gate cannot opt
-out by not knowing the rule exists, and no comment can satisfy it.
+proof. `tests/helpers.sh`'s `EXIT` trap fails any *enrolled* file that records
+no RED case, or no GREEN case, **at run time** — so no comment, heredoc, or
+unreached branch can satisfy it. A file is enrolled by **location**: anything
+under `tests/inv/`, plus the whole-file proofs named in `tests/helpers.sh`'s
+`PROOF_ENROLLED_FILES`. That location is resolved from the file's real path,
+never from `$0` — the same gate run as `tests/inv/test_x.sh` from the repo root
+or as a bare `test_x.sh` from inside the directory has to be enrolled exactly as
+it is when `tests/run.sh` passes an absolute path, or the rule quietly switches
+itself off depending on how you typed the command.
 `tests/test_red_case_rule.sh` lints every enrolled gate for the annotations and
-the `red_case` call, and exercises both halves against fixtures — a rule about
-unfalsifiable checks enforced by an unfalsifiable check would be the same
-defect one level up. Put a new gate under `tests/inv/`, where the requirement
-reaches it; the rest of `tests/test_*.sh` predates the rule and is held to it by
-review, which that file records as `NOT-TESTED:` rather than implying coverage
-it does not have. Whether a recorded RED case is *honest* — whether the input
-really was one the check must reject — is reviewer-owned and cannot be
-mechanized; ask it of every new gate.
+both calls, and exercises every half against fixtures and against a real
+`tests/inv/` gate through all three invocations — a rule about unfalsifiable
+checks enforced by an unfalsifiable check would be the same defect one level up.
+Put a new gate under `tests/inv/`, where the requirement reaches it; the rest of
+`tests/test_*.sh` predates the rule and is held to it by review, which that file
+records as `NOT-TESTED:` rather than implying coverage it does not have. Whether
+a recorded case is *honest* — whether the input really was one the check must
+reject or accept — is reviewer-owned and cannot be mechanized; ask it of every
+new gate.
 
 ## Release rehearsal
 

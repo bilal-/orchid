@@ -19,7 +19,8 @@ fi
 if ! printf 'foo &\n' | grep -Eq "$bg_re"; then
   fail "INV-01 self-check: 'foo &' must match the background regex"
 fi
-red_case "INV-01's background detector fires on a real trailing '&' and stays quiet on '&&'"
+red_case "INV-01's background detector fired on a real trailing '&'"
+green_case "the same detector left 'foo &&' -- a logical AND -- alone, so the RED case above is detection rather than a pattern that flags every line"
 
 # Tier-1 verbs must not background/detach processes or invoke engine CLIs.
 # Scope limitation: these two greps only scan libexec/* (the tier-1 verb

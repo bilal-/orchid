@@ -9,9 +9,12 @@ source "$(dirname "$0")/../helpers.sh"
 #      refused too, with the value read back to prove nothing moved. A
 #      decision recorded without a reason is one a future resumer cannot
 #      audit, which is the whole of INV-08.
-# GREEN: the same advance WITH a reason succeeds, and the journal must then
-#      carry both the arbitration entry and a kernel-derived actor -- so the
-#      refusals above are the guard discriminating, not the verb being dead.
+# GREEN: two twins, both run in this file. The same advance WITH a reason
+#      succeeds and the journal then carries the arbitration entry and a
+#      kernel-derived actor; and a key the kernel does NOT own is still
+#      accepted by `task set` and its value actually lands. Without them the
+#      refusals above are equally consistent with a verb that is simply dead
+#      and a `set` that refuses everything.
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
@@ -39,6 +42,7 @@ rc=0; "$ORCHID_BIN" task advance T001 merging 2>/dev/null || rc=$?
 "$ORCHID_BIN" task advance T001 merging --reason "both reviewers approve"
 grep -q "arbitration" .orchid/journal.md || fail "INV-08: arbitration kind journaled"
 grep -q '"by": *"operator' .orchid/journal.md 2>/dev/null || grep -q "(operator" .orchid/journal.md || fail "INV-08: actor kernel-derived"
+green_case "the SAME advance WITH a reason succeeded and journalled an arbitration entry with a kernel-derived actor, so the refusal above is the reason guard discriminating rather than the verb being dead"
 
 # Fix 1: kernel-owned keys must not be settable via `task set`
 before_status="$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)"
@@ -57,6 +61,16 @@ rc=0; "$ORCHID_BIN" task set T001 updated "2020-01-01T00:00:00Z" 2>/dev/null || 
 [ "$rc" -ne 0 ] || fail "task set updated must be refused (kernel-owned)"
 rc=0; "$ORCHID_BIN" task set T001 schema 2 2>/dev/null || rc=$?
 [ "$rc" -ne 0 ] || fail "task set schema must be refused (kernel-owned)"
+
+# ...and the GREEN twin for the deny-list specifically: a key that is NOT
+# kernel-owned must still be settable, and must actually move. A `task set`
+# that refused every key would satisfy all four refusals above while making the
+# verb useless, and this file would still pass.
+"$ORCHID_BIN" task set T001 blocking_severity high \
+  || fail "INV-08: task set must still accept a key the kernel does not own, or the four refusals above prove only that set refuses everything"
+assert_eq "high" "$("$ORCHID_BIN" task show T001 | grep '^blocking_severity: ' | cut -d' ' -f2)" \
+  "INV-08: an accepted set must actually land its value"
+green_case "a non-kernel-owned key was accepted by the same task set that refused status, attempts, updated and schema, and its value landed"
 
 # Plan-A backlog step 3(b): `--reason` as the last arg with no value must die
 # cleanly, not crash with an unbound-variable error (set -u).

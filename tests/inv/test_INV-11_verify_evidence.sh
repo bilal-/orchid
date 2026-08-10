@@ -102,6 +102,7 @@ assert_eq 0 "$rc" "fixture: real verify PASS for T003"
 tail -n1 .orchid/reviews/T003-verify.log | grep -q "^exit: 0$" || fail "sanity: fixture evidence should record exit 0"
 "$ORCHID_BIN" task advance T003 reviewing >/dev/null || fail "INV-11: reviewing after a passing verify run must be permitted"
 assert_eq reviewing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "INV-11: T003 advanced to reviewing"
+green_case "with the condition satisfied, the same command PASSed, the evidence logged 'exit: 0', and the same gate let the advance to reviewing THROUGH -- so the refusals above are the gate reading a real outcome rather than a verb that always refuses"
 
 # v0b1 fix: rework-loop stale-evidence symmetry. `orchid merge`'s rebase-reset
 # invalidates verify/merge evidence on exit-5 (INV-07); the same must be true

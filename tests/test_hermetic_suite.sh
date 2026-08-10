@@ -268,6 +268,7 @@ for digest_tool in "${DIGEST_TOOLS[@]}"; do
 done
 [ "$digest_tool_found" -eq 1 ] \
   || fail "the vendor-CLI-free PATH resolves neither ${DIGEST_TOOLS[*]}, so lib/common.sh's plugin_digest has no SHA-256 tool -- every capsuite freshness marker and every digest-pinned trust record in the nested run would fail for a reason that names neither PATH nor this file"
+green_case "every tool the suite legitimately needs still resolves on the rebuilt PATH, so the vendor CLIs being unresolvable above is a targeted removal rather than a PATH that resolves nothing"
 
 # The AMBIENT PATH -- the one the run AROUND this file is using -- gets the
 # same question asked of it directly, because section 4d's skip leans on the
@@ -359,7 +360,8 @@ location_sensitive "$sensitivity_src/wrapper-tool" \
 if location_sensitive "$sensitivity_src/plain-tool"; then
   fail "the location-sensitivity detector flags a tool that behaves identically under the mirror -- a detector that says yes to everything would make the scan below unusable"
 fi
-red_case "a mirrored wrapper visibly changes what it reports, and the detector flags it while leaving a location-independent tool alone"
+red_case "a mirrored wrapper visibly changed what it reports, and the detector flagged it"
+green_case "a tool that does not read its own location answered identically through the mirror and the detector left it alone, so the flag above is location-sensitivity rather than a detector that says yes to everything"
 
 # The scan proper. Only tools the suite needs, only inside mirrors this run
 # actually built, and never the fidelity probe's own mirror (which is
@@ -402,6 +404,7 @@ assert_eq 1 "$(grep -c . "$guard_probe_log")" \
   "a guarded re-entry must record exactly one entry in the re-entry log"
 grep -q 'vendor-CLI-free PATH' <<<"$guard_out" \
   && fail "a guarded re-entry reached the PATH-building phase -- the guard is not the first thing this file does"
+green_case "the EXACT recursion-guard token stood a re-entry down cleanly, early, and in the not-tested vocabulary -- without which the rejections below would only prove the guard rejects everything"
 
 # The guard is checked BEFORE the argument dispatch, so the token still wins
 # over --guard-probe. If it ever stopped winning, the probe flag would become a
@@ -771,6 +774,7 @@ assert_match 'the candidate did not do the thing' "$diag_out" \
   "the diagnostic must carry the nested run's failed assertions"
 assert_match 'test_example\.sh' "$diag_out" \
   "...and the file each came from, which is the only thing that makes them actionable"
+green_case "the failure diagnostic carried a real failed assertion and the file it came from, so the three degenerate-log reports below are fallbacks rather than all this report can ever produce"
 
 # RED 1 -- the shape that produced an empty diagnostic: a run that failed
 # without ever reaching an assertion.

@@ -96,6 +96,7 @@ HOME="$home" ORCHID_REPO="$symrepo" "$ORCHID_BIN" plugins trust "$symplugin" >/d
   || fail "setup: trust of the symlink-bearing plugin dir failed"
 exe="$(resolve "$home" "$symrepo" symeng)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09: freshly trusted symlink-bearing engine must resolve"
+green_case "a genuinely trusted, digest-matching repo-local engine RESOLVED, so the refusals around it are trust decisions rather than a resolver that refuses every repo-local plugin"
 rm "$symplugin/link"; ln -s targets/b "$symplugin/link"
 rc=0; exe="$(resolve "$home" "$symrepo" symeng)" || rc=$?
 [ "$rc" -ne 0 ] || fail "INV-09: repointing a symlink inside a trusted repo-local plugin must de-trust it (digest must cover symlinks)"
