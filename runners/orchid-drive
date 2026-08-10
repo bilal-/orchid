@@ -619,6 +619,54 @@ drive_implementing() {
   tf="$state/tasks/$id.md"
   envf="$(drive_implement_envelope "$repo" "$id")"
   if [ -z "$envf" ]; then
+    # A LIVE implement job outranks the failure signal, and this is the one
+    # arm where both can be true at once.
+    #
+    # drive_implement_failed reads DURABLE evidence: `jobs reconcile` files
+    # every implement envelope of an attempt as a sibling (-a<n>-implementer
+    # .json, .2.json, ...) and removes none of them. So the moment one
+    # implementer reports non-ok, that predicate is true for the whole REST
+    # of the attempt -- including the entire lifetime of the relaunch the
+    # escalation below is about to start. Unguarded, the ladder then runs on
+    # the wall clock instead of on failures: pass N infra-fails 1/3 and
+    # relaunches, pass N+1 reads the same stale envelope and infra-fails 2/3
+    # -- spawning a SECOND implementer into the same worktree, on the same
+    # branch, while the first is still committing to it -- and pass N+2
+    # auto-blocks the task with two or three engines still writing to that
+    # checkout. Every sibling arm already asks this question before it
+    # spawns (drive_hook_gate, drive_dispatch, drive_reviewing); this one
+    # asked nobody.
+    #
+    # WHY THE GUARD LIVES HERE AND NOT IN `orchid jobs prepare`. Refusing a
+    # duplicate manifest for the same task+operation inside the mint verb
+    # looks like the stronger, more central fix. It is neither:
+    #
+    #   * It is WRONG for two of the four operations. A dual-review tier
+    #     routes two `review` jobs for one task on purpose, each to a
+    #     different engine (lib/review.sh's routing table), and a point with
+    #     two hook bindings launches two `hook` jobs for one task and one
+    #     point (drive_hook_gate's dispatch loop). A blanket refusal breaks
+    #     both; an operation-keyed exemption list is a hardcoded policy
+    #     branch inside a verb whose whole job is to mint an identity.
+    #   * It cannot answer the question it would be asked. "Is a job already
+    #     outstanding" is not "does a manifest exist": a `pid: 0` manifest is
+    #     a launch that died before its spawn and nothing is running, which
+    #     is exactly why drive_job_outstanding refuses to read one as live.
+    #     prepare would have to re-derive that liveness rule, and getting it
+    #     wrong turns a recoverable orphan into a permanent refusal to
+    #     relaunch -- at the one moment recovery is needed.
+    #   * It is the wrong tier. Whether to have a second engine running is a
+    #     dispatch decision, and dispatch is tier-2's alone (INV-01/INV-06).
+    #     prepare mints identity; it is not told, and must not guess, whether
+    #     its caller intends concurrency.
+    #
+    # So concurrency stays a single driver-side question, asked by the one
+    # predicate all four arms share. libexec/orchid-jobs' `prepare` arm
+    # carries a pointer back to this note.
+    if drive_job_outstanding "$id" implement; then
+      drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the earlier non-ok envelope is not a fresh failure)"
+      return 0
+    fi
     if drive_implement_failed "$repo" "$id"; then
       drive_escalate "$id" implementer implement "" "implement envelope reconciled with a non-ok status"
       return 0
@@ -870,13 +918,34 @@ drive_blocked() {
 # cap has not blocked the task. Same ladder, same bound, one counter, no
 # hidden state.
 # ---------------------------------------------------------------------------
+#
+# ONE RUNG PER PASS, per task/operation/hook-point. The ladder counts JOB
+# FAILURES, and a pass has at most one of those per slot to report -- but two
+# separate arms can reach the same slot in one pass: the escalation sweep
+# above (a manifest whose pid is dead) and drive_implementing below (a
+# reconciled non-ok envelope). They normally cannot both fire, because the
+# sweep's own relaunch leaves a live job the walk then defers to. `drive_launch`
+# exit 14 breaks exactly that: no engine was eligible, so nothing spawned, and
+# the walk reads the attempt's older non-ok envelope as a second failure. A
+# closed ledger window is a WAIT, never a failure (see drive_launch), so
+# spending a rung on it would auto-block a task at 3/3 on two real failures and
+# one rate limit. Pass-local, like `optional_hooks_died`: a fact about what THIS
+# pass already counted, so it needs no verb and leaves nothing behind.
+escalated_this_pass=" "
 drive_escalate() {
-  local id="$1" role="$2" op="$3" point="$4" why="$5" tf
+  local id="$1" role="$2" op="$3" point="$4" why="$5" tf key
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
     drive_note "$id: $why (no task file — nothing to escalate)"
     return 0
   fi
+  key="$id:$op:$point"
+  case "$escalated_this_pass" in
+    *" $key "*)
+      drive_note "$id: $why — already escalated $op this pass, so this is the same failure, not another rung"
+      return 0 ;;
+  esac
+  escalated_this_pass="$escalated_this_pass$key "
   "$ORCHID_BIN" task infra-fail "$id" --reason "$why (role $role, operation $op)"
   if [ "$(fm_get "$tf" status)" = blocked ]; then
     drive_note "$id: infra_failures cap reached — now blocked"
