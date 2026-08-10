@@ -269,7 +269,7 @@ across prose sections is normative HERE):**
 | From | Trigger verb | Preconditions | Writes | Next |
 |---|---|---|---|---|
 | pending | `task advance` | deps done; worktree created; base_sha set | frontmatter | implementing |
-| implementing | `task advance` | implementer envelope `ok`; candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
+| implementing | `task advance` | implementer envelope `ok`; worktree HEAD moved off the prior candidate_sha (base_sha on a first dispatch); candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
 | testing | `verify` FAIL → `task advance` | — (attempts++ unless `--waive-attempt --reason`) | frontmatter, journal | rework |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
@@ -493,6 +493,17 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   `attempt_waiver`). The ≤3 cap targets repeated identical failures; the
   per-task wall-clock budget is the unconditional backstop.
   `infra_failures` NEVER consume attempts.
+- **A delivery that delivered nothing is an infra failure, not an attempt.**
+  An `ok` implement envelope is the engine's own account of itself; the
+  worktree is the only thing that can contradict it. When the envelope
+  reconciles `ok` but HEAD is still the sha the round was dispatched to move
+  (the prior `candidate_sha`, or `base_sha` on a first dispatch), no candidate
+  exists to test, review or arbitrate — the `implementing → testing`
+  precondition above simply does not hold. The orchestrator refuses the
+  transition and charges `infra_failures` (relaunching the implementer, and
+  reaching `blocked` at `infra_max` like any other job-delivery failure). It
+  is deliberately not an `attempts` round: nothing was delivered for the
+  attempt budget to be judging.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,

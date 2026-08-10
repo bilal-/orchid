@@ -600,6 +600,44 @@ drive_implement_failed() {
   [ "$any" -eq 1 ]
 }
 
+# drive_delivery_floor <repo> <task> -- the sha an implement dispatch has to
+# move the task worktree PAST before its envelope counts as delivery.
+#
+# On a rework round that is the task's existing `candidate_sha`: the round was
+# dispatched precisely to change that candidate, so a HEAD still sitting on it
+# delivered nothing. On a first dispatch there is no candidate yet, so it is
+# `base_sha` -- where an unmoved HEAD means the attempt produced no commit at
+# all, the same failure one step earlier.
+#
+# Prints nothing when the task carries neither sha. `drive_dispatch` stamps
+# `base_sha` on every dispatch, so that state can only come from a hand-edited
+# task file, and the caller below deliberately reads "nothing to compare
+# against" as "cannot prove a no-op" rather than as a refusal it cannot
+# justify.
+drive_delivery_floor() {
+  local repo="$1" id="$2" tf floor
+  tf="$(orchid_state "$repo")/tasks/$id.md"
+  floor="$(fm_get "$tf" candidate_sha)"
+  [ -n "$floor" ] || floor="$(fm_get "$tf" base_sha)"
+  [ -z "$floor" ] || printf '%s\n' "$floor"
+}
+
+# drive_delivery_is_noop <repo> <task> <worktree-head> -- 0 iff the dispatch
+# delivered nothing: HEAD is exactly the floor above.
+#
+# AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. An implement dispatch can
+# return `ok` with a summary that is pure commentary -- findings restated,
+# sources listed -- over a worktree whose HEAD never moved and whose tree is
+# clean. The envelope is the engine's own account of itself; the worktree is
+# the only thing that can contradict it, so delivery is judged there.
+drive_delivery_is_noop() {
+  local repo="$1" id="$2" head="$3" floor
+  [ -n "$head" ] || return 1
+  floor="$(drive_delivery_floor "$repo" "$id")"
+  [ -n "$floor" ] || return 1
+  [ "$head" = "$floor" ]
+}
+
 # drive_reviewer_envelope_count <repo> <task> -- how many reviewer envelopes
 # for the CURRENT attempt are `ok` AND bound to the current candidate_sha:
 # exactly the number libexec/orchid-task's reviewing->arbitrating gate will
