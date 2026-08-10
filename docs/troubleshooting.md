@@ -404,6 +404,57 @@ uncommitted `.orchid/` run state sitting in that checkout.
 automatically (staged-deletion signature against the checkout's own
 branch), before you ever act on stale state by accident.
 
+## Stale orchid itself (`refusing to run`)
+
+**Symptom:** every verb refuses immediately with `refusing to run: the
+checkout orchid itself runs from (...) sits on the integration branch ... and
+its kernel files do not match HEAD`.
+
+This is the same staleness one level down, and it is a refusal rather than a
+warning because the advisory version was read and dismissed for a full day
+while it mattered. `bin/orchid` resolves `ORCHID_ROOT` from its own location,
+so every verb, every `lib/*.sh`, every `runners/*` and every
+`plugins/engines/*/run` is read from **that checkout's working tree** — not
+from the branch head. `orchid merge` advances the integration branch with
+`update-ref` alone, on purpose, so it never reaches into another checkout's
+index or working tree. Run orchid out of a checkout of that branch and it
+keeps executing pre-merge code indefinitely while every merge reports
+success.
+
+Only self-hosted setups can hit this — an installation root that is not a git
+checkout (the `brew`/`install.sh` prefix) has no branch for anything to
+advance. The fix is the same refresh:
+
+```sh
+git checkout HEAD -- . ':(exclude).orchid'
+```
+
+which restores the kernel's own files and leaves uncommitted `.orchid/` run
+state alone. Then re-run the verb.
+
+Two things this deliberately does **not** do. It only asks about a checkout
+parked on the **integration branch** — the one branch a run merges onto, and
+so the only one that can move behind your back. A development checkout on
+`main`, on a feature branch, or in a task worktree is never asked, however
+dirty it is. And even on the integration branch it only compares the
+directories the launcher executes from (`bin/`, `lib/`, `libexec/`,
+`runners/`, `plugins/`, `roles/`, `skills/`, `templates/`) — an uncommitted
+`orchid.config` awaiting `orchid config commit`, or `.orchid/` run state the
+branch has since moved past, is not a refusal.
+
+The one case this does refuse that a warning would not: hand-editing kernel
+files directly in the integration checkout. That checkout is what drives the
+run, so an uncommitted edit there means the run is being driven by code no
+review ever saw. Commit it on a task branch and merge it, or use the override
+below while you iterate.
+
+To run a single command from a checkout you know is stale — to read something
+out of it, or to recover — prefix it:
+
+```sh
+ORCHID_ALLOW_STALE_ROOT=1 orchid status
+```
+
 ## Split-brain checkout
 
 **Symptom:** `orchid doctor`/`orchid status` warns `split-brain checkout`,

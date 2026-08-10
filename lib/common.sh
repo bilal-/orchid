@@ -195,6 +195,96 @@ orchid_stale_checkout() {
   git -C "$repo" diff --cached --name-status 2>/dev/null | awk '$1 == "D" { found=1 } END { exit !found }'
 }
 
+# orchid_root_stale [root] -- lesson L018, and the counterpart to orchid_
+# stale_checkout above. That helper asks whether the checkout holding a run's
+# DURABLE STATE has fallen behind its branch; this one asks whether the
+# checkout holding orchid's own CODE has.
+#
+# bin/orchid resolves $ORCHID_ROOT from its own location, so every verb, every
+# lib/*.sh, every runners/* and every plugins/engines/*/run it executes is
+# read from that checkout's WORKING TREE -- never from the branch head.
+# `orchid merge` advances the integration branch with `update-ref` alone, and
+# deliberately so: it must not reach into any other checkout's index or
+# working tree. The consequence is that a checkout parked on that branch goes
+# on running PRE-MERGE code indefinitely while every merge reports success.
+# Observed live on 2026-08-06: a merged review-adapter fix stayed inert for
+# two further rounds, reviewer findings[] empty the whole time, because the
+# launcher kept executing the pre-merge adapter from a stale working tree.
+#
+# TWO conditions, and both are load-bearing:
+#
+#   1. This checkout is PARKED ON THE INTEGRATION BRANCH -- the same gate
+#      orchid_stale_checkout uses, and the whole reason an ordinary DIRTY
+#      DEVELOPMENT checkout is unaffected. Development happens on `main`, on
+#      a feature branch, in a task worktree; none of them is the branch a run
+#      merges onto, so none of them can be advanced by `orchid merge` behind
+#      anyone's back and none of them is ever asked about here, however dirty
+#      it is. The integration branch is the one place where "the working tree
+#      differs from HEAD" means "someone merged and this checkout did not
+#      notice" rather than "someone is editing".
+#   2. The kernel code on disk actually differs from HEAD's. Comparing
+#      CONTENT rather than trying to infer WHO moved the ref is what makes
+#      this robust: `git update-ref` leaves no fingerprint that reliably
+#      distinguishes an advance made from this checkout's own process from
+#      one made elsewhere, but it never updates a working tree, so the
+#      content is behind either way. It is also the self-healing half -- the
+#      refresh the refusal recommends restores exactly these paths, so
+#      running it clears the refusal and nothing else has to.
+#
+# Fails OPEN on anything it cannot establish: no git on PATH, an $ORCHID_ROOT
+# that is not a work tree at all (the ordinary `brew`/`install.sh` prefix,
+# where there is no branch and no ref for anyone to advance), or a detached
+# HEAD. A guard that refused on "cannot tell" would brick installs that were
+# never at risk in the first place.
+#
+# L018 offered three structural remedies and this is the first of them. Why
+# not the other two:
+#
+#   * Resolve $ORCHID_ROOT from HEAD instead of the working tree. It would
+#     make the tool undevelopable -- an edit to lib/*.sh would have no effect
+#     until committed, so every iteration becomes a commit -- and it does not
+#     remove the hazard so much as invert it: `orchid` would then silently
+#     ignore the very working tree the operator is reading. It also needs a
+#     materialized copy of HEAD somewhere on disk to exec from (git cannot
+#     exec a blob), which is a second, cache-shaped source of staleness.
+#   * Have `orchid merge` refresh the other checkouts of the branch it
+#     advanced. It cannot know what those checkouts are (`git worktree list`
+#     is not the whole answer -- clones exist), and writing into a checkout
+#     the merging process does not own is the r-001 journal-loss incident's
+#     exact shape: the refresh that would have to run there is the one that
+#     clobbers uncommitted durable state. Refusing instead puts the decision
+#     in front of the operator standing in the affected checkout, who is the
+#     only party who knows what is uncommitted in it.
+#
+# Read-only: it only ever inspects, exactly like orchid_stale_checkout. The
+# branch it found is published so the refusal below can name it.
+orchid_root_stale() {
+  local root="${1:-${ORCHID_ROOT:-}}" integ cur drift
+  # config_get reads "$HOME/.orchid/config" unguarded, and this is the one
+  # caller that runs at SOURCE time -- ahead of any verb's own environment
+  # setup, and in a headless context (launchd, cron) where HOME can genuinely
+  # be unset. A `local` shadow is dynamically scoped, so config_get below sees
+  # it and nothing outside this function does: an unset HOME becomes "no user
+  # config layer" here rather than an `unbound variable` abort in every verb.
+  local HOME="${HOME:-}"
+  [ -n "$root" ] || return 1
+  cur="$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  [ -n "$cur" ] || return 1
+  integ="$(config_get "$root" integration_branch orchid/integration)"
+  [ "$cur" = "$integ" ] || return 1
+  # The pathspec list is exactly the directories bin/orchid EXECUTES from:
+  # the verb, the libraries it sources, the runner it hands off to, the
+  # engine adapter that runner spawns, the role profile given to that engine.
+  # Anything else in the tree -- an uncommitted `orchid.config` awaiting
+  # `orchid config commit`, an edited README, a half-written test fixture,
+  # and above all `.orchid/` -- changes nothing about what the launcher runs,
+  # so none of it is inspected here and none of it can refuse a command.
+  drift="$(git -C "$root" diff --name-only HEAD -- \
+    bin lib libexec runners plugins roles skills templates 2>/dev/null || true)"
+  [ -n "$drift" ] || return 1
+  ORCHID_ROOT_STALE_BRANCH="$cur"
+}
+
 # _ocd_cleanup_wt <wt> <repo> -- removes a temp detached worktree (used by
 # orchid_commit_durable below). A standalone function, not a closure, taking
 # both paths as explicit STRING ARGUMENTS baked into the trap command at
@@ -885,3 +975,44 @@ trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
   mkdir -p "$(_orchid_trust_dir)"
   awk -v d="$dir" '{p=$0; sub(/^[^ ]+ /, "", p)} p!=d' "$f" | atomic_write "$f"
 }
+
+# ---------------------------------------------------------------------------
+# The stale-root refusal (lesson L018). Last in this file because it must run
+# at SOURCE time -- it decides whether any caller of this library may run at
+# all -- and orchid_root_stale needs config_get, defined above.
+#
+# It is a refusal rather than a fourth warning on purpose. `orchid doctor` and
+# `orchid status` have named this condition since v1-m3. On 2026-08-06 an
+# operator read that warning on the very first command of the session, filed
+# it as the known cosmetic trap, and then drove a run for a full day in which
+# none of the merged improvements were in effect for the code actually
+# running it. A warning that must be obeyed but is never enforced will be
+# ignored, and was.
+#
+# This library is sourced by every libexec/orchid-* verb and every runners/*
+# entry point, so there is exactly one place the check fires from and no verb
+# can be written that forgets to ask (lesson L016). It is deliberately NOT in
+# bin/orchid: the runners resolve their own $ORCHID_ROOT and source this file
+# without ever passing through the dispatcher, and the dispatcher stays
+# verb-agnostic.
+#
+# Being last also puts it AFTER _orchid_entry_restore_operator_path above, so
+# it adds no binary lookup ahead of that restore -- the property every
+# trust-boundary entry point (trust/doctor/status, and the pump, tick and
+# service runners) relies on, and which they preserve here anyway by holding
+# the fixed bootstrap PATH across this whole file. An ordinary verb reaches
+# this line with the operator's PATH restored, exactly as it reaches every
+# other `git` call it makes; this check claims no stronger boundary than the
+# verb around it already has.
+#
+# `orchid help` and an unknown verb still answer (bin/orchid handles both
+# without sourcing anything). Everything else refuses, diagnostics included:
+# the message below names the exact remedy, which is more than `doctor` tells
+# an operator in this state, and an exemption list is precisely how the
+# advisory version failed. ORCHID_ALLOW_STALE_ROOT=1 is the deliberate way to
+# run one command anyway -- explicit, per-invocation, visible in the
+# transcript, and the way to read state out of a checkout mid-recovery.
+# ---------------------------------------------------------------------------
+if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale; then
+  orchid_die "refusing to run: the checkout orchid itself runs from (${ORCHID_ROOT:-unknown}) sits on the integration branch '$ORCHID_ROOT_STALE_BRANCH' and its kernel files do not match HEAD — that branch was advanced without this working tree being refreshed (which is what 'orchid merge' does, by design), so every verb, lib, runner and engine adapter here would execute PRE-MERGE code (lesson L018). Refresh it with \"git checkout HEAD -- . ':(exclude).orchid'\" — the exclude is what keeps uncommitted durable .orchid state — then re-run. To run this one command anyway: ORCHID_ALLOW_STALE_ROOT=1 orchid ..."
+fi

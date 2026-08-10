@@ -319,18 +319,32 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   exact candidate to rework with logs. **v0 baseline semantics:** the suite
   must pass, full stop; `baseline.md` records pre-existing failures for
   humans. Baseline-aware comparison is post-v1.
-  **Known limitation (m3 ledger, found live):** the integration-ref advance
-  above is a bare `git update-ref` — it never touches any OTHER checkout of
-  that branch. A long-lived checkout of the integration branch left open
-  across a merge (e.g. an operator inspecting it by hand) keeps a stale
-  index/tree; committing directly from that stale checkout silently REVERTS
-  the just-merged work (the commit's parent is still the pre-merge SHA).
-  There is no kernel guard against this today — the operator workaround is
-  to never hand-commit into a checkout of the integration branch without
-  refreshing it first (`git checkout HEAD -- .` or a fresh `git pull`).
-  Roadmap candidates (staged-deletion detection, a safe operator
-  config-commit verb, worktree-aware ref advance) are tracked in
-  roadmap.md's v1-m4 ledger.
+  **Consequences of the ref-only advance (m3 ledger, found live):** the
+  integration-ref advance above is a bare `git update-ref` — it never touches
+  any OTHER checkout of that branch, by design, since it must not write into
+  a working tree it does not own. A long-lived checkout of the integration
+  branch left open across a merge keeps a stale index/tree, and that has two
+  distinct consequences, both now guarded:
+  - Committing directly from that stale checkout silently REVERTS the
+    just-merged work (the commit's parent is still the pre-merge SHA).
+    `orchid doctor` FAILs and `orchid status` warns on the staged-deletion
+    signature (`orchid_stale_checkout`), and `orchid config commit` is the
+    safe operator path for the one file that legitimately needs committing
+    from there.
+  - If orchid ITSELF is being run out of that checkout — `bin/orchid`
+    resolves `ORCHID_ROOT` from its own location, so the verbs, libs,
+    runners and engine adapters all come from its working tree — the run is
+    driven by PRE-MERGE code indefinitely while every merge reports success
+    (lesson L018, observed live for a full day). Every verb therefore
+    REFUSES to run when `ORCHID_ROOT` is a checkout parked on the
+    integration branch whose kernel directories do not match HEAD
+    (`orchid_root_stale`, enforced at `lib/common.sh` source time).
+    Deliberately narrow: a development checkout on any other branch is never
+    asked, however dirty, and `.orchid/` is neither inspected nor touched, so
+    uncommitted durable run state is never a refusal and never at risk.
+  The refresh both point at is `git checkout HEAD -- . ':(exclude).orchid'` —
+  never a bare `git checkout HEAD -- .`, which would clobber uncommitted
+  `.orchid/` run state.
 - **Attempt fairness (tier-boundary clean):** `orchid task advance` to
   rework increments `attempts` BY DEFAULT — the deterministic verb never
   judges semantics. The orchestrator may pass `--waive-attempt --reason`
