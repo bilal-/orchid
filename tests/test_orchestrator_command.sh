@@ -124,6 +124,11 @@ refuse "initializing a repo"            init
 refuse "one-command setup"              start "$WORK/requirements.md"
 refuse "running doctor"                 doctor
 refuse "applying a plan"                plan apply --reason x
+# T021: the verb that SATISFIES the planning cross-check. Refused here for the
+# same reason the `plan_deferral` journal kind is below -- planning is operator
+# work, and an orchestrator that could defer a carried-forward item could
+# retire the previous run's findings without anyone deciding to.
+refuse "deferring a carried item"       plan defer L001 --reason x
 refuse "importing requirements"         requirements import "$WORK/requirements.md"
 refuse "answering a blocker"            answer q-1 "yes"
 refuse "merging"                        merge T001
@@ -182,6 +187,14 @@ refuse "extra arguments to task list"   task list --all
 refuse "a traversal-shaped task id"     task show ../../etc/passwd
 refuse "a command-shaped task id"       task show "T001; rm -rf /"
 refuse "a forged acceptance entry"      journal add --kind acceptance "the run is accepted"
+# T021, and the sharpest of the forged-kind refusals: `plan_deferral` is what
+# SATISFIES the planning cross-check for a carried-forward item. An
+# orchestrator able to write one free-standing could talk the next plan out of
+# a defect the previous run recorded -- without ever running `orchid plan
+# defer`, which refuses an unknown id, refuses a re-deferral, and refuses once
+# planning is over. Pinned, because a comment saying the kind is excluded is
+# not a mechanism that keeps it excluded (L016).
+refuse "a forged planning deferral"     journal add --kind plan_deferral "deferred L016: not this run"
 refuse "a journal entry with no text"   journal add --kind note
 refuse "a notify with no text"          notify --task T001
 refuse "a multi-line journal entry"     journal add --kind note "first line
@@ -209,6 +222,17 @@ admit 'journal add' journal add --task T001 --kind arbitration "weighed the find
 assert_match "weighed the finding; it is real" "$(cat .orchid/journal.md)" "an admitted journal entry really lands"
 
 admit 'journal add without a task' journal add --kind note "run-wide observation" >/dev/null
+# T021: the converse of the `plan_deferral` refusal above. Arbitration is
+# where a run decides a real defect is out of THIS task's scope, and the
+# orchestrator is the actor that decides it -- so the kind the NEXT run's
+# planning cross-check reads back out of the archived journal has to be
+# writable from here, or a finding this run knowingly does not close leaves
+# no trace for the next plan to be held to.
+admit 'journal add --kind ledger' journal add --task T001 --kind ledger \
+  "libexec/orchid-task stamps started_at only when empty; real, out of this task's scope" >/dev/null
+assert_match "stamps started_at only when empty" "$(cat .orchid/journal.md)" \
+  "an admitted ledger entry really lands, so the next run's cross-check has something to read"
+
 admit 'lessons add' lessons add --scope repo --invalidate-when "the fixture clock is pinned" \
   "fixture time drifts under parallel runs" >/dev/null
 assert_match "fixture time drifts" "$(cat .orchid/lessons.md)" "an admitted lesson really lands"

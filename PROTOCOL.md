@@ -396,6 +396,22 @@ an operator and for the hand-executed walk below — but the driver and the
 brokered orchestrator surface only ever use `task arbitrate`, which is what
 makes "who decided this, and what did they decide" one greppable fact.
 
+**A finding you approve past is a finding you must record.** Arbitration is
+where a run decides that a real defect is out of THIS task's scope — the
+right call, often — and the entry that says so is what the NEXT run's
+planning cross-check reads back out of the archived journal. Record it as
+its own entry, `orchid journal add --task <id> --kind ledger "<what, and
+where it actually lives>"`, in the same breath as the approval, and name the
+thing precisely: the cross-check associates an item with a task through
+distinctive anchor terms (a snake_case identifier, a repo-relative source
+path, an `INV-nn`, a lesson id), so `started_at` and `libexec/orchid-task`
+earn it a hearing next run where "the budget bug" does not. `ledger` is
+admitted on the brokered orchestrator surface for exactly this; the
+`plan_deferral` kind that SATISFIES the cross-check is not, and is writable
+only by `orchid plan defer` (PLANNING below). A finding that never reaches
+the journal is one no future plan can be held to — and that, not the missing
+fix, is what cost r-002 a blocked task hours into the run.
+
 ## PLANNING (pre-run, before THE TICK ever runs)
 
 Before `run_status` leaves `planning`, there is no active task to walk — this
@@ -578,9 +594,13 @@ sequence in
    transaction, from whatever checkout you're in, without ever switching the
    operator's branch; journals `plan_revision`; advances `run_status:
    planning → running` once a plan actually exists. It re-runs the
-   carry-forward cross-check above first and refuses (exit 3, nothing
-   committed, nothing journaled, the verb lock released) while any carried
-   item is neither covered by a task nor explicitly deferred.
+   carry-forward cross-check above first and, while `run_status` is still
+   `planning`, refuses (exit 3, nothing committed, nothing journaled, the
+   verb lock released) as long as any carried item is neither covered by a
+   task nor explicitly deferred. The cross-check REPORT prints on every
+   `plan apply`; only the refusal is scoped to `planning`, because `orchid
+   plan defer` closes at the same boundary and a refusal whose only remedy
+   has already closed is a dead end, not a gate.
 
 Once `run_status: running`, PLANNING is over — THE TICK below is the only
 procedure that touches task state from here on.

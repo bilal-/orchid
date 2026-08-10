@@ -904,6 +904,12 @@ driver's exit code: `while :; do orchid drive; sleep 60; done` keeps the run
 moving, `while orchid drive; do ...` stops at the first decision. A pump that
 stops at the first arbitrable disagreement is attended operation wearing an
 unattended label.
+The refusal closes at the same boundary `plan defer` does. Once `run_status`
+has left `planning`, a `plan apply` still PRINTS the cross-check and still
+names anything unconsidered, but it commits rather than refusing — neither
+remedy above is open at that point, and a gate whose only way out has already
+closed would just strand you. Pick the item up with a task instead, or leave
+it for the next run's cross-check, which will raise it again.
 
 ## Answers sent on a channel never arrive
 

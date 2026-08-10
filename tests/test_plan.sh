@@ -24,6 +24,19 @@
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/frontmatter.sh"
 
+# Machine-local Orchid state (the trust store, and the USER config tier) is
+# keyed off HOME, so a suite that leaves the operator's real HOME in place is
+# not testing this repository -- it is testing this repository plus whatever
+# happens to sit in ~/.orchid. That is not theoretical here: `orchid init`
+# resolves the integration branch through config_get (libexec/orchid-init:46),
+# which falls back to $HOME/.orchid/config (lib/common.sh:460), so an operator
+# who has set `integration_branch` there would have every fixture below create
+# a differently-named branch and every `git worktree add ... orchid/integration`
+# fail -- green on the author's machine, red on theirs, for a reason nothing in
+# the output would name. Bound BEFORE the first verb call, exactly as every
+# other fixture that runs `orchid init` does (tests/inv/test_INV-02...:30).
+export HOME="$MACHINE_HOME"
+
 # new_repo <name> -- an initialized repo plus a worktree of its integration
 # branch, cd'd into, with ORCHID_REPO/ORCHID_EPOCH bound to the worktree.
 # Same fixture shape tests/test_run.sh's rollover section uses: `run new`
@@ -261,6 +274,30 @@ grep -q "^deferred L001: " <<<"$committed_journal" \
 rc=0; out="$("$ORCHID_BIN" plan defer L001 --reason "too late" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "plan defer must refuse once planning is over"
 assert_match "requires run_status planning" "$out" "...naming the gate it failed"
+
+# ---------------------------------------------------------------------------
+# 3g -- and BECAUSE deferral closes at that boundary, the REFUSAL has to close
+# with it. `plan apply` is still a legal verb once run_status is `running` (it
+# commits whatever durable .orchid state is current), so a cross-check that
+# went on refusing there would strand an operator between two closed doors:
+# they cannot cover the item -- the plan is committed -- and they cannot defer
+# it, per the assertion directly above. A gate whose only remedy has already
+# closed is a dead end, and the brief rules exactly that out.
+#
+# Removing T010 is the cheapest way to put a carried item back into UNCOVERED
+# at a moment when neither remedy is open: it was the one task naming
+# started_at, and 3b proved that naming is what covered the item.
+# ---------------------------------------------------------------------------
+rm .orchid/tasks/T010.md
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "sanity: dropping the covering task puts the item back to UNCOVERED"
+
+rc=0; apply_out="$("$ORCHID_BIN" plan apply --reason "mid-run revision" 2>&1)" || rc=$?
+assert_eq 0 "$rc" "plan apply must NOT refuse once planning is over — the remedy it would demand is closed"
+assert_match "^applied: " "$apply_out" "...it commits, as plan apply outside planning always has"
+assert_match "UNCOVERED \[ledger\] $started_id" "$apply_out" \
+  "...and the report still NAMES the item: only the refusal is scoped, never the reporting"
+assert_match "reported, not refused" "$apply_out" "...saying plainly which of the two happened"
 
 rc=0; out="$("$ORCHID_BIN" plan bogus 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "an unknown plan subverb is refused"
