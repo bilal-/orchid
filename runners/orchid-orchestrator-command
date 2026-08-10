@@ -87,9 +87,12 @@ refuse() {
 }
 
 # The kernel's journal entry kinds this surface admits. `acceptance`,
-# `plan_revision`, `risk_change` and `attempt_waiver` are deliberately absent:
-# each is owned by a specific verb that writes it as part of its own
-# transaction, so a free-standing entry claiming one would be a forgery.
+# `plan_revision`, `plan_deferral`, `risk_change` and `attempt_waiver` are
+# deliberately absent: each is owned by a specific verb that writes it as part
+# of its own transaction, so a free-standing entry claiming one would be a
+# forgery. `plan_deferral` is the sharpest case -- it is what satisfies the
+# planning cross-check for a carried-forward item, so an orchestrator able to
+# write one could talk itself out of a defect the previous run recorded.
 _BROKER_KINDS=" note arbitration blocker blocker_resolved intervention lesson kill rebase_review "
 
 is_kind() {

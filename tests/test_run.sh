@@ -149,6 +149,16 @@ rc=0; "$ORCHID_BIN" run new --reason "too soon again" >/dev/null 2>&1 || rc=$?
 echo "# Requirements v2" > .orchid/requirements.md
 "$ORCHID_BIN" requirements import .orchid/requirements.md || fail "requirements import works on the fresh run"
 "$ORCHID_BIN" task create T010 "second-run task" || fail "task create works on the fresh run"
+# T021: the rollover just above CREATED a carried-forward item -- the active
+# lesson `run new` copied into r-002 -- so `plan apply` now refuses to commit
+# a plan that neither covers nor defers it. Asserted here only because this
+# fixture is what produces the carry-forward; the cross-check itself is
+# tests/test_plan.sh's subject.
+rc=0; carry_out="$("$ORCHID_BIN" plan apply --reason "second plan" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "plan apply is refused while the carried-forward lesson is unconsidered"
+assert_match "L001" "$carry_out" "the refusal names the lesson run new carried forward"
+"$ORCHID_BIN" plan defer L001 --reason "rollover fixture: out of scope for the second run" >/dev/null \
+  || fail "plan defer records the decision on a carried-forward lesson"
 "$ORCHID_BIN" plan apply --reason "second plan" || fail "plan apply works on the fresh run"
 assert_eq "running" "$(grep '^run_status: ' .orchid/roadmap.md | cut -d' ' -f2)" "plan apply advances the fresh run to running"
 git -C "$bare" log --format=%s -1 "orchid/integration" | grep -q "plan apply" \

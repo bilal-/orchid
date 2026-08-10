@@ -529,11 +529,58 @@ sequence in
    task file and so no `infra_failures` counter to spend; its failures are
    journaled and readable with `orchid journal show --task plan`. The pass
    never *relaunches* in this phase — deciding what to run next is yours.
+   **The carry-forward cross-check.** A run does not start from nothing:
+   `orchid run new` archived the previous run's journal under
+   `.orchid/runs/<prev>/` and carried its ACTIVE lessons into
+   `.orchid/lessons.md`. `orchid plan crosscheck` reports which of those
+   carried-forward items no task in the current draft appears to consider,
+   and exits 3 while any remains unconsidered. Two kinds count: **ledger
+   items** — entries in that archived journal recorded with the `ledger`
+   kind, or naming themselves a "ledger candidate"/"ledger item" in prose,
+   which is how every pre-`ledger`-kind run wrote them — and **active
+   lessons** carried across the rollover. Run it here, inside the critique
+   loop, where the plan is still cheap to change; step 3 runs it again and
+   REFUSES on the same condition, so it is not a report anyone can skip.
+
+   Coverage is deliberately approximate and deliberately pessimistic: an
+   item is associated with a task only through a distinctive anchor term (a
+   snake_case identifier, a repo-relative source path, an `INV-nn`, a lesson
+   id) appearing in that task's body or frontmatter VALUES — never through
+   ordinary prose, and never through a frontmatter KEY, since every task
+   file carries `started_at:` and its siblings and a whole-file match would
+   read as coverage from a plan that considered nothing. The question being
+   asked is "did anyone look at this?", not "is this scheduled correctly":
+   no text match can answer the second, and a spurious *covered* costs far
+   more than a spurious *uncovered*.
+
+   Where the honest answer is "not this run", record it:
+   `orchid plan defer <item-id> --reason "..."` journals the decision (kind
+   `plan_deferral`) and satisfies the check for that one item. It refuses an
+   id that is not on the carried-forward list, refuses to re-defer, and
+   refuses once `run_status` has left `planning` — after that, the way to
+   pick an item up is a task. There is no bulk override: a deferral names
+   one item and says why. And it is a decision about ONE plan, not a
+   permanent silencing: `plan_deferral` is itself a ledger kind, so an item
+   deferred last run reappears in the next run's cross-check and needs
+   either a task or a fresh reason. An indefinitely postponed defect is
+   allowed to be indefinitely postponed; it is not allowed to disappear.
+
+   Both empty outcomes are STATED rather than passed over: a repository
+   whose first run has never rolled over, and a previous run that left
+   nothing. An unrun check and an empty one look identical otherwise, and
+   that is the failure this exists to prevent — r-002's requirements omitted
+   a defect r-001 had already found, recorded and journaled (the once-only
+   `started_at` anchor), with eighteen active lessons and the entire
+   previous journal available while scoping. The information existed and
+   nothing forced its use.
 3. `orchid plan apply --reason "..."` — commits every current `.orchid/`
    change (roadmap, tasks, requirements) onto the integration branch in one
    transaction, from whatever checkout you're in, without ever switching the
    operator's branch; journals `plan_revision`; advances `run_status:
-   planning → running` once a plan actually exists.
+   planning → running` once a plan actually exists. It re-runs the
+   carry-forward cross-check above first and refuses (exit 3, nothing
+   committed, nothing journaled, the verb lock released) while any carried
+   item is neither covered by a task nor explicitly deferred.
 
 Once `run_status: running`, PLANNING is over — THE TICK below is the only
 procedure that touches task state from here on.

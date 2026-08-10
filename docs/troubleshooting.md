@@ -769,6 +769,36 @@ candidate from the worktree and journals why
 
 Use `reverify`. The raw edge exists because the transition table is data, not
 because it is a second, laxer procedure.
+## `plan apply` refuses: carried-forward items are unconsidered
+
+**Symptom:** `orchid plan apply` exits 3 without committing anything, listing
+items like `r-001#57` or `L016` as neither covered by a task nor deferred.
+
+This is the planning cross-check. The previous run left findings behind —
+ledger entries in `.orchid/runs/<prev>/journal.md` and the active lessons
+`orchid run new` carried across — and no task in the new plan appears to
+consider the ones it names. It exists because a run once omitted a defect the
+previous run had already found and journaled, and paid for it hours in.
+
+```sh
+orchid plan crosscheck             # the same report, without committing
+```
+
+Two ways forward, per item. Cover it — add or extend a task whose text names
+the thing (a snake_case identifier, a source path, an `INV-nn`, the lesson
+id); matching is on those anchor terms only, and a bare frontmatter key does
+not count, so the task has to actually say it. Or decide against it:
+
+```sh
+orchid plan defer r-001#57 --reason "owned by the follow-up PR, not this run"
+```
+
+That journals the decision and satisfies the check for that item alone —
+there is no bulk override, and it only works while `run_status` is
+`planning`. A deferral postpones rather than erases: the item reappears in
+the NEXT run's cross-check, still wanting a task or a fresh reason. Read the
+full item with `grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry
+at that ordinal.
 
 If the pass stops again with `awaiting-operator-prerequisite` instead, that is
 the OTHER operator-owned stop at this point — a step outside the repository,

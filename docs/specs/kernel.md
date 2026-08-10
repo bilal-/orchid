@@ -1255,7 +1255,12 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   review attempt), `acceptance`, `intervention` (operator verbs log
   automatically; also the kind used for a lock-break entry written by
   `orchid run start|resume` when it breaks a stale lock), `lesson` (mirrored
-  to `lessons.md`).
+  to `lessons.md`), `ledger` (a finding this run knowingly does not close;
+  the NEXT run's planning cross-check reads these back out of the archived
+  journal — see PROTOCOL.md PLANNING) and `plan_deferral` (written only by
+  `orchid plan defer`: the reasoned decision that this plan does not cover a
+  carried-forward item — itself read back as a ledger entry by the FOLLOWING
+  run, so a deferral postpones an item rather than erasing it).
 - **Enforcement is a complete decision matrix, kernel-level:** every
   judgment-bearing verb refuses to run without `--reason`, which it journals
   BEFORE writing the state change — `task advance` to `merging`, `blocked`,
