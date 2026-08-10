@@ -116,6 +116,125 @@ fallback still reach the real binary). It is part of the suite the
 gate above runs, so a change that reaches outside that root, moves a remote ref,
 or modifies the source checkout fails CI rather than a tester's machine.
 
+## The suite is hermetic: no vendor CLI required
+
+The deterministic suite must pass on a machine with no `codex`, `claude`,
+`agy`, `hermes`, or `openclaw` installed. It did not, once: capsuite's
+`binaries_present` check resolves each engine manifest's `requires_binaries`
+on `PATH`, and `tests/test_plugins_test.sh` asserted those pairs pass — so the
+suite was quietly asserting a fact about the author's laptop. It stayed green
+locally and failed on both hosted runners.
+
+`tests/test_hermetic_suite.sh` is the standing proof:
+
+```sh
+/bin/bash tests/test_hermetic_suite.sh
+```
+
+It builds a `PATH` on which every vendor CLI is *unresolvable* — each `PATH`
+entry that contains one is replaced by a scratch directory of symlinks to
+everything else in it, so `jq` living beside `codex` in the same Homebrew bin
+survives — and then runs the whole suite on it. It is a `tests/test_*.sh` file,
+so `tests/run.sh` and therefore `scripts/ci-local.sh` and hosted CI run it too.
+
+The mirror is the only thing that can lose a tool the suite needs, so it
+asserts, on the rebuilt `PATH`, that each one still resolves — including a
+SHA-256 tool (`shasum`, or `openssl` as `plugin_digest`'s documented fallback).
+Losing that one is the least legible failure available: capsuite's freshness
+marker and the digest-pinned trust store are both built on it, so the nested
+run would fail broadly with digest mismatches that name neither `PATH` nor the
+mirror.
+
+That nesting means one gate run can execute the suite twice, so the second run
+is launched only when it can differ from the first. On a machine where a vendor
+CLI really does resolve — a developer laptop, which is where the divergence
+hides — it always runs. Where none resolves, the surrounding `tests/run.sh`
+(`ORCHID_SUITE_RUN`) is *itself* the vendor-CLI-free whole-suite run: if any
+test depends on an installed vendor CLI, that run goes red, and a nested copy
+would only double every CI job to reach the same verdict. The skip is printed
+as a `NOT-TESTED:` line rather than passing quietly. Invoked on its own,
+outside `tests/run.sh`, there is no surrounding run to lean on and the nested
+run happens regardless.
+
+Both halves of that condition are *measured*, never assumed. Which vendor CLIs
+resolve is asked of the ambient `PATH` rather than inferred from how many
+`PATH` entries needed mirroring: an empty `PATH` element means the current
+directory and cannot be mirrored at all, so the count would report a clean
+machine while the surrounding run could still reach a `codex` in its cwd. And
+`ORCHID_SUITE_RUN` carries `tests/run.sh`'s own physical path, which the proof
+compares against the runner it resolved for itself — a bare `1` would be
+forgeable by accident, and a stray one in an operator's environment would stand
+the proof down on a vendor-CLI-free machine with nothing having run in its
+place. Losing the marker only ever costs a duplicate run; that asymmetry is why
+it is a path.
+
+One boundary the file records rather than covers: `bin/orchid` replaces `PATH`
+with a fixed machine-local list for its own bootstrap and restores the caller's
+at each verb's first `source` of `lib/common.sh`, so every binary lookup that
+exists today — `binaries_present` included — runs on the restricted `PATH`. A
+lookup added *ahead* of that restore would read the fixed list, which no `PATH`
+restriction can reach.
+
+`PATH` is not the only ambient input, so the nested run also gets a **HOME of
+its own** — a scratch directory that did not exist a moment ago, holds no
+Orchid state, and whose path nothing else on the machine knows. Everything
+machine-local the suite reads resolves through `HOME`: user config
+(`$HOME/.orchid/config`), the unattended-trust store, capsuite freshness
+markers, and the home-rooted plugin search paths in `lib/resolver.sh`,
+`lib/roles.sh` and `lib/archetype.sh`. That state is shared with every other
+Orchid on the box, including a drive loop polling the same repository while the
+suite runs — which is how a verification of this very change failed twice on an
+unchanged tree and passed twice more (lesson L024). `XDG_*` goes with `HOME`,
+because git reads its own configuration through those names and they can point
+back inside the operator's home; `ORCHID_ACTOR`/`ORCHID_REPO`/`ORCHID_EPOCH`
+are unset for the reason `tests/run.sh` unsets them.
+
+That isolation is demonstrated rather than asserted, and every probe is paired
+with a control that can fail. A decoy scratch home stands in for the
+operator's, seeded with poisonous machine-local state; the controls prove the
+decoy is a live sink (a write through `HOME` is visible to the fingerprint) and
+a live source (the poison is legible through `HOME`), and the probes then show
+a child launched *through the same function the nested run is launched with*
+writes into the disposable home, leaves the inherited one byte-identical, reads
+none of the poison, and receives no durable run identity. The nested suite then
+runs with a writer concurrently rewriting the decoy's Orchid state for the
+whole duration; the run must pass, the writer must have ticked, and the churn
+must never turn up inside the nested home. What no test file can defend
+against — a second Orchid rebasing, re-pinning or rewriting *this checkout*
+mid-run — is recorded as `NOT-TESTED:` and left as an operator scheduling
+constraint: do not verify this repository while a drive loop is dispatching
+against the same worktree.
+
+The recursion guard (`ORCHID_HERMETIC_PROOF`) stops a nested run from
+re-launching a third. It is an **exact match against a token literal in the
+file**, never a truthiness test: a bare `-n` check is satisfied by any value,
+so a stray `ORCHID_HERMETIC_PROOF=1` in an operator's shell would make the
+whole proof print one `NOT-TESTED:` line and exit 0 — an unproven-ok in the
+harness built to prevent unproven-oks, and one that is indistinguishable in a
+log from a flaky run. Same asymmetry as `ORCHID_SUITE_RUN`: losing the marker
+costs a duplicate run, forging it costs the guarantee. The file asserts the
+guard fires against a synthetic re-entry carrying the exact token, that a
+battery of stray and near-miss values do *not* satisfy it (`--guard-probe`
+reports which side of the guard an invocation landed on without running the
+proof; the guard is checked ahead of it, so it cannot pre-empt it), that a real
+nested run re-enters exactly once with that token, and — separately, and in
+both modes, because it has to hold even when nothing is nested — that
+`tests/run.sh`'s glob still reaches this file at all. That last one failing
+means the guarantee has silently stopped being enforced.
+
+A test that genuinely needs a vendor CLI present plants a stub on `PATH`
+(`tests/test_plugins_test.sh`) rather than asking the machine. Weakening the
+check itself is not an option: `capsuite_passed` is what gates failover
+(`resolve_role_available`), and a `binaries_present` that cannot fail would
+make that gate blind. `tests/test_capsuite.sh` pins the check in both
+directions with no vendor name in it at all.
+
+What a stub cannot prove — that a real vendor CLI is installed, authenticated,
+and behaves — is recorded by `not_tested` from `tests/helpers.sh`, which prints
+a `NOT-TESTED:` line in `scripts/beta-qualify.sh`'s vocabulary. Skipping is
+allowed; skipping silently is not. Qualify those claims out of band with
+`orchid plugins test --all-defaults` on a machine that has the CLIs.
+
 ## Beta qualification
 
 `scripts/beta-qualify.sh` qualifies one operator-supplied repository against
