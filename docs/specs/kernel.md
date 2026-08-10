@@ -702,6 +702,51 @@ semantic correctness beyond declared verification commands.
   through named verbs, and decides only on structured fields
 - INV-14 no kernel source branches on any discovered engine identifier
 
+## Proof discipline: every gate ships a RED case (v1.1)
+
+Runs r-001 and r-002 kept producing one defect in different costumes: a check
+that reported success without having tested anything. A review envelope with
+an empty `findings[]`. A probe that grepped the reply for the string it had
+itself fed into the prompt. A rehearsal snapshot comparing a tree that was
+never at risk. `doctor` reporting outbound ok without reading the config its
+plugin requires. An inbound line whose output was identical whether or not a
+gateway existed. Each was written in good faith; none could fail.
+**A check that cannot fail is not a check** — in a log it is
+indistinguishable from one that ran, which is why every one of them survived
+review.
+
+The rule, normative for anything in this repository that gates a transition,
+a merge, a release, or a claim in the docs:
+
+> A check that gates anything
+> **must ship a RED case demonstrating that it detects the failure it exists for**,
+> and that RED case must itself be exercised by the suite.
+
+Three consequences, each of which is the rule's real content:
+
+- **The RED case is an input, not a comment.** Feed the check something it
+  must reject and watch it fire. A sentence asserting that it would is the
+  claim under test, not evidence for it.
+- **A RED case needs a GREEN twin.** A matcher that rejects everything
+  detects nothing; the pair is what distinguishes detection from noise.
+- **What cannot be demonstrated is recorded as `not-tested`, never as a
+  pass** (`not_tested` in `tests/helpers.sh`, the same closed vocabulary —
+  `pass|fail|blocked|not-tested` — `scripts/beta-qualify.sh` uses). Absence
+  of evidence is not a defect. Silence about it is.
+
+Enforcement, as far as it mechanizes: `tests/helpers.sh` exposes `red_case
+<label>`, which records and prints a demonstrated detection; its `EXIT` trap
+FAILS any file under `tests/inv/` that records none, by path, so a new
+invariant gate cannot opt out by not knowing the rule exists.
+`tests/test_red_case_rule.sh` additionally lints every enrolled gate for a
+`# RED:` annotation, a `# GREEN:` annotation and a `red_case` call — and
+exercises both halves against fixtures, because a rule about unfalsifiable
+checks enforced by an unfalsifiable check would be the same defect one level
+up. `tests/test_hermetic_suite.sh` is the worked example at whole-file scale:
+it proves the vendor-free run fails when the suite is not hermetic, and
+records what it cannot prove as not-tested. What no check can judge — whether
+a recorded RED case is honest — stays reviewer-owned and is recorded as such.
+
 ## Command surfaces (v1.1)
 
 **NOT guaranteed** above still says there is no enforceable command allowlist

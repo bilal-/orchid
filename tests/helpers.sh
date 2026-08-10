@@ -59,6 +59,66 @@ not_tested() {
   NOT_TESTED=$((NOT_TESTED + 1))
   echo "  NOT-TESTED: $1 -- $2"
 }
+
+# --------------------------------------------------------------------------
+# THE RED-CASE RULE (T017). A check that GATES anything must ship a case that
+# demonstrates it DETECTS the failure it exists for, and that case must be
+# exercised by the suite -- not asserted in a comment.
+#
+# Across r-001 and r-002 the repeated defect was the same shape: a check that
+# reported success without having tested anything. A review envelope with an
+# empty `findings[]`. A probe that grepped a reply for the string it had just
+# fed into the prompt. A rehearsal snapshot comparing a tree that was never at
+# risk. `doctor` reporting outbound ok without reading the config its plugin
+# requires. An inbound line whose output was identical whether or not a
+# gateway existed. Every one was written in good faith, every one read in a
+# log exactly like a check that had passed, and not one of them could fail.
+#
+# red_case <label> -- record that this file has just fed its OWN check an
+# input the check must reject, and watched it fire. The label is printed, so a
+# reader of the log sees WHICH failure was demonstrated rather than inferring
+# that one was.
+#
+# For files under tests/inv/ -- the invariant gates -- recording at least one
+# is MANDATORY: the EXIT trap below fails a file that recorded none. That is
+# what makes the rule mechanical rather than a convention, because a comment
+# claiming a RED case cannot satisfy it. `ORCHID_REQUIRE_RED_CASE` extends the
+# same requirement to a file anywhere else; tests/test_red_case_rule.sh sets
+# it on itself, and passes it to the fixtures it uses to prove this
+# enforcement actually fires.
+#
+# Note the direction of that marker, because it is the opposite of
+# tests/test_hermetic_suite.sh's ORCHID_HERMETIC_PROOF and is why this one is
+# not an exact token: a stray value here can only ADD a requirement, so the
+# worst it can cost is a loud, legible failure. There is no value of it that
+# turns a check off.
+RED_CASES=0
+red_case() {
+  RED_CASES=$((RED_CASES + 1))
+  echo "  RED-CASE: $1"
+}
+# Required for the invariant gates by LOCATION, so an inv file cannot opt out
+# by forgetting; required anywhere else only when the caller asks for it. The
+# match is on `$0`, which is how every caller in this repository invokes a
+# test file -- tests/run.sh and scripts/ci-local.sh both pass a path. Running
+# one as a bare name from inside tests/inv/ would not match, which costs a
+# missing requirement on a manual invocation and never a false failure.
+_red_case_required() {
+  if [ -n "${ORCHID_REQUIRE_RED_CASE:-}" ]; then return 0; fi
+  case "$0" in */tests/inv/test_*.sh) return 0 ;; esac
+  return 1
+}
+# Printed from the EXIT trap, ahead of its `exit $((FAILS>0))`, so counting a
+# FAILS here really does fail the file.
+_red_case_summary() {
+  _red_case_required || return 0
+  if [ "${RED_CASES:-0}" -eq 0 ]; then
+    echo "  FAIL: $0 gates an invariant but recorded no RED case -- call red_case <label> after feeding this file's own check an input it must reject, so the check is known to be able to fail (docs/specs/kernel.md, 'Proof discipline')"
+    FAILS=$((FAILS+1))
+    return 0
+  fi
+  echo "  red-cases: $RED_CASES demonstrated in this file"
+}
 # Printed from the EXIT trap below, so a file's not-tested count survives even
 # an early exit. Silent when there is nothing to report.
 _not_tested_summary() {
@@ -189,7 +249,7 @@ make_scratch WORK
 # beneath a target repository. Trust-boundary fixtures use this independent
 # disposable directory instead of the historical "$WORK/home" shortcut.
 make_scratch MACHINE_HOME
-trap '_scratch_cleanup; _not_tested_summary; exit $((FAILS>0))' EXIT
+trap '_scratch_cleanup; _red_case_summary; _not_tested_summary; exit $((FAILS>0))' EXIT
 
 # plant_reviewer_envelope <task-id> [attempt] -- v1-m2's kernel envelope-
 # count gate (reviewing->arbitrating) requires review_required_count(risk_

@@ -18,8 +18,25 @@
 # on the author's machine, at the same commit -- rather than on a runner, three
 # pushes later.
 #
+# RED: this file's whole subject is a failure it must DETECT -- a suite that
+#      depends on an installed vendor CLI. It provokes that by building a PATH
+#      where none resolves and running the suite on it, and it demonstrates
+#      each of its own mechanisms against a known-bad input rather than
+#      trusting them: a battery of stray and near-miss ORCHID_HERMETIC_PROOF
+#      values that must NOT stand the proof down (section 3), a decoy home
+#      proven to be a live sink and a live source before "untouched" and
+#      "unread" are claimed of it (section 4b), a wrapper script whose
+#      behaviour visibly CHANGES when mirrored (section 2b), and synthetic
+#      failure logs -- empty, missing, and assertion-free -- fed to the
+#      failure diagnostic, which must never come back empty (section 4c).
+# GREEN: the exact recursion-guard token must stand a re-entry down cleanly
+#      (section 3), every tool the suite legitimately needs must still resolve
+#      on the rebuilt PATH (section 2), and the nested run must pass. Without
+#      those, the rejections above would only prove that something rejects
+#      everything.
+#
 # Where no vendor CLI resolves at all, the suite run already in progress around
-# this file IS that run, so there is nothing to launch and section 4c skips it
+# this file IS that run, so there is nothing to launch and section 4d skips it
 # rather than doubling every CI job to re-answer the same question. Whether one
 # resolves is measured against the ambient PATH (section 2), never inferred
 # from how much mirroring the PATH needed -- an empty PATH element means the
@@ -49,7 +66,7 @@
 # So section 4b gives the nested run its own disposable HOME and DEMONSTRATES
 # the isolation -- reads, writes, and durable run identity, each against a
 # decoy home that stands in for the operator's, each with a control that proves
-# the check can actually fail -- and section 4c then runs the whole suite with
+# the check can actually fail -- and section 4d then runs the whole suite with
 # a writer concurrently churning that decoy for the entire duration.
 #
 # RECURSION GUARD. tests/run.sh globs tests/test_*.sh, so the run this file
@@ -140,10 +157,11 @@ VENDOR_CLIS=(codex claude agy hermes openclaw)
 # files failing for reasons that read nothing like "the mirror dropped a
 # tool". ln/readlink/chmod/mktemp/mv/rm/tr/sort are what the fixtures and
 # lib/common.sh's atomic_write and plugin_digest actually shell out to;
-# cat/mkdir/cp/cut/wc/date/sleep are the bedrock the fixtures themselves are
-# written in, including this file's own isolation probes below.
+# cat/mkdir/cp/cut/wc/date/sleep/tail are the bedrock the fixtures themselves
+# are written in, including this file's own isolation probes and its failure
+# diagnostic below.
 REQUIRED_TOOLS=(jq git bash env awk sed grep find tr sort ln readlink chmod
-                mktemp mv rm cat mkdir cp cut wc date sleep)
+                mktemp mv rm cat mkdir cp cut wc date sleep tail)
 
 # plugin_digest (lib/common.sh) hashes with `shasum -a 256` and falls back to
 # `openssl dgst -sha256` when shasum is absent, so EITHER satisfies the suite
@@ -252,7 +270,7 @@ done
   || fail "the vendor-CLI-free PATH resolves neither ${DIGEST_TOOLS[*]}, so lib/common.sh's plugin_digest has no SHA-256 tool -- every capsuite freshness marker and every digest-pinned trust record in the nested run would fail for a reason that names neither PATH nor this file"
 
 # The AMBIENT PATH -- the one the run AROUND this file is using -- gets the
-# same question asked of it directly, because section 4c's skip leans on the
+# same question asked of it directly, because section 4d's skip leans on the
 # answer: it stands down only when the surrounding run is ALREADY a
 # vendor-CLI-free run, and that is a fact about the ambient PATH, not about
 # the mirror built from it. mirrored_count is not that fact. It is close, and
@@ -271,6 +289,97 @@ for vendor_cli in "${VENDOR_CLIS[@]}"; do
     AMBIENT_IS_HERMETIC=0
   fi
 done
+
+# ===========================================================================
+# 2b -- A MIRRORED TOOL MUST BE THE SAME TOOL.
+#
+# Section 2 asks whether each tool still RESOLVES. That is not the same
+# question as whether it still WORKS, because a program's own path is not
+# inert. A wrapper script that locates its payload with `dirname "$0"` -- the
+# shape Homebrew shims, pyenv/rbenv/nvm and most language-manager launchers
+# are written in -- resolves that to the SCRATCH directory under the mirror,
+# where its payload is not. Such a tool behaves differently under the mirror
+# than under the real PATH, and a hermetic proof standing on it would be
+# proving something about a tool the operator does not actually have.
+#
+# The hazard is DEMONSTRATED, not asserted: a wrapper is mirrored and both
+# copies are run, and their answers must differ. Then the same detector is
+# pointed at the tools the suite really needs, among the entries the mirror
+# really replaced -- an unmirrored PATH entry is passed through untouched and
+# cannot have this problem, and a Homebrew bin holds a thousand names the
+# suite never calls.
+# ===========================================================================
+
+# location_sensitive <file> -- true when <file> is a SCRIPT that computes its
+# own location. Shebang first, exactly the way scripts/ci-local.sh's
+# is_shell_file decides the same question: a compiled binary has no readable
+# `$0` to scan for, and grepping one is neither meaningful nor portable.
+location_sensitive() {
+  local f="$1" first=""
+  [ -f "$f" ] || return 1
+  IFS= read -r first < "$f" 2>/dev/null || true
+  case "$first" in '#!'*) ;; *) return 1 ;; esac
+  grep -Eq 'dirname[[:space:]]+"?\$0|\$\{0%|BASH_SOURCE|readlink[^;|]*\$0' "$f"
+}
+
+sensitivity_src="$WORK/mirror-fidelity"
+mkdir -p "$sensitivity_src"
+cat > "$sensitivity_src/wrapper-tool" <<'WRAPPER_TOOL'
+#!/usr/bin/env bash
+# The shape a symlink mirror cannot represent: it answers with the directory
+# it believes it is installed in, which is where its payload would be.
+printf '%s\n' "$(dirname "$0")"
+WRAPPER_TOOL
+cat > "$sensitivity_src/plain-tool" <<'PLAIN_TOOL'
+#!/usr/bin/env bash
+printf 'same-everywhere\n'
+PLAIN_TOOL
+chmod +x "$sensitivity_src/wrapper-tool" "$sensitivity_src/plain-tool"
+
+mirror_without_vendor_clis "$sensitivity_src" fidelity-probe \
+  || { fail "could not mirror the fidelity probe directory"; exit 1; }
+sensitivity_mirror="$MIRROR_RESULT"
+
+# THE RED CASE: mirroring really does change what a location-sensitive tool
+# says. If these two ever agree, the hazard has gone away on this platform and
+# the detector below is guarding nothing -- which is worth knowing, because it
+# would mean this section had quietly become decoration.
+wrapper_real="$("$sensitivity_src/wrapper-tool")"
+wrapper_mirrored="$("$sensitivity_mirror/wrapper-tool")"
+[ "$wrapper_real" != "$wrapper_mirrored" ] \
+  || fail "a wrapper that resolves its own location answered identically through the mirror ('$wrapper_real') -- either the mirror stopped being a symlink farm or this platform resolves \$0 through symlinks, and either way the detector below is no longer detecting anything"
+plain_real="$("$sensitivity_src/plain-tool")"
+plain_mirrored="$("$sensitivity_mirror/plain-tool")"
+assert_eq "$plain_real" "$plain_mirrored" \
+  "a tool that does NOT read its own location must be unaffected by mirroring -- otherwise the difference above says nothing about location-sensitivity specifically"
+
+# ...and the detector separates the two.
+location_sensitive "$sensitivity_src/wrapper-tool" \
+  || fail "the location-sensitivity detector missed a wrapper that demonstrably changes behaviour under the mirror -- every scan below would then report a clean bill of health on a broken mirror"
+if location_sensitive "$sensitivity_src/plain-tool"; then
+  fail "the location-sensitivity detector flags a tool that behaves identically under the mirror -- a detector that says yes to everything would make the scan below unusable"
+fi
+red_case "a mirrored wrapper visibly changes what it reports, and the detector flags it while leaving a location-independent tool alone"
+
+# The scan proper. Only tools the suite needs, only inside mirrors this run
+# actually built, and never the fidelity probe's own mirror (which is
+# deliberately full of exactly what is being looked for).
+mirror_fidelity_hits=""
+for mirror_dir in "$MIRROR_ROOT"/*; do
+  [ -d "$mirror_dir" ] || continue
+  [ "$mirror_dir" != "$sensitivity_mirror" ] || continue
+  for mirrored_tool in "${REQUIRED_TOOLS[@]}" "${DIGEST_TOOLS[@]}"; do
+    [ -L "$mirror_dir/$mirrored_tool" ] || continue
+    if location_sensitive "$mirror_dir/$mirrored_tool"; then
+      mirror_fidelity_hits="$mirror_fidelity_hits $mirrored_tool"
+    fi
+  done
+done
+[ -z "$mirror_fidelity_hits" ] \
+  || fail "the mirror replaced a PATH entry holding a tool the suite needs which resolves its OWN location ($mirror_fidelity_hits) -- under the mirror that tool looks for its payload in a scratch directory, so the nested run would exercise something the operator does not actually have, and this proof would be unsound rather than merely inconvenient. Fix the mirror for that tool (copy the wrapper's own directory rather than symlinking the entry), or, if the wrapper reads its location for a reason that survives relocation, record it here as a named exemption with the reason -- never widen the detector"
+
+not_tested "mirrored-binary-self-location" \
+  "whether a mirrored tool that is a compiled BINARY resolves its own location from argv[0]. The detector above reads a shebang and then the text, so it sees scripts only. git is the interesting case and is safe: it canonicalizes argv[0] through symlinks before deriving its exec-path, so it finds the real one. A binary that did NOT canonicalize would be invisible here, and the symptom would be that tool failing inside the nested run rather than anything naming the mirror"
 
 # ===========================================================================
 # 3 -- the recursion guard, exercised directly before it is relied on.
@@ -338,6 +447,7 @@ do
 done
 assert_eq 0 "$(grep -c . "$stray_log")" \
   "no stray ORCHID_HERMETIC_PROOF value may reach the guard's re-entry log -- a value that logs a re-entry is a value the guard accepted"
+red_case "every stray and near-miss ORCHID_HERMETIC_PROOF value fell through the recursion guard, while the exact token stood a re-entry down"
 
 # ===========================================================================
 # 4a -- this file is still part of the suite it claims to certify.
@@ -356,7 +466,7 @@ done
 [ "$in_suite_glob" -eq 1 ] \
   || fail "tests/run.sh globs tests/test_*.sh and this file is not among the matches, so the no-vendor-CLI guarantee is no longer executed by the suite or by CI even though this file still passes -- keep it in tests/ under a test_*.sh name"
 
-# ...and tests/run.sh still publishes the marker section 4c's skip is keyed
+# ...and tests/run.sh still publishes the marker section 4d's skip is keyed
 # on. If it stops, the skip stops firing and every CI job pays for a nested
 # run it does not need -- a cost regression, not a silent one, but one that
 # would otherwise be discovered as a doubled CI bill rather than as a failure.
@@ -385,8 +495,11 @@ grep -q 'ORCHID_SUITE_RUN=' "$RUNNER" \
 # its own configuration through them and they can point back inside the
 # operator's home even after HOME itself is redirected. The durable run
 # identity (ORCHID_ACTOR/ORCHID_REPO/ORCHID_EPOCH) is unset for the same
-# reason tests/run.sh unsets it: inherited, it binds a disposable fixture to
-# the outer run.
+# reason tests/helpers.sh:20 -- NOT tests/run.sh, which is where this comment
+# and docs/contributing.md both used to point -- unsets it: inherited, it
+# binds a disposable fixture to the outer run. The attribution is checked
+# below rather than left to prose, because a reader who believes the guard
+# lives in the runner will delete it there and find nothing that stops them.
 #
 # Each claim below is paired with a control that makes it falsifiable. An
 # "the operator's home was untouched" assertion is worth nothing if the thing
@@ -442,7 +555,7 @@ home_state() {
 
 # nested_env_run <command...> -- run a command in EXACTLY the environment the
 # nested suite run below gets. The probes in this section and the real run in
-# 4c go through this one function, which is what makes the probes evidence
+# 4d go through this one function, which is what makes the probes evidence
 # about the run rather than evidence about a hand-rolled copy of it: a change
 # that weakened the isolation would have to weaken it here, where every probe
 # below would see it.
@@ -520,6 +633,16 @@ ident_out="$(
 )"
 assert_eq "unset|unset|unset" "$ident_out" \
   "the nested run must not inherit ORCHID_REPO/ORCHID_EPOCH/ORCHID_ACTOR -- an inherited identity binds every disposable fixture in it to the OUTER run, which is a live Orchid writing the same machine at the same time"
+red_case "a child launched exactly as the nested run is wrote only into its own HOME, read none of the decoy's poisoned Orchid state, and received no durable run identity even when one was exported at it"
+
+# ...and the guard the comment at the top of this section credits is really
+# where it says it is. `nested_env_run`'s own `env -u` is what the assertion
+# above measures; what protects every OTHER file in the suite is one line at
+# the top of tests/helpers.sh, and a comment pointing at tests/run.sh instead
+# is how that line gets deleted by someone tidying the runner. Checked here so
+# the attribution cannot rot back.
+grep -qE '^unset ORCHID_ACTOR ORCHID_REPO ORCHID_EPOCH$' "$REPO_ROOT/tests/helpers.sh" \
+  || fail "tests/helpers.sh no longer unsets ORCHID_ACTOR/ORCHID_REPO/ORCHID_EPOCH -- that line, and nothing in tests/run.sh, is what keeps an outer Orchid's durable identity out of every fixture in the suite"
 
 # -- and the nested run starts from a home with no Orchid state in it at all,
 # which is the state a hosted runner is in and the state the whole file is
@@ -546,7 +669,182 @@ home_literal_hits="$(grep -REn '(/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+)/\
   || fail "a shipped file reaches an operator home's .orchid by absolute path, so redirecting HOME cannot isolate the nested run from it: $home_literal_hits"
 
 # ===========================================================================
-# 4c -- THE PROOF: the whole suite, on the vendor-CLI-free PATH, in the
+# 4c -- THE FAILURE DIAGNOSTIC, proven before the run that needs it.
+#
+# The failure path below used to print a header naming $suite_log, an awk
+# extraction of the nested run's FAIL/FATAL lines, and a footer. Two ways that
+# is a failure report which reports nothing:
+#
+#   * the awk prints ONLY lines matching FAIL/FATAL, and a nested run that
+#     died without reaching an assertion has none -- tests/run.sh unable to
+#     exec, a file killed by `set -u` before its first check, an OOM. The
+#     operator gets a header, a blank line and a footer;
+#   * $suite_log lives under $WORK, which helpers.sh's EXIT trap deletes on
+#     the way out, so the message names a path that is GONE by the time
+#     anyone goes looking (lesson L023) -- a gate whose failure output is
+#     destroyed cannot show that it detects anything, and this one was inside
+#     the harness built to prevent exactly that.
+#
+# So the report is a function that is never empty, and the log is copied
+# somewhere that outlives the cleanup before its path is printed. Both are
+# exercised here, against synthetic logs, BEFORE the branch that skips the
+# nested run: on the machines where that skip fires, the next red run is the
+# first time anyone will read this diagnostic, and that is the worst possible
+# moment to discover it prints nothing.
+# ===========================================================================
+
+# Where a failing nested run's log is kept. Machine-local, outside every
+# scratch root this run will delete, and never inside the repository -- this
+# file must not write the checkout under test.
+FAILURE_LOG_DIR="${TMPDIR:-/tmp}"
+
+# preserve_failure_log <src> <dest-dir> -- copy a log where it will outlive
+# this run's scratch cleanup, and print the surviving path. Prints nothing and
+# returns 1 when there is nothing to copy or the copy fails, so the caller
+# says so rather than naming a file that is not there.
+preserve_failure_log() {
+  local src="$1" dest_dir="$2" dest
+  [ -f "$src" ] || return 1
+  mkdir -p "$dest_dir" 2>/dev/null || return 1
+  dest="$dest_dir/orchid-hermetic-suite-failure.$$.log"
+  cp "$src" "$dest" 2>/dev/null || return 1
+  printf '%s\n' "$dest"
+}
+
+# nested_failure_report <log> <rc> <preserved-path-or-empty> -- the whole
+# diagnostic, as text, NEVER EMPTY. It always states the exit status, always
+# says whether the full output survived and where, and falls back to the tail
+# of the log when there is no assertion line to extract. An empty diagnostic
+# is indistinguishable from a diagnostic nobody printed.
+NESTED_LOG_TAIL=40
+NESTED_LOG_MAX_FAILURES=60
+nested_failure_report() {
+  local log="$1" rc="$2" kept="$3" extracted="" lines=0
+  printf 'the nested vendor-CLI-free run exited %s\n' "$rc"
+  if [ -n "$kept" ]; then
+    printf 'its full output was preserved at: %s\n' "$kept"
+  else
+    printf 'its full output could NOT be preserved -- what follows is all there is\n'
+  fi
+  if [ ! -f "$log" ]; then
+    printf 'there is no log file at %s at all: the nested run produced no output file\n' "$log"
+    return 0
+  fi
+  # `grep -c` exits 1 on a count of ZERO while still printing it, so an
+  # `|| echo 0` here would append a SECOND zero and the arithmetic test below
+  # would die on "0\n0" -- the same shape as the churn-tick guard further
+  # down. Take the status separately, then insist on a number.
+  lines="$(grep -c '' "$log" 2>/dev/null)" || lines=0
+  case "$lines" in ''|*[!0-9]*) lines=0 ;; esac
+  if [ "$lines" -eq 0 ]; then
+    printf 'the log at %s is EMPTY: the run wrote nothing, so it failed before or instead of running the suite\n' "$log"
+    return 0
+  fi
+  extracted="$(awk -v max="$NESTED_LOG_MAX_FAILURES" '
+    /^== / { current = $0 }
+    /^[[:space:]]*(FAIL|FATAL):/ {
+      if (shown < max) { print current; print $0; shown++ } else { suppressed++ }
+    }
+    END {
+      if (suppressed > 0)
+        printf "... and %d further FAIL/FATAL line(s) not shown here; the preserved log has all of them\n", suppressed
+    }
+  ' "$log")"
+  if [ -n "$extracted" ]; then
+    printf '%s\n' "$extracted"
+    return 0
+  fi
+  printf 'no FAIL/FATAL line anywhere in %s line(s) of output: the run failed WITHOUT reaching an assertion. Last %s line(s):\n' \
+    "$lines" "$NESTED_LOG_TAIL"
+  tail -n "$NESTED_LOG_TAIL" "$log"
+}
+
+diag_probe="$WORK/failure-diagnostic"
+mkdir -p "$diag_probe/kept"
+
+# GREEN: the ordinary case -- a nested run that failed an assertion. The
+# report must carry the assertion and the file it came from.
+printf '%s\n' '== /repo/tests/test_example.sh' '  FAIL: the candidate did not do the thing' \
+  > "$diag_probe/with-assertion.log"
+diag_out="$(nested_failure_report "$diag_probe/with-assertion.log" 1 "")"
+assert_match 'the candidate did not do the thing' "$diag_out" \
+  "the diagnostic must carry the nested run's failed assertions"
+assert_match 'test_example\.sh' "$diag_out" \
+  "...and the file each came from, which is the only thing that makes them actionable"
+
+# RED 1 -- the shape that produced an empty diagnostic: a run that failed
+# without ever reaching an assertion.
+printf '%s\n' 'bash: /repo/tests/run.sh: cannot execute: required file not found' \
+  > "$diag_probe/no-assertion.log"
+diag_out="$(nested_failure_report "$diag_probe/no-assertion.log" 126 "")"
+assert_match 'no FAIL/FATAL line' "$diag_out" \
+  "a nested run that failed without reaching an assertion must be REPORTED as such, not silently produce an empty diagnostic"
+assert_match 'cannot execute' "$diag_out" \
+  "...and the fallback must show what the run actually printed, or the report names a problem without a single piece of evidence for it"
+assert_match 'exited 126' "$diag_out" "the exit status is evidence too, and it is the only evidence that always exists"
+
+# RED 2 and 3 -- an empty log, and no log at all. Both are real outcomes of a
+# run that died early, and both used to print a header and nothing else.
+: > "$diag_probe/empty.log"
+diag_out="$(nested_failure_report "$diag_probe/empty.log" 1 "")"
+assert_match 'is EMPTY' "$diag_out" "an empty log must be reported as an empty log"
+diag_out="$(nested_failure_report "$diag_probe/absent.log" 1 "")"
+assert_match 'no log file at' "$diag_out" "a missing log must be reported as missing, never as no failures found"
+red_case "the failure diagnostic reports an assertion-free run, an empty log and a missing log instead of printing nothing"
+
+# RED 4 -- THE DELETED LOG. The original defect: a message naming a path
+# inside a directory this run is about to remove. A stand-in scratch directory
+# is deleted here exactly the way helpers.sh's EXIT trap deletes $WORK, and
+# the preserved copy must still be readable afterwards.
+doomed_dir="$diag_probe/doomed"
+mkdir -p "$doomed_dir"
+printf '%s\n' '== /repo/tests/test_example.sh' '  FAIL: evidence that must survive' \
+  > "$doomed_dir/suite.log"
+survivor="$(preserve_failure_log "$doomed_dir/suite.log" "$diag_probe/kept" || true)"
+[ -n "$survivor" ] || fail "preserve_failure_log produced no path for a log that exists"
+rm -rf "$doomed_dir"
+[ ! -e "$doomed_dir/suite.log" ] \
+  || fail "the stand-in cleanup did not actually delete the original log, so the survival check below proves nothing"
+[ -f "$survivor" ] \
+  || fail "the preserved log did not survive deletion of the directory the original lived in -- the failure message would again name a path that is gone by the time it is read (lesson L023)"
+assert_match 'evidence that must survive' "$(cat "$survivor")" \
+  "the preserved copy must hold the log's content, not merely exist"
+red_case "a preserved failure log outlived the deletion of the scratch directory its original lived in, with its content intact"
+
+# ...and the destination the REAL failure path uses is outside every scratch
+# root this run created -- asked of helpers.sh's own registry rather than of
+# $WORK alone, because MACHINE_HOME and any later make_scratch root are
+# deleted by the same trap.
+#
+# inside_a_scratch_root <dir> -- true when <dir> sits inside a directory this
+# run deletes on exit. Both sides are canonicalized: register_scratch records
+# `pwd -P` results, and on macOS the same directory is reachable as both
+# /var/folders/... and /private/var/folders/..., so a text comparison would
+# answer "outside" for a path that is very much inside.
+inside_a_scratch_root() {
+  local d="$1" real root
+  real="$(cd "$d" 2>/dev/null && pwd -P)" || real="$d"
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    case "$real" in "$root"|"$root"/*) return 0 ;; esac
+  done <<<"$_SCRATCH_ROOTS"
+  return 1
+}
+inside_a_scratch_root "$WORK" \
+  || fail "the scratch-root test does not recognize \$WORK itself as doomed, so it cannot answer the only question it is asked -- every 'the failure log survives' claim below would be vacuous"
+if inside_a_scratch_root "$FAILURE_LOG_DIR"; then
+  fail "the failure log would be preserved into $FAILURE_LOG_DIR, which is inside a scratch root this run deletes on exit -- the diagnostic would once again name a path that is gone by the time it is read"
+fi
+red_case "the scratch-root test recognizes \$WORK as a directory this run deletes, and the failure log's destination is not one"
+
+# A log that cannot be preserved must be SAID to be unpreserved, never
+# reported with an invented path.
+unpreservable="$(preserve_failure_log "$diag_probe/absent.log" "$diag_probe/kept" || true)"
+[ -z "$unpreservable" ] \
+  || fail "preserve_failure_log named a destination for a source that does not exist"
+
+# ===========================================================================
+# 4d -- THE PROOF: the whole suite, on the vendor-CLI-free PATH, in the
 # isolated home, with a concurrent writer churning the machine-local state an
 # ambient Orchid shares.
 #
@@ -609,7 +907,7 @@ not_tested "bootstrap-path-vendor-clis" \
 
 # The honest boundary of the isolation, for the same reason. Section 4b closes
 # the channel a concurrent Orchid actually reached this suite through -- shared
-# machine-local state under HOME -- and 4c below demonstrates the closure while
+# machine-local state under HOME -- and 4d below demonstrates the closure while
 # a writer churns it. What no test file can defend against is a second Orchid
 # mutating THIS CHECKOUT while the suite reads it: a driver that rebases the
 # worktree, re-pins Formula/orchid.rb, or rewrites .orchid/ mid-run changes the
@@ -619,13 +917,13 @@ not_tested "bootstrap-path-vendor-clis" \
 # constraint, not a testable one, and it is named here so it is not mistaken
 # for something the sections below cover.
 not_tested "concurrent-orchid-mutating-this-checkout" \
-  "a second Orchid mutating this checkout's working tree or .orchid/ state DURING the run. Section 4b closes the shared-HOME channel and 4c exercises it under a concurrent writer, but a driver that rebases, re-pins or rewrites the repository mid-run changes the code under test itself, and a test cannot both provoke that and stay safe to run. Operator-owned: do not verify this repository while a drive loop is dispatching against the same worktree (lesson L024)"
+  "a second Orchid mutating this checkout's working tree or .orchid/ state DURING the run. Section 4b closes the shared-HOME channel and 4d exercises it under a concurrent writer, but a driver that rebases, re-pins or rewrites the repository mid-run changes the code under test itself, and a test cannot both provoke that and stay safe to run. Operator-owned: do not verify this repository while a drive loop is dispatching against the same worktree (lesson L024)"
 
 if [ "$AMBIENT_IS_HERMETIC" -eq 1 ] && [ "${ORCHID_SUITE_RUN:-}" = "$RUNNER" ]; then
   not_tested "nested-vendor-cli-free-run" \
     "a SECOND suite run launched from here. It would have answered exactly what the run now executing this file is already answering: none of ${VENDOR_CLIS[*]} resolves on this run's PATH (measured in section 2, not assumed), and ORCHID_SUITE_RUN names this repository's own $RUNNER, so the run around this file IS the vendor-CLI-free whole-suite run -- if the suite depends on a vendor CLI, THAT run goes red, without this file paying for a duplicate of it. The nested run still happens wherever it can differ: on a machine where a vendor CLI does resolve, and whenever this file is invoked outside that runner"
   not_tested "concurrent-ambient-home-writer" \
-    "the concurrent-writer half of section 4c, which only runs alongside a nested run. The isolation it exercises is asserted in full above, on this machine, in section 4b -- the writer adds the demonstration that the isolation holds while the shared state is being rewritten throughout, and there is no nested run here to hold it across"
+    "the concurrent-writer half of section 4d, which only runs alongside a nested run. The isolation it exercises is asserted in full above, on this machine, in section 4b -- the writer adds the demonstration that the isolation holds while the shared state is being rewritten throughout, and there is no nested run here to hold it across"
   exit 0
 fi
 
@@ -674,11 +972,12 @@ wait "$churn_pid" 2>/dev/null || true
 
 if [ "$suite_rc" -ne 0 ]; then
   fail "the deterministic suite does not pass with ${VENDOR_CLIS[*]} unresolvable, in an isolated HOME, alongside a concurrent writer of the ambient home -- it depends on something about the machine running it, which is what kept hosted CI red"
-  echo "  ---- failures from the vendor-CLI-free run ($suite_log) ----"
-  awk '
-    /^== / { current = $0 }
-    /^[[:space:]]*(FAIL|FATAL):/ { if (shown < 60) { print "  " current; print "  " $0; shown++ } }
-  ' "$suite_log"
+  # Copied out of $WORK FIRST: everything below names a path, and the trap
+  # that deletes $WORK runs before anyone reads this.
+  suite_log_kept="$(preserve_failure_log "$suite_log" "$FAILURE_LOG_DIR" || true)"
+  echo "  ---- the vendor-CLI-free run's failure ----"
+  nested_failure_report "$suite_log" "$suite_rc" "$suite_log_kept" \
+    | while IFS= read -r report_line; do echo "  $report_line"; done
   echo "  ---- end ----"
 fi
 

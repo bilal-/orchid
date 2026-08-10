@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
+# RED: every reason-bearing verb is invoked below with the reason MISSING --
+#      `task advance ... merging` with no `--reason` at all, and `--reason`
+#      as a trailing flag with no value on advance/unblock/retry/set -- and
+#      each must be refused with a message naming the missing value rather
+#      than crashing on an unbound variable. Kernel-owned keys (`status`,
+#      `attempts`, `updated`, `schema`) are then set directly and must be
+#      refused too, with the value read back to prove nothing moved. A
+#      decision recorded without a reason is one a future resumer cannot
+#      audit, which is the whole of INV-08.
+# GREEN: the same advance WITH a reason succeeds, and the journal must then
+#      carry both the arbitration entry and a kernel-derived actor -- so the
+#      refusals above are the guard discriminating, not the verb being dead.
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
@@ -80,3 +92,4 @@ out="$("$ORCHID_BIN" task retry T012 --reason 2>&1 1>/dev/null)"; rc=$?
 [ "$rc" -ne 0 ] || fail "retry --reason with no value must fail"
 echo "$out" | grep -q "unbound variable" && fail "retry --reason with no value must not crash with an unbound-variable error"
 echo "$out" | grep -q "requires a value" || fail "retry --reason with no value must die with a clear message (got: $out)"
+red_case "every reason-bearing verb refused a missing or valueless --reason, and every kernel-owned key refused a direct set with its value unchanged"

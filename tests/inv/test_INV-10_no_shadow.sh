@@ -11,6 +11,15 @@
 # neither colliding entry may vanish from the printed report (a silent
 # precedence win would mean one just disappears; INV-10 requires both stay
 # visible until an operator resolves the collision).
+#
+# RED: two plugins claiming the id `acme/shadow`, planted in two different
+#      discovery roots below. `plugins list` must exit nonzero, `doctor` must
+#      FAIL, and BOTH colliding rows must still be printed -- a silent
+#      precedence win, where one binding quietly disappears and the run uses
+#      whichever won, is the failure this gate exists for.
+# GREEN: the surrounding fixture's non-colliding plugins resolve normally in
+#      the same listing, so the failure above is the collision being detected
+#      rather than discovery being broken outright.
 source "$(dirname "$0")/../helpers.sh"
 
 mk_plugin() {  # dir id kind version
@@ -59,3 +68,4 @@ out="$(HOME="$home" ORCHID_REPO="$repo" ORCHID_PLUGIN_PATH="$pathroot" ORCHID_EN
 [ "$rc" -ne 0 ] || fail "INV-10: doctor must FAIL on a duplicate plugin id, never silently pass"
 assert_match "FAIL.*collision" "$out" "INV-10: doctor reports the collision as a FAIL"
 assert_match "COLLISION: acme/shadow" "$out" "INV-10: doctor's plugins: section shows the COLLISION line"
+red_case "a duplicate plugin id across two discovery roots failed both plugins list and doctor, with neither colliding entry silently shadowed away"

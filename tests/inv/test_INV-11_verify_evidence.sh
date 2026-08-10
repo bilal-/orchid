@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
+# RED: a verification command that genuinely fails (`test -f marker.txt` with
+#      no marker) must produce FAIL, an evidence log recording that exact
+#      command and a nonzero exit, and a REFUSED advance to `reviewing`. The
+#      marker is then removed again after a passing run, and the evidence
+#      must flip back -- evidence that only ever says PASS is the exact defect
+#      this invariant names, and a `verify` whose log could not record a
+#      failure would gate nothing.
+# GREEN: with the marker present the same command must PASS, log `exit: 0`,
+#      and let the advance through, so the refusals above are the evidence
+#      gate reading the real outcome rather than a verb that always refuses.
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 # v1-m2 Task 5: this fixture runs T001..T006 through several overlapping
@@ -44,6 +54,7 @@ rm -f "$WORK/marker.txt"
 rc=0; "$ORCHID_BIN" verify T001 >"$out" 2>&1 || rc=$?
 assert_eq 1 "$rc" "removing marker flips back to FAIL"
 assert_match "^exit: [1-9][0-9]*$" "$(cat "$log")" "evidence flips back honestly"
+red_case "verify evidence recorded a real FAIL, flipped to PASS only when the underlying condition changed, and flipped back when it changed again"
 
 # No verification_commands on the task and no config 'verify' -> dies
 # nonzero with a clear message; no engine spawn is required to detect this.

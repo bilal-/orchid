@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
+# RED: forged, mismatched, replayed, operation-mismatched and oversize
+#      envelopes are each dropped into the real spool below and reconciled.
+#      Every one must come back `quarantined` with its launch manifest still
+#      on disk -- an envelope that was accepted, or one that was discarded
+#      without a quarantine copy, is the failure this gate exists for.
+# GREEN: a well-formed envelope bound to its own launch must be ACCEPTED
+#      ("good envelope accepted" below), so the quarantines above are
+#      evidence of binding rather than of a reconciler that rejects
+#      everything and would pass this file while accepting nothing.
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 printf 'verify=true\nrole.implementer=fake\n' > orchid.config
@@ -34,6 +43,7 @@ printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","statu
 assert_match "T001	ok" "$("$ORCHID_BIN" jobs reconcile)" "good envelope accepted"
 printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","status":"ok","summary":"replay"}' "$jid" > "$sp/$jid-replay.json"
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: replay quarantined"
+red_case "envelope binding quarantined a forged job_id, a task mismatch and a replay, while accepting the one envelope actually bound to its launch"
 
 # quarantine must never clobber prior evidence: dropping the SAME forged
 # filename twice across two reconciles must leave BOTH copies on disk.

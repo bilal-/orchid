@@ -23,6 +23,18 @@ export ORCHID_ROOT="$REPO_ROOT"
 # lib/archetype.sh's own header carries the archetype half of this rule, and
 # tests/test_drive_hooks_archetypes.sh proves it behaviourally by driving a
 # custom archetype nobody wrote code for.
+#
+# RED: two, on the two halves. Statically, a synthetic `if [ "$engine" = <a
+#      real discovered id> ]` line must be MATCHED by the same comparison
+#      pattern the scan uses (section 2's self-check) -- a scan that finds
+#      nothing passes, and so does a broken one. Behaviourally, section 3's
+#      fixture engine carries a name that appears nowhere in kernel source,
+#      asserted by grep before anything uses it: if any layer held a name
+#      table, that is the engine that falls through it.
+# GREEN: an ASSIGNMENT of the same name (`v=codex,other`, a config default
+#      table, which is data) must NOT match, or the gate would flag every
+#      default in the tree; and the unknown engine must resolve, validate,
+#      qualify and be routed to exactly like a shipped one.
 
 # ===========================================================================
 # 1 -- discover the identifier set.
@@ -111,6 +123,7 @@ probe_assign="$WORK/probe-assign.sh"
 printf 'v=%s,other\n' "$first_id" > "$probe_assign"
 probe_assign_hit="$(grep -nE "[[:space:]](=|==|!=)[[:space:]]*\"?$first_id\"?([^A-Za-z0-9_./-]|\$)" "$probe_assign" || true)"
 [ -z "$probe_assign_hit" ] || fail "INV-14 self-check: an assignment (a config default table) must not read as a branch"
+red_case "INV-14's comparison pattern matches a real engine-name branch and leaves a config default table alone"
 
 # ===========================================================================
 # 3 -- neutrality, behaviourally. An engine whose name appears nowhere in
