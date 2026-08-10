@@ -530,3 +530,87 @@ known to regenerate.
   acceptEdits`, no `Bash`), so every task ended with "verification not run" and
   the operator had to run `verify-full.sh` and commit the regenerated artifact
   by hand. This is the single biggest source of manual work in the run.
+
+## Run — wasiyyat-schedule-c (2026-08-09)
+
+First exposure to a large, messy production repo: PHP 7.4 / MySQL, ~2,100
+PHPUnit tests across three suites plus 65 Playwright specs, hand-vendored
+runtime libraries, and several gitignored multi-GB data directories. 9 tasks,
+driven by a Claude Code session executing PROTOCOL.md via `orchid drive`.
+
+Findings F24–F31 live in **`dogfood-2026-08-09-wasiyyat-schedule-c.md`**.
+Headlines:
+
+- **F24/F25 (high)** — task worktrees cannot obtain gitignored dependencies
+  (`vendor/`, data dirs, `node_modules/`), and the merge validator's worktree
+  lives under `$TMPDIR` rather than beside the repo, so a bootstrap that works
+  for task worktrees does not reach it. Suggests a `prepare=` step distinct
+  from `verify=`, plus an exported `ORCHID_REPO_ROOT`.
+- **F26 (high)** — a task that authors a schema migration cannot make its own
+  tests pass; nothing applies the migration to the test database, and it
+  presents as a task failure that consumes attempts.
+- **F27/F28 (high)** — three byte-identical failure signatures each consumed an
+  attempt, and `task retry` restores status but no attempt budget, so operator
+  guidance gets exactly one shot. There is also no supported "operator fixed
+  it, just re-verify" edge.
+- **F29 (high)** — **F23 recurs**, and worse than F23 recorded: through
+  `orchid drive` an `input_overflow` launch failure is entirely silent. 73
+  passes produced 73 `pid: 0` manifests, no logs, no journal entries, engine
+  still `ok`, and `jobs gc` cannot reap them. The escalation ladder never fires
+  because a job that never started is not `dead`/`stalled`/`timeout`. Note this
+  makes the "pid-0 ghost job is a known false positive" observation above
+  unsafe at scale.
+- **F30 (high)** — `depends_on: "T002,T003"` silently deadlocks: the scheduler
+  splits on whitespace, so the comma-joined value is one unmatchable token. The
+  rendered `waiting-deps (T002,T003)` is byte-identical to a correct
+  two-dependency wait, which hid it for hours.
+- **F31 (low/medium)** — stale-epoch handoff, a stale-checkout hint that does
+  not clear the flag (needs `git reset`, not the printed command), raw bash
+  errors on missing positionals, and a journal reference written before its log.
+
+The plan critique loop was the run's highest-value component: seven rounds to a
+clean approve, and it caught a real data-loss bug (an unscoped
+`DELETE ... WHERE filename = ?` in a file outside the one under review).
+
+### F24 (lifecycle gap, HIGH) — the pump outlives the run it was installed for
+`orchid service install` registers a launchd agent, and nothing ever takes it
+away. On the webBooks run the six tasks reached `done`, the work was reviewed,
+merged and released — and the agent was still loaded, still firing every
+`pump_interval_s`. Two consequences, both observed:
+
+- **It burns model calls on a finished run.** Earlier in the same run the pump
+  woke an orchestrator eight consecutive times against a state with no legal
+  transition, and the interval was seen shrinking to ~31s. After the merge
+  every wake is guaranteed to be a no-op, forever, because `run_status` never
+  leaves `running` on its own — nothing advances a run to a terminal state when
+  its last task is merged.
+- **It survives the thing it points at.** Cleaning up meant removing the
+  integration worktree. Had `orchid service uninstall` not been run *first*, the
+  agent would have been left pointing at a deleted directory, waking on a
+  schedule against nothing. That ordering is not written down anywhere and there
+  is no guard for it.
+
+Suggested: uninstall the service (or refuse to fire) when the run reaches a
+terminal state; have `orchid merge` on the last task advance the run rather than
+leaving it `running`; and make `git worktree remove` of the integration checkout
+warn while a service for it is loaded.
+
+### F25 (state leak, HIGH) — `.orchid/` follows the integration branch into the product's main
+Fixing F21 by un-ignoring `.orchid/` has a consequence that only shows up at the
+end. Durable state is committed on the integration branch; that branch merges
+into the feature branch; the feature branch merges into `main`. webBooks' `main`
+now tracks **14 orchestrator files** — `roadmap.md`, `journal.md`,
+`BLOCKERS.md`, `baseline.md`, `plugins.lock` and review envelopes — none of
+which belong in a shipped app repository. Nobody noticed during review because
+the MR was large and the paths look like tooling.
+
+So the two requirements are in direct tension: plan apply needs `.orchid/`
+committable, and the product repo needs it absent. Both cannot hold with a
+plain `git add` and a normal merge.
+
+Suggested: have orchid stage its own state with `git add -f` so the target repo
+can keep `.orchid/` ignored permanently — the state is still committed on the
+integration branch, but a merge into main carries nothing, because the path is
+ignored there. Failing that, `orchid merge` should exclude `.orchid/` from what
+it hands back, or the docs should tell the operator to strip it before the final
+merge.
