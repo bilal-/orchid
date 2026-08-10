@@ -1267,38 +1267,6 @@ printf 'manifest_version=1\nid=test/stubdup\nversion=0.1.0\nkind=engine\napi_ver
   printf 'CTL=%s\n' "$(printf '%q' "$DUPCTL")"
 } > "$WORK/eng/stubdup/run"
 cat >> "$WORK/eng/stubdup/run" <<'EOF'
-# Part M -- AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. An implement
-# dispatch can return `ok` with a summary that is pure commentary -- findings
-# restated, sources listed -- over a worktree whose HEAD never moved and whose
-# tree is clean. A cross-project finding, confirmed here twice on one task:
-# advancing on that spends a full verify and a full review round re-proving a
-# defect this run already arbitrated, and burns a rework attempt on a
-# candidate nobody touched. So delivery is judged by the WORKTREE, and a
-# delivery that delivered nothing is a JOB-DELIVERY failure: it belongs on the
-# escalation ladder, never on the attempt budget, and never on a transition.
-# ===========================================================================
-NOOP="$WORK/noopdelivery"
-mkdir -p "$NOOP" "$WORK/nctl"
-cd "$NOOP" || exit 1
-git init -q .
-printf 'role.implementer=stubnoop\nrole.reviewer=stubreview\n' > orchid.config
-git add -A
-git commit -q -m "fixture: config"
-ORCHID_REPO="$NOOP" "$ORCHID_BIN" init >/dev/null || fail "orchid init (no-op delivery fixture)"
-git checkout -q orchid/integration
-
-# Role-eligible in every way that matters -- the launch really spawns, the job
-# really exits 0, the envelope really reconciles `ok` -- and yet it commits
-# NOTHING. Every signal short of the worktree says the work was done.
-mkdir -p "$WORK/eng/stubnoop"
-printf 'manifest_version=1\nid=test/stubnoop\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
-  > "$WORK/eng/stubnoop/plugin.conf"
-{
-  echo '#!/usr/bin/env bash'
-  echo 'set -eu'
-  printf 'CTL=%s\n' "$(printf '%q' "$WORK/nctl")"
-} > "$WORK/eng/stubnoop/run"
-cat >> "$WORK/eng/stubnoop/run" <<'EOF'
 req="$1"
 out="$(jq -r .output "$req")"
 jid="$(jq -r .job_id "$req")"
@@ -2277,6 +2245,47 @@ assert_match "blocked" "$hblk_out" "naming that status too (it said: $hblk_out)"
 assert_eq off "$(handoff_gate_mode "$REPO")" "the default is off"
 assert_eq off "$(handoff_state "$REPO" T001 | cut -f1)" \
   "so a repository that never configured it is untouched by everything above"
+# Part M -- AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. An implement
+# dispatch can return `ok` with a summary that is pure commentary -- findings
+# restated, sources listed -- over a worktree whose HEAD never moved and whose
+# tree is clean. A cross-project finding, confirmed here twice on one task:
+# advancing on that spends a full verify and a full review round re-proving a
+# defect this run already arbitrated, and burns a rework attempt on a
+# candidate nobody touched. So delivery is judged by the WORKTREE, and a
+# delivery that delivered nothing is a JOB-DELIVERY failure: it belongs on the
+# escalation ladder, never on the attempt budget, and never on a transition.
+#
+# Part L above owns the OTHER half of this same ladder: how a relaunch already
+# in flight is accounted. This part must hold without moving any reading there,
+# so the refusal below asks L's own `drive_job_outstanding` predicate before it
+# spends a rung -- one event, one rung, whichever half observes it.
+# ===========================================================================
+NOOP="$WORK/noopdelivery"
+mkdir -p "$NOOP" "$WORK/nctl"
+cd "$NOOP" || exit 1
+git init -q .
+printf 'role.implementer=stubnoop\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$NOOP" "$ORCHID_BIN" init >/dev/null || fail "orchid init (no-op delivery fixture)"
+git checkout -q orchid/integration
+
+# Role-eligible in every way that matters -- the launch really spawns, the job
+# really exits 0, the envelope really reconciles `ok` -- and yet it commits
+# NOTHING. Every signal short of the worktree says the work was done.
+mkdir -p "$WORK/eng/stubnoop"
+printf 'manifest_version=1\nid=test/stubnoop\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubnoop/plugin.conf"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -eu'
+  printf 'CTL=%s\n' "$(printf '%q' "$WORK/nctl")"
+} > "$WORK/eng/stubnoop/run"
+cat >> "$WORK/eng/stubnoop/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
 op="$(jq -r .operation "$req")"
 [ "$op" = implement ] || exit 1
 # Which dispatch this is, counted by the stub itself rather than by the test's
