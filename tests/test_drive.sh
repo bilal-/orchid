@@ -2354,6 +2354,15 @@ assert_eq "" "$(fm_get "$NTF" candidate_sha)" \
 [ ! -f "$NOOP/.orchid/reviews/N010-verify.log" ] \
   || fail "the refusal must cost no verify round — that is precisely the price of a false advance"
 assert_match "moved no commit" "$NDRIVE_OUT" "the pass says plainly what it refused and why"
+# The pass's EXIT STATUS is the driver's own report of what it decided, and it
+# is the half a message check cannot see. 0, not 16: a delivery that delivered
+# nothing is a job-delivery failure the ladder already knows how to answer --
+# count the rung, relaunch the implementer -- so the pass resolves it and keeps
+# driving. Stopping at a judgment boundary here would wake an operator for a
+# failure with a deterministic recovery, and any other code would mean the
+# refusal path died rather than took the arm above.
+assert_eq 0 "$NDRIVE_RC" \
+  "the refusal is a rung of the ladder, not a judgment boundary — the pass resolves it and exits 0 (out: $NDRIVE_OUT)"
 
 # The journal entry IS the record of the refusal, and it names BOTH shas: what
 # the worktree actually holds, and what the task already had recorded.
@@ -2373,6 +2382,8 @@ assert_eq 1 "$(fm_get "$NTF" infra_failures)" \
 assert_match "a relaunched implement job is still running" "$NDRIVE_OUT" \
   "and it is Part L's own deferral that says so — this refusal rides that ladder, it does not run a second one beside it"
 assert_eq implementing "$(nstatus)" "still implementing, still waiting"
+assert_eq 0 "$NDRIVE_RC" \
+  "deferring to a live relaunch is a WAIT — it costs a pass and nothing else (out: $NDRIVE_OUT)"
 
 # Released: the relaunch files its own envelope, equally empty. The ladder now
 # runs to its own bound -- a human -- instead of either advancing or looping.
@@ -2401,3 +2412,13 @@ for nrev in "$NOOP"/.orchid/reviews/N010-a*-reviewer*.json; do
   [ -e "$nrev" ] || continue
   fail "no review round may be spent on a candidate that was never delivered ($nrev)"
 done
+
+# And the ladder's bound is a HUMAN, reported the way every other parked run is
+# reported: the next pass over the blocked task stops at a judgment boundary and
+# says so in its exit status. This is the assertion that the refusal path ends
+# somewhere, rather than driving on forever over a task no engine can move.
+run_ndrive
+assert_eq 16 "$NDRIVE_RC" \
+  "the pass after the cap stops at a judgment boundary, the one exit status that fetches an operator (out: $NDRIVE_OUT)"
+assert_eq blocked-task "$(ORCHID_REPO="$NOOP" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
+  "and the boundary it records is the blocked task itself"
