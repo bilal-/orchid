@@ -618,6 +618,18 @@ ones its archetype never declares.
      after the envelope has reconciled and before anything verifies the
      candidate.
   2. **An `ok` envelope is not evidence that work happened — check the
+  1. **Read no envelope at all while an implement job for this task is still
+     outstanding.** Reconcile deletes a job's manifest in the same step that
+     files its envelope, so a live job has filed nothing: any envelope on disk
+     is one an earlier dispatch left, and that dispatch's replacement is being
+     written right now. Defer the whole arm — it neither counts as a fresh
+     failure (the ladder would spend a rung per tick on one event, and spawn a
+     second implementer into the worktree the first is still committing to) nor
+     as an acceptance (the live job is MOVING that worktree, so the stale
+     envelope can pass the HEAD check below on the strength of a commit it
+     never made).
+  2. `git -C <worktree> rev-parse HEAD` to read the new candidate.
+  3. **An `ok` envelope is not evidence that work happened — check the
      worktree before advancing.** A dispatch can return `ok` with a summary
      that is pure commentary (the findings it was handed, restated; its
      sources, listed) over a worktree whose HEAD never moved and whose tree is
@@ -627,22 +639,35 @@ ones its archetype never declares.
      all. If it has not moved, the envelope is NOT an acceptable envelope: take
      no transition, and hand it to step 2's escalation ladder exactly as a
      quarantined or non-ok envelope is handed to it — same ladder, same rung,
-     no second count. That means the ladder's own rule applies first: while a
-     relaunched implement job is still outstanding it has filed no envelope of
-     its own, so the one already refused is still the newest one reconcile
-     reports, and the ladder defers rather than spending a rung on it again.
-     Only once nothing is outstanding does it spend one, with the reason
-     naming both shas — the journal entry is the whole record of the refusal:
-     `orchid task infra-fail <id> --reason "implement envelope reported ok but
-     delivered nothing: worktree HEAD <sha> is unchanged from the task's
-     recorded <sha>"`, relaunch the implementer, and leave the task in
-     `implementing`. This is deliberately the `infra_failures` counter and not
-     `attempts`: the attempt budget bounds defects in work that was actually
-     delivered, and charging it here would spend a rework round on a candidate
-     nobody touched — while advancing would spend a full verify and a full
-     review round re-proving a defect this run already arbitrated.
-  3. `orchid task set <id> candidate_sha <sha>`.
-  4. `orchid task advance <id> testing --reason "implementer envelope ok"`.
+     no second count. The reason names both shas, and the journal entry is the
+     whole record of the refusal: `orchid task infra-fail <id> --reason
+     "implement envelope reported ok but delivered nothing: worktree HEAD <sha>
+     is unchanged from the task's recorded <sha>"`, relaunch the implementer,
+     and leave the task in `implementing`. This is deliberately the
+     `infra_failures` counter and not `attempts`: the attempt budget bounds
+     defects in work that was actually delivered, and charging it here would
+     spend a rework round on a candidate nobody touched — while advancing would
+     spend a full verify and a full review round re-proving a defect this run
+     already arbitrated.
+  4. **Make that refusal stick**, by appending the refused envelope's basename
+     to the task's `refused_envelopes` (`orchid task set`), and never selecting
+     a listed envelope again — as an acceptance or as a failure. Reconcile
+     removes no envelope, so a refused one sits beside every later sibling, and
+     an unmarked refusal is undone twice over: once the relaunch it started
+     moves HEAD, the refused envelope passes step 3 (it is no longer a no-op);
+     and once a newer NON-ok sibling is filed, the refused one is still the
+     newest `ok` envelope and is picked ahead of the failure. Either way the
+     work just refused advances to testing by a second door. Escalate first and
+     record second: a lost mark costs at most a duplicate rung on a ladder that
+     ends at a human, while a lost escalation would leave the task parked in
+     `implementing` with no live job and no boundary. The mark is also the
+     ladder's only memory of that failure — a non-ok envelope stays readable and
+     re-escalates every tick until the cap, a refused one answers nothing at
+     all. So a later tick that finds a refusal recorded for the CURRENT attempt
+     with no implement job outstanding and no acceptable envelope has a relaunch
+     that never landed, not something to wait for: spend a rung and relaunch.
+  5. `orchid task set <id> candidate_sha <sha>`.
+  6. `orchid task advance <id> testing --reason "implementer envelope ok"`.
 
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a

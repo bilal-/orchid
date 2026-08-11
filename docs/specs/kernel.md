@@ -503,7 +503,14 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   transition and charges `infra_failures` (relaunching the implementer, and
   reaching `blocked` at `infra_max` like any other job-delivery failure). It
   is deliberately not an `attempts` round: nothing was delivered for the
-  attempt budget to be judging.
+  attempt budget to be judging. **The refusal is durable, not a one-pass
+  verdict:** the refused envelope stays on disk as a sibling of every later
+  one, so it is recorded in `refused_envelopes` and is never selected again —
+  otherwise the same envelope is re-selected once the relaunch moves HEAD (it
+  no longer looks like a no-op) or once a newer non-ok sibling is filed (it is
+  still the newest `ok` one), and the refused work advances to testing by a
+  second door. For the same reason no implement envelope is read at all while
+  an implement job for the task is still outstanding.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
@@ -549,6 +556,14 @@ header and runs; the equality the advance leaves behind is what INV-11's
 `testing → reviewing` gate reads out of that header afterwards. (A task
 proposing that verification refuse outright on a mismatch, T031, is unmerged at
 the time of writing; nothing above depends on it.)
+implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
+blocking_severity, stop_condition, hook_guidance, engine, effort,
+acceptance_criteria, verification_commands, resources, exclusive,
+wallclock_budget_s, started_at, created, updated`. `refused_envelopes`: the
+space-separated basenames of implement envelopes refused as no-op deliveries,
+appended by the orchestrator through `orchid task set` (INV-13) at the moment
+it refuses one; a basename carries its own attempt (`<id>-a<n>-implementer
+[.k].json`), so a mark can never mask a later attempt's envelope.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance

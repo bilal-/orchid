@@ -555,21 +555,26 @@ drive_hook_guidance() {
 }
 
 # drive_implement_envelope <repo> <task> -- the path of a reconciled `ok`
-# implement envelope for this task's CURRENT attempt, preferring the highest
+# implement envelope for this task's CURRENT attempt that has not already been
+# REFUSED as a no-op delivery (drive_delivery_refused), preferring the highest
 # collision-counter sibling (the most recently reconciled one). Prints
-# nothing when the attempt has no ok implement envelope at all -- which is
-# either "still running" (no envelope yet) or "the engine reported failure"
-# (only non-ok envelopes); drive_implement_failed below distinguishes them.
+# nothing when the attempt has no such envelope at all -- which is "still
+# running" (no envelope yet), "the engine reported failure" (only non-ok
+# envelopes), or "the only ok one was already refused"; drive_implement_failed
+# below distinguishes the first two.
 drive_implement_envelope() {
-  local repo="$1" id="$2" state attempt f best best_n rest n
+  local repo="$1" id="$2" state attempt f best best_n base rest n
   state="$(orchid_state "$repo")"
   attempt=$(( $(fm_get "$state/tasks/$id.md" attempts) + 1 ))
   best=""; best_n=0
   for f in "$state/reviews/$id-a$attempt-implementer"*.json; do
     [ -e "$f" ] || continue
     [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
-    rest="$(basename "$f")"
-    rest="${rest#"$id"-a"$attempt"-implementer}"
+    base="$(basename "$f")"
+    # An envelope already refused as a no-op delivery is not an envelope any
+    # more, on this pass or any later one -- see drive_delivery_refused.
+    if drive_delivery_refused "$repo" "$id" "$base"; then continue; fi
+    rest="${base#"$id"-a"$attempt"-implementer}"
     case "$rest" in
       .json) n=1 ;;
       .[0-9]*.json) n="${rest#.}"; n="${n%.json}" ;;
@@ -586,6 +591,15 @@ drive_implement_envelope() {
 # envelope has been reconciled for this attempt AND none of them is ok. That
 # is the deterministic "the engine reported failure" signal; a task with no
 # implement envelope at all is simply still awaiting one.
+#
+# A REFUSED envelope is not read here either, and by exactly the same rule the
+# selector above applies: it is no longer an envelope. Skipping it in only one
+# of the two would strand the task rather than route it -- a refused `ok`
+# sibling left visible HERE answers "did the engine report failure?" with `no`
+# for the whole rest of the attempt, so a genuine non-ok envelope filed
+# afterwards would be selected by nobody and escalated by nobody, and the walk
+# would sit on "awaiting the implementer envelope" with no job outstanding and
+# no envelope it will ever accept. One rule, both readers.
 drive_implement_failed() {
   local repo="$1" id="$2" state attempt f any
   state="$(orchid_state "$repo")"
@@ -593,6 +607,7 @@ drive_implement_failed() {
   any=0
   for f in "$state/reviews/$id-a$attempt-implementer"*.json; do
     [ -e "$f" ] || continue
+    if drive_delivery_refused "$repo" "$id" "$(basename "$f")"; then continue; fi
     any=1
     [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
     return 1
@@ -637,6 +652,98 @@ drive_delivery_is_noop() {
   floor="$(drive_delivery_floor "$repo" "$id")"
   [ -n "$floor" ] || return 1
   [ "$head" = "$floor" ]
+}
+
+# drive_delivery_refused <repo> <task> <envelope-basename> -- 0 iff this exact
+# envelope has ALREADY been refused as a no-op delivery on this task.
+#
+# A REFUSAL THAT DOES NOT STICK IS NOT A REFUSAL. `jobs reconcile` files every
+# implement envelope of an attempt as a sibling and removes none of them, so a
+# refused one sits there for the rest of the attempt, still `ok`, still the
+# newest `ok` -- and the no-op test above is a comparison against a MOVING
+# worktree, not a property of the envelope. The refused work then walks back in
+# by two other doors, both of which end with it advanced to testing:
+#
+#   * HEAD MOVES. The relaunch the refusal itself started commits to that same
+#     worktree. The instant it does, the already-refused envelope stops looking
+#     like a no-op -- HEAD is off the floor -- and reads as delivery of a commit
+#     it never made. (The driver also refuses to read ANY envelope while an
+#     implement job is outstanding, which closes this door for the window the
+#     relaunch is alive; this mark closes it for good, including after that job
+#     dies without filing an envelope of its own.)
+#   * A NEWER NON-OK SIBLING ARRIVES. The relaunch reports failure. "The newest
+#     ok envelope" is still the refused one, so the failure is stepped over and
+#     the refused envelope selected again.
+#
+# Both are answered in one place, by never selecting it again. The mark is the
+# task's own `refused_envelopes` frontmatter list, written through `orchid task
+# set` -- INV-13: the driver mutates durable state only through named verbs and
+# decides only on structured fields, so no sidecar file and no mutation of the
+# engine's own artifact. BASENAMES, not counters: the basename carries the
+# attempt in it (`<id>-a<n>-implementer[.k].json`), so a mark left by an earlier
+# attempt can never mask a later attempt's envelope.
+drive_delivery_refused() {
+  local repo="$1" id="$2" base="$3" list
+  [ -n "$base" ] || return 1
+  list="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" refused_envelopes)"
+  [ -n "$list" ] || return 1
+  # Space-delimited membership, matched WITH the delimiters, so a basename can
+  # only match a whole entry and never a fragment of a longer one (a task id
+  # that is a prefix of another's, say). No word splitting, so nothing globs.
+  case " $list " in
+    *" $base "*) return 0 ;;
+  esac
+  return 1
+}
+
+# drive_delivery_refused_any <repo> <task> -- 0 iff a no-op delivery has been
+# refused on this task's CURRENT attempt.
+#
+# The mark makes the refused envelope invisible, and that costs the ladder the
+# durable signal it runs on: a non-ok envelope stays readable for the rest of
+# the attempt, so an escalation whose relaunch never happened (no eligible
+# engine, a launch that failed) is simply escalated again next pass until the
+# cap fetches a human -- but a REFUSED envelope answers "did the engine report
+# failure?" with nothing at all, and the walk would sit on "awaiting the
+# implementer envelope" forever with no job, no envelope it will ever accept
+# and no boundary. So the refusal itself is the signal: a task with one on
+# record, nothing outstanding and nothing acceptable is a failure state the
+# ladder must answer, not a wait.
+#
+# Scoped to the current attempt by the basename's own `-a<n>-` segment (the
+# whole reason the mark is a basename), so a refusal from an earlier round
+# cannot make a fresh round look like a failure. The trailing `-implementer`
+# keeps `a1` from matching `a11`.
+drive_delivery_refused_any() {
+  local repo="$1" id="$2" tf attempt list
+  tf="$(orchid_state "$repo")/tasks/$id.md"
+  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+  list="$(fm_get "$tf" refused_envelopes)"
+  [ -n "$list" ] || return 1
+  case " $list " in
+    *" $id-a$attempt-implementer"*) return 0 ;;
+  esac
+  return 1
+}
+
+# drive_delivery_refusal_list <repo> <task> <envelope-basename> -- the value the
+# driver writes back to `refused_envelopes` when it refuses that envelope: the
+# existing list with this basename appended. IDEMPOTENT -- an envelope already
+# on the list is not appended twice, so a refusal that somehow reaches the same
+# envelope a second time (it should not: the selector above already excludes it)
+# rewrites the same value rather than growing the field.
+drive_delivery_refusal_list() {
+  local repo="$1" id="$2" base="$3" list
+  list="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" refused_envelopes)"
+  if [ -z "$base" ] || drive_delivery_refused "$repo" "$id" "$base"; then
+    printf '%s\n' "$list"
+    return 0
+  fi
+  if [ -n "$list" ]; then
+    printf '%s %s\n' "$list" "$base"
+  else
+    printf '%s\n' "$base"
+  fi
 }
 
 # drive_reviewer_envelope_count <repo> <task> -- how many reviewer envelopes

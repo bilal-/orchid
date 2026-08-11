@@ -401,6 +401,95 @@ if drive_delivery_is_noop "$POLICY" P50 ""; then
   fail "an unreadable HEAD is a worktree fault, handled by its own boundary — never a silent no-op verdict"
 fi
 
+# --- a refusal that does not stick is not a refusal ------------------------
+# The no-op test above compares an envelope against a MOVING worktree; it is
+# not a property of the envelope, and `jobs reconcile` removes no envelope. A
+# refused one therefore sits on disk for the rest of the attempt, still `ok`
+# and still the newest `ok`, and is re-selected by BOTH of the doors below
+# unless the refusal is recorded against the envelope itself. Each is RED
+# before this task: the selector had no notion of a refused envelope at all.
+mk_impl_env() {  # <id> <attempt> <suffix> <status>
+  local id="$1" att="$2" suffix="$3" st="$4"
+  jq -n --arg jid "j-fixture-$id-a$att$suffix" --arg task "$id" --arg st "$st" \
+    '{contract:1, job_id:$jid, task:$task, operation:"implement", status:$st,
+      summary:"delivery fixture"}' \
+    > "$POLICY/.orchid/reviews/$id-a$att-implementer$suffix.json"
+}
+
+mk_delivery_task P53 - "$BASE"
+mk_impl_env P53 1 "" ok
+assert_eq "$POLICY/.orchid/reviews/P53-a1-implementer.json" \
+  "$(drive_implement_envelope "$POLICY" P53)" \
+  "an ok implement envelope is the attempt's envelope until something says otherwise"
+
+# The refusal, recorded exactly as runners/orchid-drive records it.
+fm_set "$POLICY/.orchid/tasks/P53.md" refused_envelopes "P53-a1-implementer.json"
+drive_delivery_refused "$POLICY" P53 P53-a1-implementer.json \
+  || fail "the mark is read straight back off the task's own frontmatter"
+if drive_delivery_refused "$POLICY" P53 P53-a1-implementer.2.json; then
+  fail "and it marks THAT envelope, not every sibling of it"
+fi
+assert_eq "" "$(drive_implement_envelope "$POLICY" P53)" \
+  "DOOR ONE: a refused envelope is never selected again, so the relaunch it started may move HEAD without that envelope becoming delivery of a commit it never made"
+if drive_implement_failed "$POLICY" P53; then
+  fail "nor is it a fresh engine failure — its rung was already spent, and the relaunch's own envelope has not landed yet"
+fi
+
+mk_impl_env P53 1 .2 failed
+assert_eq "" "$(drive_implement_envelope "$POLICY" P53)" \
+  "DOOR TWO: a newer NON-ok sibling does not restore the refused envelope to 'the newest ok one' — the failure is never stepped over to reach it"
+drive_implement_failed "$POLICY" P53 \
+  || fail "that non-ok sibling is the attempt's word now: a failure the ladder counts, never an acceptance"
+
+# The mark excludes ONE envelope, not the attempt: a relaunch that really
+# delivers is still accepted, on its own envelope.
+mk_impl_env P53 1 .3 ok
+assert_eq "$POLICY/.orchid/reviews/P53-a1-implementer.3.json" \
+  "$(drive_implement_envelope "$POLICY" P53)" \
+  "a genuinely new ok envelope is the attempt's envelope — the refusal quarantines one document, not the round"
+if drive_implement_failed "$POLICY" P53; then
+  fail "and with an acceptable envelope on disk the attempt is not in failure"
+fi
+
+# Basenames carry their own attempt, which is why the mark is a basename and
+# not a counter: a counter-keyed mark would mask the NEXT round's envelope and
+# strand the task with nothing selectable.
+printf -- '---\nschema: 1\nid: P54\nstatus: implementing\narchetype: feature\nattempts: 1\nbase_sha: %s\ncandidate_sha: %s\nrefused_envelopes: P54-a1-implementer.json\n---\nbody\n' \
+  "$BASE" "$CAND" > "$POLICY/.orchid/tasks/P54.md"
+mk_impl_env P54 2 "" ok
+assert_eq "$POLICY/.orchid/reviews/P54-a2-implementer.json" \
+  "$(drive_implement_envelope "$POLICY" P54)" \
+  "a refusal recorded on attempt 1 says nothing at all about attempt 2's envelope"
+
+# The mark is also the ladder's REPLACEMENT SIGNAL. A non-ok envelope stays
+# readable for the rest of the attempt, so an escalation whose relaunch never
+# happened is escalated again next pass until the cap fetches a human; a
+# refused envelope answers that question with nothing at all. Without this
+# predicate the walk would wait forever on a relaunch that is neither running
+# nor coming.
+drive_delivery_refused_any "$POLICY" P53 \
+  || fail "a refusal on the CURRENT attempt is a failure state the ladder must answer, not a wait"
+if drive_delivery_refused_any "$POLICY" P50; then
+  fail "a task with no refusal on record is simply awaiting its envelope"
+fi
+if drive_delivery_refused_any "$POLICY" P54; then
+  fail "attempt 1's refusal must not read as attempt 2's — a fresh round would escalate on an old round's evidence"
+fi
+# ...and the segment match stops at `-implementer`, so a1 is never a11.
+printf -- '---\nschema: 1\nid: P56\nstatus: implementing\narchetype: feature\nattempts: 0\nbase_sha: %s\ncandidate_sha:\nrefused_envelopes: P56-a11-implementer.json\n---\nbody\n' \
+  "$BASE" > "$POLICY/.orchid/tasks/P56.md"
+if drive_delivery_refused_any "$POLICY" P56; then
+  fail "attempt 11's mark is not attempt 1's — a prefix match here escalates a round that never refused anything"
+fi
+
+# The value the driver writes back when it refuses: append, and idempotent.
+assert_eq "P53-a1-implementer.json P53-a1-implementer.3.json" \
+  "$(drive_delivery_refusal_list "$POLICY" P53 P53-a1-implementer.3.json)" \
+  "a second refusal appends to the list rather than replacing it — every one of them stays refused"
+assert_eq "P53-a1-implementer.json" \
+  "$(drive_delivery_refusal_list "$POLICY" P53 P53-a1-implementer.json)" \
+  "and refusing one already on the list writes the same list back, so the field cannot grow on a repeated pass"
+
 # ===========================================================================
 # Part B -- end to end, real stub engines, no model anywhere: pending ->
 # done, entirely under `orchid drive`.
@@ -2258,11 +2347,21 @@ assert_eq off "$(handoff_state "$REPO" T001 | cut -f1)" \
 # Part L above owns the OTHER half of this same ladder: how a relaunch already
 # in flight is accounted. This part must hold without moving any reading there,
 # and it does so by not building a second ladder at all: a delivery that
-# delivered nothing is dropped as UNACCEPTABLE, so it falls into the one arm
-# Part L specifies and is deferred, counted and relaunched by that arm's own
-# `drive_job_outstanding` / `drive_escalate` pair. One event, one rung,
-# whichever shape produced it -- which is why the deferral this part observes
-# below is Part L's note, word for word, and not one of its own.
+# delivered nothing is dropped as UNACCEPTABLE, so it reaches the same single
+# `drive_escalate` call every other implement failure reaches, behind the same
+# single "is a relaunch still live?" question Part L pins -- one event, one
+# rung, whichever shape produced it. That question is now asked of the walk as
+# a whole rather than of its failure arm alone, because a live relaunch is
+# MOVING the worktree the acceptance test reads: the deferral this part
+# observes below is Part L's note, word for word, and not one of its own.
+#
+# And a refusal has to STICK. Reconcile removes no envelope, so the refused one
+# sits beside every later sibling: unmarked, it is re-selected the moment the
+# relaunch moves HEAD (it stops looking like a no-op) or the moment a newer
+# non-ok sibling is filed (it is still the newest ok one), and the refused work
+# advances to testing by a second door. Part A proves what the mark excludes;
+# this part proves the driver writes one, and that the live-relaunch window
+# cannot be used to walk through the first door before it does.
 # ===========================================================================
 NOOP="$WORK/noopdelivery"
 mkdir -p "$NOOP" "$WORK/nctl"
@@ -2372,6 +2471,13 @@ assert_match "HEAD $NBASE is unchanged from the task's recorded $NBASE" "$njourn
 assert_match "infra failure #1" "$njournal" \
   "recorded through orchid task infra-fail, so it carries the kernel's own counter, cap and journal discipline"
 
+# AND THE REFUSAL IS RECORDED AGAINST THE ENVELOPE, not just against the pass
+# that made it. Part A proves what that mark then excludes; this is the half
+# only the driver can be asked -- that it writes one at all, through the same
+# named verb every other field it owns goes through.
+assert_match "N010-a1-implementer.json" "$(fm_get "$NTF" refused_envelopes)" \
+  "the refused envelope is named on the task — a refusal that leaves it selectable is not a refusal"
+
 # That refusal relaunched the implementer, and this fixture holds that job
 # open. The envelope the next pass reads is therefore STILL the one already
 # refused -- refusing it again would charge one infra_failure per pass and race
@@ -2384,6 +2490,33 @@ assert_match "a relaunched implement job is still running" "$NDRIVE_OUT" \
 assert_eq implementing "$(nstatus)" "still implementing, still waiting"
 assert_eq 0 "$NDRIVE_RC" \
   "deferring to a live relaunch is a WAIT — it costs a pass and nothing else (out: $NDRIVE_OUT)"
+
+# THE OTHER DOOR, and the pass that used to walk through it. The relaunch this
+# refusal started is alive and free to commit to the worktree at any instant --
+# so the commit is made here, by hand, in exactly that window. The moment it
+# lands, the ALREADY REFUSED envelope stops looking like a no-op (HEAD is off
+# the floor) and a driver that reads envelopes while a job is outstanding would
+# advance that half-written tree to testing on the authority of a document
+# written before any of it existed, and stamp it as the candidate while its
+# author is still typing.
+NWT="$(fm_get "$NTF" worktree)"
+[ -n "$NWT" ] || fail "the dispatch must have recorded a worktree for N010"
+git -C "$NWT" commit -q --allow-empty -m "fixture: the live relaunch's first commit"
+NMOVED="$(git -C "$NWT" rev-parse HEAD)"
+[ "$NMOVED" != "$NBASE" ] || fail "the fixture commit must really move the worktree HEAD"
+run_ndrive
+assert_eq implementing "$(nstatus)" \
+  "a HEAD moved by the LIVE relaunch is not delivery by the envelope already refused (out: $NDRIVE_OUT)"
+assert_eq "" "$(fm_get "$NTF" candidate_sha)" \
+  "and nothing is stamped as the candidate: no envelope has been filed over that commit by anyone"
+assert_eq 1 "$(fm_get "$NTF" infra_failures)" \
+  "nor is a second rung spent while that relaunch is still live"
+assert_match "a relaunched implement job is still running" "$NDRIVE_OUT" \
+  "and the LIVE JOB is what the pass defers to: with a relaunch outstanding the walk does not read an envelope at all, whatever the worktree now says"
+assert_eq 0 "$NDRIVE_RC" "the pass is still a wait (out: $NDRIVE_OUT)"
+# Rolled back, so the rest of this part measures the same unmoved worktree it
+# started with: what follows is about the ladder's bound, not about this commit.
+git -C "$NWT" reset -q --hard "$NBASE"
 
 # Released: the relaunch files its own envelope, equally empty. The ladder now
 # runs to its own bound -- a human -- instead of either advancing or looping.
@@ -2406,6 +2539,17 @@ assert_eq 3 "$(fm_get "$NTF" infra_failures)" \
 assert_eq 0 "$(fm_get "$NTF" attempts)" \
   "and after three no-op deliveries the task's rework budget is still whole — none of them was a rework"
 assert_eq "" "$(fm_get "$NTF" candidate_sha)" "no candidate was ever recorded for this task"
+# Three dispatches, three empty envelopes, three refusals -- and every one of
+# them still refused at the end, including the one refused by the pass that hit
+# the cap. A list that only ever holds the LATEST refusal would re-open the
+# earlier doors the moment this task was unblocked and retried.
+nrefused="$(fm_get "$NTF" refused_envelopes)"
+for nenv in N010-a1-implementer.json N010-a1-implementer.2.json N010-a1-implementer.3.json; do
+  case " $nrefused " in
+    *" $nenv "*) ;;
+    *) fail "every refused envelope stays refused — $nenv is missing from '$nrefused'" ;;
+  esac
+done
 [ ! -f "$NOOP/.orchid/reviews/N010-verify.log" ] \
   || fail "no verify round may be spent on a candidate that was never delivered"
 for nrev in "$NOOP"/.orchid/reviews/N010-a*-reviewer*.json; do

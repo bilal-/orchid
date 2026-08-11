@@ -633,9 +633,77 @@ drive_dispatch() {
 # implementing -- turn the implementer's own envelope into a candidate.
 # ---------------------------------------------------------------------------
 drive_implementing() {
-  local id="$1" arch="$2" tf envf wt cand floor arc why
+  local id="$1" arch="$2" tf envf envb wt cand floor arc why
   tf="$state/tasks/$id.md"
-  why=""
+  why=""; envb=""
+
+  # A LIVE implement job outranks EVERY envelope on disk. Asked first, before
+  # anything is read, because it decides both of the readings below.
+  #
+  # `jobs reconcile` deletes a job's manifest in the same step that files its
+  # envelope, so an implement job still outstanding has filed nothing: whatever
+  # envelope this task has is one an EARLIER dispatch left, and the live job was
+  # started precisely because that envelope was not good enough. Reading it
+  # again while its own replacement is being written is wrong in both
+  # directions, and this arm is the only one where both can be true at once:
+  #
+  #   AS A FAILURE, it re-counts. drive_implement_failed reads DURABLE evidence:
+  #   reconcile files every implement envelope of an attempt as a sibling
+  #   (-a<n>-implementer.json, .2.json, ...) and removes none of them. So the
+  #   moment one implementer reports non-ok, that predicate is true for the
+  #   whole REST of the attempt -- including the entire lifetime of the relaunch
+  #   the escalation below is about to start. Unguarded, the ladder then runs on
+  #   the wall clock instead of on failures: pass N infra-fails 1/3 and
+  #   relaunches, pass N+1 reads the same stale envelope and infra-fails 2/3 --
+  #   spawning a SECOND implementer into the same worktree, on the same branch,
+  #   while the first is still committing to it -- and pass N+2 auto-blocks the
+  #   task with two or three engines still writing to that checkout.
+  #
+  #   AS AN ACCEPTANCE, it advances work nobody vouched for. The stale envelope
+  #   is compared against a worktree the live job is MOVING: the instant that
+  #   job makes its first commit, an envelope already refused as a no-op
+  #   delivery (below) stops looking like one -- HEAD is off the floor -- and an
+  #   unguarded walk would advance that half-written tree to testing on the
+  #   authority of an envelope written before any of it existed, and stamp it as
+  #   the candidate while its author is still typing. The mark described by
+  #   lib/drive.sh's drive_delivery_refused closes that door permanently; this
+  #   guard closes it for the window the relaunch is alive, which is the window
+  #   in which the worktree can move under an envelope that never mentioned it.
+  #
+  # Every sibling arm already asks this question before it spawns
+  # (drive_hook_gate, drive_dispatch, drive_reviewing); this one asked nobody.
+  #
+  # WHY THE GUARD LIVES HERE AND NOT IN `orchid jobs prepare`. Refusing a
+  # duplicate manifest for the same task+operation inside the mint verb looks
+  # like the stronger, more central fix. It is neither:
+  #
+  #   * It is WRONG for two of the four operations. A dual-review tier routes
+  #     two `review` jobs for one task on purpose, each to a different engine
+  #     (lib/review.sh's routing table), and a point with two hook bindings
+  #     launches two `hook` jobs for one task and one point (drive_hook_gate's
+  #     dispatch loop). A blanket refusal breaks both; an operation-keyed
+  #     exemption list is a hardcoded policy branch inside a verb whose whole
+  #     job is to mint an identity.
+  #   * It cannot answer the question it would be asked. "Is a job already
+  #     outstanding" is not "does a manifest exist": a `pid: 0` manifest is a
+  #     launch that died before its spawn and nothing is running, which is
+  #     exactly why drive_job_outstanding refuses to read one as live. prepare
+  #     would have to re-derive that liveness rule, and getting it wrong turns a
+  #     recoverable orphan into a permanent refusal to relaunch -- at the one
+  #     moment recovery is needed.
+  #   * It is the wrong tier. Whether to have a second engine running is a
+  #     dispatch decision, and dispatch is tier-2's alone (INV-01/INV-06).
+  #     prepare mints identity; it is not told, and must not guess, whether its
+  #     caller intends concurrency.
+  #
+  # So concurrency stays a single driver-side question, asked by the one
+  # predicate all four arms share. libexec/orchid-jobs' `prepare` arm carries a
+  # pointer back to this note.
+  if drive_job_outstanding "$id" implement; then
+    drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the envelope it was launched over is not a fresh failure)"
+    return 0
+  fi
+
   envf="$(drive_implement_envelope "$repo" "$id")"
 
   # AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. A dispatch can report
@@ -649,11 +717,12 @@ drive_implementing() {
   # and saying it that way -- by dropping it here, before anything reads it --
   # is what keeps this half of the problem from growing a second ladder beside
   # the one below. The arm below is the ONLY place an implement failure is
-  # accounted: it asks `drive_job_outstanding` first, so a relaunch already in
-  # flight defers this refusal exactly as it defers a non-ok envelope, and it
-  # escalates at most once per pass through the one `drive_escalate` call each
-  # shape reaches. One event, one rung, whichever shape produced it. `why`
-  # carries only WHICH failure this is, never how it is counted.
+  # accounted: the guard above already deferred the whole walk if a relaunch is
+  # in flight, and it escalates at most once per pass through the one
+  # `drive_escalate` call each shape reaches. One event, one rung, whichever
+  # shape produced it. `why` carries only WHICH failure this is, never how it
+  # is counted; `envb` carries WHICH envelope, so the refusal can be made to
+  # stick to it.
   if [ -n "$envf" ]; then
     if ! drive_has_transition "$arch" implementing testing; then
       set_boundary operator-decision "$id" "archetype '$arch' declares no implementing -> testing edge"
@@ -667,73 +736,54 @@ drive_implementing() {
     if drive_delivery_is_noop "$repo" "$id" "$cand"; then
       floor="$(drive_delivery_floor "$repo" "$id")"
       why="implement envelope reported ok but delivered nothing: worktree HEAD $cand is unchanged from the task's recorded $floor"
+      envb="$(basename "$envf")"
       envf=""
     fi
   fi
 
   if [ -z "$envf" ]; then
-    # A LIVE implement job outranks the failure signal, and this is the one
-    # arm where both can be true at once.
-    #
-    # drive_implement_failed reads DURABLE evidence: `jobs reconcile` files
-    # every implement envelope of an attempt as a sibling (-a<n>-implementer
-    # .json, .2.json, ...) and removes none of them. So the moment one
-    # implementer reports non-ok, that predicate is true for the whole REST
-    # of the attempt -- including the entire lifetime of the relaunch the
-    # escalation below is about to start. Unguarded, the ladder then runs on
-    # the wall clock instead of on failures: pass N infra-fails 1/3 and
-    # relaunches, pass N+1 reads the same stale envelope and infra-fails 2/3
-    # -- spawning a SECOND implementer into the same worktree, on the same
-    # branch, while the first is still committing to it -- and pass N+2
-    # auto-blocks the task with two or three engines still writing to that
-    # checkout. Every sibling arm already asks this question before it
-    # spawns (drive_hook_gate, drive_dispatch, drive_reviewing); this one
-    # asked nobody.
-    #
-    # WHY THE GUARD LIVES HERE AND NOT IN `orchid jobs prepare`. Refusing a
-    # duplicate manifest for the same task+operation inside the mint verb
-    # looks like the stronger, more central fix. It is neither:
-    #
-    #   * It is WRONG for two of the four operations. A dual-review tier
-    #     routes two `review` jobs for one task on purpose, each to a
-    #     different engine (lib/review.sh's routing table), and a point with
-    #     two hook bindings launches two `hook` jobs for one task and one
-    #     point (drive_hook_gate's dispatch loop). A blanket refusal breaks
-    #     both; an operation-keyed exemption list is a hardcoded policy
-    #     branch inside a verb whose whole job is to mint an identity.
-    #   * It cannot answer the question it would be asked. "Is a job already
-    #     outstanding" is not "does a manifest exist": a `pid: 0` manifest is
-    #     a launch that died before its spawn and nothing is running, which
-    #     is exactly why drive_job_outstanding refuses to read one as live.
-    #     prepare would have to re-derive that liveness rule, and getting it
-    #     wrong turns a recoverable orphan into a permanent refusal to
-    #     relaunch -- at the one moment recovery is needed.
-    #   * It is the wrong tier. Whether to have a second engine running is a
-    #     dispatch decision, and dispatch is tier-2's alone (INV-01/INV-06).
-    #     prepare mints identity; it is not told, and must not guess, whether
-    #     its caller intends concurrency.
-    #
-    # So concurrency stays a single driver-side question, asked by the one
-    # predicate all four arms share. libexec/orchid-jobs' `prepare` arm
-    # carries a pointer back to this note.
-    if drive_job_outstanding "$id" implement; then
-      drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the envelope it was launched over is not a fresh failure)"
-      return 0
-    fi
     # The no-op delivery above, if that is what dropped the envelope. It is a
     # JOB-DELIVERY failure and takes the same rung the arm below takes, never
     # one of its own: `infra_failures` (which relaunches the implementer and
     # auto-blocks at `infra_max`) and never `attempts`, whose budget exists to
     # bound defects in work that was actually delivered. Nothing is written to
     # `candidate_sha` either -- there is no new candidate to record, and
-    # restamping the same sha would touch `updated` on a task that did not move.
+    # restamping the same sha would record nothing while touching `updated` on
+    # a task that did not move. (The mark below does touch `updated`, and
+    # should: a refusal on record IS a change of state, unlike a sha rewritten
+    # to its own value.)
+    #
+    # AND THE REFUSAL IS MADE TO STICK, by recording the envelope it refused --
+    # drive_delivery_refused documents the two doors an unmarked one walks back
+    # in through. ORDER: escalate first, mark second. Both writes go through
+    # named verbs and neither can be made atomic with the other, so the order is
+    # a choice about which half a pass killed between them leaves behind. A lost
+    # MARK costs at most one duplicate rung on a ladder that ends at a human
+    # anyway. A lost ESCALATION would leave a task with no relaunch, no live
+    # job, no acceptable envelope and no boundary -- parked in `implementing`
+    # forever, the exact disappearing act this walk exists to end.
     if [ -n "$why" ]; then
       drive_note "$id: implementing -> testing REFUSED — the ok envelope moved no commit (worktree HEAD $cand, recorded $floor)"
       drive_escalate "$id" implementer implement "" "$why"
+      "$ORCHID_BIN" task set "$id" refused_envelopes \
+        "$(drive_delivery_refusal_list "$repo" "$id" "$envb")" >/dev/null
       return 0
     fi
     if drive_implement_failed "$repo" "$id"; then
       drive_escalate "$id" implementer implement "" "implement envelope reconciled with a non-ok status"
+      return 0
+    fi
+    # A refusal already on record, with nothing outstanding and nothing
+    # acceptable on disk. The mark is what makes this state possible -- it is
+    # the one signal in this walk that DELETES itself, unlike a non-ok envelope,
+    # which stays readable and re-escalates every pass until the cap fetches a
+    # human. So the refusal stands in for it: the relaunch it started is neither
+    # running nor has it filed anything (no eligible engine at the time, a
+    # launch that failed, a job that died before writing), and waiting on it
+    # would be waiting forever. Same ladder, same cap, one honest reason.
+    if drive_delivery_refused_any "$repo" "$id"; then
+      drive_escalate "$id" implementer implement "" \
+        "the implement relaunch after a refused no-op delivery is neither running nor has it filed an envelope"
       return 0
     fi
     drive_note "$id: awaiting the implementer envelope"
@@ -1008,7 +1058,9 @@ drive_blocked() {
 # FAILURES, and a pass has at most one of those per slot to report -- but two
 # separate arms can reach the same slot in one pass: the escalation sweep
 # above (a manifest whose pid is dead) and drive_implementing below (a
-# reconciled non-ok envelope). They normally cannot both fire, because the
+# reconciled non-ok envelope, a refused no-op delivery, or a refusal already on
+# record with nothing left running -- one of the three at most, each returning
+# where it stands). They normally cannot both fire, because the
 # sweep's own relaunch leaves a live job the walk then defers to. `drive_launch`
 # exit 14 breaks exactly that: no engine was eligible, so nothing spawned, and
 # the walk reads the attempt's older non-ok envelope as a second failure. A
