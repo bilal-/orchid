@@ -165,6 +165,18 @@ case "$sub" in
     # confusing "requires --reason" for a command that supplied one.
     case "${id:-}" in -*) id="" ;; esac
     [ -n "$id" ] || orchid_die "usage: orchid plan defer <item-id> --reason \"...\""
+    # An item id is one token of a one-line report (`L<nnn>` or `<run>#<n>`),
+    # so whitespace in it is a caller that scraped too much -- and it must be
+    # refused HERE, not left to the membership check below. `grep -qxF`
+    # matches a multi-line pattern LINE BY LINE, so a doubled id passes as
+    # "known"; the deferral then journals as two lines ("deferred <line1>",
+    # then "<line2>: <reason>"), and plancheck_deferral -- which matches the
+    # single line "deferred <id>: " -- finds nothing. The operator is told the
+    # decision was recorded while the item stays unconsidered, which is the
+    # precise silent pass this whole cross-check exists to close.
+    case "$id" in
+      *[[:space:]]*) orchid_die "item id must not contain whitespace: '$(printf '%s' "$id" | tr -s '[:space:]' ' ')'" ;;
+    esac
     [ -n "$reason" ] || orchid_die "plan defer requires --reason (INV-08)"
     # journal.md is line-oriented and this entry is matched back by its
     # first line; a reason carrying its own newline could forge a second

@@ -176,9 +176,21 @@ grep -q "quarantine_probe" <<<"$out" \
 
 # The ids are positional in the archived journal, so read them out of the
 # report rather than hard-coding an ordinal that a fixture edit would shift.
-started_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep started_at <<<"$out")")"
-drive_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep drive_implementing <<<"$out")")"
-cilocal_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep ci-local <<<"$out")")"
+#
+# Anchored to the UNCOVERED VERDICT LINE, and to that line alone. `$out` is
+# stdout and stderr merged, and the refusal block on stderr repeats every open
+# item's summary verbatim -- so a bare `grep <term>` matches the verdict line
+# AND its recovery line, and `grep -oE` then returns the same id TWICE. Such a
+# value is still non-empty and still `sort -u`s to one id, so every check in
+# this block passes while the id itself carries an embedded newline; `plan
+# defer "$drive_id"` below then journals it as two lines ("deferred <id>",
+# then "<id>: <reason>"), which is not the one line `plancheck_deferral`
+# matches, so the decision reads as recorded and the item stays UNCOVERED.
+# Exactly one line per item carries a verdict, so match that one.
+item_id() { grep -oE 'r-001#[0-9]+' <<<"$(grep "  UNCOVERED .*$1" <<<"$2")"; }
+started_id="$(item_id started_at "$out")"
+drive_id="$(item_id drive_implementing "$out")"
+cilocal_id="$(item_id ci-local "$out")"
 [ -n "$started_id" ] || fail "could not read the started_at ledger item's id back out of the report"
 [ -n "$drive_id" ] || fail "could not read the drive_implementing ledger item's id back out of the report"
 [ -n "$cilocal_id" ] || fail "could not read the ci-local ledger item's id back out of the report"
