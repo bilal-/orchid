@@ -561,13 +561,21 @@ sequence in
    Coverage is deliberately approximate and deliberately pessimistic: an
    item is associated with a task only through a distinctive anchor term (a
    snake_case identifier, a repo-relative source path, an `INV-nn`, a lesson
-   id) appearing in that task's body or frontmatter VALUES — never through
-   ordinary prose, and never through a frontmatter KEY, since every task
-   file carries `started_at:` and its siblings and a whole-file match would
-   read as coverage from a plan that considered nothing. The question being
-   asked is "did anyone look at this?", not "is this scheduled correctly":
-   no text match can answer the second, and a spurious *covered* costs far
-   more than a spurious *uncovered*.
+   id) appearing in that task's **body**, or in the frontmatter fields that
+   carry an author's intent — `title`, `acceptance_criteria`,
+   `stop_condition`, `hook_guidance`, `resources`. Never through ordinary
+   prose; never through a frontmatter KEY, since every task file carries
+   `started_at:` and its siblings; and never through the MECHANICAL
+   frontmatter values, `verification_commands` above all — those are
+   boilerplate every task repeats, so a path inside one is a universal
+   anchor, and a task that merely runs the suite has not thereby considered
+   a finding about the suite. The question being asked is "did anyone look
+   at this?", not "is this scheduled correctly": no text match can answer
+   the second, and a spurious *covered* costs far more than a spurious
+   *uncovered*. Because it is approximate, every `covered` line names the
+   anchor that earned it — `covered [ledger] r-001#57 — … (task T010 via
+   started_at)` — so an incidental association can be spotted and turned
+   into a real task or a deferral instead of being taken on trust.
 
    Where the honest answer is "not this run", record it:
    `orchid plan defer <item-id> --reason "..."` journals the decision (kind

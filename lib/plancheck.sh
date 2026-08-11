@@ -52,6 +52,12 @@
 # spurious "uncovered" costs one `orchid plan defer`; a spurious "covered"
 # costs what r-002 already paid.
 #
+# And because it IS approximate, every `covered` line names the anchor that
+# fired. A bare "covered (task T010)" has to be taken on trust; "covered
+# (task T010 via started_at)" can be read and rejected in a second. The
+# whole feature exists because a plausible-looking pass went unexamined, so
+# the one verdict that closes an item states its own evidence.
+#
 # Sourced after lib/common.sh (orchid_die is not used here, but callers'
 # error paths are) and after lib/lessons.sh, whose
 # _lessons_journal_start_date defines "this run started here" for both this
@@ -100,7 +106,12 @@ plancheck_ledger_items() {
       if (k != "ledger" && k != "plan_deferral" &&
           index(low, "ledger candidate") == 0 &&
           index(low, "ledger item") == 0) return
-      s = first
+      # Never emit an empty field: the reader is `read -r` under IFS=tab,
+      # and tab is IFS WHITESPACE, so a run of two tabs collapses to one
+      # delimiter and every later field shifts left by one. An entry with no
+      # body text is degenerate, not impossible, and it must still report as
+      # itself rather than as a mangled neighbour.
+      s = (first == "" ? "(entry has no body text)" : first)
       if (length(s) > 120) s = substr(s, 1, 117) "..."
       t = body
       gsub(/\t/, " ", s); gsub(/\t/, " ", t)
@@ -125,6 +136,13 @@ plancheck_ledger_items() {
 # `orchid plan defer`, the cost of a dropped one is the miss this file
 # exists to prevent. An empty cutoff (a journal with no entries at all)
 # includes everything, for the same reason.
+#
+# Parsed here rather than through lib/lessons.sh's lessons_list_blocks
+# because that helper's four-field line has no `first:`, and this check
+# needs it to tell a carried-forward lesson from one this run's own planning
+# wrote. Same header/field grammar, same source of truth (kernel.md's
+# lessons.md format, restated at the top of lib/lessons.sh) -- if that
+# grammar ever changes, both parsers move together.
 plancheck_lesson_items() {
   local lf="$1" cutoff="$2"
   [ -f "$lf" ] || return 0
@@ -132,7 +150,8 @@ plancheck_lesson_items() {
     function emit(   s) {
       if (id == "" || lstate != "active") return
       if (cutoff != "" && firstd != "" && firstd > cutoff) return
-      s = stmt
+      # Same empty-field rule as plancheck_ledger_items above, same reason.
+      s = (stmt == "" ? "(lesson has no statement)" : stmt)
       if (length(s) > 120) s = substr(s, 1, 117) "..."
       gsub(/\t/, " ", s)
       printf "%s\tlesson\t%s\t%s %s\n", id, s, id, stmt
@@ -187,19 +206,51 @@ plancheck_anchors() {
 }
 
 # plancheck_task_text <task-file> -- the text a task is searched in: its body
-# verbatim, plus its frontmatter VALUES with the key names stripped off.
+# verbatim, plus the VALUES of the frontmatter fields that carry an author's
+# INTENT (title, acceptance_criteria, stop_condition, hook_guidance,
+# resources). Every other frontmatter line -- key and value both -- is
+# dropped.
 #
-# Stripping the keys is what makes the whole match trustworthy. Every task
-# file carries `started_at:`, `risk_tier:`, `wallclock_budget_s:` and a
-# dozen more as literal frontmatter KEYS, so a naive whole-file grep would
-# report the `started_at` ledger item as covered by every task in the plan --
-# including a plan that never mentions it. The values stay, so a task whose
-# acceptance_criteria genuinely names the field still matches.
+# This scoping is what makes the whole match trustworthy, and it is narrow
+# in two separate ways, each closing a false `covered` that would reproduce
+# the exact miss this file exists to prevent:
+#
+#   the KEYS go, because every task file carries `started_at:`,
+#   `risk_tier:`, `wallclock_budget_s:` and a dozen more literally, so a
+#   whole-file grep reports the `started_at` ledger item as covered by every
+#   task in a plan that never once mentions it;
+#
+#   the MECHANICAL VALUES go too -- and `verification_commands` above all --
+#   because they are boilerplate the operator writes for every task, which
+#   makes any path inside them a UNIVERSAL anchor rather than a distinctive
+#   one. This is not hypothetical: in r-002's own plan `scripts/ci-local.sh`
+#   appears in all fifteen task files and in nothing but their verification
+#   chains, and it is an anchor of two of r-001's largest ledger items --
+#   including "make the CI gate part of every task's chain", the one finding
+#   whose whole point is that per-task chains were not enough. Searching
+#   those values reports both as covered by whichever task the glob happens
+#   to list first. A task that runs the suite has not thereby CONSIDERED a
+#   finding about the suite.
+#
+# An allowlist rather than a denylist, so a frontmatter field added later is
+# ignored until someone decides it carries intent -- that direction costs an
+# `orchid plan defer`, the other costs a silent pass. Frontmatter lines with
+# no `key:` at all are dropped for the same reason: `fm_set` refuses an
+# embedded newline, so a continuation line is malformed state, not a value
+# this check should read intent from.
 plancheck_task_text() {
   awk '
+    BEGIN {
+      n = split("title acceptance_criteria stop_condition hook_guidance resources", f, " ")
+      for (i = 1; i <= n; i++) intent[f[i]] = 1
+    }
     NR == 1 && $0 == "---" { fm = 1; next }
     fm == 1 && $0 == "---" { fm = 0; next }
-    fm == 1 { i = index($0, ":"); if (i > 0) print substr($0, i + 1); else print $0; next }
+    fm == 1 {
+      c = index($0, ":")
+      if (c > 0 && substr($0, 1, c - 1) in intent) print substr($0, c + 1)
+      next
+    }
     { print }
   ' "$1"
 }
@@ -232,7 +283,7 @@ plancheck_deferral() {
 # still shows an operator why it stopped.
 plancheck_report() {
   local state="$1"
-  local prev cutoff tmp f id kind summary text hits hit reason nitems nopen=0
+  local prev cutoff tmp f id kind summary text hits hitfile hit via reason nitems nopen=0
   prev="$(plancheck_prev_run_id "$state")"
   if [ -z "$prev" ]; then
     echo "crosscheck: no previous run is archived under .orchid/runs/ — this is the first run of this repository, so nothing is carried forward"
@@ -253,8 +304,9 @@ plancheck_report() {
     return 0
   fi
 
-  # One stripped copy per task of the CURRENT plan, so each item costs a
-  # single `grep -l` over the set rather than a grep per (item, task) pair.
+  # One searchable copy per task of the CURRENT plan (body + intent-bearing
+  # frontmatter, per plancheck_task_text), so each item costs a single
+  # `grep -l` over the set rather than a grep per (item, task) pair.
   # Archived tasks under runs/<prev>/tasks/ are deliberately not searched:
   # the question is what THIS plan covers.
   mkdir -p "$tmp/tasks"
@@ -267,18 +319,28 @@ plancheck_report() {
   while IFS=$'\t' read -r id kind summary text; do
     [ -n "$id" ] || continue
     printf '%s\n' "$text" | plancheck_anchors > "$tmp/anchors"
-    hit=""
+    hit=""; via=""
     if [ -s "$tmp/anchors" ]; then
       # No `| head -1`: `grep -l` short-circuits per file and head would
       # close the pipe under it, which `set -o pipefail` reports as a
       # failure of the whole match (lesson L005). Take the first line of a
       # captured result instead.
       hits="$(grep -lF -f "$tmp/anchors" "$tmp"/tasks/* 2>/dev/null || true)"
-      hit="${hits%%$'\n'*}"
-      hit="${hit##*/}"; hit="${hit%.md}"
+      hitfile="${hits%%$'\n'*}"
+      if [ -n "$hitfile" ]; then
+        hit="${hitfile##*/}"; hit="${hit%.md}"
+        # WHICH anchor fired, so the one verdict that closes an item carries
+        # its own evidence. Capped at three with a count of the rest --
+        # `awk`, not `head`, for the L005 reason above -- because a long
+        # arbitration entry can yield a dozen anchors and a report line
+        # nobody finishes reading is a report nobody checks.
+        via="$({ grep -oF -f "$tmp/anchors" "$hitfile" || true; } | LC_ALL=C sort -u \
+          | awk 'NR <= 3 { printf "%s%s", (NR > 1 ? ", " : ""), $0 }
+                 END { if (NR > 3) printf ", +%d more", NR - 3 }')"
+      fi
     fi
     if [ -n "$hit" ]; then
-      printf '  covered   [%s] %s — %s (task %s)\n' "$kind" "$id" "$summary" "$hit"
+      printf '  covered   [%s] %s — %s (task %s via %s)\n' "$kind" "$id" "$summary" "$hit" "$via"
       continue
     fi
     if reason="$(plancheck_deferral "$state/journal.md" "$id")"; then

@@ -786,8 +786,15 @@ orchid plan crosscheck             # the same report, without committing
 
 Two ways forward, per item. Cover it — add or extend a task whose text names
 the thing (a snake_case identifier, a source path, an `INV-nn`, the lesson
-id); matching is on those anchor terms only, and a bare frontmatter key does
-not count, so the task has to actually say it. Or decide against it:
+id); matching is on those anchor terms only, and only in the task's body and
+its intent-bearing frontmatter (`title`, `acceptance_criteria`,
+`stop_condition`, `hook_guidance`, `resources`). A bare frontmatter key does
+not count, and neither does `verification_commands` — every task's chain
+names the same suite scripts, so a path in there would mark items covered
+across the whole plan at once. The task has to actually say it. Where an
+item does come back `covered`, the line names the anchor that earned it
+(`… (task T010 via started_at)`); if that term reads as incidental, treat
+the item as uncovered and cover or defer it properly. Or decide against it:
 
 ```sh
 orchid plan defer r-001#57 --reason "owned by the follow-up PR, not this run"

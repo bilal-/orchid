@@ -18,6 +18,13 @@
 # remove: a repository whose first run has never rolled over, and a previous
 # run that genuinely left nothing. Both must SAY so.
 #
+# And two ANTI-assertions (3a, 3a2), which carry as much weight as the three
+# positive cases: a false `covered` reproduces r-002's original miss while
+# printing a pass, so both shapes of boilerplate that every task file
+# repeats -- the frontmatter KEYS, and the mechanical VALUES like
+# `verification_commands` -- are pinned as NOT coverage, on the real terms
+# they collide with.
+#
 # RED (before libexec/orchid-plan grew the check): every crosscheck
 # invocation exits 2 on an unknown subverb, and every `plan apply` here
 # commits regardless of what the previous run left behind.
@@ -107,15 +114,17 @@ rc=0; out="$("$ORCHID_BIN" plan defer L001 --reason "nothing to defer" 2>&1)" ||
 assert_match "nothing is carried forward" "$out" "...and says why, rather than journaling a decision about a phantom"
 
 # ===========================================================================
-# 3 -- the real shape. r-001 records two ledger items and two lessons, then
-# rolls over; r-002 is planned against them.
+# 3 -- the real shape. r-001 records three ledger items and two lessons,
+# then rolls over; r-002 is planned against them.
 #
-# The two ledger items are recorded the two DIFFERENT ways the archived
-# journals actually contain them: one with the deliberate `ledger` entry
-# kind, and one as prose inside an ordinary entry ("recorded as a ledger
-# candidate for..."), which is how r-001 -- the run that motivated all of
-# this -- wrote every one of its own. If only the tidy spelling were
-# recognized, this check would not have caught the miss it was built for.
+# The first two are recorded the two DIFFERENT ways the archived journals
+# actually contain them: one with the deliberate `ledger` entry kind, and
+# one as prose inside an ordinary entry ("recorded as a ledger candidate
+# for..."), which is how r-001 -- the run that motivated all of this --
+# wrote every one of its own. If only the tidy spelling were recognized,
+# this check would not have caught the miss it was built for. The third is
+# there for 3a2: its only anchor is a path every task's verification chain
+# names, which is how a real plan produces a false `covered`.
 # ===========================================================================
 new_repo b
 b_bare="$WORK/b-bare"
@@ -128,6 +137,12 @@ echo "# Requirements" > .orchid/requirements.md
   "libexec/orchid-task stamps started_at only when the field is empty, so the budget stays anchored to attempt 1" >/dev/null
 "$ORCHID_BIN" journal add --kind intervention \
   "drive_implementing lacks the liveness guard its sibling arms carry - recorded as a ledger candidate for the next run" >/dev/null
+# The third item is transcribed from r-001's real journal, because the false
+# positive it pins is the one this check shipped with and would have died of.
+# Its only anchor is a path that lives in every task's verification chain --
+# see 3a2 for what that costs if the chain is searched.
+"$ORCHID_BIN" journal add --kind ledger \
+  "the durable fix - making scripts/ci-local.sh part of every task's verification chain, or of the merge path - is a ledger item for the next run" >/dev/null
 
 "$ORCHID_BIN" lessons add --scope repo --invalidate-when "n/a" \
   "verb_lock_acquire must never eval a jq-authored shell fragment" >/dev/null
@@ -145,12 +160,14 @@ echo "# Requirements v2" > .orchid/requirements.md
 
 rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
 assert_eq 3 "$rc" "crosscheck exits 3 while carried-forward items are unconsidered"
-assert_match "left 3 carried-forward item" "$out" \
-  "both ledger spellings and the ACTIVE lesson are carried forward (three items)"
+assert_match "left 4 carried-forward item" "$out" \
+  "both ledger spellings and the ACTIVE lesson are carried forward (four items)"
 assert_match "UNCOVERED \[ledger\] r-001#[0-9]+ .*started_at" "$out" \
   "the ledger item recorded with the ledger entry kind is found"
 assert_match "UNCOVERED \[ledger\] r-001#[0-9]+ .*drive_implementing" "$out" \
   "the ledger item recorded only as prose is found too"
+assert_match "UNCOVERED \[ledger\] r-001#[0-9]+ .*ci-local" "$out" \
+  "and the verification-chain item is found"
 assert_match "UNCOVERED \[lesson\] L001" "$out" "the carried-forward active lesson is found"
 grep -q "L002" <<<"$out" \
   && fail "a RETIRED lesson is not carried forward by orchid run new and must not be cross-checked"
@@ -161,9 +178,12 @@ grep -q "quarantine_probe" <<<"$out" \
 # report rather than hard-coding an ordinal that a fixture edit would shift.
 started_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep started_at <<<"$out")")"
 drive_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep drive_implementing <<<"$out")")"
+cilocal_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep ci-local <<<"$out")")"
 [ -n "$started_id" ] || fail "could not read the started_at ledger item's id back out of the report"
 [ -n "$drive_id" ] || fail "could not read the drive_implementing ledger item's id back out of the report"
-[ "$started_id" != "$drive_id" ] || fail "the two ledger items must have distinct ids"
+[ -n "$cilocal_id" ] || fail "could not read the ci-local ledger item's id back out of the report"
+[ "$(printf '%s\n%s\n%s\n' "$started_id" "$drive_id" "$cilocal_id" | sort -u | wc -l | tr -d ' ')" = 3 ] \
+  || fail "the three ledger items must have distinct ids"
 
 # ---------------------------------------------------------------------------
 # 3a -- THE ANTI-ASSERTION this whole design turns on. Every task file
@@ -183,16 +203,42 @@ assert_match "UNCOVERED \[ledger\] $started_id" "$out" \
   "a frontmatter KEY must never count as coverage — every task file contains started_at:"
 
 # ---------------------------------------------------------------------------
+# 3a2 -- THE SAME ANTI-ASSERTION ONE LEVEL DEEPER, and the one this check
+# actually shipped with. Stripping the frontmatter KEYS is not enough: the
+# mechanical VALUES are boilerplate too, and `verification_commands` is the
+# worst of them, because every task in a plan names the same suite entry
+# points. In r-002's own fifteen-task plan `scripts/ci-local.sh` appears in
+# all fifteen files and in nothing but their verification chains -- and it is
+# the sole anchor of the r-001 ledger item recorded above, whose entire point
+# is that per-task chains were NOT enough to make the gate run. Match on that
+# value and the finding reports `covered` by whichever task the glob lists
+# first, which is precisely the silent pass this feature exists to prevent.
+#
+# The task below is otherwise unrelated to every carried item; only its
+# verification chain overlaps, exactly as a real plan's would.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task set T011 verification_commands \
+  "/bin/bash tests/test_notify_channel.sh && /bin/bash scripts/ci-local.sh --bash /bin/bash" >/dev/null
+grep -q '^verification_commands: .*scripts/ci-local.sh' .orchid/tasks/T011.md \
+  || fail "fixture assumption broken: the verification chain did not land in T011's frontmatter"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a shared verification chain considers nothing"
+assert_match "UNCOVERED \[ledger\] $cilocal_id" "$out" \
+  "a MECHANICAL frontmatter value must never count as coverage — every task's chain names the same suite scripts"
+
+# ---------------------------------------------------------------------------
 # 3b -- A COVERED ITEM. T010's acceptance criteria name the field, so the
-# item is associated with a task and the question has been asked.
+# item is associated with a task and the question has been asked -- and the
+# report says WHICH term earned it, because a `covered` line nobody can check
+# is the same unexamined pass this whole feature exists to remove.
 # ---------------------------------------------------------------------------
 "$ORCHID_BIN" task create T010 "re-anchor the attempt clock" >/dev/null
 "$ORCHID_BIN" task set T010 acceptance_criteria \
   "stamp started_at on every advance into implementing, not only the first" >/dev/null
 rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
-assert_eq 3 "$rc" "still refused while the other two items are unconsidered"
-assert_match "covered   \[ledger\] $started_id .*\(task T010\)" "$out" \
-  "the ledger item is covered by the task whose text names it, and the task is named back"
+assert_eq 3 "$rc" "still refused while the other three items are unconsidered"
+assert_match "covered   \[ledger\] $started_id .*\(task T010 via started_at\)" "$out" \
+  "the ledger item is covered by the task whose text names it; the task AND the anchor are named back"
 
 # ---------------------------------------------------------------------------
 # 3c -- AN EXPLICITLY DEFERRED ITEM. Deferral is the release valve: the
@@ -211,7 +257,8 @@ rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
 assert_eq 3 "$rc" "one genuinely unconsidered item still refuses the plan"
 assert_match "deferred  \[lesson\] L001 .*\(deferred: the lock fix landed" "$out" \
   "a deferred item reports as decided, with its reason, not as covered"
-assert_match "UNCOVERED \[ledger\] $drive_id" "$out" "the third item is still unconsidered"
+assert_match "UNCOVERED \[ledger\] $drive_id" "$out" "the remaining items are still unconsidered"
+assert_match "UNCOVERED \[ledger\] $cilocal_id" "$out" "...both of them"
 
 # ---------------------------------------------------------------------------
 # 3d -- plan defer's own refusals. Each of these, admitted, would leave a
@@ -252,10 +299,13 @@ grep -q "r-002 plan" .orchid/journal.md \
 "$ORCHID_BIN" plan defer "$drive_id" \
   --reason "the driver guard belongs to its own follow-up task, not this run" >/dev/null \
   || fail "plan defer must work immediately after a refused plan apply (the verb lock must not leak)"
+"$ORCHID_BIN" plan defer "$cilocal_id" \
+  --reason "wiring the gate into the merge path is its own task, deliberately not this plan" >/dev/null \
+  || fail "plan defer records the decision on the verification-chain item"
 
 rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
 assert_eq 0 "$rc" "crosscheck passes once every carried item is covered or deferred"
-assert_match "all 3 carried-forward item\(s\) considered" "$out" "...and says so"
+assert_match "all 4 carried-forward item\(s\) considered" "$out" "...and says so"
 
 apply_out="$("$ORCHID_BIN" plan apply --reason "r-002 plan" 2>&1)"
 assert_match "^applied: " "$apply_out" "plan apply proceeds once nothing is left unconsidered"
@@ -306,7 +356,7 @@ assert_match "defer" "$out" "usage names the defer subverb"
 
 # ===========================================================================
 # 4 -- a deferral postpones an item; it does not erase it. `plan_deferral`
-# is itself a ledger kind, so r-002's two deferrals come back as r-003's
+# is itself a ledger kind, so r-002's three deferrals come back as r-003's
 # carried-forward items and need either a task or a fresh reason.
 #
 # Without this, the check would launder a defect out of existence in exactly
@@ -323,5 +373,7 @@ assert_match "UNCOVERED \[ledger\] r-002#[0-9]+ .*deferred $drive_id" "$out" \
   "the ledger item deferred in r-002 resurfaces in r-003 rather than vanishing"
 assert_match "UNCOVERED \[ledger\] r-002#[0-9]+ .*deferred L001" "$out" \
   "the deferral of the lesson resurfaces too, carrying its recorded reason"
+assert_match "UNCOVERED \[ledger\] r-002#[0-9]+ .*deferred $cilocal_id" "$out" \
+  "and so does the deferral of the verification-chain item"
 assert_match "UNCOVERED \[lesson\] L001" "$out" \
   "and the lesson itself is still active, so it is still carried forward"
