@@ -454,7 +454,7 @@ assert_eq 0 "$rc" "a self-hosted merge completes instead of stranding on its own
 assert_match "^merged TS1: orchid/integration -> " "$out" "it reports the merge"
 assert_match "^refreshed .* to orchid/integration \(orchid runs from this checkout\)" "$out" \
   "and says plainly that it refreshed the checkout it runs from"
-assert_eq done "$("$ORCHID_BIN" task show TS1 | grep '^status: ' | cut -d' ' -f2)" \
+assert_eq 'done' "$("$ORCHID_BIN" task show TS1 | grep '^status: ' | cut -d' ' -f2)" \
   "the task reaches done -- the bookkeeping after the advance is not refused"
 [ "$(git -C "$selfroot" rev-parse orchid/integration)" != "$self_base" ] \
   || fail "the integration ref advanced"
@@ -556,7 +556,7 @@ assert_eq v2 "$(cat "$selfroot/templates/probe-mutable.txt")" \
 rc=0
 "$ORCHID_BIN" task show TS2 >/dev/null 2>&1 || rc=$?
 assert_eq 1 "$rc" "an ordinary verb refuses against the checkout the merge left stale"
-assert_eq done "$(ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_BIN" task show TS2 | grep '^status: ' | cut -d' ' -f2)" \
+assert_eq 'done' "$(ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_BIN" task show TS2 | grep '^status: ' | cut -d' ' -f2)" \
   "but TS2 still reached done — the merge is never left half-finished"
 assert_eq "durable sentinel" "$(cat "$selfroot/.orchid/sentinel")" \
   "and uncommitted durable .orchid state survives the declined refresh too"
