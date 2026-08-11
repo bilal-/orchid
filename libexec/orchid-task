@@ -685,7 +685,20 @@ case "$sub" in
     # It names WHAT is uncommitted rather than only that something is: "commit
     # your changes" over a tree an operator believes is clean is the same
     # unsatisfiable-instruction shape this whole task exists to remove.
-    hdirty="$(handoff_worktree_dirty "$hcwd")"
+    #
+    # AND A TREE THAT COULD NOT BE INSPECTED IS REFUSED IN THE SAME DIRECTION.
+    # `git status` failing says nothing about the tree being tidy -- the path
+    # is not a checkout, it is bare, its index is unreadable -- and treating
+    # that silence as "clean" would hand the ack out on the strength of a look
+    # that never happened, which is the one failure this check exists to
+    # prevent. Same reasoning as the unreadable HEAD above it: this verb's
+    # single assertion is that the record names the tree verification will
+    # run, and it cannot assert that about a tree it could not read.
+    hdrc=0
+    hdirty="$(handoff_worktree_dirty "$hcwd")" || hdrc=$?
+    if [ "$hdrc" -ne 0 ]; then
+      orchid_die "refusing to acknowledge the hand-off for task $id: the working tree of $hcwd could not be inspected ($hdirty). An acknowledgement asserts that 'orchid verify' will run the commit it names, and nothing can assert that about a tree whose state could not be read — an inspection that answers 'clean' when it could not look is not a check at all. $hcwd is the path task $id's 'worktree' field names (empty means the repository itself); make it a readable checkout with a working tree, then re-run the ack."
+    fi
     if [ -n "$hdirty" ]; then
       orchid_die "refusing to acknowledge the hand-off for task $id: $hcwd has uncommitted changes ($hdirty). An acknowledgement names a COMMITTED candidate, but 'orchid verify' runs this tree as it stands — acknowledging now would bind every downstream judgment to a commit that does not contain that work (lesson L025). Commit them in that tree, on the branch the task record names, with the trailer 'Orchid-Handoff: operator' (or discard them), then re-run the ack."
     fi

@@ -854,7 +854,9 @@ an orchestrator can run, deliberately: `orchid task handoff <id> --ack` asserts
 that the work was performed by an actor able to perform it, advances
 `candidate_sha` to the commit that work produced (refusing any `HEAD` that does
 not descend from the current candidate or does not sit on the task's branch, any
-tree with uncommitted changes, and any status but `testing`), and writes
+tree with uncommitted changes, any tree whose state could not be read at all —
+a failed `git status` is an uninspected tree, never a clean one — and any status
+but `testing`), and writes
 `handoff_ack`
 bound to it — so the record names the tree verification will actually run
 rather than the one captured before the hand-off began. That binding is the

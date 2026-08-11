@@ -726,7 +726,12 @@ ones its archetype never declares.
      does — lesson L025 again, by the one road matching shas cannot see, and the
      likeliest mistake here, because applying the fix FEELS like performing the
      hand-off. So the verb reads the tree's STATE too and refuses while anything
-     is uncommitted, naming the paths. (`.orchid/` is not counted: kernel state
+     is uncommitted, naming the paths — and refuses in the SAME direction when
+     that read fails: a `git status` that cannot run (the path is not a
+     checkout, it is bare, its index is unreadable) is reported as a tree that
+     could not be inspected, never as a clean one, because an inspection that
+     answers "clean" when it could not look is no check at all.
+     (`.orchid/` is not counted: kernel state
      is no part of the candidate — INV-04 forbids the candidate containing it —
      and on a task with no worktree of its own that checkout is stale by design,
      since state is moved with `update-ref` and never through this index.)
@@ -769,8 +774,9 @@ ones its archetype never declares.
     `candidate_sha`, equal to `HEAD` of the tree verification will run in, and
     that tree clean, means SATISFIED, and a resumed session or a second driver
     pass simply proceeds to verification. Anything else — absent, empty, bound
-    to some other sha, a tree whose `HEAD` has moved past it, or a tree with
-    uncommitted changes on top of it — means OUTSTANDING, and it stops again.
+    to some other sha, a tree whose `HEAD` has moved past it, a tree with
+    uncommitted changes on top of it, or a tree whose state could not be read
+    at all — means OUTSTANDING, and it stops again.
     A tree merely brought back into line (the edits discarded) is satisfied
     again with no second ack: nothing was committed, so the acknowledgement
     standing still names the tree that will run. There is no

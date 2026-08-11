@@ -1933,6 +1933,55 @@ git -C "$HWT" checkout -- formula-pin.txt || fail "fixture: could not restore th
 assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
   "and a tree brought back into line with the acknowledged commit is satisfied again"
 
+# --- RED: A TREE THAT COULD NOT BE INSPECTED IS NOT A CLEAN TREE -----------
+# The check above reads the tree's STATE, which is the one axis no sha
+# comparison can see — so what it does when the read FAILS decides whether that
+# axis is a safety check or a decoration. `git status` fails for reasons that
+# say nothing about the tree being tidy: the path is not a checkout, it is a
+# bare repository, its index is unreadable, `git` is not on PATH. Every one of
+# those produces no output, and no output is what a genuinely clean tree
+# produces too. Fold them together and the ack is given, and the resume
+# proceeds, on the strength of a look that never happened — the fail-open shape
+# with the worst possible blast radius, because it is invisible exactly when
+# something is already wrong with the tree.
+#
+# The tree here is a BARE repository, which is the honest version of that
+# fault rather than a mock: `git status` cannot run in one at all, while
+# `rev-parse HEAD` answers perfectly well. So every sha this path compares
+# still agrees — the checks above it all pass — and the inspection is the only
+# thing that fails, which is precisely the case a fail-open swallows whole.
+HBARE="$WORK/handoff-uninspectable.git"
+rm -rf "$HBARE"
+git clone -q --bare "$HANDOFF" "$HBARE" \
+  || fail "fixture: could not build a tree that cannot be inspected"
+git -C "$HBARE" symbolic-ref HEAD refs/heads/task/H010 \
+  || fail "fixture: could not point the bare repository at the task's branch"
+assert_eq "$HHANDOFF_CAND" "$(git -C "$HBARE" rev-parse HEAD)" \
+  "fixture: its HEAD is readable and IS the acknowledged candidate, so nothing ABOVE the inspection can be what refuses below"
+hins_rc=0
+git -C "$HBARE" status --porcelain >/dev/null 2>&1 || hins_rc=$?
+[ "$hins_rc" -ne 0 ] \
+  || fail "fixture: 'git status' succeeded in $HBARE, so nothing below is exercising a failed inspection"
+
+horchid task set H010 worktree "$HBARE" >/dev/null
+assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "a tree whose state could not be READ is outstanding: the failure direction of an inspection has to be dirty, or the check answers 'clean' about a tree it never saw"
+assert_match "could not be inspected" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
+  "and it SAYS the tree could not be inspected rather than reporting it clean — the two call for opposite actions from whoever reads it"
+hbare_rc=0
+hbare_out="$(horchid task handoff H010 --ack \
+  --reason "fixture: acknowledging over a tree whose state cannot be read" 2>&1)" || hbare_rc=$?
+[ "$hbare_rc" -ne 0 ] \
+  || fail "the ack was given over a tree whose state could not be read — a failed inspection was taken for a clean tree (it said: $hbare_out)"
+assert_match "could not be inspected" "$hbare_out" \
+  "and the refusal says which look failed, not that the tree was fine (it said: $hbare_out)"
+assert_match "$HBARE" "$hbare_out" \
+  "naming the tree it could not read, so the operator is not left guessing which checkout is meant (it said: $hbare_out)"
+
+horchid task set H010 worktree "$HWT" >/dev/null
+assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "and the real tree — inspectable, clean, on the acknowledged commit — is satisfied again, so the refusal above was about the failed look and nothing else"
+
 # --- RED: WHICH COMMIT IT WILL ADVANCE TO IS ITSELF A GATE -----------------
 # Advancing `candidate_sha` to whatever `HEAD` happens to be is a WORSE
 # mis-binding than the drift the advance exists to remove. The drift at least

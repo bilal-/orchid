@@ -274,7 +274,11 @@ the hand-off, but every sha this verb compares describes a *commit* — acknowle
 before committing and `handoff_ack`, `candidate_sha` and `HEAD` would all agree
 about a commit that does not contain your work, while `orchid verify` runs the
 tree that does. (Uncommitted `.orchid/` state does not count; it is no part of
-the candidate.) The same applies after the fact: edit the tree after
+the candidate.) If that read cannot be made at all — the `worktree` field names
+a path that is not a checkout, or is a bare repository — the refusal says the
+tree could not be *inspected*, which is a different problem from a dirty one and
+is fixed by pointing the record at a real checkout, not by committing anything.
+The same applies after the fact: edit the tree after
 acknowledging and the next pass stops again until you either commit (then
 re-`--ack`, since `HEAD` moved) or discard the edit (no second ack needed —
 nothing was committed, so the acknowledgement standing still names the tree that

@@ -133,7 +133,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   that, so a resumed session or a second driver pass
   proceeds. Acknowledge LAST: a commit made after the ack leaves the tree ahead
   of what was acknowledged, which reopens the pause until you re-run the verb.
-  The verb refuses an ack over a tree with uncommitted changes (naming them) and
+  The verb refuses an ack over a tree with uncommitted changes (naming them),
+  over a tree whose state it could not read at all — a failed `git status` is
+  reported as an uninspected tree, never as a clean one — and
   from any status but `testing`, where reviewers, an arbiter or a merge would
   already be holding the commit it wants to advance; `--clear` carries neither
   restriction.

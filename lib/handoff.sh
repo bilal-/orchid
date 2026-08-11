@@ -69,7 +69,24 @@ handoff_gate_mode() {
 }
 
 # handoff_worktree_dirty <cwd> -- a ONE-LINE summary of everything uncommitted
-# in <cwd>, or nothing at all when the tree is clean.
+# in <cwd>, or nothing at all when the tree is clean. Three outcomes, and the
+# caller must read the STATUS as well as the output:
+#
+#   0, no output    inspected, and clean.
+#   0, one line     inspected, and this is what is uncommitted.
+#   2, one line     NOT INSPECTED, and this is why.
+#
+# THE FAILURE DIRECTION IS DIRTY, NOT CLEAN. `git status` can fail for reasons
+# that have nothing to do with the tree being tidy -- the path is not a
+# checkout, it is a bare repository, its index is unreadable, `git` is not
+# there. Discarding that status would fold every one of them into the same
+# empty string a genuinely clean tree produces, and both callers below read
+# empty as "clean": the ack would be given and the resume would proceed, on the
+# strength of a look that never happened. An inspection that answers `clean`
+# when it could not look is not a safety check, it is the fail-open shape this
+# whole file exists to close -- so the status is kept, and a tree that could
+# not be read is refused in the same direction as a dirty one and SAID to be
+# uninspected rather than reported clean.
 #
 # WHY THE STATE AND NOT JUST `HEAD`. Every other comparison in this file is
 # between shas, and a sha describes a COMMIT -- it says nothing about the tree
@@ -94,12 +111,17 @@ handoff_gate_mode() {
 # one-line boundary detail and a `die`, and a hundred-path dump in either is
 # read the way no list at all is.
 handoff_worktree_dirty() {
-  local cwd="$1" porcelain
+  local cwd="$1" porcelain rc=0
   # Captured, never piped straight into a consumer that can exit early: under
   # `pipefail` a short-circuiting reader SIGPIPEs `git` and the 141 would be
   # reported for the whole pipeline (the same trap libexec/orchid-task's INV-04
-  # re-scan documents).
-  porcelain="$(git -C "$cwd" status --porcelain 2>/dev/null || true)"
+  # re-scan documents). And captured WITH its exit status -- a `|| true` here
+  # is exactly the fail-open the header above rejects.
+  porcelain="$(git -C "$cwd" status --porcelain 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    printf 'git status exited %s in %s\n' "$rc" "$cwd"
+    return 2
+  fi
   [ -n "$porcelain" ] || return 0
   printf '%s\n' "$porcelain" | awk '
     # Porcelain v1 is two status columns, a space, then the path.
@@ -135,8 +157,9 @@ handoff_worktree_dirty() {
 #   outstanding  no acknowledgement at all, one bound to a DIFFERENT
 #                candidate (a rebase or a fresh rework round moved it), no
 #                candidate_sha to bind one to, a tree whose HEAD has moved
-#                past the acknowledgement, or a tree with uncommitted changes
-#                sitting on top of it. The pass stops.
+#                past the acknowledgement, a tree with uncommitted changes
+#                sitting on top of it, or a tree whose state could not be
+#                inspected at all. The pass stops.
 #
 # WHY THE HEAD COMPARE IS PART OF THE RESUME RULE, not a detail of the ack.
 # Two frontmatter fields agreeing prove only that they were written together.
@@ -158,7 +181,7 @@ handoff_worktree_dirty() {
 # the cost of proceeding when it was not is a burnt attempt on a candidate
 # nobody finished.
 handoff_state() {
-  local repo="$1" id="$2" tf ack cand wt cwd head dirty
+  local repo="$1" id="$2" tf ack cand wt cwd head dirty drc
   if [ "$(handoff_gate_mode "$repo")" = off ]; then
     printf 'off\tthe handoff_before_verify gate is off for this repository\n'
     return 0
@@ -199,7 +222,18 @@ handoff_state() {
   # uncommitted mechanical fix is the same L025 failure as a post-ack commit --
   # verification runs work no commit contains -- except that here every sha
   # still agrees, so nothing above would ever notice it.
-  dirty="$(handoff_worktree_dirty "$cwd")"
+  drc=0
+  dirty="$(handoff_worktree_dirty "$cwd")" || drc=$?
+  if [ "$drc" -ne 0 ]; then
+    # A LOOK THAT NEVER HAPPENED IS NOT A CLEAN TREE. Every axis above this one
+    # compares shas, which can all agree about a commit while the tree carries
+    # work no commit contains; this is the axis that reads the tree itself, so
+    # a failed read here leaves that gap wide open rather than closed. Reported
+    # as what it is -- uninspected -- because "clean" and "we could not look"
+    # call for opposite actions from the operator who reads it.
+    printf 'outstanding\tthe hand-off is acknowledged for candidate %s, but the working tree of %s could not be inspected (%s), so nothing says whether verification would run that commit or uncommitted work sitting on top of it\n' "$ack" "$cwd" "$dirty"
+    return 0
+  fi
   if [ -n "$dirty" ]; then
     printf 'outstanding\tthe hand-off is acknowledged for candidate %s, but %s has uncommitted changes (%s) — verification would run a tree no commit contains, so commit them and re-run the ack\n' "$ack" "$cwd" "$dirty"
     return 0
