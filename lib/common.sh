@@ -323,11 +323,23 @@ _orchid_head_branch_ondisk() {
 #
 #      It is also, deliberately, the CHEAP condition and therefore the first
 #      one: it is answered from Git's on-disk HEAD alone (_orchid_head_branch_
-#      ondisk above), so the whole of this function costs zero subprocesses
-#      for every root that is not parked on that branch -- which is every root
-#      in an ordinary run. That is not an optimisation, it is the ordering
-#      this check owes the unattended-trust gate; the helper's own comment has
-#      the argument.
+#      ondisk above), so NO `git` runs for a root that is not parked on that
+#      branch -- which is every root in an ordinary run. That is not an
+#      optimisation, it is the ordering this check owes the unattended-trust
+#      gate; the helper's own comment has the argument.
+#
+#      Said exactly, because "costs nothing" is the sort of claim that rots:
+#      a root with no branch at all (an install prefix, a detached HEAD)
+#      leaves this function having spawned nothing whatever, while a root that
+#      HAS a branch pays config_get's own text-processing subshells -- tr,
+#      sed, grep, tail, cut -- to learn the integration branch's name before
+#      the comparison on the line below can be made. Those read
+#      $ORCHID_ROOT/orchid.config and $HOME/.orchid/config, which are files,
+#      not repositories, and that is the distinction the ordering actually
+#      turns on: what the unattended gate forbids ahead of an acknowledgement
+#      is TOUCHING A REPOSITORY, and `git` is the only thing here that would.
+#      tests/test_stale_root.sh check 11 fences precisely that, and fences
+#      nothing about subshell count.
 #   2. This checkout's INDEX does not match HEAD for the kernel paths.
 #
 #      THE INDEX, not the working tree, and that is the difference between a
@@ -467,56 +479,124 @@ orchid_root_stale() {
 # branch (`update-ref`) and then restores this checkout's kernel paths to the
 # new HEAD; between those two steps the index legitimately does not match
 # HEAD, which is precisely what orchid_root_stale reports. The merging process
-# shields its OWN children with ORCHID_ALLOW_STALE_ROOT=1, but any other verb
-# started from this root in that window -- an operator's `orchid status`, a
-# heartbeat, a notify hook -- met a refusal for a condition that was already
-# being repaired, and failed for it.
+# shields its OWN children with ORCHID_ALLOW_STALE_ROOT=1; nothing reaches any
+# other verb started from this root in that window -- an operator's `orchid
+# status`, a heartbeat, a notify hook.
 #
-# So the window is TOLERATED rather than closed: it cannot be closed, because
-# a ref advance and a working-tree restore are two operations and no ordering
-# of them is atomic to a third process. `orchid merge` publishes its PID at
-# the marker below for exactly as long as the window is open, and the refusal
-# stands down while that PID is alive.
+# WHAT THIS DOES NOT DO, and the whole of this round's rework: it does not let
+# those verbs RUN. An earlier version stood the refusal down while the window
+# was open, which meant a concurrent verb executed the pre-merge working tree
+# for the duration -- the exact failure L018 names, reintroduced by the
+# tolerance built to make the fix for L018 comfortable. The window is short,
+# but "short" is not a property the executed code has: an `orchid tick` that
+# starts in it runs a whole pass of pre-merge kernel, and the stale-adapter
+# incident this task exists for is what that costs.
 #
-# LIVENESS is the predicate, and that is what means nothing has to reap this
-# file -- a marker and a separate garbage collector that disagreed about when
-# it had expired would be two predicates, and the gap between them is where a
-# refusal gets suppressed by a process that no longer exists. A merge killed
-# mid-window leaves the marker behind and the refusal fires anyway on the next
-# verb, because the PID it names is gone: the dangerous direction fails
-# CLOSED. `.orchid/runtime/` is local-only and ephemeral by contract, so a
+# Waiting is not the remedy either, and the reason is structural rather than a
+# matter of taste. By the time this line is reached, the process has ALREADY
+# read this file -- and its verb, and every lib it sourced -- off the
+# pre-merge tree. Sleeping until the restore lands would leave it executing
+# the old bytes it is already holding, with only the illusion of currency. The
+# one correct action for a process that finds itself holding pre-merge code is
+# to stop, so that the NEXT invocation reads the refreshed tree from its first
+# byte.
+#
+# So this predicate no longer decides WHETHER to refuse. It decides WHICH
+# refusal is printed, and that is worth a file because the two are not the
+# same message at all: "a repair is in flight, nothing ran, retry in a moment"
+# sends the operator back to their prompt, while the full report sends them to
+# `git diff --cached` and a decision about their own uncommitted bytes. Told
+# the wrong one, an operator either goes diagnosing a condition that repaired
+# itself while they read, or retries forever against a merge that died. The
+# refusal is unconditional; only its accuracy depends on this file.
+#
+# IDENTITY, not a bare PID, and that is the second half of the rework. The
+# marker records the same triple lock_acquire writes into owner.json -- pid,
+# `_pid_start` and hostname -- and all three must still match for the marker
+# to be believed. A bare PID cannot survive its own writer: a merge SIGKILLed
+# mid-window leaves the file behind (an EXIT trap does not run on -9), the
+# kernel eventually hands that number to an unrelated process, and from then
+# on the marker names something alive. Under the old tolerance that silently
+# disarmed the refusal outright; even now it would mean an operator told
+# "retry in a moment" about a merge that died hours ago. A start time pins the
+# process the number was borrowed from, and the hostname keeps a runtime
+# directory that turns out to be shared from letting one host's PID answer
+# for another's -- the identical argument lock_acquire makes, and deliberately
+# the identical fields, so there is one notion of "that process is still
+# there" in this file rather than two that can drift.
+#
+# LIVENESS being the predicate is also what means nothing has to reap this
+# file. A marker and a separate garbage collector that disagreed about when it
+# had expired would be two predicates, and the gap between them is where a
+# stale marker starts speaking for a process that no longer exists. Every
+# failure here -- dead PID, recycled PID, foreign host, truncated file, no
+# file -- falls through to the full report, which is the answer that is never
+# unsafe. `.orchid/runtime/` is local-only and ephemeral by contract, so a
 # leftover marker is inert litter, not state.
 #
-# It is not a new bypass. An operator who can write this file can already set
-# ORCHID_ALLOW_STALE_ROOT=1, which is the explicit, documented override; this
-# adds no capability that was not already one environment variable away.
+# It is not a bypass, and now cannot become one: an operator (or a hostile
+# repository) who writes this file changes the TEXT of a refusal and nothing
+# else. ORCHID_ALLOW_STALE_ROOT=1 remains the one documented way to actually
+# run.
 #
-# It spends NO subprocess: two builtin file reads and `kill -0`. It is
-# evaluated only after orchid_root_stale has already said yes, and it reads
-# only under $ORCHID_ROOT -- orchid's own installation, never a repository a
-# run was merely pointed at -- so it adds nothing in front of the
-# unattended-trust gate. It deliberately does not call orchid_runtime, which
-# would `mkdir` on a read-only question.
+# Cost: two builtin file reads, `kill -0`, and -- only once those have passed
+# -- `hostname` and the `ps` inside _pid_start. It is evaluated only after
+# orchid_root_stale has already said yes, i.e. only when a refusal is certain
+# and a `git` has already run, and it reads only under $ORCHID_ROOT -- orchid's
+# own installation, never a repository a run was merely pointed at -- so it
+# adds nothing in front of the unattended-trust gate. It deliberately does not
+# call orchid_runtime, which would `mkdir` on a read-only question.
 _orchid_kernel_refresh_inflight() {
-  local root="$1" marker pid=""
+  local root="$1" marker pid="" pstart="" host=""
   [ -n "$root" ] || return 1
   marker="$root/.orchid/runtime/kernel-refresh"
   [ -r "$marker" ] || return 1
-  read -r pid 2>/dev/null < "$marker" || [ -n "$pid" ] || return 1
-  # A non-numeric or empty PID is a truncated or hand-mangled marker: no
-  # tolerance, refuse. Same fail-closed direction as a dead PID.
+  # Three lines, one open. A marker truncated to fewer -- or written by a
+  # version of orchid that published only a PID -- leaves the later fields
+  # empty, and every field is required below, so the old one-line format reads
+  # as "cannot establish" rather than as a match. `read` reports failure at an
+  # EOF it reached without a newline having nonetheless filled the variable,
+  # so the group's status is discarded and content is what gets tested.
+  { read -r pid; read -r pstart; read -r host; } < "$marker" 2>/dev/null || true
+  # A non-numeric or empty PID is a truncated or hand-mangled marker: believe
+  # nothing, print the full report. Same direction as a dead PID.
   case "$pid" in ''|*[!0-9]*) return 1 ;; esac
-  kill -0 "$pid" 2>/dev/null
+  [ -n "$pstart" ] || return 1
+  [ -n "$host" ] || return 1
+  kill -0 "$pid" 2>/dev/null || return 1
+  [ "$host" = "$(hostname 2>/dev/null || true)" ] || return 1
+  # The one that decides it, and last because the two checks above it are
+  # cheaper (only this and the `hostname` on the line before spawn anything):
+  # the PID is alive AND it is the same process that wrote the marker, not a
+  # later tenant of the number. An unanswerable `ps` yields an empty string
+  # here, which does not equal a recorded start, so "cannot tell" reports
+  # not-in-flight.
+  [ "$(_pid_start "$pid")" = "$pstart" ]
 }
 
 # orchid_kernel_refresh_open <root> / _close <root> -- the writer half of the
 # marker above, called by libexec/orchid-merge around its advance-and-refresh.
+#
 # `_open` is best-effort: a runtime directory that cannot be written costs the
-# tolerance, never the merge.
+# accuracy of one refusal's wording, never the merge. It declines outright
+# rather than publish an identity it cannot prove -- an empty `_pid_start`
+# (a container with no `ps`) or an empty hostname would write a marker whose
+# fields the reader must reject anyway, and writing one is strictly worse than
+# writing none, since the file outlives this process and the next reader has
+# no way to know it was born unusable.
+#
+# Written through atomic_write, so a reader can never catch a half-written
+# marker: `>` truncates in place and would give a concurrent verb an empty
+# file, which is merely the safe answer rather than the true one.
 orchid_kernel_refresh_open() {
-  local rt
+  local rt start host
+  start="$(_pid_start "$$")"
+  [ -n "$start" ] || return 1
+  host="$(hostname 2>/dev/null || true)"
+  [ -n "$host" ] || return 1
   rt="$(orchid_runtime "$1" 2>/dev/null)" || return 1
-  printf '%s\n' "$$" > "$rt/kernel-refresh" 2>/dev/null || return 1
+  printf '%s\n%s\n%s\n' "$$" "$start" "$host" \
+    | atomic_write "$rt/kernel-refresh" 2>/dev/null || return 1
 }
 orchid_kernel_refresh_close() {
   rm -f "$1/.orchid/runtime/kernel-refresh" 2>/dev/null || true
@@ -1357,11 +1437,20 @@ trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
 # Shielding the merge's own children is not enough on its own, because the
 # window between the ref advance and the refresh is open to every OTHER
 # process too -- an operator's `orchid status`, a heartbeat, a notify hook,
-# all started from this same root and none of them a child of the merge. They
-# used to fail for a condition that was already being repaired. That window is
-# now TOLERATED rather than closed (_orchid_kernel_refresh_inflight above; it
-# cannot be closed, since a ref advance and a tree restore are two operations
-# and no ordering of them is atomic to a third process).
+# all started from this same root and none of them a child of the merge.
+#
+# Those verbs REFUSE in that window, and must. The window cannot be made
+# atomic -- a ref advance and a tree restore are two operations, and no
+# ordering of them is atomic to a third process -- but the thing that has to
+# be closed is not the interval, it is the possibility of EXECUTING the
+# pre-merge tree inside it, and refusing closes that completely. An earlier
+# version instead stood the refusal down for the duration, which bought a
+# heartbeat its exit status by handing it the stale kernel: the failure of
+# L018, reintroduced inside the fix for L018. What the marker
+# (_orchid_kernel_refresh_inflight above) now buys is a truthful message --
+# "a repair is in flight, nothing ran, retry" instead of a report inviting an
+# operator to diagnose a condition that is repairing itself -- and a distinct
+# exit status for the automation that used to survive on the tolerance.
 #
 # Note the reach that claim does NOT have, because an earlier draft of this
 # comment claimed it and the code never delivered it. A checkout that SHARES
@@ -1390,12 +1479,30 @@ trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
 # verb around it already has.
 #
 # `orchid help` and an unknown verb still answer (bin/orchid handles both
-# without sourcing anything). Everything else refuses, diagnostics included:
-# the message below names the branch and the files, which is more than
-# `doctor` tells an operator in this state, and an exemption list is precisely
-# how the advisory version failed. ORCHID_ALLOW_STALE_ROOT=1 is the deliberate
-# way to run one command anyway -- explicit, per-invocation, visible in the
-# transcript, and the way to read state out of a checkout mid-recovery.
+# without sourcing anything). EVERYTHING ELSE REFUSES, `doctor` and `status`
+# included, and that is the deliberate answer to the obvious objection: those
+# two only read, they change nothing, and an operator meeting a refusal wants
+# them more than any other verb. Four reasons they are in anyway, and the
+# first is the one that decides it:
+#
+#   * A diagnostic read out of a stale checkout is produced BY the pre-merge
+#     code. `orchid doctor` in this state runs the checks the old tree
+#     carries, so it can pass a checkout the merged doctor fails, and it
+#     reports on the very staleness it is a symptom of. Trusting output from
+#     code nobody has looked at is the whole of L018; a wrong diagnosis is
+#     worse than a refusal, because the operator acts on it.
+#   * There is nothing to gain. The refusal below already carries more than
+#     `doctor` would say here: the branch, the staged paths, the unstaged ones
+#     as context, and two read-only commands for looking at them.
+#   * An exemption list is exactly how the advisory version failed. It was
+#     obeyable and therefore ignored, and every exemption reopens the same
+#     door for whichever verb ends up on the list next.
+#   * The exemption exists already, and is better: ORCHID_ALLOW_STALE_ROOT=1
+#     orchid doctor is one token, per-invocation, visible in the transcript,
+#     and chosen with the observation already in front of the operator -- so
+#     the staleness of what they are about to read is explicit rather than
+#     silent. docs/troubleshooting.md says all of this where an operator in
+#     this state will find it.
 # ---------------------------------------------------------------------------
 
 # _orchid_stale_root_die -- the refusal text. ONE arm, because this verb's job
@@ -1447,11 +1554,39 @@ This is a report, not a diagnosis. Two different things leave an index that does
 LOOK FIRST — both of these are read-only: \"git -C $at status --short -- ${ORCHID_KERNEL_PATHS[*]}\" and \"git -C $at diff --cached HEAD -- ${ORCHID_KERNEL_PATHS[*]}\". Then resolve it yourself, whichever it turns out to be. docs/troubleshooting.md 'Stale orchid itself' walks the options and says what each one costs. Note that the pathspec above names orchid's own code and nothing else: uncommitted .orchid run state and a pending orchid.config edit are outside it, and orchid neither inspects nor restores them. To run one command anyway: ORCHID_ALLOW_STALE_ROOT=1 orchid ..."
 }
 
-# The tolerance for `orchid merge`'s own advance-then-refresh window is asked
-# LAST, so it costs nothing until a refusal is otherwise certain, and so the
-# ordering the branch check owes the unattended-trust gate is unchanged. It
-# spends no subprocess and reads only under $ORCHID_ROOT.
-if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale \
-   && ! _orchid_kernel_refresh_inflight "${ORCHID_ROOT:-}"; then
+# _orchid_stale_root_inflight_die -- the same refusal, worded for the one
+# state in which the checkout is knowably being repaired as it is read: an
+# `orchid merge` from this very root is between its ref advance and its
+# restore (_orchid_kernel_refresh_inflight above).
+#
+# It REFUSES like the other arm. What is different is only what the operator
+# is told to do about it, and that difference is the entire reason the marker
+# is worth a file: here the state clears itself within a moment and there is
+# nothing to decide, so sending anyone to `git diff --cached` would be sending
+# them to diagnose a condition that repaired itself while they read.
+#
+# A distinct exit status, because the callers this most affects are not
+# people. A heartbeat, a notify hook or a scheduler that starts in the window
+# used to be handed the pre-merge kernel and a zero exit; it now fails, and
+# telling it "retry" apart from "an operator must look at this checkout" is
+# what keeps that from becoming a page for a condition that resolves in a
+# second. 75 is sysexits' EX_TEMPFAIL, it is used nowhere else in orchid, and
+# it is the ONLY temporary refusal here: every other arm of this guard needs a
+# human and exits 1.
+ORCHID_STALE_ROOT_TEMPFAIL=75
+_orchid_stale_root_inflight_die() {
+  echo "orchid: refusing to run: an 'orchid merge' started from this same checkout (${ORCHID_ROOT:-unknown}) has just advanced '$ORCHID_ROOT_STALE_BRANCH' and is restoring this checkout's kernel files to it right now. Until that finishes, this working tree still holds the PRE-MERGE code, and running a verb out of it is the exact failure this guard exists for (lesson L018) — so nothing was run, and nothing here was changed. Waiting would not help this process: it has already read its libraries off the pre-merge tree, so only a fresh invocation can pick up the merged ones.
+Retry in a moment — the window is one ref advance and one restore wide. If retrying keeps reporting this, the merge died mid-restore; the next command after its process is gone reports the full state of this checkout instead, and docs/troubleshooting.md 'Stale orchid itself' takes it from there. Exit $ORCHID_STALE_ROOT_TEMPFAIL means 'temporary, retry' and is used for nothing else." >&2
+  exit "$ORCHID_STALE_ROOT_TEMPFAIL"
+}
+
+# Which refusal, never whether. `orchid merge`'s own advance-then-refresh
+# window is asked about LAST, so it costs nothing until a refusal is already
+# certain, and so the ordering the branch check owes the unattended-trust gate
+# is unchanged: it reads only under $ORCHID_ROOT and spawns no `git`.
+if [ "${ORCHID_ALLOW_STALE_ROOT:-}" != 1 ] && orchid_root_stale; then
+  if _orchid_kernel_refresh_inflight "${ORCHID_ROOT:-}"; then
+    _orchid_stale_root_inflight_die
+  fi
   _orchid_stale_root_die
 fi

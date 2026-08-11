@@ -131,9 +131,11 @@ merge_cleanup() {
     rm -f "$out_tmp" 2>/dev/null || true
   fi
   # The advance-then-refresh window, closed on every exit path. Leaving it
-  # open would suppress the stale-root refusal for other verbs from this root
-  # until the PID died anyway, so this is tidiness rather than correctness --
-  # liveness, not this line, is what the refusal actually gates on.
+  # open would not suppress anything -- other verbs from this root refuse
+  # either way -- but until this process died they would be told a repair was
+  # in flight and to retry, which stops being true the instant this merge
+  # gives up. Liveness, not this line, is what keeps that bounded; this line
+  # is what keeps it honest.
   if [ -n "$kernel_window" ]; then
     orchid_kernel_refresh_close "$kernel_window"
   fi
@@ -364,14 +366,21 @@ if [ "$rc" -eq 0 ]; then
     # says a repair is in flight. Every OTHER process started from this root
     # in that window -- an operator's `orchid status`, a heartbeat, a notify
     # hook, none of them a child of this merge and so none of them reached by
-    # the ORCHID_ALLOW_STALE_ROOT below -- would otherwise meet the stale-root
-    # refusal for a condition already being repaired, and fail for it. The
-    # marker names this PID and the refusal stands down only while that PID is
-    # alive, so a merge killed here leaves the refusal working (lib/common.sh,
-    # _orchid_kernel_refresh_inflight). Best-effort, and an `if` for the same
-    # reason as the one above: under `set -e` a bare failing command here
-    # aborts the merge between its verification and its ref advance, so an
-    # unwritable runtime dir must cost the tolerance and never the merge.
+    # the ORCHID_ALLOW_STALE_ROOT below -- meets the stale-root refusal, which
+    # is correct and is not what this marker changes: this working tree really
+    # does hold pre-merge code until the restore below lands, and letting a
+    # verb run out of it is the failure L018 names. What the marker changes is
+    # what those verbs are TOLD -- "a repair is in flight, retry" and exit 75,
+    # rather than a report inviting the operator to diagnose their own index
+    # (lib/common.sh, _orchid_kernel_refresh_inflight). It carries this
+    # process's full identity, pid + start time + host, so a marker outliving
+    # a SIGKILLed merge cannot later be answered for by whatever process
+    # inherits the number.
+    #
+    # Best-effort, and an `if` for the same reason as the one above: under
+    # `set -e` a bare failing command here aborts the merge between its
+    # verification and its ref advance, so an unwritable runtime dir must cost
+    # the wording of someone else's refusal and never the merge.
     if orchid_kernel_refresh_open "$repo"; then kernel_window="$repo"; fi
   fi
 
@@ -416,9 +425,10 @@ if [ "$rc" -eq 0 ]; then
   fi
   # The window is over: either this checkout now matches the branch, or it
   # never will without the operator. Closed HERE rather than left to the EXIT
-  # trap so the refusal resumes at the instant the repair stops being in
-  # flight -- in the declined-refresh arm above there was never anything to
-  # wait for, and other verbs from this root must start refusing immediately.
+  # trap so that "retry in a moment" stops being said at the instant it stops
+  # being true -- in the declined-refresh arm above there was never anything
+  # to wait for, and an operator told to retry a repair that was declined
+  # before it began would retry until they read the merge's own warning.
   if [ -n "$kernel_window" ]; then
     orchid_kernel_refresh_close "$kernel_window"
     kernel_window=""

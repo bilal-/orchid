@@ -81,7 +81,12 @@ source "$(dirname "$0")/helpers.sh"
 #   * 14: the window between `orchid merge`'s ref advance and its refresh,
 #     which is a real interval in which this checkout's index really does not
 #     match HEAD. Concurrent verbs from the same root -- not children of the
-#     merge, so not covered by its ORCHID_ALLOW_STALE_ROOT -- failed on it.
+#     merge, so not covered by its ORCHID_ALLOW_STALE_ROOT -- meet it. A round
+#     of this task let them RUN for the duration, which is this guard's own
+#     failure class inside its own fix: the tree they ran was the pre-merge
+#     one. They refuse now, with a distinct message and exit status, and 14
+#     pins both that and the identity that decides which message -- a bare PID
+#     outlives a SIGKILLed merge and is eventually reissued.
 # ---------------------------------------------------------------------------
 
 # The one list the guard, the refresh and the documented remedy all use. Kept
@@ -649,10 +654,16 @@ assert_eq "durable sentinel" "$(cat "$selfroot/.orchid/sentinel")" \
 # written; tests/test_unattended_trust.sh fences the same boundary from the
 # other side (its fast-guard shim fails on ANY git or mktemp before an
 # acknowledgement). So the branch half of the guard is answered from Git's
-# own on-disk HEAD and costs nothing, and the content half -- the one that
+# own on-disk HEAD and spawns NO git, and the content half -- the one that
 # does need git -- is reachable only for a checkout parked on the integration
 # branch, which is orchid's own root and never a repository a run was pointed
 # at.
+#
+# What is fenced here is git, exactly, and not "subprocesses" in general: a
+# root that HAS a branch still pays config_get's tr/sed/grep/tail/cut to learn
+# the integration branch's name, and those read config FILES rather than any
+# repository. Touching a repository ahead of its acknowledgement is the thing
+# the unattended gate forbids, and git is the only thing here that would.
 #
 # The two roots below are the two on-disk layouts Git writes, deliberately
 # split across the two outcomes so both are exercised: an ordinary checkout
@@ -813,6 +824,35 @@ assert_eq "$handedit_before" "$(cat "$root/libexec/orchid-version")" \
 assert_eq "$handedit_before" "$(git -C "$root" show ":libexec/orchid-version")" \
   "and untouched in the index, which is where its only copy of that change lives"
 
+# EVERY verb, not a list of them, and this state is where that is argued
+# hardest: a staged kernel edit refuses `doctor` and `status` too, which are
+# the verbs an operator in this state wants most. They are in anyway, and the
+# reason is not symmetry -- a diagnosis read out of this checkout would be
+# produced BY the stale code, so `doctor` here runs the checks the pre-merge
+# tree carries and can pass a checkout the merged one fails. The refusal
+# already reports more than `doctor` would (branch, staged paths, unstaged
+# context, two read-only commands), and an exemption list is precisely how
+# the advisory version of this check failed. The exemption is
+# ORCHID_ALLOW_STALE_ROOT=1, taken per invocation once the operator has read
+# what was observed, so the staleness of what they are about to read is
+# explicit rather than silent (docs/troubleshooting.md, "Why doctor and
+# status refuse too").
+#
+# Mechanically there is no list to get wrong: the refusal fires when
+# lib/common.sh is SOURCED, and every verb sources it. A second verb stands
+# in for all of them here, so an exemption added later has to break this.
+rc=0
+second_out="$(HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT= \
+  "$root/bin/orchid" fresh 2>&1)" || rc=$?
+assert_eq 1 "$rc" "a second, unrelated verb refuses in the same state -- the refusal is not per-verb"
+assert_match "refusing to run" "$second_out" "and refuses with the same report"
+rc=0
+second_out="$(HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1 \
+  "$root/bin/orchid" fresh 2>&1)" || rc=$?
+assert_eq 0 "$rc" \
+  "and the per-invocation override is what reads state out of a checkout in this state"
+assert_match "fresh: merged verb" "$second_out" "having actually run the verb"
+
 # The same staged edit, now with the branch advanced under it as well -- both
 # things are true at once, which is precisely what check 10's merge produces.
 # The refusal carries the unstaged half as context and still prescribes
@@ -834,42 +874,121 @@ assert_eq "$both_before" "$(cat "$root/libexec/orchid-version")" \
   "and both layers of the operator's work survive the refusal"
 
 # ===========================================================================
-# 14 -- `orchid merge`'s advance-then-refresh window is tolerated, on LIVENESS
+# 14 -- `orchid merge`'s advance-then-refresh window REFUSES, and says why
 # ===========================================================================
 # `orchid merge` moves the ref and then restores this checkout, and between
 # those two steps the index legitimately does not match HEAD -- the exact
 # thing the refusal reports. The merge shields its own children with
 # ORCHID_ALLOW_STALE_ROOT=1, but nothing reaches the OTHER processes started
 # from the same root in that window: an operator's `orchid status`, a
-# heartbeat, a notify hook. They failed for a condition already being
-# repaired.
+# heartbeat, a notify hook.
 #
-# The window cannot be closed -- a ref advance and a tree restore are two
-# operations and no ordering of them is atomic to a third process -- so it is
-# tolerated instead: the merge publishes its PID and the refusal stands down
-# while that PID is alive. LIVENESS is the predicate, which is what means no
-# reaper is needed, and the three negative cases below are the whole of why
-# that is safe: a marker outliving its process, a mangled one, and none at all
-# all fail CLOSED. $root is stale from check 13b and refuses without one.
+# An earlier round let those processes RUN for the duration, on the reasoning
+# that the condition was already being repaired and the window was short. That
+# was this task's own defect wearing the fix's clothes: during the window this
+# working tree really does hold the pre-merge kernel, so every verb allowed
+# through executed exactly the stale code L018 is about, and "short" is not a
+# property the executed code has -- a tick that starts in the window runs a
+# whole pass of it. Waiting instead of running is no better: by the time this
+# guard is reached the process has already sourced its libraries off the
+# pre-merge tree, so sleeping until the restore lands leaves it running the
+# old bytes it is already holding.
+#
+# So the window is closed to EXECUTION, which is the only thing that had to
+# close: the verb refuses either way, and the marker decides only WHICH
+# refusal it gets. That distinction is worth a file because the two messages
+# send an operator to opposite places -- "retry in a moment" versus a report
+# about their own staged bytes -- and it earns a distinct exit status (75,
+# EX_TEMPFAIL) because the callers most affected are heartbeats and hooks,
+# which have to tell "retry" from "a human must look at this".
+#
+# The negative cases below are the whole of why a marker may be believed at
+# all. It carries the identity lock_acquire uses -- pid, start time, host --
+# because a bare PID cannot survive its own writer: an EXIT trap does not run
+# on SIGKILL, so a killed merge leaves the file behind, and the number is
+# eventually reissued to something unrelated. Under the old tolerance that
+# silently disarmed the whole refusal; here it would tell an operator to keep
+# retrying a merge that died hours ago. Every failure -- recycled PID, foreign
+# host, dead PID, the old one-line format, a mangled file, no file -- falls
+# through to the full report. $root is stale from check 13b and refuses
+# without a marker.
 marker="$root/.orchid/runtime/kernel-refresh"
 mkdir -p "$root/.orchid/runtime"
 
+# The identity fields are spelled out here rather than sourced from
+# lib/common.sh, for the same reason ORCHID_KERNEL_PATHS is: a silent change
+# to what the marker records has to be made twice and seen in review. This
+# shell is the stand-in for the live merge -- its PID is alive by definition
+# and its start time is whatever `ps` says right now.
+live_start="$(ps -o lstart= -p "$$" 2>/dev/null | tr -d ' ')"
+live_host="$(hostname)"
+[ -n "$live_start" ] || fail "test fixture: cannot read this shell's process start time"
+[ -n "$live_host" ] || fail "test fixture: cannot read this machine's hostname"
+
+printf '%s\n%s\n%s\n' "$$" "$live_start" "$live_host" > "$marker"
+run_version "$root"
+assert_eq 75 "$rc" \
+  "a verb from a root whose merge is mid-refresh refuses with the temporary-failure status, not the operator-must-look one"
+assert_match "restoring this checkout's kernel files to it right now" "$out" \
+  "and says a repair is in flight rather than reporting an index the operator has to judge"
+assert_match "Retry in a moment" "$out" "telling the caller the state clears itself"
+[ "${out#*adapter: pre-merge}" = "$out" ] \
+  || fail "the mid-refresh window let a verb EXECUTE the pre-merge tree -- the failure this guard exists for"
+assert_no_lossy_command "the mid-refresh refusal"
+
+# Writer and reader, round-tripped in ONE process, because a marker whose
+# format the two halves disagree about is invisible from either side alone:
+# `orchid merge` would open a window nothing believes, and every verb in it
+# would get the full report about a checkout that is mid-repair. The same
+# process that opens it must recognise it.
+rc=0
+HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1 /bin/bash -c '
+  set -euo pipefail
+  source "$1/lib/common.sh"
+  orchid_kernel_refresh_open "$2" || exit 3
+  _orchid_kernel_refresh_inflight "$2" || exit 4' _ "$REPO_ROOT" "$root" || rc=$?
+assert_eq 0 "$rc" \
+  "the marker orchid_kernel_refresh_open writes is the marker _orchid_kernel_refresh_inflight believes"
+
+# ...and that window shut when its process did, with no reaper anywhere: the
+# file is still on disk, naming a PID that has now exited.
+[ -e "$marker" ] || fail "test fixture: the round-trip left no marker to go stale"
+run_version "$root"
+assert_eq 1 "$rc" \
+  "a real marker outlives the process that wrote it and stops being believed the moment it exits"
+
+# PID REUSE, which is the case a bare PID cannot see: the number is alive --
+# it is this very shell -- but it is not the process that wrote the marker.
+printf '%s\n%s\n%s\n' "$$" "ThuJan101:00:001970" "$live_host" > "$marker"
+run_version "$root"
+assert_eq 1 "$rc" \
+  "a live PID that is not the process that opened the window cannot impersonate it"
+assert_match "INDEX does not match HEAD" "$out" \
+  "and the operator gets the full report instead of being told to retry forever"
+
+# The same, one field over: a runtime directory that turns out to be shared
+# must not let another host's PID answer for this one's.
+printf '%s\n%s\n%s\n' "$$" "$live_start" "not-this-host" > "$marker"
+run_version "$root"
+assert_eq 1 "$rc" "a marker written on another host is not this host's merge"
+
+# The format this replaces, still naming a live PID. It must read as "cannot
+# establish", or an orchid mid-upgrade would believe its predecessor's markers.
 printf '%s\n' "$$" > "$marker"
 run_version "$root"
-assert_eq 0 "$rc" \
-  "a verb from a root whose merge is mid-refresh runs instead of failing on the repair in flight"
+assert_eq 1 "$rc" "the old bare-PID marker format is not believed"
 
 # A PID this shell started and reaped: certainly dead, and certainly not
 # recycled yet. This is the merge that was killed mid-window.
 ( exit 0 ) &
 dead_pid=$!
 wait "$dead_pid" 2>/dev/null || true
-printf '%s\n' "$dead_pid" > "$marker"
+printf '%s\n%s\n%s\n' "$dead_pid" "$live_start" "$live_host" > "$marker"
 run_version "$root"
 assert_eq 1 "$rc" \
-  "a marker whose merge is gone tolerates nothing -- the refusal fires, which is the safe direction"
+  "a marker whose merge is gone claims nothing -- the full report fires, which is the safe direction"
 
-printf 'not-a-pid\n' > "$marker"
+printf 'not-a-pid\nx\ny\n' > "$marker"
 run_version "$root"
 assert_eq 1 "$rc" "a truncated or mangled marker fails closed too"
 
@@ -879,7 +998,9 @@ assert_eq 1 "$rc" "and with no marker at all the refusal is exactly as it was"
 
 # The real merges from checks 9 and 10 both took this path -- one refreshing,
 # one declining to -- and neither may leave the window standing open behind
-# it, or the next genuine staleness in that checkout would be tolerated
-# silently.
+# it. Nothing would be let through if they did (the refusal no longer depends
+# on the marker), but until that process died every verb from the checkout
+# would be told to retry a repair that had already finished or been declined,
+# which in check 10's case is a wait that would never end.
 [ ! -e "$selfroot/.orchid/runtime/kernel-refresh" ] \
   || fail "orchid merge left its advance-then-refresh window open after exiting"

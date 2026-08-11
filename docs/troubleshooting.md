@@ -503,12 +503,9 @@ the checkout before it advanced the branch. If you have it in your scrollback,
 your own edit is why the next verb refuses and you are in case (2) — no
 further diagnosis needed.
 
-The merge also stands its refusal down for the fraction of a second between
-its ref advance and its refresh, so an `orchid status` or a heartbeat that
-happens to start in that window does not fail for a condition already being
-repaired. It does that by publishing its own PID at
-`.orchid/runtime/kernel-refresh` and standing down only while that process is
-alive; a merge killed mid-refresh therefore leaves the refusal working.
+A verb that starts in the fraction of a second between that merge's ref
+advance and its refresh gets a different refusal and a different exit status;
+see *A repair is in flight* at the end of this section.
 
 ### Case (2), a change of yours in the index: save it first
 
@@ -607,6 +604,72 @@ out of it, or to recover — prefix it:
 ```sh
 ORCHID_ALLOW_STALE_ROOT=1 orchid status
 ```
+
+### Why `doctor` and `status` refuse too
+
+They are the verbs you want most in this state, and they are refused anyway.
+`orchid help` and an unknown verb still answer (neither sources anything);
+everything else, diagnostics included, stops.
+
+The reason is not consistency for its own sake. **A diagnosis read out of a
+stale checkout is produced by the stale code.** `orchid doctor` here runs the
+checks the pre-merge tree carries, so it can pass a checkout the merged
+`doctor` would fail — and it would be reporting on the very staleness that
+makes it untrustworthy. Acting on a confident wrong diagnosis is worse than
+being stopped, and trusting output from code nobody has looked at is the whole
+of the failure this guard exists for.
+
+There is also nothing to gain by exempting them: the refusal already tells you
+more than `doctor` would here — the branch, the paths whose index entries
+differ, any unstaged modifications as context, and two read-only commands for
+looking at them. And an exemption list is exactly how the earlier, advisory
+version of this check failed: it was obeyable, so it was ignored.
+
+What you want is one line up:
+
+```sh
+ORCHID_ALLOW_STALE_ROOT=1 orchid doctor
+```
+
+That is the diagnostics exemption — per-invocation, visible in your
+scrollback, and taken *after* you have read what the refusal observed. The
+difference from a built-in exemption is that this way the report you are about
+to read is knowably produced by the stale kernel, rather than silently so.
+
+### A repair is in flight (exit 75)
+
+There is a fraction of a second between `orchid merge`'s ref advance and its
+refresh in which this checkout genuinely holds the pre-merge code. A verb that
+starts in that window — an `orchid status`, a heartbeat, a notify hook — gets
+a different message and **exit 75**:
+
+```
+orchid: refusing to run: an 'orchid merge' started from this same checkout
+(...) has just advanced 'orchid/integration' and is restoring this checkout's
+kernel files to it right now. ... Retry in a moment
+```
+
+**Retry it; there is nothing here for you to fix.** Nothing ran and nothing
+was changed. Exit 75 is `EX_TEMPFAIL` and orchid uses it for this and nothing
+else, so a scheduler or hook wrapping orchid can retry on 75 and alert on 1
+without parsing any text.
+
+It refuses rather than running because that window is *defined* by this
+checkout holding pre-merge code — running a verb out of it is precisely the
+failure this whole section is about, and one that starts an `orchid tick` runs
+a whole pass of it. Nor would waiting help the process that is already there:
+by the time it can tell, it has read its own libraries off the pre-merge tree,
+so only a fresh invocation picks up the merged ones.
+
+If retrying keeps reporting this, the merge died mid-restore. Once its process
+is gone, the next command reports the full state of the checkout instead and
+the cases above apply. (The merge publishes its pid, process start time and
+hostname at `.orchid/runtime/kernel-refresh`, and all three must match a live
+process for this message to be used — a PID alone gets reissued to something
+unrelated sooner or later, and would keep telling you to retry a merge that
+had died. The file is removed on every exit path a merge can take short of
+`SIGKILL`, and a leftover one is inert: it can change the wording of a
+refusal, never lift it.)
 
 ## Split-brain checkout
 

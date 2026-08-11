@@ -372,12 +372,23 @@ pending → implementing → testing → reviewing → arbitrating → merging �
     refreshes other checkouts" remedy — no checkout the merging process does
     not already own and hold the run lock for is ever written. The advance and
     the refresh are two operations and no ordering of them is atomic to a
-    third process, so the window between them is TOLERATED rather than closed:
-    `orchid merge` publishes its PID at `.orchid/runtime/kernel-refresh` for
-    the length of the window and the refusal stands down while that PID is
-    alive. Liveness is the predicate, so nothing has to reap the marker — a
-    merge killed mid-window leaves a refusal that fires, which is the safe
-    direction.
+    third process, so a window exists in which this checkout holds PRE-MERGE
+    code. Verbs started from that root inside it REFUSE — the window is closed
+    to execution, which is the only thing that had to close, since a verb
+    allowed through it runs exactly the stale kernel this refusal exists for,
+    and a verb that waited would still be holding the libraries it already
+    sourced. `orchid merge` publishes its identity — pid, process start time
+    and hostname, the same triple `lock_acquire` writes — at
+    `.orchid/runtime/kernel-refresh` for the length of the window, and that
+    marker selects WHICH refusal is printed: "a repair is in flight, nothing
+    ran, retry" and exit **75** (`EX_TEMPFAIL`, used nowhere else) while the
+    identity matches a live process, the full report otherwise. Liveness is
+    the predicate, so nothing has to reap the marker, and the identity is what
+    keeps a file left behind by a SIGKILLed merge from being answered for by
+    whatever process later inherits its PID. A marker that cannot be believed
+    — recycled PID, foreign host, mangled, absent — yields the full report,
+    which is never the unsafe answer; writing one can therefore change the
+    wording of a refusal and nothing else.
   **The refusal prescribes no repair.** It reports what it observed — the
   branch, the kernel paths whose index entries differ from HEAD, and any
   unstaged modifications as context — states that the cause is not
