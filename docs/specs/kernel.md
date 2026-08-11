@@ -337,8 +337,17 @@ pending → implementing → testing → reviewing → arbitrating → merging �
     driven by PRE-MERGE code indefinitely while every merge reports success
     (lesson L018, observed live for a full day). Every verb therefore
     REFUSES to run when `ORCHID_ROOT` is a checkout parked on the
-    integration branch whose kernel directories do not match HEAD
-    (`orchid_root_stale`, enforced at `lib/common.sh` source time).
+    integration branch whose **index** does not match HEAD for the kernel
+    paths (`orchid_root_stale`, enforced at `lib/common.sh` source time).
+    The INDEX, not the working tree: `git update-ref` moves the branch
+    without touching either, so the index left describing the commit the
+    branch moved off IS the record of the fall behind — while an operator
+    editing kernel files leaves the index alone, which is what keeps orchid
+    runnable in the integration checkout it is itself developed in. A
+    checkout that fell behind and was then `git reset` is consequently not
+    detected by this or any other check; from here it is indistinguishable
+    from ordinary editing, and catching it would mean refusing on every
+    ordinary edit.
     Because source time is ahead of every verb — including the
     unattended-trust gate, which may not let orchid touch a repository in any
     way before an acknowledgement is found — the "parked on the integration
@@ -358,20 +367,37 @@ pending → implementing → testing → reviewing → arbitrating → merging �
     a checkout with UNCOMMITTED kernel edits is never refreshed, it gets the
     refusal, because those edits are the operator's to keep — and `orchid
     merge` WARNS on stderr when it declines for that reason, naming the edit,
-    since otherwise the refusal the operator meets next names only the general
-    cause and its obvious remedy is the one that discards their work. This is
-    not the rejected "merge refreshes other checkouts" remedy — no checkout
-    the merging process does not already own and hold the run lock for is ever
-    written.
-  The refresh both point at names only the directories the launcher executes
-  from — `git checkout HEAD -- bin lib libexec runners plugins roles skills
-  templates`. Neither ever recommends `git checkout HEAD -- .`: it restores a
-  pending `orchid.config` along with the kernel, and without
-  `':(exclude).orchid'` it clobbers uncommitted `.orchid/` run state too.
+    since the refusal the operator meets next can only report what it sees and
+    cannot know that this edit is why. This is not the rejected "merge
+    refreshes other checkouts" remedy — no checkout the merging process does
+    not already own and hold the run lock for is ever written. The advance and
+    the refresh are two operations and no ordering of them is atomic to a
+    third process, so the window between them is TOLERATED rather than closed:
+    `orchid merge` publishes its PID at `.orchid/runtime/kernel-refresh` for
+    the length of the window and the refusal stands down while that PID is
+    alive. Liveness is the predicate, so nothing has to reap the marker — a
+    merge killed mid-window leaves a refusal that fires, which is the safe
+    direction.
+  **The refusal prescribes no repair.** It reports what it observed — the
+  branch, the kernel paths whose index entries differ from HEAD, and any
+  unstaged modifications as context — states that the cause is not
+  determinable from that, and prints only read-only commands for looking.
+  An index that differs from HEAD is produced identically by a `update-ref`
+  advance and by a `git add` of a kernel edit; two earlier rounds of this
+  guard classified the second as the first and prescribed a restore that
+  destroys the operator's only copy (dogfood finding F31's family). The
+  operator resolves it; `docs/troubleshooting.md` carries the options and
+  what each costs.
+  The refresh the merge runs names only what the launcher executes —
+  `bin lib libexec runners plugins roles skills templates PROTOCOL.md`,
+  the single `ORCHID_KERNEL_PATHS` list in `lib/common.sh`. It never reaches
+  for `.` : that would restore a pending `orchid.config` along with the
+  kernel, and without `':(exclude).orchid'` it clobbers uncommitted
+  `.orchid/` run state too.
   `git checkout <tree> -- <paths>` alone cannot drop a file the tree no longer
   carries; `orchid_refresh_kernel` resets each drifted path first and deletes
-  what HEAD has dropped, which is why the automatic refresh clears a refusal
-  the hand-run one-liner can leave standing (docs/troubleshooting.md). It
+  what HEAD has dropped, which is why the automatic refresh clears a state a
+  hand-run one-liner can leave standing (docs/troubleshooting.md). It
   DECLINES, per path, to overwrite an UNTRACKED file where the branch has
   since added a tracked one: the index has no entry there, so that path is
   indistinguishable in the drift list from a merged file not yet written here,

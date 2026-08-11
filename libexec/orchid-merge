@@ -106,6 +106,11 @@ fi
 lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
 wt=""
 out_tmp=""
+# Set to $repo only while this merge is inside its advance-then-refresh
+# window; see the block around the CAS below. Declared HERE, ahead of the
+# trap that reads it, because `set -u` makes an unset name fatal in the one
+# path that must never die.
+kernel_window=""
 merge_cleanup() {
   # Note: this is an EXIT trap — it does not run on SIGKILL (-9). An
   # operator (or an OOM-killer) that SIGKILLs the orchestrator process while
@@ -124,6 +129,13 @@ merge_cleanup() {
   # between its creation and its normal removal below.
   if [ -n "$out_tmp" ]; then
     rm -f "$out_tmp" 2>/dev/null || true
+  fi
+  # The advance-then-refresh window, closed on every exit path. Leaving it
+  # open would suppress the stale-root refusal for other verbs from this root
+  # until the PID died anyway, so this is tidiness rather than correctness --
+  # liveness, not this line, is what the refusal actually gates on.
+  if [ -n "$kernel_window" ]; then
+    orchid_kernel_refresh_close "$kernel_window"
   fi
   lock_release "$repo"
 }
@@ -325,6 +337,7 @@ if [ "$rc" -eq 0 ]; then
   # discover from the next verb's refusal that their own edit is why.
   self_checkout=0
   refresh_self=0
+  dirty_before=""
   repo_phys=""; root_phys=""
   if [ -n "$repo" ]; then repo_phys="$(cd "$repo" 2>/dev/null && pwd -P || true)"; fi
   if [ -n "${ORCHID_ROOT:-}" ]; then root_phys="$(cd "$ORCHID_ROOT" 2>/dev/null && pwd -P || true)"; fi
@@ -335,7 +348,31 @@ if [ "$rc" -eq 0 ]; then
     # runs under `set -e`, where that idiom is a bare failing command as soon
     # as the checkout is dirty and aborts the merge between its verification
     # and its ref advance -- the exact window nothing may die in.
-    if orchid_kernel_clean "$repo"; then refresh_self=1; fi
+    if orchid_kernel_clean "$repo"; then
+      refresh_self=1
+    else
+      # The operator's kernel edit, captured BEFORE the CAS and therefore
+      # before the ref move mixes the merge's own drift into every comparison.
+      # Against HEAD, which covers a STAGED edit as well as an unstaged one:
+      # pre-advance, anything that differs from HEAD in these paths is
+      # someone's uncommitted work here and nothing else.
+      dirty_before="$(git -C "$repo" diff --name-only HEAD -- \
+        "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null | tr '\n' ' ' || true)"
+    fi
+    # Open the advance-then-refresh window BEFORE the CAS, so no instant
+    # exists in which this checkout's index is behind its HEAD and nothing
+    # says a repair is in flight. Every OTHER process started from this root
+    # in that window -- an operator's `orchid status`, a heartbeat, a notify
+    # hook, none of them a child of this merge and so none of them reached by
+    # the ORCHID_ALLOW_STALE_ROOT below -- would otherwise meet the stale-root
+    # refusal for a condition already being repaired, and fail for it. The
+    # marker names this PID and the refusal stands down only while that PID is
+    # alive, so a merge killed here leaves the refusal working (lib/common.sh,
+    # _orchid_kernel_refresh_inflight). Best-effort, and an `if` for the same
+    # reason as the one above: under `set -e` a bare failing command here
+    # aborts the merge between its verification and its ref advance, so an
+    # unwritable runtime dir must cost the tolerance and never the merge.
+    if orchid_kernel_refresh_open "$repo"; then kernel_window="$repo"; fi
   fi
 
   # Compare-and-swap: `update-ref <ref> <new> <old>` only succeeds if <ref>
@@ -359,23 +396,32 @@ if [ "$rc" -eq 0 ]; then
       # The declined refresh, said out loud. This is the ONE outcome where the
       # merge leaves its own launcher stale on purpose, so the operator is owed
       # the reason at the moment it is created rather than only when the next
-      # verb refuses. The refusal itself now agrees with this warning instead
-      # of contradicting it -- it reports "BOTH behind that branch AND locally
-      # modified" and names the files, where it used to assert the branch
-      # advance alone and prescribe a refresh that would have thrown this edit
-      # away (lib/common.sh, _orchid_stale_root_die). Both places therefore say
-      # the same two things: the edit is why, and the obvious remedy destroys
-      # it.
-      echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Every verb here will now refuse, and will say the same thing. Save the edits first — commit them on a task branch, or 'git -C $repo stash push -- ${ORCHID_KERNEL_PATHS[*]}' — because the refresh that clears the refusal, 'git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}', overwrites those paths with HEAD's copy and destroys them" >&2
+      # verb refuses -- by then the refusal can only report what it observes,
+      # and cannot know that THIS edit is why. It prints no restoring command
+      # for the same reason lib/common.sh's refusal does not: the operator's
+      # bytes are here and nowhere else, and a command that overwrites them is
+      # never worth the keystrokes it saves.
+      echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Modified: ${dirty_before}— those bytes are in this checkout and nowhere else. Verbs run from this checkout may now refuse; they will report what they see and prescribe nothing. Deal with the edit whichever way you want it kept, then bring this checkout to $integ yourself; docs/troubleshooting.md 'Stale orchid itself' has the options and what each costs" >&2
     elif orchid_refresh_kernel "$repo"; then
       echo "refreshed $repo to $integ (orchid runs from this checkout)"
     else
       # Partial or refused restore — including the case orchid_refresh_kernel
       # declines rather than overwrite an UNTRACKED file at a path the branch
-      # now carries. `git status` is named first because that file, not git
-      # plumbing, is what the operator has to look at.
-      echo "orchid: warning: $integ advanced but this checkout could not be fully refreshed — check 'git -C $repo status' for an untracked file where the branch now carries one, then run: git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}" >&2
+      # now carries. `git status` is all that is named, and deliberately: the
+      # restore that would "finish the job" here is precisely the command that
+      # overwrites that untracked file, which is the only copy of it. Whatever
+      # stopped the refresh is a file the operator has to look at first.
+      echo "orchid: warning: $integ advanced but this checkout could not be fully refreshed — run 'git -C $repo status' and look for an untracked file at a path the branch now carries; restoring over it would destroy it, so nothing further was done and nothing further is prescribed here. Move or keep that file as you decide, then bring this checkout to $integ yourself (docs/troubleshooting.md 'Stale orchid itself')" >&2
     fi
+  fi
+  # The window is over: either this checkout now matches the branch, or it
+  # never will without the operator. Closed HERE rather than left to the EXIT
+  # trap so the refusal resumes at the instant the repair stops being in
+  # flight -- in the declined-refresh arm above there was never anything to
+  # wait for, and other verbs from this root must start refusing immediately.
+  if [ -n "$kernel_window" ]; then
+    orchid_kernel_refresh_close "$kernel_window"
+    kernel_window=""
   fi
   # The bookkeeping that closes out a merge whose ref has ALREADY moved must
   # not be stoppable by the stale-root refusal, refresh or no refresh: the
