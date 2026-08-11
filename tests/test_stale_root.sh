@@ -38,6 +38,13 @@ source "$(dirname "$0")/helpers.sh"
 # `orchid merge` whose ref advance strands its own `task advance <id> done`
 # behind the refusal, leaving the branch moved and the task frozen in
 # `merging` with no verb left able to move it.
+#
+# 8b and 10 are the two ways the automatic refresh must NOT go, and both are
+# the r-001 journal-loss hazard wearing kernel clothes rather than `.orchid/`
+# ones: 8b is a refresh that would overwrite an untracked file of the
+# operator's, 10 is a merge that correctly declines to refresh over their
+# uncommitted kernel edit and then has to SAY so, because the refusal they
+# meet next describes a cause that is not the one in front of them.
 # ---------------------------------------------------------------------------
 
 # The one list the guard, the refresh and the documented remedy all use. Kept
@@ -320,6 +327,57 @@ assert_eq 1 "$rc" "orchid_kernel_clean refuses a checkout with an uncommitted ke
 git -C "$root" checkout HEAD -- libexec/orchid-version
 
 # ===========================================================================
+# 8b -- the refresh declines rather than overwrite an UNTRACKED file
+# ===========================================================================
+# orchid_kernel_clean cannot cover this one, and not for want of trying: it is
+# asked BEFORE the ref moves, and at that moment an untracked scratch file
+# under libexec/ is not drift, does not veto anything, and could not be harmed
+# by any restore. The collision only exists once the branch has added a
+# TRACKED file at that same path -- after which `git diff HEAD` reports the
+# path as deleted (the index has no entry for it) and a reset-then-checkout
+# would silently write the branch's bytes over the operator's file.
+#
+# So the restore has to ask, per path, and decline. That is the r-001
+# journal-loss hazard in kernel clothing: uncommitted work destroyed by a
+# refresh nobody asked for.
+cat > "$elsewhere/libexec/orchid-added-later" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "added-later: the branch's version"
+VERB
+chmod +x "$elsewhere/libexec/orchid-added-later"
+git -C "$elsewhere" add -A
+git -C "$elsewhere" commit -q -m "fixture: kernel v4 (adds a verb)"
+git -C "$hub" update-ref refs/heads/orchid/integration "$(git -C "$elsewhere" rev-parse HEAD)"
+
+printf 'operator draft, never committed, never anywhere else\n' \
+  > "$root/libexec/orchid-added-later"
+draft_before="$(cat "$root/libexec/orchid-added-later")"
+
+rc=0
+( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$root" ) || rc=$?
+assert_eq 1 "$rc" \
+  "orchid_refresh_kernel reports failure rather than a refresh it did not do"
+assert_eq "$draft_before" "$(cat "$root/libexec/orchid-added-later")" \
+  "an untracked file at a path the branch now carries is never overwritten"
+run_version "$root"
+assert_eq 1 "$rc" "and the refusal stands, so the operator has to look at it"
+
+# Once the operator has dealt with their file, the same refresh completes.
+rm -f "$root/libexec/orchid-added-later"
+rc=0
+( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$root" ) || rc=$?
+assert_eq 0 "$rc" "with the file out of the way the refresh succeeds"
+assert_match "added-later: the branch's version" \
+  "$(HOME="$MACHINE_HOME" "$root/bin/orchid" added-later 2>&1)" \
+  "and the branch's verb is now the one that runs"
+
+# ===========================================================================
 # 9 -- `orchid merge` refreshes the checkout it is itself running from
 # ===========================================================================
 # The regression the refusal creates if merge is left alone. In a self-hosted
@@ -419,3 +477,86 @@ assert_eq "$self_config_before" "$(cat "$selfroot/orchid.config")" \
 rc=0
 "$ORCHID_BIN" task show TS1 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "an ordinary verb runs against the refreshed checkout"
+
+# ===========================================================================
+# 10 -- the merge that must NOT refresh says so, on the merge that caused it
+# ===========================================================================
+# Check 9's refresh is conditional, and this is the condition failing. The
+# checkout orchid runs from carries a kernel edit of its own, so restoring it
+# would throw that edit away -- which the design forbids, and which check 8's
+# orchid_kernel_clean assertion already pins. What is left is the operator's
+# side of it: the branch still advances, so this checkout still goes stale,
+# and the only place that can be explained while it is still comprehensible
+# is the merge that did it. A silent advance here means the operator meets a
+# refusal whose message names the general cause ("advanced without this
+# working tree being refreshed") and not the specific one -- their own edit --
+# and the obvious reading of that message is to run the refresh that discards
+# it.
+#
+# The edit is STAGED and reverted on disk on purpose. That is the one shape
+# that gets past the guard (which compares the working tree) while
+# orchid_kernel_clean's `--cached` half still, correctly, calls the checkout
+# dirty -- so the merge runs at all and then has to decide, which is the whole
+# point of the check. It is also the shape most likely to be quietly lost.
+self_base2="$(git -C "$selfroot" rev-parse orchid/integration)"
+git -C "$selfroot" checkout -q -b task/TS2
+printf 'v3\n' > "$selfroot/templates/probe-mutable.txt"
+# A targeted `add`, never `add -A`: durable `.orchid/` run state exists in this
+# fixture by now and must not be swept into a candidate branch.
+git -C "$selfroot" add templates/probe-mutable.txt
+git -C "$selfroot" commit -q -m "self-hosted fixture: kernel v3"
+self_cand2="$(git -C "$selfroot" rev-parse HEAD)"
+git -C "$selfroot" checkout -q orchid/integration
+
+"$ORCHID_BIN" task create TS2 "self-hosted merge over a dirty kernel index" >/dev/null
+"$ORCHID_BIN" task set TS2 base_sha "$self_base2"
+"$ORCHID_BIN" task set TS2 candidate_sha "$self_cand2"
+"$ORCHID_BIN" task set TS2 verification_commands "true"
+"$ORCHID_BIN" task advance TS2 implementing
+"$ORCHID_BIN" task advance TS2 testing
+git -C "$selfroot" checkout -q task/TS2
+"$ORCHID_BIN" verify TS2 >/dev/null
+git -C "$selfroot" checkout -q orchid/integration
+
+# Staged only, and made AFTER the branch round-trip above: `git checkout` would
+# have refused to move across a staged change to the same file.
+printf 'operator staged kernel edit\n' >> "$selfroot/templates/probe-mutable.txt"
+git -C "$selfroot" add templates/probe-mutable.txt
+printf 'v2\n' > "$selfroot/templates/probe-mutable.txt"
+staged_before="$(git -C "$selfroot" diff --cached --name-only HEAD)"
+assert_match "templates/probe-mutable.txt" "$staged_before" \
+  "test fixture: the kernel edit really is staged"
+
+rc=0
+"$ORCHID_BIN" task show TS2 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" \
+  "a kernel edit that is staged but not on disk is not itself a refusal — the guard compares the working tree"
+
+"$ORCHID_BIN" task advance TS2 reviewing
+plant_reviewer_envelope TS2
+"$ORCHID_BIN" task advance TS2 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task advance TS2 merging --reason "approved for merge"
+
+rc=0
+out="$("$ORCHID_BIN" merge TS2 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the merge still completes when it may not refresh"
+assert_match "^merged TS2: orchid/integration -> " "$out" "it reports the merge"
+assert_match "kernel files were already modified before the merge" "$out" \
+  "and names the operator's own edit as the reason it left this checkout stale"
+if grep -q "^refreshed " <<<"$out"; then
+  fail "the merge claimed a refresh it must not have performed"
+fi
+assert_eq "$staged_before" "$(git -C "$selfroot" diff --cached --name-only HEAD)" \
+  "the operator's staged kernel edit is still staged — the merge discarded nothing"
+assert_eq v2 "$(cat "$selfroot/templates/probe-mutable.txt")" \
+  "and their working tree is exactly as they left it"
+
+# The checkout is stale now, on purpose, and behaves like it: ordinary verbs
+# refuse, while the merge's own bookkeeping still reached done.
+rc=0
+"$ORCHID_BIN" task show TS2 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "an ordinary verb refuses against the checkout the merge left stale"
+assert_eq done "$(ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_BIN" task show TS2 | grep '^status: ' | cut -d' ' -f2)" \
+  "but TS2 still reached done — the merge is never left half-finished"
+assert_eq "durable sentinel" "$(cat "$selfroot/.orchid/sentinel")" \
+  "and uncommitted durable .orchid state survives the declined refresh too"

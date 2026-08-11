@@ -350,9 +350,12 @@ pending → implementing → testing → reviewing → arbitrating → merging �
     `task advance <id> done` — refuses, leaving the branch advanced and the
     task frozen in `merging`. The refresh is gated on `orchid_kernel_clean`:
     a checkout with UNCOMMITTED kernel edits is never refreshed, it gets the
-    refusal, because those edits are the operator's to keep. This is not the
-    rejected "merge refreshes other checkouts" remedy — no checkout the
-    merging process does not already own and hold the run lock for is ever
+    refusal, because those edits are the operator's to keep — and `orchid
+    merge` WARNS on stderr when it declines for that reason, naming the edit,
+    since otherwise the refusal the operator meets next names only the general
+    cause and its obvious remedy is the one that discards their work. This is
+    not the rejected "merge refreshes other checkouts" remedy — no checkout
+    the merging process does not already own and hold the run lock for is ever
     written.
   The refresh both point at names only the directories the launcher executes
   from — `git checkout HEAD -- bin lib libexec runners plugins roles skills
@@ -362,7 +365,13 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   `git checkout <tree> -- <paths>` alone cannot drop a file the tree no longer
   carries; `orchid_refresh_kernel` resets each drifted path first and deletes
   what HEAD has dropped, which is why the automatic refresh clears a refusal
-  the hand-run one-liner can leave standing (docs/troubleshooting.md).
+  the hand-run one-liner can leave standing (docs/troubleshooting.md). It
+  DECLINES, per path, to overwrite an UNTRACKED file where the branch has
+  since added a tracked one: the index has no entry there, so that path is
+  indistinguishable in the drift list from a merged file not yet written here,
+  and restoring it would destroy the only copy. `orchid_kernel_clean` cannot
+  cover that case — it is asked before the ref moves, when the collision does
+  not yet exist.
 - **Attempt fairness (tier-boundary clean):** `orchid task advance` to
   rework increments `attempts` BY DEFAULT — the deterministic verb never
   judges semantics. The orchestrator may pass `--waive-attempt --reason`

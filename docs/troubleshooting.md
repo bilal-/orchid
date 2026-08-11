@@ -433,7 +433,18 @@ executing its own merged work. The refusal is for the checkouts no process
 owns — a second clone, a parallel checkout of the same branch, or one whose
 kernel files you have edited by hand (which is the one case `orchid merge`
 deliberately will **not** refresh, because refreshing it would throw your
-edits away).
+edits away). In that last case the merge says so on stderr as it happens
+(one line, wrapped here):
+
+```
+orchid: warning: orchid/integration advanced and orchid runs from this
+checkout (...), but its kernel files were already modified before the merge
+— refreshing would have discarded that work, so it was not done.
+```
+
+If you see that, your own edit is why the next verb refuses. Commit it on a
+task branch and merge it, or stash it, before running the refresh below —
+that command restores the branch's version of those files over yours.
 
 The fix is to restore orchid's own code, and nothing else:
 
@@ -463,6 +474,18 @@ The `git clean` step removes **every** untracked file inside those eight
 directories, not just the one the reset dropped — check `git clean -nd -- ...`
 first if you keep scratch files under `plugins/`. It cannot reach `.orchid/`
 or `orchid.config`, which are outside the pathspec.
+
+**The other way the refusal survives a refresh** is an untracked file of your
+own sitting at a path the branch has since added — say a draft
+`libexec/orchid-foo` here, and a merged `libexec/orchid-foo` there. `orchid
+merge`'s automatic refresh will not overwrite it (it reports
+`could not be fully refreshed` and points you at `git status`), because from
+the drift list alone that path is indistinguishable from a merged file that
+simply has not been written here yet, and the branch's copy is not the one at
+risk. Move or delete your file, then re-run the refresh. The hand-run
+`git checkout HEAD -- <paths>` above makes no such distinction — it will
+overwrite it — which is the difference between a command you typed and one a
+merge ran on your behalf.
 
 Two things this deliberately does **not** do. It only asks about a checkout
 parked on the **integration branch** — the one branch a run merges onto, and

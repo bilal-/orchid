@@ -310,14 +310,29 @@ if [ "$rc" -eq 0 ]; then
   # tests/helpers.sh's scratch registry exists for), and two failed resolutions
   # would compare equal as empty strings -- either way green-lighting a write
   # to a directory neither variable actually names.
+  #
+  # TWO flags, not one, because the two questions have different consequences.
+  # `self_checkout` is "is $ORCHID_ROOT the very checkout this ref advance is
+  # about" -- it decides whether the operator is OWED A WORD when the merge
+  # ends. `refresh_self` adds "and is its kernel clean enough that restoring
+  # it destroys nothing" -- it decides whether this verb may WRITE. Collapsing
+  # them loses the case that matters most: a self-hosted checkout with a
+  # hand-edited kernel, where the refresh is correctly declined and the merge
+  # would otherwise advance the branch, say nothing, and leave the operator to
+  # discover from the next verb's refusal that their own edit is why.
+  self_checkout=0
   refresh_self=0
   repo_phys=""; root_phys=""
   if [ -n "$repo" ]; then repo_phys="$(cd "$repo" 2>/dev/null && pwd -P || true)"; fi
   if [ -n "${ORCHID_ROOT:-}" ]; then root_phys="$(cd "$ORCHID_ROOT" 2>/dev/null && pwd -P || true)"; fi
   if [ -n "$repo_phys" ] && [ -n "$root_phys" ] && [ "$repo_phys" = "$root_phys" ] \
-     && [ "$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)" = "$integ" ] \
-     && orchid_kernel_clean "$repo"; then
-    refresh_self=1
+     && [ "$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)" = "$integ" ]; then
+    self_checkout=1
+    # An `if`, never `orchid_kernel_clean ... && refresh_self=1`: this file
+    # runs under `set -e`, where that idiom is a bare failing command as soon
+    # as the checkout is dirty and aborts the merge between its verification
+    # and its ref advance -- the exact window nothing may die in.
+    if orchid_kernel_clean "$repo"; then refresh_self=1; fi
   fi
 
   # Compare-and-swap: `update-ref <ref> <new> <old>` only succeeds if <ref>
@@ -336,11 +351,23 @@ if [ "$rc" -eq 0 ]; then
   # this merge changed nothing the launcher executes from, so there is nothing
   # to refresh and nothing to announce. Most merges of a non-kernel change
   # land here silently.
-  if [ "$refresh_self" -eq 1 ] && ! orchid_kernel_clean "$repo"; then
-    if orchid_refresh_kernel "$repo"; then
+  if [ "$self_checkout" -eq 1 ] && ! orchid_kernel_clean "$repo"; then
+    if [ "$refresh_self" -eq 0 ]; then
+      # The declined refresh, said out loud. This is the ONE outcome where the
+      # merge leaves its own launcher stale on purpose, and the refusal the
+      # operator meets next names the general cause ("that branch was advanced
+      # without this working tree being refreshed") rather than the specific
+      # one standing in front of them. Say the specific one here, while the
+      # merge that created it is still on screen.
+      echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Every verb here will now refuse. Commit those edits on a task branch (or stash them), then run: git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}" >&2
+    elif orchid_refresh_kernel "$repo"; then
       echo "refreshed $repo to $integ (orchid runs from this checkout)"
     else
-      echo "orchid: warning: $integ advanced but this checkout could not be refreshed — run: git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}" >&2
+      # Partial or refused restore — including the case orchid_refresh_kernel
+      # declines rather than overwrite an UNTRACKED file at a path the branch
+      # now carries. `git status` is named first because that file, not git
+      # plumbing, is what the operator has to look at.
+      echo "orchid: warning: $integ advanced but this checkout could not be fully refreshed — check 'git -C $repo status' for an untracked file where the branch now carries one, then run: git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}" >&2
     fi
   fi
   # The bookkeeping that closes out a merge whose ref has ALREADY moved must

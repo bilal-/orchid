@@ -311,9 +311,13 @@ orchid_root_stale() {
 #
 # Both halves are needed. `diff HEAD` compares the WORKING TREE to HEAD and so
 # misses a change that was staged and then reverted on disk; `diff --cached`
-# compares the INDEX to HEAD and catches exactly that. Untracked files are
-# neither compared nor ever touched by the restore, so a local scratch file
-# under plugins/ does not veto a refresh it could not be harmed by.
+# compares the INDEX to HEAD and catches exactly that. Untracked files are not
+# compared at all, so a local scratch file under plugins/ does not veto a
+# refresh -- and is not harmed by one either, because orchid_refresh_kernel
+# declines any path it would have to overwrite an untracked file to restore.
+# That has to be enforced there rather than here: whether an untracked file
+# collides with the branch is not knowable until after the ref has moved,
+# which is precisely when this precondition is no longer askable.
 #
 # Fails CLOSED, unlike orchid_root_stale: a git invocation that cannot answer
 # yields the literal `?`, which is not empty, so "cannot tell" reports dirty
@@ -372,6 +376,26 @@ orchid_refresh_kernel() {
   [ -n "$drift" ] || return 0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
+    # The one path that is drift by git's reckoning and operator property by
+    # every other: a file sitting on disk that this checkout does not TRACK,
+    # at a name the branch has since added a tracked file under. The index
+    # has no entry for it, so `git diff HEAD` reports the path as DELETED --
+    # indistinguishable, from the drift list alone, from a merged file that
+    # simply has not been written here yet -- and the reset-then-checkout
+    # below would overwrite it without a word. That is the r-001 journal-loss
+    # shape one directory over, and the reason orchid_kernel_clean's promise
+    # that "untracked files are never touched by the restore" needs enforcing
+    # HERE rather than being inferred from it: that precondition is evaluated
+    # before the ref moves, when this path was not drift at all.
+    #
+    # Asked BEFORE the reset, which would itself create the index entry that
+    # makes the file look tracked. Declining costs a refusal the operator
+    # clears by hand, having seen the file; overwriting costs a file only
+    # they had a copy of.
+    if [ -e "$root/$p" ] \
+       && ! git -C "$root" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+      rc=1; continue
+    fi
     git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || { rc=1; continue; }
     if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
       git -C "$root" checkout -q -- "$p" >/dev/null 2>&1 || rc=1
@@ -1087,6 +1111,14 @@ trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
 # trap, and then drove a run for a full day in which none of the merged
 # improvements were in effect for the code actually running it. A warning that
 # must be obeyed but is never enforced will be ignored, and was.
+#
+# Note what that costs, since nothing else in the file says it: `doctor` and
+# `status` source this library like every other verb, so once the refusal
+# fires the two verbs whose job is to explain it refuse too. That is why the
+# message below has to carry the whole diagnosis and the exact remedy itself,
+# and why the override is worth naming in it -- `ORCHID_ALLOW_STALE_ROOT=1
+# orchid doctor` is how an operator reads the rest of the picture out of a
+# checkout in this state (docs/troubleshooting.md).
 #
 # What this must NOT become is a run that halts on its own success. `orchid
 # merge` advancing the integration branch is precisely what creates the
