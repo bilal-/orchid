@@ -606,10 +606,20 @@ case "$sub" in
       # around it. Captured, not piped into `grep -q`: under `pipefail` a
       # short-circuiting matcher SIGPIPEs `git log` and the 141 would read as
       # "clean" (see tests/inv/test_INV-13_driver_verb_only.sh's note).
+      #
+      # The diagnostic names the LIKELY CAUSE, because the overwhelmingly
+      # common way an operator trips this is not deliberate: where the
+      # hand-off lands on the branch that carries `.orchid/` (a task with no
+      # separate worktree), orchid's own state commits moved that branch with
+      # `update-ref` and never touched the operator's index, so a plain `git
+      # commit` after `git add <path>` builds its tree from an index many
+      # commits stale and reverts kernel state along with the intended change.
+      # Refusing with only "touches .orchid/" leaves them staring at a commit
+      # they are sure contains one file, so the remedy is printed with it.
       hbase="$(fm_get "$f" base_sha)"
       if [ -n "$hbase" ]; then
         hstate_files="$(git -C "$repo" log --format=%H --name-only "$hbase..$hhead" 2>/dev/null | grep '^\.orchid/' || true)"
-        [ -z "$hstate_files" ] || orchid_die "the hand-off's commits touch .orchid/ — refusing to advance candidate_sha to $hhead (INV-04)"
+        [ -z "$hstate_files" ] || orchid_die "the hand-off's commits touch .orchid/ — refusing to advance candidate_sha to $hhead (INV-04). If you meant to commit one file, your index was stale: orchid moves this branch with update-ref and never updates it, so the commit reverted kernel state too. Undo it, 'git reset', re-stage just your path, and re-run"
       fi
       # Journal-first, and journalled SEPARATELY from the acknowledgement
       # below: a candidate moving is the event an operator reading the trail

@@ -644,6 +644,19 @@ ones its archetype never declares.
      an operator's mechanical commit from the implementer's own work rather
      than reading it as a violation of whatever hand-off clause the task
      spec carries.
+
+     Commit ONLY the paths the mechanical step touched. Where the tree you are
+     committing in is the one carrying `.orchid/` — a task with no separate
+     `worktree`, so the hand-off lands on the integration branch itself —
+     `git add <path>` alone is not enough: orchid's own state commits move that
+     branch with `update-ref` from a throwaway worktree and never touch your
+     index, so the index can be many commits behind `HEAD` and a plain `git
+     commit` would build its tree from it, quietly reverting every `.orchid/`
+     path written since. Bring the index back first (`git reset`, then stage
+     your path), or commit the path explicitly (`git commit -- <path>`). Step 2
+     refuses to advance the candidate onto a commit that touches `.orchid/`, so
+     getting this wrong stops the hand-off rather than corrupting the run — but
+     it stops it, and the fix is here.
   2. Record it, AFTER those commits exist: `orchid task handoff <id> --ack
      --reason "<what you did>"`. The verb journals the reason, **advances
      `candidate_sha` to the commit the hand-off itself produced**, and writes

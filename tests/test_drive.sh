@@ -1721,11 +1721,31 @@ hrc=0; horchid task set H010 handoff_ack "$HHEAD" >/dev/null 2>&1 || hrc=$?
 # L025 is evidence bound to a commit that was never the one verified, and
 # below the assertions pin the fix's outcome (candidate == the tree that runs)
 # rather than the bug's symptom.
+#
+# THE INDEX HAS TO BE BROUGHT BACK TO HEAD FIRST, and that is a property of
+# this repository, not a fixture convenience. Every orchid state commit lands
+# through orchid_commit_durable (lib/common.sh): it builds the commit in a
+# throwaway worktree and moves the branch with `update-ref`, which advances
+# the CHECKED-OUT integration branch without ever touching THIS repository's
+# index. So by now the index still holds the tree from `orchid init`, several
+# durable commits back, and a plain `git commit` would build its tree from it
+# -- carrying `formula-pin.txt` as intended AND silently reverting every
+# `.orchid/` path those durable commits wrote. That commit is a commit that
+# touches kernel state, and `orchid task handoff` refuses to advance the
+# candidate onto one (INV-04, re-checked before the move) -- correctly, since
+# an operator who really did that would be destroying the run's own record.
+# The reset is what a mechanical step must do here; the assertion below pins
+# it, so a fixture that rots back into a whole-index commit fails as itself
+# rather than as the hand-off it is supposed to be exercising.
 printf 'sha256 "0000"\n' > "$HANDOFF/formula-pin.txt"
+git -C "$HANDOFF" reset -q
 git -C "$HANDOFF" add formula-pin.txt
 git -C "$HANDOFF" commit -q -m "H010: re-pin the formula checksum
 
 Orchid-Handoff: operator"
+assert_eq formula-pin.txt \
+  "$(git -C "$HANDOFF" diff-tree --no-commit-id --name-only -r HEAD)" \
+  "fixture: the operator's mechanical commit carries exactly its one file and no kernel state"
 HHANDOFF_CAND="$(git -C "$HANDOFF" rev-parse HEAD)"
 [ "$HHANDOFF_CAND" != "$HHEAD" ] || fail "fixture: the hand-off commit did not move HEAD, so nothing below is being tested"
 assert_eq "$HHEAD" "$(hfield candidate_sha)" \
