@@ -827,6 +827,18 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   always 0); ordinary `gc` is unchanged and must still be invoked on its own
   cadence (e.g. a separate cron line) — this is not folded into the default
   pass.
+- Finished-between-reconcile-and-reap (T022, closed): a pass runs `jobs
+  reconcile` then `jobs gc`, so a job that exits between the two is dead at
+  reap time with its envelope written and still in the spool. It DELIVERED.
+  Reaping its manifest destroys that delivery — reconcile matches an envelope
+  to its job through the manifest, so the next pass can only quarantine it as
+  `unknown-job` — and the driver's escalation sweep, reading the same
+  manifest, charges a rung for a job that "died without an envelope". Both
+  now skip any manifest whose `<runtime>/spool/<job_id>.json` still exists
+  (`gc-pending`); the job reads as outstanding for one more pass and the next
+  reconcile files it. This is what keeps one delivery to one rung, and it is
+  why a no-op delivery's refusal can always be recorded against the envelope
+  that caused it.
 
 ## Execution policy (the autonomy boundary)
 

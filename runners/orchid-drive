@@ -277,13 +277,26 @@ if [ "$run_status" != planning ]; then
   # launched and is no longer alive, is precisely "a job that died without
   # leaving an acceptable envelope" -- including the case `jobs check` just
   # killed for stalling or timing out. Collected BEFORE gc (which is about to
-  # reap exactly these manifests) together with the role/operation a relaunch
-  # needs.
+  # reap exactly these manifests, bar the one exception both it and the skip
+  # below make) together with the role/operation a relaunch needs.
   for _mf in "$rt/jobs"/*.json; do
     [ -e "$_mf" ] || continue
     _mpid="$(jq -r '.pid' "$_mf" 2>/dev/null || echo 0)"
     [ "$_mpid" != 0 ] || continue
     if kill -0 "$_mpid" 2>/dev/null; then continue; fi
+    # ...UNLESS ITS ENVELOPE IS ALREADY WRITTEN. A job that exited between the
+    # reconcile above and this liveness read is dead with its envelope sitting
+    # in the spool, undrained -- it delivered, and the next pass's reconcile is
+    # what files it. Escalating on that reading spends a rung on a delivery
+    # that ARRIVED and relaunches a second engine into the same worktree over
+    # it, which is the same one-event-two-rungs miscount the implementing arm
+    # is careful about below; worse, this is the exact shape a no-op delivery
+    # takes, so the rung would be spent where no refusal can be recorded
+    # against the envelope that caused it. `jobs gc` holds the manifest for
+    # precisely this case (see its own note), so the job simply reads as
+    # outstanding for one more pass and resolves on the next.
+    _mjid="$(jq -r '.job_id // empty' "$_mf" 2>/dev/null || true)"
+    if [ -n "$_mjid" ] && [ -e "$rt/spool/$_mjid.json" ]; then continue; fi
     escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // "")] | @tsv' "$_mf")
 "
   done

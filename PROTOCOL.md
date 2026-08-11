@@ -467,6 +467,18 @@ escalation ladder's "first occurrence → relaunch" never fires and the
 wallclock backstop (which only runs inside the manifest loop) goes silent
 too — the task simply waits forever.
 
+The one job this ordering cannot resolve in the pass that observes it is the
+one that exits *between* reconcile and the reap: dead here, with its envelope
+written and not yet drained. It has DELIVERED, and neither half of this step
+may treat it as a death. `jobs gc` therefore holds back (`gc-pending`) any
+manifest whose `<runtime>/spool/<job_id>.json` still exists — reaping it would
+destroy the delivery outright, since reconcile matches an envelope to its job
+*through* the manifest and the next pass would quarantine that envelope as
+`unknown-job` — and the driver's escalation sweep skips the same manifest for
+the same reason: a rung spent there is a rung spent on work that arrived, and
+it relaunches a second engine into the worktree over it. The job reads as
+outstanding for one more pass and resolves on the next.
+
 Escalation ladder for a job `jobs check` reports `dead`, `stalled`, or
 `timeout` that reconcile above did **not** just resolve:
 

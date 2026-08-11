@@ -2404,9 +2404,16 @@ if [ "$n" = 2 ]; then
 fi
 # The whole defect in one document: status ok, a summary about the work, and
 # not one commit behind it.
+#
+# Written to a sibling and MOVED into place, never redirected straight at the
+# spool path -- the same discipline Part L's stub keeps, and for the same
+# reason: `jobs reconcile` runs concurrently with this write and quarantines a
+# half-written envelope as malformed, which would delete the very delivery this
+# part is about and leave the ladder counting a job that "died" instead.
 jq -n --arg jid "$jid" --arg task "$task" \
   '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
-    summary:"restated the findings and listed the sources; made no edits"}' > "$out"
+    summary:"restated the findings and listed the sources; made no edits"}' > "$out.part"
+mv "$out.part" "$out"
 EOF
 chmod +x "$WORK/eng/stubnoop/run"
 
