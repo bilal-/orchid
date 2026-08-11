@@ -379,7 +379,14 @@ assert_eq 1 "$rc" \
   "but the bare checkout leaves the DELETED verb tracked, so the refusal survives the one-liner"
 
 rc=0
-( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+# `export`, not a bare assignment, and the same in the four subshells like this
+# one below. The consumer is the `source` on the next line -- lib/common.sh's
+# stale-root guard, which this root would otherwise refuse -- and a linter
+# cannot see inside a sourced file, so a bare assignment here reads as an
+# unused variable (SC2034). Exporting states the same thing in a form that is
+# checkable, and reaches nothing but the `git` children these helpers spawn,
+# which do not read it.
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
   source "$REPO_ROOT/lib/common.sh"
   orchid_refresh_kernel "$root" ) || rc=$?
 assert_eq 0 "$rc" "orchid_refresh_kernel reports success"
@@ -398,7 +405,7 @@ assert_eq "$config_before" "$(cat "$root/orchid.config")" \
 # has to say "dirty" here even though the edit is only in the working tree.
 printf 'echo "operator hand-edit"\n' >> "$root/libexec/orchid-version"
 rc=0
-( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
   source "$REPO_ROOT/lib/common.sh"
   orchid_kernel_clean "$root" ) || rc=$?
 assert_eq 1 "$rc" "orchid_kernel_clean refuses a checkout with an uncommitted kernel edit"
@@ -434,7 +441,7 @@ printf 'operator draft, never committed, never anywhere else\n' \
 draft_before="$(cat "$root/libexec/orchid-added-later")"
 
 rc=0
-( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
   source "$REPO_ROOT/lib/common.sh"
   orchid_refresh_kernel "$root" ) || rc=$?
 assert_eq 1 "$rc" \
@@ -447,7 +454,7 @@ assert_eq 1 "$rc" "and the refusal stands, so the operator has to look at it"
 # Once the operator has dealt with their file, the same refresh completes.
 rm -f "$root/libexec/orchid-added-later"
 rc=0
-( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
   source "$REPO_ROOT/lib/common.sh"
   orchid_refresh_kernel "$root" ) || rc=$?
 assert_eq 0 "$rc" "with the file out of the way the refresh succeeds"
@@ -755,7 +762,7 @@ assert_match "PROTOCOL.md" "$out" "and the refusal names the protocol file as th
 assert_no_lossy_command "the protocol-only refusal"
 
 rc=0
-( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
   source "$REPO_ROOT/lib/common.sh"
   orchid_refresh_kernel "$root" ) || rc=$?
 assert_eq 0 "$rc" "the refresh handles a plain file in the pathspec like any directory"
@@ -842,7 +849,12 @@ assert_eq "$handedit_before" "$(git -C "$root" show ":libexec/orchid-version")" 
 # lib/common.sh is SOURCED, and every verb sources it. A second verb stands
 # in for all of them here, so an exemption added later has to break this.
 rc=0
-second_out="$(HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT= \
+# Spelled `''` rather than left bare: an empty value before a line continuation
+# is ambiguous to a reader and to a linter alike (SC1007 -- is the next line a
+# value or the command?). The variable is set to empty rather than simply
+# omitted because this suite must not inherit an operator's own
+# ORCHID_ALLOW_STALE_ROOT=1 and quietly stop testing the refusal.
+second_out="$(HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT='' \
   "$root/bin/orchid" fresh 2>&1)" || rc=$?
 assert_eq 1 "$rc" "a second, unrelated verb refuses in the same state -- the refusal is not per-verb"
 assert_match "refusing to run" "$second_out" "and refuses with the same report"
