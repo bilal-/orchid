@@ -503,6 +503,12 @@ the checkout before it advanced the branch. If you have it in your scrollback,
 your own edit is why the next verb refuses and you are in case (2) — no
 further diagnosis needed.
 
+It is printed only when that merge actually moved one of the kernel paths. A
+merge of docs, config or tests over a checkout with kernel edits in it leaves
+that checkout exactly as current as it found it, says nothing, and refuses
+nothing — so a warning you *do* see is always about a checkout that really
+did go stale.
+
 A verb that starts in the fraction of a second between that merge's ref
 advance and its refresh gets a different refusal and a different exit status;
 see *A repair is in flight* at the end of this section.
@@ -619,6 +625,26 @@ makes it untrustworthy. Acting on a confident wrong diagnosis is worse than
 being stopped, and trusting output from code nobody has looked at is the whole
 of the failure this guard exists for.
 
+**And they refuse in case (2) as well — where your code is not stale at all,
+your own `git add` is what put a kernel change in the index, and every verb
+including `doctor` and `status` stops over it.** That is the sharpest cost
+this design has, and it is not an oversight; you have hit the tool protecting
+you rather than a broken tool. Two things make it the right trade anyway.
+Orchid genuinely cannot tell which case it is in — an index that differs from
+`HEAD` in those paths is byte-for-byte the same whether a merge advanced the
+branch or you staged an edit, which is the whole argument above — so the only
+policies available are "refuse in both" and "run in both", and the second is
+the one that cost a full day of a run executing pre-merge code. And the
+refusal is cheap to clear when the cause is yours: unstage it and every verb
+works again, contents untouched.
+
+```sh
+git -C <root> reset -q HEAD -- bin lib libexec runners plugins roles skills templates PROTOCOL.md
+```
+
+Nothing was run and nothing was changed while it refused — including by
+`doctor` and `status`, which only ever read.
+
 There is also nothing to gain by exempting them: the refusal already tells you
 more than `doctor` would here — the branch, the paths whose index entries
 differ, any unstaged modifications as context, and two read-only commands for
@@ -663,7 +689,12 @@ so only a fresh invocation picks up the merged ones.
 
 If retrying keeps reporting this, the merge died mid-restore. Once its process
 is gone, the next command reports the full state of the checkout instead and
-the cases above apply. (The merge publishes its pid, process start time and
+the cases above apply. A half-finished restore cannot leave this checkout
+*looking* current: the refresh writes each kernel file first and its index
+entry only afterwards, so whatever it did not get to is still an index that
+does not match `HEAD`, and you get case (1) rather than silence. Case (1)'s
+`git checkout HEAD -- <kernel paths>` finishes what it started.
+(The merge publishes its pid, process start time and
 hostname at `.orchid/runtime/kernel-refresh`, and all three must match a live
 process for this message to be used — a PID alone gets reissued to something
 unrelated sooner or later, and would keep telling you to retry a merge that

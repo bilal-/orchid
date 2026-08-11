@@ -402,15 +402,35 @@ if [ "$rc" -eq 0 ]; then
   # land here silently.
   if [ "$self_checkout" -eq 1 ] && ! orchid_kernel_clean "$repo"; then
     if [ "$refresh_self" -eq 0 ]; then
-      # The declined refresh, said out loud. This is the ONE outcome where the
-      # merge leaves its own launcher stale on purpose, so the operator is owed
-      # the reason at the moment it is created rather than only when the next
-      # verb refuses -- by then the refusal can only report what it observes,
-      # and cannot know that THIS edit is why. It prints no restoring command
-      # for the same reason lib/common.sh's refusal does not: the operator's
-      # bytes are here and nowhere else, and a command that overwrites them is
-      # never worth the keystrokes it saves.
-      echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Modified: ${dirty_before}— those bytes are in this checkout and nowhere else. Verbs run from this checkout may now refuse; they will report what they see and prescribe nothing. Deal with the edit whichever way you want it kept, then bring this checkout to $integ yourself; docs/troubleshooting.md 'Stale orchid itself' has the options and what each costs" >&2
+      # ...but only if THIS merge moved something the launcher executes. The
+      # condition above cannot tell: with the refresh declined, the operator's
+      # own edit keeps the checkout "unclean" whether or not the merge changed
+      # one kernel byte, so every merge of a docs or config change would warn
+      # that it had left this checkout stale when it had left it exactly
+      # current. A warning that fires when nothing happened is the one that
+      # gets filtered out, and this warning is the ONLY place in the whole
+      # sequence where the cause of a real refusal is known -- spending its
+      # credibility on merges that changed nothing is how the advisory version
+      # of this whole guard died.
+      #
+      # The merge's own diff answers it exactly, and it is the only thing that
+      # does: $integ_head is what this branch pointed at before the CAS. Fails
+      # CLOSED to the literal `?`, which is non-empty and so still warns: a
+      # `git` that cannot answer must not silence the one message the operator
+      # needs.
+      kernel_moved="$(git -C "$repo" diff --name-only "$integ_head" "$merged_sha" -- \
+        "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
+      if [ -n "$kernel_moved" ]; then
+        # The declined refresh, said out loud. This is the ONE outcome where
+        # the merge leaves its own launcher stale on purpose, so the operator
+        # is owed the reason at the moment it is created rather than only when
+        # the next verb refuses -- by then the refusal can only report what it
+        # observes, and cannot know that THIS edit is why. It prints no
+        # restoring command for the same reason lib/common.sh's refusal does
+        # not: the operator's bytes are here and nowhere else, and a command
+        # that overwrites them is never worth the keystrokes it saves.
+        echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Modified: ${dirty_before}— those bytes are in this checkout and nowhere else. Verbs run from this checkout may now refuse; they will report what they see and prescribe nothing. Deal with the edit whichever way you want it kept, then bring this checkout to $integ yourself; docs/troubleshooting.md 'Stale orchid itself' has the options and what each costs" >&2
+      fi
     elif orchid_refresh_kernel "$repo"; then
       echo "refreshed $repo to $integ (orchid runs from this checkout)"
     else

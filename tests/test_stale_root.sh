@@ -650,6 +650,81 @@ assert_eq "durable sentinel" "$(cat "$selfroot/.orchid/sentinel")" \
   "and uncommitted durable .orchid state survives the declined refresh too"
 
 # ===========================================================================
+# 10b -- a merge that moves no kernel file says NOTHING, dirty tree or not
+# ===========================================================================
+# The other half of check 10, and what keeps that warning worth reading. The
+# merge decides whether to warn from orchid_kernel_clean, which calls this
+# checkout dirty for as long as the operator's edit sits in it -- whether or
+# not the merge touched one byte the launcher executes. Left at that, every
+# merge of a docs, config or test change announces that it left this checkout
+# stale, when it left it exactly current; and an operator who has been told
+# that four times skips the fifth, which is the one where their edit really is
+# why every verb now refuses. That is precisely how the ADVISORY version of
+# this whole guard failed, so it may not be rebuilt inside the fix.
+#
+# Same dirty kernel as check 10, and a candidate that changes a tracked file
+# OUTSIDE ORCHID_KERNEL_PATHS. Nothing goes stale, nothing is said, and verbs
+# keep running.
+#
+# Check 10 left this checkout stale on purpose, so clear it first. That is the
+# test's own housekeeping and not a documented remedy -- the edit discarded
+# here is one this file made twenty lines up.
+git -C "$selfroot" checkout -q HEAD -- "${KERNEL[@]}"
+rc=0
+"$ORCHID_BIN" task show TS2 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "test fixture: the checkout is current again before 10b begins"
+
+mkdir -p "$selfroot/docs"
+printf 'v1 -- a tracked file the launcher never executes\n' > "$selfroot/docs/notes.md"
+git -C "$selfroot" add docs/notes.md
+git -C "$selfroot" commit -q -m "self-hosted fixture: a tracked file outside the kernel"
+self_base3="$(git -C "$selfroot" rev-parse orchid/integration)"
+
+git -C "$selfroot" checkout -q -b task/TS3
+printf 'v2 -- still not executed\n' > "$selfroot/docs/notes.md"
+git -C "$selfroot" add docs/notes.md
+git -C "$selfroot" commit -q -m "self-hosted fixture: a change outside the kernel"
+self_cand3="$(git -C "$selfroot" rev-parse HEAD)"
+git -C "$selfroot" checkout -q orchid/integration
+
+"$ORCHID_BIN" task create TS3 "self-hosted merge that moves no kernel file" >/dev/null
+"$ORCHID_BIN" task set TS3 base_sha "$self_base3"
+"$ORCHID_BIN" task set TS3 candidate_sha "$self_cand3"
+"$ORCHID_BIN" task set TS3 verification_commands "true"
+"$ORCHID_BIN" task advance TS3 implementing
+"$ORCHID_BIN" task advance TS3 testing
+git -C "$selfroot" checkout -q task/TS3
+"$ORCHID_BIN" verify TS3 >/dev/null
+git -C "$selfroot" checkout -q orchid/integration
+"$ORCHID_BIN" task advance TS3 reviewing
+plant_reviewer_envelope TS3
+"$ORCHID_BIN" task advance TS3 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task advance TS3 merging --reason "approved for merge"
+
+# The operator's kernel edit, made after the branch round-trips for the reason
+# check 10 gives: `git checkout` refuses to move across a change to the file.
+printf 'operator kernel edit, and no business of this merge\n' \
+  >> "$selfroot/templates/probe-mutable.txt"
+worktree_before3="$(cat "$selfroot/templates/probe-mutable.txt")"
+
+rc=0
+out="$("$ORCHID_BIN" merge TS3 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a merge that moves no kernel file completes over a dirty kernel"
+assert_match "^merged TS3: orchid/integration -> " "$out" "it reports the merge"
+if grep -q "kernel files were already modified before the merge" <<<"$out"; then
+  fail "the merge warned it had left this checkout stale when nothing the launcher executes had moved"
+fi
+if grep -q "^refreshed " <<<"$out"; then
+  fail "the merge claimed a refresh of a kernel it was never allowed to write"
+fi
+rc=0
+"$ORCHID_BIN" task show TS3 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" \
+  "and the checkout is not stale — nothing needed refreshing, which is why nothing needed saying"
+assert_eq "$worktree_before3" "$(cat "$selfroot/templates/probe-mutable.txt")" \
+  "the operator's kernel edit is exactly as they left it"
+
+# ===========================================================================
 # 11 -- the guard runs FIRST of everything, so it may not spend a subprocess
 # ===========================================================================
 # This refusal is evaluated at SOURCE time in lib/common.sh, which puts it
@@ -826,6 +901,14 @@ assert_match "not a diagnosis" "$out" \
   "saying in as many words that it is not claiming to know the cause"
 assert_match "git add" "$out" \
   "and naming the staged edit as one of the two things that produce this state"
+# The state where the refusal is hardest to read as anything but a broken tool:
+# nothing is stale, the operator staged that edit on purpose, and orchid stops
+# anyway. It has to SAY so -- that doctor and status are stopped too, and why --
+# or the reasonable response to a verb that looks broken is to route around it.
+assert_match "doctor' and 'status' included" "$out" \
+  "and saying in the refusal itself that doctor and status are stopped too"
+assert_match "protecting you rather than orchid broken" "$out" \
+  "naming it as protection, which is the only thing that distinguishes it from a bug from where the operator stands"
 assert_eq "$handedit_before" "$(cat "$root/libexec/orchid-version")" \
   "refusing is read-only: the edit it refused over is untouched on disk"
 assert_eq "$handedit_before" "$(git -C "$root" show ":libexec/orchid-version")" \
@@ -1016,3 +1099,143 @@ assert_eq 1 "$rc" "and with no marker at all the refusal is exactly as it was"
 # which in check 10's case is a wait that would never end.
 [ ! -e "$selfroot/.orchid/runtime/kernel-refresh" ] \
   || fail "orchid merge left its advance-then-refresh window open after exiting"
+
+# ===========================================================================
+# 15 -- a refresh KILLED mid-flight leaves the guard REFUSING
+# ===========================================================================
+# The window inside check 14's window. That one covers what other processes
+# are told while the restore is happening; this is what they are told when it
+# never finishes -- a SIGKILL, a full disk, a lid closing. The marker cannot
+# answer for that case by construction: it is believed only while its writer
+# is alive, so it stops speaking at the exact instant the repair stops
+# happening. What is left standing between a half-done restore and a run
+# executing the pre-merge tree is the refusal itself.
+#
+# It stands only if the restore never makes this checkout LOOK current before
+# it IS current. The guard reads the INDEX, so the index has to be the last
+# thing each path gets, after its working tree already carries HEAD's bytes.
+# The version this replaces reset the index first and wrote the file second:
+# killed in between, it left a CURRENT INDEX over PRE-MERGE CODE, which the
+# guard reads as healthy and lets every verb run -- L018 reproduced inside the
+# fix for L018, and reachable by nothing more exotic than ^C.
+#
+# ONE kernel path moves, deliberately: with two, a checkout could refuse over
+# the second while the first was already lying, and this check would pass over
+# the very defect it exists for.
+crashhub="$WORK/crash-hub"
+make_root "$crashhub" main
+git -C "$crashhub" branch orchid/integration
+crashroot="$WORK/crash-root"
+git -C "$crashhub" worktree add -q "$crashroot" orchid/integration
+crashelse="$WORK/crash-elsewhere"
+git -C "$crashhub" worktree add -q --detach "$crashelse" orchid/integration
+cat > "$crashelse/libexec/orchid-version" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "adapter: post-merge"
+VERB
+git -C "$crashelse" add -A
+git -C "$crashelse" commit -q -m "fixture: kernel v2 (one path, so one write to interrupt)"
+git -C "$crashhub" update-ref refs/heads/orchid/integration \
+  "$(git -C "$crashelse" rev-parse HEAD)"
+
+run_version "$crashroot"
+assert_eq 1 "$rc" \
+  "test fixture: the advance leaves this checkout refusing before any repair starts"
+
+# The interruption, in a process of its own so that it is a real SIGKILL of
+# the process running the refresh rather than a `return` the function could
+# tidy up after.
+#
+# The wrapper is deliberately blind to WHICH git subcommand it is wrapping: it
+# compares this checkout's tracked state before and after every git the
+# refresh runs and fires the moment anything has changed, so it interrupts the
+# first write whatever the implementation chooses to make it with, and cannot
+# be satisfied by renaming a step. `-uno` keeps a temporary file -- untracked
+# by definition -- from being mistaken for that write.
+cat > "$WORK/refresh-crash.sh" <<'CRASH'
+#!/usr/bin/env bash
+set -uo pipefail
+root="$1"
+source "$2/lib/common.sh"
+before="$(command git -C "$root" status --porcelain -uno 2>/dev/null || true)"
+git() {
+  local grc=0
+  command git "$@" || grc=$?
+  if [ "$(command git -C "$root" status --porcelain -uno 2>/dev/null || true)" != "$before" ]; then
+    # SIGKILL, not `exit`: no trap runs, nothing is cleaned up, and it reaches
+    # this process even from inside a command substitution.
+    kill -9 $$
+  fi
+  return "$grc"
+}
+orchid_refresh_kernel "$root"
+CRASH
+
+rc=0
+HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1 \
+  /bin/bash "$WORK/refresh-crash.sh" "$crashroot" "$REPO_ROOT" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ge 128 ] \
+  || fail "test fixture: the refresh was never interrupted (exit $rc) -- nothing below is being tested"
+
+run_version "$crashroot"
+assert_eq 1 "$rc" \
+  "a refresh killed before it finished leaves the guard REFUSING -- an index that says current over a tree nobody finished repairing is exactly L018"
+assert_match "INDEX does not match HEAD" "$out" \
+  "with the full report, since the merge that would have been repairing it is gone"
+[ "${out#*adapter: pre-merge}" = "$out" ] \
+  || fail "the interrupted refresh let a verb EXECUTE the pre-merge tree"
+assert_no_lossy_command "after an interrupted refresh, the refusal"
+
+# And the state it left is one a refresh can finish. It is reached only
+# through the index, which is why the drift list is not the working tree's
+# alone: the file this checkout executes is already correct here, so a
+# working-tree comparison finds nothing to do and would leave the refusal
+# standing for ever.
+rc=0
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$crashroot" ) || rc=$?
+assert_eq 0 "$rc" "a second refresh finishes the job the killed one left half done"
+run_version "$crashroot"
+assert_eq 0 "$rc" "and the refusal clears"
+assert_match "adapter: post-merge" "$out" "with the merged kernel the one that executes"
+
+# The same interruption, one path shape over, and the one the harness above
+# cannot reach (an added file is untracked, so writing it changes no tracked
+# state to trigger on). A killed refresh leaves an UNTRACKED file at a path
+# the branch ADDED, holding HEAD's own bytes: written, index entry not yet.
+# That is byte-for-byte the shape 8b declines to overwrite -- and declining
+# HERE would leave a refusal nothing could clear, since the working tree is
+# already right and only the index keeps the refusal alive. Built by hand
+# rather than by killing a second process, because it is a state, not a race.
+cat > "$crashelse/libexec/orchid-arrived" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "arrived: the merged verb"
+VERB
+chmod +x "$crashelse/libexec/orchid-arrived"
+git -C "$crashelse" add -A
+git -C "$crashelse" commit -q -m "fixture: kernel v3 (the branch adds a verb)"
+git -C "$crashhub" update-ref refs/heads/orchid/integration \
+  "$(git -C "$crashelse" rev-parse HEAD)"
+git -C "$crashroot" cat-file blob \
+  "$(git -C "$crashroot" rev-parse "HEAD:libexec/orchid-arrived")" \
+  > "$crashroot/libexec/orchid-arrived"
+
+run_version "$crashroot"
+assert_eq 1 "$rc" \
+  "a path written but not yet in the index is still a refusal, which is what makes the file safe to write through"
+rc=0
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$crashroot" ) || rc=$?
+assert_eq 0 "$rc" \
+  "and the refresh finishes it instead of declining over the file it wrote itself"
+run_version "$crashroot"
+assert_eq 0 "$rc" "clearing that refusal too"
+assert_match "arrived: the merged verb" \
+  "$(HOME="$MACHINE_HOME" "$crashroot/bin/orchid" arrived 2>&1)" \
+  "with the verb executable — the one thing a half-done write does not leave behind"

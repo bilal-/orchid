@@ -215,8 +215,8 @@ orchid_stale_checkout() {
 # neither refused nor refreshed, every verb kept working, and the run went on
 # executing the PRE-MERGE procedure with nothing anywhere saying so -- exactly
 # the stale-adapter shape of L018, one layer up. It is restored by the same
-# reset-then-checkout as any other path (a pathspec is a pathspec; nothing in
-# the refresh assumes a directory).
+# write-then-reset as any other path (a pathspec is a pathspec; nothing in the
+# refresh assumes a directory).
 #
 # What is deliberately NOT here is as load-bearing as what is. `.orchid/`
 # above all -- uncommitted durable run state is never inspected, never
@@ -534,6 +534,17 @@ orchid_root_stale() {
 # unsafe. `.orchid/runtime/` is local-only and ephemeral by contract, so a
 # leftover marker is inert litter, not state.
 #
+# "Falls through to the full report" is only worth anything because the RESTORE
+# leaves something to report. A merge killed mid-restore is exactly the case
+# this predicate cannot cover -- its writer is gone, so the marker stops being
+# believed at the instant the repair stops happening -- and what keeps that
+# from becoming silence is orchid_refresh_kernel's ordering: it never lets a
+# path's index entry match HEAD before that path's working tree does, so a
+# half-done restore is still a stale index and still a refusal. Were it the
+# other way round, this file would be the only thing standing between a killed
+# merge and a run executing the pre-merge tree, and it is expressly not built
+# to be that.
+#
 # It is not a bypass, and now cannot become one: an operator (or a hostile
 # repository) who writes this file changes the TEXT of a refusal and nothing
 # else. ORCHID_ALLOW_STALE_ROOT=1 remains the one documented way to actually
@@ -643,21 +654,47 @@ orchid_kernel_clean() {
 # `.orchid/` run state and a pending `orchid.config` edit are not merely
 # preserved, they are never named.
 #
-# Why not the one-liner `git checkout HEAD -- <paths>`: it restores modified
-# and missing files, but it does NOT remove a file the new HEAD no longer
-# carries. That path stays in the index, `git diff HEAD` keeps reporting it,
-# and the refusal the refresh was supposed to clear survives the remedy --
-# an operator following the instruction verbatim and watching it not work.
-# So each drifted path is reset to HEAD first, and then either checked out
-# (HEAD still has it: modified, or missing here because the branch added it)
-# or deleted (HEAD no longer has it). The reset is also what restores the
-# recorded FILE MODE, which is what makes a newly merged libexec verb
-# executable rather than a 644 file bin/orchid silently reports as unknown.
+# THE ORDER IS THE SAFETY PROPERTY, and it is why this is not three lines of
+# `git`. orchid_root_stale reads the INDEX, so the index is the thing that
+# makes this checkout look current to every other process on the machine. It
+# is therefore written LAST, one path at a time, and only after that path's
+# WORKING TREE already carries HEAD's bytes:
+#
+#   working tree first (installed by rename), verified, index last.
+#
+# Nothing that makes the guard look satisfied may happen before the thing the
+# guard stands for is actually true. A refresh that dies at any instant --
+# SIGKILL, a full disk, a machine going down -- therefore leaves every path it
+# has not finished with an index entry still describing the commit the branch
+# moved off, which is exactly the state the refusal fires on. An interrupted
+# refresh REFUSES; it never permits.
+#
+# The version this replaces reset the index first and checked the file out
+# second, and an interruption between those two left a CURRENT INDEX over a
+# PRE-MERGE WORKING TREE -- which the guard reads as healthy and lets the run
+# execute. That is L018 reproduced inside the fix for L018, reachable by
+# nothing more exotic than ^C, and with no marker to save it: the in-flight
+# marker below is believed only while its writer is alive, so the merge dying
+# is precisely the case it cannot cover.
+#
+# Why not `git checkout HEAD -- <path>`, which writes the working tree and the
+# index in one command. Two reasons, and the first decides it: the order in
+# which it commits those two is an INTERNAL detail of git rather than a
+# documented guarantee, so the property above would hold only for as long as
+# another project's implementation happened not to change, and could not be
+# checked by reading this file. The second is the one earlier rounds hit: it
+# restores modified and missing files, but does NOT remove a file the new HEAD
+# no longer carries. That path stays in the index, `git diff HEAD` keeps
+# reporting it, and the refusal the refresh was supposed to clear survives the
+# remedy -- an operator following the instruction verbatim and watching it not
+# work. Both shapes are handled below in the one order: the tree first, then
+# `git reset` to bring the index to HEAD, which is also what DROPS the entry
+# for a path HEAD no longer has.
 #
 # Returns non-zero if any path could not be restored, leaving the refusal in
 # place for the operator rather than reporting a refresh that did not happen.
 orchid_refresh_kernel() {
-  local root="$1" drift p rc=0 top top_phys root_phys
+  local root="$1" drift staged p rc=0 top top_phys root_phys
   # `git diff --name-only` prints paths relative to the REPOSITORY ROOT while
   # the pathspecs below are read relative to `-C "$root"`. Those agree only
   # when <root> IS the repository root, so that is required rather than
@@ -671,9 +708,29 @@ orchid_refresh_kernel() {
   root_phys="$(cd "$root" 2>/dev/null && pwd -P || true)"
   [ -n "$top_phys" ] || return 1
   [ "$top_phys" = "$root_phys" ] || return 1
+  # BOTH sides, unioned, because the two halves of a path's restore land at
+  # different moments and a refresh has to be able to finish one that was
+  # interrupted between them. `diff HEAD` names what the WORKING TREE still
+  # gets wrong; `diff --cached HEAD` names what the INDEX does -- and a path
+  # whose file was already written by a killed refresh appears only in the
+  # second. Listing the working tree alone would make this function a no-op
+  # against precisely the state it exists to repair, leaving a refusal that
+  # nothing but an operator's own `git reset` could clear.
+  #
+  # The index half is also what the guard itself reads, so this is the set of
+  # paths that have to be dealt with for the refusal to lift -- stated once,
+  # here, rather than inferred from a comparison that answers a neighbouring
+  # question. Each fails CLOSED to the literal `?`.
   drift="$(git -C "$root" diff --name-only HEAD -- \
     "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
   [ "$drift" != '?' ] || return 1
+  staged="$(git -C "$root" diff --cached --name-only HEAD -- \
+    "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
+  [ "$staged" != '?' ] || return 1
+  # A blank half contributes a blank line, which the loop skips; a path in both
+  # halves is handled once. Trailing newlines are stripped by the substitution,
+  # so "nothing on either side" really is the empty string.
+  drift="$(printf '%s\n%s\n' "$drift" "$staged" | sort -u)" || return 1
   [ -n "$drift" ] || return 0
   while IFS= read -r p; do
     [ -n "$p" ] || continue
@@ -682,29 +739,134 @@ orchid_refresh_kernel() {
     # at a name the branch has since added a tracked file under. The index
     # has no entry for it, so `git diff HEAD` reports the path as DELETED --
     # indistinguishable, from the drift list alone, from a merged file that
-    # simply has not been written here yet -- and the reset-then-checkout
-    # below would overwrite it without a word. That is the r-001 journal-loss
-    # shape one directory over, and the reason orchid_kernel_clean's promise
-    # that "untracked files are never touched by the restore" needs enforcing
-    # HERE rather than being inferred from it: that precondition is evaluated
+    # simply has not been written here yet -- and the restore below would
+    # overwrite it without a word. That is the r-001 journal-loss shape one
+    # directory over, and the reason orchid_kernel_clean's promise that
+    # "untracked files are never touched by the restore" needs enforcing HERE
+    # rather than being inferred from it: that precondition is evaluated
     # before the ref moves, when this path was not drift at all.
     #
-    # Asked BEFORE the reset, which would itself create the index entry that
-    # makes the file look tracked. Declining costs a refusal the operator
-    # clears by hand, having seen the file; overwriting costs a file only
-    # they had a copy of.
+    # Asked BEFORE anything is written, and asked as the question that actually
+    # matters -- would writing here destroy the only copy of something? -- and
+    # not as "is this path tracked", which is a proxy for it that gets the one
+    # state this function creates itself wrong. A refresh killed after it wrote
+    # a path the branch ADDED, but before the index entry for it landed, leaves
+    # an untracked file holding HEAD's own bytes; declining there would leave a
+    # refusal that no further refresh could ever clear. So an untracked file
+    # whose content IS the blob HEAD carries is written through (nothing exists
+    # to lose), and any other is declined. Declining costs a refusal the
+    # operator clears by hand, having seen the file; overwriting costs a file
+    # only they had a copy of.
     if [ -e "$root/$p" ] \
-       && ! git -C "$root" ls-files --error-unmatch -- "$p" >/dev/null 2>&1; then
+       && ! git -C "$root" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 \
+       && ! _orchid_file_is_head_blob "$root" "$p"; then
       rc=1; continue
     fi
-    git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || { rc=1; continue; }
     if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
-      git -C "$root" checkout -q -- "$p" >/dev/null 2>&1 || rc=1
+      _orchid_restore_kernel_file "$root" "$p" || { rc=1; continue; }
     else
-      rm -f "$root/$p" || rc=1
+      # HEAD has dropped this path. The FILE goes first here too, and for the
+      # same reason: a verb or library still on disk after the branch removed
+      # it is pre-merge code that still executes, and an index entry dropped
+      # ahead of it would tell the guard otherwise. Nothing is lost -- under
+      # orchid_kernel_clean these bytes were HEAD's own a moment ago and are
+      # in the object store.
+      rm -f "$root/$p" || { rc=1; continue; }
+      [ ! -e "$root/$p" ] || { rc=1; continue; }
     fi
+    # Only now: this path's working tree matches HEAD, so the index may say so.
+    git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || rc=1
   done <<< "$drift"
+  # Success has to mean the thing its caller announces. A per-path failure
+  # already yields non-zero above; this catches the rest -- a drift list that
+  # did not name everything that drifted, anything that changed underneath the
+  # loop -- and fails CLOSED on a `git` that cannot answer, because the cost of
+  # a wrong "refreshed" is a run executing a tree nobody has looked at.
+  #
+  # BOTH halves, and for the caller's sake rather than this loop's: the working
+  # tree is what the next process EXECUTES, the index is what the guard READS,
+  # and a refresh that leaves either one behind has cleared nothing whatever
+  # its per-path steps returned.
+  if [ "$rc" -eq 0 ] \
+     && { ! git -C "$root" diff --quiet HEAD -- \
+            "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null \
+          || ! git -C "$root" diff --quiet --cached HEAD -- \
+            "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null; }; then
+    rc=1
+  fi
   return "$rc"
+}
+
+# _orchid_file_is_head_blob <root> <path> -- true when the file on disk at
+# <root>/<path> holds exactly the bytes HEAD carries for <path>, whatever the
+# index says about either. `git hash-object` applies the same clean filter git
+# would, so the comparison is the one git itself would make, and both sides
+# fail CLOSED: an unreadable file, a path HEAD does not carry, or a `git` that
+# cannot answer is "not established", never "equal".
+_orchid_file_is_head_blob() {
+  local root="$1" p="$2" want got
+  want="$(git -C "$root" rev-parse --quiet --verify "HEAD:$p" 2>/dev/null || true)"
+  [ -n "$want" ] || return 1
+  got="$(git -C "$root" hash-object -- "$p" 2>/dev/null || true)"
+  [ -n "$got" ] && [ "$got" = "$want" ]
+}
+
+# _orchid_restore_kernel_file <root> <path> -- put HEAD's bytes for <path> into
+# <root>'s WORKING TREE, touching the index not at all. <path> exists in HEAD;
+# the caller has established that.
+#
+# Written from the blob rather than checked out because the index must not move
+# yet (see the order in orchid_refresh_kernel above), and installed with a
+# RENAME so the file some concurrently-executing verb may be reading is
+# replaced whole: no instant exists in which a kernel file on disk holds half
+# of each version.
+#
+# The mode comes from HEAD's tree entry, because a rename brings the temporary
+# file's own mode with it -- and it is applied with `chmod +rw` / `+x` rather
+# than a literal 644/755 so that the operator's umask is respected exactly as
+# `git checkout` would respect it (symbolic modes with no `who` are masked by
+# it; numeric ones are not). Restoring the mode is what makes a newly merged
+# libexec verb executable rather than a file bin/orchid reports as an unknown
+# command. Anything that is not an ordinary file in HEAD -- a symlink, a
+# submodule -- is DECLINED rather than approximated, and the caller turns that
+# into a refusal an operator resolves.
+#
+# The last line is a verification, and it is not ceremony: the guard's promise
+# is that the index only ever says "current" over a working tree that IS
+# current, and this is where that becomes a checked fact instead of an
+# assumption -- the same question _orchid_file_is_head_blob answers above the
+# write, asked again below it. It cannot be `git diff HEAD -- <path>`: that
+# reads the INDEX for what exists, so a path the branch ADDED -- no index entry
+# here yet -- reports as deleted however faithfully the working tree now
+# carries it.
+_orchid_restore_kernel_file() {
+  local root="$1" p="$2" entry mode want dir tmp rc=0
+  entry="$(git -C "$root" ls-tree -r HEAD -- "$p" 2>/dev/null || true)"
+  [ -n "$entry" ] || return 1
+  # "<mode> SP <type> SP <object> TAB <path>" -- the default IFS splits on both
+  # the spaces and the tab, and the path is deliberately discarded: it is the
+  # one field git may quote and escape.
+  read -r mode _ want _ <<< "$entry"
+  case "$mode" in 100644|100755) ;; *) return 1 ;; esac
+  [ -n "$want" ] || return 1
+  dir="$root/$p"; dir="${dir%/*}"
+  mkdir -p "$dir" 2>/dev/null || return 1
+  # Beside the destination, so installing it is a rename WITHIN one filesystem
+  # and therefore atomic. Dot-prefixed and named for what it is: one left
+  # behind by a killed refresh is untracked, is not a name bin/orchid can
+  # dispatch as a verb, and `git clean` clears it.
+  tmp="$(mktemp "$dir/.orchid-refresh.XXXXXX" 2>/dev/null)" || return 1
+  git -C "$root" cat-file blob "$want" > "$tmp" 2>/dev/null || rc=1
+  [ "$rc" -ne 0 ] || chmod +rw "$tmp" 2>/dev/null || rc=1
+  if [ "$rc" -eq 0 ] && [ "$mode" = 100755 ]; then
+    chmod +x "$tmp" 2>/dev/null || rc=1
+  fi
+  [ "$rc" -ne 0 ] || mv -f "$tmp" "$root/$p" 2>/dev/null || rc=1
+  if [ "$rc" -ne 0 ]; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  _orchid_file_is_head_blob "$root" "$p"
 }
 
 # _ocd_cleanup_wt <wt> <repo> -- removes a temp detached worktree (used by
@@ -1503,6 +1665,15 @@ trust_store_remove() {  # abs-dir -- atomic delete of any record for that path
 #     the staleness of what they are about to read is explicit rather than
 #     silent. docs/troubleshooting.md says all of this where an operator in
 #     this state will find it.
+#
+# And the refusal itself SAYS all four of those things, in a sentence, rather
+# than leaving an operator to infer them from a tool that has apparently
+# stopped working. That matters most in the case where the cause is their own
+# `git add` and nothing whatever is stale: from where they stand, orchid has
+# refused to run over an edit they made deliberately, and a refusal that reads
+# as a broken verb is one that gets worked around rather than resolved. It is
+# named as protection, with the reason and the override, in the message and in
+# docs/troubleshooting.md's "Why doctor and status refuse too".
 # ---------------------------------------------------------------------------
 
 # _orchid_stale_root_die -- the refusal text. ONE arm, because this verb's job
@@ -1551,7 +1722,8 @@ _orchid_stale_root_die() {
   [ -z "$mods" ] || also=" ALSO OBSERVED, and not part of why this refuses: kernel files modified in the working tree and not staged — $mods."
   orchid_die "refusing to run: the checkout orchid itself runs from ($root) sits on the integration branch '$ORCHID_ROOT_STALE_BRANCH', and its INDEX does not match HEAD for the code orchid executes: $idx. Every verb, lib, runner, engine adapter, role profile and the PROTOCOL.md a tick follows are read from THIS working tree, so orchid stops here rather than run something nobody has looked at.$also
 This is a report, not a diagnosis. Two different things leave an index that does not match HEAD and they are indistinguishable from here: 'orchid merge' advancing this branch with update-ref, which moves HEAD and leaves the index describing the commit it moved off (lesson L018 — a merged fix stayed inert for two further rounds because the launcher went on executing pre-merge code), or a kernel edit staged here with 'git add'. orchid will not guess between them, and prints no command that could discard your work: the remedy for one of those is a silent data loss in the other.
-LOOK FIRST — both of these are read-only: \"git -C $at status --short -- ${ORCHID_KERNEL_PATHS[*]}\" and \"git -C $at diff --cached HEAD -- ${ORCHID_KERNEL_PATHS[*]}\". Then resolve it yourself, whichever it turns out to be. docs/troubleshooting.md 'Stale orchid itself' walks the options and says what each one costs. Note that the pathspec above names orchid's own code and nothing else: uncommitted .orchid run state and a pending orchid.config edit are outside it, and orchid neither inspects nor restores them. To run one command anyway: ORCHID_ALLOW_STALE_ROOT=1 orchid ..."
+LOOK FIRST — both of these are read-only: \"git -C $at status --short -- ${ORCHID_KERNEL_PATHS[*]}\" and \"git -C $at diff --cached HEAD -- ${ORCHID_KERNEL_PATHS[*]}\". Then resolve it yourself, whichever it turns out to be. docs/troubleshooting.md 'Stale orchid itself' walks the options and says what each one costs. Note that the pathspec above names orchid's own code and nothing else: uncommitted .orchid run state and a pending orchid.config edit are outside it, and orchid neither inspects nor restores them. To run one command anyway: ORCHID_ALLOW_STALE_ROOT=1 orchid ...
+This stops EVERY verb, 'doctor' and 'status' included, and in both of the two cases above — including the one where nothing is stale and your own staged edit is what orchid cannot tell apart from a branch advance. That is orchid protecting you rather than orchid broken: a diagnosis read out of a checkout that IS stale is produced by the stale checks themselves, so the two verbs you would reach for first are the two whose answers could not be trusted here. Nothing was run and nothing here was changed. docs/troubleshooting.md 'Why doctor and status refuse too' has the whole argument and the one-line way to read them anyway."
 }
 
 # _orchid_stale_root_inflight_die -- the same refusal, worded for the one
