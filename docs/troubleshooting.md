@@ -803,8 +803,26 @@ the item as uncovered and cover or defer it properly. Or decide against it:
 orchid plan defer r-001#57 --reason "owned by the follow-up PR, not this run"
 ```
 
-That journals the decision and satisfies the check for that item alone —
-there is no bulk override, and it only works while `run_status` is
+Items are FINDINGS, not journal entries. One arbitration entry often records
+several defects at once, so an entry written as `(1) … (2) … (3) …` is split
+into `r-001#57.1`, `r-001#57.2`, `r-001#57.3` — cover or defer each on its
+own; the undivided `r-001#57` is refused, since deferring it would absolve
+all three in one command.
+
+An item that reports as
+
+```
+UNCOVERED [ledger] r-001#57 — CARRIED AS LEDGER ITEMS, not fixed here: …
+          ^ this entry records SEVERAL findings and cannot be split …
+```
+
+announces several findings in prose that cannot be separated unambiguously.
+No task text closes that one, by design: a wrong guess at where one finding
+ends would silently absolve the others. Read the entry, schedule what it
+needs, then defer it naming what you scheduled.
+
+A deferral journals the decision and satisfies the check for that item alone
+— there is no bulk override, and it only works while `run_status` is
 `planning`. Use the verb: what the check reads is the `plan_deferral` entry
 KIND, so a hand-written journal note whose text happens to read
 `deferred r-001#57: …` records nothing and the item stays uncovered. A

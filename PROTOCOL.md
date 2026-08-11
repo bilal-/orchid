@@ -558,6 +558,24 @@ sequence in
    loop, where the plan is still cheap to change; step 3 runs it again and
    REFUSES on the same condition, so it is not a report anyone can skip.
 
+   **The unit is the FINDING, not the journal entry.** A single arbitration
+   entry routinely records several unrelated defects — "carried as ledger
+   items: (1) … (2) … (3) … (4) …" — and tracking those per entry would let
+   one task naming one of them close the entry and carry the rest out of
+   planning under a green `covered` line. So an entry written as an
+   ascending `(1) `/`(2) `/… enumeration is split on those markers into
+   findings that are covered and deferred one at a time, with ids
+   `<run>#<n>.<k>`; each is matched only against its own segment, never
+   against the shared preamble, whose terms would otherwise cover all of
+   them at once. An entry that announces SEVERAL findings — the plural
+   "ledger items"/"ledger candidates", or a count like "the four outstanding
+   findings" — but does not enumerate them, or enumerates fewer than it
+   states, cannot be split without guessing. It is reported as one
+   UNDECOMPOSED item that no task text can ever close: schedule its findings
+   and then `orchid plan defer` the entry, saying what you scheduled. The
+   operator states that these were considered; the check never infers it
+   from a keyword that happened to land in the same paragraph.
+
    Coverage is deliberately approximate and deliberately pessimistic: an
    item is associated with a task only through a distinctive anchor term (a
    snake_case identifier, a repo-relative source path, an `INV-nn`, a lesson

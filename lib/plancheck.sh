@@ -15,6 +15,30 @@
 # PLANNING procedure -- and refuses to let a roadmap be committed while a
 # carried-forward item is neither covered by a task nor explicitly deferred.
 #
+# AN ENTRY IS NOT A FINDING. The unit this check tracks is the FINDING, not
+# the journal entry that records it, and the difference is the whole feature.
+# r-001's journal really does carry entries like "CARRIED AS LEDGER ITEMS:
+# (1) ... (2) ... (3) ... (4) ..." -- one entry, four separate defects in
+# four separate subsystems. Tracked per ENTRY, a single task naming one of
+# them marks the entry covered and the other three leave planning
+# unconsidered, silently, under a green "covered" line. That is r-002's
+# original miss reproduced by the very thing built to prevent it, so entries
+# are decomposed into their individual findings (see plancheck_ledger_items)
+# and each finding is covered, deferred or reported on its own.
+#
+# Decomposition is deliberately conservative, and what it does when it FAILS
+# is the load-bearing part. An entry whose findings are written as an
+# ascending `(1) `/`(2) `/... enumeration is split on those markers -- that
+# is unambiguous. An entry that announces SEVERAL findings ("ledger items",
+# "ledger candidates", "four outstanding findings") without enumerating them,
+# or that enumerates fewer than the number it states, cannot be split without
+# guessing where one finding ends and the next begins. Such an entry is
+# marked UNDECOMPOSED: it is never matched against task text at all and
+# reports UNCOVERED until an operator defers it by name with a reason. The
+# operator says "I have considered these" in words; the check never infers it
+# from a keyword that happens to appear. Refusing to decide beats deciding
+# wrongly in the direction that loses findings.
+#
 # WHAT IS CARRIED FORWARD. Two kinds, both already durable; this file
 # invents no new store:
 #
@@ -33,7 +57,9 @@
 #     is the only reason this check catches the exact miss that motivated
 #     it. Ids are `<run-id>#<n>`, where n is the entry's ordinal in that
 #     archived journal (immutable, so the id is stable, and an operator can
-#     confirm it with `grep -n '^## ' .orchid/runs/<prev>/journal.md`).
+#     confirm it with `grep -n '^## ' .orchid/runs/<prev>/journal.md`) --
+#     or `<run-id>#<n>.<k>` for the k'th finding of an entry that was
+#     decomposed into several.
 #
 #   active lessons -- blocks in `.orchid/lessons.md` that `orchid run new`
 #     carried across the rollover (it keeps ACTIVE blocks only). Ids are the
@@ -88,34 +114,172 @@ plancheck_prev_run_id() {
 }
 
 # plancheck_ledger_items <archived-journal> <run-id> -- one tab-separated
-# "id<TAB>kind<TAB>summary<TAB>text" line per ledger item in that journal.
-# `summary` is the entry's first non-blank body line (truncated for the
-# report); `text` is the whole entry flattened onto one line, which is what
-# anchor extraction reads. Both have any literal tab squeezed to a space so
-# the four fields survive a `read -r` with IFS=tab.
+# "id<TAB>kind<TAB>summary<TAB>mode<TAB>text" line per ledger FINDING in that
+# journal (an entry recording several findings yields several lines).
+# `summary` is the finding's own opening text, truncated for the report;
+# `mode` is `anchor` (this finding may be matched against task text) or
+# `undecomposed` (it may not -- see below); `text` is what anchor extraction
+# reads. Every field has any literal tab squeezed to a space, and none is
+# ever empty, so the five fields survive a `read -r` under IFS=tab: tab is
+# IFS WHITESPACE, so two adjacent tabs would collapse into one delimiter and
+# shift every later field left by one, reporting an entry as a mangled
+# neighbour rather than as itself.
+#
+# THE THREE OUTCOMES, in the order they are tried:
+#
+#   ENUMERATED. The entry contains `(1) `, `(2) `, ... ascending, at least
+#     two of them, each after the last -- the shape r-001's arbitration
+#     entries actually use. Each marker opens a finding that runs to the next
+#     marker (the last runs to the end), and each is emitted as
+#     `<run>#<n>.<k>` with ONLY ITS OWN segment as text.
+#
+#     The preamble before `(1) ` is dropped from all of them on purpose:
+#     text shared by every finding is text whose anchors would cover every
+#     finding at once, which is the per-entry tracking this decomposition
+#     exists to end. In r-001's journal the preamble is invariably the
+#     lead-in narrative -- "ARBITRATION: APPROVE attempt 8 ... WHAT IS
+#     KNOWINGLY DEFERRED:" -- and every finding lives inside the
+#     enumeration, so nothing is lost by it; and the one way a preamble
+#     could hide a finding of its own is by claiming more findings than the
+#     enumeration accounts for, which the count cross-check below already
+#     catches. Dropping it can only remove anchors, and a missing anchor
+#     costs one `orchid plan defer` while a shared one costs a lost finding.
+#
+#   UNDECOMPOSED. Any of three ways the split cannot be trusted: the entry
+#     says it carries SEVERAL findings -- the plural "ledger items"/"ledger
+#     candidates", or an explicit count ("TWO KERNEL DEFECTS", "the four
+#     outstanding findings") -- but has no usable enumeration; it enumerates
+#     FEWER segments than the count it states; or its markers are out of
+#     order, so the ascending scan stopped early. Where exactly one finding
+#     ends and the next begins is then a guess, and a wrong guess silently
+#     absolves the findings that fell on the wrong side of it. So the entry
+#     is emitted as ONE item in mode `undecomposed`, which plancheck_report
+#     never anchor-matches: no task text can close it, and only a named
+#     deferral with a reason can.
+#
+#     The last two are the half that matters most, and both say the same
+#     thing: a SHORTER TIDY LIST IS WORSE THAN NO LIST. An entry stating four
+#     findings and enumerating three would otherwise report three neat
+#     `covered` lines and lose the fourth without ever naming it -- three
+#     green verdicts standing in for the finding nobody read.
+#
+#   WHOLE. Anything else: one entry, one finding, `<run>#<n>`, matched on its
+#     own text exactly as before. The motivating `started_at` item is this
+#     shape ("recorded as a ledger candidate", singular), so the finding this
+#     whole file was built for stays coverable by a task that names it.
 plancheck_ledger_items() {
   local jf="$1" rid="$2"
   [ -f "$jf" ] || return 0
   awk -v rid="$rid" '
-    function emit(   k, low, s, t) {
+    # trunc(s) -- a report-safe one-line summary of s. An entry with no body
+    # text at all is degenerate, not impossible, and must still report as
+    # itself rather than as an empty field (see the IFS note above).
+    function trunc(s) {
+      sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s)
+      if (s == "") s = "(entry has no body text)"
+      if (length(s) > 120) s = substr(s, 1, 117) "..."
+      gsub(/\t/, " ", s)
+      return s
+    }
+    # numword(s) -- s as a small cardinal, or 0. Words as well as digits,
+    # because arbitration prose writes "TWO KERNEL DEFECTS EXPOSED" far more
+    # often than "2".
+    function numword(s,   nums, i, n) {
+      if (s ~ /^[0-9]+$/) return s + 0
+      n = split("one two three four five six seven eight nine ten eleven twelve", nums, " ")
+      for (i = 1; i <= n; i++) if (nums[i] == s) return i
+      return 0
+    }
+    # statedcount(low) -- the largest number of findings the entry CLAIMS to
+    # carry, or 0. A cardinal counts only when a findings noun follows it
+    # within three words, so "four outstanding findings" counts and "two
+    # independent reviewers" does not; and only 2..20, so a timestamp or a
+    # line number cannot masquerade as a count. Read from the body alone --
+    # the `## ` header is a timestamp and an actor, pure noise here.
+    function statedcount(low,   n, w, i, j, c, best) {
+      best = 0
+      # String separator, not a /regex/ literal: the third argument to split
+      # is an ERE either way, but only the string form is unambiguously
+      # portable across the awks this repo runs under (BSD/BWK on macOS,
+      # mawk and gawk on Linux CI).
+      n = split(low, w, "[^a-z0-9]+")
+      for (i = 1; i <= n; i++) {
+        c = numword(w[i])
+        if (c < 2 || c > 20) continue
+        for (j = i + 1; j <= i + 3 && j <= n; j++) {
+          if (w[j] == "findings" || w[j] == "defects" ||
+              w[j] == "items" || w[j] == "candidates") {
+            if (c > best) best = c
+            break
+          }
+        }
+      }
+      return best
+    }
+    # decompose(text) -- how many `(k) ` markers text carries in ascending
+    # order from 1, filling segstart[]; or -1 when the enumeration is
+    # malformed. Each marker is searched for only AFTER its predecessor, so
+    # "(2)" alone decomposes to nothing rather than to a mis-ordered split.
+    # The trailing space is required so a bare "(1)" inside prose is not a
+    # list marker.
+    #
+    # The -1 closes the shape the ascending scan alone would swallow: if the
+    # marker for the NEXT ordinal exists somewhere in the text but NOT after
+    # its predecessor -- a scrambled or interleaved list, "(1) ... (3) ...
+    # (2) ..." -- then the scan stopped early and the findings it never
+    # reached would leave planning inside a segment attributed to something
+    # else. A shorter tidy list is worse than no list, so say so.
+    function decompose(text,   k, p, rest, needle) {
+      nseg = 0; dpos = 1
+      for (k = 1; k <= 99; k++) {
+        needle = "(" k ") "
+        rest = substr(text, dpos)
+        p = index(rest, needle)
+        if (p == 0) break
+        segstart[k] = dpos + p - 1
+        dpos = segstart[k] + length(needle)
+        nseg = k
+      }
+      if (index(text, "(" (nseg + 1) ") ") > 0) return -1
+      return nseg
+    }
+    function segment(text, k) {
+      if (k < nseg) return substr(text, segstart[k], segstart[k + 1] - segstart[k])
+      return substr(text, segstart[k])
+    }
+    function emit(   kind, low, blow, ns, sc, i, seg, t) {
       if (hdr == "") return
       # Journal header shape: "## <ISO8601> <task|run> <kind> (<actor>)".
       split(hdr, ha, " ")
-      k = ha[4]
+      kind = ha[4]
       low = tolower(hdr " " body)
-      if (k != "ledger" && k != "plan_deferral" &&
+      if (kind != "ledger" && kind != "plan_deferral" &&
           index(low, "ledger candidate") == 0 &&
           index(low, "ledger item") == 0) return
-      # Never emit an empty field: the reader is `read -r` under IFS=tab,
-      # and tab is IFS WHITESPACE, so a run of two tabs collapses to one
-      # delimiter and every later field shifts left by one. An entry with no
-      # body text is degenerate, not impossible, and it must still report as
-      # itself rather than as a mangled neighbour.
-      s = (first == "" ? "(entry has no body text)" : first)
-      if (length(s) > 120) s = substr(s, 1, 117) "..."
-      t = body
-      gsub(/\t/, " ", s); gsub(/\t/, " ", t)
-      printf "%s#%d\tledger\t%s\t%s\n", rid, idx, s, t
+      blow = tolower(body)
+      ns = decompose(body)
+      sc = statedcount(blow)
+      if (ns >= 2 && sc <= ns) {
+        for (i = 1; i <= ns; i++) {
+          seg = segment(body, i)
+          t = seg; gsub(/\t/, " ", t)
+          printf "%s#%d.%d\tledger\t%s\tanchor\t%s\n", rid, idx, i, trunc(seg), t
+        }
+        return
+      }
+      t = body; gsub(/\t/, " ", t)
+      # `ns < 0` is a malformed enumeration, which is undecomposable on its
+      # own evidence and needs no plural marker to say so. Otherwise the
+      # marker has to be a PLURAL spelling: "ledger item" (singular) is the
+      # ordinary way to record ONE carried finding and must stay
+      # anchor-matchable, since the `started_at` miss that motivated this
+      # whole file is written exactly that way.
+      if (ns < 0 || sc >= 2 || index(blow, "ledger items") > 0 ||
+          index(blow, "ledger candidates") > 0) {
+        printf "%s#%d\tledger\t%s\tundecomposed\t%s\n", rid, idx, trunc(first), t
+        return
+      }
+      printf "%s#%d\tledger\t%s\tanchor\t%s\n", rid, idx, trunc(first), t
     }
     BEGIN { idx = 0; hdr = ""; body = ""; first = "" }
     /^## / { emit(); idx++; hdr = $0; body = ""; first = ""; next }
@@ -124,9 +288,10 @@ plancheck_ledger_items() {
   ' "$jf"
 }
 
-# plancheck_lesson_items <lessons.md> <cutoff> -- the same four-field shape,
+# plancheck_lesson_items <lessons.md> <cutoff> -- the same five-field shape,
 # one line per ACTIVE lesson block carried in from before <cutoff> (the
-# current journal's first-entry date, i.e. this run's own start).
+# current journal's first-entry date, i.e. this run's own start). Always mode
+# `anchor`: a lesson block IS one lesson, so there is nothing to decompose.
 #
 # The boundary comparison is `<=`, not `<`, on purpose. Journal and lesson
 # timestamps are both second-resolution, so a rollover and a lesson written
@@ -154,7 +319,7 @@ plancheck_lesson_items() {
       s = (stmt == "" ? "(lesson has no statement)" : stmt)
       if (length(s) > 120) s = substr(s, 1, 117) "..."
       gsub(/\t/, " ", s)
-      printf "%s\tlesson\t%s\t%s %s\n", id, s, id, stmt
+      printf "%s\tlesson\t%s\tanchor\t%s %s\n", id, s, id, stmt
     }
     /^## L/ {
       emit()
@@ -305,9 +470,18 @@ plancheck_deferral() {
 # The per-item lines go to stdout (they are the report); the refusal and the
 # recovery commands go to stderr, so a caller redirecting the report away
 # still shows an operator why it stopped.
+#
+# MUST be called as a plain statement, never via `$(...)`/a pipeline. Like
+# orchid_commit_durable (lib/common.sh) this function manages its own EXIT
+# trap, COMPOSED with whatever the caller already armed rather than
+# clobbering it -- `plan apply` reaches here holding the verb lock under
+# `trap 'verb_lock_release ...' EXIT`, and a second competing trap would
+# leak that lock on every refusal. A command substitution would fork a
+# subshell, so the trap manipulation would apply only to the throwaway and
+# the scratch directory would survive after all.
 plancheck_report() {
   local state="$1"
-  local prev cutoff tmp f id kind summary text hits hitfile hit via reason nitems nopen=0
+  local prev cutoff tmp rc=0
   prev="$(plancheck_prev_run_id "$state")"
   if [ -z "$prev" ]; then
     echo "crosscheck: no previous run is archived under .orchid/runs/ — this is the first run of this repository, so nothing is carried forward"
@@ -316,6 +490,65 @@ plancheck_report() {
 
   cutoff="$(_lessons_journal_start_date "$state/journal.md")"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/orchid-plancheck.XXXXXX")"
+
+  # The scratch directory is removed on the way out of EVERY path, including
+  # the ones this function does not choose: `plan apply` is a long
+  # interactive step and an operator who interrupts it at the cross-check
+  # used to leave an orchid-plancheck.* directory in TMPDIR forever, one per
+  # interrupted attempt. The cleanup runs BEFORE the caller's own trap
+  # command, and the caller's is restored verbatim on the normal return
+  # below, so this composition is invisible to it either way.
+  local tmp_q; printf -v tmp_q '%q' "$tmp"
+  local prev_trap prev_cmd=""
+  prev_trap="$(trap -p EXIT)"
+  case "$prev_trap" in
+    "trap -- "*)
+      prev_cmd="${prev_trap#trap -- \'}"; prev_cmd="${prev_cmd%\' EXIT}" ;;
+  esac
+  if [ -n "$prev_cmd" ]; then
+    # ShellCheck rationale: the quoted local path and the prior trap are intentionally captured before locals leave scope.
+    # shellcheck disable=SC2064
+    trap "_plancheck_cleanup $tmp_q; $prev_cmd" EXIT
+  else
+    # ShellCheck rationale: the quoted local path must be captured before locals leave scope.
+    # shellcheck disable=SC2064
+    trap "_plancheck_cleanup $tmp_q" EXIT
+  fi
+
+  # The report proper runs in a helper purely so this arming/disarming pair
+  # is written once: the body has three exit points, and a cleanup repeated
+  # at each is a cleanup that will be forgotten at the fourth.
+  _plancheck_body "$state" "$prev" "$cutoff" "$tmp" || rc=$?
+
+  _plancheck_cleanup "$tmp"
+  if [ -n "$prev_cmd" ]; then
+    # ShellCheck rationale: this restores the exact previously captured EXIT command.
+    # shellcheck disable=SC2064
+    trap "$prev_cmd" EXIT
+  else
+    trap - EXIT
+  fi
+  return "$rc"
+}
+
+# _plancheck_cleanup <dir> -- removes the report's scratch directory. A
+# standalone function, not a closure, taking the path as an explicit STRING
+# ARGUMENT baked into the trap command at registration time: a `local` inside
+# plancheck_report is already out of scope by the time a later EXIT trap
+# fires. Same shape, and same reason, as lib/common.sh's _ocd_cleanup_wt.
+_plancheck_cleanup() {
+  if [ -n "${1:-}" ]; then
+    rm -rf "$1"
+  fi
+  return 0
+}
+
+# _plancheck_body <state> <prev> <cutoff> <tmp> -- plancheck_report's report,
+# with the scratch directory supplied and its removal already guaranteed by
+# the caller. Same exit codes.
+_plancheck_body() {
+  local state="$1" prev="$2" cutoff="$3" tmp="$4"
+  local f id kind summary mode text hits hitfile hit via reason nitems nopen=0
   {
     plancheck_ledger_items "$state/runs/$prev/journal.md" "$prev"
     plancheck_lesson_items "$state/lessons.md" "$cutoff"
@@ -323,7 +556,6 @@ plancheck_report() {
 
   nitems="$(wc -l < "$tmp/items" | tr -d ' ')"
   if [ "$nitems" -eq 0 ]; then
-    rm -rf "$tmp"
     echo "crosscheck: previous run $prev recorded no ledger items and carried no active lessons forward — nothing to cross-check (stated, not skipped)"
     return 0
   fi
@@ -340,27 +572,35 @@ plancheck_report() {
   done
 
   echo "crosscheck: $prev left $nitems carried-forward item(s); each must be covered by a task in this plan or explicitly deferred"
-  while IFS=$'\t' read -r id kind summary text; do
+  while IFS=$'\t' read -r id kind summary mode text; do
     [ -n "$id" ] || continue
-    printf '%s\n' "$text" | plancheck_anchors > "$tmp/anchors"
     hit=""; via=""
-    if [ -s "$tmp/anchors" ]; then
-      # No `| head -1`: `grep -l` short-circuits per file and head would
-      # close the pipe under it, which `set -o pipefail` reports as a
-      # failure of the whole match (lesson L005). Take the first line of a
-      # captured result instead.
-      hits="$(grep -lF -f "$tmp/anchors" "$tmp"/tasks/* 2>/dev/null || true)"
-      hitfile="${hits%%$'\n'*}"
-      if [ -n "$hitfile" ]; then
-        hit="${hitfile##*/}"; hit="${hit%.md}"
-        # WHICH anchor fired, so the one verdict that closes an item carries
-        # its own evidence. Capped at three with a count of the rest --
-        # `awk`, not `head`, for the L005 reason above -- because a long
-        # arbitration entry can yield a dozen anchors and a report line
-        # nobody finishes reading is a report nobody checks.
-        via="$({ grep -oF -f "$tmp/anchors" "$hitfile" || true; } | LC_ALL=C sort -u \
-          | awk 'NR <= 3 { printf "%s%s", (NR > 1 ? ", " : ""), $0 }
-                 END { if (NR > 3) printf ", +%d more", NR - 3 }')"
+    # An UNDECOMPOSED entry is skipped here entirely rather than matched and
+    # then overruled. It records several findings that could not be split
+    # apart, so its text is the union of all of them and ANY anchor in it
+    # would close the lot -- the precise per-entry absolution this
+    # decomposition exists to end. There is no task text that can answer for
+    # it; only a named deferral can.
+    if [ "$mode" = anchor ]; then
+      printf '%s\n' "$text" | plancheck_anchors > "$tmp/anchors"
+      if [ -s "$tmp/anchors" ]; then
+        # No `| head -1`: `grep -l` short-circuits per file and head would
+        # close the pipe under it, which `set -o pipefail` reports as a
+        # failure of the whole match (lesson L005). Take the first line of a
+        # captured result instead.
+        hits="$(grep -lF -f "$tmp/anchors" "$tmp"/tasks/* 2>/dev/null || true)"
+        hitfile="${hits%%$'\n'*}"
+        if [ -n "$hitfile" ]; then
+          hit="${hitfile##*/}"; hit="${hit%.md}"
+          # WHICH anchor fired, so the one verdict that closes an item carries
+          # its own evidence. Capped at three with a count of the rest --
+          # `awk`, not `head`, for the L005 reason above -- because a long
+          # arbitration entry can yield a dozen anchors and a report line
+          # nobody finishes reading is a report nobody checks.
+          via="$({ grep -oF -f "$tmp/anchors" "$hitfile" || true; } | LC_ALL=C sort -u \
+            | awk 'NR <= 3 { printf "%s%s", (NR > 1 ? ", " : ""), $0 }
+                   END { if (NR > 3) printf ", +%d more", NR - 3 }')"
+        fi
       fi
     fi
     if [ -n "$hit" ]; then
@@ -372,22 +612,27 @@ plancheck_report() {
       continue
     fi
     printf '  UNCOVERED [%s] %s — %s\n' "$kind" "$id" "$summary"
+    if [ "$mode" != anchor ]; then
+      printf '            ^ this entry records SEVERAL findings and cannot be split into them unambiguously, so no task text can close it: schedule them, then defer this entry naming what you scheduled\n'
+    fi
     nopen=$((nopen + 1))
-    printf '%s\t%s\n' "$id" "$summary" >> "$tmp/open"
+    printf '%s\t%s\t%s\n' "$id" "$mode" "$summary" >> "$tmp/open"
   done < "$tmp/items"
 
   if [ "$nopen" -eq 0 ]; then
-    rm -rf "$tmp"
     echo "crosscheck: all $nitems carried-forward item(s) considered"
     return 0
   fi
 
   echo "crosscheck: $nopen of $nitems carried-forward item(s) from $prev are neither covered by a task in this plan nor explicitly deferred:" >&2
-  while IFS=$'\t' read -r id summary; do
+  while IFS=$'\t' read -r id mode summary; do
     [ -n "$id" ] || continue
     printf '  %s — %s\n' "$id" "$summary" >&2
-    printf '      cover it with a task in this plan, or record the decision: orchid plan defer %s --reason "..."\n' "$id" >&2
+    if [ "$mode" = anchor ]; then
+      printf '      cover it with a task in this plan, or record the decision: orchid plan defer %s --reason "..."\n' "$id" >&2
+    else
+      printf '      several findings in one entry, not separable — only an explicit decision closes it: orchid plan defer %s --reason "..."\n' "$id" >&2
+    fi
   done < "$tmp/open"
-  rm -rf "$tmp"
   return 3
 }

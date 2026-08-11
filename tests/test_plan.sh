@@ -18,7 +18,7 @@
 # remove: a repository whose first run has never rolled over, and a previous
 # run that genuinely left nothing. Both must SAY so.
 #
-# And four ANTI-assertions, which carry as much weight as the three positive
+# And the ANTI-assertions, which carry as much weight as the three positive
 # cases, because every one of them is a way for the gate to print a pass over
 # an item nobody considered -- r-002's original miss, wearing a green check.
 #
@@ -32,6 +32,13 @@
 #   3d2      a bypass by ordering: `run advance` out of planning is gated on
 #            the same condition `plan apply` is, so the refusal cannot be
 #            stepped around by taking the two verbs in the other order.
+#   5        a false `covered` for a whole ENTRY: r-001's journal records up
+#            to six separate findings in a single entry, so section 5 proves
+#            coverage is tracked per FINDING -- covering one of three leaves
+#            two outstanding (5b), an entry that cannot be split into its
+#            findings is closed by nothing but an explicit decision (5c, 5d),
+#            and neither the shared preamble (5a2) nor the undivided entry id
+#            (5e) can absolve the findings underneath.
 #
 # RED (before libexec/orchid-plan grew the check): every crosscheck
 # invocation exits 2 on an unknown subverb, and every `plan apply` here
@@ -468,3 +475,228 @@ assert_match "UNCOVERED \[ledger\] r-002#[0-9]+ .*deferred $cilocal_id" "$out" \
   "and so does the deferral of the verification-chain item"
 assert_match "UNCOVERED \[lesson\] L001" "$out" \
   "and the lesson itself is still active, so it is still carried forward"
+
+# ===========================================================================
+# 5 -- AN ENTRY IS NOT A FINDING, which is the property everything above
+# quietly assumed and r-001's real journal disproves. Its arbitration entries
+# carry two, three, four and six separate defects apiece, in one entry each:
+#
+#   "CARRIED AS LEDGER ITEMS: (1) drive_implementing lacks the liveness
+#    guard ... (2) drive_surface_admits treats a soft surface as ... (3) the
+#    task walk's fd 0 is the `task list` pipe ... (4) drive_testing runs the
+#    full suite BEFORE consulting the hook gate ..."
+#
+# Tracked per ENTRY, one task naming ONE of those four marks the entry
+# `covered` and the other three leave planning unconsidered, silently, under
+# a green verdict line. That is r-002's original miss reproduced by the very
+# check built to prevent it -- and worse than the miss, because the report
+# says in writing that someone looked.
+#
+# So coverage is tracked per FINDING. The four fixture entries below are the
+# four shapes that decides:
+#
+#   an ENUMERATED entry, split on its `(k) ` markers into findings that are
+#     covered and deferred one at a time (5b is the brief's RED case: three
+#     findings, one covered, two still outstanding);
+#   an UNDECOMPOSABLE entry, which announces several findings in prose that
+#     cannot be split without guessing, and is therefore never matched
+#     against task text at all (5c);
+#   a SHORT-COUNT entry, which enumerates fewer findings than it states it
+#     carries (5d);
+#   a SCRAMBLED entry, whose markers run 1, 3, 2, so an ascending scan stops
+#     early and the finding it never reached is buried inside a segment
+#     attributed to another one (5d2).
+#
+# The last two are the same lesson twice: A SHORTER TIDY LIST IS WORSE THAN
+# NO LIST. Split either of them and the survivors come back closeable with a
+# green line while the finding that fell off is never named at all -- one
+# report, several verdicts, and the thing this check exists to surface gone
+# without a trace. Both are therefore treated as undecomposable.
+#
+# RED (per-entry tracking): 5a finds three findings where one item exists, so
+# every id lookup below comes back empty and the assertions fail on the spot.
+# ===========================================================================
+new_repo c
+c_bare="$WORK/c-bare"
+echo "# Requirements" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+"$ORCHID_BIN" task create T001 "r-001 task" >/dev/null
+"$ORCHID_BIN" plan apply --reason "r-001 plan" >/dev/null
+
+# The enumerated entry. Its PREAMBLE deliberately names drive_worktrees --
+# a term belonging to none of the three findings -- because preamble text is
+# text every finding shares, and shared text whose anchors counted would
+# cover all three at once. 5a2 pins that it covers none.
+"$ORCHID_BIN" journal add --kind ledger \
+  "ARBITRATION: approve attempt 8 of drive_worktrees and carry three findings as ledger items: (1) drive_implementing lacks the liveness guard its sibling arms carry, so a failed implementer spawns duplicates into one worktree; (2) drive_surface_admits treats a soft surface as admitting every verb, so failover wakes the whole mechanical tick; (3) verify_stdin_inherit lets orchid verify consume the task walk's own pipe and truncate the pass" >/dev/null
+# The undecomposable entry, transcribed in shape from r-001's own six-finding
+# merge note: a plural announcement and then prose. Where one finding ends
+# and the next begins is a guess, and a guess absolves whatever falls on the
+# wrong side of it.
+"$ORCHID_BIN" journal add --kind ledger \
+  "CARRIED AS LEDGER ITEMS, not fixed here: the beta_qualify_trust question above; a symlinked --output leaving harness_created directories in a target it refuses to write to; and tests/test_manifest.sh still naming the superseded version" >/dev/null
+# The short-count entry: it says four, it enumerates two.
+"$ORCHID_BIN" journal add --kind ledger \
+  "four outstanding findings are carried into the next run: (1) release_channel_regex now exists in four hand-synced copies and only one of them has shape tests; (2) probe_prompt_echo feeds the expected string into the prompt it then greps for" >/dev/null
+# The scrambled entry: markers 1, 3, 2. It states no count and uses no plural
+# marker, so nothing but the ordering itself says the split is untrustworthy.
+# An ascending scan finds (1) and then (2) -- which sits LAST -- and never
+# reaches (3), burying uninstall_symlink_assert inside finding one.
+"$ORCHID_BIN" journal add --kind ledger \
+  "ARBITRATION: carried findings, listed out of order: (1) merge_rebase_regeneration records a blocking pass inferred from the manifest rather than tested; (3) uninstall_symlink_assert uses a test that is false for a dangling link; (2) qualify_output_symlink leaves harness directories in a target it refuses to write to" >/dev/null
+
+roll_over "open the second run"
+assert_eq "r-002" "$(fm_get .orchid/roadmap.md run_id)" "sanity: the multi-finding fixture rolled over"
+echo "# Requirements v2" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+
+# ---------------------------------------------------------------------------
+# 5a -- four journal entries, SIX carried-forward items: the enumerated one
+# is three findings, the other three are one apiece.
+# ---------------------------------------------------------------------------
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "crosscheck exits 3 while the carried findings are unconsidered"
+assert_match "left 6 carried-forward item" "$out" \
+  "the entry carrying three findings is three items, so four entries are six"
+
+# Read the ids off the VERDICT lines only -- the stderr refusal block repeats
+# every open item, so a looser grep returns each id twice and every check
+# below would pass while holding a two-line value (the trap 3's own comment
+# documents at length).
+part_id() { grep -oE 'r-001#[0-9]+\.[0-9]+' <<<"$(grep "  UNCOVERED \[ledger\] .*$1" <<<"$2")"; }
+whole_id() { grep -oE 'r-001#[0-9]+' <<<"$(grep "  UNCOVERED \[ledger\] .*$1" <<<"$2")"; }
+f1="$(part_id drive_implementing "$out")"
+f2="$(part_id drive_surface_admits "$out")"
+f3="$(part_id verify_stdin_inherit "$out")"
+undec_id="$(whole_id beta_qualify_trust "$out")"
+short_id="$(whole_id "four outstanding findings" "$out")"
+scram_id="$(whole_id "listed out of order" "$out")"
+[ -n "$f1" ] || fail "the enumerated entry's first finding must be an item of its own"
+[ -n "$f2" ] || fail "...and its second"
+[ -n "$f3" ] || fail "...and its third"
+[ -n "$undec_id" ] || fail "the undecomposable entry must still be reported"
+[ -n "$short_id" ] || fail "the short-count entry must still be reported"
+[ -n "$scram_id" ] || fail "the scrambled entry must still be reported"
+[ "$(printf '%s\n%s\n%s\n' "$f1" "$f2" "$f3" | sort -u | wc -l | tr -d ' ')" = 3 ] \
+  || fail "the three findings of one entry must have three distinct ids"
+assert_eq "${f1%.*}" "${f3%.*}" "...all bearing the ordinal of the single entry that recorded them"
+
+# ---------------------------------------------------------------------------
+# 5a2 -- PREAMBLE TEXT IS NOT COVERAGE. The words before `(1)` belong to
+# every finding equally, so counting them would restore per-entry tracking
+# under a different name: one task naming the entry's narrative would close
+# all three findings at once.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T030 "rework drive_worktrees provisioning" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a task naming only the entry's preamble considers nothing"
+assert_match "UNCOVERED \[ledger\] $f1" "$out" \
+  "a term from the shared preamble must not cover the findings that follow it"
+assert_match "UNCOVERED \[ledger\] $f2" "$out" "...any of them"
+assert_match "UNCOVERED \[ledger\] $f3" "$out" "...at all"
+
+# ---------------------------------------------------------------------------
+# 5b -- THE RED CASE THE BRIEF NAMES. One entry, three findings, ONE of them
+# covered. The other two must still be outstanding. Under per-entry tracking
+# the single task below closed the entry and all three findings left planning
+# with nobody having read two of them.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T031 "make the orchestrate surface refuse a soft engine" >/dev/null
+"$ORCHID_BIN" task set T031 acceptance_criteria \
+  "drive_surface_admits must not report a soft surface as admitting every verb" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "covering one finding of an entry must not clear the plan"
+assert_match "covered   \[ledger\] $f2 .*\(task T031 via drive_surface_admits\)" "$out" \
+  "the finding the task names is covered, and the anchor that earned it is named back"
+assert_match "UNCOVERED \[ledger\] $f1" "$out" \
+  "THE POINT: its sibling finding in the same entry stays outstanding"
+assert_match "UNCOVERED \[ledger\] $f3" "$out" "...and so does the third"
+
+# ---------------------------------------------------------------------------
+# 5c -- AN UNDECOMPOSABLE ENTRY IS NOT MATCHABLE AT ALL. It announces several
+# findings in prose, so its text is the union of all of them and ANY anchor
+# in it would close the lot. A task naming one of the three below therefore
+# closes nothing: the operator has to say, in a reason, that the others were
+# considered. Inferred absolution is exactly what this check exists to stop.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T032 "refresh the version strings the manifest suite pins" >/dev/null
+"$ORCHID_BIN" task set T032 acceptance_criteria \
+  "tests/test_manifest.sh must name the current version in its comments" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a task matching one finding of an unsplittable entry does not clear it"
+assert_match "UNCOVERED \[ledger\] $undec_id" "$out" \
+  "an entry whose findings cannot be separated is never closed by a text match"
+grep -q "covered   \[ledger\] $undec_id" <<<"$out" \
+  && fail "matching one finding of an unsplittable entry must never report the entry covered"
+assert_match "records SEVERAL findings" "$out" \
+  "...and the report says WHY it cannot be covered, so the operator is not left guessing"
+
+# ---------------------------------------------------------------------------
+# 5d -- AN ENTRY THAT ENUMERATES FEWER FINDINGS THAN IT STATES. Splitting it
+# on its markers would produce two tidy, coverable items and lose the two it
+# only claimed -- a decomposition that is worse than none, because each of
+# the two survivors can now be closed with a green line. Stated count over
+# enumerated count is the check; a mismatch falls back to undecomposable.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T033 "collapse the prerelease regex to one copy" >/dev/null
+"$ORCHID_BIN" task set T033 acceptance_criteria \
+  "release_channel_regex must exist once, with shape tests on the single copy" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "the short-count entry is still unconsidered"
+grep -q "$short_id\.[0-9]" <<<"$out" \
+  && fail "an entry that enumerates fewer findings than it states must not be split at all"
+assert_match "UNCOVERED \[ledger\] $short_id" "$out" \
+  "...and a task matching one of the two it DID enumerate must not close it"
+
+# ---------------------------------------------------------------------------
+# 5d2 -- A SCRAMBLED ENUMERATION. Markers 1, 3, 2: scanning ascending finds
+# (1), then (2) -- which sits last -- and stops, because there is no (3)
+# after it. That yields two clean-looking findings, and the third is buried
+# inside the first one's segment, coverable by anything that happens to match
+# its neighbour and never named on its own line. The entry states no count
+# and uses no plural marker, so the ORDERING is the only evidence that the
+# split cannot be trusted, and it has to be enough.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T034 "fix the uninstall symlink assertion" >/dev/null
+"$ORCHID_BIN" task set T034 acceptance_criteria \
+  "uninstall_symlink_assert must hold for a dangling symlink" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "the scrambled entry is still unconsidered"
+grep -q "$scram_id\.[0-9]" <<<"$out" \
+  && fail "an out-of-order enumeration must not be split into the prefix an ascending scan happens to reach"
+assert_match "UNCOVERED \[ledger\] $scram_id" "$out" \
+  "...and the finding the scan never reached cannot be closed by a task naming it, because the entry is not matchable at all"
+
+# ---------------------------------------------------------------------------
+# 5e -- DEFERRAL IS PER FINDING TOO, and the undivided entry id of a
+# decomposed entry is not an item. Admitting it would hand back the per-entry
+# absolution in one command: one deferral, three findings gone.
+# ---------------------------------------------------------------------------
+rc=0; out="$("$ORCHID_BIN" plan defer "${f1%.*}" --reason "the whole entry at once" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "the entry id of a DECOMPOSED entry must not be deferrable — its findings are the items"
+assert_match "not a carried-forward item" "$out" "...saying so, and printing the real ids"
+
+"$ORCHID_BIN" plan defer "$f1" --reason "the driver guard is its own follow-up task, deliberately not this plan" >/dev/null \
+  || fail "a single finding of an entry is deferrable by its own id"
+"$ORCHID_BIN" plan defer "$f3" --reason "the stdin drain lands with the verify rework, not here" >/dev/null \
+  || fail "...and so is its sibling, independently"
+"$ORCHID_BIN" plan defer "$undec_id" --reason "T032 takes the manifest strings; the rest were read and postponed by hand" >/dev/null \
+  || fail "an unsplittable entry is closed by an explicit decision, which is the only thing that closes it"
+"$ORCHID_BIN" plan defer "$short_id" --reason "the regex copies are T033; the probe echo was read and postponed" >/dev/null \
+  || fail "...and so is a short-count entry"
+"$ORCHID_BIN" plan defer "$scram_id" --reason "T034 takes the symlink assertion; the other two were read and postponed" >/dev/null \
+  || fail "...and so is a scrambled one"
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 0 "$rc" "crosscheck passes once every FINDING is covered or deferred"
+assert_match "all 6 carried-forward item\(s\) considered" "$out" "...counting findings, not entries"
+assert_match "deferred  \[ledger\] $f1 .*\(deferred: the driver guard" "$out" \
+  "a deferred finding reports its own recorded reason"
+assert_match "covered   \[ledger\] $f2 " "$out" "...while its covered sibling still reports as covered"
+
+apply_out="$("$ORCHID_BIN" plan apply --reason "r-002 plan" 2>&1)"
+assert_match "^applied: " "$apply_out" "plan apply proceeds once no finding is left unconsidered"
+assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and takes the run to running"
+committed_journal="$(git -C "$c_bare" show "orchid/integration:.orchid/journal.md")"
+grep -q "^deferred $f3: the stdin drain" <<<"$committed_journal" \
+  || fail "the per-finding deferrals ride onto the integration branch with the plan"
