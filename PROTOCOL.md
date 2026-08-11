@@ -717,6 +717,31 @@ ones its archetype never declares.
      past entry to `testing`, so an operator's mechanical commit gets the same
      INV-04 scan the implementer's work got, not a way around it.
 
+     **COMMIT FIRST — an ack over a dirty tree is refused.** Every check above
+     compares SHAS, and a sha describes a commit; none of them can see the
+     working tree sitting on top of it. Applying the linter's own fix and
+     acknowledging without committing would leave `handoff_ack`,
+     `candidate_sha` and `HEAD` in perfect three-way agreement about a commit
+     that does not contain the work, while `orchid verify` runs the tree that
+     does — lesson L025 again, by the one road matching shas cannot see, and the
+     likeliest mistake here, because applying the fix FEELS like performing the
+     hand-off. So the verb reads the tree's STATE too and refuses while anything
+     is uncommitted, naming the paths. (`.orchid/` is not counted: kernel state
+     is no part of the candidate — INV-04 forbids the candidate containing it —
+     and on a task with no worktree of its own that checkout is stale by design,
+     since state is moved with `update-ref` and never through this index.)
+
+     **And it is acknowledged from `testing` only.** That is the one status this
+     pause exists in. From `reviewing`, `arbitrating` or `merging` the advance
+     would move `candidate_sha` out from under people already judging that exact
+     commit — their envelopes name the sha they were dispatched against, so the
+     record would name a candidate nobody looked at while their verdicts are
+     read as judgments of it. From anywhere else there is no finished candidate
+     to bind to. `--clear` carries no such restriction: it only ever withdraws,
+     it is what `orchid merge`'s rebase arm calls from `merging`, and a
+     withdrawal some status could refuse would be a stale acknowledgement
+     nothing could remove.
+
      Acknowledge last, then. If you commit again after acknowledging, the pause
      REOPENS — the resume rule below compares the acknowledgement against the
      tree's `HEAD`, not only against the other frontmatter field — so run the
@@ -726,8 +751,8 @@ ones its archetype never declares.
 
   **The acknowledgement is bound to a committed candidate, never to a task or
   a moment.** It counts only while `handoff_ack` equals the task's CURRENT
-  `candidate_sha` AND that is still what the tree's `HEAD` is. That single
-  rule answers all three questions a pause has to answer:
+  `candidate_sha`, that is still what the tree's `HEAD` is, AND that tree is
+  clean. That single rule answers all three questions a pause has to answer:
 
   - *What clears it.* Entry to `rework` (from any edge), `orchid task
     unblock`, `orchid task retry`, and `orchid merge`'s rebase arm — the same
@@ -739,12 +764,16 @@ ones its archetype never declares.
     acknowledgement; `orchid merge` additionally clears it explicitly, so the
     invalidation is a journalled event an operator can see rather than a
     silent mismatch.
-  - *What a resume finds.* `orchid task show <id>` and `git -C <its tree>
-    rev-parse HEAD` — `handoff_ack` equal to `candidate_sha` AND equal to
-    `HEAD` of the tree verification will run in means SATISFIED, and a resumed
-    session or a second driver pass simply proceeds to verification. Anything
-    else — absent, empty, bound to some other sha, or a tree whose `HEAD` has
-    moved past it — means OUTSTANDING, and it stops again. There is no
+  - *What a resume finds.* `orchid task show <id>`, `git -C <its tree>
+    rev-parse HEAD` and `git -C <its tree> status` — `handoff_ack` equal to
+    `candidate_sha`, equal to `HEAD` of the tree verification will run in, and
+    that tree clean, means SATISFIED, and a resumed session or a second driver
+    pass simply proceeds to verification. Anything else — absent, empty, bound
+    to some other sha, a tree whose `HEAD` has moved past it, or a tree with
+    uncommitted changes on top of it — means OUTSTANDING, and it stops again.
+    A tree merely brought back into line (the edits discarded) is satisfied
+    again with no second ack: nothing was committed, so the acknowledgement
+    standing still names the tree that will run. There is no
     in-memory state, no lock and no boundary record involved in that decision,
     which is what makes it survive a crash, a restart, or a second operator
     picking the run up cold. `orchid status --explain` reports the outstanding
@@ -763,6 +792,13 @@ ones its archetype never declares.
     acknowledgement reopens the pause, and re-running `orchid task handoff <id>
     --ack` is the whole remedy — it advances and re-binds, which is why
     acknowledging LAST costs nothing but acknowledging early costs one command.
+
+    The tree's STATE is read for the same reason, and it closes the same gap
+    one step further down. An operator who edits after acknowledging — or who
+    acknowledged before committing at all — leaves all THREE shas in agreement
+    about a commit that does not contain the work, so nothing a sha comparison
+    can do would notice. An uncommitted change therefore reads OUTSTANDING as
+    surely as a moved `HEAD` does.
   - *What a deterministic driver does here.* `handoff_before_verify` (config,
     default `off`) is what asks for the pause; set it to `required` when the
     implementer is such a profile. Then `orchid drive` STOPS at an

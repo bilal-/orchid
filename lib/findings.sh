@@ -311,3 +311,38 @@ findings_age_briefs() {
     END { if (inblk && !keep) collapse() }
   ' "$f"
 }
+
+# findings_brief_present <body> <brief> -- 0 iff <brief> is ALREADY in <body>,
+# byte for byte. The guard that makes appending a brief IDEMPOTENT.
+#
+# WHY THE CANDIDATE MARKER IS NOT ENOUGH ON ITS OWN. `findings_age_briefs`
+# withdraws the briefs describing some OTHER candidate; it deliberately leaves
+# the ones describing the CURRENT one alone, because those are still true. So a
+# body can reach a second entry to `rework` on the same candidate, with the same
+# evidence log still on disk, and `findings_brief` regenerates a block identical
+# to the one already there. Every route into that shape ends the same way -- the
+# implementer is handed the same locations twice, in two blocks it must read as
+# two separate reports, and the duplication grows by one on every further round.
+#
+# The known route is `merging` -> `rework` followed by `orchid task retry`: the
+# `merging` arm EXEMPTS `<id>-merge.log` from its rm precisely so the failure it
+# is journalling keeps its evidence, and `retry` then re-reads that surviving log
+# against the same unchanged candidate. But the fix is deliberately at the APPEND
+# rather than on that route: any other path that reaches `rework` twice without
+# minting a new candidate -- a hand-walked `task advance`, an `unblock` after a
+# `retry`, an arbitration -- produces it too, and a per-route guard would have to
+# be rediscovered at each of them.
+#
+# By CONTENT, not by candidate: a brief that differs from the live one is a
+# different report (the gate that failed this time was not the one that failed
+# last time) and is appended. Only the byte-identical re-issue is dropped.
+findings_brief_present() {
+  local body="$1" brief="$2"
+  [ -n "$brief" ] || return 1
+  # Quoted, so the brief's own `*`, `?` and `[` are matched literally rather
+  # than read as pattern syntax.
+  case "$body" in
+    *"$brief"*) return 0 ;;
+  esac
+  return 1
+}

@@ -694,3 +694,14 @@ grep -qF 'aged out' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's rework-brief section must state that briefs describing a replaced candidate are aged out — otherwise re-serving them reads as intended behaviour"
 grep -qF 'FINDINGS_BRIEF_MARK' "$REPO_ROOT/lib/findings.sh" \
   || fail "lib/findings.sh must keep the marker that binds each brief to its candidate — the aging pass is only as good as what identifies a block"
+
+# The two refusals `orchid task handoff --ack` carries beyond its sha checks are
+# BOTH things an operator hits while doing the procedure correctly-looking:
+# applying the fix without committing it, and acknowledging once the candidate
+# has moved on to reviewers. A refusal an operator meets with no sentence in the
+# procedure explaining it is indistinguishable from a bug in the verb, and the
+# usual response to a verb that looks broken is to work around it.
+grep -qF 'an ack over a dirty tree is refused' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md's hand-off procedure must say that --ack refuses over an uncommitted tree — an operator who hits that refusal with nothing in the procedure about it reads it as a broken verb"
+grep -qF 'acknowledged from `testing` only' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md's hand-off procedure must say which status --ack is legal from — the advance it performs moves candidate_sha, which is destructive once reviewers hold that commit"

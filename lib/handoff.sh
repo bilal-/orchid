@@ -68,20 +68,75 @@ handoff_gate_mode() {
   esac
 }
 
+# handoff_worktree_dirty <cwd> -- a ONE-LINE summary of everything uncommitted
+# in <cwd>, or nothing at all when the tree is clean.
+#
+# WHY THE STATE AND NOT JUST `HEAD`. Every other comparison in this file is
+# between shas, and a sha describes a COMMIT -- it says nothing about the tree
+# sitting on top of it. An operator who applies the linter's fix and
+# acknowledges without committing leaves `handoff_ack`, `candidate_sha` and
+# `HEAD` all in perfect agreement about a commit that does not contain the work,
+# while `orchid verify` runs the working tree that does. Every downstream
+# judgment is then recorded against a commit nobody ran: lesson L025 exactly,
+# reached by the one road three matching shas cannot see. So the tree's STATE is
+# read too, at both ends -- the ack refuses to be given (libexec/orchid-task) and
+# a resume reads the boundary as still outstanding.
+#
+# Untracked files count. `orchid verify` runs the suite in this tree with no
+# regard for the index, so an uncommitted new file is as capable of turning a
+# FAIL into a PASS as an uncommitted edit is -- and a mode bit set on a newly
+# added executable, one of the three canonical hand-off steps, IS a tracked
+# modification that shows up here. `.orchid/` does NOT count: kernel state is
+# no part of the candidate, and the checkout it lives in is stale by design
+# (see the note in the awk below).
+#
+# Truncated at five paths with the remainder counted: this text goes into a
+# one-line boundary detail and a `die`, and a hundred-path dump in either is
+# read the way no list at all is.
+handoff_worktree_dirty() {
+  local cwd="$1" porcelain
+  # Captured, never piped straight into a consumer that can exit early: under
+  # `pipefail` a short-circuiting reader SIGPIPEs `git` and the 141 would be
+  # reported for the whole pipeline (the same trap libexec/orchid-task's INV-04
+  # re-scan documents).
+  porcelain="$(git -C "$cwd" status --porcelain 2>/dev/null || true)"
+  [ -n "$porcelain" ] || return 0
+  printf '%s\n' "$porcelain" | awk '
+    # Porcelain v1 is two status columns, a space, then the path.
+    { p = substr($0, 4) }
+    # `.orchid/` IS NOT PART OF THE CANDIDATE and is skipped. Kernel state is
+    # committed through a throwaway worktree and moved with `update-ref`, which
+    # never touches this checkout index -- so on a task with no worktree of its
+    # own, where this tree IS the integration checkout, every state write since
+    # the last plain checkout reads as an uncommitted change here. Counting
+    # those would refuse the ack forever on exactly the tasks PROTOCOL.md
+    # already calls the awkward case, for state the candidate is forbidden to
+    # contain anyway (INV-04). What this function asks about is the tree the
+    # candidate itself is made of.
+    p ~ /^\.orchid\// { next }
+    { n++; if (n <= 5) { printf "%s%s", sep, p; sep = ", " } }
+    END {
+      if (n > 5) printf ", and %d more", n - 5
+      if (n > 0) printf "\n"
+    }'
+}
+
 # handoff_state <repo> <task-id> -- exactly one line, "<state><TAB><detail>":
 #
 #   off          this repository does not ask for the pause at all; nothing
 #                gates, and no boundary is ever raised for it.
-#   satisfied    `handoff_ack` equals the task's CURRENT candidate_sha AND
-#                that is what `HEAD` of the tree verification will run in
-#                actually is: an operator performed this candidate's
-#                mechanical steps, recorded it, and nothing has landed since.
-#                A resumed session or a second driver pass proceeds -- this is
-#                what stops the pause looping forever.
+#   satisfied    `handoff_ack` equals the task's CURRENT candidate_sha, that is
+#                what `HEAD` of the tree verification will run in actually is,
+#                AND that tree is CLEAN: an operator performed this candidate's
+#                mechanical steps, committed them, recorded it, and nothing has
+#                landed or been left uncommitted since. A resumed session or a
+#                second driver pass proceeds -- this is what stops the pause
+#                looping forever.
 #   outstanding  no acknowledgement at all, one bound to a DIFFERENT
 #                candidate (a rebase or a fresh rework round moved it), no
-#                candidate_sha to bind one to, or a tree whose HEAD has moved
-#                past the acknowledgement. The pass stops.
+#                candidate_sha to bind one to, a tree whose HEAD has moved
+#                past the acknowledgement, or a tree with uncommitted changes
+#                sitting on top of it. The pass stops.
 #
 # WHY THE HEAD COMPARE IS PART OF THE RESUME RULE, not a detail of the ack.
 # Two frontmatter fields agreeing prove only that they were written together.
@@ -98,11 +153,12 @@ handoff_gate_mode() {
 # everywhere else here.
 #
 # Fail-closed on every axis: a missing task file, a missing candidate, a stale
-# acknowledgement and an unreadable tree all read `outstanding`. The cost of
-# stopping when the work was in fact done is one operator command; the cost of
-# proceeding when it was not is a burnt attempt on a candidate nobody finished.
+# acknowledgement, a dirty tree and an unreadable tree all read `outstanding`.
+# The cost of stopping when the work was in fact done is one operator command;
+# the cost of proceeding when it was not is a burnt attempt on a candidate
+# nobody finished.
 handoff_state() {
-  local repo="$1" id="$2" tf ack cand wt cwd head
+  local repo="$1" id="$2" tf ack cand wt cwd head dirty
   if [ "$(handoff_gate_mode "$repo")" = off ]; then
     printf 'off\tthe handoff_before_verify gate is off for this repository\n'
     return 0
@@ -137,6 +193,15 @@ handoff_state() {
   fi
   if [ "$head" != "$ack" ]; then
     printf 'outstanding\tthe hand-off was acknowledged for candidate %s, but HEAD of %s is now %s — a commit landed after the acknowledgement, so re-run the ack to advance and re-bind\n' "$ack" "$cwd" "$head"
+    return 0
+  fi
+  # ...and the tree ON that commit, which the three shas above cannot see. An
+  # uncommitted mechanical fix is the same L025 failure as a post-ack commit --
+  # verification runs work no commit contains -- except that here every sha
+  # still agrees, so nothing above would ever notice it.
+  dirty="$(handoff_worktree_dirty "$cwd")"
+  if [ -n "$dirty" ]; then
+    printf 'outstanding\tthe hand-off is acknowledged for candidate %s, but %s has uncommitted changes (%s) — verification would run a tree no commit contains, so commit them and re-run the ack\n' "$ack" "$cwd" "$dirty"
     return 0
   fi
   printf 'satisfied\toperator hand-off acknowledged for candidate %s\n' "$cand"

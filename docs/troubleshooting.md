@@ -268,6 +268,25 @@ verified. (It re-runs the `.orchid/` scan over `base_sha..HEAD` while it moves,
 so a mechanical commit that touched state is refused here rather than slipping
 past entry to `testing`.)
 
+"Commit first" is enforced, not advice: `--ack` refuses while the tree has
+uncommitted changes and prints the paths. Applying the fix feels like performing
+the hand-off, but every sha this verb compares describes a *commit* — acknowledge
+before committing and `handoff_ack`, `candidate_sha` and `HEAD` would all agree
+about a commit that does not contain your work, while `orchid verify` runs the
+tree that does. (Uncommitted `.orchid/` state does not count; it is no part of
+the candidate.) The same applies after the fact: edit the tree after
+acknowledging and the next pass stops again until you either commit (then
+re-`--ack`, since `HEAD` moved) or discard the edit (no second ack needed —
+nothing was committed, so the acknowledgement standing still names the tree that
+will run).
+
+`--ack` is also refused from any status but `testing`. Past that point a
+reviewer, an arbiter or a merge is already judging that exact commit, and
+advancing `candidate_sha` underneath them would leave the record naming a
+candidate none of them looked at. If you need to withdraw an acknowledgement
+from one of those states, `orchid task handoff <id> --clear` is legal from
+anywhere.
+
 The acknowledgement is bound to the task's **current** `candidate_sha`, which
 is why the next pass proceeds and why nothing has to remember that you did it.
 It is invalidated the same way verify evidence is (INV-07): entry to `rework`,

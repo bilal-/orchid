@@ -6,6 +6,7 @@ source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
+source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
@@ -55,12 +56,30 @@ rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;;
 # tell them apart -- the mechanism that exists to carry the CURRENT failure,
 # quietly re-serving expired ones. The aging pass is what makes "the brief"
 # singular. See lib/findings.sh.
+#
+# AND THE APPEND IS IDEMPOTENT BY CONTENT (findings_brief_present). Aging
+# withdraws only the briefs describing some OTHER candidate -- the ones
+# describing the current one are still true and are left standing -- so a second
+# entry to `rework` on an UNCHANGED candidate, with the same evidence log still
+# on disk, would otherwise regenerate a block identical to the one already in
+# the body and hand the implementer the same locations twice. `merging` ->
+# `rework` followed by `orchid task retry` is the route that does it today (the
+# `merging` arm exempts `<id>-merge.log` from its rm, and `retry` re-reads that
+# survivor), but the guard is here at the append rather than on that route
+# because every other way of reaching `rework` twice without minting a new
+# candidate produces the same body.
 refresh_briefs() {
-  local rf="$1" rid="$2" rcand rbrief
+  local rf="$1" rid="$2" rcand rbrief rbody
   rcand="$(fm_get "$rf" candidate_sha)"
   rbrief="$(findings_brief "$state" "$rid" "$rcand")"
-  findings_age_briefs "$rf" "$rcand"
-  [ -z "$rbrief" ] || printf '\n%s\n' "$rbrief"
+  # The AGED body is what the presence check reads, because aging is what
+  # decides which blocks are still live: one it just collapsed no longer
+  # matches, and the fresh brief is appended as it should be.
+  rbody="$(findings_age_briefs "$rf" "$rcand")"
+  printf '%s\n' "$rbody"
+  if [ -n "$rbrief" ] && ! findings_brief_present "$rbody" "$rbrief"; then
+    printf '\n%s\n' "$rbrief"
+  fi
 }
 
 case "$sub" in
@@ -616,6 +635,32 @@ case "$sub" in
       echo "$id: operator hand-off cleared (was $old)"
       exit 0
     fi
+    # WHICH STATES MAY BE ACKNOWLEDGED FROM. The hand-off is one named point in
+    # the procedure: after the implementer's envelope reconciles (which is what
+    # captures `candidate_sha` and moves the task to `testing`) and before
+    # `orchid verify` runs. `testing` is therefore the only status in which
+    # acknowledging one means anything -- and, more to the point, the only one
+    # in which ADVANCING `candidate_sha` is safe.
+    #
+    # From `reviewing` or `arbitrating` that advance would move the candidate
+    # out from under reviewers who are judging that exact commit: their
+    # envelopes name the sha they were dispatched against, the record would name
+    # a different one, and the verdicts would be read as judgments of a tree
+    # nobody looked at. From `merging` it would move the candidate underneath a
+    # merge already in flight. From `pending`/`implementing`/`rework` there is
+    # no candidate anyone has finished producing yet, and from `done`/`blocked`
+    # there is nothing left for a hand-off to unblock. The refusal NAMES the
+    # status it declined from, because which of those it was is the whole
+    # content of the mistake.
+    #
+    # `--clear` is deliberately NOT restricted: it only ever WITHDRAWS, it is
+    # what `orchid merge`'s rebase arm calls from `merging`, and a withdrawal
+    # that some status could refuse would be a stale acknowledgement nothing
+    # could remove.
+    hstatus="$(fm_get "$f" status)"
+    if [ "$hstatus" != testing ]; then
+      orchid_die "refusing to acknowledge a hand-off for task $id from status '$hstatus': the hand-off is the pause between the implementer's envelope reconciling and 'orchid verify' running, so it is acknowledged from 'testing' only. Acknowledging here would advance candidate_sha out from under whoever owns '$hstatus' (a reviewer or arbiter judging that exact commit, or a merge in flight). Use 'orchid task handoff $id --clear' to withdraw an acknowledgement — that is legal from any status."
+    fi
     cand="$(fm_get "$f" candidate_sha)"
     [ -n "$cand" ] || orchid_die "task $id has no candidate_sha — a hand-off is acknowledged against a committed candidate, never against a task"
     # The tree `orchid verify` will actually run in, resolved exactly the way
@@ -626,6 +671,24 @@ case "$sub" in
     hwt="$(fm_get "$f" worktree)"; hcwd="$repo"; [ -z "$hwt" ] || hcwd="$hwt"
     hhead="$(git -C "$hcwd" rev-parse HEAD 2>/dev/null || true)"
     [ -n "$hhead" ] || orchid_die "cannot read HEAD of $hcwd — a hand-off is acknowledged against the tree 'orchid verify' will run in, and that tree cannot be read"
+    # AND THE TREE'S STATE, not only its HEAD. Every other check on this path
+    # compares SHAS, and a sha describes a commit -- it says nothing about the
+    # working tree sitting on top of it. An operator who applies the linter's
+    # own fix and acknowledges without committing leaves `handoff_ack`,
+    # `candidate_sha` and `HEAD` in perfect three-way agreement about a commit
+    # that does not contain the work, while `orchid verify` runs the dirty tree
+    # that does: every downstream judgment is then evidence about a commit
+    # nobody ran, which is lesson L025 reached by the one road matching shas
+    # cannot see. Refused BEFORE the advance, because advancing onto a HEAD with
+    # uncommitted work on top of it would write exactly that record.
+    #
+    # It names WHAT is uncommitted rather than only that something is: "commit
+    # your changes" over a tree an operator believes is clean is the same
+    # unsatisfiable-instruction shape this whole task exists to remove.
+    hdirty="$(handoff_worktree_dirty "$hcwd")"
+    if [ -n "$hdirty" ]; then
+      orchid_die "refusing to acknowledge the hand-off for task $id: $hcwd has uncommitted changes ($hdirty). An acknowledgement names a COMMITTED candidate, but 'orchid verify' runs this tree as it stands — acknowledging now would bind every downstream judgment to a commit that does not contain that work (lesson L025). Commit them in that tree, on the branch the task record names, with the trailer 'Orchid-Handoff: operator' (or discard them), then re-run the ack."
+    fi
     if [ "$hhead" != "$cand" ]; then
       # WHICH COMMIT, THOUGH. Advancing to whatever HEAD happens to be is a
       # WORSE mis-binding than the drift this advance exists to remove: a tree

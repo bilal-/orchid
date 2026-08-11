@@ -264,9 +264,57 @@ assert_eq testing "$(t007_status)" "archetype edge merging:testing"
 "$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
 
 # edge: merging:rework
+#
+# A REAL merge log is planted first, so this edge exercises the rework brief on
+# the one path where the evidence OUTLIVES the transition. `merging:rework`
+# deliberately exempts `<id>-merge.log` from the invalidation every other entry
+# to `rework` performs -- that log documents the very failure the advance is
+# journalling -- and the two assertions after the edge are about what that
+# survivor may then do.
+mkdir -p .orchid/reviews
+{ echo "date: 2026-08-11T00:00:00Z"
+  echo "sha: $edge_sha"
+  echo "candidate: $edge_sha"
+  echo "command: fixture"
+  echo "---"
+  echo "lib/merged.sh:11: SC2115: the merged tree failed the same suite"
+  echo "exit: 1"
+} > .orchid/reviews/T007-merge.log
 "$ORCHID_BIN" task advance T007 rework --reason "validation_failed: see reviews/T007-merge.log"
 assert_eq rework "$(t007_status)" "archetype edge merging:rework"
 assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "merging:rework never bumps attempts (from=merging)"
+[ -f .orchid/reviews/T007-merge.log ] \
+  || fail "merging:rework must leave the merge log in place -- it is the evidence for the failure it just journalled"
+assert_match "^lib/merged\.sh:11: SC2115: the merged tree failed the same suite$" \
+  "$("$ORCHID_BIN" task show T007)" \
+  "and the edge carried that log's exact locations into the task body (T010, lesson L017)"
+
+# THE SAME BRIEF IS NEVER APPENDED TWICE.
+#
+# Aging withdraws the briefs describing some OTHER candidate; the ones
+# describing the CURRENT candidate are still true and are left standing. That
+# leaves one gap: a second entry to `rework` on an UNCHANGED candidate, with the
+# same evidence log still on disk, regenerates a block identical to the one
+# already in the body. The implementer is then handed the same locations twice,
+# in two blocks it must read as two separate reports, and the body grows by one
+# more copy on every further round -- the same defect a stale brief is, reached
+# from the other side.
+#
+# `merging` -> `rework` then `orchid task retry` is the route that reaches it,
+# and it is walked here exactly: the exempted merge log above is still on disk,
+# `retry` re-reads it, and the candidate has not moved. The guard is on the
+# APPEND rather than on this route (lib/findings.sh findings_brief_present),
+# because every other way of reaching `rework` twice without minting a new
+# candidate produces the same body.
+t007_briefs() { "$ORCHID_BIN" task show T007 | grep -c 'Rework brief — exact locations'; }
+t007_brief_n="$(t007_briefs)"
+assert_eq 1 "$t007_brief_n" "one live brief stands after the merging:rework edge"
+"$ORCHID_BIN" task retry T007 --reason "retry over the surviving merge log"
+assert_eq rework "$(t007_status)" "retry leaves the task in rework"
+assert_eq "$t007_brief_n" "$(t007_briefs)" \
+  "and appends NO second copy of the brief it already carries"
+assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep -c 'lib/merged\.sh:11: SC2115')" \
+  "the locations themselves appear exactly once, so nothing reads as two separate reports of one failure"
 
 "$ORCHID_BIN" task advance T007 implementing
 "$ORCHID_BIN" task advance T007 testing

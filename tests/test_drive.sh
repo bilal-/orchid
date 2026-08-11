@@ -1598,13 +1598,21 @@ assert_eq 1 "$(borchid task show B010 | grep -c 'Rework brief — exact location
 borchid task advance B010 implementing --reason "fixture: re-dispatch" >/dev/null
 borchid task set B010 candidate_sha "$BHEAD" >/dev/null
 borchid task advance B010 testing --reason "fixture" >/dev/null
-sed "s|^candidate: .*|candidate: $BHEAD|" "$EXLOG" > "$BRIEF/.orchid/reviews/B010-verify.log"
+# A DIFFERENT diagnostic from the one already in the body. The brief this edge
+# emits has to be distinguishable from the round-one brief still standing above
+# it, or the append-idempotence guard further down would (correctly) drop it as
+# a re-issue and the count below would be asserting that guard rather than the
+# binding this block is about.
+mk_bindlog "$BRIEF/.orchid/reviews/B010-verify.log" "$BHEAD" \
+  "lib/current-round.sh:3: SC2086: reported against the candidate being reworked"
 mk_bindlog "$BRIEF/.orchid/reviews/B010-merge.log" "$OLD_CAND" \
   "lib/superseded.sh:9: SC2154: from a candidate that no longer exists"
 borchid task advance B010 rework --reason "verify failed" >/dev/null
 bstale="$(borchid task show B010)"
 assert_eq 2 "$(printf '%s\n' "$bstale" | grep -c 'Rework brief — exact locations')" \
   "a second brief really was appended on this edge, so the absence check below is about binding and not about an edge that emitted nothing"
+assert_match "^lib/current-round\.sh:3: SC2086: reported against the candidate being reworked$" "$bstale" \
+  "and it is THIS round's log that was carried"
 case "$bstale" in
   *superseded.sh*)
     fail "the rework edge re-injected a merge log from a superseded candidate into the brief" ;;
@@ -1823,6 +1831,29 @@ hrc=0; horchid task set H010 handoff_ack "$HHEAD" >/dev/null 2>&1 || hrc=$?
 # one file, no kernel state -- so a fixture that rots into a whole-index commit
 # fails as itself rather than as the hand-off it is supposed to be exercising.
 printf 'sha256 "0000"\n' > "$HWT/formula-pin.txt"
+
+# --- RED: THE ACK IS REFUSED WHILE THE TREE IS DIRTY -----------------------
+# The mechanical work now EXISTS, and it is not committed. Every sha this verb
+# compares — `handoff_ack`, `candidate_sha`, `HEAD` — describes a COMMIT, and
+# none of them can see a working tree. So an operator who applies the linter's
+# own fix and acknowledges without committing leaves all three in perfect
+# agreement about a commit that does not contain the work, while `orchid verify`
+# runs the dirty tree that does: every downstream judgment is then evidence
+# about a commit nobody ran. That is lesson L025 reached by the one road three
+# matching shas cannot see, and it is the likeliest operator mistake here,
+# because applying the fix FEELS like performing the hand-off.
+hdirty_rc=0
+hdirty_out="$(horchid task handoff H010 --ack \
+  --reason "fixture: acknowledging with the fix applied but not committed" 2>&1)" || hdirty_rc=$?
+[ "$hdirty_rc" -ne 0 ] \
+  || fail "the ack was given over a dirty tree — verification would then run work no commit contains (it said: $hdirty_out)"
+assert_match "uncommitted changes" "$hdirty_out" \
+  "and it refuses on the tree's STATE, which is the thing no sha comparison can see (it said: $hdirty_out)"
+assert_match "formula-pin.txt" "$hdirty_out" \
+  "NAMING what is uncommitted — 'commit your changes' over a tree an operator believes is clean is the same unsatisfiable instruction this task exists to remove (it said: $hdirty_out)"
+assert_eq "$HHEAD" "$(hfield candidate_sha)" "the refused ack advanced nothing"
+assert_eq "" "$(hfield handoff_ack)" "and acknowledged nothing"
+
 git -C "$HWT" add formula-pin.txt || fail "fixture: could not stage the operator's mechanical change"
 git -C "$HWT" commit -q -m "H010: re-pin the formula checksum
 
@@ -1866,6 +1897,41 @@ assert_match "advanced candidate_sha $HHEAD -> $HHANDOFF_CAND" "$(cat "$HANDOFF/
 assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" "which reads as satisfied"
 assert_match "operator hand-off acknowledged for candidate" "$(cat "$HANDOFF/.orchid/journal.md")" \
   "and it is journalled, so the mechanical steps are part of the durable record"
+
+# --- A DIRTY TREE IS OUTSTANDING ON THE RESUME SIDE TOO --------------------
+# The refusal above governs the moment of acknowledging. The resume rule has to
+# hold the same line on its own, and NOT by inheriting that refusal: an operator
+# can edit the tree after a perfectly good ack, and a second driver pass has
+# nothing but the record and the tree to read. Here all THREE shas agree —
+# `handoff_ack`, `candidate_sha` and `HEAD` are one commit — and the tree still
+# does not match any of them. A resume that reads that as "already performed"
+# verifies work no commit contains.
+printf 'sha256 "3333"\n' > "$HWT/formula-pin.txt"
+assert_eq "$(hfield candidate_sha)" "$(hfield handoff_ack)" \
+  "the two frontmatter fields agree"
+assert_eq "$HHANDOFF_CAND" "$(git -C "$HWT" rev-parse HEAD)" \
+  "and HEAD has not moved — so all three agree, and only the tree's state differs"
+assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "yet the hand-off reads outstanding: three matching shas say nothing about the tree on top of them"
+assert_match "uncommitted changes" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
+  "and the detail says which axis failed"
+assert_match "formula-pin.txt" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
+  "naming the path, so the operator is not left to diff the tree themselves"
+rm -f "$HVERIFY_RAN"
+run_hdrive
+assert_eq 16 "$HDRIVE_RC" \
+  "a pass over an acknowledged candidate with a dirty tree stops at the boundary (out: $HDRIVE_OUT)"
+assert_eq operator-handoff "$(hboundary | jq -r .kind)" \
+  "and it stops at the HAND-OFF specifically — every operator boundary exits 16, so the code alone would not say which one was raised"
+[ ! -f "$HVERIFY_RAN" ] \
+  || fail "the pass verified a tree no commit contains — the acknowledgement was read as satisfied on shas alone"
+# Restoring the tree settles it with NO second ack: nothing was committed, so
+# the acknowledgement standing still names the tree that will run. (A post-ack
+# COMMIT is the other case, below, and that one does need re-acknowledging —
+# the two are different because one moved HEAD and the other did not.)
+git -C "$HWT" checkout -- formula-pin.txt || fail "fixture: could not restore the tree"
+assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "and a tree brought back into line with the acknowledged commit is satisfied again"
 
 # --- RED: WHICH COMMIT IT WILL ADVANCE TO IS ITSELF A GATE -----------------
 # Advancing `candidate_sha` to whatever `HEAD` happens to be is a WORSE
@@ -2042,6 +2108,49 @@ hjournal_n="$(wc -l < "$HANDOFF/.orchid/journal.md" | tr -d ' ')"
 horchid task handoff H010 --clear --reason "fixture: withdraw again" >/dev/null
 assert_eq "$hjournal_n" "$(wc -l < "$HANDOFF/.orchid/journal.md" | tr -d ' ')" \
   "clearing an already-empty hand-off journals nothing"
+
+# --- THE ACK IS RESTRICTED TO THE STATUS IT MEANS ANYTHING IN --------------
+# `--ack` MOVES `candidate_sha`. That is safe at exactly one point in the
+# procedure — `testing`, between the implementer's envelope reconciling and
+# `orchid verify` running — and it is destructive everywhere reviewers or a
+# merge already hold that commit: their envelopes name the sha they were
+# dispatched against, so advancing underneath them leaves the record naming a
+# candidate nobody looked at while the verdicts are read as judgments of it.
+# `reviewing` is walked here because it is the state a real one lands in; the
+# refusal is a single compare against the status, so `arbitrating` and `merging`
+# take the identical path.
+horchid task set H010 candidate_sha "$HHANDOFF_CAND" >/dev/null
+horchid task set H010 verification_commands true >/dev/null
+horchid verify H010 >/dev/null 2>&1 \
+  || fail "fixture: the passing verify needed to reach reviewing did not run"
+horchid task advance H010 reviewing --reason "fixture: reviewers now hold this candidate" >/dev/null
+assert_eq reviewing "$(hfield status)" "fixture: the task really is under review"
+hrev_rc=0
+hrev_out="$(horchid task handoff H010 --ack \
+  --reason "fixture: acknowledging while reviewers hold this candidate" 2>&1)" || hrev_rc=$?
+[ "$hrev_rc" -ne 0 ] \
+  || fail "the ack advanced candidate_sha out from under reviewers judging that exact commit (it said: $hrev_out)"
+assert_match "reviewing" "$hrev_out" \
+  "and the refusal names the status it declined from, not just a rule (it said: $hrev_out)"
+assert_eq "$HHANDOFF_CAND" "$(hfield candidate_sha)" \
+  "the candidate the reviewers are judging did not move"
+assert_eq "" "$(hfield handoff_ack)" "and nothing was acknowledged"
+
+# `--clear` is NOT restricted, and that asymmetry is deliberate: it only ever
+# withdraws, `orchid merge`'s rebase arm calls it from `merging`, and a
+# withdrawal some status could refuse would be a stale acknowledgement nothing
+# could remove.
+horchid task handoff H010 --clear --reason "fixture: withdrawal is legal from any status" >/dev/null
+
+# Parked is not a hand-off point either — there is nothing left for one to
+# unblock, and this is the cheap proof that the guard is on the STATE rather
+# than a special case carved out for reviewers.
+horchid task advance H010 blocked --reason "fixture: parked" >/dev/null
+hblk_rc=0
+hblk_out="$(horchid task handoff H010 --ack --reason "fixture: acknowledging a parked task" 2>&1)" || hblk_rc=$?
+[ "$hblk_rc" -ne 0 ] \
+  || fail "the ack was accepted from blocked (it said: $hblk_out)"
+assert_match "blocked" "$hblk_out" "naming that status too (it said: $hblk_out)"
 
 # The gate is opt-in: a repository that never asked for the pause is not
 # gated by it and never sees the boundary at all.

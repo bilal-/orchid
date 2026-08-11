@@ -133,6 +133,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   that, so a resumed session or a second driver pass
   proceeds. Acknowledge LAST: a commit made after the ack leaves the tree ahead
   of what was acknowledged, which reopens the pause until you re-run the verb.
+  The verb refuses an ack over a tree with uncommitted changes (naming them) and
+  from any status but `testing`, where reviewers, an arbiter or a merge would
+  already be holding the commit it wants to advance; `--clear` carries neither
+  restriction.
   A rebase or a fresh rework round invalidates it exactly as
   INV-07 invalidates verify evidence. Any value
   other than `off` reads as `required`, so a typo can only route more work to
