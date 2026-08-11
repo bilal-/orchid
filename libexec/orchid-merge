@@ -280,6 +280,46 @@ rc=0
 rm -f "$out_tmp"
 
 if [ "$rc" -eq 0 ]; then
+  # --- self-hosted refresh (T006 / lesson L018) ------------------------------
+  # The ref advance below is what MAKES a checkout of $integ stale: it moves
+  # the branch and, by design, never touches any working tree. When orchid is
+  # being run OUT OF the very checkout whose branch this is -- the self-hosted
+  # case, and the only one that can hit lib/common.sh's stale-root refusal --
+  # that leaves this process's own $ORCHID_ROOT behind its own HEAD. Every
+  # child process from that instant on, starting with the `task advance <id>
+  # done` at the end of this block, would refuse; the branch would be
+  # advanced, the task stuck in `merging`, and no verb left able to move it.
+  #
+  # So refresh it. This is NOT the rejected "merge refreshes other checkouts"
+  # remedy (see orchid_root_stale): the one checkout written here is the one
+  # this process is already operating on and already holds the run lock for.
+  # A second clone, an operator's parallel checkout, a worktree this process
+  # cannot see -- none of them is touched, and none of them can be, which is
+  # exactly why the refusal still has to exist for them.
+  #
+  # Decided BEFORE the advance, because afterwards "this tree fell behind" and
+  # "someone is editing the kernel here" look identical. orchid_kernel_clean
+  # is what keeps the r-001 journal-loss incident from repeating in a new
+  # shape: it refuses the refresh unless every path it would restore is
+  # already byte-equal to HEAD, and it never names `.orchid/` or orchid.config
+  # at all. A hand-edited kernel therefore keeps its edits and gets the
+  # refusal instead -- the operator decides, not this verb.
+  #
+  # "Same checkout" is compared as PHYSICAL paths, and both sides must resolve
+  # to something: `cd ""` is a silent no-op that leaves $PWD in place (the trap
+  # tests/helpers.sh's scratch registry exists for), and two failed resolutions
+  # would compare equal as empty strings -- either way green-lighting a write
+  # to a directory neither variable actually names.
+  refresh_self=0
+  repo_phys=""; root_phys=""
+  if [ -n "$repo" ]; then repo_phys="$(cd "$repo" 2>/dev/null && pwd -P || true)"; fi
+  if [ -n "${ORCHID_ROOT:-}" ]; then root_phys="$(cd "$ORCHID_ROOT" 2>/dev/null && pwd -P || true)"; fi
+  if [ -n "$repo_phys" ] && [ -n "$root_phys" ] && [ "$repo_phys" = "$root_phys" ] \
+     && [ "$(git -C "$repo" symbolic-ref --short -q HEAD 2>/dev/null || true)" = "$integ" ] \
+     && orchid_kernel_clean "$repo"; then
+    refresh_self=1
+  fi
+
   # Compare-and-swap: `update-ref <ref> <new> <old>` only succeeds if <ref>
   # STILL points at <old> (integ_head, read at the top of this script). If a
   # concurrent merge landed on integration in the window between that read
@@ -291,7 +331,25 @@ if [ "$rc" -eq 0 ]; then
       "merge CAS failed: update-ref refs/heads/$integ expected $integ_head but it moved concurrently; task remains in merging for retry"
     orchid_die "update-ref CAS failed: integration branch '$integ' changed concurrently (expected $integ_head) — retry orchid merge $id"
   fi
-  "$ORCHID_ROOT/bin/orchid" task advance "$id" "done"
+  # orchid_kernel_clean re-asked AFTER the advance answers a different
+  # question than it did before it: with HEAD already moved, "clean" now means
+  # this merge changed nothing the launcher executes from, so there is nothing
+  # to refresh and nothing to announce. Most merges of a non-kernel change
+  # land here silently.
+  if [ "$refresh_self" -eq 1 ] && ! orchid_kernel_clean "$repo"; then
+    if orchid_refresh_kernel "$repo"; then
+      echo "refreshed $repo to $integ (orchid runs from this checkout)"
+    else
+      echo "orchid: warning: $integ advanced but this checkout could not be refreshed — run: git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}" >&2
+    fi
+  fi
+  # The bookkeeping that closes out a merge whose ref has ALREADY moved must
+  # not be stoppable by the stale-root refusal, refresh or no refresh: the
+  # alternative is a task frozen in `merging` behind an integration branch
+  # that already carries its work, which is worse in every way than one more
+  # deterministic verb running from the code that was live one second ago.
+  # Scoped to this single invocation, never exported for the whole verb.
+  ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_ROOT/bin/orchid" task advance "$id" "done"
   echo "merged $id: $integ -> $merged_sha"
   exit 0
 fi

@@ -423,14 +423,46 @@ success.
 
 Only self-hosted setups can hit this — an installation root that is not a git
 checkout (the `brew`/`install.sh` prefix) has no branch for anything to
-advance. The fix is the same refresh:
+advance.
+
+**You should rarely see it at all.** The merge that creates the condition
+repairs the checkout it is itself running from: after the ref advance,
+`orchid merge` restores that one checkout's kernel directories to the branch
+it just moved, prints `refreshed <path> to <branch>`, and the run goes on
+executing its own merged work. The refusal is for the checkouts no process
+owns — a second clone, a parallel checkout of the same branch, or one whose
+kernel files you have edited by hand (which is the one case `orchid merge`
+deliberately will **not** refresh, because refreshing it would throw your
+edits away).
+
+The fix is to restore orchid's own code, and nothing else:
 
 ```sh
-git checkout HEAD -- . ':(exclude).orchid'
+git checkout HEAD -- bin lib libexec runners plugins roles skills templates
 ```
 
-which restores the kernel's own files and leaves uncommitted `.orchid/` run
-state alone. Then re-run the verb.
+Then re-run the verb. Note what that command does *not* name: `.orchid/` and
+`orchid.config` are outside it, so uncommitted run state and a config edit
+awaiting `orchid config commit` are untouched. Prefer it over
+`git checkout HEAD -- .`, which restores your pending `orchid.config` along
+with the kernel — and which, without `':(exclude).orchid'`, clobbers
+uncommitted `.orchid/` run state as well.
+
+**If the refusal survives that command**, the branch *deleted* a kernel file
+your checkout still has. `git checkout <tree> -- <paths>` never removes an
+index entry the tree has dropped, so that file stays tracked and keeps
+counting as drift. Clear it with:
+
+```sh
+git reset -q HEAD -- bin lib libexec runners plugins roles skills templates
+git checkout -q HEAD -- bin lib libexec runners plugins roles skills templates
+git clean -qfd -- bin lib libexec runners plugins roles skills templates
+```
+
+The `git clean` step removes **every** untracked file inside those eight
+directories, not just the one the reset dropped — check `git clean -nd -- ...`
+first if you keep scratch files under `plugins/`. It cannot reach `.orchid/`
+or `orchid.config`, which are outside the pathspec.
 
 Two things this deliberately does **not** do. It only asks about a checkout
 parked on the **integration branch** — the one branch a run merges onto, and

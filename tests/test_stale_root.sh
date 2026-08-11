@@ -3,7 +3,9 @@ source "$(dirname "$0")/helpers.sh"
 
 # ---------------------------------------------------------------------------
 # T006 / lesson L018: orchid refuses to run FROM a checkout of the integration
-# branch whose kernel files have fallen behind that branch.
+# branch whose kernel files have fallen behind that branch, and `orchid merge`
+# refreshes the ONE checkout it is itself running from so that refusal never
+# fires on the merge's own bookkeeping.
 #
 # bin/orchid resolves $ORCHID_ROOT from its own location, so the verbs, libs,
 # runners and engine adapters it executes come from that checkout's WORKING
@@ -26,20 +28,36 @@ source "$(dirname "$0")/helpers.sh"
 #     and on the integration branch itself for everything that is not kernel
 #     code, which is what keeps the `edit orchid.config` -> `orchid config
 #     commit` path working (check 4).
-#   * uncommitted durable `.orchid/` state survives the refusal, the
-#     documented remedy, and a branch-side advance of that same state, and is
-#     never itself a reason to refuse (checks 1-4).
+#   * uncommitted durable `.orchid/` state, and an uncommitted `orchid.config`
+#     with it, survive the refusal, the documented remedy, the automatic
+#     refresh and a branch-side advance of that same state (checks 1-4, 8, 9).
+#
+# Checks 8 and 9 are the ones the first attempt did not have. 8 pins the
+# restore itself, including the case a bare `git checkout HEAD -- <paths>`
+# cannot clear. 9 pins the regression that check made possible: a self-hosted
+# `orchid merge` whose ref advance strands its own `task advance <id> done`
+# behind the refusal, leaving the branch moved and the task frozen in
+# `merging` with no verb left able to move it.
 # ---------------------------------------------------------------------------
+
+# The one list the guard, the refresh and the documented remedy all use. Kept
+# here literally, NOT sourced from lib/common.sh, so that a silent edit to
+# ORCHID_KERNEL_PATHS has to be made in two places and is seen in review.
+KERNEL=(bin lib libexec runners plugins roles skills templates)
 
 # make_root <dir> <branch> -- a minimal but REAL orchid installation root: the
 # shipped dispatcher and the shipped lib/common.sh under test, plus one
-# `version` verb whose only job is to report WHICH copy of itself just ran.
+# `version` verb whose only job is to report WHICH copy of itself just ran,
+# and one `gone` verb that a later commit deletes. Every kernel directory
+# exists, so the remedy the refusal prints can be run against it verbatim.
 # Committed on <branch> alongside one tracked `.orchid/journal.md` standing in
-# for durable run state. The branch is pinned explicitly so the fixture never
-# depends on the machine's `init.defaultBranch`.
+# for durable run state and one tracked `orchid.config`. The branch is pinned
+# explicitly so the fixture never depends on the machine's
+# `init.defaultBranch`.
 make_root() {
-  local dir="$1" branch="$2"
-  mkdir -p "$dir/bin" "$dir/lib" "$dir/libexec" "$dir/.orchid"
+  local dir="$1" branch="$2" d
+  for d in "${KERNEL[@]}"; do mkdir -p "$dir/$d"; printf 'fixture\n' > "$dir/$d/.keep"; done
+  mkdir -p "$dir/.orchid"
   cp "$REPO_ROOT/bin/orchid" "$dir/bin/orchid"
   cp "$REPO_ROOT/lib/common.sh" "$dir/lib/common.sh"
   cat > "$dir/libexec/orchid-version" <<'VERB'
@@ -48,7 +66,13 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
 echo "adapter: pre-merge"
 VERB
-  chmod +x "$dir/bin/orchid" "$dir/libexec/orchid-version"
+  cat > "$dir/libexec/orchid-gone" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "gone: still here"
+VERB
+  chmod +x "$dir/bin/orchid" "$dir/libexec/orchid-version" "$dir/libexec/orchid-gone"
   printf 'committed journal line\n' > "$dir/.orchid/journal.md"
   printf 'integration_branch=orchid/integration\nverify=true\n' > "$dir/orchid.config"
   git init -q "$dir"
@@ -101,14 +125,22 @@ git -C "$hub" update-ref refs/heads/orchid/integration "$(git -C "$elsewhere" re
 # HEAD -- .` would silently revert it. This is the r-001 incident's shape.
 printf 'uncommitted durable line\n' >> "$root/.orchid/journal.md"
 journal_before="$(cat "$root/.orchid/journal.md")"
+# The same shape one file over: the config edit the documented `orchid config
+# commit` path leaves uncommitted by design. It is tracked, so the remedy the
+# refusal prints must not be broad enough to restore it either.
+printf '# probe marker kept\n' >> "$root/orchid.config"
+config_before="$(cat "$root/orchid.config")"
 
 run_version "$root"
 assert_eq 1 "$rc" "a stale integration checkout refuses to run, it does not merely warn"
 assert_match "refusing to run: the checkout orchid itself runs from" "$out" \
   "the refusal says the ROOT is what is stale, not the managed repo"
 assert_match "orchid/integration" "$out" "the refusal names the branch it is parked on"
-assert_match "git checkout HEAD -- \. ':\(exclude\)\.orchid'" "$out" \
-  "the refusal names the .orchid-preserving refresh, never a bare one"
+assert_match "checkout HEAD -- bin lib libexec runners plugins roles skills templates" "$out" \
+  "the refusal names the kernel-scoped refresh"
+if grep -qE "checkout HEAD -- \." <<<"$out"; then
+  fail "the refusal must never print a whole-tree refresh: that restores the uncommitted orchid.config the design promises to leave alone"
+fi
 assert_match "ORCHID_ALLOW_STALE_ROOT=1" "$out" "the refusal names its own override"
 assert_eq "$journal_before" "$(cat "$root/.orchid/journal.md")" \
   "refusing must not touch uncommitted durable .orchid state"
@@ -122,11 +154,13 @@ assert_match "adapter: pre-merge" "$out" \
   "the stale root was in fact executing pre-merge code (lesson L018)"
 
 # ===========================================================================
-# 2 -- the documented remedy clears it, and costs no durable state
+# 2 -- the documented remedy clears it, and costs no uncommitted state
 # ===========================================================================
-git -C "$root" checkout HEAD -- . ':(exclude).orchid'
+git -C "$root" checkout HEAD -- "${KERNEL[@]}"
 assert_eq "$journal_before" "$(cat "$root/.orchid/journal.md")" \
   "the documented refresh preserves uncommitted durable .orchid state"
+assert_eq "$config_before" "$(cat "$root/orchid.config")" \
+  "the documented refresh preserves an uncommitted orchid.config edit"
 run_version "$root"
 assert_eq 0 "$rc" "the refusal clears after the documented refresh"
 assert_match "adapter: post-merge" "$out" "the refreshed root executes the merged code"
@@ -214,3 +248,174 @@ rm -rf "$plain/.git"
 run_version "$plain"
 assert_eq 0 "$rc" "a non-git installation root runs unconditionally"
 assert_match "adapter: pre-merge" "$out" "a non-git installation root runs its own code"
+
+# ===========================================================================
+# 8 -- orchid_refresh_kernel restores what a bare checkout cannot
+# ===========================================================================
+# The branch advances again, this time with all three shapes of kernel change
+# in one commit: a MODIFIED verb, an ADDED verb (which must arrive executable
+# or bin/orchid reports it as an unknown command), and a DELETED verb.
+#
+# `git checkout HEAD -- <paths>` handles the first two and NOT the third: it
+# never removes an index entry the new HEAD has dropped, so the deleted verb
+# stays tracked, `git diff HEAD` keeps reporting it, and the refusal survives
+# the remedy. That is the gap orchid_refresh_kernel closes, and it is asserted
+# here in both directions so the helper cannot be quietly replaced by the
+# one-liner it exists to fix.
+cat > "$elsewhere/libexec/orchid-version" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "adapter: post-merge-2"
+VERB
+cat > "$elsewhere/libexec/orchid-fresh" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "fresh: merged verb"
+VERB
+chmod +x "$elsewhere/libexec/orchid-fresh"
+rm -f "$elsewhere/libexec/orchid-gone"
+git -C "$elsewhere" add -A
+git -C "$elsewhere" commit -q -m "fixture: kernel v3 (add, modify, delete)"
+git -C "$hub" update-ref refs/heads/orchid/integration "$(git -C "$elsewhere" rev-parse HEAD)"
+
+journal_before="$(cat "$root/.orchid/journal.md")"
+config_before="$(cat "$root/orchid.config")"
+run_version "$root"
+assert_eq 1 "$rc" "the add/modify/delete advance is a refusal like any other"
+
+git -C "$root" checkout HEAD -- "${KERNEL[@]}"
+assert_match "fresh: merged verb" \
+  "$(HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1 "$root/bin/orchid" fresh 2>&1)" \
+  "a bare checkout does restore an added verb, executable bit and all"
+run_version "$root"
+assert_eq 1 "$rc" \
+  "but the bare checkout leaves the DELETED verb tracked, so the refusal survives the one-liner"
+
+rc=0
+( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$root" ) || rc=$?
+assert_eq 0 "$rc" "orchid_refresh_kernel reports success"
+[ -e "$root/libexec/orchid-gone" ] \
+  && fail "orchid_refresh_kernel leaves behind a verb the branch deleted"
+run_version "$root"
+assert_eq 0 "$rc" "and the refusal is cleared by it"
+assert_match "adapter: post-merge-2" "$out" "the root now executes the branch's kernel"
+assert_eq "$journal_before" "$(cat "$root/.orchid/journal.md")" \
+  "the refresh never touches uncommitted durable .orchid state"
+assert_eq "$config_before" "$(cat "$root/orchid.config")" \
+  "the refresh never touches an uncommitted orchid.config edit"
+
+# A hand-edited kernel is exactly what the refresh must NOT silently discard:
+# orchid_kernel_clean is the precondition every caller checks first, and it
+# has to say "dirty" here even though the edit is only in the working tree.
+printf 'echo "operator hand-edit"\n' >> "$root/libexec/orchid-version"
+rc=0
+( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_kernel_clean "$root" ) || rc=$?
+assert_eq 1 "$rc" "orchid_kernel_clean refuses a checkout with an uncommitted kernel edit"
+git -C "$root" checkout HEAD -- libexec/orchid-version
+
+# ===========================================================================
+# 9 -- `orchid merge` refreshes the checkout it is itself running from
+# ===========================================================================
+# The regression the refusal creates if merge is left alone. In a self-hosted
+# run $ORCHID_ROOT and the managed repo are the same directory, so the CAS
+# `update-ref` at the end of `orchid merge` makes that directory stale in the
+# same instant -- and the very next child process is merge's own `task advance
+# <id> done`. Unguarded, that child refuses: the integration branch carries
+# the work, the task is frozen in `merging`, and every verb that could say so
+# refuses too.
+#
+# A REAL orchid root, copied from this checkout, so the merge runs the shipped
+# verb and not a stand-in. The candidate carries all three kernel shapes again
+# (add/modify/delete) plus the durable-state hazards on either side of the
+# pathspec: an untracked `.orchid/` sentinel and a tracked-but-uncommitted
+# `orchid.config` edit that the refresh must not so much as read.
+selfroot="$WORK/selfhosted"
+mkdir -p "$selfroot"
+for d in "${KERNEL[@]}"; do cp -R "$REPO_ROOT/$d" "$selfroot/$d"; done
+printf 'v1\n' > "$selfroot/templates/probe-mutable.txt"
+printf 'doomed\n' > "$selfroot/templates/probe-doomed.txt"
+printf 'integration_branch=orchid/integration\n' > "$selfroot/orchid.config"
+git init -q "$selfroot"
+git -C "$selfroot" symbolic-ref HEAD refs/heads/orchid/integration
+git -C "$selfroot" add -A
+git -C "$selfroot" commit -q -m "self-hosted fixture: kernel v1"
+
+# The candidate branch, committed BEFORE any .orchid state exists so `add -A`
+# cannot sweep durable state into it.
+git -C "$selfroot" checkout -q -b task/TS1
+cat > "$selfroot/libexec/orchid-probe" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "probe: merged"
+VERB
+chmod +x "$selfroot/libexec/orchid-probe"
+printf 'v2\n' > "$selfroot/templates/probe-mutable.txt"
+rm -f "$selfroot/templates/probe-doomed.txt"
+git -C "$selfroot" add -A
+git -C "$selfroot" commit -q -m "self-hosted fixture: kernel v2"
+self_cand="$(git -C "$selfroot" rev-parse HEAD)"
+git -C "$selfroot" checkout -q orchid/integration
+self_base="$(git -C "$selfroot" rev-parse orchid/integration)"
+
+mkdir -p "$selfroot/.orchid/tasks" "$selfroot/.orchid/reviews"
+printf 'durable sentinel\n' > "$selfroot/.orchid/sentinel"
+printf '# probe marker kept\n' >> "$selfroot/orchid.config"
+self_config_before="$(cat "$selfroot/orchid.config")"
+
+cd_scratch "$selfroot" || exit 1
+ORCHID_BIN="$selfroot/bin/orchid"          # plant_reviewer_envelope reads this
+export ORCHID_REPO="$selfroot"
+HOME="$WORK/selfhome"; mkdir -p "$HOME"; export HOME
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+
+"$ORCHID_BIN" task create TS1 "self-hosted kernel merge" >/dev/null
+"$ORCHID_BIN" task set TS1 base_sha "$self_base"
+"$ORCHID_BIN" task set TS1 candidate_sha "$self_cand"
+"$ORCHID_BIN" task set TS1 verification_commands "true"
+"$ORCHID_BIN" task advance TS1 implementing
+"$ORCHID_BIN" task advance TS1 testing
+git -C "$selfroot" checkout -q task/TS1
+"$ORCHID_BIN" verify TS1 >/dev/null
+git -C "$selfroot" checkout -q orchid/integration
+"$ORCHID_BIN" task advance TS1 reviewing
+plant_reviewer_envelope TS1
+"$ORCHID_BIN" task advance TS1 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task advance TS1 merging --reason "approved for merge"
+
+rc=0
+out="$("$ORCHID_BIN" merge TS1 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a self-hosted merge completes instead of stranding on its own ref advance"
+assert_match "^merged TS1: orchid/integration -> " "$out" "it reports the merge"
+assert_match "^refreshed .* to orchid/integration \(orchid runs from this checkout\)" "$out" \
+  "and says plainly that it refreshed the checkout it runs from"
+assert_eq done "$("$ORCHID_BIN" task show TS1 | grep '^status: ' | cut -d' ' -f2)" \
+  "the task reaches done -- the bookkeeping after the advance is not refused"
+[ "$(git -C "$selfroot" rev-parse orchid/integration)" != "$self_base" ] \
+  || fail "the integration ref advanced"
+
+# The point of the whole task: the run now executes its own merged work.
+assert_match "probe: merged" "$("$ORCHID_BIN" probe 2>&1)" \
+  "the merged verb is live in the checkout orchid runs from, executable bit and all"
+assert_eq v2 "$(cat "$selfroot/templates/probe-mutable.txt")" "a modified kernel file is refreshed"
+[ -e "$selfroot/templates/probe-doomed.txt" ] \
+  && fail "a kernel file the merge deleted is still on disk after the refresh"
+
+# ...without the refresh reaching one byte outside the kernel pathspec.
+assert_eq "durable sentinel" "$(cat "$selfroot/.orchid/sentinel")" \
+  "uncommitted durable .orchid state survives the automatic refresh"
+assert_eq "$self_config_before" "$(cat "$selfroot/orchid.config")" \
+  "an uncommitted orchid.config edit survives the automatic refresh"
+
+# And an ordinary verb afterwards is not refused, which is what "the run keeps
+# going" actually means.
+rc=0
+"$ORCHID_BIN" task show TS1 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "an ordinary verb runs against the refreshed checkout"
