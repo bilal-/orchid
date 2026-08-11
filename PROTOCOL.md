@@ -645,18 +645,30 @@ ones its archetype never declares.
      than reading it as a violation of whatever hand-off clause the task
      spec carries.
 
-     Commit ONLY the paths the mechanical step touched. Where the tree you are
-     committing in is the one carrying `.orchid/` — a task with no separate
-     `worktree`, so the hand-off lands on the integration branch itself —
-     `git add <path>` alone is not enough: orchid's own state commits move that
-     branch with `update-ref` from a throwaway worktree and never touch your
-     index, so the index can be many commits behind `HEAD` and a plain `git
-     commit` would build its tree from it, quietly reverting every `.orchid/`
-     path written since. Bring the index back first (`git reset`, then stage
-     your path), or commit the path explicitly (`git commit -- <path>`). Step 2
-     refuses to advance the candidate onto a commit that touches `.orchid/`, so
-     getting this wrong stops the hand-off rather than corrupting the run — but
-     it stops it, and the fix is here.
+     Commit ONLY the paths the mechanical step touched, and commit them in the
+     tree the task record NAMES — its `worktree`, or the repository when it has
+     none. Step 2 reads `HEAD` from exactly that tree, so a hand-off committed
+     anywhere else is not a hand-off at all: the verb sees a `HEAD` that never
+     moved, finds nothing to advance, and the pass stops at the same boundary
+     forever.
+
+     A task with no separate `worktree` is the awkward case, because then that
+     tree is the one carrying `.orchid/` and the hand-off lands on the
+     integration branch itself. Step 2 re-scans `base_sha..HEAD` and refuses on
+     any `.orchid/` commit in that range, and this is the branch where those
+     commits land: `orchid plan apply`, `run accept`, `config commit` and
+     `start` each write state through a throwaway worktree and move the branch
+     with `update-ref`, so any of them running while the task was in flight
+     puts one there. Prefer giving the task a worktree (`git worktree add`,
+     then `orchid task set <id> worktree <path>`, which is what dispatch does
+     for itself) and committing the mechanical step in it. That same
+     `update-ref` is why a commit made in a stale checkout of the integration
+     branch is refused for a second reason: it never touches your index, so
+     `git add <path>` followed by a plain `git commit` can build its tree from
+     an index many commits behind `HEAD` and quietly revert every `.orchid/`
+     path written since — bring the index back first (`git reset`, then stage
+     your path). Either way the refusal stops the hand-off rather than
+     corrupting the run — but it stops it, and the fix is here.
   2. Record it, AFTER those commits exist: `orchid task handoff <id> --ack
      --reason "<what you did>"`. The verb journals the reason, **advances
      `candidate_sha` to the commit the hand-off itself produced**, and writes

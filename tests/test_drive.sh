@@ -1664,7 +1664,31 @@ horchid task set H010 verification_commands \
   "touch $HVERIFY_RAN; echo lib/gate.sh:9: SC2086: Double quote to prevent globbing; exit 1" >/dev/null
 
 HHEAD="$(git -C "$HANDOFF" rev-parse HEAD)"
+
+# THE TASK GETS ITS OWN WORKTREE, ON ITS OWN BRANCH, because that is where a
+# real hand-off happens: dispatch gives every code task a checkout of its own
+# (drive_worktree_plan), the implementer's commits land there, and the
+# operator's mechanical commit lands on top of them. `orchid verify` and
+# `orchid task handoff` both resolve their tree the SAME way -- the task's
+# `worktree` field when set, else the repository -- so recording it here is
+# what makes this fixture and the verbs agree about which tree is being
+# judged. A fixture that commits the hand-off somewhere the task record does
+# not name tests nothing: the verb reads a HEAD that never moved, finds
+# nothing to advance, and every assertion below it reads back empty.
+#
+# It also keeps the hand-off's commit ANSWERABLE TO INV-04 for the same reason
+# the implementer's own commits are. `handoff --ack` re-runs entry-to-testing's
+# scan of `base_sha..HEAD`, and the INTEGRATION BRANCH is where orchid's own
+# state commits land (orchid_commit_durable builds them in a throwaway worktree
+# and moves the branch with `update-ref`) -- so a hand-off committed there is
+# refused the moment any of them falls inside the range, for touching kernel
+# state it never wrote. A task branch carries the candidate's commits and
+# nothing else, which is the shape that scan was written for.
+HWT="$WORK/handoff-wt"
+git -C "$HANDOFF" worktree add -q -b task/H010 "$HWT" "$HHEAD" \
+  || fail "fixture: could not create H010's task worktree"
 horchid task advance H010 implementing --reason "fixture dispatch" >/dev/null
+horchid task set H010 worktree "$HWT" >/dev/null
 horchid task set H010 base_sha "$HHEAD" >/dev/null
 horchid task set H010 candidate_sha "$HHEAD" >/dev/null
 horchid task advance H010 testing --reason "fixture: implementer envelope ok" >/dev/null
@@ -1722,37 +1746,44 @@ hrc=0; horchid task set H010 handoff_ack "$HHEAD" >/dev/null 2>&1 || hrc=$?
 # below the assertions pin the fix's outcome (candidate == the tree that runs)
 # rather than the bug's symptom.
 #
-# THE INDEX HAS TO BE BROUGHT BACK TO HEAD FIRST, and that is a property of
-# this repository, not a fixture convenience. Every orchid state commit lands
-# through orchid_commit_durable (lib/common.sh): it builds the commit in a
-# throwaway worktree and moves the branch with `update-ref`, which advances
-# the CHECKED-OUT integration branch without ever touching THIS repository's
-# index. So by now the index still holds the tree from `orchid init`, several
-# durable commits back, and a plain `git commit` would build its tree from it
-# -- carrying `formula-pin.txt` as intended AND silently reverting every
-# `.orchid/` path those durable commits wrote. That commit is a commit that
-# touches kernel state, and `orchid task handoff` refuses to advance the
-# candidate onto one (INV-04, re-checked before the move) -- correctly, since
-# an operator who really did that would be destroying the run's own record.
-# The reset is what a mechanical step must do here; the assertion below pins
-# it, so a fixture that rots back into a whole-index commit fails as itself
-# rather than as the hand-off it is supposed to be exercising.
-printf 'sha256 "0000"\n' > "$HANDOFF/formula-pin.txt"
-git -C "$HANDOFF" reset -q
-git -C "$HANDOFF" add formula-pin.txt
-git -C "$HANDOFF" commit -q -m "H010: re-pin the formula checksum
+# IT LANDS IN THE TASK'S OWN WORKTREE (see the note above `git worktree add`),
+# which is both where a real one lands and the only tree the record and the
+# verbs agree about. The assertion below pins the commit's SHAPE -- exactly its
+# one file, no kernel state -- so a fixture that rots into a whole-index commit
+# fails as itself rather than as the hand-off it is supposed to be exercising.
+printf 'sha256 "0000"\n' > "$HWT/formula-pin.txt"
+git -C "$HWT" add formula-pin.txt || fail "fixture: could not stage the operator's mechanical change"
+git -C "$HWT" commit -q -m "H010: re-pin the formula checksum
 
-Orchid-Handoff: operator"
+Orchid-Handoff: operator" || fail "fixture: the operator's mechanical commit did not land"
 assert_eq formula-pin.txt \
-  "$(git -C "$HANDOFF" diff-tree --no-commit-id --name-only -r HEAD)" \
+  "$(git -C "$HWT" diff-tree --no-commit-id --name-only -r HEAD)" \
   "fixture: the operator's mechanical commit carries exactly its one file and no kernel state"
-HHANDOFF_CAND="$(git -C "$HANDOFF" rev-parse HEAD)"
+HHANDOFF_CAND="$(git -C "$HWT" rev-parse HEAD)"
 [ "$HHANDOFF_CAND" != "$HHEAD" ] || fail "fixture: the hand-off commit did not move HEAD, so nothing below is being tested"
 assert_eq "$HHEAD" "$(hfield candidate_sha)" \
   "before the ack the record still names the PRE-hand-off commit — that is the drift, and it is real"
 
 # The operator records the work.
-horchid task handoff H010 --ack --reason "re-pinned Formula/orchid.rb and set the exec bit" >/dev/null
+#
+# ITS EXIT CODE AND ITS OWN WORDS ARE ASSERTED FIRST, and that is not
+# belt-and-braces. Every way this verb declines -- an unreadable tree, a
+# candidate it will not advance onto, a missing reason -- ends in a `die` whose
+# message is the only statement of WHY, and a fixture that sends it to
+# /dev/null (or leaves it interleaved on stderr with a suite's own output)
+# turns each of those into the same six assertions reading back empty. That is
+# a rework round spent rediscovering a sentence the verb already printed --
+# precisely the failure lesson L017 is about, reproduced inside the test for
+# the feature that exists to end it. So the refusal is captured and QUOTED.
+hack_rc=0
+hack_out="$(horchid task handoff H010 --ack \
+  --reason "re-pinned Formula/orchid.rb and set the exec bit" 2>&1)" || hack_rc=$?
+[ "$hack_rc" -eq 0 ] \
+  || fail "the ack verb refused the hand-off (exit $hack_rc) — it said: $hack_out"
+assert_match "candidate_sha advanced $HHEAD -> $HHANDOFF_CAND" "$hack_out" \
+  "the verb SAYS which candidate it moved, so the move is never a silent one (it said: $hack_out)"
+assert_match "operator hand-off acknowledged for candidate $HHANDOFF_CAND" "$hack_out" \
+  "and says what it acknowledged, against which candidate (it said: $hack_out)"
 assert_eq "$HHANDOFF_CAND" "$(hfield candidate_sha)" \
   "the hand-off ADVANCES the candidate to its own resulting commit — the tree verification will actually run"
 assert_eq "$HHANDOFF_CAND" "$(hfield handoff_ack)" \
