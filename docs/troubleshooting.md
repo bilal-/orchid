@@ -260,6 +260,14 @@ orchid task show <id>              # candidate_sha, and handoff_ack beside it
 orchid task handoff <id> --ack --reason "re-pinned the formula; set the exec bit"
 ```
 
+Commit first, acknowledge second: `--ack` moves `candidate_sha` forward to the
+commit your hand-off produced and binds the acknowledgement to *that*. Without
+it the record would keep naming the commit captured before you started, while
+verification ran the tree you just committed — evidence about a commit nobody
+verified. (It re-runs the `.orchid/` scan over `base_sha..HEAD` while it moves,
+so a mechanical commit that touched state is refused here rather than slipping
+past entry to `testing`.)
+
 The acknowledgement is bound to the task's **current** `candidate_sha`, which
 is why the next pass proceeds and why nothing has to remember that you did it.
 It is invalidated the same way verify evidence is (INV-07): entry to `rework`,

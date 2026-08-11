@@ -31,6 +31,15 @@
 # the old one can never be silently inherited by it, exactly as INV-07
 # invalidates the verify evidence there.
 #
+# WHICH CANDIDATE, THOUGH. The hand-off's whole purpose is to COMMIT work
+# after candidate_sha was captured, so the acknowledging verb advances the
+# candidate to the commit the hand-off produced before binding to it. That is
+# what makes `satisfied` below mean "the record names the tree verification
+# will run" rather than merely "someone said they were done" -- an ack against
+# the pre-hand-off sha would bind every downstream judgment to a commit that
+# was never verified (lesson L025), inside the procedure meant to end exactly
+# that. This file only READS the result of that; see libexec/orchid-task.
+#
 # Pure policy, like lib/drive.sh: every function below READS (task
 # frontmatter, config) and prints. The acknowledgement itself has exactly one
 # writer, the `orchid task handoff` verb (libexec/orchid-task).

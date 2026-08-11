@@ -72,6 +72,18 @@ FINDINGS_MAX_LINES=20
 # Lines with leading whitespace never match shapes 1 or 2 (the anchors forbid
 # it), which is also what keeps shellcheck's own indented caret lines from
 # being quoted twice.
+#
+# SHAPE 3'S HEADER EXPIRES AT THE END OF ITS OWN BLOCK. ShellCheck separates
+# findings with a blank line, and a caret line reached after one belongs to no
+# header -- so `sc_file` is cleared there, and by any shape-1/2 diagnostic
+# (another tool's output has plainly ended the block). Without that, ONE
+# `In <file> line <N>:` header seen anywhere earlier in the log would be
+# attributed to every later caret+SC line in it, however far away and however
+# unrelated: a brief whose whole job is to carry exact locations would be
+# printing confidently wrong ones. The reset is deliberately NOT done on emit,
+# because shellcheck reports several findings on one source line as several
+# caret lines under a SINGLE header, and dropping the header after the first
+# would silently lose the rest.
 findings_extract() {
   local log="$1" max="${2:-$FINDINGS_MAX_LINES}"
   [ -f "$log" ] || return 0
@@ -82,6 +94,8 @@ findings_extract() {
       n++
       if (n <= max) print s
     }
+    # The blank line that ends a shellcheck block ends its header with it.
+    /^[[:space:]]*$/ { sc_file = ""; next }
     # Shape 3, first half: remember where the next caret line points.
     /^In .+ line [0-9]+:$/ {
       sc_file = $0
@@ -106,8 +120,8 @@ findings_extract() {
       emit(sc_file ":" sc_line ": " code ": " msg)
       next
     }
-    /^[^[:space:]:]+:[0-9]+:([0-9]+:)?[[:space:]]/ { emit($0); next }
-    /^[^[:space:]:]+:[[:space:]]line[[:space:]][0-9]+:[[:space:]]/ { emit($0); next }
+    /^[^[:space:]:]+:[0-9]+:([0-9]+:)?[[:space:]]/ { sc_file = ""; emit($0); next }
+    /^[^[:space:]:]+:[[:space:]]line[[:space:]][0-9]+:[[:space:]]/ { sc_file = ""; emit($0); next }
     END {
       if (n > max)
         printf "... and %d further diagnostic line(s) in this log, not quoted here\n", n - max

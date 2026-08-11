@@ -355,7 +355,14 @@ operator performed that candidate's execution-requiring mechanical steps and a
 resumed pass proceeds. It is bound to a candidate, never to a task or a
 moment: entry to `rework` and `orchid merge`'s rebase arm both clear it, the
 same INV-07 invalidation that drops verify evidence, so a rebased tree never
-inherits an acknowledgement made against the tree it replaced.
+inherits an acknowledgement made against the tree it replaced. `--ack` also
+ADVANCES `candidate_sha` to `HEAD` of the tree `orchid verify` resolves (the
+task's `worktree` when set, else the repo) before binding to it, re-running
+entry-to-`testing`'s `.orchid/` scan over `base_sha..HEAD` and refusing on a
+hit: a hand-off exists to commit work AFTER the candidate was captured, so
+without the advance the record would name a commit that was never the one
+verified — the drift lesson L025 records — and it is the one other path that
+moves `candidate_sha` past INV-04's gate.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
@@ -823,8 +830,10 @@ executable — and an engine profile that denies on the command *string* can
 perform none of it, so verifying first is a guaranteed failure that spends a
 rework attempt on work nobody in that round could do. It is settled by no verb
 an orchestrator can run, deliberately: `orchid task handoff <id> --ack` asserts
-that the work was performed by an actor able to perform it, and it writes
-`handoff_ack` bound to the task's current `candidate_sha`. That binding is the
+that the work was performed by an actor able to perform it, advances
+`candidate_sha` to the commit that work produced, and writes `handoff_ack`
+bound to it — so the record names the tree verification will actually run
+rather than the one captured before the hand-off began. That binding is the
 whole resume rule — equal means done and the walk proceeds, anything else means
 outstanding and it stops again — and it is invalidated exactly as INV-07
 invalidates verify evidence, so a rebased tree never inherits an

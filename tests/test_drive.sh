@@ -1386,9 +1386,11 @@ foo=$bar
 In lib/example.sh line 40:
 echo "$undefined"
       ^--^ SC2154 (warning): undefined is referenced but not assigned.
+      ^--^ SC2086: a second finding on the SAME source line, one header
 
 runners/example: line 3: syntax error near unexpected token `fi'
 ok 1 - a passing case whose name mentions 12:34:56 and lib/example.sh
+    ^-- SC9999: a caret line reached after its block ended
 exit: 1
 EOF
 
@@ -1401,11 +1403,22 @@ assert_match "^lib/example\.sh:12: SC2086: Double quote to prevent globbing and 
   "ShellCheck's three-line tty report is recomposed into file:line: RULE: message out of its own fields"
 assert_match "^lib/example\.sh:40: SC2154: undefined is referenced but not assigned\.$" "$extracted" \
   "including the newer '(warning)' severity form, whose parenthetical is not part of the message"
+assert_match "^lib/example\.sh:40: SC2086: a second finding on the SAME source line, one header$" "$extracted" \
+  "shellcheck reports several findings on one line as several caret lines under ONE header — dropping the header after the first would silently lose the rest"
 assert_match "^runners/example: line 3: syntax error" "$extracted" \
   "and the shell's own 'file: line N:' shape, which is what bash -n prints"
 case "$extracted" in
   *"a passing case whose name"*)
     fail "ordinary test output must not be quoted as a finding — a brief mixing noise with locations is read the way one with no locations is" ;;
+esac
+# A HEADER EXPIRES WITH ITS OWN BLOCK. The stray caret above sits after a
+# blank line and after two other tools' diagnostics; attributing it to the
+# last `In <file> line <N>:` seen anywhere earlier would put a real file and a
+# real line number on a finding that was never reported at either — a brief
+# whose entire job is exact locations, printing a confidently wrong one.
+case "$extracted" in
+  *SC9999*)
+    fail "a caret+SC line outside any shellcheck block must not inherit the last header seen — that is a fabricated location, not a carried one" ;;
 esac
 
 # A PASSING log contributes nothing, however location-shaped its output. The
@@ -1695,12 +1708,60 @@ assert_eq testing "$(hfield status)" "and still takes no transition"
 hrc=0; horchid task set H010 handoff_ack "$HHEAD" >/dev/null 2>&1 || hrc=$?
 [ "$hrc" -ne 0 ] || fail "task set must refuse handoff_ack — a hand-picked value is the one way this record could lie"
 
-# The operator performs the work and records it.
+# --- THE HAND-OFF'S OWN COMMIT LANDS AFTER THE CANDIDATE WAS CAPTURED -----
+# The operator now does exactly what PROTOCOL.md's procedure says: performs
+# this candidate's mechanical steps and COMMITS them onto its branch. That
+# commit lands after `candidate_sha` was captured (which happened when the
+# implementer's envelope reconciled, several steps ago) -- so the tree
+# `orchid verify` is about to run is no longer the tree the task record names.
+#
+# This is the drift the feature would otherwise INSTITUTIONALISE: a hand-off
+# formalised as a procedure step, whose every use silently unbinds the record
+# from the tree everything downstream is about to be judged against. Lesson
+# L025 is evidence bound to a commit that was never the one verified, and
+# below the assertions pin the fix's outcome (candidate == the tree that runs)
+# rather than the bug's symptom.
+printf 'sha256 "0000"\n' > "$HANDOFF/formula-pin.txt"
+git -C "$HANDOFF" add formula-pin.txt
+git -C "$HANDOFF" commit -q -m "H010: re-pin the formula checksum
+
+Orchid-Handoff: operator"
+HHANDOFF_CAND="$(git -C "$HANDOFF" rev-parse HEAD)"
+[ "$HHANDOFF_CAND" != "$HHEAD" ] || fail "fixture: the hand-off commit did not move HEAD, so nothing below is being tested"
+assert_eq "$HHEAD" "$(hfield candidate_sha)" \
+  "before the ack the record still names the PRE-hand-off commit — that is the drift, and it is real"
+
+# The operator records the work.
 horchid task handoff H010 --ack --reason "re-pinned Formula/orchid.rb and set the exec bit" >/dev/null
-assert_eq "$HHEAD" "$(hfield handoff_ack)" "the acknowledgement is bound to the task's CURRENT candidate_sha"
+assert_eq "$HHANDOFF_CAND" "$(hfield candidate_sha)" \
+  "the hand-off ADVANCES the candidate to its own resulting commit — the tree verification will actually run"
+assert_eq "$HHANDOFF_CAND" "$(hfield handoff_ack)" \
+  "and binds the acknowledgement to THAT commit, not to the one the hand-off superseded"
+assert_eq "$(hfield candidate_sha)" "$(hfield handoff_ack)" \
+  "leaving the two equal, which is the state a verify-side sha check can accept"
+assert_match "advanced candidate_sha $HHEAD -> $HHANDOFF_CAND" "$(cat "$HANDOFF/.orchid/journal.md")" \
+  "and the move is journalled on its own, so an operator reading the trail sees the candidate change"
 assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" "which reads as satisfied"
 assert_match "operator hand-off acknowledged for candidate" "$(cat "$HANDOFF/.orchid/journal.md")" \
   "and it is journalled, so the mechanical steps are part of the durable record"
+
+# THE PROOF THAT THE HAND-OFF LEFT NO DRIFT BEHIND. `orchid verify` stamps two
+# independent lines into its evidence: `sha:`, read from the tree it actually
+# ran in, and `candidate:`, read from frontmatter. Had the ack not advanced the
+# candidate, these two would name DIFFERENT commits and every downstream
+# judgment would be recorded against a tree nobody ran (lesson L025). They are
+# compared here, one verb call at a time, because the driver's own pass below
+# ends on a `rework` advance that DELETES this log (INV-07) — after it there is
+# nothing left to compare. The sentinel is cleared afterwards so the pass below
+# still proves the DRIVER verified, not this line.
+horchid verify H010 >/dev/null 2>&1 || true
+HVLOG="$HANDOFF/.orchid/reviews/H010-verify.log"
+[ -f "$HVLOG" ] || fail "orchid verify wrote no evidence log"
+assert_eq "$HHANDOFF_CAND" "$(grep '^sha: ' "$HVLOG" | cut -d' ' -f2-)" \
+  "verification runs against the tree the hand-off's commit produced"
+assert_eq "$HHANDOFF_CAND" "$(grep '^candidate: ' "$HVLOG" | cut -d' ' -f2-)" \
+  "and its evidence names that same commit as the candidate it judged — the two agree, which is what a verify-side sha check requires"
+rm -f "$HVERIFY_RAN"
 
 # Pass 3 -- A SECOND PASS AFTER AN ACKNOWLEDGED HAND-OFF PROCEEDS.
 run_hdrive
@@ -1723,8 +1784,11 @@ assert_eq "" "$(hfield handoff_ack)" "entry to rework clears the acknowledgement
 # An acknowledgement made for one candidate must never read as satisfied for
 # another. This is the shape `orchid merge`'s rebase arm produces when it moves
 # candidate_sha underneath an acknowledged hand-off.
+# The candidate is set to the fixture's CURRENT HEAD so this round's ack has
+# nothing to advance: what is under test here is the binding, and an ack that
+# also moved the candidate would prove it against a sha the test never named.
 horchid task advance H010 implementing --reason "fixture: re-dispatch" >/dev/null
-horchid task set H010 candidate_sha "$HHEAD" >/dev/null
+horchid task set H010 candidate_sha "$HHANDOFF_CAND" >/dev/null
 horchid task advance H010 testing --reason "fixture" >/dev/null
 horchid task handoff H010 --ack --reason "fixture: acknowledged against the pre-rebase candidate" >/dev/null
 assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" "acknowledged for this candidate"
@@ -1733,7 +1797,7 @@ HREBASED=7777777777777777777777777777777777777777
 horchid task set H010 candidate_sha "$HREBASED" >/dev/null
 assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
   "a moved candidate_sha leaves the hand-off outstanding — a rebased tree never inherits work done on the tree it replaced"
-assert_match "bound to candidate $HHEAD, not the current $HREBASED" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
+assert_match "bound to candidate $HHANDOFF_CAND, not the current $HREBASED" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
   "and the detail names both shas, so an operator can see WHY it stopped"
 
 rm -f "$HVERIFY_RAN"

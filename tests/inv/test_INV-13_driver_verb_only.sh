@@ -18,9 +18,15 @@ POLICY="$REPO_ROOT/lib/drive.sh"
 # only the file it was written for stops being an invariant the moment the
 # driver grows another input, and hiding a mutation behind one of them is
 # exactly what check 1 exists to prevent.
-POLICIES="$POLICY $REPO_ROOT/lib/handoff.sh"
+#
+# An ARRAY, not a space-separated string: `$REPO_ROOT` is wherever the checkout
+# happens to live, and a path containing a space would split one library into
+# two nonexistent ones -- turning check 1 into a `fail` on a correct tree, or
+# (had the existence guard below not been there) into a loop that scans nothing
+# and passes vacuously.
+POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh")
 [ -f "$DRIVER" ] || fail "INV-13: runners/orchid-drive is missing"
-for p in $POLICIES; do
+for p in "${POLICIES[@]}"; do
   [ -f "$p" ] || fail "INV-13: $p is missing"
 done
 
@@ -67,7 +73,7 @@ drv_code="$(code_of "$DRIVER")"
 # would hide a mutation behind a function call the driver's own audit cannot
 # see).
 # ===========================================================================
-for p in $POLICIES; do
+for p in "${POLICIES[@]}"; do
   if code_of "$p" | grep -nE 'fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|^[[:space:]]*(rm|mv|cp)[[:space:]]'; then
     fail "INV-13: $p must be read-only policy — it mutates, or reaches for a verb"
   fi
@@ -141,7 +147,7 @@ fi
 if code_of "$DRIVER" | grep -nE '\.summary|\.actions'; then
   fail "INV-13: the driver reads an engine's prose summary"
 fi
-for p in $POLICIES; do
+for p in "${POLICIES[@]}"; do
   if code_of "$p" | grep -nE '\.summary|\.actions'; then
     fail "INV-13: $p reads an engine's prose summary"
   fi

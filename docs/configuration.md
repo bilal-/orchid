@@ -124,11 +124,13 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   like any other config change — never a line a task's candidate adds to the
   live `orchid.config` of the run it is executing inside, which would switch a
   new driver gate on mid-run, for every remaining task, with no reason
-  recorded. Perform the steps, then
-  `orchid task handoff <id> --ack --reason "..."` — the acknowledgement is
-  bound to that task's current `candidate_sha`, so a resumed session or a
-  second driver pass proceeds, and a rebase or a fresh rework round
-  invalidates it exactly as INV-07 invalidates verify evidence. Any value
+  recorded. Perform the steps, commit them, then
+  `orchid task handoff <id> --ack --reason "..."` — which advances
+  `candidate_sha` to the commit the hand-off produced (so the record names the
+  tree verification will run, not the one captured before it) and binds the
+  acknowledgement to that, so a resumed session or a second driver pass
+  proceeds, and a rebase or a fresh rework round invalidates it exactly as
+  INV-07 invalidates verify evidence. Any value
   other than `off` reads as `required`, so a typo can only route more work to
   a human, never less.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable

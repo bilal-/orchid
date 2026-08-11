@@ -532,12 +532,27 @@ case "$sub" in
     # "already performed" from "still outstanding" with no memory of its own.
     #
     # BOUND TO A COMMITTED CANDIDATE, NEVER TO A TASK OR A MOMENT. The value
-    # is DERIVED here from the task's current candidate_sha and is never
-    # accepted from the caller, so an acknowledgement cannot be made for a
-    # candidate other than the one on the task right now. It stops counting
-    # the instant that sha moves -- which is exactly how `orchid merge`'s
-    # rebase arm invalidates it (INV-07): a rebased tree is a different
-    # candidate, and work done on the old one is not evidence about it.
+    # is DERIVED here and is never accepted from the caller, so an
+    # acknowledgement cannot be made for a candidate other than the one the
+    # hand-off actually left behind. It stops counting the instant that sha
+    # moves -- which is exactly how `orchid merge`'s rebase arm invalidates it
+    # (INV-07): a rebased tree is a different candidate, and work done on the
+    # old one is not evidence about it.
+    #
+    # AND THE HAND-OFF ADVANCES THE CANDIDATE TO ITS OWN RESULTING COMMIT.
+    # This is the defect the feature would otherwise institutionalise. The
+    # candidate is captured when the implementer's envelope reconciles; the
+    # hand-off's whole purpose is to COMMIT work after that -- a lint fix, a
+    # re-pinned checksum, a mode bit -- so by the time it is acknowledged the
+    # tree `orchid verify` will run is no longer the one the task record
+    # names. Acknowledging against the pre-hand-off sha would leave every
+    # downstream piece of evidence bound to a commit that was never the one
+    # verified (lesson L025), inside the very procedure that formalises the
+    # hand-off. So the ack reads HEAD of the tree verification will use --
+    # resolved exactly as `orchid verify` resolves its own cwd (the task's
+    # `worktree` when set, else the repo) -- and moves `candidate_sha` there
+    # first. That leaves the two equal, which is the state T031's verify-side
+    # refusal is there to require.
     #
     # `--clear` withdraws it. Idempotent by content, like `run boundary set`:
     # clearing a field that is already empty journals nothing, so the rebase
@@ -575,6 +590,35 @@ case "$sub" in
     fi
     cand="$(fm_get "$f" candidate_sha)"
     [ -n "$cand" ] || orchid_die "task $id has no candidate_sha — a hand-off is acknowledged against a committed candidate, never against a task"
+    # The tree `orchid verify` will actually run in, resolved exactly the way
+    # orchid-verify resolves its own cwd. Unreadable is fatal rather than
+    # "acknowledge the old sha anyway": the one thing this verb asserts is
+    # that the record names the tree the work landed in, and it cannot assert
+    # that about a HEAD it cannot read.
+    hwt="$(fm_get "$f" worktree)"; hcwd="$repo"; [ -z "$hwt" ] || hcwd="$hwt"
+    hhead="$(git -C "$hcwd" rev-parse HEAD 2>/dev/null || true)"
+    [ -n "$hhead" ] || orchid_die "cannot read HEAD of $hcwd — a hand-off is acknowledged against the tree 'orchid verify' will run in, and that tree cannot be read"
+    if [ "$hhead" != "$cand" ]; then
+      # INV-04, re-checked. Entry to `testing` scans base..candidate for
+      # `.orchid/` commits, and this is the only other path that moves
+      # candidate_sha forward past that gate -- so an operator's mechanical
+      # commit gets the same scan the implementer's did, rather than a way
+      # around it. Captured, not piped into `grep -q`: under `pipefail` a
+      # short-circuiting matcher SIGPIPEs `git log` and the 141 would read as
+      # "clean" (see tests/inv/test_INV-13_driver_verb_only.sh's note).
+      hbase="$(fm_get "$f" base_sha)"
+      if [ -n "$hbase" ]; then
+        hstate_files="$(git -C "$repo" log --format=%H --name-only "$hbase..$hhead" 2>/dev/null | grep '^\.orchid/' || true)"
+        [ -z "$hstate_files" ] || orchid_die "the hand-off's commits touch .orchid/ — refusing to advance candidate_sha to $hhead (INV-04)"
+      fi
+      # Journal-first, and journalled SEPARATELY from the acknowledgement
+      # below: a candidate moving is the event an operator reading the trail
+      # needs to see on its own, not a detail folded into an ack line.
+      journal --task "$id" --kind intervention "operator hand-off advanced candidate_sha $cand -> $hhead (hand-off commits landed after the candidate was captured): $reason"
+      fm_set "$f" candidate_sha "$hhead"; fm_set "$f" updated "$(now)"
+      echo "$id: candidate_sha advanced $cand -> $hhead (the hand-off's own commits)"
+      cand="$hhead"
+    fi
     if [ "$old" = "$cand" ]; then
       echo "$id: operator hand-off already acknowledged for candidate $cand"
       exit 0

@@ -644,11 +644,36 @@ ones its archetype never declares.
      an operator's mechanical commit from the implementer's own work rather
      than reading it as a violation of whatever hand-off clause the task
      spec carries.
-  2. Record it: `orchid task handoff <id> --ack --reason "<what you did>"`.
-     The verb journals the reason and writes `handoff_ack: <candidate_sha>`,
-     DERIVING the value from the task's current candidate — it is never
-     supplied by the caller, and `orchid task set handoff_ack` is refused
-     outright.
+  2. Record it, AFTER those commits exist: `orchid task handoff <id> --ack
+     --reason "<what you did>"`. The verb journals the reason, **advances
+     `candidate_sha` to the commit the hand-off itself produced**, and writes
+     `handoff_ack` equal to it. Both values are DERIVED — the candidate from
+     `HEAD` of the tree `orchid verify` will run in (the task's `worktree`
+     when set, else the repo), the acknowledgement from that candidate —
+     never supplied by the caller, and `orchid task set handoff_ack` is
+     refused outright.
+
+     That advance is the point of doing this by verb rather than by hand.
+     `candidate_sha` was captured back at step 3's `implementing` bullet, when
+     the implementer's envelope reconciled; the hand-off's whole purpose is to
+     COMMIT work after that. Left alone, the record would name the
+     pre-hand-off commit while verification ran the post-hand-off tree, and
+     every downstream judgment — the verify log, the review envelopes bound to
+     it, the merge — would be evidence about a commit that was never the one
+     verified. That is the failure lesson L025 records, and a hand-off that
+     institutionalised it would be worse than the habit it replaces, because
+     it would happen on every task instead of occasionally. Advancing leaves
+     `candidate_sha` equal to the tree that runs, which is also what a
+     verify-side sha check requires before it will run at all. The advance
+     re-scans `base_sha..HEAD` for `.orchid/` commits and refuses on a hit:
+     this is the only other path that moves `candidate_sha` past entry to
+     `testing`, so an operator's mechanical commit gets the same INV-04 scan
+     the implementer's work got, not a way around it.
+
+     Acknowledge last, then. If you commit again after acknowledging, run the
+     verb again — it advances and re-binds. Running it with nothing new to
+     commit is a no-op that journals nothing, so re-running it is always safe
+     and never the wrong call.
 
   **The acknowledgement is bound to a committed candidate, never to a task or
   a moment.** It counts only while `handoff_ack` equals the task's CURRENT

@@ -92,11 +92,14 @@ record, because runners/orchid-pump deliberately wakes no model for it.
 Between an implementer's envelope reconciling and `orchid verify` running,
 some candidates need execution-requiring mechanical work an engine profile
 cannot do at all: a lint fix, a release checksum re-pin, the mode bit on a new
-executable. Where `handoff_before_verify` asks for that pause, a pass stops at
+executable — and committing it moves the tree out from under the candidate the
+implementer's envelope was captured against. Where `handoff_before_verify`
+asks for that pause, a pass stops at
 an `operator-handoff` boundary instead of verifying — verifying first would
 spend one of the task's three rework rounds on a failure nobody was going to
-fix in that round. The stop is on a durable acknowledgement bound to the
-task's current candidate_sha (`orchid task handoff <id> --ack --reason "..."`),
+fix in that round. The stop is on a durable acknowledgement bound to a
+candidate (`orchid task handoff <id> --ack --reason "..."`, which advances
+candidate_sha to the commit the hand-off itself produced and binds to that),
 not on the moment, so a resumed session proceeds once it has been made and
 stops again the moment a rebase or a fresh rework round moves the candidate
 out from under it. The boundary is operator-only by design: no verb an
