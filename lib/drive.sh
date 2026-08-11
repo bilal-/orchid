@@ -610,10 +610,11 @@ drive_implement_failed() {
 # all, the same failure one step earlier.
 #
 # Prints nothing when the task carries neither sha. `drive_dispatch` stamps
-# `base_sha` on every dispatch, so that state can only come from a hand-edited
-# task file, and the caller below deliberately reads "nothing to compare
-# against" as "cannot prove a no-op" rather than as a refusal it cannot
-# justify.
+# `base_sha` on the FIRST dispatch and never re-stamps it (a rework round keeps
+# the base its candidate was built on), so every task that has ever been
+# dispatched carries one and that state can only come from a hand-edited task
+# file. The caller below deliberately reads "nothing to compare against" as
+# "cannot prove a no-op" rather than as a refusal it cannot justify.
 drive_delivery_floor() {
   local repo="$1" id="$2" tf floor
   tf="$(orchid_state "$repo")/tasks/$id.md"
