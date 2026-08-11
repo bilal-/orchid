@@ -647,10 +647,13 @@ ones its archetype never declares.
 
      Commit ONLY the paths the mechanical step touched, and commit them in the
      tree the task record NAMES — its `worktree`, or the repository when it has
-     none. Step 2 reads `HEAD` from exactly that tree, so a hand-off committed
-     anywhere else is not a hand-off at all: the verb sees a `HEAD` that never
-     moved, finds nothing to advance, and the pass stops at the same boundary
-     forever.
+     none — on top of the current `candidate_sha` and on the branch the record
+     names (`branch:` in its frontmatter). Step 2 reads `HEAD` from exactly that
+     tree, so a hand-off committed anywhere else is not a hand-off at all: the
+     verb sees a `HEAD` that never moved, finds nothing to advance, and the pass
+     stops at the same boundary forever. A `HEAD` that moved somewhere ELSE —
+     an unrelated history, a detached commit, another task's branch — is
+     refused outright rather than adopted; see step 2.
 
      A task with no separate `worktree` is the awkward case, because then that
      tree is the one carrying `.orchid/` and the hand-off lands on the
@@ -688,22 +691,43 @@ ones its archetype never declares.
      verified. That is the failure lesson L025 records, and a hand-off that
      institutionalised it would be worse than the habit it replaces, because
      it would happen on every task instead of occasionally. Advancing leaves
-     `candidate_sha` equal to the tree that runs, which is also what a
-     verify-side sha check requires before it will run at all. The advance
-     re-scans `base_sha..HEAD` for `.orchid/` commits and refuses on a hit:
-     this is the only other path that moves `candidate_sha` past entry to
-     `testing`, so an operator's mechanical commit gets the same INV-04 scan
-     the implementer's work got, not a way around it.
+     `candidate_sha` equal to the tree that runs, so `orchid verify`'s two
+     header lines — `sha:`, read from the tree it ran in, and `candidate:`,
+     read from frontmatter — name the same commit, and the INV-11 gate on
+     `testing → reviewing` accepts the evidence. (As this ships, `orchid
+     verify` itself does not compare the two before running; a task proposing
+     that it refuse outright, T031, is unmerged at the time of writing. If it
+     lands, this equality is the state it would require — the hand-off does
+     not depend on it either way.)
 
-     Acknowledge last, then. If you commit again after acknowledging, run the
-     verb again — it advances and re-binds. Running it with nothing new to
+     **What it will advance TO is itself a gate.** Adopting whatever `HEAD`
+     happens to be would trade this drift for a worse mis-binding: a record
+     naming a tree that shares no history with the work under judgment, while
+     the verify evidence, the review envelopes bound to it and the merge all
+     carry on as though it did. So the new commit must DESCEND from the
+     candidate it replaces — a hand-off only ever adds commits on top of the
+     implementer's work — and must be contained in the branch the task record
+     names; a `HEAD` on an unrelated history, on another branch, or detached is
+     refused, in a message naming both shas, and nothing is written. A record
+     whose `branch:` does not exist in that tree is refused for the same
+     reason: nothing can confirm membership of a branch that is not there
+     (`orchid task set <id> branch <name>` if the record is what is wrong). The
+     advance additionally re-scans `base_sha..HEAD` for `.orchid/` commits and
+     refuses on a hit: this is the only other path that moves `candidate_sha`
+     past entry to `testing`, so an operator's mechanical commit gets the same
+     INV-04 scan the implementer's work got, not a way around it.
+
+     Acknowledge last, then. If you commit again after acknowledging, the pause
+     REOPENS — the resume rule below compares the acknowledgement against the
+     tree's `HEAD`, not only against the other frontmatter field — so run the
+     verb again: it advances and re-binds. Running it with nothing new to
      commit is a no-op that journals nothing, so re-running it is always safe
      and never the wrong call.
 
   **The acknowledgement is bound to a committed candidate, never to a task or
   a moment.** It counts only while `handoff_ack` equals the task's CURRENT
-  `candidate_sha`. That single rule answers all three questions a pause has
-  to answer:
+  `candidate_sha` AND that is still what the tree's `HEAD` is. That single
+  rule answers all three questions a pause has to answer:
 
   - *What clears it.* Entry to `rework` (from any edge), `orchid task
     unblock`, `orchid task retry`, and `orchid merge`'s rebase arm — the same
@@ -715,16 +739,30 @@ ones its archetype never declares.
     acknowledgement; `orchid merge` additionally clears it explicitly, so the
     invalidation is a journalled event an operator can see rather than a
     silent mismatch.
-  - *What a resume finds.* `orchid task show <id>` — `handoff_ack` equal to
-    `candidate_sha` means SATISFIED, and a resumed session or a second driver
-    pass simply proceeds to verification. Anything else — absent, empty, or
-    bound to some other sha — means OUTSTANDING, and it stops again. There is
-    no in-memory state, no lock and no boundary record involved in that
-    decision, which is what makes it survive a crash, a restart, or a second
-    operator picking the run up cold. `orchid status --explain` reports the
-    outstanding case as `awaiting-operator-handoff` rather than
-    `awaiting-verify`: the wait is on a person, and saying otherwise is the
-    silence this pause exists to end.
+  - *What a resume finds.* `orchid task show <id>` and `git -C <its tree>
+    rev-parse HEAD` — `handoff_ack` equal to `candidate_sha` AND equal to
+    `HEAD` of the tree verification will run in means SATISFIED, and a resumed
+    session or a second driver pass simply proceeds to verification. Anything
+    else — absent, empty, bound to some other sha, or a tree whose `HEAD` has
+    moved past it — means OUTSTANDING, and it stops again. There is no
+    in-memory state, no lock and no boundary record involved in that decision,
+    which is what makes it survive a crash, a restart, or a second operator
+    picking the run up cold. `orchid status --explain` reports the outstanding
+    case as `awaiting-operator-handoff` rather than `awaiting-verify`: the wait
+    is on a person, and saying otherwise is the silence this pause exists to
+    end.
+
+    **The tree is read, never inferred, and that third comparison is not
+    belt-and-braces.** Two frontmatter fields agreeing prove only that they
+    were written together. An operator who acknowledges and then commits once
+    more — a second lint fix, a formula re-pinned after re-reading the diff —
+    leaves both fields naming a tree that exists nowhere, still perfectly
+    equal to each other. A resume reading that as "already performed" verifies
+    the later tree and binds every downstream judgment to a commit nothing ever
+    verified: lesson L025 again, reached silently. So a `HEAD` past the
+    acknowledgement reopens the pause, and re-running `orchid task handoff <id>
+    --ack` is the whole remedy — it advances and re-binds, which is why
+    acknowledging LAST costs nothing but acknowledging early costs one command.
   - *What a deterministic driver does here.* `handoff_before_verify` (config,
     default `off`) is what asks for the pause; set it to `required` when the
     implementer is such a profile. Then `orchid drive` STOPS at an
@@ -815,6 +853,22 @@ ones its archetype never declares.
     disk, and the `merging` arm of the `rework` advance deliberately exempts
     that log from its deletion so the failure it is journaling keeps its
     evidence — so the sha compare, not the file's presence, is what decides.
+
+    **And each brief in the body names its own candidate; the ones describing
+    a candidate this task has since replaced are aged out.** A brief is
+    APPENDED, once per rework round, to a body that outlives every candidate
+    in it — so binding the QUOTE to the failing candidate only solves half of
+    it. Left alone, round three hands the implementer round one's line numbers
+    beside round three's, in the same voice, with nothing in the text saying
+    which describes the tree it was just given: the same defect one layer up,
+    inside its own remedy, and worse than the log case because locations that
+    were exact when written go on looking actionable forever. So every brief is
+    fenced with the candidate it describes, and every entry to `rework`
+    collapses the blocks describing some other candidate to a short superseded
+    notice — the block keeps its marker, its candidate and the count of what it
+    carried, so the record of what each round was told survives; the
+    instruction does not. Exactly one live brief reaches the pack: the one for
+    the candidate now under work.
 
     When the rework was caused by
     something `context.md` failed to state — not an actual defect in the
@@ -1036,8 +1090,9 @@ one-pass driver could otherwise stop progressing in silence:
   role's default chain rather than the slot's engine.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
   Where `handoff_before_verify` is `required`, a pass reaching a `testing`
-  task compares `handoff_ack` against the task's current `candidate_sha`
-  before it runs anything. Equal: it verifies, exactly as it always did.
+  task compares `handoff_ack` against the task's current `candidate_sha` and
+  against `HEAD` of the tree it would verify, before it runs anything. All
+  three equal: it verifies, exactly as it always did.
   Anything else: it stops at an `operator-handoff` boundary and exits 16,
   WITHOUT running `orchid verify` — a driver that verified first would fail a
   candidate whose remaining work nobody in that round was able to do, spend
@@ -1106,13 +1161,15 @@ one-pass driver could otherwise stop progressing in silence:
    (docs/specs/kernel.md, Memory & resumption). Never re-scan the whole
    journal file by hand.
 6. For every task in `testing`, re-read the operator hand-off from the task
-   itself rather than from memory: `handoff_ack` equal to `candidate_sha`
+   and its tree rather than from memory: `handoff_ack` equal to
+   `candidate_sha` and equal to `HEAD` of the tree that would be verified
    means this candidate's execution-requiring mechanical steps were already
    performed, and the walk proceeds to verification; anything else means they
-   were not (or were performed against a candidate that has since moved), and
-   the walk stops there again. Nothing else records this, which is the point —
+   were not (or were performed against a candidate that has since moved, or a
+   commit has landed since the acknowledgement), and the walk stops there
+   again. Nothing else records this, which is the point —
    a resumed session, a second driver pass and a second operator all read the
-   same two frontmatter fields and reach the same answer. `orchid status
+   same two fields and the same `HEAD` and reach the same answer. `orchid status
    --explain` prints `awaiting-operator-handoff` for the outstanding case, and
    `orchid run boundary show` names any boundary the last pass left recorded.
 7. Resume THE TICK above, starting at step 3 (the state-machine walk), now

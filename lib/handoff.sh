@@ -38,7 +38,11 @@
 # will run" rather than merely "someone said they were done" -- an ack against
 # the pre-hand-off sha would bind every downstream judgment to a commit that
 # was never verified (lesson L025), inside the procedure meant to end exactly
-# that. This file only READS the result of that; see libexec/orchid-task.
+# that. The commit it advances to must DESCEND from the candidate it replaces
+# and sit on the branch the task record names -- advancing to whatever HEAD
+# happens to be would trade the drift for a worse mis-binding, a record naming
+# a tree that shares no history with the work under judgment. This file only
+# READS the result of that; see libexec/orchid-task.
 #
 # Pure policy, like lib/drive.sh: every function below READS (task
 # frontmatter, config) and prints. The acknowledgement itself has exactly one
@@ -68,20 +72,37 @@ handoff_gate_mode() {
 #
 #   off          this repository does not ask for the pause at all; nothing
 #                gates, and no boundary is ever raised for it.
-#   satisfied    `handoff_ack` equals the task's CURRENT candidate_sha: an
-#                operator performed this candidate's mechanical steps and
-#                recorded it. A resumed session or a second driver pass
-#                proceeds -- this is what stops the pause looping forever.
+#   satisfied    `handoff_ack` equals the task's CURRENT candidate_sha AND
+#                that is what `HEAD` of the tree verification will run in
+#                actually is: an operator performed this candidate's
+#                mechanical steps, recorded it, and nothing has landed since.
+#                A resumed session or a second driver pass proceeds -- this is
+#                what stops the pause looping forever.
 #   outstanding  no acknowledgement at all, one bound to a DIFFERENT
-#                candidate (a rebase or a fresh rework round moved it), or no
-#                candidate_sha to bind one to. The pass stops.
+#                candidate (a rebase or a fresh rework round moved it), no
+#                candidate_sha to bind one to, or a tree whose HEAD has moved
+#                past the acknowledgement. The pass stops.
 #
-# Fail-closed on every axis: a missing task file, a missing candidate and a
-# stale acknowledgement all read `outstanding`. The cost of stopping when the
-# work was in fact done is one operator command; the cost of proceeding when
-# it was not is a burnt attempt on a candidate nobody finished.
+# WHY THE HEAD COMPARE IS PART OF THE RESUME RULE, not a detail of the ack.
+# Two frontmatter fields agreeing prove only that they were written together.
+# The thing the pause is actually about is a COMMITTED TREE -- and an operator
+# who acknowledges, then commits once more (a second lint fix, a formula they
+# re-pinned after re-reading the diff) leaves the record naming a tree that no
+# longer exists anywhere. On a resume that reads `already performed` and
+# verifies the later tree, every downstream judgment is bound to a commit
+# nothing ever verified, which is lesson L025 reached by a different road --
+# and reached silently, because the two fields still match each other. So the
+# tree is read, not inferred, and a HEAD that has moved past the ack reopens
+# the pause: `orchid task handoff <id> --ack` re-run advances and re-binds,
+# which is precisely the one-command cost the fail-closed direction costs
+# everywhere else here.
+#
+# Fail-closed on every axis: a missing task file, a missing candidate, a stale
+# acknowledgement and an unreadable tree all read `outstanding`. The cost of
+# stopping when the work was in fact done is one operator command; the cost of
+# proceeding when it was not is a burnt attempt on a candidate nobody finished.
 handoff_state() {
-  local repo="$1" id="$2" tf ack cand
+  local repo="$1" id="$2" tf ack cand wt cwd head
   if [ "$(handoff_gate_mode "$repo")" = off ]; then
     printf 'off\tthe handoff_before_verify gate is off for this repository\n'
     return 0
@@ -103,6 +124,19 @@ handoff_state() {
   fi
   if [ "$ack" != "$cand" ]; then
     printf 'outstanding\tthe recorded hand-off is bound to candidate %s, not the current %s\n' "$ack" "$cand"
+    return 0
+  fi
+  # The tree resolved exactly as `orchid verify` and `orchid task handoff`
+  # resolve theirs -- the task's `worktree` when set, else the repo -- so all
+  # three are always talking about the same checkout.
+  wt="$(fm_get "$tf" worktree)"; cwd="$repo"; [ -z "$wt" ] || cwd="$wt"
+  head="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || true)"
+  if [ -z "$head" ]; then
+    printf 'outstanding\tHEAD of %s cannot be read, so nothing confirms the acknowledged candidate %s is still the tree verification would run\n' "$cwd" "$cand"
+    return 0
+  fi
+  if [ "$head" != "$ack" ]; then
+    printf 'outstanding\tthe hand-off was acknowledged for candidate %s, but HEAD of %s is now %s — a commit landed after the acknowledgement, so re-run the ack to advance and re-bind\n' "$ack" "$cwd" "$head"
     return 0
   fi
   printf 'satisfied\toperator hand-off acknowledged for candidate %s\n' "$cand"

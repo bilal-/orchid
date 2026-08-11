@@ -1610,6 +1610,77 @@ case "$bstale" in
     fail "the rework edge re-injected a merge log from a superseded candidate into the brief" ;;
 esac
 
+# --- A BRIEF DESCRIBES ONE CANDIDATE, AND IT DIES WITH IT ------------------
+# Briefs are APPENDED to a body that outlives every candidate in it, so the
+# binding above -- which log may be quoted -- only solves half the problem. The
+# other half is the two briefs now sitting in B010's body: on the next round
+# they are handed to an implementer alongside the new one, in the same voice,
+# with nothing in the text saying which describes the tree it was just given.
+# That is the same defect one layer up, and it is worse than the log case,
+# because locations that were exact when written LOOK actionable forever.
+borchid task advance B010 implementing --reason "fixture: re-dispatch" >/dev/null
+# A REAL second candidate. The aging rule keys on the sha, so a fixture that
+# re-used BHEAD would assert nothing at all. `git reset` first because this
+# checkout's index is stale by construction: orchid moves this branch with
+# `update-ref` and never touches the index, so a plain commit here would build
+# its tree from an index many commits back (PROTOCOL.md says exactly this to
+# operators; the fixture is subject to it too).
+git -C "$BRIEF" reset -q
+printf 'the next candidate\n' > "$BRIEF/note.txt"
+git -C "$BRIEF" add note.txt
+git -C "$BRIEF" commit -q -m "fixture: a second candidate" \
+  || fail "fixture: the second candidate's commit did not land"
+BHEAD2="$(git -C "$BRIEF" rev-parse HEAD)"
+borchid task set B010 candidate_sha "$BHEAD2" >/dev/null
+borchid task advance B010 testing --reason "fixture" >/dev/null
+mk_bindlog "$BRIEF/.orchid/reviews/B010-verify.log" "$BHEAD2" \
+  "lib/later.sh:4: SC2086: reported against the candidate now under work"
+borchid task advance B010 rework --reason "verify failed" >/dev/null
+baged="$(borchid task show B010)"
+
+assert_match "<!-- orchid:rework-brief candidate=$BHEAD2 -->" "$baged" \
+  "every brief NAMES the candidate it describes — without that, nothing downstream can tell one round's locations from another's"
+assert_match "^lib/later\.sh:4: SC2086: reported against the candidate now under work$" "$baged" \
+  "the current candidate's locations are carried, exactly as before"
+assert_match "Superseded rework brief \(candidate " "$baged" \
+  "and the briefs describing the candidate it replaced are aged out where the reader can see it happened"
+case "$baged" in
+  *"lib/example.sh:12: SC2086"*)
+    fail "a superseded candidate's exact locations are still being handed forward verbatim — the implementer cannot tell them from the current ones, which is the L023 defect inside its own remedy" ;;
+esac
+assert_eq 1 "$(printf '%s\n' "$baged" | grep -c 'Rework brief — exact locations')" \
+  "exactly ONE live brief remains: the one describing the candidate now under work"
+assert_match "candidate=$BHEAD superseded" "$baged" \
+  "the aged-out block keeps the candidate it was bound to, so the record of what each round was told survives the withdrawal"
+
+# THE ASSERTION THAT MATTERS, again: the pack. A body that ages briefs but a
+# pack that still ships them would have changed nothing for the actor.
+PACKOUT2="$WORK/packout2"
+rm -rf "$PACKOUT2"
+pack_build "$BRIEF" B010 implement "$PACKOUT2" >/dev/null 2>&1 \
+  || fail "pack_build must succeed for a task carrying an aged brief"
+bpacked2="$(cat "$PACKOUT2/task.md")"
+case "$bpacked2" in
+  *"lib/example.sh:12: SC2086"*)
+    fail "the pack the implementer is actually handed still carries a superseded candidate's locations" ;;
+esac
+assert_match "^lib/later\.sh:4: SC2086: reported against the candidate now under work$" "$bpacked2" \
+  "while the current candidate's locations do reach it"
+
+# Aging is IDEMPOTENT. Rework is a loop, so this pass runs again on every round
+# — re-collapsing an already-collapsed block would re-word and re-count it every
+# time, and the body would drift a little further from what was actually said.
+bsup_n="$(printf '%s\n' "$baged" | grep -c 'Superseded rework brief')"
+borchid task advance B010 implementing --reason "fixture: re-dispatch" >/dev/null
+borchid task set B010 candidate_sha "$BHEAD2" >/dev/null
+borchid task advance B010 testing --reason "fixture" >/dev/null
+borchid task advance B010 rework --reason "merge conflict" >/dev/null
+bagain="$(borchid task show B010)"
+assert_eq "$bsup_n" "$(printf '%s\n' "$bagain" | grep -c 'Superseded rework brief')" \
+  "a block already marked superseded is passed through, never collapsed a second time"
+assert_eq 1 "$(printf '%s\n' "$bagain" | grep -c 'Rework brief — exact locations')" \
+  "and the live brief survives a round that changed no candidate"
+
 # ===========================================================================
 # Part N -- THE OPERATOR HAND-OFF (T010): a named stop, a durable
 # acknowledgement, and a resume rule.
@@ -1789,12 +1860,116 @@ assert_eq "$HHANDOFF_CAND" "$(hfield candidate_sha)" \
 assert_eq "$HHANDOFF_CAND" "$(hfield handoff_ack)" \
   "and binds the acknowledgement to THAT commit, not to the one the hand-off superseded"
 assert_eq "$(hfield candidate_sha)" "$(hfield handoff_ack)" \
-  "leaving the two equal, which is the state a verify-side sha check can accept"
+  "leaving the two equal, which is the state the evidence header below is judged against"
 assert_match "advanced candidate_sha $HHEAD -> $HHANDOFF_CAND" "$(cat "$HANDOFF/.orchid/journal.md")" \
   "and the move is journalled on its own, so an operator reading the trail sees the candidate change"
 assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" "which reads as satisfied"
 assert_match "operator hand-off acknowledged for candidate" "$(cat "$HANDOFF/.orchid/journal.md")" \
   "and it is journalled, so the mechanical steps are part of the durable record"
+
+# --- RED: WHICH COMMIT IT WILL ADVANCE TO IS ITSELF A GATE -----------------
+# Advancing `candidate_sha` to whatever `HEAD` happens to be is a WORSE
+# mis-binding than the drift the advance exists to remove. The drift at least
+# named a commit that really was this candidate's; a record pointed at an
+# unrelated tree names one that shares no history with the work under judgment,
+# while every downstream gate — the verify evidence, the review envelopes bound
+# to it, the merge — carries on as though it did.
+#
+# (a) AN UNRELATED HISTORY. What a checkout left on some other line of work
+# looks like from here. The orphan below shares no ancestor with the candidate
+# at all, so no amount of `.orchid/`-scanning would notice: the range between
+# them is not a range.
+git -C "$HWT" checkout -q --orphan alien || fail "fixture: could not start an unrelated history"
+git -C "$HWT" commit -q -m "an unrelated tree" || fail "fixture: the unrelated commit did not land"
+HALIEN="$(git -C "$HWT" rev-parse HEAD)"
+halien_rc=0
+halien_out="$(horchid task handoff H010 --ack \
+  --reason "fixture: acknowledging against an unrelated tree" 2>&1)" || halien_rc=$?
+[ "$halien_rc" -ne 0 ] \
+  || fail "the ack advanced candidate_sha to a commit that shares NO history with the candidate (it said: $halien_out)"
+assert_match "does not descend from the current candidate" "$halien_out" \
+  "and it refuses on the ground that actually matters — a hand-off only ever ADDS commits on top of the implementer's work (it said: $halien_out)"
+assert_match "$HHANDOFF_CAND" "$halien_out" \
+  "the refusal names the candidate it declined to replace (it said: $halien_out)"
+assert_match "$HALIEN" "$halien_out" \
+  "and the commit it declined to advance to — those two shas ARE the mistake (it said: $halien_out)"
+assert_eq "$HHANDOFF_CAND" "$(hfield candidate_sha)" "the record is untouched by a refused ack"
+assert_eq "$HHANDOFF_CAND" "$(hfield handoff_ack)" "as is the acknowledgement already standing"
+git -C "$HWT" checkout -q -f task/H010 || fail "fixture: could not return to the task branch"
+git -C "$HWT" branch -D alien >/dev/null 2>&1 || true
+
+# (b) A DESCENDANT, BUT NOT ON THE TASK'S BRANCH. Descent alone still admits a
+# commit made on a branch that merely forked from this candidate — which is
+# what an operator working two tasks in two checkouts produces by accident, and
+# it is the shape whose commits silently vanish from the branch that merges.
+git -C "$HWT" checkout -q --detach "$HHANDOFF_CAND" || fail "fixture: could not detach HEAD"
+printf 'sha256 "1111"\n' > "$HWT/formula-pin.txt"
+git -C "$HWT" add formula-pin.txt
+git -C "$HWT" commit -q -m "H010: a mechanical fix committed off the task branch
+
+Orchid-Handoff: operator" || fail "fixture: the off-branch commit did not land"
+HDETACHED="$(git -C "$HWT" rev-parse HEAD)"
+hoff_rc=0
+hoff_out="$(horchid task handoff H010 --ack \
+  --reason "fixture: committed on a detached HEAD" 2>&1)" || hoff_rc=$?
+[ "$hoff_rc" -ne 0 ] \
+  || fail "the ack accepted a commit that is not on the task's branch (it said: $hoff_out)"
+assert_match "is not contained in task H010's branch" "$hoff_out" \
+  "the refusal says which membership failed (it said: $hoff_out)"
+assert_match "$HDETACHED" "$hoff_out" "naming the commit it refused (it said: $hoff_out)"
+assert_match "$HHANDOFF_CAND" "$hoff_out" "and the candidate it would have replaced (it said: $hoff_out)"
+assert_eq "$HHANDOFF_CAND" "$(hfield candidate_sha)" "and again the record is untouched"
+git -C "$HWT" checkout -q -f task/H010 || fail "fixture: could not return to the task branch"
+
+# --- A COMMIT MADE AFTER THE ACK REOPENS THE PAUSE -------------------------
+# The two frontmatter fields agreeing prove only that they were written
+# together. What the pause is about is a committed TREE — and an operator who
+# acknowledges, then commits once more (a second lint fix, a formula re-pinned
+# after re-reading the diff), leaves the record naming a tree that exists
+# nowhere. A resume that read that as "already performed" would verify the
+# later tree and bind every downstream judgment to a commit nothing verified:
+# lesson L025 again, reached silently, because the fields still match.
+printf 'sha256 "2222"\n' > "$HWT/formula-pin.txt"
+git -C "$HWT" add formula-pin.txt
+git -C "$HWT" commit -q -m "H010: re-pin again, after acknowledging
+
+Orchid-Handoff: operator" || fail "fixture: the post-ack commit did not land"
+HHANDOFF_CAND2="$(git -C "$HWT" rev-parse HEAD)"
+assert_eq "$HHANDOFF_CAND" "$(hfield handoff_ack)" \
+  "the acknowledgement still names the commit it was made against"
+assert_eq "$(hfield candidate_sha)" "$(hfield handoff_ack)" \
+  "and the two frontmatter fields still AGREE — which is exactly why comparing them alone is not enough"
+assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "yet the hand-off reads outstanding again: HEAD of the tree verification would run has moved past what was acknowledged"
+assert_match "HEAD of $HWT is now $HHANDOFF_CAND2" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
+  "and the detail names the tree and the commit that moved, so an operator can see what happened"
+rm -f "$HVERIFY_RAN"
+run_hdrive
+assert_eq 16 "$HDRIVE_RC" \
+  "a pass over a tree that moved past its acknowledgement stops at the boundary (out: $HDRIVE_OUT)"
+[ ! -f "$HVERIFY_RAN" ] \
+  || fail "the pass verified a tree nobody acknowledged — two matching fields are not evidence about a commit"
+
+# The branch check is a check on this path too: a record naming a branch this
+# tree does not have can confirm nothing about the commit in front of it.
+horchid task set H010 branch task/never-created >/dev/null
+hnob_rc=0
+hnob_out="$(horchid task handoff H010 --ack --reason "fixture: the record names a branch that does not exist" 2>&1)" || hnob_rc=$?
+[ "$hnob_rc" -ne 0 ] \
+  || fail "the ack advanced against a branch the record names but the tree does not have (it said: $hnob_out)"
+assert_match "which does not exist in" "$hnob_out" \
+  "and says so, rather than failing somewhere less legible (it said: $hnob_out)"
+horchid task set H010 branch task/H010 >/dev/null
+
+# Re-running the ack IS the whole remedy — it advances and re-binds, which is
+# the same one-command cost every other fail-closed axis here charges.
+horchid task handoff H010 --ack --reason "fixture: re-acknowledged after the later commit" >/dev/null
+assert_eq "$HHANDOFF_CAND2" "$(hfield candidate_sha)" \
+  "re-running the ack advances the candidate to the later commit"
+assert_eq "$HHANDOFF_CAND2" "$(hfield handoff_ack)" "and re-binds the acknowledgement to it"
+assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "which settles the pause, so this is a stop with a way out and not a loop"
+HHANDOFF_CAND="$HHANDOFF_CAND2"
 
 # THE PROOF THAT THE HAND-OFF LEFT NO DRIFT BEHIND. `orchid verify` stamps two
 # independent lines into its evidence: `sha:`, read from the tree it actually
@@ -1811,7 +1986,7 @@ HVLOG="$HANDOFF/.orchid/reviews/H010-verify.log"
 assert_eq "$HHANDOFF_CAND" "$(grep '^sha: ' "$HVLOG" | cut -d' ' -f2-)" \
   "verification runs against the tree the hand-off's commit produced"
 assert_eq "$HHANDOFF_CAND" "$(grep '^candidate: ' "$HVLOG" | cut -d' ' -f2-)" \
-  "and its evidence names that same commit as the candidate it judged — the two agree, which is what a verify-side sha check requires"
+  "and its evidence names that same commit as the candidate it judged — the two agree, which is what INV-11's testing -> reviewing gate reads out of this header"
 rm -f "$HVERIFY_RAN"
 
 # Pass 3 -- A SECOND PASS AFTER AN ACKNOWLEDGED HAND-OFF PROCEEDS.

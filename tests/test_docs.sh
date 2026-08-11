@@ -638,3 +638,59 @@ grep -qF 'Qualify a repository before acknowledging it' "$REPO_ROOT/PROTOCOL.md"
 # The release-day checklist must include the local rehearsal.
 grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
   || fail "docs/install.md's release-day steps must include the local rehearsal"
+
+# ===========================================================================
+# T010 -- THE DOCS DESCRIBE THE TREE THEY SHIP IN, in BOTH directions.
+#
+# The operator hand-off leaves `candidate_sha` equal to the `HEAD` its own
+# commits produced, and it is tempting to explain that by naming the check that
+# would consume the equality: a verification that REFUSES to run when the two
+# disagree. No such refusal is in this tree -- `libexec/orchid-verify` records
+# both shas into its evidence header and runs regardless; the gate that reads
+# them is INV-11's, on the `testing -> reviewing` advance, afterwards. A task
+# proposing the verify-side refusal (T031) is unmerged. A doc that describes an
+# unmerged task's design in the present tense is indistinguishable, to every
+# later reader, from one describing shipped behaviour, and the cost lands on
+# whoever trusts it.
+#
+# So this is a TWO-WAY tripwire on the source, not a one-off correction of the
+# prose. While `orchid verify` compares nothing, the docs must say so; the day
+# it does compare, the same assertion fails and sends the person who landed it
+# to the sentences that have just become false. The discriminator is
+# mechanical: no line of that verb outside a comment mentions both shas today,
+# and any comparison of them necessarily would.
+VERIFY_SRC="$REPO_ROOT/libexec/orchid-verify"
+[ -f "$VERIFY_SRC" ] \
+  || fail "libexec/orchid-verify must exist — the check below reads it as the source of truth about what verification does"
+verify_compares=0
+# Captured, then matched from a HERESTRING -- never `grep -v ... | grep -Eq`.
+# This file runs under `pipefail`, and `grep -q` exits at its first match,
+# SIGPIPEing the upstream grep mid-write; pipefail then promotes that 141 to
+# the pipeline's status and the `if` reads "no match" for a pattern that DID
+# match. A tripwire that silently inverts is worse than no tripwire.
+verify_body="$(grep -v '^[[:space:]]*#' "$VERIFY_SRC" 2>/dev/null || true)"
+if grep -Eq '\$sha.*\$cand|\$cand.*\$sha' <<<"$verify_body"; then
+  verify_compares=1
+fi
+for doc in PROTOCOL.md docs/specs/kernel.md; do
+  if [ "$verify_compares" -eq 1 ]; then
+    grep -qF 'does not compare' "$REPO_ROOT/$doc" \
+      && fail "$doc still says 'orchid verify' compares no shas before running, but libexec/orchid-verify now does — the sentence that was honest about an unlanded gate has become a false one about a landed gate"
+  else
+    grep -qF 'does not compare' "$REPO_ROOT/$doc" \
+      || fail "$doc must state that 'orchid verify' performs no sha comparison as this ships — describing an unmerged task's design (T031) in the present tense reads as shipped behaviour to every later reader"
+  fi
+done
+if [ "$verify_compares" -eq 0 ]; then
+  grep -qF 'verify-side sha check requires' "$REPO_ROOT/PROTOCOL.md" \
+    && fail "PROTOCOL.md asserts a verify-side sha refusal in the present tense and no such refusal is in libexec/orchid-verify — state the dependency as a dependency, or describe the tree this ships in"
+fi
+
+# The rework brief is one brief, not an accumulating pile: PROTOCOL.md has to
+# say that each block names its candidate and that superseded ones are aged
+# out, because an implementer handed three briefs cannot tell which describes
+# the tree it was just given.
+grep -qF 'aged out' "$REPO_ROOT/PROTOCOL.md" \
+  || fail "PROTOCOL.md's rework-brief section must state that briefs describing a replaced candidate are aged out — otherwise re-serving them reads as intended behaviour"
+grep -qF 'FINDINGS_BRIEF_MARK' "$REPO_ROOT/lib/findings.sh" \
+  || fail "lib/findings.sh must keep the marker that binds each brief to its candidate — the aging pass is only as good as what identifies a block"

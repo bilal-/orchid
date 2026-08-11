@@ -41,6 +41,28 @@ needs_reason() { case "$1:$2" in
 
 rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
 
+# refresh_briefs <task-file> <id> -- the task body as the NEXT implementer
+# should read it, printed for the caller to pipe into atomic_write: every
+# rework brief bound to a candidate other than the current one collapsed to a
+# superseded notice, and -- when a failing gate left location-bearing evidence
+# for the CURRENT candidate -- one fresh brief appended.
+#
+# Both halves belong to the same moment, which is why they are one function
+# called from all three entries to `rework` (`advance`, `unblock`, `retry`)
+# rather than an append at each. A brief is APPENDED to a body that outlives
+# the candidate it describes, so appending alone means round three hands the
+# implementer round one's line numbers next to round three's with nothing to
+# tell them apart -- the mechanism that exists to carry the CURRENT failure,
+# quietly re-serving expired ones. The aging pass is what makes "the brief"
+# singular. See lib/findings.sh.
+refresh_briefs() {
+  local rf="$1" rid="$2" rcand rbrief
+  rcand="$(fm_get "$rf" candidate_sha)"
+  rbrief="$(findings_brief "$state" "$rid" "$rcand")"
+  findings_age_briefs "$rf" "$rcand"
+  [ -z "$rbrief" ] || printf '\n%s\n' "$rbrief"
+}
+
 case "$sub" in
   create)
     verb_lock_guard "$repo"
@@ -417,10 +439,11 @@ case "$sub" in
       # heading promising locations it does not have. The candidate is passed
       # in because the brief only quotes evidence BOUND to it: a log whose
       # header names a superseded candidate is dropped, not carried forward.
-      brief="$(findings_brief "$state" "$id" "$(fm_get "$f" candidate_sha)")"
-      if [ -n "$brief" ]; then
-        { cat "$f"; printf '\n%s\n' "$brief"; } | atomic_write "$f"
-      fi
+      # The same rule is applied to the briefs ALREADY in the body, which is
+      # the other end of the same defect: each one names the candidate it
+      # describes, and this pass ages out the ones that describe a candidate
+      # this task has since replaced (refresh_briefs, above).
+      refresh_briefs "$f" "$id" | atomic_write "$f"
       # An operator hand-off is acknowledged AGAINST a candidate, and a rework
       # round exists to mint a different one -- so the acknowledgement does
       # not survive entry to rework, the same INV-07 symmetry the evidence
@@ -551,8 +574,13 @@ case "$sub" in
     # hand-off. So the ack reads HEAD of the tree verification will use --
     # resolved exactly as `orchid verify` resolves its own cwd (the task's
     # `worktree` when set, else the repo) -- and moves `candidate_sha` there
-    # first. That leaves the two equal, which is the state T031's verify-side
-    # refusal is there to require.
+    # first. That leaves the two equal, so `orchid verify`'s two header lines
+    # (`sha:`, read from the tree it ran in, and `candidate:`, read from
+    # frontmatter) agree, and the INV-11 gate on `testing -> reviewing` accepts
+    # the evidence. As this ships, `orchid verify` itself does not compare them
+    # before running; a task proposing that it refuse outright (T031) is
+    # unmerged at the time of writing, and if it lands, this equality is the
+    # state it would require -- nothing here depends on it either way.
     #
     # `--clear` withdraws it. Idempotent by content, like `run boundary set`:
     # clearing a field that is already empty journals nothing, so the rebase
@@ -599,6 +627,39 @@ case "$sub" in
     hhead="$(git -C "$hcwd" rev-parse HEAD 2>/dev/null || true)"
     [ -n "$hhead" ] || orchid_die "cannot read HEAD of $hcwd — a hand-off is acknowledged against the tree 'orchid verify' will run in, and that tree cannot be read"
     if [ "$hhead" != "$cand" ]; then
+      # WHICH COMMIT, THOUGH. Advancing to whatever HEAD happens to be is a
+      # WORSE mis-binding than the drift this advance exists to remove: a tree
+      # left on another task's branch, a HEAD detached by a bisect, a worktree
+      # path since reused for something else, and the record would name a
+      # commit that shares no history with the work under judgment while every
+      # downstream gate carries on as though it did. The drift at least named a
+      # commit that was really this candidate's.
+      #
+      # So the new commit must be BOTH:
+      #
+      #   * a DESCENDANT of the candidate it replaces. A hand-off only ever
+      #     adds commits on top of the implementer's work -- a lint fix, a
+      #     re-pinned checksum, a mode bit -- so anything that does not contain
+      #     that work is not this candidate's hand-off, whatever else it is.
+      #   * ON the branch the task record names. Descent alone still admits a
+      #     commit made on some other branch that happened to fork from this
+      #     candidate, which is exactly what an operator working two tasks in
+      #     two checkouts produces by mistake.
+      #
+      # Both refusals name BOTH shas, because the whole content of the mistake
+      # is which two commits were about to be conflated.
+      if ! git -C "$hcwd" merge-base --is-ancestor "$cand" "$hhead" 2>/dev/null; then
+        orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hhead does not descend from the current candidate $cand, so it is not this candidate's hand-off (HEAD of $hcwd is on an unrelated history — check out the task's own branch, commit the mechanical step on top of $cand, and re-run)"
+      fi
+      hbranch="$(fm_get "$f" branch)"
+      if [ -n "$hbranch" ]; then
+        if ! git -C "$hcwd" rev-parse --verify --quiet "refs/heads/$hbranch" >/dev/null 2>&1; then
+          orchid_die "refusing to advance candidate_sha $cand -> $hhead: task $id names branch '$hbranch', which does not exist in $hcwd, so nothing can confirm $hhead belongs to this task's line of work (create it at the hand-off commit, or point the record at the branch the work is really on with 'orchid task set $id branch <name>')"
+        fi
+        if ! git -C "$hcwd" merge-base --is-ancestor "$hhead" "refs/heads/$hbranch" 2>/dev/null; then
+          orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hhead is not contained in task $id's branch '$hbranch' (HEAD of $hcwd is detached, or on another branch — commit the mechanical step on '$hbranch' and re-run; the candidate it would have replaced is $cand)"
+        fi
+      fi
       # INV-04, re-checked. Entry to `testing` scans base..candidate for
       # `.orchid/` commits, and this is the only other path that moves
       # candidate_sha forward past that gate -- so an operator's mechanical
@@ -671,10 +732,9 @@ case "$sub" in
     # failing gate's exact locations are deleted two lines below. The brief
     # goes in FIRST and the operator's own guidance last, so the guidance
     # reads as the final word on top of the evidence rather than being buried
-    # under it. Candidate-bound, as on the advance arm.
-    brief="$(findings_brief "$state" "$id" "$(fm_get "$f" candidate_sha)")"
-    { cat "$f"
-      [ -z "$brief" ] || printf '\n%s\n' "$brief"
+    # under it. Candidate-bound, as on the advance arm -- and briefs describing
+    # a candidate this task has replaced are aged out in the same pass.
+    { refresh_briefs "$f" "$id"
       printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"
     } | atomic_write "$f"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
@@ -707,11 +767,9 @@ case "$sub" in
     # advance:rework arm). `retry` is the verb an operator reaches for after
     # `attempts exhausted`, which is exactly the moment the last verify log's
     # locations are most worth carrying forward -- if, and only if, that log
-    # is still bound to the candidate being retried.
-    brief="$(findings_brief "$state" "$id" "$(fm_get "$f" candidate_sha)")"
-    if [ -n "$brief" ]; then
-      { cat "$f"; printf '\n%s\n' "$brief"; } | atomic_write "$f"
-    fi
+    # is still bound to the candidate being retried -- and, in the same pass,
+    # the briefs already in the body that describe a candidate it is not.
+    refresh_briefs "$f" "$id" | atomic_write "$f"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
     # with the advance:rework arm and orchid-merge's rebase-reset) -- and any
     # operator hand-off bound to the candidate being replaced.

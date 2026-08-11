@@ -34,6 +34,25 @@
 # Read-only: every function here reads a log and prints text. The append
 # itself is done by libexec/orchid-task, the task file's single writer.
 
+# FINDINGS_BRIEF_MARK -- the marker every brief block is fenced with, so a
+# brief is a STRUCTURED region of the task body rather than a heading someone
+# has to recognize by its prose:
+#
+#   <!-- orchid:rework-brief candidate=<sha> -->
+#   ... the heading, the prose, the quoted locations ...
+#   <!-- orchid:rework-brief-end -->
+#
+# EVERY BRIEF NAMES THE CANDIDATE IT DESCRIBES, and that is not decoration.
+# Briefs are APPENDED, once per rework round, to a body that survives every
+# round -- so without a candidate on each block and something that acts on it,
+# round three hands the implementer round one's line numbers alongside round
+# three's, with nothing in the text to tell them apart. That is the same defect
+# `findings_brief`'s sha binding refuses at the log end (evidence belongs to the
+# candidate that produced it), reappearing one layer up inside its own remedy:
+# locations that were exact when written, re-served against a tree they were
+# never reported against. `findings_age_briefs` is what closes it.
+FINDINGS_BRIEF_MARK="orchid:rework-brief"
+
 # FINDINGS_MAX_LINES -- the cap on how many diagnostic lines ONE brief block
 # carries. `task.md` is a NON-TRUNCATABLE pack input (lib/pack.sh: a pack
 # whose non-truncatable inputs exceed `pack_budget_bytes` fails outright with
@@ -212,8 +231,9 @@ $lines
 "
   done
   [ -n "$out" ] || return 0
+  printf '<!-- %s candidate=%s -->\n' "$FINDINGS_BRIEF_MARK" "$cand"
+  printf '**Rework brief — exact locations reported by the failing gate (candidate `%.12s`):**\n' "$cand"
   cat <<'HEADER'
-**Rework brief — exact locations reported by the failing gate:**
 
 These are the gate's own `file:line: RULE: message` lines, copied verbatim.
 They are carried here because the actor asked to fix them may not be able to
@@ -223,4 +243,71 @@ Running the linter, or committing its own fix, is operator work — see
 PROTOCOL.md, "The operator hand-off".
 HEADER
   printf '%s\n' "$out"
+  printf '<!-- %s-end -->\n' "$FINDINGS_BRIEF_MARK"
+}
+
+# findings_age_briefs <task-file> <current-candidate> -- the task body with
+# every brief block that describes some OTHER candidate collapsed to a short
+# superseded notice, and every block describing <current-candidate> passed
+# through untouched. Prints the whole file; writes nothing.
+#
+# WHY THE OLD ONES CANNOT SIMPLY STAY. `lib/pack.sh` copies the task body
+# verbatim into the implementer's pack as `task.md`, so every live brief in it
+# is an instruction that actor reads as current. A brief from a candidate two
+# rounds dead names lines that a later tree may have moved, renamed or already
+# fixed -- and the implementer has no way to tell which of the three briefs in
+# front of it describes the tree it was just handed. In r-001 that shape cost
+# T005 two rework rounds against locations it could not see; re-serving expired
+# ones costs the same rounds against locations that are no longer true, which is
+# strictly worse: they LOOK actionable.
+#
+# WHY COLLAPSED RATHER THAN DELETED. The task body is the durable record of what
+# each round was told, and silently rewriting it to look as though a brief was
+# never issued would hide exactly the history a reviewer reads it for. So the
+# block keeps its marker, keeps the candidate it was bound to, and says how many
+# diagnostic lines it carried -- the record survives, the instruction does not.
+#
+# IDEMPOTENT: a block already marked `superseded` is passed through unchanged
+# rather than re-collapsed, so the repeated calls this gets (one per entry to
+# `rework`, and rework is the loop) neither re-count nor re-word it.
+#
+# A candidate of `none`, or none at all, ages EVERY live brief: nothing binds to
+# a task with no committed candidate, which is the same rule `findings_brief`
+# applies when it refuses to quote a log for one.
+findings_age_briefs() {
+  local f="$1" cur="${2:-}"
+  [ -f "$f" ] || return 0
+  [ "$cur" != none ] || cur=""
+  awk -v mark="$FINDINGS_BRIEF_MARK" -v cur="$cur" '
+    function collapse() {
+      printf "<!-- %s candidate=%s superseded -->\n", mark, blkcand
+      printf "**Superseded rework brief (candidate `%.12s`) — %d line(s) withdrawn.**\n", blkcand, dropped
+      print "They were reported against a candidate that is no longer the one under"
+      print "work, so their line numbers describe a tree that no longer exists. Do not"
+      print "act on them: the locations for the candidate now under work, if the gate"
+      print "reported any, are in the brief marked with that sha."
+      printf "<!-- %s-end -->\n", mark
+    }
+    $0 ~ ("^<!-- " mark " candidate=") && inblk == 0 {
+      blkcand = $0
+      sub("^<!-- " mark " candidate=", "", blkcand)
+      sub(/ .*$/, "", blkcand)
+      keep = (index($0, " superseded ") > 0) || (cur != "" && blkcand == cur)
+      dropped = 0
+      inblk = 1
+      if (keep) print
+      next
+    }
+    inblk && $0 == ("<!-- " mark "-end -->") {
+      if (keep) print; else collapse()
+      inblk = 0
+      next
+    }
+    inblk { if (keep) print; else dropped++; next }
+    { print }
+    # A block whose end marker never arrived (a body truncated by hand) is
+    # closed here rather than dropped: losing the tail of a task file silently
+    # is a worse outcome than an unmatched marker an operator can see.
+    END { if (inblk && !keep) collapse() }
+  ' "$f"
 }

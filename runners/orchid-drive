@@ -99,10 +99,12 @@ an `operator-handoff` boundary instead of verifying — verifying first would
 spend one of the task's three rework rounds on a failure nobody was going to
 fix in that round. The stop is on a durable acknowledgement bound to a
 candidate (`orchid task handoff <id> --ack --reason "..."`, which advances
-candidate_sha to the commit the hand-off itself produced and binds to that),
+candidate_sha to the commit the hand-off itself produced — refusing a HEAD that
+does not descend from the current candidate or does not sit on the task's
+branch — and binds to that),
 not on the moment, so a resumed session proceeds once it has been made and
-stops again the moment a rebase or a fresh rework round moves the candidate
-out from under it. The boundary is operator-only by design: no verb an
+stops again the moment a rebase, a fresh rework round, or one more commit moves
+the tree out from under it. The boundary is operator-only by design: no verb an
 orchestrator can run performs the work.
 
 A pass that reads every task as `done` takes COMPLETION's mechanical first

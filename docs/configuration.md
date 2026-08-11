@@ -127,9 +127,13 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   recorded. Perform the steps, commit them, then
   `orchid task handoff <id> --ack --reason "..."` — which advances
   `candidate_sha` to the commit the hand-off produced (so the record names the
-  tree verification will run, not the one captured before it) and binds the
-  acknowledgement to that, so a resumed session or a second driver pass
-  proceeds, and a rebase or a fresh rework round invalidates it exactly as
+  tree verification will run, not the one captured before it; a `HEAD` that
+  does not descend from the current candidate, or does not sit on the task's
+  branch, is refused rather than adopted) and binds the acknowledgement to
+  that, so a resumed session or a second driver pass
+  proceeds. Acknowledge LAST: a commit made after the ack leaves the tree ahead
+  of what was acknowledged, which reopens the pause until you re-run the verb.
+  A rebase or a fresh rework round invalidates it exactly as
   INV-07 invalidates verify evidence. Any value
   other than `off` reads as `required`, so a typo can only route more work to
   a human, never less.

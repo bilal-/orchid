@@ -93,8 +93,9 @@ pack_budget_bytes=65536
 # instead of verifying a candidate that was never going to pass and spending a
 # rework round on it. Perform the steps, then record them with
 # `orchid task handoff <id> --ack --reason "..."` -- the acknowledgement is
-# bound to that task's current candidate_sha, so a resumed session proceeds
-# and a rebase or a fresh rework round invalidates it (INV-07). `off` (the
+# bound to that task's current candidate_sha AND to the tree's HEAD, so a
+# resumed session proceeds, while a rebase, a fresh rework round or one more
+# commit after the ack invalidates it (INV-07; re-run the verb). `off` (the
 # default) never gates anything; any OTHER value reads as `required`, so a
 # typo here can only ever route more work to a human, never less. Turning it
 # on is an operator decision, landed like any other config change with
