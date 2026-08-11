@@ -407,8 +407,11 @@ branch), before you ever act on stale state by accident.
 ## Stale orchid itself (`refusing to run`)
 
 **Symptom:** every verb refuses immediately with `refusing to run: the
-checkout orchid itself runs from (...) sits on the integration branch ... and
-its kernel files do not match HEAD`.
+checkout orchid itself runs from (...) sits on the integration branch ...`,
+followed by **which** mismatch it found: the kernel files are `BEHIND that
+branch`, they are `LOCALLY MODIFIED`, or they are both. Read that word before
+you type anything — the fix for the first is a command that destroys your work
+in the other two, and the refusal says so in each case.
 
 This is the same staleness one level down, and it is a refusal rather than a
 warning because the advisory version was read and dismissed for a full day
@@ -421,43 +424,76 @@ index or working tree. Run orchid out of a checkout of that branch and it
 keeps executing pre-merge code indefinitely while every merge reports
 success.
 
+The same applies to `PROTOCOL.md`, which is not code and is executed all the
+same: the skills under `skills/` carry no procedure of their own, they tell
+the engine to read `$ORCHID_ROOT/PROTOCOL.md` and follow it, so a merge that
+changes only the protocol leaves a stale checkout running the **pre-merge
+procedure**. It is compared and refreshed exactly like the eight directories.
+
 Only self-hosted setups can hit this — an installation root that is not a git
 checkout (the `brew`/`install.sh` prefix) has no branch for anything to
-advance.
+advance. Nor does it reach a **separate clone**: refs are per-repository, so
+your clone's `HEAD` does not move when the origin's integration branch does,
+its working tree goes on matching its own `HEAD`, and there is nothing for
+this check to compare. A clone goes stale the ordinary way and is refreshed
+the ordinary way (`git pull`). What *is* covered is any checkout that shares
+the advanced ref — a linked worktree (`git worktree add`), or a second
+checkout of the same repository parked on that branch.
 
 **You should rarely see it at all.** The merge that creates the condition
 repairs the checkout it is itself running from: after the ref advance,
 `orchid merge` restores that one checkout's kernel directories to the branch
 it just moved, prints `refreshed <path> to <branch>`, and the run goes on
 executing its own merged work. The refusal is for the checkouts no process
-owns — a second clone, a parallel checkout of the same branch, or one whose
-kernel files you have edited by hand (which is the one case `orchid merge`
-deliberately will **not** refresh, because refreshing it would throw your
-edits away). In that last case the merge says so on stderr as it happens
-(one line, wrapped here):
+owns — a parallel checkout of the same branch, or one whose kernel files you
+have edited by hand (which is the one case `orchid merge` deliberately will
+**not** refresh, because refreshing it would throw your edits away). In that
+last case the merge says so on stderr as it happens (one line, wrapped here):
 
 ```
 orchid: warning: orchid/integration advanced and orchid runs from this
 checkout (...), but its kernel files were already modified before the merge
-— refreshing would have discarded that work, so it was not done.
+— refreshing would have discarded that work, so it was not done. ... Save the
+edits first ... because the refresh that clears the refusal ... overwrites
+those paths with HEAD's copy and destroys them.
 ```
 
-If you see that, your own edit is why the next verb refuses. Commit it on a
-task branch and merge it, or stash it, before running the refresh below —
-that command restores the branch's version of those files over yours.
+If you see that, your own edit is why the next verb refuses, and the refusal
+will say `BOTH behind that branch AND locally modified` and name the files.
 
-The fix is to restore orchid's own code, and nothing else:
+### `LOCALLY MODIFIED` (or `BOTH ...`): save the edit first
+
+The refusal names the modified paths. Those bytes exist nowhere else, so deal
+with them *before* the refresh below, which overwrites them:
 
 ```sh
-git checkout HEAD -- bin lib libexec runners plugins roles skills templates
+git stash push -- bin lib libexec runners plugins roles skills templates PROTOCOL.md
+# ...or commit them on a task branch and let the run merge them.
 ```
 
-Then re-run the verb. Note what that command does *not* name: `.orchid/` and
-`orchid.config` are outside it, so uncommitted run state and a config edit
-awaiting `orchid config commit` are untouched. Prefer it over
-`git checkout HEAD -- .`, which restores your pending `orchid.config` along
-with the kernel — and which, without `':(exclude).orchid'`, clobbers
-uncommitted `.orchid/` run state as well.
+If you only want to keep working with the edit live — the ordinary case for
+someone developing orchid in its own integration checkout — don't refresh at
+all; run with the override at the bottom of this section instead.
+
+### `BEHIND that branch`: restore orchid's own code, and nothing else
+
+This is the case where the restore costs nothing: the refusal reaches it only
+when nothing in those paths differs from the index, so every byte it
+overwrites is already in the object store.
+
+```sh
+git checkout HEAD -- bin lib libexec runners plugins roles skills templates PROTOCOL.md
+```
+
+Then re-run the verb. Note what that command does *not* name: `.orchid/`,
+`orchid.config` and `requirements.md` are outside it, so uncommitted run
+state, a config edit awaiting `orchid config commit` and a requirements draft
+are untouched. Prefer it over `git checkout HEAD -- .`, which restores your
+pending `orchid.config` and `requirements.md` along with the kernel — and
+which, without `':(exclude).orchid'`, clobbers uncommitted `.orchid/` run
+state as well. (Dogfood finding F31 is an operator's `requirements.md` edit
+lost to a restore run to clear a refusal — which is why the refusal above
+tells you which case you are in before it names any command at all.)
 
 **If the refusal survives that command**, the branch *deleted* a kernel file
 your checkout still has. `git checkout <tree> -- <paths>` never removes an
@@ -465,15 +501,15 @@ index entry the tree has dropped, so that file stays tracked and keeps
 counting as drift. Clear it with:
 
 ```sh
-git reset -q HEAD -- bin lib libexec runners plugins roles skills templates
-git checkout -q HEAD -- bin lib libexec runners plugins roles skills templates
-git clean -qfd -- bin lib libexec runners plugins roles skills templates
+git reset -q HEAD -- bin lib libexec runners plugins roles skills templates PROTOCOL.md
+git checkout -q HEAD -- bin lib libexec runners plugins roles skills templates PROTOCOL.md
+git clean -qfd -- bin lib libexec runners plugins roles skills templates PROTOCOL.md
 ```
 
 The `git clean` step removes **every** untracked file inside those eight
 directories, not just the one the reset dropped — check `git clean -nd -- ...`
-first if you keep scratch files under `plugins/`. It cannot reach `.orchid/`
-or `orchid.config`, which are outside the pathspec.
+first if you keep scratch files under `plugins/`. It cannot reach `.orchid/`,
+`orchid.config` or `requirements.md`, which are outside the pathspec.
 
 **The other way the refusal survives a refresh** is an untracked file of your
 own sitting at a path the branch has since added — say a draft
@@ -491,17 +527,20 @@ Two things this deliberately does **not** do. It only asks about a checkout
 parked on the **integration branch** — the one branch a run merges onto, and
 so the only one that can move behind your back. A development checkout on
 `main`, on a feature branch, or in a task worktree is never asked, however
-dirty it is. And even on the integration branch it only compares the
-directories the launcher executes from (`bin/`, `lib/`, `libexec/`,
-`runners/`, `plugins/`, `roles/`, `skills/`, `templates/`) — an uncommitted
-`orchid.config` awaiting `orchid config commit`, or `.orchid/` run state the
-branch has since moved past, is not a refusal.
+dirty it is. And even on the integration branch it only compares what the
+launcher executes — the eight directories `bin/`, `lib/`, `libexec/`,
+`runners/`, `plugins/`, `roles/`, `skills/`, `templates/`, plus `PROTOCOL.md`
+— so an uncommitted `orchid.config` awaiting `orchid config commit`, a
+`requirements.md` you are still drafting, or `.orchid/` run state the branch
+has since moved past is not a refusal.
 
 The one case this does refuse that a warning would not: hand-editing kernel
 files directly in the integration checkout. That checkout is what drives the
 run, so an uncommitted edit there means the run is being driven by code no
-review ever saw. Commit it on a task branch and merge it, or use the override
-below while you iterate.
+review ever saw. It is reported as `LOCALLY MODIFIED`, with the files named
+and without a restore command attached, because there is no version of that
+edit anywhere but your disk. Commit it on a task branch and merge it, stash
+it, or use the override below while you iterate.
 
 To run a single command from a checkout you know is stale — to read something
 out of it, or to recover — prefix it:

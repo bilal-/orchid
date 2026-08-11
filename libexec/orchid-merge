@@ -293,9 +293,12 @@ if [ "$rc" -eq 0 ]; then
   # So refresh it. This is NOT the rejected "merge refreshes other checkouts"
   # remedy (see orchid_root_stale): the one checkout written here is the one
   # this process is already operating on and already holds the run lock for.
-  # A second clone, an operator's parallel checkout, a worktree this process
-  # cannot see -- none of them is touched, and none of them can be, which is
-  # exactly why the refusal still has to exist for them.
+  # An operator's parallel checkout, a linked worktree this process cannot see
+  # -- neither is touched, and neither can be, which is exactly why the
+  # refusal still has to exist for them. (A separate CLONE is a different
+  # story: its refs are its own, so this update-ref does not make it stale and
+  # the refusal cannot see it either way. lib/common.sh says so where it says
+  # who the refusal is for.)
   #
   # Decided BEFORE the advance, because afterwards "this tree fell behind" and
   # "someone is editing the kernel here" look identical. orchid_kernel_clean
@@ -354,12 +357,16 @@ if [ "$rc" -eq 0 ]; then
   if [ "$self_checkout" -eq 1 ] && ! orchid_kernel_clean "$repo"; then
     if [ "$refresh_self" -eq 0 ]; then
       # The declined refresh, said out loud. This is the ONE outcome where the
-      # merge leaves its own launcher stale on purpose, and the refusal the
-      # operator meets next names the general cause ("that branch was advanced
-      # without this working tree being refreshed") rather than the specific
-      # one standing in front of them. Say the specific one here, while the
-      # merge that created it is still on screen.
-      echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Every verb here will now refuse. Commit those edits on a task branch (or stash them), then run: git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}" >&2
+      # merge leaves its own launcher stale on purpose, so the operator is owed
+      # the reason at the moment it is created rather than only when the next
+      # verb refuses. The refusal itself now agrees with this warning instead
+      # of contradicting it -- it reports "BOTH behind that branch AND locally
+      # modified" and names the files, where it used to assert the branch
+      # advance alone and prescribe a refresh that would have thrown this edit
+      # away (lib/common.sh, _orchid_stale_root_die). Both places therefore say
+      # the same two things: the edit is why, and the obvious remedy destroys
+      # it.
+      echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Every verb here will now refuse, and will say the same thing. Save the edits first — commit them on a task branch, or 'git -C $repo stash push -- ${ORCHID_KERNEL_PATHS[*]}' — because the refresh that clears the refusal, 'git -C $repo checkout HEAD -- ${ORCHID_KERNEL_PATHS[*]}', overwrites those paths with HEAD's copy and destroys them" >&2
     elif orchid_refresh_kernel "$repo"; then
       echo "refreshed $repo to $integ (orchid runs from this checkout)"
     else

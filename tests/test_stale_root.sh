@@ -45,25 +45,53 @@ source "$(dirname "$0")/helpers.sh"
 # operator's, 10 is a merge that correctly declines to refresh over their
 # uncommitted kernel edit and then has to SAY so, because the refusal they
 # meet next describes a cause that is not the one in front of them.
+#
+# 12 and 13 are the two the earlier rounds of this task did not have, and both
+# are defects the guard SHIPPED with rather than hazards it might have had.
+#
+#   * 12: PROTOCOL.md is executed, not merely read. The skills carry no
+#     procedure of their own -- they tell the engine to read
+#     $ORCHID_ROOT/PROTOCOL.md and follow it -- so a merge that changes ONLY
+#     the protocol used to be invisible to this guard: no refusal, no
+#     refresh, and a run that went on executing the PRE-MERGE procedure. That
+#     is this task's own failure class on the one file that defines the
+#     procedure.
+#   * 13: the refusal's DIAGNOSIS, which was previously a single sentence
+#     asserting a branch advance whatever it had actually found. Met with a
+#     hand-edited kernel -- a state `orchid merge` itself creates whenever it
+#     declines to refresh (check 10) -- it named the wrong cause and
+#     prescribed `git checkout HEAD -- <kernel paths>`, which throws the
+#     operator's uncommitted edit away without a word. Dogfood finding F31 is
+#     that shape costing a requirements.md edit. So: which mismatch, in the
+#     message; the files named when they are the operator's; and never a bare
+#     restore command where something can be lost.
 # ---------------------------------------------------------------------------
 
 # The one list the guard, the refresh and the documented remedy all use. Kept
 # here literally, NOT sourced from lib/common.sh, so that a silent edit to
 # ORCHID_KERNEL_PATHS has to be made in two places and is seen in review.
-KERNEL=(bin lib libexec runners plugins roles skills templates)
+#
+# Split in two because the fixture builder below has to MAKE these paths and
+# they are not all of a kind: eight directories the launcher executes out of,
+# and one FILE, PROTOCOL.md, which is the procedure a tick executes. The guard
+# treats them identically (a pathspec is a pathspec); only `mkdir` cares.
+KERNEL_DIRS=(bin lib libexec runners plugins roles skills templates)
+KERNEL=("${KERNEL_DIRS[@]}" PROTOCOL.md)
 
 # make_root <dir> <branch> -- a minimal but REAL orchid installation root: the
 # shipped dispatcher and the shipped lib/common.sh under test, plus one
 # `version` verb whose only job is to report WHICH copy of itself just ran,
-# and one `gone` verb that a later commit deletes. Every kernel directory
-# exists, so the remedy the refusal prints can be run against it verbatim.
+# and one `gone` verb that a later commit deletes. Every kernel path exists --
+# the eight directories and PROTOCOL.md -- so the remedy the refusal prints
+# can be run against it verbatim.
 # Committed on <branch> alongside one tracked `.orchid/journal.md` standing in
 # for durable run state and one tracked `orchid.config`. The branch is pinned
 # explicitly so the fixture never depends on the machine's
 # `init.defaultBranch`.
 make_root() {
   local dir="$1" branch="$2" d
-  for d in "${KERNEL[@]}"; do mkdir -p "$dir/$d"; printf 'fixture\n' > "$dir/$d/.keep"; done
+  for d in "${KERNEL_DIRS[@]}"; do mkdir -p "$dir/$d"; printf 'fixture\n' > "$dir/$d/.keep"; done
+  printf 'PROTOCOL v1\n' > "$dir/PROTOCOL.md"
   mkdir -p "$dir/.orchid"
   cp "$REPO_ROOT/bin/orchid" "$dir/bin/orchid"
   cp "$REPO_ROOT/lib/common.sh" "$dir/lib/common.sh"
@@ -143,8 +171,10 @@ assert_eq 1 "$rc" "a stale integration checkout refuses to run, it does not mere
 assert_match "refusing to run: the checkout orchid itself runs from" "$out" \
   "the refusal says the ROOT is what is stale, not the managed repo"
 assert_match "orchid/integration" "$out" "the refusal names the branch it is parked on"
-assert_match "checkout HEAD -- bin lib libexec runners plugins roles skills templates" "$out" \
-  "the refusal names the kernel-scoped refresh"
+assert_match "BEHIND that branch" "$out" \
+  "and names the mismatch it actually found -- this checkout fell behind, nothing here is hand-edited"
+assert_match "checkout HEAD -- bin lib libexec runners plugins roles skills templates PROTOCOL.md" "$out" \
+  "the refusal names the kernel-scoped refresh, PROTOCOL.md included"
 if grep -qE "checkout HEAD -- \." <<<"$out"; then
   fail "the refusal must never print a whole-tree refresh: that restores the uncommitted orchid.config the design promises to leave alone"
 fi
@@ -488,10 +518,10 @@ assert_eq 0 "$rc" "an ordinary verb runs against the refreshed checkout"
 # side of it: the branch still advances, so this checkout still goes stale,
 # and the only place that can be explained while it is still comprehensible
 # is the merge that did it. A silent advance here means the operator meets a
-# refusal whose message names the general cause ("advanced without this
-# working tree being refreshed") and not the specific one -- their own edit --
-# and the obvious reading of that message is to run the refresh that discards
-# it.
+# refusal with no idea their own edit is why. Check 13 pins the other half of
+# that conversation -- the refusal itself now reports the edit and warns what
+# the refresh would cost -- but this warning is still the only one that fires
+# while the merge that caused it is on screen.
 #
 # The edit is STAGED and reverted on disk on purpose. That is the one shape
 # that gets past the guard (which compares the working tree) while
@@ -640,3 +670,92 @@ assert_eq 1 "$rc" \
   "a stale linked-worktree root is still refused, with its branch read from the gitdir pointer"
 grep -q '^git ' "$guard_log" \
   || fail "the refusal is allowed its content comparison and must actually make one"
+
+# ===========================================================================
+# 12 -- a merge that changes ONLY PROTOCOL.md is stale like any other
+# ===========================================================================
+# PROTOCOL.md is not code and is executed all the same: skills/orchid*/SKILL.md
+# carry no procedure of their own, they tell the driving engine to read
+# $ORCHID_ROOT/PROTOCOL.md and follow the section they name. So the protocol
+# on disk in this checkout IS the instruction stream a tick runs, and a
+# protocol-only merge left out of the kernel pathspec reproduces this whole
+# task's failure class on the one file that defines the procedure: nothing
+# refuses, nothing refreshes, and the run goes on executing the PRE-MERGE
+# procedure while the merge reports success.
+#
+# $root is back at the branch head after check 8b, so this advance is the only
+# thing between them.
+printf 'PROTOCOL v2: the merged procedure\n' > "$elsewhere/PROTOCOL.md"
+git -C "$elsewhere" add -A
+git -C "$elsewhere" commit -q -m "fixture: kernel v5 (PROTOCOL.md only)"
+git -C "$hub" update-ref refs/heads/orchid/integration "$(git -C "$elsewhere" rev-parse HEAD)"
+
+assert_eq "PROTOCOL v1" "$(cat "$root/PROTOCOL.md")" \
+  "test fixture: the stale checkout really is still carrying the pre-merge procedure"
+run_version "$root"
+assert_eq 1 "$rc" "a merge that changes ONLY PROTOCOL.md is a refusal, not a silent pre-merge run"
+assert_match "BEHIND that branch" "$out" "and is diagnosed as the branch advance it is"
+
+rc=0
+( HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$root" ) || rc=$?
+assert_eq 0 "$rc" "the refresh handles a plain file in the pathspec like any directory"
+assert_eq "PROTOCOL v2: the merged procedure" "$(cat "$root/PROTOCOL.md")" \
+  "and the checkout now carries the merged procedure"
+run_version "$root"
+assert_eq 0 "$rc" "the refusal clears once the protocol is current"
+
+# ===========================================================================
+# 13 -- a HAND-EDITED kernel is diagnosed as one, and never silently discarded
+# ===========================================================================
+# The defect this pins is in the MESSAGE, which is the whole product here: a
+# refusal is nothing but its diagnosis and its remedy. The single-arm version
+# asserted "that branch was advanced without this working tree being
+# refreshed" whatever it had found, and prescribed the kernel-scoped
+# `git checkout HEAD -- ...` to clear it. Meet that with an uncommitted kernel
+# edit -- the state check 10's merge deliberately LEAVES BEHIND, so orchid
+# creates it -- and the operator is told a false cause and handed a command
+# that deletes their work without saying so. Dogfood finding F31 is exactly
+# that, one file over: a requirements.md edit lost to a restore run to clear a
+# refusal.
+#
+# $root is clean and current after check 12, so the ONLY mismatch below is the
+# operator's own.
+printf 'echo "operator hand-edit"\n' >> "$root/libexec/orchid-version"
+handedit_before="$(cat "$root/libexec/orchid-version")"
+run_version "$root"
+assert_eq 1 "$rc" "a hand-edited kernel on the integration branch still refuses"
+assert_match "LOCALLY MODIFIED" "$out" \
+  "and the refusal says WHICH mismatch it found: the operator's own edit"
+assert_match "libexec/orchid-version" "$out" \
+  "naming the file whose only copy is on disk, so it can be looked at before anything is typed"
+if grep -q "BEHIND that branch" <<<"$out"; then
+  fail "the refusal asserts a branch advance that did not happen -- the index matches HEAD here"
+fi
+assert_match "stash push" "$out" "and offers a remedy that keeps the edit"
+assert_match "DO NOT run" "$out" \
+  "the destroying command is marked as one rather than printed as the fix"
+assert_match "gone for good" "$out" \
+  "in words that say what it costs, not just that it is discouraged"
+assert_eq "$handedit_before" "$(cat "$root/libexec/orchid-version")" \
+  "refusing is read-only: the edit it refused over is still there"
+
+# The same edit, now with the branch advanced under it as well: BOTH halves
+# are true at once, which is precisely what check 10's merge produces, and the
+# refusal has to carry both -- the stale code AND the edit the ordinary
+# refresh would destroy.
+printf 'echo "merged line"\n' >> "$elsewhere/libexec/orchid-fresh"
+git -C "$elsewhere" add -A
+git -C "$elsewhere" commit -q -m "fixture: kernel v6 (advance under a hand-edit)"
+git -C "$hub" update-ref refs/heads/orchid/integration "$(git -C "$elsewhere" rev-parse HEAD)"
+
+run_version "$root"
+assert_eq 1 "$rc" "a stale checkout that is ALSO hand-edited refuses"
+assert_match "BOTH behind that branch AND locally modified" "$out" \
+  "and the refusal reports both causes rather than picking the convenient one"
+assert_match "libexec/orchid-version" "$out" "still naming the edit at risk"
+assert_match "DESTROYS" "$out" \
+  "and saying plainly that the refresh it goes on to recommend would destroy it"
+assert_eq "$handedit_before" "$(cat "$root/libexec/orchid-version")" \
+  "and the edit survives the refusal here too"
