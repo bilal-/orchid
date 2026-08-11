@@ -339,6 +339,12 @@ pending → implementing → testing → reviewing → arbitrating → merging �
     REFUSES to run when `ORCHID_ROOT` is a checkout parked on the
     integration branch whose kernel directories do not match HEAD
     (`orchid_root_stale`, enforced at `lib/common.sh` source time).
+    Because source time is ahead of every verb — including the
+    unattended-trust gate, which may not let orchid touch a repository in any
+    way before an acknowledgement is found — the "parked on the integration
+    branch" half is answered by READING Git's on-disk `HEAD`, never by
+    spawning `git`. Only a root that really is parked there goes on to the
+    content comparison, and that root is orchid's own installation.
     Deliberately narrow: a development checkout on any other branch is never
     asked, however dirty, and `.orchid/` is neither inspected nor touched, so
     uncommitted durable run state is never a refusal and never at risk.

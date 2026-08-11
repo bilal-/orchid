@@ -560,3 +560,83 @@ assert_eq 'done' "$(ORCHID_ALLOW_STALE_ROOT=1 "$ORCHID_BIN" task show TS2 | grep
   "but TS2 still reached done — the merge is never left half-finished"
 assert_eq "durable sentinel" "$(cat "$selfroot/.orchid/sentinel")" \
   "and uncommitted durable .orchid state survives the declined refresh too"
+
+# ===========================================================================
+# 11 -- the guard runs FIRST of everything, so it may not spend a subprocess
+# ===========================================================================
+# This refusal is evaluated at SOURCE time in lib/common.sh, which puts it
+# ahead of every verb's own code -- and therefore ahead of lib/trust.sh's
+# unattended-trust gate, whose whole premise is that orchid touches NO
+# repository, in NO way, until an acknowledgement for it has been found and
+# the Git-version refusal has cleared. Spawning git IS touching, and a
+# source-time spawn lands in front of that lookup however the gate itself is
+# written; tests/test_unattended_trust.sh fences the same boundary from the
+# other side (its fast-guard shim fails on ANY git or mktemp before an
+# acknowledgement). So the branch half of the guard is answered from Git's
+# own on-disk HEAD and costs nothing, and the content half -- the one that
+# does need git -- is reachable only for a checkout parked on the integration
+# branch, which is orchid's own root and never a repository a run was pointed
+# at.
+#
+# The two roots below are the two on-disk layouts Git writes, deliberately
+# split across the two outcomes so both are exercised: an ordinary checkout
+# with a .git DIRECTORY on the zero-subprocess path, and a linked worktree
+# with a .git FILE holding a "gitdir:" pointer on the refusal path. Getting
+# the pointer form wrong would be invisible to a directory-only fixture, and
+# a linked worktree is how every task checkout in a real run is made.
+guard_bin="$WORK/guard-bin"
+guard_log="$WORK/guard-git.log"
+mkdir -p "$guard_bin"
+guard_real_git="$(command -v git)"
+cat > "$guard_bin/git" <<'SHIM'
+#!/usr/bin/env bash
+printf 'git %s\n' "$*" >> "$ORCHID_TEST_GUARD_LOG"
+exec "$ORCHID_TEST_REAL_GIT" "$@"
+SHIM
+chmod +x "$guard_bin/git"
+
+# source_guarded <root> -- source the library under test the way a verb does,
+# with the logging git ahead of the real one on PATH. Leaves the status in
+# $rc and every git the source consumed in $guard_log.
+source_guarded() {
+  : > "$guard_log"
+  rc=0
+  PATH="$guard_bin:$PATH" HOME="$MACHINE_HOME" \
+    ORCHID_TEST_GUARD_LOG="$guard_log" ORCHID_TEST_REAL_GIT="$guard_real_git" \
+    ORCHID_ROOT="$1" \
+    /bin/bash -c 'set -euo pipefail; source "$ORCHID_ROOT/lib/common.sh"' \
+    >/dev/null 2>&1 || rc=$?
+}
+
+guardhub="$WORK/guard-hub"
+make_root "$guardhub" main
+git -C "$guardhub" branch orchid/integration
+guardstale="$WORK/guard-staleroot"
+git -C "$guardhub" worktree add -q "$guardstale" orchid/integration
+guardelse="$WORK/guard-elsewhere"
+git -C "$guardhub" worktree add -q --detach "$guardelse" orchid/integration
+printf 'merged kernel change\n' >> "$guardelse/templates/.keep"
+git -C "$guardelse" add -A
+git -C "$guardelse" commit -q -m "fixture: kernel v2 (the merged fix)"
+git -C "$guardhub" update-ref refs/heads/orchid/integration \
+  "$(git -C "$guardelse" rev-parse HEAD)"
+
+# The development root is DIRTY in the kernel on purpose. A guard that reached
+# for its content comparison before establishing the branch would have plenty
+# to find here, so an empty log means the branch test really did come first
+# and really was answered without git -- not merely that there was nothing to
+# compare.
+printf 'operator edit\n' >> "$guardhub/templates/.keep"
+
+source_guarded "$guardhub"
+assert_eq 0 "$rc" "a dirty development root sources the library without refusing"
+[ ! -s "$guard_log" ] \
+  || fail "the stale-root guard spent a Git subprocess ahead of the unattended-trust gate ($(tr '\n' ' ' < "$guard_log"))"
+
+# ...and giving that up bought nothing: the refusal still fires, off a linked
+# worktree whose branch is only knowable through its gitdir pointer.
+source_guarded "$guardstale"
+assert_eq 1 "$rc" \
+  "a stale linked-worktree root is still refused, with its branch read from the gitdir pointer"
+grep -q '^git ' "$guard_log" \
+  || fail "the refusal is allowed its content comparison and must actually make one"

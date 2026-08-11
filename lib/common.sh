@@ -213,6 +213,72 @@ orchid_stale_checkout() {
 # and none of them is ever restored out from under an operator.
 ORCHID_KERNEL_PATHS=(bin lib libexec runners plugins roles skills templates)
 
+# _orchid_head_branch_ondisk <dir> -- the short branch name <dir>'s HEAD points
+# at, or non-zero when there is none: a detached HEAD, a directory that is not
+# a work tree at all, or an admin directory this process cannot read. It reads
+# Git's OWN on-disk files and never spawns `git`.
+#
+# Why not `git -C <dir> symbolic-ref --short -q HEAD`, which is exactly what
+# this replaces and answers the identical question. The refusal at the bottom
+# of this file runs at SOURCE time -- ahead of every verb's own code, and so
+# ahead of lib/trust.sh's unattended gate, which rests on the invariant that
+# orchid touches NO repository in ANY way until an acknowledgement for it has
+# been found and the Git-version refusal has been cleared. Spawning `git` is
+# touching, and a source-time `git` is the FIRST process of the run, so it
+# lands in front of the acknowledgement lookup no matter how the gate is
+# written. `orchid_root_stale` asks about $ORCHID_ROOT -- orchid's own
+# installation, whose code is already executing -- rather than about a target
+# repository, but the honest fix is not to argue the distinction from inside
+# the process that is already running: it is to not need the subprocess.
+# Reading two files answers precisely what was asked, and leaves the one
+# remaining `git` below reachable only for a checkout PARKED ON THE
+# INTEGRATION BRANCH, i.e. only for $ORCHID_ROOT and never for a repository
+# the run was merely pointed at.
+#
+# Both layouts Git writes are handled, because the live run and the fixtures
+# use both. An ordinary checkout has a `.git` DIRECTORY holding HEAD. A linked
+# worktree -- `git worktree add`, which is how every task checkout in a run is
+# made, and how this guard's own fixtures build the stale root -- has a `.git`
+# FILE holding a single `gitdir: <path>` pointer to a per-worktree admin
+# directory that carries that worktree's own HEAD; the pointer is resolved
+# relative to <dir> when it is not absolute. Anything else (no `.git`, a
+# pointer that does not parse, an unreadable or empty HEAD) reports no branch,
+# which is the same fail-OPEN answer `symbolic-ref -q` gave for the ordinary
+# `brew`/`install.sh` prefix. A HEAD that is not `ref: refs/heads/...` is a
+# detached HEAD and likewise reports nothing, exactly as before.
+#
+# One deliberate difference from the subprocess: git resolves a work tree by
+# walking UP from <dir>, this does not. That only matters when $ORCHID_ROOT is
+# a plain subdirectory nested inside some UNRELATED repository's work tree, in
+# which case the old call reported that outer repository's branch and this
+# reports none. Reporting none is the better answer -- the outer repository is
+# not the one `orchid merge` advances -- and it is fail-open either way.
+_orchid_head_branch_ondisk() {
+  local dir="$1" gitdir line=""
+  gitdir="$dir/.git"
+  if [ -f "$gitdir" ]; then
+    [ -r "$gitdir" ] || return 1
+    # `read` reports failure at an EOF it reached without a newline, having
+    # nonetheless filled $line. Both files here normally end in one, but a
+    # hand-repaired pointer or HEAD may not, and treating that as "no branch"
+    # would silently disarm the guard -- so the status is only fatal when
+    # nothing was read.
+    read -r line 2>/dev/null < "$gitdir" || [ -n "$line" ] || return 1
+    case "$line" in
+      'gitdir: '*) gitdir="${line#gitdir: }" ;;
+      *) return 1 ;;
+    esac
+    case "$gitdir" in /*) ;; *) gitdir="$dir/$gitdir" ;; esac
+  fi
+  [ -d "$gitdir" ] && [ -r "$gitdir/HEAD" ] || return 1
+  line=""
+  read -r line 2>/dev/null < "$gitdir/HEAD" || [ -n "$line" ] || return 1
+  case "$line" in
+    'ref: refs/heads/'*) printf '%s\n' "${line#ref: refs/heads/}" ;;
+    *) return 1 ;;
+  esac
+}
+
 # orchid_root_stale [root] -- lesson L018, and the counterpart to orchid_
 # stale_checkout above. That helper asks whether the checkout holding a run's
 # DURABLE STATE has fallen behind its branch; this one asks whether the
@@ -240,6 +306,14 @@ ORCHID_KERNEL_PATHS=(bin lib libexec runners plugins roles skills templates)
 #      it is. The integration branch is the one place where "the working tree
 #      differs from HEAD" means "someone merged and this checkout did not
 #      notice" rather than "someone is editing".
+#
+#      It is also, deliberately, the CHEAP condition and therefore the first
+#      one: it is answered from Git's on-disk HEAD alone (_orchid_head_branch_
+#      ondisk above), so the whole of this function costs zero subprocesses
+#      for every root that is not parked on that branch -- which is every root
+#      in an ordinary run. That is not an optimisation, it is the ordering
+#      this check owes the unattended-trust gate; the helper's own comment has
+#      the argument.
 #   2. The kernel code on disk actually differs from HEAD's. Comparing
 #      CONTENT rather than trying to infer WHO moved the ref is what makes
 #      this robust: `git update-ref` leaves no fingerprint that reliably
@@ -286,7 +360,12 @@ orchid_root_stale() {
   # config layer" here rather than an `unbound variable` abort in every verb.
   local HOME="${HOME:-}"
   [ -n "$root" ] || return 1
-  cur="$(git -C "$root" symbolic-ref --short -q HEAD 2>/dev/null || true)"
+  # Condition 1 FIRST, and answered WITHOUT a subprocess: see _orchid_head_
+  # branch_ondisk above for why this may not be `git symbolic-ref`. Every root
+  # that is not parked on the integration branch -- an install prefix, a
+  # development checkout, a task worktree, every root in an ordinary run --
+  # leaves this function having executed nothing but file reads.
+  cur="$(_orchid_head_branch_ondisk "$root")" || return 1
   [ -n "$cur" ] || return 1
   integ="$(config_get "$root" integration_branch orchid/integration)"
   [ "$cur" = "$integ" ] || return 1
