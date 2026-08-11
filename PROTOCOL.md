@@ -624,20 +624,23 @@ ones its archetype never declares.
      clean. Compare the sha just read against the task's existing
      `candidate_sha` — or, on a first dispatch, which has none yet, against its
      `base_sha`, where an unmoved HEAD means the attempt produced no commit at
-     all. If it has not moved, take NO transition and instead escalate it as
-     the job-delivery failure it is: `orchid task infra-fail <id> --reason
-     "implement envelope reported ok but delivered nothing: worktree HEAD
-     <sha> is unchanged from the task's recorded <sha>"` (name both shas — the
-     journal entry is the whole record of the refusal), then relaunch the
-     implementer exactly as step 2's ladder does, and leave the task in
+     all. If it has not moved, the envelope is NOT an acceptable envelope: take
+     no transition, and hand it to step 2's escalation ladder exactly as a
+     quarantined or non-ok envelope is handed to it — same ladder, same rung,
+     no second count. That means the ladder's own rule applies first: while a
+     relaunched implement job is still outstanding it has filed no envelope of
+     its own, so the one already refused is still the newest one reconcile
+     reports, and the ladder defers rather than spending a rung on it again.
+     Only once nothing is outstanding does it spend one, with the reason
+     naming both shas — the journal entry is the whole record of the refusal:
+     `orchid task infra-fail <id> --reason "implement envelope reported ok but
+     delivered nothing: worktree HEAD <sha> is unchanged from the task's
+     recorded <sha>"`, relaunch the implementer, and leave the task in
      `implementing`. This is deliberately the `infra_failures` counter and not
      `attempts`: the attempt budget bounds defects in work that was actually
      delivered, and charging it here would spend a rework round on a candidate
      nobody touched — while advancing would spend a full verify and a full
-     review round re-proving a defect this run already arbitrated. Do not
-     escalate the same envelope twice: while the relaunched implement job is
-     still outstanding it has filed no envelope of its own, so the one already
-     refused is still the newest one reconcile reports.
+     review round re-proving a defect this run already arbitrated.
   3. `orchid task set <id> candidate_sha <sha>`.
   4. `orchid task advance <id> testing --reason "implementer envelope ok"`.
 

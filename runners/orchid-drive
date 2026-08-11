@@ -633,9 +633,44 @@ drive_dispatch() {
 # implementing -- turn the implementer's own envelope into a candidate.
 # ---------------------------------------------------------------------------
 drive_implementing() {
-  local id="$1" arch="$2" tf envf wt cand floor arc
+  local id="$1" arch="$2" tf envf wt cand floor arc why
   tf="$state/tasks/$id.md"
+  why=""
   envf="$(drive_implement_envelope "$repo" "$id")"
+
+  # AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. A dispatch can report
+  # `ok` with a summary that is pure commentary -- the findings it was handed,
+  # restated; its sources, listed -- over a worktree whose HEAD never moved and
+  # whose tree is clean. Advancing on that spends a full verify and a full
+  # review round re-proving a defect this run already arbitrated, and burns a
+  # rework attempt on a candidate nobody touched.
+  #
+  # So an envelope that delivered nothing is simply NOT AN ACCEPTABLE ENVELOPE,
+  # and saying it that way -- by dropping it here, before anything reads it --
+  # is what keeps this half of the problem from growing a second ladder beside
+  # the one below. The arm below is the ONLY place an implement failure is
+  # accounted: it asks `drive_job_outstanding` first, so a relaunch already in
+  # flight defers this refusal exactly as it defers a non-ok envelope, and it
+  # escalates at most once per pass through the one `drive_escalate` call each
+  # shape reaches. One event, one rung, whichever shape produced it. `why`
+  # carries only WHICH failure this is, never how it is counted.
+  if [ -n "$envf" ]; then
+    if ! drive_has_transition "$arch" implementing testing; then
+      set_boundary operator-decision "$id" "archetype '$arch' declares no implementing -> testing edge"
+      return 0
+    fi
+    wt="$(fm_get "$tf" worktree)"; [ -n "$wt" ] || wt="$repo"
+    if ! cand="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"; then
+      set_boundary worktree-conflict "$id" "cannot read HEAD of the task worktree $wt"
+      return 0
+    fi
+    if drive_delivery_is_noop "$repo" "$id" "$cand"; then
+      floor="$(drive_delivery_floor "$repo" "$id")"
+      why="implement envelope reported ok but delivered nothing: worktree HEAD $cand is unchanged from the task's recorded $floor"
+      envf=""
+    fi
+  fi
+
   if [ -z "$envf" ]; then
     # A LIVE implement job outranks the failure signal, and this is the one
     # arm where both can be true at once.
@@ -682,7 +717,19 @@ drive_implementing() {
     # predicate all four arms share. libexec/orchid-jobs' `prepare` arm
     # carries a pointer back to this note.
     if drive_job_outstanding "$id" implement; then
-      drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the earlier non-ok envelope is not a fresh failure)"
+      drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the envelope it was launched over is not a fresh failure)"
+      return 0
+    fi
+    # The no-op delivery above, if that is what dropped the envelope. It is a
+    # JOB-DELIVERY failure and takes the same rung the arm below takes, never
+    # one of its own: `infra_failures` (which relaunches the implementer and
+    # auto-blocks at `infra_max`) and never `attempts`, whose budget exists to
+    # bound defects in work that was actually delivered. Nothing is written to
+    # `candidate_sha` either -- there is no new candidate to record, and
+    # restamping the same sha would touch `updated` on a task that did not move.
+    if [ -n "$why" ]; then
+      drive_note "$id: implementing -> testing REFUSED — the ok envelope moved no commit (worktree HEAD $cand, recorded $floor)"
+      drive_escalate "$id" implementer implement "" "$why"
       return 0
     fi
     if drive_implement_failed "$repo" "$id"; then
@@ -690,46 +737,6 @@ drive_implementing() {
       return 0
     fi
     drive_note "$id: awaiting the implementer envelope"
-    return 0
-  fi
-  if ! drive_has_transition "$arch" implementing testing; then
-    set_boundary operator-decision "$id" "archetype '$arch' declares no implementing -> testing edge"
-    return 0
-  fi
-  wt="$(fm_get "$tf" worktree)"; [ -n "$wt" ] || wt="$repo"
-  if ! cand="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"; then
-    set_boundary worktree-conflict "$id" "cannot read HEAD of the task worktree $wt"
-    return 0
-  fi
-
-  # AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. A dispatch can report
-  # `ok` with a summary that is pure commentary -- the findings it was handed,
-  # restated; its sources, listed -- over a worktree whose HEAD never moved and
-  # whose tree is clean. Advancing on that spends a full verify and a full
-  # review round re-proving a defect this run already arbitrated, and burns a
-  # rework attempt on a candidate nobody touched.
-  #
-  # So the refusal is a JOB-DELIVERY failure, not a verdict on a candidate: it
-  # goes on the escalation ladder (`infra_failures`, which relaunches the
-  # implementer and auto-blocks at `infra_max`) and never on `attempts`, whose
-  # budget exists to bound defects in work that was actually delivered. Nothing
-  # is written to the task's `candidate_sha` either -- there is no new candidate
-  # to record, and overwriting it with the same sha would restamp `updated` on a
-  # task that did not move.
-  if drive_delivery_is_noop "$repo" "$id" "$cand"; then
-    floor="$(drive_delivery_floor "$repo" "$id")"
-    if drive_job_outstanding "$id" implement; then
-      # An earlier pass already refused this envelope and relaunched. The
-      # relaunched job has not filed its own envelope yet, so the one read
-      # above is still the newest -- escalating again here would charge the
-      # SAME refusal to `infra_failures` once per pass and race a second
-      # implementer against the one already running.
-      drive_note "$id: still awaiting the relaunched implementer — the refused envelope is not escalated twice"
-      return 0
-    fi
-    drive_escalate "$id" implementer implement "" \
-      "implement envelope reported ok but delivered nothing: worktree HEAD $cand is unchanged from the task's recorded $floor"
-    drive_note "$id: implementing -> testing REFUSED — the ok envelope moved no commit (worktree HEAD $cand, recorded $floor)"
     return 0
   fi
 

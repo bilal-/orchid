@@ -2257,8 +2257,12 @@ assert_eq off "$(handoff_state "$REPO" T001 | cut -f1)" \
 #
 # Part L above owns the OTHER half of this same ladder: how a relaunch already
 # in flight is accounted. This part must hold without moving any reading there,
-# so the refusal below asks L's own `drive_job_outstanding` predicate before it
-# spends a rung -- one event, one rung, whichever half observes it.
+# and it does so by not building a second ladder at all: a delivery that
+# delivered nothing is dropped as UNACCEPTABLE, so it falls into the one arm
+# Part L specifies and is deferred, counted and relaunched by that arm's own
+# `drive_job_outstanding` / `drive_escalate` pair. One event, one rung,
+# whichever shape produced it -- which is why the deferral this part observes
+# below is Part L's note, word for word, and not one of its own.
 # ===========================================================================
 NOOP="$WORK/noopdelivery"
 mkdir -p "$NOOP" "$WORK/nctl"
@@ -2366,8 +2370,8 @@ assert_match "infra failure #1" "$njournal" \
 run_ndrive
 assert_eq 1 "$(fm_get "$NTF" infra_failures)" \
   "the same refused envelope is never escalated twice while its own relaunch is still outstanding"
-assert_match "not escalated twice" "$NDRIVE_OUT" \
-  "and the pass says it is waiting on that relaunch rather than silently doing nothing"
+assert_match "a relaunched implement job is still running" "$NDRIVE_OUT" \
+  "and it is Part L's own deferral that says so — this refusal rides that ladder, it does not run a second one beside it"
 assert_eq implementing "$(nstatus)" "still implementing, still waiting"
 
 # Released: the relaunch files its own envelope, equally empty. The ladder now
