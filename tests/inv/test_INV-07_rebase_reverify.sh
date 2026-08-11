@@ -3,6 +3,17 @@ source "$(dirname "$0")/../helpers.sh"
 # INV-07: a candidate whose SHA changed cannot merge without re-verify +
 # re-review. Exercised via the stale-base rebase path of `orchid merge`:
 # a parallel commit lands on integration first, forcing rebase-reverify.
+#
+# RED: a candidate whose SHA has moved under it -- a real parallel commit is
+#      landed on integration below, so the recorded verify evidence belongs to
+#      a commit that no longer exists. The merge must exit 5, the integration
+#      ref must be untouched, the stale evidence must be DELETED rather than
+#      reused, and the advance back to `reviewing` on the rebased candidate
+#      must then be refused. Evidence that outlives the thing it attests to is
+#      exactly a check that passes without having tested the candidate in hand.
+# GREEN: after a real re-verify on the rebased candidate, the same merge
+#      succeeds and the task reaches `done` -- so the refusal above is the
+#      gate discriminating, not `merge` being broken.
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks .orchid/reviews
 export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
@@ -107,6 +118,8 @@ rc=0; out2="$WORK/merge2.out"
 assert_eq 0 "$rc" "merge succeeds on the new base"
 assert_match "^merged T001: $integ -> " "$(cat "$out2")" "prints merged message on second attempt"
 assert_eq "done" "$("$ORCHID_BIN" task show T001 | grep '^status: ' | cut -d' ' -f2)" "task reaches done"
+red_case "a moved candidate SHA made merge exit 5, destroyed the stale verify evidence and blocked re-entry to reviewing until a real re-verify ran"
+green_case "after a real re-verify on the rebased candidate the SAME merge succeeded and the task reached done, so the refusal above is a re-verify requirement rather than a merge that refuses every rebased candidate"
 
 final_integ="$(git rev-parse "$integ")"
 git show "$final_integ:feature.txt" >/dev/null 2>&1 || fail "final integ contains the (rebased) feature commit"

@@ -85,6 +85,58 @@ resolved. Paths built from a root (`"$WORK/repo"`) may keep plain `cd` — they
 cannot come out empty. `tests/test_helpers.sh` proves the guard and lints the
 suite for the plain-`cd` shape.
 
+## Every gate ships a RED case
+
+A check that cannot fail is not a check. Runs r-001 and r-002 shipped, in good
+faith, a review envelope with an empty `findings[]`, a probe that grepped the
+reply for the string it had itself fed into the prompt, a rehearsal snapshot
+comparing a tree that was never at risk, a `doctor` reporting outbound ok
+without reading the config its plugin requires, and an inbound line whose
+output was identical whether or not a gateway existed. In a log, none of those
+is distinguishable from a check that ran. The rule is normative in
+[docs/specs/kernel.md](./specs/kernel.md) ("Proof discipline") and in
+[PROTOCOL.md](../PROTOCOL.md)'s Preamble: **a check that gates anything must
+ship a RED case demonstrating that it detects the failure it exists for, and
+that RED case must itself be exercised by the suite.**
+
+In practice, when you write a gate:
+
+1. Feed the check an input it MUST reject, watch it fire, and record that with
+   `red_case "<what fired, and on what>"` from `tests/helpers.sh`. The label is
+   printed as a `RED-CASE:` line, so the log shows *which* failure was
+   demonstrated.
+2. Pair it with the GREEN twin — an input the same check must accept — and
+   record that with `green_case "<what was accepted>"`. A matcher that rejects
+   everything detects nothing. **The twin has to run inside the gate file
+   itself.** Delegating it ("the accepting direction is covered by
+   `tests/test_pack.sh`") satisfies a reader and leaves this gate's own
+   acceptance side unexercised, so a check that had simply stopped working
+   would produce the rejection for the wrong reason and still read as a pass.
+3. Annotate the file with `# RED:` and `# GREEN:` comments naming both, in a
+   sentence rather than a word.
+4. What you cannot demonstrate goes through `not_tested`, never a pass.
+
+Enforcement is in two halves, because structure alone cannot carry a rule about
+proof. `tests/helpers.sh`'s `EXIT` trap fails any *enrolled* file that records
+no RED case, or no GREEN case, **at run time** — so no comment, heredoc, or
+unreached branch can satisfy it. A file is enrolled by **location**: anything
+under `tests/inv/`, plus the whole-file proofs named in `tests/helpers.sh`'s
+`PROOF_ENROLLED_FILES`. That location is resolved from the file's real path,
+never from `$0` — the same gate run as `tests/inv/test_x.sh` from the repo root
+or as a bare `test_x.sh` from inside the directory has to be enrolled exactly as
+it is when `tests/run.sh` passes an absolute path, or the rule quietly switches
+itself off depending on how you typed the command.
+`tests/test_red_case_rule.sh` lints every enrolled gate for the annotations and
+both calls, and exercises every half against fixtures and against a real
+`tests/inv/` gate through all three invocations — a rule about unfalsifiable
+checks enforced by an unfalsifiable check would be the same defect one level up.
+Put a new gate under `tests/inv/`, where the requirement reaches it; the rest of
+`tests/test_*.sh` predates the rule and is held to it by review, which that file
+records as `NOT-TESTED:` rather than implying coverage it does not have. Whether
+a recorded case is *honest* — whether the input really was one the check must
+reject or accept — is reviewer-owned and cannot be mechanized; ask it of every
+new gate.
+
 ## Release rehearsal
 
 Release identity lives in `release/metadata.conf` and is cross-checked with the
@@ -145,6 +197,30 @@ marker and the digest-pinned trust store are both built on it, so the nested
 run would fail broadly with digest mismatches that name neither `PATH` nor the
 mirror.
 
+Resolving is not the same as *working*. A mirrored entry is a symlink in a
+scratch directory, and a wrapper script that finds its payload with `dirname
+"$0"` resolves that to the scratch directory instead — so a mirrored tool can
+behave differently from the real one, and a proof standing on it would be
+proving something about a tool nobody has. The file demonstrates that rather
+than assuming it: a wrapper is mirrored, both copies are run, and their answers
+must differ; a location-independent tool's must not. The same detector is then
+pointed at every tool the suite needs inside every entry the mirror actually
+replaced, and a hit is a failure — the remedy is to fix the mirror for that
+tool or record a named exemption with its reason, never to widen the detector.
+Compiled binaries that resolve their own location from `argv[0]` are outside
+what a text scan can see and are recorded as `NOT-TESTED:` (`git` is the
+interesting case, and is safe: it canonicalizes through the symlink).
+
+When the nested run does fail, its log is copied out of the scratch tree
+*before* anything names it — `$TMPDIR/orchid-hermetic-suite-failure.<pid>.log`
+— because the trap that deletes `$WORK` runs before anyone reads the message.
+The diagnostic itself is never empty: a run that died without reaching an
+assertion has no `FAIL:` lines to extract, so the report says so and prints the
+tail instead of a header, a blank and a footer. Both behaviours are exercised
+against synthetic logs on every run, including on the machines where the nested
+run is skipped — that is where the next red run will be the first time anyone
+reads this output.
+
 That nesting means one gate run can execute the suite twice, so the second run
 is launched only when it can differ from the first. On a machine where a vendor
 CLI really does resolve — a developer laptop, which is where the divergence
@@ -187,7 +263,11 @@ suite runs — which is how a verification of this very change failed twice on a
 unchanged tree and passed twice more (lesson L024). `XDG_*` goes with `HOME`,
 because git reads its own configuration through those names and they can point
 back inside the operator's home; `ORCHID_ACTOR`/`ORCHID_REPO`/`ORCHID_EPOCH`
-are unset for the reason `tests/run.sh` unsets them.
+are unset for the reason `tests/helpers.sh` (not `tests/run.sh`) unsets them —
+an inherited durable identity binds a disposable fixture to the outer run. The
+attribution matters: the guard is one line at the top of `helpers.sh`, and a
+reader who believes it lives in the runner can delete it there without finding
+anything that stops them.
 
 That isolation is demonstrated rather than asserted, and every probe is paired
 with a control that can fail. A decoy scratch home stands in for the

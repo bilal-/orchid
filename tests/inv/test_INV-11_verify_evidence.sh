@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/../helpers.sh"
+# RED: a verification command that genuinely fails (`test -f marker.txt` with
+#      no marker) must produce FAIL, an evidence log recording that exact
+#      command and a nonzero exit, and a REFUSED advance to `reviewing`. The
+#      marker is then removed again after a passing run, and the evidence
+#      must flip back -- evidence that only ever says PASS is the exact defect
+#      this invariant names, and a `verify` whose log could not record a
+#      failure would gate nothing.
+# GREEN: with the marker present the same command must PASS, log `exit: 0`,
+#      and let the advance through, so the refusals above are the evidence
+#      gate reading the real outcome rather than a verb that always refuses.
 cd_scratch "$WORK" || exit 1; git init -q .; git commit -q --allow-empty -m root
 mkdir -p .orchid/tasks; export ORCHID_REPO="$WORK" HOME="$WORK/home"; mkdir -p "$HOME"
 # v1-m2 Task 5: this fixture runs T001..T006 through several overlapping
@@ -44,6 +54,7 @@ rm -f "$WORK/marker.txt"
 rc=0; "$ORCHID_BIN" verify T001 >"$out" 2>&1 || rc=$?
 assert_eq 1 "$rc" "removing marker flips back to FAIL"
 assert_match "^exit: [1-9][0-9]*$" "$(cat "$log")" "evidence flips back honestly"
+red_case "verify evidence recorded a real FAIL, flipped to PASS only when the underlying condition changed, and flipped back when it changed again"
 
 # No verification_commands on the task and no config 'verify' -> dies
 # nonzero with a clear message; no engine spawn is required to detect this.
@@ -91,6 +102,7 @@ assert_eq 0 "$rc" "fixture: real verify PASS for T003"
 tail -n1 .orchid/reviews/T003-verify.log | grep -q "^exit: 0$" || fail "sanity: fixture evidence should record exit 0"
 "$ORCHID_BIN" task advance T003 reviewing >/dev/null || fail "INV-11: reviewing after a passing verify run must be permitted"
 assert_eq reviewing "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "INV-11: T003 advanced to reviewing"
+green_case "with the condition satisfied, the same command PASSed, the evidence logged 'exit: 0', and the same gate let the advance to reviewing THROUGH -- so the refusals above are the gate reading a real outcome rather than a verb that always refuses"
 
 # v0b1 fix: rework-loop stale-evidence symmetry. `orchid merge`'s rebase-reset
 # invalidates verify/merge evidence on exit-5 (INV-07); the same must be true

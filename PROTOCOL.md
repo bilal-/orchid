@@ -92,6 +92,28 @@ part of the architecture; this file never changes to suit one.*
   <role> <operation>`, where `<role>` is one of the roles bound in config
   (`role.implementer`, `role.reviewer`, ...). Never invoke an engine binary
   directly, and never invent a role that isn't a config key.
+- **Every check ships a RED case.**
+  **A check that cannot fail is not a check** — and it is the failure mode
+  this loop produces most often, because it costs nothing and reads like a
+  pass. Runs r-001 and r-002 shipped, in good faith, a review envelope with an
+  empty `findings[]`, a probe that grepped the reply for the string it had fed
+  into the prompt, a rehearsal snapshot comparing a tree never at risk, a
+  `doctor` reporting outbound ok without reading the config its plugin
+  requires, and an inbound line whose output was identical whether or not a
+  gateway existed. So: anything this protocol treats as a gate — a task's
+  `verification_commands`, a reviewer's `findings[]`, a hook's artifact, a
+  probe an envelope's summary leans on — must ship a RED case demonstrating
+  that it DETECTS the failure it exists for, exercised by the suite rather
+  than described in a comment, plus the GREEN twin that keeps it from being a
+  matcher that rejects everything — and the twin has to be exercised inside the
+  gate itself, not delegated to some other check that happens to cover the
+  accepting direction. What cannot be demonstrated is recorded as
+  `not-tested` (`orchid notify`, the journal, or `tests/helpers.sh`'s
+  `not_tested`), never as a pass. The normative statement, and what is
+  mechanically enforced, is docs/specs/kernel.md's "Proof discipline"; new
+  gates live under `tests/inv/`, where `red_case` and `green_case` are both
+  required by location — resolved from the file's real path, so the
+  requirement cannot be shed by invoking the file a different way.
 - **Hook points.** Five kernel-owned edges — `after_plan_draft`,
   `before_arbitration`, `on_verify_fail`, `before_merge`, `on_blocker` — may
   each carry zero or more plugin NAMEs (the short discovery name; a
@@ -351,7 +373,11 @@ sequence in
 2. Draft the roadmap: create each task with `orchid task create <id>
    <title>`, then fill in its spec via `orchid task set <id> <key> <value>`
    (acceptance criteria, `verification_commands`, `depends_on`, `risk_tier`
-   with `--reason`, ...). `.orchid/roadmap.md` itself is the one piece of
+   with `--reason`, ...). A task whose deliverable IS a check — a new gate, a
+   probe, a lint, a verification command — states its RED case in the
+   acceptance criteria, in the Preamble's terms: which failure the check
+   detects, and how the suite watches it fire. A task that cannot state one
+   has not yet described a check. `.orchid/roadmap.md` itself is the one piece of
    durable state this protocol permits editing directly while still in
    `planning` — it is only *committed* by step 3 below, so drafting it
    (unlike every mutation THE TICK makes) is not yet a fenced, journaled
