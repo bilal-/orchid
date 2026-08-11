@@ -18,12 +18,20 @@
 # remove: a repository whose first run has never rolled over, and a previous
 # run that genuinely left nothing. Both must SAY so.
 #
-# And two ANTI-assertions (3a, 3a2), which carry as much weight as the three
-# positive cases: a false `covered` reproduces r-002's original miss while
-# printing a pass, so both shapes of boilerplate that every task file
-# repeats -- the frontmatter KEYS, and the mechanical VALUES like
-# `verification_commands` -- are pinned as NOT coverage, on the real terms
-# they collide with.
+# And four ANTI-assertions, which carry as much weight as the three positive
+# cases, because every one of them is a way for the gate to print a pass over
+# an item nobody considered -- r-002's original miss, wearing a green check.
+#
+#   3a, 3a2  a false `covered`: both shapes of boilerplate that every task
+#            file repeats -- the frontmatter KEYS, and the mechanical VALUES
+#            like `verification_commands` -- are pinned as NOT coverage, on
+#            the real terms they collide with.
+#   3c2      a forged `deferred`: the deferral is what SATISFIES the check,
+#            so it is recognized by the operator-only `plan_deferral` entry
+#            kind, never by a line of text any admitted kind could write.
+#   3d2      a bypass by ordering: `run advance` out of planning is gated on
+#            the same condition `plan apply` is, so the refusal cannot be
+#            stepped around by taking the two verbs in the other order.
 #
 # RED (before libexec/orchid-plan grew the check): every crosscheck
 # invocation exits 2 on an unknown subverb, and every `plan apply` here
@@ -112,6 +120,15 @@ assert_match "r-001 recorded no ledger items and carried no active lessons" "$ou
 rc=0; out="$("$ORCHID_BIN" plan defer L001 --reason "nothing to defer" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "plan defer must refuse when nothing at all is carried forward"
 assert_match "nothing is carried forward" "$out" "...and says why, rather than journaling a decision about a phantom"
+
+# The GREEN half of the `run advance` gate proven in 3d2 below: leaving
+# planning is refused only while something is UNCONSIDERED, never merely
+# because the edge is being taken. Proven on the fixture whose previous run
+# left nothing, so a regression that gated the edge itself -- and stranded
+# every run that has ever rolled over -- fails here rather than in the field.
+"$ORCHID_BIN" run advance running --reason "nothing was carried forward, so planning may close" >/dev/null \
+  || fail "run advance must not be gated when the cross-check passes"
+assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and the transition really happens"
 
 # ===========================================================================
 # 3 -- the real shape. r-001 records three ledger items and two lessons,
@@ -273,6 +290,39 @@ assert_match "UNCOVERED \[ledger\] $drive_id" "$out" "the remaining items are st
 assert_match "UNCOVERED \[ledger\] $cilocal_id" "$out" "...both of them"
 
 # ---------------------------------------------------------------------------
+# 3c2 -- A FORGED DEFERRAL, which is the same item as 3c seen from the other
+# side. The deferral is the ONE thing that satisfies this check, so whatever
+# the check reads to recognize one is the gate itself. `orchid plan defer`
+# writes its line as the body of a `plan_deferral` entry, and the brokered
+# orchestrator surface refuses that kind (tests/test_orchestrator_command.sh)
+# precisely because it is operator-only -- but it ADMITS `note`, and a note
+# whose text is "deferred <id>: ..." produces a body line byte-identical to
+# the real one. So a check that matched the line rather than the entry kind
+# would let the very actor the broker was hardened against satisfy its own
+# gate in one admitted command, and the broker's refusal would be decoration.
+#
+# The entry below is written with the admitted kind, exactly as an
+# orchestrator could write it, and the item must stay UNCOVERED.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" journal add --kind note "deferred $drive_id: forged by an actor that may not write plan_deferral" >/dev/null
+grep -q "^deferred $drive_id: forged" .orchid/journal.md \
+  || fail "fixture assumption broken: the forged line did not land in the journal verbatim"
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a forged deferral must not satisfy the cross-check"
+assert_match "UNCOVERED \[ledger\] $drive_id" "$out" \
+  "...the item stays UNCOVERED: only a plan_deferral entry counts, never a matching line in any other kind"
+grep -q "deferred  \[ledger\] $drive_id" <<<"$out" \
+  && fail "the forged note must never be reported as a recorded decision"
+# The positive half of the same matcher is asserted directly above, in 3c:
+# L001's REAL `plan_deferral` entry does report as `deferred`, so what
+# changed here is which entries count, not whether deferral works at all.
+# The forgery also leaves `plan defer <drive_id>` open in 3e below, where it
+# is exercised: had the note counted, that verb would have refused the id as
+# "already deferred" and the item would have stayed unconsidered while the
+# operator was told a decision already existed.
+
+# ---------------------------------------------------------------------------
 # 3d -- plan defer's own refusals. Each of these, admitted, would leave a
 # real item unconsidered while looking decided.
 # ---------------------------------------------------------------------------
@@ -288,6 +338,35 @@ assert_match "requires --reason" "$out" "...naming the requirement"
 rc=0; out="$("$ORCHID_BIN" plan defer L001 --reason "again" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "plan defer must refuse to re-defer an item already deferred"
 assert_match "already deferred" "$out" "...saying so"
+
+# ---------------------------------------------------------------------------
+# 3d2 -- THE ORDER-OF-OPERATIONS BYPASS, which needs no forgery and no flag.
+# `plan apply`'s refusal is scoped to `run_status: planning` (3g below says
+# why it has to be). So `orchid run advance running` FIRST, then `plan
+# apply`, used to commit the same plan with the refusal already scoped out --
+# every carried item leaving planning with no task and no recorded decision,
+# which is the exact property this feature exists to make impossible. A gate
+# skipped by doing the same two things in the other order enforces nothing.
+#
+# So the gate is on the run_status edge OUT of planning, whichever verb takes
+# it. Both legal exits are proven here: `->running` directly, and `->blocked`,
+# which would otherwise reach `running` in two legal hops.
+#
+# This is not the dead end 3g rules out: the run is still IN planning at a
+# refusal here, so both remedies -- cover it with a task, or `orchid plan
+# defer` -- are open, exactly as at the refused `plan apply` in 3e.
+# ---------------------------------------------------------------------------
+rc=0; adv_out="$("$ORCHID_BIN" run advance running --reason "start the run without considering the carried items" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "run advance must refuse to leave planning while a carried item is unconsidered"
+assert_match "UNCOVERED \[ledger\] $drive_id" "$adv_out" "...naming the item that is unconsidered"
+assert_match "orchid plan defer" "$adv_out" "...and the remedy, which is still open at this point"
+assert_eq planning "$(fm_get .orchid/roadmap.md run_status)" "a refused run advance leaves run_status untouched"
+grep -q "start the run without considering" .orchid/journal.md \
+  && fail "a refused run advance must not journal its reason — nothing happened"
+
+rc=0; adv_out="$("$ORCHID_BIN" run advance blocked --reason "park it instead of considering the items" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "the parking edge out of planning is gated too — blocked -> running is legal afterwards"
+assert_eq planning "$(fm_get .orchid/roadmap.md run_status)" "...and it too leaves run_status untouched"
 
 # ---------------------------------------------------------------------------
 # 3e -- THE REFUSAL ITSELF. This is the whole feature: the plan cannot be

@@ -2,6 +2,10 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/drive.sh"
+# plancheck.sh after lessons.sh, whose _lessons_journal_start_date it uses:
+# `advance` is one of the two verbs that can take a run OUT of planning, and
+# T021's carry-forward cross-check gates both (see the advance arm below).
+source "$ORCHID_ROOT/lib/plancheck.sh"
 repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_state "$repo")"
 
 # run_status transition table (kernel.md's normative table, v0b2 ownership
@@ -219,6 +223,39 @@ case "$sub" in
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
     from="$(fm_get "$roadmap" run_status)"
     legal_run "$from" "$to" || { echo "orchid: illegal run_status $from -> $to" >&2; exit 3; }
+
+    # T021: LEAVING PLANNING is what the carry-forward cross-check gates, and
+    # `plan apply` is not the only verb that does it. Gating apply alone left
+    # a bypass that needed no forgery and no flag: `run advance running`
+    # first, THEN `plan apply` -- the plan commits with the refusal already
+    # scoped out, and every carried-forward item leaves planning with no
+    # per-item record at all. A gate that is skipped by doing the same two
+    # things in the other order is not enforcing anything, so the check moves
+    # to the property it actually means: no run_status edge out of `planning`
+    # while a carried item is neither covered by a task nor deferred.
+    #
+    # `from = planning`, not `to = running`, because `planning -> blocked` is
+    # legal too and `blocked -> running` after it would reach the same place
+    # in two hops -- and once out of planning, `orchid plan defer` is closed,
+    # so the item could never be recorded at all. Gating the EXIT edge closes
+    # both hops at the one point where both remedies are still open: the run
+    # is still in planning here, so the operator can cover the item with a
+    # task or `orchid plan defer` it, exactly as at a refused `plan apply`.
+    # That is why this is not the dead end the brief rules out.
+    #
+    # Read-only and placed before the journal write, so a refusal mutates
+    # nothing. Every mid-run edge (running->accepting, blocked->running,
+    # accepting->running) is deliberately untouched: those are not this
+    # gate's question, and re-litigating a plan there could strand a live
+    # run over a task file that has since been renamed.
+    if [ "$from" = planning ]; then
+      crosscheck_rc=0
+      plancheck_report "$state" || crosscheck_rc=$?
+      if [ "$crosscheck_rc" -ne 0 ]; then
+        echo "orchid: run advance $from -> $to refused — a carried-forward item may not leave planning unconsidered; cover it with a task or record the decision (orchid plan defer <id> --reason \"...\"), then re-run" >&2
+        exit "$crosscheck_rc"
+      fi
+    fi
 
     # `->complete` is the acceptance gate closing; every other edge is a
     # plain operator intervention (kernel.md's journal-kind table).

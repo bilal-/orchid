@@ -583,7 +583,11 @@ sequence in
    id that is not on the carried-forward list, refuses to re-defer, and
    refuses once `run_status` has left `planning` — after that, the way to
    pick an item up is a task. There is no bulk override: a deferral names
-   one item and says why. And it is a decision about ONE plan, not a
+   one item and says why. What satisfies the check is an entry of that
+   KIND, not a line of that shape: `plan_deferral` is writable only by this
+   verb and is refused on the brokered orchestrator surface, so a `note`
+   (which is admitted there) reading `deferred <id>: …` counts for nothing
+   and the item stays uncovered. And it is a decision about ONE plan, not a
    permanent silencing: `plan_deferral` is itself a ledger kind, so an item
    deferred last run reappears in the next run's cross-check and needs
    either a task or a fresh reason. An indefinitely postponed defect is
@@ -609,6 +613,18 @@ sequence in
    `plan apply`; only the refusal is scoped to `planning`, because `orchid
    plan defer` closes at the same boundary and a refusal whose only remedy
    has already closed is a dead end, not a gate.
+
+   **The gate is on leaving `planning`, not on this verb.** `orchid run
+   advance` can take a run out of `planning` too, so it applies the same
+   cross-check on every edge out of that status (`→ running` and `→ blocked`
+   alike, since `blocked → running` is legal after it) and refuses on the
+   same condition, before journaling or writing anything. Otherwise `run
+   advance running` followed by `plan apply` would commit exactly the plan
+   the refusal above exists to stop, with every carried item leaving
+   planning unrecorded — a gate that can be stepped around by reordering two
+   verbs is not enforcing anything. Both remedies are open at that refusal
+   (the run is still in `planning`), so it strands nothing; mid-run edges
+   are untouched.
 
 Once `run_status: running`, PLANNING is over — THE TICK below is the only
 procedure that touches task state from here on.

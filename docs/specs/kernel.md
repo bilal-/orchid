@@ -149,6 +149,8 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 |---|---|
 | `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/handoff/prereq-ack/infra-fail` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) |
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry` |
+| `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) — both writers of the `planning` EXIT edge also run the carry-forward cross-check first and refuse while an item is unconsidered (PROTOCOL.md PLANNING) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
 | `context.md` | `orchid plan apply` / `orchid plan refresh-context` |
@@ -1260,7 +1262,11 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   journal — see PROTOCOL.md PLANNING) and `plan_deferral` (written only by
   `orchid plan defer`: the reasoned decision that this plan does not cover a
   carried-forward item — itself read back as a ledger entry by the FOLLOWING
-  run, so a deferral postpones an item rather than erasing it).
+  run, so a deferral postpones an item rather than erasing it). The
+  cross-check recognizes a deferral by that KIND alone, never by the shape
+  of the entry's text: the kind is refused on the brokered orchestrator
+  surface precisely because it satisfies the check, and a reader matching
+  text would hand that satisfaction back through any admitted kind.
 - **Enforcement is a complete decision matrix, kernel-level:** every
   judgment-bearing verb refuses to run without `--reason`, which it journals
   BEFORE writing the state change — `task advance` to `merging`, `blocked`,

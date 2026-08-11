@@ -773,6 +773,9 @@ because it is a second, laxer procedure.
 
 **Symptom:** `orchid plan apply` exits 3 without committing anything, listing
 items like `r-001#57` or `L016` as neither covered by a task nor deferred.
+`orchid run advance` out of `planning` exits 3 with the same list — the gate
+is on the run leaving `planning`, so taking that edge first does not open the
+door for the `plan apply` behind it.
 
 This is the planning cross-check. The previous run left findings behind —
 ledger entries in `.orchid/runs/<prev>/journal.md` and the active lessons
@@ -802,8 +805,11 @@ orchid plan defer r-001#57 --reason "owned by the follow-up PR, not this run"
 
 That journals the decision and satisfies the check for that item alone —
 there is no bulk override, and it only works while `run_status` is
-`planning`. A deferral postpones rather than erases: the item reappears in
-the NEXT run's cross-check, still wanting a task or a fresh reason. Read the
+`planning`. Use the verb: what the check reads is the `plan_deferral` entry
+KIND, so a hand-written journal note whose text happens to read
+`deferred r-001#57: …` records nothing and the item stays uncovered. A
+deferral postpones rather than erases: the item reappears in the NEXT run's
+cross-check, still wanting a task or a fresh reason. Read the
 full item with `grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry
 at that ordinal.
 
@@ -916,6 +922,13 @@ has left `planning`, a `plan apply` still PRINTS the cross-check and still
 names anything unconsidered, but it commits rather than refusing — neither
 remedy above is open at that point, and a gate whose only way out has already
 closed would just strand you. Pick the item up with a task instead, or leave
+The refusal closes at the same boundary `plan defer` does, and that boundary
+is exactly why `run advance` is gated too: while a run is still in
+`planning`, both remedies above are open, so the refusal always has a way
+out. Once `run_status` has legitimately left `planning`, a `plan apply` still
+PRINTS the cross-check and still names anything unconsidered, but it commits
+rather than refusing — neither remedy is open at that point, and a gate whose
+only way out has already closed would just strand you. Pick the item up with a task instead, or leave
 it for the next run's cross-check, which will raise it again.
 
 ## Answers sent on a channel never arrive

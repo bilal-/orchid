@@ -258,15 +258,39 @@ plancheck_task_text() {
 # plancheck_deferral <journal.md> <item-id> -- the recorded deferral reason
 # for that item, or exit 1 when none is recorded. `orchid plan defer` writes
 # exactly one line, "deferred <id>: <reason>", as the body of a
-# `plan_deferral` journal entry; item ids are `L<nnn>` or `r-<n>#<n>` and
-# carry no regex metacharacter, so a line-anchored match is exact.
+# `plan_deferral` journal entry.
+#
+# WHAT IS MATCHED IS THE ENTRY KIND, NOT THE LINE -- and that distinction is
+# the gate. A deferral is the one thing that SATISFIES this cross-check, so
+# whatever is read here is what the whole check rests on; matching raw text
+# would make it forgeable by anyone who can write a journal entry at all.
+# The brokered orchestrator surface (runners/orchid-orchestrator-command)
+# refuses `--kind plan_deferral` for exactly that reason, but it admits
+# `note` -- and `journal add --kind note "deferred r-001#57: handled"`
+# produces a body line byte-identical to the real one. The broker's refusal
+# only buys anything if this reader consults the field the broker actually
+# guards, so the kind is parsed off the entry's `## ` header and a
+# "deferred <id>: " line counts ONLY inside a `plan_deferral` entry. An
+# operator's deferral satisfies the check; a forged note does not, and the
+# item stays UNCOVERED.
+#
+# Ids are `L<nnn>` or `r-<n>#<n>` and carry no regex metacharacter, but the
+# body match is a literal `index(...) == 1` prefix test anyway -- one less
+# thing that has to stay true for the gate to hold. `kind` resets on every
+# header line, so an entry's body can never inherit its predecessor's kind.
 plancheck_deferral() {
-  local jf="$1" id="$2" prefix line
+  local jf="$1" id="$2" line
   [ -f "$jf" ] || return 1
-  prefix="deferred $id: "
-  line="$(grep -m1 "^$prefix" "$jf" || true)"
+  line="$(awk -v id="$id" '
+    BEGIN { kind = ""; prefix = "deferred " id ": " }
+    # Journal header shape: "## <ISO8601> <task|run> <kind> (<actor>)".
+    /^## / { split($0, ha, " "); kind = ha[4]; next }
+    kind == "plan_deferral" && index($0, prefix) == 1 {
+      print substr($0, length(prefix) + 1); exit
+    }
+  ' "$jf")"
   [ -n "$line" ] || return 1
-  printf '%s\n' "${line#"$prefix"}"
+  printf '%s\n' "$line"
 }
 
 # plancheck_report <state> -- print the cross-check for the roadmap
