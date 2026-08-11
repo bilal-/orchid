@@ -5,7 +5,8 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
-source "$ORCHID_ROOT/lib/schedule.sh"
+source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
+source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
@@ -40,6 +41,46 @@ needs_reason() { case "$1:$2" in
   *:merging|*:blocked|arbitrating:rework|arbitrating:done) return 0;; *) return 1;; esac; }
 
 rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
+
+# refresh_briefs <task-file> <id> -- the task body as the NEXT implementer
+# should read it, printed for the caller to pipe into atomic_write: every
+# rework brief bound to a candidate other than the current one collapsed to a
+# superseded notice, and -- when a failing gate left location-bearing evidence
+# for the CURRENT candidate -- one fresh brief appended.
+#
+# Both halves belong to the same moment, which is why they are one function
+# called from all three entries to `rework` (`advance`, `unblock`, `retry`)
+# rather than an append at each. A brief is APPENDED to a body that outlives
+# the candidate it describes, so appending alone means round three hands the
+# implementer round one's line numbers next to round three's with nothing to
+# tell them apart -- the mechanism that exists to carry the CURRENT failure,
+# quietly re-serving expired ones. The aging pass is what makes "the brief"
+# singular. See lib/findings.sh.
+#
+# AND THE APPEND IS IDEMPOTENT BY CONTENT (findings_brief_present). Aging
+# withdraws only the briefs describing some OTHER candidate -- the ones
+# describing the current one are still true and are left standing -- so a second
+# entry to `rework` on an UNCHANGED candidate, with the same evidence log still
+# on disk, would otherwise regenerate a block identical to the one already in
+# the body and hand the implementer the same locations twice. `merging` ->
+# `rework` followed by `orchid task retry` is the route that does it today (the
+# `merging` arm exempts `<id>-merge.log` from its rm, and `retry` re-reads that
+# survivor), but the guard is here at the append rather than on that route
+# because every other way of reaching `rework` twice without minting a new
+# candidate produces the same body.
+refresh_briefs() {
+  local rf="$1" rid="$2" rcand rbrief rbody
+  rcand="$(fm_get "$rf" candidate_sha)"
+  rbrief="$(findings_brief "$state" "$rid" "$rcand")"
+  # The AGED body is what the presence check reads, because aging is what
+  # decides which blocks are still live: one it just collapsed no longer
+  # matches, and the fresh brief is appended as it should be.
+  rbody="$(findings_age_briefs "$rf" "$rcand")"
+  printf '%s\n' "$rbody"
+  if [ -n "$rbrief" ] && ! findings_brief_present "$rbody" "$rbrief"; then
+    printf '\n%s\n' "$rbrief"
+  fi
+}
 
 case "$sub" in
   create)
@@ -112,6 +153,14 @@ case "$sub" in
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
+      handoff_ack)
+        # T010: an operator hand-off is an assertion that execution-requiring
+        # work was really done AGAINST A COMMITTED CANDIDATE, so the field can
+        # only ever hold the task's own current candidate_sha. A bare `task
+        # set` would let any string land there -- including one copied from a
+        # candidate the rebase arm has already superseded -- which is the one
+        # way this record could lie. `task handoff` derives the value itself.
+        orchid_die "'handoff_ack' is kernel-owned — use task handoff <id> --ack|--clear (it is bound to the current candidate_sha, never set by hand)" ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -391,6 +440,38 @@ case "$sub" in
       # deleting it here would destroy that diagnostic evidence. The
       # rebase-reset path (exit-5) invalidates both logs itself when it
       # mints a new candidate, so it never reaches this arm at all.
+      #
+      # THE REWORK BRIEF (T010, lesson L017) is lifted BEFORE that rm, and
+      # that ordering is the whole point: the verify log is about to be
+      # deleted, and it is the only place the failing gate's exact locations
+      # exist. `findings_brief` copies them into the task BODY, which
+      # lib/pack.sh carries verbatim into the next implementer's pack as
+      # `task.md` -- so `file:line: RULE: message` reaches the actor asked to
+      # fix it, instead of a pointer to a log that actor may be unable to
+      # open, re-run or reproduce. Appended on EVERY rework edge, not just
+      # the driver's: a hand-walked `task advance <id> rework`, `orchid
+      # merge`'s validation-failure arm and `task arbitrate --result
+      # request-changes` all land here, which is what makes this automatic
+      # rather than a convention someone has to remember. Emits nothing at
+      # all when no failing log carried a location (a merge conflict, a
+      # request-changes with no gate output), so a rework never gains a
+      # heading promising locations it does not have. The candidate is passed
+      # in because the brief only quotes evidence BOUND to it: a log whose
+      # header names a superseded candidate is dropped, not carried forward.
+      # The same rule is applied to the briefs ALREADY in the body, which is
+      # the other end of the same defect: each one names the candidate it
+      # describes, and this pass ages out the ones that describe a candidate
+      # this task has since replaced (refresh_briefs, above).
+      refresh_briefs "$f" "$id" | atomic_write "$f"
+      # An operator hand-off is acknowledged AGAINST a candidate, and a rework
+      # round exists to mint a different one -- so the acknowledgement does
+      # not survive entry to rework, the same INV-07 symmetry the evidence
+      # invalidation just below has. Guarded on being non-empty so this never
+      # appends a `handoff_ack:` line to tasks in repositories that do not use
+      # the gate at all.
+      if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+        fm_set "$f" handoff_ack ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
       [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
     fi
@@ -480,6 +561,228 @@ case "$sub" in
     [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
     ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
     echo "arbitrated $id: result=$result from=$from to=$to" ;;
+  handoff)
+    # T010: the SOLE writer of `handoff_ack` -- the durable record that an
+    # operator really performed this candidate's execution-requiring
+    # mechanical steps (a lint fix, a checksum re-pin, a mode bit on a new
+    # executable), the ones an engine profile that denies on the command
+    # string cannot perform at all (lesson L017). PROTOCOL.md's THE TICK
+    # names the point in the procedure where they happen; this verb is what
+    # makes that point RESUMABLE, and it is why the pause is not an infinite
+    # loop: a second driver pass, or a session restarted an hour later, reads
+    # `handoff_ack` against the task's current `candidate_sha` and can tell
+    # "already performed" from "still outstanding" with no memory of its own.
+    #
+    # BOUND TO A COMMITTED CANDIDATE, NEVER TO A TASK OR A MOMENT. The value
+    # is DERIVED here and is never accepted from the caller, so an
+    # acknowledgement cannot be made for a candidate other than the one the
+    # hand-off actually left behind. It stops counting the instant that sha
+    # moves -- which is exactly how `orchid merge`'s rebase arm invalidates it
+    # (INV-07): a rebased tree is a different candidate, and work done on the
+    # old one is not evidence about it.
+    #
+    # AND THE HAND-OFF ADVANCES THE CANDIDATE TO ITS OWN RESULTING COMMIT.
+    # This is the defect the feature would otherwise institutionalise. The
+    # candidate is captured when the implementer's envelope reconciles; the
+    # hand-off's whole purpose is to COMMIT work after that -- a lint fix, a
+    # re-pinned checksum, a mode bit -- so by the time it is acknowledged the
+    # tree `orchid verify` will run is no longer the one the task record
+    # names. Acknowledging against the pre-hand-off sha would leave every
+    # downstream piece of evidence bound to a commit that was never the one
+    # verified (lesson L025), inside the very procedure that formalises the
+    # hand-off. So the ack reads HEAD of the tree verification will use --
+    # resolved exactly as `orchid verify` resolves its own cwd (the task's
+    # `worktree` when set, else the repo) -- and moves `candidate_sha` there
+    # first. That leaves the two equal, so `orchid verify`'s two header lines
+    # (`sha:`, read from the tree it ran in, and `candidate:`, read from
+    # frontmatter) agree, and the INV-11 gate on `testing -> reviewing` accepts
+    # the evidence. As this ships, `orchid verify` itself does not compare them
+    # before running; a task proposing that it refuse outright (T031) is
+    # unmerged at the time of writing, and if it lands, this equality is the
+    # state it would require -- nothing here depends on it either way.
+    #
+    # `--clear` withdraws it. Idempotent by content, like `run boundary set`:
+    # clearing a field that is already empty journals nothing, so the rebase
+    # arm can call it unconditionally without one journal line per rebase on
+    # every repository that never uses the gate.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    mode=""; reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --ack) mode=ack; shift ;;
+      --clear) mode=clear; shift ;;
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) orchid_die "usage: orchid task handoff <id> --ack|--clear --reason \"...\"" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task handoff <id> --ack|--clear --reason \"...\""
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    [ -n "$mode" ] || orchid_die "task handoff requires --ack or --clear"
+    [ -n "$reason" ] || orchid_die "task handoff requires --reason (INV-08)"
+    old="$(fm_get "$f" handoff_ack)"
+    if [ "$mode" = clear ]; then
+      if [ -z "$old" ]; then
+        echo "$id: no operator hand-off was recorded"
+        exit 0
+      fi
+      # Journal-first (INV-08 discipline): the reason is recorded before the
+      # field it justifies is written.
+      journal --task "$id" --kind intervention "operator hand-off cleared (was $old): $reason"
+      fm_set "$f" handoff_ack ""; fm_set "$f" updated "$(now)"
+      echo "$id: operator hand-off cleared (was $old)"
+      exit 0
+    fi
+    # WHICH STATES MAY BE ACKNOWLEDGED FROM. The hand-off is one named point in
+    # the procedure: after the implementer's envelope reconciles (which is what
+    # captures `candidate_sha` and moves the task to `testing`) and before
+    # `orchid verify` runs. `testing` is therefore the only status in which
+    # acknowledging one means anything -- and, more to the point, the only one
+    # in which ADVANCING `candidate_sha` is safe.
+    #
+    # From `reviewing` or `arbitrating` that advance would move the candidate
+    # out from under reviewers who are judging that exact commit: their
+    # envelopes name the sha they were dispatched against, the record would name
+    # a different one, and the verdicts would be read as judgments of a tree
+    # nobody looked at. From `merging` it would move the candidate underneath a
+    # merge already in flight. From `pending`/`implementing`/`rework` there is
+    # no candidate anyone has finished producing yet, and from `done`/`blocked`
+    # there is nothing left for a hand-off to unblock. The refusal NAMES the
+    # status it declined from, because which of those it was is the whole
+    # content of the mistake.
+    #
+    # `--clear` is deliberately NOT restricted: it only ever WITHDRAWS, it is
+    # what `orchid merge`'s rebase arm calls from `merging`, and a withdrawal
+    # that some status could refuse would be a stale acknowledgement nothing
+    # could remove.
+    hstatus="$(fm_get "$f" status)"
+    if [ "$hstatus" != testing ]; then
+      orchid_die "refusing to acknowledge a hand-off for task $id from status '$hstatus': the hand-off is the pause between the implementer's envelope reconciling and 'orchid verify' running, so it is acknowledged from 'testing' only. Acknowledging here would advance candidate_sha out from under whoever owns '$hstatus' (a reviewer or arbiter judging that exact commit, or a merge in flight). Use 'orchid task handoff $id --clear' to withdraw an acknowledgement — that is legal from any status."
+    fi
+    cand="$(fm_get "$f" candidate_sha)"
+    [ -n "$cand" ] || orchid_die "task $id has no candidate_sha — a hand-off is acknowledged against a committed candidate, never against a task"
+    # The tree `orchid verify` will actually run in, resolved exactly the way
+    # orchid-verify resolves its own cwd. Unreadable is fatal rather than
+    # "acknowledge the old sha anyway": the one thing this verb asserts is
+    # that the record names the tree the work landed in, and it cannot assert
+    # that about a HEAD it cannot read.
+    hwt="$(fm_get "$f" worktree)"; hcwd="$repo"; [ -z "$hwt" ] || hcwd="$hwt"
+    hhead="$(git -C "$hcwd" rev-parse HEAD 2>/dev/null || true)"
+    [ -n "$hhead" ] || orchid_die "cannot read HEAD of $hcwd — a hand-off is acknowledged against the tree 'orchid verify' will run in, and that tree cannot be read"
+    # AND THE TREE'S STATE, not only its HEAD. Every other check on this path
+    # compares SHAS, and a sha describes a commit -- it says nothing about the
+    # working tree sitting on top of it. An operator who applies the linter's
+    # own fix and acknowledges without committing leaves `handoff_ack`,
+    # `candidate_sha` and `HEAD` in perfect three-way agreement about a commit
+    # that does not contain the work, while `orchid verify` runs the dirty tree
+    # that does: every downstream judgment is then evidence about a commit
+    # nobody ran, which is lesson L025 reached by the one road matching shas
+    # cannot see. Refused BEFORE the advance, because advancing onto a HEAD with
+    # uncommitted work on top of it would write exactly that record.
+    #
+    # It names WHAT is uncommitted rather than only that something is: "commit
+    # your changes" over a tree an operator believes is clean is the same
+    # unsatisfiable-instruction shape this whole task exists to remove.
+    #
+    # AND A TREE THAT COULD NOT BE INSPECTED IS REFUSED IN THE SAME DIRECTION.
+    # `git status` failing says nothing about the tree being tidy -- the path
+    # is not a checkout, it is bare, its index is unreadable -- and treating
+    # that silence as "clean" would hand the ack out on the strength of a look
+    # that never happened, which is the one failure this check exists to
+    # prevent. Same reasoning as the unreadable HEAD above it: this verb's
+    # single assertion is that the record names the tree verification will
+    # run, and it cannot assert that about a tree it could not read.
+    hdrc=0
+    hdirty="$(handoff_worktree_dirty "$hcwd")" || hdrc=$?
+    if [ "$hdrc" -ne 0 ]; then
+      orchid_die "refusing to acknowledge the hand-off for task $id: the working tree of $hcwd could not be inspected ($hdirty). An acknowledgement asserts that 'orchid verify' will run the commit it names, and nothing can assert that about a tree whose state could not be read — an inspection that answers 'clean' when it could not look is not a check at all. $hcwd is the path task $id's 'worktree' field names (empty means the repository itself); make it a readable checkout with a working tree, then re-run the ack."
+    fi
+    if [ -n "$hdirty" ]; then
+      orchid_die "refusing to acknowledge the hand-off for task $id: $hcwd has uncommitted changes ($hdirty). An acknowledgement names a COMMITTED candidate, but 'orchid verify' runs this tree as it stands — acknowledging now would bind every downstream judgment to a commit that does not contain that work (lesson L025). Commit them in that tree, on the branch the task record names, with the trailer 'Orchid-Handoff: operator' (or discard them), then re-run the ack."
+    fi
+    if [ "$hhead" != "$cand" ]; then
+      # WHICH COMMIT, THOUGH. Advancing to whatever HEAD happens to be is a
+      # WORSE mis-binding than the drift this advance exists to remove: a tree
+      # left on another task's branch, a HEAD detached by a bisect, a worktree
+      # path since reused for something else, and the record would name a
+      # commit that shares no history with the work under judgment while every
+      # downstream gate carries on as though it did. The drift at least named a
+      # commit that was really this candidate's.
+      #
+      # So the new commit must be BOTH:
+      #
+      #   * a DESCENDANT of the candidate it replaces. A hand-off only ever
+      #     adds commits on top of the implementer's work -- a lint fix, a
+      #     re-pinned checksum, a mode bit -- so anything that does not contain
+      #     that work is not this candidate's hand-off, whatever else it is.
+      #   * ON the branch the task record names. Descent alone still admits a
+      #     commit made on some other branch that happened to fork from this
+      #     candidate, which is exactly what an operator working two tasks in
+      #     two checkouts produces by mistake.
+      #
+      # Both refusals name BOTH shas, because the whole content of the mistake
+      # is which two commits were about to be conflated.
+      if ! git -C "$hcwd" merge-base --is-ancestor "$cand" "$hhead" 2>/dev/null; then
+        orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hhead does not descend from the current candidate $cand, so it is not this candidate's hand-off (HEAD of $hcwd is on an unrelated history — check out the task's own branch, commit the mechanical step on top of $cand, and re-run)"
+      fi
+      hbranch="$(fm_get "$f" branch)"
+      if [ -n "$hbranch" ]; then
+        if ! git -C "$hcwd" rev-parse --verify --quiet "refs/heads/$hbranch" >/dev/null 2>&1; then
+          orchid_die "refusing to advance candidate_sha $cand -> $hhead: task $id names branch '$hbranch', which does not exist in $hcwd, so nothing can confirm $hhead belongs to this task's line of work (create it at the hand-off commit, or point the record at the branch the work is really on with 'orchid task set $id branch <name>')"
+        fi
+        if ! git -C "$hcwd" merge-base --is-ancestor "$hhead" "refs/heads/$hbranch" 2>/dev/null; then
+          orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hhead is not contained in task $id's branch '$hbranch' (HEAD of $hcwd is detached, or on another branch — commit the mechanical step on '$hbranch' and re-run; the candidate it would have replaced is $cand)"
+        fi
+      fi
+      # INV-04, re-checked. Entry to `testing` scans base..candidate for
+      # `.orchid/` commits, and this is the only other path that moves
+      # candidate_sha forward past that gate -- so an operator's mechanical
+      # commit gets the same scan the implementer's did, rather than a way
+      # around it. Captured, not piped into `grep -q`: under `pipefail` a
+      # short-circuiting matcher SIGPIPEs `git log` and the 141 would read as
+      # "clean" (see tests/inv/test_INV-13_driver_verb_only.sh's note).
+      #
+      # The diagnostic names the TWO CAUSES, because neither way of tripping
+      # this is deliberate and refusing with only "touches .orchid/" leaves an
+      # operator staring at a commit they are sure contains one file. Both
+      # arise from the same fact -- that the integration branch is where
+      # orchid's own state lives:
+      #
+      #   * The hand-off was committed onto the integration branch itself
+      #     (a task with no separate worktree). That branch is where orchid's
+      #     own state commits land -- `plan apply`, `run accept`, `config
+      #     commit` and `start` all write `.orchid/` through
+      #     orchid_commit_durable and move it with `update-ref` -- so any of
+      #     them running while the task was in flight leaves one inside
+      #     `base_sha..HEAD`, and the range spans more than the operator's own
+      #     commit. The remedy is the tree the task record names: its worktree.
+      #   * The commit was made in a stale checkout of that branch. Because
+      #     `update-ref` never touches the repository's index, a plain `git
+      #     commit` after `git add <path>` builds its tree from an index many
+      #     commits back and reverts kernel state along with the intended
+      #     change.
+      hbase="$(fm_get "$f" base_sha)"
+      if [ -n "$hbase" ]; then
+        hstate_files="$(git -C "$repo" log --format=%H --name-only "$hbase..$hhead" 2>/dev/null | grep '^\.orchid/' || true)"
+        [ -z "$hstate_files" ] || orchid_die "the commits in $hbase..$hhead touch .orchid/ — refusing to advance candidate_sha to $hhead (INV-04). Either the hand-off was committed onto the integration branch, which carries orchid's own state commits (commit it in the task's worktree instead — 'orchid task show $id' names it), or your index was stale: orchid moves that branch with update-ref and never updates it, so a plain commit reverted kernel state too (undo it, 'git reset', re-stage just your path, re-run)"
+      fi
+      # Journal-first, and journalled SEPARATELY from the acknowledgement
+      # below: a candidate moving is the event an operator reading the trail
+      # needs to see on its own, not a detail folded into an ack line.
+      journal --task "$id" --kind intervention "operator hand-off advanced candidate_sha $cand -> $hhead (hand-off commits landed after the candidate was captured): $reason"
+      fm_set "$f" candidate_sha "$hhead"; fm_set "$f" updated "$(now)"
+      echo "$id: candidate_sha advanced $cand -> $hhead (the hand-off's own commits)"
+      cand="$hhead"
+    fi
+    if [ "$old" = "$cand" ]; then
+      echo "$id: operator hand-off already acknowledged for candidate $cand"
+      exit 0
+    fi
+    journal --task "$id" --kind intervention "operator hand-off acknowledged for candidate $cand: $reason"
+    fm_set "$f" handoff_ack "$cand"; fm_set "$f" updated "$(now)"
+    echo "$id: operator hand-off acknowledged for candidate $cand" ;;
   unblock)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
@@ -500,10 +803,24 @@ case "$sub" in
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
     journal --task "$id" --kind intervention "unblock: $reason"
-    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    # T010: same rework brief the advance:rework arm appends, and for the same
+    # reason -- this is also an entry to rework, and the logs holding the
+    # failing gate's exact locations are deleted two lines below. The brief
+    # goes in FIRST and the operator's own guidance last, so the guidance
+    # reads as the final word on top of the evidence rather than being buried
+    # under it. Candidate-bound, as on the advance arm -- and briefs describing
+    # a candidate this task has replaced are aged out in the same pass.
+    { refresh_briefs "$f" "$id"
+      printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"
+    } | atomic_write "$f"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
-    # with the advance:rework arm and orchid-merge's rebase-reset).
+    # with the advance:rework arm and orchid-merge's rebase-reset) -- and, on
+    # the same grounds, any operator hand-off recorded against the candidate
+    # this rework round is about to replace.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+    if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+      fm_set "$f" handoff_ack ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework" ;;
   retry)
@@ -522,9 +839,20 @@ case "$sub" in
       *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
     esac
     journal --task "$id" --kind intervention "retry: $reason"
+    # T010: the same rework brief, lifted before the logs go (see the
+    # advance:rework arm). `retry` is the verb an operator reaches for after
+    # `attempts exhausted`, which is exactly the moment the last verify log's
+    # locations are most worth carrying forward -- if, and only if, that log
+    # is still bound to the candidate being retried -- and, in the same pass,
+    # the briefs already in the body that describe a candidate it is not.
+    refresh_briefs "$f" "$id" | atomic_write "$f"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
-    # with the advance:rework arm and orchid-merge's rebase-reset).
+    # with the advance:rework arm and orchid-merge's rebase-reset) -- and any
+    # operator hand-off bound to the candidate being replaced.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
+    if [ -n "$(fm_get "$f" handoff_ack)" ]; then
+      fm_set "$f" handoff_ack ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework" ;;
   infra-fail)
@@ -559,5 +887,5 @@ case "$sub" in
     else
       echo "$id: infra_failures $n/$max"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|unblock|retry|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|unblock|retry|infra-fail" ;;
 esac

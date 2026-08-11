@@ -21,6 +21,7 @@ risk_tier: medium
 blocking_severity: medium
 stop_condition: report at most 8 findings at or above medium severity; no style nits; one pass only
 hook_guidance:
+handoff_ack:
 engine: __ENGINE__
 effort: medium
 acceptance_criteria:

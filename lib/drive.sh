@@ -68,13 +68,20 @@ drive_threshold_rank() {
 #   hook-failure      -- a `:required` hook binding has no ok, current envelope
 #   worktree-conflict -- a dispatch worktree cannot be proven to belong to
 #                        this task/repo/branch
+#   operator-handoff  -- the candidate's execution-requiring mechanical steps
+#                        (a lint fix, a checksum re-pin, a mode bit on a new
+#                        executable) are not acknowledged for THIS candidate.
+#                        Deliberately settled by no verb below: none performs
+#                        the work, and a model able to acknowledge its own
+#                        hand-off would defeat the point of naming one at all
+#                        (lesson L017; lib/handoff.sh)
 #   run-complete      -- every task is `done`; PROTOCOL.md's COMPLETION
 #                        procedure (acceptance checks, then `orchid run
 #                        accept --evidence`) is still to be run
 #   operator-decision -- everything else this policy deliberately refuses to
 #                        decide (attempts exhausted, wallclock budget, a
 #                        status/archetype combination with no declared edge)
-_DRIVE_BOUNDARY_KINDS=" planning blocked-task review-evidence review-conflict hook-failure worktree-conflict run-complete operator-decision "
+_DRIVE_BOUNDARY_KINDS=" planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-handoff run-complete operator-decision "
 
 drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
   case "$_DRIVE_BOUNDARY_KINDS" in
@@ -145,8 +152,17 @@ drive_surface_admits() {
 #
 # `blocked-task` (`task unblock`/`task retry`), `hook-failure` (its handler or
 # its binding is broken), `worktree-conflict` (a checkout that cannot be proven
-# to belong to this task) and the `operator-decision` catch-all deliberately
-# name none: no procedure an orchestrator can run resolves them.
+# to belong to this task), `operator-handoff` and the `operator-decision`
+# catch-all deliberately name none: no procedure an orchestrator can run
+# resolves them.
+#
+# `operator-handoff` is the one whose omission is a POLICY choice rather than
+# a gap. `orchid task handoff --ack` is a real verb, and the broker could be
+# taught to admit it -- which is exactly why it must not be. The verb asserts
+# that execution-requiring work was performed by an actor able to perform it;
+# a model that can run no linter and no chmod, acknowledging its own hand-off,
+# would turn the record into the same unsatisfiable routing the hand-off
+# exists to prevent, with a durable field now claiming otherwise.
 drive_boundary_settling_verb() {
   case "$1" in
     review-evidence|review-conflict) printf 'task-arbitrate\n' ;;

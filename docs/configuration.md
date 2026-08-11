@@ -70,6 +70,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `pump_stale_s` | `900` | repo | v1-m2 |
 | `pump_interval_s` | `240` | repo | v1-m4 |
 | `arbiter_wait_s` | `14400` | repo | v1-m2 |
+| `handoff_before_verify` | `off` | repo | v1.1 |
 | `hook.after_plan_draft` | *(unbound — no handler)* | repo | v1-m3 |
 | `hook.before_arbitration` | *(unbound)* | repo | v1-m3 |
 | `hook.on_verify_fail` | *(unbound)* | repo | v1-m3 |
@@ -109,6 +110,39 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   (not qualified ids); append `:required` to a handler to make its failure
   block the edge (exit 15). No built-in defaults — an unbound point runs no
   handler at all.
+- **`handoff_before_verify`** (`off` by default) names the OPERATOR HAND-OFF
+  pause in [PROTOCOL.md](../PROTOCOL.md)'s THE TICK: the point, after an
+  implementer's envelope reconciles and before `orchid verify` runs, where a
+  candidate's execution-requiring mechanical work happens — applying a
+  linter's own fix, re-pinning a release checksum, setting the mode bit on a
+  newly added executable. Set it to `required` when your implementer is an
+  engine profile that denies on the command *string* and so can perform none
+  of those: a drive pass then stops at an `operator-handoff` boundary instead
+  of verifying a candidate that was never going to pass and spending one of
+  its three rework rounds on the failure. It ships `off`, and turning it on is
+  an operator decision landed through `orchid config commit --reason "..."`
+  like any other config change — never a line a task's candidate adds to the
+  live `orchid.config` of the run it is executing inside, which would switch a
+  new driver gate on mid-run, for every remaining task, with no reason
+  recorded. Perform the steps, commit them, then
+  `orchid task handoff <id> --ack --reason "..."` — which advances
+  `candidate_sha` to the commit the hand-off produced (so the record names the
+  tree verification will run, not the one captured before it; a `HEAD` that
+  does not descend from the current candidate, or does not sit on the task's
+  branch, is refused rather than adopted) and binds the acknowledgement to
+  that, so a resumed session or a second driver pass
+  proceeds. Acknowledge LAST: a commit made after the ack leaves the tree ahead
+  of what was acknowledged, which reopens the pause until you re-run the verb.
+  The verb refuses an ack over a tree with uncommitted changes (naming them),
+  over a tree whose state it could not read at all — a failed `git status` is
+  reported as an uninspected tree, never as a clean one — and
+  from any status but `testing`, where reviewers, an arbiter or a merge would
+  already be holding the commit it wants to advance; `--clear` carries neither
+  restriction.
+  A rebase or a fresh rework round invalidates it exactly as
+  INV-07 invalidates verify evidence. Any value
+  other than `off` reads as `required`, so a typo can only route more work to
+  a human, never less.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable
   reviewer/critic (the diff is swapped for a `diff.stat` summary, honestly
   recorded as omitted); an inline-only engine (agy, hermes) still gets the

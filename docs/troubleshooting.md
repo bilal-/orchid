@@ -237,6 +237,75 @@ from a raised question (`orchid notify`), answer it first
 [docs/engines/openclaw.md](./engines/openclaw.md#inbox-hardening-orchid-answer))
 so the guidance text exists before `unblock` folds it in.
 
+## A task sits in `testing` and nothing verifies it
+
+**Symptom:** `orchid status --explain` shows a task in `testing` as
+`awaiting-operator-handoff`, and every `orchid drive` pass exits 16 with a
+judgment boundary of kind `operator-handoff` without running `orchid verify`.
+
+This is not a fault — it is the operator hand-off doing its job. Your
+repository set `handoff_before_verify=required`, which says the implementer
+here is an engine profile that cannot execute anything (it denies on the
+command *string*), so this candidate's mechanical work — applying a linter's
+own fix, re-pinning a release checksum, setting the mode bit on a newly added
+executable — has to be done by you. The pass stops rather than verifying a
+candidate that was never going to pass and spending one of the task's three
+rework rounds on it.
+
+```sh
+orchid run boundary show           # what is being held, and why
+orchid task show <id>              # candidate_sha, and handoff_ack beside it
+# ...do the mechanical work in the task's worktree and commit it, giving each
+# such commit the trailer "Orchid-Handoff: operator", then:
+orchid task handoff <id> --ack --reason "re-pinned the formula; set the exec bit"
+```
+
+Commit first, acknowledge second: `--ack` moves `candidate_sha` forward to the
+commit your hand-off produced and binds the acknowledgement to *that*. Without
+it the record would keep naming the commit captured before you started, while
+verification ran the tree you just committed — evidence about a commit nobody
+verified. (It re-runs the `.orchid/` scan over `base_sha..HEAD` while it moves,
+so a mechanical commit that touched state is refused here rather than slipping
+past entry to `testing`.)
+
+"Commit first" is enforced, not advice: `--ack` refuses while the tree has
+uncommitted changes and prints the paths. Applying the fix feels like performing
+the hand-off, but every sha this verb compares describes a *commit* — acknowledge
+before committing and `handoff_ack`, `candidate_sha` and `HEAD` would all agree
+about a commit that does not contain your work, while `orchid verify` runs the
+tree that does. (Uncommitted `.orchid/` state does not count; it is no part of
+the candidate.) If that read cannot be made at all — the `worktree` field names
+a path that is not a checkout, or is a bare repository — the refusal says the
+tree could not be *inspected*, which is a different problem from a dirty one and
+is fixed by pointing the record at a real checkout, not by committing anything.
+The same applies after the fact: edit the tree after
+acknowledging and the next pass stops again until you either commit (then
+re-`--ack`, since `HEAD` moved) or discard the edit (no second ack needed —
+nothing was committed, so the acknowledgement standing still names the tree that
+will run).
+
+`--ack` is also refused from any status but `testing`. Past that point a
+reviewer, an arbiter or a merge is already judging that exact commit, and
+advancing `candidate_sha` underneath them would leave the record naming a
+candidate none of them looked at. If you need to withdraw an acknowledgement
+from one of those states, `orchid task handoff <id> --clear` is legal from
+anywhere.
+
+The acknowledgement is bound to the task's **current** `candidate_sha`, which
+is why the next pass proceeds and why nothing has to remember that you did it.
+It is invalidated the same way verify evidence is (INV-07): entry to `rework`,
+`orchid task unblock`, `orchid task retry`, and `orchid merge`'s rebase arm all
+clear it, because a rebased or reworked tree is a different candidate and work
+done on the old one is not evidence about it. If a pass stops again right after
+you acknowledged, compare the two fields — `handoff_ack` naming a sha other
+than `candidate_sha` is exactly that invalidation, and the boundary reason
+prints both.
+
+Set `handoff_before_verify=off` (the default) if your implementer can run the
+repository's own gates itself; nothing then gates and this boundary is never
+raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
+"The operator hand-off".
+
 ## Answers sent on a channel never arrive
 
 **Symptom:** blockers reach your phone, you answer them there, and the run

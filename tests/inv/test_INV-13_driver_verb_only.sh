@@ -12,8 +12,23 @@ source "$(dirname "$0")/../helpers.sh"
 
 DRIVER="$REPO_ROOT/runners/orchid-drive"
 POLICY="$REPO_ROOT/lib/drive.sh"
+# T010: the driver reads verdicts from a SECOND policy library now
+# (lib/handoff.sh, the operator hand-off gate). Check 1 below applies to every
+# such library, not just the first one written -- a read-only rule that covers
+# only the file it was written for stops being an invariant the moment the
+# driver grows another input, and hiding a mutation behind one of them is
+# exactly what check 1 exists to prevent.
+#
+# An ARRAY, not a space-separated string: `$REPO_ROOT` is wherever the checkout
+# happens to live, and a path containing a space would split one library into
+# two nonexistent ones -- turning check 1 into a `fail` on a correct tree, or
+# (had the existence guard below not been there) into a loop that scans nothing
+# and passes vacuously.
+POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh")
 [ -f "$DRIVER" ] || fail "INV-13: runners/orchid-drive is missing"
-[ -f "$POLICY" ] || fail "INV-13: lib/drive.sh is missing"
+for p in "${POLICIES[@]}"; do
+  [ -f "$p" ] || fail "INV-13: $p is missing"
+done
 
 # Comment lines are excluded everywhere below: this file's whole subject is
 # what the driver EXECUTES, and both files document the very verbs and
@@ -53,13 +68,16 @@ green_case "the same stripper DROPPED the commented-out fm_set, so its exclusion
 drv_code="$(code_of "$DRIVER")"
 
 # ===========================================================================
-# 1 -- lib/drive.sh is a PURE POLICY library: it reads and prints verdicts.
-# It may never mutate anything, and it may never invoke a verb (which would
-# hide a mutation behind a function call the driver's own audit cannot see).
+# 1 -- every policy library the driver reads verdicts from is PURE: it reads
+# and prints. None may ever mutate anything, and none may invoke a verb (which
+# would hide a mutation behind a function call the driver's own audit cannot
+# see).
 # ===========================================================================
-if code_of "$POLICY" | grep -nE 'fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|^[[:space:]]*(rm|mv|cp)[[:space:]]'; then
-  fail "INV-13: lib/drive.sh must be read-only policy — it mutates, or reaches for a verb"
-fi
+for p in "${POLICIES[@]}"; do
+  if code_of "$p" | grep -nE 'fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:space:]]+(add|remove)|^[[:space:]]*(rm|mv|cp)[[:space:]]'; then
+    fail "INV-13: $p must be read-only policy — it mutates, or reaches for a verb"
+  fi
+done
 
 # ===========================================================================
 # 2 -- runners/orchid-drive never writes `.orchid/` itself. It holds `$state`
@@ -129,9 +147,11 @@ fi
 if code_of "$DRIVER" | grep -nE '\.summary|\.actions'; then
   fail "INV-13: the driver reads an engine's prose summary"
 fi
-if code_of "$POLICY" | grep -nE '\.summary|\.actions'; then
-  fail "INV-13: the policy library reads an engine's prose summary"
-fi
+for p in "${POLICIES[@]}"; do
+  if code_of "$p" | grep -nE '\.summary|\.actions'; then
+    fail "INV-13: $p reads an engine's prose summary"
+  fi
+done
 case "$drv_code" in
   *drive_review_decision*) ;;
   *) fail "INV-13: the driver must route arbitration through the structured policy function" ;;

@@ -34,6 +34,7 @@ __orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
+source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
 # --explain and --html are independent flags (either, neither, or both may
@@ -96,7 +97,24 @@ _status_task_why() {
       done <<< "$blockers"
       [ -n "$why" ] || why="ready-to-dispatch" ;;
     implementing) why="awaiting-implementer-envelope" ;;
-    testing)      why="awaiting-verify (or rebase-pending)" ;;
+    testing)
+      # T010: a task held at the operator hand-off is NOT awaiting verify --
+      # nothing is going to run, and nothing will, until a human performs this
+      # candidate's execution-requiring steps and records them. Reporting it
+      # as `awaiting-verify` would describe a wait on the machine when the
+      # wait is on a person, which is the whole class of silence PROTOCOL.md's
+      # named pause exists to end. `off` and `satisfied` both read exactly as
+      # they did before this task, so a repository not using the gate sees no
+      # change at all.
+      if [ "$(handoff_state "$repo" "$id" | cut -f1)" = outstanding ]; then
+        # No quotes in the predicate text: this same string is rendered into
+        # the static status page's task table, and a stray `"` there is a
+        # markup hazard for no benefit. The full invocation is in PROTOCOL.md
+        # and in the boundary's own reason.
+        why="awaiting-operator-handoff (orchid task handoff $id --ack)"
+      else
+        why="awaiting-verify (or rebase-pending)"
+      fi ;;
     reviewing)    why="awaiting-review-envelopes" ;;
     arbitrating)  why="awaiting-arbitration" ;;
     merging)      why="awaiting-merge" ;;

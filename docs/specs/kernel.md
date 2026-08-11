@@ -146,7 +146,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 
 | File | Sole writer (verb) |
 |---|---|
-| `tasks/*.md` | `orchid task create/set/advance/unblock/retry` |
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/handoff` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
@@ -343,9 +343,48 @@ pending → implementing → testing → reviewing → arbitrating → merging �
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
 implementer_engine_id, base_sha, candidate_sha, risk_tier,
-blocking_severity, stop_condition, hook_guidance, engine, effort,
+blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
 acceptance_criteria, verification_commands, resources, exclusive,
-wallclock_budget_s, started_at, created, updated`. `hook_guidance` (v1-m3):
+wallclock_budget_s, started_at, created, updated`. `handoff_ack` (v1.1):
+kernel-owned and written by `orchid task handoff <id> --ack|--clear --reason
+"..."` ALONE — `orchid task set` refuses it by name, because its only legal
+value is the task's current `candidate_sha` at the moment of the ack and a
+hand-set field is the one way this record could lie. Empty means the
+`operator-handoff` boundary is outstanding; equal to `candidate_sha` AND to
+`HEAD` of the tree verification would run in, with that tree CLEAN, means the
+operator performed that candidate's execution-requiring mechanical steps and a
+resumed pass proceeds. The last two comparisons are what keep the rule about a
+committed TREE rather than about two fields written together: an ack followed by
+one more commit leaves both fields equal and naming a tree that exists nowhere,
+and an ack given over uncommitted work leaves all three shas equal and naming a
+commit that does not contain it — a pass that read either as done would verify a
+commit nobody acknowledged. `--ack` is refused outright over a dirty tree
+(`.orchid/` excepted, being no part of the candidate) and from any status other
+than `testing`, the one point in the procedure this pause exists at: from
+`reviewing`, `arbitrating` or `merging` its advance would move `candidate_sha`
+out from under judgments already bound to that exact commit. `--clear` is
+restricted by neither, since it only ever withdraws. It is bound to a
+candidate, never to a task or a
+moment: entry to `rework` and `orchid merge`'s rebase arm both clear it, the
+same INV-07 invalidation that drops verify evidence, so a rebased tree never
+inherits an acknowledgement made against the tree it replaced. `--ack` also
+ADVANCES `candidate_sha` to `HEAD` of the tree `orchid verify` resolves (the
+task's `worktree` when set, else the repo) before binding to it — but only to a
+commit that DESCENDS from the current candidate and is contained in the task's
+`branch`, refusing otherwise in a message naming both shas, since adopting an
+unrelated `HEAD` would be a worse mis-binding than the drift the advance
+removes — and re-running entry-to-`testing`'s `.orchid/` scan over
+`base_sha..HEAD`, refusing on a
+hit: a hand-off exists to commit work AFTER the candidate was captured, so
+without the advance the record would name a commit that was never the one
+verified — the drift lesson L025 records — and it is the one other path that
+moves `candidate_sha` past INV-04's gate. As this ships, `orchid verify` itself
+does not compare the two before running — it records both into its evidence
+header and runs; the equality the advance leaves behind is what INV-11's
+`testing → reviewing` gate reads out of that header afterwards. (A task
+proposing that verification refuse outright on a mismatch, T031, is unmerged at
+the time of writing; nothing above depends on it.)
+`hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
 "..."`, before the rework advance (PROTOCOL.md, THE TICK's `testing` FAIL
@@ -800,9 +839,36 @@ is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
 exit code — returned by `drive` when a pass stopped at one, and by `run
 boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
-`run-complete`, `operator-decision`. `orchid task arbitrate` is the sole
-explicit judgment-result verb; see PROTOCOL.md's "Judgment boundaries"
-section for the non-overlapping arbitration truth table.
+`operator-handoff`, `run-complete`, `operator-decision`. `orchid task
+arbitrate` is the sole explicit judgment-result verb; see PROTOCOL.md's
+"Judgment boundaries" section for the non-overlapping arbitration truth table.
+
+`operator-handoff` (v1.1) is the one raised BETWEEN an implementer's envelope
+reconciling and verification, where `handoff_before_verify` asks for it: some
+mechanical work in a candidate requires EXECUTION — applying a linter's own
+fix, re-pinning a release checksum, setting the mode bit on a newly added
+executable — and an engine profile that denies on the command *string* can
+perform none of it, so verifying first is a guaranteed failure that spends a
+rework attempt on work nobody in that round could do. It is settled by no verb
+an orchestrator can run, deliberately: `orchid task handoff <id> --ack` asserts
+that the work was performed by an actor able to perform it, advances
+`candidate_sha` to the commit that work produced (refusing any `HEAD` that does
+not descend from the current candidate or does not sit on the task's branch, any
+tree with uncommitted changes, any tree whose state could not be read at all —
+a failed `git status` is an uninspected tree, never a clean one — and any status
+but `testing`), and writes
+`handoff_ack`
+bound to it — so the record names the tree verification will actually run
+rather than the one captured before the hand-off began. That binding is the
+whole resume rule — `handoff_ack`, `candidate_sha` and the tree's `HEAD` all
+equal AND that tree clean means done and the walk proceeds, anything else means
+outstanding and it stops again — and it is invalidated exactly as INV-07
+invalidates verify evidence, so a rebased tree never inherits an
+acknowledgement made against the tree it replaced. The exact `file:line: RULE:
+message` locations of a failing gate travel into the next rework brief
+regardless of who acts on them (see PROTOCOL.md, THE TICK's `testing` arm):
+carrying the locations is what makes a routed fix satisfiable, and the hand-off
+is what stops it being routed to an actor that cannot perform it.
 
 One boundary is recorded per pass, chosen by whether a woken orchestrator
 could actually SETTLE it ahead of the ones only an operator can, then by
