@@ -93,6 +93,31 @@ assert_eq 3 "$rc" "retry from pending must exit 3"
 "$ORCHID_BIN" task retry T003 --reason "guidance given"
 assert_eq rework "$("$ORCHID_BIN" task show T003 | grep '^status: ' | cut -d' ' -f2)" "retry from blocked -> rework"
 
+# T028 (dogfood F30): `task set <id> depends_on <value>` refuses, at WRITE
+# time, an id that names no task file. The scheduler cannot report such an id
+# as an error later -- it can only say `waiting-deps (T999)`, which is what a
+# task correctly waiting on an unfinished dependency says too -- so the write
+# is the last moment the operator can be told the id resolves to nothing. Ids
+# are split on commas as well as whitespace (lib/schedule.sh's
+# schedule_split_deps, the same splitter the scheduler reads with), so a bad
+# id hiding inside an otherwise-valid comma list is caught as well.
+deps_before="$("$ORCHID_BIN" task show T002 | grep '^depends_on: ' | cut -d' ' -f2-)"
+rc=0; dep_unknown_out="$("$ORCHID_BIN" task set T002 depends_on "T003,T999" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set depends_on with an id that has no task file must be refused"
+assert_match "T999" "$dep_unknown_out" "the refusal names the unresolvable id"
+assert_eq "$deps_before" "$("$ORCHID_BIN" task show T002 | grep '^depends_on: ' | cut -d' ' -f2-)" \
+  "a refused depends_on write leaves the field exactly as it was"
+
+# ...and the same call with every id resolving is accepted and stored as
+# written -- otherwise the refusal above would be satisfied by a check that
+# rejects every value.
+"$ORCHID_BIN" task set T002 depends_on "T001,T003" \
+  || fail "a comma-separated depends_on naming existing tasks must be accepted"
+assert_eq "T001,T003" "$("$ORCHID_BIN" task show T002 | grep '^depends_on: ' | cut -d' ' -f2-)" \
+  "an accepted depends_on is stored verbatim"
+"$ORCHID_BIN" task set T002 depends_on "" \
+  || fail "clearing depends_on must remain legal (no ids to resolve)"
+
 # v0b2: `task advance <id> implementing` stamps frontmatter `started_at`
 # (ISO) — the task wall-clock anchor `jobs check` reads for the
 # budget-exceeded backstop.

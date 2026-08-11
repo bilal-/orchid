@@ -113,6 +113,27 @@ case "$sub" in
       status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
     esac
+    # depends_on ids are checked HERE, at write time (dogfood F30). The
+    # scheduler can only ever report an id it cannot satisfy as
+    # `waiting-deps (<id>)` -- indistinguishable, in the status table and in
+    # a dispatch refusal, from a real dependency that simply has not finished
+    # yet. So a typo'd or renamed id does not look like an error at all: the
+    # task just never dispatches, and the predicate explaining why reads
+    # exactly like a task correctly waiting its turn. Refusing the write is
+    # the only point at which the operator is still holding the id and can be
+    # told it names nothing, hours before it can deadlock a run.
+    #
+    # Split with schedule_split_deps, the same function the scheduler reads
+    # with, so "accepted at write time" and "resolved at dispatch time" can
+    # never disagree about where one id ends and the next begins. An empty
+    # value is legal (it clears the field) and yields no tokens to check.
+    if [ "$key" = depends_on ]; then
+      unknown_deps=""
+      while IFS= read -r dep_id; do
+        [ -f "$tasks/$dep_id.md" ] || unknown_deps="$unknown_deps $dep_id"
+      done < <(schedule_split_deps "$val")
+      [ -z "$unknown_deps" ] || orchid_die "depends_on names no such task:$unknown_deps (ids are separated by commas or whitespace, and each must already exist as a task)"
+    fi
     if [ "$key" = risk_tier ]; then
       reason=""
       if [ "${1:-}" = "--reason" ]; then

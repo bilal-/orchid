@@ -233,7 +233,11 @@ ticks outlive the session.
 `schedule_dispatch_blockers`, the single home for the predicate set,
 enforced by `orchid task advance` on dispatch and surfaced read-only by
 `orchid status --explain`: dependency-manifest tasks serialize
-(`waiting-deps`); the concurrency cap gates how many tasks may be active at
+(`waiting-deps`) — `depends_on` separates ids by **comma or whitespace**, and
+`orchid task set <id> depends_on <value>` refuses at write time any id with no
+task file, because an unsatisfiable id is otherwise reported as an ordinary
+`waiting-deps (<id>)` and reads like a task correctly waiting its turn; the
+concurrency cap gates how many tasks may be active at
 once (`concurrency-cap`); `exclusive: true` and `resources:` declarations
 (ports, dbs) gate parallelism (`exclusive-overlap`, `resource-conflict`) —
 worktrees isolate git state only, never caches/ports/servers; unknown test
