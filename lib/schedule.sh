@@ -40,6 +40,40 @@ schedule_is_active_status() {
   _schedule_active_status "$1"
 }
 
+# schedule_split_deps <value> -- the task ids in a `depends_on` frontmatter
+# value, one per line, split on COMMAS as well as whitespace, empty tokens
+# skipped. The single home for what separates two dependency ids: both the
+# reader below and `orchid task set`'s write-time existence check split with
+# this, so a value the writer accepted can never be re-read as a different
+# set of ids.
+#
+# Commas are here because of dogfood finding F30, and the bug it names is
+# the reason this is a function and not a bare `for d in $deps`. `depends_on:
+# T002,T003` read by word splitting alone is ONE token, "T002,T003"; the
+# reader then looks for `.orchid/tasks/T002,T003.md`, finds no file, reads no
+# status, and the dependency can never equal `done` -- the task waits
+# forever. What made it survive is the rendering: the unmet token joins back
+# into `waiting-deps (T002,T003)`, which reads exactly like a correct
+# two-dependency wait, so the predicate that was supposed to explain the
+# stall was the thing hiding it.
+#
+# Two `tr` invocations rather than one with a bracket expression: `tr
+# ',[:space:]' '\n'` relies on set2 being padded with its last character,
+# which is not portable enough to rest a scheduling predicate on. Splitting
+# is done by `tr` + `while read` rather than by unquoted word splitting so a
+# hand-edited id containing a glob character is never expanded against the
+# cwd.
+schedule_split_deps() {
+  local tok
+  while IFS= read -r tok; do
+    [ -n "$tok" ] && printf '%s\n' "$tok"
+  done < <(printf '%s\n' "$1" | tr ',' '\n' | tr ' \t' '\n\n')
+  # Same normalization lib/manifest.sh's _manifest_split_csv documents: a
+  # `while read` loop exits with its final (EOF-failing) read's status, so an
+  # empty `depends_on` would otherwise report failure to a caller that checks.
+  return 0
+}
+
 # schedule_active_tasks <repo> -- ids whose status is currently active
 # (implementing, testing, reviewing, arbitrating, merging), one per line, in
 # task-file glob order. Empty output (no active tasks) is not an error.
@@ -72,7 +106,12 @@ schedule_active_tasks() {
 #                                       line per (resource, active-id) pair.
 #   waiting-deps (<id> ...)         -- this task's `depends_on` ids that have
 #                                       not reached `done` yet, space-
-#                                       separated inside one predicate.
+#                                       separated inside one predicate,
+#                                       however the frontmatter value itself
+#                                       separated them (schedule_split_deps
+#                                       accepts commas and whitespace; the
+#                                       rendering is always space-separated,
+#                                       one id per space).
 #
 # <task> is a task ID, not a path (mirrors archetype_transitions <name>).
 schedule_dispatch_blockers() {
@@ -123,8 +162,10 @@ schedule_dispatch_blockers() {
 
   local deps d unmet=""
   deps="$(fm_get "$f" depends_on)"
-  for d in $deps; do
+  # Process substitution, never a pipe: a `while read` on the right-hand side
+  # of `|` runs in a subshell, and $unmet would be discarded with it.
+  while IFS= read -r d; do
     [ "$(fm_get "$state/tasks/$d.md" status 2>/dev/null)" = "done" ] || unmet="$unmet $d"
-  done
+  done < <(schedule_split_deps "$deps")
   [ -z "$unmet" ] || echo "waiting-deps ($(printf '%s' "${unmet# }"))"
 }

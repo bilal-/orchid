@@ -8,6 +8,8 @@ scaffold: false
 branch: task/__ID__
 worktree:
 run_id:
+# depends_on: comma- or whitespace-separated ids of tasks that must reach
+# `done` before this one dispatches (e.g. `T001,T002`); each must already exist
 depends_on:
 attempts: 0
 infra_failures: 0
