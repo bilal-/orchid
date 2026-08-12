@@ -395,6 +395,32 @@ approved as tooling. Decide which you want before you take the work across:
 history" — has both answers, and describes the two guards that will tell you
 when it is happening (a warning from `orchid merge`, and a refused `git push`).
 
+### Tearing it down
+
+A completed run does not stop a schedule. Nothing does — not the last task
+merging, not `orchid run accept`, not `run_status: complete`. If you installed
+the service in step 6, the launchd agent or crontab line is still firing every
+`pump_interval_s`, and every one of those wakes is now a certain no-op.
+
+So when you are done with the working checkout, the order matters:
+
+```sh
+orchid service uninstall --repo "$PWD"        # FIRST — while the checkout exists
+cd ..
+git worktree remove your-project-orchid       # then this
+```
+
+Reversed, you leave a scheduler waking on a timer against a directory that is
+no longer there, and the record naming that leftover schedule was inside the
+directory you just deleted. `orchid service status` names this ordering next
+to the schedule it applies to, and `orchid doctor` — run from anywhere on the
+machine, not just from the repository — reports any binding whose repository
+is gone, with the `orchid service uninstall` command that ends it. The pump
+itself refuses to run, loudly, rather than waking against a deleted path.
+
+`orchid service uninstall` is safe to run blind: it refuses cleanly, touching
+nothing, when no schedule is installed for that path.
+
 ## Before you hand this to someone else
 
 If you are about to point Orchid at a repository you do not already know it can

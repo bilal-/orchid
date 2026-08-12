@@ -549,7 +549,7 @@ assert_eq "$BIND_CANON" "$(jq -r '.repo' "$bind_mrec")" "the machine-local copy 
 
 assert_match 'teardown:' "$bind_out" \
   "install states the obligation it just created, at the moment it creates it"
-assert_match 'uninstall this schedule BEFORE removing|uninstall it BEFORE removing|BEFORE removing' "$bind_out" \
+assert_match 'BEFORE removing' "$bind_out" \
   "and states the ORDERING, not merely that a reversal exists"
 assert_match 'service uninstall --repo' "$bind_out" "and names the exact command that ends it"
 
@@ -663,8 +663,17 @@ green_case "a checkout with no pump-service binding passes the removal guard sil
 # run in -- a report scoped to a repository can say nothing about one that no
 # longer exists.
 doctor_out="$(ORCHID_REPO="$WORK" "$ORCHID_BIN" doctor 2>&1 || true)"
-assert_match "WARN: pump service $gone_label is still installed for $GONE_CANON, which no longer exists" \
-  "$doctor_out" "doctor reports the leftover schedule from the record that outlived its repository"
+assert_match "WARN: pump service $gone_label is still installed" "$doctor_out" \
+  "doctor reports the leftover schedule from the record that outlived its repository"
+assert_match 'which no longer exists' "$doctor_out" \
+  "and says the repository it is bound to is gone, rather than merely listing it"
+# The PATH itself is compared literally, never as a pattern: a scratch path
+# carries `.` and can carry other ERE metacharacters, and a pattern that
+# happens to match anyway would not be evidence that this path was named.
+case "$doctor_out" in
+  *"$GONE_CANON"*) ;;
+  *) fail "doctor's warning must name the exact repository path the leftover schedule points at" ;;
+esac
 assert_match "orchid service uninstall --repo" "$doctor_out" \
   "and names the command that removes it"
 

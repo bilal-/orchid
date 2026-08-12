@@ -427,6 +427,15 @@ orchid service status
 orchid service uninstall
 ```
 
+Nothing removes that schedule for you — not the last task merging, not
+`orchid run accept`, not a `complete` run. When you tear the working checkout
+down, uninstall the service FIRST and remove the worktree second, or you leave
+a scheduler waking on a timer against a deleted directory. `orchid service
+install` records what it bound itself to; `orchid doctor` reports any binding
+whose repository is gone; the pump refuses loudly rather than waking against a
+missing path. See [PROTOCOL.md's COMPLETION](./PROTOCOL.md#completion) for the
+ordering.
+
 `orchid trust show "$PWD"` displays the machine-local acknowledgement and
 its identity/root/policy provenance; without an identity-keyed record it
 reports root verification as pending and returns denied without walking

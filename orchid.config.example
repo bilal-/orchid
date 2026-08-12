@@ -238,6 +238,15 @@ pack_budget_bytes=65536
 # `orchid service install` to take effect; editing this key alone does not
 # touch an already-installed schedule.
 # pump_interval_s=240
+# How many pump passes one unchanged judgment boundary may wake an
+# orchestrator for before the pump stops waking a model over it and the
+# driver hands it to a human instead. "An orchestrator could settle this"
+# is a static property of the boundary's kind, the task's status and the
+# adapter's command surface; it cannot notice that the record has not moved
+# in three passes. A run whose tasks are all `done` is the case this exists
+# for: `orchid run accept` needs an operator's evidence, so no number of
+# wakeups will ever move it.
+# pump_wake_max=3
 # v1-m2: high-risk arbitration's wait (seconds) for the preferred
 # role.arbiter engine before a fallback arbiter may decide (PROTOCOL.md,
 # HEADLESS OPERATION).

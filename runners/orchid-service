@@ -76,9 +76,24 @@ a crontab line.
                line). idempotent: refuses cleanly (a plain message, no
                launchctl/crontab touched) when nothing is installed for
                --repo -- safe to call blind.
-  status     report installed/loaded state plus the tail of --repo's
-               .orchid/runtime/pump.log. Always exits 0 -- a status query
-               is never a failure, even when nothing is installed.
+  status     report installed/loaded state, the binding record, the teardown
+               ordering, and the tail of --repo's .orchid/runtime/pump.log.
+               Always exits 0 -- a status query is never a failure, even
+               when nothing is installed.
+
+TEARDOWN ORDERING. A schedule outlives the run it serves: nothing removes it
+when the last task merges. `install` records what it bound itself to (a
+binding record inside the repo, and a machine-local copy under
+~/.orchid/services/ that survives the repo's removal), and the rule that
+record exists to keep is:
+
+    uninstall the service FIRST, then remove the integration worktree.
+
+Reversed, a launchd agent / crontab line keeps waking on a schedule against a
+deleted directory, and the record naming the leftover schedule went into the
+bin with it. `orchid doctor` reports any binding whose repository is gone; a
+pump whose target is gone refuses loudly instead of polling forever; and every
+checkout removal orchid itself performs refuses while a binding is live.
 
 options:
   --repo <path>    target repo (default: $ORCHID_REPO, else the cwd)
@@ -244,6 +259,36 @@ _svc_render_cron_line() {
   echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e --service-log >> /dev/null 2>&1 # orchid-service:$label"
 }
 
+# _svc_print_binding <repo> -- the teardown half of `status`. An operator
+# asking "what is installed here?" is usually one step away from tearing the
+# checkout down, and the ordering that must hold (uninstall, THEN remove) is
+# exactly the thing the live-run finding says is written down nowhere. So it
+# is printed here, next to the schedule it constrains, rather than left to a
+# doc page.
+_svc_print_binding() {
+  local repo="$1" rec
+  rec="$(orchid_service_repo_record "$repo")"
+  if [ -f "$rec" ]; then
+    echo "  binding:  $rec"
+    echo "  teardown: this checkout is bound to a live schedule -- uninstall it BEFORE removing $repo:"
+    echo "              $(orchid_service_uninstall_command "$repo")"
+  fi
+}
+
+# _svc_print_uninstalled <repo> <label> -- the one wording both platform
+# branches report a successful uninstall with. The second line is the whole
+# point of the teardown ordering: this is the moment the checkout becomes safe
+# to delete, so it is said here rather than left for the operator to infer.
+# Omitted when the checkout is already gone (an uninstall reaching a removed
+# repository is the reversed ordering being cleaned up after, and telling
+# somebody a deleted directory is safe to delete reads as a bug).
+_svc_print_uninstalled() {
+  local repo="$1" label="$2"
+  echo "orchid: service uninstalled for $repo (label $label)"
+  [ -d "$repo" ] || return 0
+  echo "  $repo is now safe to remove"
+}
+
 _svc_print_log_tail() {
   local log="$1"
   echo "  log: $log"
@@ -293,11 +338,22 @@ _svc_install_darwin() {
     launchctl load "$plist_path"
   fi
 
+  # Record what this schedule is bound to, on both sides of the boundary (see
+  # lib/common.sh's own header for why there are two records). Written AFTER
+  # the scheduler mutation, so a binding never claims an install that did not
+  # happen; a failure to record is loud but not fatal -- the agent IS
+  # installed by this point, and refusing here would leave the operator with
+  # a live schedule and a nonzero exit telling them it failed.
+  orchid_service_binding_write "$repo" "$label" darwin "$plist_path" "$interval_s" \
+    || echo "orchid: warning: could not record the service binding for $repo (the agent is installed; 'orchid doctor' will not be able to name it)" >&2
+
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  plist:      $plist_path"
   echo "  interval_s: $interval_s"
   echo "  log:        $log"
+  echo "  binding:    $(orchid_service_repo_record "$repo")"
+  echo "  teardown:   uninstall this schedule BEFORE removing $repo -- $(orchid_service_uninstall_command "$repo")"
 }
 
 _svc_uninstall_darwin() {
@@ -311,7 +367,8 @@ _svc_uninstall_darwin() {
     launchctl unload "$plist_path" >/dev/null 2>&1 || true
   fi
   rm -f "$plist_path"
-  echo "orchid: service uninstalled for $repo (label $label)"
+  orchid_service_binding_remove "$repo" "$label"
+  _svc_print_uninstalled "$repo" "$label"
 }
 
 _svc_status_darwin() {
@@ -340,6 +397,7 @@ _svc_status_darwin() {
       fi
     fi
   fi
+  _svc_print_binding "$repo"
   _svc_print_log_tail "$repo/.orchid/runtime/pump.log"
 }
 
@@ -426,18 +484,36 @@ _svc_install_linux() {
     eval "$pipeline"
   fi
 
+  # Same binding record as the darwin branch -- see there, and lib/common.sh.
+  # The `artifact` here is the local pump.cron record rather than the crontab
+  # itself, matching what uninstall/status already reason from on this branch.
+  orchid_service_binding_write "$repo" "$label" linux "$record" "$interval_s" \
+    || echo "orchid: warning: could not record the service binding for $repo (the crontab line is installed; 'orchid doctor' will not be able to name it)" >&2
+
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  crontab:    $line"
   echo "  interval_s: $interval_s (floored to $(_svc_cron_minutes "$interval_s") min for cron)"
   echo "  log:        $log"
+  echo "  binding:    $(orchid_service_repo_record "$repo")"
+  echo "  teardown:   uninstall this schedule BEFORE removing $repo -- $(orchid_service_uninstall_command "$repo")"
 }
 
 _svc_uninstall_linux() {
   local repo="$1" dry="$2"
   local label; label="$(_svc_label "$repo")"
   local record; record="$(_svc_cron_record_path "$repo")"
-  [ -f "$record" ] || orchid_die "no service installed for $repo (label $label)"
+  local mdir mrec=""
+  if [ ! -f "$record" ]; then
+    # The cron record lives INSIDE the checkout, so a schedule that outlived
+    # its repository has none left to reason from -- and that is precisely the
+    # case an operator most needs uninstall for. The machine-local binding is
+    # the copy that survives it; with it, the marker is still removable from
+    # the real crontab, which is where the leftover schedule actually lives.
+    if mdir="$(orchid_service_machine_dir)"; then mrec="$mdir/$label.json"; fi
+    [ -n "$mrec" ] && [ -f "$mrec" ] \
+      || orchid_die "no service installed for $repo (label $label)"
+  fi
   local marker="# orchid-service:$label"
   local pipeline; pipeline="$(_svc_cron_pipeline_uninstall "$marker")"
   _svc_emit_cron_seam "$pipeline"
@@ -448,7 +524,8 @@ _svc_uninstall_linux() {
     eval "$pipeline"
   fi
   rm -f "$record"
-  echo "orchid: service uninstalled for $repo (label $label)"
+  orchid_service_binding_remove "$repo" "$label"
+  _svc_print_uninstalled "$repo" "$label"
 }
 
 _svc_status_linux() {
@@ -485,6 +562,7 @@ _svc_status_linux() {
       fi
     fi
   fi
+  _svc_print_binding "$repo"
   _svc_print_log_tail "$repo/.orchid/runtime/pump.log"
 }
 
@@ -515,9 +593,39 @@ done
 [ "$sub" = install ] || [ -z "$interval_arg" ] \
   || orchid_die "--interval-s is only valid with 'install'"
 
+# _svc_bound_repo_by_path <path> -- the CANONICAL repo path a machine-local
+# binding was installed against, when <path> names one exactly. The label every
+# subverb derives is a hash of the canonical path, and `pwd -P` cannot resolve
+# a directory that no longer exists -- so for a checkout that is gone, the
+# binding record is the only thing left that can name the path the schedule was
+# hashed from. Exact string match against the recorded value, which is what
+# `orchid doctor` prints back at the operator.
+_svc_bound_repo_by_path() {
+  local want="$1" label repo
+  while IFS="$(printf '\t')" read -r label repo; do
+    [ -n "$label" ] || continue
+    [ -n "$repo" ] || continue
+    if [ "$repo" = "$want" ]; then
+      printf '%s\n' "$repo"
+      return 0
+    fi
+  done < <(orchid_service_bindings)
+  return 1
+}
+
 repo_in="${repo_arg:-${ORCHID_REPO:-$PWD}}"
-[ -d "$repo_in" ] || orchid_die "no such repo directory: $repo_in"
-repo="$(cd "$repo_in" && pwd -P)"
+if [ -d "$repo_in" ]; then
+  repo="$(cd "$repo_in" && pwd -P)"
+elif [ "$sub" = uninstall ] && repo="$(_svc_bound_repo_by_path "$repo_in")"; then
+  # A schedule outlives what it points at, so uninstall -- and ONLY uninstall
+  # -- must work against a repository that is already gone. Refusing here would
+  # make the leftover launchd agent / crontab line unremovable by the very
+  # command `orchid doctor` names for it. `install` still refuses (there is
+  # nothing to install for), and so does `status` (it reports on a checkout).
+  echo "orchid: $repo no longer exists — removing its leftover schedule from the machine-local binding record" >&2
+else
+  orchid_die "no such repo directory: $repo_in"
+fi
 plat="$(_svc_platform)"
 
 # `install` is the only arm that crosses the unattended boundary, and the

@@ -84,6 +84,66 @@ readable. Revocation still needs a usable `.git` marker to know which record
 applies; if a linked worktree's own marker or registration is broken, revoke
 from the main checkout, which shares the same record.
 
+## The run is finished but the service is still firing
+
+**Symptom:** every task is `done`, the work is merged, `orchid status` shows
+`run_status: complete` — and the launchd agent or crontab line is still waking
+every `pump_interval_s`.
+
+That is expected, and it is yours to stop. Nothing ties a schedule's lifetime
+to the run it serves: not the last task merging, not `orchid run accept`, not
+`run_status: complete`. Each wake after completion is a certain no-op (the
+pump prints `pump: run complete` and exits 0), but it is a no-op that runs
+forever.
+
+```sh
+orchid service status --repo "$PWD"    # names the binding and this ordering
+orchid service uninstall --repo "$PWD"
+```
+
+**Do this BEFORE removing the integration worktree.** Reversed, the scheduler
+keeps firing against a directory that is no longer there, and the record
+naming the leftover schedule was inside the directory you deleted. If that
+already happened, `orchid doctor` — from anywhere on this machine, not just
+from the repository — reports it from the machine-local copy under
+`~/.orchid/services/`:
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for
+  /path/that/is/gone, which no longer exists — the scheduler is waking against
+  a deleted path; remove it with: orchid service uninstall --repo /path/that/is/gone
+```
+
+`orchid service uninstall` works on a path that no longer exists — it is the
+one subverb that does. It resolves the path from the machine-local binding
+record (the canonical spelling `orchid doctor` printed above, which is what the
+schedule's label was derived from), then removes the launchd plist, or the
+marker-guarded crontab line, neither of which lived in the repository either.
+`install` and `status` still refuse a missing `--repo`: there is nothing to
+install for, and nothing to report on.
+
+## The pump woke an orchestrator over and over and nothing moved
+
+**Symptom:** `pump.log` shows repeated hand-offs to an orchestrator for the
+same judgment boundary, pass after pass, with the boundary unchanged.
+
+Each pass records the boundary through `orchid run boundary set`, which bumps
+the record's `passes` counter whenever the record is unchanged by content. Once
+`passes` exceeds `pump_wake_max` (config, default 3) the pump stops waking a
+model for it:
+
+```
+pump: judgment boundary [run-complete] has survived 4 passes unchanged
+  (pump_wake_max=3) — not waking an orchestrator again; an operator has been
+  notified
+```
+
+The driver raises the blocker on the same pass, exactly once. Read it in
+`.orchid/BLOCKERS.md`, or with `orchid run boundary show`, and act on the
+boundary yourself — a `run-complete` boundary wants the acceptance checks and
+`orchid run accept --reason ... --evidence ...`, which no orchestrator can
+perform on your behalf. The counter resets the moment the boundary changes.
+
 ## An installed service runs on schedule but nothing happens
 
 **Symptom:** `orchid service status` looks healthy, the scheduler fires, and

@@ -78,7 +78,37 @@ if unattended_refusal_log="$(unattended_trust_refusal_log_path)"; then
   echo "WARN: unattended trust denied a scheduled/service invocation on this machine; most recent entries (time, surface, repo, state, why) from $unattended_refusal_log:"
   tail -n 5 "$unattended_refusal_log" | sed 's/^/  /'
 fi
+
 _orchid_entry_restore_operator_path
+
+# Machine-local pump service bindings. Deliberately NOT scoped to $repo: the
+# failure this exists for is a schedule whose repository is GONE, and a report
+# scoped to a repository can say nothing about a repository that no longer
+# exists. `orchid service install` writes one record per installed schedule
+# under ~/.orchid/services/ precisely so it survives the checkout — once the
+# worktree is removed, the repo-local copy went with it and the pump's own
+# refusal goes to the scheduler's /dev/null, leaving this the only surface an
+# operator has left.
+#
+# A binding pointing at a live directory is ordinary state, reported so the
+# teardown ordering is visible BEFORE anything is torn down. A binding pointing
+# at a path that is gone is the leftover schedule itself: the launchd agent or
+# crontab line is still firing on its interval against nothing.
+#
+# WARN, never FAIL. The finding is about this machine's scheduler, not about
+# this repository's health, and it must never flip an otherwise clean doctor's
+# exit code in a repository that has nothing to do with it. Placed after the
+# operator PATH is restored: it reads json with jq, and an unfindable jq here
+# would silently report no bindings at all, which reads exactly like having
+# none.
+while IFS="$(printf '\t')" read -r svc_label svc_repo; do
+  [ -n "$svc_label" ] || continue
+  if [ -d "$svc_repo" ]; then
+    echo "ok: pump service installed for $svc_repo (label $svc_label) — uninstall it BEFORE removing that checkout: $(orchid_service_uninstall_command "$svc_repo")"
+  else
+    echo "WARN: pump service $svc_label is still installed for $svc_repo, which no longer exists — the scheduler is waking against a deleted path; remove it with: $(orchid_service_uninstall_command "$svc_repo")"
+  fi
+done < <(orchid_service_bindings)
 
 # --greenfield (v1-m2 Task 9): the ONLY flag. Skips exactly the two checks
 # that cannot hold pre-scaffold -- everything else below runs unchanged.

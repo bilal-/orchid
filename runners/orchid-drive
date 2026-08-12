@@ -3549,6 +3549,29 @@ fi
 # boundary show` instead of inspecting a file.
 # ---------------------------------------------------------------------------
 if [ -n "$boundary_kind" ]; then
+  # The record is read BEFORE it is written, and written before the notify
+  # decision below, because that decision now needs both halves: which record
+  # was there a moment ago (the dedup), and what the `passes` counter reads
+  # AFTER this pass has been counted (the wake budget).
+  prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+  prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
+  prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
+  prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
+
+  if [ -n "$boundary_task" ]; then
+    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --task "$boundary_task" \
+      --reason "$boundary_reason" >/dev/null
+  else
+    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --reason "$boundary_reason" >/dev/null
+  fi
+
+  now_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+  boundary_passes="$(printf '%s' "$now_boundary" | jq -r '.passes // 1' 2>/dev/null || echo 1)"
+  case "$boundary_passes" in
+    ''|*[!0-9]*) boundary_passes=1 ;;
+  esac
+  wake_max="$(drive_wake_budget_max "$repo")"
+
   # A boundary no orchestrator procedure resolves is one runners/orchid-pump
   # deliberately will NOT wake a model for, so the only way it reaches a human
   # is a notification. Sent exactly once per distinct STOP -- every operator-only
@@ -3623,11 +3646,27 @@ if [ -n "$boundary_kind" ]; then
     drive_notify "$page_kind" "$page_task" "$page_status" "$page_text"
     drive_note "notified: [$page_kind] is operator-only, so no orchestrator will be woken for it"
   done <<< "$boundaries_met"
-  if [ -n "$boundary_task" ]; then
-    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --task "$boundary_task" \
-      --reason "$boundary_reason" >/dev/null
-  else
-    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --reason "$boundary_reason" >/dev/null
+
+  if drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" "$orchestrator_surface" && \
+     drive_wake_budget_exhausted "$boundary_passes" "$wake_max"; then
+    # The mirror image, and the same predicate the pump declines on: this
+    # boundary WAS orchestrator-resolvable on paper, and pump_wake_max wakeups
+    # have now been spent on it without the record changing by so much as a
+    # character. The pump stops waking a model for it from here on, which
+    # means the notify path is the only one left -- and it was suppressed for
+    # every one of those passes precisely BECAUSE the boundary looked
+    # resolvable, which is how a finished run polled a model forever with
+    # nobody told.
+    #
+    # Exactly once, on the pass where the budget first runs out: the record is
+    # unchanged by content from here on, so the dedup above would suppress
+    # this forever, and an equality test on the counter is what makes "the
+    # moment it ran out" a distinct, once-only fact.
+    if [ "$boundary_passes" -eq $(( wake_max + 1 )) ]; then
+      drive_notify "$boundary_kind" "$boundary_task" "$boundary_status" \
+        "judgment boundary [$boundary_kind] has survived $wake_max orchestrator wakeup(s) unchanged and now needs an operator: $boundary_reason"
+      drive_note "notified: [$boundary_kind] outlasted its wake budget (pump_wake_max=$wake_max) — no further orchestrator will be woken for it"
+    fi
   fi
 else
   "$ORCHID_BIN" run boundary clear --reason "deterministic drive resolved every step this pass" >/dev/null

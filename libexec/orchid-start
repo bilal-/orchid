@@ -767,6 +767,14 @@ if [ "$have_worktree_opt" -eq 1 ]; then
     else
       wt_hint="re-run with --worktree $existing_wt (or 'git worktree remove $existing_wt' first)"
     fi
+    # The one place this file tells an operator to REMOVE a checkout. A pump
+    # service installed against that checkout keeps waking on its interval
+    # against a path that is about to stop existing, and the record naming it
+    # lives inside the directory being removed — so the ordering has to be
+    # said here, where the removal is being suggested, not only in a doc page.
+    if orchid_service_bound "$existing_wt"; then
+      wt_hint="$wt_hint. NOTE: a pump service is installed against $existing_wt — uninstall it BEFORE removing that checkout, or a scheduler keeps firing against a deleted path: $(orchid_service_uninstall_command "$existing_wt")"
+    fi
     orchid_die "branch $integ is already checked out at $existing_wt, not at the requested $wt_target — $wt_hint. orchid start never moves or steals an existing checkout"
   fi
 else

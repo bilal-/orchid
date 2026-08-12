@@ -3145,6 +3145,17 @@ is normal, never an error:
 - **Uninitialized, or the run is already `complete`:** the pump exits
   immediately, touching nothing (it will not even create `runtime/` on an
   uninitialized repo).
+- **The target is gone — the one loud failure:** a schedule outlives what it
+  points at. `orchid service install` binds an agent to ONE path, and removing
+  the integration worktree leaves it waking, on the same interval, against a
+  directory that is not there. Every other check in this list answers "nothing
+  to do, exit 0" for a path that does not exist, so a deleted target would poll
+  forever in silence. Instead the pump refuses, nonzero, naming `orchid service
+  uninstall --repo <path>`: a missing checkout is not a wait state, because no
+  later pass finds it again. The same refusal covers a directory that survived
+  while its repository did not (a linked worktree whose main checkout was
+  deleted, a pruned registration) — checked after the uninitialized/split-
+  brain/`complete` arms, all three of which are legitimate quiet no-ops.
 - **No lease yet, and `run_status` isn't `running`:** a run still in
   `planning` (PLANNING above) has never written `runtime/lease.json` at
   all — there is no interactive session to have been abandoned, so a
@@ -3200,7 +3211,20 @@ is normal, never an error:
   before and AFTER that pass, so a blocker the pass itself raised is sent
   through the configured channel in the same invocation that found it,
   rather than waiting for whichever later invocation happens to drain next.
-  With all three satisfied, the
+  A fourth fact bounds the remaining case: even a boundary an
+  orchestrator CAN settle gets only `pump_wake_max` (config, default 3) passes
+  to be settled in. "Could settle" is static — a kind, a task status, a
+  manifest label — and cannot notice that the record has not changed by a
+  character in three passes. The boundary record's own `passes` counter can:
+  `orchid run boundary set` bumps it whenever the record it is handed is
+  unchanged by content and resets it to 1 when it is not, so it counts passes
+  this exact boundary has survived. Once it exceeds the budget the pump stops
+  waking a model for it (`pump: judgment boundary [<kind>] has survived N
+  passes unchanged`, exit 0) and the driver raises the `orchid notify` blocker
+  that reaches a human — exactly once, on the pass the budget runs out. A run
+  whose tasks are all `done` is what this exists for: the acceptance evidence
+  behind `orchid run accept` is a human's, so no number of wakeups moves it.
+  With all four satisfied, the
   pump probes `resolve_role_available orchestrator` and `exec`s
   `runners/orchid-tick` — the only path that reaches it, since a pass the
   deterministic policy can resolve on its own goes through
@@ -3317,6 +3341,32 @@ Once `orchid status --explain` shows every task `done`:
    regardless of how recently it was last refreshed — closing the gap where
    an operator previously had to wait out `pump_stale_s`, or hand-backdate
    `lease.json`, before `run new` or the pump would touch this run again.
+5. `orchid service uninstall --repo <path>` — **if, and only if, a schedule
+   was installed.** Nothing else removes one: `run accept` does not, a merged
+   last task does not, and a completed run does not. Until this runs, the
+   launchd agent / crontab line keeps firing on its interval; every wake after
+   the run reaches `complete` is a certain no-op (the pump prints `pump: run
+   complete` and exits), but it is a no-op that runs forever.
+
+**TEARDOWN ORDERING.** When the run is over and you are removing the
+integration worktree, the order is not interchangeable:
+
+```sh
+orchid service uninstall --repo /path/to/project-orchid   # FIRST
+git worktree remove /path/to/project-orchid               # then this
+```
+
+Reversed, a scheduler is left waking on a timer against a deleted directory,
+and the binding record that would have named the leftover schedule was inside
+the directory you just removed. Four things hold this ordering up, because
+documentation alone did not: `orchid service install` records what it bound
+itself to (in the checkout, and in a machine-local copy under
+`~/.orchid/services/` that OUTLIVES the checkout); `orchid doctor` reports any
+binding whose repository is gone; a pump whose target is gone refuses loudly
+instead of polling (HEADLESS OPERATION above); and every checkout removal
+orchid itself performs refuses while a binding is live, naming the uninstall
+command. If you removed the worktree first, `orchid doctor` from anywhere on
+the machine names the schedule still owed an uninstall.
 
 ## Known documentation discrepancies surfaced while writing this file
 

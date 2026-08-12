@@ -605,6 +605,63 @@ drive_boundary_wakes_orchestrator() {
   drive_boundary_resolvable "$@"
 }
 
+# -- the wake budget --------------------------------------------------------
+# "Could an orchestrator settle this?" and "has waking one actually settled
+# it?" are different questions, and the second is the one the live-run finding
+# is about: a pump woke an orchestrator EIGHT consecutive times over a boundary
+# no wakeup moved, and because the boundary was classified as orchestrator-
+# resolvable the notify path that reaches a human stayed suppressed the whole
+# time. Resolvability is a static property of (kind, status, surface); it
+# cannot notice that three passes have gone by with the record byte-identical.
+#
+# The counter itself is the boundary record's own `passes` field, bumped by
+# `orchid run boundary set` (libexec/orchid-run) whenever the record it is
+# handed is unchanged by content and reset to 1 whenever it is not. That is
+# deliberately NOT a new file: the driver re-derives the boundary once per pump
+# pass and records it through that one verb, so "how many passes has this exact
+# boundary survived" is already a fact the single writer of the record is in a
+# position to state, and the pump already reads that record back through `run
+# boundary show`. A second piece of runtime state would need its own writer,
+# its own reset rule, and its own way of going stale.
+#
+# Both callers read this file, neither owns it: runners/orchid-pump declines
+# the wake, runners/orchid-drive routes the boundary to `orchid notify`
+# instead. They must agree exactly, or the run either polls a model forever
+# (pump lenient) or tells the human twice (driver lenient) -- so it is one
+# predicate here, exactly as drive_boundary_wakes_orchestrator is.
+#
+# This file stays PURE: it reads and prints, it never mutates. The pump sources
+# it on that promise (see its own header), and the counter's single writer is
+# the verb, not this library.
+
+# drive_wake_budget_max <repo> -- how many passes an orchestrator-resolvable
+# boundary may survive before waking a model over it is treated as spent.
+# `pump_wake_max` (config, default 3). A malformed or zero value falls back to
+# the default rather than to "never wake" or "wake forever": both extremes are
+# worse failure modes than the documented number.
+drive_wake_budget_max() {
+  local n
+  n="$(config_get "$1" pump_wake_max 3)"
+  case "$n" in
+    ''|*[!0-9]*) n=3 ;;
+  esac
+  [ "$n" -gt 0 ] || n=3
+  printf '%s\n' "$n"
+}
+
+# drive_wake_budget_exhausted <passes> <max> -- 0 iff this boundary has now
+# survived MORE passes than the budget allows, i.e. <max> wakeups have already
+# been spent on it and changed nothing. Strictly greater-than: on the pass
+# where `passes` equals `max` the last permitted wakeup has not happened yet.
+# Fail-open (return 1, "budget remains") on any unparseable input -- a
+# malformed counter must never be what silently stops a run from being driven.
+drive_wake_budget_exhausted() {
+  local passes="${1:-}" max="${2:-}"
+  case "$passes" in ''|*[!0-9]*) return 1 ;; esac
+  case "$max" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$passes" -gt "$max" ]
+}
+
 # drive_orchestrator_surface <repo> -- the `command_surface` label of the
 # adapter the pump would actually wake for a boundary in THIS repository, or
 # `brokered` when no orchestrator engine resolves at all (nobody will be woken,

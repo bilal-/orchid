@@ -84,6 +84,30 @@ if [ "$#" -ne 0 ]; then
 fi
 
 repo="${ORCHID_REPO:-$PWD}"
+
+# 0. THE TARGET ITSELF STILL EXISTS. A schedule outlives the run it serves and
+# outlives the checkout it points at: `orchid service install` binds a launchd
+# agent / crontab line to ONE path, and `git worktree remove` (or a plain rm)
+# on the integration worktree leaves that agent waking, on the same interval,
+# against a directory that is no longer there.
+#
+# Every check below this line asks a question ABOUT a checkout, and every one
+# of them answers "nothing to do here, exit 0" for a directory that does not
+# exist -- so a deleted target polls forever as a silent, successful no-op.
+# That silence is the whole defect: the operator has no signal at all, and the
+# schedule's own record went into the bin with the directory.
+#
+# This is the ONE pump outcome that is a loud failure rather than a cron-
+# friendly wait state, and deliberately so: a wait state is a condition that
+# the next pass might find resolved, and nothing about a removed checkout gets
+# better on the next pass. It exits nonzero so the scheduler's own failure
+# accounting sees it, and it names the command that ends it.
+if [ ! -d "$repo" ]; then
+  echo "pump: refusing to run: $repo does not exist -- the checkout this schedule was installed against is gone" >&2
+  echo "pump: no later pass will find it again; remove the schedule with: $(orchid_service_uninstall_command "$repo")" >&2
+  exit 1
+fi
+
 state="$(orchid_state "$repo")"
 
 # THE MACHINE-LOCAL TRUST LOOKUP, THEN THE STALE-ROOT GATE, ABOVE THE THREE
@@ -159,6 +183,53 @@ rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
 if [ "$rs" = complete ]; then
   echo "pump: run complete"
   exit 0
+fi
+
+# 3b. The other half of step 0's question. The DIRECTORY survived, but the
+# repository behind it did not: a linked worktree whose main checkout was
+# deleted, a `.git` file pointing at a pruned/removed registration, a common
+# directory that moved. Reaching here means this really is an orchid checkout
+# (roadmap.md is present, step 2 proved it), so a checkout with nothing behind
+# it is a broken target, not an uninitialized one -- and the very first thing
+# the deterministic driver does is read a ref. Same reasoning as step 0: no
+# later pass repairs it, so it is a loud failure rather than exit 0.
+#
+# Placed AFTER the not-an-orchid-repo/split-brain/complete arms on purpose. All
+# three are legitimate quiet no-ops that must stay quiet, and this question is
+# meaningless for a directory that was never an orchid checkout.
+#
+# _pump_git_checkout_alive answers it from the FILESYSTEM alone -- no `git` is
+# run. That is not an optimization: this arm sits BEFORE the unattended trust
+# gate below, and nothing target-controlled may execute ahead of that gate. A
+# `.git` DIRECTORY is an ordinary checkout. A `.git` FILE is a linked worktree,
+# and its `gitdir:` line is exactly what `git worktree remove`, `git worktree
+# prune`, or a deleted main checkout leaves dangling. Anything else is not a
+# checkout at all. Reading that one line with the shell's own `read` executes
+# nothing from the target.
+_pump_git_checkout_alive() {
+  local repo="$1" line gitdir
+  # An `if`, not `[ -d ... ] && return 0`: under `set -e` an AND-list whose
+  # left side fails leaves the list itself nonzero, and this file runs with
+  # `set -e` on.
+  if [ -d "$repo/.git" ]; then return 0; fi
+  [ -f "$repo/.git" ] || return 1
+  IFS= read -r line < "$repo/.git" 2>/dev/null || line=""
+  case "$line" in
+    "gitdir: "*) gitdir="${line#gitdir: }" ;;
+    *) return 1 ;;
+  esac
+  gitdir="${gitdir%$'\r'}"
+  [ -n "$gitdir" ] || return 1
+  case "$gitdir" in
+    /*) ;;
+    *) gitdir="$repo/$gitdir" ;;
+  esac
+  [ -e "$gitdir" ]
+}
+if ! _pump_git_checkout_alive "$repo"; then
+  echo "pump: refusing to run: $repo is no longer a git checkout -- its repository or worktree registration is gone" >&2
+  echo "pump: no later pass will repair it; remove the schedule with: $(orchid_service_uninstall_command "$repo")" >&2
+  exit 1
 fi
 
 # The first potentially effectful operation below is orchid_runtime (which
@@ -699,6 +770,41 @@ else
     exit 0
   fi
   echo "pump: no capable orchestrator available ($reason)"
+  exit 0
+fi
+
+# 6b. THE WAKE BUDGET, and the last thing asked before the hand-off. Even a
+# boundary an orchestrator CAN settle gets a BOUNDED number of tries at it.
+# "Could settle" is static -- a kind, a task status, a manifest label -- so it
+# is satisfied identically on the hundredth pass as on the first, and it cannot
+# notice that the record has not changed by a character in between. A run whose
+# every task is already `done` is exactly that shape: the acceptance evidence
+# behind `orchid run accept` is a human's, so no number of wakeups will ever
+# move it. The live-run finding is the same: eight consecutive wakeups with no
+# legal transition available, the interval shrinking rather than the polling
+# stopping.
+#
+# `passes` is the boundary record's own counter -- `orchid run boundary set`
+# bumps it whenever the record it is handed is unchanged by content and resets
+# it to 1 when it is not -- so it counts passes THIS EXACT boundary has
+# survived. Once it exceeds pump_wake_max, the wakeups already spent on it
+# demonstrably changed nothing, and runners/orchid-drive has raised the blocker
+# that reaches a human on the same pass (it reads this same predicate, from
+# lib/drive.sh, for the mirror-image decision). So the pump stops waking a
+# model for it -- permanently, until the boundary itself changes.
+#
+# Asked HERE rather than beside 5b/5c on purpose: an unavailable orchestrator
+# (step 6) is a genuine wait state that the next pass may find resolved, and it
+# is the more immediate reason of the two. Reporting a spent budget over it
+# would name the wrong cause for the same no-op. Exit 0 either way: a run
+# parked on a human is a wait state, not a failure.
+boundary_passes="$(printf '%s' "$boundary_json" | jq -r '.passes // 1' 2>/dev/null || echo 1)"
+case "$boundary_passes" in
+  ''|*[!0-9]*) boundary_passes=1 ;;
+esac
+wake_max="$(drive_wake_budget_max "$repo")"
+if drive_wake_budget_exhausted "$boundary_passes" "$wake_max"; then
+  echo "pump: judgment boundary [${boundary_kind:-unknown}] has survived $boundary_passes passes unchanged (pump_wake_max=$wake_max) — not waking an orchestrator again; an operator has been notified"
   exit 0
 fi
 

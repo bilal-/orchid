@@ -1207,6 +1207,150 @@ _orchid_restore_kernel_file() {
   _orchid_file_is_head_blob "$root" "$p"
 }
 
+# ---------------------------------------------------------------------------
+# THE PUMP SERVICE BINDING
+# ---------------------------------------------------------------------------
+# `orchid service install` schedules runners/orchid-pump against ONE checkout,
+# and nothing else in this kernel knows that happened. Both halves of the
+# live-run finding are that gap: the agent keeps firing after the run's last
+# task merges, and it keeps firing after the checkout it points at has been
+# removed -- a launchd agent waking on a schedule against a deleted directory,
+# with the ordering that avoids it ("uninstall the service before removing the
+# worktree") written down nowhere.
+#
+# So install records what it bound itself TO, in two places, because the two
+# answer different questions:
+#
+#   <repo>/.orchid/runtime/service.json  -- travels WITH the checkout. Any
+#     path about to REMOVE that checkout can see the schedule still pointing
+#     at it (orchid_service_removal_guard below) without consulting anything
+#     machine-global.
+#   $HOME/.orchid/services/<label>.json  -- OUTLIVES the checkout. Once the
+#     worktree is gone its own copy went with it, and this is the only thing
+#     left that can name which `orchid service uninstall` is still owed;
+#     `orchid doctor` reads it and says so.
+#
+# Both are runtime/machine-local state, never durable run state: a binding is
+# a fact about THIS machine's scheduler, not about the run, so it is never
+# committed, never carried across a clone, and never archived by `run new`.
+
+# The repo-local half. Deliberately under runtime/ (gitignored) and not beside
+# roadmap.md: a clone of an integration branch must not inherit a claim that
+# some other machine's launchd has a job pointed at it.
+orchid_service_repo_record() { echo "$1/.orchid/runtime/service.json"; }
+
+# The machine-local half. Fails (rather than resolving to /.orchid/services)
+# when HOME is unset or empty, so a detached scheduler invocation with no HOME
+# writes nothing instead of writing to the filesystem root.
+orchid_service_machine_dir() {
+  [ -n "${HOME:-}" ] || return 1
+  echo "$HOME/.orchid/services"
+}
+
+# orchid_service_uninstall_command <repo> -- the exact command that reverses
+# an install for <repo>, shell-quoted so an operator can paste it verbatim
+# even when the path contains a space. Centralized because four different
+# refusals name it, and a refusal that names the wrong command is worse than
+# one that names none.
+orchid_service_uninstall_command() {
+  local q; printf -v q '%q' "$1"
+  echo "orchid service uninstall --repo $q"
+}
+
+# orchid_service_binding_write <repo> <label> <platform> <artifact> <interval_s>
+# Records both halves. The repo-local write is the one that matters (the
+# removal guard reads it), so its failure is this function's failure; the
+# machine-local copy is best effort -- an unwritable HOME must not turn a
+# working `service install` into a failed one, and the schedule it describes
+# was installed either way.
+orchid_service_binding_write() {
+  local repo="$1" label="$2" plat="$3" artifact="$4" interval="$5"
+  local rec tmp mdir stamp
+  stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
+  rec="$(orchid_service_repo_record "$repo")"
+  mkdir -p "$(dirname "$rec")" || return 1
+  # Temp-then-rename by hand rather than `jq ... | atomic_write`: a producer
+  # that dies mid-pipe still lands its (empty) output through a pipeline, and
+  # a zero-byte service.json reads to every consumer below as "a service IS
+  # installed here" while naming nothing. Write the temp file first, check jq
+  # actually succeeded, and only then let it become the record.
+  tmp="$rec.tmp.$$"
+  if ! jq -n --arg l "$label" --arg p "$plat" --arg r "$repo" --arg a "$artifact" \
+             --arg i "$interval" --arg at "$stamp" \
+        '{schema:1, label:$l, platform:$p, repo:$r, artifact:$a,
+          interval_s:($i|tonumber? // 0), installed_at:$at}' > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  mv "$tmp" "$rec" || { rm -f "$tmp" 2>/dev/null || true; return 1; }
+
+  if mdir="$(orchid_service_machine_dir)"; then
+    ( umask 077; mkdir -p "$mdir" ) 2>/dev/null || return 0
+    tmp="$mdir/$label.json.tmp.$$"
+    if ( umask 077; cp "$rec" "$tmp" ) 2>/dev/null; then
+      mv "$tmp" "$mdir/$label.json" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+    fi
+  fi
+  return 0
+}
+
+# orchid_service_binding_remove <repo> <label> -- reverses the above. Both
+# removals are unconditional and quiet: `uninstall` has already established
+# that something was installed, and a binding record that was never written
+# (an older install, a read-only HOME) must not make uninstall fail.
+orchid_service_binding_remove() {
+  local repo="$1" label="$2" mdir
+  rm -f "$(orchid_service_repo_record "$repo")" 2>/dev/null || true
+  if mdir="$(orchid_service_machine_dir)"; then
+    rm -f "$mdir/$label.json" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# orchid_service_bound <path> -- 0 iff a pump service records itself as
+# installed against that exact checkout. A plain file test on purpose: this is
+# asked from EXIT traps and from refusal paths, where anything that could
+# itself fail (a git call, a jq parse) would be a worse answer than the one
+# bit being asked for.
+orchid_service_bound() { [ -f "$1/.orchid/runtime/service.json" ]; }
+
+# orchid_service_removal_guard <path> -- 0 when <path> is safe to remove, 1
+# (naming the uninstall command on stderr) when a pump service is still
+# installed against it.
+#
+# THE ORDERING THIS ENCODES: uninstall the service, THEN remove the checkout.
+# Reversed, the scheduler keeps waking against a path that is no longer there,
+# and the record that would have named the leftover schedule was inside the
+# directory that was just deleted. Every path in this kernel that removes a
+# checkout asks this first, so the rule holds wherever a removal is added
+# later rather than only where one exists today.
+orchid_service_removal_guard() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  orchid_service_bound "$path" || return 0
+  echo "orchid: refusing to remove $path: a pump service is still installed against it" >&2
+  echo "orchid: uninstall the schedule FIRST, then remove the checkout -- $(orchid_service_uninstall_command "$path")" >&2
+  return 1
+}
+
+# orchid_service_bindings -- one "<label><TAB><repo>" line per machine-local
+# binding record. Silent and successful when the store does not exist: an
+# operator who never installed a service has no bindings, which is not a
+# finding.
+orchid_service_bindings() {
+  local mdir f label repo
+  mdir="$(orchid_service_machine_dir)" || return 0
+  [ -d "$mdir" ] || return 0
+  for f in "$mdir"/*.json; do
+    [ -f "$f" ] || continue
+    label="$(jq -r '.label // ""' "$f" 2>/dev/null || echo "")"
+    repo="$(jq -r '.repo // ""' "$f" 2>/dev/null || echo "")"
+    [ -n "$label" ] || continue
+    [ -n "$repo" ] || continue
+    printf '%s\t%s\n' "$label" "$repo"
+  done
+}
+
 # _ocd_cleanup_wt <wt> <repo> -- removes a temp detached worktree (used by
 # orchid_commit_durable below). A standalone function, not a closure, taking
 # both paths as explicit STRING ARGUMENTS baked into the trap command at
@@ -1217,6 +1361,16 @@ _orchid_restore_kernel_file() {
 _ocd_cleanup_wt() {
   local wt="$1" repo="$2"
   if [ -n "$wt" ]; then
+    # A temp worktree built by this function never carries a runtime/ dir (the
+    # durable copy skips it), so this guard is expected never to fire here.
+    # It is asked anyway: this is one of the three places orchid removes a
+    # checkout, the rule is "no removal walks past a live schedule", and a
+    # rule enforced only where it currently matters is a rule the next
+    # removal site forgets. Skip-and-warn, never a failure: an EXIT trap that
+    # can die takes the verb's real exit code with it.
+    if ! orchid_service_removal_guard "$wt"; then
+      return 0
+    fi
     git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
     rm -rf "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune >/dev/null 2>&1 || true

@@ -153,19 +153,48 @@ case "$sub" in
         # Idempotent by content: the driver re-derives the same boundary on
         # every pass for as long as the underlying condition holds, so an
         # unchanged record must not re-journal it once per pass.
-        bprev_kind=""; bprev_task=""; bprev_reason=""
+        #
+        # `passes` is the ONE thing an unchanged re-set does change. The driver
+        # records the boundary exactly once per pump pass, so this counts how
+        # many passes this exact boundary has survived -- which is what
+        # lib/drive.sh's wake budget answers "has waking an orchestrator over
+        # this actually moved it?" from. It lives HERE, in the record's single
+        # writer, rather than in runtime state of its own: the reset rule is
+        # precisely the content comparison already being made two lines below,
+        # and a separate counter would need to re-derive that comparison to
+        # know when to zero itself.
+        bprev_kind=""; bprev_task=""; bprev_reason=""; bprev_passes=0
         if [ -f "$bfile" ]; then
           bprev_kind="$(jq -r '.kind // ""' "$bfile" 2>/dev/null || echo "")"
           bprev_task="$(jq -r '.task // ""' "$bfile" 2>/dev/null || echo "")"
           bprev_reason="$(jq -r '.reason // ""' "$bfile" 2>/dev/null || echo "")"
+          bprev_passes="$(jq -r '.passes // 0' "$bfile" 2>/dev/null || echo 0)"
+          case "$bprev_passes" in
+            ''|*[!0-9]*) bprev_passes=0 ;;
+          esac
         fi
         if [ "$bprev_kind" = "$bkind" ] && [ "$bprev_task" = "$btask" ] && [ "$bprev_reason" = "$breason" ]; then
-          echo "boundary unchanged: $bkind${btask:+ ($btask)}"
+          bnext_passes=$(( bprev_passes + 1 ))
+          # Bump in place: `at` and `epoch` keep naming when this boundary was
+          # FIRST recorded (a record that restamped itself every pass would
+          # make "how long has this been parked" unanswerable). Written through
+          # a temp file rather than `jq ... | atomic_write` because a jq that
+          # dies mid-pipe still lands its empty output, and a zero-byte
+          # boundary.json reads to `show` as "no boundary" -- which would make
+          # this counter's own failure look like the run had come unstuck.
+          btmp="$bfile.tmp.$$"
+          if jq --argjson p "$bnext_passes" '.passes = $p' "$bfile" > "$btmp" 2>/dev/null \
+             && [ -s "$btmp" ]; then
+            mv "$btmp" "$bfile"
+          else
+            rm -f "$btmp" 2>/dev/null || true
+          fi
+          echo "boundary unchanged: $bkind${btask:+ ($btask)} (pass $bnext_passes)"
           exit 0
         fi
         jq -n --arg k "$bkind" --arg t "$btask" --arg r "$breason" \
           --arg e "$(epoch_current "$repo")" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '{schema:1, kind:$k, task:$t, reason:$r, epoch:($e|tonumber? // 0), at:$at}' \
+          '{schema:1, kind:$k, task:$t, reason:$r, epoch:($e|tonumber? // 0), at:$at, passes:1}' \
           | atomic_write "$bfile"
         bjargs=(--kind blocker)
         [ -z "$btask" ] || bjargs=(--task "$btask" --kind blocker)
@@ -476,6 +505,14 @@ case "$sub" in
     wt=""
     run_new_cleanup() {
       if [ -n "$wt" ]; then
+        # No removal walks past a live schedule (orchid_service_removal_guard,
+        # lib/common.sh). A rollover's temp worktree never carries one -- the
+        # copy above skips runtime/ -- so this is expected never to fire; it is
+        # asked because "uninstall before you remove" has to hold at every
+        # removal site, not only the ones where a service could plausibly be.
+        if ! orchid_service_removal_guard "$wt"; then
+          return 0
+        fi
         git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
         rm -rf "$wt" 2>/dev/null || true
         git -C "$repo" worktree prune >/dev/null 2>&1 || true
