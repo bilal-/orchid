@@ -126,6 +126,43 @@ integ="$(config_get "$repo" integration_branch orchid/integration)"
 git -C "$repo" rev-parse --verify -q "refs/heads/$integ" >/dev/null 2>&1 \
   || orchid_die "integration branch '$integ' does not exist"
 
+# --- run-state containment (T037; dogfood finding, webBooks run) -----------
+# This verb is the one that grows the integration branch, and the integration
+# branch carries `.orchid/` -- roadmap, journal, BLOCKERS, plugins.lock, every
+# review envelope. That is by design and is what makes the run durable. What
+# is NOT by design is that state continuing on down the merge chain: on a real
+# product repository 14 of those files reached `main` this way, integration
+# branch -> feature branch -> MR, reviewed and approved because the diff was
+# large and the paths look like tooling.
+#
+# So before advancing anything, ask whether run state has ALREADY escaped the
+# run's own branches locally. If it has, every further merge this verb performs
+# is more run state queued up behind the same route, and the operator is the
+# only one who can decide what to do about it.
+#
+# A WARNING, not a refusal, and the choice is deliberate. The condition is not
+# created by this merge -- it is created by an operator's own `git merge`,
+# which the kernel never runs and, per PROTOCOL.md's Preamble, never may.
+# Refusing here would freeze a task in `merging` over something that already
+# happened, that this verb cannot undo, and whose only remedy is work on
+# branches orchid does not own; a run deadlocked behind a report is strictly
+# worse than a run that reports. The place a refusal IS safe -- reversible,
+# and squarely on orchid's side of the line -- is the boundary where the state
+# would leave the machine, and that refusal ships in templates/pre-push.sh.
+#
+# Best-effort and an `if`, never `x="$(...)" || true` on a bare line: nothing
+# about this advisory may cost the merge under `set -e`, and a repository
+# whose refs cannot be listed must lose the warning, never the verb.
+leaked_branches=""
+if leaked_out="$(orchid_leaked_run_state_branches "$repo" "$integ" 2>/dev/null)"; then
+  if [ -n "$leaked_out" ]; then
+    leaked_branches="$(printf '%s\n' "$leaked_out" | tr '\n' ' ')"
+  fi
+fi
+if [ -n "$leaked_branches" ]; then
+  echo "orchid: warning: orchid's own run state (.orchid/ — roadmap, journal, BLOCKERS, plugins.lock, review envelopes) is already carried by branch(es) OUTSIDE this run: ${leaked_branches}— merging $id advances $integ, and whatever route put run state on those branches puts the rest of it there too, then on into whatever THEY merge into. This is how a run's bookkeeping arrives on a product's main branch and gets approved as tooling. Nothing here is undone and nothing is prescribed: a self-hosted repository legitimately carries its own run state, and only you know which of those this is. If it is not, strip .orchid/ from those branches before they go anywhere — docs/troubleshooting.md 'Run state in your product's history'" >&2
+fi
+
 # --- before_merge kernel gate (v1-m3 Task 6; exit-code registry: 2 unknown
 # verb, 3 illegal transition, 5 rebase_rereview_required, 12 input_overflow,
 # 13 plugin validation failure, 14 no eligible engine, 15 hook handler

@@ -96,7 +96,26 @@ fi
 # Best-effort -- init must never fail because this couldn't run.
 ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins lock >/dev/null 2>&1 || true
 git -C "$repo" checkout -q "$integ"
-git -C "$repo" add .orchid .gitignore && git -C "$repo" commit -q -m "orchid: initialize run state"
+# `-f` on `.orchid` alone, and never on `.gitignore` (T037): a repository
+# that already excludes `.orchid/` -- an operator who added that line to keep
+# orchid's bookkeeping out of their product, which is a reasonable thing to
+# want -- otherwise fails right here, on git's own "paths are ignored by one
+# of your .gitignore files", before the run exists at all. The full rationale
+# for why run state may be force-staged while orchid.config may not is in
+# lib/common.sh's orchid_commit_durable; the short version is that these
+# bytes are orchid's own and the run does not exist unless they are
+# committed. What that operator actually wants -- run state that never
+# reaches their product -- is answered by orchid-merge's containment warning
+# and the pre-push run-state guard installed just below, not by leaving init
+# broken.
+#
+# `:(exclude).orchid/runtime` is not optional here: `runtime/` exists on disk
+# by this point (orchid_runtime created it above) and `-f` switches off the
+# very ignore rule that keeps the lock, the epoch and lease.json out of the
+# commit. The exclusion, not the ignore file, is what keeps them out now.
+git -C "$repo" add -f -- .orchid ':(exclude).orchid/runtime'
+git -C "$repo" add -- .gitignore
+git -C "$repo" commit -q -m "orchid: initialize run state"
 
 # v1-m4 Task 2 (push prevention): install `.git/hooks/pre-push` as a
 # defense-in-depth guard against pushing orchid-managed refs to origin --

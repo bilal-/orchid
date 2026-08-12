@@ -2231,6 +2231,65 @@ filesystem helpers resolve only from fixed system, Homebrew/Linuxbrew, or
 MacPorts directories. The captured operator path becomes active only after
 trust succeeds, in time for engine/plugin discovery and execution.
 
+## Run state in your product's history
+
+**Symptom:** `.orchid/` files — `roadmap.md`, `journal.md`, `BLOCKERS.md`,
+`plugins.lock`, review envelopes under `.orchid/reviews/` — are tracked on
+your project's `main`, or on a feature branch headed there. Nobody added them
+deliberately. Or: `orchid merge` prints a warning naming a branch outside the
+run that carries run state; or a `git push` is refused with "carries orchid's
+own run state".
+
+Orchid commits its run state, on purpose: a roadmap that exists only in one
+checkout's working tree is gone at the next task worktree, the next machine,
+the next headless pump. That state lives on the integration branch. What it
+must not do is keep going: integration branch → your feature branch → `main`
+is an ordinary merge chain, and once run state is *tracked* it rides that
+chain like any other file. In a large merge request the paths look like
+tooling and get approved as tooling. That is exactly how it has happened.
+
+Two things ship against it, and neither is a substitute for deciding what you
+want:
+
+- `orchid merge` warns — to stderr, never refusing — when any local branch
+  outside the run (not the integration branch, not a branch recorded on a
+  task) carries `.orchid/`. It names the branch. It prescribes nothing and
+  undoes nothing: the merge that put it there is yours, on branches orchid
+  does not own, and a run frozen behind a report would be worse than a run
+  that reports.
+- The `pre-push` hook `orchid init` installs refuses a push that would put run
+  state on a remote ref that does not already have it — see
+  [configuration.md](./configuration.md) (`push_guard`). It is the last local
+  gate that sees *every* route, including a squash, a cherry-pick or a rebase
+  that carries the files across without ever making a merge commit, and a
+  hosted MR that is merged where no local hook runs at all.
+
+**If your product should not carry run state,** keep the integration branch
+out of the merge chain: take the product changes across on their own (rebase,
+cherry-pick, or a merge followed by `git rm -r --cached .orchid`), rather than
+merging the integration branch itself into a branch bound for `main`. To clean
+up after a leak that already landed, strip the paths from the offending
+branches — `git rm -r --cached .orchid` and commit — before pushing them
+anywhere further; history already on a remote is a separate decision, and a
+rewrite of a shared branch is not something to do on a tool's advice.
+
+**If it should** — orchid's own repository is self-hosted and its run state
+*is* part of its history — then nothing here is a defect. Push the ref once
+with `ORCHID_ALLOW_PUSH=1`; every later push of that ref is exempt
+automatically, because the remote's copy already carries run state. The merge
+warning still prints, and is still telling you the truth.
+
+**What you must not do** is un-ignore or delete `.orchid/` from `.gitignore`
+to get a verb working again. Excluding `.orchid/` is a supported thing to
+want: `orchid init`, `orchid plan apply` and `orchid run new` force-stage run
+state precisely so that an operator who ignores it still gets a working run.
+If a verb fails with git's "paths are ignored by one of your .gitignore
+files", that is a bug in the verb — report it — not an instruction to change
+your `.gitignore`. (`orchid.config` is the deliberate exception, and is
+refused rather than force-committed: it is *your* file, and whether repository
+configuration belongs in history is your call. `orchid start` says so, and
+names the one-line fix, when it hits that case.)
+
 ## See also
 
 - [docs/configuration.md](./configuration.md) — every config key named

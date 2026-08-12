@@ -453,6 +453,100 @@ out22b="$(ORCHID_REPO="$r22" "$ORCHID_BIN" start "$REQ" 2>&1)" \
 assert_match '^verify=true$' "$(git -C "$r22" show orchid/integration:orchid.config)" \
   "and the run's verification command lands on the branch"
 
+# `.orchid/` is the OTHER half of that asymmetry, and it is answered the
+# opposite way on purpose (T037, dogfood finding F21).
+#
+# An operator who does not want orchid's bookkeeping in their product writes
+# `.orchid/` into .gitignore -- a reasonable thing to want, and the reported
+# incident is exactly what happens when they do not. Before this fix that line
+# broke the run outright: `orchid init` stages the skeleton with a plain `git
+# add`, git refuses an ignored pathspec, and init died on git's own error; the
+# operator's only way forward was to un-ignore `.orchid/`, which is precisely
+# what made the state merge-able into their product in the first place. Same
+# failure again, later, at `orchid plan apply` (lib/common.sh's
+# orchid_commit_durable), which is the first durable verb a planning
+# orchestrator reaches.
+#
+# So run state is force-staged and orchid.config is not. The distinction is
+# ownership: `.orchid/` is orchid's own, was already tracked before any ignore
+# rule existed, and a run whose state is not committed does not survive a
+# fresh checkout -- whereas orchid.config is the operator's file and whether
+# it belongs in history is their call (r22 above). The want behind the ignore
+# line is answered where it actually lives: orchid-merge's containment warning
+# and the pre-push run-state guard, not by leaving init broken.
+#
+# RED (before this fix): `orchid start` exits non-zero here with "The
+# following paths are ignored by one of your .gitignore files: .orchid".
+r25="$W/r25"; mkdir -p "$r25"; git -C "$r25" init -q
+printf '.orchid/\n' > "$r25/.gitignore"
+{
+  printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\n'
+  printf 'role.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n'
+} > "$r25/orchid.config"
+printf 'print("hello")\n' > "$r25/app.py"
+git -C "$r25" add -A
+git -C "$r25" commit -q -m "fixture: project that ignores .orchid/"
+
+out25="$(ORCHID_REPO="$r25" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must succeed on a repo whose .gitignore excludes .orchid/: $out25"
+wt25="$W/r25-orchid"
+git -C "$r25" cat-file -e "orchid/integration:.orchid/roadmap.md" 2>/dev/null \
+  || fail "the run's own state must be COMMITTED on the integration branch even when .orchid/ is ignored"
+assert_eq "$(cat "$REQ")" "$(cat "$wt25/.orchid/requirements.md")" \
+  "and the imported requirements are there to read in the integration checkout"
+
+# The durable-commit path itself, which is where F21 was actually reported:
+# `orchid plan apply` commits `.orchid/` onto the integration branch through
+# orchid_commit_durable's temp worktree, and that worktree inherits the same
+# .gitignore.
+apply25="$(ORCHID_REPO="$wt25" ORCHID_EPOCH=0 "$ORCHID_BIN" plan apply --reason "first plan" 2>&1)" \
+  || fail "plan apply must succeed with .orchid/ ignored: $apply25"
+assert_match "^applied: orchid/integration -> " "$apply25" "plan apply reports the commit it landed"
+assert_match "^run_status: running$" "$(git -C "$r25" show 'orchid/integration:.orchid/roadmap.md')" \
+  "and the planning->running transition it owns landed ON THE BRANCH, not just on disk"
+assert_match "first plan" "$(git -C "$r25" show 'orchid/integration:.orchid/journal.md')" \
+  "the plan-apply journal entry is committed on the branch, not left in one checkout"
+
+# The price of `-f`, held to: forcing past .gitignore also forces past the
+# `.orchid/runtime/` line, so `runtime/` is excluded by an explicit pathspec at
+# every staging site instead of being left to an ignore rule that `-f` has
+# switched off. lease.json, the epoch and the lock are local-only and must
+# never be committed -- least of all here, where the operator ignored the
+# whole directory.
+[ -f "$wt25/.orchid/runtime/epoch" ] \
+  || fail "fixture: runtime/ must exist on disk for this exclusion to be worth asserting"
+assert_eq "" "$(git -C "$r25" ls-tree -r --name-only orchid/integration -- .orchid/runtime)" \
+  "no .orchid/runtime/ path is ever committed, even when -f overrides the ignore rule that used to stop it"
+
+# The GREEN twin: the identical sequence on a repo that does NOT ignore
+# `.orchid/` behaves exactly as it always did -- the force-stage is not doing
+# the work here, so a regression that broke the ordinary path would show up
+# as this block failing rather than as silence.
+r26="$W/r26"; mk_repo "$r26" 'verify=true'
+out26="$(ORCHID_REPO="$r26" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "start must still succeed on a repo that does not ignore .orchid/: $out26"
+apply26="$(ORCHID_REPO="$W/r26-orchid" ORCHID_EPOCH=0 "$ORCHID_BIN" plan apply --reason "first plan" 2>&1)" \
+  || fail "plan apply must still succeed with .orchid/ un-ignored: $apply26"
+assert_match "^applied: orchid/integration -> " "$apply26" "the un-ignored path reports the same commit line"
+
+# And the deliberate stance on orchid.config is NOT reversed by any of this:
+# the same repo, with orchid.config ALSO ignored and untracked, is still
+# refused with the actionable message rather than force-committed.
+r27="$W/r27"; mkdir -p "$r27"; git -C "$r27" init -q
+printf '.orchid/\norchid.config\n' > "$r27/.gitignore"
+{
+  printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\n'
+  printf 'role.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n'
+} > "$r27/orchid.config"
+printf 'print("hello")\n' > "$r27/app.py"
+git -C "$r27" add -A
+git -C "$r27" commit -q -m "fixture: project that ignores both"
+rc=0; out27="$(ORCHID_REPO="$r27" "$ORCHID_BIN" start "$REQ" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "ignoring .orchid/ must not have made an ignored orchid.config force-committable"
+assert_match "excluded by .gitignore" "$out27" "the orchid.config refusal is unchanged"
+git -C "$r27" rev-parse --verify -q orchid/integration >/dev/null 2>&1 \
+  && fail "and it still lands above the mutation boundary"
+
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
 # checkout, never adopt or overwrite anything else.

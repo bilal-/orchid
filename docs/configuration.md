@@ -664,6 +664,17 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   (defense-in-depth; PROTOCOL.md instructs the model not to push, but that
   prompt policy is not OS/network containment).
   `ORCHID_ALLOW_PUSH=1` overrides it for one push.
+  The same hook also refuses a push of *any other* ref whose tip carries
+  orchid's own run state (`.orchid/`) when the remote's copy of that ref does
+  not already carry it — the leak that reaches a product's `main` by riding
+  the merge chain rather than by anyone pushing an orchid-named branch. A ref
+  whose remote copy already tracks run state is exempt automatically, so a
+  repository that carries its own run state on purpose (orchid's own does)
+  pushes it once with `ORCHID_ALLOW_PUSH=1` and is never asked again. See
+  [troubleshooting.md](./troubleshooting.md) — "Run state in your product's
+  history". Note that `orchid init` never overwrites an existing pre-push
+  hook, so a repository initialized before this leg shipped keeps the hook it
+  has; delete it and re-run `orchid init` to pick up the newer one.
 - **`status_page`** is where `orchid status --html` writes its
   self-contained static page — never served, open the file directly.
 - **`notify.plugin`** (default `openclaw`) selects WHICH `kind=notify`

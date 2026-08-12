@@ -2068,6 +2068,39 @@ at all), overridable per-push via `ORCHID_ALLOW_PUSH=1` — a backstop for
 when the no-external-mutation policy above is violated anyway, not a
 replacement for it.
 
+**Run-state containment (T037 — SHIPPED):** committing `.orchid/` is what
+makes a run durable, and it is also what lets a run's bookkeeping ride the
+merge chain — integration branch → feature branch → `main` — into a
+product's history, where a large diff makes it read as tooling. Two guards,
+because the kernel never performs the merge that leaks it and never may:
+
+- The same pre-push hook additionally refuses a push of any **other** ref
+  whose tip carries `.orchid/` when the remote's copy of that ref does not
+  already carry it. Push is the chokepoint rather than merge, because a
+  squash, a cherry-pick or a rebase carries the files across without a merge
+  commit, and a hosted merge request is merged where no local hook runs at
+  all. A ref whose remote copy already tracks run state is exempt, so a
+  deliberately self-hosted repository is asked once and never again.
+- `orchid merge` **warns** (stderr, never refuses) when any local branch
+  outside the run — not the integration branch, not a branch recorded on a
+  task — carries `.orchid/`, naming the branch. It does not refuse because
+  the condition is created by an operator's own merge, on branches the
+  kernel does not own and cannot undo; freezing a task in `merging` behind a
+  report would be worse than reporting.
+
+The staging side of the same finding: `orchid init`, `orchid plan apply`
+(via `orchid_commit_durable`) and `orchid run new` stage run state with `git
+add -f`, so an operator who excludes `.orchid/` in `.gitignore` still gets a
+working run instead of git's raw ignored-pathspec error. `orchid.config` is
+deliberately NOT force-staged (`orchid start` refuses with an actionable
+message instead): it is the operator's own file and whether repository
+configuration belongs in history is their call, whereas run state is
+orchid's own and a run whose state is uncommitted does not survive a fresh
+checkout. Because `-f` also overrides the `.orchid/runtime/` ignore line,
+every one of those staging sites carries an explicit
+`:(exclude).orchid/runtime` pathspec — the exclusion, not the ignore rule,
+is what keeps the lock, the epoch and `lease.json` out of a durable commit.
+
 ## Glossary (one sentence each; forbidden confusions marked ✗)
 
 - **Engine** — a vendor AI accessed through an adapter plugin. ✗ not a role.

@@ -409,6 +409,58 @@ rc=0; ORCHID_ALLOW_PUSH=1 git -C "$pg" push origin task/T001 >/dev/null 2>&1 || 
 git -C "$pg" branch feature/other trunk
 rc=0; other_push_out="$(git -C "$pg" push origin feature/other 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] || fail "push guard must never block a non-task/non-integration branch (got: $other_push_out)"
+green_case 'a branch carrying no run state pushes exactly as it always did'
+
+# ---------------------------------------------------------------------------
+# T037: the SECOND leg of the same hook -- a ref that is neither task/* nor
+# the integration branch, but whose tip carries orchid's own run state.
+#
+# This is the leak the name-based leg cannot see. On a real product repository
+# 14 `.orchid/` files reached `main` by riding the merge chain, integration
+# branch -> feature branch -> MR, and were approved because the diff was large
+# and the paths look like tooling. By the time that feature branch is pushed
+# it is an ordinary branch with an ordinary name.
+#
+# Push is the gate rather than merge because merging is only one of the
+# routes: a squash, a cherry-pick and a rebase put the same files on the same
+# branch with no merge commit at all, and a hosted MR is merged on the forge
+# where no local hook runs. Everything that reaches a forge is pushed first.
+#
+# RED (before this fix): the push succeeds and run state is on the remote.
+# ---------------------------------------------------------------------------
+git -C "$pg" branch feature/carries-run-state orchid/integration
+[ -n "$(git -C "$pg" ls-tree feature/carries-run-state -- .orchid)" ] \
+  || fail "fixture: the branch must actually carry .orchid/ for this case to mean anything"
+rc=0; leak_push_out="$(git -C "$pg" push origin feature/carries-run-state 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "push guard must block a branch that would introduce run state to the remote"
+assert_match "push blocked" "$leak_push_out" "the run-state leg names the block plainly"
+assert_match "carries orchid.s own run state" "$leak_push_out" "and says what is on the branch"
+git -C "$pg" ls-remote --exit-code --heads "$remote" feature/carries-run-state >/dev/null 2>&1 \
+  && fail "a blocked push must not have landed the ref on the remote"
+red_case 'an ordinarily-named branch carrying .orchid/ is refused at push'
+
+# The documented way through, and the reason this leg is not a nuisance in a
+# repository that tracks run state on purpose (orchid's own is exactly that):
+# push it once with the override, and every later push of that ref is exempt
+# automatically, because the remote's copy already carries run state.
+rc=0; ORCHID_ALLOW_PUSH=1 git -C "$pg" push origin feature/carries-run-state >/dev/null 2>&1 || rc=$?
+[ "$rc" -eq 0 ] || fail "ORCHID_ALLOW_PUSH=1 must allow a deliberate run-state push"
+
+leak_wt="$WORK/pushguard-leak-wt"
+git -C "$pg" worktree add -q "$leak_wt" feature/carries-run-state
+printf 'more\n' > "$leak_wt/more.txt"
+git -C "$leak_wt" add more.txt
+git -C "$leak_wt" commit -q -m "further work on a branch the remote already tracks run state on"
+git -C "$pg" worktree remove --force "$leak_wt"
+
+rc=0; second_push_out="$(git -C "$pg" push origin feature/carries-run-state 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a ref whose remote copy ALREADY carries run state must push without the override (got: $second_push_out)"
+green_case 'a ref whose remote copy already carries run state is exempt, no override needed'
+
+# Deleting a ref pushes no tree and can leak nothing -- it must never be
+# mistaken for the leak, or an operator could not clean up after one.
+rc=0; del_push_out="$(git -C "$pg" push origin :feature/carries-run-state 2>&1)" || rc=$?
+[ "$rc" -eq 0 ] || fail "the run-state leg must never block a ref DELETION (got: $del_push_out)"
 
 # A pre-existing user pre-push hook must NEVER be overwritten by init.
 pg2="$WORK/pushguard-userhook"; mkdir -p "$pg2"

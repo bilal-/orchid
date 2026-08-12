@@ -1369,7 +1369,58 @@ orchid_commit_durable() {
     "$ORCHID_COMMIT_DURABLE_HOOK" "$wt"
   fi
 
-  git -C "$wt" add -- "$@"
+  # Staging, and the ONE place `-f` is legitimate (T037, dogfood F21 + the
+  # webBooks run-state leak). Two different kinds of path reach this helper
+  # and they get two different answers, deliberately:
+  #
+  #   * `.orchid/` is ORCHID'S OWN run state. Nobody authored it; `orchid
+  #     init` created it, committed it, and wrote the one gitignore line it
+  #     needs (`.orchid/runtime/`). The run's whole durability contract is
+  #     that this state lives in commits on the integration branch -- a
+  #     roadmap that exists only in one checkout's working tree is gone on
+  #     the next task worktree, the next machine, the next headless pump.
+  #     So when an operator's .gitignore excludes `.orchid/`, a plain `git
+  #     add` fails (git refuses an ignored pathspec) and every durable verb
+  #     -- `plan apply` first, since it is the first one an operator meets
+  #     -- dies with git's raw error and no way forward that does not
+  #     involve editing THEIR .gitignore. `-f` is the right answer for this
+  #     path because it overrides nothing the operator owns: these bytes are
+  #     orchid's, they were already tracked before the ignore rule was
+  #     written, and half-tracking them (old files tracked, new ones
+  #     silently skipped) is a corrupt run, not a respected preference.
+  #
+  #   * `orchid.config` is the OPERATOR'S file, and gets no `-f` -- see
+  #     libexec/orchid-start's _start_require_committable_config, which
+  #     refuses with an actionable message rather than force-committing a
+  #     file its owner excluded. That stance is unchanged and is why this is
+  #     a per-path decision instead of one `-f` on the whole argument list:
+  #     whether repository configuration belongs in history is a judgment
+  #     about the operator's own work; whether orchid's bookkeeping is
+  #     committed is not a judgment at all, it is what makes the run exist.
+  #
+  # And the reason `-f` here is not simply the F21 reporter's fix applied
+  # wholesale: force-adding makes the file TRACKED, and a tracked file rides
+  # the merge chain into whatever the integration branch is merged into.
+  # That leak is a separate problem with a separate answer (orchid-merge's
+  # containment warning + templates/pre-push.sh's run-state leg); `-f` is
+  # only safe here BECAUSE that answer ships alongside it.
+  #
+  # `.orchid/runtime` is excluded EXPLICITLY, and that exclusion is the price
+  # of `-f`: the ignore rule that normally keeps lease.json, the epoch, the
+  # lock and pump.log out of every durable commit is precisely what `-f`
+  # switches off. The copy-in step above already drops `runtime` (see
+  # _ocd_copy_path), so today this exclusion never has anything to do -- it is
+  # here because "never rides into a commit" must be true at the WRITE, not
+  # only true of the one caller that happens to prepare the worktree
+  # correctly. A future caller that leaves a runtime dir behind gets an
+  # exclusion, not a committed lock file.
+  local ocd_p
+  for ocd_p in "$@"; do
+    case "$ocd_p" in
+      .orchid|.orchid/*) git -C "$wt" add -f -- "$ocd_p" ':(exclude).orchid/runtime' ;;
+      *) git -C "$wt" add -- "$ocd_p" ;;
+    esac
+  done
   if git -C "$wt" diff --cached --quiet -- "$@"; then
     orchid_die "orchid_commit_durable: nothing to commit -- no changes in: $*"
   fi
@@ -1716,6 +1767,65 @@ orchid_qid_reserve() {
     return 0
   done
   return 1
+}
+
+# --- run-state containment (T037) -----------------------------------------
+#
+# THE LEAK, observed on a real product repository: 14 `.orchid/` files --
+# roadmap, journal, BLOCKERS, plugins.lock, review envelopes -- sitting on
+# that project's `main`. Nobody force-added them there. They rode the merge
+# chain, integration branch -> feature branch -> main, and passed review
+# because the MR was large and the paths look like tooling.
+#
+# It is not a mistake anybody made. Committing run state IS the design (it is
+# what `orchid_commit_durable` above exists to do, and what makes a run
+# survive a fresh checkout), so in ANY product repository that state rides
+# whatever the integration branch is merged into, by default, forever. The
+# kernel cannot stop the operator's own `git merge` -- it never runs it, and
+# PROTOCOL.md is explicit that the operator alone moves anything anywhere --
+# so what it can do is SEE the shape and say so, which is what these two
+# helpers are for. The refusal half, at the boundary where run state would
+# actually leave the machine, lives in templates/pre-push.sh.
+#
+# "Outside the run" is asked from the run's own records, never from a branch
+# NAME: the integration branch is whatever `integration_branch` says, and a
+# task branch is whatever that task's frontmatter `branch:` says. Guessing
+# `task/*` would miss a renamed one and, worse, would silently exempt an
+# operator branch that happened to match.
+_orchid_in_run_branches() {
+  local repo="$1" integ="$2" state tf
+  state="$(orchid_state "$repo")"
+  printf '%s\n' "$integ"
+  for tf in "$state"/tasks/*.md; do
+    [ -f "$tf" ] || continue
+    grep -m1 '^branch: ' "$tf" 2>/dev/null | cut -d' ' -f2- || true
+  done
+}
+
+# orchid_leaked_run_state_branches <repo> <integ> -- print, one per line,
+# every LOCAL branch outside this run whose tip tree carries durable run
+# state. Empty output (the healthy shape) means the run's bookkeeping is
+# still confined to the run's own branches.
+#
+# The question is asked of each branch's TREE, not of its ancestry: a squash
+# merge, a cherry-pick and a `git merge` all put the same files on the same
+# branch, and only one of them leaves the integration branch as an ancestor.
+# `.orchid/runtime/` is gitignored and so is never in a tree at all -- any
+# `.orchid/` path a commit carries is durable run state by construction.
+orchid_leaked_run_state_branches() {
+  local repo="$1" integ="$2" in_run b
+  in_run="$(_orchid_in_run_branches "$repo" "$integ")"
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    # A HERESTRING, never `printf ... | grep -Fxq`: this library is sourced
+    # into scripts running under `set -o pipefail`, where `grep -q` exiting
+    # at its first match SIGPIPEs the upstream printf and pipefail promotes
+    # that 141 to the pipeline's status -- the same size-dependent coin flip
+    # tests/helpers.sh's assert_match documents.
+    if grep -Fxq -- "$b" <<<"$in_run"; then continue; fi
+    if [ -z "$(git -C "$repo" ls-tree "refs/heads/$b" -- .orchid 2>/dev/null)" ]; then continue; fi
+    printf '%s\n' "$b"
+  done <<<"$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true)"
 }
 
 # with_timeout <secs> cmd... -- runs cmd (any command form, including a

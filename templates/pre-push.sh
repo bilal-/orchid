@@ -25,20 +25,73 @@
 # `orchid init` never overwrites a pre-existing user pre-push hook (checked
 # before this file is ever copied in) -- this file is only ever installed
 # into a hooks dir that had none.
+#
+# SECOND leg (T037): refuse any OTHER ref whose tip carries orchid's own run
+# state (`.orchid/`) when the remote's copy of that ref does not already carry
+# it. The two legs guard different things and neither covers the other.
+#
+# The refs blocked BY NAME above are orchid's own branches -- refusing them is
+# about who moves what. This leg is about a leak with no orchid branch in it
+# at all: on a real product repository 14 `.orchid/` files reached `main` by
+# riding the merge chain, integration branch -> feature branch -> MR, and were
+# approved because the diff was large and the paths look like tooling. By the
+# time that feature branch is pushed it is an ordinary branch with an ordinary
+# name; nothing above would look at it twice.
+#
+# Push is the right place for this leg, and a merge hook is not. Merging is
+# only one of the routes -- a squash, a cherry-pick and a rebase put the same
+# files on the same branch without ever creating a merge commit, and a hosted
+# MR is merged on the forge where no local hook runs at all. Everything that
+# reaches a forge is pushed first, so this is the last gate that sees every
+# route, and it is a gate that costs nothing to be wrong about: the state is
+# still local, and the override below is one variable.
+#
+# The exemption is what keeps this from being a nuisance: a ref whose remote
+# copy ALREADY carries run state is a repository that tracks it on purpose --
+# orchid's own, self-hosted, is exactly that -- and this push is not the one
+# that introduced it. Only a push that would put run state somewhere it is not
+# yet is refused. A remote sha of all zeros (a brand-new remote branch) has no
+# copy to exempt, and one whose object is not present locally cannot be read
+# to check: both fail CLOSED, since the cost is a message and a variable.
 [ "${ORCHID_ALLOW_PUSH:-0}" = 1 ] && exit 0
 
 integ="__INTEGRATION_BRANCH__"
 
+# Non-empty output when <commit-ish>'s tree carries durable run state.
+# `.orchid/runtime/` is gitignored and never enters a tree, so any `.orchid`
+# entry a commit carries is run state by construction.
+carries_run_state() {
+  [ -n "$(git ls-tree "$1" -- .orchid 2>/dev/null)" ]
+}
+
 blocked=0
-while read -r _local_ref _local_sha remote_ref _remote_sha; do
+blocked_ref=""
+leaked=0
+leaked_ref=""
+while read -r _local_ref local_sha remote_ref remote_sha; do
   case "$remote_ref" in
-    refs/heads/task/*) blocked=1; blocked_ref="$remote_ref" ;;
-    "refs/heads/$integ") blocked=1; blocked_ref="$remote_ref" ;;
+    refs/heads/task/*) blocked=1; blocked_ref="$remote_ref"; continue ;;
+    "refs/heads/$integ") blocked=1; blocked_ref="$remote_ref"; continue ;;
   esac
+  # A deletion (all-zero local sha) pushes no tree and can leak nothing.
+  case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+  carries_run_state "$local_sha" || continue
+  case "$remote_sha" in
+    *[!0]*)
+      if git cat-file -e "$remote_sha" 2>/dev/null && carries_run_state "$remote_sha"; then
+        continue
+      fi ;;
+  esac
+  leaked=1; leaked_ref="$remote_ref"
 done
 
 if [ "$blocked" -eq 1 ]; then
   echo "orchid: push blocked -- '$blocked_ref' is orchid-managed (task branches and the integration branch, '$integ', are never pushed by the kernel itself; PROTOCOL.md: the operator alone moves anything to origin). Set ORCHID_ALLOW_PUSH=1 to override." >&2
+  exit 1
+fi
+
+if [ "$leaked" -eq 1 ]; then
+  echo "orchid: push blocked -- '$leaked_ref' carries orchid's own run state (.orchid/ -- roadmap, journal, BLOCKERS, plugins.lock, review envelopes) and the remote's copy of that ref does not. That state belongs to the run, not to your product: pushed here it becomes part of your project's history and, in a large diff, reads as tooling and is approved as tooling. If it got there by merging the integration branch ('$integ') into this branch, strip .orchid/ from it before pushing. If this repository tracks run state deliberately (orchid's own does), push it once with ORCHID_ALLOW_PUSH=1 and every later push of this ref is exempt automatically. Set ORCHID_ALLOW_PUSH=1 to override." >&2
   exit 1
 fi
 exit 0

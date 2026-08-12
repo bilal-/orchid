@@ -1861,3 +1861,84 @@ assert_eq "done" "$("$ORCHID_BIN" task show T111 | grep '^status: ' | cut -d' ' 
   "reading EOF is not a failure -- the task still reaches done"
 assert_eq "" "$(cat "$stdin_probe")" \
   "the validation suite reads EOF in the temp worktree, never the caller's stdin"
+
+# T037 -- run-state containment. This verb grows the integration branch, and
+# the integration branch carries `.orchid/`: roadmap, journal, BLOCKERS,
+# plugins.lock, every review envelope. On a real product repository 14 of
+# those files reached `main`, integration branch -> feature branch -> MR,
+# approved because the diff was large and the paths look like tooling.
+#
+# The kernel never runs that merge and never may (PROTOCOL.md's Preamble), so
+# what it owes the operator is to SEE the shape and say so: run state sitting
+# on a branch that is neither the integration branch nor any task's recorded
+# branch means the route out of the run is already open, and every further
+# merge queues more state behind it.
+#
+# A WARNING, not a refusal -- the condition predates this merge, this verb
+# cannot undo it, and refusing would freeze the task in `merging` over work
+# that has to happen on branches orchid does not own. The refusal ships where
+# it is safe and reversible: templates/pre-push.sh, at the boundary where the
+# state would leave the machine (tests/test_launch.sh).
+#
+# RED (before this fix): no warning at all -- merge is silent while run state
+# is already on its way into the product's history.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T042 "containment green twin"
+git checkout -q -b task/T042 "$integ"
+echo seven > feature7.txt && git add feature7.txt && git commit -q -m "feature 7"
+cand7="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base7="$(git rev-parse "$integ")"
+walk_to_merging T042 task/T042 "$base7" "$cand7" "test -f feature7.txt"
+
+out7="$WORK/merge7.out"; rc=0
+"$ORCHID_BIN" merge T042 >"$out7" 2>&1 || rc=$?
+assert_eq 0 "$rc" "containment: an ordinary repo still merges clean (exit 0)"
+grep -q "run state" "$out7" \
+  && fail "no branch outside the run carries run state -> merge must say nothing about containment"
+green_case 'no branch outside the run carries .orchid/ -> merge warns about nothing'
+
+# Now the leak, built the way it actually happens: the operator takes the
+# integration branch onto a branch of their own. Built in a THROWAWAY
+# worktree so the fixture's own checkout is never switched onto a branch that
+# tracks .orchid/ (checking back out would delete the live run state under
+# the suite's feet).
+leak_wt="$WORK/leak-wt"
+git worktree add -q -b product/main "$leak_wt" "$integ"
+mkdir -p "$leak_wt/.orchid"
+printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$leak_wt/.orchid/roadmap.md"
+printf '# Journal\n' > "$leak_wt/.orchid/journal.md"
+git -C "$leak_wt" add -f .orchid
+git -C "$leak_wt" commit -q -m "operator: merged the integration branch into their own branch"
+git worktree remove --force "$leak_wt"
+[ -n "$(git ls-tree product/main -- .orchid)" ] \
+  || fail "fixture: product/main must actually carry run state for the RED case to mean anything"
+
+"$ORCHID_BIN" task create T043 "containment red case"
+git checkout -q -b task/T043 "$integ"
+echo eight > feature8.txt && git add feature8.txt && git commit -q -m "feature 8"
+cand8="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base8="$(git rev-parse "$integ")"
+walk_to_merging T043 task/T043 "$base8" "$cand8" "test -f feature8.txt"
+
+# stdout and stderr captured SEPARATELY, in the one run this task has: the
+# warning belongs on stderr, so a caller parsing merge's result line never has
+# to filter advisory prose out of it. (Re-running the verb to check the other
+# stream would prove nothing -- T043 is `done` by then and merge dies at its
+# status gate, above this warning, leaving both files empty and both
+# assertions passing vacuously.)
+out8="$WORK/merge8.out"; err8="$WORK/merge8.err"; rc=0
+"$ORCHID_BIN" merge T043 >"$out8" 2>"$err8" || rc=$?
+assert_eq 0 "$rc" "containment: the warning is advisory -- the merge still completes (exit 0)"
+assert_eq "done" "$("$ORCHID_BIN" task show T043 | grep '^status: ' | cut -d' ' -f2)" \
+  "containment: a warned merge still reaches done, never deadlocks the task"
+assert_match "^merged T043: $integ -> " "$(cat "$out8")" "containment: stdout still carries only the result line"
+assert_match "run state" "$(cat "$err8")" "containment: the warning names what is leaking"
+assert_match "product/main" "$(cat "$err8")" "containment: and names the branch outside the run that carries it"
+assert_match "docs/troubleshooting.md" "$(cat "$err8")" "containment: and points at what to do about it"
+grep -q "run state" "$out8" \
+  && fail "the containment warning must go to stderr, never stdout"
+grep -q "task/T00" "$err8" \
+  && fail "a task's own branch is inside the run and must never be reported as a leak"
+red_case 'a branch outside the run carrying .orchid/ is named by orchid merge'
