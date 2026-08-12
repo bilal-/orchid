@@ -278,3 +278,113 @@ walk_to_merging T006 task/T006 "$base6" "$cand6" "test -f feature6.txt"
 rc=0; "$ORCHID_BIN" merge T006 >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "no hook.before_merge binding -> merge proceeds unchanged (exit 0)"
 assert_eq "done" "$("$ORCHID_BIN" task show T006 | grep '^status: ' | cut -d' ' -f2)" "no hook.before_merge binding -> task still reaches done"
+
+# ---------------------------------------------------------------------------
+# T030 (lesson L022): a DERIVED artifact must not be regenerated per
+# candidate. The repository-level version of this is Formula/orchid.rb, whose
+# one content-derived checksum line every task's verification chain used to
+# oblige it to re-pin; tests/test_ci_release.sh proves that story on a real
+# release fixture. What is proven HERE is the same property at the layer that
+# actually deadlocked: `orchid merge`'s stale-base rebase arm.
+#
+# `derived.txt` below stands in for any such artifact. The two scenarios are
+# identical except for whether the candidates regenerate it, so the rebase
+# outcome is attributable to that and to nothing else.
+# ---------------------------------------------------------------------------
+git checkout -q "$integ"
+echo "derived from the base" > derived.txt
+git add derived.txt && git commit -q -m "carry a content-derived artifact"
+derived_base="$(git rev-parse "$integ")"
+
+# --- RED: both candidates regenerate it -> the second one cannot land ------
+"$ORCHID_BIN" task create T007 "per-candidate re-derivation conflicts on rebase"
+# Candidate a, landed on integration first by an ordinary merge (its own trip
+# through the state machine is not what this case is about).
+git checkout -q -b task/T007a "$derived_base"
+echo a > source-a.txt && echo "derived for a" > derived.txt
+git add source-a.txt derived.txt && git commit -q -m "candidate a, re-derived"
+git checkout -q "$integ"
+git merge -q --no-ff -m "land candidate a" task/T007a \
+  || fail "T030 setup: candidate a must land on integration"
+
+# Candidate b forked the SAME base and re-derived the same line differently.
+git checkout -q -b task/T007 "$derived_base"
+echo b > source-b.txt && echo "derived for b" > derived.txt
+git add source-b.txt derived.txt && git commit -q -m "candidate b, re-derived"
+cand7="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+
+# base_sha is deliberately the ORIGINAL base, not the current integ HEAD, so
+# merge takes its stale-base rebase arm — the one that deadlocked the run.
+walk_to_merging T007 task/T007 "$derived_base" "$cand7" "test -f source-b.txt"
+
+pre_integ7="$(git rev-parse "$integ")"
+# Compared before/against after rather than against a literal: the T005 case
+# above deliberately leaves its own recorded worktree registered, so the
+# absolute count here is not 1 and asserting one would pin that case's
+# leftovers instead of this merge's cleanup.
+pre_wt7="$(git worktree list | wc -l | tr -d ' ')"
+rc=0
+"$ORCHID_BIN" merge T007 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "two candidates that both re-derive a shared artifact -> rebase conflict, exit 1"
+assert_eq rework "$("$ORCHID_BIN" task show T007 | grep '^status: ' | cut -d' ' -f2)" \
+  "the conflicting second candidate is sent to rework — where a no-shell implementer cannot regenerate anything, and the loop never ends"
+assert_eq "$pre_integ7" "$(git rev-parse "$integ")" "integration ref untouched by the conflicting rebase"
+assert_eq "$pre_wt7" "$(git worktree list | wc -l | tr -d ' ')" \
+  "the conflicting rebase leaks no temp worktree"
+
+# --- GREEN: neither candidate regenerates it -> both land, unattended ------
+# This is the shipped contract. Nothing else changes: same one base, same two
+# candidates, same stale-base rebase arm.
+"$ORCHID_BIN" task create T008 "two candidates off one base both land"
+green_base="$(git rev-parse "$integ")"
+
+git checkout -q -b task/T008a "$green_base"
+echo a > green-a.txt && git add green-a.txt && git commit -q -m "candidate a"
+git checkout -q "$integ"
+git merge -q --no-ff -m "land green candidate a" task/T008a \
+  || fail "T030 setup: green candidate a must land on integration"
+green_integ="$(git rev-parse "$integ")"
+
+git checkout -q -b task/T008 "$green_base"
+echo b > green-b.txt && git add green-b.txt && git commit -q -m "candidate b"
+cand8="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+
+walk_to_merging T008 task/T008 "$green_base" "$cand8" "test -f green-b.txt"
+
+rc=0
+"$ORCHID_BIN" merge T008 >/dev/null 2>&1 || rc=$?
+# Exit 5 is not an operator step: the rebase succeeded, and the kernel is
+# re-requiring review of the candidate it just minted (INV-07). The driver
+# walks this on its own — which is the whole difference from the RED case,
+# where the same arm produced `rework` and an instruction nobody could follow.
+assert_eq 5 "$rc" "no candidate re-derives -> the stale-base rebase is clean (exit 5, re-review required)"
+assert_eq testing "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' ' -f2)" \
+  "a clean rebase lands the task in testing, not rework"
+new_base8="$("$ORCHID_BIN" task show T008 | grep '^base_sha: ' | cut -d' ' -f2)"
+assert_eq "$green_integ" "$new_base8" "the rebased candidate now sits on the tip candidate a landed"
+
+new_cand8="$("$ORCHID_BIN" task show T008 | grep '^candidate_sha: ' | cut -d' ' -f2)"
+[ "$new_cand8" != "$cand8" ] || fail "the rebase must mint a new candidate sha"
+assert_eq "$new_cand8" "$(git rev-parse task/T008)" "the task branch carries the rebased tip"
+# No frontmatter worktree on this task, so `orchid verify` runs in the main
+# checkout and sha-binds the log to ITS head — the rebased branch has to be
+# checked out for the INV-11 gate to accept the evidence. Same two lines
+# walk_to_merging uses; the point being proven is that a driver gets here
+# with no human in the loop, not that the checkout is free.
+git checkout -q task/T008
+rc=0; "$ORCHID_BIN" verify T008 >/dev/null || rc=$?
+git checkout -q "$integ"
+assert_eq 0 "$rc" "the rebased candidate re-verifies with no operator step in between"
+"$ORCHID_BIN" task advance T008 reviewing
+plant_reviewer_envelope T008
+"$ORCHID_BIN" task advance T008 arbitrating --reason "re-reviewed after rebase, approved"
+"$ORCHID_BIN" task advance T008 merging --reason "approved for merge"
+rc=0
+"$ORCHID_BIN" merge T008 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "the second candidate merges on its new base"
+assert_eq "done" "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' ' -f2)" \
+  "both candidates off one base reach done, with no operator intervention anywhere"
+git show "$integ:green-a.txt" >/dev/null 2>&1 || fail "candidate a's change is on the integration branch"
+git show "$integ:green-b.txt" >/dev/null 2>&1 || fail "candidate b's change is on the integration branch"

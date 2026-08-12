@@ -1370,10 +1370,16 @@ arbitrate` is the sole explicit judgment-result verb; see PROTOCOL.md's
 `operator-handoff` (v1.1) is the one raised BETWEEN an implementer's envelope
 reconciling and verification, where `handoff_before_verify` asks for it: some
 mechanical work in a candidate requires EXECUTION — applying a linter's own
-fix, re-pinning a release checksum, setting the mode bit on a newly added
-executable — and an engine profile that denies on the command *string* can
-perform none of it, so verifying first is a guaranteed failure that spends a
-rework attempt on work nobody in that round could do. It is settled by no verb
+fix, setting the mode bit on a newly added executable, running a generator
+whose output is checked in — and an engine profile that denies on the command
+*string* can perform none of it, so verifying first is a guaranteed failure
+that spends a rework attempt on work nobody in that round could do. An
+artifact derived from the WHOLE TREE (a release-archive checksum pinned into a
+packaging file is the case that bit) is the one thing that must never be
+regenerated this way: every candidate would rewrite the same line differently,
+and the second to rebase conflicts on it irresolvably. Those belong to the
+integration branch, regenerated once there and gated at the release gate, not
+in any task's `verification_commands`. It is settled by no verb
 an orchestrator can run, deliberately: `orchid task handoff <id> --ack` asserts
 that the work was performed by an actor able to perform it, advances
 `candidate_sha` to the commit that work produced (refusing any `HEAD` that does

@@ -954,16 +954,28 @@ ones its archetype never declares.
 
   **The operator hand-off (`orchid task handoff`).** Some steps in a
   candidate are mechanical and require EXECUTION: applying a linter's own
-  fix, re-pinning a release checksum (`scripts/pin-formula.sh`), setting the
-  mode bit on a newly added executable. An engine profile that denies on the
+  fix, setting the mode bit on a newly added executable, running a generator
+  whose output is checked in. An engine profile that denies on the
   command **string** can perform none of them — it cannot run the linter, the
-  checksum tool, or `chmod` — so a rework round routed to it for that work is
+  generator, or `chmod` — so a rework round routed to it for that work is
   an instruction it could never satisfy, and it spends one of the task's three
   attempts finding that out. These steps therefore belong to the OPERATOR, and
   this is the point in the procedure where they happen. Before this they were
   performed here anyway, by habit, at a point nothing named — and a point
   nothing names is a point a driver walks straight past, running `orchid
   verify` against a candidate that was never going to pass.
+
+  One kind of mechanical step must NEVER be on this list, however routinely a
+  repository's own conventions ask for it: regenerating an artifact whose
+  value is derived from the WHOLE TREE, such as a release-archive checksum
+  pinned into a packaging file. Every candidate would rewrite the same line to
+  a different value, so the first one merges and the second one conflicts on
+  it in the stale-base rebase below — which aborts, sends the task to
+  `rework`, and dispatches an implementer that cannot regenerate the artifact
+  either. Nothing in that loop terminates and no attempt of it is free. A
+  tree-wide derived artifact belongs to the INTEGRATION BRANCH: regenerate it
+  there once, after merges have landed or at release time, and gate it at the
+  release gate rather than in any task's `verification_commands`.
 
   So, with the task now in `testing` and before step 3's `testing` bullet
   runs anything:

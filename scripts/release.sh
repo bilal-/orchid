@@ -225,7 +225,13 @@ sha256_file() {
 archive_sha="$(sha256_file "$archive_a")"
 rebuilt_sha="$(sha256_file "$archive_b")"
 [ "$archive_sha" = "$rebuilt_sha" ] || die "archive rebuild checksum mismatch"
-[ "$archive_sha" = "$formula_sha" ] || die "formula checksum mismatch: $formula_sha vs $archive_sha"
+# THE gate for the formula pin (T030). Nothing upstream of here checks it any
+# more: the pin is a derived artifact of the integration branch, not of any
+# one candidate, so no task's verification chain re-pins it and none of them
+# conflict over it. That makes this the single place a stale pin is caught,
+# which is why the message carries the remedy and the branch it belongs on
+# rather than just the two digests.
+[ "$archive_sha" = "$formula_sha" ] || die "formula checksum mismatch: pinned $formula_sha, archive $archive_sha -- Formula/orchid.rb was not re-pinned for this tag's content; run 'bash scripts/pin-formula.sh' on the integration branch, commit the formula-only change (Formula/ is export-ignored, so the archive bytes do not move), re-tag that commit and re-run this gate"
 
 list="$TMP_ROOT/archive.list"
 tar -tzf "$archive_a" > "$list"

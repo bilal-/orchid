@@ -145,12 +145,28 @@ local-only checklist in [install.md](./install.md#release-day-steps-operator-not
 The script emits files to the requested output directory but does not upload,
 push, publish, or alter a tag.
 
-The formula's pinned SHA-256 must stay fresh for the tree that carries it:
+The formula's pinned SHA-256 must be fresh for the tree that ships:
 `scripts/pin-formula.sh` recomputes the deterministic archive checksum from
-current content and rewrites `Formula/orchid.rb`; its `--check` mode runs in
-the test suite on every commit, so any change to shipped bytes must be
-committed together with a re-pinned formula (`Formula/` is export-ignored,
-so re-pinning never changes the archive itself).
+current content and rewrites `Formula/orchid.rb`, and its `--check` mode
+verifies without rewriting (`Formula/` is export-ignored, so re-pinning never
+changes the archive itself).
+
+**Re-pin on the integration branch, once, at release time — never on a
+feature or task branch.** The checksum is derived from the entire tree, so
+every branch that re-pins rewrites the same single `sha256` line to a
+different value. Two branches off one base therefore conflict on that line
+the moment the second one rebases, and under Orchid's own orchestration that
+conflict is unresolvable: the rebase aborts, the task is sent to rework, and
+the implementer profile that receives it cannot run a checksum tool. The pin
+is a derived artifact of the integration branch, and it belongs there.
+
+Nothing in a branch's verification chain checks the pin, so expect it to be
+stale between releases. `scripts/release.sh` is the gate: it rebuilds the
+archive from the tagged commit and refuses to verify a tag whose formula
+checksum does not match, naming the branch to re-pin on. Both halves —
+two candidates landing in sequence without touching the formula, and a stale
+pin still failing the release gate — are pinned by `tests/test_ci_release.sh`
+and `tests/test_merge.sh`.
 
 Both tools build compressed bytes through the disposable repository's
 config-isolated `git archive --format=tar.gz` backend. With archive-command
