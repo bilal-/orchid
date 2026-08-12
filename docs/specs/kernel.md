@@ -319,18 +319,172 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   exact candidate to rework with logs. **v0 baseline semantics:** the suite
   must pass, full stop; `baseline.md` records pre-existing failures for
   humans. Baseline-aware comparison is post-v1.
-  **Known limitation (m3 ledger, found live):** the integration-ref advance
-  above is a bare `git update-ref` — it never touches any OTHER checkout of
-  that branch. A long-lived checkout of the integration branch left open
-  across a merge (e.g. an operator inspecting it by hand) keeps a stale
-  index/tree; committing directly from that stale checkout silently REVERTS
-  the just-merged work (the commit's parent is still the pre-merge SHA).
-  There is no kernel guard against this today — the operator workaround is
-  to never hand-commit into a checkout of the integration branch without
-  refreshing it first (`git checkout HEAD -- .` or a fresh `git pull`).
-  Roadmap candidates (staged-deletion detection, a safe operator
-  config-commit verb, worktree-aware ref advance) are tracked in
-  roadmap.md's v1-m4 ledger.
+  **Consequences of the ref-only advance (m3 ledger, found live):** the
+  integration-ref advance above is a bare `git update-ref` — it never touches
+  any OTHER checkout of that branch, by design, since it must not write into
+  a working tree it does not own. A long-lived checkout of the integration
+  branch left open across a merge keeps a stale index/tree, and that has two
+  distinct consequences, both now guarded:
+  - Committing directly from that stale checkout silently REVERTS the
+    just-merged work (the commit's parent is still the pre-merge SHA).
+    `orchid doctor` FAILs and `orchid status` warns on the staged-deletion
+    signature (`orchid_stale_checkout`), and `orchid config commit` is the
+    safe operator path for the one file that legitimately needs committing
+    from there.
+  - If orchid ITSELF is being run out of that checkout — `bin/orchid`
+    resolves `ORCHID_ROOT` from its own location, so the verbs, libs,
+    runners and engine adapters all come from its working tree — the run is
+    driven by PRE-MERGE code indefinitely while every merge reports success
+    (lesson L018, observed live for a full day). Every verb therefore
+    REFUSES to run when `ORCHID_ROOT` is a checkout parked on the
+    integration branch whose **index** does not match HEAD for the kernel
+    paths (`orchid_root_stale`, enforced at `lib/common.sh` source time).
+    The INDEX, not the working tree: `git update-ref` moves the branch
+    without touching either, so the index left describing the commit the
+    branch moved off IS the record of the fall behind — while an operator
+    editing kernel files leaves the index alone, which is what keeps orchid
+    runnable in the integration checkout it is itself developed in. A
+    checkout that fell behind and was then `git reset` is consequently not
+    detected by this or any other check; from here it is indistinguishable
+    from ordinary editing, and catching it would mean refusing on every
+    ordinary edit. Because a `git reset` is also the documented way to clear a
+    STAGED-edit refusal, that remedy can silently retire a genuine staleness
+    along with the refusal — so docs/troubleshooting.md states the hazard where
+    it prescribes the reset, and gives the read-only scan (does the index match
+    an ancestor of HEAD for these paths?) that separates the two states while
+    the index still holds the evidence.
+    Because source time is ahead of every verb — including the
+    unattended-trust gate, which may not let orchid touch a repository in any
+    way before an acknowledgement is found — the "parked on the integration
+    branch" half is answered by READING Git's on-disk `HEAD`, never by
+    spawning `git`. Only a root that really is parked there goes on to the
+    content comparison, and that root is orchid's own installation.
+    Deliberately narrow: a development checkout on any other branch is never
+    asked, however dirty, and `.orchid/` is neither inspected nor touched, so
+    uncommitted durable run state is never a refusal and never at risk.
+    That refusal must not stop the run on its own success, so `orchid merge`
+    REFRESHES the one checkout it is itself running from (`$ORCHID_REPO` and
+    `$ORCHID_ROOT` resolving to the same directory, parked on the branch just
+    advanced) immediately after the CAS, and shields its own remaining
+    bookkeeping from the refusal. Otherwise the very next child process —
+    `task advance <id> done` — refuses, leaving the branch advanced and the
+    task frozen in `merging`. The refresh is gated on `orchid_kernel_clean`:
+    a checkout with UNCOMMITTED kernel edits is never refreshed, it gets the
+    refusal, because those edits are the operator's to keep — and `orchid
+    merge` WARNS on stderr when it declines for that reason, naming the edit,
+    since the refusal the operator meets next can only report what it sees and
+    cannot know that this edit is why. That warning is gated on the merge
+    having actually MOVED a kernel path (`$integ_head..$merged_sha` restricted
+    to `ORCHID_KERNEL_PATHS`), not merely on the checkout being dirty: a merge
+    of docs, config or tests leaves a dirty checkout exactly as current as it
+    found it, and a warning that fires when nothing went stale is the one an
+    operator learns to skip past — including on the merge where it matters. This is not the rejected "merge
+    refreshes other checkouts" remedy — no checkout the merging process does
+    not already own and hold the run lock for is ever written. The advance and
+    the refresh are two operations and no ordering of them is atomic to a
+    third process, so a window exists in which this checkout holds PRE-MERGE
+    code. Verbs started from that root inside it REFUSE — the window is closed
+    to execution, which is the only thing that had to close, since a verb
+    allowed through it runs exactly the stale kernel this refusal exists for,
+    and a verb that waited would still be holding the libraries it already
+    sourced. `orchid merge` publishes its identity — pid, process start time
+    and hostname, the same triple `lock_acquire` writes — at
+    `.orchid/runtime/kernel-refresh` for the length of the window, and that
+    marker selects WHICH refusal is printed: "a repair is in flight, nothing
+    ran, retry" and exit **75** (`EX_TEMPFAIL`, used nowhere else) while the
+    identity matches a live process, the full report otherwise. Liveness is
+    the predicate, so nothing has to reap the marker, and the identity is what
+    keeps a file left behind by a SIGKILLed merge from being answered for by
+    whatever process later inherits its PID. A marker that cannot be believed
+    — recycled PID, foreign host, mangled, absent — yields the full report,
+    which is never the unsafe answer; writing one can therefore change the
+    wording of a refusal and nothing else.
+  **The refusal prescribes no repair.** It reports what it observed — the
+  branch, the kernel paths whose index entries differ from HEAD, and any
+  unstaged modifications as context — states that the cause is not
+  determinable from that, and prints only read-only commands for looking.
+  An index that differs from HEAD is produced identically by a `update-ref`
+  advance and by a `git add` of a kernel edit; two earlier rounds of this
+  guard classified the second as the first and prescribed a restore that
+  destroys the operator's only copy (dogfood finding F31's family). The
+  operator resolves it; `docs/troubleshooting.md` carries the options and
+  what each costs.
+  **EVERY verb refuses, `doctor` and `status` included, in both causes** —
+  including the one where the cause is the operator's own `git add` and
+  nothing is stale at all. That is deliberate and is the sharpest cost this
+  design carries, so it is stated rather than discovered: orchid cannot tell
+  the two causes apart, a `doctor` run out of a checkout that IS stale is
+  produced by the stale `doctor`, and an exemption list is how the advisory
+  version of this check came to be ignored. `ORCHID_ALLOW_STALE_ROOT=1 orchid
+  doctor` is the exemption — per-invocation, visible in the transcript, taken
+  with the observation already in front of the operator. `docs/troubleshooting.md`
+  says so where someone meeting the refusal will find it, because a refusal an
+  operator reads as a broken tool is one they work around.
+  The refresh the merge runs names only what the launcher executes —
+  `bin lib libexec runners plugins roles skills templates PROTOCOL.md`,
+  the single `ORCHID_KERNEL_PATHS` list in `lib/common.sh`. It never reaches
+  for `.` : that would restore a pending `orchid.config` along with the
+  kernel, and without `':(exclude).orchid'` it clobbers uncommitted
+  `.orchid/` run state too.
+  **The refresh writes the working tree first and the index last**, one path
+  at a time, and that order is a safety property rather than an internal
+  detail. The guard reads the INDEX, so the index is what makes this checkout
+  look current to every other process; it is written only once that path's
+  working tree already carries HEAD's bytes (installed by rename, then
+  verified against HEAD's blob with `git hash-object`). A refresh killed at any
+  instant — SIGKILL, a full disk — therefore leaves every unfinished path with
+  an index entry still describing the commit the branch moved off, which is
+  the state the refusal fires on: **an interrupted refresh refuses, it never
+  permits.** The in-flight marker cannot cover that case by construction — it
+  is believed only while its writer is alive, so a merge dying is exactly when
+  it stops speaking — which is why the ordering, and not the marker, is what
+  closes it. The drift list is the UNION of `diff HEAD` and
+  `diff --cached HEAD` over the kernel paths, so a later refresh can finish an
+  interrupted one instead of finding the working tree already right and
+  declaring victory over an index that is not.
+  `git checkout <tree> -- <paths>` is deliberately not the mechanism: it
+  cannot drop a file the tree no longer carries (that path stays in the index
+  and keeps counting as drift, which is why the automatic refresh clears a
+  state a hand-run one-liner can leave standing — docs/troubleshooting.md),
+  and the order in which it commits its index and working-tree writes is
+  git's internal detail rather than a guarantee this guard may rest on.
+  `orchid_kernel_clean` is the caller's PRECONDITION and is re-asked PER
+  WRITE, on the line above each one, because it is evaluated before the ref
+  advance and cannot speak for the interval since. Every write is preceded by
+  the question *would writing here destroy the only copy of something?* — safe
+  only when the path has no file, when the file still holds the bytes the
+  precondition saw, or when the file already holds HEAD's own bytes. Anything
+  else was written in the window and is DECLINED, leaving both those bytes and
+  the refusal in place.
+  "The bytes the precondition saw" is read from the COMMIT `HEAD` was on when
+  `orchid_kernel_clean` passed — `orchid merge` passes it as the refresh's
+  base, and already holds it as the expected-old value of its own CAS — and
+  NOT from the index, which carries the same bytes and needs nothing passed.
+  The index is not a snapshot: `git add` moves it and the working-tree file
+  together, so an operator who edits *and stages* a kernel file inside the
+  window leaves a file matching its index entry perfectly that is nonetheless
+  the only copy of their work. Read against the index that state is
+  indistinguishable from an untouched checkout and is overwritten for it; read
+  against the base commit it is exactly what it is. The record has to be one
+  the racing writer cannot also move, and only a commit is that. A caller with
+  no base to offer falls back to the index, which gives the same answer in
+  every case but that one; a base that does not resolve makes the comparison
+  unanswerable rather than true, so a bad argument yields a refusal and never
+  a write.
+  This is also what makes the refresh decline to overwrite an UNTRACKED file
+  where the branch has since added a tracked one — it matches neither the base
+  (which does not carry the path) nor HEAD — while still writing through the
+  untracked file whose content already IS HEAD's blob, the state a killed
+  refresh leaves behind, where declining would leave a refusal no refresh
+  could clear. The collision case is one `orchid_kernel_clean` could never
+  cover at all: it is asked before the ref moves, when the collision does not
+  yet exist.
+  The drift walk is NUL-delimited (`git diff -z`), because
+  `--name-only` C-quotes any path holding a space, a quote, a backslash or a
+  non-ASCII byte, and a quoted name matches no file — the restore would decline
+  over a path it never looked at. An empty list is NOT an early success: a
+  `git` that cannot answer prints nothing, so the walk falls through to the
+  same both-halves verification that closes the function.
 - **Attempt fairness (tier-boundary clean):** `orchid task advance` to
   rework increments `attempts` BY DEFAULT — the deterministic verb never
   judges semantics. The orchestrator may pass `--waive-attempt --reason`
