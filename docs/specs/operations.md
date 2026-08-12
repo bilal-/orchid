@@ -336,7 +336,15 @@ this section false without touching a byte of it.
    `orchid service status`/`orchid service uninstall` report/reverse it.
 5. Run ends at `run_status: complete` (acceptance evidence in
    `reviews/acceptance.log`) or surfaces a blocker. Integration branch holds
-   the product; pushing/deploying is yours.
+   the product; pushing/deploying is yours. A schedule installed in step 4
+   does NOT end with it — nothing ties one to a run's lifetime, so every wake
+   after completion is a certain no-op that runs forever. Tearing the checkout
+   down is therefore ordered, not interchangeable: `orchid service uninstall
+   --repo <path>` FIRST, `git worktree remove <path>` second. Reversed, the
+   scheduler keeps firing against a directory that is gone and the binding
+   record naming the leftover schedule went into the bin with it — `orchid
+   doctor` reads the machine-local copy under `~/.orchid/services/` and names
+   what is still owed an uninstall. See PROTOCOL.md's COMPLETION.
 
 ## Remote interaction
 

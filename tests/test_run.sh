@@ -343,7 +343,12 @@ echo "# Requirements" > .orchid/requirements.md
 "$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
 "$ORCHID_BIN" task create W001 "the only task, and it is finished" >/dev/null
 "$ORCHID_BIN" plan apply --reason "wake-budget fixture" >/dev/null
-fm_set "$WB_WT/.orchid/tasks/W001.md" status done
+# `done` is QUOTED. Bare, it is a shell keyword sitting in argument position,
+# which is exactly the shape ShellCheck flags (SC1010) and ci-local runs at
+# --severity=warning, so the linter -- not bash -- is what would reject it.
+# Every other fixture in this suite that plants a finished status spells it
+# the same way (tests/test_drive.sh's F010/B010 fixtures).
+fm_set "$WB_WT/.orchid/tasks/W001.md" status "done"
 unset ORCHID_EPOCH
 HOME="$HOME" "$ORCHID_BIN" trust unattended "$WB_WT" --reason "wake-budget fixture" >/dev/null \
   || fail "wake-budget fixture: unattended acknowledgement"
