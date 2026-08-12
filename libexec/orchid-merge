@@ -431,7 +431,14 @@ if [ "$rc" -eq 0 ]; then
         # that overwrites them is never worth the keystrokes it saves.
         echo "orchid: warning: $integ advanced and orchid runs from this checkout ($repo), but its kernel files were already modified before the merge — refreshing would have discarded that work, so it was not done. Modified: ${dirty_before}— those bytes are in this checkout and nowhere else. Verbs run from this checkout may now refuse; they will report what they see and prescribe nothing. Deal with the edit whichever way you want it kept, then bring this checkout to $integ yourself; docs/troubleshooting.md 'Stale orchid itself' has the options and what each costs" >&2
       fi
-    elif orchid_refresh_kernel "$repo"; then
+    # $integ_head is passed as the refresh's BASE: it is the commit this
+    # branch -- and so this checkout's HEAD -- was on when orchid_kernel_clean
+    # passed above, and the CAS just proved it was still that at the instant
+    # of the advance. Every per-write safety check inside the refresh is asked
+    # against it rather than against this checkout's index, because an
+    # operator who edits AND STAGES a kernel file inside the window moves the
+    # index and the file together and would otherwise look untouched.
+    elif orchid_refresh_kernel "$repo" "$integ_head"; then
       echo "refreshed $repo to $integ (orchid runs from this checkout)"
     else
       # Partial or refused restore — including the case orchid_refresh_kernel

@@ -101,6 +101,14 @@ source "$(dirname "$0")/helpers.sh"
 #     path was never restored and the refresh reported failure over something
 #     it had not looked at. The walk is NUL-delimited now, and 17 is the path
 #     that proves it.
+#   * 18: the same window as 16, one notch narrower, and the notch is what the
+#     per-write check itself could not see. 16's editor left the file
+#     disagreeing with its index entry, which is how the check caught it; a
+#     `git add` moves the index and the file TOGETHER, so an edit STAGED in
+#     the window looks pristine to any comparison against the index. The
+#     record has to be one the racing writer cannot also move, so the check is
+#     asked against the commit HEAD was on when the precondition passed --
+#     which `orchid merge` already holds, as its CAS's expected-old value.
 # ---------------------------------------------------------------------------
 
 # The one list the guard, the refresh and the documented remedy all use. Kept
@@ -1413,3 +1421,115 @@ assert_eq "the merged role, at a name git has to quote" "$(cat "$quoteroot/$awkw
   "and the merged bytes really are on disk under the real name"
 run_version "$quoteroot"
 assert_eq 0 "$rc" "so the refusal clears rather than surviving its own remedy"
+
+# ===========================================================================
+# 18 -- an edit that is also STAGED inside the window is not overwritten
+# ===========================================================================
+# 16's edit dirtied the working tree and left the index alone, so the file
+# stopped matching its index entry and the per-write check saw it. This is the
+# same race one notch narrower, and it is the one that check could not see:
+# `git add` moves the index and the file TOGETHER, so an operator who edits a
+# kernel file inside the window and stages it leaves a file matching its index
+# entry exactly -- indistinguishable, read against the index, from a checkout
+# nobody has touched, and overwritten for it.
+#
+# The record has to be one the racing writer cannot also move, so the refresh
+# is asked against the commit HEAD was on when the precondition passed.
+# `orchid merge` already holds that sha: it is the expected-old value of its
+# own CAS. This check races a staged edit into the interval and watches the
+# refresh decline over a file the index calls pristine.
+#
+# The GREEN twin is in the same shape as 16's and for the same reason: the
+# decline has to be a state the operator can clear, not a dead end.
+stagehub="$WORK/stage-hub"
+make_root "$stagehub" main
+git -C "$stagehub" branch orchid/integration
+stageroot="$WORK/stage-root"
+git -C "$stagehub" worktree add -q "$stageroot" orchid/integration
+stageelse="$WORK/stage-elsewhere"
+git -C "$stagehub" worktree add -q --detach "$stageelse" orchid/integration
+cat > "$stageelse/libexec/orchid-version" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "adapter: post-merge"
+VERB
+git -C "$stageelse" add -A
+git -C "$stageelse" commit -q -m "fixture: kernel v2 (the merged fix)"
+stage_head="$(git -C "$stageelse" rev-parse HEAD)"
+# The base, read here for the GREEN twin below: this checkout's HEAD while it
+# is still the commit the precondition will be asked about. The racer reads
+# the same value for itself, where a real caller reads it.
+stage_base="$(git -C "$stageroot" rev-parse HEAD)"
+
+# The same harness as 16, with two differences: the injected edit is STAGED as
+# well as saved, and the base is handed to the refresh the way `orchid merge`
+# hands it its CAS's expected-old sha.
+cat > "$WORK/stage-racer.sh" <<'RACE'
+#!/usr/bin/env bash
+set -uo pipefail
+root="$1"; lib="$2"; hub="$3"; advance_to="$4"; marker="$5"
+source "$lib/lib/common.sh"
+orchid_kernel_clean "$root" || { echo "precondition-not-clean"; exit 9; }
+# Read where a real caller reads it: while the precondition it belongs to is
+# the thing just established, and before anything has moved.
+base="$(command git -C "$root" rev-parse HEAD)"
+[ -n "$base" ] || { echo "no-base"; exit 9; }
+command git -C "$hub" update-ref refs/heads/orchid/integration "$advance_to" \
+  || { echo "advance-failed"; exit 9; }
+# The operator, saving AND staging inside the window. After this the file and
+# its index entry agree perfectly and both hold the operator's bytes, which is
+# the whole point: the index has stopped being a record of what the
+# precondition saw.
+git() {
+  if [ ! -e "$marker" ]; then
+    : > "$marker"
+    printf 'echo "operator save, staged mid-refresh"\n' >> "$root/libexec/orchid-version"
+    command git -C "$root" add -- libexec/orchid-version
+  fi
+  command git "$@"
+}
+orchid_refresh_kernel "$root" "$base"
+RACE
+
+rc=0
+HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1 \
+  /bin/bash "$WORK/stage-racer.sh" "$stageroot" "$REPO_ROOT" "$stagehub" \
+  "$stage_head" "$WORK/stage-marker" > "$WORK/stage.log" 2>&1 || rc=$?
+[ "$rc" -ne 9 ] \
+  || fail "test fixture: the racer never reached the refresh ($(tr '\n' ' ' < "$WORK/stage.log")) -- nothing below is being tested"
+[ -e "$WORK/stage-marker" ] \
+  || fail "test fixture: the edit never landed, so the refresh was not raced and nothing below is being tested"
+assert_eq 1 "$rc" \
+  "a refresh whose path was edited AND STAGED after its precondition passed REFUSES rather than report a refresh it should not have made"
+# The fixture only tests the NARROW case if the edit really did reach the
+# index: an unstaged one is already caught by check 16 and would make
+# everything else here pass without exercising the base comparison at all.
+# Asked after the status above so that a refresh which wrongly went through --
+# leaving the branch's bytes in both the file and the index, and so equal --
+# is reported as the overwrite it is rather than as a broken fixture.
+assert_eq "$(cat "$stageroot/libexec/orchid-version")" \
+  "$(git -C "$stageroot" show ':libexec/orchid-version')" \
+  "test fixture: the raced edit is STAGED, so the file matches its index entry and only the base comparison can tell"
+grep -q 'operator save, staged mid-refresh' "$stageroot/libexec/orchid-version" \
+  || fail "the refresh overwrote an edit staged after the precondition -- the index agreed with the file, which is exactly why the index cannot be the record"
+grep -q 'adapter: pre-merge' "$stageroot/libexec/orchid-version" \
+  || fail "the refresh replaced the raced file with the branch's copy, which is the same loss wearing a different diff"
+red_case 'a tracked kernel path edited AND STAGED between the precondition and the write is declined, not overwritten'
+run_version "$stageroot"
+assert_eq 1 "$rc" \
+  "and the stale-root refusal stands, so the operator decides what happens to their own bytes"
+
+# The GREEN twin: with those bytes dealt with -- here by putting the path back,
+# in both the index and the tree, to the commit the precondition saw -- the
+# very same refresh, against the very same base, completes.
+git -C "$stageroot" checkout "$stage_base" -- libexec/orchid-version
+rc=0
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$stageroot" "$stage_base" ) || rc=$?
+assert_eq 0 "$rc" "with the staged edit dealt with, the same refresh completes"
+green_case 'the same path, once the raced edit is gone, is refreshed'
+run_version "$stageroot"
+assert_eq 0 "$rc" "and the refusal clears"
+assert_match "adapter: post-merge" "$out" "with the merged kernel the one that executes"

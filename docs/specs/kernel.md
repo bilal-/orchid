@@ -452,18 +452,33 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   WRITE, on the line above each one, because it is evaluated before the ref
   advance and cannot speak for the interval since. Every write is preceded by
   the question *would writing here destroy the only copy of something?* — safe
-  only when the path has no file, when the file still holds its INDEX entry's
-  bytes (the index being the surviving record of what `orchid_kernel_clean`
-  judged clean, since `update-ref` moves neither it nor the working tree), or
-  when the file already holds HEAD's own bytes. Anything else was written in
-  the window and is DECLINED, leaving both those bytes and the refusal in
-  place. That is also what makes the refresh decline to overwrite an UNTRACKED
-  file where the branch has since added a tracked one — it matches neither the
-  index (no entry) nor HEAD — while still writing through the untracked file
-  whose content already IS HEAD's blob, the state a killed refresh leaves
-  behind, where declining would leave a refusal no refresh could clear. The
-  collision case is one `orchid_kernel_clean` could never cover at all: it is
-  asked before the ref moves, when the collision does not yet exist.
+  only when the path has no file, when the file still holds the bytes the
+  precondition saw, or when the file already holds HEAD's own bytes. Anything
+  else was written in the window and is DECLINED, leaving both those bytes and
+  the refusal in place.
+  "The bytes the precondition saw" is read from the COMMIT `HEAD` was on when
+  `orchid_kernel_clean` passed — `orchid merge` passes it as the refresh's
+  base, and already holds it as the expected-old value of its own CAS — and
+  NOT from the index, which carries the same bytes and needs nothing passed.
+  The index is not a snapshot: `git add` moves it and the working-tree file
+  together, so an operator who edits *and stages* a kernel file inside the
+  window leaves a file matching its index entry perfectly that is nonetheless
+  the only copy of their work. Read against the index that state is
+  indistinguishable from an untouched checkout and is overwritten for it; read
+  against the base commit it is exactly what it is. The record has to be one
+  the racing writer cannot also move, and only a commit is that. A caller with
+  no base to offer falls back to the index, which gives the same answer in
+  every case but that one; a base that does not resolve makes the comparison
+  unanswerable rather than true, so a bad argument yields a refusal and never
+  a write.
+  This is also what makes the refresh decline to overwrite an UNTRACKED file
+  where the branch has since added a tracked one — it matches neither the base
+  (which does not carry the path) nor HEAD — while still writing through the
+  untracked file whose content already IS HEAD's blob, the state a killed
+  refresh leaves behind, where declining would leave a refusal no refresh
+  could clear. The collision case is one `orchid_kernel_clean` could never
+  cover at all: it is asked before the ref moves, when the collision does not
+  yet exist.
   The drift walk is NUL-delimited (`git diff -z`), because
   `--name-only` C-quotes any path holding a space, a quote, a backslash or a
   non-ASCII byte, and a quoted name matches no file — the restore would decline

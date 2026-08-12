@@ -643,9 +643,16 @@ orchid_kernel_clean() {
     "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')" ] || return 1
 }
 
-# orchid_refresh_kernel <root> -- bring <root>'s kernel paths to HEAD, so a
-# checkout that fell behind its own branch runs the code that branch now
+# orchid_refresh_kernel <root> [<base>] -- bring <root>'s kernel paths to HEAD,
+# so a checkout that fell behind its own branch runs the code that branch now
 # carries. The ONLY writer in this family; every other helper here inspects.
+#
+# <base> is the commit <root>'s HEAD was on at the moment orchid_kernel_clean
+# passed, i.e. before the ref advance. Callers that know it SHOULD pass it: it
+# is the snapshot every per-write safety check below is asked against, and
+# _orchid_kernel_writable says why a snapshot rather than the live index is
+# what that check needs. Omitting it falls back to the index, which differs
+# only when something stages a kernel edit inside the window.
 #
 # Callers MUST have established orchid_kernel_clean first (see above). Under
 # that precondition every path this touches was, moments earlier, byte-equal
@@ -700,14 +707,17 @@ orchid_kernel_clean() {
 # immediately, by _orchid_kernel_writable on the one path it is about to touch.
 # A path whose file has changed under the check is DECLINED, and the refusal
 # the operator then meets is the correct outcome: their bytes are still on
-# disk. What remains is the rename itself, which no check can get inside;
-# the window this closes is the whole advance-and-walk, and what is left is one
-# `mv`.
+# disk. That check is asked against <base> rather than against the index for
+# the reason spelled out there -- `git add` in the window moves the index and
+# the file together, so the index cannot serve as the record of what was here
+# when the precondition passed. What remains is the rename itself, which no
+# check can get inside; the window this closes is the whole advance-and-walk,
+# and what is left is one `mv`.
 #
 # Returns non-zero if any path could not be restored, leaving the refusal in
 # place for the operator rather than reporting a refresh that did not happen.
 orchid_refresh_kernel() {
-  local root="$1" p q seen rc=0 top top_phys root_phys
+  local root="$1" base="${2:-}" p q seen rc=0 top top_phys root_phys
   local -a drift=()
   # `git diff --name-only` prints paths relative to the REPOSITORY ROOT while
   # the pathspecs below are read relative to `-C "$root"`. Those agree only
@@ -776,7 +786,7 @@ orchid_refresh_kernel() {
         # _orchid_restore_kernel_file asks _orchid_kernel_writable itself,
         # immediately before its rename, so nothing about this path is decided
         # here at a distance from the write it decides.
-        _orchid_restore_kernel_file "$root" "$p" || { rc=1; continue; }
+        _orchid_restore_kernel_file "$root" "$p" "$base" || { rc=1; continue; }
       else
         # HEAD has dropped this path. The FILE goes first here too, and for the
         # same reason: a verb or library still on disk after the branch removed
@@ -785,7 +795,7 @@ orchid_refresh_kernel() {
         # as these bytes are still the ones orchid_kernel_clean saw, which is
         # exactly what the line below re-establishes at the moment of the
         # removal rather than inheriting from a check made before the advance.
-        _orchid_kernel_writable "$root" "$p" || { rc=1; continue; }
+        _orchid_kernel_writable "$root" "$p" "$base" || { rc=1; continue; }
         rm -f "$root/$p" || { rc=1; continue; }
         [ ! -e "$root/$p" ] || { rc=1; continue; }
       fi
@@ -814,18 +824,25 @@ orchid_refresh_kernel() {
   return "$rc"
 }
 
-# _orchid_file_is_head_blob <root> <path> -- true when the file on disk at
-# <root>/<path> holds exactly the bytes HEAD carries for <path>, whatever the
-# index says about either. `git hash-object` applies the same clean filter git
-# would, so the comparison is the one git itself would make, and both sides
-# fail CLOSED: an unreadable file, a path HEAD does not carry, or a `git` that
-# cannot answer is "not established", never "equal".
-_orchid_file_is_head_blob() {
-  local root="$1" p="$2" want got
-  want="$(git -C "$root" rev-parse --quiet --verify "HEAD:$p" 2>/dev/null || true)"
+# _orchid_file_is_commit_blob <root> <rev> <path> -- true when the file on disk
+# at <root>/<path> holds exactly the bytes <rev> carries for <path>, whatever
+# the index says about either. `git hash-object` applies the same clean filter
+# git would, so the comparison is the one git itself would make, and both sides
+# fail CLOSED: an unreadable file, a <rev> that does not carry <path>, a <rev>
+# that does not resolve at all, or a `git` that cannot answer is "not
+# established", never "equal".
+_orchid_file_is_commit_blob() {
+  local root="$1" rev="$2" p="$3" want got
+  want="$(git -C "$root" rev-parse --quiet --verify "$rev:$p" 2>/dev/null || true)"
   [ -n "$want" ] || return 1
   got="$(git -C "$root" hash-object -- "$p" 2>/dev/null || true)"
   [ -n "$got" ] && [ "$got" = "$want" ]
+}
+
+# _orchid_file_is_head_blob <root> <path> -- the same question against the
+# commit this checkout is parked on right now.
+_orchid_file_is_head_blob() {
+  _orchid_file_is_commit_blob "$1" HEAD "$2"
 }
 
 # _orchid_file_is_index_blob <root> <path> -- the same question against the
@@ -842,25 +859,39 @@ _orchid_file_is_index_blob() {
   [ -n "$got" ] && [ "$got" = "$want" ]
 }
 
-# _orchid_kernel_writable <root> <path> -- true when putting HEAD's bytes at
-# <root>/<path>, or removing it, can destroy nothing. Asked by
+# _orchid_kernel_writable <root> <path> [<base>] -- true when putting HEAD's
+# bytes at <root>/<path>, or removing it, can destroy nothing. Asked by
 # orchid_refresh_kernel immediately before each of its two writes, and it is
 # the whole of what stands between a refresh and an operator's uncommitted
 # work.
+#
+# <base> is the commit this checkout's HEAD was on when orchid_kernel_clean
+# passed -- for `orchid merge`, the branch sha its CAS names as the expected
+# old value. Given it, the question below is asked against a SNAPSHOT, and
+# that is what makes the answer trustworthy rather than merely current.
 #
 # Three states are safe, and nothing else is:
 #
 #   * NO FILE THERE. Whatever the index or HEAD says, there are no bytes on
 #     disk to lose.
-#   * THE FILE STILL HOLDS ITS INDEX ENTRY'S BYTES. This is what closes the
-#     window the caller's precondition cannot. orchid_kernel_clean established
-#     working tree == index == HEAD for these paths BEFORE the ref advance;
-#     `git update-ref` then moved HEAD and touched neither of the other two, so
-#     the index is the surviving RECORD of what this checkout legitimately held
-#     at the moment it was judged clean. A file that still matches it has not
-#     been edited since. One that does not was written in the window -- an
-#     editor saving, a script, a second operator -- and its bytes exist here
-#     and nowhere else.
+#   * THE FILE STILL HOLDS THE BYTES THE PRECONDITION SAW. This is what closes
+#     the window the caller's precondition cannot. orchid_kernel_clean
+#     established working tree == index == <base> for these paths BEFORE the
+#     ref advance, so a file still equal to <base>'s blob has not been edited
+#     since. One that is not was written in the window -- an editor saving, a
+#     script, a second operator -- and its bytes exist here and nowhere else.
+#
+#     WHY <base> AND NOT THE INDEX, which holds those same bytes and needs no
+#     argument passed for it. Because the index is not a snapshot: `git add` in
+#     the window moves it and the file TOGETHER, so an operator who edits and
+#     stages a kernel file between the precondition and the write leaves a file
+#     that matches its index entry perfectly and is nonetheless the only copy
+#     of their work. Read against the index that state is indistinguishable
+#     from an untouched checkout and gets overwritten; read against <base> it
+#     is exactly what it is. The record has to be one the racing writer cannot
+#     also move, and only a commit is that. Callers with no <base> to offer
+#     fall back to the index, which is the same answer in every case but that
+#     one.
 #   * THE FILE ALREADY HOLDS HEAD'S BYTES. Nothing to lose either, and this
 #     arm is load-bearing rather than an optimisation: a refresh killed after
 #     it wrote a path the branch ADDED, but before that path's index entry
@@ -869,28 +900,39 @@ _orchid_file_is_index_blob() {
 #
 # What that adds up to for the case the whole helper exists for: an untracked
 # file of the operator's at a name the branch has since added a tracked file
-# under matches neither the index (it has no entry) nor HEAD (its content is
-# the operator's), so it is DECLINED and survives. That is the r-001
-# journal-loss shape one directory over, and asking the question as "would
-# writing here destroy the only copy of something?" rather than as "is this
-# path tracked?" is what gets both it and the killed-refresh state right at
-# once.
+# under matches neither <base> (which does not carry the path) nor HEAD (its
+# content is the operator's), so it is DECLINED and survives. That is the
+# r-001 journal-loss shape one directory over, and asking the question as
+# "would writing here destroy the only copy of something?" rather than as "is
+# this path tracked?" is what gets both it and the killed-refresh state right
+# at once.
+#
+# A <base> that does not resolve -- a caller passing something that is not a
+# commit -- makes the first arm unanswerable rather than true, so the file
+# falls through to the HEAD comparison and an ordinary path is DECLINED. The
+# failure mode of a bad argument is a refusal, never a write.
 #
 # Declining costs a refusal the operator clears by hand, having seen the file.
 # Overwriting costs a file only they had a copy of.
 _orchid_kernel_writable() {
-  local root="$1" p="$2"
+  local root="$1" p="$2" base="${3:-}"
   [ -e "$root/$p" ] || return 0
-  if _orchid_file_is_index_blob "$root" "$p"; then return 0; fi
+  if [ -n "$base" ]; then
+    if _orchid_file_is_commit_blob "$root" "$base" "$p"; then return 0; fi
+  elif _orchid_file_is_index_blob "$root" "$p"; then
+    return 0
+  fi
   _orchid_file_is_head_blob "$root" "$p"
 }
 
-# _orchid_restore_kernel_file <root> <path> -- put HEAD's bytes for <path> into
-# <root>'s WORKING TREE, touching the index not at all. <path> exists in HEAD;
-# the caller has established that. What the caller may NOT establish on this
-# function's behalf is that writing there is safe: _orchid_kernel_writable is
-# asked here, on the line above the rename, because a precondition checked
-# before the ref advance cannot speak for a file saved since.
+# _orchid_restore_kernel_file <root> <path> [<base>] -- put HEAD's bytes for
+# <path> into <root>'s WORKING TREE, touching the index not at all. <path>
+# exists in HEAD; the caller has established that. What the caller may NOT
+# establish on this function's behalf is that writing there is safe:
+# _orchid_kernel_writable is asked here, on the line above the rename, because
+# a precondition checked before the ref advance cannot speak for a file saved
+# since. <base> is passed straight through to it and means what it means
+# there.
 #
 # Written from the blob rather than checked out because the index must not move
 # yet (see the order in orchid_refresh_kernel above), and installed with a
@@ -917,7 +959,7 @@ _orchid_kernel_writable() {
 # here yet -- reports as deleted however faithfully the working tree now
 # carries it.
 _orchid_restore_kernel_file() {
-  local root="$1" p="$2" entry mode want dir tmp rc=0
+  local root="$1" p="$2" base="${3:-}" entry mode want dir tmp rc=0
   entry="$(git -C "$root" ls-tree -r HEAD -- "$p" 2>/dev/null || true)"
   [ -n "$entry" ] || return 1
   # "<mode> SP <type> SP <object> TAB <path>" -- the default IFS splits on both
@@ -948,7 +990,7 @@ _orchid_restore_kernel_file() {
   # that had been told, truthfully but no longer accurately, that the tree was
   # clean. Declining leaves the operator's bytes on disk and the stale-root
   # refusal standing, which is the outcome they can act on.
-  if [ "$rc" -eq 0 ] && ! _orchid_kernel_writable "$root" "$p"; then rc=1; fi
+  if [ "$rc" -eq 0 ] && ! _orchid_kernel_writable "$root" "$p" "$base"; then rc=1; fi
   [ "$rc" -ne 0 ] || mv -f "$tmp" "$root/$p" 2>/dev/null || rc=1
   if [ "$rc" -ne 0 ]; then
     rm -f "$tmp" 2>/dev/null || true
