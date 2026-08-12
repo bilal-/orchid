@@ -28,6 +28,7 @@ export ORCHID_ROOT
 __orchid_entry_defer_restore=1
 
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/roles.sh"; source "$ORCHID_ROOT/lib/resolver.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/trust.sh"
@@ -512,6 +513,35 @@ if orchid_split_brain "$repo"; then
   bad "split-brain checkout: work from the integration branch or a worktree of it — see 'orchid init' output"
 else
   ok "no split-brain checkout state"
+fi
+# Task-file integrity (T034, dogfood F34). A task whose file was destroyed
+# mid-flight -- the shape F34 found, and the one that took out r-002's own
+# `.orchid/tasks/T002.md` -- does not present as damage anywhere else: the file
+# is still there, `task list` prints a row of empty fields for it, and a run
+# looking for it simply behaves as though the task stopped existing. Nobody
+# goes looking for a zero-byte file, so the check has to come to them.
+#
+# Read-only and per-file, like every other doctor check: it names the path and
+# what is wrong with it, and never repairs anything. It is a FAIL rather than a
+# WARN because an unparseable task file is not a degraded state the run can
+# continue through -- every kernel verb that touches that task reads its
+# frontmatter first.
+task_files_dir="$(orchid_state "$repo")/tasks"
+task_files_total=0; task_files_bad=0
+if [ -d "$task_files_dir" ]; then
+  for task_file in "$task_files_dir"/*.md; do
+    [ -f "$task_file" ] || continue
+    task_files_total=$((task_files_total + 1))
+    if ! task_file_why="$(fm_check "$task_file" id)"; then
+      task_files_bad=$((task_files_bad + 1))
+      bad "task file ${task_file#"$repo"/}: $task_file_why — this is a DAMAGED task file, not a task with nothing in it; every verb that reads this task reads its frontmatter first. Recover it with 'git log --all --oneline -- ${task_file#"$repo"/}' then 'git checkout <sha> -- ${task_file#"$repo"/}' (a review pack under .orchid/runtime/packs/ may also carry a copy)"
+    fi
+  done
+fi
+if [ "$task_files_total" -eq 0 ]; then
+  ok "task files: none on disk yet (nothing to check)"
+elif [ "$task_files_bad" -eq 0 ]; then
+  ok "task files: $task_files_total present, each with parseable frontmatter and an id"
 fi
 # Stale integration checkout (v1-m3 final review, CRITICAL 2): see
 # lib/common.sh's orchid_stale_checkout for the full signature this detects

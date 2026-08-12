@@ -264,7 +264,10 @@ resolving to a discovered plugin whose capabilities satisfy the role
 descriptor (labeled `unverified` until the v1 capability suite passes it),
 engine binaries/auth (cheap no-op probes derived from resolved adapters —
 not a separate `engines=` list), explicit verification commands (or
-`--greenfield`), integration branch creatable, platform supported.
+`--greenfield`), integration branch creatable, platform supported, and every
+file in `.orchid/tasks/` parsing as a frontmatter document with an `id` — a
+zero-byte or frontmatter-less task file is a FAIL naming the path, since a task
+destroyed mid-flight (dogfood F34) presents nowhere else as damage.
 
 ## Task lifecycle
 
@@ -1024,6 +1027,25 @@ Neither mechanism is preferred over a suite that migrates its own store (a
 fixture, a temp file, an in-memory database the tests build). Where that is
 available it is strictly better, and `operator_prerequisite` should be left
 empty.
+**Every frontmatter value is ONE LINE (v1.1, dogfood F34).** A value carrying
+its own newline cannot be represented in a one-`key: value`-per-line document,
+so `orchid task set` and `orchid task create` refuse one BEFORE opening
+anything, naming the constraint. The rule is not new; the refusal is. Until it
+landed the write was attempted anyway, the rewrite died inside its own argument
+parsing, and the task file was left at ZERO BYTES — id, title, status, every
+field gone, exit status 0 — which is how `.orchid/tasks/T002.md` was lost on
+r-002 while an operator was setting a multi-paragraph `hook_guidance`. Single
+line is a reasonable rule; destroying the file when it is violated is not, so
+`fm_set` (`lib/frontmatter.sh`) is now rewrite-or-refuse as well: it renames a
+temp file over the task only once the rewrite has SUCCEEDED and produced a
+non-empty document, and no failure of any kind can leave a truncated task
+behind. The one writer whose value is machine-written prose — the driver
+attaching a hook's `.artifact.guidance` — folds it to a single line instead,
+that guidance being advisory input an autonomous round must not stop over.
+Because a destroyed task file is otherwise indistinguishable from a task that
+simply stopped existing, the READ end reports it too: `orchid task show` exits
+non-zero on an empty or unparseable task file (it exited 0 printing nothing),
+and `orchid doctor` FAILs on one by name.
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or

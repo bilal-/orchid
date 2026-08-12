@@ -1351,3 +1351,96 @@ rm -f .orchid/reviews/T010-verify.log
 "$ORCHID_BIN" verify T010 >/dev/null \
   || fail "with no declaration there is no gate, whatever prerequisite_ack happens to hold"
 [ -f .orchid/reviews/T010-verify.log ] || fail "...and verify writes evidence again"
+# T034 (dogfood F34, and the identical accident on r-002's own
+# .orchid/tasks/T002.md): A NEWLINE IN A VALUE MUST BE REFUSED, NOT WRITTEN,
+# AND ABOVE ALL NOT ALLOWED TO DESTROY THE TASK FILE.
+#
+# What used to happen: `task set <id> <key> "<value with a newline>"` printed
+# "awk: newline in string" three times, EXITED 0, and left the task file at
+# ZERO BYTES -- id, title, status, archetype, branch, every field gone. Not a
+# rejected write: a destroyed file. It then failed quietly in both directions,
+# because every later `task set` against the empty file reported success too
+# and `task show` exited 0 printing nothing, so the only signal either dogfood
+# operator got was a grep coming back empty.
+#
+# The single-line rule itself is reasonable -- frontmatter is one `key: value`
+# per line. Destroying the file when it is violated is not. So the assertions
+# below are about BOTH halves: the refusal, and the file being byte-identical
+# afterwards.
+# ============================================================================
+make_scratch T034_KEEP
+"$ORCHID_BIN" task create T010 "newline refusal"
+nl_file=".orchid/tasks/T010.md"
+cp "$nl_file" "$T034_KEEP/T010.before"
+
+# The value an operator actually types: multi-paragraph prose pasted into a
+# long field. `acceptance_criteria` and `hook_guidance` are where this happens,
+# and where losing the content hurts most.
+nl_value="$(printf 'first paragraph of the criteria\n\nsecond paragraph of the criteria')"
+rc=0; nl_out="$("$ORCHID_BIN" task set T010 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set with a newline-bearing value must exit NON-ZERO (it used to exit 0 and leave the task file at zero bytes)"
+red_case 'task set with a value containing a newline: refused, non-zero exit'
+assert_match "newline" "$nl_out" "the refusal names the constraint it is enforcing (a newline in a single-line field), rather than reporting a tool error"
+echo "$nl_out" | grep -qi "awk" && fail "the refusal must not leak a raw awk error -- that message was the symptom of the file already being gone"
+[ -s "$nl_file" ] || fail "THE FILE IS EMPTY: a refused write destroyed the task, which is the whole defect"
+cmp -s "$T034_KEEP/T010.before" "$nl_file" \
+  || fail "a refused newline write must leave the task file BYTE-IDENTICAL"
+assert_eq T010 "$("$ORCHID_BIN" task show T010 | grep '^id: ' | cut -d' ' -f2)" \
+  "and the task is still fully readable after the refusal"
+
+# The GREEN twin, on the same key and the same check: a single-line value is
+# accepted and stored verbatim, so the refusal above is evidence of detection
+# rather than of a guard that rejects every value.
+"$ORCHID_BIN" task set T010 acceptance_criteria "one line of criteria is fine" \
+  || fail "a single-line value must still be accepted"
+assert_eq "one line of criteria is fine" \
+  "$("$ORCHID_BIN" task show T010 | grep '^acceptance_criteria: ' | cut -d' ' -f2-)" \
+  "an accepted single-line value is stored verbatim"
+green_case 'task set with a single-line value: accepted and stored verbatim'
+
+# `task create` renders its template through `sed`, not `fm_set` -- a different
+# writer, the same destruction: sed rejects a replacement containing a newline
+# and the pipeline lands its empty output as a brand-new ZERO-BYTE task file.
+rc=0; create_nl_out="$("$ORCHID_BIN" task create T012 "$(printf 'title\nwith a newline')" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task create with a newline in the title must be refused"
+assert_match "newline" "$create_nl_out" "the create refusal names the constraint too"
+[ ! -e ".orchid/tasks/T012.md" ] \
+  || fail "a refused create must not leave a task file behind at all, least of all an empty one"
+
+# ---------------------------------------------------------------------------
+# ...AND THE READ END. A task file that has already been destroyed (by an
+# older orchid, an interrupted write, a bad restore) must be reported as
+# DAMAGED by the verb whose entire job is to show it. `cat` on a zero-byte file
+# prints nothing and exits 0, which is indistinguishable from a healthy verb
+# answering about a task with nothing in it.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T011 "the shape a destroyed task file leaves behind"
+: > ".orchid/tasks/T011.md"
+[ ! -s ".orchid/tasks/T011.md" ] || fail "fixture: T011.md must be zero bytes for this case to mean anything"
+
+rc=0; show_empty_out="$("$ORCHID_BIN" task show T011 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task show on an EMPTY task file must exit non-zero (it used to exit 0 and print nothing)"
+red_case 'task show against a zero-byte task file: refused, non-zero exit'
+assert_match "EMPTY" "$show_empty_out" "task show says the file is empty instead of printing nothing"
+assert_match "DAMAGED" "$show_empty_out" "and names it as damage, not as a task that merely has no content"
+
+# The other half of the quiet failure: a write against the already-destroyed
+# file used to report success, so nothing ever signalled that the task had
+# stopped existing.
+rc=0; set_empty_out="$("$ORCHID_BIN" task set T011 title "is anything still here" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set against an already-empty task file must not report success"
+assert_match "empty" "$set_empty_out" "the write refusal says the document it would have produced is empty"
+
+# Non-empty but frontmatter-less: the same class, reached from a partial
+# restore rather than a truncation.
+printf 'the frontmatter is gone but the body survived\n' > ".orchid/tasks/T011.md"
+rc=0; show_nofm_out="$("$ORCHID_BIN" task show T011 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task show on a frontmatter-less task file must exit non-zero"
+assert_match "no frontmatter" "$show_nofm_out" "task show names the missing frontmatter delimiter"
+
+# GREEN twin for the read end, in this same file: an intact task file is still
+# printed in full, exit 0.
+show_ok_out="$("$ORCHID_BIN" task show T010)" || fail "task show on a healthy task must still exit 0"
+assert_match "^id: T010$" "$show_ok_out" "task show on a healthy task still prints its frontmatter"
+assert_match "^status: pending$" "$show_ok_out" "task show on a healthy task prints the whole document, not just a probe"
+green_case 'task show against an intact task file: printed in full, exit 0'

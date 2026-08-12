@@ -864,3 +864,61 @@ assert_match "note: notify inbound \\(the return leg\\): nothing to probe" "$nfy
   "with no channel there is no return leg to probe either"
 grep -q "notify inbound (the return leg): NOT VERIFIED" <<<"$nfy_al_out" \
   && fail "with notify.channel unset there is no channel to be unverified about"
+
+# ---------------------------------------------------------------------------
+# T034 (dogfood F34): DOCTOR MUST SEE A DESTROYED TASK FILE.
+#
+# A task whose file was destroyed mid-flight -- zero bytes, or non-empty with
+# its frontmatter gone -- presents everywhere else as a task that simply
+# stopped existing: the path is still there, `task list` prints a row of empty
+# fields, and nothing in a run says anything is wrong. Both dogfood operators
+# found the damage only because a grep came back empty. Nobody goes looking for
+# a zero-byte file, so the check has to come to them.
+#
+# The GREEN direction is asserted FIRST and in the same repo, so the FAIL below
+# is attributable to the truncation and not to a check that flags every task
+# file it sees.
+# ---------------------------------------------------------------------------
+tskf="$WORK/taskfile-repo"; mkdir -p "$tskf"
+git init -q "$tskf"
+(cd "$tskf" && git commit -q --allow-empty -m root)
+printf 'verify=true\nrole.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' \
+  > "$tskf/orchid.config"
+mkdir -p "$tskf/.orchid/tasks"
+# roadmap.md alongside tasks/, or doctor's split-brain check fails this repo
+# for an unrelated reason and the rc assertions below prove nothing.
+printf -- '---\nrun_id: r-001\nrun_status: running\n---\nroadmap body\n' > "$tskf/.orchid/roadmap.md"
+printf -- '---\nschema: 1\nid: TK1\ntitle: intact\nstatus: pending\n---\nbody\n' > "$tskf/.orchid/tasks/TK1.md"
+tskf_doctor() {
+  tskf_rc=0
+  tskf_out="$(ORCHID_REPO="$tskf" HOME="$MACHINE_HOME" ORCHID_ENGINES_DIR="$WORK/eng" \
+    "$ORCHID_BIN" doctor 2>&1)" || tskf_rc=$?
+}
+
+tskf_doctor
+assert_eq "0" "$tskf_rc" "the task-file fixture must start doctor-clean, so the FAIL below is attributable to the damage"
+assert_match "^ok: task files: 1 present, each with parseable frontmatter and an id" "$tskf_out" \
+  "doctor reports intact task files as intact"
+green_case 'orchid doctor over an intact task file: ok, exit 0'
+
+# ZERO BYTES -- exactly what the destroyed r-002/F34 task file looked like.
+: > "$tskf/.orchid/tasks/TK1.md"
+tskf_doctor
+[ "$tskf_rc" -ne 0 ] || fail "doctor must FAIL on a zero-byte task file (a run whose task file vanished otherwise presents as a task that stopped existing)"
+assert_match "^FAIL: task file \\.orchid/tasks/TK1\\.md: the file is EMPTY \\(0 bytes\\)" "$tskf_out" \
+  "doctor names the damaged path and what is wrong with it"
+assert_match "DAMAGED task file" "$tskf_out" \
+  "doctor calls it damage rather than an empty task"
+assert_match "git checkout <sha> -- \\.orchid/tasks/TK1\\.md" "$tskf_out" \
+  "doctor prints the recovery command for the file it names"
+red_case 'orchid doctor over a zero-byte task file: FAIL, non-zero exit'
+
+# ...and the non-empty half of the same class: a file with content but no
+# frontmatter at all, which every reader here would otherwise treat as a task
+# with no fields set.
+printf 'the frontmatter is gone but the body survived\n' > "$tskf/.orchid/tasks/TK1.md"
+tskf_doctor
+[ "$tskf_rc" -ne 0 ] || fail "doctor must FAIL on a frontmatter-less task file too"
+assert_match "^FAIL: task file \\.orchid/tasks/TK1\\.md: no frontmatter" "$tskf_out" \
+  "doctor distinguishes a frontmatter-less file from an empty one"
+red_case 'orchid doctor over a frontmatter-less task file: FAIL, non-zero exit'

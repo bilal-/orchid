@@ -1898,6 +1898,18 @@ drive_testing() {
   [ "$hg" -eq 0 ] || return 0
   guidance="$(drive_hook_guidance "$repo" "$id" on_verify_fail "$attempt")"
   if [ -n "$guidance" ]; then
+    # FLATTENED HERE, not refused downstream (T034, dogfood F34). This is the
+    # one caller of `task set` whose value is engine-written prose: a hook's
+    # `.artifact.guidance` is whatever the hook plugin chose to say, and
+    # multi-line advice is the natural thing to write. Frontmatter holds one
+    # line per key, so `task set` now refuses a newline outright -- which is
+    # right for an operator typing the value, and wrong here: the guidance is
+    # ADVISORY (it never changes a routing decision), so a refusal would abort
+    # an autonomous rework round over a formatting detail nobody chose. Folding
+    # it to one line keeps every word of it attached to the task. Before both
+    # changes this path could destroy the task file mid-run, with no operator
+    # present at all.
+    guidance="$(printf '%s' "$guidance" | tr '\n' ' ')"
     "$ORCHID_BIN" task set "$id" hook_guidance "$guidance"
     drive_note "$id: attached the on_verify_fail hook's guidance to the task"
   fi

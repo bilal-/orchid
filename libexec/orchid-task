@@ -13,6 +13,28 @@ tf() { echo "$tasks/$1.md"; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 journal() { ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add "$@"; }
 
+# _no_newline <what> <value> -- dies cleanly, BEFORE anything is written, if
+# value contains an embedded newline. Same guard (and same wording shape) as
+# libexec/orchid-lessons' own `_no_newline`, for the same reason one line up:
+# a task file's frontmatter is strictly one `key: value` per line, and a value
+# carrying its own newline cannot be represented there at all.
+#
+# T034 (dogfood F34, and the identical accident on r-002's `.orchid/tasks/
+# T002.md`): without this, `task set <id> <key> "<value with a newline>"` did
+# not reject the write -- it DESTROYED the file. `awk -v v=...` refused the
+# assignment, printed "newline in string" three times, and the old
+# `awk | atomic_write` pipeline renamed awk's empty output over the task,
+# leaving zero bytes and exiting 0. lib/frontmatter.sh's fm_set now refuses the
+# same input as a backstop; this is where an operator gets told, in terms of the
+# value THEY typed, which argument was the problem and what to do with it. The
+# field where it hurts most is exactly the one it happens in: a long
+# `acceptance_criteria` or `hook_guidance` pasted as prose.
+_no_newline() {
+  case "$2" in
+    *$'\n'*) orchid_die "$1 must not contain a newline: task frontmatter is one 'key: value' per line, so a multi-line value cannot be stored there. Nothing was written. Flatten it to a single line, or put the prose in the task BODY instead (below the closing '---' in .orchid/tasks/<id>.md)." ;;
+  esac
+}
+
 # legal <from> <to> <archetype> -- archetype-driven (INV-05: data from the
 # manifest, never a name branch): `to=blocked` is the one universal escape
 # hatch (legal from any status, any archetype); every other edge must be
@@ -271,7 +293,7 @@ reverify_edge_gate() {
 rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
 
 # refresh_briefs <task-file> <id> -- the task body as the NEXT implementer
-# should read it, printed for the caller to pipe into atomic_write: every
+# should read it, printed for the caller to pipe into fm_write_task: every
 # rework brief bound to a candidate other than the current one collapsed to a
 # superseded notice, and -- when a failing gate left location-bearing evidence
 # for the CURRENT candidate -- one fresh brief appended.
@@ -321,6 +343,14 @@ case "$sub" in
     # convention (jobs prepare's plan-branch would then shadow a real task's
     # frontmatter). Refused up front, before any file is written.
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    # Same single-line rule as `set` below, on the two values that reach the
+    # template. These are not rendered by fm_set (a plain `sed` substitution
+    # is), but the destruction was the same shape: `sed` refuses a replacement
+    # containing a newline, and the writer downstream landed its empty output
+    # as a brand-new ZERO-BYTE task file that `task show` then reported as
+    # nothing at all. Refused before the template is read.
+    _no_newline "task id" "$id"
+    _no_newline "task title" "$title"
     # --archetype <name> (default: feature) -- the ONLY new flag; a bare
     # `task create <id> <title>` behaves exactly as before this arm gained
     # option parsing.
@@ -353,23 +383,48 @@ case "$sub" in
     # feature/review and any other archetype without its own template).
     tmpl="$ORCHID_ROOT/templates/task-$arch.md"
     [ -f "$tmpl" ] || tmpl="$ORCHID_ROOT/templates/task.md"
+    # fm_write_task, not atomic_write (T034): `sed` can fail on the operator's
+    # own text -- a `|` in the title closes the s|||-command early -- and
+    # atomic_write would then land sed's empty output as a brand-new ZERO-BYTE
+    # task file that `task create` itself refuses to replace ever after ("task
+    # <id> exists"). A create that fails must leave nothing behind.
     sed -e "s|__ID__|$id|g" -e "s|__TITLE__|$title|g" \
         -e "s|__ARCHETYPE__|$arch|g" \
         -e "s|__ENGINE__|$(resolve_role "$repo" implementer)|g" \
         -e "s|__DATE__|$(now)|g" \
-      "$tmpl" | atomic_write "$(tf "$id")" ;;
-  show) cat "$(tf "$1")" ;;
+      "$tmpl" | fm_write_task "$(tf "$id")" ;;
+  show)
+    # `cat` alone (T034, dogfood F34): a task file destroyed by a failed
+    # rewrite is ZERO BYTES, and `cat` on it prints nothing and exits 0 -- so
+    # the verb an operator uses to ask "what is the state of this task" answered
+    # SUCCESSFULLY, with silence, about a task that no longer existed. Both
+    # dogfood operators found the damage only by noticing a grep came back
+    # empty. An unreadable task file is a damaged one, and must be reported as
+    # damage, loudly, by the verb whose whole job is to show it.
+    show_id="${1:-}"
+    [ -n "$show_id" ] || orchid_die "usage: orchid task show <id>"
+    show_f="$(tf "$show_id")"
+    [ -f "$show_f" ] || orchid_die "no task $show_id"
+    if ! show_why="$(fm_check "$show_f" id)"; then
+      orchid_die "task $show_id is DAMAGED, not empty: $show_why ($show_f). Recover the frontmatter rather than re-creating the task: 'git log --all --oneline -- .orchid/tasks/$show_id.md' then 'git checkout <sha> -- .orchid/tasks/$show_id.md'; a review pack under .orchid/runtime/packs/ may also carry a copy of it."
+    fi
+    cat "$show_f" ;;
   list) for f in "$tasks"/*.md; do [ -e "$f" ] || continue
         printf '%s\t%s\t%s\n' "$(fm_get "$f" id)" "$(fm_get "$f" status)" "$(fm_get "$f" title)"; done ;;
   set)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; key="$2"; val="$3"; shift 3 || true
     # Reserved-id + existence guards BEFORE any read/write of the task
-    # file (v1-m3 fix): `fm_set`'s `awk ... | atomic_write "$f"` pipe has
-    # atomic_write write empty stdin to `$f` BEFORE awk's own can't-open-
-    # file failure aborts the script under `set -e` -- so a nonexistent id
+    # file (v1-m3 fix): `fm_set` was `awk ... | atomic_write "$f"`, and
+    # atomic_write wrote empty stdin to `$f` BEFORE awk's own can't-open-
+    # file failure aborted the script under `set -e` -- so a nonexistent id
     # used to crash with a raw awk error AND leave a stray empty
-    # tasks/<id>.md behind. `plan` is additionally refused by name (same
+    # tasks/<id>.md behind. fm_set no longer has that pipeline at all (T034:
+    # it renames a temp file only once awk has SUCCEEDED and produced a
+    # non-empty document, so it can no longer truncate anything), but these
+    # guards stay: "no task NOPE" is the diagnostic an operator can act on,
+    # and a library-level refusal about an unreadable file is not.
+    # `plan` is additionally refused by name (same
     # message `task create` uses) rather than falling through to the
     # generic "no task" die -- it can never have a real task file (`task
     # create` refuses it), so a plain existence check alone would still be
@@ -378,6 +433,10 @@ case "$sub" in
     # existence out-of-band and defeat the reserved-id protection.
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    # BEFORE any read, any derived write (risk_tier's blocking_severity), and
+    # any rewrite of the file: a newline in the VALUE is what destroyed a task
+    # file on r-002 and again in dogfood F34. See _no_newline's header.
+    _no_newline "the value for '$key'" "$val"
     case "$key" in
       status|attempts|infra_failures|id|created|updated|schema)
         orchid_die "'$key' is kernel-owned — use task advance/unblock/retry" ;;
@@ -860,7 +919,12 @@ case "$sub" in
       # the other end of the same defect: each one names the candidate it
       # describes, and this pass ages out the ones that describe a candidate
       # this task has since replaced (refresh_briefs, above).
-      refresh_briefs "$f" "$id" | atomic_write "$f"
+      #
+      # fm_write_task, not atomic_write (T034): atomic_write renames whatever
+      # its stdin gave it, so a producer that emitted nothing would truncate
+      # the task here exactly as fm_set's old pipeline did -- and `pipefail`
+      # reports the producer's failure only after that rename.
+      refresh_briefs "$f" "$id" | fm_write_task "$f"
       # An operator hand-off is acknowledged AGAINST a candidate, and a rework
       # round exists to mint a different one -- so the acknowledgement does
       # not survive entry to rework, the same INV-07 symmetry the evidence
@@ -1387,7 +1451,7 @@ case "$sub" in
     # a candidate this task has replaced are aged out in the same pass.
     { refresh_briefs "$f" "$id"
       printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"
-    } | atomic_write "$f"
+    } | fm_write_task "$f"
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
     # with the advance:rework arm and orchid-merge's rebase-reset) -- and, on
     # the same grounds, any operator hand-off recorded against the candidate
@@ -1500,7 +1564,7 @@ case "$sub" in
     # locations are most worth carrying forward -- if, and only if, that log
     # is still bound to the candidate being retried -- and, in the same pass,
     # the briefs already in the body that describe a candidate it is not.
-    refresh_briefs "$f" "$id" | atomic_write "$f"
+    refresh_briefs "$f" "$id" | fm_write_task "$f"
     # The reason is DELIVERED, not merely journaled -- the task body is the
     # implementer's own input (pack_build copies this file into the capsule
     # as task.md), and the journal is not. `unblock` has always written it
@@ -1508,7 +1572,7 @@ case "$sub" in
     # silently dropped the diagnosis on the floor and the next attempt
     # repeated the same mistake with no way to tell why. Same shape as
     # unblock's, so the two verbs deliver identically.
-    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | fm_write_task "$f"
     # Budget, journal-first (INV-08), and never a decrement of `attempts` --
     # see schedule_attempt_budget's header for why winding the counter back
     # would re-point this attempt at a previous attempt's envelopes. The

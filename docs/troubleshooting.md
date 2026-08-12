@@ -1655,6 +1655,50 @@ cd ../<repo>-orchid
 `journal.md` present, `roadmap.md` absent) and name it by exactly this
 name, rather than leaving you to debug a missing roadmap.
 
+## A task file is empty, or `task show` prints nothing
+
+**Symptom:** `orchid task show <id>` prints nothing and exits 0; a `grep` for
+one of the task's fields comes back empty; `orchid task list` shows a row with
+no id, status or title; a run behaves as though a task it was working on
+stopped existing.
+
+That task's file has been **destroyed, not emptied**. The cause was a value
+containing a newline — typically a multi-paragraph `acceptance_criteria` or
+`hook_guidance` pasted as prose:
+
+```sh
+orchid task set T002 hook_guidance "first paragraph
+
+second paragraph"
+```
+
+Before v1.1 that printed `awk: newline in string` three times, **exited 0**,
+and left `.orchid/tasks/T002.md` at zero bytes with every field gone. It then
+failed quietly in both directions: later `task set` calls against the empty
+file also reported success, and `task show` exited 0 printing nothing.
+
+**Current behaviour.** A newline in a value is refused before anything is
+opened — task frontmatter is one `key: value` per line, and a multi-line value
+cannot be stored there. Put the prose in the task BODY instead (edit
+`.orchid/tasks/<id>.md` below the closing `---`), or flatten it to one line.
+Frontmatter writes now land through a temp file that is renamed only once the
+rewrite has succeeded and produced a non-empty document, so a failed write
+cannot truncate a task. `orchid task show` exits non-zero on an empty or
+unparseable task file, and `orchid doctor` FAILs on one, naming the path.
+
+**Recovering a file already destroyed** — the frontmatter is recoverable
+wherever it was last committed, and often from a review pack:
+
+```sh
+git log --all --oneline -- .orchid/tasks/T002.md
+git checkout <sha> -- .orchid/tasks/T002.md
+ls .orchid/runtime/packs/            # a pack of that task carries its frontmatter
+```
+
+Restore the frontmatter rather than re-creating the task: a fresh `task create`
+resets `attempts`, `base_sha`/`candidate_sha` and `status`, which throws away
+the run's record of everything that task has already done.
+
 ## Pack overflow
 
 **Symptom:** an engine launch fails with `input_overflow` on a review,
