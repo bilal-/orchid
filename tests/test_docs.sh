@@ -405,6 +405,22 @@ grep -q 'if \[ "\$operation" = critique \]' "$REPO_ROOT/plugins/engines/codex/ru
 # first approve-with-one-medium-nit review reads as a broken driver.
 assert_match "blocks an otherwise-approving review" "$protocol_one_line" \
   "PROTOCOL.md must state that a non-empty findings[] halts an approving review, not just that an empty one blocks nothing"
+
+# T039 (lesson L027): the reviewer-slot table is pinned per attempt -- and the
+# DRIVER is not the only thing that dispatches slots. PROTOCOL's risk-tiered
+# review policy is the procedure a model-driven orchestrator follows, and it
+# launches each printed slot itself, so a pin described as something only the
+# deterministic driver takes leaves that path recomputing a live table between
+# one dispatch and the next: exactly the r-002 dead end, reached by the one
+# route the fix did not cover. Both halves are asserted on the FOLDED text
+# (these sentences straddle hard wraps): the dispatch instruction itself must
+# carry `--pin`, and it must say the pin comes BEFORE the first launch -- a
+# table pinned after slot 1 went out has already had its chance to move.
+assert_match 'review-plan <id> --pin` FIRST' "$protocol_one_line" \
+  "PROTOCOL.md's risk-tiered review policy must tell whoever dispatches the slots to PIN the table, not merely to read it"
+assert_match "Pin BEFORE launching the first slot" "$protocol_one_line" \
+  "...and must say the pin precedes the first launch, since a plan pinned afterwards could already have moved between the two dispatches"
+
 kernel_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/kernel.md" | tr -s '[:space:]' ' ')"
 assert_match "one \`medium\` finding turns an all-\`approve\`" "$kernel_one_line" \
   "docs/specs/kernel.md must state the same halting half of the severity gate"

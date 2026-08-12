@@ -66,8 +66,8 @@ part of the architecture; this file never changes to suit one.*
 - **Risk-tiered review policy.** There is no fixed reviewer count — the
   task's `risk_tier` (`orchid task show <id>`) decides how many reviewer
   slots this attempt needs and which engines fill them. Consult `orchid jobs
-  review-plan <id>` FIRST, every attempt: it prints the routing table for
-  the task's CURRENT `risk_tier`, one line per required slot — `<slot>
+  review-plan <id> --pin` FIRST, every attempt: it prints the routing table
+  for the task's CURRENT `risk_tier`, one line per required slot — `<slot>
   <engine>	<engine-independent|session-independent>` — computed from
   `role.reviewer`'s chain, the `review.<tier>` chain, engine discovery,
   role eligibility, and the ledger, all at once. Never re-derive this by
@@ -75,20 +75,26 @@ part of the architecture; this file never changes to suit one.*
   review --engine <slot-engine>` — `--engine` is exactly how a second (or
   third) slot's engine differs from whatever `role.reviewer` would resolve
   to on its own.
-  **The table is PINNED for the life of an attempt.** `orchid jobs
-  review-plan <id> --pin` writes it down, bound to the task's `attempts`+1
-  and its current `candidate_sha`; every later read returns that table until
-  one of those two changes. The deterministic driver pins on its first
-  `reviewing` pass and the pin is idempotent, so an orchestrator normally
-  just reads it. This is not tidiness: engine health is one of the inputs,
-  so a table recomputed on every read MOVES — and on r-002 it moved after an
-  engine had already filed a valid review, re-routing the slot that review
-  had been dispatched for and leaving a task that could not advance, could
-  not rework and could not be arbitrated (lesson L027). Evidence is judged
-  against the plan the attempt was dispatched under, never against a plan
-  computed after the fact. Before dispatching ANY slot the table labels
-  `session-independent`, journal it — the same rule as before, now applied
-  per-slot: `orchid journal add --task <id> "reviewer slot <n> is
+  **The table is PINNED for the life of an attempt, by WHOEVER dispatches
+  it.** `orchid jobs review-plan <id> --pin` writes it down, bound to the
+  task's `attempts`+1 and its current `candidate_sha`; every later read —
+  including the bare, unfenced `orchid jobs review-plan <id>` — returns that
+  table until one of those two changes. The deterministic driver pins on its
+  first `reviewing` pass, and the pin is idempotent, so an orchestrator that
+  dispatches slots itself pins with the same command and gets back whatever
+  was already written. Pin BEFORE launching the first slot, not after: a
+  table that is still being recomputed between one slot's dispatch and the
+  next is exactly the table that moves. (A task with no `candidate_sha` yet
+  has no round of evidence to bind a plan to; `--pin` refuses, and the bare
+  read is all there is to have.) This is not tidiness: engine health is one
+  of the inputs, so a table recomputed on every read MOVES — and on r-002 it
+  moved after an engine had already filed a valid review, re-routing the slot
+  that review had been dispatched for and leaving a task that could not
+  advance, could not rework and could not be arbitrated (lesson L027).
+  Evidence is judged against the plan the attempt was dispatched under, never
+  against a plan computed after the fact. Before dispatching ANY slot the
+  table labels `session-independent`, journal it — the same rule as before,
+  now applied per-slot: `orchid journal add --task <id> "reviewer slot <n> is
   session-independent only: <engine>, same as the implementer's"`. Never let
   a degraded independence pass silently, on any slot.
 - **Inline-review blind-spot guard.** The reviewer's input pack includes
