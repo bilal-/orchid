@@ -123,8 +123,36 @@ rm -f "$repo/orchid.config"
 ledger_mark "$repo" zeta ok
 line="$(ledger_show "$repo" | grep '^zeta	')"
 assert_match "^zeta	ok	-\$" "$line" "ledger_show: ok engine detail is '-'"
+
+# T039 (r-002, the ten minutes this cost an operator): the status COLUMN is
+# the effective status, never the last mark's stale string. `acme`'s window
+# was pushed into the past at the top of this file and `ledger_available`
+# has reported it available ever since -- but nothing rewrites the stored
+# `status`, so a report that printed it verbatim said `rate_limited` about an
+# engine dispatch was perfectly willing to use. That reads like the cause of a
+# stall, and on r-002 it sent the operator six days back into a rate-limit
+# window that had nothing to do with the failure they were chasing.
 line="$(ledger_show "$repo" | grep '^acme	')"
-assert_match "^acme	rate_limited	until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\$" "$line" "ledger_show: rate_limited detail is 'until <iso>'"
+assert_match "^acme	ok	rate limit expired [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\$" "$line" \
+  "ledger_show: an EXPIRED rate-limit window reports the engine as ok (with the window that closed), never as still rate_limited"
+ledger_available "$repo" acme \
+  || fail "ledger_show and ledger_available must agree: the report says ok, so dispatch must be willing to use it"
+
+# The GREEN twin, so the line above is not a formatter that simply never says
+# rate_limited: a window that is still OPEN reports exactly that.
+ledger_mark "$repo" iota rate_limited 600
+line="$(ledger_show "$repo" | grep '^iota	')"
+assert_match "^iota	rate_limited	until [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z\$" "$line" \
+  "ledger_show: an OPEN rate-limit window still reports rate_limited, with the instant it closes"
+ledger_available "$repo" iota \
+  && fail "ledger_show and ledger_available must agree: the report says rate_limited, so dispatch must refuse it"
+
+# ledger_effective_status is that same derivation, for the callers that have a
+# name and need to know WHY an engine is unavailable -- a window reopens by
+# itself (wait), a failure threshold does not (a decision).
+assert_eq ok "$(ledger_effective_status "$repo" acme)" "ledger_effective_status: an expired window is ok"
+assert_eq rate_limited "$(ledger_effective_status "$repo" iota)" "ledger_effective_status: an open window is rate_limited"
+assert_eq ok "$(ledger_effective_status "$repo" never-heard-of-it)" "ledger_effective_status: an engine with no record at all is ok"
 line="$(ledger_show "$repo" | grep '^beta	')"
 assert_match "^beta	ok	-\$" "$line" "ledger_show: beta was reset to ok by the earlier ok mark"
 ledger_mark "$repo" theta failed; ledger_mark "$repo" theta failed; ledger_mark "$repo" theta failed
