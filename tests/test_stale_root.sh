@@ -87,6 +87,20 @@ source "$(dirname "$0")/helpers.sh"
 #     one. They refuse now, with a distinct message and exit status, and 14
 #     pins both that and the identity that decides which message -- a bare PID
 #     outlives a SIGKILLed merge and is eventually reissued.
+#   * 16: the same window read from the OTHER end. 14 asks what other processes
+#     are told while it is open; 16 asks what the refresh may WRITE in it.
+#     orchid_kernel_clean is asked before the ref advance and cannot speak for
+#     the interval after it, so an editor saving a kernel file there was
+#     silently overwritten by a refresh already gated on a check that had
+#     passed. That is the r-001 journal-loss hazard once more, this time inside
+#     the fix's own write path, and 16 races an edit into the interval and
+#     watches the refresh decline instead.
+#   * 17: a kernel path whose name git has to C-QUOTE. The drift walk used to
+#     be newline-delimited, so `"roles/say \"hi\".md"` reached the restore
+#     complete with its quotes and escapes -- a name no filesystem has. The
+#     path was never restored and the refresh reported failure over something
+#     it had not looked at. The walk is NUL-delimited now, and 17 is the path
+#     that proves it.
 # ---------------------------------------------------------------------------
 
 # The one list the guard, the refresh and the documented remedy all use. Kept
@@ -1239,3 +1253,163 @@ assert_eq 0 "$rc" "clearing that refusal too"
 assert_match "arrived: the merged verb" \
   "$(HOME="$MACHINE_HOME" "$crashroot/bin/orchid" arrived 2>&1)" \
   "with the verb executable — the one thing a half-done write does not leave behind"
+
+# ===========================================================================
+# 16 -- an edit that lands AFTER the precondition is not overwritten by it
+# ===========================================================================
+# orchid_kernel_clean is asked BEFORE the ref advance, because that is the one
+# moment "this tree fell behind" and "someone is editing here" are still
+# distinguishable. The writes happen after it. Everything in between -- the
+# CAS, the drift walk, one restore per path -- is an interval that check cannot
+# speak for, and an editor saving a kernel file in it used to have its bytes
+# silently overwritten by a refresh that had been told, truthfully but no
+# longer accurately, that the tree was clean. Passing a check once is not the
+# requirement; not losing the edit is.
+#
+# So the refresh re-asks, per path, immediately before each write. This check
+# feeds it exactly that state and watches it decline.
+#
+# The edit is made from inside the sequence rather than staged beforehand, so
+# the interval is real: the harness below asks the precondition itself, moves
+# the ref itself, and then appends to a tracked kernel file on the FIRST git
+# subprocess the refresh runs -- after the precondition passed, before any
+# restore. Which git that is, and which write it precedes, is the
+# implementation's business and not this test's; the marker file keeps it to
+# one edit however many subshells the walk spawns.
+racehub="$WORK/race-hub"
+make_root "$racehub" main
+git -C "$racehub" branch orchid/integration
+raceroot="$WORK/race-root"
+git -C "$racehub" worktree add -q "$raceroot" orchid/integration
+raceelse="$WORK/race-elsewhere"
+git -C "$racehub" worktree add -q --detach "$raceelse" orchid/integration
+cat > "$raceelse/libexec/orchid-version" <<'VERB'
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ORCHID_ROOT/lib/common.sh"
+echo "adapter: post-merge"
+VERB
+git -C "$raceelse" add -A
+git -C "$raceelse" commit -q -m "fixture: kernel v2 (the merged fix)"
+race_head="$(git -C "$raceelse" rev-parse HEAD)"
+
+cat > "$WORK/refresh-racer.sh" <<'RACE'
+#!/usr/bin/env bash
+set -uo pipefail
+root="$1"; lib="$2"; hub="$3"; advance_to="$4"; marker="$5"
+source "$lib/lib/common.sh"
+# The precondition, asked where every real caller asks it: before the advance.
+# `command git` throughout this preamble -- the wrapper below must not see the
+# setup, only the refresh.
+orchid_kernel_clean "$root" || { echo "precondition-not-clean"; exit 9; }
+# From the hub, exactly as every other advance in this file is made: the ref is
+# shared, so this moves $root's HEAD without touching its index or its working
+# tree, which is the update-ref-under-a-checkout signature the whole guard is
+# about.
+command git -C "$hub" update-ref refs/heads/orchid/integration "$advance_to" \
+  || { echo "advance-failed"; exit 9; }
+# The operator's editor, saving inside the window. A marker FILE rather than a
+# shell variable: the refresh runs git inside command substitutions and a
+# process substitution, and a variable set in one of those subshells would be
+# invisible to the next, so the edit would land once per subshell instead of
+# once.
+git() {
+  if [ ! -e "$marker" ]; then
+    : > "$marker"
+    printf 'echo "operator save, mid-refresh"\n' >> "$root/libexec/orchid-version"
+  fi
+  command git "$@"
+}
+orchid_refresh_kernel "$root"
+RACE
+
+rc=0
+HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1 \
+  /bin/bash "$WORK/refresh-racer.sh" "$raceroot" "$REPO_ROOT" "$racehub" \
+  "$race_head" "$WORK/race-marker" > "$WORK/race.log" 2>&1 || rc=$?
+[ "$rc" -ne 9 ] \
+  || fail "test fixture: the racer never reached the refresh ($(tr '\n' ' ' < "$WORK/race.log")) -- nothing below is being tested"
+[ -e "$WORK/race-marker" ] \
+  || fail "test fixture: the edit never landed, so the refresh was not raced and nothing below is being tested"
+assert_eq 1 "$rc" \
+  "a refresh whose path was edited after its precondition passed REFUSES rather than report a refresh it should not have made"
+grep -q 'operator save, mid-refresh' "$raceroot/libexec/orchid-version" \
+  || fail "the refresh overwrote an edit that landed after the precondition it was gated on -- those bytes were in this checkout and nowhere else"
+grep -q 'adapter: pre-merge' "$raceroot/libexec/orchid-version" \
+  || fail "the refresh replaced the raced file with the branch's copy, which is the same loss wearing a different diff"
+red_case 'a tracked kernel path dirtied between the precondition and the write is declined, not overwritten'
+run_version "$raceroot"
+assert_eq 1 "$rc" \
+  "and the stale-root refusal stands, so the operator decides what happens to their own bytes"
+
+# The GREEN twin, and the reason the decline is a refusal rather than a dead
+# end: once those bytes are dealt with -- here by restoring the file from the
+# INDEX, which is what it held when the precondition passed -- the very same
+# refresh completes and the refusal clears.
+git -C "$raceroot" checkout -- libexec/orchid-version
+rc=0
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$raceroot" ) || rc=$?
+assert_eq 0 "$rc" "with the raced edit dealt with, the same refresh completes"
+green_case 'the same path, holding the bytes the precondition saw, is refreshed'
+run_version "$raceroot"
+assert_eq 0 "$rc" "and the refusal clears"
+assert_match "adapter: post-merge" "$out" "with the merged kernel the one that executes"
+
+# ===========================================================================
+# 17 -- a kernel path git has to C-QUOTE is walked, not skipped
+# ===========================================================================
+# `git diff --name-only` C-quotes any path containing a quote, a backslash, a
+# control character or a non-ASCII byte: it prints `"roles/say \"hi\".md"`,
+# quotes and escapes and all. A newline-delimited walk hands that spelling
+# straight to `cat-file -e HEAD:<name>` and to the restore, which then look for
+# a file no filesystem has -- so the path is silently never restored, and the
+# refresh reports failure over something it never looked at. `-z` turns the
+# quoting off and terminates each name with the one byte a path cannot contain.
+#
+# roles/ and templates/ are the kernel directories whose contents are operator-
+# facing prose, so an awkward filename there is not a contrivance.
+quotehub="$WORK/quote-hub"
+make_root "$quotehub" main
+git -C "$quotehub" branch orchid/integration
+quoteroot="$WORK/quote-root"
+git -C "$quotehub" worktree add -q "$quoteroot" orchid/integration
+quoteelse="$WORK/quote-elsewhere"
+git -C "$quotehub" worktree add -q --detach "$quoteelse" orchid/integration
+
+awkward='roles/an awkward "name".md'
+printf 'the merged role, at a name git has to quote\n' > "$quoteelse/$awkward"
+git -C "$quoteelse" add -A
+git -C "$quoteelse" commit -q -m "fixture: kernel v2 (a path git has to quote)"
+git -C "$quotehub" update-ref refs/heads/orchid/integration \
+  "$(git -C "$quoteelse" rev-parse HEAD)"
+
+# The fixture is only testing anything if git really does quote it. Asserted
+# rather than assumed: a git that printed the name raw would make everything
+# below pass without exercising the walk at all.
+#
+# A herestring, never `git ... | grep -q`, for the reason helpers.sh's
+# assert_match spells out: this file runs under `set -o pipefail`, and a
+# `grep -q` that exits on its first match SIGPIPEs the writer, whose 141 then
+# becomes the pipeline's status and reads as "no match" for a pattern it did
+# find.
+grep -q '\\"' \
+  <<<"$(git -C "$quoteroot" diff --name-only HEAD -- "${KERNEL[@]}")" \
+  || fail "test fixture: git did not C-quote '$awkward', so the NUL-delimited walk is not being exercised"
+
+run_version "$quoteroot"
+assert_eq 1 "$rc" "a merge that adds a path git must quote is a refusal like any other"
+
+rc=0
+( export HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1
+  source "$REPO_ROOT/lib/common.sh"
+  orchid_refresh_kernel "$quoteroot" ) || rc=$?
+assert_eq 0 "$rc" \
+  "the refresh walks a C-quotable path instead of failing over a name no file has"
+[ -e "$quoteroot/$awkward" ] \
+  || fail "the refresh skipped a path git quoted -- it looked for the QUOTED spelling, which names no file"
+assert_eq "the merged role, at a name git has to quote" "$(cat "$quoteroot/$awkward")" \
+  "and the merged bytes really are on disk under the real name"
+run_version "$quoteroot"
+assert_eq 0 "$rc" "so the refusal clears rather than surviving its own remedy"

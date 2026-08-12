@@ -691,10 +691,24 @@ orchid_kernel_clean() {
 # `git reset` to bring the index to HEAD, which is also what DROPS the entry
 # for a path HEAD no longer has.
 #
+# THE PRECONDITION IS RE-ASKED PER WRITE, and that is the second safety
+# property. orchid_kernel_clean is evaluated by the caller BEFORE the ref
+# advance; the writes below happen after it, and an editor saving a kernel file
+# in between would have its bytes silently overwritten by a refresh that had
+# already been told the tree was clean. Passing a check once is not the
+# requirement -- not losing an edit is -- so every write here is preceded,
+# immediately, by _orchid_kernel_writable on the one path it is about to touch.
+# A path whose file has changed under the check is DECLINED, and the refusal
+# the operator then meets is the correct outcome: their bytes are still on
+# disk. What remains is the rename itself, which no check can get inside;
+# the window this closes is the whole advance-and-walk, and what is left is one
+# `mv`.
+#
 # Returns non-zero if any path could not be restored, leaving the refusal in
 # place for the operator rather than reporting a refresh that did not happen.
 orchid_refresh_kernel() {
-  local root="$1" drift staged p rc=0 top top_phys root_phys
+  local root="$1" p q seen rc=0 top top_phys root_phys
+  local -a drift=()
   # `git diff --name-only` prints paths relative to the REPOSITORY ROOT while
   # the pathspecs below are read relative to `-C "$root"`. Those agree only
   # when <root> IS the repository root, so that is required rather than
@@ -720,63 +734,66 @@ orchid_refresh_kernel() {
   # The index half is also what the guard itself reads, so this is the set of
   # paths that have to be dealt with for the refusal to lift -- stated once,
   # here, rather than inferred from a comparison that answers a neighbouring
-  # question. Each fails CLOSED to the literal `?`.
-  drift="$(git -C "$root" diff --name-only HEAD -- \
-    "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
-  [ "$drift" != '?' ] || return 1
-  staged="$(git -C "$root" diff --cached --name-only HEAD -- \
-    "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null || echo '?')"
-  [ "$staged" != '?' ] || return 1
-  # A blank half contributes a blank line, which the loop skips; a path in both
-  # halves is handled once. Trailing newlines are stripped by the substitution,
-  # so "nothing on either side" really is the empty string.
-  drift="$(printf '%s\n%s\n' "$drift" "$staged" | sort -u)" || return 1
-  [ -n "$drift" ] || return 0
-  while IFS= read -r p; do
+  # question.
+  #
+  # `-z` and a NUL-delimited read, never the newline-separated default. Without
+  # it `git diff --name-only` C-QUOTES any path holding a space, a quote, a
+  # backslash or a non-ASCII byte -- it prints `"roles/my role.md"`, quotes and
+  # all, or `"templates/caf\303\251.md"` -- and every consumer below would then
+  # be handed a name no file has: `cat-file -e HEAD:<that>` misses, the restore
+  # declines, and the refresh reports failure over a path it never looked at.
+  # `-z` disables the quoting entirely and terminates each name with a NUL, the
+  # one byte a path cannot contain, so the walk is exact for every name git can
+  # store. It also rules out `$(...)`, which strips NULs, hence the redirect.
+  #
+  # A path in both halves is deduped here rather than by `sort -u`, which has
+  # no portable NUL-delimited spelling; the list is at most a few dozen entries
+  # long, so the linear scan costs nothing and spawns nothing.
+  while IFS= read -r -d '' p; do
     [ -n "$p" ] || continue
-    # The one path that is drift by git's reckoning and operator property by
-    # every other: a file sitting on disk that this checkout does not TRACK,
-    # at a name the branch has since added a tracked file under. The index
-    # has no entry for it, so `git diff HEAD` reports the path as DELETED --
-    # indistinguishable, from the drift list alone, from a merged file that
-    # simply has not been written here yet -- and the restore below would
-    # overwrite it without a word. That is the r-001 journal-loss shape one
-    # directory over, and the reason orchid_kernel_clean's promise that
-    # "untracked files are never touched by the restore" needs enforcing HERE
-    # rather than being inferred from it: that precondition is evaluated
-    # before the ref moves, when this path was not drift at all.
-    #
-    # Asked BEFORE anything is written, and asked as the question that actually
-    # matters -- would writing here destroy the only copy of something? -- and
-    # not as "is this path tracked", which is a proxy for it that gets the one
-    # state this function creates itself wrong. A refresh killed after it wrote
-    # a path the branch ADDED, but before the index entry for it landed, leaves
-    # an untracked file holding HEAD's own bytes; declining there would leave a
-    # refusal that no further refresh could ever clear. So an untracked file
-    # whose content IS the blob HEAD carries is written through (nothing exists
-    # to lose), and any other is declined. Declining costs a refusal the
-    # operator clears by hand, having seen the file; overwriting costs a file
-    # only they had a copy of.
-    if [ -e "$root/$p" ] \
-       && ! git -C "$root" ls-files --error-unmatch -- "$p" >/dev/null 2>&1 \
-       && ! _orchid_file_is_head_blob "$root" "$p"; then
-      rc=1; continue
+    seen=0
+    if [ "${#drift[@]}" -gt 0 ]; then
+      for q in "${drift[@]}"; do
+        [ "$q" = "$p" ] || continue
+        seen=1
+        break
+      done
     fi
-    if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
-      _orchid_restore_kernel_file "$root" "$p" || { rc=1; continue; }
-    else
-      # HEAD has dropped this path. The FILE goes first here too, and for the
-      # same reason: a verb or library still on disk after the branch removed
-      # it is pre-merge code that still executes, and an index entry dropped
-      # ahead of it would tell the guard otherwise. Nothing is lost -- under
-      # orchid_kernel_clean these bytes were HEAD's own a moment ago and are
-      # in the object store.
-      rm -f "$root/$p" || { rc=1; continue; }
-      [ ! -e "$root/$p" ] || { rc=1; continue; }
-    fi
-    # Only now: this path's working tree matches HEAD, so the index may say so.
-    git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || rc=1
-  done <<< "$drift"
+    [ "$seen" -eq 1 ] || drift+=("$p")
+  done < <(git -C "$root" diff -z --name-only HEAD -- \
+             "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null
+           git -C "$root" diff -z --cached --name-only HEAD -- \
+             "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null)
+  # No early return on an empty list, and that is the fail-CLOSED half a
+  # process substitution cannot carry in its exit status: a `git` that could
+  # not answer produces no output, which is indistinguishable here from "no
+  # drift". Falling through to the verification at the bottom -- which fails
+  # closed on that same broken `git` -- is what keeps "it printed nothing" from
+  # being reported as "refreshed".
+  if [ "${#drift[@]}" -gt 0 ]; then
+    for p in "${drift[@]}"; do
+      if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
+        # _orchid_restore_kernel_file asks _orchid_kernel_writable itself,
+        # immediately before its rename, so nothing about this path is decided
+        # here at a distance from the write it decides.
+        _orchid_restore_kernel_file "$root" "$p" || { rc=1; continue; }
+      else
+        # HEAD has dropped this path. The FILE goes first here too, and for the
+        # same reason: a verb or library still on disk after the branch removed
+        # it is pre-merge code that still executes, and an index entry dropped
+        # ahead of it would tell the guard otherwise. Nothing is lost so long
+        # as these bytes are still the ones orchid_kernel_clean saw, which is
+        # exactly what the line below re-establishes at the moment of the
+        # removal rather than inheriting from a check made before the advance.
+        _orchid_kernel_writable "$root" "$p" || { rc=1; continue; }
+        rm -f "$root/$p" || { rc=1; continue; }
+        [ ! -e "$root/$p" ] || { rc=1; continue; }
+      fi
+      # Only now: this path's working tree matches HEAD, so the index may say
+      # so.
+      git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || rc=1
+    done
+  fi
   # Success has to mean the thing its caller announces. A per-path failure
   # already yields non-zero above; this catches the rest -- a drift list that
   # did not name everything that drifted, anything that changed underneath the
@@ -811,9 +828,69 @@ _orchid_file_is_head_blob() {
   [ -n "$got" ] && [ "$got" = "$want" ]
 }
 
+# _orchid_file_is_index_blob <root> <path> -- the same question against the
+# INDEX rather than HEAD: does the file on disk still hold exactly the bytes
+# this checkout's index entry names? Fails CLOSED in every direction an answer
+# is unavailable, including the two that matter -- a path with no stage-0 entry
+# (untracked here, or unmerged) and a `git` that cannot answer -- both of which
+# report "not established" rather than "equal".
+_orchid_file_is_index_blob() {
+  local root="$1" p="$2" want got
+  want="$(git -C "$root" rev-parse --quiet --verify ":0:$p" 2>/dev/null || true)"
+  [ -n "$want" ] || return 1
+  got="$(git -C "$root" hash-object -- "$p" 2>/dev/null || true)"
+  [ -n "$got" ] && [ "$got" = "$want" ]
+}
+
+# _orchid_kernel_writable <root> <path> -- true when putting HEAD's bytes at
+# <root>/<path>, or removing it, can destroy nothing. Asked by
+# orchid_refresh_kernel immediately before each of its two writes, and it is
+# the whole of what stands between a refresh and an operator's uncommitted
+# work.
+#
+# Three states are safe, and nothing else is:
+#
+#   * NO FILE THERE. Whatever the index or HEAD says, there are no bytes on
+#     disk to lose.
+#   * THE FILE STILL HOLDS ITS INDEX ENTRY'S BYTES. This is what closes the
+#     window the caller's precondition cannot. orchid_kernel_clean established
+#     working tree == index == HEAD for these paths BEFORE the ref advance;
+#     `git update-ref` then moved HEAD and touched neither of the other two, so
+#     the index is the surviving RECORD of what this checkout legitimately held
+#     at the moment it was judged clean. A file that still matches it has not
+#     been edited since. One that does not was written in the window -- an
+#     editor saving, a script, a second operator -- and its bytes exist here
+#     and nowhere else.
+#   * THE FILE ALREADY HOLDS HEAD'S BYTES. Nothing to lose either, and this
+#     arm is load-bearing rather than an optimisation: a refresh killed after
+#     it wrote a path the branch ADDED, but before that path's index entry
+#     landed, leaves an untracked file carrying HEAD's own content. Declining
+#     there would leave a refusal that no further refresh could ever clear.
+#
+# What that adds up to for the case the whole helper exists for: an untracked
+# file of the operator's at a name the branch has since added a tracked file
+# under matches neither the index (it has no entry) nor HEAD (its content is
+# the operator's), so it is DECLINED and survives. That is the r-001
+# journal-loss shape one directory over, and asking the question as "would
+# writing here destroy the only copy of something?" rather than as "is this
+# path tracked?" is what gets both it and the killed-refresh state right at
+# once.
+#
+# Declining costs a refusal the operator clears by hand, having seen the file.
+# Overwriting costs a file only they had a copy of.
+_orchid_kernel_writable() {
+  local root="$1" p="$2"
+  [ -e "$root/$p" ] || return 0
+  if _orchid_file_is_index_blob "$root" "$p"; then return 0; fi
+  _orchid_file_is_head_blob "$root" "$p"
+}
+
 # _orchid_restore_kernel_file <root> <path> -- put HEAD's bytes for <path> into
 # <root>'s WORKING TREE, touching the index not at all. <path> exists in HEAD;
-# the caller has established that.
+# the caller has established that. What the caller may NOT establish on this
+# function's behalf is that writing there is safe: _orchid_kernel_writable is
+# asked here, on the line above the rename, because a precondition checked
+# before the ref advance cannot speak for a file saved since.
 #
 # Written from the blob rather than checked out because the index must not move
 # yet (see the order in orchid_refresh_kernel above), and installed with a
@@ -861,6 +938,17 @@ _orchid_restore_kernel_file() {
   if [ "$rc" -eq 0 ] && [ "$mode" = 100755 ]; then
     chmod +x "$tmp" 2>/dev/null || rc=1
   fi
+  # THE LAST THING BEFORE THE WRITE, and deliberately after the blob, the mode
+  # and the temporary file are already in hand: everything above this line is
+  # preparation that touches nothing at the destination, so putting the check
+  # here leaves the `mv` on the next line as the entire remaining window. The
+  # caller's orchid_kernel_clean was asked before the ref advance and cannot
+  # speak for what happened since -- an editor saving this very file while the
+  # merge walked its drift list would otherwise be overwritten by a refresh
+  # that had been told, truthfully but no longer accurately, that the tree was
+  # clean. Declining leaves the operator's bytes on disk and the stale-root
+  # refusal standing, which is the outcome they can act on.
+  if [ "$rc" -eq 0 ] && ! _orchid_kernel_writable "$root" "$p"; then rc=1; fi
   [ "$rc" -ne 0 ] || mv -f "$tmp" "$root/$p" 2>/dev/null || rc=1
   if [ "$rc" -ne 0 ]; then
     rm -f "$tmp" 2>/dev/null || true

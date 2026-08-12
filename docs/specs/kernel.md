@@ -347,7 +347,12 @@ pending → implementing → testing → reviewing → arbitrating → merging �
     checkout that fell behind and was then `git reset` is consequently not
     detected by this or any other check; from here it is indistinguishable
     from ordinary editing, and catching it would mean refusing on every
-    ordinary edit.
+    ordinary edit. Because a `git reset` is also the documented way to clear a
+    STAGED-edit refusal, that remedy can silently retire a genuine staleness
+    along with the refusal — so docs/troubleshooting.md states the hazard where
+    it prescribes the reset, and gives the read-only scan (does the index match
+    an ancestor of HEAD for these paths?) that separates the two states while
+    the index still holds the evidence.
     Because source time is ahead of every verb — including the
     unattended-trust gate, which may not let orchid touch a repository in any
     way before an acknowledgement is found — the "parked on the integration
@@ -443,15 +448,28 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   state a hand-run one-liner can leave standing — docs/troubleshooting.md),
   and the order in which it commits its index and working-tree writes is
   git's internal detail rather than a guarantee this guard may rest on.
-  The refresh DECLINES, per path, to overwrite an UNTRACKED file where the
-  branch has since added a tracked one: the index has no entry there, so that
-  path is indistinguishable in the drift list from a merged file not yet
-  written here, and restoring it would destroy the only copy. The exception is
-  an untracked file whose content already IS HEAD's blob — the state a killed
-  refresh leaves behind — where writing through destroys nothing and declining
-  would leave a refusal no refresh could clear. `orchid_kernel_clean` cannot
-  cover the collision case at all: it is asked before the ref moves, when the
-  collision does not yet exist.
+  `orchid_kernel_clean` is the caller's PRECONDITION and is re-asked PER
+  WRITE, on the line above each one, because it is evaluated before the ref
+  advance and cannot speak for the interval since. Every write is preceded by
+  the question *would writing here destroy the only copy of something?* — safe
+  only when the path has no file, when the file still holds its INDEX entry's
+  bytes (the index being the surviving record of what `orchid_kernel_clean`
+  judged clean, since `update-ref` moves neither it nor the working tree), or
+  when the file already holds HEAD's own bytes. Anything else was written in
+  the window and is DECLINED, leaving both those bytes and the refusal in
+  place. That is also what makes the refresh decline to overwrite an UNTRACKED
+  file where the branch has since added a tracked one — it matches neither the
+  index (no entry) nor HEAD — while still writing through the untracked file
+  whose content already IS HEAD's blob, the state a killed refresh leaves
+  behind, where declining would leave a refusal no refresh could clear. The
+  collision case is one `orchid_kernel_clean` could never cover at all: it is
+  asked before the ref moves, when the collision does not yet exist.
+  The drift walk is NUL-delimited (`git diff -z`), because
+  `--name-only` C-quotes any path holding a space, a quote, a backslash or a
+  non-ASCII byte, and a quoted name matches no file — the restore would decline
+  over a path it never looked at. An empty list is NOT an early success: a
+  `git` that cannot answer prints nothing, so the walk falls through to the
+  same both-halves verification that closes the function.
 - **Attempt fairness (tier-boundary clean):** `orchid task advance` to
   rework increments `attempts` BY DEFAULT — the deterministic verb never
   judges semantics. The orchestrator may pass `--waive-attempt --reason`

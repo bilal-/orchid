@@ -461,7 +461,10 @@ there is stated rather than hidden: a checkout that fell behind and then had
 detected — by this check or by any other. Catching it would mean refusing on
 every ordinary edit, which is the trade that made the tool unusable. If you
 have run `git reset` in the integration checkout, `git -C <root> diff HEAD --
-<kernel paths>` is what tells you whether its code is current.
+<kernel paths>` is what tells you whether its code is current. That matters
+more than it sounds, because `git reset` is also what this page prescribes for
+clearing a staged-edit refusal — see *Unstaging is not free* below before you
+run it.
 
 The same applies to `PROTOCOL.md`, which is not code and is executed all the
 same: the skills under `skills/` carry no procedure of their own, they tell
@@ -513,6 +516,33 @@ A verb that starts in the fraction of a second between that merge's ref
 advance and its refresh gets a different refusal and a different exit status;
 see *A repair is in flight* at the end of this section.
 
+### The one test that settles which case you are in
+
+Reading a diff tells you what changed; it does not tell you whether those bytes
+exist anywhere but here. This does, and it is read-only:
+
+```sh
+for c in $(git -C <root> rev-list -n 50 HEAD); do
+  git -C <root> diff --cached --quiet "$c" -- \
+    bin lib libexec runners plugins roles skills templates PROTOCOL.md \
+    && { echo "index matches $c"; break; }
+done
+```
+
+**A match is proof of case (1).** Your index is byte-for-byte an earlier commit
+on this branch — the one the branch moved off — so every byte a restore
+overwrites is already in the object store, and nothing you have is at risk.
+
+**No match means the index carries bytes no commit does**, so at least part of
+what is staged is yours and a restore would destroy it. It does *not* mean the
+checkout is current: you can be stale *and* have a staged edit at the same
+time, and that mixed state is the one the remedies below are most likely to get
+wrong. Treat "no match" as *save your bytes first*, not as "nothing is stale".
+
+Run it before either remedy below, while the index still holds the evidence —
+`git reset` overwrites it, and *Unstaging is not free* later in this section is
+what that costs.
+
 ### Case (2), a change of yours in the index: save it first
 
 `git -C <root> diff --cached HEAD -- <kernel paths>` showed changes you
@@ -528,7 +558,10 @@ If you only want to keep working with the change live — the ordinary case for
 someone developing orchid in its own integration checkout — don't restore at
 all; unstage it (`git -C <root> reset -q HEAD -- <kernel paths>`, which leaves
 the file contents alone) or run with the override at the bottom of this
-section.
+section. **Read the warning under *Unstaging is not free* below before you
+reach for that reset**: it clears the refusal whether or not the checkout is
+also stale, and it is the one remedy on this page that can leave you running
+pre-merge code with nothing left to say so.
 
 ### Case (1), the branch was advanced under you: restore orchid's own code
 
@@ -602,7 +635,9 @@ git -C <root> reset -q HEAD -- bin lib libexec runners plugins roles skills temp
 ```
 
 `git reset` without `--hard` moves index entries only; every byte in your
-working tree is left exactly as it was.
+working tree is left exactly as it was. **It also clears the refusal when the
+checkout really had fallen behind, and nothing detects that afterwards** —
+*Unstaging is not free* below has the whole of it, and the scan to run first.
 
 To run a single command from a checkout you know is stale — to read something
 out of it, or to recover — prefix it:
@@ -610,6 +645,46 @@ out of it, or to recover — prefix it:
 ```sh
 ORCHID_ALLOW_STALE_ROOT=1 orchid status
 ```
+
+### Unstaging is not free: it can hide a genuinely stale kernel
+
+That `git reset` is safe for your *bytes* and unsafe for your *detection*, and
+the two are easy to conflate because the refusal it clears looks the same in
+both cases.
+
+The check compares the **index** to `HEAD` (see *An ordinary dirty working tree
+is not this* above for why it must). `git reset` resyncs the index to `HEAD` by
+definition — so it clears the refusal **whether or not this checkout had also
+fallen behind**. If the branch really was advanced under you and you unstage
+instead of restoring, you are left with an index that matches `HEAD` over a
+working tree that still holds pre-merge code: orchid runs, reports nothing, and
+executes the old kernel indefinitely. That is lesson L018 exactly, reached by
+following a remedy. Nothing detects it afterwards — not this check, not
+`doctor`, not `status`; the index was the only record of the fall behind, and
+the reset overwrote it.
+
+So the order matters:
+
+1. Run *The one test that settles which case you are in* **first**, while the
+   index still holds the evidence. A match means you are in case (1) and should
+   restore, not unstage.
+2. If you unstage anyway — a mixed state, or you simply want the edit live —
+   check the working tree immediately afterwards, because it is the only thing
+   left to check:
+
+   ```sh
+   git -C <root> diff HEAD -- bin lib libexec runners plugins roles skills templates PROTOCOL.md
+   ```
+
+   Every hunk in that diff should be *yours*. Anything you do not recognise —
+   in particular anything that reads like a merge running backwards — is the
+   branch having advanced under you, and the fix is *Case (1)* above: save your
+   own edit, then restore.
+
+If you have already unstaged and are unsure, the same scan works against the
+working tree rather than the index; drop `--cached`:
+`git -C <root> diff --quiet "$c" -- <kernel paths>`. A match against an
+ancestor of `HEAD` means the tree you are executing is that older commit's.
 
 ### Why `doctor` and `status` refuse too
 
