@@ -209,6 +209,80 @@ and Orchid provides no OS-level containment for adapter/plugin process trees.
 Interactive/manual operation, planning, and read-only commands remain
 available and never create an acknowledgement.
 
+## Qualification runs the target verify= command, and takes no acknowledgement
+
+`scripts/beta-qualify.sh` executes exactly one thing inside the repository it is
+qualifying: that repository's own configured `verify=` command, once, in place,
+to time it. That is repository content reaching execution with no
+acknowledgement of any kind, which is the same class of exposure the gate above
+exists for. **Qualification stays ungated anyway.** That is a decision, and it
+is recorded here with what was rejected, because an outcome without its
+reasoning is not a decision anyone can revisit.
+
+What the harness carries instead of a gate: the exception is stated in its
+header and in `--help`, in the same breath as the no-write promise; it is
+announced on stderr at the moment the command is executed, on that path only;
+and `--no-run-verify` opts out, recording the timing probe as `not-tested`
+rather than as a pass.
+
+Three reasons the unattended acknowledgement is the wrong instrument here.
+
+- **It would invert the documented order.** PROTOCOL.md's HEADLESS OPERATION
+  section and [beta-qualification.md](../beta-qualification.md) both say to
+  qualify a repository *before* acknowledging it: the acknowledgement opens the
+  headless gate, it does not make a target drivable. Requiring trust in order to
+  qualify would make the operator acknowledge a repository before holding any
+  evidence about it, which hollows out the deliberate, reason-carrying act the
+  gate exists to protect. And a qualification that then *failed* would leave the
+  acknowledgement behind: the headless gate open on a repository just proved
+  undrivable, closable only by remembering to revoke.
+- **It would gate one command and leave its neighbour open.**
+  `unattended_trust_require` guards exactly three surfaces — the pump, a direct
+  tick, and service installation — because nobody is in front of those. `orchid
+  verify` executes repository-supplied commands too — the task's
+  `verification_commands`, or this same `orchid.config` `verify=` as its
+  fallback — in the foreground, and asks for nothing. Gating qualification but
+  not `orchid verify`
+  would not remove the exposure; it would move it one command to the left while
+  reading like a fix.
+- **The gate's subject is a different one.** The acknowledgement means the
+  operator accepts this repository as input to an unattended, shell-capable
+  *model*, and its threat is target content prompt-injecting an orchestrator
+  nobody is watching. Qualification builds no prompt, spawns no engine, and runs
+  no model. Its exposure is the direct execution of a command the operator can
+  read in one line of the target's `orchid.config` before typing anything — and
+  the harness is a foreground command with two required paths on it, never
+  scheduled and never invoked by the kernel.
+
+**Rejected: a qualification-scoped acknowledgement, narrower than unattended
+trust.** It would need its own store, identity binding, policy version,
+revocation verb, and refusal log — all of the machinery above, which exists
+because a scheduled pump has nobody in front of it and no terminal to print to.
+Qualification has both, by construction. A trust record whose only audience is
+the person who just typed the command is a confirmation prompt wearing a trust
+boundary's clothes, and a second record keyed to the same repository is a second
+thing to revoke and a second way for two stores to disagree about one target.
+The in-band notice is that confirmation, at its honest weight.
+
+**Rejected: making `--no-run-verify` the default, with an explicit opt-in to
+run.** The timing probe is the most load-bearing fact in the report: the driver
+holds no lease refresh across a synchronous verification and the merge
+re-verifies after its rebase, so a suite approaching `pump_stale_s` strands a
+headless run with no actor able to move it. When `--no-run-verify` is passed,
+`verify-duration` is recorded as a non-blocking `not-tested`, so the verdict can
+still read `qualified` with that fact unmeasured. As an opt-out that is honest —
+the operator asked for it, and `not_certified` names it. As the *default* it
+would mean the ordinary run prints `qualified` for a repository whose suite was
+never timed, trading a stated execution exception for a quietly weaker headline.
+A default that must be overridden to produce the report's most important number
+is not a safer default, only a less-read one.
+
+**What would reopen this.** The balance rests on the harness executing nothing
+but the operator-configured `verify=` command. If a probe is ever added that
+runs something else in the target — spawning an engine, executing a repository
+hook, running a plugin entrypoint from the target tree — the exposure stops
+being one readable line of config and this decision has to be made again.
+
 ## Operator walkthrough (the human's seat)
 
 1. `orchid doctor` — readiness + plugin/trust report.

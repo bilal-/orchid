@@ -669,6 +669,50 @@ grep -qF 'scripts/beta-qualify.sh' "$REPO_ROOT/docs/specs/plugins.md" \
 grep -qF 'Qualify a repository before acknowledging it' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's HEADLESS OPERATION section must tell an operator to qualify before acknowledging"
 
+# T011 -- THAT ORDER IS A DECISION, AND A DECISION RECORDED ONLY AS AN OUTCOME
+# IS ONE NOBODY CAN REVISIT.
+#
+# The harness runs the target's own verify= command in place with no
+# acknowledgement of any kind, which is repository content reaching execution.
+# Keeping it ungated was chosen over two live alternatives -- a narrower
+# qualification-scoped acknowledgement, and making --no-run-verify the default
+# -- and the next person to notice the exposure will reach for one of exactly
+# those two. So the spec must carry the reasoning, BOTH rejected options, and
+# the condition that would reopen the question; losing any of them sends that
+# person round the same loop with no record that it was already walked.
+#
+# Folded first, then grep -qF: these are prose SENTENCES, every one of them
+# straddles a hard wrap in the source, and a fixed-string search over the raw
+# file would never match one.
+ops_spec_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/operations.md" | tr -s '[:space:]' ' ')"
+grep -qF 'Qualification stays ungated anyway.' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must record the decision that beta qualification takes no trust step of its own"
+grep -qF 'It would invert the documented order.' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must say why requiring an acknowledgement to qualify would invert the documented order"
+grep -qF 'Rejected: a qualification-scoped acknowledgement' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must record the narrower qualification-scoped acknowledgement as a REJECTED alternative rather than omit it"
+grep -qF 'Rejected: making `--no-run-verify` the default' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must record making --no-run-verify the default as a REJECTED alternative"
+grep -qF 'What would reopen this.' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must state what would make this decision have to be made again"
+
+# The two surfaces that would otherwise state the order without the reasoning.
+beta_md_one_line="$(tr '\n' ' ' < "$BETA_MD" | tr -s '[:space:]' ' ')"
+grep -qF 'no acknowledgement of its own' <<<"$beta_md_one_line" \
+  || fail "docs/beta-qualification.md must tell a tester plainly that qualification needs no trust step of its own"
+grep -qF 'specs/operations.md' <<<"$beta_md_one_line" \
+  || fail "docs/beta-qualification.md must point at the recorded decision instead of restating only its outcome"
+grep -qF 'requires no acknowledgement of its own' <<<"$protocol_one_line" \
+  || fail "PROTOCOL.md must say that beta qualification itself requires no acknowledgement, not only that it never grants one"
+
+# TWO-WAY, against the code. While qualification is ungated the docs must say
+# so; the day someone gates it, this fails and sends them to the sentences that
+# have just become false rather than leaving the spec quietly wrong.
+grep -qF 'unattended_trust_require' "$QUALIFY_SH" \
+  && fail "scripts/beta-qualify.sh now gates itself on the unattended acknowledgement, which inverts the order PROTOCOL.md and docs/specs/operations.md document — if that decision has changed, change those two and this assertion with it"
+grep -qF 'docs/specs/operations.md' "$QUALIFY_SH" \
+  || fail "scripts/beta-qualify.sh must point at the recorded decision, so an editor tempted to add a gate finds the reasoning first"
+
 # The release-day checklist must include the local rehearsal.
 grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
   || fail "docs/install.md's release-day steps must include the local rehearsal"

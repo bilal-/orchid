@@ -14,6 +14,15 @@
 # than the promise being quietly weakened. `--no-run-verify` skips it and
 # records the timing probe as `not-tested`, never as a pass.
 #
+# That exception is also announced ON STDERR at the moment it happens, because
+# a header comment and a `--help` page are read by whoever goes looking and the
+# operator who does not look is exactly the one who needed telling. That notice
+# stands in place of a trust step: qualification takes NO acknowledgement of its
+# own, deliberately, and the reasoning together with the
+# alternatives that were rejected is recorded in docs/specs/operations.md
+# ("Qualification runs the target verify= command, and takes no
+# acknowledgement"). Read that before adding a gate here.
+#
 # ---------------------------------------------------------------------------
 # THE EVIDENCE RULE (the reason this file is shaped the way it is)
 # ---------------------------------------------------------------------------
@@ -103,7 +112,11 @@ command once, IN PLACE, to time it. That is the operator's own code running in
 the operator's own repository -- whatever it writes, it writes, and this harness
 neither sandboxes it nor makes it safe. Timing it any other way would be a
 guess. With --no-run-verify the duration probe is recorded as not-tested, never
-as a pass.
+as a pass. The run is also announced on stderr as it starts. That notice stands
+in place of a trust step: qualification is deliberately ungated, because the
+acknowledgement that opens the headless gate is meant to be made AFTER a
+repository qualifies, not as a precondition for finding out whether it does.
+See docs/specs/operations.md for that decision and what was rejected.
 
 The verify= command's own output is discarded unread: its exit code and
 wall-clock duration are the only things recorded about it. The recorded
@@ -497,6 +510,16 @@ elif [ -z "$verify_cmd" ]; then
     "nothing was executed: no verify= command is configured" "$VERIFY_WHY" \
     "no verify= command is configured (see the repo-config probe), so there was nothing to time"
 else
+  # IN-BAND DISCLOSURE, printed only on the path that actually executes
+  # something. This is the mitigation qualification carries INSTEAD of a trust
+  # step, so it fires where the exposure is and nowhere else: a notice that also
+  # printed under --no-run-verify would be a warning about something that did
+  # not happen, and warnings that fire when nothing happened are how an operator
+  # learns to skip them. Stderr, not stdout: the two evidence paths this script
+  # prints last are what a caller pipes. No path is named -- the operator passed
+  # --repo and knows what it is, and _scrub_guard does not reach stderr.
+  printf 'beta-qualify: executing the configured verify= command IN PLACE inside --repo, to time it.\n' >&2
+  printf 'beta-qualify: that is repository-specific code, run with your privileges; this harness does not sandbox it. --no-run-verify skips it and records the timing probe as not-tested.\n' >&2
   verify_rc=0
   # Both streams discarded: nothing the repository prints can reach a record.
   ( cd "$REPO" && with_timeout "$VERIFY_TIMEOUT_S" "$BASH_BIN" -c "$verify_cmd" >/dev/null 2>&1 ) || verify_rc=$?

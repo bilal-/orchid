@@ -69,6 +69,16 @@ operator, and running it is what makes the timing probe real rather than a
 guess. Pass `--no-run-verify` to skip it — the timing probe is then recorded as
 `not-tested`, never as a pass.
 
+That run is announced on stderr as it starts — a notice, not a gate, and it
+stands in place of one. Qualification requires **no unattended
+trust and no acknowledgement of its own**, deliberately: the acknowledgement is
+what you make *after* a repository qualifies, so requiring it first would invert
+the order and leave the headless gate open on a repository that then failed to
+qualify. The reasoning, and the two alternatives that were rejected — a narrower
+qualification-scoped acknowledgement, and making `--no-run-verify` the default —
+are recorded in
+[specs/operations.md](./specs/operations.md#qualification-runs-the-target-verify-command-and-takes-no-acknowledgement).
+
 ## The probes, and the defects each one exists to catch
 
 | Probe | Blocking | What it does |
@@ -164,7 +174,8 @@ repository. Then, per candidate repository and per implementer profile:
       running unattended.
 - [ ] **Unattended trust.** Acknowledge deliberately, with a real reason:
       `orchid trust unattended <repo> --reason "<why>"`. Nothing else opens that
-      gate, and this harness never does.
+      gate, and this harness never does. It is last on this list on purpose:
+      running the harness needs none of it.
 
 ## The local release rehearsal
 

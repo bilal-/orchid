@@ -2026,8 +2026,12 @@ evidence — check identities, durations, exit codes, and outcomes, never
 repository content. It writes nothing of its own into the target; the one
 thing it executes there is the target's own configured `verify=` command, run
 once in place to time it (`--no-run-verify` skips it and records that probe as
-`not-tested`). It never acknowledges trust on the operator's behalf and never
-contacts a remote. What it cannot settle
+`not-tested`). It never acknowledges trust on the operator's behalf, requires
+no acknowledgement of its own, and never contacts a remote; the in-place run is
+disclosed on stderr as it happens instead. Gating qualification on the record it
+exists to inform would invert this order and would leave the gate open on a
+repository that then failed to qualify — `docs/specs/operations.md` records that
+decision and the alternatives rejected with it. What it cannot settle
 locally, including the inbound half of the blocker round trip, it records as
 `not-tested` with the reason rather than as a pass. See
 [docs/beta-qualification.md](./docs/beta-qualification.md).
