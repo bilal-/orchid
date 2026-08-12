@@ -45,6 +45,13 @@ pack_budget_bytes=65536
 # lock_break_s=900
 # verb_lock_wait_s=10
 # stall_minutes=10
+# T040: the CPU floor of the stall check. stall_minutes catches a job that
+# stops writing to its log; this catches one that keeps writing and stops
+# working -- an engine still heartbeating while its cumulative CPU time
+# barely moves. Less than this many CPU-seconds across the last
+# stall_minutes of heartbeats is reported (and killed) as `stalled`. 0
+# disables the check.
+# cpu_stall_min_s=1
 # timeout_minutes=60
 # agy_max_bytes=100000
 # v1-m4: same shape as agy_max_bytes above -- plugins/engines/hermes/run is

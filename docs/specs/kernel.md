@@ -195,6 +195,11 @@ lease.json                  # orchestrator heartbeat lease
 jobs/<job_id>.json          # write-ahead manifests, keyed by JOB (not task):
                             #   parallel reviewers never collide
 spool/                      # engine result envelopes awaiting reconciliation
+exits/<job_id>              # the engine's own exit status, written by the
+                            #   launcher's spawn wrapper once the engine is
+                            #   gone. Nothing else records it: the launcher
+                            #   returns at spawn, so an envelope-less job's
+                            #   exit code would otherwise be unrecoverable
 engines.json                # availability ledger (per-machine quota state)
 answers/  logs/
 ```
@@ -822,7 +827,9 @@ derived cache, rebuildable from it.
 | Mode | Defense |
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
+| Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
+| Alive but not working | CPU delta across the job's own heartbeat lines: less than `cpu_stall_min_s` (default 1) of CPU across the last `stall_minutes` of heartbeats → `stalled` → kill, retry. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
 | Blocked on an interactive terminal prompt | supported adapters receive stdin `/dev/null` plus their documented noninteractive/never-approval flags; a vendor regression can still fail or hang and is bounded by timeout |
 | Spinning | deterministic FIRST, with a false-positive guard: duplicate-line checks apply to the ADAPTER's own output, use a sliding window (≥5 min identical lines AND no CPU/disk delta AND no new commits) — build tools legitimately repeat progress lines and are never judged by line content alone; LLM log-tail judgment is the ESCALATION tier |
 
@@ -871,6 +878,25 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   reconcile files it. This is what keeps one delivery to one rung, and it is
   why a no-op delivery's refusal can always be recorded against the envelope
   that caused it.
+- Exited-without-an-envelope (T040, closed): the complement of the case
+  above — the job is dead and there is no envelope anywhere, not in the spool
+  and not in `reviews/`. Before T040 `jobs reconcile` had nothing to land and
+  printed nothing, so an attempt that ran to completion and produced eight
+  complete findings *in its log* was indistinguishable from one that never
+  ran; the findings were recovered by an operator with grep, and would
+  otherwise have cost an expensive re-run to regenerate work orchid already
+  had on disk. reconcile now sweeps those manifests after the spool drain:
+  results still parseable in the log (the adapters' own `FINDING:`/`VERDICT:`
+  grammar) are filed as a DEGRADED `no_envelope` envelope at the ordinary
+  reviews path, the exit code (recorded by `runners/orchid-launch`, which
+  wraps the spawn so the status survives the launcher's own exit) and the log
+  tail are journaled, and a report line is always printed. A log with nothing
+  parseable files no envelope at all — several gates read a same-shaped file
+  as evidence a point has been answered, so one is never manufactured. The
+  manifest is stamped, not deleted, so the escalation ladder still spends its
+  rung and gc still reaps it in the same pass. No gate counts a
+  `no_envelope` envelope as evidence, and no adapter may write that status
+  (spool envelopes carrying it are quarantined `kernel-status`).
 
 ## Execution policy (the autonomy boundary)
 

@@ -491,6 +491,18 @@ drive_hook_envelope_count() {
   n=0
   for ef in "$state/reviews/$id-a$attempt-hook-$point"*.json; do
     [ -e "$ef" ] || continue
+    # A DEGRADED envelope is not an answer to this point. `jobs reconcile`
+    # files one (status `no_envelope`) when a job exits without writing an
+    # envelope but left salvageable results in its log -- the work is
+    # recovered, but nothing about it says the hook ran to completion. This
+    # is the ONE counter that does not already filter on `ok`, deliberately
+    # (an adapter that omits candidate_sha must still be able to satisfy a
+    # binding), so it is the one place a degraded envelope would silently
+    # convert an auto-relaunch into a hook-failure boundary: counted here,
+    # the point reads as answered, drive_hook_unsatisfied then refuses it for
+    # want of an `ok` engine match, and a human is fetched for a job the
+    # ladder would have retried by itself.
+    [ "$(envelope_field "$ef" '.status // empty' 2>/dev/null || true)" != no_envelope ] || continue
     if [ -n "$cand" ]; then
       ecand="$(envelope_field "$ef" '.candidate_sha // empty' 2>/dev/null || true)"
       if [ -n "$ecand" ] && [ "$ecand" != "$cand" ]; then

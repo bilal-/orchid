@@ -308,6 +308,14 @@ case "$sub" in
           case " $impl_refused " in
             *" $impl_base "*) continue ;;
           esac
+          # A DEGRADED envelope (T040, status `no_envelope`) names the engine
+          # of a dispatch that never reported anything -- `jobs reconcile`
+          # reconstructed it from the job's log after the process exited
+          # silently. It is not that dispatch's account of itself, so it must
+          # not become the record of who implemented the candidate some
+          # later, possibly failed-over, engine actually built. Skipped for
+          # the same reason a refused no-op delivery is, one line above.
+          [ "$(envelope_field "$impl_ef" '.status // empty' 2>/dev/null || true)" != no_envelope ] || continue
           impl_rest="${impl_base#"$id"-a"$impl_attempt"-implementer}"
           case "$impl_rest" in
             .json) impl_n=1 ;;

@@ -155,6 +155,66 @@ done
 assert_eq "$WORK" "$(jq -r .worktree "$plan_req")" "plan critique request worktree defaults to the repo (no task file to read one from)"
 
 # ===========================================================================
+# T040 / dogfood finding F35, END TO END through the real launcher.
+#
+# The incident: a critique attempt ran to completion, wrote eight complete
+# findings to its job log, and exited WITHOUT writing an envelope. reconcile
+# had nothing to land, so from the outside the attempt simply never happened;
+# the findings survived only because an operator went grepping runtime logs.
+#
+# `plan critique` is deliberately the shape used here -- it is the exact
+# operation that failed in the real run -- and the stub engine below does
+# precisely what that engine did: prints its results in the adapters' own
+# reply grammar (which the launcher's `>> "$log"` redirect captures verbatim,
+# the same way it captured the real one), then exits non-zero without ever
+# touching its `output` path.
+#
+# Two properties can only be proved HERE, against the real launcher, and not
+# in tests/test_jobs.sh against a hand-built manifest: that the engine's exit
+# status is recorded at all (this launcher returns at spawn and nobody waits
+# on the child, so without the spawn wrapper the status is simply gone), and
+# that the pack/pgid/liveness contract survives that wrapper.
+# ===========================================================================
+mkdir -p "$WORK/eng/salvager"
+printf 'manifest_version=1\nid=test/salvager\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/salvager/plugin.conf"
+cat > "$WORK/eng/salvager/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+# Does all the work, reports it to stdout, then dies without an envelope --
+# the `output` path is never written to at all.
+echo "FINDING: high: the reaper never runs in PLANNING"
+echo "FINDING: medium: a refusal and its gc disagree about the same predicate"
+echo "VERDICT: request-changes"
+exit 3
+EOF
+chmod +x "$WORK/eng/salvager/run"
+printf 'role.salvagecritic=salvager\n' >> "$WORK/orchid.config"
+
+salv_launch_out="$("$REPO_ROOT/runners/orchid-launch" plan salvagecritic critique)"
+assert_match "^launched j-" "$salv_launch_out" "the salvage-case job launches like any other"
+salv_job_id="$(echo "$salv_launch_out" | awk '{print $2}')"
+sleep 1
+
+# The exit status of a job nobody waits on: recorded by the launcher's spawn
+# wrapper, or lost forever.
+assert_eq "3" "$(tr -d '[:space:]' < "$WORK/.orchid/runtime/exits/$salv_job_id" 2>/dev/null)" \
+  "the engine's own exit status is recorded — the launcher returns at spawn, so nothing else on this machine ever collects it"
+
+salv_reconcile_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^plan	no_envelope" "$salv_reconcile_line" \
+  "reconcile reports the job that exited without an envelope — printing nothing is what made this look like an attempt that never ran"
+salv_landed=".orchid/reviews/plan-a1-salvagecritic.json"
+[ -f "$WORK/$salv_landed" ] \
+  || fail "the findings the engine already produced must be landed as a degraded envelope rather than discarded (the whole of F35)"
+assert_eq no_envelope "$(jq -r .status "$WORK/$salv_landed")" "filed with the first-class no_envelope status"
+assert_eq 3 "$(jq -r .exit_code "$WORK/$salv_landed")" "carrying the exit code end to end, from the launcher's record"
+assert_eq 2 "$(jq -r '.findings | length' "$WORK/$salv_landed")" "and both findings the engine wrote to its log"
+assert_eq request-changes "$(jq -r .verdict "$WORK/$salv_landed")" "and the verdict it reached"
+assert_match "Exit code: 3" "$(ORCHID_REPO="$WORK" "$ORCHID_BIN" journal show --task plan)" \
+  "with the exit code and log tail journaled, so an operator sees it without knowing to grep runtime/logs"
+
+# ===========================================================================
 # v1-m4 Task 3 (worktree-read review packs): orchid-launch now resolves the
 # reviewer engine's plugin dir BEFORE pack_build (previously it happened
 # only at the spawn site, after the pack was already built) so pack_build

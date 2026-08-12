@@ -467,6 +467,53 @@ escalation ladder's "first occurrence → relaunch" never fires and the
 wallclock backstop (which only runs inside the manifest loop) goes silent
 too — the task simply waits forever.
 
+**`stalled` is decided on PROGRESS, not just on liveness.** A job earns it two
+ways, and both kill it: its log has not been written to for `stall_minutes`
+(the original test), OR its own heartbeat lines show it burning less than
+`cpu_stall_min_s` (config, default `1`) of CPU across the last `stall_minutes`
+of heartbeats. The second exists because the first cannot see a job that keeps
+heartbeating and stops working — a real attempt sent heartbeats for five
+minutes while accumulating two tenths of a second of CPU and then exited with
+nothing, and `jobs check` called it `running` the whole time, because *the
+process was alive*. The CPU numbers were already in the log: every heartbeat
+line carries a `cpu` field for exactly this consumer. The floor is
+deliberately far below what a working engine accumulates, since an engine
+blocked on a vendor API legitimately burns almost none; `cpu_stall_min_s=0`
+turns the check off. A job without enough heartbeat history to span the window
+is never judged by it.
+
+**A job that exits without an envelope is a first-class failure, never a job
+that never happened.** `orchid jobs reconcile` makes a second pass, after the
+spool drain, over every manifest whose pid is gone with no envelope of its own
+anywhere, and for each one:
+
+- **Salvages what the engine already produced.** If the job's log holds
+  results in the shape its adapter would have parsed — `FINDING:
+  <low|medium|high>: <title>` lines, a whole-line `VERDICT:
+  approve|request-changes` — they are filed as a DEGRADED envelope at the
+  ordinary `reviews/<task>-a<n>-<role>.json` path with `status: no_envelope`,
+  `degraded: true`, the exit code, and the log it came from. The engine has
+  already been paid for that work; a degraded envelope an operator can read
+  beats re-running an expensive critique to regenerate findings orchid
+  already has on disk. **No gate counts one as evidence** — `no_envelope` is
+  not `ok`, so review sufficiency, the arbitration gate, hook satisfaction and
+  hook envelope counting all skip it exactly as they skip a `failed` one. A
+  job whose log holds nothing parseable files NOTHING: an envelope is never
+  manufactured for a handler that exited quietly having produced nothing.
+- **Journals the exit code and the tail of the log**, always, whether or not
+  anything was salvaged, so the failure is visible to an operator who does not
+  know to go grepping `runtime/logs`.
+- **Prints a `<task>	no_envelope	<detail>` line**, always. reconcile
+  printing nothing at all is precisely what made this class of failure
+  indistinguishable from a job that was never dispatched.
+
+The manifest is left in place (stamped, so a second `reconcile` in the same
+pass repeats none of the above) rather than deleted, so the escalation sweep
+below still sees the death and still spends its rung; `jobs gc` reaps it a
+step later in the same pass as always. `status: no_envelope` is the one
+envelope status the kernel alone writes — an adapter that files one in the
+spool has its envelope quarantined (`kernel-status`), never accepted.
+
 The one job this ordering cannot resolve in the pass that observes it is the
 one that exits *between* reconcile and the reap: dead here, with its envelope
 written and not yet drained. It has DELIVERED, and neither half of this step
