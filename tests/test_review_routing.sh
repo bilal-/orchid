@@ -120,7 +120,7 @@ export ORCHID_EPOCH
 "$ORCHID_BIN" task create TR1 demo >/dev/null
 outF="$(ORCHID_EPOCH='' "$ORCHID_BIN" jobs review-plan TR1)"
 assert_eq 1 "$(echo "$outF" | wc -l | tr -d ' ')" "low tier: review-plan prints exactly one slot"
-assert_match $'^1\tagy\tengine-independent$' "$outF" "low tier: slot 1 is agy, engine-independent (differs from codex implementer)"
+assert_match $'^1\tagy\tengine-independent\tinline$' "$outF" "low tier: slot 1 is agy, engine-independent (differs from codex implementer), inline (no workspace_read)"
 
 # G -- medium-tier task -> two distinct slots; slot 2 prefers the worktree-
 # capable engine (codex-review declares workspace_read; agy does not).
@@ -128,8 +128,8 @@ assert_match $'^1\tagy\tengine-independent$' "$outF" "low tier: slot 1 is agy, e
 "$ORCHID_BIN" task set TR2 risk_tier medium --reason "touches shared code" >/dev/null
 outG="$("$ORCHID_BIN" jobs review-plan TR2)"
 assert_eq 2 "$(echo "$outG" | wc -l | tr -d ' ')" "medium tier: review-plan prints exactly two slots"
-assert_match $'^1\tagy\tengine-independent$' "$outG" "medium tier: slot 1 is agy, engine-independent"
-assert_match $'^2\tcodex-review\tengine-independent$' "$outG" "medium tier: slot 2 is codex-review (worktree-capable, distinct from slot 1), engine-independent"
+assert_match $'^1\tagy\tengine-independent\tinline$' "$outG" "medium tier: slot 1 is agy, engine-independent, inline"
+assert_match $'^2\tcodex-review\tengine-independent\tworktree$' "$outG" "medium tier: slot 2 is codex-review (worktree-capable, distinct from slot 1), engine-independent"
 
 # H -- when every candidate OTHER than the implementer's own engine is
 # unavailable, the slot falls back to the implementer's engine, labeled
@@ -138,7 +138,7 @@ ledger_mark "$repoR" agy rate_limited 999999
 ledger_mark "$repoR" codex-review rate_limited 999999
 "$ORCHID_BIN" task create TR3 demo >/dev/null
 outH="$("$ORCHID_BIN" jobs review-plan TR3)"
-assert_match $'^1\tcodex\tsession-independent$' "$outH" "only the implementer's engine available -> session-independent fallback (never silent)"
+assert_match $'^1\tcodex\tsession-independent\tworktree$' "$outH" "only the implementer's engine available -> session-independent fallback (never silent)"
 
 # ===========================================================================
 # I/J/K -- one task's real lifecycle walk: implementer_engine_id capture,

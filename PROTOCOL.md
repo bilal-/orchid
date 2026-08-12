@@ -68,7 +68,8 @@ part of the architecture; this file never changes to suit one.*
   slots this attempt needs and which engines fill them. Consult `orchid jobs
   review-plan <id> --pin` FIRST, every attempt: it prints the routing table
   for the task's CURRENT `risk_tier`, one line per required slot — `<slot>
-  <engine>	<engine-independent|session-independent>` — computed from
+  <engine>	<engine-independent|session-independent>	<worktree|inline>`
+  — computed from
   `role.reviewer`'s chain, the `review.<tier>` chain, engine discovery,
   role eligibility, and the ledger, all at once. Never re-derive this by
   hand. Launch each printed slot with `runners/orchid-launch <id> reviewer
@@ -97,6 +98,19 @@ part of the architecture; this file never changes to suit one.*
   now applied per-slot: `orchid journal add --task <id> "reviewer slot <n> is
   session-independent only: <engine>, same as the implementer's"`. Never let
   a degraded independence pass silently, on any slot.
+- **Review depth is a SECOND axis, not the same one.** Column 3 says who the
+  reviewer is not; column 4 says what it can see. An `inline` reviewer
+  judges the diff text alone and cannot open a file the diff never showed
+  it; a `worktree` one can (manifest capability `workspace_read`). At
+  `risk_tier` `medium`/`high` a deterministic approval needs at least one
+  review from a `worktree` slot: without one, `orchid drive` reports
+  unproven review depth and stops at an arbitrable `review-evidence`
+  boundary instead of approving, and you settle it by reading the diff and
+  running `orchid task arbitrate`. If the whole table comes back `inline`,
+  journal that before dispatching — same discipline as a
+  `session-independent` label — and dispatch every slot anyway: no slot is
+  ever dropped for being inline. See docs/specs/kernel.md, "Review depth",
+  for why this keys on `risk_tier` rather than on a task's prose.
 - **Inline-review blind-spot guard.** The reviewer's input pack includes
   `symbols.txt` — every changed file and hunk header
   (`+++`/`@@` lines) from `base_sha..candidate_sha`'s diff. When the diff

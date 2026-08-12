@@ -951,6 +951,76 @@ manifest AND the changed-symbol list; routing upgrades to a
 worktree-capable reviewer when changed symbols are referenced in un-diffed
 files.
 
+### Review depth (v1.1 — decision, T012)
+
+**Engine independence and review depth are different axes, and `medium`/
+`high` require both.** Independence asks who the reviewer is NOT (the
+implementer); depth asks what the reviewer can SEE. An *inline* reviewer
+(manifest capability `structured_text` without `workspace_read` — agy and
+hermes) judges from the diff text alone: it cannot open the file a change
+must stay consistent with, so it cannot check a claim against existing
+behaviour. A *worktree-capable* reviewer (`workspace_read` — codex-review,
+codex, claude) can.
+
+Evidence, from run r-001 (lesson L010): on T003 the engine-independent
+inline slot APPROVED a candidate whose central acceptance criterion was
+unmet, with a one-sentence unsupported rationale and a null `findings`
+array, while the session-independent worktree-capable slot found the defect
+and cited the file and line; the arbiter confirmed it in the code and
+rejected. The inline slot did this four times in one run.
+
+**What is required.** For `risk_tier` `medium`/`high`:
+
+1. `review_routing`'s table carries a fourth column, `worktree|inline`, per
+   slot — the two labels are printed separately because neither implies the
+   other.
+2. The depth pass that fills slot 2 searches past `review.<tier>` into
+   `role.reviewer`'s chain and finally the implementer's own engine, so a
+   worktree-capable slot is routed whenever the install has an eligible one
+   at all — rather than settling for a second inline engine because of the
+   order of names in one config key. A slot filled that way is labeled
+   `session-independent`, which is exactly what caught the r-001 defect.
+3. A DETERMINISTIC approval additionally requires depth evidence: at least
+   one of the counted reviews must come from a worktree-capable engine,
+   attributed by the envelope's own `.engine`. Without it the driver reports
+   `evidence` and stops at a `review-evidence` boundary on an `arbitrating`
+   task — arbitrable, so `orchid task arbitrate` (and, on a brokered
+   surface, a woken orchestrator reading the diff) settles it. An all-inline
+   routing table is journaled before dispatch, never silent.
+
+**agy is not dropped, and no slot is ever refused for being inline.** On a
+diff it can genuinely inspect, an inline engine is the only real engine
+independence available when codex is out, and independence guards a failure
+mode depth cannot. Depth changes who may declare an approval FINAL without a
+human; it never changes who is allowed to review.
+
+**Rejected: make `review.<tier>` itself refuse to resolve, or refuse to
+dispatch, without a worktree-capable engine.** This converts a depth
+shortfall into an availability failure. An install holding only inline
+engines (agy + hermes, or codex rate-limited on a two-engine install) could
+then review no medium/high task at all, and would sit at a boundary no
+evidence could settle. Worse, the cheapest operator workaround would be to
+downgrade `risk_tier` — a monotonic, `--reason`-carrying field — so the
+policy would push operators toward misdescribing risk to make the run move.
+Depth is a property of the EVIDENCE, so it is judged where evidence is
+judged (arbitration), not where slots are allocated.
+
+**Rejected: a per-task flag deciding whether the criteria "involve
+interaction with existing kernel behaviour".** Whether as a new frontmatter
+field or as a keyword scan of `acceptance_criteria`, this asks the kernel to
+judge prose — which it does nowhere else, by design (the arbitration truth
+table reads structured envelope fields only). A scan would be unauditable
+and defeated by phrasing; a second hand-set field would duplicate a
+judgement `risk_tier` already carries, with no rule keeping the two
+consistent. `risk_tier` medium/high is ALREADY the operator's assertion that
+a task touches shared/kernel surface, it is monotonic, it requires a
+`--reason`, and it is journaled. The depth requirement reuses it.
+
+**Rejected: a `review.require_depth` config key.** The boundary is already
+the escape hatch — an operator or arbiter settles it per task, on the
+record. A key would let an install disable that record permanently and
+globally, which is the one outcome the r-001 evidence argues against.
+
 **Arbitration:** findings below the task's risk threshold never block;
 reviewer agreement is strong signal; on disagreement the orchestrator reads
 the diff and decides. The orchestrator implements nothing beyond ≤ ~10-line

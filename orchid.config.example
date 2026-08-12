@@ -37,7 +37,19 @@ pack_budget_bytes=65536
 # chain of engine names consulted for the risk-tiered reviewer slots (see
 # docs/specs/kernel.md's Independence section) — low tier wants one
 # engine-independent reviewer; medium/high want two (worktree-capable for
-# depth + engine-independent for diversity). Built-in defaults shown here:
+# depth + engine-independent for diversity).
+#
+# v1.1 (docs/specs/kernel.md, "Review depth"): at medium/high the depth half
+# of that pairing is no longer only a preference. `orchid jobs review-plan`
+# labels each slot `worktree` or `inline`, its depth pass searches past this
+# chain into role.reviewer's chain and the implementer's own engine to find a
+# worktree-capable slot, and `orchid drive` will not make a DETERMINISTIC
+# approval at those tiers unless one of the counted reviews came from a
+# worktree-capable engine — it stops at an arbitrable `review-evidence`
+# boundary instead. Nothing here refuses a slot or an engine over depth: an
+# install whose only reviewers are inline still gets every slot, and still
+# reviews every task; what it does not get is an approval no human read.
+# Built-in defaults shown here:
 # review.low=agy
 # review.medium=codex-review,agy
 # review.high=codex-review,agy

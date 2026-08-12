@@ -260,12 +260,18 @@ mk_policy_task P10 low high
 mk_review P10 "" approve true '[]'
 assert_eq approve "$(decision_of P10)" "a single unanimous scope-complete approval approves at risk_tier low"
 
+# v1.1 (T012): at medium/high the COUNT is no longer the whole bar -- one of
+# the counted reviews has to come from a worktree-capable engine (lesson
+# L010). `mk_review` writes no `.engine` at all, so neither of these two can
+# be attributed to one, and the set is depth-unproven however unanimous it
+# is. The depth-satisfied twin of this case is in tests/test_review.sh.
 mk_policy_task P11 medium high
 mk_review P11 "" approve true '[]'
 mk_review P11 ".2" approve true '[]'
-assert_eq approve "$(decision_of P11)" "two unanimous scope-complete approvals approve at risk_tier medium"
-assert_match "unanimous scope-complete approval from 2 review" "$(detail_of P11)" \
-  "the approval detail records how many reviews backed it"
+assert_eq evidence "$(decision_of P11)" \
+  "two unanimous approvals from unattributable reviewers do NOT deterministically approve at risk_tier medium"
+assert_match "unproven review depth: 2 of 2" "$(detail_of P11)" \
+  "the detail says the count was met and names the axis that was not"
 
 mk_policy_task P12 low high
 mk_review P12 "" approve true '[{"severity":"medium","title":"a nit below the bar"}]'

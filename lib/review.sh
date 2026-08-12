@@ -29,6 +29,35 @@ review_required_count() {
   esac
 }
 
+# review_depth_required <risk_tier> -- exit 0 iff this tier requires DEPTH
+# evidence as well as a count: at least one review produced by a WORKTREE-
+# CAPABLE engine, one that can open a file the diff does not contain. `low`
+# -> no; `medium`/`high` -> yes; anything unrecognized -> yes, the same
+# fail-safe posture review_required_count and _review_tier_key already take.
+#
+# v1.1 (T012), from lesson L010 with direct evidence from run r-001: engine
+# independence and review DEPTH are different axes. An inline, diff-only
+# reviewer judges from diff text alone; on r-001's T003 one approved a
+# candidate whose central acceptance criterion was unmet, with a null
+# findings array, while a worktree-capable slot found the defect and cited
+# the file and line. Independence is still required (slot 1, every tier, and
+# the reason agy is never dropped); depth is what this predicate adds.
+#
+# WHY THIS KEYS ON risk_tier, NOT ON THE TASK'S PROSE. The requirement being
+# encoded -- "the criteria involve interaction with existing kernel
+# behaviour" -- is a judgement about the task, and `risk_tier` is already the
+# kernel's operator-set, monotonic, `--reason`-carrying proxy for exactly
+# that judgement (INV-08; kernel.md ties medium/high to shared/kernel
+# surface). Deriving it a second time by reading `acceptance_criteria` would
+# make the kernel parse prose, which it does nowhere else. See docs/specs/
+# kernel.md, "Review depth", for the decision and the rejected alternatives.
+review_depth_required() {
+  case "$1" in
+    low) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # review_implementer_engine <repo> <task> -- the task's recorded
 # `implementer_engine_id` frontmatter if set (kernel-derived, single-writer:
 # `task advance implementing->testing` is the only writer of that field),
@@ -82,6 +111,55 @@ _review_worktree_capable() {
   return 1
 }
 
+# review_engine_depth <engine-name> -- the DEPTH column of the routing table:
+# `worktree` when the named engine is worktree-capable, else `inline`. A name
+# that does not resolve at all reads `inline` -- depth is a positive claim,
+# and an engine nobody can discover cannot be proven to be able to open the
+# checkout.
+review_engine_depth() {
+  local dir
+  if dir="$(resolve_engine_dir "$1" 2>/dev/null)" && _review_worktree_capable "$dir"; then
+    echo worktree
+  else
+    echo inline
+  fi
+}
+
+# review_qid_worktree_capable <qualified-engine-id> -- exit 0 iff the engine
+# that FILED a review is worktree-capable. Reviewer envelopes name their
+# producer by its manifest `id=` (e.g. "orchid/claude"), never by the plugin
+# DIRECTORY name a routing row carries, so this is the qualified-id-keyed
+# counterpart of review_engine_depth: strip the publisher, resolve the bare
+# name, and only trust the answer when that name qualifies BACK to the same
+# id (resolve_engine_qualified_id's own round trip, fallback included). A
+# publisher whose manifest id does not match its directory name, a forged
+# `orchid/<anything>`, or an engine not installed here therefore reads as
+# not-worktree-capable rather than as a lucky prefix match.
+review_qid_worktree_capable() {
+  local qid="$1" name dir
+  [ -n "$qid" ] || return 1
+  name="${qid##*/}"
+  [ -n "$name" ] || return 1
+  [ "$(resolve_engine_qualified_id "$name")" = "$qid" ] || return 1
+  dir="$(resolve_engine_dir "$name" 2>/dev/null)" || return 1
+  _review_worktree_capable "$dir"
+}
+
+# review_routing_has_depth <routing-table> -- exit 0 iff at least one row of
+# a `review_routing`/`orchid jobs review-plan` table is a `worktree` slot.
+# Read the 4th field only: an install with no eligible worktree-capable
+# reviewer at all still gets its full complement of slots (never zero), so
+# "how many slots" can never answer this question.
+review_routing_has_depth() {
+  local line
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "$(printf '%s' "$line" | cut -s -f4)" = worktree ] || continue
+    return 0
+  done <<< "$1"
+  return 1
+}
+
 # _review_candidate_ok <repo> <engine> -- discovered + reviewer-role-
 # eligible + ledger-available. Shared by both slots' candidate walks below.
 _review_candidate_ok() {
@@ -94,7 +172,16 @@ _review_candidate_ok() {
 
 # review_routing <repo> <task> -- prints the routing table for this task's
 # current risk_tier, one line per required slot: <slot>\t<engine>\t
-# <engine-independent|session-independent>.
+# <engine-independent|session-independent>\t<worktree|inline>.
+#
+# The two labels are INDEPENDENT AXES and the table prints both because
+# neither implies the other (lesson L010): column 3 is who the reviewer is
+# NOT (the implementer), column 4 is what the reviewer can SEE. The depth
+# column is descriptive, never a filter -- no slot is ever dropped for being
+# `inline`, because on a diff it can inspect an inline reviewer is often the
+# only genuine engine independence an install has. What reacts to an
+# all-`inline` medium/high table is the arbitration policy (lib/drive.sh's
+# drive_review_decision) and the journal, not this function.
 review_routing() {
   local repo="$1" task="$2" tf risk_tier count impl_engine tier_chain
   tf="$(orchid_state "$repo")/tasks/$task.md"
@@ -120,16 +207,35 @@ review_routing() {
   if [ -z "$slot1_engine" ]; then
     slot1_engine="$impl_engine"; slot1_label="session-independent"
   fi
-  printf '1\t%s\t%s\n' "$slot1_engine" "$slot1_label"
+  printf '1\t%s\t%s\t%s\n' "$slot1_engine" "$slot1_label" "$(review_engine_depth "$slot1_engine")"
 
   [ "$count" -ge 2 ] || return 0
 
-  # Slot 2 (medium/high only): the next DISTINCT available engine from the
-  # tier chain, worktree-capable entries tried first (depth), independence
-  # labeled the same way as slot 1. Fewer distinct engines than slots ->
-  # repeat slot 1's engine, forced session-independent (a single engine
-  # reviewing twice is degraded independence regardless of its relation to
-  # the implementer) -- never zero slots.
+  # Slot 2 (medium/high only): the next DISTINCT available engine,
+  # worktree-capable entries tried first (depth), independence labeled the
+  # same way as slot 1. Fewer distinct engines than slots -> repeat slot 1's
+  # engine, forced session-independent (a single engine reviewing twice is
+  # degraded independence regardless of its relation to the implementer) --
+  # never zero slots.
+  #
+  # THE DEPTH PASS SEARCHES WIDER THAN THE TIER CHAIN (v1.1, T012). These
+  # tiers exist to pair an inline reviewer with one that can open the file
+  # the change must stay consistent with, so settling for a second INLINE
+  # engine merely because it is the next name in `review.<tier>` gives up the
+  # pairing over a config-ordering accident. Pass 1 therefore continues past
+  # the tier chain into `role.reviewer`'s own chain and finally the
+  # implementer's engine -- which is worktree-capable on any install whose
+  # implementer can also review, and whose slot is honestly labeled
+  # `session-independent` below. On r-001 that was exactly the slot that
+  # caught the defect the inline slot approved (lesson L010). Everything
+  # reached this way still passes the same discovery + reviewer-eligibility +
+  # ledger test as a tier-chain entry; nothing is admitted that
+  # `_review_candidate_ok` would refuse.
+  #
+  # Pass 2 (the INLINE fallback, below) is deliberately NOT widened: once no
+  # depth is available anywhere, which inline engine fills the slot is a
+  # plain preference question, and `review.<tier>` is the operator's answer
+  # to it.
   local dir slot2_engine=""
   while IFS= read -r e; do
     [ -n "$e" ] || continue
@@ -138,7 +244,9 @@ review_routing() {
     _review_worktree_capable "$dir" || continue
     _review_candidate_ok "$repo" "$e" || continue
     slot2_engine="$e"; break
-  done < <(printf '%s\n' "$tier_chain" | tr ',' '\n')
+  done < <(printf '%s\n' "$tier_chain" | tr ',' '\n'
+           resolve_role_chain "$repo" reviewer 2>/dev/null || true
+           printf '%s\n' "$impl_engine")
   if [ -z "$slot2_engine" ]; then
     while IFS= read -r e; do
       [ -n "$e" ] || continue
@@ -155,7 +263,7 @@ review_routing() {
   else
     slot2_engine="$slot1_engine"; slot2_label="session-independent"
   fi
-  printf '2\t%s\t%s\n' "$slot2_engine" "$slot2_label"
+  printf '2\t%s\t%s\t%s\n' "$slot2_engine" "$slot2_label" "$(review_engine_depth "$slot2_engine")"
 }
 
 # ===========================================================================

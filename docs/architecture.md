@@ -247,6 +247,21 @@ leaving evidence nothing could credit, on the only edge out of `reviewing`,
 in a status from which no arbitration verb is legal. Independence you can
 recompute is not independence you can prove.
 
+**Independence is not depth, and `medium`/`high` need both.** Slot 1's
+engine-independent reviewer is typically *inline*: it judges the diff text
+alone and cannot open a file the diff never showed it. Run r-001 shipped the
+consequence four times — an inline slot approving a candidate whose central
+acceptance criterion was unmet, with an empty findings array, while the
+worktree-capable slot cited the file and line and the arbiter rejected. So
+at those tiers the routing table labels each slot `worktree` or `inline`,
+slot 2's depth pass searches past `review.<tier>` to find a worktree-capable
+reviewer wherever the install has one, and an approval with no
+worktree-capable review behind it is handed to an arbiter rather than made
+deterministically ([specs/kernel.md](./specs/kernel.md), "Review depth").
+The inline reviewer is never dropped: on a diff it can genuinely inspect it
+is often the only cross-vendor independence an install has, and independence
+guards a failure mode depth cannot.
+
 ## 5. Epoch fencing: two writers, one survivor
 
 <!-- Grounded in docs/specs/kernel.md's normative process model (epochs,

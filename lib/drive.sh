@@ -475,7 +475,9 @@ drive_envelope_has_blocking_finding() {
 #                           blocking_severity -- the ONLY deterministic
 #                           approval this policy will ever make.
 #   evidence<TAB><detail>   fewer valid, `ok`, current-candidate reviews on
-#                           hand than the task's risk_tier requires.
+#                           hand than the task's risk_tier requires; or (a
+#                           medium/high tier only) enough of them, but not
+#                           one from a worktree-capable engine.
 #   conflict<TAB><detail>   a request-changes verdict, a finding at or above
 #                           blocking_severity, mixed verdicts, or a review
 #                           that reports scope_complete false.
@@ -528,9 +530,38 @@ drive_envelope_has_blocking_finding() {
 # and deterministic approval rests on `verdict` + `scope_complete` alone.
 # Either way an EMPTY findings[] blocks nothing: an engine that reports no
 # findings is a valid review, and this gate has always read `[]` that way.
+#
+# REVIEW DEPTH (v1.1, T012 -- lesson L010, evidenced on run r-001's T003). At
+# `medium`/`high` the count is not the whole bar: at least one of the counted
+# reviews must come from a WORKTREE-CAPABLE engine, one that could open a
+# file the diff never showed it. An inline reviewer's approve is a real
+# review and still counts toward the tier's number; what it cannot do on its
+# own is make an approval DETERMINISTIC on a task whose criteria turn on
+# interaction with existing behaviour -- which is what `risk_tier medium` and
+# above already assert about a task. r-001 shipped exactly that failure: an
+# inline slot's contentless approve, a worktree-capable slot's file-and-line
+# rejection, four times in one run.
+#
+# The shortfall is reported as `evidence`, not as a refusal or a conflict.
+# There is nothing wrong with the reviews on hand -- there is a question
+# nobody able to answer it was asked -- so this lands on a `review-evidence`
+# boundary while the task is `arbitrating`, which `drive_boundary_priority`
+# already ranks arbitrable: `orchid task arbitrate` settles it, and on a
+# brokered surface the orchestrator is woken to read the diff and decide.
+# That is precisely the path that caught the defect on r-001, so the policy
+# routes to it deliberately rather than approving on its own authority. It is
+# never a permanent park: the verb that settles it can always run.
+#
+# Depth is attributed from the envelope's OWN `.engine` (cross-checked
+# against the job manifest by `orchid jobs reconcile` before filing), never
+# from the routing table -- a table says who was ASKED, an envelope says who
+# ANSWERED, and a relaunch through a different `--engine` can make those
+# differ. An envelope that names no engine, or names one not installed here,
+# is not depth evidence: depth is a positive claim about what a reviewer
+# could see, and an unattributable review supports no such claim.
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
-  local f n approve_n conflicts base verdict scope status ecand
+  local f n approve_n depth_n conflicts base verdict scope status ecand eengine
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -548,7 +579,7 @@ drive_review_decision() {
     return 0
   fi
 
-  n=0; approve_n=0; conflicts=""
+  n=0; approve_n=0; depth_n=0; conflicts=""
   for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
@@ -567,6 +598,13 @@ drive_review_decision() {
     status="$(envelope_field "$f" '.status // empty' 2>/dev/null || true)"
     [ "$status" = ok ] || continue
     n=$(( n + 1 ))
+    # Step 3 -- the DEPTH axis, over exactly the same counted set. Read
+    # alongside the verdict rather than in a second walk, so a review can
+    # never be counted for the tier's number and skipped for its depth.
+    eengine="$(envelope_field "$f" '.engine // empty' 2>/dev/null || true)"
+    if review_qid_worktree_capable "$eengine"; then
+      depth_n=$(( depth_n + 1 ))
+    fi
     verdict="$(envelope_field "$f" '.verdict // empty' 2>/dev/null || true)"
     scope="$(envelope_field "$f" '.scope_complete // false' 2>/dev/null || true)"
     if [ "$verdict" = approve ]; then
@@ -593,8 +631,18 @@ drive_review_decision() {
     return 0
   fi
 
-  printf 'approve\tunanimous scope-complete approval from %s review(s), no finding at or above %s\n' \
-    "$approve_n" "$blocking"
+  # Depth is judged AFTER the conflict arm on purpose: when a review already
+  # says something is wrong, that finding is the actionable thing to report,
+  # and a depth shortfall behind it would only rename a decision the operator
+  # is being handed anyway.
+  if [ "$depth_n" -eq 0 ] && review_depth_required "$tier"; then
+    printf 'evidence\tunproven review depth: %s of %s review(s) for risk_tier %s bound to candidate %s, none of them from a worktree-capable engine — an inline reviewer judges the diff text alone and cannot open the files this change must stay consistent with\n' \
+      "$n" "$need" "$tier" "$cand"
+    return 0
+  fi
+
+  printf 'approve\tunanimous scope-complete approval from %s review(s), %s of them worktree-capable, no finding at or above %s\n' \
+    "$approve_n" "$depth_n" "$blocking"
 }
 
 # drive_hook_has_required <repo> <point> -- 0 iff the point's binding carries
