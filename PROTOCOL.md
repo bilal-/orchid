@@ -202,10 +202,10 @@ The kernel-owned boundary kinds:
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
-| `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository |
+| `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository — or its state cannot be read at all, which is refused in the same direction rather than taken for a clean tree |
 | `operator-handoff` | `handoff_before_verify` is on and this candidate's execution-requiring mechanical steps are not acknowledged for it — see "The operator hand-off" below |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
-| `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem |
+| `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree |
 
 **Waking a model for one asks the SAME question.** The precedence above
 decides which of several boundaries goes into the record;
@@ -642,18 +642,42 @@ ones its archetype never declares.
      `candidate_sha` — or, on a first dispatch, which has none yet, against its
      `base_sha`, where an unmoved HEAD means the attempt produced no commit at
      all. If it has not moved, the envelope is NOT an acceptable envelope: take
-     no transition, and hand it to step 2's escalation ladder exactly as a
-     quarantined or non-ok envelope is handed to it — same ladder, same rung,
-     no second count. The reason names both shas, and the journal entry is the
-     whole record of the refusal: `orchid task infra-fail <id> --reason
-     "implement envelope reported ok but delivered nothing: worktree HEAD <sha>
-     is unchanged from the task's recorded <sha>"`, relaunch the implementer,
-     and leave the task in `implementing`. This is deliberately the
-     `infra_failures` counter and not `attempts`: the attempt budget bounds
-     defects in work that was actually delivered, and charging it here would
-     spend a rework round on a candidate nobody touched — while advancing would
-     spend a full verify and a full review round re-proving a defect this run
-     already arbitrated.
+     no transition. There is no candidate either way — but WHICH no-op this is
+     decides who answers it, so read the tree's state before charging anything
+     (`git status --porcelain`, `.orchid/` excluded, being no part of any
+     candidate — the same read the hand-off below makes).
+
+     **The tree is CLEAN.** The dispatch left no commit and no edit. Hand it to
+     step 2's escalation ladder exactly as a quarantined or non-ok envelope is
+     handed to it — same ladder, same rung, no second count. The reason names
+     both shas, and the journal entry is the whole record of the refusal:
+     `orchid task infra-fail <id> --reason "implement envelope reported ok but
+     delivered nothing: worktree HEAD <sha> is unchanged from the task's
+     recorded <sha>"`, relaunch the implementer, and leave the task in
+     `implementing`. This is deliberately the `infra_failures` counter and not
+     `attempts`: the attempt budget bounds defects in work that was actually
+     delivered, and charging it here would spend a rework round on a candidate
+     nobody touched — while advancing would spend a full verify and a full
+     review round re-proving a defect this run already arbitrated.
+
+     **The tree is DIRTY.** The dispatch did the work and failed to commit it,
+     which is not the same failure and must not take the same rung: the
+     ladder's recovery is a relaunch, and a relaunch into that worktree hands
+     the next dispatch a tree it did not create and cannot account for — it
+     will commit those edits as its own, revert them, or build on top of them,
+     and the journal will read whichever it does as the work of a round that
+     never wrote them. Throwing real output away is not a decision to
+     automate. So charge nothing, relaunch nothing, mark nothing refused (step
+     4's mark would make the envelope unselectable after the work is committed,
+     which is precisely the resolution being asked for), and stop at an
+     `operator-decision` boundary that names the observed HEAD, the recorded
+     sha and the uncommitted paths. Both answers leave this arm correct on the
+     next pass: committed onto the task branch, HEAD is off the floor and the
+     envelope is ordinary delivery; discarded, the tree is clean and the
+     refusal above applies. A tree that cannot be READ at all takes a
+     `worktree-conflict` boundary — the same direction, never folded into the
+     clean case, since an inspection that answers "clean" when it could not
+     look would relaunch over a tree nobody has seen.
   4. **Make that refusal stick**, by appending the refused envelope's basename
      to the task's `refused_envelopes` (`orchid task set`), and never selecting
      a listed envelope again — as an acceptance or as a failure. Reconcile
@@ -679,8 +703,11 @@ ones its archetype never declares.
 
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a
-  repeat failure goes to `blocked`, never `rework`) — as does the no-op
-  delivery above, which reaches `blocked` by the same `infra_max` cap.
+  repeat failure goes to `blocked`, never `rework`) — as does the clean-tree
+  no-op delivery above, which reaches `blocked` by the same `infra_max` cap.
+  The dirty-tree one takes no rung at all and so reaches no cap: it is a
+  boundary from the first pass that sees it, and stays one until a human
+  answers it.
 
   **The operator hand-off (`orchid task handoff`).** Some steps in a
   candidate are mechanical and require EXECUTION: applying a linter's own

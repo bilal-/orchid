@@ -401,6 +401,31 @@ if drive_delivery_is_noop "$POLICY" P50 ""; then
   fail "an unreadable HEAD is a worktree fault, handled by its own boundary — never a silent no-op verdict"
 fi
 
+# --- and WHICH no-op it is: a sha comparison cannot see the tree -----------
+# An unmoved HEAD over a worktree full of uncommitted edits is a dispatch that
+# did the work and failed to commit it. It fails the delivery test the same way
+# a commentary-only round does -- no candidate exists either way -- but the
+# ladder's recovery for the latter is to relaunch the implementer into that
+# same worktree, which over the former hands the next dispatch a tree it did
+# not write. So the verdict distinguishes them, from the tree state the caller
+# read (`handoff_worktree_dirty`'s stdout and exit status) rather than from a
+# second sha. RED before this: there was no verdict to ask at all — every
+# unmoved HEAD took the one refusal arm, whatever the tree held.
+assert_eq delivered "$(drive_delivery_verdict "$POLICY" P50 3333333333333333333333333333333333333333 "" 0)" \
+  "a HEAD that moved off the floor is delivery — there is a candidate to test"
+assert_eq delivered "$(drive_delivery_verdict "$POLICY" P50 3333333333333333333333333333333333333333 "src/half-done.sh" 0)" \
+  "and a dirty tree over a MOVED head is not this arm's question — that one belongs to the operator hand-off, one state later, against a candidate that exists"
+assert_eq nothing "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 0)" \
+  "an unmoved HEAD over a CLEAN tree is the commentary-only round: no commit, no edit, nothing on disk to show for the dispatch"
+assert_eq uncommitted "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "src/half-done.sh, docs/notes.md" 0)" \
+  "an unmoved HEAD over a DIRTY tree is a different failure: the dispatch wrote real work and never committed it"
+assert_eq uninspected "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "git status exited 128 in /nope" 2)" \
+  "a tree that could not be READ is refused in the same direction as a dirty one, never folded into the clean case — an inspection that answers 'clean' when it could not look is fail-open"
+assert_eq uninspected "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 2)" \
+  "and the exit status decides that, not the text: a failed inspection prints its diagnosis on the same channel a dirty tree prints paths on"
+assert_eq delivered "$(drive_delivery_verdict "$POLICY" P52 "$CAND" "src/half-done.sh" 0)" \
+  "with no sha recorded a no-op cannot be PROVEN, so nothing is refused — the tree state does not turn an unprovable case into a refusable one"
+
 # --- a refusal that does not stick is not a refusal ------------------------
 # The no-op test above compares an envelope against a MOVING worktree; it is
 # not a property of the envelope, and `jobs reconcile` removes no envelope. A
@@ -2573,3 +2598,157 @@ assert_eq 16 "$NDRIVE_RC" \
   "the pass after the cap stops at a judgment boundary, the one exit status that fetches an operator (out: $NDRIVE_OUT)"
 assert_eq blocked-task "$(ORCHID_REPO="$NOOP" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
   "and the boundary it records is the blocked task itself"
+
+# ===========================================================================
+# Part P -- A SHA COMPARISON CANNOT SEE THE TREE. Part O judges delivery by
+# comparing the worktree HEAD against the sha the round was dispatched to move,
+# and an unmoved HEAD is no candidate however the envelope reads. But a sha
+# describes a COMMIT and says nothing about the tree sitting on top of it, so
+# that one comparison answers "delivered nothing" for two failures that are not
+# the same failure:
+#
+#   * the commentary-only round -- no commit AND no edit. Part O's case. Its
+#     recovery is deterministic: spend the job-delivery rung and relaunch the
+#     implementer into the same worktree, which is exactly where it left off.
+#   * a dispatch that DID the work and never committed it. The worktree holds
+#     real, uncommitted output. Relaunching over it hands the next dispatch a
+#     tree it did not create and cannot account for -- it will commit those
+#     edits as its own, revert them, or build on top of them, and whichever it
+#     does, the journal will read as the work of a round that never wrote them.
+#     Throwing the work away is a decision about somebody's real output, which
+#     is not a rung of a ladder; it is the operator's call.
+#
+# So this part pins the SECOND one, and pins that it is handled differently:
+# no rung, no relaunch, no refusal mark, and a judgment boundary naming what is
+# on disk. RED before this task's fix: the fixture below took Part O's arm --
+# an infra_failure and a relaunch straight into the dirty tree.
+# ===========================================================================
+UNCM="$WORK/uncommitted"
+mkdir -p "$UNCM" "$WORK/uctl"
+cd "$UNCM" || exit 1
+git init -q .
+printf 'role.implementer=stubdirty\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$UNCM" "$ORCHID_BIN" init >/dev/null || fail "orchid init (uncommitted-delivery fixture)"
+git checkout -q orchid/integration
+
+# The same stub as Part O's in every respect but one: it WRITES. A file lands
+# in the task worktree, no commit is made, and the envelope reports ok.
+mkdir -p "$WORK/eng/stubdirty"
+printf 'manifest_version=1\nid=test/stubdirty\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubdirty/plugin.conf"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -eu'
+  printf 'CTL=%s\n' "$(printf '%q' "$WORK/uctl")"
+} > "$WORK/eng/stubdirty/run"
+cat >> "$WORK/eng/stubdirty/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+op="$(jq -r .operation "$req")"
+wt="$(jq -r .worktree "$req")"
+[ "$op" = implement ] || exit 1
+# Counted by the stub itself: this is how the test asks "was a second
+# implementer launched over the tree the first one dirtied?" without racing the
+# pass. A relaunch here is the defect.
+echo "$(( $(cat "$CTL/n" 2>/dev/null || echo 0) + 1 ))" > "$CTL/n"
+printf 'the fix this round was dispatched to make\n' > "$wt/half-done.txt"
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"applied the fix"}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+chmod +x "$WORK/eng/stubdirty/run"
+
+UEPOCH="$(ORCHID_REPO="$UNCM" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+uorchid() { ORCHID_REPO="$UNCM" ORCHID_EPOCH="$UEPOCH" "$ORCHID_BIN" "$@"; }
+uorchid requirements import "$WORK/requirements.md" >/dev/null
+uorchid task create U010 "its implementer edits the tree and never commits" >/dev/null
+uorchid task set U010 verification_commands "false" >/dev/null
+uorchid plan apply --reason "initial plan" >/dev/null
+
+UTF="$UNCM/.orchid/tasks/U010.md"
+UDRIVE_OUT=""; UDRIVE_RC=0
+run_udrive() {
+  UDRIVE_RC=0
+  UDRIVE_OUT="$(ORCHID_REPO="$UNCM" ORCHID_EPOCH="$UEPOCH" "$DRIVE" 2>&1)" || UDRIVE_RC=$?
+}
+ustatus() { fm_get "$UTF" status; }
+
+# Passes until the boundary lands. `testing` reached even once IS the defect --
+# there is no candidate, whatever is sitting in the tree.
+upass=0
+while [ "$UDRIVE_RC" -ne 16 ] && [ "$upass" -lt 30 ]; do
+  run_udrive
+  case "$(ustatus)" in
+    pending|implementing) ;;
+    *) fail "U010 must never leave implementing on a dispatch that committed nothing (got '$(ustatus)', out: $UDRIVE_OUT)"
+       break ;;
+  esac
+  upass=$(( upass + 1 ))
+  sleep 0.3
+done
+
+UWT="$(fm_get "$UTF" worktree)"
+[ -n "$UWT" ] || fail "the dispatch must have recorded a worktree for U010"
+UBASE="$(fm_get "$UTF" base_sha)"
+assert_eq 16 "$UDRIVE_RC" \
+  "the pass stops at a judgment boundary — this failure has no deterministic recovery a driver may take on its own (out: $UDRIVE_OUT)"
+assert_eq operator-decision "$(ORCHID_REPO="$UNCM" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
+  "and the boundary is an operator-decision: commit the work onto the branch or throw it away is a call about somebody's real output"
+assert_eq implementing "$(ustatus)" \
+  "the task itself has not moved — an unmoved HEAD is no candidate, however much is sitting in the tree"
+assert_eq "" "$(fm_get "$UTF" candidate_sha)" \
+  "and nothing is stamped as the candidate: the work exists nowhere a sha can name"
+assert_eq "$UBASE" "$(git -C "$UWT" rev-parse HEAD)" \
+  "nor did anything commit on the dispatch's behalf"
+
+# THE DISTINCTION, in the two places it has to show. The pass SAYS which of the
+# two failures this was...
+assert_match "uncommitted work" "$UDRIVE_OUT" \
+  "the pass names what actually happened — 'delivered nothing' would be a false report of a tree with the work in it"
+assert_match "half-done.txt" "$UDRIVE_OUT" \
+  "and names the paths, so the operator can see what they are being asked to decide about without going looking"
+
+# ...and NOTHING IS CHARGED. Part O's rung belongs to a failure with a
+# deterministic recovery; this one is a stop, and a stop that also spent a rung
+# would walk this task toward `blocked` on passes an operator has not answered
+# yet.
+assert_eq 0 "$(fm_get "$UTF" infra_failures)" \
+  "no job-delivery rung is spent: the ladder's recovery is a relaunch, and a relaunch is exactly what must not happen here"
+assert_eq 0 "$(fm_get "$UTF" attempts)" \
+  "and no attempt either — the rework budget bounds defects in delivered work, and none was delivered"
+assert_eq "" "$(fm_get "$UTF" refused_envelopes)" \
+  "nor is the envelope marked refused: once the operator commits that work it IS the delivery this envelope reported, and a mark would make it unselectable forever"
+assert_eq 1 "$(cat "$WORK/uctl/n")" \
+  "and no second implementer was launched into the tree the first one dirtied"
+assert_eq "the fix this round was dispatched to make" "$(cat "$UWT/half-done.txt")" \
+  "the uncommitted work is still there, untouched — the driver reports it, it does not clean up after an engine"
+
+# A second pass changes none of that. The boundary is re-raised from the same
+# facts rather than escalating: an unanswered stop is not a fresh event.
+run_udrive
+assert_eq 16 "$UDRIVE_RC" "the stop holds until a human answers it (out: $UDRIVE_OUT)"
+assert_eq 0 "$(fm_get "$UTF" infra_failures)" "and re-reading the same tree spends nothing"
+assert_eq 1 "$(cat "$WORK/uctl/n")" "still one implementer, still no relaunch"
+assert_eq implementing "$(ustatus)" "still implementing, still no candidate"
+
+# THE OPERATOR ANSWERS IT, the way the boundary asks: the work is committed onto
+# the task branch. Now there IS a candidate, and the envelope that reported it
+# is still on disk and still selectable -- which is the whole reason it was not
+# marked refused. This is the assertion that the stop is EXITABLE.
+git -C "$UWT" add -- half-done.txt
+git -C "$UWT" commit -q -m "operator: commit the work the dispatch left behind"
+UCOMMIT="$(git -C "$UWT" rev-parse HEAD)"
+[ "$UCOMMIT" != "$UBASE" ] || fail "the operator's commit must really move the worktree HEAD"
+run_udrive
+assert_eq "$UCOMMIT" "$(fm_get "$UTF" candidate_sha)" \
+  "the committed work is recorded as the candidate — the refusal was about a tree with no commit in it, not about this envelope (out: $UDRIVE_OUT)"
+if [ "$(ustatus)" = implementing ]; then
+  fail "and the task leaves implementing once a candidate exists — a boundary that cannot be answered is a deadlock, not a stop (out: $UDRIVE_OUT)"
+fi
+assert_eq 0 "$(fm_get "$UTF" infra_failures)" \
+  "with nothing ever charged for the round the operator completed"

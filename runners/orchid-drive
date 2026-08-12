@@ -647,6 +647,7 @@ drive_dispatch() {
 # ---------------------------------------------------------------------------
 drive_implementing() {
   local id="$1" arch="$2" tf envf envb wt cand floor arc why
+  local dirty drc verdict
   tf="$state/tasks/$id.md"
   why=""; envb=""
 
@@ -748,9 +749,49 @@ drive_implementing() {
     fi
     if drive_delivery_is_noop "$repo" "$id" "$cand"; then
       floor="$(drive_delivery_floor "$repo" "$id")"
-      why="implement envelope reported ok but delivered nothing: worktree HEAD $cand is unchanged from the task's recorded $floor"
-      envb="$(basename "$envf")"
-      envf=""
+      # NO CANDIDATE EXISTS EITHER WAY -- but WHICH no-op this is decides who
+      # answers it, so the tree is read before anything is charged. A sha
+      # comparison cannot see a tree: an unmoved HEAD over a worktree full of
+      # uncommitted edits is a dispatch that did the work and failed to commit
+      # it, not one that sat still, and the ladder's recovery -- relaunch the
+      # implementer into that same worktree -- would hand the next dispatch a
+      # tree it did not create and cannot account for. `.orchid/` is excluded
+      # by the reader itself, being no part of any candidate.
+      drc=0
+      dirty="$(handoff_worktree_dirty "$wt")" || drc=$?
+      verdict="$(drive_delivery_verdict "$repo" "$id" "$cand" "$dirty" "$drc")"
+      case "$verdict" in
+        nothing)
+          why="implement envelope reported ok but delivered nothing: worktree HEAD $cand is unchanged from the task's recorded $floor, and the tree is clean — the dispatch left no commit and no edit"
+          envb="$(basename "$envf")"
+          envf="" ;;
+        uncommitted)
+          # Not a rung. Nothing is charged, nothing is relaunched and the
+          # envelope is NOT marked refused: whether that work is committed onto
+          # the branch or thrown away is a decision about somebody's real
+          # output, and both resolutions leave this arm correct on the next
+          # pass -- committed, HEAD is off the floor and the envelope is
+          # ordinary delivery; discarded, the tree is clean and this becomes
+          # the `nothing` refusal above. A mark here would break the first of those
+          # by making the envelope unselectable after the work landed.
+          drive_note "$id: implementing -> testing REFUSED — the ok envelope committed nothing, but the dispatch DID leave uncommitted work behind ($dirty)"
+          set_boundary operator-decision "$id" \
+            "implement envelope reported ok but committed nothing: worktree HEAD $cand is unchanged from the task's recorded $floor, and the dispatch left uncommitted work in $wt ($dirty) — commit it onto the task branch or discard it; relaunching an implementer over it would hand the next dispatch a tree it did not write"
+          return 0 ;;
+        *)
+          # `uninspected`, and anything this arm has not been taught -- the one
+          # word it can never see here is `delivered`, which the is_noop guard
+          # above already excluded. A tree that could not be READ takes the same
+          # direction as a dirty one and is never folded into the clean case: an
+          # inspection that answers "clean" when it could not look would spend a
+          # rung and relaunch over a worktree nobody has seen, the fail-open
+          # shape lib/handoff.sh exists to close. An unrecognized verdict stops
+          # here for the same reason -- a `case` that fell through to the
+          # refusal would charge a rung on a state it could not name.
+          set_boundary worktree-conflict "$id" \
+            "implement envelope reported ok with worktree HEAD $cand unchanged from the task's recorded $floor, and its tree is '$verdict' rather than clean — $dirty"
+          return 0 ;;
+      esac
     fi
   fi
 
