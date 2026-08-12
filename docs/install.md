@@ -156,7 +156,19 @@ from the source archive, avoiding a checksum self-reference.
    tripwire fired, that no repository acquired a remote or a remote ref, that
    the source checkout is unchanged afterwards (working tree, file listing,
    `HEAD`, and remote refs), and that removing the root leaves the machine as
-   it found it. Qualify each candidate repository with
+   it found it.
+
+   Run it from the Git checkout you are tagging, which is what this step
+   assumes. The suite is runnable inside an unpacked release archive too, and
+   there the tree has no Git metadata at its root: the rehearsal detects that
+   context, compares the file listing only, and records the working-tree,
+   `HEAD` and remote-ref half of the claim above as `NOT-TESTED`. It is never
+   reported as a pass — three Git questions a tree cannot answer would
+   otherwise compare equal before and after whatever the run did. So a
+   rehearsal for release day has to happen in the checkout, or the isolation
+   claim you are relying on is one that run did not make.
+
+   Qualify each candidate repository with
    `scripts/beta-qualify.sh` and work through
    [beta-qualification.md](./beta-qualification.md)'s operator checklist before
    handing a build to anyone.

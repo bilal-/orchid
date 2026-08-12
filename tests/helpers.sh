@@ -226,6 +226,108 @@ list_dir_files() (
     if [ -f "$entry" ]; then printf '%s\n' "${entry##*/}"; fi
   done
 )
+
+# --------------------------------------------------------------------------
+# THE TREE A SUITE RUNS FROM, and whether a Git question about it can be asked
+# at all (T004).
+#
+# tests/run.sh globs tests/test_*.sh, and this suite is deliberately runnable
+# inside an EXTRACTED RELEASE ARCHIVE: scripts/release.sh unpacks one and runs
+# scripts/ci-local.sh inside it, and tests/test_ci_release.sh skips its
+# Git-dependent checks there by design. An archive has no `.git` at its root.
+# Every `git -C <root> ...` asked of such a tree therefore fails, writes
+# nothing to stdout, and yields the empty string -- BEFORE and AFTER alike. A
+# before/after comparison assembled out of those answers compares a tree that
+# was never at risk: it passes whatever the run did, and in a log it is
+# indistinguishable from the same comparison made against a real checkout.
+# That is the "check that cannot fail" shape docs/specs/kernel.md's proof
+# discipline exists to remove, which is why the context is established FIRST
+# here rather than inferred from an empty answer afterwards.
+#
+# source_tree_is_checkout <path> -- true only when <path> is ITSELF the top
+# level of a Git checkout. "Is there a toplevel" is the wrong question: an
+# archive unpacked inside some unrelated repository has one, and every answer
+# Git gives about it describes THAT repository's working tree, HEAD and refs --
+# a different tree entirely, reported as though it were this one.
+source_tree_is_checkout() {
+  local root top
+  # `cd ""` is a silent bash no-op (L014), so an empty argument would leave
+  # `pwd -P` reporting the CALLER's directory and the question below being
+  # asked of the caller's own checkout. Refuse before that can happen.
+  [ -n "${1:-}" ] && [ -d "$1" ] || return 1
+  # Physical, for the reason REPO_ROOT above is: a checkout reached through a
+  # symlinked path (macOS hands out /var/folders/... for /private/var/folders/...)
+  # must compare equal to the physical path Git's own getcwd-based answer gives,
+  # or a genuine checkout reads as "no Git metadata here" and the caller records
+  # a claim as not-tested that it could have tested.
+  root="$(cd "$1" && pwd -P)" || return 1
+  top="$(git -C "$root" rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$top" ] && [ "$top" = "$root" ]
+}
+
+# snapshot_source_tree <path> -- one comparable blob holding everything a
+# caller may claim about <path> having been read-only input, and nothing it
+# may not.
+#
+# The FIRST line is the context itself, so a tree that stops (or starts) being
+# a checkout mid-run is a DIFFERENCE rather than a silent downgrade of what the
+# comparison covers.
+#
+# In a checkout, three questions, each scoped to something the caller can
+# actually control:
+#
+#  * WORKING TREE -- Git's own porcelain, `.orchid` excluded. That directory is
+#    the OUTER run's live state (its journal, task records, and runtime lease),
+#    rewritten by the kernel that invoked this suite while the suite runs, so
+#    including it makes the caller's own progress look like damage.
+#  * REMOTE REFS -- the only part of the ref namespace nothing local can
+#    disturb. Local branches live in a Git common directory shared with every
+#    other worktree of the checkout, so an outer commit or merge moves them
+#    mid-run through no act of the caller's.
+#  * HEAD -- which answers "did anything commit into the tree under test".
+#
+# Outside a checkout those three are ABSENT, not empty answers dressed up as
+# equal ones. What remains, in both contexts, is the NAMES listing (`.git` and
+# `.orchid` pruned), and it is real evidence either way: it catches a file
+# created or removed beside the tree's own content. What it cannot catch
+# outside a checkout is a change to the CONTENT of a file that was already
+# there -- so a caller running outside one must record that with not_tested,
+# never let it read as a pass. note_source_tree_context below is that record.
+snapshot_source_tree() {
+  local root="$1"
+  if source_tree_is_checkout "$root"; then
+    echo "--source-context-- git-checkout"
+    echo "--worktree--"
+    git -C "$root" status --porcelain=v1 --untracked-files=all -- ':!.orchid'
+    echo "--remote-refs--"
+    git -C "$root" for-each-ref --format='%(refname) %(objectname)' refs/remotes
+    echo "--head--"
+    git -C "$root" rev-parse HEAD
+  else
+    echo "--source-context-- no-git-metadata"
+  fi
+  echo "--names--"
+  find "$root" -name .git -prune -o -name .orchid -prune -o -print 2>/dev/null \
+    | LC_ALL=C sort
+}
+
+# note_source_tree_context <path> -- record what a snapshot_source_tree
+# comparison of <path> is going to be able to prove. Silent, with nothing
+# counted, in a checkout, where it proves all of it; one not_tested line
+# otherwise, naming the claim, why it cannot be tested here, and how to qualify
+# it out of band. Returns non-zero in that second case, for a caller that wants
+# to branch on it.
+#
+# Call it ONCE, before the first snapshot: not_tested writes to stdout, so
+# calling it from inside snapshot_source_tree would land in the snapshot and
+# make every comparison differ from itself.
+note_source_tree_context() {
+  local root="$1"
+  source_tree_is_checkout "$root" && return 0
+  not_tested "source-tree-git-state" \
+    "the working tree, HEAD and remote refs of $root, which is not the top level of a Git checkout -- this run is inside an extracted release archive, or some other copied tree, where Git can answer none of the three. That comparison is therefore not MADE here, rather than made against three empty answers, which would have passed whatever this run did. The file listing is still compared, so a file created or removed beside the tree's own content is still caught; a change to the CONTENT of a file that was already there is not. Qualify it by running this file from the Git checkout being released -- what docs/install.md's release-day steps prescribe, and what CI runs."
+  return 1
+}
 # --------------------------------------------------------------------------
 # Scratch-directory registry. THE hazard this exists for (m2's stray-commit
 # mishap, and v1-m4 T006's repeat of it): a test file opens with
