@@ -291,6 +291,15 @@ rc=0; ORCHID_EPOCH=$(( ORCHID_EPOCH - 1 )) "$ORCHID_BIN" run release-lease >/dev
 # what is being proven is that a wake STOPS HAPPENING, and only a spawn that
 # does not happen can show that.
 # ===========================================================================
+# lib/common.sh FIRST, and not only for tidiness: drive_wake_budget_max calls
+# config_get, which lives there, and lib/drive.sh sources nothing of its own
+# (every other caller -- the pump, the driver, tests/test_drive.sh -- has
+# already sourced the kernel by the time it reads this file). Without it the
+# budget's config lookup is a `command not found` whose empty output lands in
+# the malformed-value arm and falls back to the very default the assertion
+# below checks for -- so the arm would pass while proving nothing, which is
+# exactly what the configured-value assertion further down now rules out.
+source "$REPO_ROOT/lib/common.sh"
 source "$REPO_ROOT/lib/frontmatter.sh"
 source "$REPO_ROOT/lib/drive.sh"
 
@@ -380,6 +389,19 @@ fi
 if drive_wake_budget_exhausted "" 3 || drive_wake_budget_exhausted 4 "not-a-number"; then
   fail "a malformed counter must fail OPEN (budget remains) -- it must never be what silently stops a run being driven"
 fi
+
+# ...and the budget is genuinely READ, not merely defaulted to. `3` is also
+# what a budget whose config lookup does not work at all produces: an empty
+# value lands in the malformed-value arm and falls back to the same number, so
+# the default assertion above cannot by itself tell a working lookup from a
+# missing one. A repository that configures the key explicitly can.
+WB_CFG="$WB/configured"; mkdir -p "$WB_CFG"
+printf 'pump_wake_max=7\n' > "$WB_CFG/orchid.config"
+assert_eq 7 "$(drive_wake_budget_max "$WB_CFG")" \
+  "an explicit pump_wake_max is honoured -- the budget comes from config, not from a constant"
+printf 'pump_wake_max=0\n' > "$WB_CFG/orchid.config"
+assert_eq 3 "$(drive_wake_budget_max "$WB_CFG")" \
+  "a zero budget falls back to the default rather than to 'never wake an orchestrator at all'"
 
 # -- GREEN: within budget, the pump really does wake an orchestrator -------
 wb_pass=1
