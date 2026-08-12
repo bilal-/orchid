@@ -567,14 +567,21 @@ sequence in
    findings that are covered and deferred one at a time, with ids
    `<run>#<n>.<k>`; each is matched only against its own segment, never
    against the shared preamble, whose terms would otherwise cover all of
-   them at once. An entry that announces SEVERAL findings — the plural
+   them at once. The enumeration has to be a WHOLE one: every ordinal it
+   uses appearing exactly once, and no higher ordinal appearing at all, so
+   that a scrambled (`1, 3, 2`), gapped (`1, 2, 4`) or repeated list is not
+   split on the tidy prefix an ascending scan happens to reach — the
+   findings past the break would sit inside a segment attributed to a
+   neighbour, closeable by anything that matched it and never named on a
+   line of their own. An entry that announces SEVERAL findings — the plural
    "ledger items"/"ledger candidates", or a count like "the four outstanding
    findings" — but does not enumerate them, or enumerates fewer than it
-   states, cannot be split without guessing. It is reported as one
-   UNDECOMPOSED item that no task text can ever close: schedule its findings
-   and then `orchid plan defer` the entry, saying what you scheduled. The
-   operator states that these were considered; the check never infers it
-   from a keyword that happened to land in the same paragraph.
+   states, cannot be split without guessing either. Any of these is reported
+   as one UNDECOMPOSED item that no task text can ever close: schedule its
+   findings and then `orchid plan defer` the entry, saying what you
+   scheduled. The operator states that these were considered; the check
+   never infers it from a keyword that happened to land in the same
+   paragraph.
 
    Coverage is deliberately approximate and deliberately pessimistic: an
    item is associated with a task only through a distinctive anchor term (a

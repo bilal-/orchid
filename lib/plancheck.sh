@@ -145,19 +145,20 @@ plancheck_prev_run_id() {
 #     catches. Dropping it can only remove anchors, and a missing anchor
 #     costs one `orchid plan defer` while a shared one costs a lost finding.
 #
-#   UNDECOMPOSED. Any of three ways the split cannot be trusted: the entry
+#   UNDECOMPOSED. Any of the ways the split cannot be trusted: the entry
 #     says it carries SEVERAL findings -- the plural "ledger items"/"ledger
 #     candidates", or an explicit count ("TWO KERNEL DEFECTS", "the four
 #     outstanding findings") -- but has no usable enumeration; it enumerates
-#     FEWER segments than the count it states; or its markers are out of
-#     order, so the ascending scan stopped early. Where exactly one finding
-#     ends and the next begins is then a guess, and a wrong guess silently
+#     FEWER segments than the count it states; or its markers are scrambled,
+#     gapped or repeated, so the ascending scan reports a clean prefix of a
+#     list that is not one (see decompose). Where exactly one finding ends
+#     and the next begins is then a guess, and a wrong guess silently
 #     absolves the findings that fell on the wrong side of it. So the entry
 #     is emitted as ONE item in mode `undecomposed`, which plancheck_report
 #     never anchor-matches: no task text can close it, and only a named
 #     deferral with a reason can.
 #
-#     The last two are the half that matters most, and both say the same
+#     All but the first are the half that matters most, and they say the same
 #     thing: a SHORTER TIDY LIST IS WORSE THAN NO LIST. An entry stating four
 #     findings and enumerating three would otherwise report three neat
 #     `covered` lines and lose the fourth without ever naming it -- three
@@ -216,6 +217,18 @@ plancheck_ledger_items() {
       }
       return best
     }
+    # markers(text, k) -- how many times the literal marker `(k) ` occurs
+    # anywhere in text. `text` is a scalar parameter, so consuming it here is
+    # a copy and the caller's string is untouched.
+    function markers(text, k,   n, p, needle) {
+      needle = "(" k ") "
+      n = 0
+      while ((p = index(text, needle)) > 0) {
+        n++
+        text = substr(text, p + length(needle))
+      }
+      return n
+    }
     # decompose(text) -- how many `(k) ` markers text carries in ascending
     # order from 1, filling segstart[]; or -1 when the enumeration is
     # malformed. Each marker is searched for only AFTER its predecessor, so
@@ -223,12 +236,32 @@ plancheck_ledger_items() {
     # The trailing space is required so a bare "(1)" inside prose is not a
     # list marker.
     #
-    # The -1 closes the shape the ascending scan alone would swallow: if the
-    # marker for the NEXT ordinal exists somewhere in the text but NOT after
-    # its predecessor -- a scrambled or interleaved list, "(1) ... (3) ...
-    # (2) ..." -- then the scan stopped early and the findings it never
-    # reached would leave planning inside a segment attributed to something
-    # else. A shorter tidy list is worse than no list, so say so.
+    # Then the split is CROSS-CHECKED against the whole text before it is
+    # trusted, because the ascending scan alone reports a clean prefix for
+    # three different malformed lists and each one buries a finding inside a
+    # segment attributed to its neighbour:
+    #
+    #   SCRAMBLED   "(1) ... (3) ... (2) ..." -- the scan takes (1) then (2),
+    #     which sits last, and never reaches (3).
+    #   GAPPED      "(1) ... (2) ... (4) ..." -- the scan stops at (2)
+    #     because no (3) follows, and (4)'s finding lands inside segment 2.
+    #     An ordinal struck out of a hand-edited enumeration leaves exactly
+    #     this shape, and checking only for the NEXT ordinal misses it.
+    #   REPEATED    "(1) ... (2) ... (1) ..." -- a marker used twice means
+    #     the position the scan assigned it is a choice between two, and the
+    #     text after the other one is absorbed by whichever segment
+    #     surrounds it.
+    #
+    # So each ordinal the scan consumed must appear EXACTLY ONCE, and no
+    # higher ordinal may appear at all. A shorter tidy list is worse than no
+    # list -- its survivors come back closeable with a green verdict line
+    # while the finding that fell off is never named -- so any of the three
+    # returns -1 and the entry is reported whole and unmatchable.
+    #
+    # nseg == 0 returns before those checks: there is no enumeration to
+    # distrust, and a stray "(5) " in prose must not make an ordinary
+    # single-finding entry unmatchable. That is the `started_at` shape, which
+    # has to stay coverable by a task that names it.
     function decompose(text,   k, p, rest, needle) {
       nseg = 0; dpos = 1
       for (k = 1; k <= 99; k++) {
@@ -240,7 +273,9 @@ plancheck_ledger_items() {
         dpos = segstart[k] + length(needle)
         nseg = k
       }
-      if (index(text, "(" (nseg + 1) ") ") > 0) return -1
+      if (nseg == 0) return 0
+      for (k = 1; k <= nseg; k++) if (markers(text, k) != 1) return -1
+      for (k = nseg + 1; k <= 99; k++) if (markers(text, k) > 0) return -1
       return nseg
     }
     function segment(text, k) {

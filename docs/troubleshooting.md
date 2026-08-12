@@ -816,10 +816,12 @@ UNCOVERED [ledger] r-001#57 — CARRIED AS LEDGER ITEMS, not fixed here: …
           ^ this entry records SEVERAL findings and cannot be split …
 ```
 
-announces several findings in prose that cannot be separated unambiguously.
-No task text closes that one, by design: a wrong guess at where one finding
-ends would silently absolve the others. Read the entry, schedule what it
-needs, then defer it naming what you scheduled.
+announces several findings that cannot be separated unambiguously — prose
+with no enumeration, an enumeration shorter than the count the entry claims,
+or one whose markers are scrambled (`1, 3, 2`), gapped (`1, 2, 4`) or
+repeated. No task text closes that one, by design: a wrong guess at where one
+finding ends would silently absolve the others. Read the entry, schedule what
+it needs, then defer it naming what you scheduled.
 
 A deferral journals the decision and satisfies the check for that item alone
 — there is no bulk override, and it only works while `run_status` is

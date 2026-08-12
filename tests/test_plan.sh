@@ -505,13 +505,16 @@ assert_match "UNCOVERED \[lesson\] L001" "$out" \
 #     carries (5d);
 #   a SCRAMBLED entry, whose markers run 1, 3, 2, so an ascending scan stops
 #     early and the finding it never reached is buried inside a segment
-#     attributed to another one (5d2).
+#     attributed to another one (5d2);
+#   a GAPPED entry, whose markers run 1, 2, 4 -- the shape an ordinal struck
+#     out of a hand-edited enumeration leaves behind, and the one a check for
+#     the NEXT ordinal alone walks straight past (5d3).
 #
-# The last two are the same lesson twice: A SHORTER TIDY LIST IS WORSE THAN
-# NO LIST. Split either of them and the survivors come back closeable with a
-# green line while the finding that fell off is never named at all -- one
-# report, several verdicts, and the thing this check exists to surface gone
-# without a trace. Both are therefore treated as undecomposable.
+# The last three are the same lesson three times: A SHORTER TIDY LIST IS
+# WORSE THAN NO LIST. Split any of them and the survivors come back closeable
+# with a green line while the finding that fell off is never named at all --
+# one report, several verdicts, and the thing this check exists to surface
+# gone without a trace. All three are therefore treated as undecomposable.
 #
 # RED (per-entry tracking): 5a finds three findings where one item exists, so
 # every id lookup below comes back empty and the assertions fail on the spot.
@@ -544,6 +547,13 @@ echo "# Requirements" > .orchid/requirements.md
 # reaches (3), burying uninstall_symlink_assert inside finding one.
 "$ORCHID_BIN" journal add --kind ledger \
   "ARBITRATION: carried findings, listed out of order: (1) merge_rebase_regeneration records a blocking pass inferred from the manifest rather than tested; (3) uninstall_symlink_assert uses a test that is false for a dangling link; (2) qualify_output_symlink leaves harness directories in a target it refuses to write to" >/dev/null
+# The gapped entry: markers 1, 2, 4. The ascending scan takes (1) and (2),
+# finds no (3) after them, and stops -- a clean-looking two-finding split
+# with trust_walk_symlink buried inside the second segment. Like the
+# scrambled entry it states no count and uses no plural marker, so the GAP
+# itself is the only evidence the split cannot be trusted.
+"$ORCHID_BIN" journal add --kind ledger \
+  "ARBITRATION: carried findings, with a gap where one was struck out: (1) notify_dedupe_window drops the second alert of a pair naming different tasks; (2) status_lease_age reads the lease mtime rather than the stamp recorded inside it; (4) trust_walk_symlink follows a symlinked plugin directory out of the repository" >/dev/null
 
 roll_over "open the second run"
 assert_eq "r-002" "$(fm_get .orchid/roadmap.md run_id)" "sanity: the multi-finding fixture rolled over"
@@ -551,13 +561,13 @@ echo "# Requirements v2" > .orchid/requirements.md
 "$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
 
 # ---------------------------------------------------------------------------
-# 5a -- four journal entries, SIX carried-forward items: the enumerated one
-# is three findings, the other three are one apiece.
+# 5a -- five journal entries, SEVEN carried-forward items: the enumerated one
+# is three findings, the other four are one apiece.
 # ---------------------------------------------------------------------------
 rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
 assert_eq 3 "$rc" "crosscheck exits 3 while the carried findings are unconsidered"
-assert_match "left 6 carried-forward item" "$out" \
-  "the entry carrying three findings is three items, so four entries are six"
+assert_match "left 7 carried-forward item" "$out" \
+  "the entry carrying three findings is three items, so five entries are seven"
 
 # Read the ids off the VERDICT lines only -- the stderr refusal block repeats
 # every open item, so a looser grep returns each id twice and every check
@@ -571,12 +581,14 @@ f3="$(part_id verify_stdin_inherit "$out")"
 undec_id="$(whole_id beta_qualify_trust "$out")"
 short_id="$(whole_id "four outstanding findings" "$out")"
 scram_id="$(whole_id "listed out of order" "$out")"
+gap_id="$(whole_id "with a gap where one was struck out" "$out")"
 [ -n "$f1" ] || fail "the enumerated entry's first finding must be an item of its own"
 [ -n "$f2" ] || fail "...and its second"
 [ -n "$f3" ] || fail "...and its third"
 [ -n "$undec_id" ] || fail "the undecomposable entry must still be reported"
 [ -n "$short_id" ] || fail "the short-count entry must still be reported"
 [ -n "$scram_id" ] || fail "the scrambled entry must still be reported"
+[ -n "$gap_id" ] || fail "the gapped entry must still be reported"
 [ "$(printf '%s\n%s\n%s\n' "$f1" "$f2" "$f3" | sort -u | wc -l | tr -d ' ')" = 3 ] \
   || fail "the three findings of one entry must have three distinct ids"
 assert_eq "${f1%.*}" "${f3%.*}" "...all bearing the ordinal of the single entry that recorded them"
@@ -668,6 +680,28 @@ assert_match "UNCOVERED \[ledger\] $scram_id" "$out" \
   "...and the finding the scan never reached cannot be closed by a task naming it, because the entry is not matchable at all"
 
 # ---------------------------------------------------------------------------
+# 5d3 -- A GAPPED ENUMERATION, markers 1, 2, 4. The ascending scan takes (1)
+# and (2), looks for (3), finds none, and stops with a tidy two-finding
+# split -- so the third finding sits inside segment 2 and any anchor of its
+# NEIGHBOUR closes it. Checking only whether the NEXT ordinal exists says
+# yes-there-is-no-(3) and walks straight past the (4) that is right there:
+# the malformation has to be looked for across the WHOLE enumeration, not
+# one place past its end. A struck-out item in a hand-edited list leaves
+# exactly this shape, which is why it is a fixture and not a curiosity.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T035 "stop the trust walk escaping through a symlink" >/dev/null
+"$ORCHID_BIN" task set T035 acceptance_criteria \
+  "trust_walk_symlink must not follow a plugin directory link out of the repository" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "the gapped entry is still unconsidered"
+grep -q "$gap_id\.[0-9]" <<<"$out" \
+  && fail "a gapped enumeration must not be split into the prefix the ascending scan happens to reach"
+assert_match "UNCOVERED \[ledger\] $gap_id" "$out" \
+  "THE POINT: a task naming the finding BEHIND the gap does not close the entry — its two siblings would have left planning under one green line"
+grep -q "covered   \[ledger\] $gap_id" <<<"$out" \
+  && fail "a gapped entry must never report covered: its segments are not its findings"
+
+# ---------------------------------------------------------------------------
 # 5e -- DEFERRAL IS PER FINDING TOO, and the undivided entry id of a
 # decomposed entry is not an item. Admitting it would hand back the per-entry
 # absolution in one command: one deferral, three findings gone.
@@ -686,10 +720,12 @@ assert_match "not a carried-forward item" "$out" "...saying so, and printing the
   || fail "...and so is a short-count entry"
 "$ORCHID_BIN" plan defer "$scram_id" --reason "T034 takes the symlink assertion; the other two were read and postponed" >/dev/null \
   || fail "...and so is a scrambled one"
+"$ORCHID_BIN" plan defer "$gap_id" --reason "T035 takes the trust walk; the alert dedupe and the lease stamp were read and postponed" >/dev/null \
+  || fail "...and so is a gapped one"
 
 rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
 assert_eq 0 "$rc" "crosscheck passes once every FINDING is covered or deferred"
-assert_match "all 6 carried-forward item\(s\) considered" "$out" "...counting findings, not entries"
+assert_match "all 7 carried-forward item\(s\) considered" "$out" "...counting findings, not entries"
 assert_match "deferred  \[ledger\] $f1 .*\(deferred: the driver guard" "$out" \
   "a deferred finding reports its own recorded reason"
 assert_match "covered   \[ledger\] $f2 " "$out" "...while its covered sibling still reports as covered"
