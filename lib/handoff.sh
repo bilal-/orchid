@@ -4,16 +4,26 @@
 # and `orchid verify` running.
 #
 # WHAT THE PAUSE IS FOR. Some steps in a candidate are mechanical and require
-# EXECUTION: re-pinning a release checksum in a formula, setting the mode bit
-# on a newly added executable, applying a linter's own fix. An engine profile
-# that denies on the command STRING can perform none of them -- it cannot run
-# the linter, the checksum tool, or `chmod` (lesson L017) -- so routing them
+# EXECUTION: setting the mode bit on a newly added executable, applying a
+# linter's own fix, running a generator whose output is checked in. An engine
+# profile that denies on the command STRING can perform none of them -- it
+# cannot run the linter, the generator, or `chmod` (lesson L017) -- so routing them
 # to it produces a rework round that could never have succeeded and spends one
 # of the task's three attempts on it. Until this file, those steps were
 # performed by an operator BY HABIT, at a point in the procedure that nothing
 # named; and a point nothing names is a point a deterministic driver walks
 # straight past, running `orchid verify` against a candidate that was never
 # going to pass.
+#
+# WHAT MUST NEVER BE ON THAT LIST. An artifact derived from the WHOLE TREE --
+# the release-archive checksum pinned into Formula/orchid.rb is the case that
+# bit (lesson L022) -- must not be regenerated per candidate, by this pause or
+# by anything else. Every candidate would rewrite the same line to a different
+# value, so the second one to reach `orchid merge`'s stale-base rebase
+# conflicts on it, lands in `rework`, and is handed to an implementer that
+# cannot regenerate it either; nothing in that loop terminates. Such artifacts
+# belong to the integration branch, regenerated there once after merges land
+# or at release time, and gated at the release gate.
 #
 # WHAT IT IS NOT. It is not a claim about who may SEE a lint finding. The
 # exact `file:line: RULE: message` locations travel into the brief regardless

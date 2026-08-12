@@ -292,17 +292,25 @@ This is not a fault — it is the operator hand-off doing its job. Your
 repository set `handoff_before_verify=required`, which says the implementer
 here is an engine profile that cannot execute anything (it denies on the
 command *string*), so this candidate's mechanical work — applying a linter's
-own fix, re-pinning a release checksum, setting the mode bit on a newly added
-executable — has to be done by you. The pass stops rather than verifying a
-candidate that was never going to pass and spending one of the task's three
-rework rounds on it.
+own fix, setting the mode bit on a newly added executable, running a generator
+whose output is checked in — has to be done by you. The pass stops rather than
+verifying a candidate that was never going to pass and spending one of the
+task's three rework rounds on it.
+
+One thing is deliberately *not* on that list: an artifact derived from the
+whole tree, such as the release-archive checksum pinned into
+`Formula/orchid.rb`. Regenerating one per candidate makes every candidate
+rewrite the same line to a different value, and the second to merge then
+conflicts on it with nobody in the loop able to resolve it. Those are
+regenerated on the integration branch instead — see
+[contributing.md](./contributing.md#release-rehearsal).
 
 ```sh
 orchid run boundary show           # what is being held, and why
 orchid task show <id>              # candidate_sha, and handoff_ack beside it
 # ...do the mechanical work in the task's worktree and commit it, giving each
 # such commit the trailer "Orchid-Handoff: operator", then:
-orchid task handoff <id> --ack --reason "re-pinned the formula; set the exec bit"
+orchid task handoff <id> --ack --reason "applied the lint fix; set the exec bit"
 ```
 
 Commit first, acknowledge second: `--ack` moves `candidate_sha` forward to the

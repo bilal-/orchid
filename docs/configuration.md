@@ -164,8 +164,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   pause in [PROTOCOL.md](../PROTOCOL.md)'s THE TICK: the point, after an
   implementer's envelope reconciles and before `orchid verify` runs, where a
   candidate's execution-requiring mechanical work happens — applying a
-  linter's own fix, re-pinning a release checksum, setting the mode bit on a
-  newly added executable. Set it to `required` when your implementer is an
+  linter's own fix, setting the mode bit on a newly added executable, running
+  a generator whose output is checked in (but never regenerating an artifact
+  derived from the whole tree, such as the release-archive checksum pinned
+  into `Formula/orchid.rb`: per-candidate re-derivation of a shared line
+  conflicts unresolvably on the second merge, so those belong to the
+  integration branch). Set it to `required` when your implementer is an
   engine profile that denies on the command *string* and so can perform none
   of those: a drive pass then stops at an `operator-handoff` boundary instead
   of verifying a candidate that was never going to pass and spending one of

@@ -116,8 +116,11 @@ Nothing reads the manifest's `shell` atom on that path. (The same
 adapter's *orchestrate* path does pass `--allowedTools`, scoped to the brokered
 command surface. That is a different launch, and an implementer never reaches
 it.) A `claude` implementer therefore edits files happily and cannot run one
-command — so `scripts/pin-formula.sh` and `chmod +x` on a new `libexec` verb are
-both silent, recurring operator hand-offs on that profile.
+command — so `chmod +x` on a new `libexec` verb and applying a linter's own fix
+are both silent, recurring operator hand-offs on that profile. (Re-pinning
+`Formula/orchid.rb` is *not* one of them: that checksum is derived from the
+whole tree, so it is regenerated on the integration branch at release time
+rather than in any candidate — see [contributing.md](./contributing.md).)
 
 That asymmetry is why `implementer-shell` is only a floor: a *missing* `shell`
 declaration is decisive, because the profile certainly cannot run commands, while
