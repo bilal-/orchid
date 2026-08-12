@@ -370,3 +370,159 @@ jq -n --arg cand "$head_w" \
 "$ORCHID_BIN" task advance TW3 testing >/dev/null
 assert_eq beta "$(fm_get "$repoW/.orchid/tasks/TW3.md" implementer_engine_id)" \
   "implementer_engine_id capture falls back to the highest counter (newest) when no envelope matches the current candidate_sha"
+
+# ===========================================================================
+# P/Q/R/S/T -- THE PINNED PLAN (T039, run r-002's lesson L027).
+#
+# `review_routing` is computed live, from engine health among other things.
+# Read once per dispatch that is right; read again to JUDGE a review that has
+# already been filed, it is a table that moves under its own evidence. On
+# r-002 it did: an engine filed a valid, candidate-bound review, then hit its
+# consecutive-failure threshold on unrelated work, and the slot it had been
+# dispatched for was re-routed to somebody else. Its review then belonged to
+# no slot at all, the reviewing->arbitrating edge stayed shut, and the task
+# had no legal exit that was not a hand-edit of durable state.
+#
+# So `orchid jobs review-plan <task> --pin` writes the table down for the life
+# of the attempt, and two verbs -- `--repin` and `--adopt-evidence` -- are the
+# recorded exits for a plan that no longer fits its evidence.
+# ===========================================================================
+repoP="$WORK/repoP"; mkdir -p "$repoP/.orchid/tasks" "$repoP/.orchid/reviews"
+(cd "$repoP" && git init -q . && git commit -q --allow-empty -m root)
+export ORCHID_REPO="$repoP"
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+head_p="$(git -C "$repoP" rev-parse HEAD)"
+
+# A medium-tier task with a candidate on it: two reviewer slots, and a round
+# of evidence for a plan to be bound to.
+mk_p_task() {
+  "$ORCHID_BIN" task create "$1" "pinned plan fixture" >/dev/null
+  "$ORCHID_BIN" task set "$1" risk_tier medium --reason "two reviewer slots" >/dev/null
+  "$ORCHID_BIN" task set "$1" candidate_sha "$head_p" >/dev/null
+}
+# mk_p_review <task> <suffix> <qualified-engine-id|-> -- an ok, scope-complete,
+# candidate-bound reviewer envelope, filed exactly where `jobs reconcile` files
+# one. `-` is an adapter that omitted the optional `.engine` field.
+mk_p_review() {
+  jq -n --arg jid "j-plan-$1$2" --arg task "$1" --arg cand "$head_p" --arg e "$3" \
+    '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
+      verdict:"approve", scope_complete:true, summary:"plan fixture",
+      candidate_sha:$cand, findings:[]}
+     + (if $e == "-" then {} else {engine:$e} end)' \
+    > "$repoP/.orchid/reviews/$1-a1-reviewer$2.json"
+}
+p_journal() { "$ORCHID_BIN" journal show --task "$1" 2>/dev/null || true; }
+p_pin_lines() { grep -c 'review plan pinned' <<< "$(p_journal "$1")" || true; }
+
+TWO_ENGINE_PLAN="$(printf '1\tagy\tengine-independent\n2\tcodex-review\tengine-independent')"
+
+# ---------------------------------------------------------------------------
+# P -- `--pin` writes the table down, once, bound to the attempt AND the
+# candidate; a second `--pin` is a no-op an idempotent driver can make every
+# pass.
+# ---------------------------------------------------------------------------
+mk_p_task TP1
+planP="$("$ORCHID_BIN" jobs review-plan TP1 --pin)"
+assert_eq "$TWO_ENGINE_PLAN" "$planP" "--pin returns the table it pinned"
+pinP="$repoP/.orchid/reviews/TP1-a1-review-plan.json"
+[ -f "$pinP" ] || fail "--pin writes the plan down for the attempt"
+assert_eq "$head_p" "$(jq -r .candidate_sha "$pinP")" "the pin records the candidate it was taken for"
+assert_eq 1 "$(jq -r .attempt "$pinP")" "...and the attempt"
+assert_eq 1 "$(p_pin_lines TP1)" "pinning a plan is journaled"
+assert_eq "$planP" "$("$ORCHID_BIN" jobs review-plan TP1 --pin)" "a second --pin returns the same table"
+assert_eq 1 "$(p_pin_lines TP1)" \
+  "...and journals nothing the second time: an idempotent pin lets the driver call it every pass without narrating a change that did not happen"
+
+# The bare form is still read-only and unfenced -- an operator can ask what
+# the plan is from anywhere, exactly as before.
+assert_eq "$planP" "$(ORCHID_EPOCH='' "$ORCHID_BIN" jobs review-plan TP1)" \
+  "the bare read needs no epoch and returns the pinned table"
+
+# ---------------------------------------------------------------------------
+# Q -- THE RED CASE. The engine that filed slot 1's review reaches its
+# consecutive-failure threshold AFTERWARDS. Live routing moves; the pin does
+# not; and the review that engine already filed still counts for the slot it
+# was dispatched for.
+# ---------------------------------------------------------------------------
+ledger_mark "$repoP" agy failed
+ledger_mark "$repoP" agy failed
+ledger_mark "$repoP" agy failed
+ledger_available "$repoP" agy && fail "fixture: three consecutive failures must make agy ledger-unavailable"
+
+liveP="$(review_routing "$repoP" TP1)"
+[ "$liveP" != "$planP" ] \
+  || fail "fixture: live routing must have MOVED off the failing engine, or nothing below proves anything"
+assert_eq "$planP" "$("$ORCHID_BIN" jobs review-plan TP1)" \
+  "the pinned plan outlives its engine's health: a read still returns the table this attempt was dispatched against"
+
+mk_p_review TP1 "" orchid/agy
+mk_p_review TP1 ".2" orchid/codex-review
+assert_eq "" "$(review_plan_unsatisfied "$repoP" TP1 "$(review_plan "$repoP" TP1)")" \
+  "every pinned slot is credited: a review filed BEFORE its engine failed still counts for the slot it was dispatched for"
+[ -n "$(review_plan_unsatisfied "$repoP" TP1 "$liveP")" ] \
+  || fail "RED: against the LIVE table those same two reviews leave a slot uncredited — that is the dead end the pin closes, and if it no longer reproduces this comparison proves nothing"
+
+# ---------------------------------------------------------------------------
+# R -- `--adopt-evidence` REFUSES to buy a task its exit. Two reviews from one
+# engine cannot be adopted into a plan that routed two different ones: that is
+# exactly the same-engine pair the independence policy exists to refuse.
+# ---------------------------------------------------------------------------
+ledger_mark "$repoP" agy ok   # a healthy ledger again, so TP2 really routes two engines
+mk_p_task TP2
+planR="$("$ORCHID_BIN" jobs review-plan TP2 --pin)"
+assert_eq "$TWO_ENGINE_PLAN" "$planR" "fixture: TP2's plan routes two DIFFERENT engines"
+mk_p_review TP2 "" orchid/codex-review
+mk_p_review TP2 ".2" orchid/codex-review
+rc=0; err="$("$ORCHID_BIN" jobs review-plan TP2 --adopt-evidence 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--adopt-evidence must refuse two reviews from ONE engine into a two-engine plan"
+assert_match "lower the tier's engine independence" "$err" "...and names which of its two conditions failed"
+assert_eq "$planR" "$("$ORCHID_BIN" jobs review-plan TP2)" "a refused adoption leaves the pin exactly as it was"
+
+# The other refusal: a slot with no review at all is DISPATCHED, not adopted.
+mk_p_task TP5
+"$ORCHID_BIN" jobs review-plan TP5 --pin >/dev/null
+mk_p_review TP5 "" orchid/agy
+rc=0; err="$("$ORCHID_BIN" jobs review-plan TP5 --adopt-evidence 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--adopt-evidence must refuse when there are fewer reviews than slots"
+assert_match "must be dispatched, not adopted" "$err" "...and says so"
+
+# ---------------------------------------------------------------------------
+# S -- and ACCEPTS the case it exists for: a plan whose slots no longer match
+# the engines that actually reviewed, where adopting them costs no
+# independence at all. This is the exit for a task already wedged in that
+# state, and it is a verb, not an operator editing durable state by hand.
+# ---------------------------------------------------------------------------
+mk_p_task TP3
+"$ORCHID_BIN" jobs review-plan TP3 --pin >/dev/null
+mk_p_review TP3 "" orchid/codex-review
+mk_p_review TP3 ".2" orchid/claude
+[ -n "$(review_plan_unsatisfied "$repoP" TP3 "$(review_plan "$repoP" TP3)")" ] \
+  || fail "fixture: TP3 must start WEDGED — evidence its pinned plan cannot credit"
+adoptS="$("$ORCHID_BIN" jobs review-plan TP3 --adopt-evidence)"
+assert_eq "$(printf '1\tcodex-review\tengine-independent\n2\tclaude\tengine-independent')" "$adoptS" \
+  "--adopt-evidence re-pins the slots onto the engines that actually filed the reviews, in the order they were filed"
+assert_eq "" "$(review_plan_unsatisfied "$repoP" TP3 "$(review_plan "$repoP" TP3)")" \
+  "and the wedge is gone: every slot now has a review of its own"
+assert_match "review plan pinned for attempt 1 \(adopt\)" "$(p_journal TP3)" \
+  "the adoption is recorded, with the table it landed"
+
+# ---------------------------------------------------------------------------
+# T -- `--repin` moves ONLY the slots nobody has reviewed. A repin that
+# recomputed every row would re-route a covered slot and orphan its review a
+# second time -- the defect, offered as its own remedy.
+# ---------------------------------------------------------------------------
+mk_p_task TP4
+planT="$("$ORCHID_BIN" jobs review-plan TP4 --pin)"
+assert_eq "$TWO_ENGINE_PLAN" "$planT" "fixture: TP4 pins agy (slot 1) and codex-review (slot 2)"
+mk_p_review TP4 "" orchid/agy
+ledger_mark "$repoP" codex-review failed
+ledger_mark "$repoP" codex-review failed
+ledger_mark "$repoP" codex-review failed
+ledger_available "$repoP" codex-review && fail "fixture: codex-review must be ledger-unavailable for the repin to have anything to move"
+repinT="$("$ORCHID_BIN" jobs review-plan TP4 --repin)"
+assert_match $'^1\tagy\tengine-independent$' "$repinT" \
+  "--repin FREEZES the slot that already has a review of its own, whatever live routing now prefers"
+assert_match $'^2\tagy\tsession-independent$' "$repinT" \
+  "and rebinds only the unfilled slot — labeled session-independent, because one engine covering two slots is degraded independence however it was arrived at"
+ledger_mark "$repoP" codex-review ok
