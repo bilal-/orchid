@@ -425,7 +425,7 @@ TWO_ENGINE_PLAN="$(printf '1\tagy\tengine-independent\n2\tcodex-review\tengine-i
 mk_p_task TP1
 planP="$("$ORCHID_BIN" jobs review-plan TP1 --pin)"
 assert_eq "$TWO_ENGINE_PLAN" "$planP" "--pin returns the table it pinned"
-pinP="$repoP/.orchid/reviews/TP1-a1-review-plan.json"
+pinP="$repoP/.orchid/reviews/TP1-a1.review-plan.json"
 [ -f "$pinP" ] || fail "--pin writes the plan down for the attempt"
 assert_eq "$head_p" "$(jq -r .candidate_sha "$pinP")" "the pin records the candidate it was taken for"
 assert_eq 1 "$(jq -r .attempt "$pinP")" "...and the attempt"

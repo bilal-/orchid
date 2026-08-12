@@ -157,3 +157,446 @@ review_routing() {
   fi
   printf '2\t%s\t%s\n' "$slot2_engine" "$slot2_label"
 }
+
+# ===========================================================================
+# The PINNED plan (T039, run r-002's lesson L027)
+# ===========================================================================
+# `review_routing` above is computed LIVE, from engine health among other
+# things. That is right for choosing where to send a review, and wrong for
+# judging one that has already been filed -- and the two were the same table.
+#
+# What it cost, live on r-002: T024 collected two valid, candidate-bound
+# review envelopes (one approve, one request-changes) from two different
+# engines. Then the engine that had filed the FIRST of them accumulated three
+# consecutive failures on unrelated work and went `failing` in the ledger.
+# `_review_candidate_ok` therefore stopped offering it, slot 1 re-routed to
+# another engine, and the review it had already filed was suddenly
+# attributable to no slot at all. The driver refused to reconcile evidence it
+# could not credit; the `feature` archetype declares `reviewing ->
+# arbitrating` as the only forward edge; that edge is gated on slot coverage;
+# and `orchid task arbitrate` refuses any status but `arbitrating`. The task
+# had no legal exit left, and nothing about it was broken: no envelope was
+# stale, no engine was misconfigured, and the reviews were exactly the two the
+# tier asked for. THE PLAN MOVED UNDER THE EVIDENCE.
+#
+# So the plan is pinned. Once an attempt has a candidate to review, the table
+# is written down once (`review_plan_pin`, through `orchid jobs review-plan
+# <id> --pin`) and every later reader gets THAT table back until the attempt
+# or the candidate changes -- whichever engines are healthy at the moment of
+# reading. Evidence keeps counting against the slots it was dispatched for,
+# because those slots stop moving.
+#
+# The pin is per (task, attempt) by filename and per candidate by content:
+# a new attempt files under a new name, and a candidate that moves within one
+# attempt (the `merging` -> `testing` rebase edge, or a `--waive-attempt`
+# rework round) invalidates the pin exactly as it invalidates the reviews it
+# was pinned alongside. Two escapes exist for a plan that no longer fits its
+# evidence, and both are verbs that record what they did:
+# `--repin` (recompute from live routing) and `--adopt-evidence` (re-pin onto
+# the engines that actually reviewed, refused when that would buy the
+# task its exit by lowering the independence bar).
+
+# review_plan_attempt <repo> <task> -- the attempt number this round's
+# reviewer envelopes are filed under (`attempts` + 1), the same formula `jobs
+# prepare` mints job ids with and the same one the kernel's own
+# reviewing->arbitrating gate counts by. A missing/garbled `attempts` reads as
+# 0 (so the answer is 1) rather than crashing an arithmetic expansion.
+review_plan_attempt() {
+  local tf a
+  tf="$(orchid_state "$1")/tasks/$2.md"
+  a="$(fm_get "$tf" attempts 2>/dev/null || true)"
+  case "$a" in ''|*[!0-9]*) a=0 ;; esac
+  echo $(( a + 1 ))
+}
+
+# review_plan_file <repo> <task> -- where this attempt's pin lives. Durable
+# (`reviews/`, alongside the envelopes it credits), not runtime: a plan that
+# vanished with a wiped runtime tree would re-derive itself live and re-open
+# the dead end above.
+#
+# `<task>-a<n>.review-plan.json`, with a DOT where every envelope has a dash.
+# Every reader of that directory globs `<task>-a<n>-<something>` -- `jobs
+# reconcile` files envelopes at `-a<n>-<role>.json` for any role, including a
+# custom `<name>.role` one, and lib/pack.sh's before_arbitration pack sweeps
+# `-a<n>-*.json` wholesale. A plan named with a dash would sit inside all of
+# those patterns: one custom role called `review-plan` and reconcile would
+# quietly overwrite the pinned plan with an envelope. The dot puts this file
+# outside every existing glob by construction rather than by luck.
+review_plan_file() {
+  printf '%s/reviews/%s-a%s.review-plan.json\n' \
+    "$(orchid_state "$1")" "$2" "$(review_plan_attempt "$1" "$2")"
+}
+
+# review_filed_engines <repo> <task> -- one line per reviewer envelope of the
+# CURRENT attempt that is `ok` AND bound to the current candidate_sha: the
+# QUALIFIED engine id it reports, or a bare `-` when it reports none.
+#
+# `.engine` is the only durable record of WHICH engine produced a filed
+# review: `orchid jobs reconcile` cross-checks it against the job manifest's
+# own engine (so it cannot be forged past reconcile) and then deletes the
+# manifest, leaving the envelope as the sole survivor. Adapters that omit the
+# field -- it is optional -- yield `-`, which every consumer below treats as
+# attributable to any slot, and as proving no independence of its own.
+review_filed_engines() {
+  local repo="$1" id="$2" state tf attempt cand f e
+  state="$(orchid_state "$repo")"; tf="$state/tasks/$id.md"
+  attempt="$(review_plan_attempt "$repo" "$id")"
+  cand="$(fm_get "$tf" candidate_sha 2>/dev/null || true)"
+  [ -n "$cand" ] || return 0
+  for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
+    [ -e "$f" ] || continue
+    [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
+    [ "$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)" = "$cand" ] || continue
+    e="$(envelope_field "$f" '.engine // empty' 2>/dev/null || true)"
+    printf '%s\n' "${e:--}"
+  done
+}
+
+# review_plan_pinned <repo> <task> -- the pinned table, iff a pin exists for
+# this attempt AND is bound to the task's CURRENT candidate_sha. Exit 1
+# (printing nothing) otherwise, so callers fall through to live routing.
+review_plan_pinned() {
+  local repo="$1" id="$2" f cand rows
+  cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
+  [ -n "$cand" ] || return 1
+  f="$(review_plan_file "$repo" "$id")"
+  [ -f "$f" ] || return 1
+  [ "$(jq -r '.candidate_sha // empty' "$f" 2>/dev/null || true)" = "$cand" ] || return 1
+  rows="$(jq -r '.slots[]? | [(.slot|tostring), .engine, .label] | @tsv' "$f" 2>/dev/null || true)"
+  [ -n "$rows" ] || return 1
+  printf '%s\n' "$rows"
+}
+
+# review_plan <repo> <task> -- the EFFECTIVE table every reader should use:
+# the pin when there is one, live routing when there is not (a task with no
+# candidate yet has no evidence to protect, and nothing to pin against).
+review_plan() {
+  local rows
+  if rows="$(review_plan_pinned "$1" "$2")"; then
+    printf '%s\n' "$rows"
+    return 0
+  fi
+  review_routing "$1" "$2"
+}
+
+# review_plan_store <repo> <task> <rows> -- write the pin. A LIBRARY helper:
+# the epoch fence and the verb lock belong to the verb that calls it
+# (libexec/orchid-jobs' review-plan arm), which is the only caller.
+review_plan_store() {
+  local repo="$1" id="$2" rows="$3" f cand attempt json
+  cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
+  [ -n "$cand" ] || return 1
+  [ -n "$rows" ] || return 1
+  attempt="$(review_plan_attempt "$repo" "$id")"
+  f="$(review_plan_file "$repo" "$id")"
+  mkdir -p "$(dirname "$f")"
+  # Rendered into a VARIABLE first, then written -- never `jq ... |
+  # atomic_write`: atomic_write consumes whatever its producer managed to emit
+  # and reports the success of `mv`, so a jq that died mid-pipe would land an
+  # empty pin (a plan with no slots at all) and exit 0.
+  json="$(printf '%s\n' "$rows" | jq -Rn --arg cand "$cand" --arg attempt "$attempt" \
+    --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+      {contract:1, attempt:($attempt|tonumber), candidate_sha:$cand, pinned_at:$at,
+       slots:[inputs | select(length > 0) | split("\t")
+              | {slot:(.[0]|tonumber), engine:.[1], label:.[2]}]}')" || return 1
+  [ -n "$json" ] || return 1
+  printf '%s\n' "$json" | atomic_write "$f"
+}
+
+# review_plan_pin <repo> <task> -- pin the effective plan for this attempt and
+# print it. IDEMPOTENT: a pin already bound to the current candidate is
+# returned untouched (so a driver may call this every pass without rewriting
+# state or journaling a change that did not happen). Exit 1 when the task has
+# no candidate_sha yet -- there is nothing to bind a plan to.
+review_plan_pin() {
+  local repo="$1" id="$2" rows
+  if rows="$(review_plan_pinned "$repo" "$id")"; then
+    printf '%s\n' "$rows"
+    return 0
+  fi
+  rows="$(review_routing "$repo" "$id")"
+  [ -n "$rows" ] || return 1
+  review_plan_store "$repo" "$id" "$rows" || return 1
+  printf '%s\n' "$rows"
+}
+
+# _review_pool_take <pool> <want> -- prints <pool> minus the FIRST line equal
+# to <want>; exit 1 (pool printed unchanged) when there is none. Consuming
+# rather than merely testing is what gives the matching below multiplicity:
+# one envelope can satisfy exactly one slot.
+_review_pool_take() {
+  local want="$2" line found=0 out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if [ "$found" -eq 0 ] && [ "$line" = "$want" ]; then found=1; continue; fi
+    out="$out$line
+"
+  done <<< "$1"
+  printf '%s' "$out"
+  [ "$found" -eq 1 ]
+}
+
+# review_plan_unsatisfied <repo> <task> <plan> -- the rows of <plan> that have
+# NO review of their own yet. Empty output means every routed slot is covered.
+#
+# Keyed on SLOT IDENTITY, never on a count. A count is the wrong key the
+# moment a slot is relaunched: with slot 1 routed to engine A and slot 2 to
+# engine B, a relaunch that lands a SECOND A review takes the count to the
+# tier's required number, and a count-keyed driver would then both stop
+# dispatching slot 2 and hand two reviews from one engine to a unanimous
+# approval -- defeating the engine independence the whole risk-tiered review
+# policy exists to enforce (docs/specs/kernel.md, "Independence"). Here A's
+# second review can only ever satisfy a slot the plan itself routed to A,
+# which is exactly the degraded case `review_routing` already labels
+# `session-independent` and journals.
+#
+# Envelopes that name no engine (`-`) are matched LAST, after every exact
+# attribution has been made, and can stand in for any remaining slot: an
+# adapter that omits `.engine` leaves nothing to attribute by, and refusing to
+# credit its review would relaunch a slot forever.
+review_plan_unsatisfied() {
+  local repo="$1" id="$2" plan="$3" pool line eng qid unmatched out
+  pool="$(review_filed_engines "$repo" "$id")"
+
+  unmatched=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    eng="$(printf '%s' "$line" | cut -f2)"
+    qid="$(resolve_engine_qualified_id "$eng" 2>/dev/null || true)"
+    [ -n "$qid" ] || qid="$eng"
+    if pool="$(_review_pool_take "$pool" "$qid")"; then
+      continue
+    fi
+    unmatched="$unmatched$line
+"
+  done <<< "$plan"
+
+  out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if pool="$(_review_pool_take "$pool" -)"; then
+      continue
+    fi
+    out="$out$line
+"
+  done <<< "$unmatched"
+  printf '%s' "$out"
+}
+
+# review_plan_repin <repo> <task> -- rebind this attempt to the LIVE routing
+# table, EXCEPT for the slots that already have a review of their own: those
+# rows are frozen exactly as they are.
+#
+# That exception is the whole design. A repin that recomputed every row would
+# be the defect this file exists to fix, offered as its own remedy: it would
+# re-route a slot whose review is already on disk and orphan that review a
+# second time. So repin only ever moves the slots that nobody has reviewed --
+# which is precisely the case it exists for, a pinned slot whose engine can no
+# longer be dispatched at all -- and it never hands one of those slots an
+# engine a frozen row is already using, because two slots on one engine is
+# degraded independence and has to be labeled as such rather than arrived at
+# by accident.
+review_plan_repin() {
+  local repo="$1" id="$2" old live unsat unsat_slots kept used rows impl
+  old="$(review_plan "$repo" "$id")"
+  live="$(review_routing "$repo" "$id")"
+  [ -n "$live" ] || return 1
+  if [ -z "$old" ]; then
+    review_plan_store "$repo" "$id" "$live" || return 1
+    printf '%s\n' "$live"
+    return 0
+  fi
+
+  unsat="$(review_plan_unsatisfied "$repo" "$id" "$old")"
+  unsat_slots=" "
+  local line slot
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    unsat_slots="$unsat_slots$(printf '%s' "$line" | cut -f1) "
+  done <<< "$unsat"
+
+  # Pass 1 -- freeze every covered row, and book its engine as taken.
+  kept=""; used=" "
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    slot="$(printf '%s' "$line" | cut -f1)"
+    case "$unsat_slots" in *" $slot "*) continue ;; esac
+    kept="$kept$line
+"
+    used="$used$(printf '%s' "$line" | cut -f2) "
+  done <<< "$old"
+
+  # Pass 2 -- every slot the plan has, frozen row first, then the first live
+  # engine nobody has taken, then (never zero slots) whatever the live table
+  # named for it.
+  local n_old n_live n i keptrow liverow eng label cand
+  n_old="$(printf '%s\n' "$old" | grep -c '[^[:space:]]' || true)"
+  n_live="$(printf '%s\n' "$live" | grep -c '[^[:space:]]' || true)"
+  n="$n_old"; [ "$n_live" -le "$n" ] || n="$n_live"
+  impl="$(review_implementer_engine "$repo" "$id")"
+  rows=""
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    i=$(( i + 1 ))
+    # `!found` rather than `exit` in every awk below: `exit` closes the pipe
+    # the instant it matches, and under `set -o pipefail` an upstream printf
+    # still mid-write is SIGPIPEd, its 141 becomes the substitution's status,
+    # and the caller (libexec/orchid-jobs runs `set -e`) dies on a row it
+    # found. Reading to EOF costs nothing on a two-line table and cannot race.
+    keptrow="$(printf '%s\n' "$kept" | awk -F'\t' -v s="$i" '$1 == s && !found { print; found = 1 }')"
+    if [ -n "$keptrow" ]; then
+      rows="$rows$keptrow
+"
+      continue
+    fi
+    liverow="$(printf '%s\n' "$live" | awk -F'\t' -v s="$i" '$1 == s && !found { print; found = 1 }')"
+    eng=""
+    while IFS= read -r cand; do
+      [ -n "$cand" ] || continue
+      case "$used" in *" $cand "*) continue ;; esac
+      eng="$cand"; break
+    done < <(printf '%s\n' "$live" | cut -f2)
+    if [ -z "$eng" ]; then
+      eng="$(printf '%s' "$liverow" | cut -f2)"
+      [ -n "$eng" ] || eng="$(printf '%s\n' "$old" | awk -F'\t' -v s="$i" '$1 == s && !found { print $2; found = 1 }')"
+    fi
+    [ -n "$eng" ] || continue
+    # Labeled BEFORE the engine is booked: a slot that had to reuse an engine
+    # another slot already holds is degraded independence regardless of its
+    # relation to the implementer, exactly as `review_routing`'s own
+    # fewer-engines-than-slots fallback says.
+    label=engine-independent
+    case "$used" in *" $eng "*) label=session-independent ;; esac
+    [ "$eng" != "$impl" ] || label=session-independent
+    used="$used$eng "
+    rows="$rows$(printf '%s\t%s\t%s' "$i" "$eng" "$label")
+"
+  done
+  [ -n "$rows" ] || return 1
+  review_plan_store "$repo" "$id" "$rows" || return 1
+  printf '%s' "$rows"
+}
+
+# _review_engine_name_for_qid <repo> <task> <qualified-id> -- the plugin NAME
+# whose manifest claims <qualified-id>, or exit 1. A routing row names an
+# engine the way config does (`agy`), while an envelope names it the way its
+# manifest does (`orchid/agy`), so adopting filed evidence into a plan has to
+# cross that boundary.
+#
+# The cheap direction first -- strip the publisher and ROUND-TRIP the result
+# through resolve_engine_qualified_id, which is what makes the strip safe: it
+# is accepted only when the stripped name really does resolve back to the same
+# qualified id, so a third-party `acme/foo` whose bound name is not `foo`
+# falls through instead of being silently mis-credited. The fallback walks the
+# names this task could actually have been routed to.
+_review_engine_name_for_qid() {
+  local repo="$1" id="$2" qid="$3" tf risk_tier cand
+  cand="${qid#*/}"
+  if [ -n "$cand" ] && [ "$(resolve_engine_qualified_id "$cand" 2>/dev/null || true)" = "$qid" ]; then
+    printf '%s\n' "$cand"
+    return 0
+  fi
+  tf="$(orchid_state "$repo")/tasks/$id.md"
+  risk_tier="$(fm_get "$tf" risk_tier 2>/dev/null || true)"
+  [ -n "$risk_tier" ] || risk_tier=low
+  local e
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    [ "$(resolve_engine_qualified_id "$e" 2>/dev/null || true)" = "$qid" ] || continue
+    printf '%s\n' "$e"
+    return 0
+  done < <(resolve_role_chain "$repo" reviewer
+           printf '%s\n' "$(_review_tier_chain "$repo" "$risk_tier")" | tr ',' '\n'
+           review_implementer_engine "$repo" "$id")
+  return 1
+}
+
+# _review_distinct_count -- how many DISTINCT non-empty lines its stdin holds,
+# ignoring the anonymous `-` (an envelope naming no engine proves no
+# independence, whichever slot it ends up credited to).
+_review_distinct_count() {
+  local line seen=" " n=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "$line" != "-" ] || continue
+    case "$seen" in *" $line "*) continue ;; esac
+    seen="$seen$line "; n=$(( n + 1 ))
+  done
+  echo "$n"
+}
+
+# review_plan_adopt_evidence <repo> <task> -- re-pin this attempt's plan onto
+# the engines that ACTUALLY filed valid, candidate-bound reviews, and print
+# the new table. This is the recorded exit for a task whose plan no longer
+# matches its evidence: the reviews on hand were dispatched, filed and
+# reconciled against slots that have since been re-routed, and crediting them
+# to the slots they came from is the whole of the remedy.
+#
+# It may never buy a task its exit by lowering the bar, so it refuses unless
+# BOTH hold, with a diagnostic naming which one failed:
+#   - there is at least one review per slot (a slot with no review at all
+#     must be DISPATCHED, not adopted); and
+#   - the filed reviews name at least as many distinct engines as the plan
+#     they replace does. Two reviews from one engine can never be adopted into
+#     a plan that asked for two different ones -- that is precisely the
+#     same-engine pair the independence policy exists to refuse, and it stays
+#     refused.
+review_plan_adopt_evidence() {
+  local repo="$1" id="$2" plan filed need n_filed line qid name impl rows i
+  plan="$(review_plan "$repo" "$id")"
+  [ -n "$plan" ] || { echo "orchid: $id has no review plan to adopt evidence into" >&2; return 1; }
+  filed="$(review_filed_engines "$repo" "$id")"
+  need="$(printf '%s\n' "$plan" | grep -c '[^[:space:]]' || true)"
+  n_filed=0
+  [ -z "$filed" ] || n_filed="$(printf '%s\n' "$filed" | grep -c '[^[:space:]]' || true)"
+  if [ "$n_filed" -lt "$need" ]; then
+    echo "orchid: $id has $n_filed review envelope(s) bound to the current candidate but $need slot(s) — a slot with no review of its own must be dispatched, not adopted" >&2
+    return 1
+  fi
+  local have_distinct want_distinct
+  have_distinct="$(printf '%s\n' "$filed" | _review_distinct_count)"
+  want_distinct="$(printf '%s\n' "$plan" | cut -f2 | _review_distinct_count)"
+  if [ "$have_distinct" -lt "$want_distinct" ]; then
+    echo "orchid: $id's filed reviews name $have_distinct distinct engine(s) but the plan routes $want_distinct — adopting them would lower the tier's engine independence, not record it" >&2
+    return 1
+  fi
+
+  # The named engines, in the order `jobs reconcile` filed them, mapped back
+  # to the plugin names a routing row carries.
+  local named=""
+  while IFS= read -r qid; do
+    [ -n "$qid" ] || continue
+    [ "$qid" != "-" ] || continue
+    name="$(_review_engine_name_for_qid "$repo" "$id" "$qid")" || {
+      echo "orchid: $id has a review filed by '$qid', which resolves to no installed engine — its slot cannot be pinned (install or bind that engine, or use --repin)" >&2
+      return 1
+    }
+    named="$named$name
+"
+  done <<< "$filed"
+
+  impl="$(review_implementer_engine "$repo" "$id")"
+  local eng label used=" "
+  rows=""; i=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    i=$(( i + 1 ))
+    # Slot i takes the i-th named review when there is one; slots left over
+    # (covered by an anonymous envelope, which is creditable to any of them)
+    # keep the engine the plan already named. The label is re-derived, never
+    # carried over: an adopted engine that is the implementer's own, or one a
+    # slot above already holds, is degraded independence and has to say so --
+    # the same two rules `review_routing` labels by.
+    eng="$(printf '%s\n' "$named" | sed -n "${i}p")"
+    [ -n "$eng" ] || eng="$(printf '%s' "$line" | cut -f2)"
+    label=engine-independent
+    case "$used" in *" $eng "*) label=session-independent ;; esac
+    [ "$eng" != "$impl" ] || label=session-independent
+    used="$used$eng "
+    rows="$rows$(printf '%s\t%s\t%s' "$i" "$eng" "$label")
+"
+  done <<< "$plan"
+
+  review_plan_store "$repo" "$id" "$rows" || return 1
+  printf '%s' "$rows"
+}

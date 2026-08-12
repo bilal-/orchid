@@ -156,6 +156,67 @@ ledger_available() {
   ' "$f" >/dev/null
 }
 
+# _ledger_effective <repo> <until> <fails> -- the status a record ACTUALLY
+# has right now, derived from the same two numbers `ledger_available` decides
+# on, in the same order: `failing` (at or past the failure threshold),
+# `rate_limited` (a window that has not closed yet), else `ok`.
+#
+# The stored `status` string is a record of the last MARK, not of the present:
+# `ledger_mark` writes "rate_limited" once and nothing ever rewrites it when
+# the window passes, because nothing has to -- availability is computed from
+# `rate_limited_until <= now`. Reporting that stale string is how r-002's
+# operator spent ten minutes chasing an engine whose window had expired six
+# days earlier, while the actual cause of the stall was elsewhere entirely.
+# Every reporting path derives the status here instead, so what an operator
+# reads and what dispatch does can never disagree.
+#
+# `rl_until`, not `until`: the reserved word is only recognized as one in
+# command position, so `until=0` would in fact parse as a plain assignment --
+# but a loop keyword standing where a reader expects a variable is a trap for
+# the next person editing this, and costs nothing to avoid.
+_ledger_effective() {
+  local repo="$1" rl_until="${2:-0}" fails="${3:-0}" now threshold
+  now="$(date +%s)"
+  threshold="$(config_get "$repo" engine_fail_threshold 3)"
+  case "$rl_until" in ''|*[!0-9]*) rl_until=0 ;; esac
+  case "$fails" in ''|*[!0-9]*) fails=0 ;; esac
+  # A garbled `engine_fail_threshold` falls back to the same default the
+  # config lookup itself declares, rather than letting `[` fail with a
+  # syntax error and report `ok` on the way out.
+  case "$threshold" in ''|*[!0-9]*) threshold=3 ;; esac
+  if [ "$fails" -ge "$threshold" ]; then echo failing
+  elif [ "$rl_until" -gt "$now" ]; then echo rate_limited
+  else echo ok
+  fi
+}
+
+# ledger_effective_status <repo> <engine> -- that same derivation for one
+# engine, for callers that have a name and need to know WHY it is unavailable:
+# a `rate_limited` engine's window reopens on its own (wait), while a
+# `failing` one stays unavailable until an `ok` mark it can only earn by being
+# dispatched (a decision, not a wait). An engine with no record at all is
+# `ok`, exactly as ledger_available treats it.
+ledger_effective_status() {
+  local repo="$1" engine="$2" f rec
+  f="$(_ledger_file "$repo")"
+  [ -f "$f" ] || { echo ok; return 0; }
+  rec="$(jq -r --arg e "$engine" '
+    (.[$e] // {}) | [((.rate_limited_until // 0)|tostring), ((.consecutive_failures // 0)|tostring)] | @tsv' \
+    "$f" 2>/dev/null || true)"
+  [ -n "$rec" ] || { echo ok; return 0; }
+  _ledger_effective "$repo" "$(printf '%s' "$rec" | cut -f1)" "$(printf '%s' "$rec" | cut -f2)"
+}
+
+# ledger_show <repo> -- one line per engine: <engine>\t<status>\t<detail>,
+# where <status> is the EFFECTIVE status (_ledger_effective above), never the
+# last mark's stale string. detail = "until <iso>" while a rate-limit window
+# is open, "rate limit expired <iso>" once it has closed (the mark is still
+# the most recent thing that happened to this engine, and saying so is more
+# use than a bare "-"), "failures <n>" whenever consecutive_failures>0 --
+# whether the engine has already reached the threshold or is still
+# accumulating below it, so an operator sees it coming -- "-" otherwise.
+# Prints nothing when the ledger is missing or empty; callers (e.g. `orchid
+# status`) supply the "(no engine events yet)" placeholder.
 # ledger_show <repo> -- one line per engine: <engine>\t<status>\t<detail>
 # (detail = "until <iso>" for rate_limited; otherwise "failures <n>" whenever
 # consecutive_failures>0 -- whether status has already flipped to "failing"
@@ -172,7 +233,7 @@ ledger_available() {
 # it is handed -- and see it WITHOUT the word "failures" next to a
 # well-behaved engine's name.
 ledger_show() {
-  local repo="$1" f detail
+  local repo="$1" f detail eff
   f="$(_ledger_file "$repo")"
   [ -f "$f" ] || return 0
   jq -r 'to_entries[] |
@@ -180,12 +241,19 @@ ledger_show() {
      (.value.consecutive_failures // 0), (.value.capability_refusals // 0)]
     | @tsv' "$f" |
   while IFS=$'\t' read -r engine status until fails refusals; do
-    if [ "$status" = rate_limited ]; then
+    # T039: report the status the record ACTUALLY has now, not the last one
+    # marked -- `ledger_mark` writes "rate_limited" once and nothing rewrites
+    # it when the window closes. T008: a capability refusal is not an engine
+    # fault, so it is counted and shown separately from failures. Both.
+    eff="$(_ledger_effective "$repo" "$until" "$fails")"
+    if [ "$eff" = rate_limited ]; then
       detail="until $(_ledger_epoch_to_iso "$until")"
     else
       detail=""
       if [ "${fails:-0}" -gt 0 ] 2>/dev/null; then
         detail="failures $fails"
+      elif [ "$status" = rate_limited ]; then
+        detail="rate limit expired $(_ledger_epoch_to_iso "$until")"
       fi
       if [ "${refusals:-0}" -gt 0 ] 2>/dev/null; then
         if [ -n "$detail" ]; then
@@ -196,6 +264,6 @@ ledger_show() {
       fi
       [ -n "$detail" ] || detail="-"
     fi
-    printf '%s\t%s\t%s\n' "$engine" "$status" "$detail"
+    printf '%s\t%s\t%s\n' "$engine" "$eff" "$detail"
   done
 }

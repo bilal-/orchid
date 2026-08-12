@@ -328,6 +328,20 @@ review_plan_count="$(grep -c 'jobs review-plan' "$PROTOCOL")"
 grep -qE '^\s*review-plan\)' "$REPO_ROOT/libexec/orchid-jobs" \
   || fail "PROTOCOL.md names 'orchid jobs review-plan' but libexec/orchid-jobs has no review-plan) case arm"
 
+# T039: the plan is PINNED for the life of an attempt, and the two verbs that
+# move a pinned plan are the recorded exits a `review-evidence` boundary names
+# (no arbitration verb is legal from `reviewing`, so a boundary that named
+# neither left an operator with nothing but a hand-edit of durable state --
+# which is exactly how r-002 lost a task). Same targeted doc<->code binding as
+# the `--hook` check below: PROTOCOL.md must name each form, and
+# libexec/orchid-jobs must actually parse it.
+for plan_flag in --pin --repin --adopt-evidence; do
+  grep -qF -- "$plan_flag" "$PROTOCOL" \
+    || fail "PROTOCOL.md never mentions 'orchid jobs review-plan $plan_flag' — the pinned plan's own escape hatches must be documented where the review policy is"
+  grep -qF -- "$plan_flag)" "$REPO_ROOT/libexec/orchid-jobs" \
+    || fail "PROTOCOL.md names '$plan_flag' but libexec/orchid-jobs has no '$plan_flag)' case arm to parse it"
+done
+
 # v1-m2 (Task 10): the v0-era aspirational note ("marking an engine
 # unavailable ... is not implemented by any verb [yet]") must be gone from
 # PROTOCOL.md now that lib/ledger.sh + `orchid jobs reconcile` actually close

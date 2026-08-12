@@ -175,7 +175,8 @@ assert_match "waited 1s" "$timeout_err" "timeout die message reports the configu
 wait "$timeout_holder_pid" 2>/dev/null
 
 # ---------------------------------------------------------------------------
-# 6. Read-only verbs (show/list/check/gc/review-plan/status/config/doctor)
+# 6. Read-only verbs (show/list/check/gc/review-plan without its pinning
+# flags/status/config/doctor)
 # never take the verb lock at all -- they must run instantly even while a
 # live owner holds it, never waiting behind it.
 # ---------------------------------------------------------------------------

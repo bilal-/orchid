@@ -74,7 +74,19 @@ part of the architecture; this file never changes to suit one.*
   hand. Launch each printed slot with `runners/orchid-launch <id> reviewer
   review --engine <slot-engine>` — `--engine` is exactly how a second (or
   third) slot's engine differs from whatever `role.reviewer` would resolve
-  to on its own. Before dispatching ANY slot the table labels
+  to on its own.
+  **The table is PINNED for the life of an attempt.** `orchid jobs
+  review-plan <id> --pin` writes it down, bound to the task's `attempts`+1
+  and its current `candidate_sha`; every later read returns that table until
+  one of those two changes. The deterministic driver pins on its first
+  `reviewing` pass and the pin is idempotent, so an orchestrator normally
+  just reads it. This is not tidiness: engine health is one of the inputs,
+  so a table recomputed on every read MOVES — and on r-002 it moved after an
+  engine had already filed a valid review, re-routing the slot that review
+  had been dispatched for and leaving a task that could not advance, could
+  not rework and could not be arbitrated (lesson L027). Evidence is judged
+  against the plan the attempt was dispatched under, never against a plan
+  computed after the fact. Before dispatching ANY slot the table labels
   `session-independent`, journal it — the same rule as before, now applied
   per-slot: `orchid journal add --task <id> "reviewer slot <n> is
   session-independent only: <engine>, same as the implementer's"`. Never let
@@ -1795,6 +1807,31 @@ one-pass driver could otherwise stop progressing in silence:
   counts as complete. The one relaunch the escalation ladder below does NOT
   make is a reviewer's, for the same reason: it would go back through the
   role's default chain rather than the slot's engine.
+  **That ledger is pinned, and its boundaries name their remedy.** A slot
+  identity that can be recomputed is not a ledger at all (see the Preamble's
+  risk-tiered review policy, and lesson L027), so the table is bound to the
+  attempt by `orchid jobs review-plan <id> --pin`. Two verbs, and only these,
+  move a pinned plan afterwards — each records the table it landed in the
+  journal, and a `review-evidence` boundary raised while the task is still
+  `reviewing` names the one it expects, because no arbitration verb is legal
+  from that status and an operator told only what is wrong has nothing left
+  but a hand-edit:
+  - `orchid jobs review-plan <id> --adopt-evidence` — re-pin the slots onto
+    the engines that ACTUALLY filed valid, candidate-bound reviews. The exit
+    for a plan that has re-routed under evidence already on disk. It refuses
+    when there are fewer reviews than slots (a slot with no review is
+    dispatched, not adopted) and when the filed reviews name fewer distinct
+    engines than the plan they replace (adoption may record independence,
+    never lower it), so it can settle the dead end without ever settling the
+    independence requirement.
+  - `orchid jobs review-plan <id> --repin` — rebind the attempt to the live
+    routing table, for a pinned slot whose engine can no longer be dispatched
+    at all. Slots that already have a review of their own are frozen exactly
+    as they are; only the unfilled ones move, and never onto an engine a
+    frozen row already holds without the `session-independent` label that
+    admits it.
+  Either way the task keeps a legal, recorded exit; `orchid task advance <id>
+  blocked --reason "..."` remains the universal one when neither fits.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
   Where `handoff_before_verify` is `required`, a pass reaching a `testing`
   task compares `handoff_ack` against the task's current `candidate_sha` and

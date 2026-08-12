@@ -1218,14 +1218,58 @@ case "$sub" in
     done
     ;;
   review-plan)
-    # tier-1, read-only: pure routing diagnostics over durable state + config
-    # + engine discovery -- no mutation anywhere, so (unlike prepare/
-    # reconcile) this is deliberately NOT epoch-fenced. Consulted by the
-    # orchestrator before dispatching each reviewer slot (PROTOCOL, Task 10).
-    task="$1"
+    # The slot table for a task's current attempt. The bare form is tier-1 and
+    # read-only -- pure routing diagnostics over durable state + config +
+    # engine discovery, so (unlike prepare/reconcile) it is deliberately NOT
+    # epoch-fenced, and an operator can ask what the plan is from anywhere.
+    # Consulted before dispatching each reviewer slot (PROTOCOL, Task 10).
+    #
+    # The three writing forms below PIN that table for the life of the attempt
+    # (lib/review.sh's "PINNED plan" header has the incident this exists for).
+    # They mutate durable state under `.orchid/reviews`, so they take the verb
+    # lock and the epoch fence exactly like `prepare`/`reconcile` do, and each
+    # journals the table it landed -- never the no-op re-pin, so a driver may
+    # call `--pin` on every pass without narrating a change that did not
+    # happen:
+    #   --pin             pin the effective plan, once, idempotently
+    #   --repin           rebind the attempt to the LIVE routing table
+    #   --adopt-evidence  re-pin onto the engines that actually reviewed
+    task="${1:-}"
+    [ -n "$task" ] || orchid_die "usage: orchid jobs review-plan <task> [--pin|--repin|--adopt-evidence]"
+    shift
+    plan_mode=show
+    while [ $# -gt 0 ]; do case "$1" in
+      --pin) plan_mode=pin; shift ;;
+      --repin) plan_mode=repin; shift ;;
+      --adopt-evidence) plan_mode=adopt; shift ;;
+      *) orchid_die "usage: orchid jobs review-plan <task> [--pin|--repin|--adopt-evidence]" ;;
+    esac; done
     tf="$state/tasks/$task.md"
     [ -f "$tf" ] || orchid_die "no task $task"
-    review_routing "$repo" "$task"
+    if [ "$plan_mode" = show ]; then
+      review_plan "$repo" "$task"
+      exit 0
+    fi
+    verb_lock_guard "$repo"
+    epoch_require "$repo"
+    plan_before="$(review_plan_pinned "$repo" "$task" 2>/dev/null || true)"
+    case "$plan_mode" in
+      pin)
+        plan_after="$(review_plan_pin "$repo" "$task")" || \
+          orchid_die "cannot pin a review plan for $task — a plan is bound to a round of evidence, and there is none to bind to until the task has a candidate_sha (and a routable slot)" ;;
+      repin)
+        plan_after="$(review_plan_repin "$repo" "$task")" || \
+          orchid_die "cannot re-pin a review plan for $task — a plan is bound to a round of evidence, and there is none to bind to until the task has a candidate_sha (and a routable slot)" ;;
+      # review_plan_adopt_evidence prints its own refusal (which of the two
+      # conditions failed, with the counts) to stderr; repeating it here would
+      # replace a specific diagnostic with a generic one.
+      adopt) plan_after="$(review_plan_adopt_evidence "$repo" "$task")" || exit 1 ;;
+    esac
+    printf '%s\n' "$plan_after"
+    if [ "$plan_after" != "$plan_before" ]; then
+      ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --task "$task" --kind review_plan \
+        "review plan pinned for attempt $(review_plan_attempt "$repo" "$task") ($plan_mode): $(printf '%s\n' "$plan_after" | while IFS=$'\t' read -r s e l; do printf 'slot %s=%s/%s ' "$s" "$e" "$l"; done)" >/dev/null
+    fi
     ;;
   *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc|review-plan" ;;
 esac

@@ -1642,7 +1642,18 @@ drive_reviewing() {
   # The routing table is the SLOT LEDGER, not just a dispatch list: which
   # slots exist, which engine each was routed to, and therefore which of them
   # a filed review can and cannot be credited to.
-  routing="$("$ORCHID_BIN" jobs review-plan "$id" 2>/dev/null || true)"
+  #
+  # PINNED, not recomputed, and pinned on the FIRST reviewing pass rather than
+  # at the first dispatch: `--pin` is idempotent, so the cost of calling it
+  # every pass is one no-op verb, and the benefit is that the ledger is
+  # written down before any evidence can be filed against it. A plan that is
+  # still being recomputed live re-routes a slot the moment its engine's
+  # health changes, and the review that slot already filed then belongs to
+  # nothing -- the r-002 dead end (lib/review.sh's "PINNED plan" header).
+  # A task with no candidate_sha cannot be pinned (nothing to bind to) and
+  # falls back to the live table, which is all it could have had anyway.
+  routing="$("$ORCHID_BIN" jobs review-plan "$id" --pin 2>/dev/null || true)"
+  [ -n "$routing" ] || routing="$("$ORCHID_BIN" jobs review-plan "$id" 2>/dev/null || true)"
   unsat=""
   if [ -n "$routing" ]; then
     unsat="$(drive_review_slots_unsatisfied "$repo" "$id" "$routing")"
@@ -1654,8 +1665,16 @@ drive_reviewing() {
     # two DIFFERENT ones. Relaunching would only add a third review to a set
     # the kernel already counts as complete, so this stops instead, at a
     # boundary a woken orchestrator can settle by reading the evidence.
+    #
+    # The boundary NAMES ITS REMEDIES. This stop is raised while the task is
+    # `reviewing`, where no arbitration verb is legal, so an operator who is
+    # told only what is wrong has nothing to do but hand-edit durable state --
+    # which is how r-002 lost T024. Both named actions are verbs, both record
+    # what they did, and `--adopt-evidence` refuses outright when crediting
+    # the filed reviews would lower the independence bar rather than record
+    # it, so naming it here can never talk anyone past the gate.
     set_boundary review-evidence "$id" \
-      "$have of $need review envelope(s) bound to the current candidate, but slot(s) $(printf '%s' "$unsat" | cut -f1 | tr '\n' ' ')have no review of their own — the tier's engine independence is unproven"
+      "$have of $need review envelope(s) bound to the current candidate, but slot(s) $(printf '%s' "$unsat" | cut -f1 | tr '\n' ' ')have no review of their own — the tier's engine independence is unproven. Expected: 'orchid jobs review-plan $id --adopt-evidence' when those envelopes were dispatched for the slots the plan has since re-routed, otherwise 'orchid task advance $id blocked --reason ...' to hand it to a human"
     return 0
   fi
 
@@ -1688,9 +1707,10 @@ drive_reviewing() {
   if [ -z "$unsat" ]; then
     # Short of the tier's count, yet every routed slot is already credited:
     # the table and the count disagree, and dispatching "some slot" to make up
-    # the difference would be guessing. Named, not silently retried forever.
+    # the difference would be guessing. Named, not silently retried forever --
+    # and, like the boundary above, told which verb settles it.
     set_boundary review-evidence "$id" \
-      "$have of $need review envelope(s) bound to the current candidate, but the routing table has no unfilled slot to dispatch"
+      "$have of $need review envelope(s) bound to the current candidate, but the routing table has no unfilled slot to dispatch. Expected: 'orchid jobs review-plan $id --repin' to rebind the attempt to the current routing table, otherwise 'orchid task advance $id blocked --reason ...' to hand it to a human"
     return 0
   fi
   # Dispatch exactly the slots that have no review of their own -- never
@@ -1712,6 +1732,24 @@ drive_reviewing() {
     fi
     lrc=0
     drive_launch "$id" reviewer review "$eng" || lrc=$?
+    if [ "$lrc" -eq 14 ]; then
+      # A slot cannot fail over the way a role dispatch can: the escalation
+      # ladder deliberately never relaunches a reviewer, because that would go
+      # back through the role's default chain instead of the SLOT's engine
+      # (PROTOCOL.md), and the plan is pinned besides. So "no eligible engine"
+      # is only a WAIT here while the ledger says the window reopens by
+      # itself; anything else -- an engine at its failure threshold (which can
+      # only clear by being dispatched, which it no longer is), one
+      # uninstalled, one that lost its role eligibility -- would wait forever
+      # with nobody told. That is the same silent dead end this task exists to
+      # close, so it stops, names the slot, and names the verb that rebinds it.
+      if [ "$(ledger_effective_status "$repo" "$eng")" = rate_limited ]; then
+        break
+      fi
+      set_boundary review-evidence "$id" \
+        "reviewer slot $slot is pinned to engine '$eng', which cannot be dispatched (no eligible engine) — a slot never fails over to another engine on its own. Expected: 'orchid jobs review-plan $id --repin' to rebind this attempt's unfilled slot(s) to engines that can run, otherwise 'orchid task advance $id blocked --reason ...' to hand it to a human"
+      return 0
+    fi
     [ "$lrc" -eq 0 ] || break
   done <<< "$unsat"
   return 0
