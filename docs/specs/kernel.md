@@ -269,7 +269,7 @@ across prose sections is normative HERE):**
 | From | Trigger verb | Preconditions | Writes | Next |
 |---|---|---|---|---|
 | pending | `task advance` | deps done; worktree created; base_sha set | frontmatter | implementing |
-| implementing | `task advance` | implementer envelope `ok`; candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
+| implementing | `task advance` | implementer envelope `ok`; the dispatch DELIVERED a candidate (orchestrator-checked before the verb is called — see below); candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
 | testing | `verify` FAIL → `task advance` | — (attempts++ unless `--waive-attempt --reason`) | frontmatter, journal | rework |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
@@ -291,6 +291,21 @@ the `.orchid/` worktree-contamination guard, evidence recorded (passing
 verify log) as the sole gate on `testing` → `reviewing`, and — closing the
 last conditional gap — refuses entry to `testing` outright when `base_sha` or
 `candidate_sha` is unset, rather than silently skipping the `.orchid/` check.
+
+**The `implementing → testing` DELIVERY precondition is orchestrator-enforced
+by necessity, not by preference,** and the table says so rather than claiming a
+guarantee no verb provides. The orchestrator reads the task worktree's `HEAD`,
+compares it against the sha the round was dispatched to move (the task's
+EXISTING `candidate_sha`, or `base_sha` on a first dispatch), and only then
+writes that `HEAD` into `candidate_sha` and calls `task advance`. By the time
+the verb runs, `candidate_sha` IS the observed `HEAD` and the sha it had to
+move off is no longer anywhere in the record — so `task advance` has nothing
+left to compare and could not enforce this even if it were asked to. What the
+verb itself guarantees at this edge is what it can still see: the edge is
+declared by the archetype, `base_sha` and `candidate_sha` are both set, and no
+commit in `base_sha..candidate_sha` touches `.orchid/`. That a candidate was
+DELIVERED is the orchestrator's word, given at the one moment both shas exist
+(PROTOCOL.md, THE TICK's `implementing` arm; the bullet below).
 
 Feature-archetype diagram (other archetypes declare row subsets within
 kernel invariants):
@@ -493,10 +508,48 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   `attempt_waiver`). The ≤3 cap targets repeated identical failures; the
   per-task wall-clock budget is the unconditional backstop.
   `infra_failures` NEVER consume attempts.
+- **A delivery that delivered nothing is an infra failure, not an attempt.**
+  An `ok` implement envelope is the engine's own account of itself; the
+  worktree is the only thing that can contradict it. When the envelope
+  reconciles `ok` but HEAD is still the sha the round was dispatched to move
+  (the prior `candidate_sha`, or `base_sha` on a first dispatch), no candidate
+  exists to test, review or arbitrate — the `implementing → testing` delivery
+  precondition above simply does not hold. The orchestrator refuses the
+  transition, and when the tree is CLEAN as well (the next bullet takes the
+  case where it is not) charges `infra_failures` (relaunching the implementer,
+  and reaching `blocked` at `infra_max` like any other job-delivery failure). It
+  is deliberately not an `attempts` round: nothing was delivered for the
+  attempt budget to be judging. **The refusal is durable, not a one-pass
+  verdict:** the refused envelope stays on disk as a sibling of every later
+  one, so it is recorded in `refused_envelopes` and is never selected again —
+  otherwise the same envelope is re-selected once the relaunch moves HEAD (it
+  no longer looks like a no-op) or once a newer non-ok sibling is filed (it is
+  still the newest `ok` one), and the refused work advances to testing by a
+  second door. For the same reason no implement envelope is read at all while
+  an implement job for the task is still outstanding.
+- **A sha comparison cannot see the tree, and the two no-ops it collapses call
+  for opposite handling.** An unmoved HEAD says no candidate exists; it does
+  not say the dispatch did nothing. Over a CLEAN tree it did nothing (the case
+  above): no commit, no edit, and the recovery is deterministic — spend the
+  rung and relaunch the implementer into the worktree it left exactly as it
+  found it. Over a DIRTY tree it did the work and failed to commit it, and
+  relaunching there hands the next dispatch a tree it did not create: it will
+  commit those edits as its own, revert them, or build on top of them, and the
+  journal will read whichever it does as the work of a round that never wrote
+  them. Discarding real output is not a decision to automate, so that case
+  takes no rung, no relaunch and no `refused_envelopes` mark — it raises an
+  `operator-decision` boundary naming the uncommitted paths, and both answers
+  leave the next pass correct: committed, HEAD is off the floor and the
+  envelope is ordinary delivery; discarded, the tree is clean and the refusal
+  above applies. A tree that cannot be READ is refused in the same direction (a
+  `worktree-conflict` boundary), never folded into the clean case — an
+  inspection that answers "clean" when it could not look is the fail-open shape
+  the operator hand-off's own tree check exists to close. `.orchid/` is
+  excluded throughout, being no part of any candidate.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
-implementer_engine_id, base_sha, candidate_sha, risk_tier,
+implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
 blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
 acceptance_criteria, verification_commands, resources, exclusive,
 wallclock_budget_s, started_at, created, updated`. `handoff_ack` (v1.1):
@@ -538,6 +591,11 @@ header and runs; the equality the advance leaves behind is what INV-11's
 `testing → reviewing` gate reads out of that header afterwards. (A task
 proposing that verification refuse outright on a mismatch, T031, is unmerged at
 the time of writing; nothing above depends on it.)
+`refused_envelopes` (v1.1): the
+space-separated basenames of implement envelopes refused as no-op deliveries,
+appended by the orchestrator through `orchid task set` (INV-13) at the moment
+it refuses one; a basename carries its own attempt (`<id>-a<n>-implementer
+[.k].json`), so a mark can never mask a later attempt's envelope.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
@@ -801,6 +859,18 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   always 0); ordinary `gc` is unchanged and must still be invoked on its own
   cadence (e.g. a separate cron line) — this is not folded into the default
   pass.
+- Finished-between-reconcile-and-reap (T022, closed): a pass runs `jobs
+  reconcile` then `jobs gc`, so a job that exits between the two is dead at
+  reap time with its envelope written and still in the spool. It DELIVERED.
+  Reaping its manifest destroys that delivery — reconcile matches an envelope
+  to its job through the manifest, so the next pass can only quarantine it as
+  `unknown-job` — and the driver's escalation sweep, reading the same
+  manifest, charges a rung for a job that "died without an envelope". Both
+  now skip any manifest whose `<runtime>/spool/<job_id>.json` still exists
+  (`gc-pending`); the job reads as outstanding for one more pass and the next
+  reconcile files it. This is what keeps one delivery to one rung, and it is
+  why a no-op delivery's refusal can always be recorded against the envelope
+  that caused it.
 
 ## Execution policy (the autonomy boundary)
 

@@ -286,13 +286,28 @@ case "$sub" in
         # candidate_sha matches the task's CURRENT candidate_sha (the
         # strongest signal available), and otherwise fall back to the
         # highest counter (the most recently reconciled envelope).
+        #
+        # An envelope the orchestrator REFUSED as a no-op delivery (its
+        # basename is listed in `refused_envelopes`; see kernel.md's
+        # "a delivery that delivered nothing" rule) is skipped here too. It is
+        # `ok`, it is a sibling of this same attempt, and it can outlive the
+        # round that produced it -- so left visible it could name the engine of
+        # a dispatch that delivered nothing as the implementer of a candidate
+        # some LATER, possibly failed-over, engine actually built. This field
+        # is what lib/review.sh's independence comparison excludes from
+        # reviewing; deriving it from a refused envelope would exclude the
+        # wrong engine.
         impl_attempt=$(( $(fm_get "$f" attempts) + 1 ))
         impl_cand="$(fm_get "$f" candidate_sha)"
+        impl_refused="$(fm_get "$f" refused_envelopes)"
         impl_best=""; impl_best_n=0
         impl_match=""; impl_match_n=0
         for impl_ef in "$state/reviews/$id-a$impl_attempt-implementer"*.json; do
           [ -e "$impl_ef" ] || continue
           impl_base="$(basename "$impl_ef")"
+          case " $impl_refused " in
+            *" $impl_base "*) continue ;;
+          esac
           impl_rest="${impl_base#"$id"-a"$impl_attempt"-implementer}"
           case "$impl_rest" in
             .json) impl_n=1 ;;

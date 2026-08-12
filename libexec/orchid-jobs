@@ -500,6 +500,26 @@ case "$sub" in
         echo "gc-skip $base (suspect fields)"
         continue
       fi
+      # A JOB WHOSE ENVELOPE IS STILL PENDING IN THE SPOOL HAS DELIVERED, and
+      # its manifest is not litter. `reconcile` and this reap run in the same
+      # pass, in that order, so a job that exits BETWEEN them is dead here with
+      # its envelope written and not yet drained -- and reaping the manifest
+      # then destroys the delivery outright, because reconcile matches an
+      # envelope to its job THROUGH the manifest: the next pass finds none and
+      # quarantines the envelope as `unknown-job`. What the engine actually
+      # reported is lost, and every reader downstream sees the job as one that
+      # died without an envelope. Skipped here instead, so the next reconcile
+      # can file it; the manifest is reaped on a later pass either way (once
+      # drained, reconcile deletes it itself; if the envelope is quarantined as
+      # malformed the spool entry is gone and this loop reaps it as before), so
+      # nothing lingers. Keyed <spool>/<job_id>.json -- the exact path `prepare`
+      # mints as `output`, and the same key the orphan sweep below already uses
+      # -- rather than the manifest's own `output` field, which a fixture or a
+      # hand-edited manifest may point at something that always exists.
+      if [ -e "$spool_dir/$job_id.json" ]; then
+        echo "gc-pending $job_id (envelope awaiting reconcile)"
+        continue
+      fi
       quarantine_file "$f" gc-dead
       rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$log_f"
       echo "gc $job_id"

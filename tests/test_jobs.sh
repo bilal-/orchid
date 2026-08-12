@@ -137,6 +137,67 @@ kill -0 "$live_pid" 2>/dev/null || fail "sanity: live pid still alive during ass
 kill "$live_pid" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
+# T022: A DEAD JOB WHOSE ENVELOPE IS STILL IN THE SPOOL HAS DELIVERED, and its
+# manifest is the only thing that can prove which job that envelope belongs to.
+# `reconcile` and this reap run in the same driver pass, in that order, so a
+# job that exits BETWEEN them is dead here with its envelope written and not
+# yet drained. Reaping the manifest then destroys the delivery: reconcile
+# matches an envelope to its job THROUGH the manifest, so the next pass finds
+# none and quarantines the envelope as `unknown-job` — the engine's own report
+# is lost, and the driver's escalation sweep counts the job as one that died
+# without an envelope, spending a rung on work that actually arrived.
+#
+# Age and deadness are exactly the same as the reaped fixture above; only the
+# pending spool entry differs. The second half is the one that keeps this a
+# DEFERRAL rather than an exemption: with the envelope drained, the very same
+# manifest is reaped as before.
+#
+# The job_id's trailing field must be HEX, exactly as `jobs prepare` mints it:
+# gc validates the whole id against `j-e<n>-<task>-a<n>-<hex>` BEFORE it looks
+# at the spool, and a non-hex suffix is quarantined as `.reason-gc-suspect` on
+# the way past — the hold-back below is then never reached and every assertion
+# in this block fails for a reason that has nothing to do with the hold-back.
+# That ordering is deliberate and must stay: the hold-back keys an existence
+# probe on `<spool>/<job_id>.json`, which may not be built from an unvalidated
+# id. Keep the suffix in [0-9a-f], as every other fixture here does.
+# ---------------------------------------------------------------------------
+( exit 0 ) & pend_pid=$!
+wait "$pend_pid" 2>/dev/null || true
+mkdir -p "$rt/packs/j-e1-TPEND-a1-feed0001"
+echo '{}' > "$rt/requests/j-e1-TPEND-a1-feed0001.json"
+echo pend-log > "$rt/logs/j-pend.log"
+jq -n --argjson pid "$pend_pid" --argjson started "$old_started" --arg log "$rt/logs/j-pend.log" \
+  --arg out "$rt/spool/j-e1-TPEND-a1-feed0001.json" \
+  '{job_id:"j-e1-TPEND-a1-feed0001", task:"TPEND", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:$out,
+    base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-pend.json"
+echo '{"contract":1,"job_id":"j-e1-TPEND-a1-feed0001","task":"TPEND","operation":"implement","status":"ok"}' \
+  > "$rt/spool/j-e1-TPEND-a1-feed0001.json"
+
+pend_out="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
+assert_match "gc-pending j-e1-TPEND-a1-feed0001" "$pend_out" \
+  "gc names the manifest it is holding back, and why"
+echo "$pend_out" | grep -q "^gc j-e1-TPEND-a1-feed0001$" \
+  && fail "gc must not reap a dead job whose envelope is still pending in the spool"
+[ -f "$rt/jobs/j-pend.json" ] \
+  || fail "gc: the manifest a pending envelope still needs must survive — without it reconcile can only quarantine that envelope as unknown-job"
+[ ! -f "$rt/quarantine/j-pend.json.reason-gc-dead" ] \
+  || fail "gc: nor may it be quarantined out from under the envelope"
+[ -f "$rt/spool/j-e1-TPEND-a1-feed0001.json" ] || fail "gc: the pending envelope itself must be untouched"
+[ -d "$rt/packs/j-e1-TPEND-a1-feed0001" ] || fail "gc: nor may the pack the envelope's job was built from be reaped"
+[ -f "$rt/requests/j-e1-TPEND-a1-feed0001.json" ] || fail "gc: nor its request document"
+
+# Drained (what reconcile does with it): the hold is released and the ordinary
+# dead-job reap applies, unchanged.
+rm -f "$rt/spool/j-e1-TPEND-a1-feed0001.json"
+pend_out2="$("$ORCHID_BIN" jobs gc --older-than-s 86400)"
+assert_match "^gc j-e1-TPEND-a1-feed0001$" "$pend_out2" \
+  "once nothing is waiting on it, the same manifest is reaped exactly as before"
+[ ! -f "$rt/jobs/j-pend.json" ] || fail "gc: drained manifest removed from jobs dir"
+[ -f "$rt/quarantine/j-pend.json.reason-gc-dead" ] || fail "gc: drained manifest quarantined as .reason-gc-dead"
+
+# ---------------------------------------------------------------------------
 # v0b2: gc must validate manifest-derived paths before removal. job_id and
 # log come straight from manifest JSON content with no validation — a
 # corrupted or hand-edited manifest could carry a job_id with `../` or a log

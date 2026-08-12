@@ -186,7 +186,7 @@ the integration branch, so a crash anywhere resumes from files.
 stateDiagram-v2
     [*] --> pending
     pending --> implementing: deps done - worktree created, base_sha recorded
-    implementing --> testing: implementer envelope ok - candidate_sha set, no commit touches .orchid/
+    implementing --> testing: implementer envelope ok AND the worktree HEAD moved - candidate_sha set, no commit touches .orchid/
     testing --> reviewing: orchid verify PASS - the evidence log is the only gate (INV-11)
     testing --> rework: verify FAIL - consumes an attempt
     reviewing --> arbitrating: every required review envelope reconciled for this candidate

@@ -686,6 +686,49 @@ if [ "$verify_compares" -eq 0 ]; then
     && fail "PROTOCOL.md asserts a verify-side sha refusal in the present tense and no such refusal is in libexec/orchid-verify — state the dependency as a dependency, or describe the tree this ships in"
 fi
 
+# ===========================================================================
+# T022 -- THE TRANSITION TABLE MUST NOT CREDIT A VERB WITH A GATE IT CANNOT
+# PERFORM. The no-op-delivery refusal is a comparison between the worktree's
+# `HEAD` and the sha the round was dispatched to move, and the driver makes it
+# in the only window where both exist: it reads `HEAD`, compares, and only then
+# writes that `HEAD` into `candidate_sha` and calls `orchid task advance`. By
+# the time the verb runs the two shas are equal by construction and the prior
+# candidate is gone from the record, so a table listing "HEAD moved off the
+# prior candidate_sha" as a PRECONDITION of `task advance` names a gate nothing
+# performs — and the table is this project's declared test oracle, so the next
+# reader to trust it removes the driver-side check as redundant.
+#
+# Two-way, on the ORDER in the driver rather than on the prose alone: the day
+# the write moves after the advance (or the verb grows the comparison), this
+# fails and sends whoever landed it to the sentence that has just changed
+# meaning.
+#
+# Captured whole and split with parameter expansion -- no `grep | head`, for
+# the pipefail/SIGPIPE reason spelled out above. Each pattern matches exactly
+# one line, which is asserted rather than assumed: two matches would make
+# `${hits%%:*}` a line number for one of them and the comparison meaningless.
+kernel_cand_hits="$(grep -n 'task set "\$id" candidate_sha "\$cand"' "$REPO_ROOT/runners/orchid-drive" || true)"
+kernel_adv_hits="$(grep -n 'task advance "\$id" testing' "$REPO_ROOT/runners/orchid-drive" || true)"
+assert_eq 1 "$(printf '%s' "$kernel_cand_hits" | grep -c . || true)" \
+  "T022 tripwire: the driver must have exactly one candidate_sha write on the implementing arm — the check below reads its position (found: $kernel_cand_hits)"
+assert_eq 1 "$(printf '%s' "$kernel_adv_hits" | grep -c . || true)" \
+  "T022 tripwire: the driver must have exactly one implementing -> testing advance (found: $kernel_adv_hits)"
+kernel_cand_set="${kernel_cand_hits%%:*}"
+kernel_cand_adv="${kernel_adv_hits%%:*}"
+# Defaulted so a missing match cannot turn the comparison below into a bash
+# error on a non-numeric operand: 0 vs 0 takes the `else` arm, which reports a
+# tripwire that could not read the driver alongside the count assertions above.
+case "$kernel_cand_set" in ''|*[!0-9]*) kernel_cand_set=0 ;; esac
+case "$kernel_cand_adv" in ''|*[!0-9]*) kernel_cand_adv=0 ;; esac
+if [ "$kernel_cand_set" -lt "$kernel_cand_adv" ]; then
+  assert_match "orchestrator-checked before the verb is called" "$kernel_one_line" \
+    "docs/specs/kernel.md's implementing -> testing row must attribute the delivery check to the orchestrator: the driver writes candidate_sha to the HEAD it just read BEFORE advancing, so 'task advance' sees the two equal and has nothing left to compare"
+  assert_match "could not enforce this even if it were asked to" "$kernel_one_line" \
+    "docs/specs/kernel.md must SAY why that precondition is orchestrator-enforced rather than kernel-enforced — an unexplained exception to the enforcement-ownership paragraph reads as an oversight to be tidied up"
+else
+  fail "T022 tripwire: the driver no longer writes candidate_sha before its implementing -> testing advance (write at line $kernel_cand_set, advance at line $kernel_cand_adv) — either the verb can now see both shas, or this check can no longer read the driver; docs/specs/kernel.md's account of why the precondition is orchestrator-enforced must be revisited either way"
+fi
+
 # The rework brief is one brief, not an accumulating pile: PROTOCOL.md has to
 # say that each block names its candidate and that superseded ones are aged
 # out, because an implementer handed three briefs cannot tell which describes

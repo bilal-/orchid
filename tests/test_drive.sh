@@ -362,6 +362,159 @@ mk_hook_env P41 "" -
 assert_eq 1 "$(drive_hook_envelope_count "$POLICY" P41 before_arbitration 1 "$CAND")" \
   "an envelope with no candidate_sha cannot be PROVEN superseded, so it still counts (fail closed)"
 
+# --- what a dispatch has to MOVE for its envelope to be delivery -----------
+# The sha a no-op is measured against, by task shape rather than by fixture
+# timing: a rework round is dispatched to change the candidate it already has,
+# while a first dispatch has none yet and must move off its base.
+BASE=2222222222222222222222222222222222222222
+mk_delivery_task() {  # <id> <candidate|-> <base|->
+  local id="$1" cand="$2" base="$3"
+  [ "$cand" != - ] || cand=""
+  [ "$base" != - ] || base=""
+  printf -- '---\nschema: 1\nid: %s\nstatus: implementing\narchetype: feature\nattempts: 0\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$id" "$base" "$cand" > "$POLICY/.orchid/tasks/$id.md"
+}
+
+mk_delivery_task P50 "$CAND" "$BASE"
+assert_eq "$CAND" "$(drive_delivery_floor "$POLICY" P50)" \
+  "a rework round measures delivery against the candidate it was dispatched to change"
+drive_delivery_is_noop "$POLICY" P50 "$CAND" \
+  || fail "an ok envelope over a HEAD still sitting on that candidate delivered nothing"
+if drive_delivery_is_noop "$POLICY" P50 3333333333333333333333333333333333333333; then
+  fail "a HEAD that moved off the prior candidate IS delivery — the envelope is not second-guessed further"
+fi
+
+mk_delivery_task P51 - "$BASE"
+assert_eq "$BASE" "$(drive_delivery_floor "$POLICY" P51)" \
+  "a FIRST dispatch has no candidate yet, so the sha it must move off is its base"
+drive_delivery_is_noop "$POLICY" P51 "$BASE" \
+  || fail "a first dispatch whose HEAD is still the base produced no commit at all — the same no-op, one step earlier"
+
+# Neither sha recorded: state no dispatch can produce (drive_dispatch stamps
+# base_sha on every one). Nothing to compare against is NOT a refusal.
+mk_delivery_task P52 - -
+assert_eq "" "$(drive_delivery_floor "$POLICY" P52)" "no recorded sha, nothing to measure against"
+if drive_delivery_is_noop "$POLICY" P52 "$CAND"; then
+  fail "with no sha on the task, a no-op cannot be PROVEN — the driver must not refuse on a guess"
+fi
+if drive_delivery_is_noop "$POLICY" P50 ""; then
+  fail "an unreadable HEAD is a worktree fault, handled by its own boundary — never a silent no-op verdict"
+fi
+
+# --- and WHICH no-op it is: a sha comparison cannot see the tree -----------
+# An unmoved HEAD over a worktree full of uncommitted edits is a dispatch that
+# did the work and failed to commit it. It fails the delivery test the same way
+# a commentary-only round does -- no candidate exists either way -- but the
+# ladder's recovery for the latter is to relaunch the implementer into that
+# same worktree, which over the former hands the next dispatch a tree it did
+# not write. So the verdict distinguishes them, from the tree state the caller
+# read (`handoff_worktree_dirty`'s stdout and exit status) rather than from a
+# second sha. RED before this: there was no verdict to ask at all — every
+# unmoved HEAD took the one refusal arm, whatever the tree held.
+assert_eq delivered "$(drive_delivery_verdict "$POLICY" P50 3333333333333333333333333333333333333333 "" 0)" \
+  "a HEAD that moved off the floor is delivery — there is a candidate to test"
+assert_eq delivered "$(drive_delivery_verdict "$POLICY" P50 3333333333333333333333333333333333333333 "src/half-done.sh" 0)" \
+  "and a dirty tree over a MOVED head is not this arm's question — that one belongs to the operator hand-off, one state later, against a candidate that exists"
+assert_eq nothing "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 0)" \
+  "an unmoved HEAD over a CLEAN tree is the commentary-only round: no commit, no edit, nothing on disk to show for the dispatch"
+assert_eq uncommitted "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "src/half-done.sh, docs/notes.md" 0)" \
+  "an unmoved HEAD over a DIRTY tree is a different failure: the dispatch wrote real work and never committed it"
+assert_eq uninspected "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "git status exited 128 in /nope" 2)" \
+  "a tree that could not be READ is refused in the same direction as a dirty one, never folded into the clean case — an inspection that answers 'clean' when it could not look is fail-open"
+assert_eq uninspected "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 2)" \
+  "and the exit status decides that, not the text: a failed inspection prints its diagnosis on the same channel a dirty tree prints paths on"
+assert_eq delivered "$(drive_delivery_verdict "$POLICY" P52 "$CAND" "src/half-done.sh" 0)" \
+  "with no sha recorded a no-op cannot be PROVEN, so nothing is refused — the tree state does not turn an unprovable case into a refusable one"
+
+# --- a refusal that does not stick is not a refusal ------------------------
+# The no-op test above compares an envelope against a MOVING worktree; it is
+# not a property of the envelope, and `jobs reconcile` removes no envelope. A
+# refused one therefore sits on disk for the rest of the attempt, still `ok`
+# and still the newest `ok`, and is re-selected by BOTH of the doors below
+# unless the refusal is recorded against the envelope itself. Each is RED
+# before this task: the selector had no notion of a refused envelope at all.
+mk_impl_env() {  # <id> <attempt> <suffix> <status>
+  local id="$1" att="$2" suffix="$3" st="$4"
+  jq -n --arg jid "j-fixture-$id-a$att$suffix" --arg task "$id" --arg st "$st" \
+    '{contract:1, job_id:$jid, task:$task, operation:"implement", status:$st,
+      summary:"delivery fixture"}' \
+    > "$POLICY/.orchid/reviews/$id-a$att-implementer$suffix.json"
+}
+
+mk_delivery_task P53 - "$BASE"
+mk_impl_env P53 1 "" ok
+assert_eq "$POLICY/.orchid/reviews/P53-a1-implementer.json" \
+  "$(drive_implement_envelope "$POLICY" P53)" \
+  "an ok implement envelope is the attempt's envelope until something says otherwise"
+
+# The refusal, recorded exactly as runners/orchid-drive records it.
+fm_set "$POLICY/.orchid/tasks/P53.md" refused_envelopes "P53-a1-implementer.json"
+drive_delivery_refused "$POLICY" P53 P53-a1-implementer.json \
+  || fail "the mark is read straight back off the task's own frontmatter"
+if drive_delivery_refused "$POLICY" P53 P53-a1-implementer.2.json; then
+  fail "and it marks THAT envelope, not every sibling of it"
+fi
+assert_eq "" "$(drive_implement_envelope "$POLICY" P53)" \
+  "DOOR ONE: a refused envelope is never selected again, so the relaunch it started may move HEAD without that envelope becoming delivery of a commit it never made"
+if drive_implement_failed "$POLICY" P53; then
+  fail "nor is it a fresh engine failure — its rung was already spent, and the relaunch's own envelope has not landed yet"
+fi
+
+mk_impl_env P53 1 .2 failed
+assert_eq "" "$(drive_implement_envelope "$POLICY" P53)" \
+  "DOOR TWO: a newer NON-ok sibling does not restore the refused envelope to 'the newest ok one' — the failure is never stepped over to reach it"
+drive_implement_failed "$POLICY" P53 \
+  || fail "that non-ok sibling is the attempt's word now: a failure the ladder counts, never an acceptance"
+
+# The mark excludes ONE envelope, not the attempt: a relaunch that really
+# delivers is still accepted, on its own envelope.
+mk_impl_env P53 1 .3 ok
+assert_eq "$POLICY/.orchid/reviews/P53-a1-implementer.3.json" \
+  "$(drive_implement_envelope "$POLICY" P53)" \
+  "a genuinely new ok envelope is the attempt's envelope — the refusal quarantines one document, not the round"
+if drive_implement_failed "$POLICY" P53; then
+  fail "and with an acceptable envelope on disk the attempt is not in failure"
+fi
+
+# Basenames carry their own attempt, which is why the mark is a basename and
+# not a counter: a counter-keyed mark would mask the NEXT round's envelope and
+# strand the task with nothing selectable.
+printf -- '---\nschema: 1\nid: P54\nstatus: implementing\narchetype: feature\nattempts: 1\nbase_sha: %s\ncandidate_sha: %s\nrefused_envelopes: P54-a1-implementer.json\n---\nbody\n' \
+  "$BASE" "$CAND" > "$POLICY/.orchid/tasks/P54.md"
+mk_impl_env P54 2 "" ok
+assert_eq "$POLICY/.orchid/reviews/P54-a2-implementer.json" \
+  "$(drive_implement_envelope "$POLICY" P54)" \
+  "a refusal recorded on attempt 1 says nothing at all about attempt 2's envelope"
+
+# The mark is also the ladder's REPLACEMENT SIGNAL. A non-ok envelope stays
+# readable for the rest of the attempt, so an escalation whose relaunch never
+# happened is escalated again next pass until the cap fetches a human; a
+# refused envelope answers that question with nothing at all. Without this
+# predicate the walk would wait forever on a relaunch that is neither running
+# nor coming.
+drive_delivery_refused_any "$POLICY" P53 \
+  || fail "a refusal on the CURRENT attempt is a failure state the ladder must answer, not a wait"
+if drive_delivery_refused_any "$POLICY" P50; then
+  fail "a task with no refusal on record is simply awaiting its envelope"
+fi
+if drive_delivery_refused_any "$POLICY" P54; then
+  fail "attempt 1's refusal must not read as attempt 2's — a fresh round would escalate on an old round's evidence"
+fi
+# ...and the segment match stops at `-implementer`, so a1 is never a11.
+printf -- '---\nschema: 1\nid: P56\nstatus: implementing\narchetype: feature\nattempts: 0\nbase_sha: %s\ncandidate_sha:\nrefused_envelopes: P56-a11-implementer.json\n---\nbody\n' \
+  "$BASE" > "$POLICY/.orchid/tasks/P56.md"
+if drive_delivery_refused_any "$POLICY" P56; then
+  fail "attempt 11's mark is not attempt 1's — a prefix match here escalates a round that never refused anything"
+fi
+
+# The value the driver writes back when it refuses: append, and idempotent.
+assert_eq "P53-a1-implementer.json P53-a1-implementer.3.json" \
+  "$(drive_delivery_refusal_list "$POLICY" P53 P53-a1-implementer.3.json)" \
+  "a second refusal appends to the list rather than replacing it — every one of them stays refused"
+assert_eq "P53-a1-implementer.json" \
+  "$(drive_delivery_refusal_list "$POLICY" P53 P53-a1-implementer.json)" \
+  "and refusing one already on the list writes the same list back, so the field cannot grow on a repeated pass"
+
 # ===========================================================================
 # Part B -- end to end, real stub engines, no model anywhere: pending ->
 # done, entirely under `orchid drive`.
@@ -2206,3 +2359,396 @@ assert_match "blocked" "$hblk_out" "naming that status too (it said: $hblk_out)"
 assert_eq off "$(handoff_gate_mode "$REPO")" "the default is off"
 assert_eq off "$(handoff_state "$REPO" T001 | cut -f1)" \
   "so a repository that never configured it is untouched by everything above"
+# Part O -- AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. An implement
+# dispatch can return `ok` with a summary that is pure commentary -- findings
+# restated, sources listed -- over a worktree whose HEAD never moved and whose
+# tree is clean. A cross-project finding, confirmed here twice on one task:
+# advancing on that spends a full verify and a full review round re-proving a
+# defect this run already arbitrated, and burns a rework attempt on a
+# candidate nobody touched. So delivery is judged by the WORKTREE, and a
+# delivery that delivered nothing is a JOB-DELIVERY failure: it belongs on the
+# escalation ladder, never on the attempt budget, and never on a transition.
+#
+# Part L above owns the OTHER half of this same ladder: how a relaunch already
+# in flight is accounted. This part must hold without moving any reading there,
+# and it does so by not building a second ladder at all: a delivery that
+# delivered nothing is dropped as UNACCEPTABLE, so it reaches the same single
+# `drive_escalate` call every other implement failure reaches, behind the same
+# single "is a relaunch still live?" question Part L pins -- one event, one
+# rung, whichever shape produced it. That question is now asked of the walk as
+# a whole rather than of its failure arm alone, because a live relaunch is
+# MOVING the worktree the acceptance test reads: the deferral this part
+# observes below is Part L's note, word for word, and not one of its own.
+#
+# And a refusal has to STICK. Reconcile removes no envelope, so the refused one
+# sits beside every later sibling: unmarked, it is re-selected the moment the
+# relaunch moves HEAD (it stops looking like a no-op) or the moment a newer
+# non-ok sibling is filed (it is still the newest ok one), and the refused work
+# advances to testing by a second door. Part A proves what the mark excludes;
+# this part proves the driver writes one, and that the live-relaunch window
+# cannot be used to walk through the first door before it does.
+# ===========================================================================
+NOOP="$WORK/noopdelivery"
+mkdir -p "$NOOP" "$WORK/nctl"
+cd "$NOOP" || exit 1
+git init -q .
+printf 'role.implementer=stubnoop\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$NOOP" "$ORCHID_BIN" init >/dev/null || fail "orchid init (no-op delivery fixture)"
+git checkout -q orchid/integration
+
+# Role-eligible in every way that matters -- the launch really spawns, the job
+# really exits 0, the envelope really reconciles `ok` -- and yet it commits
+# NOTHING. Every signal short of the worktree says the work was done.
+mkdir -p "$WORK/eng/stubnoop"
+printf 'manifest_version=1\nid=test/stubnoop\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubnoop/plugin.conf"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -eu'
+  printf 'CTL=%s\n' "$(printf '%q' "$WORK/nctl")"
+} > "$WORK/eng/stubnoop/run"
+cat >> "$WORK/eng/stubnoop/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+op="$(jq -r .operation "$req")"
+[ "$op" = implement ] || exit 1
+# Which dispatch this is, counted by the stub itself rather than by the test's
+# sense of timing: the SECOND one is the relaunch the first refusal makes, and
+# it stays open -- no envelope of its own -- until the test releases it. That
+# is what turns "is the refused envelope still the newest one?" into a
+# deterministic question instead of a race against pass duration.
+n=$(( $(cat "$CTL/n" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$CTL/n"
+if [ "$n" = 2 ]; then
+  i=0
+  while [ ! -f "$CTL/release" ] && [ "$i" -lt 900 ]; do sleep 0.2; i=$((i + 1)); done
+fi
+# The whole defect in one document: status ok, a summary about the work, and
+# not one commit behind it.
+#
+# Written to a sibling and MOVED into place, never redirected straight at the
+# spool path -- the same discipline Part L's stub keeps, and for the same
+# reason: `jobs reconcile` runs concurrently with this write and quarantines a
+# half-written envelope as malformed, which would delete the very delivery this
+# part is about and leave the ladder counting a job that "died" instead.
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"restated the findings and listed the sources; made no edits"}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+chmod +x "$WORK/eng/stubnoop/run"
+
+NEPOCH="$(ORCHID_REPO="$NOOP" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+norchid() { ORCHID_REPO="$NOOP" ORCHID_EPOCH="$NEPOCH" "$ORCHID_BIN" "$@"; }
+norchid requirements import "$WORK/requirements.md" >/dev/null
+norchid task create N010 "its implementer only ever talks about the work" >/dev/null
+norchid task set N010 verification_commands "false" >/dev/null
+norchid plan apply --reason "initial plan" >/dev/null
+
+NTF="$NOOP/.orchid/tasks/N010.md"
+NDRIVE_OUT=""; NDRIVE_RC=0
+run_ndrive() {
+  NDRIVE_RC=0
+  NDRIVE_OUT="$(ORCHID_REPO="$NOOP" ORCHID_EPOCH="$NEPOCH" "$DRIVE" 2>&1)" || NDRIVE_RC=$?
+}
+nstatus() { fm_get "$NTF" status; }
+
+# Passes until the refusal lands, asserting on EVERY one of them that the
+# driver never takes the transition this part exists to refuse. `testing`
+# reached even once IS the defect, whatever the run does afterwards.
+npass=0
+while [ "$(fm_get "$NTF" infra_failures)" = 0 ] && [ "$npass" -lt 30 ]; do
+  run_ndrive
+  case "$(nstatus)" in
+    pending|implementing) ;;
+    *) fail "N010 must never leave implementing on a dispatch that delivered nothing (got '$(nstatus)', out: $NDRIVE_OUT)"
+       break ;;
+  esac
+  npass=$(( npass + 1 ))
+  sleep 0.3
+done
+
+NBASE="$(fm_get "$NTF" base_sha)"
+[ -n "$NBASE" ] || fail "the dispatch must have stamped base_sha (out: $NDRIVE_OUT)"
+assert_eq implementing "$(nstatus)" \
+  "an ok envelope over an unmoved worktree takes NO transition — the task stays exactly where it was"
+assert_eq 1 "$(fm_get "$NTF" infra_failures)" \
+  "the refusal is charged to infra_failures, the job-delivery counter (out: $NDRIVE_OUT)"
+assert_eq 0 "$(fm_get "$NTF" attempts)" \
+  "and never to attempts: nothing was delivered for the rework budget to be judging"
+assert_eq "" "$(fm_get "$NTF" candidate_sha)" \
+  "no candidate_sha was recorded — there is no new candidate to record"
+[ ! -f "$NOOP/.orchid/reviews/N010-verify.log" ] \
+  || fail "the refusal must cost no verify round — that is precisely the price of a false advance"
+assert_match "moved no commit" "$NDRIVE_OUT" "the pass says plainly what it refused and why"
+# The pass's EXIT STATUS is the driver's own report of what it decided, and it
+# is the half a message check cannot see. 0, not 16: a delivery that delivered
+# nothing is a job-delivery failure the ladder already knows how to answer --
+# count the rung, relaunch the implementer -- so the pass resolves it and keeps
+# driving. Stopping at a judgment boundary here would wake an operator for a
+# failure with a deterministic recovery, and any other code would mean the
+# refusal path died rather than took the arm above.
+assert_eq 0 "$NDRIVE_RC" \
+  "the refusal is a rung of the ladder, not a judgment boundary — the pass resolves it and exits 0 (out: $NDRIVE_OUT)"
+
+# The journal entry IS the record of the refusal, and it names BOTH shas: what
+# the worktree actually holds, and what the task already had recorded.
+njournal="$(cat "$NOOP/.orchid/journal.md")"
+assert_match "HEAD $NBASE is unchanged from the task's recorded $NBASE" "$njournal" \
+  "the journalled refusal names the observed HEAD and the recorded sha it failed to move past"
+assert_match "infra failure #1" "$njournal" \
+  "recorded through orchid task infra-fail, so it carries the kernel's own counter, cap and journal discipline"
+
+# AND THE REFUSAL IS RECORDED AGAINST THE ENVELOPE, not just against the pass
+# that made it. Part A proves what that mark then excludes; this is the half
+# only the driver can be asked -- that it writes one at all, through the same
+# named verb every other field it owns goes through.
+assert_match "N010-a1-implementer.json" "$(fm_get "$NTF" refused_envelopes)" \
+  "the refused envelope is named on the task — a refusal that leaves it selectable is not a refusal"
+
+# That refusal relaunched the implementer, and this fixture holds that job
+# open. The envelope the next pass reads is therefore STILL the one already
+# refused -- refusing it again would charge one infra_failure per pass and race
+# a second implementer against the live one.
+run_ndrive
+assert_eq 1 "$(fm_get "$NTF" infra_failures)" \
+  "the same refused envelope is never escalated twice while its own relaunch is still outstanding"
+assert_match "a relaunched implement job is still running" "$NDRIVE_OUT" \
+  "and it is Part L's own deferral that says so — this refusal rides that ladder, it does not run a second one beside it"
+assert_eq implementing "$(nstatus)" "still implementing, still waiting"
+assert_eq 0 "$NDRIVE_RC" \
+  "deferring to a live relaunch is a WAIT — it costs a pass and nothing else (out: $NDRIVE_OUT)"
+
+# THE OTHER DOOR, and the pass that used to walk through it. The relaunch this
+# refusal started is alive and free to commit to the worktree at any instant --
+# so the commit is made here, by hand, in exactly that window. The moment it
+# lands, the ALREADY REFUSED envelope stops looking like a no-op (HEAD is off
+# the floor) and a driver that reads envelopes while a job is outstanding would
+# advance that half-written tree to testing on the authority of a document
+# written before any of it existed, and stamp it as the candidate while its
+# author is still typing.
+NWT="$(fm_get "$NTF" worktree)"
+[ -n "$NWT" ] || fail "the dispatch must have recorded a worktree for N010"
+git -C "$NWT" commit -q --allow-empty -m "fixture: the live relaunch's first commit"
+NMOVED="$(git -C "$NWT" rev-parse HEAD)"
+[ "$NMOVED" != "$NBASE" ] || fail "the fixture commit must really move the worktree HEAD"
+run_ndrive
+assert_eq implementing "$(nstatus)" \
+  "a HEAD moved by the LIVE relaunch is not delivery by the envelope already refused (out: $NDRIVE_OUT)"
+assert_eq "" "$(fm_get "$NTF" candidate_sha)" \
+  "and nothing is stamped as the candidate: no envelope has been filed over that commit by anyone"
+assert_eq 1 "$(fm_get "$NTF" infra_failures)" \
+  "nor is a second rung spent while that relaunch is still live"
+assert_match "a relaunched implement job is still running" "$NDRIVE_OUT" \
+  "and the LIVE JOB is what the pass defers to: with a relaunch outstanding the walk does not read an envelope at all, whatever the worktree now says"
+assert_eq 0 "$NDRIVE_RC" "the pass is still a wait (out: $NDRIVE_OUT)"
+# Rolled back, so the rest of this part measures the same unmoved worktree it
+# started with: what follows is about the ladder's bound, not about this commit.
+git -C "$NWT" reset -q --hard "$NBASE"
+
+# Released: the relaunch files its own envelope, equally empty. The ladder now
+# runs to its own bound -- a human -- instead of either advancing or looping.
+: > "$WORK/nctl/release"
+npass=0
+while [ "$(nstatus)" != blocked ] && [ "$npass" -lt 40 ]; do
+  run_ndrive
+  case "$(nstatus)" in
+    implementing|blocked) ;;
+    *) fail "a repeated no-op delivery must still never advance (got '$(nstatus)', out: $NDRIVE_OUT)"
+       break ;;
+  esac
+  npass=$(( npass + 1 ))
+  sleep 0.3
+done
+assert_eq blocked "$(nstatus)" \
+  "an implementer that keeps delivering nothing reaches a human through the infra_failures cap (out: $NDRIVE_OUT)"
+assert_eq 3 "$(fm_get "$NTF" infra_failures)" \
+  "the bound it hit is infra_max, the job-delivery budget"
+assert_eq 0 "$(fm_get "$NTF" attempts)" \
+  "and after three no-op deliveries the task's rework budget is still whole — none of them was a rework"
+assert_eq "" "$(fm_get "$NTF" candidate_sha)" "no candidate was ever recorded for this task"
+# Three dispatches, three empty envelopes, three refusals -- and every one of
+# them still refused at the end, including the one refused by the pass that hit
+# the cap. A list that only ever holds the LATEST refusal would re-open the
+# earlier doors the moment this task was unblocked and retried.
+nrefused="$(fm_get "$NTF" refused_envelopes)"
+for nenv in N010-a1-implementer.json N010-a1-implementer.2.json N010-a1-implementer.3.json; do
+  case " $nrefused " in
+    *" $nenv "*) ;;
+    *) fail "every refused envelope stays refused — $nenv is missing from '$nrefused'" ;;
+  esac
+done
+[ ! -f "$NOOP/.orchid/reviews/N010-verify.log" ] \
+  || fail "no verify round may be spent on a candidate that was never delivered"
+for nrev in "$NOOP"/.orchid/reviews/N010-a*-reviewer*.json; do
+  [ -e "$nrev" ] || continue
+  fail "no review round may be spent on a candidate that was never delivered ($nrev)"
+done
+
+# And the ladder's bound is a HUMAN, reported the way every other parked run is
+# reported: the next pass over the blocked task stops at a judgment boundary and
+# says so in its exit status. This is the assertion that the refusal path ends
+# somewhere, rather than driving on forever over a task no engine can move.
+run_ndrive
+assert_eq 16 "$NDRIVE_RC" \
+  "the pass after the cap stops at a judgment boundary, the one exit status that fetches an operator (out: $NDRIVE_OUT)"
+assert_eq blocked-task "$(ORCHID_REPO="$NOOP" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
+  "and the boundary it records is the blocked task itself"
+
+# ===========================================================================
+# Part P -- A SHA COMPARISON CANNOT SEE THE TREE. Part O judges delivery by
+# comparing the worktree HEAD against the sha the round was dispatched to move,
+# and an unmoved HEAD is no candidate however the envelope reads. But a sha
+# describes a COMMIT and says nothing about the tree sitting on top of it, so
+# that one comparison answers "delivered nothing" for two failures that are not
+# the same failure:
+#
+#   * the commentary-only round -- no commit AND no edit. Part O's case. Its
+#     recovery is deterministic: spend the job-delivery rung and relaunch the
+#     implementer into the same worktree, which is exactly where it left off.
+#   * a dispatch that DID the work and never committed it. The worktree holds
+#     real, uncommitted output. Relaunching over it hands the next dispatch a
+#     tree it did not create and cannot account for -- it will commit those
+#     edits as its own, revert them, or build on top of them, and whichever it
+#     does, the journal will read as the work of a round that never wrote them.
+#     Throwing the work away is a decision about somebody's real output, which
+#     is not a rung of a ladder; it is the operator's call.
+#
+# So this part pins the SECOND one, and pins that it is handled differently:
+# no rung, no relaunch, no refusal mark, and a judgment boundary naming what is
+# on disk. RED before this task's fix: the fixture below took Part O's arm --
+# an infra_failure and a relaunch straight into the dirty tree.
+# ===========================================================================
+UNCM="$WORK/uncommitted"
+mkdir -p "$UNCM" "$WORK/uctl"
+cd "$UNCM" || exit 1
+git init -q .
+printf 'role.implementer=stubdirty\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$UNCM" "$ORCHID_BIN" init >/dev/null || fail "orchid init (uncommitted-delivery fixture)"
+git checkout -q orchid/integration
+
+# The same stub as Part O's in every respect but one: it WRITES. A file lands
+# in the task worktree, no commit is made, and the envelope reports ok.
+mkdir -p "$WORK/eng/stubdirty"
+printf 'manifest_version=1\nid=test/stubdirty\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubdirty/plugin.conf"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -eu'
+  printf 'CTL=%s\n' "$(printf '%q' "$WORK/uctl")"
+} > "$WORK/eng/stubdirty/run"
+cat >> "$WORK/eng/stubdirty/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+op="$(jq -r .operation "$req")"
+wt="$(jq -r .worktree "$req")"
+[ "$op" = implement ] || exit 1
+# Counted by the stub itself: this is how the test asks "was a second
+# implementer launched over the tree the first one dirtied?" without racing the
+# pass. A relaunch here is the defect.
+echo "$(( $(cat "$CTL/n" 2>/dev/null || echo 0) + 1 ))" > "$CTL/n"
+printf 'the fix this round was dispatched to make\n' > "$wt/half-done.txt"
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"applied the fix"}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+chmod +x "$WORK/eng/stubdirty/run"
+
+UEPOCH="$(ORCHID_REPO="$UNCM" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+uorchid() { ORCHID_REPO="$UNCM" ORCHID_EPOCH="$UEPOCH" "$ORCHID_BIN" "$@"; }
+uorchid requirements import "$WORK/requirements.md" >/dev/null
+uorchid task create U010 "its implementer edits the tree and never commits" >/dev/null
+uorchid task set U010 verification_commands "false" >/dev/null
+uorchid plan apply --reason "initial plan" >/dev/null
+
+UTF="$UNCM/.orchid/tasks/U010.md"
+UDRIVE_OUT=""; UDRIVE_RC=0
+run_udrive() {
+  UDRIVE_RC=0
+  UDRIVE_OUT="$(ORCHID_REPO="$UNCM" ORCHID_EPOCH="$UEPOCH" "$DRIVE" 2>&1)" || UDRIVE_RC=$?
+}
+ustatus() { fm_get "$UTF" status; }
+
+# Passes until the boundary lands. `testing` reached even once IS the defect --
+# there is no candidate, whatever is sitting in the tree.
+upass=0
+while [ "$UDRIVE_RC" -ne 16 ] && [ "$upass" -lt 30 ]; do
+  run_udrive
+  case "$(ustatus)" in
+    pending|implementing) ;;
+    *) fail "U010 must never leave implementing on a dispatch that committed nothing (got '$(ustatus)', out: $UDRIVE_OUT)"
+       break ;;
+  esac
+  upass=$(( upass + 1 ))
+  sleep 0.3
+done
+
+UWT="$(fm_get "$UTF" worktree)"
+[ -n "$UWT" ] || fail "the dispatch must have recorded a worktree for U010"
+UBASE="$(fm_get "$UTF" base_sha)"
+assert_eq 16 "$UDRIVE_RC" \
+  "the pass stops at a judgment boundary — this failure has no deterministic recovery a driver may take on its own (out: $UDRIVE_OUT)"
+assert_eq operator-decision "$(ORCHID_REPO="$UNCM" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
+  "and the boundary is an operator-decision: commit the work onto the branch or throw it away is a call about somebody's real output"
+assert_eq implementing "$(ustatus)" \
+  "the task itself has not moved — an unmoved HEAD is no candidate, however much is sitting in the tree"
+assert_eq "" "$(fm_get "$UTF" candidate_sha)" \
+  "and nothing is stamped as the candidate: the work exists nowhere a sha can name"
+assert_eq "$UBASE" "$(git -C "$UWT" rev-parse HEAD)" \
+  "nor did anything commit on the dispatch's behalf"
+
+# THE DISTINCTION, in the two places it has to show. The pass SAYS which of the
+# two failures this was...
+assert_match "uncommitted work" "$UDRIVE_OUT" \
+  "the pass names what actually happened — 'delivered nothing' would be a false report of a tree with the work in it"
+assert_match "half-done.txt" "$UDRIVE_OUT" \
+  "and names the paths, so the operator can see what they are being asked to decide about without going looking"
+
+# ...and NOTHING IS CHARGED. Part O's rung belongs to a failure with a
+# deterministic recovery; this one is a stop, and a stop that also spent a rung
+# would walk this task toward `blocked` on passes an operator has not answered
+# yet.
+assert_eq 0 "$(fm_get "$UTF" infra_failures)" \
+  "no job-delivery rung is spent: the ladder's recovery is a relaunch, and a relaunch is exactly what must not happen here"
+assert_eq 0 "$(fm_get "$UTF" attempts)" \
+  "and no attempt either — the rework budget bounds defects in delivered work, and none was delivered"
+assert_eq "" "$(fm_get "$UTF" refused_envelopes)" \
+  "nor is the envelope marked refused: once the operator commits that work it IS the delivery this envelope reported, and a mark would make it unselectable forever"
+assert_eq 1 "$(cat "$WORK/uctl/n")" \
+  "and no second implementer was launched into the tree the first one dirtied"
+assert_eq "the fix this round was dispatched to make" "$(cat "$UWT/half-done.txt")" \
+  "the uncommitted work is still there, untouched — the driver reports it, it does not clean up after an engine"
+
+# A second pass changes none of that. The boundary is re-raised from the same
+# facts rather than escalating: an unanswered stop is not a fresh event.
+run_udrive
+assert_eq 16 "$UDRIVE_RC" "the stop holds until a human answers it (out: $UDRIVE_OUT)"
+assert_eq 0 "$(fm_get "$UTF" infra_failures)" "and re-reading the same tree spends nothing"
+assert_eq 1 "$(cat "$WORK/uctl/n")" "still one implementer, still no relaunch"
+assert_eq implementing "$(ustatus)" "still implementing, still no candidate"
+
+# THE OPERATOR ANSWERS IT, the way the boundary asks: the work is committed onto
+# the task branch. Now there IS a candidate, and the envelope that reported it
+# is still on disk and still selectable -- which is the whole reason it was not
+# marked refused. This is the assertion that the stop is EXITABLE.
+git -C "$UWT" add -- half-done.txt
+git -C "$UWT" commit -q -m "operator: commit the work the dispatch left behind"
+UCOMMIT="$(git -C "$UWT" rev-parse HEAD)"
+[ "$UCOMMIT" != "$UBASE" ] || fail "the operator's commit must really move the worktree HEAD"
+run_udrive
+assert_eq "$UCOMMIT" "$(fm_get "$UTF" candidate_sha)" \
+  "the committed work is recorded as the candidate — the refusal was about a tree with no commit in it, not about this envelope (out: $UDRIVE_OUT)"
+if [ "$(ustatus)" = implementing ]; then
+  fail "and the task leaves implementing once a candidate exists — a boundary that cannot be answered is a deadlock, not a stop (out: $UDRIVE_OUT)"
+fi
+assert_eq 0 "$(fm_get "$UTF" infra_failures)" \
+  "with nothing ever charged for the round the operator completed"

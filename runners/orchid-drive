@@ -277,13 +277,26 @@ if [ "$run_status" != planning ]; then
   # launched and is no longer alive, is precisely "a job that died without
   # leaving an acceptable envelope" -- including the case `jobs check` just
   # killed for stalling or timing out. Collected BEFORE gc (which is about to
-  # reap exactly these manifests) together with the role/operation a relaunch
-  # needs.
+  # reap exactly these manifests, bar the one exception both it and the skip
+  # below make) together with the role/operation a relaunch needs.
   for _mf in "$rt/jobs"/*.json; do
     [ -e "$_mf" ] || continue
     _mpid="$(jq -r '.pid' "$_mf" 2>/dev/null || echo 0)"
     [ "$_mpid" != 0 ] || continue
     if kill -0 "$_mpid" 2>/dev/null; then continue; fi
+    # ...UNLESS ITS ENVELOPE IS ALREADY WRITTEN. A job that exited between the
+    # reconcile above and this liveness read is dead with its envelope sitting
+    # in the spool, undrained -- it delivered, and the next pass's reconcile is
+    # what files it. Escalating on that reading spends a rung on a delivery
+    # that ARRIVED and relaunches a second engine into the same worktree over
+    # it, which is the same one-event-two-rungs miscount the implementing arm
+    # is careful about below; worse, this is the exact shape a no-op delivery
+    # takes, so the rung would be spent where no refusal can be recorded
+    # against the envelope that caused it. `jobs gc` holds the manifest for
+    # precisely this case (see its own note), so the job simply reads as
+    # outstanding for one more pass and resolves on the next.
+    _mjid="$(jq -r '.job_id // empty' "$_mf" 2>/dev/null || true)"
+    if [ -n "$_mjid" ] && [ -e "$rt/spool/$_mjid.json" ]; then continue; fi
     escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // "")] | @tsv' "$_mf")
 "
   done
@@ -633,74 +646,204 @@ drive_dispatch() {
 # implementing -- turn the implementer's own envelope into a candidate.
 # ---------------------------------------------------------------------------
 drive_implementing() {
-  local id="$1" arch="$2" tf envf wt cand arc
+  local id="$1" arch="$2" tf envf envb wt cand floor arc why
+  local dirty drc verdict
   tf="$state/tasks/$id.md"
+  why=""; envb=""
+
+  # A LIVE implement job outranks EVERY envelope on disk. Asked first, before
+  # anything is read, because it decides both of the readings below.
+  #
+  # `jobs reconcile` deletes a job's manifest in the same step that files its
+  # envelope, so an implement job still outstanding has filed nothing: whatever
+  # envelope this task has is one an EARLIER dispatch left, and the live job was
+  # started precisely because that envelope was not good enough. Reading it
+  # again while its own replacement is being written is wrong in both
+  # directions, and this arm is the only one where both can be true at once:
+  #
+  #   AS A FAILURE, it re-counts. drive_implement_failed reads DURABLE evidence:
+  #   reconcile files every implement envelope of an attempt as a sibling
+  #   (-a<n>-implementer.json, .2.json, ...) and removes none of them. So the
+  #   moment one implementer reports non-ok, that predicate is true for the
+  #   whole REST of the attempt -- including the entire lifetime of the relaunch
+  #   the escalation below is about to start. Unguarded, the ladder then runs on
+  #   the wall clock instead of on failures: pass N infra-fails 1/3 and
+  #   relaunches, pass N+1 reads the same stale envelope and infra-fails 2/3 --
+  #   spawning a SECOND implementer into the same worktree, on the same branch,
+  #   while the first is still committing to it -- and pass N+2 auto-blocks the
+  #   task with two or three engines still writing to that checkout.
+  #
+  #   AS AN ACCEPTANCE, it advances work nobody vouched for. The stale envelope
+  #   is compared against a worktree the live job is MOVING: the instant that
+  #   job makes its first commit, an envelope already refused as a no-op
+  #   delivery (below) stops looking like one -- HEAD is off the floor -- and an
+  #   unguarded walk would advance that half-written tree to testing on the
+  #   authority of an envelope written before any of it existed, and stamp it as
+  #   the candidate while its author is still typing. The mark described by
+  #   lib/drive.sh's drive_delivery_refused closes that door permanently; this
+  #   guard closes it for the window the relaunch is alive, which is the window
+  #   in which the worktree can move under an envelope that never mentioned it.
+  #
+  # Every sibling arm already asks this question before it spawns
+  # (drive_hook_gate, drive_dispatch, drive_reviewing); this one asked nobody.
+  #
+  # WHY THE GUARD LIVES HERE AND NOT IN `orchid jobs prepare`. Refusing a
+  # duplicate manifest for the same task+operation inside the mint verb looks
+  # like the stronger, more central fix. It is neither:
+  #
+  #   * It is WRONG for two of the four operations. A dual-review tier routes
+  #     two `review` jobs for one task on purpose, each to a different engine
+  #     (lib/review.sh's routing table), and a point with two hook bindings
+  #     launches two `hook` jobs for one task and one point (drive_hook_gate's
+  #     dispatch loop). A blanket refusal breaks both; an operation-keyed
+  #     exemption list is a hardcoded policy branch inside a verb whose whole
+  #     job is to mint an identity.
+  #   * It cannot answer the question it would be asked. "Is a job already
+  #     outstanding" is not "does a manifest exist": a `pid: 0` manifest is a
+  #     launch that died before its spawn and nothing is running, which is
+  #     exactly why drive_job_outstanding refuses to read one as live. prepare
+  #     would have to re-derive that liveness rule, and getting it wrong turns a
+  #     recoverable orphan into a permanent refusal to relaunch -- at the one
+  #     moment recovery is needed.
+  #   * It is the wrong tier. Whether to have a second engine running is a
+  #     dispatch decision, and dispatch is tier-2's alone (INV-01/INV-06).
+  #     prepare mints identity; it is not told, and must not guess, whether its
+  #     caller intends concurrency.
+  #
+  # So concurrency stays a single driver-side question, asked by the one
+  # predicate all four arms share. libexec/orchid-jobs' `prepare` arm carries a
+  # pointer back to this note.
+  if drive_job_outstanding "$id" implement; then
+    drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the envelope it was launched over is not a fresh failure)"
+    return 0
+  fi
+
   envf="$(drive_implement_envelope "$repo" "$id")"
+
+  # AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. A dispatch can report
+  # `ok` with a summary that is pure commentary -- the findings it was handed,
+  # restated; its sources, listed -- over a worktree whose HEAD never moved and
+  # whose tree is clean. Advancing on that spends a full verify and a full
+  # review round re-proving a defect this run already arbitrated, and burns a
+  # rework attempt on a candidate nobody touched.
+  #
+  # So an envelope that delivered nothing is simply NOT AN ACCEPTABLE ENVELOPE,
+  # and saying it that way -- by dropping it here, before anything reads it --
+  # is what keeps this half of the problem from growing a second ladder beside
+  # the one below. The arm below is the ONLY place an implement failure is
+  # accounted: the guard above already deferred the whole walk if a relaunch is
+  # in flight, and it escalates at most once per pass through the one
+  # `drive_escalate` call each shape reaches. One event, one rung, whichever
+  # shape produced it. `why` carries only WHICH failure this is, never how it
+  # is counted; `envb` carries WHICH envelope, so the refusal can be made to
+  # stick to it.
+  if [ -n "$envf" ]; then
+    if ! drive_has_transition "$arch" implementing testing; then
+      set_boundary operator-decision "$id" "archetype '$arch' declares no implementing -> testing edge"
+      return 0
+    fi
+    wt="$(fm_get "$tf" worktree)"; [ -n "$wt" ] || wt="$repo"
+    if ! cand="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"; then
+      set_boundary worktree-conflict "$id" "cannot read HEAD of the task worktree $wt"
+      return 0
+    fi
+    if drive_delivery_is_noop "$repo" "$id" "$cand"; then
+      floor="$(drive_delivery_floor "$repo" "$id")"
+      # NO CANDIDATE EXISTS EITHER WAY -- but WHICH no-op this is decides who
+      # answers it, so the tree is read before anything is charged. A sha
+      # comparison cannot see a tree: an unmoved HEAD over a worktree full of
+      # uncommitted edits is a dispatch that did the work and failed to commit
+      # it, not one that sat still, and the ladder's recovery -- relaunch the
+      # implementer into that same worktree -- would hand the next dispatch a
+      # tree it did not create and cannot account for. `.orchid/` is excluded
+      # by the reader itself, being no part of any candidate.
+      drc=0
+      dirty="$(handoff_worktree_dirty "$wt")" || drc=$?
+      verdict="$(drive_delivery_verdict "$repo" "$id" "$cand" "$dirty" "$drc")"
+      case "$verdict" in
+        nothing)
+          why="implement envelope reported ok but delivered nothing: worktree HEAD $cand is unchanged from the task's recorded $floor, and the tree is clean — the dispatch left no commit and no edit"
+          envb="$(basename "$envf")"
+          envf="" ;;
+        uncommitted)
+          # Not a rung. Nothing is charged, nothing is relaunched and the
+          # envelope is NOT marked refused: whether that work is committed onto
+          # the branch or thrown away is a decision about somebody's real
+          # output, and both resolutions leave this arm correct on the next
+          # pass -- committed, HEAD is off the floor and the envelope is
+          # ordinary delivery; discarded, the tree is clean and this becomes
+          # the `nothing` refusal above. A mark here would break the first of those
+          # by making the envelope unselectable after the work landed.
+          drive_note "$id: implementing -> testing REFUSED — the ok envelope committed nothing, but the dispatch DID leave uncommitted work behind ($dirty)"
+          set_boundary operator-decision "$id" \
+            "implement envelope reported ok but committed nothing: worktree HEAD $cand is unchanged from the task's recorded $floor, and the dispatch left uncommitted work in $wt ($dirty) — commit it onto the task branch or discard it; relaunching an implementer over it would hand the next dispatch a tree it did not write"
+          return 0 ;;
+        *)
+          # `uninspected`, and anything this arm has not been taught -- the one
+          # word it can never see here is `delivered`, which the is_noop guard
+          # above already excluded. A tree that could not be READ takes the same
+          # direction as a dirty one and is never folded into the clean case: an
+          # inspection that answers "clean" when it could not look would spend a
+          # rung and relaunch over a worktree nobody has seen, the fail-open
+          # shape lib/handoff.sh exists to close. An unrecognized verdict stops
+          # here for the same reason -- a `case` that fell through to the
+          # refusal would charge a rung on a state it could not name.
+          set_boundary worktree-conflict "$id" \
+            "implement envelope reported ok with worktree HEAD $cand unchanged from the task's recorded $floor, and its tree is '$verdict' rather than clean — $dirty"
+          return 0 ;;
+      esac
+    fi
+  fi
+
   if [ -z "$envf" ]; then
-    # A LIVE implement job outranks the failure signal, and this is the one
-    # arm where both can be true at once.
+    # The no-op delivery above, if that is what dropped the envelope. It is a
+    # JOB-DELIVERY failure and takes the same rung the arm below takes, never
+    # one of its own: `infra_failures` (which relaunches the implementer and
+    # auto-blocks at `infra_max`) and never `attempts`, whose budget exists to
+    # bound defects in work that was actually delivered. Nothing is written to
+    # `candidate_sha` either -- there is no new candidate to record, and
+    # restamping the same sha would record nothing while touching `updated` on
+    # a task that did not move. (The mark below does touch `updated`, and
+    # should: a refusal on record IS a change of state, unlike a sha rewritten
+    # to its own value.)
     #
-    # drive_implement_failed reads DURABLE evidence: `jobs reconcile` files
-    # every implement envelope of an attempt as a sibling (-a<n>-implementer
-    # .json, .2.json, ...) and removes none of them. So the moment one
-    # implementer reports non-ok, that predicate is true for the whole REST
-    # of the attempt -- including the entire lifetime of the relaunch the
-    # escalation below is about to start. Unguarded, the ladder then runs on
-    # the wall clock instead of on failures: pass N infra-fails 1/3 and
-    # relaunches, pass N+1 reads the same stale envelope and infra-fails 2/3
-    # -- spawning a SECOND implementer into the same worktree, on the same
-    # branch, while the first is still committing to it -- and pass N+2
-    # auto-blocks the task with two or three engines still writing to that
-    # checkout. Every sibling arm already asks this question before it
-    # spawns (drive_hook_gate, drive_dispatch, drive_reviewing); this one
-    # asked nobody.
-    #
-    # WHY THE GUARD LIVES HERE AND NOT IN `orchid jobs prepare`. Refusing a
-    # duplicate manifest for the same task+operation inside the mint verb
-    # looks like the stronger, more central fix. It is neither:
-    #
-    #   * It is WRONG for two of the four operations. A dual-review tier
-    #     routes two `review` jobs for one task on purpose, each to a
-    #     different engine (lib/review.sh's routing table), and a point with
-    #     two hook bindings launches two `hook` jobs for one task and one
-    #     point (drive_hook_gate's dispatch loop). A blanket refusal breaks
-    #     both; an operation-keyed exemption list is a hardcoded policy
-    #     branch inside a verb whose whole job is to mint an identity.
-    #   * It cannot answer the question it would be asked. "Is a job already
-    #     outstanding" is not "does a manifest exist": a `pid: 0` manifest is
-    #     a launch that died before its spawn and nothing is running, which
-    #     is exactly why drive_job_outstanding refuses to read one as live.
-    #     prepare would have to re-derive that liveness rule, and getting it
-    #     wrong turns a recoverable orphan into a permanent refusal to
-    #     relaunch -- at the one moment recovery is needed.
-    #   * It is the wrong tier. Whether to have a second engine running is a
-    #     dispatch decision, and dispatch is tier-2's alone (INV-01/INV-06).
-    #     prepare mints identity; it is not told, and must not guess, whether
-    #     its caller intends concurrency.
-    #
-    # So concurrency stays a single driver-side question, asked by the one
-    # predicate all four arms share. libexec/orchid-jobs' `prepare` arm
-    # carries a pointer back to this note.
-    if drive_job_outstanding "$id" implement; then
-      drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the earlier non-ok envelope is not a fresh failure)"
+    # AND THE REFUSAL IS MADE TO STICK, by recording the envelope it refused --
+    # drive_delivery_refused documents the two doors an unmarked one walks back
+    # in through. ORDER: escalate first, mark second. Both writes go through
+    # named verbs and neither can be made atomic with the other, so the order is
+    # a choice about which half a pass killed between them leaves behind. A lost
+    # MARK costs at most one duplicate rung on a ladder that ends at a human
+    # anyway. A lost ESCALATION would leave a task with no relaunch, no live
+    # job, no acceptable envelope and no boundary -- parked in `implementing`
+    # forever, the exact disappearing act this walk exists to end.
+    if [ -n "$why" ]; then
+      drive_note "$id: implementing -> testing REFUSED — the ok envelope moved no commit (worktree HEAD $cand, recorded $floor)"
+      drive_escalate "$id" implementer implement "" "$why"
+      "$ORCHID_BIN" task set "$id" refused_envelopes \
+        "$(drive_delivery_refusal_list "$repo" "$id" "$envb")" >/dev/null
       return 0
     fi
     if drive_implement_failed "$repo" "$id"; then
       drive_escalate "$id" implementer implement "" "implement envelope reconciled with a non-ok status"
       return 0
     fi
+    # A refusal already on record, with nothing outstanding and nothing
+    # acceptable on disk. The mark is what makes this state possible -- it is
+    # the one signal in this walk that DELETES itself, unlike a non-ok envelope,
+    # which stays readable and re-escalates every pass until the cap fetches a
+    # human. So the refusal stands in for it: the relaunch it started is neither
+    # running nor has it filed anything (no eligible engine at the time, a
+    # launch that failed, a job that died before writing), and waiting on it
+    # would be waiting forever. Same ladder, same cap, one honest reason.
+    if drive_delivery_refused_any "$repo" "$id"; then
+      drive_escalate "$id" implementer implement "" \
+        "the implement relaunch after a refused no-op delivery is neither running nor has it filed an envelope"
+      return 0
+    fi
     drive_note "$id: awaiting the implementer envelope"
     return 0
   fi
-  if ! drive_has_transition "$arch" implementing testing; then
-    set_boundary operator-decision "$id" "archetype '$arch' declares no implementing -> testing edge"
-    return 0
-  fi
-  wt="$(fm_get "$tf" worktree)"; [ -n "$wt" ] || wt="$repo"
-  if ! cand="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"; then
-    set_boundary worktree-conflict "$id" "cannot read HEAD of the task worktree $wt"
-    return 0
-  fi
+
   "$ORCHID_BIN" task set "$id" candidate_sha "$cand"
   arc=0
   "$ORCHID_BIN" task advance "$id" testing --reason "implementer envelope ok" >/dev/null || arc=$?
@@ -969,7 +1112,9 @@ drive_blocked() {
 # FAILURES, and a pass has at most one of those per slot to report -- but two
 # separate arms can reach the same slot in one pass: the escalation sweep
 # above (a manifest whose pid is dead) and drive_implementing below (a
-# reconciled non-ok envelope). They normally cannot both fire, because the
+# reconciled non-ok envelope, a refused no-op delivery, or a refusal already on
+# record with nothing left running -- one of the three at most, each returning
+# where it stands). They normally cannot both fire, because the
 # sweep's own relaunch leaves a live job the walk then defers to. `drive_launch`
 # exit 14 breaks exactly that: no engine was eligible, so nothing spawned, and
 # the walk reads the attempt's older non-ok envelope as a second failure. A
