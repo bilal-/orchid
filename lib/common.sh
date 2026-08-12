@@ -718,7 +718,18 @@ orchid_kernel_clean() {
 # place for the operator rather than reporting a refresh that did not happen.
 orchid_refresh_kernel() {
   local root="$1" base="${2:-}" p q seen rc=0 top top_phys root_phys
-  local -a drift=()
+  # `kernel_drift` rather than the obvious `drift`, and the prefix is load-
+  # bearing rather than taste. ci-local lints every shell file in ONE
+  # `shellcheck` invocation, which makes each sourced library visible to the
+  # files that source it -- so an array declared here is an array in the
+  # linter's model of every verb in libexec/, `local` or not. ShellCheck does
+  # not model bash's function scoping across a `source` boundary. Plain
+  # `drift` collided with the scalar of that name in libexec/orchid-plugins'
+  # `plugins drift` arm and charged THAT file three SC2178s and an SC2128 for
+  # a line it does not contain and an author who never touched it. Names
+  # introduced in this library are effectively global to the gate; keep them
+  # specific enough not to land on someone else's local.
+  local -a kernel_drift=()
   # `git diff --name-only` prints paths relative to the REPOSITORY ROOT while
   # the pathspecs below are read relative to `-C "$root"`. Those agree only
   # when <root> IS the repository root, so that is required rather than
@@ -762,14 +773,14 @@ orchid_refresh_kernel() {
   while IFS= read -r -d '' p; do
     [ -n "$p" ] || continue
     seen=0
-    if [ "${#drift[@]}" -gt 0 ]; then
-      for q in "${drift[@]}"; do
+    if [ "${#kernel_drift[@]}" -gt 0 ]; then
+      for q in "${kernel_drift[@]}"; do
         [ "$q" = "$p" ] || continue
         seen=1
         break
       done
     fi
-    [ "$seen" -eq 1 ] || drift+=("$p")
+    [ "$seen" -eq 1 ] || kernel_drift+=("$p")
   done < <(git -C "$root" diff -z --name-only HEAD -- \
              "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null
            git -C "$root" diff -z --cached --name-only HEAD -- \
@@ -780,8 +791,8 @@ orchid_refresh_kernel() {
   # drift". Falling through to the verification at the bottom -- which fails
   # closed on that same broken `git` -- is what keeps "it printed nothing" from
   # being reported as "refreshed".
-  if [ "${#drift[@]}" -gt 0 ]; then
-    for p in "${drift[@]}"; do
+  if [ "${#kernel_drift[@]}" -gt 0 ]; then
+    for p in "${kernel_drift[@]}"; do
       if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
         # _orchid_restore_kernel_file asks _orchid_kernel_writable itself,
         # immediately before its rename, so nothing about this path is decided
