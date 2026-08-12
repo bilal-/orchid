@@ -227,9 +227,46 @@ review_plan_file() {
     "$(orchid_state "$1")" "$2" "$(review_plan_attempt "$1" "$2")"
 }
 
+# _review_filed_order <base> -- the envelope paths matching `<base>*.json`, in
+# the order `orchid jobs reconcile` FILED them, which is NOT the order the
+# shell globs them in.
+#
+# Reconcile keeps a second accepted envelope for the same attempt as
+# `<base>.2.json`, a third as `<base>.3.json` (libexec/orchid-jobs) -- and
+# `<base>.2.json` sorts BEFORE `<base>.json`, because the first character
+# that differs is '2' against 'j' and digits precede letters in every
+# collation this runs under. So the shell hands back the SECOND review first.
+#
+# That is harmless for the pool matching below, which is order-free by
+# construction. It is not harmless for `review_plan_adopt_evidence`, which
+# credits the i-th filed review to slot i: read in glob order, a two-review
+# adoption pins slot 1 to whichever engine happened to file second, silently
+# transposing the table against the evidence it is supposed to be recording.
+#
+# Decorate-sort-undecorate, rather than walking reconcile's own `.2`, `.3`
+# counter until it gaps: that walk would drop a `.2.json` whose `.json` an
+# operator had removed, changing which envelopes count. This changes ONLY the
+# order -- the set is exactly the glob's, as before. A name that is not a
+# counter suffix at all (a custom role whose name merely starts with
+# `reviewer`) sorts last, deterministically, instead of jumping the queue.
+_review_filed_order() {
+  local base="$1" f n
+  for f in "$base"*.json; do
+    [ -e "$f" ] || continue
+    n="${f%.json}"; n="${n#"$base"}"
+    case "$n" in
+      '') n=1 ;;           # `<base>.json` -- the first envelope reconcile filed
+      .*) n="${n#.}" ;;    # `<base>.<n>.json` -- the n-th
+    esac
+    case "$n" in ''|*[!0-9]*) n=999999 ;; esac
+    printf '%06d\t%s\n' "$n" "$f"
+  done | sort | cut -f2-
+}
+
 # review_filed_engines <repo> <task> -- one line per reviewer envelope of the
 # CURRENT attempt that is `ok` AND bound to the current candidate_sha: the
-# QUALIFIED engine id it reports, or a bare `-` when it reports none.
+# QUALIFIED engine id it reports, or a bare `-` when it reports none, in the
+# order they were filed (_review_filed_order).
 #
 # `.engine` is the only durable record of WHICH engine produced a filed
 # review: `orchid jobs reconcile` cross-checks it against the job manifest's
@@ -243,13 +280,13 @@ review_filed_engines() {
   attempt="$(review_plan_attempt "$repo" "$id")"
   cand="$(fm_get "$tf" candidate_sha 2>/dev/null || true)"
   [ -n "$cand" ] || return 0
-  for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
-    [ -e "$f" ] || continue
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
     [ "$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)" = "$cand" ] || continue
     e="$(envelope_field "$f" '.engine // empty' 2>/dev/null || true)"
     printf '%s\n' "${e:--}"
-  done
+  done < <(_review_filed_order "$state/reviews/$id-a$attempt-reviewer")
 }
 
 # review_plan_pinned <repo> <task> -- the pinned table, iff a pin exists for

@@ -499,6 +499,18 @@ mk_p_review TP3 "" orchid/codex-review
 mk_p_review TP3 ".2" orchid/claude
 [ -n "$(review_plan_unsatisfied "$repoP" TP3 "$(review_plan "$repoP" TP3)")" ] \
   || fail "fixture: TP3 must start WEDGED — evidence its pinned plan cannot credit"
+
+# FILING order, not GLOB order, and the two really do differ here. `jobs
+# reconcile` names a second envelope for the same attempt `<base>.2.json`
+# (libexec/orchid-jobs), and `.2.json` sorts BEFORE `.json` -- '2' precedes
+# 'j' -- so the shell hands back the review that was filed SECOND first.
+# Adoption credits the i-th review to slot i, so reading the glob raw would
+# transpose the adopted table against its own evidence. Asserted here on its
+# own, ahead of the table, so a regression names the cause rather than
+# surfacing as two engines in the wrong slots.
+assert_eq "$(printf 'orchid/codex-review\norchid/claude')" "$(review_filed_engines "$repoP" TP3)" \
+  "filed reviews are read in the order reconcile filed them (TP3-a1-reviewer.json, then TP3-a1-reviewer.2.json), never in the order the shell globs them"
+
 adoptS="$("$ORCHID_BIN" jobs review-plan TP3 --adopt-evidence)"
 assert_eq "$(printf '1\tcodex-review\tengine-independent\n2\tclaude\tengine-independent')" "$adoptS" \
   "--adopt-evidence re-pins the slots onto the engines that actually filed the reviews, in the order they were filed"
