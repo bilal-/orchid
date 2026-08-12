@@ -1475,7 +1475,7 @@ assert_eq 3 "$(dstarts)" \
   "and relaunches once more, exactly as the ladder says (out: $DDRIVE_OUT)"
 
 # ===========================================================================
-# Part O -- THE REWORK BRIEF (T010). A lint or verification failure's EXACT
+# Part M -- THE REWORK BRIEF (T010). A lint or verification failure's EXACT
 # locations must reach the guidance the next implementer receives.
 #
 # The defect this covers is not hypothetical (lesson L017). An engine profile
@@ -2334,7 +2334,7 @@ assert_match "blocked" "$hblk_out" "naming that status too (it said: $hblk_out)"
 assert_eq off "$(handoff_gate_mode "$REPO")" "the default is off"
 assert_eq off "$(handoff_state "$REPO" T001 | cut -f1)" \
   "so a repository that never configured it is untouched by everything above"
-# Part M -- AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. An implement
+# Part O -- AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. An implement
 # dispatch can return `ok` with a summary that is pure commentary -- findings
 # restated, sources listed -- over a worktree whose HEAD never moved and whose
 # tree is clean. A cross-project finding, confirmed here twice on one task:

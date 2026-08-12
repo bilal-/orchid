@@ -514,7 +514,7 @@ pending → implementing → testing → reviewing → arbitrating → merging �
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
-implementer_engine_id, base_sha, candidate_sha, risk_tier,
+implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
 blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
 acceptance_criteria, verification_commands, resources, exclusive,
 wallclock_budget_s, started_at, created, updated`. `handoff_ack` (v1.1):
@@ -556,10 +556,7 @@ header and runs; the equality the advance leaves behind is what INV-11's
 `testing → reviewing` gate reads out of that header afterwards. (A task
 proposing that verification refuse outright on a mismatch, T031, is unmerged at
 the time of writing; nothing above depends on it.)
-implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
-blocking_severity, stop_condition, hook_guidance, engine, effort,
-acceptance_criteria, verification_commands, resources, exclusive,
-wallclock_budget_s, started_at, created, updated`. `refused_envelopes`: the
+`refused_envelopes` (v1.1): the
 space-separated basenames of implement envelopes refused as no-op deliveries,
 appended by the orchestrator through `orchid task set` (INV-13) at the moment
 it refuses one; a basename carries its own attempt (`<id>-a<n>-implementer

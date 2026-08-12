@@ -623,13 +623,6 @@ ones its archetype never declares.
 
 - **implementing** (`awaiting-implementer-envelope`): once step 2's reconcile
   reports this task's job `ok` (operation `implement`):
-  1. `git -C <worktree> rev-parse HEAD` to read the new candidate.
-  2. `orchid task set <id> candidate_sha <sha>`.
-  3. `orchid task advance <id> testing --reason "implementer envelope ok"`.
-  4. **The operator hand-off** — the named pause below. It sits exactly here,
-     after the envelope has reconciled and before anything verifies the
-     candidate.
-  2. **An `ok` envelope is not evidence that work happened — check the
   1. **Read no envelope at all while an implement job for this task is still
      outstanding.** Reconcile deletes a job's manifest in the same step that
      files its envelope, so a live job has filed nothing: any envelope on disk
@@ -680,6 +673,9 @@ ones its archetype never declares.
      that never landed, not something to wait for: spend a rung and relaunch.
   5. `orchid task set <id> candidate_sha <sha>`.
   6. `orchid task advance <id> testing --reason "implementer envelope ok"`.
+  7. **The operator hand-off** — the named pause below. It sits exactly here,
+     after the envelope has reconciled and before anything verifies the
+     candidate.
 
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a
