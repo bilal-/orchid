@@ -544,8 +544,25 @@ for k in inbound_probe requires_config; do
 done
 grep -q "inbound_probe=--inbound-probe" "$REPO_ROOT/plugins/notify/openclaw/plugin.conf" \
   || fail "the openclaw notify plugin must declare an inbound probe — docs promise doctor actually probes the return leg for it"
-grep -q "^inbound_probe" "$REPO_ROOT/plugins/notify/hermes/plugin.conf" \
-  && fail "plugins/notify/hermes declares an inbound probe, but hermes.md documents (and the hermes CLI supports) no inbound-liveness query"
+# v1-m4 T009 reversed T006's deliberate omission here: hermes was the channel
+# r-001 actually delivered on, and the one whose gateway being down swallowed
+# a real operator answer (lesson L011), so shipping the ONE channel that
+# demonstrated the failure without the check for it was the wrong way round.
+# The claim these two lines guard is the same in both directions — a doc that
+# says doctor probes this plugin's return leg, and a manifest that makes it
+# true — so hermes.md must describe the probe rather than an omission.
+grep -q "inbound_probe=--inbound-probe" "$REPO_ROOT/plugins/notify/hermes/plugin.conf" \
+  || fail "the hermes notify plugin must declare an inbound probe — hermes.md documents 'hermes gateway status' as the return-leg query doctor runs for it"
+grep -qF "This plugin ships no inbound probe" "$REPO_ROOT/docs/engines/hermes.md" \
+  && fail "docs/engines/hermes.md still says the hermes notify plugin ships no inbound probe — plugins/notify/hermes/plugin.conf declares one"
+# Folded, like every other prose assertion in this file: the sentence this
+# pins straddles a hard wrap in the source, and `grep` against the raw file
+# would silently never match it.
+hermes_doc_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/engines/hermes.md" | tr -s '[:space:]' ' ')"
+assert_match "hermes gateway status" "$hermes_doc_one_line" \
+  "docs/engines/hermes.md must name the CLI query its inbound probe actually asks"
+assert_match "prove anything on the channel side will turn that reply into an actual" "$hermes_doc_one_line" \
+  "docs/engines/hermes.md must bound what a REACHABLE probe proves — the gateway, never a channel-side agent"
 
 # ===========================================================================
 # 7 -- beta qualification and the release rehearsal: the tooling exists, and

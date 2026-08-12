@@ -235,15 +235,12 @@ declared, not assumed: this plugin's manifest carries
 actually configured against its own declaration before reporting outbound
 `ok`.
 
-**This plugin ships no inbound probe, deliberately.** A `kind=notify` plugin
-MAY declare an `inbound_probe=` mode that tells `orchid doctor` whether its
-channel is reachable (openclaw does, via `openclaw channels status`). The
-`hermes` CLI has no equivalent inbound-liveness query — `hermes send --list`
-enumerates *configured platform credentials*, which is an outbound-config
-fact and would prove nothing about whether a reply can get back. Rather than
-dress that up as a liveness check, the key is omitted, and doctor then says
-plainly that this plugin cannot determine the return leg. Omission is the
-honest answer; a probe that always answers "fine" would be worse than none.
+**This plugin ships an inbound probe** (`inbound_probe=--inbound-probe` in
+its manifest, see docs/specs/plugins.md) — see "The inbound probe" below for
+what it asks and what its answer is worth. Note that `hermes send --list` is
+*not* what it asks: that enumerates configured platform credentials, an
+outbound-config fact that would prove nothing about whether a reply can get
+back.
 
 ```
 notify.plugin=hermes    # selects THIS plugin (default is openclaw -- see below)
@@ -288,6 +285,67 @@ must actually be set to `hermes` for the pump to launch this plugin at all
 — leaving it unset (or setting `notify.channel`/`notify.to` alone, the way
 the openclaw section above documents) still drives the openclaw plugin,
 since `openclaw` remains `notify.plugin`'s default.
+
+## The inbound probe (`orchid doctor` checks the return leg)
+
+Sending and receiving are different facts with different requirements, and
+for *this* plugin they are unusually far apart. `hermes send` talks to the
+platform's bot-token API directly with the gateway's stored credentials and
+needs no running gateway at all; a reply coming back is delivered to the
+gateway process, which is what would hand it to a channel-side agent. So
+hermes can send perfectly while the return leg is dead — which is exactly
+what happened on r-001: the gateway was down for a day, blockers kept
+arriving on the operator's phone, and the answer typed back was lost with
+**no local trace at all** (lesson L011). Hermes was the channel that run
+actually delivered on, and the channel that swallowed that answer.
+
+`hermes gateway status` is the CLI's own report of that fact, so this plugin
+declares a probe rather than asserting "no way to tell" on behalf of a CLI
+that can tell:
+
+```sh
+plugins/notify/hermes/send --inbound-probe    # what doctor invokes; sends nothing
+hermes gateway status                         # what the probe asks
+```
+
+- **exit 0 — REACHABLE.** The judged status line reports the gateway
+  running/connected/online/ready/active/healthy.
+- **exit 1 — NOT REACHABLE.** `hermes gateway status` failed (gateway not
+  running, socket refused, auth expired), or it answered and the judged line
+  carries a negation (`not running`, `stopped`, `disconnected`, `offline`,
+  `expired`, `down`, `unreachable`, `unhealthy`, …).
+- **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
+  `notify.channel` is unset, this build has no `gateway status` subcommand,
+  the command printed nothing, or the line isn't one the probe recognizes.
+  Doctor prints "undetermined" and the raw line — never `ok`.
+
+**Which line gets judged**, most specific evidence first: the row naming the
+configured `notify.channel`, else the row naming the gateway itself, else the
+first line. Judging the whole output instead would let one unrelated
+platform's row condemn a healthy return leg. One deliberate difference from
+openclaw's probe: `openclaw channels status` is documented to *enumerate*
+channels, so a channel missing from it is a determination there (exit 1).
+Nothing establishes that `hermes gateway status` lists platforms at all, so a
+channel it does not name is absence of evidence here — the probe falls
+through to the gateway's own state rather than declaring the return leg dead.
+
+**What a REACHABLE result does and does not prove.** It proves the gateway
+your reply is delivered to is up. It does **not** prove anything on the
+channel side will turn that reply into an actual `orchid answer` invocation
+against this repo — orchid ships no inbound listener and neither starts nor
+supervises that agent, so nothing local can observe it. Doctor's wording
+keeps those two apart; so does the probe's.
+
+**PENDING-VALIDATION, and more so than for `send` above.** Unlike `hermes
+send --help`, `hermes gateway status` has *not* been read from an installed
+CLI — the task that added this probe could execute nothing at all. Both its
+existence and its output are therefore treated as untrusted: a build with no
+such subcommand is caught as an unknown subcommand and answers **2**, never
+1, so a version difference can never masquerade as an outage, and any line
+outside the two recognized vocabularies above answers 2 with its own text
+quoted. Confirm the subcommand and its wording during the live hero-demo
+dogfood; if it turns out to be spelled differently, this probe reports
+"undetermined" until it is corrected, which is the safe direction.
 
 ## See also
 

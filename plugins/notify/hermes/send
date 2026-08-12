@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # kind=notify entrypoint. Contract (docs/specs/plugins.md, "notify channel"
-# row): `send <question-id> <text>`. No repo access, no stdin, no exit-code
+# row): `send <question-id> <text>`, plus the OPTIONAL read-only
+# `--inbound-probe` mode this plugin declares in its manifest (see that
+# branch's own header below). No repo access, no stdin, no exit-code
 # guessing -- this script's own exit code IS the send outcome the pump acts
 # on (0 -> outbox file removed; nonzero -> left for retry, see runners/
 # orchid-pump's outbox drain). Launched ONLY by runners/orchid-pump (tier-2,
@@ -63,6 +65,183 @@ set -euo pipefail
 # run against a live, configured Hermes gateway with a real platform
 # connected -- that is the live hero-demo dogfood (a later controller task),
 # not this build task.
+
+# -- inbound probe mode (v1-m4 T009, manifest `inbound_probe=--inbound-probe`)
+# The ONE argument that puts this entrypoint into a read-only liveness probe
+# instead of a send (docs/specs/plugins.md, "The inbound probe"). Handled
+# before the `send <qid> <text>` argument contract below, which is otherwise
+# completely unchanged -- runners/orchid-pump never passes this flag (a qid
+# is always `q-<epoch>-<hex>`), so the send path cannot reach this branch.
+# Same shape, same flag spelling and the same three exit codes as
+# plugins/notify/openclaw/send's own probe, deliberately: doctor's branch is
+# written once against the contract, not once per plugin.
+#
+# WHY THIS PLUGIN NEEDS ONE AT ALL, given `send` does not. The two legs have
+# genuinely different dependencies here, and that asymmetry is the whole
+# outage: `hermes send` talks to the platform's bot-token API directly using
+# the gateway's stored credentials and needs NO running gateway (see the
+# header above), while a reply coming BACK is delivered to the gateway
+# process, which is what would hand it to a channel-side agent. So hermes
+# can send perfectly while the return leg is dead -- which is exactly what
+# happened on r-001: the gateway was down for a day, blockers kept arriving
+# on the operator's phone, and the answer typed back was lost with no local
+# trace (lesson L011). `hermes gateway status` is the CLI's own report of
+# that fact, so omitting the key here would assert "no way to tell" on
+# behalf of a plugin that can in fact tell.
+#
+# Exit code IS the verdict; one line of detail on stdout is what `orchid
+# doctor` prints beside it:
+#   0  reachable      -- POSITIVELY determined the inbound transport is up
+#   1  unreachable    -- POSITIVELY determined it is down
+#   2  undetermined   -- could not tell (and says why)
+# Anything else, or doctor's own timeout, is also read as undetermined.
+#
+# WHAT THIS PROVES, EXACTLY. It probes the GATEWAY -- the process an
+# operator's reply is physically delivered to -- because that is the leg that
+# actually failed in the outage above. It does NOT prove that a channel-side
+# agent is installed and will turn a reply into a real `orchid answer`
+# invocation against this repo -- orchid ships no inbound listener and neither
+# starts nor supervises that agent, so nothing here can observe it. Doctor
+# labels those two facts apart; this branch's own wording must never imply
+# the second.
+#
+# PENDING-VALIDATION, and stronger here than for the send shape above: unlike
+# `hermes send --help`, `hermes gateway status` has NOT been read from an
+# installed CLI by this task -- this build task could execute nothing at all.
+# Both its EXISTENCE and its OUTPUT are therefore treated as untrusted. A
+# build with no such subcommand is caught by the unknown-subcommand branch
+# and answers 2 (undetermined), never 1, so a version difference can never
+# masquerade as an outage; and only tokens this branch can recognize with
+# confidence produce a 0/1 verdict, with anything unfamiliar exiting 2 and
+# the raw line quoted rather than guessing. A wrong "unreachable" is a false
+# alarm that teaches an operator to ignore the line; a wrong "reachable" is
+# exactly the unproven-ok this probe exists to remove.
+if [ "${1:-}" = --inbound-probe ]; then
+  [ $# -eq 1 ] || { echo "--inbound-probe takes no further arguments"; exit 2; }
+  probe_channel="${ORCHID_NOTIFY_CHANNEL:-}"
+  [ -n "$probe_channel" ] || { echo "notify.channel is unset, so there is no channel to probe"; exit 2; }
+  command -v hermes >/dev/null 2>&1 \
+    || { echo "the hermes CLI is not on PATH, so nothing here can query gateway state"; exit 2; }
+
+  # Never `exec`, never let `set -e` fire: a nonzero exit here is DATA.
+  probe_rc=0
+  probe_out="$(hermes gateway status 2>&1)" || probe_rc=$?
+
+  # First line only, by parameter expansion rather than `| head -n1`: the
+  # caller gets one line of detail, and a pipeline here would be one more
+  # SIGPIPE/pipefail hazard inside a script that runs under `set -o pipefail`.
+  probe_first="${probe_out%%$'\n'*}"
+
+  if [ "$probe_rc" -ne 0 ]; then
+    # An unrecognized subcommand is a CLI-VERSION difference, not evidence
+    # about the gateway -- reporting "down" for it would be a false alarm on
+    # a perfectly healthy system, and it is the likelier of the two misreads
+    # here because nobody has run this subcommand against a real hermes yet.
+    # Everything else that makes `gateway status` itself fail (gateway not
+    # running, socket refused, auth expired) IS a determination: the process
+    # a reply must be delivered to cannot currently be queried at all.
+    # `usage:` only where a CLI actually prints it -- at the start of a line.
+    # As a bare substring it would also swallow a gateway error that merely
+    # quotes the word, and answer "this build has no gateway status" for a
+    # gateway that is genuinely down. That misread fails SAFE (undetermined
+    # rather than a false alarm), which is why it is anchored rather than
+    # dropped. `invalid choice` is argparse's own wording for an unknown
+    # subcommand, which is the parser hermes's CLI is built on.
+    case "$probe_out" in
+      *"nknown command"*|*"nrecognized"*|*"nknown subcommand"*|*"o such command"*|*"nvalid choice"*|[Uu]sage:*|*$'\n'[Uu]sage:*)
+        echo "this hermes build does not support 'gateway status' (exit $probe_rc: $probe_first)"
+        exit 2 ;;
+    esac
+    echo "'hermes gateway status' failed (exit $probe_rc: $probe_first) -- the gateway your replies are delivered to is not answering"
+    exit 1
+  fi
+  [ -n "$probe_out" ] || { echo "'hermes gateway status' exited 0 and printed nothing, so there is no state here to read"; exit 2; }
+
+  # WHICH LINE gets judged, most specific evidence first. Judging the whole
+  # blob would let one unrelated platform's row condemn a healthy return leg
+  # (a multi-platform gateway prints several), which is the same false alarm
+  # the word-boundary discipline below exists to prevent.
+  #   1. the row naming the configured channel -- the best evidence there is
+  #   2. failing that, the row naming the gateway itself
+  #   3. failing that, the first line
+  # The channel name comes from config and is interpolated into an ERE, so a
+  # name carrying regex metacharacters falls back to a FIXED-string match
+  # instead -- an invalid-regex error from grep would otherwise end up quoted
+  # back to the operator as if it were hermes's own status output.
+  #
+  # Note what step 2 deliberately does NOT do, and where this differs from
+  # openclaw's probe: openclaw's `channels status` is documented to ENUMERATE
+  # channels, so a channel missing from it is itself a determination (exit 1).
+  # Nothing establishes that `hermes gateway status` lists platforms at all,
+  # so absence of the channel here is absence of evidence -- it falls through
+  # to the gateway's own state rather than declaring the return leg dead.
+  case "$probe_channel" in
+    *[!A-Za-z0-9_-]*)
+      probe_line="$(printf '%s\n' "$probe_out" | grep -iF -- "$probe_channel" | head -n1 || true)" ;;
+    *)
+      probe_line="$(printf '%s\n' "$probe_out" | grep -iE "(^|[^[:alnum:]_-])${probe_channel}([^[:alnum:]_-]|$)" | head -n1 || true)" ;;
+  esac
+  if [ -z "$probe_line" ]; then
+    probe_line="$(printf '%s\n' "$probe_out" | grep -iE '(^|[^[:alnum:]_-])gateway([^[:alnum:]_-]|$)' | head -n1 || true)"
+  fi
+  [ -n "$probe_line" ] || probe_line="$probe_first"
+
+  probe_lower="$(printf '%s' "$probe_line" | tr '[:upper:]' '[:lower:]')"
+  # Negatives FIRST: "not running" contains "running", so a positive-first
+  # order would read a stopped gateway as up -- the one mistake this probe
+  # must never make.
+  #
+  # But each negative is matched as a WHOLE WORD, and against the row with
+  # the channel's OWN NAME elided, because these run against an entire status
+  # row -- name included. Bare substrings fail in exactly the way this file
+  # also refuses to fail for `*ok*`/`*error*` below: `*down*` calls a channel
+  # named `downtime-alerts` dead, and reads a healthy "telegram connected
+  # (last shutdown 2d ago)" as NOT connected. Either one makes doctor print
+  # "Answers sent on this channel are being lost" about a row that says
+  # connected -- the false alarm that teaches an operator to ignore this
+  # line, on the one check whose whole job is to be believed.
+  #
+  # Each negated form is spelled out here rather than left to the positive
+  # test: "not ready" contains the whole word "ready", so a row hermes writes
+  # that way is a negation the positives would otherwise read as up.
+  probe_channel_lower="$(printf '%s' "$probe_channel" | tr '[:upper:]' '[:lower:]')"
+  probe_status="${probe_lower//"$probe_channel_lower"/ }"
+  if grep -qE '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy)|stopped|disconnect(ed|ing)?|offline|unauthor[a-z]*|unhealthy|expired|down|unreachable)([^a-z0-9_-]|$)' \
+       <<<"$probe_status"; then
+    echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
+    exit 1
+  fi
+  # Deliberately NARROW, in both directions. No bare `*ok*`/`*fail*`/`*error*`
+  # substring tests: `*ok*` matches "broken" (and "token expired"), and a
+  # healthy row reading "running, 0 errors" would trip `*error*`. Either way a
+  # substring that loose invents a verdict out of a word fragment. A line
+  # matching neither list falls through to exit 2 below with its own text
+  # quoted, which is the honest answer for output nobody has verified against
+  # a live gateway yet. A truly down gateway is caught by the nonzero-exit
+  # branch above, not by string matching.
+  #
+  # `up` is absent from this list on purpose, though it is the word an
+  # operator would reach for: as a whole word it also matches "could not
+  # bring up the gateway", whose negation none of the forms above catch --
+  # a false REACHABLE, the worse of the two errors, out of a status line
+  # that says the opposite.
+  #
+  # And matched with the negatives' own two disciplines, WHOLE WORDS against
+  # the NAME-ELIDED row, because the same two failures mirror exactly onto
+  # this side: a bare `*active*` reads "inactive" as up, and a channel named
+  # `ready-queue` or `online-ops` would invent a verdict out of its own name.
+  # This direction is the worse one to get wrong -- a false NOT-reachable
+  # only cries wolf, while a false REACHABLE tells an operator their answers
+  # are getting through on a channel that is dropping every one of them.
+  if grep -qE '(^|[^a-z0-9_-])(running|connected|online|ready|active|healthy)([^a-z0-9_-]|$)' \
+       <<<"$probe_status"; then
+    echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
+    exit 0
+  fi
+  echo "hermes's gateway status line for channel '$probe_channel' is not one this probe recognizes: $probe_line"
+  exit 2
+fi
+
 qid="${1:?usage: send <question-id> <text>}"
 text="${2:?usage: send <question-id> <text>}"
 : "$qid"   # accepted per the notify-channel contract; not otherwise used --
