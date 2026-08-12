@@ -195,6 +195,60 @@ orchid_stale_checkout() {
   git -C "$repo" diff --cached --name-status 2>/dev/null | awk '$1 == "D" { found=1 } END { exit !found }'
 }
 
+# orchid_stale_checkout_remedy -- the ONE copy of what an operator is told to
+# do about the state above. `orchid doctor` and `orchid status` both print it,
+# and until dogfood finding F31 they printed it as two separately maintained
+# string literals; what that duplication bought was the same WRONG text in two
+# places, which is why it lives here now.
+#
+# What was wrong with it. The printed recovery was `git checkout HEAD -- .
+# ':(exclude).orchid'` and nothing else, and an operator who ran exactly that,
+# character for character, watched the warning survive it. The exclusion is the
+# reason, and it is not a defect in the exclusion: `git checkout` never touches
+# an index entry for a path its own pathspec excluded, so every `.orchid/` path
+# the new HEAD carries and the stale index does not is left exactly as it was --
+# staged for deletion. Those staged deletions ARE the signature
+# orchid_stale_checkout reads. The remedy cleared the half it was allowed to
+# reach and left the half the check looks at, so the check went on firing, and
+# the operator was left with a warning that survived its own documented fix.
+#
+# So the remedy is BOTH halves:
+#
+#     git checkout HEAD -- . ':(exclude).orchid'   # the working tree, minus run state
+#     git reset                                    # the index, all of it
+#
+# THE ORDER IS PART OF IT, for the operator who runs the first command and then
+# stops -- reads a message, gets interrupted, loses the shell. Both orders end
+# in the same place; the two intermediate states are not equally safe. Checkout
+# first leaves fresh code under a warning that is still displayed: honest, and
+# the remaining step is still in front of them. Reset first leaves PRE-MERGE
+# code under a checkout that now looks healthy to every check there is -- L018
+# (a merged fix inert for two further rounds because the launcher kept
+# executing the stale tree) with its one alarm switched off. So: reset LAST.
+#
+# And the exclusion is narrower than it reads, which is the other half of F31
+# and cost that operator a file. `:(exclude).orchid` protects uncommitted
+# DURABLE RUN STATE. It protects nothing else -- the checkout half restores
+# every OTHER tracked path from HEAD, so an uncommitted edit anywhere outside
+# `.orchid/` is overwritten, with no reflog to recover it from, and
+# `requirements.md` being revised at the repository root is precisely the file
+# an operator has an uncommitted edit to while driving a run. Naming that here
+# is the difference between a remedy that can be run and one that can be run
+# safely.
+#
+# A single-quoted heredoc, so the pathspec's own quoting reaches the operator
+# verbatim and nothing in the prose is ever evaluated. First line is the
+# headline (the caller prefixes its own `FAIL:`/`WARNING:`); the rest is the
+# argument for why it is two commands and what each one costs.
+orchid_stale_checkout_remedy() {
+  cat <<'ORCHID_STALE_CHECKOUT_REMEDY'
+integration checkout is stale — refresh with "git checkout HEAD -- . ':(exclude).orchid' && git reset" before committing anything here
+  BOTH commands, in that order: the checkout restores the code this checkout fell behind on, and the bare "git reset" is what CLEARS this warning. A checkout never touches an index entry its own pathspec excluded, so the .orchid/ paths HEAD carries and this stale index does not stay staged for deletion — and those staged deletions are what this check reads. The checkout alone leaves it firing (dogfood finding F31).
+  The reset writes no file and deletes no file: it brings the index to HEAD, and the live .orchid/ run state on disk is left exactly as it was. Whatever "git status" still shows under .orchid/ afterwards is this run's own working state — leave it to the run rather than hand-committing it.
+  The checkout is the half that can cost you something: ':(exclude).orchid' protects uncommitted durable run state and NOTHING else, so any other uncommitted edit in this checkout — a requirements.md being revised at the repository root is the one this has already cost an operator — is overwritten from HEAD with no reflog to recover it from. Commit or stash those first ("git status --short" names them).
+ORCHID_STALE_CHECKOUT_REMEDY
+}
+
 # ORCHID_KERNEL_PATHS -- what a run EXECUTES out of $ORCHID_ROOT. Eight
 # directories: the verb, the libraries it sources, the runner it hands off to,
 # the engine adapter that runner spawns, the role profile and prompt template

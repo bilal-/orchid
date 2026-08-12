@@ -178,8 +178,14 @@ fi
 # v1-m4 Task 1: remedy scoped to exclude .orchid/ (see orchid-doctor's own
 # comment on this same wording) so it never clobbers uncommitted run state.
 # v1-m4 Task 5 review: stderr, same reasoning as the split-brain warning above.
+# T029 (dogfood finding F31): the recovery text is no longer spelled out here
+# -- it was wrong, and it was wrong identically in `orchid doctor`, which is
+# what maintaining one operator instruction as two string literals buys. Both
+# now print lib/common.sh's orchid_stale_checkout_remedy, which says why the
+# scoped checkout alone does not clear this warning and what the second command
+# costs. Still stderr, still multi-line only in the state that fires.
 if orchid_stale_checkout "$repo"; then
-  echo "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid'\" before committing anything here" >&2
+  echo "WARNING: $(orchid_stale_checkout_remedy)" >&2
 fi
 # Job liveness warnings (T035), in EVERY mode and with no flag to ask for
 # them, in the same place and on the same stream as the two checkout warnings

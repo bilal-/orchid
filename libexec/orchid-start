@@ -1162,7 +1162,29 @@ echo "unattended trust: $trust_state$trust_note"
 echo
 echo "next — durable orchid state lives only on $integ, so work from the worktree:"
 echo "  cd $wt"
-echo "  export ORCHID_EPOCH=$epoch"
+# T029 (dogfood finding F31, reported independently by two operators): this
+# line used to be `export ORCHID_EPOCH=$epoch`, i.e. `export ORCHID_EPOCH=0` on
+# every fresh setup -- a literal, in a shell an operator keeps for the rest of
+# the run, naming a value GUARANTEED to expire. `orchid run start`, `orchid run
+# resume` and every headless tick fence a fresh epoch (libexec/orchid-run), so
+# the first drive pass makes that 0 stale and the next mutating verb typed in
+# that shell is refused: `stale epoch '0' (current 3) — refused (INV-02)`.
+#
+# The refusal is not what is wrong -- it names the current epoch, and INV-02 is
+# doing exactly its job by fencing out a shell that no longer holds the run.
+# The HANDOFF was: it handed over a constant for a quantity that is not one,
+# and both operators ended up reading `.orchid/runtime/epoch` by hand for every
+# command afterwards. So the export is spelled as that read from the start --
+# it is correct the moment it is pasted, it is the same line to re-run after
+# each drive pass rather than a different number to hunt for, and it is the
+# form docs/quickstart.md already teaches for exactly this reason. The current
+# value is still printed (`epoch:` above, and the comment on the line itself)
+# for anyone who wants to see what they just took.
+echo "  export ORCHID_EPOCH=\"\$(cat .orchid/runtime/epoch)\"   # $epoch right now"
+echo "that export is a snapshot, not a constant: 'orchid run start', 'orchid run"
+echo "resume' and every headless tick fence a NEW epoch (INV-02), after which"
+echo "this shell is refused with \"stale epoch '$epoch' (current N) — refused"
+echo "(INV-02)\" — re-run the same line above to pick the current one back up."
 echo "draft the plan against the imported requirements (PROTOCOL.md's PLANNING"
 echo "procedure, or the orchid-plan skill): create each task with 'orchid task"
 echo "create <id> <title>' + 'orchid task set <id> <key> <value>', run the"
