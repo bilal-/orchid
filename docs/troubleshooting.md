@@ -829,9 +829,9 @@ A deferral journals the decision and satisfies the check for that item alone
 KIND, so a hand-written journal note whose text happens to read
 `deferred r-001#57: …` records nothing and the item stays uncovered. A
 deferral postpones rather than erases: the item reappears in the NEXT run's
-cross-check, still wanting a task or a fresh reason. Read the
-full item with `grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry
-at that ordinal.
+cross-check, still wanting a task or a fresh reason. Read the full item with
+`grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry at that
+ordinal.
 
 If the pass stops again with `awaiting-operator-prerequisite` instead, that is
 the OTHER operator-owned stop at this point — a step outside the repository,
@@ -948,8 +948,9 @@ is exactly why `run advance` is gated too: while a run is still in
 out. Once `run_status` has legitimately left `planning`, a `plan apply` still
 PRINTS the cross-check and still names anything unconsidered, but it commits
 rather than refusing — neither remedy is open at that point, and a gate whose
-only way out has already closed would just strand you. Pick the item up with a task instead, or leave
-it for the next run's cross-check, which will raise it again.
+only way out has already closed would just strand you. Pick the item up with
+a task instead, or leave it for the next run's cross-check, which will raise
+it again.
 
 ## Answers sent on a channel never arrive
 
