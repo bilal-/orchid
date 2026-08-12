@@ -30,7 +30,11 @@ before_count="$(ls .orchid/tasks/*.md 2>/dev/null | wc -l | tr -d ' ')"
 rc=0; set_nope_out="$("$ORCHID_BIN" task set NOPE somekey someval 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task set on a nonexistent id must be refused"
 assert_match "no task NOPE" "$set_nope_out" "task set on a nonexistent id names it (clean die, not a raw awk error)"
-echo "$set_nope_out" | grep -qi "awk" && fail "task set on a nonexistent id must never leak a raw awk error"
+# Herestring, never `echo | grep -q` -- see the T034 block near the end of this
+# file for why the pipe makes a NEGATIVE assertion fail open. These two guard
+# the awk leak from the very pipeline T034 replaced, so they have to be able to
+# fire.
+grep -qi "awk" <<<"$set_nope_out" && fail "task set on a nonexistent id must never leak a raw awk error"
 
 rc=0; set_plan_out="$("$ORCHID_BIN" task set plan somekey someval 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task set plan must be refused (reserved id)"
@@ -39,7 +43,7 @@ assert_match "reserved" "$set_plan_out" "task set plan names it reserved"
 rc=0; unblock_nope_out="$("$ORCHID_BIN" task unblock NOPE2 --reason x 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task unblock on a nonexistent id must be refused"
 assert_match "no task NOPE2" "$unblock_nope_out" "task unblock on a nonexistent id names it (clean die, not a raw awk error)"
-echo "$unblock_nope_out" | grep -qi "awk" && fail "task unblock on a nonexistent id must never leak a raw awk error"
+grep -qi "awk" <<<"$unblock_nope_out" && fail "task unblock on a nonexistent id must never leak a raw awk error"
 
 rc=0; unblock_plan_out="$("$ORCHID_BIN" task unblock plan --reason x 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task unblock plan must be refused (reserved id)"
@@ -1381,7 +1385,13 @@ rc=0; nl_out="$("$ORCHID_BIN" task set T010 acceptance_criteria "$nl_value" 2>&1
 [ "$rc" -ne 0 ] || fail "task set with a newline-bearing value must exit NON-ZERO (it used to exit 0 and leave the task file at zero bytes)"
 red_case 'task set with a value containing a newline: refused, non-zero exit'
 assert_match "newline" "$nl_out" "the refusal names the constraint it is enforcing (a newline in a single-line field), rather than reporting a tool error"
-echo "$nl_out" | grep -qi "awk" && fail "the refusal must not leak a raw awk error -- that message was the symptom of the file already being gone"
+# Herestring, never `echo "$nl_out" | grep -qi`: this file runs under `set -o
+# pipefail` (tests/helpers.sh line 2) and `grep -q` exits at its FIRST match,
+# SIGPIPEing the upstream `echo` mid-write -- pipefail then promotes that 141
+# to the pipeline's status, so `&& fail` is skipped for a pattern grep DID
+# find. On a NEGATIVE assertion that is the fail-open direction: the leak this
+# line exists to catch would go unreported precisely when it is present.
+grep -qi "awk" <<<"$nl_out" && fail "the refusal must not leak a raw awk error -- that message was the symptom of the file already being gone"
 [ -s "$nl_file" ] || fail "THE FILE IS EMPTY: a refused write destroyed the task, which is the whole defect"
 cmp -s "$T034_KEEP/T010.before" "$nl_file" \
   || fail "a refused newline write must leave the task file BYTE-IDENTICAL"
