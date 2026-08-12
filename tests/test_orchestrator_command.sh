@@ -100,6 +100,12 @@ assert_eq review-conflict "$(printf '%s' "$out" | jq -r .kind)" "and its output,
 # engine, walks the state machine, or reaches a shell.
 # ===========================================================================
 tasks_before="$(list_dir_files .orchid/tasks | LC_ALL=C sort)"
+# T039: `reviews/` is durable state too, and it is where the refused
+# `jobs review-plan --pin|--repin|--adopt-evidence` forms below would land a
+# pinned slot plan. Without this capture those three refusals would be
+# asserted only on their exit code -- and a broker that refused loudly while
+# the verb had already written would pass.
+reviews_before="$(list_dir_files .orchid/reviews | LC_ALL=C sort)"
 journal_before="$(wc -c < .orchid/journal.md)"
 status_before="$(status_of T001)"
 
@@ -145,6 +151,20 @@ refuse "the driver itself"              drive
 
 # Malformed or over-permissive variants of ADMITTED forms are refused too --
 # admission is per argument, not per verb.
+# T039: `jobs review-plan` grew three WRITING forms (they pin the reviewer-slot
+# plan under .orchid/reviews). The bare read stays admitted -- a woken
+# orchestrator judges evidence against the plan its attempt was dispatched
+# under, and the bare read now returns exactly that pinned table -- but this
+# surface must not be able to MOVE the plan. Re-pinning is how a plan and its
+# evidence are brought back into agreement, and a boundary that an
+# orchestrator could settle by re-pinning until the numbers line up is not a
+# judgment at all. The arity check is what refuses these, so all three are
+# named: an admission widened to "review-plan plus flags" would let every one
+# of them through at once.
+refuse "pinning the review plan"        jobs review-plan T001 --pin
+refuse "re-pinning the review plan"     jobs review-plan T001 --repin
+refuse "adopting review evidence"       jobs review-plan T001 --adopt-evidence
+
 refuse "an unadmitted status flag"      status --html
 refuse "an unadmitted lessons listing"  lessons list
 refuse "a non-numeric tail count"       journal tail -n abc
@@ -165,6 +185,8 @@ refuse "a lesson with a bogus scope"    lessons add --scope everything --invalid
 # Every refusal above was inert.
 assert_eq "$tasks_before" "$(list_dir_files .orchid/tasks | LC_ALL=C sort)" \
   "no refused command created or removed a task"
+assert_eq "$reviews_before" "$(list_dir_files .orchid/reviews | LC_ALL=C sort)" \
+  "no refused command wrote to reviews/ — in particular, none of the three review-plan writing forms landed a pinned slot plan on its way to being refused"
 assert_eq "$journal_before" "$(wc -c < .orchid/journal.md)" \
   "no refused command wrote to the journal"
 assert_eq "$status_before" "$(status_of T001)" \
