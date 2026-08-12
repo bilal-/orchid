@@ -219,7 +219,7 @@ plancheck_ledger_items() {
     }
     # markers(text, k) -- how many times the literal marker `(k) ` occurs
     # anywhere in text. `text` is a scalar parameter, so consuming it here is
-    # a copy and the caller's string is untouched.
+    # a copy and the string belonging to the caller is untouched.
     function markers(text, k,   n, p, needle) {
       needle = "(" k ") "
       n = 0
@@ -244,9 +244,10 @@ plancheck_ledger_items() {
     #   SCRAMBLED   "(1) ... (3) ... (2) ..." -- the scan takes (1) then (2),
     #     which sits last, and never reaches (3).
     #   GAPPED      "(1) ... (2) ... (4) ..." -- the scan stops at (2)
-    #     because no (3) follows, and (4)'s finding lands inside segment 2.
-    #     An ordinal struck out of a hand-edited enumeration leaves exactly
-    #     this shape, and checking only for the NEXT ordinal misses it.
+    #     because no (3) follows, and the finding at (4) lands inside
+    #     segment 2. An ordinal struck out of a hand-edited enumeration
+    #     leaves exactly this shape, and checking only for the NEXT ordinal
+    #     misses it.
     #   REPEATED    "(1) ... (2) ... (1) ..." -- a marker used twice means
     #     the position the scan assigned it is a choice between two, and the
     #     text after the other one is absorbed by whichever segment
