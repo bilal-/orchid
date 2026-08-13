@@ -688,24 +688,51 @@ ones its archetype never declares.
      clean. Compare the sha just read against the task's existing
      `candidate_sha` — or, on a first dispatch, which has none yet, against its
      `base_sha`, where an unmoved HEAD means the attempt produced no commit at
-     all. If it has not moved, the envelope is NOT an acceptable envelope: take
-     no transition. There is no candidate either way — but WHICH no-op this is
-     decides who answers it, so read the tree's state before charging anything
+     all. If it has not moved, read the tree's state before charging anything
      (`git status --porcelain`, `.orchid/` excluded, being no part of any
-     candidate — the same read the hand-off below makes).
+     candidate — the same read the hand-off below makes), and ask of the task's
+     own two shas whether a candidate EXISTS at all: an unmoved HEAD is three
+     different situations, and only two of them are delivery failures.
 
-     **The tree is CLEAN.** The dispatch left no commit and no edit. Hand it to
-     step 2's escalation ladder exactly as a quarantined or non-ok envelope is
-     handed to it — same ladder, same rung, no second count. The reason names
-     both shas, and the journal entry is the whole record of the refusal:
-     `orchid task infra-fail <id> --reason "implement envelope reported ok but
-     delivered nothing: worktree HEAD <sha> is unchanged from the task's
-     recorded <sha>"`, relaunch the implementer, and leave the task in
-     `implementing`. This is deliberately the `infra_failures` counter and not
-     `attempts`: the attempt budget bounds defects in work that was actually
-     delivered, and charging it here would spend a rework round on a candidate
-     nobody touched — while advancing would spend a full verify and a full
-     review round re-proving a defect this run already arbitrated.
+     **The tree is CLEAN and the floor was the `base_sha`.** The dispatch left
+     no commit and no edit, and no earlier one did either: this task has
+     produced nothing anywhere. The envelope is NOT an acceptable envelope —
+     take no transition. Hand it to step 2's escalation ladder exactly as a
+     quarantined or non-ok envelope is handed to it — same ladder, same rung,
+     no second count. The reason names both shas, and the journal entry is the
+     whole record of the refusal: `orchid task infra-fail <id> --reason
+     "implement envelope reported ok but delivered nothing: worktree HEAD <sha>
+     is unchanged from the task's recorded <sha>"`, relaunch the implementer,
+     and leave the task in `implementing`. This is deliberately the
+     `infra_failures` counter and not `attempts`: the attempt budget bounds
+     defects in work that was actually delivered, and charging it here would
+     spend a rework round on a candidate nobody touched — while advancing would
+     spend a full verify and a full review round re-proving a defect this run
+     already arbitrated.
+
+     **The tree is CLEAN and the floor was a `candidate_sha` ahead of the
+     `base_sha`.** A candidate demonstrably exists — the driver stamped that sha
+     itself, from a HEAD it read in this worktree, and the worktree still agrees
+     — and this round added no commit on top of it. That is a routing question,
+     not a delivery failure, and it must not spend the job-delivery ladder,
+     whose recovery is a relaunch: there is nothing here to relaunch FOR.
+     ADVANCE on the existing candidate, mark no envelope refused, charge
+     nothing, and journal which of the two clean cases this was and why. It is
+     produced by ordinary operation rather than only by a lazy engine: a rebase
+     rewrites a task's commits, the driver re-stamps the new HEAD as
+     `candidate_sha`, the next round dispatches, and the implementer truthfully
+     reports that the work asked of it is already in place. Every run with
+     concurrency above one rebases in-flight tasks onto a moved integration
+     branch, so every such run reaches this, and refusing it blocks a task whose
+     candidate is sitting right there (lesson L039). Advancing is bounded by the
+     ordinary route: an engine that keeps adding nothing to a candidate that
+     keeps failing verification spends the ATTEMPT budget, the budget for
+     defects in work that WAS delivered, and reaches a human at its cap. Both
+     shas must be on record for this case — with the base missing, nothing
+     proves a candidate exists and the refusal above stands. Ancestry is
+     deliberately NOT required: the rebase that triggers this can leave the
+     recorded base off the candidate's line of descent, and demanding descent
+     would re-block the case this exists to route.
 
      **The tree is DIRTY.** The dispatch did the work and failed to commit it,
      which is not the same failure and must not take the same rung: the
@@ -720,8 +747,9 @@ ones its archetype never declares.
      `operator-decision` boundary that names the observed HEAD, the recorded
      sha and the uncommitted paths. Both answers leave this arm correct on the
      next pass: committed onto the task branch, HEAD is off the floor and the
-     envelope is ordinary delivery; discarded, the tree is clean and the
-     refusal above applies. A tree that cannot be READ at all takes a
+     envelope is ordinary delivery; discarded, the tree is clean and whichever
+     of the two clean cases above applies to that task's shas applies here. A
+     tree that cannot be READ at all takes a
      `worktree-conflict` boundary — the same direction, never folded into the
      clean case, since an inspection that answers "clean" when it could not
      look would relaunch over a tree nobody has seen.
@@ -743,7 +771,12 @@ ones its archetype never declares.
      with no implement job outstanding and no acceptable envelope has a relaunch
      that never landed, not something to wait for: spend a rung and relaunch.
   5. `orchid task set <id> candidate_sha <sha>`.
-  6. `orchid task advance <id> testing --reason "implementer envelope ok"`.
+  6. `orchid task advance <id> testing --reason "implementer envelope ok"` —
+     one advance for both roads into it, with the reason naming which road when
+     it was the round that added nothing to an existing candidate. A pass
+     message dies with the pass; the journalled reason is all an operator
+     reading the run back afterwards has to tell a round that committed
+     everything from one that committed nothing.
   7. **The operator hand-off** — the named pause below. It sits exactly here,
      after the envelope has reconciled and before anything verifies the
      candidate.
@@ -751,10 +784,12 @@ ones its archetype never declares.
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a
   repeat failure goes to `blocked`, never `rework`) — as does the clean-tree
-  no-op delivery above, which reaches `blocked` by the same `infra_max` cap.
-  The dirty-tree one takes no rung at all and so reaches no cap: it is a
-  boundary from the first pass that sees it, and stays one until a human
-  answers it.
+  no-op delivery over a task that never produced a candidate, which reaches
+  `blocked` by the same `infra_max` cap. The dirty-tree one takes no rung at
+  all and so reaches no cap: it is a boundary from the first pass that sees it,
+  and stays one until a human answers it. The clean-tree round over a candidate
+  that already exists takes no rung either, and needs none — it advances, and
+  is bounded downstream by the attempt budget like any other delivered round.
 
   **The operator hand-off (`orchid task handoff`).** Some steps in a
   candidate are mechanical and require EXECUTION: applying a linter's own

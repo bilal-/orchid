@@ -379,7 +379,7 @@ mk_delivery_task P50 "$CAND" "$BASE"
 assert_eq "$CAND" "$(drive_delivery_floor "$POLICY" P50)" \
   "a rework round measures delivery against the candidate it was dispatched to change"
 drive_delivery_is_noop "$POLICY" P50 "$CAND" \
-  || fail "an ok envelope over a HEAD still sitting on that candidate delivered nothing"
+  || fail "an ok envelope over a HEAD still sitting on that candidate added no commit — which is all this predicate claims: WHICH no-op it is (and whether it is one at all) belongs to the verdict below"
 if drive_delivery_is_noop "$POLICY" P50 3333333333333333333333333333333333333333; then
   fail "a HEAD that moved off the prior candidate IS delivery — the envelope is not second-guessed further"
 fi
@@ -415,8 +415,8 @@ assert_eq delivered "$(drive_delivery_verdict "$POLICY" P50 33333333333333333333
   "a HEAD that moved off the floor is delivery — there is a candidate to test"
 assert_eq delivered "$(drive_delivery_verdict "$POLICY" P50 3333333333333333333333333333333333333333 "src/half-done.sh" 0)" \
   "and a dirty tree over a MOVED head is not this arm's question — that one belongs to the operator hand-off, one state later, against a candidate that exists"
-assert_eq nothing "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 0)" \
-  "an unmoved HEAD over a CLEAN tree is the commentary-only round: no commit, no edit, nothing on disk to show for the dispatch"
+assert_eq nothing "$(drive_delivery_verdict "$POLICY" P51 "$BASE" "" 0)" \
+  "an unmoved HEAD over a CLEAN tree, on a task with no candidate on record, is the commentary-only round: no commit, no edit, nothing on disk to show for the dispatch or for any before it"
 assert_eq uncommitted "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "src/half-done.sh, docs/notes.md" 0)" \
   "an unmoved HEAD over a DIRTY tree is a different failure: the dispatch wrote real work and never committed it"
 assert_eq uninspected "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "git status exited 128 in /nope" 2)" \
@@ -425,6 +425,45 @@ assert_eq uninspected "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 2)" \
   "and the exit status decides that, not the text: a failed inspection prints its diagnosis on the same channel a dirty tree prints paths on"
 assert_eq delivered "$(drive_delivery_verdict "$POLICY" P52 "$CAND" "src/half-done.sh" 0)" \
   "with no sha recorded a no-op cannot be PROVEN, so nothing is refused — the tree state does not turn an unprovable case into a refusable one"
+
+# --- and whether a candidate EXISTS: the other half of the same blindness ---
+# The floor is the candidate_sha where the task has one, so "HEAD is still the
+# floor" is two situations, not one, and only the first is a delivery failure
+# (lesson L039):
+#
+#   * the floor is the BASE. Nothing was ever produced -- not by this round and
+#     not by any before it. T022's refusal, and it stands exactly as it was.
+#   * the floor is a CANDIDATE ahead of that base. The work is already on disk;
+#     this round added no commit on top of it. Refusing that charges the
+#     job-delivery ladder for a task whose candidate is sitting right there,
+#     and it is reached by ordinary operation -- a rebase re-stamps
+#     candidate_sha and the next implementer finds its own work in place.
+#
+# BOTH EDGES ARE PINNED HERE, side by side, because pinning only one is the
+# defect: T022 pinned the too-permissive edge and the too-strict one, unpinned,
+# blocked a whole run. RED before this task's fix: the second case answered
+# `nothing` and took the refusal arm.
+assert_eq unchanged "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 0)" \
+  "an unmoved HEAD over a clean tree, where the floor is a CANDIDATE ahead of the base, is a round that added nothing to work already delivered — not a round that delivered nothing"
+assert_eq nothing "$(drive_delivery_verdict "$POLICY" P51 "$BASE" "" 0)" \
+  "and the too-permissive edge is untouched: with the floor at the base, an ok envelope over a worktree that never moved is still the refusal T022 shipped"
+# A candidate cannot be PROVEN by a sha with nothing to compare it against, so
+# the stricter word stands wherever the pair is incomplete. Neither state is
+# producible by a dispatch (base_sha is stamped on the first one and never
+# re-stamped), which is exactly why the fail-closed direction is free.
+mk_delivery_task P53 "$CAND" -
+assert_eq nothing "$(drive_delivery_verdict "$POLICY" P53 "$CAND" "" 0)" \
+  "a candidate with no base recorded proves nothing about work produced — the refusal stands rather than advancing on a guess"
+mk_delivery_task P54 "$CAND" "$CAND"
+assert_eq nothing "$(drive_delivery_verdict "$POLICY" P54 "$CAND" "" 0)" \
+  "nor does a candidate_sha that IS the base: the task holds the sha it started from, and a round that returns it has produced nothing"
+# The tree still decides first. Real uncommitted output over an existing
+# candidate is the operator's call, exactly as it is over a bare base -- an
+# advance would carry the round's work nowhere and a relaunch would inherit it.
+assert_eq uncommitted "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "src/half-done.sh" 0)" \
+  "a DIRTY tree is answered as a dirty tree whether or not a candidate exists — the existence of one does not license advancing past somebody's uncommitted work"
+assert_eq uninspected "$(drive_delivery_verdict "$POLICY" P50 "$CAND" "" 2)" \
+  "and a tree nobody could read is still uninspected — the candidate question is asked only once the tree is known to be clean"
 
 # --- a refusal that does not stick is not a refusal ------------------------
 # The no-op test above compares an envelope against a MOVING worktree; it is
@@ -2752,3 +2791,185 @@ if [ "$(ustatus)" = implementing ]; then
 fi
 assert_eq 0 "$(fm_get "$UTF" infra_failures)" \
   "with nothing ever charged for the round the operator completed"
+
+# ===========================================================================
+# Part Q -- A ROUND THAT ADDED NOTHING TO A CANDIDATE IS NOT A ROUND THAT
+# DELIVERED NOTHING (lesson L039). Part O judges delivery by comparing the
+# worktree HEAD against the sha the round was dispatched to move, and that
+# sha -- the FLOOR -- is the task's `candidate_sha` where it has one and its
+# `base_sha` where it does not. So "HEAD is still the floor" collapses two
+# situations that are not the same situation at all:
+#
+#   * THE FLOOR IS THE BASE. Nothing was ever produced, by this round or any
+#     before it. Part O's case, and it is unchanged here: still refused, still
+#     charged to the job-delivery ladder, still marked.
+#   * THE FLOOR IS A CANDIDATE AHEAD OF THAT BASE. The work is already on disk.
+#     The driver stamped that sha itself, from a HEAD it read in this very
+#     worktree, so a candidate demonstrably EXISTS -- and this round adding no
+#     commit on top of it is a routing question, not a delivery failure.
+#
+# Charging the second to the infra ladder is what this part exists to stop. It
+# is not a hypothetical and not a lazy engine: a rebase rewrites a task's
+# commits, the driver re-stamps the new HEAD as `candidate_sha`, the next round
+# dispatches, and the implementer finds its own already-delivered work in place
+# and truthfully says so. Every run with concurrency above one rebases in-flight
+# tasks onto a moved integration branch, so every such run reaches this. In the
+# run this lesson comes from it blocked twenty-six of forty tasks inside four
+# hours -- ten of them without ever spending an attempt -- because the honest
+# answer "the work is already delivered, and manufacturing a diff to look
+# productive would be worse" was charged as an infra failure until the cap.
+#
+# THIS FIXTURE IS THAT REBASE, WITHOUT NEEDING ONE: an implementer that
+# delivers a real commit on its first dispatch and, on every dispatch after,
+# reports ok and commits nothing because there is nothing left to commit. What
+# must hold is that the second round is ROUTED (advanced on the candidate that
+# exists), that it costs no rung of the job-delivery ladder, that no envelope is
+# marked refused, and that the journal says which of the two clean cases it was.
+# RED before this task's fix: the second round took Part O's arm -- infra
+# failures 1, 2, 3 and `blocked`, with the candidate sitting untouched in the
+# worktree the whole time.
+#
+# BOTH EDGES, per lesson L034: Part O above pins the too-permissive one end to
+# end and must keep passing exactly as written, and this part pins the
+# too-strict one. The unit-level pair sits together in Part A.
+# ===========================================================================
+DONE="$WORK/alreadydone"
+mkdir -p "$DONE" "$WORK/dctl"
+cd "$DONE" || exit 1
+git init -q .
+printf 'role.implementer=stubdone\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$DONE" "$ORCHID_BIN" init >/dev/null || fail "orchid init (already-delivered fixture)"
+git checkout -q orchid/integration
+
+mkdir -p "$WORK/eng/stubdone"
+printf 'manifest_version=1\nid=test/stubdone\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubdone/plugin.conf"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -eu'
+  printf 'CTL=%s\n' "$(printf '%q' "$WORK/dctl")"
+} > "$WORK/eng/stubdone/run"
+cat >> "$WORK/eng/stubdone/run" <<'EOF'
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+op="$(jq -r .operation "$req")"
+wt="$(jq -r .worktree "$req")"
+[ "$op" = implement ] || exit 1
+# Which dispatch this is, counted by the stub itself: the test asks "was an
+# implementer RELAUNCHED over a candidate that already exists?" and a count is
+# the only answer that does not race the pass.
+n=$(( $(cat "$CTL/n" 2>/dev/null || echo 0) + 1 ))
+echo "$n" > "$CTL/n"
+if [ "$n" = 1 ]; then
+  # The delivering round. A real commit, exactly what an implementer with work
+  # to do leaves behind -- this is what makes every later round's unmoved HEAD
+  # a candidate rather than a base.
+  cd "$wt" || exit 1
+  echo "the feature this task was dispatched for" > feature.txt
+  git add feature.txt
+  git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "stub: deliver $task"
+  jq -n --arg jid "$jid" --arg task "$task" --arg sha "$(git rev-parse HEAD)" \
+    '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+      summary:"delivered the feature", commits:[$sha]}' > "$out.part"
+  mv "$out.part" "$out"
+  exit 0
+fi
+# Every round after it: the honest answer, and the exact one the run this
+# lesson comes from punished. The work is in place, so nothing is edited and
+# nothing is committed -- manufacturing a diff to look productive would be
+# worse than reporting the work as delivered.
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"found nothing to change: the candidate already contains this work, and I made no edits"}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+chmod +x "$WORK/eng/stubdone/run"
+
+DEPOCH="$(ORCHID_REPO="$DONE" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+dorchid() { ORCHID_REPO="$DONE" ORCHID_EPOCH="$DEPOCH" "$ORCHID_BIN" "$@"; }
+dorchid requirements import "$WORK/requirements.md" >/dev/null
+dorchid task create D010 "its second implementer finds the work already done" >/dev/null
+# Verification that always fails, so the task is sent back to `rework` and
+# dispatched a SECOND time over the candidate the first round delivered. That
+# second dispatch is the whole subject of this part.
+dorchid task set D010 verification_commands "false" >/dev/null
+dorchid plan apply --reason "initial plan" >/dev/null
+
+DTF="$DONE/.orchid/tasks/D010.md"
+DDRIVE_OUT=""; DDRIVE_RC=0
+run_ddrive() {
+  DDRIVE_RC=0
+  DDRIVE_OUT="$(ORCHID_REPO="$DONE" ORCHID_EPOCH="$DEPOCH" "$DRIVE" 2>&1)" || DDRIVE_RC=$?
+}
+dstatus() { fm_get "$DTF" status; }
+
+# Passes until the SECOND rework round has been accounted -- `attempts` at 2
+# means the round that committed nothing was routed through testing like any
+# other delivery. The job-delivery ladder is asserted on EVERY pass, not only
+# at the end: one rung charged anywhere in here is the defect, whatever the run
+# does afterwards.
+dpass=0
+while [ "$(fm_get "$DTF" attempts)" -lt 2 ] && [ "$dpass" -lt 60 ]; do
+  run_ddrive
+  if [ "$(fm_get "$DTF" infra_failures)" != 0 ]; then
+    fail "a round that added nothing to an EXISTING candidate must never be charged to the job-delivery ladder — the candidate is on disk, so there is nothing to relaunch for (out: $DDRIVE_OUT)"
+    break
+  fi
+  dpass=$(( dpass + 1 ))
+  sleep 0.3
+done
+
+DWT="$(fm_get "$DTF" worktree)"
+[ -n "$DWT" ] || fail "the dispatch must have recorded a worktree for D010"
+DBASE="$(fm_get "$DTF" base_sha)"
+DCAND="$(fm_get "$DTF" candidate_sha)"
+[ -n "$DCAND" ] || fail "the first round must have delivered a candidate (out: $DDRIVE_OUT)"
+[ "$DCAND" != "$DBASE" ] || fail "and that candidate must be AHEAD of the base — otherwise this fixture is Part O's case, not this one's"
+assert_eq 2 "$(fm_get "$DTF" attempts)" \
+  "the round that added no commit to an existing candidate is ROUTED, not refused: it reached testing, failed verification there like any other candidate, and spent the rework budget that bounds delivered work (out: $DDRIVE_OUT)"
+assert_eq 0 "$(fm_get "$DTF" infra_failures)" \
+  "and spent no rung of the job-delivery ladder, whose recovery is a relaunch — there is nothing here to relaunch FOR"
+assert_eq "" "$(fm_get "$DTF" refused_envelopes)" \
+  "nor is the envelope marked refused: it truthfully describes the candidate the task has, and a mark would make it unselectable forever"
+assert_eq "$DCAND" "$(git -C "$DWT" rev-parse HEAD)" \
+  "the candidate is exactly where the first round left it — the second round added nothing to it, and nothing was manufactured on its behalf"
+assert_eq 2 "$(cat "$WORK/dctl/n")" \
+  "and exactly two implementers ran: the one that delivered and the one that found the work in place — no relaunch was spawned over a candidate that already existed"
+assert_eq "the feature this task was dispatched for" "$(cat "$DWT/feature.txt")" \
+  "the delivered work is still there, untouched: work a job already completed is not discarded"
+
+# THE PASS SAYS WHICH CASE THIS WAS, and so does the JOURNAL. A pass message is
+# gone with the pass; an operator reading a run back afterwards has only the
+# journal, and "implementer envelope ok" alone would leave a round that
+# committed nothing looking identical to one that committed everything.
+assert_match "a candidate exists and this round added nothing to it" "$DDRIVE_OUT" \
+  "the pass names the case it routed rather than reporting a delivery it did not see"
+djournal="$(cat "$DONE/.orchid/journal.md")"
+assert_match "a candidate exists and this round added nothing to it" "$djournal" \
+  "and the journal carries it too, through the same named verb the transition goes through — which of the two clean cases this was"
+assert_match "not a delivery failure" "$djournal" \
+  "saying WHY in the journal and not only what: the whole defect was a routing question accounted as a failure"
+
+# AND IT IS BOUNDED. Advancing is not a licence to loop: an engine that keeps
+# adding nothing to a candidate that keeps failing verification runs out of the
+# ATTEMPT budget -- the budget for defects in work that WAS delivered -- and
+# reaches a human there, never on the job-delivery ladder it was wrongly charged
+# to before.
+dpass=0
+while [ "$(dstatus)" != blocked ] && [ "$dpass" -lt 60 ]; do
+  run_ddrive
+  dpass=$(( dpass + 1 ))
+  sleep 0.3
+done
+assert_eq blocked "$(dstatus)" \
+  "an implementer that keeps finding its work already done still reaches a human (out: $DDRIVE_OUT)"
+assert_eq 3 "$(fm_get "$DTF" attempts)" \
+  "and the bound it hit is the ATTEMPT cap: every one of those rounds was a rework round over a candidate that exists"
+assert_eq 0 "$(fm_get "$DTF" infra_failures)" \
+  "with the job-delivery ladder never touched from the first pass to the last — that ladder is for dispatches that produced nothing, and this task produced a candidate on its first one"
+assert_eq "" "$(fm_get "$DTF" refused_envelopes)" \
+  "and no envelope was ever refused: none of them lied about the worktree"

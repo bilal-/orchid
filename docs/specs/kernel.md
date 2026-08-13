@@ -516,15 +516,15 @@ pending → implementing → testing → reviewing → arbitrating → merging �
 - **A delivery that delivered nothing is an infra failure, not an attempt.**
   An `ok` implement envelope is the engine's own account of itself; the
   worktree is the only thing that can contradict it. When the envelope
-  reconciles `ok` but HEAD is still the sha the round was dispatched to move
-  (the prior `candidate_sha`, or `base_sha` on a first dispatch), no candidate
-  exists to test, review or arbitrate — the `implementing → testing` delivery
-  precondition above simply does not hold. The orchestrator refuses the
-  transition, and when the tree is CLEAN as well (the next bullet takes the
-  case where it is not) charges `infra_failures` (relaunching the implementer,
-  and reaching `blocked` at `infra_max` like any other job-delivery failure). It
-  is deliberately not an `attempts` round: nothing was delivered for the
-  attempt budget to be judging. **The refusal is durable, not a one-pass
+  reconciles `ok` but HEAD is still the `base_sha` of a task that has never
+  recorded a candidate, no candidate exists to test, review or arbitrate — the
+  `implementing → testing` delivery precondition above simply does not hold.
+  The orchestrator refuses the transition, and when the tree is CLEAN as well
+  (the bullets below take the cases where it is not, and where a candidate does
+  exist) charges `infra_failures` (relaunching the implementer, and reaching
+  `blocked` at `infra_max` like any other job-delivery failure). It is
+  deliberately not an `attempts` round: nothing was delivered for the attempt
+  budget to be judging. **The refusal is durable, not a one-pass
   verdict:** the refused envelope stays on disk as a sibling of every later
   one, so it is recorded in `refused_envelopes` and is never selected again —
   otherwise the same envelope is re-selected once the relaunch moves HEAD (it
@@ -551,6 +551,24 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   inspection that answers "clean" when it could not look is the fail-open shape
   the operator hand-off's own tree check exists to close. `.orchid/` is
   excluded throughout, being no part of any candidate.
+- **Nor can it see whether a candidate exists, and a round that added nothing
+  to one is not a round that delivered nothing.** The sha an unmoved HEAD is
+  measured against is the `candidate_sha` where the task has one, so "HEAD is
+  still the floor" collapses a task that has produced NOTHING into one whose
+  candidate is already on disk and merely gained no commit this round. Where
+  the floor is a `candidate_sha` that differs from the recorded `base_sha`, the
+  orchestrator itself stamped that sha from a HEAD it read in that worktree, so
+  a candidate demonstrably exists and the delivery precondition DOES hold: the
+  transition is taken on the existing candidate, nothing is charged, no
+  envelope is marked refused, and the journal records which of the two clean
+  cases it was. Charging the job-delivery ladder here blocks a task whose
+  candidate is sitting right there, and the case arises in ordinary operation:
+  a rebase rewrites a task's commits, the orchestrator re-stamps the new HEAD
+  as `candidate_sha`, and the next round's implementer truthfully reports that
+  the work asked of it is already in place. Advancing is bounded by `attempts`
+  downstream — the budget for defects in work that WAS delivered — like any
+  other delivered round. Both shas must be on record: with `base_sha` missing,
+  nothing proves a candidate exists and the refusal two bullets above stands.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
