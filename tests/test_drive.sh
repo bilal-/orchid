@@ -2900,10 +2900,17 @@ dorchid task set D010 verification_commands "false" >/dev/null
 dorchid plan apply --reason "initial plan" >/dev/null
 
 DTF="$DONE/.orchid/tasks/D010.md"
-DDRIVE_OUT=""; DDRIVE_RC=0
+# DDRIVE_OUT holds ONE pass's output and is reassigned on every pass; the
+# routing note this part pins is emitted on whichever pass routes the case,
+# which the loops below overrun. DDRIVE_ALL accumulates every pass for the
+# assertions that mean "some pass said this"; DDRIVE_OUT stays for the ones
+# that genuinely mean the last pass.
+DDRIVE_OUT=""; DDRIVE_ALL=""; DDRIVE_RC=0
 run_ddrive() {
   DDRIVE_RC=0
   DDRIVE_OUT="$(ORCHID_REPO="$DONE" ORCHID_EPOCH="$DEPOCH" "$DRIVE" 2>&1)" || DDRIVE_RC=$?
+  DDRIVE_ALL="$DDRIVE_ALL$DDRIVE_OUT
+"
 }
 dstatus() { fm_get "$DTF" status; }
 
@@ -2946,7 +2953,7 @@ assert_eq "the feature this task was dispatched for" "$(cat "$DWT/feature.txt")"
 # gone with the pass; an operator reading a run back afterwards has only the
 # journal, and "implementer envelope ok" alone would leave a round that
 # committed nothing looking identical to one that committed everything.
-assert_match "a candidate exists and this round added nothing to it" "$DDRIVE_OUT" \
+assert_match "a candidate exists and this round added nothing to it" "$DDRIVE_ALL" \
   "the pass names the case it routed rather than reporting a delivery it did not see"
 djournal="$(cat "$DONE/.orchid/journal.md")"
 assert_match "a candidate exists and this round added nothing to it" "$djournal" \
