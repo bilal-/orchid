@@ -473,8 +473,13 @@ assert_eq "2" "$(jq -r .attempt "$mph2")" \
 # The fixture below is that job: a manifest whose pid is dead, no envelope
 # anywhere, and a log holding results in the SAME `FINDING:`/`VERDICT:`
 # grammar the review adapters themselves emit and parse.
+#
+# The job_id's trailing field is HEX, exactly as `jobs prepare` mints it --
+# the salvage pass validates it with the same regex as gc's dead-manifest
+# reap (see the TEVIL case below), so a mnemonic non-hex id here would be
+# skipped as suspect and every assertion in this Part would see empty.
 # ===========================================================================
-salv_log="$rt/logs/j-e1-TSALV-a1-5a1v0001.log"
+salv_log="$rt/logs/j-e1-TSALV-a1-5a1f0001.log"
 mkdir -p "$rt/logs" "$rt/exits"
 cat > "$salv_log" <<'SALVLOG'
 Reading the pack...
@@ -484,12 +489,12 @@ FINDING: bogus: this severity token is not one of the three
 FINDING: low:
 VERDICT: request-changes
 SALVLOG
-printf '7\n' > "$rt/exits/j-e1-TSALV-a1-5a1v0001"
+printf '7\n' > "$rt/exits/j-e1-TSALV-a1-5a1f0001"
 
 ( exit 0 ) & salv_pid=$!
 wait "$salv_pid" 2>/dev/null || true
 jq -n --argjson pid "$salv_pid" --arg log "$salv_log" \
-  '{job_id:"j-e1-TSALV-a1-5a1v0001", task:"TSALV", attempt:4, role:"plan_critic",
+  '{job_id:"j-e1-TSALV-a1-5a1f0001", task:"TSALV", attempt:4, role:"plan_critic",
     operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:"cand0", hook_point:""}' \
   > "$rt/jobs/j-salv.json"
