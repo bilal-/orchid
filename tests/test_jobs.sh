@@ -581,6 +581,35 @@ assert_match "quarantined: $forge_jid.json \(kernel-status\)" "$forge_line" \
   "a spool envelope claiming the kernel-only no_envelope status is quarantined, never accepted"
 [ -f "$rt/quarantine/$forge_jid.json.reason-kernel-status" ] || fail "and lands in quarantine under that reason"
 
+# ---------------------------------------------------------------------------
+# T040 rework (carried finding): the salvage pass validates manifest-derived
+# fields exactly as gc's dead-manifest reap does, BEFORE tailing the log or
+# building the reviews/ write path from them -- task/attempt/role/hook_point
+# become the write path, job_id keys the exits/ read, and the log is tailed
+# straight into the journal. A corrupted or hand-edited manifest must not
+# steer a read or a write anywhere on disk: skipped, salvaging nothing, and
+# left standing for gc's own sweep to quarantine as gc-suspect.
+# ---------------------------------------------------------------------------
+evil_decoy="$WORK/evil-decoy.log"
+printf 'FINDING: high: decoy outside runtime\n' > "$evil_decoy"
+( exit 0 ) & evil_pid=$!
+wait "$evil_pid" 2>/dev/null || true
+jq -n --argjson pid "$evil_pid" --arg log "$evil_decoy" \
+  '{job_id:"j-e1-TEVIL-a1-ee110001", task:"../../tasks/TEVIL", attempt:1, role:"plan_critic",
+    operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:"", hook_point:""}' \
+  > "$rt/jobs/j-evilsalv.json"
+evil_out="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "salvage-skip: j-evilsalv.json \(suspect fields\)" "$evil_out" \
+  "a dead manifest whose fields fail validation is skipped by the salvage pass, and says so"
+grep -q "no_envelope" <<<"$evil_out" \
+  && fail "nothing may be salvaged from a suspect manifest -- its fields would steer the write path and the log read"
+[ -f "$rt/jobs/j-evilsalv.json" ] \
+  || fail "the suspect manifest is left standing for gc's own sweep to quarantine"
+assert_eq false "$(jq -r '.no_envelope_reported // false' "$rt/jobs/j-evilsalv.json")" \
+  "and is not stamped as reported -- the salvage pass never touched it"
+rm -f "$rt/jobs/j-evilsalv.json" "$evil_decoy"
+
 # ===========================================================================
 # T040 / F35, second half -- LIVENESS IS CHECKED, PROGRESS IS NOT.
 #
@@ -596,6 +625,13 @@ assert_match "quarantined: $forge_jid.json \(kernel-status\)" "$forge_line" \
 # CPU-delta guard would have the raw signal to consume. These cases are that
 # consumer. Note every fixture log below is written FRESH (mtime = now), so
 # the log-mtime arm is provably not what is firing.
+#
+# THE ARM IS OPT-IN (cpu_stall_min_s, default 0: off): F35's own follow-up
+# retracted CPU as a sole progress signal after a healthy API-bound job
+# proved indistinguishable from the dead one on CPU alone (~9 CPU-seconds
+# across 40 minutes, 24 modified files in its worktree). The cases below
+# therefore opt in explicitly with ORCHID_CPU_STALL_MIN_S=1; the default's
+# own edge -- no floor configured, no kill -- is pinned further down.
 # ===========================================================================
 cpu_stall_log="$rt/logs/j-cpuflat.log"
 cat > "$cpu_stall_log" <<'FLATLOG'
@@ -619,8 +655,10 @@ jq -n --argjson pid "$cpu_stall_pid" --arg log "$cpu_stall_log" --argjson starte
 # stall_minutes=5 makes the window exactly the 5m30s the fixture spans;
 # timeout_minutes is 0 in this file's config (set far above for the pgid
 # guard), so it is overridden here or the timeout arm would answer first and
-# the case would prove nothing about CPU.
-cpu_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check 2>/dev/null)"
+# the case would prove nothing about CPU. CPU_STALL_MIN_S=1 opts the arm in
+# (default 0: off), the shape an operator who enabled it would run.
+cpu_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
 assert_match "TCPUFLAT	stalled" "$cpu_out" \
   "a heartbeating process burning 0.2s of CPU across five minutes is NOT working -- its heartbeats are lying, and check must call it stalled"
 sleep 0.3
@@ -647,7 +685,10 @@ jq -n --argjson pid "$cpu_busy_pid" --arg log "$cpu_busy_log" --argjson started 
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpubusy.json"
-busy_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check 2>/dev/null)"
+# Opted in (CPU_STALL_MIN_S=1), or the `running` below would be vacuous --
+# an unconfigured arm never consults the log at all.
+busy_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
 assert_match "TCPUBUSY	running" "$busy_out" "a job accumulating real CPU over the same window is running, not stalled"
 kill -0 "$cpu_busy_pid" 2>/dev/null || fail "and it must still be alive -- the guard must never kill an engine that is working"
 green_case "a live job burning real CPU over the same window is left running"
@@ -669,14 +710,17 @@ jq -n --argjson pid "$cpu_young_pid" --arg log "$cpu_young_log" --argjson starte
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
     log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
   > "$rt/jobs/j-cpuyoung.json"
-young_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check 2>/dev/null)"
+# Opted in for the same non-vacuity reason as the busy twin above.
+young_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
 assert_match "TCPUYOUNG	running" "$young_out" \
   "thirty seconds of heartbeats cannot answer a five-minute question -- a job with no anchor in the window is never judged by it"
 kill "$cpu_young_pid" 2>/dev/null || true
 rm -f "$rt/jobs/j-cpuyoung.json"
 
-# cpu_stall_min_s=0 is the documented escape hatch: a delta is always >= 0, so
-# the check can never fire. Proved on the very fixture that DID fire above.
+# An EXPLICIT cpu_stall_min_s=0 (not just the unset default) disables the
+# check outright -- the check arm skips the log entirely when it reads 0.
+# Proved on the very fixture that DID fire when opted in above.
 cat > "$cpu_stall_log" <<'FLATLOG2'
 [hb 2026-08-11T05:18:12Z] engine pid 4245 cpu 0:00.85
 [hb 2026-08-11T05:21:12Z] engine pid 4245 cpu 0:00.97
@@ -694,3 +738,67 @@ off_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN
 assert_match "TCPUOFF	running" "$off_out" "cpu_stall_min_s=0 disables the CPU-delta check outright"
 kill "$cpu_off_pid" 2>/dev/null || true
 rm -f "$rt/jobs/j-cpuoff.json"
+
+# ---------------------------------------------------------------------------
+# T040 rework: THE DEFAULT IS OFF -- the opt-in edge, pinned. F35's follow-up
+# retracted CPU as a sole progress signal: a legitimate implement job sat at
+# ~9s of CPU across 40 minutes -- on CPU alone identical to the flat fixture
+# above -- and was working the whole time, with 24 modified files in its
+# worktree to prove it. Worktree corroboration cannot rescue the signal for
+# review/critique/hook jobs either: they run under a read-only policy and
+# legitimately never touch the worktree for their whole run. A kill here
+# discards work the engine was already paid for -- the loss this whole task
+# exists to prevent -- so with NO floor configured the arm must not fire, on
+# the very fixture that fires when opted in.
+# ---------------------------------------------------------------------------
+cat > "$cpu_stall_log" <<'FLATLOG3'
+[hb 2026-08-11T05:18:12Z] engine pid 4246 cpu 0:00.85
+[hb 2026-08-11T05:21:12Z] engine pid 4246 cpu 0:00.97
+[hb 2026-08-11T05:23:42Z] engine pid 4246 cpu 0:01.07
+FLATLOG3
+sleep 100 &
+cpu_dflt_pid=$!
+jq -n --argjson pid "$cpu_dflt_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUDFLT-a1-c0d00001", task:"TCPUDFLT", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpudflt.json"
+dflt_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUDFLT	running" "$dflt_out" \
+  "with no floor configured the CPU arm must not fire -- CPU alone cannot tell a dead engine from a healthy one blocked on a vendor API"
+kill -0 "$cpu_dflt_pid" 2>/dev/null \
+  || fail "and the job must still be alive -- an unconfigured arm must never kill"
+red_case "the CPU-delta arm is opt-in: with no floor configured, the flat-CPU job is left running"
+kill "$cpu_dflt_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-cpudflt.json"
+
+# ---------------------------------------------------------------------------
+# T040 rework: A CPU COUNTER THAT GOES BACKWARDS IS UNKNOWN, NEVER A STALL.
+# `ps -o time=` is cumulative per-PID, and pid reuse hands a heartbeat a
+# stranger's clock -- ordinary, not exotic. The old comparison asked only
+# "is the delta >= the floor", so a NEGATIVE delta failed that test, fell
+# through, and killed a healthy job. Unknown must not kill: even with the
+# arm opted in, this job stays running and alive.
+# ---------------------------------------------------------------------------
+cpu_back_log="$rt/logs/j-cpuback.log"
+cat > "$cpu_back_log" <<'BACKLOG'
+[hb 2026-08-11T05:18:12Z] engine pid 4247 cpu 0:41.12
+[hb 2026-08-11T05:21:12Z] engine pid 4247 cpu 0:00.30
+[hb 2026-08-11T05:23:42Z] engine pid 4247 cpu 0:00.95
+BACKLOG
+sleep 100 &
+cpu_back_pid=$!
+jq -n --argjson pid "$cpu_back_pid" --arg log "$cpu_back_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUBACK-a1-c0e00001", task:"TCPUBACK", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpuback.json"
+back_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUBACK	running" "$back_out" \
+  "a negative CPU delta is unknown, never no-progress -- even with the arm opted in it must not fire"
+kill -0 "$cpu_back_pid" 2>/dev/null \
+  || fail "and the job must still be alive -- unknown must not kill"
+red_case "a CPU counter that went backwards (pid reuse) is unknown: the job is left running, not killed"
+kill "$cpu_back_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-cpuback.json"

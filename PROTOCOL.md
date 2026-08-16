@@ -469,18 +469,23 @@ too — the task simply waits forever.
 
 **`stalled` is decided on PROGRESS, not just on liveness.** A job earns it two
 ways, and both kill it: its log has not been written to for `stall_minutes`
-(the original test), OR its own heartbeat lines show it burning less than
-`cpu_stall_min_s` (config, default `1`) of CPU across the last `stall_minutes`
-of heartbeats. The second exists because the first cannot see a job that keeps
-heartbeating and stops working — a real attempt sent heartbeats for five
-minutes while accumulating two tenths of a second of CPU and then exited with
-nothing, and `jobs check` called it `running` the whole time, because *the
-process was alive*. The CPU numbers were already in the log: every heartbeat
-line carries a `cpu` field for exactly this consumer. The floor is
-deliberately far below what a working engine accumulates, since an engine
-blocked on a vendor API legitimately burns almost none; `cpu_stall_min_s=0`
-turns the check off. A job without enough heartbeat history to span the window
-is never judged by it.
+(the original test), OR — when an operator has opted in by setting
+`cpu_stall_min_s` (config, default `0`: off) above zero — its own heartbeat
+lines show it burning less than that many CPU-seconds across the last
+`stall_minutes` of heartbeats. The second exists because the first cannot see
+a job that keeps heartbeating and stops working — a real attempt sent
+heartbeats for five minutes while accumulating two tenths of a second of CPU
+and then exited with nothing, and `jobs check` called it `running` the whole
+time, because *the process was alive*. The CPU numbers were already in the
+log: every heartbeat line carries a `cpu` field for exactly this consumer.
+The arm is opt-in because the same incident report later retracted CPU as a
+sole progress signal: an engine blocked on a vendor API legitimately burns
+almost none — a healthy job was observed at ~9 CPU-seconds across 40 minutes,
+indistinguishable on CPU alone from the dead one — and killing a working
+engine discards work already paid for. A job without enough heartbeat history
+to span the window is never judged by it, and a heartbeat CPU counter that
+goes backwards (pid reuse hands `ps` a stranger's clock) is unknown, never a
+stall.
 
 **A job that exits without an envelope is a first-class failure, never a job
 that never happened.** `orchid jobs reconcile` makes a second pass, after the

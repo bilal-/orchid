@@ -165,6 +165,18 @@ done < <(spawn_child_env "$plugin_dir")
 # Written last-thing-before-exit via a temp file and a rename, so a reader
 # never sees a half-written status, and never sees the record at all until it
 # is final.
+#
+# THE RECORDER MUST SURVIVE THE KILL PATHS TOO. `jobs check` answers a
+# stalled or timed-out job with a process-GROUP kill (kill_stuck's
+# `kill -- -$pgid`), and this subshell is that group's leader -- without a
+# handler the TERM felled the recorder before its one write, so reconcile
+# journaled "Exit code: unrecorded" in exactly the killed-job case the
+# record was added for. `trap :` below is a real handler, NEVER `trap ''`:
+# an ignored disposition is inherited across exec, which would make the
+# engine itself immune to the group TERM, while a caught one is reset to
+# default in the child -- so the engine still dies of the signal as before,
+# the subshell finishes its wait, sees the engine's 128+signal status, and
+# records it.
 mkdir -p "$rt/exits"
 exit_file="$rt/exits/$job_id"
 
@@ -176,12 +188,14 @@ set -m
 if [ "${#child_env[@]}" -gt 0 ]; then
   (
     _rc=0
+    trap : TERM INT HUP
     env -i "${child_env[@]}" ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null || _rc=$?
     printf '%s\n' "$_rc" > "$exit_file.tmp" && mv -f "$exit_file.tmp" "$exit_file"
   ) >> "$log" 2>&1 &
 else
   (
     _rc=0
+    trap : TERM INT HUP
     env -i ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null || _rc=$?
     printf '%s\n' "$_rc" > "$exit_file.tmp" && mv -f "$exit_file.tmp" "$exit_file"
   ) >> "$log" 2>&1 &

@@ -847,7 +847,7 @@ derived cache, rebuildable from it.
 | Dead | pgid + start-time liveness per `orchid jobs check` |
 | Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
-| Alive but not working | CPU delta across the job's own heartbeat lines: less than `cpu_stall_min_s` (default 1) of CPU across the last `stall_minutes` of heartbeats → `stalled` → kill, retry. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
+| Alive but not working | Opt-in CPU delta across the job's own heartbeat lines: with `cpu_stall_min_s` above zero (default 0: off — F35 retracted CPU as a sole progress signal, a healthy API-bound engine burns almost none), less than the floor across the last `stall_minutes` of heartbeats → `stalled` → kill, retry; a counter that goes backwards (pid reuse) is unknown and never kills. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
 | Blocked on an interactive terminal prompt | supported adapters receive stdin `/dev/null` plus their documented noninteractive/never-approval flags; a vendor regression can still fail or hang and is bounded by timeout |
 | Spinning | deterministic FIRST, with a false-positive guard: duplicate-line checks apply to the ADAPTER's own output, use a sliding window (≥5 min identical lines AND no CPU/disk delta AND no new commits) — build tools legitimately repeat progress lines and are never judged by line content alone; LLM log-tail judgment is the ESCALATION tier |
 

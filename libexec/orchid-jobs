@@ -119,13 +119,26 @@ job_exit_code() {
 # its own ACCEPTED TRADE-OFF note, and kernel.md's spinning row). This is
 # that consumer.
 #
-# DELIBERATELY CONSERVATIVE, and `cpu_stall_min_s` is how an operator tunes
-# it. An engine that spends its run blocked on a vendor API genuinely burns
-# very little CPU, so a floor set too high would kill healthy work; the
-# default of one second across a whole ten-minute window is far below what
-# any engine doing real work accumulates, and far above the ~0.2s the F35
-# attempt managed. Setting `cpu_stall_min_s=0` disables the check outright
-# (a delta is always >= 0), which is the documented escape hatch.
+# OPT-IN, and `cpu_stall_min_s` is the switch: the default is 0, which
+# disables the arm outright. F35's own follow-up RETRACTED CPU as a sole
+# progress signal: a legitimate implement job sat at ~9 seconds of CPU
+# across 40 minutes -- on CPU alone indistinguishable from the dead attempt
+# above -- and was working the whole time, with 24 modified files in its
+# worktree to prove it. An engine whose wallclock is dominated by waiting on
+# vendor API responses burns almost nothing, so no floor separates the two
+# cases; and the worktree corroboration that report suggested cannot rescue
+# the signal for review/critique/hook jobs, which run under a read-only
+# policy and legitimately never touch the worktree for their whole run. A
+# kill on this arm discards work the engine was already paid for -- the
+# exact loss this task exists to prevent -- while a missed stall costs only
+# wallclock, which the timeout arm still bounds. An operator who knows their
+# engines' CPU profile opts in by setting a floor above zero.
+#
+# A NEGATIVE delta is UNKNOWN, never no-progress: `ps -o time=` is
+# cumulative per-PID, and pid reuse hands a heartbeat a stranger's counter,
+# which is ordinary, not exotic. Unknown must not kill, so a counter that
+# went backwards reports nothing rather than judging a number that no
+# longer describes one process.
 #
 # The window is anchored on the LAST HEARTBEAT, not on `now`: the two numbers
 # compared then come from the same clock the engine's own log was written
@@ -208,7 +221,12 @@ hb_cpu_flat() {
         if (AT[k] <= cutoff) { anchor = k; break }
       }
       if (anchor == 0) exit 1
-      if (CPU[seen] - CPU[anchor] >= floor + 0) exit 1
+      delta = CPU[seen] - CPU[anchor]
+      # A counter that went BACKWARDS no longer describes the same process
+      # (pid reuse; see the function header). That is UNKNOWN, not
+      # no-progress -- report nothing rather than fall through to a kill.
+      if (delta < 0) exit 1
+      if (delta >= floor + 0) exit 1
       printf "%d %s %s\n", AT[seen] - AT[anchor], CPU[anchor], CPU[seen]
       exit 0
     }
@@ -371,7 +389,9 @@ case "$sub" in
     # Read-and-runtime-only: reports/kills by pgid, never mutates durable state.
     stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
     timeout_s=$(( $(config_get "$repo" timeout_minutes 60) * 60 ))
-    cpu_floor="$(config_get "$repo" cpu_stall_min_s 1)"
+    # 0 = the CPU-delta stall arm is OFF (the default; it is opt-in -- see
+    # hb_cpu_flat's header for why CPU alone must not kill).
+    cpu_floor="$(config_get "$repo" cpu_stall_min_s 0)"
     now="$(date +%s)"
     budget_seen=" "
     for f in "$jobs_dir"/*.json; do
@@ -429,7 +449,7 @@ case "$sub" in
       if [ "$log_mtime" -gt 0 ] && [ $(( now - log_mtime )) -gt "$stall_s" ]; then
         kill_stuck "$pgid" "$pid"
         printf '%s\tstalled\n' "$task"
-      elif cpu_flat="$(hb_cpu_flat "$log" "$stall_s" "$cpu_floor")"; then
+      elif [ "$cpu_floor" != 0 ] && cpu_flat="$(hb_cpu_flat "$log" "$stall_s" "$cpu_floor")"; then
         # SAME `stalled` token, deliberately: this is the same fact the arm
         # above reports (this job is not working) reached by the other
         # available route, and PROTOCOL.md's escalation ladder and the
@@ -634,6 +654,30 @@ case "$sub" in
       s_log="$(jq -r '.log // empty' "$mf")"
       s_base="$(jq -r '.base_sha // ""' "$mf")"
       s_cand="$(jq -r '.candidate_sha // ""' "$mf")"
+      # Same suspect-fields posture as gc's dead-manifest reap (v0b2), for
+      # the same reason: everything above is manifest JSON content, and this
+      # pass USES it -- job_id keys the exits/ read, task/attempt/role/
+      # hook_point become the reviews/ write path, and the log is tailed
+      # straight into the journal. A corrupted or hand-edited manifest must
+      # not steer a read or a write anywhere on disk: skip it (salvage
+      # nothing, build nothing from it) and leave it standing for gc, whose
+      # own sweep quarantines it as gc-suspect.
+      s_suspect=0
+      echo "$s_jid" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || s_suspect=1
+      echo "$s_task" | grep -qE '^[A-Za-z0-9_-]+$' || s_suspect=1
+      echo "$s_attempt" | grep -qE '^[0-9]+$' || s_suspect=1
+      echo "$s_role" | grep -qE '^[A-Za-z0-9_-]+$' || s_suspect=1
+      if [ -n "$s_point" ]; then
+        echo "$s_point" | grep -qE '^[A-Za-z0-9_-]+$' || s_suspect=1
+      fi
+      if [ -n "$s_log" ]; then
+        case "$s_log" in *..*) s_suspect=1 ;; esac
+        case "$s_log" in "$rt"/logs/*) ;; *) s_suspect=1 ;; esac
+      fi
+      if [ "$s_suspect" -eq 1 ]; then
+        echo "salvage-skip: $(basename "$mf") (suspect fields)"
+        continue
+      fi
       s_exit=""; s_exit="$(job_exit_code "$s_jid" || true)"
       s_salvage="$(envelope_salvage_json "$s_log")"
 
