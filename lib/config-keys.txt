@@ -13,6 +13,7 @@ review.high
 lock_break_s
 verb_lock_wait_s
 stall_minutes
+cpu_stall_min_s
 timeout_minutes
 agy_max_bytes
 hermes_max_bytes

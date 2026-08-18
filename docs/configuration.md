@@ -54,6 +54,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `lock_break_s` | `900` | repo | v0 |
 | `verb_lock_wait_s` | `10` | repo | v1-m2 |
 | `stall_minutes` | `10` | repo | v0 |
+| `cpu_stall_min_s` | `0` | repo | v1.1 |
 | `timeout_minutes` | `60` | repo | v0 |
 | `agy_max_bytes` | `100000` | repo or engine worktree | v0 |
 | `hermes_max_bytes` | `100000` | repo or engine worktree | v1-m4 |
@@ -91,6 +92,21 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 - **`verify`** has no default on purpose: `orchid doctor` FAILs preflight
   until it's set (`orchid.config`), except `--greenfield` mode, which skips
   this check pre-scaffold (nothing to verify yet).
+- **`cpu_stall_min_s`** (default `0`: the check is OFF until an operator
+  opts in) is the CPU floor of the stall check. `stall_minutes` catches a
+  job that stops writing to its log; this catches the job that keeps writing
+  and stops working — an engine still emitting heartbeats while its
+  cumulative CPU time barely moves. With a floor above zero, `orchid jobs
+  check` reads the `cpu` field of the heartbeat lines already in every job
+  log and reports `stalled` (and kills the job, exactly as the log-mtime arm
+  does) when the job burned less than this many CPU-seconds across the last
+  `stall_minutes` of heartbeats. The check is opt-in because CPU alone
+  cannot separate a dead engine from a healthy one blocked on a vendor API —
+  the incident this check came from (F35) later retracted the signal after a
+  working job was observed at ~9 CPU-seconds across 40 minutes — so set a
+  floor above zero only if you know your engines' CPU profile. A heartbeat
+  CPU counter that goes backwards (pid reuse) is treated as unknown and
+  never kills.
 - **`role.*`** — each value is a comma-separated failover chain, primary
   first (e.g. `role.implementer=codex,claude`). A fallback only ever
   activates once it has passed `orchid plugins test <engine> <role>` (the

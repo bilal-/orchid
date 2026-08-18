@@ -146,15 +146,59 @@ while IFS= read -r _line; do
   child_env+=("$_line")
 done < <(spawn_child_env "$plugin_dir")
 
+# T040: RECORD THE ENGINE'S EXIT STATUS, because nothing else on this machine
+# ever will. This launcher returns the moment it has spawned; the engine is
+# then reparented and nobody waits on it, so by the time `jobs reconcile`
+# finds a manifest whose pid is gone and no envelope anywhere, "what exit code
+# did it die with" is a question with no answer on disk at all. That was half
+# of what made dogfood finding F35 invisible: an operator could see THAT a job
+# had vanished, never why.
+#
+# The engine is therefore wrapped in a subshell that outlives it by exactly
+# one write. Every property `jobs check` depends on is preserved: with job
+# control on (below), the SUBSHELL is the process-group leader, so pgid ==
+# pid still holds, `kill -- -$pgid` still fells the whole tree (engine
+# included), and `kill -0 $pid` is still true for precisely as long as the
+# engine runs, since the subshell is doing nothing but waiting on it. What
+# changes is only that the group has one more, idle, member in it.
+#
+# Written last-thing-before-exit via a temp file and a rename, so a reader
+# never sees a half-written status, and never sees the record at all until it
+# is final.
+#
+# THE RECORDER MUST SURVIVE THE KILL PATHS TOO. `jobs check` answers a
+# stalled or timed-out job with a process-GROUP kill (kill_stuck's
+# `kill -- -$pgid`), and this subshell is that group's leader -- without a
+# handler the TERM felled the recorder before its one write, so reconcile
+# journaled "Exit code: unrecorded" in exactly the killed-job case the
+# record was added for. `trap :` below is a real handler, NEVER `trap ''`:
+# an ignored disposition is inherited across exec, which would make the
+# engine itself immune to the group TERM, while a caught one is reset to
+# default in the child -- so the engine still dies of the signal as before,
+# the subshell finishes its wait, sees the engine's 128+signal status, and
+# records it.
+mkdir -p "$rt/exits"
+exit_file="$rt/exits/$job_id"
+
 # set -m (job control) around the spawn so bash puts the engine in its OWN
 # process group (pgid == child pid) instead of inheriting the orchestrator's
 # — without this, `jobs check`'s stall/timeout group-kill (kill -- -$pgid)
 # would kill the orchestrator itself, since the manifest pgid would be ours.
 set -m
 if [ "${#child_env[@]}" -gt 0 ]; then
-  env -i "${child_env[@]}" ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1 &
+  (
+    _rc=0
+    trap : TERM INT HUP
+    env -i "${child_env[@]}" ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null || _rc=$?
+    printf '%s\n' "$_rc" > "$exit_file.tmp" && mv -f "$exit_file.tmp" "$exit_file"
+  ) >> "$log" 2>&1 &
 else
-  env -i ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null >> "$log" 2>&1 &
+  (
+    _rc=0
+    trap : TERM INT HUP
+    env -i ORCHID_DRYRUN="${ORCHID_DRYRUN:-0}" "$exe" "$req_file" </dev/null || _rc=$?
+    printf '%s\n' "$_rc" > "$exit_file.tmp" && mv -f "$exit_file.tmp" "$exit_file"
+  ) >> "$log" 2>&1 &
 fi
 pid=$!
 set +m

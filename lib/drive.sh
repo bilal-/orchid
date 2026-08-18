@@ -491,6 +491,18 @@ drive_hook_envelope_count() {
   n=0
   for ef in "$state/reviews/$id-a$attempt-hook-$point"*.json; do
     [ -e "$ef" ] || continue
+    # A DEGRADED envelope is not an answer to this point. `jobs reconcile`
+    # files one (status `no_envelope`) when a job exits without writing an
+    # envelope but left salvageable results in its log -- the work is
+    # recovered, but nothing about it says the hook ran to completion. This
+    # is the ONE counter that does not already filter on `ok`, deliberately
+    # (an adapter that omits candidate_sha must still be able to satisfy a
+    # binding), so it is the one place a degraded envelope would silently
+    # convert an auto-relaunch into a hook-failure boundary: counted here,
+    # the point reads as answered, drive_hook_unsatisfied then refuses it for
+    # want of an `ok` engine match, and a human is fetched for a job the
+    # ladder would have retried by itself.
+    [ "$(envelope_field "$ef" '.status // empty' 2>/dev/null || true)" != no_envelope ] || continue
     if [ -n "$cand" ]; then
       ecand="$(envelope_field "$ef" '.candidate_sha // empty' 2>/dev/null || true)"
       if [ -n "$ecand" ] && [ "$ecand" != "$cand" ]; then
@@ -646,13 +658,21 @@ drive_delivery_floor() {
 }
 
 # drive_delivery_is_noop <repo> <task> <worktree-head> -- 0 iff the dispatch
-# delivered nothing: HEAD is exactly the floor above.
+# added no commit: HEAD is exactly the floor above.
 #
 # AN OK ENVELOPE IS NOT EVIDENCE THAT WORK HAPPENED. An implement dispatch can
 # return `ok` with a summary that is pure commentary -- findings restated,
 # sources listed -- over a worktree whose HEAD never moved and whose tree is
 # clean. The envelope is the engine's own account of itself; the worktree is
 # the only thing that can contradict it, so delivery is judged there.
+#
+# THIS PREDICATE IS NOT A REFUSAL, and no caller may read it as one. It answers
+# "did this round add a commit?", which is a strictly narrower question than
+# "did this round fail to deliver?" -- the floor is a candidate_sha wherever the
+# task has one, so a `0` here covers both a task that has produced nothing at
+# all and one whose candidate is already on disk and merely gained nothing this
+# round. `drive_delivery_verdict` below is what separates them, and routing on
+# this predicate alone is the defect lesson L039 records.
 drive_delivery_is_noop() {
   local repo="$1" id="$2" head="$3" floor
   [ -n "$head" ] || return 1
@@ -668,19 +688,58 @@ drive_delivery_is_noop() {
 #                is accepted and nothing here looks at the tree (a dirty tree
 #                over a MOVED head is the operator hand-off's question, asked
 #                one state later against a candidate that exists -- lib/handoff.sh).
-#   nothing      HEAD unchanged and the tree clean. The commentary-only round:
-#                no commit, no edit, nothing on disk to show for the dispatch.
+#   nothing      HEAD unchanged, the tree clean, and NO candidate exists: the
+#                floor the round failed to move off is the task's `base_sha`.
+#                The commentary-only round -- no commit, no edit, nothing on
+#                disk to show for the dispatch, and nothing on disk from any
+#                earlier one either.
+#   unchanged    HEAD unchanged and the tree clean, but the floor is a
+#                CANDIDATE that is not the base: a candidate demonstrably
+#                exists and this round added no commit on top of it.
 #   uncommitted  HEAD unchanged but the tree is NOT clean. The dispatch wrote
 #                real work and failed to commit it.
 #   uninspected  HEAD unchanged and the tree could not be read at all.
 #
+# WHY `unchanged` IS NOT `nothing` (lesson L039). Both are an unmoved HEAD over
+# a clean tree, and folding them together is a comparison that never asks the
+# one question separating them: does a candidate EXIST? `nothing` answers no --
+# the floor is the base, so the task has produced not one commit and there is
+# nothing anywhere to advance. `unchanged` answers yes: the floor is a
+# candidate_sha the driver itself stamped from a HEAD it read in this worktree,
+# and it differs from the base, so commits exist and a round that added none on
+# top of them did not FAIL to deliver -- it delivered nothing NEW over work
+# already delivered. That is a routing question, and charging it to the
+# job-delivery ladder blocks a task whose candidate is sitting right there.
+#
+# It is reachable in ordinary operation rather than only from a lazy engine: a
+# rebase rewrites a task's commits, the driver re-stamps the new HEAD as
+# `candidate_sha`, the next round dispatches, and the implementer finds its own
+# already-delivered work in place and truthfully reports that there is nothing
+# to change. Every run with concurrency above one rebases in-flight tasks onto
+# a moved integration branch, so every such run walks into this.
+#
+# BOTH SHAS MUST BE ON RECORD for `unchanged`. "A candidate exists" is a claim
+# about work that was produced, and the only proof available here is a recorded
+# base the recorded candidate differs from; with the base missing (a state no
+# dispatch can produce -- `drive_dispatch` stamps it on the first one) nothing
+# is proven and the stricter word stands. Note that ANCESTRY is deliberately
+# not required: a rebase onto a moved integration branch is exactly the trigger
+# above, and it can leave the recorded base off the candidate's line of descent
+# -- demanding descent here would re-block the very case this word exists to
+# route. The worktree agreeing (HEAD is the candidate) is the other half of the
+# evidence, and it is checked by the caller's own `git rev-parse`.
+#
 # WHY `uncommitted` IS NOT `nothing`. Both fail the delivery test the same way
-# -- no candidate exists, so nothing may advance -- but they call for opposite
-# handling, and a sha comparison cannot tell them apart because a sha describes
-# a COMMIT and says nothing about the tree sitting on top of it. `nothing` has
-# a deterministic recovery: charge the job-delivery rung and relaunch the
-# implementer into the same worktree, which is exactly where it left off --
-# empty. Relaunching over `uncommitted` hands the new dispatch a tree it did
+# -- this round produced no commit, so nothing NEW may advance -- but they call
+# for opposite handling, and a sha comparison cannot tell them apart because a
+# sha describes a COMMIT and says nothing about the tree sitting on top of it.
+# (It is checked FIRST, ahead of the candidate question above, for the same
+# reason: real uncommitted output is the operator's call whether or not a
+# candidate already exists, and advancing past it would carry it nowhere.)
+# `nothing` has a deterministic recovery: charge the job-delivery rung and
+# relaunch the implementer into the same worktree, which is exactly where it
+# left off -- empty.
+# Relaunching over `uncommitted` hands the new dispatch a tree it did
 # not create, holding edits it cannot account for: it will commit them as its
 # own, or revert them, or build on top of them, and whichever it does the
 # journal will read as the work of a round that never wrote them. And the work
@@ -702,11 +761,18 @@ drive_delivery_is_noop() {
 # `.orchid/`, which is no part of any candidate.
 drive_delivery_verdict() {
   local repo="$1" id="$2" head="$3" dirty="$4" irc="${5:-0}"
+  local tf cand base
   if ! drive_delivery_is_noop "$repo" "$id" "$head"; then
     printf 'delivered\n'; return 0
   fi
   if [ "$irc" -ne 0 ]; then printf 'uninspected\n'; return 0; fi
   if [ -n "$dirty" ]; then printf 'uncommitted\n'; return 0; fi
+  tf="$(orchid_state "$repo")/tasks/$id.md"
+  cand="$(fm_get "$tf" candidate_sha)"
+  base="$(fm_get "$tf" base_sha)"
+  if [ -n "$cand" ] && [ -n "$base" ] && [ "$cand" != "$base" ] && [ "$head" = "$cand" ]; then
+    printf 'unchanged\n'; return 0
+  fi
   printf 'nothing\n'
 }
 

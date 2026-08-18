@@ -456,3 +456,354 @@ assert_match "plan	ok" "$mph1_line" "plan hook envelope reconciled"
 mph2="$("$ORCHID_BIN" jobs prepare plan hook hook --hook after_plan_draft)"
 assert_eq "2" "$(jq -r .attempt "$mph2")" \
   "second plan-hook prepare counts the prior reconciled envelope (regression: used to stay stuck at 1)"
+
+# ===========================================================================
+# T040 / dogfood finding F35 -- NEVER DISCARD WORK A JOB ALREADY COMPLETED.
+#
+# The reported incident, verbatim in shape: critique attempt a4 ran to
+# completion, produced EIGHT complete findings, wrote every one of them to its
+# job log, and then exited WITHOUT writing an envelope. `orchid jobs
+# reconcile` had nothing to land, so from the outside the attempt simply never
+# happened -- the findings sat in
+# `.orchid/runtime/logs/j-e0-plan-a4-b068.log` until an operator recovered
+# them with grep and applied them by hand. Without that grep they were lost
+# and an expensive critique would have been re-run to regenerate findings
+# orchid already had on disk.
+#
+# The fixture below is that job: a manifest whose pid is dead, no envelope
+# anywhere, and a log holding results in the SAME `FINDING:`/`VERDICT:`
+# grammar the review adapters themselves emit and parse.
+#
+# The job_id's trailing field is HEX, exactly as `jobs prepare` mints it --
+# the salvage pass validates it with the same regex as gc's dead-manifest
+# reap (see the TEVIL case below), so a mnemonic non-hex id here would be
+# skipped as suspect and every assertion in this Part would see empty.
+# ===========================================================================
+salv_log="$rt/logs/j-e1-TSALV-a1-5a1f0001.log"
+mkdir -p "$rt/logs" "$rt/exits"
+cat > "$salv_log" <<'SALVLOG'
+Reading the pack...
+FINDING: high: the reaper never runs in PLANNING
+FINDING: medium: a refusal and its gc disagree about the same predicate
+FINDING: bogus: this severity token is not one of the three
+FINDING: low:
+VERDICT: request-changes
+SALVLOG
+printf '7\n' > "$rt/exits/j-e1-TSALV-a1-5a1f0001"
+
+( exit 0 ) & salv_pid=$!
+wait "$salv_pid" 2>/dev/null || true
+jq -n --argjson pid "$salv_pid" --arg log "$salv_log" \
+  '{job_id:"j-e1-TSALV-a1-5a1f0001", task:"TSALV", attempt:4, role:"plan_critic",
+    operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:"cand0", hook_point:""}' \
+  > "$rt/jobs/j-salv.json"
+
+salv_out="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TSALV	no_envelope" "$salv_out" \
+  "reconcile REPORTS the exited-without-an-envelope job -- printing nothing is what made this look like a job that never ran"
+salv_env=".orchid/reviews/TSALV-a4-plan_critic.json"
+[ -f "$salv_env" ] \
+  || fail "the findings the engine already produced must be landed as a degraded envelope, not left for an operator to grep out of runtime/logs"
+assert_eq no_envelope "$(jq -r .status "$salv_env")" "the degraded envelope carries the first-class no_envelope status"
+assert_eq true "$(jq -r .degraded "$salv_env")" "and is marked degraded"
+assert_eq 7 "$(jq -r .exit_code "$salv_env")" "and carries the exit code the launcher recorded"
+assert_eq "$salv_log" "$(jq -r .salvaged_from "$salv_env")" "and names the log it was reconstructed from"
+assert_eq request-changes "$(jq -r .verdict "$salv_env")" "the verdict line in the log is salvaged too"
+assert_eq 2 "$(jq -r '.findings | length' "$salv_env")" \
+  "exactly the two well-formed findings are salvaged -- an unknown severity token and an empty title are dropped, never guessed at (same best-effort parse the adapters themselves use)"
+assert_eq "the reaper never runs in PLANNING" "$(jq -r '.findings[0].title' "$salv_env")" "the first finding survives verbatim"
+assert_eq high "$(jq -r '.findings[0].severity' "$salv_env")" "with its severity"
+assert_eq cand0 "$(jq -r .candidate_sha "$salv_env")" "and stays bound to the candidate its manifest pinned"
+red_case "a job that logged results and exited with no envelope: the work is recovered as a degraded envelope, not discarded"
+
+# The failure is VISIBLE without knowing to grep runtime/logs: the exit code
+# and the tail of the log are journaled.
+salv_journal="$("$ORCHID_BIN" journal show --task TSALV)"
+assert_match "exited without writing an envelope" "$salv_journal" "the death itself is journaled"
+assert_match "Exit code: 7" "$salv_journal" "with the exit code an operator otherwise has no way to see"
+assert_match "the reaper never runs in PLANNING" "$salv_journal" "and the tail of the log, so the evidence is in the audit trail too"
+
+# The manifest SURVIVES, stamped. The driver's escalation sweep reads dead
+# manifests, not reconcile's stdout, and runs after reconcile in the same
+# pass: deleting it here would retire the infra_failures ladder for exactly
+# this failure class, trading one silent loss for another.
+[ -f "$rt/jobs/j-salv.json" ] \
+  || fail "the manifest must survive reconcile -- the escalation sweep reads it, and gc reaps it a step later in the same pass"
+assert_eq true "$(jq -r .no_envelope_reported "$rt/jobs/j-salv.json")" "and is stamped as reported"
+
+# Reported ONCE. A second reconcile before gc gets to the manifest must not
+# file a second envelope nor re-journal the same death.
+salv_out2="$("$ORCHID_BIN" jobs reconcile)"
+# A HERESTRING, never `echo "$out" | grep -q`: under pipefail, grep -q exits
+# at its first match and SIGPIPEs the echo, so the pipeline reports 141 and
+# this assertion would be SKIPPED exactly when the duplicate it guards against
+# is present (helpers.sh's assert_match carries the same note).
+grep -q "TSALV" <<<"$salv_out2" && fail "a second reconcile must not re-report the same envelope-less job"
+[ ! -e ".orchid/reviews/TSALV-a4-plan_critic.2.json" ] \
+  || fail "nor file a duplicate degraded envelope beside the first"
+green_case "the same job re-reconciled: reported and salvaged exactly once"
+
+# ---------------------------------------------------------------------------
+# ...and NOTHING IS INVENTED. A job that exits leaving no parseable results
+# files NO envelope at all. This is the half that keeps the salvage honest:
+# several gates read a same-shaped file at that path as evidence that the
+# question has been answered (drive_hook_envelope_count counts hook envelopes;
+# `jobs prepare` counts plan-critique rounds), so manufacturing one for every
+# muted exit would answer questions nobody asked. The death is still reported
+# and still journaled -- that is not conditional on there being loot.
+# ---------------------------------------------------------------------------
+mute_log="$rt/logs/j-e1-TMUTE-a1-3ee00001.log"
+printf 'starting up\nsomething went wrong, exiting\n' > "$mute_log"
+( exit 0 ) & mute_pid=$!
+wait "$mute_pid" 2>/dev/null || true
+jq -n --argjson pid "$mute_pid" --arg log "$mute_log" \
+  '{job_id:"j-e1-TMUTE-a1-3ee00001", task:"TMUTE", attempt:1, role:"plan_critic",
+    operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:"", hook_point:""}' \
+  > "$rt/jobs/j-mute.json"
+
+mute_out="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TMUTE	no_envelope	nothing-to-salvage" "$mute_out" \
+  "a job that produced nothing is still reported as a failure, and says so plainly"
+[ ! -e ".orchid/reviews/TMUTE-a1-plan_critic.json" ] \
+  || fail "an envelope must NEVER be manufactured for a job whose log held no results -- gates read that file as evidence the point was answered"
+assert_match "Exit code: unrecorded" "$("$ORCHID_BIN" journal show --task TMUTE)" \
+  "an unrecorded exit code is reported as unrecorded, never as 0"
+
+# ---------------------------------------------------------------------------
+# `no_envelope` is the KERNEL's word. An adapter that files one in the spool
+# is not reporting its own status, it is impersonating the kernel's account of
+# one -- and every reader that skips a degraded envelope as non-evidence would
+# skip that engine's real failure the same way, silently.
+# ---------------------------------------------------------------------------
+mforge="$("$ORCHID_BIN" jobs prepare plan plan_critic critique)"
+forge_jid="$(jq -r .job_id "$mforge")"; forge_out="$(jq -r .output "$mforge")"
+printf '{"contract":1,"job_id":"%s","task":"plan","operation":"critique","status":"no_envelope","findings":[{"severity":"high","title":"forged"}]}' \
+  "$forge_jid" > "$forge_out"
+forge_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "quarantined: $forge_jid.json \(kernel-status\)" "$forge_line" \
+  "a spool envelope claiming the kernel-only no_envelope status is quarantined, never accepted"
+[ -f "$rt/quarantine/$forge_jid.json.reason-kernel-status" ] || fail "and lands in quarantine under that reason"
+
+# ---------------------------------------------------------------------------
+# T040 rework (carried finding): the salvage pass validates manifest-derived
+# fields exactly as gc's dead-manifest reap does, BEFORE tailing the log or
+# building the reviews/ write path from them -- task/attempt/role/hook_point
+# become the write path, job_id keys the exits/ read, and the log is tailed
+# straight into the journal. A corrupted or hand-edited manifest must not
+# steer a read or a write anywhere on disk: skipped, salvaging nothing, and
+# left standing for gc's own sweep to quarantine as gc-suspect.
+# ---------------------------------------------------------------------------
+evil_decoy="$WORK/evil-decoy.log"
+printf 'FINDING: high: decoy outside runtime\n' > "$evil_decoy"
+( exit 0 ) & evil_pid=$!
+wait "$evil_pid" 2>/dev/null || true
+jq -n --argjson pid "$evil_pid" --arg log "$evil_decoy" \
+  '{job_id:"j-e1-TEVIL-a1-ee110001", task:"../../tasks/TEVIL", attempt:1, role:"plan_critic",
+    operation:"critique", engine:"critic", pid:$pid, pgid:0, started_at:1,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:"", hook_point:""}' \
+  > "$rt/jobs/j-evilsalv.json"
+evil_out="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "salvage-skip: j-evilsalv.json \(suspect fields\)" "$evil_out" \
+  "a dead manifest whose fields fail validation is skipped by the salvage pass, and says so"
+grep -q "no_envelope" <<<"$evil_out" \
+  && fail "nothing may be salvaged from a suspect manifest -- its fields would steer the write path and the log read"
+[ -f "$rt/jobs/j-evilsalv.json" ] \
+  || fail "the suspect manifest is left standing for gc's own sweep to quarantine"
+assert_eq false "$(jq -r '.no_envelope_reported // false' "$rt/jobs/j-evilsalv.json")" \
+  "and is not stamped as reported -- the salvage pass never touched it"
+rm -f "$rt/jobs/j-evilsalv.json" "$evil_decoy"
+
+# ===========================================================================
+# T040 / F35, second half -- LIVENESS IS CHECKED, PROGRESS IS NOT.
+#
+# The other attempt that produced nothing kept sending heartbeats while its
+# CPU time stayed flat: 0.85s at 05:18:12Z and 1.07s at 05:23:42Z, roughly two
+# tenths of a second of CPU across five minutes of wallclock. Then it exited
+# with no envelope. `jobs check` has a `stalled` status and it never fired,
+# because the process was ALIVE -- and the heartbeats kept its log mtime fresh
+# the whole time, so the log-mtime stall arm could not fire either.
+#
+# The CPU numbers were already on disk: lib/heartbeat.sh has carried a `cpu`
+# field on every heartbeat line since it was written, explicitly so a future
+# CPU-delta guard would have the raw signal to consume. These cases are that
+# consumer. Note every fixture log below is written FRESH (mtime = now), so
+# the log-mtime arm is provably not what is firing.
+#
+# THE ARM IS OPT-IN (cpu_stall_min_s, default 0: off): F35's own follow-up
+# retracted CPU as a sole progress signal after a healthy API-bound job
+# proved indistinguishable from the dead one on CPU alone (~9 CPU-seconds
+# across 40 minutes, 24 modified files in its worktree). The cases below
+# therefore opt in explicitly with ORCHID_CPU_STALL_MIN_S=1; the default's
+# own edge -- no floor configured, no kill -- is pinned further down.
+# ===========================================================================
+cpu_stall_log="$rt/logs/j-cpuflat.log"
+cat > "$cpu_stall_log" <<'FLATLOG'
+[hb 2026-08-11T05:18:12Z] engine pid 4242 cpu 0:00.85
+[hb 2026-08-11T05:21:12Z] engine pid 4242 cpu 0:00.97
+[hb 2026-08-11T05:23:42Z] engine pid 4242 cpu 0:01.07
+FLATLOG
+# pgid 0 in every fixture below, exactly as the pgid-guard case far above
+# does: a `sleep &` in a non-interactive script inherits this script's own
+# process group rather than leading one, so a group kill keyed on its pid
+# would signal no group at all and the kill assertion would pass vacuously.
+# kill_stuck falls back to signalling the pid directly when pgid is 0.
+sleep 100 &
+cpu_stall_pid=$!
+jq -n --argjson pid "$cpu_stall_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUFLAT-a1-c0f00001", task:"TCPUFLAT", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpuflat.json"
+
+# stall_minutes=5 makes the window exactly the 5m30s the fixture spans;
+# timeout_minutes is 0 in this file's config (set far above for the pgid
+# guard), so it is overridden here or the timeout arm would answer first and
+# the case would prove nothing about CPU. CPU_STALL_MIN_S=1 opts the arm in
+# (default 0: off), the shape an operator who enabled it would run.
+cpu_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUFLAT	stalled" "$cpu_out" \
+  "a heartbeating process burning 0.2s of CPU across five minutes is NOT working -- its heartbeats are lying, and check must call it stalled"
+sleep 0.3
+if kill -0 "$cpu_stall_pid" 2>/dev/null; then
+  fail "a CPU-stalled job must be killed, exactly as a log-mtime-stalled one is"
+  kill "$cpu_stall_pid" 2>/dev/null || true
+fi
+rm -f "$rt/jobs/j-cpuflat.json"
+red_case "a live, heartbeating job with no CPU progress is marked stalled"
+
+# The twin: the SAME heartbeat cadence, the same fresh log, a job that is
+# genuinely working. It must be left alone -- an engine doing real work must
+# never be killed by the guard that catches one doing none.
+cpu_busy_log="$rt/logs/j-cpubusy.log"
+cat > "$cpu_busy_log" <<'BUSYLOG'
+[hb 2026-08-11T05:18:12Z] engine pid 4243 cpu 0:00.85
+[hb 2026-08-11T05:21:12Z] engine pid 4243 cpu 0:18.40
+[hb 2026-08-11T05:23:42Z] engine pid 4243 cpu 0:41.12
+BUSYLOG
+sleep 100 &
+cpu_busy_pid=$!
+jq -n --argjson pid "$cpu_busy_pid" --arg log "$cpu_busy_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUBUSY-a1-c0b00001", task:"TCPUBUSY", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpubusy.json"
+# Opted in (CPU_STALL_MIN_S=1), or the `running` below would be vacuous --
+# an unconfigured arm never consults the log at all.
+busy_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUBUSY	running" "$busy_out" "a job accumulating real CPU over the same window is running, not stalled"
+kill -0 "$cpu_busy_pid" 2>/dev/null || fail "and it must still be alive -- the guard must never kill an engine that is working"
+green_case "a live job burning real CPU over the same window is left running"
+kill "$cpu_busy_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-cpubusy.json"
+
+# Not enough heartbeat history to span the window is NOT evidence of a stall.
+# A job in its first minutes has no anchor to measure a delta against, and
+# judging it anyway would kill every engine during its own startup.
+cpu_young_log="$rt/logs/j-cpuyoung.log"
+cat > "$cpu_young_log" <<'YOUNGLOG'
+[hb 2026-08-11T05:18:12Z] engine pid 4244 cpu 0:00.85
+[hb 2026-08-11T05:18:42Z] engine pid 4244 cpu 0:00.86
+YOUNGLOG
+sleep 100 &
+cpu_young_pid=$!
+jq -n --argjson pid "$cpu_young_pid" --arg log "$cpu_young_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUYOUNG-a1-c0900001", task:"TCPUYOUNG", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpuyoung.json"
+# Opted in for the same non-vacuity reason as the busy twin above.
+young_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUYOUNG	running" "$young_out" \
+  "thirty seconds of heartbeats cannot answer a five-minute question -- a job with no anchor in the window is never judged by it"
+kill "$cpu_young_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-cpuyoung.json"
+
+# An EXPLICIT cpu_stall_min_s=0 (not just the unset default) disables the
+# check outright -- the check arm skips the log entirely when it reads 0.
+# Proved on the very fixture that DID fire when opted in above.
+cat > "$cpu_stall_log" <<'FLATLOG2'
+[hb 2026-08-11T05:18:12Z] engine pid 4245 cpu 0:00.85
+[hb 2026-08-11T05:21:12Z] engine pid 4245 cpu 0:00.97
+[hb 2026-08-11T05:23:42Z] engine pid 4245 cpu 0:01.07
+FLATLOG2
+sleep 100 &
+cpu_off_pid=$!
+jq -n --argjson pid "$cpu_off_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUOFF-a1-c0000001", task:"TCPUOFF", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpuoff.json"
+off_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=0 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUOFF	running" "$off_out" "cpu_stall_min_s=0 disables the CPU-delta check outright"
+kill "$cpu_off_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-cpuoff.json"
+
+# ---------------------------------------------------------------------------
+# T040 rework: THE DEFAULT IS OFF -- the opt-in edge, pinned. F35's follow-up
+# retracted CPU as a sole progress signal: a legitimate implement job sat at
+# ~9s of CPU across 40 minutes -- on CPU alone identical to the flat fixture
+# above -- and was working the whole time, with 24 modified files in its
+# worktree to prove it. Worktree corroboration cannot rescue the signal for
+# review/critique/hook jobs either: they run under a read-only policy and
+# legitimately never touch the worktree for their whole run. A kill here
+# discards work the engine was already paid for -- the loss this whole task
+# exists to prevent -- so with NO floor configured the arm must not fire, on
+# the very fixture that fires when opted in.
+# ---------------------------------------------------------------------------
+cat > "$cpu_stall_log" <<'FLATLOG3'
+[hb 2026-08-11T05:18:12Z] engine pid 4246 cpu 0:00.85
+[hb 2026-08-11T05:21:12Z] engine pid 4246 cpu 0:00.97
+[hb 2026-08-11T05:23:42Z] engine pid 4246 cpu 0:01.07
+FLATLOG3
+sleep 100 &
+cpu_dflt_pid=$!
+jq -n --argjson pid "$cpu_dflt_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUDFLT-a1-c0d00001", task:"TCPUDFLT", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpudflt.json"
+dflt_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUDFLT	running" "$dflt_out" \
+  "with no floor configured the CPU arm must not fire -- CPU alone cannot tell a dead engine from a healthy one blocked on a vendor API"
+kill -0 "$cpu_dflt_pid" 2>/dev/null \
+  || fail "and the job must still be alive -- an unconfigured arm must never kill"
+red_case "the CPU-delta arm is opt-in: with no floor configured, the flat-CPU job is left running"
+kill "$cpu_dflt_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-cpudflt.json"
+
+# ---------------------------------------------------------------------------
+# T040 rework: A CPU COUNTER THAT GOES BACKWARDS IS UNKNOWN, NEVER A STALL.
+# `ps -o time=` is cumulative per-PID, and pid reuse hands a heartbeat a
+# stranger's clock -- ordinary, not exotic. The old comparison asked only
+# "is the delta >= the floor", so a NEGATIVE delta failed that test, fell
+# through, and killed a healthy job. Unknown must not kill: even with the
+# arm opted in, this job stays running and alive.
+# ---------------------------------------------------------------------------
+cpu_back_log="$rt/logs/j-cpuback.log"
+cat > "$cpu_back_log" <<'BACKLOG'
+[hb 2026-08-11T05:18:12Z] engine pid 4247 cpu 0:41.12
+[hb 2026-08-11T05:21:12Z] engine pid 4247 cpu 0:00.30
+[hb 2026-08-11T05:23:42Z] engine pid 4247 cpu 0:00.95
+BACKLOG
+sleep 100 &
+cpu_back_pid=$!
+jq -n --argjson pid "$cpu_back_pid" --arg log "$cpu_back_log" --argjson started "$(date +%s)" \
+  '{job_id:"j-e1-TCPUBACK-a1-c0e00001", task:"TCPUBACK", attempt:1, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
+    log:$log, output:"/dev/null", base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-cpuback.json"
+back_out="$(ORCHID_STALL_MINUTES=5 ORCHID_TIMEOUT_MINUTES=60 ORCHID_CPU_STALL_MIN_S=1 \
+  "$ORCHID_BIN" jobs check 2>/dev/null)"
+assert_match "TCPUBACK	running" "$back_out" \
+  "a negative CPU delta is unknown, never no-progress -- even with the arm opted in it must not fire"
+kill -0 "$cpu_back_pid" 2>/dev/null \
+  || fail "and the job must still be alive -- unknown must not kill"
+red_case "a CPU counter that went backwards (pid reuse) is unknown: the job is left running, not killed"
+kill "$cpu_back_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-cpuback.json"

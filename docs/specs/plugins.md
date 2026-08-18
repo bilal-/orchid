@@ -128,6 +128,16 @@ artifact per hook schema; `orchestrate` → `actions[]` (the verb invocations
 the tick performed, for audit). An `ok` missing its operation's required
 payload is `malformed`.
 
+**One status is the kernel's, not an adapter's: `no_envelope`.** It marks a
+DEGRADED envelope `orchid jobs reconcile` writes itself for a job that exited
+without producing one, reconstructed from results left in the job's log
+(`degraded: true`, plus `exit_code` and `salvaged_from`). An adapter that
+writes it is not reporting its own status but impersonating the kernel's
+account of one, so reconcile quarantines any spool envelope carrying it
+(`kernel-status`) on the same anti-forgery terms as any other bad binding.
+No gate treats a `no_envelope` envelope as evidence — it is not `ok` — so it
+recovers work without ever passing for a review, a delivery or a hook result.
+
 **Binding rules (anti-forgery):** `job_id` is kernel-minted per launch
 (distinct from the logical rework `attempt`); reconciliation accepts an
 envelope ONLY if a live manifest matches its `job_id`, and takes engine

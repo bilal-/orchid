@@ -195,6 +195,11 @@ lease.json                  # orchestrator heartbeat lease
 jobs/<job_id>.json          # write-ahead manifests, keyed by JOB (not task):
                             #   parallel reviewers never collide
 spool/                      # engine result envelopes awaiting reconciliation
+exits/<job_id>              # the engine's own exit status, written by the
+                            #   launcher's spawn wrapper once the engine is
+                            #   gone. Nothing else records it: the launcher
+                            #   returns at spawn, so an envelope-less job's
+                            #   exit code would otherwise be unrecoverable
 engines.json                # availability ledger (per-machine quota state)
 answers/  logs/
 ```
@@ -511,15 +516,15 @@ pending → implementing → testing → reviewing → arbitrating → merging �
 - **A delivery that delivered nothing is an infra failure, not an attempt.**
   An `ok` implement envelope is the engine's own account of itself; the
   worktree is the only thing that can contradict it. When the envelope
-  reconciles `ok` but HEAD is still the sha the round was dispatched to move
-  (the prior `candidate_sha`, or `base_sha` on a first dispatch), no candidate
-  exists to test, review or arbitrate — the `implementing → testing` delivery
-  precondition above simply does not hold. The orchestrator refuses the
-  transition, and when the tree is CLEAN as well (the next bullet takes the
-  case where it is not) charges `infra_failures` (relaunching the implementer,
-  and reaching `blocked` at `infra_max` like any other job-delivery failure). It
-  is deliberately not an `attempts` round: nothing was delivered for the
-  attempt budget to be judging. **The refusal is durable, not a one-pass
+  reconciles `ok` but HEAD is still the `base_sha` of a task that has never
+  recorded a candidate, no candidate exists to test, review or arbitrate — the
+  `implementing → testing` delivery precondition above simply does not hold.
+  The orchestrator refuses the transition, and when the tree is CLEAN as well
+  (the bullets below take the cases where it is not, and where a candidate does
+  exist) charges `infra_failures` (relaunching the implementer, and reaching
+  `blocked` at `infra_max` like any other job-delivery failure). It is
+  deliberately not an `attempts` round: nothing was delivered for the attempt
+  budget to be judging. **The refusal is durable, not a one-pass
   verdict:** the refused envelope stays on disk as a sibling of every later
   one, so it is recorded in `refused_envelopes` and is never selected again —
   otherwise the same envelope is re-selected once the relaunch moves HEAD (it
@@ -546,6 +551,24 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   inspection that answers "clean" when it could not look is the fail-open shape
   the operator hand-off's own tree check exists to close. `.orchid/` is
   excluded throughout, being no part of any candidate.
+- **Nor can it see whether a candidate exists, and a round that added nothing
+  to one is not a round that delivered nothing.** The sha an unmoved HEAD is
+  measured against is the `candidate_sha` where the task has one, so "HEAD is
+  still the floor" collapses a task that has produced NOTHING into one whose
+  candidate is already on disk and merely gained no commit this round. Where
+  the floor is a `candidate_sha` that differs from the recorded `base_sha`, the
+  orchestrator itself stamped that sha from a HEAD it read in that worktree, so
+  a candidate demonstrably exists and the delivery precondition DOES hold: the
+  transition is taken on the existing candidate, nothing is charged, no
+  envelope is marked refused, and the journal records which of the two clean
+  cases it was. Charging the job-delivery ladder here blocks a task whose
+  candidate is sitting right there, and the case arises in ordinary operation:
+  a rebase rewrites a task's commits, the orchestrator re-stamps the new HEAD
+  as `candidate_sha`, and the next round's implementer truthfully reports that
+  the work asked of it is already in place. Advancing is bounded by `attempts`
+  downstream — the budget for defects in work that WAS delivered — like any
+  other delivered round. Both shas must be on record: with `base_sha` missing,
+  nothing proves a candidate exists and the refusal two bullets above stands.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, infra_failures, session_id,
@@ -822,7 +845,9 @@ derived cache, rebuildable from it.
 | Mode | Defense |
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
+| Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
+| Alive but not working | Opt-in CPU delta across the job's own heartbeat lines: with `cpu_stall_min_s` above zero (default 0: off — F35 retracted CPU as a sole progress signal, a healthy API-bound engine burns almost none), less than the floor across the last `stall_minutes` of heartbeats → `stalled` → kill, retry; a counter that goes backwards (pid reuse) is unknown and never kills. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
 | Blocked on an interactive terminal prompt | supported adapters receive stdin `/dev/null` plus their documented noninteractive/never-approval flags; a vendor regression can still fail or hang and is bounded by timeout |
 | Spinning | deterministic FIRST, with a false-positive guard: duplicate-line checks apply to the ADAPTER's own output, use a sliding window (≥5 min identical lines AND no CPU/disk delta AND no new commits) — build tools legitimately repeat progress lines and are never judged by line content alone; LLM log-tail judgment is the ESCALATION tier |
 
@@ -871,6 +896,25 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   reconcile files it. This is what keeps one delivery to one rung, and it is
   why a no-op delivery's refusal can always be recorded against the envelope
   that caused it.
+- Exited-without-an-envelope (T040, closed): the complement of the case
+  above — the job is dead and there is no envelope anywhere, not in the spool
+  and not in `reviews/`. Before T040 `jobs reconcile` had nothing to land and
+  printed nothing, so an attempt that ran to completion and produced eight
+  complete findings *in its log* was indistinguishable from one that never
+  ran; the findings were recovered by an operator with grep, and would
+  otherwise have cost an expensive re-run to regenerate work orchid already
+  had on disk. reconcile now sweeps those manifests after the spool drain:
+  results still parseable in the log (the adapters' own `FINDING:`/`VERDICT:`
+  grammar) are filed as a DEGRADED `no_envelope` envelope at the ordinary
+  reviews path, the exit code (recorded by `runners/orchid-launch`, which
+  wraps the spawn so the status survives the launcher's own exit) and the log
+  tail are journaled, and a report line is always printed. A log with nothing
+  parseable files no envelope at all — several gates read a same-shaped file
+  as evidence a point has been answered, so one is never manufactured. The
+  manifest is stamped, not deleted, so the escalation ladder still spends its
+  rung and gc still reaps it in the same pass. No gate counts a
+  `no_envelope` envelope as evidence, and no adapter may write that status
+  (spool envelopes carrying it are quarantined `kernel-status`).
 
 ## Execution policy (the autonomy boundary)
 
