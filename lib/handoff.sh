@@ -25,6 +25,17 @@
 # belong to the integration branch, regenerated there once after merges land
 # or at release time, and gated at the release gate.
 #
+# WHAT PERFORMING IT BY HABIT RISKS. A hand-off can also be LOST after being
+# performed: done outside this pause, late in a candidate's life, on a branch
+# tip that is not what eventually merged, the work is silently dropped from
+# the shipped tree and nothing fails at the time -- an exec-bit hand-off once
+# shipped exactly that way, identical blob, wrong mode. Same failure family
+# as lessons L017 and L021: mechanical work done out-of-band leaves no
+# machine-checkable trace tying it to the candidate under judgment. The sha
+# binding below is the countermeasure -- the ack names the commit the work
+# produced, so work the shipped candidate lacks surfaces as a mismatch
+# instead of a habit nobody re-checks.
+#
 # WHAT IT IS NOT. It is not a claim about who may SEE a lint finding. The
 # exact `file:line: RULE: message` locations travel into the brief regardless
 # of who acts on them (lib/findings.sh), so the record shows what was wrong

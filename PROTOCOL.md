@@ -977,6 +977,20 @@ ones its archetype never declares.
   there once, after merges have landed or at release time, and gate it at the
   release gate rather than in any task's `verification_commands`.
 
+  A step that DOES belong on the list can still be lost after being
+  performed. Done by habit rather than through this pause — late in a
+  candidate's life, on a branch tip that is not what eventually merged — an
+  operator hand-off is silently DROPPED from the shipped tree, and nothing
+  fails at the time. It has happened: an exec-bit hand-off performed on a
+  task branch whose tip never merged shipped the identical blob with the
+  wrong mode, harmless only because every caller spelled `bash <path>`. That
+  is the failure family lessons L017 and L021 record — mechanical work done
+  out-of-band leaves no machine-checkable trace tying it to the candidate
+  under judgment — and the acknowledgement in step 2 below is the
+  countermeasure: it advances `candidate_sha` to the commit the hand-off
+  itself produced, so work the shipped tree lacks is a sha mismatch a gate
+  refuses rather than a habit nobody re-checks.
+
   So, with the task now in `testing` and before step 3's `testing` bullet
   runs anything:
 
