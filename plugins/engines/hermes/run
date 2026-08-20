@@ -78,6 +78,13 @@ classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
   else echo failed
   fi
 }
+# Capability-refusal marker, identical in meaning and wording to
+# plugins/engines/agy/run's (see that file's comment): the two refusal sites
+# below -- an operation outside review|critique, a diff over hermes_max_bytes
+# -- are this adapter working as designed, so `lib/ledger.sh` must not charge
+# them toward engine_fail_threshold. Genuine faults (nonzero rc, unparseable
+# reply) never carry it.
+REFUSAL='{"failure_kind":"capability"}'
 
 # Operation gate precedes DRYRUN (mirrors agy/codex/claude symmetry): an
 # unsupported operation fails the same way whether or not ORCHID_DRYRUN is
@@ -87,7 +94,7 @@ case "$operation" in
   review|critique) ;;
   *)
     echo "orchid/hermes: unsupported operation '$operation' (review|critique only -- see docs/engines/hermes.md)" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1 ;;
 esac
 
@@ -119,7 +126,7 @@ if [ -f "$input_pack/task.md" ]; then
   max_bytes="$(config_get "$worktree" hermes_max_bytes 100000)"
   if [ "$diff_bytes" -gt "$max_bytes" ]; then
     echo "orchid/hermes: diff.patch is $diff_bytes bytes (> hermes_max_bytes=$max_bytes); route to a worktree-capable reviewer" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1
   fi
 

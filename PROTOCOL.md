@@ -600,7 +600,20 @@ a `rate_limited_until` window (`rate_limit_backoff_s`, config, default
 non-`ok` status (`failed`, `timeout`, `auth`, `malformed`) increments that
 engine's `consecutive_failures`, which flips it to `failing` once it reaches
 `engine_fail_threshold` (config, default 3) — automatically, on every
-reconcile pass, no separate verb call needed. This is the OTHER half of
+reconcile pass, no separate verb call needed. ONE EXCEPTION, and it is not a
+loophole: an envelope carrying `failure_kind: "capability"` is a REFUSAL, not
+a fault — the adapter declining an operation it never claimed or a diff over
+its own inline byte cap (`agy_max_bytes`) — and it increments nothing. Such an
+engine keeps its `status`, keeps its place in every role chain, and shows up
+in `orchid status` as `refusals <n>`, with one `refusal: <task> <engine>
+declined by design` line printed by the reconcile pass that accepted it. Read
+those lines as ROUTING information, never as engine health: they say this
+engine cannot do this particular job, so if they keep appearing for the same
+role, the fix is a worktree-capable engine on that chain (or a bigger cap),
+not a healthier engine. Measured on r-002, before the distinction existed:
+three refusals of diffs ~1% over the cap marked a well-behaved reviewer
+`failing`, halved the run's independent reviewer pool, and stranded a task
+whose review had already been filed. This is the OTHER half of
 `docs/specs/kernel.md`'s "repeated infra failures → engine marked
 unavailable" guardrail (`orchid task infra-fail` above is the task-scoped
 counter half); it is no longer aspirational. Every launch attempt —
@@ -1672,8 +1685,10 @@ Once `orchid status --explain` shows every task `done`:
   differently than the table's wording suggests: not by `infra-fail` itself
   (it is purely task-scoped and never touches an engine record), but by
   `orchid jobs reconcile` marking the ledger (`runtime/engines.json`) from
-  every reconciled envelope's status, automatically, on every pass — see
-  THE TICK step 2's Failover paragraph. No longer aspirational.
+  every reconciled envelope's status, automatically, on every pass — save for
+  a `failure_kind: "capability"` refusal, which is the engine declining work
+  outside its contract and marks nothing against it; see THE TICK step 2's
+  Failover paragraph. No longer aspirational.
 - **`implementer_engine_id`** — present in the task schema/template
   (`templates/task.md`); as of this milestone, `orchid task advance <id>
   testing` populates it (from the reconciled implement envelope's `.engine`

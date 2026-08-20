@@ -567,6 +567,20 @@ case "$sub" in
       status="$(envelope_field "$f" .status)"
       verdict="$(envelope_field "$f" '.verdict // "n/a"')"
       retry_after="$(envelope_field "$f" '.retry_after // empty')"
+      # failure_kind (v1-m5 T008): the adapter's own classification of a
+      # non-`ok` envelope -- `capability` when it declined by design, absent
+      # or `engine` when it genuinely failed. Read here and handed to
+      # ledger_mark below, which is the ONE place the distinction has to be
+      # made: an engine that correctly refuses work outside its declared
+      # envelope must not accumulate consecutive_failures for it (see
+      # lib/ledger.sh's header for the r-002 cascade that proved why).
+      # Trustworthy enough for this purpose only because the cross-checks
+      # above already quarantined any envelope not bound to a live manifest
+      # for this exact engine; and it can only ever SPARE an engine a failure
+      # charge, never impose one, so the worst a confused adapter can do with
+      # it is keep itself in the rotation -- which `refusals <n>` in `orchid
+      # status` then shows the operator.
+      failure_kind="$(envelope_field "$f" '.failure_kind // empty')"
       # Naming (collision counter, and the hook op's own hook-<point> shape)
       # is reviews_dest's, shared with the salvage pass at the end of this
       # arm so a degraded envelope can never be filed under a name no reader
@@ -579,8 +593,20 @@ case "$sub" in
       # self-reported one, even when present -- the cross-check above
       # already quarantined any envelope whose reported engine disagreed,
       # but this is our own durable record, not forgeable input).
-      ledger_mark "$repo" "$m_engine" "$status" "$retry_after"
+      ledger_mark "$repo" "$m_engine" "$status" "$retry_after" "$failure_kind"
       printf '%s\t%s\t%s\n' "$m_task" "$status" "$verdict"
+      # A refusal gets its own line, not a new column: the three-column TSV
+      # above is what the tick prints and what tests match on, and the
+      # accepted envelope's `status` really is `failed` -- every downstream
+      # gate (drive_review_decision, the reviewing->arbitrating gate) still
+      # skips it exactly as before. What the extra line adds is that the
+      # refusal is no longer invisible in the run's own output: the envelope
+      # naming the limit is filed durably under reviews/, and this says which
+      # engine declined and that it was not charged for it.
+      if [ "$status" != ok ] && [ "$failure_kind" = capability ]; then
+        printf 'refusal: %s %s declined by design (%s, not counted as an engine fault)\n' \
+          "$m_task" "$m_engine" "$status"
+      fi
     done
 
     # -----------------------------------------------------------------------

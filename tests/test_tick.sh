@@ -167,3 +167,34 @@ envelope_validate "$bad2" && fail "an ok orchestrate envelope without summary mu
 good="$WORK/good-orchestrate.json"
 jq -n '{contract:1, job_id:"x", task:"run", operation:"orchestrate", status:"ok", actions:["a"], summary:"s"}' > "$good"
 envelope_validate "$good" || fail "a well-formed ok orchestrate envelope must validate"
+
+# ===========================================================================
+# E (v1-m5 T008) -- the tick does its OWN ledger_mark for the orchestrator it
+# picked (this runner never goes through `jobs reconcile`), so the
+# capability-refusal distinction has to hold on this path too: an engine bound
+# to role.orchestrator that declines `orchestrate` as an operation it never
+# claimed has refused, not failed. The tick still exits nonzero -- nothing was
+# orchestrated -- but the engine is not walked toward `failing` for saying so.
+# ===========================================================================
+mk_stub_engine stubref
+cat > "$WORK/eng/stubref/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
+printf '{"contract":1,"job_id":"%s","task":"%s","operation":"orchestrate","status":"failed","failure_kind":"capability"}' \
+  "$jid" "$task" > "$out"
+EOF
+chmod +x "$WORK/eng/stubref/run"
+
+printf 'role.orchestrator=stubref\n' >> orchid.config
+out="$("$REPO_ROOT/runners/orchid-tick" 2>&1)"; rc=$?
+[ "$rc" -ne 0 ] || fail "tick must still exit nonzero on a refusal envelope -- nothing was orchestrated"
+assert_match "tick: stubref failed" "$out" "tick still reports the envelope's own status"
+assert_eq 0 "$(jq -r '.stubref.consecutive_failures' .orchid/runtime/engines.json)" \
+  "the tick's own ledger_mark does not charge a capability refusal as a failure"
+assert_eq refused "$(jq -r '.stubref.last_status' .orchid/runtime/engines.json)" \
+  "the tick's own ledger_mark records the refusal as 'refused', never 'failed'"
+assert_eq ok "$(jq -r '.stubref.status' .orchid/runtime/engines.json)" \
+  "a refusing orchestrator keeps its health status"

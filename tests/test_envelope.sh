@@ -60,6 +60,29 @@ good <<'EOF' || fail "findings and commits optional together on non-ok status to
 {"contract":1,"job_id":"j-17","task":"T001","operation":"review","status":"failed","findings":[],"commits":[]}
 EOF
 
+# failure_kind (v1-m5 T008): optional, a known value, and only on an envelope
+# that actually reports a failure. lib/ledger.sh spares a `capability` refusal
+# its consecutive-failure charge, so an unrecognized or incoherent value must
+# be quarantined rather than guessed at.
+good <<'EOF' || fail "failure_kind capability on a failed envelope accepted"
+{"contract":1,"job_id":"j-18","task":"T001","operation":"review","status":"failed","failure_kind":"capability"}
+EOF
+good <<'EOF' || fail "failure_kind engine on a malformed envelope accepted"
+{"contract":1,"job_id":"j-19","task":"T001","operation":"review","status":"malformed","failure_kind":"engine"}
+EOF
+good <<'EOF' || fail "absent failure_kind still accepted (every pre-T008 adapter and fixture)"
+{"contract":1,"job_id":"j-20","task":"T001","operation":"review","status":"failed"}
+EOF
+bad <<'EOF' || fail "unknown failure_kind value rejected"
+{"contract":1,"job_id":"j-21","task":"T001","operation":"review","status":"failed","failure_kind":"whatever"}
+EOF
+bad <<'EOF' || fail "failure_kind on an ok envelope rejected (nothing to classify)"
+{"contract":1,"job_id":"j-22","task":"T001","operation":"review","status":"ok","verdict":"approve","scope_complete":true,"failure_kind":"capability"}
+EOF
+bad <<'EOF' || fail "failure_kind of the wrong type rejected"
+{"contract":1,"job_id":"j-23","task":"T001","operation":"review","status":"failed","failure_kind":true}
+EOF
+
 echo 'not json' > "$WORK/e.json"
 envelope_validate "$WORK/e.json" 2>/dev/null && fail "non-JSON rejected"
 printf '{"status":"ok","value":"test"}' > "$WORK/f.json"

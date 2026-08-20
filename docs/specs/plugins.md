@@ -113,6 +113,7 @@ request's `output` path:
 { "contract": 1, "job_id": "j-<nonce>", "task": "T001", "attempt": 3,
   "engine": "orchid/codex", "role": "reviewer",
   "status": "ok|failed|rate_limited|timeout|auth|malformed",
+  "failure_kind": "capability|engine",
   "base_sha": "...", "candidate_sha": "...", "session_id": "...",
   "started_at": "...", "ended_at": "...", "retry_after": null,
   "verdict": "approve|request-changes|n/a", "scope_complete": true,
@@ -127,6 +128,24 @@ the common fields — `review` → `verdict`, `scope_complete`, `findings[]`;
 artifact per hook schema; `orchestrate` → `actions[]` (the verb invocations
 the tick performed, for audit). An `ok` missing its operation's required
 payload is `malformed`.
+
+**`failure_kind` — a refusal is not a fault (v1-m5).** Optional, and
+meaningful only on a non-`ok` envelope (`capability` or `engine`; absent means
+`engine`, so every adapter written before this field keeps its exact
+meaning). An adapter sets `capability` when it declined the request BY DESIGN
+— an operation it never claimed (`agy` handed `implement`, `codex-review`
+handed anything outside review/critique), a plan pack it has no prompt shape
+for, a diff over its own inline byte cap (`agy_max_bytes`,
+`hermes_max_bytes`). Such an envelope is the adapter working correctly: it
+read the request, recognized it as outside its declared envelope, and said so
+naming the limit and the remedy. `engine` (or absence) is the ordinary case —
+the engine crashed, timed out, lost its auth, or answered something
+unparseable. The status itself stays `failed`/`malformed`, so nothing
+downstream changes: the envelope is still not review evidence and the slot is
+still relaunched. What changes is the LEDGER: `lib/ledger.sh` charges a
+consecutive failure for the second kind and never for the first (see Engine
+availability & role failover below). A `failure_kind` on an `ok` envelope, or
+any value outside the two, fails validation and is quarantined.
 
 **One status is the kernel's, not an adapter's: `no_envelope`.** It marks a
 DEGRADED envelope `orchid jobs reconcile` writes itself for a job that exited
@@ -398,9 +417,10 @@ Hook.
 ## Engine availability & role failover (v1-m2 — SHIPPED)
 
 Ledger (`lib/ledger.sh`, `runtime/engines.json`: last status,
-`rate_limited_until`, consecutive failures — updated by `orchid jobs
-reconcile`'s `ledger_mark` from every accepted/quarantined envelope, and by
-`runners/orchid-tick` for the tick's own orchestrator pick; `rate_limited`
+`rate_limited_until`, consecutive failures, capability refusals — updated by
+`orchid jobs reconcile`'s `ledger_mark` from every accepted/quarantined
+envelope, and by `runners/orchid-tick` for the tick's own orchestrator
+pick; `rate_limited`
 opens a window sized by `rate_limit_backoff_s`, config, default 3600s, or
 the envelope's own `retry_after`; `engine_fail_threshold`, config, default
 3, is the consecutive-failure count that flips an engine to `failing`;
@@ -424,6 +444,29 @@ task advance ... testing`). High-risk arbitration waits (bounded by
 PROTOCOL.md's HEADLESS OPERATION section is normative on the wait/fallback
 mechanics; this is orchestrator-followed policy, not a kernel-verb gate.
 Model/effort: static per-role defaults in v1; risk×model matrix v1-m4.
+
+**A capability refusal never counts toward `engine_fail_threshold`
+(v1-m5).** `ledger_mark` takes the envelope's `failure_kind` (see the
+envelope contract above) and, for a `capability` refusal, records the event
+without touching the engine's health: `consecutive_failures` and `status` are
+left exactly as they were, `last_status` becomes `refused` rather than
+`failed`, and a separate cumulative `capability_refusals` count is
+incremented. `orchid status`'s engines section shows that count
+(`<engine> ok refusals 3`) so a refusal is visible rather than silent — the
+reconcile pass that accepted it also prints one `refusal: <task> <engine>
+declined by design` line, and the envelope naming the limit is filed durably
+under `reviews/`. A `capability` claim on a `rate_limited` envelope is ignored
+(there is no fault to reclassify, and it must not shorten a quota window).
+Measured on r-002: `agy` refused three review packs whose diffs were ~1% over
+`agy_max_bytes`, the ledger read those as three faults and marked it
+`failing`, the run's reviewer pool silently dropped to one
+session-independent engine, and a reviewer slot was recomputed out from under
+a review `agy` had already filed — stranding that task. The refusal count is
+deliberately NOT a second disqualifier: an adapter that claimed `capability`
+on everything would stay in the rotation, exactly as an adapter that claimed
+`ok` on work it never did would — envelopes are self-reports (see Binding
+rules), and the answer to a lying plugin is the operator removing it, with
+`refusals <n>` in `orchid status` being what makes the lie legible.
 
 ## Threat model (consolidated)
 
