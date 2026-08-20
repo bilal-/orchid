@@ -30,6 +30,18 @@ write_envelope() {  # status extra-json
           engine:"orchid/agy", base_sha:$base_sha, candidate_sha:$candidate_sha} + $extra' \
     | atomic_write "$output"
 }
+# A CAPABILITY REFUSAL, not a fault (v1-m5 T008). Every `write_envelope failed
+# "$REFUSAL"` below is this adapter declining work it never claimed it could
+# do -- an operation outside review|critique, a plan pack it has no prompt
+# shape for, a diff over its own inline byte cap. The envelope status stays
+# `failed` (nothing downstream changes: the review is still not evidence and
+# the slot still gets relaunched), but `failure_kind:"capability"` tells
+# `lib/ledger.sh` not to charge agy a consecutive failure for behaving
+# correctly. Live on r-002, three refusals of diffs ~1% over the cap marked
+# this engine `failing` and cost the whole run a reviewer. Faults -- a nonzero
+# rc from the CLI, an unparseable reply -- deliberately do NOT carry it.
+REFUSAL='{"failure_kind":"capability"}'
+
 classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
   if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
   elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
@@ -41,7 +53,7 @@ case "$operation" in
   review|critique) ;;
   *)
     echo "orchid/agy: unsupported operation '$operation' (review|critique only)" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1 ;;
 esac
 
@@ -63,7 +75,7 @@ fi
 # failing loudly). Fail closed with a real envelope instead.
 if [ ! -f "$input_pack/task.md" ] || [ ! -f "$input_pack/diff.patch" ]; then
   echo "orchid/agy: agy has no plan-critique mode -- bind an engine with a plan-critique prompt (codex/claude)" >&2
-  write_envelope failed '{}'
+  write_envelope failed "$REFUSAL"
   exit 1
 fi
 
@@ -72,7 +84,7 @@ diff_bytes="$(wc -c <"$diff_file" 2>/dev/null | tr -d ' ')"; diff_bytes="${diff_
 max_bytes="$(config_get "$worktree" agy_max_bytes 100000)"
 if [ "$diff_bytes" -gt "$max_bytes" ]; then
   echo "orchid/agy: diff.patch is $diff_bytes bytes (> agy_max_bytes=$max_bytes); route to a worktree-capable reviewer" >&2
-  write_envelope failed '{}'
+  write_envelope failed "$REFUSAL"
   exit 1
 fi
 

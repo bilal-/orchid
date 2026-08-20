@@ -161,3 +161,35 @@ capsuite_run implg2 implementer >/dev/null
 out2="$(ORCHID_REPO="$crepo" "$ORCHID_BIN" doctor)" || true
 assert_match "role implementer -> implg \(primary: [^)]+\), implg2 \(fallback: capsuite passed\)" "$out2" \
   "doctor shows 'capsuite passed' for a fallback once it has passed the capability suite, primary still annotated with its resolved exe path"
+
+# ---------------------------------------------------------------------------
+# H (v1-m5 T008) -- a CAPABILITY REFUSAL must not shorten a role's chain, and
+# a genuine FAULT still must. This is the r-002 cascade at its source: agy
+# refused three review packs whose diffs were ~1% over its byte cap, the
+# ledger read those refusals as faults and marked agy `failing`, and from that
+# moment `resolve_role_available` -- which every dispatch and the live
+# `jobs review-plan` computation walk through -- believed the run had one
+# fewer independent engine than it did. Both directions are asserted here so
+# neither can regress alone: the fix must not disarm the failing-engine
+# guardrail it narrows.
+# ---------------------------------------------------------------------------
+mk_engine primh "workspace_write,shell,git"
+mk_engine failh "workspace_write,shell,git"
+printf 'role.implementer=primh,failh\n' > "$repo/orchid.config"
+capsuite_run failh implementer >/dev/null || fail "sanity: capsuite_run should pass for failh/implementer"
+
+# threshold-many (default 3) capability refusals: the primary keeps the role.
+ledger_mark "$repo" primh failed "" capability
+ledger_mark "$repo" primh failed "" capability
+ledger_mark "$repo" primh failed "" capability
+out="$(resolve_role_available "$repo" implementer)" || fail "an engine that only ever refused work outside its contract must still resolve"
+assert_eq primh "$out" "three capability refusals must NOT fail the role over to its fallback (the r-002 cascade)"
+
+# the same three events as genuine faults: the primary loses the role.
+ledger_mark "$repo" primh failed
+ledger_mark "$repo" primh failed
+ledger_mark "$repo" primh failed
+out="$(resolve_role_available "$repo" implementer)" || fail "a failing primary with a capsuite-passed fallback must still resolve"
+assert_eq failh "$out" "three genuine faults still fail the role over -- distinguishing refusals does not disarm the failing-engine guardrail"
+
+rm -f "$repo/orchid.config"

@@ -7,6 +7,19 @@
 # a first-class, readable envelope like any other -- and refused at the spool
 # door in libexec/orchid-jobs, so an adapter can never file one itself and
 # pass its own crash off as the kernel's reconstruction of one.
+#
+# `failure_kind` (optional, v1-m5 T008): how the adapter itself classifies a
+# non-`ok` envelope -- `capability` (it declined by design: an operation it
+# never claimed, a diff over its own inline byte cap) or `engine` (it
+# genuinely failed). Absent means `engine`, so every pre-existing adapter and
+# fixture keeps its exact meaning. Constrained here rather than merely passed
+# through because `lib/ledger.sh`'s ledger_mark acts on it: a `capability`
+# claim spares the engine a consecutive-failure charge, and a field with that
+# much say over failover must be a known value on an envelope that actually
+# reports a failure. `capability` alongside `status:"ok"` is incoherent (there
+# is no failure to classify) and fails validation -> quarantine, which is the
+# fail-closed direction: a quarantined envelope never reaches the ledger at
+# all.
 envelope_validate() {
   jq -e '
     (.contract == 1)
@@ -38,6 +51,10 @@ envelope_validate() {
     and (
       (has("commits") | not) or
       (.commits | type == "array" and all(.[]; type == "string"))
+    )
+    and (
+      (has("failure_kind") | not) or
+      ((.failure_kind | IN("capability","engine")) and .status != "ok")
     )
   ' "$1" >/dev/null
 }

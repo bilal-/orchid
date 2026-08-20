@@ -22,6 +22,34 @@ early), there is no override verb — the ledger window is time-based by
 design, so waiting it out or configuring a fallback chain
 (`role.<role>=<primary>,<fallback>`) is the supported path.
 
+## An engine keeps declining the work it is handed
+
+**Symptom:** `orchid jobs reconcile` prints `refusal: <task> <engine>
+declined by design`, and `orchid status`'s `== engines` section shows that
+engine as `ok` with `refusals <n>` climbing. The job log names the reason —
+typically `diff.patch is <n> bytes (> agy_max_bytes=100000); route to a
+worktree-capable reviewer`.
+
+This is not an engine problem and orchid deliberately does not treat it as
+one: the engine read the request, recognized it as outside what its adapter
+declares (an inline-only reviewer cannot see a diff it is not given), and
+refused correctly. It keeps its health record and its place in every role
+chain, so it goes on getting the work it *is* good at. Nothing is stuck.
+
+Read the refusals as ROUTING, not health. If they keep appearing for the same
+role, the remedy is on the chain, not on the engine: put a worktree-capable
+reviewer on it (`role.reviewer=<worktree-capable>,<inline>`, with
+`orchid plugins test <engine> reviewer` for a fallback), or raise that
+adapter's cap (`agy_max_bytes` / `hermes_max_bytes`) if the diffs are only
+marginally over and you want the inline reviewer to keep taking them.
+
+Before v1-m5 these refusals were counted as engine faults, and on r-002 three
+of them (diffs ~1% over the cap) marked a well-behaved reviewer `failing`,
+halved that run's independent reviewer pool, and left a task stranded whose
+review had already been filed. If you are reading an older ledger where an
+engine went `failing` with no real errors in its logs, that is what happened;
+an unrelated `ok` mark clears the streak.
+
 ## Unattended trust refusal
 
 **Symptom:** the pump, direct headless tick, or `orchid service install`

@@ -160,14 +160,23 @@ set -e
 # auth/malformed identically (consecutive-failure counting), so nothing is
 # lost by collapsing "no envelope at all" into that same bucket rather than
 # inventing a seventh status.
+#
+# failure_kind (v1-m5 T008) rides along for the same reason `jobs reconcile`
+# reads it: an engine bound to `role.orchestrator` that declines `orchestrate`
+# as an operation it never claimed has refused by design, not failed, and must
+# not be charged a consecutive failure for saying so. It is deliberately left
+# EMPTY on the no-envelope fallback below -- an adapter that wrote nothing at
+# all has made no claim about anything, so that path stays a plain fault.
 if [ -f "$out_envelope" ] && envelope_validate "$out_envelope" 2>/dev/null; then
   status="$(jq -r .status "$out_envelope")"
+  failure_kind="$(jq -r '.failure_kind // empty' "$out_envelope")"
   actions_n="$(jq -r '(.actions // []) | length' "$out_envelope")"
 else
   status=failed
+  failure_kind=""
   actions_n=0
 fi
 
-ledger_mark "$repo" "$engine" "$status"
+ledger_mark "$repo" "$engine" "$status" "" "$failure_kind"
 echo "tick: $engine $status actions=$actions_n"
 [ "$status" = ok ]

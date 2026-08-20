@@ -40,12 +40,18 @@ classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
   fi
 }
 
+# Capability-refusal marker (v1-m5 T008; same meaning as
+# plugins/engines/agy/run's): declining an operation this adapter never
+# claimed is designed behaviour, so `lib/ledger.sh` must not charge it toward
+# engine_fail_threshold. Genuine faults below never carry it.
+REFUSAL='{"failure_kind":"capability"}'
+
 # Operation gate precedes DRYRUN: an unsupported operation fails the same way
 # whether or not ORCHID_DRYRUN is set (no dryrun short-circuit for unknowns).
 case "$operation" in implement|review|critique|orchestrate) ;;
   *)
     echo "orchid/claude: unsupported operation '$operation'" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1 ;;
 esac
 

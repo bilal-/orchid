@@ -98,6 +98,12 @@ rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "oversize: adapter should exit nonzero"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "oversize: status failed"
 [ ! -e "$WORK/oversize.argv" ] || fail "oversize: agy must never be invoked when the byte guard trips"
+# v1-m5 (T008): the byte guard is a CAPABILITY REFUSAL, and the envelope has
+# to say so -- `status` alone cannot tell lib/ledger.sh apart from an engine
+# that crashed, which is how three ~1%-over refusals marked agy `failing` on
+# r-002 and cost that run a reviewer.
+envelope_validate "$d/out/envelope.json" || fail "oversize: refusal envelope must still be valid"
+assert_eq "capability" "$(jq -r '.failure_kind // "absent"' "$d/out/envelope.json")" "oversize: the byte-cap refusal is marked failure_kind capability, not an engine fault"
 
 # --- 6b. custom agy_max_bytes via env override (config_get precedence) -----
 d="$(build_request customcap review '#!/usr/bin/env bash
@@ -117,6 +123,10 @@ echo "VERDICT: approve OR request-changes"')"
 rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "echoed-instruction stub: adapter should exit nonzero"
 assert_eq "malformed" "$(jq -r .status "$d/out/envelope.json")" "echoed-instruction stub: status malformed (not approve)"
+# The other half of the T008 distinction: an unparseable reply IS evidence the
+# engine misbehaved, so it must carry no capability marker and must go on
+# counting toward engine_fail_threshold.
+assert_eq "absent" "$(jq -r '.failure_kind // "absent"' "$d/out/envelope.json")" "echoed-instruction stub: a genuine fault must never be marked a capability refusal"
 
 # --- 7. unsupported operation -----------------------------------------------
 d="$(build_request badop implement "")"
@@ -124,6 +134,7 @@ rm -rf "${d:?}/bin"
 rc=0; run_adapter "$d" || rc=$?
 [ "$rc" -ne 0 ] || fail "badop: adapter should exit nonzero"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "badop: status failed"
+assert_eq "capability" "$(jq -r '.failure_kind // "absent"' "$d/out/envelope.json")" "badop: declining an operation agy never claimed is a capability refusal, not an engine fault"
 
 # --- 8. DRYRUN: review, no spawn (no agy on PATH at all) --------------------
 d="$(build_request dryreview review "")"
@@ -253,3 +264,4 @@ rc=0; stderr_out="$(run_adapter "$d" 2>&1 1>/dev/null)" || rc=$?
 assert_match "agy has no plan-critique mode" "$stderr_out" "plan pack: stderr note explains why"
 envelope_validate "$d/out/envelope.json" || fail "plan pack: a failed envelope must still be written and valid"
 assert_eq "failed" "$(jq -r .status "$d/out/envelope.json")" "plan pack: status failed (never a silent crash with no envelope at all)"
+assert_eq "capability" "$(jq -r '.failure_kind // "absent"' "$d/out/envelope.json")" "plan pack: having no plan-critique mode is a capability refusal, not an engine fault"

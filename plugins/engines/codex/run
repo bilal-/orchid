@@ -45,6 +45,16 @@ classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
   else echo failed
   fi
 }
+# Capability-refusal marker (v1-m5 T008; same meaning as
+# plugins/engines/agy/run's). Both OPERATION gates below -- the
+# ORCHID_ALLOWED_OPS one and the unsupported-operation one -- are this adapter
+# declining an operation it never claimed, i.e. exactly what a wrapper like
+# codex-review exists to do. `lib/ledger.sh` must not read those as evidence
+# the engine is broken: a `codex-review` handed one `implement` request by a
+# misconfigured role binding would otherwise walk toward `failing` and take
+# its perfectly good review capacity with it. Genuine faults below (nonzero
+# rc, `git add`/`commit` failures, unparseable replies) never carry it.
+REFUSAL='{"failure_kind":"capability"}'
 
 # Allowed-ops gate precedes the operation gate AND DRYRUN: a wrapper adapter
 # (e.g. codex-review) can restrict which operations it permits via
@@ -60,7 +70,8 @@ if [ -n "${ORCHID_ALLOWED_OPS:-}" ]; then
     *",$operation,"*) ;;
     *)
       echo "$ENGINE_ID: operation '$operation' not permitted for $ENGINE_ID" >&2
-      write_envelope failed "$(jq -n --arg s "operation $operation not permitted for $ENGINE_ID" '{summary:$s}')"
+      write_envelope failed "$(jq -n --arg s "operation $operation not permitted for $ENGINE_ID" \
+        '{summary:$s, failure_kind:"capability"}')"
       exit 1 ;;
   esac
 fi
@@ -72,7 +83,7 @@ fi
 case "$operation" in implement|review|critique|orchestrate) ;;
   *)
     echo "orchid/codex: unsupported operation '$operation'" >&2
-    write_envelope failed '{}'
+    write_envelope failed "$REFUSAL"
     exit 1 ;;
 esac
 
