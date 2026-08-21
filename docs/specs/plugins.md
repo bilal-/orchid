@@ -205,8 +205,14 @@ execute?
   repository, the broker script itself. The prompt's "never hand-edit
   `.orchid/`" is policy, not enforcement.
 - `soft` — no. The vendor CLI offers no restriction Orchid can rely on, so
-  the orchestrator's reach is bounded only by launcher environment hygiene
-  and by the operator's machine-local unattended acknowledgement.
+  the orchestrator's reach is bounded only by launcher environment hygiene,
+  by the operator's machine-local unattended acknowledgement, and by the
+  orchestrate prompt the adapter hands it. That last bound is asked for, not
+  enforced — but it is the SAME judgment-boundary contract the broker
+  enforces, so boundary policy classifies a `soft` surface against that same
+  verb set, never against "every verb is reachable" (see
+  [kernel.md](./kernel.md)'s `command_surface` section for why the wider
+  reading suppressed the operator blocker).
 
 An absent value reads as `soft`: this field may weaken its own claim by
 omission, never strengthen it. `runners/orchid-tick` prints the resolved

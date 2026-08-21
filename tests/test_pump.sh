@@ -422,3 +422,170 @@ assert_match 'stubfallback2' "$out" "the no-capable-orchestrator message names t
 # intended: mechanical progress never waits on model availability.
 [ "$epoch_after" -gt "$epoch_before" ] \
   || fail "the deterministic driver runs regardless of orchestrator availability, so it fences an epoch ($epoch_before -> $epoch_after)"
+
+# ===========================================================================
+# G -- ONE TASK'S DECISION MUST NOT PARK THE OTHER TWENTY-NINE (lesson L026).
+#
+# `orchid drive` exits 16 as soon as ANY task needs an operator. That code
+# means "a decision is outstanding somewhere", never "no further progress is
+# possible" — and a pump that reads it the second way halts a whole roadmap
+# over a decision affecting one task. It is not hypothetical: a run stopped at
+# one review conflict at 07:32Z, the operator arbitrated within minutes but did
+# not restart the pump, and twenty-eight unrelated tasks sat idle until 14:42Z.
+# A pump that stops at the first arbitrable disagreement is attended operation
+# wearing an unattended label.
+#
+# So ONE pump pass over a run holding a boundaried task AND a dispatchable one
+# must do both halves:
+#
+#   1. REPORT the boundary — through the configured notify channel, in the same
+#      invocation that found it. This is the RED half: `orchid notify` (tier-1)
+#      only queues runtime/outbox/<qid>, and the pump used to drain that outbox
+#      ONLY BEFORE the drive pass. The blocker the pass itself raised therefore
+#      waited for whichever LATER invocation happened to drain next — and if the
+#      operator stopped the pump at the boundary (exactly what "16 means stop"
+#      invites), it was never sent at all. Before the fix the channel below is
+#      never called and the message is still sitting in the outbox here.
+#   2. CONTINUE — the unrelated task is dispatched by that very same pass, and
+#      the invocation ends 0, a wait state rather than a failure. The driver
+#      already walked every task; this pins that the pump neither swallows that
+#      progress nor turns 16 into a halt, so the two cannot regress apart.
+# ===========================================================================
+KEEP="$WORK/keepgoing"
+mkdir -p "$KEEP"
+cd "$KEEP" || exit 1
+git init -q .
+
+# A stub `openclaw` on PATH, same shape as tests/test_notify_channel.sh's:
+# captures argv, sends nothing real. It is the proof that the SEND happened —
+# BLOCKERS.md alone would only prove `orchid notify` ran.
+KEEPBIN="$WORK/keepbin"; mkdir -p "$KEEPBIN"
+KEEP_OC_LOG="$WORK/keep-openclaw-calls.log"; : > "$KEEP_OC_LOG"
+cat > "$KEEPBIN/openclaw" <<EOF
+#!/usr/bin/env bash
+echo "\$@" >> "$KEEP_OC_LOG"
+exit 0
+EOF
+chmod +x "$KEEPBIN/openclaw"
+export PATH="$KEEPBIN:$PATH"
+
+# An implementer stub, so "kept advancing" means a real dispatch (worktree,
+# launch, advance) and not a status hand-edited by the fixture.
+mkdir -p "$WORK/eng/stubkeepimpl"
+printf 'manifest_version=1\nid=test/stubkeepimpl\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubkeepimpl/plugin.conf"
+cat > "$WORK/eng/stubkeepimpl/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+worktree="$(jq -r .worktree "$req")"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+[ "$(jq -r .operation "$req")" = implement ] || exit 1
+cd "$worktree" || exit 1
+echo "stub implementation for $task" > stub_feature.txt
+git add stub_feature.txt
+git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "stub: implement $task"
+sha="$(git rev-parse HEAD)"
+jq -n --arg jid "$jid" --arg task "$task" --arg sha "$sha" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"stub implemented", commits:[$sha]}' > "$out"
+EOF
+chmod +x "$WORK/eng/stubkeepimpl/run"
+
+# An orchestrator IS configured and resolvable here, deliberately: the point is
+# that the pump declines to wake one for a decision it cannot make, not that
+# there was nobody to wake.
+{
+  echo "role.orchestrator=stubparked"
+  echo "role.implementer=stubkeepimpl"
+  echo "notify.channel=slack"
+  echo "notify.to=#ops"
+  echo "send_retry_max=2"
+} > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+
+export ORCHID_REPO="$KEEP"
+"$ORCHID_BIN" init >/dev/null || fail "orchid init (keep-going fixture)"
+git checkout -q orchid/integration
+KEPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$KEPOCH"
+cat > "$WORK/requirements-keep.md" <<'EOF'
+# Requirements
+- REQ-1: one task waits for a human; every other task keeps moving.
+EOF
+"$ORCHID_BIN" requirements import "$WORK/requirements-keep.md" >/dev/null
+"$ORCHID_BIN" task create K900 "parked on a human" >/dev/null
+"$ORCHID_BIN" task create K901 "unrelated, and perfectly dispatchable" >/dev/null
+"$ORCHID_BIN" task set K901 verification_commands true >/dev/null
+"$ORCHID_BIN" plan apply --reason "initial plan" >/dev/null
+"$ORCHID_BIN" task advance K900 blocked --reason "fixture: parked for a human" >/dev/null
+unset ORCHID_EPOCH
+
+HOME="$HOME" "$ORCHID_BIN" trust unattended "$KEEP" --reason "keep-going pump fixture" >/dev/null \
+  || fail "keep-going fixture acknowledgement must succeed"
+write_lease 1000
+rm -f "$WORK/marker-stubparked"
+
+kstatus_of() { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
+assert_eq blocked "$(kstatus_of K900)" "fixture: one task really is parked on a human"
+assert_eq pending "$(kstatus_of K901)" "fixture: the other really is dispatchable"
+
+# ...and the surface this all runs against is the SOFT one, stated rather than
+# left to chance. `blocked-task` names no settling verb at all, so it is
+# operator-only on every surface — which means this whole section would keep
+# passing if the pinned orchestrator's label quietly became `brokered`, and the
+# end-to-end proof that a soft surface no longer suppresses the blocker would
+# be gone with nothing failing. mk_stub_engine writes no `command_surface` key,
+# and an absent label reads as `soft` (INV-14: the field may weaken its own
+# claim by omission, never strengthen it), so this asserts the default that
+# actually applies here rather than a key nobody wrote.
+assert_eq soft "$(manifest_get "$WORK/eng/stubparked" command_surface soft)" \
+  "the orchestrator this run would wake declares the UNRESTRICTED surface — the path that used to swallow the blocker"
+
+krc=0
+kout="$("$PUMP" 2>&1)" || krc=$?
+
+assert_eq 0 "$krc" \
+  "a boundaried task is a wait state for the RUN, not a pump failure (out: $kout)"
+assert_match "pump: judgment boundary \[blocked-task\] is operator-only — not waking an orchestrator" "$kout" \
+  "the pump names the boundary it declined to wake a model for"
+assert_match "the pass still advanced every other task" "$kout" \
+  "and says plainly that ending this invocation is not stopping the run"
+[ -f "$WORK/marker-stubparked" ] \
+  && fail "no orchestrator may be woken for a decision no admitted verb can make, however available one is"
+
+# Half 2: the unrelated task really moved, in the SAME pass that met the
+# boundary, by a real dispatch.
+assert_eq implementing "$(kstatus_of K901)" \
+  "the dispatchable task advanced in the very pass that met another task's boundary (out: $kout)"
+assert_eq blocked "$(kstatus_of K900)" \
+  "and the boundaried task was left exactly where only a human can move it"
+[ -n "$(list_dir_files "$KEEP/.orchid/runtime/jobs")" ] \
+  || fail "that advance must be backed by a job that really spawned, not a bare status write"
+
+# Half 1: the blocker reached the channel in THIS invocation.
+assert_match "judgment boundary \[blocked-task\]" "$(cat "$KEEP_OC_LOG")" \
+  "the boundary was reported through the notify channel by the same pass that raised it"
+assert_match "channel slack" "$(cat "$KEEP_OC_LOG")" \
+  "and through the configured channel, not some default"
+kqueued="$(list_dir_files "$KEEP/.orchid/runtime/outbox" 2>/dev/null | grep -v '\.tries$' | grep -v '\.reason-send-failed$' || true)"
+assert_eq "" "$kqueued" \
+  "nothing is left queued for a later invocation that may never come (still queued: $kqueued)"
+assert_match "judgment boundary \[blocked-task\]" "$(cat "$KEEP/.orchid/BLOCKERS.md")" \
+  "and the local terminal surface carries it too"
+
+# Idempotent, which is what makes "keep driving" cost nothing: a second pass
+# re-reports the same record, raises no second blocker, and sends nothing more.
+koc_lines_before="$(wc -l < "$KEEP_OC_LOG")"
+kblockers_before="$(wc -l < "$KEEP/.orchid/BLOCKERS.md")"
+write_lease 1000   # the pass refreshed it; re-stale so the next one really runs
+krc=0
+kout="$("$PUMP" 2>&1)" || krc=$?
+assert_eq 0 "$krc" "a repeated pass over the same outstanding decision is still a wait state"
+assert_eq "$kblockers_before" "$(wc -l < "$KEEP/.orchid/BLOCKERS.md")" \
+  "an unchanged record raises no second blocker"
+assert_eq "$koc_lines_before" "$(wc -l < "$KEEP_OC_LOG")" \
+  "and sends no second message — re-reporting a boundary costs nothing"

@@ -108,9 +108,28 @@ err_file="$(mktemp)"; trap 'rm -f "$err_file"' EXIT
 # fix as the implement path above) and `--skip-git-repo-check` (an
 # orchestrate tick's worktree is the operator's own checkout, not a fresh
 # clone codex would otherwise refuse as untrusted).
+#
+# THE CONTRACT, not a tick (v1.1). This block used to say "Execute ONE tick",
+# which was the truth before `orchid drive` existed and a live defect after:
+# the driver has already run every mechanical step, and this adapter is
+# reached for exactly one reason -- a named judgment boundary. A woken model
+# told to run the whole procedure again re-walks work that is already done and
+# never settles the one decision it was woken for, while lib/drive.sh's policy
+# counts the wakeup as the boundary's resolution route and therefore suppresses
+# the `orchid notify` blocker that would have told a human. So the instruction
+# block below is the same judgment-boundary contract the brokered adapter
+# carries, and lib/drive.sh's _DRIVE_SOFT_WRITE_VERBS is the list it names --
+# the two are pinned together by tests/test_drive.sh's Part R.
+#
+# The HONEST difference from the brokered adapter, stated because the label
+# says it: nothing here ENFORCES that list. codex's manifest declares
+# `command_surface=soft`, this CLI offers no per-command allowlist, and every
+# "only these verbs" / "never contact any remote" line below is prompt policy.
+# The vendor sandbox (`--sandbox workspace-write`) is a real filesystem/network
+# policy, and it is not command brokerage.
 if [ "$operation" = orchestrate ]; then
   protocol="$(cat "$ORCHID_ROOT/PROTOCOL.md" 2>/dev/null || true)"
-  instructions="Execute ONE tick of the tick procedure described above against the repository at $worktree. Use only \`orchid\` verbs (the binary at $ORCHID_ROOT/bin/orchid) and $ORCHID_ROOT/runners/orchid-launch to launch engines -- never hand-edit anything under .orchid/. Never run 'git push', never fetch/pull, never contact any remote -- every mutation you make must stay repo-local; only the operator moves anything to origin. For every verb invocation you make, print one line of the exact form: ORCHID-ACTION: <command>. The kernel has already fenced a fresh epoch for this tick; do NOT run 'orchid run resume' -- start at THE TICK step 1 with the ORCHID_EPOCH provided."
+  instructions="A deterministic driver has ALREADY executed this tick's mechanical steps against the repository at $worktree (lease, reconcile/check/gc, dispatch, verify, review routing, unambiguous approval, merge, status). Do NOT execute a tick and do NOT repeat those steps. You were woken for ONE reason: a judgment boundary deterministic policy refused to resolve. Use only \`orchid\` verbs (the binary at $ORCHID_ROOT/bin/orchid) -- no engine launcher, no vendor CLI, and never hand-edit anything under .orchid/. Start by running: orchid run boundary show. Read the named task with orchid task show <id>, its reviews with orchid jobs review-plan <id>, and the recent record with orchid journal tail -n 20. Then record exactly one decision: orchid task arbitrate <id> --result approve|request-changes --reason \"<why>\" when the boundary is an arbitration you can settle, or orchid notify --task <id> \"<what a human must decide>\" when it is not. Those two, plus orchid journal add --task <id> --kind arbitration \"<text>\" and orchid lessons add --scope repo --invalidate-when \"<when>\" \"<lesson>\", are the ONLY writes you may make: a boundary none of them settles is a human's, so notify and stop. Finish with orchid run boundary clear --reason \"<what you decided>\" once, and only once, the boundary is genuinely resolved. Never run 'git push', never fetch/pull, never contact any remote -- every mutation stays repo-local; only the operator moves anything to origin. The kernel has already fenced a fresh epoch for this wakeup; do NOT run 'orchid run resume'. For every command you run, print one line of the exact form: ORCHID-ACTION: <command>."
   prompt="$protocol"$'\n\n'"$instructions"
 
   # Streaming + heartbeat (v1-m3, round 2 of the live-run finding -- see

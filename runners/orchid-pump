@@ -432,6 +432,28 @@ fi
 export ORCHID_REPO="$repo"
 drive_rc=0
 "$ORCHID_ROOT/runners/orchid-drive" || drive_rc=$?
+
+# SECOND DRAIN, and the one that matters for a boundary. `orchid notify` is
+# tier-1 and only ever QUEUES (runtime/outbox/<qid>); this runner is what
+# sends. The drain above ran BEFORE the pass, so every blocker the pass itself
+# raised -- the judgment boundary no admitted verb can settle, an exhausted
+# attempt budget, an exceeded wallclock -- would otherwise sit in the outbox
+# until some LATER invocation happened to drain it. That is the wrong way
+# round: the whole reason the driver raises those blockers is that a human has
+# to hear about them, and the pass that produced one may be the last one
+# anybody runs. Draining here reports it through the configured channel in the
+# SAME invocation that found it. Cheap and unconditional (no channel
+# configured returns immediately), and it changes no exit code below.
+#
+# One consequence, stated rather than discovered: `send_retry_max` counts
+# ATTEMPTS, not passes, so against a permanently-broken channel an invocation
+# that reaches this line spends two of them instead of one and a doomed
+# message quarantines after about half as many invocations. That bound is what
+# the counter is for, and BLOCKERS.md plus the terminal remain the complete
+# operator surface either way (docs/specs/operations.md) -- whereas a blocker
+# that is never sent at all has no surface but the one nobody is watching.
+_pump_drain_outbox "$repo"
+
 if [ "$drive_rc" -eq 0 ]; then
   echo "pump: deterministic drive completed the pass, no judgment boundary"
   exit 0
@@ -481,9 +503,21 @@ boundary_status=""
 if [ -n "$boundary_task" ] && [ -f "$state/tasks/$boundary_task.md" ]; then
   boundary_status="$(fm_get "$state/tasks/$boundary_task.md" status)"
 fi
+
+# WHAT THIS EXIT IS NOT. Ending the invocation here is not the run stopping.
+# The driver walked every task and took every edge policy allowed before it
+# reported this boundary (see its own exit-code table): drive's 16 means "a
+# decision is outstanding somewhere", never "no further progress is possible".
+# So the next scheduled invocation drives the whole roadmap again, and the one
+# boundaried task simply re-reports the same record at no cost -- exactly what
+# keeps twenty-nine unrelated tasks moving while one arbitration waits for a
+# human. The blocker has already been queued by the driver and sent by the
+# drain above, so the human hears about it without the run being parked for
+# them.
 if ! drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" \
      "$(drive_orchestrator_surface "$repo")"; then
   echo "pump: judgment boundary [${boundary_kind:-unknown}] is operator-only — not waking an orchestrator"
+  echo "pump: reported to the operator; the pass still advanced every other task, and the next pass will too"
   exit 0
 fi
 

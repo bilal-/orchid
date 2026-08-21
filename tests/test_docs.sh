@@ -493,6 +493,17 @@ grep -q "the shipped review adapters ask for a VERDICT line only" <<<"$drive_hel
 # nothing about which one is bound.
 grep -qi "default reviewer" <<<"$drive_help_one_line" \
   && fail "orchid drive --help asserts what the DEFAULT reviewer's adapter does — lib/resolver.sh's reviewer default populates no findings[], and the help is supposed to distinguish adapters by capability, not by which is default"
+# The other thing an operator reads at the moment it matters: what exit 16
+# actually means. "The judgment-boundary exit code" invites the halting
+# reading — stop the run, fetch a human — and a caller that takes it halts
+# every task over a decision affecting one (a live run lost seven hours and
+# twenty-eight idle tasks to exactly that). The help must say which of the two
+# it is. Plain substrings again, no ERE metacharacters.
+assert_match "A DECISION IS OUTSTANDING SOMEWHERE" "$drive_help_one_line" \
+  "orchid drive --help must say exit 16 reports an outstanding decision, not a run that cannot proceed"
+assert_match "walked EVERY task" "$drive_help_one_line" \
+  "...and that the pass which returns it still advanced every other task"
+
 # ...and the same claim must not survive in any other shipped usage text.
 stale_help="$(grep -rln "adapter never fills findings" "$REPO_ROOT/runners" "$REPO_ROOT/libexec" "$REPO_ROOT/bin" 2>/dev/null || true)"
 [ -z "$stale_help" ] || fail "stale L006 severity-gate claim still shipped in: $stale_help"

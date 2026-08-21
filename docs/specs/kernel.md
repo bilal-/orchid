@@ -1091,9 +1091,23 @@ vendor CLI cannot express one. Each `kind=engine` manifest declares
   repo) the broker script included — "never hand-edit `.orchid/`" is prompt
   policy, not enforcement.
 - `soft` — no enforceable restriction; the orchestrator's reach is bounded
-  only by launcher environment hygiene and by the operator's machine-local
-  unattended acknowledgement. An absent label reads as `soft`: this field may
-  weaken its own claim by omission, never strengthen it.
+  only by launcher environment hygiene, by the operator's machine-local
+  unattended acknowledgement, and by the orchestrate prompt the adapter hands
+  it. An absent label reads as `soft`: this field may weaken its own claim by
+  omission, never strengthen it.
+
+  `soft` is a statement about ENFORCEMENT, and boundary policy must not read
+  it as one about ADMISSION. Every adapter woken for a boundary is handed the
+  same judgment-boundary contract — read the record, read the task and its
+  reviews, record ONE decision — naming the same write verbs the broker
+  admits, so a soft adapter settles the same set, unenforced. Treating `soft`
+  as "every verb is admissible" classified every boundary kind as
+  orchestrator-resolvable, which suppressed the `orchid notify` blocker for
+  all of them and woke a model for decisions (`orchid run accept`, `orchid
+  plan apply`) no prompt had asked it to make. `lib/drive.sh`'s
+  `_DRIVE_SOFT_WRITE_VERBS` is that set, and a shipped adapter carrying a
+  pre-v1.1 "execute one tick" orchestrate prompt while its surface is treated
+  as settling anything is a test failure, not a style difference.
 
 Both remain gated behind `orchid trust unattended`. Every headless tick
 prints the resolved engine's label.
@@ -1149,12 +1163,21 @@ verb that records the result (`orchid task arbitrate` for the two review
 kinds, `orchid plan apply` for `planning`, `orchid run accept` for
 `run-complete`, none for the rest), the resolved orchestrator adapter's
 `command_surface` (a `brokered` adapter can run only the broker, whose one
-state-changing judgment verb is `task arbitrate`; a `soft` adapter has no
-enforceable restriction; an unrecognized label reads as `brokered`), and the
-named task's CURRENT status (`task arbitrate` refuses anything but
-`arbitrating`, exit 3). The pump asks the identical question before waking a
-model; anything that fails it wakes nobody and the driver raises one `orchid
-notify` blocker per distinct record instead.
+state-changing judgment verb is `task arbitrate`; a `soft` adapter is asked
+for that same set by its orchestrate prompt and enforced on none of it; an
+unrecognized label reads as `brokered`), and the named task's CURRENT status
+(`task arbitrate` refuses anything but `arbitrating`, exit 3). The pump asks
+the identical question before waking a model; anything that fails it wakes
+nobody and the driver raises one `orchid notify` blocker per distinct record
+instead. On both shipped surfaces that makes `planning` and `run-complete`
+operator-only: nothing admits `plan apply` or `run accept`.
+
+Exit 16 reports that a decision is outstanding somewhere; it never reports
+that the run cannot proceed. The pass that returns it has already walked
+every task and taken every edge policy allowed, and `orchid drive` is
+idempotent, so an unattended caller reports the boundary and drives again —
+the boundaried task re-reports the same record at no cost while every other
+task keeps advancing. Exit 1 is the code for a pass that could not be made.
 
 `run-complete` is the driver's own COMPLETION hand-off: a pass that reads
 every task as `done` makes COMPLETION's mechanical first call (`orchid run

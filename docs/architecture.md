@@ -94,11 +94,16 @@ exits exactly 16, the boundary reads back through its verb, AND that boundary
 is settleable — some verb records its result, the resolved adapter's
 `command_surface` admits that verb, and the named task's current status lets
 it run. All three matter: `orchid task arbitrate` is the only write the
-broker admits and it refuses any status but `arbitrating`, and no brokered
-adapter can run `orchid run accept`, so a finished run is a human's job.
-Anything that fails the test is left to the
+broker admits and it refuses any status but `arbitrating`, and no adapter —
+brokered or soft — is admitted to run `orchid run accept`, so a finished run
+is a human's job. `soft` names the absence of ENFORCEMENT, not a wider set of
+admitted verbs: every woken adapter is handed the same judgment-boundary
+contract, so it settles the same decisions, with nothing stopping it from
+doing more. Anything that fails the test is left to the
 blocker the driver raised, rather than spending a model wakeup per pump cycle
-on a decision no admitted verb can make. When one is
+on a decision no admitted verb can make. Exit 16 means a decision is
+outstanding somewhere, not that the run is stuck: the pass still advanced
+every other task, and the pump reports the boundary and keeps driving. When one is
 woken, an adapter that declares `command_surface=brokered` confines it to
 `runners/orchid-orchestrator-command`, a default-deny argument-validating
 broker admitting judgment-only forms — a real command allowlist for that

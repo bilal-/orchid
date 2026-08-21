@@ -107,9 +107,12 @@ case "$sub" in
     # meaning for.
     #
     # Exit codes: `show` exits 16 (the dedicated judgment-boundary code) when
-    # a boundary IS recorded, and 0 when none is -- so "is this run parked on
-    # a judgment call?" is answerable from an exit status alone, with no
-    # output parsing anywhere.
+    # a boundary IS recorded, and 0 when none is -- so "is a decision
+    # outstanding in this run?" is answerable from an exit status alone, with
+    # no output parsing anywhere. That is the question it answers, and it is
+    # not "can this run make progress": one task's boundary parks that task,
+    # never the roadmap, and `orchid drive` keeps walking and advancing every
+    # other task while this record stands.
     bsub="${1:-}"; shift || true
     bfile="$rt/boundary.json"
     case "$bsub" in

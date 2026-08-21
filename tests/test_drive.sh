@@ -102,13 +102,32 @@ fi
 if drive_boundary_wakes_orchestrator run-complete "" brokered; then
   fail "a brokered adapter cannot run 'orchid run accept' — a finished run is a human's job"
 fi
-drive_boundary_wakes_orchestrator run-complete "" soft \
-  || fail "a soft adapter has no command restriction, so COMPLETION is reachable from it"
 if drive_boundary_wakes_orchestrator planning "" brokered; then
   fail "a brokered adapter cannot run 'orchid plan apply' either"
 fi
-drive_boundary_wakes_orchestrator planning "" soft \
-  || fail "a soft adapter can run PLANNING's own recording verb"
+
+# ...and the SOFT surface gives the SAME answer, by a different route (T003).
+# `soft` is the absence of ENFORCEMENT, not a wider set of admitted verbs: the
+# orchestrate contract every woken adapter is handed asks for an arbitration,
+# a notify, a journal/lessons note and a boundary clear — it never asks anyone
+# to run `orchid run accept` or `orchid plan apply`. Reading `soft` as "every
+# verb is admissible" made EVERY kind orchestrator-resolvable, which suppresses
+# the `orchid notify` blocker for all of them (the driver only notifies for
+# boundaries no admitted verb settles) and wakes a model per staleness window
+# for a decision no prompt asked it to make: the never-told-the-human failure
+# the brokered path exists to prevent, reintroduced on the soft path.
+if drive_boundary_wakes_orchestrator run-complete "" soft; then
+  fail "no adapter is asked to run 'orchid run accept', so a finished run is a human's job on a soft surface too"
+fi
+if drive_boundary_wakes_orchestrator planning "" soft; then
+  fail "and none is asked to draft a roadmap — PLANNING is operator work on every surface"
+fi
+
+# The kind a soft surface DOES settle is the one its contract actually names,
+# on a status the verb accepts. Without this the assertions above would also
+# be satisfied by a policy that simply never woke anybody.
+drive_boundary_wakes_orchestrator review-conflict arbitrating soft \
+  || fail "a soft adapter is still woken for the arbitration its orchestrate contract asks it for"
 
 # Kinds no verb settles at all are operator-only on EVERY surface.
 for kind in blocked-task hook-failure worktree-conflict operator-handoff operator-decision; do
@@ -1183,14 +1202,52 @@ assert_eq 16 "$BDRIVE_RC" "a repeated pass over the finished run reports the sam
 assert_eq "$b_blockers_before" "$(wc -l < "$BROK/.orchid/BLOCKERS.md")" \
   "and raises no second blocker for a record that has not changed"
 
-# The same run, driven for a SOFT orchestrator, is the other half of the
-# classification: nothing restricts that adapter's commands, so COMPLETION is
-# reachable from it and the boundary is left for the model rather than a
-# human. Same kind, same record, opposite routing -- which is exactly why the
-# decision cannot be made from the kind alone.
-if ! drive_boundary_wakes_orchestrator run-complete "" soft; then
-  fail "a soft adapter can run 'orchid run accept', so COMPLETION is an orchestrator procedure there"
+# The same run driven for a SOFT orchestrator routes the SAME way, and that is
+# the point of T003: `soft` says nothing enforces a command allowlist, not that
+# a woken model has been asked to close a run. Nothing hands any adapter the
+# `orchid run accept --evidence` step, so COMPLETION reaches a human whichever
+# label the resolved orchestrator declares -- and the blocker above is raised
+# on both. (Part R pins the other half: what that woken model is actually
+# asked to do.)
+if drive_boundary_wakes_orchestrator run-complete "" soft; then
+  fail "a soft surface must not imply COMPLETION is an orchestrator procedure — no prompt asks for 'orchid run accept'"
 fi
+
+# ...and end to end, because the consequence that matters is not the
+# classification but the BLOCKER. A finished run under a soft orchestrator used
+# to raise none at all: the kind read as settleable, the driver notifies only
+# for boundaries no admitted verb settles, and the pump then woke a model every
+# staleness window to run a verb nothing had asked it for. Nobody was ever told
+# the run was waiting to be accepted. Same fixture shape as the brokered one
+# above, one label apart.
+SOFTRUN="$WORK/softrun"
+mkdir -p "$SOFTRUN"
+cd "$SOFTRUN" || exit 1
+git init -q .
+printf 'role.orchestrator=stubsoft\nrole.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$SOFTRUN" "$ORCHID_BIN" init >/dev/null || fail "orchid init (soft-completion fixture)"
+git checkout -q orchid/integration
+SEPOCH="$(ORCHID_REPO="$SOFTRUN" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+sorchid() { ORCHID_REPO="$SOFTRUN" ORCHID_EPOCH="$SEPOCH" "$ORCHID_BIN" "$@"; }
+sboundary() { ORCHID_REPO="$SOFTRUN" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+sorchid requirements import "$WORK/requirements.md" >/dev/null
+sorchid task create S010 "the only task, and it is finished" >/dev/null
+sorchid plan apply --reason "initial plan" >/dev/null
+fm_set "$SOFTRUN/.orchid/tasks/S010.md" status "done"
+
+assert_eq soft "$(drive_orchestrator_surface "$SOFTRUN")" \
+  "the pinned orchestrator really is the unrestricted-surface one"
+SDRIVE_RC=0
+SDRIVE_OUT="$(ORCHID_REPO="$SOFTRUN" ORCHID_EPOCH="$SEPOCH" "$DRIVE" 2>&1)" || SDRIVE_RC=$?
+assert_eq 16 "$SDRIVE_RC" "a finished run stops at a judgment boundary here too (out: $SDRIVE_OUT)"
+assert_eq run-complete "$(sboundary | jq -r .kind)" "and the boundary names the run's completion"
+assert_match "notified: \[run-complete\] is operator-only" "$SDRIVE_OUT" \
+  "a soft surface routes it to a human as well — nothing asks any adapter to close a run"
+assert_match "judgment boundary \[run-complete\] needs an operator" \
+  "$(cat "$SOFTRUN/.orchid/BLOCKERS.md")" \
+  "and the blocker telling the operator to run the acceptance step is really raised"
 
 # ===========================================================================
 # Part I2 -- the ordinary reviewer-slot recovery, end to end (lesson L007).
@@ -2980,3 +3037,122 @@ assert_eq 0 "$(fm_get "$DTF" infra_failures)" \
   "with the job-delivery ladder never touched from the first pass to the last — that ladder is for dispatches that produced nothing, and this task produced a candidate on its first one"
 assert_eq "" "$(fm_get "$DTF" refused_envelopes)" \
   "and no envelope was ever refused: none of them lied about the worktree"
+
+# ===========================================================================
+# Part R -- THE TWO HALVES OF THE SOFT-SURFACE FIX, PINNED TO EACH OTHER.
+#
+# Classifying the surface correctly is only half the fix. A soft adapter IS
+# still woken for the one kind its contract settles (an arbitration on an
+# `arbitrating` task, asserted first below as this Part's premise), so the
+# PROMPT that adapter hands the model is what actually decides that boundary.
+# An adapter still carrying the pre-v1.1 "execute ONE tick" instruction re-runs
+# a pass `orchid drive` has already run and never touches the record — while
+# policy, having counted the wakeup as this boundary's resolution route,
+# suppressed the `orchid notify` blocker that would have told a human. Same
+# never-told-the-human failure, one layer up from the one Part I pins.
+#
+# So: every shipped adapter that HANDLES the orchestrate operation must feed
+# the judgment-boundary contract, and must not feed a tick instruction — and
+# every shipped adapter that does NOT handle it must REFUSE it, loudly, which
+# the sweep proves as behaviour below rather than assuming from an absent
+# dispatch line. The prompt check is static and reads the `instructions=` line
+# each adapter actually builds — asserting against the real vendor CLI would
+# mean spawning one.
+# ===========================================================================
+drive_boundary_wakes_orchestrator review-conflict arbitrating soft \
+  || fail "Part R's premise: a soft adapter really is woken for an arbitrable boundary"
+
+orch_adapters=0
+for _run in "$REPO_ROOT"/plugins/engines/*/run; do
+  [ -f "$_run" ] || continue
+  _name="$(basename "$(dirname "$_run")")"
+  # The dispatch line every orchestrate-capable adapter in this tree carries.
+  # An adapter that does not carry it must be UNABLE to serve the role — "it
+  # refuses the operation" is the other honest answer to "can you serve this
+  # role", and it has to be proven as behaviour, not read off the absent
+  # dispatch: an adapter that absorbed `orchestrate` through its case-pattern
+  # list (the review adapters' dispatch shape) would carry no dispatch line
+  # either, and a wakeup routed through it would be swallowed with none of
+  # the prompt checks below ever applying. So hand each one a real orchestrate
+  # request and require the loud no: nonzero exit, a non-ok envelope for
+  # reconcile to see, and a refusal that names the operation. ORCHID_DRYRUN=1
+  # is belt and braces — every shipped adapter gates the operation BEFORE its
+  # dryrun short-circuit, and one that admitted the operation would answer the
+  # dryrun `ok`/exit-0 and trip every assertion here, rather than spawn a
+  # vendor CLI.
+  if ! grep -q 'operation" = orchestrate' "$_run"; then
+    _ref_env="$WORK/qrefuse-$_name.json"
+    _ref_req="$WORK/qrefuse-$_name.request.json"
+    rm -f "$_ref_env"
+    jq -n --arg out "$_ref_env" \
+      '{job_id:"j-qrefuse", task:"T000", operation:"orchestrate", worktree:".",
+        input_pack:".", output:$out, base_sha:"", candidate_sha:""}' > "$_ref_req"
+    _ref_rc=0
+    _ref_out="$(ORCHID_DRYRUN=1 "$_run" "$_ref_req" 2>&1)" || _ref_rc=$?
+    [ "$_ref_rc" -ne 0 ] \
+      || fail "$_name neither carries the judgment-boundary dispatch nor refuses an orchestrate request — a wakeup routed through it would be absorbed by another door (out: $_ref_out)"
+    assert_match "operation 'orchestrate'" "$_ref_out" \
+      "$_name's refusal must name the operation it turned down"
+    if [ -f "$_ref_env" ]; then
+      case "$(jq -r .status "$_ref_env" 2>/dev/null || echo unreadable)" in
+        ok) fail "$_name answered an operation it does not serve with an ok envelope" ;;
+      esac
+    else
+      fail "$_name refused orchestrate without writing an envelope — reconcile would never see the job fail, and it would sit prepared/running forever"
+    fi
+    continue
+  fi
+  orch_adapters=$(( orch_adapters + 1 ))
+  _instr="$(grep 'instructions=' "$_run" || true)"
+  [ -n "$_instr" ] \
+    || fail "$_name handles orchestrate but builds no instruction block this check can read"
+  case "$_instr" in
+    *"Execute ONE tick"*|*"execute ONE tick"*|*"Execute one tick"*)
+      fail "$_name's orchestrate prompt still tells a woken model to execute a whole tick — the driver already ran it, and boundary policy counts that wakeup as this boundary's resolution" ;;
+  esac
+  case "$_instr" in
+    *"run boundary show"*) ;;
+    *) fail "$_name's orchestrate prompt must send the woken model to the boundary record first" ;;
+  esac
+  case "$_instr" in
+    *"task arbitrate"*) ;;
+    *) fail "$_name's orchestrate prompt must name the verb that records an arbitration" ;;
+  esac
+  case "$_instr" in
+    *notify*) ;;
+    *) fail "$_name's orchestrate prompt must offer notify for a boundary it cannot settle" ;;
+  esac
+  case "$_instr" in
+    *"run boundary clear"*) ;;
+    *) fail "$_name's orchestrate prompt must name the verb that releases the record" ;;
+  esac
+done
+[ "$orch_adapters" -ge 2 ] \
+  || fail "Part R swept $orch_adapters orchestrate-capable adapter(s) — it is not looking at the shipped ones"
+
+# And the classification half, stated as data rather than through a boundary:
+# what a soft surface admits is exactly what that contract asks for. A verb
+# the prompt never names must not be admitted by either surface, or the
+# suppression of the notify blocker starts again.
+drive_surface_admits soft task-arbitrate \
+  || fail "the arbitration the orchestrate contract asks for must be admitted on a soft surface"
+drive_surface_admits soft notify \
+  || fail "so must the notify it is told to fall back to"
+# The two negatives are queried through the settling-verb table, not retyped:
+# a negative admits-check passes for ANY unknown string, so a literal here
+# would go silently vacuous the day the atom were respelled. Reading the atom
+# from drive_boundary_settling_verb ties the query to the spelling the driver
+# itself classifies with, and the assert_eq beside it is the tripwire that
+# fails LOUDLY on a respelling instead of letting the negative prove nothing.
+r_accept_verb="$(drive_boundary_settling_verb run-complete)"
+assert_eq run-accept "$r_accept_verb" \
+  "Part R's run-complete negative queries the atom the table really names"
+if drive_surface_admits soft "$r_accept_verb"; then
+  fail "no orchestrate prompt names 'orchid run accept', so no surface may admit it"
+fi
+r_plan_verb="$(drive_boundary_settling_verb planning)"
+assert_eq plan-apply "$r_plan_verb" \
+  "and the PLANNING negative likewise"
+if drive_surface_admits soft "$r_plan_verb"; then
+  fail "and none names 'orchid plan apply' either"
+fi
