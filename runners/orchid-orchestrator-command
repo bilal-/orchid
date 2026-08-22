@@ -33,7 +33,7 @@ set -euo pipefail
 # ADMITTED -- recording what was learned, and telling a human:
 #     journal add [--task <id>] --kind <kind> <text>
 #     lessons add --scope <repo|engine:<id>> --invalidate-when <text> <text>
-#     notify [--task <id>] <text>
+#     notify [--task <id>] [--choice <value>]... <text>
 # ADMITTED -- releasing the boundary once judged:
 #     run boundary clear --reason <text>
 #
@@ -74,7 +74,7 @@ The brokered, judgment-only command surface. Admitted forms:
                                      [--waive-attempt]
   journal add [--task <id>] --kind <kind> <text>
   lessons add --scope <repo|engine:<id>> --invalidate-when <text> <text>
-  notify [--task <id>] <text>
+  notify [--task <id>] [--choice <value>]... <text>
   run boundary clear --reason <text>
 
 Anything else is refused (exit 17).
@@ -323,6 +323,16 @@ case "$verb" in
           is_id "$2" || refuse "'$2' is not a valid task id"
           [ -z "$n_task" ] || refuse "--task given more than once"
           n_task="$2"; shift 2 ;;
+        --choice)
+          # Repeatable: each occurrence names one permitted answer for the
+          # question being raised (libexec/orchid-notify records the set;
+          # `orchid answer` refuses values outside it). Validated to the
+          # broker's own conservative id shape — narrower than the verb's
+          # comma/whitespace ban, on purpose: nothing an orchestrator
+          # declares as a choice needs more than a word.
+          [ "$#" -ge 2 ] || refuse "--choice requires a value"
+          is_id "$2" || refuse "'$2' is not a valid choice value (one [A-Za-z0-9_-] word)"
+          shift 2 ;;
         --*) refuse "unexpected flag '$1' to notify" ;;
         *)
           [ "$#" -eq 1 ] || refuse "notify takes exactly one text argument, last"

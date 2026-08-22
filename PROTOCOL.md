@@ -2086,7 +2086,13 @@ to it is best-effort only (queued in `runtime/outbox/`, drained by the pump,
 retried up to `send_retry_max` times before quarantine) — `BLOCKERS.md` plus
 the terminal is always a complete interaction surface on its own, with or
 without a channel ever delivering anything (docs/specs/operations.md).
-Raise one with `orchid notify [--task <id>] "<text>"` (prints a `qid`). If
+Raise one with `orchid notify [--task <id>] [--choice <value>]... "<text>"`
+(prints a `qid`). Declare `--choice` values whenever the question has an
+enumerable answer set — the permitted answers are recorded with the
+question, named on the page and in `BLOCKERS.md`, and `orchid answer`
+refuses anything outside them (naming the valid ones), so a typo can never
+be recorded as a decision; a question with no declared set accepts free
+text as before. If
 `hook.on_blocker` is bound, invoke it now (Preamble shape:
 `runners/orchid-launch <id> hook hook --hook on_blocker`, then `orchid jobs
 reconcile`) — its artifact is read the same way `on_verify_fail`'s is,

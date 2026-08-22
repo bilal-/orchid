@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"
+# fm_get: the page body below names the originating task's title and attempt
+# number, read from the task file's own frontmatter.
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 
 # `orchid notify` is a plain mutating verb (INV-02): it writes durable
@@ -8,13 +11,35 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runti
 verb_lock_guard "$repo"
 epoch_require "$repo"
 
-task=""
-if [ "${1:-}" = "--task" ]; then
-  [ -n "${2:-}" ] || orchid_die "--task requires a value"
-  task="$2"; shift 2
-fi
-[ $# -gt 0 ] || orchid_die "usage: orchid notify [--task <id>] <text>"
+usage="usage: orchid notify [--task <id>] [--choice <value>]... <text>"
+task=""; choices=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --task)
+      [ -n "${2:-}" ] || orchid_die "--task requires a value"
+      task="$2"; shift 2 ;;
+    --choice)
+      # Each --choice names ONE permitted answer (lesson L028 in the answer
+      # medium: a page must be able to LIST what `orchid answer` will
+      # accept, and `orchid answer` refuses anything outside a declared
+      # set). A value has to survive both as a single argv word of
+      # `orchid answer <qid> <choice>` and as one entry of the
+      # comma-joined `choices:` line recorded with the question, so
+      # whitespace and commas are refused outright, never escaped.
+      [ -n "${2:-}" ] || orchid_die "--choice requires a value"
+      case "$2" in
+        *[[:space:],]*) orchid_die "--choice '$2' must be a single comma-free word — it becomes one argument to \`orchid answer\`" ;;
+      esac
+      choices="${choices:+$choices,}$2"; shift 2 ;;
+    -*) orchid_die "$usage" ;;
+    *) break ;;
+  esac
+done
+[ $# -gt 0 ] || orchid_die "$usage"
 text="$*"
+# Human-facing spelling of the set ("a | b | c") for BLOCKERS.md and the
+# channel page; the machine-facing CSV goes in the .question file.
+choices_display="${choices//,/ | }"
 
 epoch="$(epoch_current "$repo")"
 suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
@@ -84,6 +109,11 @@ header="## $qid"
   [ -f "$state/BLOCKERS.md" ] && cat "$state/BLOCKERS.md"
   echo; echo "$header"; echo "$text"
   echo "nonce: $nonce"
+  # The permitted answers ride next to the reply command for the same
+  # one-copy-paste reason the nonce does: `orchid answer` refuses a value
+  # outside a declared set, so the operator must be able to see the set
+  # right where the command is.
+  [ -z "$choices" ] || echo "choices: $choices_display"
   echo "reply: ORCHID_REPO=\"$repo\" orchid answer $qid <choice> --nonce $nonce"
 } | atomic_write "$state/BLOCKERS.md"
 
@@ -91,9 +121,13 @@ header="## $qid"
 # existence is what makes a qid "known" to `orchid answer`. First line
 # records the originating task (or "none"), so `orchid answer` can resolve
 # blocker_resolved back into the same task's journal view; second line is
-# the nonce above; this is an internal file format, not a public contract.
+# the nonce above; a `choices:` line (CSV, only when a set was declared)
+# is what `orchid answer` validates a value against; the free-text body
+# follows. This is an internal file format, not a public contract.
 mkdir -p "$rt/answers"
-{ printf 'task: %s\n' "${task:-none}"; printf 'nonce: %s\n' "$nonce"; printf '%s\n' "$text"; } \
+{ printf 'task: %s\n' "${task:-none}"; printf 'nonce: %s\n' "$nonce"
+  [ -z "$choices" ] || printf 'choices: %s\n' "$choices"
+  printf '%s\n' "$text"; } \
   | atomic_write "$rt/answers/$qid.question"
 
 # v1-m4 Task 7 (OUTBOX pattern, INV-01): `orchid notify` is tier-1 and must
@@ -107,14 +141,40 @@ mkdir -p "$rt/answers"
 channel="$(config_get "$repo" notify.channel "")"
 if [ -n "$channel" ]; then
   mkdir -p "$rt/outbox"
+  # The page has a BODY, not just an id and a command. r-001 shipped
+  # twenty-seven boundaries whose page was one opaque line — answerable in
+  # principle, unanswerable in practice, because nothing on the phone said
+  # which task, which attempt, or what would be accepted. So: the line
+  # saying what is being decided first, then the task id AND title, the
+  # attempt number, the permitted answers, and the reply command last.
+  # Task context is best effort — nothing validates --task today
+  # (unchanged), so an unknown id just omits the lines it cannot fill.
+  #
   # The reply instruction embeds the repo binding so the command is complete
   # from ANY cwd — hero-demo F18: a channel-side agent reliably executes the
   # message's command verbatim, and a bare `orchid answer` run from the
   # agent's own cwd dies with "no such question". Never rely on the
-  # answering side knowing the repo out of band.
-  printf '%s: %s — reply: ORCHID_REPO="%s" orchid answer %s <choice> --nonce %s\n' \
-      "$qid" "$text" "$repo" "$qid" "$nonce" \
-    | atomic_write "$rt/outbox/$qid"
+  # answering side knowing the repo out of band. The qid and nonce ride
+  # verbatim — they are the security model; the body is what surrounds them.
+  task_title=""; task_attempt=""
+  if [ -n "$task" ] && [ -f "$state/tasks/$task.md" ]; then
+    task_title="$(fm_get "$state/tasks/$task.md" title)" || task_title=""
+    task_attempt="$(fm_get "$state/tasks/$task.md" attempts)" || task_attempt=""
+  fi
+  {
+    printf '%s: %s\n' "$qid" "$text"
+    if [ -n "$task" ]; then
+      if [ -n "$task_title" ]; then
+        printf 'task: %s — %s\n' "$task" "$task_title"
+      else
+        printf 'task: %s\n' "$task"
+      fi
+      [ -z "$task_attempt" ] || printf 'attempt: %s\n' "$task_attempt"
+    fi
+    [ -z "$choices" ] || printf 'choices: %s\n' "$choices_display"
+    printf 'reply: ORCHID_REPO="%s" orchid answer %s <choice> --nonce %s\n' \
+      "$repo" "$qid" "$nonce"
+  } | atomic_write "$rt/outbox/$qid"
 fi
 
 echo "$qid"

@@ -115,3 +115,58 @@ err6="$(PATH="$STUBBIN_STAT:$PATH" "$ORCHID_BIN" answer "$qid6" nope 2>&1 1>/dev
 [ "$rc" -ne 0 ] || fail "answer must refuse (not silently proceed) when both stat variants fail on the .question file"
 assert_match "cannot determine .* age" "$err6" "answer names the age-unknown refusal plainly, rather than skipping the expiry check"
 [ ! -f ".orchid/runtime/answers/$qid6.answer" ] || fail "an answer refused for unknown age must never be recorded as answered"
+
+# --- declared choice sets (T009): both edges pinned per L034 -----------------
+# A question minted with --choice values records the set with itself, and
+# `orchid answer` REFUSES a value outside it, naming the valid ones (L028:
+# a refusal names the action that clears it). A question with NO declared
+# set keeps today's free-text contract in full.
+
+# A --choice value must survive as one argv word of `orchid answer`, so a
+# value with whitespace or a comma (the set's own join character) is
+# refused at mint time, never recorded in a shape the reader can't split.
+rc=0
+"$ORCHID_BIN" notify --choice "two words" "bad choice shape" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a --choice value containing whitespace must be refused at mint time"
+rc=0
+"$ORCHID_BIN" notify --choice "a,b" "comma in a choice" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "a --choice value containing a comma must be refused at mint time"
+
+# ...and a typoed flag dies as usage rather than silently becoming message
+# text (the same silent-acceptance shape the choice gate exists to close).
+rc=0
+"$ORCHID_BIN" notify --choise approve "typoed flag" 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "an unknown --flag must die as a usage error, not be swallowed into the message text"
+
+qidC="$("$ORCHID_BIN" notify --task T001 --choice approve --choice request-changes --choice defer "promote r-001 to beta?")"
+assert_match "^choices: approve,request-changes,defer\$" "$(cat ".orchid/runtime/answers/$qidC.question")" \
+  "the .question file records the declared set on its own choices: line"
+assert_match "^choices: approve \| request-changes \| defer\$" "$(cat .orchid/BLOCKERS.md)" \
+  "BLOCKERS.md names the permitted answers beside the reply command"
+
+# RED: a value outside the declared set is refused, the refusal NAMES the
+# valid choices, and nothing is recorded — not the answer file, not a
+# blocker_resolved journal entry.
+rc=0
+errC="$("$ORCHID_BIN" answer "$qidC" ship-it 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "an answer outside the declared choice set must be refused"
+assert_match "'ship-it' is not among $qidC's declared choices" "$errC" "the refusal names the rejected value and the qid"
+assert_match "approve \| request-changes \| defer" "$errC" "the refusal names the valid choices (L028)"
+[ ! -f ".orchid/runtime/answers/$qidC.answer" ] || fail "a refused out-of-set answer must never be recorded as answered"
+if grep -q "$qidC: ship-it" .orchid/journal.md; then
+  fail "a refused out-of-set answer must never journal a blocker_resolved entry"
+fi
+
+# GREEN: a value inside the declared set is accepted and recorded verbatim.
+outC="$("$ORCHID_BIN" answer "$qidC" defer)"
+assert_match "$qidC: defer" "$outC" "an in-set answer is accepted"
+assert_eq "defer" "$(cat ".orchid/runtime/answers/$qidC.answer")" "the in-set choice is recorded verbatim"
+
+# GREEN (the other edge): a question that declares NO set records no
+# choices: line and still accepts free text, exactly as before.
+qidF="$("$ORCHID_BIN" notify "no declared set here")"
+if grep -q '^choices: ' ".orchid/runtime/answers/$qidF.question"; then
+  fail "a question minted without --choice must not record a choices: line"
+fi
+outF="$("$ORCHID_BIN" answer "$qidF" any-free-text-at-all)"
+assert_match "any-free-text-at-all" "$outF" "free text stays accepted when the question declares no choice set"

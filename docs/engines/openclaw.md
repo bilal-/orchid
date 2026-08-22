@@ -101,9 +101,22 @@ the adapter and this doc can never drift on which flags are real.
 `orchid notify` is a tier-1 verb; INV-01 forbids tier-1 verbs from
 spawning/detaching a process. So when `notify.channel` is configured,
 `orchid notify` only ever **writes** `runtime/outbox/<qid>` — the fully
-composed message text, nonce included and the repo binding inline so the
-command runs verbatim from any cwd (F18): `"<qid>: <text> — reply:
-ORCHID_REPO="<repo>" orchid answer <qid> <choice> --nonce <nonce>"`.
+composed page, one fact per line, the repo binding inline so the reply
+command runs verbatim from any cwd (F18):
+
+```
+<qid>: <text>
+task: <id> — <title>            # only with --task; title/attempt read
+attempt: <n>                    #   from the task file's own frontmatter
+choices: <a> | <b> | <c>        # only when --choice values were declared
+reply: ORCHID_REPO="<repo>" orchid answer <qid> <choice> --nonce <nonce>
+```
+
+The context lines exist because a page an operator cannot decide from is a
+page that does not get answered: the first line says what is being decided,
+the middle names the task/attempt and what `orchid answer` will accept, and
+the reply command closes the page. The qid and nonce ride verbatim — they
+are the security model; the body is what surrounds them.
 
 `runners/orchid-pump` (tier-2) is what actually launches
 `plugins/notify/openclaw/send <qid> <text>` for each queued outbox file —
@@ -212,6 +225,13 @@ opt-in per call.** The gate is `answer_allowlist` being configured at all
   question older than `answer_expiry_s` (by `.question` file mtime) is
   refused — die, plus a journal note (`blocker_expired`) so the run's
   history shows it, not just a silent stderr refusal.
+- **Declared choice sets.** A question minted with `orchid notify
+  --choice <value>...` records its permitted answers (the `.question`
+  file's `choices:` line, echoed into `BLOCKERS.md` and the outbound
+  page). `orchid answer` refuses any value outside that set, and the
+  refusal names the valid ones — so a typo is caught, never silently
+  recorded as a decision. A question that declares no set keeps the
+  free-text contract unchanged.
 
 **Nonce entropy.** Minting the nonce itself refuses to degrade silently:
 if `notify.channel` OR `answer_allowlist` is configured (i.e. a real

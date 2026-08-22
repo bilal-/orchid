@@ -31,7 +31,8 @@ qf="$rt/answers/$qid.question"
 [ -f "$qf" ] || orchid_die "unknown question $qid (no .question file — orchid notify never minted it, or runtime was wiped)"
 
 # Recover task/nonce from the .question file (libexec/orchid-notify's own
-# format: "task: <id|none>" then "nonce: <value>" then the free-text body).
+# format: "task: <id|none>" then "nonce: <value>", an optional
+# "choices: <csv>" line, then the free-text body).
 # Read individually rather than assuming a fixed line count so a
 # pre-v1-m4-Task-7 .question file (no nonce line at all -- shouldn't exist
 # in practice since notify always mints one now, but a stale runtime dir
@@ -40,6 +41,15 @@ qf="$rt/answers/$qid.question"
 task_line="$(head -n1 "$qf")"; task_id="${task_line#task: }"
 [ "$task_id" = "none" ] && task_id=""
 qnonce="$(grep -m1 '^nonce: ' "$qf" 2>/dev/null | sed 's/^nonce: //')"
+# Declared choice set: a `choices: a,b,c` line (CSV) written by `orchid
+# notify --choice ...` between the nonce line and the free-text body. Most
+# questions declare none — the guard below then never fires and free text
+# stays accepted, so nothing minted before choice sets changes behavior.
+qchoices="$(grep -m1 '^choices: ' "$qf" 2>/dev/null | sed 's/^choices: //')" || qchoices=""
+# A scraped line that could not have been minted by `--choice` (mint-side
+# refuses whitespace in a value) is body prose that merely starts with
+# "choices: " — ignore it rather than gate free text on a sentence.
+case "$qchoices" in *[[:space:]]*) qchoices="" ;; esac
 
 # -- Expiry (answer_expiry_s, default 86400) --------------------------------
 # Applies UNCONDITIONALLY (local terminal and remote sender alike) — the
@@ -115,6 +125,22 @@ if [ -n "$allowlist" ]; then
       [ "$entry" = "$ORCHID_ANSWER_SENDER" ] && allowed=1
     done < <(_manifest_split_csv "$allowlist")
     [ "$allowed" -eq 1 ] || orchid_die "sender '$ORCHID_ANSWER_SENDER' is not in answer_allowlist — refusing (set answer_allowlist to permit it)"
+  fi
+fi
+
+# -- Declared choice set -----------------------------------------------------
+# Lesson L028 in the answer medium: a refusal names what WOULD be accepted.
+# When the question declared a set, a value outside it is refused — and the
+# refusal lists the valid choices, so a typo ("aprove") is caught here
+# instead of being recorded silently as if it were a decision. Questions
+# with no declared set keep today's free-text contract in full.
+if [ -n "$qchoices" ]; then
+  choice_ok=0
+  while IFS= read -r valid_choice; do
+    if [ "$valid_choice" = "$choice" ]; then choice_ok=1; fi
+  done < <(_manifest_split_csv "$qchoices")
+  if [ "$choice_ok" -ne 1 ]; then
+    orchid_die "'$choice' is not among $qid's declared choices — valid: ${qchoices//,/ | }"
   fi
 fi
 

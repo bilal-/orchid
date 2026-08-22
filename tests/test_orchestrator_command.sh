@@ -200,6 +200,8 @@ refuse "a forged acceptance entry"      journal add --kind acceptance "the run i
 refuse "a forged planning deferral"     journal add --kind plan_deferral "deferred L016: not this run"
 refuse "a journal entry with no text"   journal add --kind note
 refuse "a notify with no text"          notify --task T001
+refuse "a choice with no value"         notify --choice
+refuse "a command-shaped choice value"  notify --choice "rm -rf /" --task T001 "question"
 refuse "a multi-line journal entry"     journal add --kind note "first line
 second line"
 refuse "an unknown arbitration result"  task arbitrate T001 --result maybe --reason x
@@ -242,6 +244,11 @@ assert_match "fixture time drifts" "$(cat .orchid/lessons.md)" "an admitted less
 
 admit 'notify' notify --task T001 "which behaviour is intended here?" >/dev/null
 assert_match "which behaviour is intended here" "$(cat .orchid/BLOCKERS.md)" "an admitted blocker really lands"
+
+admit 'notify with declared choices' notify --task T001 --choice approve --choice request-changes \
+  "approve the candidate or send it back?" >/dev/null
+assert_match "choices: approve \| request-changes" "$(cat .orchid/BLOCKERS.md)" \
+  "the brokered choice set really lands with the question (T039: a new flag must be admitted deliberately, never auto-refused into silence)"
 
 # ===========================================================================
 # 3b -- T021: this surface and the orchestrate PROMPTS must agree.
