@@ -804,7 +804,15 @@ ones its archetype never declares.
   dispatching, e.g. a second task racing the same `concurrency` cap):
   1. Create the task's worktree — `git worktree add <path> -b <branch>
      <integration-branch HEAD>`, using the task's recorded `branch` — then
-     record it: `orchid task set <id> worktree <path>`.
+     record it: `orchid task set <id> worktree <path>`. `worktree add`
+     reproduces only what git TRACKS, so any gitignored build state the
+     integration checkout carries (`node_modules`, `vendor`, `.venv`, a
+     symlink into a sibling checkout) is simply absent from the new
+     checkout, and the task's first `orchid verify` there fails on missing
+     dependencies rather than on anything the implementer wrote — and is
+     CHARGED for it, because that is not one of the two hand-offs the
+     classifier can prove (see `testing` below). Provision such state in the
+     new worktree before dispatching.
   2. Record the base: `orchid task set <id> base_sha <integration-branch
      HEAD sha>`.
   3. `orchid task advance <id> implementing --reason "dispatching: deps
@@ -1170,12 +1178,73 @@ ones its archetype never declares.
     then `orchid jobs reconcile`) — an ok envelope's `.artifact.guidance`
     string gets attached to the task BEFORE the rework advance below:
     `orchid task set <id> hook_guidance "<the guidance text>"`. Then,
-    whether or not a hook fired: `orchid task advance <id> rework --reason
-    "verify failed: see .orchid/reviews/<id>-verify.log"` (consumes an attempt unless
-    `--waive-attempt` is also given — reserve that for a failure clearly
-    unrelated to the candidate itself).
+    whether or not a hook fired, **classify the failure before charging it**
+    — the attempt budget measures the CANDIDATE's quality, and a failure the
+    candidate did not cause must not spend it. There are exactly two verdicts
+    and no configuration:
+    - *Not the candidate.* One of the TWO operator hand-offs the protocol
+      itself defines — a stale package checksum, or an executable this
+      candidate left mode 644 — is outstanding, and every failing line in the
+      round is attributable to it. Both halves are required, and neither is
+      worth anything alone. The STATE is proved against the world, never read
+      from the failure's wording: the driver stats the files the candidate
+      ADDED and the files it MODIFIED whose base recorded mode 755 (a `#!`
+      file left mode 644 is the exec-bit hand-off's own state, whether the
+      candidate shipped it that way or dropped the bit while rewriting it),
+      and it RUNS the repository's package-pin freshness check
+      (`handoff.pin_check`, config, default `scripts/pin-formula.sh --check`;
+      never trusted when the candidate changed the check itself) and requires
+      it to REPORT A FILE STALE — a nonzero exit is not that report, since a
+      check that cannot find the formula or trips over metadata this candidate
+      corrupted exits nonzero too and re-pinning fixes neither. The
+      ATTRIBUTION is then required from the failure to that FILE: a failing
+      line that names it and reports its fault — refusing to execute that
+      path, or calling it stale. `Permission denied`, `is not executable` and
+      `checksum is stale` are all sentences an ordinary defect prints, so no
+      wording decides this on its own; and being outstanding is not being to
+      blame, since a repository whose sourced libraries carry `#!` lines at
+      mode 644 has the exec-bit state outstanding on any candidate that adds
+      one. Where the state holds and the failure is not attributable to it,
+      the attempt is CHARGED and the reason says attribution was not
+      established. Attribution is per FAILING LINE and takes two steps,
+      because one fault does not produce one failure: one line must both name
+      the file and report its fault (CAUSAL — the proof it blocked this run),
+      after which every failing line naming that file is its CASCADE, causal
+      wording or not. The path is matched at a BOUNDARY, never as a substring:
+      an outstanding `bin/tool` must not collect a genuine
+      `bin/tool-helper: Permission denied`. NO ROUND IS EVER WAIVED AS A
+      ROUND: it is waived only when every failing line in it is individually
+      claimed, so one round may hold a mix — two hand-offs each explaining
+      part of it are waived together, while one further unexplained line
+      charges it and the reason quotes that line. Such a round is charged to
+      `orchid task infra-fail <id> --reason "..."` — the environment budget,
+      capped by `infra_max` (config, default 3) — and then enters rework
+      WAIVED: `orchid task advance <id> rework --waive-attempt --reason
+      "verify failed (handoff, attempt not charged): <why>"`. The
+      `attempt_waiver` journal entry the waiver writes is what makes "this
+      failure was not charged, and here is why" a durable fact rather than an
+      inference from a counter that did not move. A waived round must produce
+      a FRESH implement envelope of its own: `--waive-attempt` leaves
+      `attempts` where it is, so the re-dispatched round would otherwise
+      resolve the previous round's envelope and re-verify a candidate that
+      never moved. And it is waived ONCE: if a waived fault recurs on a task
+      that has ALREADY HAD ONE WAIVED, stop at an operator boundary instead of
+      re-dispatching, because a hand-off is a fault an operator clears and an
+      identical retry cannot. That guard counts the task's own waived rounds,
+      not `infra_failures`, which also counts unrelated harness faults.
+    - *The candidate, or anything uncertain.* `orchid task advance <id>
+      rework --reason "verify failed (candidate, attempt charged — <why>):
+      see .orchid/reviews/<id>-verify.log"`, which consumes an attempt.
+      Uncertainty always lands here: forgiving a real defect hides it, while
+      charging a spurious failure costs one attempt, so the classification
+      fails toward the strict reading and states why it charged. That
+      includes a failure that merely COINCIDES with an outstanding hand-off,
+      and it includes every failure neither hand-off covers — a flaky test, a
+      worktree missing gitignored build state `git worktree add` cannot
+      reproduce, a harness fault. Orchid forgives only what it can prove, and
+      those it cannot.
 
-    **That advance carries the failing gate's exact locations into the brief,
+    **Either advance carries the failing gate's exact locations into the brief,
     automatically.** Before it deletes the verify log, `orchid task advance
     <id> rework` reads it for location-bearing diagnostics — `file:line:
     RULE: message` and `file:line:col: message` (the gcc-style shape almost
@@ -1234,20 +1303,23 @@ ones its archetype never declares.
     instruction does not. Exactly one live brief reaches the pack: the one for
     the candidate now under work.
 
-    When the rework was caused by
-    something `context.md` failed to state — not an actual defect in the
-    candidate — this is a lesson-birth moment (docs/specs/kernel.md,
-    Cross-run lessons): `orchid lessons add --scope repo --invalidate-when
-    "..." "..."` before continuing. Once `attempts` (`orchid task show
-    <id>`) reaches the task's budget, stop retrying automatically: `orchid
-    notify --task <id> "attempts exhausted (<attempts>/<budget>): see
+    When the rework was caused by something `context.md` failed to state —
+    not an actual defect in the candidate — this is a lesson-birth moment
+    (docs/specs/kernel.md, Cross-run lessons): `orchid lessons add --scope
+    repo --invalidate-when "..." "..."` before continuing. A failure you can
+    see is non-deterministic is the same moment, and a reason to make the test
+    wait for what it samples: Orchid charges it, because it cannot prove
+    flakiness and will not guess at it.
+    Once the task's non-waived `attempts` count (`orchid task show <id>`)
+    reaches its budget, stop retrying automatically: `orchid notify --task
+    <id> "attempts exhausted (<attempts>/<budget>): see
     .orchid/reviews/<id>-verify.log"` then `orchid task advance <id> blocked
     --reason "attempts exhausted (<attempts>/<budget>)"`. The budget is
-    `rework_max` (config, default 3), or the task's own `attempt_budget`
-    when an operator has granted it one (`orchid task retry <id> --reason
-    "..." --attempts N`); it is an orchestrator-enforced budget (kernel.md),
-    not a kernel-verb gate — no verb refuses one more rework advance on its
-    own.
+    `rework_max` (config, default 3), or the task's own `attempt_budget` when
+    an operator has granted it one (`orchid task retry <id> --reason "..."
+    --attempts N`). It is orchestrator-enforced, not a kernel-verb gate; a
+    classified non-candidate failure uses a waived rework edge and never
+    reaches this budget check, which is the point of classifying first.
 
 - **reviewing** (`awaiting-review-envelopes`): apply the risk-tiered review
   policy from the Preamble — `orchid jobs review-plan <id>`, then

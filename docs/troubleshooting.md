@@ -351,6 +351,79 @@ Set `handoff_before_verify=off` (the default) if your implementer can run the
 repository's own gates itself; nothing then gates and this boundary is never
 raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
 "The operator hand-off".
+## A task burns attempts on failures that are not its fault
+
+**Symptom:** `orchid task show <id>` shows `attempts` climbing (and eventually
+`blocked — attempts exhausted`) on verify failures the candidate did not
+cause — most often a package checksum only the operator can re-pin, or an
+executable that shipped without its mode bit.
+
+The driver classifies a failed `orchid verify` before charging it, so those
+two rounds should be landing on `infra_failures` instead. Check which way a
+round went:
+
+```sh
+orchid task show <id>              # attempts vs infra_failures
+orchid journal show --task <id>    # 'attempt_waiver' entries say why
+```
+
+**Exactly two failures are waivable**, both hand-offs the protocol itself
+defines and neither of which the implementer profile may perform. There is
+nothing to configure — no signature list, and no way to declare a third. Each
+needs two things to hold, and each one alone is worth nothing:
+
+1. **The state is proved against the world.** For the mode bit, orchid stats
+   the files the candidate *added* (a `#!` file shipped mode 644) and the ones
+   it *modified* whose base recorded mode 755 (a rewrite that lost an exec bit
+   — an engine whose file writes recreate a file at 0644 does this to every
+   executable it touches, and it cannot `chmod` it back). For the pin, orchid
+   *runs* your own freshness check (`handoff.pin_check`, default
+   `scripts/pin-formula.sh --check`, run under its own `#!` interpreter when
+   it is not executable, as orchid's own is) and requires it to **report a
+   file stale** — a nonzero exit is not enough, because a check that cannot
+   find the formula or trips over metadata the candidate corrupted exits
+   nonzero too and re-pinning fixes neither. No sentence in the *failure* can
+   substitute for either proof, which is why an ordinary defect that merely
+   says `Permission denied` is charged.
+2. **This failure is attributed to that file**, in two steps, because one
+   fault does not fail one check — it strands a whole suite. First, some
+   failing line must *name the file and report its fault*
+   (`.../orchid-frob: Permission denied`, `libexec/orchid-frob is not
+   executable`, `Formula/orchid.rb ... is STALE`); that is the proof the state
+   blocked this run. After it, every failing line that *names* the file is
+   part of the same cascade and is attributed too, causal wording or not —
+   `runners/orchid-drive must exist and be executable` and `T001 ... (last
+   rc=126 ...)` are that mode bit's failures as surely as the refusal is.
+   Without that first line, naming alone attributes nothing: every assertion
+   that fails inside a newly added file names it. The path is matched at a
+   **boundary**, so an outstanding `bin/tool` never collects a real
+   `bin/tool-helper: Permission denied`.
+
+Where the state is outstanding and the failure is not attributable to it, the
+attempt is **charged**, and the reason says the hand-off is outstanding and
+that attribution was not established — so you can clear it and still see that
+it was not what failed.
+
+**A round is never waived as a round.** It is waived only when *every* failing
+line in it is individually claimed. That cuts both ways: two hand-offs
+outstanding at once, each explaining part of the output, together waive the
+round; one more line neither of them owns charges it, and the reason quotes
+that line. Perform the hand-off (re-pin, `chmod +x`) and re-dispatch; the same
+failure charges afterwards, because the state it was proved against is gone.
+If a waived fault comes back a second time, the pass stops at an operator
+boundary rather than re-dispatching again — a fault only you can clear does
+not get better by being retried.
+
+**Anything else charges**, including a flaky test and a worktree missing
+gitignored build state that `git worktree add` cannot reproduce
+(`node_modules`, `vendor`, `.venv`). Orchid forgives only what it can prove,
+and it cannot prove either of those. Fix the test, or provision the worktree,
+then `orchid task retry <id> --reason "..."`, which returns a blocked task to
+`rework` without consuming an attempt. A test you have decided is genuinely
+non-deterministic is a lesson-birth moment for `orchid lessons add` — and a
+reason to make the test wait for what it is sampling. Forgiveness is bounded
+either way: repeated waived failures still block the task once
+`infra_failures` reaches `infra_max`.
 
 ## `attempts exhausted` — the task blocked and you have a diagnosis
 

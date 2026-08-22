@@ -277,7 +277,7 @@ across prose sections is normative HERE):**
 | pending | `task advance` | deps done; worktree created; base_sha set | frontmatter | implementing |
 | implementing | `task advance` | implementer envelope `ok`; the dispatch DELIVERED a candidate (orchestrator-checked before the verb is called — see below); candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
-| testing | `verify` FAIL → `task advance` | — (attempts++ unless `--waive-attempt --reason`) | frontmatter, journal | rework |
+| testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff → `task infra-fail` + `--waive-attempt --reason` | frontmatter, journal | rework |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
 | arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
 | arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
@@ -602,6 +602,47 @@ buying a fresh implementation pass to reach the same tree.
   downstream — the budget for defects in work that WAS delivered — like any
   other delivered round. Both shas must be on record: with `base_sha` missing,
   nothing proves a candidate exists and the refusal two bullets above stands.
+- **Verification failures are classified before they are charged.** An
+  attempt budget that counts the harness's bad days is not measuring the
+  candidate: a stale package pin the implementer profile cannot re-pin and an
+  executable shipped without its mode bit are failures in which the code under
+  test is blameless, and each of them spent a rework attempt before this rule
+  existed. The deterministic driver therefore classifies a FAILED
+  `orchid verify`, and it can reach exactly two verdicts — `candidate`, which
+  charges, and `handoff`, which does not. There is NO configuration surface: a
+  repository cannot declare a signature that forgives its own failures, and
+  the two hand-offs are recognized with no per-repo configuration at all,
+  because the protocol rather than any one project is what names them.
+  Each is proved in two halves, and neither half is worth anything alone. The
+  STATE is proved against the world: the driver stats the files the candidate
+  ADDED and the ones it MODIFIED whose base recorded mode 755 (a rewrite that
+  loses an exec bit is the same hand-off as a new file that never carried
+  one), and it RUNS the repository's own pin freshness check and requires it
+  to REPORT A FILE STALE — a nonzero exit alone is not that report, since a
+  check that cannot find the formula or trips over metadata the candidate
+  corrupted exits nonzero too and re-pinning fixes neither. The failure is
+  then ATTRIBUTED to that file: a failing line must name it and report its
+  fault (refuse to execute it, or call it stale), which proves the state
+  blocked this run, after which every failing line NAMING that file is part of
+  the same cascade (one missing mode bit strands a whole suite, not one
+  assertion). The path is matched at a boundary, so an outstanding `bin/tool`
+  cannot collect a failure on `bin/tool-helper`. A `handoff` verdict charges
+  `infra_failures` rather than `attempts`, entering rework with
+  `--waive-attempt` so the waiver's journal entry names the class and the
+  reason. Four properties make this safe rather than a loophole: it forgives
+  only on POSITIVE evidence, never on absence of it; every uncertain case (no
+  evidence log, no state outstanding, a known fault the failure cannot be
+  attributed to) charges and says why; NO ROUND IS EVER WAIVED AS A ROUND —
+  attribution is per failing LINE and a round is waived only when every line in
+  it is individually claimed, so two hand-offs each explaining part of a round
+  waive it together while one line neither owns charges it with that line
+  quoted; and forgiveness is bounded — by `infra_max`, which blocks the task
+  rather than looping forever, and by the recurrence guard, which stops a
+  SECOND waived round on the same task at an operator boundary rather than
+  re-dispatching an implementer that cannot clear it. A waived round also
+  requires a FRESH implement envelope, since `--waive-attempt` holds
+  `attempts` still and the previous round's envelope would otherwise re-verify
+  a candidate that never moved.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, attempt_budget, infra_failures, session_id,
@@ -652,6 +693,11 @@ header and runs; the equality the advance leaves behind is what INV-11's
 `testing → reviewing` gate reads out of that header afterwards. (A task
 proposing that verification refuse outright on a mismatch, T031, is unmerged at
 the time of writing; nothing above depends on it.)
+`implement_floor` (v1.1): driver-written, and no part of the schema-1 list
+above — it is absent from a task file until a round is waived, and inert once
+`attempts` moves past the attempt it names. Its value is `a<attempt>:<n>`, the
+implement-envelope sibling counter a WAIVED round's next envelope must exceed,
+so a waived round cannot re-resolve the envelope of the round it waived.
 `refused_envelopes` (v1.1): the
 space-separated basenames of implement envelopes refused as no-op deliveries,
 appended by the orchestrator through `orchid task set` (INV-13) at the moment

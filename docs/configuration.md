@@ -75,6 +75,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `gc_older_than_s` | `86400` | repo | v0 |
 | `infra_max` | `3` | repo | v0 |
 | `rework_max` | `3` | repo | v1.1 |
+| `handoff.pin_check` | `scripts/pin-formula.sh --check` | repo | v1.1 |
 | `model` | *(empty — engine's own default)* | repo or user | v0 |
 | `effort` | `medium` | repo or user | v0 |
 | `rate_limit_backoff_s` | `3600` | repo | v1-m2 |
@@ -191,6 +192,80 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   INV-07 invalidates verify evidence. Any value
   other than `off` reads as `required`, so a typo can only route more work to
   a human, never less.
+- **Verification-failure classification** has **no configuration surface at
+  all**, and that is the design rather than an omission. A repository cannot
+  declare a signature that forgives its own failures: earlier versions of this
+  feature offered one, and every signature list, directory-name list and
+  whole-round exemption in them ended up forgiving something it never meant
+  to. Exactly two failures are waivable, both hand-offs the protocol itself
+  defines and neither of which an implementer profile may perform:
+  - **A package pin the repository's own freshness check reports stale**
+    (`handoff.pin_check`, below).
+  - **An executable this candidate left mode 644** — a file carrying a `#!`
+    line with no execute permission, either one it *added* at that mode or one
+    it *modified* that its `base_sha` recorded mode 755, which is what a
+    rewrite that loses an exec bit looks like and is just as much the
+    operator's `chmod`.
+
+  Each needs **two halves, and neither is worth anything alone**:
+  - *The state, proved against the world* — `stat` for the mode bit, and
+    *running* the freshness check for the pin. No sentence in the failure can
+    answer either question, because `Permission denied`, `is not executable`
+    and `checksum is stale` are all things an ordinary defect prints.
+  - *The attribution, from the failure to that file.* Per failing **line**,
+    and in two steps, because one fault does not produce one failure — it
+    produces a cascade. At least one failing line must **name that file** and
+    report its fault (refuse to execute it, or call it stale); that is the
+    proof the outstanding state blocked this run. Every failing line that then
+    names the file is part of its cascade, whether or not it repeats the
+    causal wording (`runners/orchid-drive must exist and be executable` is
+    unmistakably that mode bit's failure). The path is matched at a
+    **boundary**, never as a substring: an outstanding `bin/tool` does not
+    collect a genuine `bin/tool-helper: Permission denied`.
+
+  Being outstanding is not being to blame — a repository whose sourced
+  libraries carry `#!` lines at mode 644 (orchid is one, in every `lib/*.sh`)
+  has that state outstanding on any candidate that adds one, and a stale pin
+  is outstanding on the whole tree for as long as it is stale. Where the state
+  is outstanding and the failure is not attributable to it, the attempt is
+  **charged** and the reason says attribution was not established.
+
+  **A round is never waived as a round.** It is waived only when *every*
+  failing line in it has been individually claimed, which lets one round hold
+  a mix: two hand-offs outstanding at once, each explaining part of the
+  output, together account for all of it and it is waived; one further
+  unexplained line charges it and the reason quotes that line. What remains
+  forgiven, and is bounded on purpose: a candidate that produces *no failing
+  line of its own* while one of those states is outstanding is waived for that
+  round — an operator clears the state in seconds, the round is charged to
+  `infra_failures`, and it stops for a human if it recurs.
+
+  A waived round re-enters rework with `--waive-attempt`, and requires a
+  *fresh* implement envelope of its own: `--waive-attempt` leaves `attempts`
+  where it is, so without that the re-dispatched round would resolve the
+  previous round's envelope and re-verify a candidate that never moved. If a
+  waived fault recurs — a second waived round on the same task — the pass
+  stops at an operator boundary instead of re-dispatching, because a hand-off
+  is a fault an operator clears and an identical retry cannot. That guard
+  counts *this task's own* waived rounds rather than `infra_failures`, which
+  also counts unrelated harness faults.
+- **`handoff.pin_check`** — the package-pin freshness check the `handoff`
+  route runs, as a command line relative to the verified tree
+  (default `scripts/pin-formula.sh --check`). It is only invoked when the
+  named script is a regular file there *and* states how to run it — directly
+  when it is executable, otherwise under the interpreter its own `#!` line
+  names, which is how orchid runs its own mode-644
+  `scripts/pin-formula.sh`; a file that is neither executable nor names a
+  working interpreter is never run, and that is no pin route. It is never
+  trusted when the candidate itself changed it (a bug an implementer just
+  introduced into a pinning script fails exactly like a stale pin, and that is
+  the implementer's). **A nonzero exit does not prove the pin stale** — a
+  check that cannot find the formula, cannot find a git checkout, or trips
+  over packaging metadata the candidate itself corrupted exits nonzero too,
+  and re-pinning fixes none of those. The check must *say* something is stale
+  and *name* a file the repository tracks; that file is what the waiver is
+  attributed to, and a check that fails silently proves nothing and forgives
+  nothing. `none` disables the route.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable
   reviewer/critic (the diff is swapped for a `diff.stat` summary, honestly
   recorded as omitted); an inline-only engine (agy, hermes) still gets the

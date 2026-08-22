@@ -1220,6 +1220,9 @@ drive_implementing() {
 drive_testing() {
   local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts budget arc
   local hstate hdetail
+  local cls_line cls cls_reason prior_waived wmark
+  local clsrc ifrc fsrc floor_mark
+  wmark="$(drive_waiver_mark)"
   tf="$state/tasks/$id.md"
 
   # THE OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm). Between
@@ -1280,20 +1283,121 @@ drive_testing() {
     drive_note "$id: attached the on_verify_fail hook's guidance to the task"
   fi
 
-  # The rework budget is orchestrator-enforced (docs/specs/kernel.md), not a
-  # verb gate: no verb refuses a fourth rework on its own, so the driver is
-  # what stops retrying and hands the task to a human.
+  # Classify the failure BEFORE anything charges it (lib/drive.sh,
+  # drive_verify_class). Read the evidence now: the rework advance below
+  # invalidates the verify log on its way through.
   #
-  # It used to be the literal `attempts >= 3` right here, with no
-  # configuration anywhere and `attempts` itself on `task set`'s kernel-owned
-  # deny-list -- so a task that had spent its rounds on causes T019 says must
-  # NOT be charged (an environment failure, an operator-caused no-op rebase)
-  # could not be given another one through ANY verb: `unblock` and `retry`
-  # both return it to `rework` without touching the counter, and it re-blocks
-  # on its very next verify failure. Hand-editing frontmatter was the only
-  # move left. Both layers are now named and recorded -- `rework_max`
-  # (config, default 3) for the repo, `attempt_budget` frontmatter for the
-  # one task, written by `orchid task retry --attempts N` (dogfood F28).
+  # THE CLASSIFIER MAY NOT KILL THE PASS, and that is not defensive padding.
+  # This library is sourced into a `set -euo pipefail` runner and read through
+  # a command substitution, so any non-zero it returns -- a pin check that died
+  # in a way its own arm did not anticipate, a git that could not answer --
+  # propagated straight out as the PASS's exit
+  # status. That exits with a code this runner does not document (0, 16 or 1),
+  # leaves every task after this one in the walk untouched with no boundary and
+  # no journal line, and does it at the one moment the run is already failing.
+  # A classifier that cannot answer is the case the strict default was written
+  # for, so it takes the strict default and SAYS the classifier itself is what
+  # failed -- charging the attempt, exactly as an unreadable evidence log does.
+  clsrc=0
+  cls_line="$(drive_verify_class "$repo" "$tf" "$state/reviews/$id-verify.log")" || clsrc=$?
+  if [ "$clsrc" -ne 0 ] || [ -z "$cls_line" ]; then
+    cls=candidate
+    cls_reason="the failure could not be classified — the classifier itself did not answer (exit $clsrc, ${#cls_line} bytes); charging per the strict default rather than forgiving a round nothing was able to read"
+  else
+    cls="${cls_line%%$'\t'*}"
+    cls_reason="${cls_line#*$'\t'}"
+  fi
+
+  if [ "$cls" != candidate ]; then
+    # The edge is checked BEFORE anything is charged. A task whose archetype
+    # has no testing -> rework edge is going to an operator either way, and
+    # spending environment budget on a round that never advances would charge
+    # for a refusal -- the same "charged for something that is not the
+    # candidate" mistake this whole path exists to stop, one budget over.
+    if ! drive_has_transition "$arch" testing rework; then
+      set_boundary operator-decision "$id" "verify failed ($cls) and archetype '$arch' declares no testing -> rework edge"
+      return 0
+    fi
+    # Not the candidate's failure, so not the candidate's attempt. It is still
+    # a failure that must be counted somewhere, or an environment fault would
+    # loop this task forever at zero cost: `infra_failures` is the kernel's
+    # existing budget for exactly this, with its own journal-first discipline
+    # and its own `infra_max` auto-block. Rework is then entered WAIVED, whose
+    # `attempt_waiver` journal entry carries the classification and its reason
+    # -- so "this failure was not charged, and here is why" is a durable,
+    # greppable fact rather than an inference from a counter that did not move.
+    #
+    # Read this task's OWN waived-round history. The guard used to key on
+    # `infra_failures`, which also counts a dead job manifest and a launch that
+    # could not spawn -- an unrelated earlier one then held the task for an
+    # operator before the single retry that is supposed to happen.
+    prior_waived="$(drive_waived_rounds "$state/journal.md" "$id" || true)"
+    case "$prior_waived" in ''|*[!0-9]*) prior_waived=0 ;; esac
+    # Charged through the verb, and its REFUSAL is a boundary rather than the
+    # end of the pass. Every other verb call in this file already captures its
+    # status this way; these were the ones that did not, and on the one path
+    # where the run is already failing that turned a refusal into an
+    # undocumented exit code with the rest of the walk silently skipped.
+    ifrc=0
+    "$ORCHID_BIN" task infra-fail "$id" \
+      --reason "verify failed, but the candidate is not what failed ($cls): $cls_reason" >/dev/null || ifrc=$?
+    if [ "$ifrc" -ne 0 ]; then
+      set_boundary operator-decision "$id" \
+        "task infra-fail refused this $cls verify failure (exit $ifrc), so the round was neither charged to the environment budget nor waived: $cls_reason"
+      return 0
+    fi
+    if [ "$(fm_get "$tf" status)" = blocked ]; then
+      drive_note "$id: verify FAIL ($cls, $wmark) — infra_failures cap reached, testing -> blocked"
+      set_boundary operator-decision "$id" "repeated non-candidate verify failures ($cls): $cls_reason"
+      return 0
+    fi
+    # A hand-off is a thing an OPERATOR clears -- a checksum re-pinned, an exec
+    # bit set. Re-dispatching the implementer against it produces the identical
+    # failure and nothing else, so the second one stops here rather than
+    # grinding out the rest of `infra_max` on retries that cannot work. The
+    # first still retries: the fault may have been cleared between the two
+    # passes, and one bad round is not yet a reason to stop a run for a human.
+    if [ "$prior_waived" -ge 1 ]; then
+      drive_note "$id: verify FAIL ($cls, $wmark) — recurring non-candidate fault, testing held for an operator"
+      set_boundary operator-decision "$id" "$cls verify failure on a task that has already had $prior_waived operator-clearable round(s) waived — an operator clears this, another identical re-dispatch cannot: $cls_reason"
+      return 0
+    fi
+    # The floor is recorded BEFORE the advance, while this round's envelopes
+    # are still the newest on disk. Without it the waived round -- which by
+    # design leaves `attempts` where it is -- re-resolves the envelope the
+    # round just now being waived produced, re-stamps a worktree HEAD that
+    # never moved as the candidate, and re-verifies an unchanged candidate.
+    # A floor that could not be RECORDED therefore stops the pass here rather
+    # than waiving anyway: waiving without it trades a failed write for a loop.
+    fsrc=0
+    floor_mark="$(drive_implement_floor_mark "$repo" "$id" || true)"
+    if [ -n "$floor_mark" ]; then
+      "$ORCHID_BIN" task set "$id" implement_floor "$floor_mark" >/dev/null || fsrc=$?
+    else
+      fsrc=1
+    fi
+    if [ "$fsrc" -ne 0 ]; then
+      set_boundary operator-decision "$id" \
+        "the waived round's implement floor could not be recorded (exit $fsrc), and waiving without it re-verifies the candidate that just failed: $cls_reason"
+      return 0
+    fi
+    arc=0
+    "$ORCHID_BIN" task advance "$id" rework --waive-attempt \
+      --reason "$(drive_waiver_reason "$cls" "$cls_reason")" >/dev/null || arc=$?
+    if [ "$arc" -ne 0 ]; then
+      set_boundary operator-decision "$id" "testing -> rework refused (exit $arc)"
+      return 0
+    fi
+    drive_note "$id: verify FAIL ($cls, $wmark) — testing -> rework"
+    return 0
+  fi
+
+  # The rework budget is orchestrator-enforced (docs/specs/kernel.md), not a
+  # verb gate. Only reached on a CHARGED candidate failure -- a waived round
+  # above never counts against this budget, which is the point of classifying
+  # first. T026 made the budget configurable per repository and grantable per
+  # task through `orchid task retry --attempts N`; preserve that recovery path
+  # here instead of restoring the old literal-three dead end.
   attempts="$(fm_get "$tf" attempts)"; [ -n "$attempts" ] || attempts=0
   budget="$(schedule_attempt_budget "$repo" "$id")"
   if [ "$attempts" -ge "$budget" ]; then
@@ -1309,12 +1413,12 @@ drive_testing() {
   fi
   arc=0
   "$ORCHID_BIN" task advance "$id" rework \
-    --reason "verify failed: see .orchid/reviews/$id-verify.log" >/dev/null || arc=$?
+    --reason "verify failed (candidate, attempt charged — $cls_reason): see .orchid/reviews/$id-verify.log" >/dev/null || arc=$?
   if [ "$arc" -ne 0 ]; then
     set_boundary operator-decision "$id" "testing -> rework refused (exit $arc)"
     return 0
   fi
-  drive_note "$id: verify FAIL, testing -> rework"
+  drive_note "$id: verify FAIL (candidate, attempt charged), testing -> rework"
   return 0
 }
 

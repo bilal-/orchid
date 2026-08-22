@@ -89,6 +89,31 @@ pack_budget_bytes=65536
 # `orchid task retry <id> --reason "..." --attempts N` (which records an
 # `attempt_budget` in that task's frontmatter and journals the grant).
 # rework_max=3
+# v1.1: verification-failure classification. A FAILED verify is classified
+# before it is charged, so the attempt budget keeps measuring the candidate
+# rather than the harness. There is nothing to configure and no signature list:
+# exactly two failures are waivable, both hand-offs the protocol itself defines
+# and neither of which an implementer profile may perform --
+#   - a package pin this repository's own freshness check REPORTS STALE, and
+#   - an executable this candidate left mode 644 (stat'ing the files it added,
+#     and the ones it modified whose base recorded mode 755, since a rewrite
+#     that drops an exec bit is the same hand-off).
+# Each is proved against the world first, and then THIS failure must be
+# attributable to that file: a failing line naming it and refusing to execute
+# it, or naming it and calling it stale. Everything else charges, including a
+# failure that merely coincides with an outstanding hand-off.
+#
+# The package-pin freshness check that route RUNS, relative to the verified
+# tree. Invoked only if it is a regular file there that states how it is run --
+# directly when it carries the exec bit, otherwise under the interpreter its
+# own `#!` line names, which is how a mode-644 check like orchid's own
+# scripts/pin-formula.sh is run. Its nonzero EXIT is not enough: it must report
+# a file stale in words, because a check that cannot find the formula or trips
+# over metadata the candidate corrupted also exits nonzero and re-pinning fixes
+# neither. Never trusted when the candidate itself changed it. `none` disables
+# the route.
+# Default: scripts/pin-formula.sh --check
+# handoff.pin_check=scripts/pin-formula.sh --check
 # model=
 # effort=medium
 # rate_limit_backoff_s=3600
