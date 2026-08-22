@@ -595,3 +595,191 @@ ORCHID_REPO="$W/r14-orchid" ORCHID_EPOCH=0 "$ORCHID_BIN" requirements import "$R
   || fail "orchid requirements import still works standalone"
 assert_eq "$(cat "$REQ")" "$(cat "$W/r14-orchid/.orchid/requirements.md")" \
   "the documented manual sequence still produces the same result"
+
+# ===========================================================================
+# 9 -- T002 (r-001 follow-up): `orchid start` must stay idempotent on a repo
+# whose own history already carries .orchid/tasks/.
+#
+# r-001's reviewer reported an .orchid/tasks/ idempotence break and the finding
+# text was lost to an empty findings[], so this Part was written first as a
+# diagnosis derived by READING libexec/orchid-start. The break is real, and the
+# source trace that establishes it is:
+#
+#   * `orchid init` cuts $integ from the operator's own HEAD
+#     (libexec/orchid-init:80) and commits a fresh roadmap.md over whatever
+#     .orchid/ that HEAD carried -- but it never clears an inherited
+#     .orchid/tasks/, because it only `mkdir -p`s that directory
+#     (libexec/orchid-init:81) and git tracks no empty one. Those inherited
+#     task files ride onto the integration branch.
+#   * `orchid start` cleared the committed-tasks witness for mode=new, and was
+#     right to: nothing on that branch came from `plan apply`. But the
+#     exemption was scoped to the INVOCATION while the state it excuses is
+#     durable, so the next identical run read mode=existing and refused --
+#     with a premise untrue of the state `orchid start` itself created, and a
+#     recovery (`run resume`/`run new`) that does not apply to a run still in
+#     planning with no plan on it.
+#
+# The fix reads the witness against the branch's fork point
+# (_start_tasks_inherited), so both runs reach the same verdict from committed
+# state. This Part is now the regression guard for it, and the tripwire below
+# is the other half: the witness must still fire when a plan really has landed,
+# or the fix would have "passed" by disabling it.
+#
+# The precondition is a repository whose own history carries .orchid/tasks/:
+# an orchid-managed repo whose integration branch was merged back into its
+# mainline and whose next run gets a new integration branch. That is exactly
+# how this repository's own main branch looks, so the fixture below is the
+# dogfood shape rather than an invented one.
+#
+# Part 2 above already pins idempotence for a repo with no inherited .orchid
+# state; this Part is the same question asked of the one input shape Part 2
+# does not carry.
+# ===========================================================================
+r25="$W/r25"; mk_repo "$r25"
+mkdir -p "$r25/.orchid/tasks"
+printf -- '---\nrun_status: complete\nrun_id: r-001\n---\n# Roadmap\n' > "$r25/.orchid/roadmap.md"
+printf -- '---\nid: T001\nstatus: merged\n---\n# T001\n' > "$r25/.orchid/tasks/T001.md"
+printf '# Journal\n' > "$r25/.orchid/journal.md"
+git -C "$r25" add -A
+git -C "$r25" commit -q -m "fixture: a finished orchid run, merged back into the mainline"
+# roadmap.md is committed alongside tasks/ deliberately: without it the
+# operator's own checkout matches orchid_split_brain (lib/common.sh) and the
+# preflight would fail this fixture for that instead, never reaching the
+# witness under test.
+
+rc=0
+out25a="$(ORCHID_REPO="$r25" "$ORCHID_BIN" start "$REQ" --verify 'true' 2>&1)" || rc=$?
+if [ "$rc" -ne 0 ]; then
+  fail "the FIRST orchid start refused a repo whose own history carries .orchid/tasks/ (exit $rc) — setup must accept that shape before idempotence on it means anything, so read this before the assertions below: $out25a"
+else
+  assert_match "^orchid start: initialized a new run$" "$out25a" \
+    "setup succeeds on a repo whose own history already carries .orchid/tasks/"
+  # The premise of the whole Part: those inherited task files are now
+  # COMMITTED on the integration branch, put there by `orchid init` branching
+  # from the operator's HEAD -- never by `orchid plan apply`.
+  assert_eq ".orchid/tasks/T001.md" \
+    "$(git -C "$r25" ls-tree --name-only refs/heads/orchid/integration -- .orchid/tasks/)" \
+    "the inherited task file rides onto the integration branch that setup just created"
+
+  rc=0
+  out25b="$(ORCHID_REPO="$r25" ORCHID_EPOCH=0 "$ORCHID_BIN" start "$REQ" --verify 'true' 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    # One report, not three: `fail` accumulates rather than exits (helpers.sh),
+    # so the two assertions below would otherwise pile two derived failures on
+    # top of the one that actually explains them.
+    printf '%s\n' "$out25b" | sed 's/^/    | /'
+    fail "the second identical 'orchid start' exited $rc where the first exited 0 — setup refuses the state it created one run earlier (output above). orchid start must be idempotent, or fail with a recovery that applies; this fails with a recovery for a run in flight."
+  else
+    assert_match "^orchid start: reused existing run state$" "$out25b" \
+      "a second identical run reuses the state the first one built"
+    assert_match "^requirements: unchanged \(already imported verbatim\)$" "$out25b" \
+      "and re-imports nothing"
+  fi
+fi
+
+# The tripwire, and the reason the Part above is not satisfied by simply
+# deleting the witness: .orchid/tasks/ content that a plan really DID put on
+# the branch must still be refused. The fixture is the same inherited-tasks
+# shape, so the only difference between refusing and reusing is the provenance
+# of the task files -- which is exactly what _start_tasks_inherited judges.
+r26="$W/r26"; mk_repo "$r26"
+mkdir -p "$r26/.orchid/tasks"
+printf -- '---\nrun_status: complete\nrun_id: r-001\n---\n# Roadmap\n' > "$r26/.orchid/roadmap.md"
+printf -- '---\nid: T001\nstatus: merged\n---\n# T001\n' > "$r26/.orchid/tasks/T001.md"
+printf '# Journal\n' > "$r26/.orchid/journal.md"
+git -C "$r26" add -A
+git -C "$r26" commit -q -m "fixture: a finished orchid run, merged back into the mainline"
+
+# --worktree so the integration checkout is at a path this test knows, rather
+# than one it would have to parse back out of the output.
+r26wt="$W/r26wt"
+ORCHID_REPO="$r26" "$ORCHID_BIN" start "$REQ" --verify 'true' --worktree "$r26wt" >/dev/null 2>&1 \
+  || fail "setup failed on the tripwire fixture"
+
+# A plan lands: committed .orchid/tasks/ content on $integ that the branch did
+# NOT inherit. The roadmap is left reading `planning` on purpose -- that is
+# precisely the case the tasks witness exists for, the one the two roadmap
+# witnesses cannot see.
+#
+# The edit is to the BODY of the file already there, leaving its frontmatter
+# (and so the set of task ids, and every id/status the preflight reads) exactly
+# as it was one successful `orchid start` ago. Two reasons: this refusal is
+# then attributable to provenance alone rather than to some other check
+# noticing a new id, and it pins the blob-sha comparison specifically -- a
+# witness that compared only PATHS would sail past this.
+printf -- '---\nid: T001\nstatus: merged\n---\n# T001\n\nplanned onto the branch\n' \
+  > "$r26wt/.orchid/tasks/T001.md"
+# Pathspec-limited, so this commits the one file it means to even if setup left
+# anything else staged in that checkout -- the subject of this tripwire is the
+# task file's provenance, and nothing else should ride along and muddy it.
+git -C "$r26wt" commit -q -m "orchid: plan apply" -- .orchid/tasks/T001.md
+
+rc=0
+out26="$(ORCHID_REPO="$r26" ORCHID_EPOCH=0 "$ORCHID_BIN" start "$REQ" --verify 'true' 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+  fail "orchid start accepted a branch carrying a task file that a plan put there — the inherited-tasks exemption must not disable the witness: $out26"
+else
+  assert_match "already carries committed .orchid/tasks/" "$out26" \
+    "and refuses on the tasks witness, naming it"
+fi
+
+# ===========================================================================
+# 10 -- the second half of that tripwire: the inherited-tasks exemption must
+# decline on COMMIT identity, not on branch names.
+#
+# _start_tasks_inherited answers by comparing $integ's committed .orchid/tasks/
+# against the same path at the branch's fork point, and it must refuse to
+# answer whenever that fork point IS the branch tip -- the comparison is
+# vacuously true there, so an unguarded reading would not inform the witness
+# but silently disable it.
+#
+# HEAD sitting on $integ is the obvious way to land in that state and a name
+# check catches it. This Part is the way that a name check does NOT catch: an
+# operator who fast-forwards their own branch onto $integ mid-run. The names
+# still differ, the commits no longer do, and every task file `plan apply` put
+# on the branch is now also on the merge base. That is precisely the state the
+# witness exists for -- a plan on the branch, candidates whose base_sha this
+# verb's durable commit could move -- so it must still refuse.
+#
+# Part 9's tripwire above cannot see this: it leaves the operator's branch at
+# the fork point, where names and commits agree about which is which.
+# ===========================================================================
+r27="$W/r27"; mk_repo "$r27"
+mkdir -p "$r27/.orchid/tasks"
+printf -- '---\nrun_status: complete\nrun_id: r-001\n---\n# Roadmap\n' > "$r27/.orchid/roadmap.md"
+printf -- '---\nid: T001\nstatus: merged\n---\n# T001\n' > "$r27/.orchid/tasks/T001.md"
+printf '# Journal\n' > "$r27/.orchid/journal.md"
+git -C "$r27" add -A
+git -C "$r27" commit -q -m "fixture: a finished orchid run, merged back into the mainline"
+
+r27wt="$W/r27wt"
+ORCHID_REPO="$r27" "$ORCHID_BIN" start "$REQ" --verify 'true' --worktree "$r27wt" >/dev/null 2>&1 \
+  || fail "setup failed on the commit-identity fixture"
+
+# A plan lands, exactly as in Part 9's tripwire.
+printf -- '---\nid: T001\nstatus: merged\n---\n# T001\n\nplanned onto the branch\n' \
+  > "$r27wt/.orchid/tasks/T001.md"
+git -C "$r27wt" commit -q -m "orchid: plan apply" -- .orchid/tasks/T001.md
+
+# ...and THEN the operator moves their own branch onto $integ. `reset --hard`
+# rather than `merge --ff-only` on purpose: it reaches the same commit without
+# depending on the operator checkout being clean, or on setup having added no
+# path that a merge would refuse to overwrite. Either way the branch names stay
+# distinct while the commits become identical, which is the whole subject here.
+r27_branch="$(git -C "$r27" rev-parse --abbrev-ref HEAD)"
+[ "$r27_branch" != "orchid/integration" ] \
+  || fail "fixture: the operator checkout must be on its own branch, not \$integ — this Part is about two NAMES over one commit"
+git -C "$r27" reset -q --hard refs/heads/orchid/integration \
+  || fail "fixture: could not fast-forward the operator's branch onto the integration branch"
+assert_eq "$(git -C "$r27" rev-parse refs/heads/orchid/integration)" \
+  "$(git -C "$r27" rev-parse HEAD)" \
+  "fixture: the operator's branch and the integration branch now name one commit"
+
+rc=0
+out27="$(ORCHID_REPO="$r27" ORCHID_EPOCH=0 "$ORCHID_BIN" start "$REQ" --verify 'true' 2>&1)" || rc=$?
+if [ "$rc" -eq 0 ]; then
+  fail "orchid start accepted a branch with a plan on it because the operator's own branch had been moved onto that branch — the fork point was the branch tip, so the inherited-tasks comparison was vacuous and must have declined to answer rather than passed: $out27"
+else
+  assert_match "already carries committed .orchid/tasks/" "$out27" \
+    "and still refuses on the tasks witness when the fork point is the branch tip under another name"
+fi

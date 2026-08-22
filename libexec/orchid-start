@@ -410,7 +410,8 @@ _start_require_no_config_clobber() {
 #                              ("" when that branch carries no roadmap.md)
 #   ORCHID_START_RUN_ID        run_id, preferring the live copy
 #   ORCHID_START_TASKS         "1" when <branch> carries committed
-#                              .orchid/tasks/ entries
+#                              .orchid/tasks/ entries that it did NOT inherit
+#                              when it was cut (see _start_tasks_inherited)
 #
 # Reading BOTH roadmap copies is the whole point. Neither is authoritative on
 # its own, and they can genuinely disagree in EITHER direction:
@@ -432,11 +433,17 @@ _start_require_no_config_clobber() {
 # ORCHID_START_TASKS is a third, independent witness, and the only one that
 # speaks directly to what the durable commit further below actually risks:
 # whether any candidate's base_sha can be moved by advancing this branch.
-# Task files reach the integration branch ONLY through `orchid plan apply`
-# (kernel.md's sole writer of the planning->running edge); `orchid init` and
-# `orchid run new` both leave .orchid/tasks/ empty, and git tracks no empty
-# directory. A branch carrying task files has a plan on it, whatever its
-# roadmap frontmatter happens to say.
+# Task files are ADDED to the integration branch only through `orchid plan
+# apply` (kernel.md's sole writer of the planning->running edge); `orchid init`
+# and `orchid run new` both leave .orchid/tasks/ empty, and git tracks no empty
+# directory. A branch carrying task files it did not inherit has a plan on it,
+# whatever its roadmap frontmatter happens to say.
+#
+# "Did not inherit" is load-bearing and is T002. `orchid init` cuts the branch
+# from the operator's HEAD, so a repo whose own mainline already carries
+# .orchid/tasks/ hands them to the branch without any `plan apply` -- the
+# witness has to be read against the branch's fork point, or the second
+# `orchid start` refuses the state the first one created.
 _start_read_run_state() {
   local repo="$1" branch="$2" live="$3" tmp
   ORCHID_START_ROADMAP=""; ORCHID_START_RS_LIVE=""; ORCHID_START_RS_COMMITTED=""
@@ -461,8 +468,68 @@ _start_read_run_state() {
   # boundary installs one, and a competing `trap ... EXIT` here would clobber
   # it rather than compose with it (lib/common.sh's verb_lock_guard note).
   rm -f "$tmp"
-  [ -z "$(git -C "$repo" ls-tree --name-only "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)" ] \
-    || ORCHID_START_TASKS=1
+  if [ -n "$(git -C "$repo" ls-tree --name-only "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)" ] \
+     && ! _start_tasks_inherited "$repo" "$branch"; then
+    ORCHID_START_TASKS=1
+  fi
+}
+
+# _start_tasks_inherited <repo> <branch> -- true when the committed
+# .orchid/tasks/ on <branch> is byte-for-byte what that branch INHERITED when
+# it was cut, so nothing has been planned onto it since.
+#
+# This is what makes the exemption below DURABLE instead of invocation-scoped,
+# and it is the whole of T002. `orchid init` cuts $integ from the operator's
+# own HEAD (libexec/orchid-init:80) and then commits a fresh roadmap.md over
+# whatever .orchid/ that HEAD carried -- but it does NOT clear an inherited
+# .orchid/tasks/, because it only ever `mkdir -p`s that directory and git
+# tracks no empty one. On a repo whose own mainline already carries task files
+# (an orchid-managed repo whose finished run was merged back -- this
+# repository's own shape), those files ride onto $integ having never come from
+# `orchid plan apply`.
+#
+# The `mode=new` arm further below already blesses exactly that state, and is
+# right to. But it is scoped to the INVOCATION, while the state it excuses is
+# durable on the branch: the next, identical `orchid start` reads mode=existing
+# and refuses what the first one created -- with a premise that is untrue of it
+# ("task files reach the integration branch only through 'orchid plan apply'")
+# and a recovery that does not apply (`run resume`/`run new`, for a run still
+# in planning with no plan on it). Deciding it from committed state instead
+# means both runs read the same answer.
+#
+# The fork point, not the operator's HEAD as it stands now: their branch may
+# have moved on since init, and only what was there when $integ was CUT is
+# inherited. Anything `plan apply` committed since is on $integ and not on the
+# merge base, so the trees differ and the witness fires exactly as before.
+#
+# Refuses to answer (returns false, i.e. keeps the strict reading) whenever the
+# fork point turns out to BE the branch tip. Every task file on $integ is then
+# also on the base, so the comparison below is vacuously true and would disable
+# the witness outright rather than inform it. A branch compared against itself
+# proves nothing, so this declines rather than guesses -- the operator gets the
+# existing refusal, which is safe.
+#
+# That test is on COMMITS, not on branch names, and the difference is the whole
+# of it. HEAD sitting on $integ is only the obvious way to reach a vacuous
+# comparison; an operator who fast-forwarded or merged their own branch onto
+# $integ mid-run reaches the identical one under a different name, and that is
+# the shape with a plan genuinely on the branch and candidates whose base_sha
+# this verb's durable commit could move. A name check would wave it through.
+_start_tasks_inherited() {
+  local repo="$1" branch="$2" tip base ours theirs
+  tip="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/$branch" 2>/dev/null || true)"
+  [ -n "$tip" ] || return 1
+  # Unborn HEAD (a repo with no commits of its own) has no merge base either,
+  # so this is also what declines there.
+  base="$(git -C "$repo" merge-base "refs/heads/$branch" HEAD 2>/dev/null || true)"
+  [ -n "$base" ] || return 1
+  [ "$base" != "$tip" ] || return 1
+  # Full `ls-tree -r` rows (mode, type, blob sha, path), never just the names:
+  # a plan apply that REPLACED an inherited task file's contents under the same
+  # path must read as a plan, and only the blob sha says so.
+  ours="$(git -C "$repo" ls-tree -r "refs/heads/$branch" -- .orchid/tasks/ 2>/dev/null || true)"
+  theirs="$(git -C "$repo" ls-tree -r "$base" -- .orchid/tasks/ 2>/dev/null || true)"
+  [ "$ours" = "$theirs" ]
 }
 
 # _start_require_planning <when> <branch> -- refuse unless EVERY witness
@@ -877,6 +944,14 @@ if [ "$mode" = new ]; then
   # already run. The two roadmap witnesses still apply (init writes and
   # commits `run_status: planning` itself, so anything else is a real
   # surprise).
+  #
+  # T002: _start_tasks_inherited now reaches the same verdict from committed
+  # state, on this run and on every later one, which is what makes a second
+  # `orchid start` idempotent instead of a refusal. This arm is KEPT rather
+  # than replaced by it: on a branch this invocation just created the answer
+  # is not in doubt, and it stays right even in the shapes the helper declines
+  # to judge (a fork point that is already the branch tip, where a branch
+  # would be compared against itself).
   ORCHID_START_TASKS=""
 fi
 _start_require_planning "re-checked under the verb lock, before anything was committed" "$integ"
@@ -988,8 +1063,9 @@ else
   # and under that lock the run was re-checked against all three witnesses
   # _start_read_run_state gathers: the checkout's roadmap.md, the roadmap
   # COMMITTED on $integ (the two lag each other in opposite directions), and
-  # $integ's own committed .orchid/tasks/, empty until a plan lands. A branch
-  # with no plan on it has no candidate whose base this commit can move.
+  # $integ's own committed .orchid/tasks/, unchanged from what the branch
+  # inherited until a plan lands. A branch with no plan on it has no candidate
+  # whose base this commit can move.
   #
   # The lease is deliberately NOT part of that argument: it is refused above
   # where a checkout exists, but it is advisory (an orchestrator session's
