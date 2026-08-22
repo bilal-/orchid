@@ -5,10 +5,13 @@
 # XDG_CONFIG_HOME, XDG_DATA_HOME, TMPDIR, ORCHID_HOME, CLAUDE_SKILLS_DIR, the
 # install prefix, the plugin/engine search paths, Git's global and system
 # config files, and every fixture, worktree, and output path. Nothing outside
-# that root may change; the source checkout is read-only input and is proven
-# unchanged -- working tree, file listing, HEAD, and remote refs (see step 0c
-# for what each snapshot deliberately leaves out, and why watching less is what
-# makes the claim mean something on a live machine).
+# that root may change; the source tree is read-only input and is proven
+# unchanged -- working tree, file listing, HEAD, and remote refs when this file
+# runs from a Git checkout, and the file listing ALONE when it does not, with
+# the other three recorded as not-tested rather than passed (see step 0c for
+# what each snapshot deliberately leaves out, why watching less is what makes
+# the claim mean something on a live machine, and why an extracted release
+# archive cannot be asked those three at all).
 #
 # It walks the whole operator story once, with no network and no external
 # mutation anywhere:
@@ -386,34 +389,29 @@ assert_snapshot_unchanged() {
   fail "$label -- changed:
 $delta"
 }
-# The source checkout is read-only input. Three questions, each scoped to
-# something this rehearsal actually controls:
+# The source tree is read-only input, and tests/helpers.sh's
+# snapshot_source_tree is what asks whether that is provable HERE before it
+# asks anything else. It watches the working tree (git's own porcelain,
+# `.orchid` excluded -- that directory is the outer run's live state, and not a
+# channel this rehearsal can write through either: every verb it runs is handed
+# an explicit ORCHID_REPO under the private root, and no step ever names the
+# source tree as a repository), REMOTE refs only (exactly the promise, and the
+# only part of the ref namespace nothing local can disturb), HEAD, and the file
+# listing with `.git` and `.orchid` pruned. See that function for why each is
+# scoped the way it is.
 #
-#  * WORKING TREE -- git's own porcelain, `.orchid` excluded. That directory
-#    is the OUTER run's live state (its journal, task records, and runtime
-#    lease), rewritten by the kernel that invoked this suite while the suite
-#    runs, so including it makes the caller's own progress look like damage.
-#    It is not a channel this rehearsal can write through either: every verb
-#    it runs is handed an explicit ORCHID_REPO under the private root, and no
-#    step ever names the source checkout as a repository.
-#  * REFS -- REMOTE refs only, which is exactly the promise ("no remote ref
-#    moved") and the only part of the ref namespace nothing local can disturb.
-#    Local branches live in a Git common directory shared with every other
-#    worktree of this checkout, so an outer commit or merge moves them mid-run
-#    through no act of this file's. HEAD is kept: it answers "did anything
-#    commit into the checkout under test".
-#  * NAMES -- the file listing with `.git` and `.orchid` pruned, which catches
-#    a file created or removed beside the checkout's own content.
-snapshot_source() {
-  git -C "$REPO_ROOT" status --porcelain=v1 --untracked-files=all -- ':!.orchid'
-  echo "--remote-refs--"
-  git -C "$REPO_ROOT" for-each-ref --format='%(refname) %(objectname)' refs/remotes
-  echo "--head--"
-  git -C "$REPO_ROOT" rev-parse HEAD
-  echo "--names--"
-  find "$REPO_ROOT" -name .git -prune -o -name .orchid -prune -o -print 2>/dev/null \
-    | LC_ALL=C sort
-}
+# THE CONTEXT IS THE POINT (T004). tests/run.sh globs this file, and the suite
+# is deliberately runnable inside an extracted release archive -- which has no
+# Git metadata at its root, so the first three questions above have no answer
+# there and a before/after comparison of them would report a tree that was
+# never at risk as unchanged, passing without proving anything. Rather than
+# delete the claim, the snapshot states its context on its own first line (so a
+# tree that stops being a checkout mid-run is itself a difference), drops the
+# Git sections when they cannot be asked, keeps comparing the file listing --
+# which is real evidence in both contexts -- and records the rest here as
+# not-tested, once, before the first snapshot is taken.
+snapshot_source() { snapshot_source_tree "$REPO_ROOT"; }
+note_source_tree_context "$REPO_ROOT" || true
 # path_state <path> -- one token from a closed set, and nothing about what a
 # directory CONTAINS. A path this process cannot even test reads `absent` both
 # times, which is honest: a path unreachable to this uid is one the rehearsal
@@ -885,7 +883,7 @@ for repo in "$PROJ" "$WT" "$DRIVEN" "$RELFIX" "$PLACEHOLDER"; do
 done
 
 assert_snapshot_unchanged \
-  "the source checkout is read-only input: no file, remote ref, or working-tree state may change" \
+  "the source tree is read-only input: no file, and -- in a Git checkout -- no remote ref, HEAD or working-tree state, may change" \
   "$SOURCE_BEFORE" "$(snapshot_source)"
 assert_snapshot_unchanged \
   "nothing outside the private rehearsal root may change" \

@@ -639,6 +639,22 @@ grep -qF 'Qualify a repository before acknowledging it' "$REPO_ROOT/PROTOCOL.md"
 grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
   || fail "docs/install.md's release-day steps must include the local rehearsal"
 
+# ...and it must not prescribe a run whose guarantee is weaker than the page's
+# description of it (T004). tests/run.sh globs the rehearsal and the suite is
+# runnable inside an unpacked release archive, where the tree has no Git
+# metadata at its root: the working-tree, HEAD and remote-ref half of the
+# isolation claim cannot be asked there, and the rehearsal records it as
+# not-tested (tests/test_rehearsal_source_snapshot.sh proves that behaviour).
+# The page has to say both things, or an operator reads the archive run's
+# silence as the whole claim having held. Folded to one line first: these are
+# SENTENCES, and each straddles a hard wrap in the source.
+install_md_one_line="$(tr '\n' ' ' < "$INSTALL_MD" | tr -s '[:space:]' ' ')"
+grep -qF 'Run it from the Git checkout you are tagging' <<<"$install_md_one_line" \
+  || fail "docs/install.md's release-day rehearsal step must tell the operator to run it from the Git checkout being tagged -- an archive run cannot make the isolation claim the step is there for"
+grep -qF 'records the working-tree, `HEAD` and remote-ref half of the claim above as `NOT-TESTED`' \
+  <<<"$install_md_one_line" \
+  || fail "docs/install.md must say what the rehearsal does NOT prove when it runs outside a Git checkout, rather than describing the checkout run's guarantee as the only one"
+
 # ===========================================================================
 # T010 -- THE DOCS DESCRIBE THE TREE THEY SHIP IN, in BOTH directions.
 #

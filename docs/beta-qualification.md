@@ -213,7 +213,13 @@ under an outer run that writes its own state as the tests execute:
 - The source checkout is compared on its working tree (with `.orchid`, the
   outer run's live state, excluded), its file listing, its `HEAD`, and its
   **remote** refs. Local branches are shared with every other worktree of the
-  same checkout and move through no act of the rehearsal's.
+  same checkout and move through no act of the rehearsal's. All but the file
+  listing are Git questions, and the suite is also runnable inside an unpacked
+  release archive, which has no Git metadata at its root — so the rehearsal
+  establishes that context first and, outside a checkout, records those three
+  as `NOT-TESTED` rather than comparing three empty answers and calling the
+  tree untouched. Run the rehearsal from the checkout when you need the whole
+  claim.
 - Machine-local state is compared path by path, at names the rehearsal writes
   down in advance — the skill symlinks `install.sh` wires, the entry point it
   links into its default prefix, the per-user config and data directories, the
