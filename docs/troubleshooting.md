@@ -349,7 +349,7 @@ command *string*), so this candidate's mechanical work — applying a linter's
 own fix, setting the mode bit on a newly added executable, running a generator
 whose output is checked in — has to be done by you. The pass stops rather than
 verifying a candidate that was never going to pass and spending one of the
-task's three rework rounds on it.
+task's configured `rework_max` rounds on it.
 
 One thing is deliberately *not* on that list: an artifact derived from the
 whole tree, such as the release-archive checksum pinned into
@@ -358,6 +358,35 @@ rewrite the same line to a different value, and the second to merge then
 conflicts on it with nobody in the loop able to resolve it. Those are
 regenerated on the integration branch instead — see
 [contributing.md](./contributing.md#release-rehearsal).
+
+The boundary can instead say the `mechanical` step could not be routed to the
+engine that built this candidate (INV-16). `orchid run boundary show` says
+which arm held it; either way, nothing was dispatched and no attempt was spent.
+
+By far the likeliest reading is the first: you set the key. The routing arm
+does **not** normally fire for a shortfall in an implementer's declared
+capabilities, because `roles/implementer.role` requires
+`workspace_write,shell,git` — an engine short of those is refused the role at
+dispatch (`no eligible engine`, exit 14) and never builds a candidate for this
+pause to hold. What that arm does catch is the wording below.
+
+**The other wording of the same stop:** the boundary says the actor *is not
+installed* rather than naming a capability, and names it. Then the engine
+recorded against this candidate answers to neither name orchid looks it up by:
+no directory beneath a plugin root's `engines/` is called that, and no installed
+manifest declares that `id=`. A capability gate that cannot identify an actor
+refuses rather than permits — it will not report "no objection" about a manifest
+it never read. Install the plugin, or bind the role to the name it *is*
+installed under, and the arm goes quiet on its own.
+
+A qualified third-party id (`acme/foo`) does **not** read this way on its own.
+Both forms resolve: the directory a binding names, and the `id=` an installed
+manifest claims. So a healthy third-party implementer is priced from its own
+manifest like any other, and this wording means the plugin is genuinely absent
+— not that it is third-party. If it *is* installed and you still see this,
+check that its `plugin.conf` declares the id the record carries, and that no
+second installed plugin claims the same one (two claimants are refused rather
+than chosen between, INV-10 — the boundary says so in those words).
 
 ```sh
 orchid run boundary show           # what is being held, and why

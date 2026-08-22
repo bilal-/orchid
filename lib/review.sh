@@ -1232,3 +1232,68 @@ review_plan_adopt_evidence_rows() {
 
   printf '%s' "$rows"
 }
+# review_slot_engine_source <repo> <task> <slot> <engine> -- WHERE a routed
+# slot's engine came from, as advice an operator can act on. Always prints
+# exactly one line; the STATUS says which kind:
+#
+#   0   a single config key -- `role.reviewer` or `review.<tier>` -- and it is
+#       the key whose chain actually produced this slot's engine.
+#   1   a phrase, because NEITHER chain produced it: review_routing's
+#       session-independent fallback handed the slot the implementer's own
+#       engine, so there is no reviewer binding that names it and editing one
+#       would not, by itself, explain what happened.
+#
+# WHY THIS EXISTS. A capability refusal for a reviewer slot ends at an
+# `operator-handoff` boundary whose reason names a key to change. Naming
+# `role.reviewer` unconditionally is wrong for exactly the slot most likely to
+# be refused: `_review_candidate_ok` already requires reviewer-role eligibility
+# (hence `structured_text`) of every CHAIN entry, so a chain-resolved slot
+# engine has declared what `review` needs -- while the fallback arm skips that
+# check entirely and hands the slot the implementer's engine, which was only
+# ever gated on `workspace_write,shell,git`. An operator told to edit
+# `role.reviewer` there edits a key the refused engine never came through,
+# watches the boundary survive, and concludes orchid is broken.
+#
+# The tier key is derived the same way review_routing derives it, from the
+# task's own `risk_tier`, so the key named is the one THIS task's routing read
+# -- `review.high` and `review.low` are different bindings and advice that
+# named the wrong one is advice about somebody else's chain.
+#
+# Slot 2 is asked about `review.<tier>` FIRST, because slot 2 is drawn purely
+# from that chain; an engine that also appears in `role.reviewer`'s would
+# otherwise be attributed to a chain slot 2 never walks. Slot 1 walks the
+# reviewer chain first and the tier chain after, and is asked in that same
+# order, so first match is the entry that actually won.
+review_slot_engine_source() {
+  local repo="$1" task="$2" slot="$3" engine="$4" tf tier key tier_chain e
+  tf="$(orchid_state "$repo")/tasks/$task.md"
+  tier="$(fm_get "$tf" risk_tier 2>/dev/null || true)"
+  [ -n "$tier" ] || tier=low
+  key="$(_review_tier_key "$tier")"
+  tier_chain="$(_review_tier_chain "$repo" "$tier")"
+
+  if [ "$slot" = 2 ]; then
+    while IFS= read -r e; do
+      [ -n "$e" ] || continue
+      [ "$e" = "$engine" ] || continue
+      printf 'review.%s\n' "$key"
+      return 0
+    done < <(printf '%s\n' "$tier_chain" | tr ',' '\n')
+  fi
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    [ "$e" = "$engine" ] || continue
+    printf 'role.reviewer\n'
+    return 0
+  done < <(resolve_role_chain "$repo" reviewer 2>/dev/null || true)
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    [ "$e" = "$engine" ] || continue
+    printf 'review.%s\n' "$key"
+    return 0
+  done < <(printf '%s\n' "$tier_chain" | tr ',' '\n')
+
+  printf 'role.reviewer or review.%s — slot %s came through neither: no engine either chain names was eligible and available, so the slot fell back to the engine that built the candidate (%s), which no reviewer binding selected\n' \
+    "$key" "$slot" "$engine"
+  return 1
+}

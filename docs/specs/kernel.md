@@ -1618,6 +1618,9 @@ semantic correctness beyond declared verification commands.
 - INV-13 the deterministic driver mutates durable/cross-process state only
   through named verbs, and decides only on structured fields
 - INV-14 no kernel source branches on any discovered engine identifier
+- INV-16 a step is never dispatched to an actor whose manifest does not
+  declare what that step's work needs; it becomes an operator hand-off with a
+  named, journaled boundary instead
 
 ## Proof discipline: every gate ships a RED case (v1.1)
 
@@ -1732,8 +1735,62 @@ boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 PROTOCOL.md's "Judgment boundaries" section for the non-overlapping
 arbitration truth table.
 
-`operator-handoff` (v1.1) is the one raised BETWEEN an implementer's envelope
-reconciling and verification, where `handoff_before_verify` asks for it: some
+`operator-handoff` (v1.1) is raised where work belongs to an operator because
+no actor in the loop declares what performing it needs. There are two ways in
+and one meaning.
+
+The first is a step that could not be ROUTED at all (v1.1, INV-16). `orchid
+jobs prepare` is where a (task, role, operation) triple is bound to an engine,
+and it refuses with exit 19 — minting nothing, spawning nothing, spending no
+attempt — when the resolved actor's manifest does not declare what that step's
+work needs. The requirements are kernel data (`lib/capability.sh`), not a role
+descriptor: `implement` needs `workspace_write`, `orchestrate` needs `shell`
+and `git` (the same implication `lib/conform.sh` already uses to decide which
+operations to probe a plugin for), `review` and `critique` need
+`structured_text` (both produce an envelope the kernel parses a verdict and
+`findings[]` out of; the built-in judging roles require the same atom, so the
+rows are defense in depth there and load bearing under a custom role), and the
+`mechanical` step — the candidate's execution-requiring work — needs `shell`.
+`hook` is the one step priced at nothing, deliberately: a handler is bound by
+name from config rather than by role at all, and no hook contract has ever
+asked one for a capability. A row priced at nothing is a statement, never an
+omission — an unpriced step is one this gate cannot refuse. The table is
+deliberately not derived from `requires=`/`forbids=`: a `kind=role` plugin
+ships its own `descriptor.role`, so a publisher can declare a role that asks
+for nothing and bind its own engine
+to it — a capability is a **claim by the plugin, never a grant**, and a claim
+must not be able to vote itself past a gate. The rule therefore only ever
+REFUSES: a *missing* atom is decisive (the profile certainly cannot do the
+work) while a *present* one settles nothing, so nothing built on it may read a
+clean answer as permission. `orchid drive` journals the refusal against the
+task and records this boundary; it never retries it, because unlike exit 14 no
+later pass makes the same actor able to do the same work.
+
+An actor is named two ways and resolved by both. Third-party engines carry
+qualified ids (`acme/foo`) while a binding names the directory a plugin is
+installed under, and `implementer_engine_id` records whichever form the
+implement envelope reported (minus the `orchid/` vendor prefix). Both are
+looked up through the one registry that installed the plugin
+(`resolve_engine_dir_any`): first as a directory name, then against the `id=`
+every installed manifest claims. The id is matched *whole* — the basename is
+never retried, since `acme/foo` and `zzz/foo` both fall to a directory called
+`foo` and answering out of another publisher's manifest is the shadowing INV-10
+refuses; an id claimed by two installed plugins is likewise refused rather than
+chosen between.
+
+An actor that resolves under *neither* name is refused too, by both callers,
+and told apart from a declared shortfall only so the refusal can say which
+happened and name what it looked for. There is no "could not tell, so allow"
+answer — and equally no "could not tell, so refuse forever": that id is in the
+record because orchid dispatched to that plugin, so refusing the qualified form
+outright would hold every candidate a third-party engine builds at a hand-off
+no operator act can clear. Both mistakes are the engine-dependent behaviour
+INV-14 forbids, approached from opposite sides.
+
+The second is the one raised BETWEEN an implementer's envelope
+reconciling and verification, where `handoff_before_verify` asks for it, or
+where the `mechanical` step cannot be routed to the actor that built the
+candidate at all: some
 mechanical work in a candidate requires EXECUTION — applying a linter's own
 fix, setting the mode bit on a newly added executable, running a generator
 whose output is checked in — and an engine profile that denies on the command
@@ -1778,6 +1835,19 @@ mechanical work inside the candidate whose acknowledgement moves
 outside the repository whose acknowledgement moves nothing. A task can be held
 by both, and the driver raises the hand-off first — its advance would
 otherwise expire a prerequisite acknowledgement taken before it.
+**Which half of the capability arm a running repository actually meets.** The
+arm has two outcomes and they are not equally reachable. The one that fires is
+the actor that resolves to no installed manifest: no role gate covers it,
+because the role gate ran while the plugin was still installed. The other — the
+actor's manifest does not declare `shell` — cannot arise for a candidate this
+kernel dispatched, since `roles/implementer.role` declares
+`requires=workspace_write,shell,git` and an engine declaring no `shell` is
+refused the role at exit 14 before any candidate of its exists. That row is
+kept as defense in depth against the role descriptor changing, and as the
+answer where nothing recorded which engine built the candidate; it is not a
+pause an operator will be spared setting `handoff_before_verify` by. That key
+remains the only cover for the case no manifest shows — a profile that
+*declares* `shell` and is still not granted it.
 
 One boundary is recorded per pass, chosen by whether a woken orchestrator
 could actually SETTLE it ahead of the ones only an operator can, then by
@@ -1846,4 +1916,8 @@ boundary, 17 brokered command refused, 18 slot already holds an unlaunched
 manifest (T027). Every code means ONE condition: 18 is its own entry rather
 than a second meaning for 17 precisely because a caller that has to
 distinguish "the broker refused this command" from "wait, this slot has an
-orphan" cannot do it from a number two conditions share.
+orphan" cannot do it from a number two conditions share; 19 step not routable
+to the resolved actor (INV-16). A step name the kernel does not know is NOT 19 — that is a
+malformed request rather than an actor unable to do the work, so it is an
+ordinary usage error and says so instead of sending an operator to audit a
+plugin that is behaving perfectly.

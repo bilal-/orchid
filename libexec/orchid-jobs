@@ -10,6 +10,9 @@ source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
 # `check`'s backstop escalates at 100%; `ls`'s BUDGET column renders the same
 # number continuously, so the table can never disagree with the escalation.
 source "$ORCHID_ROOT/lib/schedule.sh"
+# capability.sh owns the kernel's step-to-capability table. Prepare is where
+# a resolved actor is finally bound to an operation, so it is the routing gate.
+source "$ORCHID_ROOT/lib/capability.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
 # T035: the append-only record of jobs that are no longer outstanding, so
@@ -945,6 +948,19 @@ case "$sub" in
       # rather than re-wrapping it (prepare is tier-1: mint-manifest-only, so
       # there is nothing else to clean up here before exiting).
       engine="$(resolve_role_available "$repo" "$role")" || exit 14
+    fi
+    # INV-16: role eligibility and step coverage are different questions. A
+    # custom role may ask for nothing; it cannot thereby make its actor capable
+    # of work the kernel knows this operation requires. Refuse before minting a
+    # manifest, spawning a process, or spending an attempt.
+    cap_rc=0
+    cap_why="$(capability_routing_refusal "$operation" "$engine")" || cap_rc=$?
+    if [ "$cap_rc" -eq 3 ]; then
+      orchid_die "unknown operation '$operation': $cap_why"
+    fi
+    if [ "$cap_rc" -ne 0 ]; then
+      echo "orchid: refusing to route role '$role' to engine '$engine': $cap_why" >&2
+      exit 19
     fi
     # T027 (dogfood F29): refuse to mint a SECOND manifest for a job that
     # already has an UNLAUNCHED one -- same task, same attempt, same role,

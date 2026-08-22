@@ -34,7 +34,12 @@ POLICY="$REPO_ROOT/lib/drive.sh"
 # two nonexistent ones -- turning check 1 into a `fail` on a correct tree, or
 # (had the existence guard below not been there) into a loop that scans nothing
 # and passes vacuously.
-POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh" "$REPO_ROOT/lib/findings.sh")
+#
+# T018 adds a third (lib/capability.sh, the step-routing table the hand-off
+# gate's capability arm reads). Enrolling it is not optional bookkeeping: it is
+# consulted on the path to a boundary the driver records, so a mutation hidden
+# there would escape check 1 for exactly the reason the note above gives.
+POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh" "$REPO_ROOT/lib/findings.sh" "$REPO_ROOT/lib/capability.sh")
 [ -f "$DRIVER" ] || fail "INV-13: runners/orchid-drive is missing"
 for p in "${POLICIES[@]}"; do
   [ -f "$p" ] || fail "INV-13: $p is missing"

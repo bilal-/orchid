@@ -54,6 +54,23 @@ assert_match "T001	ok" "$line" "reconciled"
 # to reach the assertions below.
 sleep 100 &
 spid=$!
+# DISOWNED, so the shell stops REPORTING this job. `jobs check` is about to
+# kill it -- that is the whole point of the case -- and bash then announces the
+# reap on stderr as `tests/test_jobs.sh: line N: <pid> Terminated: 15 sleep
+# 100`. That line has the exact `file: line N:` shape lib/findings.sh carries
+# into a rework brief, so a suite that is passing hands the next implementer
+# three fabricated locations to "fix" and displaces the real ones (it did
+# exactly that to T018). Disowning changes nothing this fixture asserts: the
+# pid stays in `$spid`, and `kill`/`kill -0` address a pid, never a job spec.
+#
+# Guarded, and the guard is the portable part rather than a shrug. `disown`
+# takes a JOBSPEC on bash 3.2 (the floor this suite runs on), not a pid, so the
+# bare form is the only spelling available -- and a bare `disown` that finds no
+# current job both exits non-zero and prints `disown: current: no such job`,
+# which would be a NEW stderr line of exactly the shape this is removing.
+# Nothing is made fail-open by it: the entire effect of this line is what
+# stderr says.
+disown 2>/dev/null || true
 jq -n --argjson pid "$spid" \
   '{job_id:"j-guard", task:"TGUARD", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:0, log:"/nonexistent.log", output:"/dev/null",
@@ -108,6 +125,7 @@ jq -n --argjson pid "$young_dead_pid" --argjson started "$now" --arg log "$rt/lo
 # Live + old: age must never override a live pid.
 sleep 100 &
 live_pid=$!
+disown 2>/dev/null || true  # as at the pgid guard above: a reaped job's notice is not a finding
 jq -n --argjson pid "$live_pid" --argjson started "$old_started" --arg log "$rt/logs/j-live.log" \
   '{job_id:"j-live", task:"TLIVE", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
@@ -687,6 +705,7 @@ ORCHID_CONCURRENCY=8 "$ORCHID_BIN" task advance TRUNAWAY implementing
 "$ORCHID_BIN" task set TRUNAWAY wallclock_budget_s 1
 sleep 100 &
 runaway_pid=$!
+disown 2>/dev/null || true  # as at the pgid guard above: a reaped job's notice is not a finding
 jq -n --argjson pid "$runaway_pid" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TRUNAWAY-a1-run00001", task:"TRUNAWAY", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:"/nonexistent.log", output:"/dev/null",

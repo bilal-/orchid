@@ -48,7 +48,8 @@ source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
-source "$ORCHID_ROOT/lib/drive.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
+source "$ORCHID_ROOT/lib/drive.sh"; source "$ORCHID_ROOT/lib/capability.sh"
+source "$ORCHID_ROOT/lib/handoff.sh"
 # findings.sh for findings_log_gate_failed alone: the merging arm at the
 # bottom of this file has to tell a `gate_failed` merge from a
 # `validation_failed` one, and that answer is a field in the merge log's
@@ -580,7 +581,7 @@ drive_lease_heartbeat_stop() {
 }
 
 # ---------------------------------------------------------------------------
-# Launch helper. THREE outcomes, not two:
+# Launch helper. FOUR outcomes, not two:
 #
 #   0        spawned.
 #   14/18    a WAIT, never a failure. 14 is `no eligible engine`: the ledger
@@ -594,6 +595,7 @@ drive_lease_heartbeat_stop() {
 #            Neither spends a rung of the escalation ladder --
 #            a wait counted as a failure auto-blocks a task on the wall clock
 #            (the reasoning drive_escalate's own header spells out for 14).
+#   19       a capability-routing refusal handed to the operator (INV-16).
 #   anything else
 #            A JOB FAILURE, and it is escalated HERE (T027, dogfood F29). A
 #            launcher that dies BEFORE its spawn line -- an input_overflow
@@ -628,6 +630,15 @@ drive_lease_heartbeat_stop() {
 # next pass that relaunched it, failed it again and deferred again -- an
 # optional binding gating a step forever, which is precisely what "optional
 # never gates" is there to forbid.
+#
+# Exit 19 (INV-16, `orchid jobs prepare`'s step-routing gate) is the WAITs'
+# opposite and must never be confused with them. Nothing is waiting: the step
+# needs a capability the resolved actor's manifest does not claim, and no later
+# pass makes the same actor able to do the same work. Retrying it every pass
+# spends nothing but wall clock; escalating it spends the task's infra_failures
+# budget on infrastructure that is not broken; dispatching it anyway is what
+# cost T005 two attempt cycles and T014 three. So it is handed to an operator,
+# once, by name -- see drive_capability_refusal below.
 # ---------------------------------------------------------------------------
 drive_launch() {
   local task="$1" role="$2" op="$3" engine="${4:-}" point="${5:-}" rc=0 key=""
@@ -647,11 +658,15 @@ drive_launch() {
     drive_note "$task: an unlaunched $op manifest for this slot is still on disk — nothing was spawned; gc clears it once it is past stall_minutes"
     return 18
   fi
+  if [ "$rc" -eq 19 ]; then
+    drive_note "$task: step '$op' cannot be routed to the actor resolved for role '$role' — see the launch output above"
+    return 19
+  fi
   drive_note "$task: launch failed (role '$role', operation '$op', exit $rc)"
   # The manifest this launcher stranded IS the identity of the failure, and the
   # only handle both arms of the ladder can independently derive. Empty when the
   # launcher died before it minted one at all (a `jobs prepare` that failed for
-  # some reason other than 14/18): nothing was left on disk, so no later sweep
+  # some reason other than 14/18/19): nothing was left on disk, so no later sweep
   # can find it and there is nothing to deduplicate against -- the charge below
   # simply happens, as it always did.
   key="$(drive_stranded_launch_job "$repo" "$task" "$role" "$op" "$point")"
@@ -707,6 +722,78 @@ drive_stranded_launch_job() {
     jq -r '.job_id // empty' "$mf" 2>/dev/null || true
     return 0
   done
+  return 0
+}
+
+# drive_capability_refusal <task> <role> <operation> [hook-point] [binding] --
+# what every arm does with a launch that came back 19. The refusal itself was already
+# decided (and printed) by `orchid jobs prepare`; this is the driver's half of
+# it, and it is deliberately the same two acts at each of the FOUR call sites
+# rather than four near-identical inline blocks that could drift.
+#
+# THE HOOK POINT IS PASSED, NOT DROPPED. A hook launch is the one call whose
+# `role` positional is a placeholder (the literal `hook`), so the point is the
+# only thing that identifies which binding was refused -- and it is also what
+# decides which config key the advice may name. Both strings therefore come
+# from lib/drive.sh's drive_capability_handoff_text, which is where that
+# distinction is documented and where a test can read it without running a
+# whole drive pass.
+#
+# EVERY call site, and the escalation ladder's relaunch is the one that proves
+# why. It is the only one whose launch is not the reason a task is being walked,
+# so it is the easiest to leave as a bare `|| true` -- and a swallowed 19 there
+# is the worst of the four: the pass has just spent an infra_failures rung on
+# the job that DIED, the relaunch is refused for a reason no later pass changes,
+# and with no boundary raised the walk meets the same task again next pass and
+# spends the next rung. Three passes later the task is `blocked` on a counter
+# that measures broken infrastructure, with nothing in the journal naming the
+# capability that actually stopped it. That is precisely the mis-attribution
+# T008 removed, reintroduced by the task adding the refusal.
+#
+# JOURNALED, then boundaried. The journal line is the durable record that this
+# step was refused rather than merely never attempted -- without it the task's
+# history shows a status that simply stopped moving, which is exactly how the
+# hand-offs this rule exists to end stayed invisible for two whole runs. The
+# boundary is `operator-handoff` because that is what a step no actor in the
+# loop declares the capability for IS; it names no settling verb, so a human is
+# notified and no model is woken to make a decision it has no verb to make.
+#
+# ONCE PER DISTINCT RECORD, not once per pass. This refusal persists until an
+# operator acts, and the walk re-reaches it every pump cycle -- a line appended
+# each time would bury the run's history under one unchanging fact, which is
+# the same hazard the notify path at the foot of this file already guards.
+#
+# BUT KEYED ON THE JOURNAL, NOT ON THE BOUNDARY, which is where the notify
+# path's shape must NOT be copied. That path compares against the boundary it is
+# about to write, so its comparison is asking about a record that is certainly
+# there. This one is not: `set_boundary` below only records the pass's WINNING
+# boundary -- a `blocked` task met earlier in the walk, or another task refused
+# on this very pass, holds it at equal priority and this refusal is noted and
+# dropped. Keyed on the boundary, the dedup would then miss on every pass and
+# append a line on every pass, in exactly the case the paragraph above claims to
+# guard. The journal line is the one artifact this function ALWAYS writes when
+# it writes anything, so it is what the dedup asks about: `journal show` reads
+# the task's own index (a bounded tail, so a task whose history has churned far
+# past this entry may record it a second time -- an honest re-statement after a
+# long gap, not a line per pass).
+#
+# THE BINDING KEY IS PASSED WHERE THE CALLER KNOWS IT. `role.<role>` is the
+# right advice only where a role chain is what bound the actor; a reviewer slot
+# can equally have come from `review.<tier>` or from the fallback to the engine
+# that built the candidate, and advice naming the wrong key is advice about
+# somebody else's chain (lib/drive.sh's drive_capability_handoff_text).
+drive_capability_refusal() {
+  local id="$1" role="$2" op="$3" point="${4:-}" binding="${5:-}"
+  local text reason line prior
+  text="$(drive_capability_handoff_text "$role" "$op" "$point" "$binding")"
+  reason="$(printf '%s' "$text" | cut -f1)"
+  line="$(printf '%s' "$text" | cut -f2-)"
+  prior="$("$ORCHID_BIN" journal show --task "$id" 2>/dev/null || true)"
+  case "$prior" in
+    *"$line"*) ;;
+    *) "$ORCHID_BIN" journal add --task "$id" "$line" >/dev/null ;;
+  esac
+  set_boundary operator-handoff "$id" "$reason"
   return 0
 }
 
@@ -779,8 +866,10 @@ drive_job_outstanding() {
 #
 # Returns: 0 satisfied (or the point is unbound, or bound only `optional`)
 #          1 pending -- just dispatched, or still running; do nothing yet
-#          2 a `:required` entry failed -- a hook-failure boundary is raised
-#            and the guarded transition is NOT taken
+#          2 the guarded transition is NOT taken and a boundary has been
+#            raised: either a `:required` entry failed (hook-failure), or the
+#            hook step could not be routed to the handler bound to this point
+#            at all (operator-handoff, INV-16)
 # ---------------------------------------------------------------------------
 drive_hook_gate() {
   local id="$1" point="$2" attempt="$3" cand="$4"
@@ -817,6 +906,21 @@ drive_hook_gate() {
         first=0
       else
         drive_launch "$id" hook hook "$hid" "$point" || lrc=$?
+      fi
+      if [ "$lrc" -eq 19 ]; then
+        # A handler bound to this point cannot be routed the hook step at all.
+        # Reported as the hand-off it is and the guarded step is NOT taken --
+        # returning 2 here rather than falling through to the "dispatched,
+        # deferring to the next pass" line below, which would promise an
+        # envelope no job was ever started to produce.
+        #
+        # Unreachable while lib/capability.sh prices `hook` at nothing, and
+        # written anyway: the price is a row in a table, the arm that handles
+        # its consequence is control flow, and a table gaining a row must never
+        # be the moment a driver first discovers it has no branch for the
+        # answer.
+        drive_capability_refusal "$id" hook hook "$point"
+        return 2
       fi
       [ "$lrc" -eq 0 ] || break
       spawned=$(( spawned + 1 ))
@@ -1075,6 +1179,13 @@ drive_dispatch() {
         # wrong, and both clear without anyone doing anything -- the ledger
         # window reopens on its own, and gc reaps the orphaned manifest.
         drive_note "$id: staying in $from — nothing was spawned, so there is nothing to wait for"
+        return 0
+      fi
+      if [ "$lrc" -eq 19 ]; then
+        # The opposite of a wait (INV-16). The task stays in $from -- it has
+        # not been advanced, so no envelope is awaited and no attempt is spent
+        # -- and the step is handed over by name.
+        drive_capability_refusal "$id" "$role" "$op"
         return 0
       fi
       if [ "$lrc" -ne 0 ]; then
@@ -1827,7 +1938,7 @@ drive_testing() {
 # ---------------------------------------------------------------------------
 drive_reviewing() {
   local id="$1" arch="$2" tf tier need have routing unsat line slot eng label lrc arc
-  local pin_rc pin_detail pin_output pin_line
+  local pin_rc pin_detail pin_output pin_line pin_slot pin_eng pin_label pin_extra pin_valid src
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = reviewing ] || return 0
   tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
@@ -1992,6 +2103,19 @@ drive_reviewing() {
         "reviewer slot $slot is pinned to engine '$eng', which cannot be dispatched (no eligible engine) — a slot never fails over to another engine on its own. Expected: 'orchid jobs review-plan $id --repin' to rebind this attempt's unfilled slot(s) to engines that can run, otherwise 'orchid task advance $id blocked --reason ...' to hand it to a human"
       return 0
     fi
+    if [ "$lrc" -eq 19 ]; then
+      # NAME THE KEY THIS SLOT'S ENGINE ACTUALLY RESOLVED FROM. The slot may
+      # have come from `role.reviewer`'s chain, from `review.<tier>`'s, or from
+      # neither -- review_routing's session-independent fallback hands slot 1
+      # the engine that built the candidate, and that arm skips the reviewer
+      # eligibility check every chain entry passes, so it is the slot most
+      # likely to be refused here and the one `role.reviewer` describes worst.
+      # The status is discarded on purpose: both answers are advice, and the
+      # phrase the fallback prints is the one an operator needs.
+      src="$(review_slot_engine_source "$repo" "$id" "$slot" "$eng" || true)"
+      drive_capability_refusal "$id" reviewer review "" "$src"
+      break
+    fi
     [ "$lrc" -eq 0 ] || break
   done <<< "$unsat"
   return 0
@@ -2100,7 +2224,7 @@ drive_blocked() {
 # already, and the pass-local guard is the only one they ever needed.
 escalated_this_pass=" "
 drive_escalate() {
-  local id="$1" role="$2" op="$3" point="$4" why="$5" key="${6:-}" tf slot tstatus receipt
+  local id="$1" role="$2" op="$3" point="$4" why="$5" key="${6:-}" tf slot tstatus receipt lrc
   tf="$state/tasks/$id.md"
   # Asked BEFORE anything else, including the missing-task-file arm below: a
   # charge that has already been recorded must not be re-journaled either, or
@@ -2184,7 +2308,21 @@ drive_escalate() {
     drive_note "$id: leaving the relaunch to the reviewing walk, which knows which SLOT is missing"
     return 0
   fi
-  drive_launch "$id" "$role" "$op" "" "$point" || true
+  # The relaunch gets the SAME exit-19 arm as the other three call sites. A
+  # ladder that swallowed it would keep charging rungs for a refusal no rung
+  # can clear (see drive_capability_refusal's header): the rung already spent
+  # above belongs to the job that died, and this is where the pass stops
+  # spending more and says whose work it is instead. Every OTHER launch failure
+  # stays swallowed here on purpose -- drive_launch has already noted it, and
+  # the ladder's whole design is that a failed relaunch is just the next rung.
+  lrc=0
+  drive_launch "$id" "$role" "$op" "" "$point" || lrc=$?
+  if [ "$lrc" -eq 19 ]; then
+    # `$point` rides along: this relaunch covers hook jobs too (it is the same
+    # `$point` the launch above was given), and a hook refusal reported as a
+    # `role.hook` binding names a key that does not exist.
+    drive_capability_refusal "$id" "$role" "$op" "$point"
+  fi
   return 0
 }
 

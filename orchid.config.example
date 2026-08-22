@@ -256,6 +256,19 @@ pack_budget_bytes=65536
 # typo here can only ever route more work to a human, never less. Turning it
 # on is an operator decision, landed like any other config change with
 # `orchid config commit --reason "..."`.
+#
+# A second arm asks for the same pause without being configured (INV-16),
+# where the mechanical step cannot be ROUTED to the engine that built the
+# candidate. It does not replace this key. What it closes on its own is the
+# implementer that resolves to no installed manifest at all; its other
+# outcome -- the engine declares no `shell` -- cannot arise for a candidate
+# orchid dispatched, because roles/implementer.role requires
+# `workspace_write,shell,git` and the role gate refuses such an engine before
+# it can build one. So THIS key stays the only cover for the case no manifest
+# shows: a profile that DECLARES `shell` and is still not granted it, which
+# the shipped `claude` adapter is on its implement path. The two arms compose
+# and never override -- either turns the pause on, neither turns the other
+# off -- so an engine declaring `shell` can never clear a pause you asked for.
 # handoff_before_verify=off
 
 # NOTE (T024, dogfood F26): the OPERATOR PREREQUISITE is a different stop at

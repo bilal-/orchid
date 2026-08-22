@@ -34,7 +34,12 @@ __orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/manifest.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
-source "$ORCHID_ROOT/lib/handoff.sh"
+# resolver/review/capability are here for lib/handoff.sh's capability arm
+# alone (INV-16): handoff_state asks which actor built a candidate and whether
+# the mechanical step may be routed to it, and this file's per-task hand-off
+# line is one of that function's two callers.
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/review.sh"
+source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
 # --explain, --html and --jobs are independent flags (any combination may be

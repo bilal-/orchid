@@ -1913,6 +1913,10 @@ assert_eq 3 "$(dstarts)" \
 # a log, and not a paraphrase.
 # ===========================================================================
 source "$REPO_ROOT/lib/findings.sh"
+# capability.sh before handoff.sh: the hand-off gate's capability arm (INV-16)
+# asks it whether the `mechanical` step may be routed to the actor that built
+# a candidate.
+source "$REPO_ROOT/lib/capability.sh"
 source "$REPO_ROOT/lib/handoff.sh"
 source "$REPO_ROOT/lib/pack.sh"
 

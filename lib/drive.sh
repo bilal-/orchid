@@ -38,7 +38,11 @@ drive_finding_rank() {
 # every task and took every edge it could, so this reports a decision waiting
 # somewhere, never a run that cannot proceed; `orchid run boundary show` when
 # one is recorded), 17 BROKERED COMMAND REFUSED
-# (runners/orchid-orchestrator-command).
+# (runners/orchid-orchestrator-command), 18 SLOT ALREADY HOLDS AN UNLAUNCHED
+# MANIFEST (`orchid jobs prepare`, T027), 19 STEP NOT COVERED BY THE RESOLVED
+# ACTOR'S CAPABILITIES (`orchid jobs prepare`, INV-16 -- distinct from 14
+# because nothing is waiting: no later pass makes the same actor able to do
+# the same work, so the driver hands it to an operator instead of retrying).
 
 # drive_threshold_rank <blocking_severity> -- ordinal for the TASK's
 # configured blocking threshold. Deliberately the mirror image of
@@ -73,15 +77,19 @@ drive_threshold_rank() {
 #                        all: an inspection that answers "clean" when it could
 #                        not look is fail-open, so it is refused in the same
 #                        direction as a tree that is genuinely in the way
-#   operator-handoff  -- the candidate's execution-requiring mechanical steps
-#                        (a lint fix, a mode bit on a new executable, a
-#                        generator whose output is checked in -- never an
-#                        artifact derived from the whole tree, lesson L022)
-#                        are not acknowledged for THIS candidate.
-#                        Deliberately settled by no verb below: none performs
-#                        the work, and a model able to acknowledge its own
-#                        hand-off would defeat the point of naming one at all
-#                        (lesson L017; lib/handoff.sh)
+#   operator-handoff  -- work that belongs to an operator because no actor in
+#                        the loop declares what performing it needs. Two ways
+#                        in, one meaning: the candidate's execution-requiring
+#                        mechanical steps (a lint fix, a mode bit, a generator
+#                        whose output is checked in -- never a whole-tree
+#                        derived artifact, lesson L022) are not acknowledged
+#                        for THIS candidate; or a step could not be ROUTED
+#                        because the resolved actor's manifest does not cover
+#                        it (INV-16, lib/capability.sh -- `orchid jobs prepare`
+#                        exit 19). Deliberately settled by no verb below: none
+#                        performs the work, and a model able to acknowledge its
+#                        own hand-off would defeat the point of naming one at
+#                        all (lesson L017; lib/handoff.sh)
 #   task-prerequisite -- the task declares an `operator_prerequisite` (a step
 #                        outside the sandbox its verification depends on --
 #                        canonically applying, to the database the suite runs
@@ -111,6 +119,57 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
     *" $1 "*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# drive_capability_handoff_text <role> <operation> [hook-point] [binding] --
+# the two strings runners/orchid-drive writes when a launch comes back 19
+# (INV-16), TAB-separated: the boundary reason, then the journal line.
+#
+# WHY IT NAMES A CONFIG KEY AT ALL. The boundary is the only thing an operator
+# meets, and "an operator performs this step" alone leaves them with no way to
+# stop meeting it. The advice is therefore the other half of the rule: perform
+# it, or bind an actor whose manifest covers it.
+#
+# WHICH MEANS THE KEY HAS TO BE ONE ORCHID ACTUALLY READS, and the hook step is
+# why this is a function rather than one interpolated string. A hook job's
+# `role` positional is the literal word `hook` -- it carries no meaning, since
+# handlers are bound by NAME from `hook.<point>` config and reach no role chain
+# at all (libexec/orchid-jobs' hook arm). Pouring that positional into
+# `role.<role>` produces `role.hook`: a key this kernel has never had, never
+# reads, and `orchid config` does not know (lib/config-keys.txt). An operator
+# following that advice edits a file orchid ignores, watches the boundary
+# survive it, and has been sent to debug their own config instead of the
+# routing. The same string also dropped the POINT, so the one fact that
+# identifies which of the five bindings was refused went unsaid.
+#
+# So the hook arm names the point and points at `hook.<point>`, and the role
+# arm defaults to `role.<role>`, which for every step bound straight off a role
+# chain IS the key that binds the actor that was refused.
+#
+# AND THE DEFAULT IS OVERRIDABLE, because for one caller it is the wrong key. A
+# REVIEWER SLOT's engine is not necessarily `role.reviewer`'s: review_routing
+# walks that chain and then the `review.<tier>` chain, and falls back to the
+# engine that built the candidate when neither yields an eligible, available
+# one. Advising `role.reviewer` for an engine that came from `review.high`
+# sends an operator to edit a key the refused engine never came through -- they
+# change it, the boundary survives unchanged, and the reasonable conclusion is
+# that orchid is broken. So a caller that KNOWS which key resolved its actor
+# passes it (lib/review.sh's review_slot_engine_source computes it), and the
+# `role.<role>` default stands only where the role chain really is the binding.
+drive_capability_handoff_text() {
+  local role="$1" op="$2" point="${3:-}" binding="${4:-}"
+  if [ -n "$point" ]; then
+    printf "step '%s' for hook point '%s' needs a capability the resolved handler does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds a handler at hook.%s whose manifest covers it\t" \
+      "$op" "$point" "$point"
+    printf "step '%s' was not routed to hook point '%s': the resolved handler's manifest does not declare what that work needs (INV-16) — an operator performs it\n" \
+      "$op" "$point"
+    return 0
+  fi
+  [ -n "$binding" ] || binding="role.$role"
+  printf "step '%s' for role '%s' needs a capability the resolved actor does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s\t" \
+    "$op" "$role" "$binding"
+  printf "step '%s' was not routed to role '%s': the resolved actor's manifest does not declare what that work needs (INV-16) — an operator performs it\n" \
+    "$op" "$role"
 }
 
 # -- boundary resolvability -------------------------------------------------
