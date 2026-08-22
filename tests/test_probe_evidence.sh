@@ -193,6 +193,8 @@ check_ran hallucination "$halluc_rc" "$halluc_out"
 
 assert_match "marker-version=true" "$halluc_out" \
   "plausible-hallucination stub: the probe read this stub's reply, so the verdict below is about the evidence rule"
+assert_match "marker-config=true" "$halluc_out" \
+  "plausible-hallucination stub: both marker lines reached the probe"
 refute_match "PROBE-RESULT: YES" "$halluc_out" \
   "plausible-hallucination stub: a reply of the right shape with invented values must never be scored as having executed the verbs"
 assert_match "output-version=false" "$halluc_out" \
