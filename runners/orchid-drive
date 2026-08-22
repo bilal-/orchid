@@ -115,8 +115,19 @@ refuses `orchid run accept`, so no model can close the run.
 
 Exit codes:
   0   the pass completed; nothing is waiting on a human judgment call
-  16  the pass stopped at a judgment boundary (see: orchid run boundary show)
-  1   a precondition failed (uninitialized, split-brain, or a verb refused)
+  16  A DECISION IS OUTSTANDING SOMEWHERE — not "no further progress is
+      possible". The pass still walked EVERY task and took every edge policy
+      could take; one task (or the run) additionally met a judgment boundary
+      it refused to decide, and that record is what 16 reports (see: orchid
+      run boundary show). A caller that reads 16 as "stop the run and fetch a
+      human" halts twenty-nine tasks over a decision affecting one. Drive is
+      idempotent, so a boundaried task simply re-reports the same record on
+      the next pass at no cost: keep driving. The only thing 16 asks of an
+      unattended caller is that the boundary reach a human — which the pass
+      has already done, by raising one `orchid notify` blocker per distinct
+      record whenever no admitted verb can settle it.
+  1   a precondition failed (uninitialized, split-brain, or a verb refused).
+      THIS is the code that means the pass could not be made at all.
 EOF
 }
 
@@ -1413,6 +1424,13 @@ fi
 "$ORCHID_BIN" status --html >/dev/null 2>&1 || drive_note "status --html failed (left for the next pass)"
 "$ORCHID_BIN" run refresh-lease
 
+# 16 reports that a decision is OUTSTANDING, never that the pass was
+# abandoned: every task above was walked and every edge policy could take was
+# taken before this line is reached. The distinction is the whole difference
+# between an unattended pump that keeps the other twenty-nine tasks moving and
+# one that parks a run for seven hours over an arbitration affecting one task.
+# See the exit-code table in usage() above, and runners/orchid-pump's own
+# handling of this code.
 if [ -n "$boundary_kind" ]; then
   exit 16
 fi

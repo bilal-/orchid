@@ -334,6 +334,36 @@ repository's own gates itself; nothing then gates and this boundary is never
 raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
 "The operator hand-off".
 
+## One task needs a decision and the whole run stopped
+
+**Symptom:** `orchid drive` exited 16 (or the pump printed `judgment boundary
+[...] is operator-only`), somebody read that as "the run is stuck", and
+twenty-nine tasks with no relationship to the boundaried one sat idle until a
+human came back and restarted the pump.
+
+Exit 16 says **a decision is outstanding somewhere** — never "no further
+progress is possible". The pass that returns it has already walked every task
+and taken every edge deterministic policy allows; the boundary is recorded at
+the end of it. `orchid drive` is idempotent, so a boundaried task re-reports
+the identical record on the next pass at no cost while every other task keeps
+advancing. Exit 1, not 16, is the code that means a pass could not be made.
+
+So keep driving. A scheduled pump does this by itself — each invocation runs
+the whole roadmap again — which is why the correct response to a boundary is
+to leave the schedule alone and read the blocker:
+
+```sh
+orchid run boundary show           # which task, which kind, why
+cat .orchid/BLOCKERS.md            # the same thing, plus everything else waiting
+orchid status --explain            # what did keep moving while it waited
+```
+
+If you are driving by hand in a loop, the loop condition must not be the
+driver's exit code: `while :; do orchid drive; sleep 60; done` keeps the run
+moving, `while orchid drive; do ...` stops at the first decision. A pump that
+stops at the first arbitrable disagreement is attended operation wearing an
+unattended label.
+
 ## Answers sent on a channel never arrive
 
 **Symptom:** blockers reach your phone, you answer them there, and the run

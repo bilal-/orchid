@@ -79,7 +79,25 @@ every implementer adapter in this codebase follows — see
 Codex can hold the orchestrator role: the adapter feeds it PROTOCOL.md's
 full text plus a fixed instruction block naming the concrete `$worktree`/
 `$ORCHID_ROOT` paths, and greps its transcript for `ORCHID-ACTION: <command>`
-lines to populate the envelope's `actions[]`. Requires `shell,git`
+lines to populate the envelope's `actions[]`.
+
+Since v1.1 that instruction block is the **judgment-boundary contract**, not
+"execute one tick": `orchid drive` has already run every mechanical step of
+the pass, and this adapter is reached for exactly one reason — a boundary
+deterministic policy refused to resolve. The block therefore directs the
+model to `orchid run boundary show`, the named task and its reviews, and then
+exactly one recorded decision (`orchid task arbitrate`, or `orchid notify`
+when the boundary is not one it can settle), finishing at `orchid run
+boundary clear`. Those verbs, plus `journal add`/`lessons add`, are the whole
+admitted set — the same one `lib/drive.sh` classifies a boundary against
+(`_DRIVE_SOFT_WRITE_VERBS`), which is why the two are pinned together by a
+test: a tick-style prompt here would mean a model woken for a boundary that
+policy had already counted as handled, with no blocker raised for the human.
+Nothing enforces the list — this adapter declares `command_surface=soft`, so
+every "only these verbs" line is prompt policy, unlike the brokered adapter's
+vendor-enforced allowlist.
+
+Requires `shell,git`
 capabilities (`plugins/engines/codex/plugin.conf` declares both) —
 `--sandbox workspace-write` is used for this path too, since a tick needs to
 run `git`/`orchid` verbs, not just edit files. That vendor sandbox is a real

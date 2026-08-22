@@ -150,6 +150,19 @@ and itself exits 16 when one is recorded, 0 when none is. `orchid run boundary
 clear --reason "..."` releases it. That verb is the record's single writer;
 nothing else may create, edit or delete it.
 
+**Exit 16 says a decision is outstanding SOMEWHERE — never that the run is
+stuck.** A pass that meets a boundary still walks every other task and takes
+every edge policy allows; the record is written and 16 returned at the END of
+that pass, not the moment the boundary was met. What it asks of a caller is
+that the decision reach a human, which the pass has already done by raising
+one `orchid notify` blocker per distinct record whenever no admitted verb can
+settle it — and then that the caller KEEP DRIVING. `orchid drive` is
+idempotent, so a boundaried task re-reports the identical record on the next
+pass at no cost while every unrelated task keeps advancing. Reading 16 as
+"stop and fetch a human" is how one task's arbitration parks a whole roadmap:
+it is attended operation wearing an unattended label. Exit 1, not 16, is the
+code that means a pass could not be made at all.
+
 When one pass meets several boundaries, the one RECORDED is the one a woken
 orchestrator could actually SETTLE, ahead of the ones only an operator can;
 among equals, the first in task-id order. The walk still notes every boundary
@@ -178,20 +191,31 @@ conjunction of three facts, and each of them is read from structured data:
    `brokered` adapter can run only the broker
    (`runners/orchid-orchestrator-command`), whose single state-changing
    judgment verb is `orchid task arbitrate`; it refuses `plan apply`, `run
-   accept`, `task unblock` and every other write. A `soft` adapter has no
-   enforceable restriction, so every verb is reachable from it. An
-   unrecognized label reads as `brokered` — the narrower surface, so an
-   unknown label can only ever route more boundaries to a human.
+   accept`, `task unblock` and every other write. A `soft` adapter is not
+   *stopped* from running those, but nothing asks it to: what a woken
+   orchestrator is handed is the judgment-boundary contract — read the
+   record, read the task and its reviews, record ONE decision — and that
+   contract names the same write verbs the broker admits. So `soft` means
+   "the same set, unenforced", never "every verb". Reading it as "every verb"
+   was a live defect: with a soft orchestrator resolved, every kind
+   classified as settleable, which suppressed the `orchid notify` blocker for
+   all of them and woke a model per staleness window to run `orchid run
+   accept` or `orchid plan apply` — verbs no prompt had asked it for — with
+   the human never told. An unrecognized label reads as `brokered` — the
+   surface whose set is enforced rather than merely asked for, so an unknown
+   label can only ever route more boundaries to a human.
 3. **Whether the task's CURRENT status lets that verb run.** `orchid task
    arbitrate` refuses any status but `arbitrating` (exit 3), so a review
    boundary raised while the task is still `reviewing` — which is exactly
    what the reviewing walk's own slot-independence boundary is — is not
    arbitrable, however arbitrable the same kind becomes one transition later.
 
-Both consequences are load bearing. A `run-complete` boundary against a
-`brokered` orchestrator is a HUMAN's job: no model can run the verb that
-closes the run. And a review boundary raised from `reviewing` must not
-outrank a genuine operator-only one with a verb that would have exited 3.
+Both consequences are load bearing. A `run-complete` boundary is a HUMAN's
+job on every surface shipped today: no adapter is asked to run — and the
+brokered one cannot run — the verb that closes the run, so `planning` and
+`run-complete` route to a blocker rather than a wakeup whatever the label
+says. And a review boundary raised from `reviewing` must not outrank a
+genuine operator-only one with a verb that would have exited 3.
 
 The kernel-owned boundary kinds:
 
@@ -1558,7 +1582,13 @@ is normal, never an error:
   the invocation with `pump: judgment boundary [<kind>] is operator-only —
   not waking an orchestrator`, exit 0: it would recur identically on every
   pass until a human acted, and the driver has already raised the blocker
-  that reaches one. With all three satisfied, the
+  that reaches one. Ending the INVOCATION is not ending the RUN — the pass
+  it just ran advanced every other task, and the next scheduled one will do
+  the same while the boundary waits. The pump drains `runtime/outbox/` both
+  before and AFTER that pass, so a blocker the pass itself raised is sent
+  through the configured channel in the same invocation that found it,
+  rather than waiting for whichever later invocation happens to drain next.
+  With all three satisfied, the
   pump probes `resolve_role_available orchestrator` and `exec`s
   `runners/orchid-tick` — the only path that reaches it, since a pass the
   deterministic policy can resolve on its own goes through

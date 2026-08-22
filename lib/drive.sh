@@ -34,7 +34,9 @@ drive_finding_rank() {
 # their own sites): 2 unknown verb, 3 illegal transition, 5
 # rebase_rereview_required, 12 input_overflow, 13 plugin validation failure,
 # 14 no eligible engine, 15 hook handler failure, 16 JUDGMENT BOUNDARY
-# (`orchid drive` when a pass stopped at one; `orchid run boundary show` when
+# OUTSTANDING (`orchid drive` when a pass met one -- the pass still walked
+# every task and took every edge it could, so this reports a decision waiting
+# somewhere, never a run that cannot proceed; `orchid run boundary show` when
 # one is recorded), 17 BROKERED COMMAND REFUSED
 # (runners/orchid-orchestrator-command).
 
@@ -105,13 +107,27 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
 # `orchid notify` blocker that is the only way a human ever hears about it:
 #
 #   1. WHICH VERB settles this kind at all (drive_boundary_settling_verb).
-#   2. Whether the RESOLVED ADAPTER's command surface admits that verb. A
-#      `command_surface=brokered` adapter (plugins/engines/claude) can run
-#      nothing but runners/orchid-orchestrator-command, whose table admits
-#      exactly one state-changing judgment verb -- `orchid task arbitrate` --
-#      and refuses `plan apply`, `run accept`, `task unblock` and every other
-#      write outright. A `soft` adapter has no enforceable restriction, so
-#      every verb is reachable from it.
+#   2. Whether the RESOLVED ADAPTER's command surface admits that verb --
+#      which is a question about the WAKEUP CONTRACT, not only about a
+#      sandbox. A `command_surface=brokered` adapter can run nothing but
+#      runners/orchid-orchestrator-command, whose table admits exactly one
+#      state-changing judgment verb -- `orchid task arbitrate` -- and refuses
+#      `plan apply`, `run accept`, `task unblock` and every other write
+#      outright. A `soft` adapter is not STOPPED from running those, but
+#      nothing asks it to: the orchestrate request an adapter is woken with
+#      is the judgment-boundary contract (read the record, read the task and
+#      its reviews, record ONE decision), and that contract names the same
+#      write verbs the broker admits. So `soft` reads "the same set,
+#      unenforced" -- never "every verb".
+#
+#      It used to read "every verb", and that was this file's own founding
+#      defect reintroduced on the other path. With a soft orchestrator
+#      resolved, EVERY kind classified as orchestrator-resolvable; the
+#      `orchid notify` blocker is suppressed for exactly those; so a finished
+#      run's `orchid run accept` and a `planning` run's `orchid plan apply`
+#      woke a model once per staleness window forever, for a decision no
+#      prompt had asked it to make -- with the human never told, which is the
+#      one outcome the brokered path exists to prevent.
 #   3. Whether the TASK'S CURRENT STATUS lets that verb run. `orchid task
 #      arbitrate` refuses anything but `arbitrating` (libexec/orchid-task,
 #      exit 3), so a review boundary raised while the task is still
@@ -131,20 +147,31 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
 # atoms. Kept as data beside the broker's own table, not inferred from it.
 _DRIVE_BROKERED_WRITE_VERBS=" task-arbitrate journal-add lessons-add notify run-boundary-clear "
 
+# ...and the ones a `soft` adapter can be relied on to run: the SAME set,
+# reached by a different route. The broker ENFORCES the list above; a soft
+# adapter is bounded only by the orchestrate prompt it is handed, and that
+# prompt asks a woken orchestrator for exactly these decisions and no others.
+# Derived here rather than retyped so the two can never silently disagree: a
+# surface that is one day asked to settle more (an adapter whose prompt really
+# does direct it through `orchid plan apply`) widens HERE, in data, in the
+# same commit that changes the prompt -- which is what tests/test_drive.sh's
+# Part R pins, so the classification and the prompt cannot drift apart.
+_DRIVE_SOFT_WRITE_VERBS="$_DRIVE_BROKERED_WRITE_VERBS"
+
 # drive_surface_admits <command_surface> <verb-phrase> -- 0 iff an adapter
-# declaring <command_surface> can actually run that verb. `soft` is the
-# absence of an enforceable restriction, so it admits everything; anything
-# unrecognized is treated as `brokered`, the NARROWER surface, so an unknown
-# label can only ever route more boundaries to a human, never fewer.
+# declaring <command_surface>, woken for a boundary, can be relied on to run
+# that verb. Anything unrecognized is treated as `brokered` -- the surface
+# whose set is enforced rather than merely asked for -- so an unknown label
+# can only ever route more boundaries to a human, never fewer.
 drive_surface_admits() {
-  local surface="$1" verb="$2"
+  local surface="$1" verb="$2" admitted
   case "$surface" in
-    soft) return 0 ;;
-    *)
-      case "$_DRIVE_BROKERED_WRITE_VERBS" in
-        *" $verb "*) return 0 ;;
-        *) return 1 ;;
-      esac ;;
+    soft) admitted="$_DRIVE_SOFT_WRITE_VERBS" ;;
+    *) admitted="$_DRIVE_BROKERED_WRITE_VERBS" ;;
+  esac
+  case "$admitted" in
+    *" $verb "*) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -156,6 +183,14 @@ drive_surface_admits() {
 #   review-conflict
 #   planning         -- `orchid plan apply` (PROTOCOL.md PLANNING)
 #   run-complete     -- `orchid run accept --evidence` (PROTOCOL.md COMPLETION)
+#
+# Naming a verb is NOT the same as an adapter being able to run it: no surface
+# admits `plan apply` or `run accept` today (neither the broker's table nor
+# the judgment-boundary prompt any adapter is woken with mentions either), so
+# `planning` and `run-complete` are operator-only on every surface. They stay
+# in this table because it answers one question -- which verb would record the
+# result -- and admission is deliberately the separate axis above; the day an
+# adapter is asked to run one, it is one atom of data that changes.
 #
 # `blocked-task` (`task unblock`/`task retry`), `hook-failure` (its handler or
 # its binding is broken), `worktree-conflict` (a checkout that cannot be proven
