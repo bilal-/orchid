@@ -833,6 +833,16 @@ cross-check, still wanting a task or a fresh reason. Read the full item with
 `grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry at that
 ordinal.
 
+The refusal closes at the same boundary `plan defer` does, and that boundary
+is exactly why `run advance` is gated too: while a run is still in
+`planning`, both remedies above are open, so the refusal always has a way
+out. Once `run_status` has legitimately left `planning`, a `plan apply` still
+PRINTS the cross-check and still names anything unconsidered, but it commits
+rather than refusing — neither remedy is open at that point, and a gate whose
+only way out has already closed would just strand you. Pick the item up with
+a task instead, or leave it for the next run's cross-check, which will raise
+it again.
+
 If the pass stops again with `awaiting-operator-prerequisite` instead, that is
 the OTHER operator-owned stop at this point — a step outside the repository,
 not inside the candidate — and the next section is the one you want. Do the
@@ -907,7 +917,6 @@ If the suite can migrate its own store instead — a fixture database, a temp
 file, an in-memory DB the tests build — do that and leave
 `operator_prerequisite` empty. It is the better answer wherever it is
 available; this is for where it is not.
-
 ## One task needs a decision and the whole run stopped
 
 **Symptom:** `orchid drive` exited 16 (or the pump printed `judgment boundary
@@ -937,20 +946,6 @@ driver's exit code: `while :; do orchid drive; sleep 60; done` keeps the run
 moving, `while orchid drive; do ...` stops at the first decision. A pump that
 stops at the first arbitrable disagreement is attended operation wearing an
 unattended label.
-The refusal closes at the same boundary `plan defer` does. Once `run_status`
-has left `planning`, a `plan apply` still PRINTS the cross-check and still
-names anything unconsidered, but it commits rather than refusing — neither
-remedy above is open at that point, and a gate whose only way out has already
-closed would just strand you. Pick the item up with a task instead, or leave
-The refusal closes at the same boundary `plan defer` does, and that boundary
-is exactly why `run advance` is gated too: while a run is still in
-`planning`, both remedies above are open, so the refusal always has a way
-out. Once `run_status` has legitimately left `planning`, a `plan apply` still
-PRINTS the cross-check and still names anything unconsidered, but it commits
-rather than refusing — neither remedy is open at that point, and a gate whose
-only way out has already closed would just strand you. Pick the item up with
-a task instead, or leave it for the next run's cross-check, which will raise
-it again.
 
 ## Answers sent on a channel never arrive
 
