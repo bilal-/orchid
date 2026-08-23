@@ -1264,9 +1264,12 @@ drive_review_slots_unsatisfied() {
 # cannot be proven to belong to this task, this branch and this repository
 # must be refused rather than reused.
 
-# _drive_physical <path> -- canonical absolute path, or nothing.
+# _drive_physical <path> -- canonical absolute path, or nothing. Delegates to
+# lib/common.sh's orchid_physical_dir (which every caller of this file has
+# already sourced) so the worktree comparisons below and the path a prepare
+# command is handed can never be canonicalized two different ways.
 _drive_physical() {
-  ( cd "$1" 2>/dev/null && pwd -P ) || return 1
+  orchid_physical_dir "$1" || return 1
 }
 
 # _drive_common_dir <path> -- the canonical Git COMMON directory backing the

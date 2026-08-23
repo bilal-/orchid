@@ -1715,6 +1715,46 @@ The log's mtime is what the kernel reads, and it separates the two reports:
 There is one thing the kernel cannot do for `unstamped` and you may still want
 to: kill the process, if it turns out to be alive but silent. `pgrep -f
 <job_id>` finds it; nothing else on this machine knows its pid.
+## Verification fails only in orchid's own checkouts
+
+**Symptom:** the suite passes when you run it by hand, but every task fails
+`orchid verify`, or passes verify and then fails validation inside `orchid
+merge` — with an error about a missing module, binary, generated file or
+`.env` rather than about the change itself.
+
+Both checkouts orchid works in are `git worktree add` of a ref: the task's
+dispatch worktree (a sibling directory named `<repo>-<task-id>`) and the
+detached temp worktree merge validates in (under `$TMPDIR`). Each holds
+**only what is committed**. Your own checkout also holds everything
+untracked you have accumulated there — installed dependencies above all —
+which is exactly the difference.
+
+Point `worktree_prepare` at the command that supplies it:
+
+```sh
+# in <repo>/orchid.config
+worktree_prepare=npm ci --silent
+```
+
+It runs inside each fresh checkout before anything else uses it, once per
+checkout per command text, with `ORCHID_REPO_ROOT` set to this repository's
+own canonical path — the way to reach back for something too expensive to
+rebuild (`worktree_prepare=ln -s "$ORCHID_REPO_ROOT/node_modules" .`).
+Output lands in `.orchid/runtime/worktree-prepare/<task>.log` (and
+`<task>-merge.log` for the merge validation checkout); a failure stops the
+run (a `worktree-conflict` boundary on dispatch, a refusal on merge) rather
+than being scored against the candidate, and is retried on the next pass
+once you have fixed it. It counts against `infra_failures`, never against
+the task's `attempts`, so a bootstrap you never get round to fixing blocks
+the task at `infra_max` instead of raising the same boundary forever. It
+runs with **stdin closed**, so an installer that stops to ask a question
+fails rather than hanging — pass whatever `--yes`/`--non-interactive` flag
+it has. See [configuration.md](./configuration.md) for the full contract.
+
+`ORCHID_REPO_ROOT` is exported to `verify` as well, in both checkouts, so a
+suite that has to reach back for gitignored state at test time (rather than
+once at setup time) can do it portably instead of hardcoding an absolute
+path into committed config.
 
 ## Scheduled pump can't find jq / engine CLIs
 

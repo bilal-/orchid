@@ -858,7 +858,7 @@ drive_hook_gate() {
 # ---------------------------------------------------------------------------
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
-  local tf target outcome blockers plan action path branch integ integ_head arc lrc role_line role op wtmiss
+  local tf target outcome blockers plan action path branch integ integ_head arc lrc role_line role op wtmiss prep prep_why
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
@@ -927,6 +927,46 @@ drive_dispatch() {
       *)
         set_boundary worktree-conflict "$id" "unrecognized worktree plan '$action'"
         return 0 ;;
+    esac
+    # The checkout exists; now make it USABLE. A fresh worktree holds only
+    # what is committed, so a project whose verification needs untracked
+    # setup would hand this task's implementer a checkout its own verify
+    # command cannot pass -- and report that environment's problem as the
+    # candidate's. `worktree_prepare` (config, default unset) is where the
+    # operator closes that gap; unconfigured, this is a no-op, and a
+    # checkout already prepared with the same command is skipped rather than
+    # re-prepared on every pass. Runs for reuse/adopt too, not just create:
+    # the stamp lives in the worktree's own private git dir, so the ONLY
+    # thing that decides is whether this exact checkout has been prepared
+    # with this exact command -- which is false for the orphan a crashed
+    # pass left behind, and for a worktree that predates the config.
+    prep="$(worktree_prepare "$repo" "$path" "$id")"
+    case "$(printf '%s' "$prep" | cut -f1)" in
+      fail)
+        # ON THE INFRA LADDER, NOT THE ATTEMPT COUNTER. This is the whole
+        # point of the prepare step existing as its own command: folded into
+        # `verify` instead, a broken bootstrap is a failed verification, which
+        # spends one of the task's ATTEMPTS and reads as "the candidate is
+        # wrong" -- the misdiagnosis the dogfood findings behind this feature
+        # are made of. Charged through the kernel's own counter (which
+        # journals its reason and auto-blocks at `infra_max`) so a bootstrap
+        # nobody fixes converts into a blocked task after a bounded number of
+        # passes, instead of a boundary re-raised forever. `|| true` because a
+        # counter that could not be written must not take the pass down with
+        # it: the boundary below is the report that actually reaches a human,
+        # and it is raised either way.
+        prep_why="$(printf '%s' "$prep" | cut -f2-)"
+        "$ORCHID_BIN" task infra-fail "$id" \
+          --reason "worktree_prepare failed for the dispatch worktree: $prep_why" || true
+        # Named for the condition, not for the counter: the task stays where
+        # it was and an operator has to fix the environment either way. If
+        # that infra-fail was the one that hit the cap, the task is now
+        # `blocked`, and the next pass reports it as such through the
+        # blocked-task boundary that owns that state.
+        set_boundary worktree-conflict "$id" "$prep_why"
+        return 0 ;;
+      ok)
+        drive_note "$id: prepared the dispatch worktree $path (log: $(printf '%s' "$prep" | cut -f2-))" ;;
     esac
     # base_sha is only ever STAMPED, never re-stamped: a rework re-dispatch
     # keeps the base its candidate was actually built on, so `orchid merge`'s
@@ -2313,6 +2353,23 @@ if [ -n "$merging_ids" ]; then
   drive_hook_gate "$merge_id" before_merge "$merge_attempt" "$merge_cand" || merge_hg=$?
   if [ "$merge_hg" -eq 0 ]; then
     merge_rc=0
+    # Fingerprint the validation log BEFORE the call, so the rule below can
+    # ask "did THIS run write it" rather than merely "is a file there".
+    # `orchid merge` deletes any previous attempt's copy as its first
+    # committed act, which covers every way it can die once it has started --
+    # but not the one way it can die before it starts: a run lock it did not
+    # get (an operator merging by hand while a pass is walking). That die
+    # leaves the task in `merging` with an earlier attempt's log untouched on
+    # disk, and reading its presence as evidence would send someone to a log
+    # about a candidate and a merged tree that no longer exist -- the
+    # dangling-evidence defect of lesson L023, arriving by the one route the
+    # verb cannot close from the inside. Content, not mtime: a log rewritten
+    # inside the same coarse timestamp is still a different log, and a log
+    # that is byte-identical to the one already there tells an operator
+    # nothing this run learned.
+    merge_log="$state/reviews/$merge_id-merge.log"
+    merge_log_before=""
+    [ ! -f "$merge_log" ] || merge_log_before="$(cksum <"$merge_log" 2>/dev/null || true)"
     # Same heartbeat as `verify` above, and for the same reason: `orchid
     # merge` re-runs the task's whole verification suite on the integration
     # checkout before it touches a ref.
@@ -2373,6 +2430,15 @@ if [ -n "$merging_ids" ]; then
         "$ORCHID_BIN" journal add --task "$merge_id" \
           "re-review scope: full — the rebase minted a new candidate, so prior evidence is invalid" >/dev/null
         drive_note "$merge_id: base moved — rebased; re-verify and re-review required (INV-07)" ;;
+      blocked)
+        # `merging -> blocked` is not an unexpected status: a merge validation
+        # worktree whose `worktree_prepare` step keeps failing charges the
+        # infra ladder each pass (libexec/orchid-merge), and the kernel's own
+        # counter blocks the task at `infra_max`. Reported as the blocked task
+        # it is, through the boundary that owns that state, rather than as a
+        # merge that went somewhere nobody anticipated.
+        set_boundary blocked-task "$merge_id" \
+          "task is blocked — only an operator (orchid task unblock|retry) resolves it" ;;
       merging)
         if [ "$merge_rc" -eq 15 ]; then
           set_boundary hook-failure "$merge_id" "merge refused: a required before_merge hook has no ok envelope for this candidate"
@@ -2399,8 +2465,35 @@ if [ -n "$merging_ids" ]; then
               "merge refused: merge re-runs the suite against the same store and the operator prerequisite is unacknowledged for this candidate: $(fm_get "$merge_tf" operator_prerequisite) — do it, then: orchid task prereq-ack $merge_id --reason \"...\""
           fi
         else
+          # Point at evidence that is ACTUALLY THERE (lesson L023). The
+          # validation log exists only once merge got as far as running the
+          # suite; the ways it can be left in `merging` short of that -- a
+          # `worktree_prepare` step that failed, a temp worktree it could not
+          # create, a missing verify command -- write no log at all, and the
+          # verb deletes any stale copy from a previous attempt before it can
+          # be mistaken for this one's. So a log THIS RUN WROTE is the
+          # distinction, and when there is none the verb's own last line
+          # (which names the prepare log, for the case that has one) is the
+          # only record there is.
+          #
+          # "This run wrote it" is the test, not "a file exists": a log whose
+          # bytes are exactly the ones that were there before the call
+          # outlived its run and is treated as absent (see the fingerprint
+          # above).
+          merge_log_after=""
+          [ ! -f "$merge_log" ] || merge_log_after="$(cksum <"$merge_log" 2>/dev/null || true)"
+          merge_evidence="see .orchid/reviews/$merge_id-merge.log"
+          if [ -z "$merge_log_after" ] || [ "$merge_log_after" = "$merge_log_before" ]; then
+            # `|| true` is required, not defensive: this file runs under
+            # `set -euo pipefail`, and a verb that printed nothing (or only
+            # blank lines) makes grep exit 1, which would take the whole pass
+            # down at the exact moment it is trying to explain a failure.
+            merge_evidence="$(printf '%s\n' "$merge_out" | grep -v '^[[:space:]]*$' | tail -n 1 || true)"
+            merge_evidence="${merge_evidence:-the verb produced no output}"
+            merge_evidence="${merge_evidence:0:300}"
+          fi
           "$ORCHID_BIN" notify --task "$merge_id" \
-            "merge left task in merging: see .orchid/reviews/$merge_id-merge.log" >/dev/null
+            "merge left task in merging: $merge_evidence" >/dev/null
           set_boundary operator-decision "$merge_id" "merge left the task in merging (exit $merge_rc) — a config/CAS problem, not a candidate defect"
         fi ;;
       *)

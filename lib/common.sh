@@ -1386,6 +1386,232 @@ with_timeout() {
   return 124
 }
 
+# -- worktrees Orchid creates ------------------------------------------------
+
+# orchid_physical_dir <path> -- <path> as a canonical, absolute, symlink-free
+# directory path, or nothing (non-zero) when it does not exist or is not a
+# directory.
+#
+# `cd` plus `pwd -P`, and nothing else. Both one-word spellings of this are
+# traps: `realpath` is not installed on a stock macOS, and BSD `readlink` had
+# no `-f` at all before macOS 12.3 -- either would work on the CI Linux runner
+# and fail on the operator's own laptop, which is the worst way for a path
+# helper to differ. This spelling is shell built-ins only, so it behaves the
+# same everywhere bash 3.2 runs.
+#
+# CANONICAL matters as much as portable. macOS reaches $TMPDIR through a
+# symlink (/var -> /private/var), so one directory has two spellings, and any
+# path this repository hands to something running ELSEWHERE -- a `git worktree
+# list` comparison, or a `worktree_prepare` command whose cwd is a fresh
+# checkout under /var/folders -- must be the spelling both sides agree on.
+orchid_physical_dir() {
+  ( cd "$1" 2>/dev/null && pwd -P )
+}
+
+# A checkout Orchid creates holds exactly what is committed and nothing else:
+# a task's dispatch worktree (runners/orchid-drive) and the detached
+# validation worktree `orchid merge` runs the suite in are both `git worktree
+# add` of a ref, never a copy of anybody's working directory. So every project
+# whose verification needs something UNTRACKED -- installed dependencies, a
+# generated lockfile, a .env, a built toolchain -- fails in those checkouts
+# while passing in the operator's own, and the failure is reported against the
+# candidate rather than against the environment that produced it.
+#
+# `worktree_prepare` (config, default unset) is the operator's one chance to
+# close that gap: a command line run INSIDE the fresh checkout before anything
+# else uses it. Parsed from config and never sourced -- same treatment
+# `verify` gets -- and run through `bash -c` in the foreground, so this is a
+# setup command rather than an engine spawn and INV-01 is untouched.
+#
+# The command is handed three environment variables, of which the first is the
+# point of the exercise:
+#
+#   ORCHID_REPO_ROOT  the repository orchid dispatched from, canonicalized by
+#                     orchid_physical_dir. A prepare command's job is nearly
+#                     always to bring across something the checkout does not
+#                     have (`ln -s "$ORCHID_REPO_ROOT/node_modules" .`), and
+#                     it cannot work that path out for itself: a dispatch
+#                     worktree is a SIBLING of the repository while a merge
+#                     validation worktree is an unrelated mktemp directory
+#                     under $TMPDIR, so no fixed number of `..` hops reaches
+#                     the repository from both, and on macOS the $TMPDIR one
+#                     is not even on the same spelling of the filesystem.
+#   ORCHID_WORKTREE   the checkout being prepared (also its cwd).
+#   ORCHID_TASK       the task id that checkout belongs to. The TASK ID, and
+#                     nothing decorated onto it: a prepare command that keys a
+#                     cache or names a scratch directory off this value has to
+#                     get back the same string the rest of the protocol uses
+#                     for that task. Which checkout of that task is being
+#                     prepared is ORCHID_WORKTREE's job to say, and the log
+#                     slug's -- neither of which is this variable.
+#
+# ORCHID_REPO_ROOT is deliberately NOT spelled `ORCHID_REPO`: that name is a
+# verb's "which repository am I operating on" input, and setting it here would
+# silently retarget any nested `orchid` call the prepare command makes -- at
+# the exact moment the caller is standing in a different checkout.
+
+# _worktree_prepare_gitdir <worktree> -- that checkout's PRIVATE git directory
+# (`<common>/worktrees/<name>` for a linked worktree, `.git` for the main
+# one), canonicalized, or nothing.
+#
+# This is where the prepared-stamp goes, and the choice is the whole
+# crash-safety story: git deletes that directory when the worktree is removed
+# or pruned, so a stamp can never outlive the checkout it describes, and a
+# worktree recreated at the same path is never mistaken for a prepared one.
+_worktree_prepare_gitdir() {
+  local wt="$1" raw
+  raw="$(git -C "$wt" rev-parse --git-dir 2>/dev/null)" || return 1
+  [ -n "$raw" ] || return 1
+  case "$raw" in
+    /*) ;;
+    *) raw="$wt/$raw" ;;
+  esac
+  orchid_physical_dir "$raw"
+}
+
+# _worktree_prepare_run <worktree> <repo-root> <task> <command> -- the child
+# side of the fork with_timeout backgrounds: working directory and
+# environment, then the configured command line through `bash -c` WITH ITS
+# STDIN CLOSED, exactly as `orchid verify` runs its own.
+#
+# `</dev/null` is the load-bearing token on that line, and leaving it off is a
+# silent-data-loss bug rather than a hygiene miss. runners/orchid-drive walks
+# its work through loops whose OWN stdin is the list being walked -- the task
+# walk reads `< <("$ORCHID_BIN" task list | sort)`, and the binding,
+# review-slot and escalation loops are herestring-fed the same way. Dispatch
+# calls worktree_prepare from inside that walk, in a command substitution,
+# which redirects stdout and nothing else; so an inherited stdin here is the
+# driver's own worklist pipe. A prepare command that reads stdin for any
+# ordinary reason -- an installer asking to continue, a bootstrap script with
+# a bare `read`, anything ending in `cat` -- then consumes the tasks the
+# driver has not walked yet. The loop sees EOF, the pass ends early having
+# silently skipped real work, and NOTHING reports an error: every task it
+# never reached simply looks like a task with nothing to do this pass.
+#
+# Closing stdin makes that impossible instead of unlikely, and costs a prepare
+# command nothing it should have had: it is a setup step running unattended,
+# with no operator on the other end of a prompt to answer it.
+_worktree_prepare_run() {
+  local wt="$1" root="$2" task="$3" cmd="$4"
+  cd "$wt" || return 1
+  ORCHID_REPO_ROOT="$root" ORCHID_WORKTREE="$wt" ORCHID_TASK="$task" \
+    bash -c "$cmd" </dev/null
+}
+
+# worktree_prepare <repo> <worktree> <task> [log-slug] -- prepares <worktree>
+# when the operator configured a command for it. Prints exactly one line,
+# "<action><TAB><detail>" (the shape drive_worktree_plan already uses), and
+# ALWAYS returns 0: the caller owns the consequence, and the two callers differ
+# on it -- dispatch parks the run on a worktree-conflict boundary and leaves
+# the task where it was, while `orchid merge` dies before it can report an
+# environment's problem as a candidate's.
+#
+#   skip <reason>   nothing is configured, or this checkout's stamp already
+#                   records this exact command
+#   ok   <log>      the command ran and exited 0
+#   fail <reason>   it exited non-zero, outlived worktree_prepare_timeout_s,
+#                   or could not be run at all. Names the log either way.
+#
+# The stamp records the COMMAND TEXT, not merely the fact of a run, so editing
+# `worktree_prepare` re-prepares every checkout on its next pass -- and a
+# FAILED run is never stamped, so the next pass retries it once the operator
+# has fixed whatever broke.
+#
+# <task> is the task id the checkout belongs to, and reaches the command as
+# ORCHID_TASK -- undecorated, because that variable's contract is the task id.
+# <log-slug> names the log and defaults to <task>; the ONLY caller that passes
+# it is `orchid merge`, which prepares a SECOND checkout for a task that
+# usually already has a dispatch worktree, and would otherwise overwrite that
+# checkout's prepare log with this one's. Two checkouts, two records, one task
+# id in both.
+worktree_prepare() {
+  local repo="$1" wt="$2" task="$3" slug="${4:-$3}"
+  local cmd root phys gitdir stamp rt log secs out_tmp tail_txt rc=0
+  cmd="$(config_get "$repo" worktree_prepare "")"
+  if [ -z "$cmd" ]; then
+    printf 'skip\tno worktree_prepare configured\n'
+    return 0
+  fi
+  root="$(orchid_physical_dir "$repo")" || root=""
+  if [ -z "$root" ]; then
+    printf 'fail\tcannot resolve the repository root %s\n' "$repo"
+    return 0
+  fi
+  phys="$(orchid_physical_dir "$wt")" || phys=""
+  if [ -z "$phys" ]; then
+    printf 'fail\tcannot resolve the worktree %s\n' "$wt"
+    return 0
+  fi
+  gitdir="$(_worktree_prepare_gitdir "$phys")" || gitdir=""
+  if [ -z "$gitdir" ]; then
+    printf 'fail\t%s is not a git checkout, so nothing can record that it was prepared\n' "$phys"
+    return 0
+  fi
+  stamp="$gitdir/orchid-prepared"
+  if [ -f "$stamp" ] && [ "$(cat "$stamp" 2>/dev/null)" = "$cmd" ]; then
+    printf 'skip\t%s is already prepared with this command\n' "$phys"
+    return 0
+  fi
+
+  secs="$(config_get "$repo" worktree_prepare_timeout_s 900)"
+  # A non-numeric budget would go straight to with_timeout's own `sleep`,
+  # whose immediate failure would have the watcher kill the command the
+  # instant it started -- every prepare a zero-second timeout, silently. A
+  # malformed value falls back to the default instead.
+  case "$secs" in ''|*[!0-9]*) secs=900 ;; esac
+
+  # The log lives under runtime/ (gitignored), never in .orchid/reviews/:
+  # this is an environment record, not evidence about a candidate, and no
+  # gate reads it.
+  rt="$(orchid_runtime "$repo")"
+  mkdir -p "$rt/worktree-prepare"
+  slug="${slug//\//-}"; [ -n "$slug" ] || slug=worktree
+  log="$rt/worktree-prepare/$slug.log"
+
+  out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-prepare.XXXXXX")"
+  with_timeout "$secs" _worktree_prepare_run "$phys" "$root" "$task" "$cmd" \
+    >"$out_tmp" 2>&1 || rc=$?
+  {
+    echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "worktree: $phys"
+    echo "repo_root: $root"
+    echo "task: $task"
+    echo "command: $cmd"
+    echo "---"
+    cat "$out_tmp"
+    echo "exit: $rc"
+  } | atomic_write "$log"
+  # A boundary reason is one line, so the tail that explains the failure is
+  # flattened and bounded here rather than at each call site.
+  tail_txt="$(tail -n 3 "$out_tmp" 2>/dev/null | tr '\n\t' '  ')" || tail_txt=""
+  tail_txt="${tail_txt:0:200}"
+  rm -f "$out_tmp"
+
+  if [ "$rc" -eq 0 ]; then
+    # An unwritable stamp costs a repeated prepare on the next pass, which is
+    # exactly what an unprepared checkout would have got anyway -- never worth
+    # aborting a caller running under `set -e` over.
+    printf '%s\n' "$cmd" | atomic_write "$stamp" || true
+    printf 'ok\t%s\n' "$log"
+    return 0
+  fi
+  # 124 AND 143 are both "we killed it". with_timeout reports 124 only when
+  # its watcher has already been reaped by the time the timed command is
+  # waited on; win that race the other way -- the watcher fires, kills the
+  # group, and is still a zombie when `kill -0` checks it -- and the caller
+  # gets the command's OWN status for a SIGTERM it did not survive, which is
+  # 128+15. Reading that as an ordinary non-zero exit would tell the operator
+  # to go debug a command that never got to finish.
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 143 ]; then
+    printf 'fail\tworktree_prepare timed out after %ss in %s (worktree_prepare_timeout_s; see %s)\n' \
+      "$secs" "$phys" "$log"
+    return 0
+  fi
+  printf 'fail\tworktree_prepare failed (exit status %s) in %s (see %s)%s\n' \
+    "$rc" "$phys" "$log" "${tail_txt:+ -- $tail_txt}"
+  return 0
+}
+
 # v1-m4: hyphenated config keys (a custom role id like `role.code-reviewer`)
 # used to have NO working env override at all -- `tr 'a-z.'` never mapped
 # `-`, so `ORCHID_ROLE_CODE-REVIEWER` (an invalid env var name; bash silently
@@ -1703,7 +1929,10 @@ epoch_require() {
 
 _trust_canon_path() {  # dir -> canonical absolute path (no trailing slash,
   # symlinks resolved), or nonzero if it doesn't exist / isn't a directory.
-  ( cd "$1" 2>/dev/null && pwd -P )
+  # The trust store's own name for orchid_physical_dir (above), kept because
+  # four call sites outside this file speak it; the implementation is shared
+  # so there is exactly one place this repository canonicalizes a path.
+  orchid_physical_dir "$1"
 }
 
 _orchid_file_sha256() {  # file -> a line binding this file's path to its

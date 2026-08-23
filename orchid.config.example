@@ -26,6 +26,27 @@ verify=npm test
 # exactly that reason: static checks and ShellCheck, no second suite. See
 # docs/configuration.md.
 # merge_gate=/bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
+
+# A checkout Orchid creates -- a task's dispatch worktree, and the temp
+# worktree `orchid merge` validates in -- is `git worktree add` of a ref, so
+# it holds ONLY what is committed. If the `verify` command above needs
+# anything untracked (installed dependencies, a generated file, a .env), set
+# worktree_prepare to the command that puts it there; it runs once inside
+# each fresh checkout, before anything else uses it, and is skipped on later
+# passes until you change it. Unset (the default) means no preparation step
+# at all -- correct for any project whose committed tree is enough to verify.
+#
+# The command's cwd is the checkout and its stdin is closed (it runs
+# unattended -- there is nobody to answer a prompt), and it is given
+# ORCHID_REPO_ROOT (this repository's own canonical path -- a dispatch
+# worktree is a sibling of it, a merge worktree is somewhere under $TMPDIR,
+# so nothing relative reaches it from both), ORCHID_WORKTREE and ORCHID_TASK
+# (the bare task id in both checkouts). Output goes to
+# .orchid/runtime/worktree-prepare/<task>.log, or <task>-merge.log for the
+# merge validation checkout; a failure stops the run rather than letting the
+# environment's problem be reported as the candidate's.
+# worktree_prepare=npm ci --silent
+# worktree_prepare_timeout_s=900
 # Roles are configuration — see docs/configuration.md. Each role.* value is a
 # comma-separated failover chain, primary first (e.g.
 # role.implementer=codex,claude): a fallback engine only ever activates once

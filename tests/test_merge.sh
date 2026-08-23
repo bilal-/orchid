@@ -19,7 +19,11 @@ walk_to_merging() {
   "$ORCHID_BIN" task set "$id" base_sha "$base"
   "$ORCHID_BIN" task set "$id" candidate_sha "$cand"
   "$ORCHID_BIN" task set "$id" verification_commands "$vcmd"
-  "$ORCHID_BIN" task advance "$id" implementing
+  # This is the one edge in this walk the scheduler can refuse. Name that
+  # refusal here so a parked fixture reports its held slot directly instead
+  # of making a later feature case fail with an unrelated end-state message.
+  "$ORCHID_BIN" task advance "$id" implementing \
+    || fail "$id: dispatch into implementing refused -- the rest of this case is meaningless"
   "$ORCHID_BIN" task advance "$id" testing
   git checkout -q "$branch"
   "$ORCHID_BIN" verify "$id" >/dev/null
@@ -164,6 +168,12 @@ grep -qi "update-ref\|CAS" .orchid/journal.md || fail "CAS failure journal entry
 # change did (it special-cased only the unset-ORCHID_ACTOR default).
 assert_match "\\(orchestrator e${ORCHID_EPOCH}\\)" "$(cat .orchid/journal.md)" \
   "CAS failure journal entry's actor is 'orchestrator e<epoch>', not epoch-less 'orchestrator'"
+
+# This fixture intentionally remains in the active `merging` state after the
+# CAS refusal. Release its scheduling slot after the assertions that require
+# that state, so later prepare cases are not refused at the concurrency cap.
+"$ORCHID_BIN" task advance T004 blocked \
+  --reason "fixture teardown: release the scheduling slot this parked task holds" >/dev/null
 
 # ---------------------------------------------------------------------------
 # v0b2: stale-base rebase IN the recorded frontmatter worktree. When a task's
@@ -1570,3 +1580,266 @@ assert_eq "" "$(git -C "$cfgnew" status --porcelain -- orchid.config)" \
 assert_match "orchid\.config" \
   "$(git -C "$cfgnew" status --porcelain --ignored -- orchid.config)" \
   "the shorthand 'orchid merge' reports a preserved config in must name the file in exactly the case the precondition was widened to refuse -- a warning that says a file was kept and does not say which is not a warning"
+
+# T007's final fixture intentionally leaves a red repository gate configured.
+set_gate ""
+# `worktree_prepare` runs in the merge validation worktree too. That worktree
+# is a fresh detached `git worktree add` of the integration head, so it holds
+# ONLY what is committed -- and merge re-runs the task's whole suite there.
+# A project whose suite needs anything untracked therefore passes its
+# testing->reviewing gate (which runs in a checkout that has it) and fails
+# every merge (in one that does not), with the failure recorded against the
+# candidate. The prepare step is what closes that, and the temp worktree is
+# also the case that makes ORCHID_REPO_ROOT necessary rather than convenient:
+# it lives under $TMPDIR, so no relative path from it reaches this repository.
+#
+# RED before this task: merge never prepares its worktree, dep.txt is absent
+# there, validation fails and T107 lands in rework instead of done.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T107 "merge validation worktree preparation"
+git checkout -q -b task/T107 "$integ"
+echo seven > prepare-merge-green.txt && git add prepare-merge-green.txt && git commit -q -m "feature 7"
+cand7="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base7="$(git rev-parse "$integ")"
+
+# Untracked in this checkout because the operator put it there -- the shape
+# every real project has (installed dependencies, a generated file, a .env).
+echo dep > dep.txt
+cat > "$WORK/merge-prep.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+# Reaches BACK to the repository for something the checkout cannot have.
+cp "$ORCHID_REPO_ROOT/dep.txt" "$ORCHID_WORKTREE/dep.txt"
+EOF
+chmod +x "$WORK/merge-prep.sh"
+echo "worktree_prepare=$WORK/merge-prep.sh" >> orchid.config
+
+walk_to_merging T107 task/T107 "$base7" "$cand7" "test -f dep.txt"
+
+rc=0; "$ORCHID_BIN" merge T107 >"$WORK/merge7.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" "a suite needing untracked setup merges once worktree_prepare provides it"
+assert_eq "done" "$("$ORCHID_BIN" task show T107 | grep '^status: ' | cut -d' ' -f2)" \
+  "the candidate is not blamed for the validation worktree's missing setup"
+prep7=".orchid/runtime/worktree-prepare/T107-merge.log"
+[ -f "$prep7" ] \
+  || fail "the merge validation worktree's prepare step writes its own log, under its own name"
+# The log is named `<id>-merge` because a task usually has TWO prepared
+# checkouts and one record must not overwrite the other. ORCHID_TASK is not:
+# its contract is the task id, and a prepare command that keys a cache off it
+# must get back the same string the rest of the protocol uses for that task,
+# in both checkouts, with nothing to strip.
+assert_match "^task: T107$" "$(cat "$prep7")" \
+  "ORCHID_TASK is the bare task id in the merge worktree too, never the log's slug"
+n_wt7="$(git worktree list | wc -l | tr -d ' ')"
+assert_eq 2 "$n_wt7" "the prepared temp worktree is still torn down after the merge"
+
+# ---------------------------------------------------------------------------
+# A prepare step that FAILS must leave the operator pointing at evidence that
+# exists. merge dies before it validates anything, so it writes no
+# `<id>-merge.log` — and any copy an EARLIER attempt left behind (the
+# merging->rework arm keeps that file on purpose) would now describe a
+# candidate and a merged tree that no longer exist. The driver decides which
+# message to send by asking whether that file is there, so a stale one is not
+# merely untidy, it is the dangling-evidence defect of lesson L023: it sends
+# someone to read a log about the wrong thing.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T108 "merge prepare fails"
+git checkout -q -b task/T108 "$integ"
+echo eight > prepare-merge-fail.txt && git add prepare-merge-fail.txt && git commit -q -m "feature 8"
+cand8="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base8="$(git rev-parse "$integ")"
+walk_to_merging T108 task/T108 "$base8" "$cand8" "test -f prepare-merge-fail.txt"
+
+# Exactly what an earlier attempt on an earlier candidate leaves behind.
+printf 'stale evidence from an attempt on a candidate that no longer exists\n' \
+  > ".orchid/reviews/T108-merge.log"
+echo 'worktree_prepare=sh -c "echo bootstrap-broke >&2; exit 9"' >> orchid.config
+
+rc=0; "$ORCHID_BIN" merge T108 >"$WORK/merge8.out" 2>&1 || rc=$?
+assert_eq 1 "$rc" "a failing prepare step makes merge refuse rather than validate"
+assert_eq "merging" "$("$ORCHID_BIN" task show T108 | grep '^status: ' | cut -d' ' -f2)" \
+  "the task stays in merging — the environment failed, so the candidate is not sent back to rework"
+[ ! -f ".orchid/reviews/T108-merge.log" ] \
+  || fail "a run that never validated must leave no validation evidence — including a previous attempt's"
+prep8=".orchid/runtime/worktree-prepare/T108-merge.log"
+[ -f "$prep8" ] || fail "the prepare step's own log is written even when the command fails"
+assert_match "^exit: 9$" "$(cat "$prep8")" "that log records the command's own exit status"
+assert_match "worktree-prepare/T108-merge.log" "$(cat "$WORK/merge8.out")" \
+  "the refusal names a log that actually exists, not the validation log it never wrote"
+n_wt8="$(git worktree list | wc -l | tr -d ' ')"
+assert_eq 2 "$n_wt8" "the temp worktree is torn down even when the prepare step fails"
+
+# ...AND IT IS COUNTED. An environment that cannot be prepared is the failure
+# class this whole step exists to classify, so it goes on the infra ladder --
+# the kernel-owned counter that journals its own reason and auto-blocks at
+# `infra_max`. Charged nowhere, a bootstrap nobody repairs leaves the task in
+# `merging` and the driver re-raising the same boundary every pass, forever,
+# with no bound and no record. `attempts` is deliberately untouched: this is
+# not a failed attempt by the candidate.
+#
+# RED before this change: infra_failures is still 0 and the journal holds no
+# record of the environment failure.
+assert_eq 1 "$("$ORCHID_BIN" task show T108 | grep '^infra_failures: ' | cut -d' ' -f2)" \
+  "a merge validation worktree that cannot be prepared charges the infra ladder"
+assert_match "worktree_prepare failed for the merge validation worktree" \
+  "$("$ORCHID_BIN" journal show --task T108)" \
+  "the infra failure records WHY, so an operator reads the environment's problem and not the candidate's"
+
+# Fixture teardown, for the reason spelled out at the T004 case above: this is
+# the file's SECOND case whose asserted end state is `merging`, and two parked
+# tasks are exactly the run's whole concurrency cap. `blocked` rather than
+# `rework` on purpose -- this case asserts above that an environment failure
+# does NOT send this candidate back to rework, and the teardown must not
+# quietly contradict the contract the case just proved. It is also what an
+# operator actually does with a task whose bootstrap nobody has repaired: the
+# infra ladder this case just charged auto-blocks at `infra_max` by itself.
+"$ORCHID_BIN" task advance T108 blocked \
+  --reason "fixture teardown: release the scheduling slot this parked task holds" >/dev/null
+
+# ---------------------------------------------------------------------------
+# ORCHID_REPO_ROOT reaches the VERIFICATION command too, in BOTH checkouts
+# that run one.
+#
+# The prepare step alone does not close the gap this feature exists for: a
+# suite that needs gitignored state from the dispatching repository has to
+# reach back for it at verification time as well, and neither checkout can
+# work out where that repository is on its own -- `orchid verify` runs in a
+# SIBLING worktree, and merge validation runs in an unrelated $TMPDIR
+# directory. This task's whole suite is one command that reaches back, and it
+# is run twice by two different verbs: once by `orchid verify` inside
+# walk_to_merging (the INV-11 gate), then again by `orchid merge` in the temp
+# worktree. No prepare step is configured, so nothing but the verification
+# environment itself can make it pass.
+#
+# RED before this change: ORCHID_REPO_ROOT is exported to the prepare child
+# and to nothing else, so the command tests `/dep.txt`, verify FAILs, and
+# walk_to_merging never gets the task past testing.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T109 "verification reaches back to the repository"
+git checkout -q -b task/T109 "$integ"
+echo nine > prepare-root-export.txt && git add prepare-root-export.txt && git commit -q -m "feature 9"
+cand9="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base9="$(git rev-parse "$integ")"
+# Unset again: T108 left a deliberately broken command as the last-wins value,
+# and this case must prove the VERIFICATION environment carries the variable,
+# with no prepare step in the picture at all.
+echo 'worktree_prepare=' >> orchid.config
+
+# dep.txt is untracked here (written during the T107 case above), so no
+# checkout of any ref holds it -- reaching back is the only way to find it.
+[ -f dep.txt ] || echo dep > dep.txt
+walk_to_merging T109 task/T109 "$base9" "$cand9" 'test -f "$ORCHID_REPO_ROOT/dep.txt"'
+assert_eq "merging" "$("$ORCHID_BIN" task show T109 | grep '^status: ' | cut -d' ' -f2)" \
+  "orchid verify hands the suite ORCHID_REPO_ROOT, so the task reaches merging at all"
+
+rc=0; "$ORCHID_BIN" merge T109 >"$WORK/merge9.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" "merge validation hands the same suite ORCHID_REPO_ROOT in the temp worktree"
+assert_eq "done" "$("$ORCHID_BIN" task show T109 | grep '^status: ' | cut -d' ' -f2)" \
+  "a suite that reaches back to the repository is not blamed for a checkout that cannot hold what it needs"
+assert_match "^exit: 0$" "$(cat ".orchid/reviews/T109-merge.log")" \
+  "the validation log records the suite passing in a \$TMPDIR checkout that has no relative path home"
+
+# ---------------------------------------------------------------------------
+# A merge that dies BEFORE it validates leaves no validation evidence --
+# whichever of the many ways it dies.
+#
+# runners/orchid-drive reads the presence of `<id>-merge.log` as "this run got
+# as far as validating", and picks which failure to report an operator from
+# that. The deletion used to sit just above the temp worktree, so every die
+# between the top of the verb and that line -- a missing base_sha or branch, a
+# refused before_merge hook, an integration branch that does not exist, a
+# rebase that could not get a worktree for the task branch -- left an earlier
+# attempt's log in place for the driver to point at: a log about a candidate
+# and a merged tree that no longer exist. That is lesson L023's
+# dangling-evidence defect, arriving by a route no reader would suspect,
+# because the file is real and the message naming it is confident.
+#
+# The integration branch is made to vanish for one invocation (through the
+# config key's own env override, so no other case sees it) as the cheapest
+# stand-in for that whole family: it dies at a check well above where the
+# deletion used to be, with the task still in `merging`.
+#
+# RED before this change: T110-merge.log still holds the stale bytes.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T110 "merge dies before it validates"
+git checkout -q -b task/T110 "$integ"
+echo ten > prepare-stale-log.txt && git add prepare-stale-log.txt && git commit -q -m "feature 10"
+cand10="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base10="$(git rev-parse "$integ")"
+walk_to_merging T110 task/T110 "$base10" "$cand10" "test -f prepare-stale-log.txt"
+
+printf 'stale evidence from an attempt on a candidate that no longer exists\n' \
+  > ".orchid/reviews/T110-merge.log"
+rc=0
+ORCHID_INTEGRATION_BRANCH=no-such-branch "$ORCHID_BIN" merge T110 >"$WORK/merge10.out" 2>&1 || rc=$?
+assert_eq 1 "$rc" "a merge that cannot even find its integration branch refuses"
+assert_eq "merging" "$("$ORCHID_BIN" task show T110 | grep '^status: ' | cut -d' ' -f2)" \
+  "the task stays in merging — nothing about the candidate was learned"
+[ ! -f ".orchid/reviews/T110-merge.log" ] \
+  || fail "a run that died before validating must leave no validation evidence, however early it died"
+
+# The GREEN twin the same rule must accept: a run that DID validate leaves its
+# log behind, so the driver has something real to point at. Without this, the
+# case above is satisfied by a verb that simply never writes one.
+rc=0; "$ORCHID_BIN" merge T110 >"$WORK/merge10b.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" "with the integration branch back, the same merge goes through"
+[ -f ".orchid/reviews/T110-merge.log" ] \
+  || fail "a run that DID validate leaves its own validation log"
+assert_match "^exit: 0$" "$(cat ".orchid/reviews/T110-merge.log")" \
+  "and that log is this run's, recording the suite it actually ran"
+
+# The one route the two cases above cannot reach: this verb dying at
+# `lock_acquire`, i.e. BEFORE the delete, which no ordering inside it can fix.
+# runners/orchid-drive covers that end by fingerprinting the file across the
+# call and treating unchanged bytes as no evidence -- driver-side, so it is
+# out of this file's reach, and reaching it would mean holding the run lock
+# across a full driver pass with a task walked all the way to `merging`.
+not_tested "merge-log-outlives-a-lock-refusal" \
+  "the driver-side half of the same rule (fingerprint across the call) needs a driver pass, not a verb call"
+
+# ---------------------------------------------------------------------------
+# The validation suite's stdin is /dev/null here too, never the caller's.
+#
+# This verb runs from inside runners/orchid-drive, whose own stdin is the
+# worklist it is walking, and the suite below has only its stdout redirected
+# -- so an inherited stdin is that worklist. A suite that reads stdin for any
+# ordinary reason (a bootstrap ending in `cat`, a tool that stops to ask)
+# then consumes the entries the pass has not reached yet: the walk sees EOF,
+# work is silently skipped, and nothing reports an error, because a task the
+# walk never reached looks exactly like a task with nothing to do. Same rule
+# `orchid verify` follows (tests/test_verify.sh) -- applied here because this
+# is the OTHER verb that runs the same suite, in the checkout that has no
+# relative path home.
+#
+# The caller's stdin is a pipe holding known bytes, so this cannot pass by
+# accident on a harness whose own stdin happens to be at EOF already.
+#
+# RED before this change: the probe holds those bytes -- the suite read the
+# merge caller's stdin.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T111 "merge validation reads no stdin"
+git checkout -q -b task/T111 "$integ"
+echo eleven > prepare-stdin.txt && git add prepare-stdin.txt && git commit -q -m "feature 11"
+cand11="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base11="$(git rev-parse "$integ")"
+
+stdin_probe="$WORK/merge-verify-stdin.txt"
+walk_to_merging T111 task/T111 "$base11" "$cand11" "cat > '$stdin_probe'"
+# Truncated AFTER the walk, on purpose: `orchid verify` ran this same suite on
+# the way to `merging` and wrote the file too. What is under test is what the
+# MERGE run leaves in it.
+: > "$stdin_probe"
+
+rc=0
+printf 'the caller stdin a validation suite must never read\n' \
+  | "$ORCHID_BIN" merge T111 >"$WORK/merge11.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" "a validation suite that reads stdin still merges"
+assert_eq "done" "$("$ORCHID_BIN" task show T111 | grep '^status: ' | cut -d' ' -f2)" \
+  "reading EOF is not a failure -- the task still reaches done"
+assert_eq "" "$(cat "$stdin_probe")" \
+  "the validation suite reads EOF in the temp worktree, never the caller's stdin"

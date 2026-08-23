@@ -59,6 +59,29 @@ cmd="$(fm_get "$tf" verification_commands)"
 wt="$(fm_get "$tf" worktree)"
 cwd="$repo"; [ -z "$wt" ] || cwd="$wt"
 
+# ORCHID_REPO_ROOT — this repository's own canonical path, handed to the
+# verification command exactly as `worktree_prepare` hands it to a prepare
+# command (lib/common.sh states the variable's full contract, including why
+# it is not spelled ORCHID_REPO).
+#
+# The prepare step alone is not enough, and the motivating case is the one
+# that named this feature: a suite that needs gitignored build state the
+# checkout cannot hold reaches back for it through this variable. Some of
+# that reaching is not one-time setup — a symlink whose target the suite
+# re-points, a cache directory a test writes into, a fixture path computed
+# per run — so the verification command needs the same portable handle. The
+# alternative is an absolute path hardcoded into committed config, which is
+# the thing this variable exists to make unnecessary. `cwd` above is why:
+# it is a sibling worktree of this repository, never this repository, so
+# nothing relative in the suite reaches back on its own.
+#
+# ORCHID_WORKTREE and ORCHID_TASK are deliberately NOT set here. Both
+# describe the checkout being PREPARED, and a verification command is not
+# handed a checkout to operate on: it is already standing in one (`cwd`),
+# and it is evidence about a candidate rather than setup for an environment.
+root="$(orchid_physical_dir "$repo")" || root=""
+[ -n "$root" ] || root="$repo"
+
 sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
 # v0b2: sha-binding. Recorded straight from frontmatter at run time so the
 # evidence log carries its own claim about which candidate it verified —
@@ -85,8 +108,18 @@ trap 'rm -f "$out_tmp"' EXIT
 # combining stdout+stderr. This is the test command itself, executed via
 # bash -c in the foreground — not an engine spawn (INV-01 only forbids
 # backgrounding/detaching and invoking engine CLIs from tier-1 verbs).
+#
+# `</dev/null` is not cosmetic (same reasoning as lib/common.sh's
+# _worktree_prepare_run, which documents the case at length). This verb runs
+# from inside runners/orchid-drive's task walk, whose own stdin is the
+# worklist it is iterating — `< <("$ORCHID_BIN" task list | sort)`. Only
+# stdout is redirected below, so without this the suite inherits that pipe,
+# and a verification command that reads stdin eats the tasks the driver has
+# not reached yet: the walk ends early, work is skipped, and no error is
+# reported anywhere. A test suite has no operator to prompt either, so
+# closing stdin costs a correct command nothing.
 rc=0
-( cd "$cwd" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || rc=$?
+( cd "$cwd" && ORCHID_REPO_ROOT="$root" bash -c "$cmd" ) >"$out_tmp" 2>&1 </dev/null || rc=$?
 
 {
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"

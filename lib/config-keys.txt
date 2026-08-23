@@ -1,6 +1,8 @@
 integration_branch
 verify
 merge_gate
+worktree_prepare
+worktree_prepare_timeout_s
 concurrency
 role.orchestrator
 role.implementer
