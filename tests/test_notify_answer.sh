@@ -170,3 +170,24 @@ if grep -q '^choices: ' ".orchid/runtime/answers/$qidF.question"; then
 fi
 outF="$("$ORCHID_BIN" answer "$qidF" any-free-text-at-all)"
 assert_match "any-free-text-at-all" "$outF" "free text stays accepted when the question declares no choice set"
+[ ! -f ".orchid/runtime/answers/$qidF.choices" ] \
+  || fail "a question minted without --choice must record no declared set at all"
+
+# ...and the set that DOES gate is read from the question's own record, never
+# scraped back out of its prose. The `choices:` line in the .question file is
+# a display line: it sits at exactly the position the free-text body would
+# otherwise start at, so a blocker whose own text opens "choices: ..." is
+# indistinguishable from a declaration by any line-matching rule. Reading it
+# as one would refuse the operator's legitimate free-text answer and name
+# choices nobody ever declared — the silent-mis-gate twin of the typo this
+# feature exists to catch. Both directions, so neither half can rot:
+qidX="$("$ORCHID_BIN" notify "choices: rollback,retry")"
+[ ! -f ".orchid/runtime/answers/$qidX.choices" ] \
+  || fail "a blocker whose TEXT starts with 'choices: ' declared nothing — no set may be recorded for it"
+outX="$("$ORCHID_BIN" answer "$qidX" "let us discuss it first")"
+assert_match "let us discuss it first" "$outX" \
+  "a question whose prose merely looks like a declaration must still accept free text"
+[ -f ".orchid/runtime/answers/$qidC.choices" ] \
+  || fail "a question minted WITH --choice must record the declared set in its own file"
+assert_eq "approve,request-changes,defer" "$(cat ".orchid/runtime/answers/$qidC.choices")" \
+  "the recorded set is the CSV the refusal above names, verbatim"

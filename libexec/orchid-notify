@@ -122,13 +122,27 @@ header="## $qid"
 # records the originating task (or "none"), so `orchid answer` can resolve
 # blocker_resolved back into the same task's journal view; second line is
 # the nonce above; a `choices:` line (CSV, only when a set was declared)
-# is what `orchid answer` validates a value against; the free-text body
-# follows. This is an internal file format, not a public contract.
+# is the human-readable record of the permitted answers, which `orchid
+# status` renders on its blockers page; the free-text body follows. This is
+# an internal file format, not a public contract.
 mkdir -p "$rt/answers"
 { printf 'task: %s\n' "${task:-none}"; printf 'nonce: %s\n' "$nonce"
   [ -z "$choices" ] || printf 'choices: %s\n' "$choices"
   printf '%s\n' "$text"; } \
   | atomic_write "$rt/answers/$qid.question"
+
+# ...and the MACHINE-READABLE record of the same set, in its own file,
+# because `orchid answer` gates free text on it and prose must not be able
+# to switch that gate on. The `choices:` line above sits at exactly the
+# position the free-text body would otherwise start at, and that body is
+# arbitrary text an orchestrator chose: a blocker reading "choices:
+# rollback,retry" is indistinguishable from a declared set by any
+# line-matching rule, and reading it as one would refuse the operator's
+# legitimate free-text answer while naming choices nobody ever declared.
+# This file's mere EXISTENCE is the declaration instead — a question minted
+# without --choice has none, so `orchid answer` accepts free text for it,
+# and so does every question minted before choice sets existed.
+[ -z "$choices" ] || printf '%s\n' "$choices" | atomic_write "$rt/answers/$qid.choices"
 
 # v1-m4 Task 7 (OUTBOX pattern, INV-01): `orchid notify` is tier-1 and must
 # NEVER spawn (INV-01) -- so when a channel is configured, this only WRITES

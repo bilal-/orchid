@@ -32,7 +32,7 @@ qf="$rt/answers/$qid.question"
 
 # Recover task/nonce from the .question file (libexec/orchid-notify's own
 # format: "task: <id|none>" then "nonce: <value>", an optional
-# "choices: <csv>" line, then the free-text body).
+# "choices: <csv>" line kept there for display, then the free-text body).
 # Read individually rather than assuming a fixed line count so a
 # pre-v1-m4-Task-7 .question file (no nonce line at all -- shouldn't exist
 # in practice since notify always mints one now, but a stale runtime dir
@@ -41,15 +41,20 @@ qf="$rt/answers/$qid.question"
 task_line="$(head -n1 "$qf")"; task_id="${task_line#task: }"
 [ "$task_id" = "none" ] && task_id=""
 qnonce="$(grep -m1 '^nonce: ' "$qf" 2>/dev/null | sed 's/^nonce: //')"
-# Declared choice set: a `choices: a,b,c` line (CSV) written by `orchid
-# notify --choice ...` between the nonce line and the free-text body. Most
-# questions declare none — the guard below then never fires and free text
-# stays accepted, so nothing minted before choice sets changes behavior.
-qchoices="$(grep -m1 '^choices: ' "$qf" 2>/dev/null | sed 's/^choices: //')" || qchoices=""
-# A scraped line that could not have been minted by `--choice` (mint-side
-# refuses whitespace in a value) is body prose that merely starts with
-# "choices: " — ignore it rather than gate free text on a sentence.
-case "$qchoices" in *[[:space:]]*) qchoices="" ;; esac
+# Declared choice set: read from the question's OWN record (a sibling
+# `<qid>.choices` file, CSV, written by `orchid notify --choice ...`), NEVER
+# scraped back out of the .question above. The .question's optional
+# `choices:` header line sits at exactly the position the free-text body
+# would otherwise occupy, and that body is arbitrary text an orchestrator
+# chose: a blocker reading "choices: rollback,retry" is indistinguishable
+# from a declared set by any line-matching rule, and this gate decides
+# whether free text is accepted at all. Prose must not be able to switch it
+# on. So the sidecar's mere EXISTENCE is the declaration — a question minted
+# without --choice has no such file, the guard below never fires, and free
+# text stays accepted exactly as it did before choice sets existed.
+qchoices=""
+qcf="$rt/answers/$qid.choices"
+[ ! -f "$qcf" ] || qchoices="$(cat "$qcf")"
 
 # -- Expiry (answer_expiry_s, default 86400) --------------------------------
 # Applies UNCONDITIONALLY (local terminal and remote sender alike) — the

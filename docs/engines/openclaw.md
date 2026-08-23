@@ -226,12 +226,17 @@ opt-in per call.** The gate is `answer_allowlist` being configured at all
   refused — die, plus a journal note (`blocker_expired`) so the run's
   history shows it, not just a silent stderr refusal.
 - **Declared choice sets.** A question minted with `orchid notify
-  --choice <value>...` records its permitted answers (the `.question`
-  file's `choices:` line, echoed into `BLOCKERS.md` and the outbound
-  page). `orchid answer` refuses any value outside that set, and the
+  --choice <value>...` records its permitted answers — as prose on the
+  `.question` file's `choices:` line, in `BLOCKERS.md` and on the outbound
+  page, and as the machine record `orchid answer` actually gates on, a
+  sibling `runtime/answers/<qid>.choices` file. That file's *existence* is
+  the declaration, which is why it is separate: a blocker whose own text
+  opens `choices: ...` sits at exactly the position the `.question`
+  header's own line does, and prose must not be able to switch the gate
+  on. `orchid answer` refuses any value outside a declared set, and the
   refusal names the valid ones — so a typo is caught, never silently
-  recorded as a decision. A question that declares no set keeps the
-  free-text contract unchanged.
+  recorded as a decision. A question that declares no set has no such file
+  and keeps the free-text contract unchanged.
 
 **Nonce entropy.** Minting the nonce itself refuses to degrade silently:
 if `notify.channel` OR `answer_allowlist` is configured (i.e. a real
