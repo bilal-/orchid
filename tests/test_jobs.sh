@@ -789,6 +789,293 @@ assert_eq "2" "$(jq -r .attempt "$mph2")" \
 rm -f "$mph2"
 
 # ===========================================================================
+# T035: `orchid jobs ls` -- the operator's process table for the run.
+#
+# What `status` could show while two jobs existed for one task was a task id
+# and a state word (`T004 dead` / `T004 running`): not which job was which,
+# nor its role, engine, attempt, start time, elapsed, or whether the dead one
+# was a corpse already handled or a fresh failure needing escalation. Every
+# field was already in the manifest, so this is a rendering gap. The two
+# properties below are the ones that make it worth having.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# (1) LIVENESS IS COMPUTED, NEVER READ (dogfood F29). A manifest records the
+# pid its launcher stamped and nothing ever unstamps it, so a table that
+# believes the file describes 73 never-launched jobs as 73 identical
+# `prepared` lines -- which is exactly what happened, and the only way to find
+# they were corpses was cat-ing manifests and noticing `pid: 0, started_at 0`.
+# Three manifests, identical in every respect a reader could get from the file
+# alone; the kernel is what tells them apart.
+# ---------------------------------------------------------------------------
+ls_now="$(date +%s)"
+sleep 100 &
+ls_live_pid=$!
+echo running-log > "$rt/logs/j-ls-live.log"
+jq -n --argjson pid "$ls_live_pid" --argjson st "$ls_now" --arg log "$rt/logs/j-ls-live.log" \
+  '{job_id:"j-e1-TLS-a3-1111aaaa", task:"TLS", attempt:3, role:"reviewer", operation:"review",
+    engine:"fake", pid:$pid, pgid:$pid, started_at:$st, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:"", launched_by:"drive"}' > "$rt/jobs/j-ls-live.json"
+
+( exit 0 ) & ls_dead_pid=$!
+wait "$ls_dead_pid" 2>/dev/null || true
+echo dead-log > "$rt/logs/j-ls-dead.log"
+touch -t 202001010000 "$rt/logs/j-ls-dead.log"   # last wrote long ago
+jq -n --argjson pid "$ls_dead_pid" --argjson st "$(( ls_now - 45000 ))" \
+  --arg log "$rt/logs/j-ls-dead.log" \
+  '{job_id:"j-e1-TLS-a4-2222bbbb", task:"TLS", attempt:4, role:"plan_critic", operation:"critique",
+    engine:"fake", pid:$pid, pgid:0, started_at:$st, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:"", launched_by:"pump"}' > "$rt/jobs/j-ls-dead.json"
+
+jq -n '{job_id:"j-e1-TLS-a5-3333cccc", task:"TLS", attempt:5, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"", output:"/dev/null",
+    base_sha:"", candidate_sha:"", launched_by:"operator"}' > "$rt/jobs/j-ls-prep.json"
+touch -t 202001010000 "$rt/jobs/j-ls-prep.json"   # prepared long ago, never launched
+
+ls_out="$("$ORCHID_BIN" jobs ls 2>/dev/null)"
+assert_match "^JOB[[:space:]]+TASK[[:space:]]+ROLE[[:space:]]+OP[[:space:]]+ATT[[:space:]]+ENGINE[[:space:]]+PID[[:space:]]+STATE[[:space:]]+AGE[[:space:]]+ELAPSED[[:space:]]+BUDGET[[:space:]]+LAUNCHER[[:space:]]+LOG$" \
+  "$ls_out" "jobs ls renders one header row with every column the operator asked for"
+assert_match "j-e1-TLS-a3-1111aaaa[[:space:]]+TLS[[:space:]]+reviewer[[:space:]]+review[[:space:]]+3[[:space:]]+fake[[:space:]]+$ls_live_pid[[:space:]]+running[[:space:]]" \
+  "$ls_out" "a job whose pid is alive renders running, with its role, op, attempt and engine on the row"
+assert_match "j-e1-TLS-a4-2222bbbb[[:space:]]+TLS[[:space:]]+plan_critic[[:space:]]+critique[[:space:]]+4[[:space:]]+fake[[:space:]]+$ls_dead_pid[[:space:]]+dead[[:space:]]" \
+  "$ls_out" "a job whose pid is gone renders dead — the manifest still says it launched"
+assert_match "j-e1-TLS-a5-3333cccc[[:space:]]+TLS[[:space:]]+implementer[[:space:]]+implement[[:space:]]+5[[:space:]]+fake[[:space:]]+0[[:space:]]+never-started[[:space:]]" \
+  "$ls_out" "a pid-0 manifest renders never-started"
+# Herestrings, not `echo ... | grep -q`, for every negative below: this file
+# runs under `set -o pipefail`, and grep -q exits at its first match, which
+# SIGPIPEs the upstream echo mid-write -- pipefail then promotes that 141 to
+# the pipeline's status and the check silently reports the opposite of what it
+# saw (helpers.sh documents the same hazard for assert_match).
+grep -q "prepared" <<< "$ls_out" \
+  && fail "F29: a never-launched manifest must NEVER render as 'prepared' in the operator table — that word is what made 73 corpses read as 73 healthy jobs"
+
+# The machine surface is deliberately untouched: `jobs check` is what THE TICK
+# is specified against, it kills what it calls stalled, and it still answers in
+# its own vocabulary. The point is that the OPERATOR view no longer inherits it.
+ls_check_out="$(ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check)"
+assert_match "TLS	prepared" "$ls_check_out" \
+  "jobs check keeps its documented vocabulary (the table is a new surface, not a rewrite of the protocol one)"
+
+# The three columns nothing else in the kernel could answer: who launched it.
+assert_match "j-e1-TLS-a3-1111aaaa.*[[:space:]]drive[[:space:]]" "$ls_out" \
+  "a job a drive pass started says so"
+assert_match "j-e1-TLS-a4-2222bbbb.*[[:space:]]pump[[:space:]]" "$ls_out" \
+  "a job the scheduled pump started says so — it wants a different response from a hand-run one"
+assert_match "j-e1-TLS-a3-1111aaaa.*runtime/logs/j-ls-live\.log" "$ls_out" \
+  "the log path is on the row, so the next command is copy-paste rather than a find under runtime/logs/"
+
+# ---------------------------------------------------------------------------
+# (2) AGE BESIDE LIVENESS, AND A WARNING THAT CANNOT BE SKIMMED PAST (F36).
+# The failure this closes is not "the operator lacked data": a session read
+# real, recent-looking findings out of a log and told its operator the critique
+# was actively working, while the job had been DEAD FOR TWELVE AND A HALF
+# HOURS. Both the operator and the assistant concluded the run was healthy from
+# CONTENT while the TIMESTAMP said otherwise. So age is a column, and the two
+# conditions that mean "nothing is happening" also say so in words, on stderr.
+# ---------------------------------------------------------------------------
+ls_warn="$("$ORCHID_BIN" jobs ls 2>&1 >/dev/null)"
+assert_match "WARNING: job j-e1-TLS-a4-2222bbbb .* is dead and left no envelope" "$ls_warn" \
+  "a job whose pid is gone and whose envelope never landed is called out as a failure, not left as a row to notice"
+assert_match "j-e1-TLS-a4-2222bbbb .* last wrote [0-9]+d[0-9]+h ago" "$ls_warn" \
+  "the age of the last thing it wrote is in the warning itself (F36: the timestamp was the signal nobody read)"
+assert_match "WARNING: job j-e1-TLS-a5-3333cccc .* never started \(pid 0\)" "$ls_warn" \
+  "a manifest that has sat prepared past the stall threshold is called out too — nothing is running for it"
+grep -q "j-e1-TLS-a3-1111aaaa" <<< "$ls_warn" \
+  && fail "a live job that wrote to its log a moment ago must not be warned about"
+
+# Age is rendered per row, not only inside a warning: the dead job last wrote
+# in 2000, the live one just now.
+ls_tsv="$("$ORCHID_BIN" jobs ls --tsv 2>/dev/null)"
+ls_dead_age="$(awk -F'\t' '$1 == "j-e1-TLS-a4-2222bbbb" { print $9; exit }' <<< "$ls_tsv")"
+assert_match "^[0-9]+d[0-9]{2}h$" "$ls_dead_age" "AGE is a duration a human reads at a glance"
+ls_live_age="$(awk -F'\t' '$1 == "j-e1-TLS-a3-1111aaaa" { print $9; exit }' <<< "$ls_tsv")"
+assert_match "^[0-9]+(s|m[0-9]{2}s)$" "$ls_live_age" \
+  "a job writing right now shows seconds, not a stale-looking figure"
+
+# ---------------------------------------------------------------------------
+# ELAPSED AGAINST wallclock_budget_s. Distinguishing slow from hung meant
+# reading started_at out of a manifest and doing the arithmetic by hand. The
+# column and `jobs check`'s escalation now come from ONE predicate
+# (schedule_budget_pct), so the table can never tell an operator a task is at
+# 40% while check reports it budget-exceeded. TBUDGET (anchored in 2000,
+# budget 1s) and TOKBUDGET (budget 28800s, just dispatched) are the fixtures
+# built for `check` far above; here they are read through the new column.
+# ---------------------------------------------------------------------------
+ls_tb_pct="$(awk -F'\t' '$2 == "TBUDGET" { print $11; exit }' <<< "$ls_tsv")"
+ls_ok_pct="$(awk -F'\t' '$2 == "TOKBUDGET" { print $11; exit }' <<< "$ls_tsv")"
+assert_match "^[0-9]+%$" "$ls_tb_pct" "BUDGET renders as a percentage of the attempt's wall-clock budget"
+assert_match "^[0-9]+%$" "$ls_ok_pct" "a task within budget shows its percentage too — continuously, not only once exceeded"
+[ "${ls_tb_pct%\%}" -ge 100 ] || fail "the over-budget task must read >=100% in the table"
+[ "${ls_ok_pct%\%}" -lt 100 ] || fail "the within-budget task must read <100% in the table"
+assert_match "TBUDGET	budget-exceeded" "$ls_check_out" \
+  "and jobs check agrees about the SAME task: >=100% in the column is exactly what it escalates"
+grep -q "TOKBUDGET	budget-exceeded" <<< "$ls_check_out" \
+  && fail "nor may the two disagree in the other direction"
+# A task with no attempt in flight has no budget to render (the same
+# active-status gate that keeps `check` from re-blocking a retried task).
+ls_tls_pct="$(awk -F'\t' '$2 == "TLS" { print $11; exit }' <<< "$ls_tsv")"
+assert_eq "-" "$ls_tls_pct" "a job whose task has no attempt in flight shows no budget, rather than an invented one"
+
+# ---------------------------------------------------------------------------
+# A DEAD PID WITH ITS ENVELOPE STILL IN THE SPOOL HAS DELIVERED. `jobs gc`
+# already holds that manifest back for exactly one pass; rendering it `dead`
+# would send an operator escalating a delivery that arrived (and relaunching a
+# second engine over it).
+# ---------------------------------------------------------------------------
+( exit 0 ) & ls_del_pid=$!
+wait "$ls_del_pid" 2>/dev/null || true
+jq -n --argjson pid "$ls_del_pid" --argjson st "$(( ls_now - 30 ))" \
+  --arg out "$rt/spool/j-e1-TDEL-a1-5555eeee.json" \
+  '{job_id:"j-e1-TDEL-a1-5555eeee", task:"TDEL", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:$pid, pgid:0, started_at:$st, log:"/nonexistent.log", output:$out,
+    base_sha:"", candidate_sha:"", launched_by:"drive"}' > "$rt/jobs/j-ls-del.json"
+echo '{"contract":1,"job_id":"j-e1-TDEL-a1-5555eeee","task":"TDEL","operation":"implement","status":"ok","summary":"delivered fixture"}' \
+  > "$rt/spool/j-e1-TDEL-a1-5555eeee.json"
+ls_del_out="$("$ORCHID_BIN" jobs ls 2>/dev/null)"
+assert_match "j-e1-TDEL-a1-5555eeee[[:space:]].*[[:space:]]delivered[[:space:]]" "$ls_del_out" \
+  "a dead pid whose envelope is waiting to be reconciled renders delivered, never dead"
+ls_del_warn="$("$ORCHID_BIN" jobs ls 2>&1 >/dev/null)"
+grep -q "j-e1-TDEL-a1-5555eeee" <<< "$ls_del_warn" \
+  && fail "nor may it be warned about — it delivered, and the next reconcile files it"
+rm -f "$rt/jobs/j-ls-del.json" "$rt/spool/j-e1-TDEL-a1-5555eeee.json"
+
+# ---------------------------------------------------------------------------
+# WHO LAUNCHED IT. `jobs prepare` records the automation that minted the job,
+# so even a manifest whose launcher died before spawning still names it -- the
+# pid-0 ghost is precisely the one an operator needs attributed. The value is
+# ambient environment landing in a manifest a tab-separated table later
+# renders, so it is sanitized rather than trusted verbatim.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TLAUNCH "launcher-attribution" >/dev/null
+ls_m_pump="$(ORCHID_LAUNCHED_BY=pump "$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+assert_eq "pump" "$(jq -r .launched_by "$ls_m_pump")" \
+  "jobs prepare records the automation that owns the launch"
+ls_m_default="$("$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+assert_eq "operator" "$(jq -r .launched_by "$ls_m_default")" \
+  "a hand-run launch, inheriting nothing, records operator"
+ls_m_hostile="$(ORCHID_LAUNCHED_BY="$(printf 'ev\til\nx')" "$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+assert_eq "evilx" "$(jq -r .launched_by "$ls_m_hostile")" \
+  "a launcher value carrying a tab or a newline is stripped before it can splice a table row apart"
+ls_m_empty="$(ORCHID_LAUNCHED_BY='!!!' "$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+assert_eq "operator" "$(jq -r .launched_by "$ls_m_empty")" \
+  "a launcher value with nothing legible left in it falls back to operator, never to empty"
+
+# ---------------------------------------------------------------------------
+# `--all`: history, so "what did this task run, in what order, and how long did
+# each take" is answerable AFTER the fact instead of reconstructed from
+# journal.md by hand. Both paths that remove a manifest -- reconcile and gc --
+# record it first, because the manifest is the only place a job's engine,
+# launcher and start time ever lived; the durable envelope carries no timing.
+# ---------------------------------------------------------------------------
+( exit 0 ) & ls_hist_pid=$!
+wait "$ls_hist_pid" 2>/dev/null || true
+jq -n --argjson pid "$ls_hist_pid" --argjson st "$(( ls_now - 3661 ))" \
+  --arg out "$rt/spool/j-e1-T001-a9-4444dddd.json" \
+  '{job_id:"j-e1-T001-a9-4444dddd", task:"T001", attempt:9, role:"implementer", operation:"implement",
+    engine:"fake", pid:$pid, pgid:0, started_at:$st, log:"/nonexistent.log", output:$out,
+    base_sha:"", candidate_sha:"", launched_by:"drive"}' > "$rt/jobs/j-ls-hist.json"
+echo '{"contract":1,"job_id":"j-e1-T001-a9-4444dddd","task":"T001","operation":"implement","status":"ok","summary":"history fixture"}' \
+  > "$rt/spool/j-e1-T001-a9-4444dddd.json"
+"$ORCHID_BIN" jobs reconcile >/dev/null
+
+ls_all_out="$("$ORCHID_BIN" jobs ls --all 2>/dev/null)"
+assert_match "j-e1-T001-a9-4444dddd[[:space:]]+T001[[:space:]]+implementer[[:space:]]+implement[[:space:]]+9[[:space:]]+fake[[:space:]]+$ls_hist_pid[[:space:]]+ok[[:space:]]" \
+  "$ls_all_out" "a reconciled job stays answerable after its manifest is gone, with the envelope's own outcome"
+ls_all_tsv="$("$ORCHID_BIN" jobs ls --all --tsv 2>/dev/null)"
+ls_hist_elapsed="$(awk -F'\t' '$1 == "j-e1-T001-a9-4444dddd" { print $10; exit }' <<< "$ls_all_tsv")"
+assert_match "^[0-9]+h[0-9]{2}m$" "$ls_hist_elapsed" \
+  "and how long it actually ran — measured at the moment it left the jobs dir, since nothing durable records it"
+
+# A MANIFEST MINTED BEFORE THIS TASK HAS NO `launched_by` KEY AT ALL, and one
+# is still sitting in the jobs dir of every run that upgrades mid-flight. Its
+# row must land in the same columns as everyone else's. It is the empty-cell
+# case, and the reason no producer here may emit one: the readers split on a
+# tab, tab is IFS whitespace, and a run of IFS whitespace delimits ONE field,
+# so an empty cell shifts every column after it left by one AND STILL PARSES.
+# Untreated, this job's STATE would read as its log path, its LAUNCHER as a
+# raw epoch, and its ELAPSED as `-`. (jq's `//` does not catch it: it takes
+# its right side only for `null` or `false`, and "" is neither -- so a
+# `{"role": ""}` manifest lands here too.)
+( exit 0 ) & ls_old_pid=$!
+wait "$ls_old_pid" 2>/dev/null || true
+jq -n --argjson pid "$ls_old_pid" --argjson st "$(( ls_now - 3661 ))" \
+  --arg out "$rt/spool/j-e1-T001-a10-6666ffff.json" \
+  '{job_id:"j-e1-T001-a10-6666ffff", task:"T001", attempt:10, role:"implementer",
+    operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$st,
+    log:"/nonexistent.log", output:$out, base_sha:"", candidate_sha:""}' \
+  > "$rt/jobs/j-ls-old.json"
+echo '{"contract":1,"job_id":"j-e1-T001-a10-6666ffff","task":"T001","operation":"implement","status":"ok","summary":"pre-upgrade fixture"}' \
+  > "$rt/spool/j-e1-T001-a10-6666ffff.json"
+"$ORCHID_BIN" jobs reconcile >/dev/null
+ls_old_tsv="$("$ORCHID_BIN" jobs ls --all --tsv 2>/dev/null)"
+ls_old_row="$(awk -F'\t' '$1 == "j-e1-T001-a10-6666ffff" { print; exit }' <<< "$ls_old_tsv")"
+assert_eq "ok" "$(awk -F'\t' '{ print $8 }' <<< "$ls_old_row")" \
+  "STATE stays in the STATE column for a manifest that predates the launched_by field"
+assert_eq "-" "$(awk -F'\t' '{ print $12 }' <<< "$ls_old_row")" \
+  "an unrecorded launcher renders as '-', never as an empty cell that shifts the row"
+assert_eq "/nonexistent.log" "$(awk -F'\t' '{ print $13 }' <<< "$ls_old_row")" \
+  "and the log path is still the last column, not one cell to the left"
+assert_match "^[0-9]+h[0-9]{2}m$" "$(awk -F'\t' '{ print $10 }' <<< "$ls_old_row")" \
+  "ELAPSED is still a duration — the column an operator uses to tell slow from hung"
+
+assert_match "j-e1-TPREP-a1-aaaa0001.*gc-prepared" "$ls_all_out" \
+  "a manifest gc reaped is in the history too, named by the reason it was reaped"
+grep -q "gc-prepared" <<< "$ls_out" \
+  && fail "the DEFAULT table is outstanding jobs only — history is what --all is for"
+grep -q "j-e1-TLS-a3-1111aaaa" <<< "$ls_all_out" \
+  || fail "--all must still include the jobs that are outstanding right now"
+
+# ---------------------------------------------------------------------------
+# `--warnings` (what `orchid status` calls in every mode) prints nothing on
+# stdout: it exists so the liveness warnings reach an operator who never asked
+# for a table.
+# ---------------------------------------------------------------------------
+ls_warn_stdout="$("$ORCHID_BIN" jobs ls --warnings 2>/dev/null)"
+assert_eq "" "$ls_warn_stdout" "jobs ls --warnings writes no table to stdout"
+ls_warn_stderr="$("$ORCHID_BIN" jobs ls --warnings 2>&1 >/dev/null)"
+assert_match "is dead and left no envelope" "$ls_warn_stderr" "jobs ls --warnings still warns"
+
+# ---------------------------------------------------------------------------
+# `--watch`, since the natural use of a process table is polling -- both
+# operators who hit this were already doing it by hand around `orchid drive`.
+# Polled to a condition rather than slept-and-asserted: a fixed sleep here
+# would be a timing coin flip on a loaded machine.
+# ---------------------------------------------------------------------------
+ls_watch_log="$WORK/ls-watch.out"
+: > "$ls_watch_log"
+"$ORCHID_BIN" jobs ls --watch --interval 1 > "$ls_watch_log" 2>/dev/null &
+ls_watch_pid=$!
+ls_watch_ok=0
+ls_watch_n=0
+ls_watch_tries=0
+while [ "$ls_watch_tries" -lt 15 ]; do
+  ls_watch_tries=$(( ls_watch_tries + 1 ))
+  ls_watch_n="$(grep -c '^# orchid jobs' "$ls_watch_log" 2>/dev/null)" || true
+  case "${ls_watch_n:-0}" in
+    ''|*[!0-9]*) ls_watch_n=0 ;;
+  esac
+  if [ "$ls_watch_n" -ge 2 ]; then ls_watch_ok=1; break; fi
+  sleep 1
+done
+kill "$ls_watch_pid" 2>/dev/null || true
+wait "$ls_watch_pid" 2>/dev/null || true
+[ "$ls_watch_ok" -eq 1 ] \
+  || fail "jobs ls --watch must re-render on its interval (saw $ls_watch_n renders in 15s at --interval 1)"
+assert_match "j-e1-TLS-a3-1111aaaa" "$(cat "$ls_watch_log")" "each --watch render is the same table"
+
+# An interval must be a positive whole number of seconds: a mistyped one that
+# fell through to `sleep` would spin the loop as fast as the machine allows.
+ls_bad_rc=0
+"$ORCHID_BIN" jobs ls --watch --interval 0 >/dev/null 2>&1 || ls_bad_rc=$?
+[ "$ls_bad_rc" -ne 0 ] || fail "jobs ls --interval 0 must be refused, not spun"
+ls_bad_rc=0
+"$ORCHID_BIN" jobs ls --nonsense >/dev/null 2>&1 || ls_bad_rc=$?
+[ "$ls_bad_rc" -ne 0 ] || fail "jobs ls must refuse an unknown flag rather than ignore it"
+
+kill "$ls_live_pid" 2>/dev/null || true
+rm -f "$rt/jobs/j-ls-live.json" "$rt/jobs/j-ls-dead.json" "$rt/jobs/j-ls-prep.json"
+
+# ===========================================================================
 # T040 / dogfood finding F35 -- NEVER DISCARD WORK A JOB ALREADY COMPLETED.
 #
 # The reported incident, verbatim in shape: critique attempt a4 ran to

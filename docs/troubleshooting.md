@@ -122,6 +122,59 @@ jq` about a `jq` no scheduled run can reach. When the two `PATH`s disagree
 they say so explicitly: doctor prints a `WARN:` line naming the surface that
 is short, and `status --explain` prints an `unattended_tools: WARNING:` line.
 
+## A run looks busy but nothing is moving
+
+**Symptom:** `orchid status` shows a task in an active status, the log for its
+job has plenty of plausible content in it, and hours pass with nothing landing.
+
+This has cost three runs multi-hour stalls, and in the third it produced a
+false report: a session told its operator that a critique was "actively
+working" and quoted its recent findings, while that job had been **dead for
+twelve and a half hours**. The findings were real. They were simply stale, and
+nothing in what either the operator or the session was reading said so.
+
+Everything needed to notice was already on disk, so the answer is one command:
+
+```sh
+orchid jobs ls
+```
+
+One row per outstanding job — job id, task, role, operation, attempt, engine,
+pid, state, age, elapsed, budget consumed, who launched it, and its log path.
+Two columns settle this symptom:
+
+- **STATE is computed, never read.** A manifest records the pid its launcher
+  stamped and nothing ever unstamps it, so the file reads the same whether the
+  process is running or was killed yesterday. Every row asks the kernel
+  instead: `running`, `dead` (process gone, no envelope — this one needs you),
+  `delivered` (process gone, envelope written and waiting for the next
+  `orchid jobs reconcile` — this one does not), or `never-started` (a `pid: 0`
+  manifest whose launcher died before it spawned; clear those with `orchid
+  jobs gc --reap-prepared`).
+- **AGE is how long since the job last wrote anything.** Content in a log says
+  nothing about whether the process behind it still exists; the log's mtime
+  does. An `AGE` of `12h30m` beside a `dead` state is the whole diagnosis.
+
+You do not have to remember to run it. A job that is dead with no envelope, one
+that has been silent past `stall_minutes`, and one that never started at all
+each print a `WARNING:` line on stderr that `orchid status` shows in every
+mode, with no flag:
+
+```
+WARNING: job j-e12-T031-a4-9c2f (T031 reviewer/review a4, claude, pid 40122, by pump) is dead and left no envelope — it ran 41m18s and last wrote 12h31m ago; escalate or relaunch (log: ...)
+```
+
+`orchid status --jobs` puts the same table in status's `== jobs` section
+(unflagged, that section keeps `orchid jobs check`'s machine-facing task/state
+pairs), the static page has a Jobs section, `orchid jobs ls --watch` polls it,
+and `orchid jobs ls --all` adds the jobs that already finished — what a task
+ran, in what order, and how long each took.
+
+If the answer is that the *driver* stopped rather than a job — no rows at all,
+nothing in flight, and the run parked mid-walk — see
+[Stale locks / lease](#stale-locks--lease); a supervising loop that exits at a
+judgment boundary leaves exactly that shape, and cost one run seven hours.
+
 ## Unattended trust breaks after a machine-wide deduplication pass
 
 **Symptom:** repositories that were acknowledged and working start reporting

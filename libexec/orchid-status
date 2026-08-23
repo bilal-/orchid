@@ -37,16 +37,17 @@ source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/trust.sh"
 source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
-# --explain and --html are independent flags (either, neither, or both may
-# be given) -- a loop over every arg rather than the old single `[ "${1:-}"
+# --explain, --html and --jobs are independent flags (any combination may be
+# given) -- a loop over every arg rather than the old single `[ "${1:-}"
 # = --explain ]` check, so `status --html` (a second, brand-new invocation
 # shape, v1-m4) doesn't have to land in argv position 1 relative to
 # --explain for either to be recognized.
-explain=0; html=0
+explain=0; html=0; jobs_view=0
 for _status_arg in "$@"; do
   case "$_status_arg" in
     --explain) explain=1 ;;
     --html) html=1 ;;
+    --jobs) jobs_view=1 ;;
   esac
 done
 
@@ -148,6 +149,18 @@ fi
 if orchid_stale_checkout "$repo"; then
   echo "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid'\" before committing anything here" >&2
 fi
+# Job liveness warnings (T035), in EVERY mode and with no flag to ask for
+# them, in the same place and on the same stream as the two checkout warnings
+# above. Dogfood F36 is why they are unconditional: a session reported a
+# critique as "actively working", and quoted its real findings, while that job
+# had been dead for twelve and a half hours -- everything needed to notice was
+# already on disk (a pid that was gone, an envelope that never landed, a log
+# twelve hours cold) and `orchid status` showed a run in planning with no hint
+# of any of it. A view an operator has to know to ask for is a view that will
+# be missed by the operator who most needs it, so `jobs ls` prints these to
+# stderr and status simply lets them through. `|| true`: a report surface must
+# never turn a broken jobs read into a failed status call.
+"$ORCHID_ROOT/bin/orchid" jobs ls --warnings || true
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null)" || true
 
 # -- v1-m4: `orchid status --html` -------------------------------------------
@@ -209,6 +222,26 @@ if [ "$html" -eq 1 ]; then
 "
   done
   [ -n "$tasks_html" ] || tasks_html='<tr><td colspan="4">(no tasks)</td></tr>
+'
+
+  # -- jobs (T035): the same rows `orchid jobs ls` renders, read back as TSV
+  # from the one producer rather than re-derived here -- the page is the
+  # "check from another room" surface, and it was exactly the room the F36
+  # operator was checking from while a job had been dead half a day. Read
+  # through `jobs ls --tsv` for the same reason the engines table below goes
+  # through ledger_show: one reader, so the page and the terminal can never
+  # disagree about whether a job is alive.
+  jobs_html=""
+  jobs_out="$("$ORCHID_ROOT/bin/orchid" jobs ls --tsv 2>/dev/null || true)"
+  if [ -n "$jobs_out" ]; then
+    while IFS=$'\t' read -r j_id j_task j_role j_op j_att j_eng j_pid j_state \
+        j_age j_elapsed j_budget j_by j_log; do
+      [ -n "$j_id" ] || continue
+      jobs_html="$jobs_html<tr><td>$(orchid_html_escape "$j_id")</td><td>$(orchid_html_escape "$j_task")</td><td>$(orchid_html_escape "$j_role")</td><td>$(orchid_html_escape "$j_op")</td><td>$(orchid_html_escape "$j_att")</td><td>$(orchid_html_escape "$j_eng")</td><td>$(orchid_html_escape "$j_pid")</td><td>$(orchid_html_escape "$j_state")</td><td>$(orchid_html_escape "$j_age")</td><td>$(orchid_html_escape "$j_elapsed")</td><td>$(orchid_html_escape "$j_budget")</td><td>$(orchid_html_escape "$j_by")</td><td><code>$(orchid_html_escape "$j_log")</code></td></tr>
+"
+    done <<< "$jobs_out"
+  fi
+  [ -n "$jobs_html" ] || jobs_html='<tr><td colspan="13">(no outstanding jobs)</td></tr>
 '
 
   # -- engines ledger (same lib/ledger.sh reader the text report uses) ----
@@ -321,6 +354,11 @@ $unattended_html
 <tr><th>id</th><th>status</th><th>title</th><th>why</th></tr>
 $tasks_html</table>
 
+<h2>Jobs</h2>
+<table>
+<tr><th>job</th><th>task</th><th>role</th><th>op</th><th>att</th><th>engine</th><th>pid</th><th>state</th><th>age</th><th>elapsed</th><th>budget</th><th>launcher</th><th>log</th></tr>
+$jobs_html</table>
+
 <h2>Engines</h2>
 <table>
 <tr><th>engine</th><th>status</th><th>detail</th></tr>
@@ -372,7 +410,24 @@ for f in "$state/tasks"/*.md; do
   echo "$line"
 done
 echo "== jobs"
-"$ORCHID_ROOT/bin/orchid" jobs check 2>/dev/null || echo "(jobs: plan B)"
+# --jobs (T035): the same process table `orchid jobs ls` renders, in place of
+# `jobs check`'s bare `<task>\t<state>` pairs -- which is all this section has
+# ever shown, and which cannot answer any of the questions an operator asks
+# when two jobs exist for one task: which job is which, its role, engine,
+# attempt, how long it has run, and whether a dead one is a corpse already
+# handled or a fresh failure needing escalation.
+#
+# `check` remains what the unflagged section prints. It is the machine surface
+# THE TICK is specified against (PROTOCOL.md), it kills what it reports as
+# stalled or timed out, and quietly swapping its vocabulary out from under
+# every existing reader is not what an operator asking for a nicer table
+# wanted. Warnings are suppressed here in both arms only because they were
+# already printed, once, above.
+if [ "$jobs_view" -eq 1 ]; then
+  "$ORCHID_ROOT/bin/orchid" jobs ls 2>/dev/null || echo "(jobs: plan B)"
+else
+  "$ORCHID_ROOT/bin/orchid" jobs check 2>/dev/null || echo "(jobs: plan B)"
+fi
 echo "== engines"
 engines_out="$(ledger_show "$repo" 2>/dev/null || true)"
 [ -n "$engines_out" ] && echo "$engines_out" || echo "(no engine events yet)"

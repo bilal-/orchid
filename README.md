@@ -462,6 +462,17 @@ orphan is cleared, whether its job never started or died without an
 envelope). Full incident-by-incident detail:
 [troubleshooting.md](./docs/troubleshooting.md).
 
+**Watching a run:** `orchid jobs ls` (also `orchid status --jobs`) is the
+process table — one row per outstanding job with its job id, task, role,
+operation, attempt, engine, pid, state, age, elapsed, budget consumed,
+launcher and log path; `--watch` polls it, `--all` adds the jobs that already
+finished. Liveness there is always computed (`kill -0`), never read off the
+manifest, so a job whose process is gone reads `dead` and one that never
+spawned reads `never-started` — and the two conditions that mean nothing is
+happening (a job dead with no envelope, a job silent past `stall_minutes`)
+also print a `WARNING:` line that `orchid status` shows in every mode, with no
+flag.
+
 ## Before you point it at someone else's repo
 
 `scripts/beta-qualify.sh` qualifies one operator-supplied repository against

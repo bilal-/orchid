@@ -178,6 +178,86 @@ echo "$html_stdout" | grep -qF '.orchid/runtime/status.html' \
 assert_match "WARNING: split-brain checkout" "$html_stderr" \
   "the split-brain warning lands on stderr (not stdout) in --html mode"
 
+# ===========================================================================
+# T035: the process table under `status --jobs`, and the liveness warnings
+# that need no flag at all.
+#
+# What this section could show while two jobs existed for one task was a task
+# id and a state word. Worse, in the incident that sharpened the requirement
+# (dogfood F36) `orchid status` showed a run in planning with no hint that its
+# only in-flight job had died twelve and a half hours earlier -- so the warning
+# below is deliberately not behind a flag.
+# ===========================================================================
+mkdir -p "$WORK/.orchid/runtime/jobs" "$WORK/.orchid/runtime/logs"
+( exit 0 ) & st_dead_pid=$!
+wait "$st_dead_pid" 2>/dev/null || true
+echo stale-log > "$WORK/.orchid/runtime/logs/j-st-dead.log"
+touch -t 202001010000 "$WORK/.orchid/runtime/logs/j-st-dead.log"
+jq -n --argjson pid "$st_dead_pid" --argjson st "$(( $(date +%s) - 45000 ))" \
+  --arg log "$WORK/.orchid/runtime/logs/j-st-dead.log" \
+  '{job_id:"j-e1-T001-a1-9999ffff", task:"T001", attempt:1, role:"reviewer", operation:"review",
+    engine:"acme-engine", pid:$pid, pgid:0, started_at:$st, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:"", launched_by:"pump"}' \
+  > "$WORK/.orchid/runtime/jobs/j-st-dead.json"
+
+# Plain status: stdout unchanged. `jobs check` is the surface THE TICK is
+# specified against and it kills what it calls stalled -- swapping its
+# vocabulary out from under every existing reader is not what an operator
+# asking for a nicer table wanted.
+st_plain="$("$ORCHID_BIN" status 2>/dev/null)"
+assert_match "^== jobs$" "$st_plain" "plain status keeps its jobs section"
+assert_match "^T001[[:space:]]dead$" "$st_plain" \
+  "plain status still prints jobs check's machine-facing task/state pairs"
+grep -q "j-e1-T001-a1-9999ffff" <<< "$st_plain" \
+  && fail "the table is what --jobs asks for; plain status's stdout is unchanged"
+
+# The warning, however, is behind no flag at all: the F36 operator was reading
+# exactly this command.
+st_plain_err="$("$ORCHID_BIN" status 2>&1 >/dev/null)"
+assert_match "WARNING: job j-e1-T001-a1-9999ffff .* is dead and left no envelope" "$st_plain_err" \
+  "status warns about a job whose pid is gone and whose envelope never landed, with no flag asked for"
+assert_match "last wrote [0-9]+d[0-9]+h ago" "$st_plain_err" \
+  "and says how long ago it last wrote — the timestamp both the operator and an assistant read past"
+
+# --jobs: the same table `orchid jobs ls` renders, in place of the pairs.
+st_jobs="$("$ORCHID_BIN" status --jobs 2>/dev/null)"
+assert_match "^JOB[[:space:]]+TASK[[:space:]]+ROLE[[:space:]]+OP[[:space:]]+ATT[[:space:]]+ENGINE[[:space:]]+PID[[:space:]]+STATE[[:space:]]+AGE[[:space:]]+ELAPSED[[:space:]]+BUDGET[[:space:]]+LAUNCHER[[:space:]]+LOG$" \
+  "$st_jobs" "status --jobs renders the process table"
+assert_match "j-e1-T001-a1-9999ffff[[:space:]]+T001[[:space:]]+reviewer[[:space:]]+review[[:space:]]+1[[:space:]]+acme-engine[[:space:]]+$st_dead_pid[[:space:]]+dead[[:space:]]" \
+  "$st_jobs" "one row per outstanding job: which job, whose work, which engine, which pid, and its computed state"
+grep -Eq "^T001[[:space:]]dead$" <<< "$st_jobs" \
+  && fail "--jobs replaces the bare task/state pair rather than printing both"
+
+# --explain, --html and --jobs stay independent flags.
+st_both="$("$ORCHID_BIN" status --explain --jobs 2>/dev/null)"
+assert_match "ready-to-dispatch" "$st_both" "status --explain --jobs keeps the explain predicates"
+assert_match "j-e1-T001-a1-9999ffff" "$st_both" "and adds the process table"
+
+# The static page -- the surface an operator checks from another room, which
+# is the room the F36 operator was checking from -- carries the same rows,
+# read back through the same producer.
+st_page="$("$ORCHID_BIN" status --html 2>/dev/null)"
+st_page_content="$(cat "$st_page")"
+# Herestrings, not `echo "$page" | grep -q`: this file runs under `set -o
+# pipefail` and `grep -q` exits at its FIRST match, SIGPIPEing the upstream
+# `echo` mid-write. pipefail promotes that 141 to the pipeline's status, so
+# `|| fail` fires for a pattern grep DID find. A whole status page is easily
+# long enough for echo to still be writing, and `<h2>Jobs</h2>` matches
+# roughly halfway down it -- exactly the size-dependent coin flip helpers.sh
+# documents at assert_match.
+grep -qF '<h2>Jobs</h2>' <<< "$st_page_content" || fail "the status page must have a Jobs section"
+grep -qF 'j-e1-T001-a1-9999ffff' <<< "$st_page_content" || fail "the outstanding job must appear on the page"
+grep -qF '>dead<' <<< "$st_page_content" \
+  || fail "the page must render the COMPUTED state, not the pid the manifest still records"
+
+rm -f "$WORK/.orchid/runtime/jobs/j-st-dead.json"
+st_empty="$("$ORCHID_BIN" status --jobs 2>/dev/null)"
+assert_match "\(no outstanding jobs\)" "$st_empty" \
+  "with nothing outstanding the section says so, rather than printing a bare header"
+st_empty_err="$("$ORCHID_BIN" status 2>&1 >/dev/null)"
+grep -q "WARNING: job " <<< "$st_empty_err" \
+  && fail "and warns about nothing — a warning that fires on a healthy run is one an operator learns to ignore"
+
 # --- PROTOCOL.md lint: THE TICK step 5 must regenerate the page ------------
 grep -q 'orchid status --html' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's THE TICK step 5 must mention 'orchid status --html'"

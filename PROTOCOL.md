@@ -614,6 +614,25 @@ the same reason: a rung spent there is a rung spent on work that arrived, and
 it relaunches a second engine into the worktree over it. The job reads as
 outstanding for one more pass and resolves on the next.
 
+**The operator's view of the same state: `orchid jobs ls`.** `jobs check` is
+the machine surface this step is specified against, and its `<task-id>
+<state>` pairs are exactly enough to walk the ladder below and nothing like
+enough to answer "which of these two jobs is which, and do I intervene". `jobs
+ls` (also `orchid status --jobs`, and a Jobs section on the static page)
+renders one row per outstanding job — job id, task, role, operation, attempt,
+engine, pid, state, age, elapsed, percentage of `wallclock_budget_s` consumed,
+who launched it, and its log path. It computes liveness with `kill -0` exactly
+as `check` does rather than believing the manifest, so a `pid: 0` manifest
+reads `never-started`, a job whose process is gone reads `dead`, and the
+hold-back case above reads `delivered`. It is read-only and kills nothing (the
+stall/timeout kill stays `check`'s alone), so it is safe to run from a second
+terminal mid-pass; `--watch` polls it, `--all` adds jobs that have already
+finished. The two conditions that mean nothing is happening — a job dead with
+no envelope, and a job silent past `stall_minutes` — additionally print a
+`WARNING:` line on stderr, which `orchid status` shows in every mode with no
+flag asked for: a run whose only in-flight job died is precisely the run where
+nobody thinks to go looking at a table.
+
 Escalation ladder for a job `jobs check` reports `dead`, `stalled`, `timeout`,
 `never-started` or `unstamped` that reconcile above did **not** just resolve:
 
@@ -2107,8 +2126,9 @@ declares `command_surface=brokered` in its manifest and restricts its
 orchestrator to exactly one executable —
 `runners/orchid-orchestrator-command`, a default-deny, argument-validating
 broker. It admits a short list of exact read forms (`task show`, `task list`,
-`status [--explain]`, `jobs review-plan`, `journal tail`, `journal show`,
-`lessons list --active`, `run boundary show`), the one judgment-result verb
+`status [--explain]`, `jobs ls [--all]`, `jobs review-plan`, `journal tail`,
+`journal show`, `lessons list --active`, `run boundary show`), the one
+judgment-result verb
 (`orchid task arbitrate`), `journal add`, `lessons add`, `notify`, and `run
 boundary clear`; it refuses `trust`, `service`, `config`, `plugins`, `init`,
 `start`, every tier-2 runner, every vendor CLI, and anything a shell would

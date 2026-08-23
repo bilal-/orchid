@@ -5,11 +5,17 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
-# schedule.sh only for schedule_is_active_status — `check`'s wall-clock
-# backstop reports a budget only while a task is actually mid-attempt.
+# schedule.sh only for schedule_budget_pct — the one home for "does a
+# wall-clock budget apply to this task right now, and how far into it is it".
+# `check`'s backstop escalates at 100%; `ls`'s BUDGET column renders the same
+# number continuously, so the table can never disagree with the escalation.
 source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
 jobs_dir="$rt/jobs"; spool_dir="$rt/spool"; quarantine_dir="$rt/quarantine"
+# T035: the append-only record of jobs that are no longer outstanding, so
+# `jobs ls --all` can answer "what did this task run, in what order, and how
+# long did each take" after the fact. See history_append below.
+hist_file="$rt/jobs-history.tsv"
 sub="${1:-}"; shift || true
 
 # Moves $src into quarantine as <basename>.reason-<reason>, never clobbering
@@ -393,7 +399,395 @@ hb_cpu_flat() {
   ' "$log"
 }
 
+# A jq `def blank` prepended to every program below that builds one of these
+# tab-separated rows. It exists because NO CELL MAY EVER BE EMPTY: the readers
+# split on a tab, tab is IFS whitespace, and a run of IFS whitespace delimits
+# ONE field -- so a single empty cell silently shifts every column after it
+# left by one, and the row still parses. jq's `//` does not prevent that: it
+# is the alternative operator, taking its right side only when the left is
+# `null` or `false`, and an empty STRING is neither. `(.launched_by//"")` on a
+# manifest minted before this task (which has no such key) yields "" and the
+# key was never the problem; `{"role": ""}` yields "" too. So every string
+# cell goes through `blank` and renders `-`, which is also what the operator
+# should see in the column.
+JOBS_JQ_BLANK='def blank: if (. // "") == "" then "-" else . end;'
+
+# history_append <manifest> <outcome> -- record a job that has just stopped
+# being outstanding, one TSV line appended to runtime/jobs-history.tsv.
+#
+# The manifest is the ONLY place a job's identity, engine, launcher and start
+# time live, and both paths out of the jobs dir destroy it: `reconcile` files
+# the envelope and deletes the manifest, `gc` quarantines it. So the line is
+# written from the manifest while it is still on disk, and it is written at
+# exactly the two sites that remove one. Without it `jobs ls --all` could name
+# which envelopes landed but never how long any of them took -- the durable
+# envelope carries no timing at all.
+#
+# Best-effort by construction (`|| true`): this is a report surface, and a
+# full disk or an unreadable manifest must never take down `reconcile`, which
+# is the verb that lands an engine's actual work. Never called for a
+# `gc-suspect` manifest -- those have already failed field validation, and
+# copying hand-edited fields into a history file every later render reads is
+# how a forged manifest would reach an operator's terminal.
+#
+# Runtime-only and append-only: it lives under `.orchid/runtime/` (gitignored,
+# machine-local, exactly like the manifests it summarizes), nothing reads it
+# but `jobs ls --all`, and it is one short line per job for the life of a run
+# -- so no rotation, and no epoch fence for the same reason the whole `gc` arm
+# has none.
+history_append() {
+  local mf="$1" outcome="$2" now
+  now="$(date +%s)"
+  jq -r --argjson now "$now" --arg outcome "$outcome" \
+    "$JOBS_JQ_BLANK"'
+     select((.job_id//"") != "")
+     | [$now, .job_id, (.task|blank), (.attempt//0), (.role|blank), (.operation|blank),
+        (.engine|blank), (.pid//0), (.launched_by|blank), (.started_at//0),
+        (if ((.started_at//0) > 0) then ($now - (.started_at//0)) else -1 end),
+        ($outcome|blank), (.log|blank)] | @tsv' "$mf" 2>/dev/null >> "$hist_file" || true
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# `jobs ls` (T035) -- the operator's process table for the run.
+#
+# Every column below is already persisted in the job manifest, so this is a
+# rendering gap rather than a data-modelling one. Two properties are why it is
+# a renderer and not a dump of those fields:
+#
+#   LIVENESS IS COMPUTED, NEVER READ. A manifest records the pid its launcher
+#   stamped and nothing ever unstamps it: the process can be gone for hours
+#   and the file still reads exactly as it did while it was running. So every
+#   row asks the kernel (`kill -0`), exactly as `jobs check` does, and a pid of
+#   0 -- what `jobs prepare` mints, and only runners/orchid-launch ever
+#   overwrites -- renders as `never-started`. Dogfood F29 was 73 never-launched
+#   manifests rendering as 73 identical `prepared` lines; the only way to find
+#   they were corpses was cat-ing manifests and noticing `pid: 0`.
+#
+#   AGE SITS BESIDE LIVENESS. Dogfood F36: a session told its operator a
+#   critique was "actively working" and quoted its recent findings while that
+#   job had been dead for twelve and a half hours. The findings were real, and
+#   simply stale. The operator and an assistant reading the same log both
+#   concluded the run was healthy from its CONTENT while the TIMESTAMP said
+#   otherwise -- so AGE (how long since the job last wrote anything) is a
+#   column on every row, and a job that has gone quiet past `stall_minutes`,
+#   or died without leaving an envelope, additionally gets a warning line on
+#   stderr that no amount of plausible log content can drown out.
+#
+# Read-only, and deliberately un-fenced (no epoch, no verb lock), like `jobs
+# review-plan`: it reports state, never mutates it. In particular it never
+# kills -- `jobs check` owns the stall/timeout kill, and a view an operator
+# polls must be safe to run at any moment, including from a second terminal
+# while a pass is mid-flight. That is also why a silent-but-alive job still
+# reads `running` here rather than borrowing `check`'s `stalled`: `stalled` in
+# this kernel means "reported AND killed", and this verb does neither.
+# ---------------------------------------------------------------------------
+
+# The literal tab these rows are separated by, so `sort -t` and `IFS=` never
+# have to spell it inline.
+JOBS_TAB="$(printf '\t')"
+
+# fmt_dur <seconds> -- a duration a human reads at a glance (`45s`, `12m30s`,
+# `3h04m`, `2d03h`). Anything not a whole non-negative number of seconds --
+# including the -1 the row producer uses for "unknown" -- renders as `-`,
+# never as a misleading 0.
+fmt_dur() {
+  local s="${1:-}"
+  case "$s" in
+    ''|-*|*[!0-9]*) printf -- '-\n'; return 0 ;;
+  esac
+  if [ "$s" -lt 60 ]; then
+    printf '%ds\n' "$s"
+  elif [ "$s" -lt 3600 ]; then
+    printf '%dm%02ds\n' "$(( s / 60 ))" "$(( s % 60 ))"
+  elif [ "$s" -lt 86400 ]; then
+    printf '%dh%02dm\n' "$(( s / 3600 ))" "$(( s % 3600 / 60 ))"
+  else
+    printf '%dd%02dh\n' "$(( s / 86400 ))" "$(( s % 86400 / 3600 ))"
+  fi
+}
+
+# jobs_rows <show-all> -- one RAW row per job, tab-separated, numeric fields
+# left as numbers (-1 meaning "unknown"), prefixed by a sort key:
+#
+#   key job task role op attempt engine pid state age elapsed pct launcher log
+#
+# One producer, three consumers (the table, the --tsv feed, and the warnings
+# pass), so a warning can never describe a different job from the row above
+# it. The key is the job's start time, falling back to the last thing that
+# touched it, so the table reads oldest-first: the order jobs actually ran in.
+jobs_rows() {
+  local show_all="${1:-0}" now f raw
+  local jid jtask jrole jop jatt jengine jpid jstarted jlog jby jstate
+  local age_src age elapsed pct tf key
+  local t_status t_started t_budget
+  now="$(date +%s)"
+  for f in "$jobs_dir"/*.json; do
+    [ -e "$f" ] || continue
+    # `blank` on every string cell, and `select` rather than a `//""` on
+    # job_id: an empty leading cell is stripped as leading IFS whitespace
+    # instead of shifting, which would make the TASK read as the JOB. A
+    # manifest with no job_id has nothing this table can identify, so it is
+    # dropped here and `[ -n "$raw" ]` below is what notices.
+    raw="$(jq -r "$JOBS_JQ_BLANK"'
+             select((.job_id//"") != "")
+             | [.job_id,(.task|blank),(.role|blank),(.operation|blank),(.attempt//0),
+                (.engine|blank),(.pid//0),(.started_at//0),(.log|blank),(.launched_by|blank)]
+             | @tsv' "$f" 2>/dev/null)" || raw=""
+    [ -n "$raw" ] || continue
+    IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jengine jpid jstarted jlog jby <<< "$raw"
+    [ -n "${jid:-}" ] || continue
+    case "$jpid" in ''|*[!0-9]*) jpid=0 ;; esac
+    case "$jstarted" in ''|*[!0-9]*) jstarted=0 ;; esac
+
+    # THE COMPUTED LIVENESS. `delivered` is the one non-obvious arm: a job
+    # that exited with its envelope already written and not yet drained has
+    # not failed, it is one `jobs reconcile` away from being filed (the same
+    # case `jobs gc` holds a manifest back for), so calling it `dead` would
+    # send an operator escalating a delivery that arrived.
+    if [ "$jpid" -le 0 ]; then
+      jstate=never-started
+    elif kill -0 "$jpid" 2>/dev/null; then
+      jstate=running
+    else
+      jstate=dead
+      case "$jid" in
+        */*|*..*) ;;   # never build a path out of an unvalidated job_id
+        *) if [ -e "$spool_dir/$jid.json" ]; then jstate=delivered; fi ;;
+      esac
+    fi
+
+    # AGE is time since the job last WROTE, which is the log's mtime -- the
+    # signal that was sitting on disk, unlooked-at, through both multi-hour
+    # F36 stalls. A never-launched job has no log, so its manifest's own mtime
+    # answers the only question there is about it: how long it has sat there.
+    # `!= -` because that is what the producer above renders an absent log as;
+    # a bare `-n` would stat a relative path named `-` in whatever directory
+    # the operator happened to run this from.
+    age_src=0
+    if [ "$jlog" != - ] && [ -e "$jlog" ]; then age_src="$(file_mtime "$jlog")"; fi
+    if [ "$age_src" -le 0 ]; then age_src="$(file_mtime "$f")"; fi
+    if [ "$age_src" -gt 0 ]; then
+      age=$(( now - age_src ))
+      if [ "$age" -lt 0 ]; then age=0; fi
+    else
+      age=-1
+    fi
+
+    if [ "$jstarted" -gt 0 ]; then
+      elapsed=$(( now - jstarted ))
+      if [ "$elapsed" -lt 0 ]; then elapsed=0; fi
+    else
+      elapsed=-1
+    fi
+
+    # BUDGET through lib/schedule.sh's schedule_budget_pct -- the same
+    # predicate `check` reports budget-exceeded from, never a second copy of
+    # the arithmetic, so the column reads >=100% for exactly the tasks `check`
+    # escalates. It is a TASK-level fact, so a task with several outstanding
+    # jobs shows the same percentage on each of its rows.
+    pct=-1
+    tf="$state/tasks/$jtask.md"
+    if [ -f "$tf" ]; then
+      t_status="$(fm_get "$tf" status)"
+      t_started="$(fm_get "$tf" started_at)"
+      t_budget="$(fm_get "$tf" wallclock_budget_s)"
+      pct="$(schedule_budget_pct "$t_status" "$(iso_to_epoch "$t_started")" "$t_budget" "$now")" \
+        || pct=-1
+      case "$pct" in ''|*[!0-9]*) pct=-1 ;; esac
+    fi
+
+    key="$jstarted"
+    if [ "$key" -le 0 ]; then key="$age_src"; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$key" "$jid" "$jtask" "${jrole:--}" "${jop:--}" "$jatt" "${jengine:--}" \
+      "$jpid" "$jstate" "$age" "$elapsed" "$pct" "${jby:--}" "${jlog:--}"
+  done
+
+  # --all: everything that is no longer outstanding, from the history file
+  # both removal paths write. ELAPSED is real here (it was measured against
+  # the manifest's own started_at at the moment the job left the jobs dir);
+  # BUDGET is not carried, since a budget describes a task's attempt now, not
+  # a finished job then.
+  if [ "$show_all" -eq 1 ] && [ -f "$hist_file" ]; then
+    local h_fin h_jid h_task h_att h_role h_op h_eng h_pid h_by h_started
+    local h_elapsed h_outcome h_log h_age h_key
+    while IFS="$JOBS_TAB" read -r h_fin h_jid h_task h_att h_role h_op h_eng \
+        h_pid h_by h_started h_elapsed h_outcome h_log; do
+      [ -n "${h_jid:-}" ] || continue
+      case "$h_fin" in ''|*[!0-9]*) h_fin=0 ;; esac
+      case "$h_started" in ''|*[!0-9]*) h_started=0 ;; esac
+      case "${h_elapsed:-}" in ''|-*|*[!0-9]*) h_elapsed=-1 ;; esac
+      h_age=-1
+      if [ "$h_fin" -gt 0 ]; then
+        h_age=$(( now - h_fin ))
+        if [ "$h_age" -lt 0 ]; then h_age=0; fi
+      fi
+      h_key="$h_started"
+      if [ "$h_key" -le 0 ]; then h_key="$h_fin"; fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$h_key" "$h_jid" "$h_task" "${h_role:--}" "${h_op:--}" "${h_att:-0}" \
+        "${h_eng:--}" "${h_pid:-0}" "${h_outcome:--}" "$h_age" "$h_elapsed" \
+        -1 "${h_by:--}" "${h_log:--}"
+    done < "$hist_file"
+  fi
+  return 0
+}
+
+# jobs_display <with-header> -- raw rows on stdin, display rows on stdout:
+# durations formatted, an absent budget rendered `-` rather than -1.
+jobs_display() {
+  local with_header="${1:-1}" budget_cell
+  local jid jtask jrole jop jatt jeng jpid jstate age elapsed pct jby jlog
+  if [ "$with_header" -eq 1 ]; then
+    printf 'JOB\tTASK\tROLE\tOP\tATT\tENGINE\tPID\tSTATE\tAGE\tELAPSED\tBUDGET\tLAUNCHER\tLOG\n'
+  fi
+  while IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jeng jpid jstate \
+      age elapsed pct jby jlog; do
+    [ -n "${jid:-}" ] || continue
+    if [ "${pct:--1}" -ge 0 ] 2>/dev/null; then budget_cell="$pct%"; else budget_cell="-"; fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$jid" "$jtask" "$jrole" "$jop" "$jatt" "$jeng" "$jpid" "$jstate" \
+      "$(fmt_dur "$age")" "$(fmt_dur "$elapsed")" "$budget_cell" "$jby" "$jlog"
+  done
+  return 0
+}
+
+# jobs_table -- display rows on stdin, column-aligned text on stdout. awk
+# rather than column(1): `column -t` is not in POSIX, its two implementations
+# disagree about empty fields, and a process table that renders differently
+# on the operator's laptop and in the pump log is worse than an unaligned one.
+jobs_table() {
+  awk -F'\t' '
+    {
+      rows++
+      for (i = 1; i <= NF; i++) {
+        cell[rows, i] = $i
+        if (length($i) > w[i]) w[i] = length($i)
+      }
+      if (NF > cols) cols = NF
+    }
+    END {
+      for (r = 1; r <= rows; r++) {
+        line = ""
+        for (i = 1; i <= cols; i++) {
+          if (i < cols) line = line sprintf("%-" w[i] "s  ", cell[r, i])
+          else line = line cell[r, i]
+        }
+        sub(/ +$/, "", line)
+        print line
+      }
+    }
+  '
+}
+
+# jobs_warnings -- raw rows on stdin, operator warnings on STDERR.
+#
+# Stderr, not stdout, for the same reason `orchid status`'s split-brain and
+# stale-checkout warnings are: stdout here is a table a script may read, and a
+# warning spliced into it would corrupt exactly the capture an operator most
+# needs to trust. They are the part of this feature that closes F36 -- the
+# failure there was not that the operator lacked data, it was that the data
+# they had (recent, real findings) read as health while the timestamp said the
+# job had been dead half a day. A row is easy to skim past; a line that says
+# so in words is not.
+jobs_warnings() {
+  local stall_s label seen_budget=" "
+  local jid jtask jrole jop jatt jeng jpid jstate age elapsed pct jby jlog
+  stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+  while IFS="$JOBS_TAB" read -r jid jtask jrole jop jatt jeng jpid jstate \
+      age elapsed pct jby jlog; do
+    [ -n "${jid:-}" ] || continue
+    # Everything needed to decide what to do next, on the line itself: which
+    # job, whose work, which engine, which process, and who started it -- a
+    # drive pass and an operator's own hand-run launch want different
+    # responses, and during the wasiyyat run the operator could not tell them
+    # apart at all.
+    label="$jid ($jtask $jrole/$jop a$jatt, $jeng, pid $jpid, by $jby)"
+    case "$jstate" in
+      dead)
+        # F36 exactly: pid gone, no envelope. Nothing else will notice on its
+        # own until a driver pass runs, and in a semi-attended run that pass
+        # may be the thing that died.
+        echo "WARNING: job $label is dead and left no envelope — it ran $(fmt_dur "$elapsed") and last wrote $(fmt_dur "$age") ago; escalate or relaunch (log: $jlog)" >&2 ;;
+      never-started)
+        if [ "${age:-0}" -gt "$stall_s" ] 2>/dev/null; then
+          echo "WARNING: job $label was prepared $(fmt_dur "$age") ago and never started (pid 0) — nothing is running for it (clear with: orchid jobs gc --reap-prepared)" >&2
+        fi ;;
+      running)
+        if [ "${age:-0}" -gt "$stall_s" ] 2>/dev/null; then
+          echo "WARNING: job $label is alive but last wrote $(fmt_dur "$age") ago — past the $(fmt_dur "$stall_s") stall threshold (log: $jlog)" >&2
+        fi ;;
+    esac
+    if [ "${pct:--1}" -ge 100 ] 2>/dev/null; then
+      case "$seen_budget" in
+        *" $jtask "*) ;;   # one escalation per task, not one per manifest
+        *) seen_budget="$seen_budget$jtask "
+           echo "WARNING: task $jtask is at $pct% of its wall-clock budget — orchid jobs check reports it budget-exceeded" >&2 ;;
+      esac
+    fi
+  done
+  return 0
+}
+
+# jobs_ls_emit <mode> <show-all> -- one rendering pass. Rows are produced
+# ONCE and shared by the table and the warnings, so a --watch loop costs one
+# manifest walk per refresh rather than two.
+jobs_ls_emit() {
+  local mode="$1" show_all="$2" rows
+  # Sorted on the leading key, which is then CUT AWAY: every consumer below
+  # reads exactly the thirteen columns it renders, so no reader carries a
+  # field it never uses and none can drift out of step with the header.
+  rows="$(jobs_rows "$show_all" | sort -t"$JOBS_TAB" -k1,1n | cut -f2-)"
+  case "$mode" in
+    tsv)
+      [ -z "$rows" ] || jobs_display 0 <<< "$rows" ;;
+    warnings) ;;
+    *)
+      if [ -z "$rows" ]; then
+        if [ "$show_all" -eq 1 ]; then echo "(no jobs recorded)"; else echo "(no outstanding jobs)"; fi
+      else
+        jobs_display 1 <<< "$rows" | jobs_table
+      fi ;;
+  esac
+  [ -z "$rows" ] || jobs_warnings <<< "$rows"
+  return 0
+}
+
 case "$sub" in
+  ls)
+    # See the block comment above. Read-only: no verb lock, no epoch fence,
+    # no kill, no write anywhere.
+    show_all=0; ls_mode=table; watch=0; interval=5
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --all) show_all=1; shift ;;
+        --tsv) ls_mode=tsv; shift ;;
+        --warnings) ls_mode=warnings; shift ;;
+        --watch) watch=1; shift ;;
+        --interval)
+          [ -n "${2:-}" ] || orchid_die "--interval requires a value"
+          case "$2" in ''|*[!0-9]*) orchid_die "--interval takes whole seconds (got '$2')" ;; esac
+          [ "$2" -gt 0 ] || orchid_die "--interval must be at least 1 second"
+          interval="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs ls [--all] [--tsv|--warnings] [--watch [--interval N]]" ;;
+      esac
+    done
+    if [ "$watch" -eq 1 ]; then
+      # The natural use of a process table is polling, and every operator who
+      # hit F29/F36 was already doing it by hand. Redraws in place only on a
+      # terminal -- redirected to a file or a pump log, the escape sequences
+      # would be noise in the one artifact read after the fact.
+      while :; do
+        if [ -t 1 ]; then printf '\033[H\033[2J'; fi
+        printf '# orchid jobs — %s (every %ss; Ctrl-C to stop)\n' \
+          "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$interval"
+        jobs_ls_emit "$ls_mode" "$show_all"
+        sleep "$interval"
+      done
+    fi
+    jobs_ls_emit "$ls_mode" "$show_all"
+    ;;
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
     #
@@ -593,6 +987,22 @@ case "$sub" in
       exit 18
     done
 
+    # WHO IS LAUNCHING THIS (T035). Recorded here rather than at the spawn, so
+    # even a manifest whose launcher died before it ever spawned still names
+    # the automation that minted it -- that is the pid-0 ghost an operator most
+    # needs attributed, since a job `drive` just started and one they started
+    # by hand want different responses. `ORCHID_LAUNCHED_BY` is set by
+    # runners/orchid-drive (`drive`) and runners/orchid-pump (`pump`, which
+    # wins because it is exported around the drive it invokes); a hand-run
+    # runners/orchid-launch, or an orchestrator session an operator started
+    # themselves, inherits neither and records `operator`.
+    #
+    # Sanitized, never trusted verbatim: this is ambient environment landing in
+    # a manifest that a tab-separated table later renders, so a value carrying
+    # a tab or a newline would splice a row apart in every reader downstream.
+    launched_by="$(printf '%s' "${ORCHID_LAUNCHED_BY:-operator}" | tr -cd 'A-Za-z0-9._-' | cut -c1-16)"
+    [ -n "$launched_by" ] || launched_by=operator
+
     epoch="$(epoch_current "$repo")"
     suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
     job_id="j-e${epoch}-${task}-a${attempt}-${suffix}"
@@ -602,10 +1012,11 @@ case "$sub" in
       --arg role "$role" --arg operation "$operation" --arg engine "$engine" \
       --arg log "$rt/logs/$job_id.log" --arg output "$output" \
       --arg base_sha "$base_sha" --arg candidate_sha "$candidate_sha" \
-      --arg hook_point "$hook_point" \
+      --arg hook_point "$hook_point" --arg launched_by "$launched_by" \
       '{job_id:$job_id, task:$task, attempt:$attempt, role:$role, operation:$operation,
         engine:$engine, pid:0, pgid:0, started_at:0, log:$log, output:$output,
-        base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point}' | atomic_write "$manifest"
+        base_sha:$base_sha, candidate_sha:$candidate_sha, hook_point:$hook_point,
+        launched_by:$launched_by}' | atomic_write "$manifest"
     echo "$manifest"
     ;;
   check)
@@ -657,11 +1068,17 @@ case "$sub" in
             t_status="$(fm_get "$tf_budget" status)"
             t_started="$(fm_get "$tf_budget" started_at)"
             t_budget="$(fm_get "$tf_budget" wallclock_budget_s)"
-            if schedule_is_active_status "$t_status" && [ -n "$t_started" ] && [ -n "$t_budget" ]; then
-              t_started_epoch="$(iso_to_epoch "$t_started")"
-              if [ "$t_started_epoch" -gt 0 ] && [ $(( now - t_started_epoch )) -gt "$t_budget" ]; then
-                printf '%s\tbudget-exceeded\n' "$task"
-              fi
+            # T035: the active-status/anchor/budget predicate above now lives
+            # in lib/schedule.sh's schedule_budget_pct, so `jobs ls`'s BUDGET
+            # column renders the very percentage this arm escalates on rather
+            # than a second copy of the same arithmetic that could drift from
+            # it. The reported condition is unchanged: a task whose attempt has
+            # consumed its whole wall-clock budget.
+            t_pct="$(schedule_budget_pct "$t_status" "$(iso_to_epoch "$t_started")" \
+              "$t_budget" "$now")" || t_pct=""
+            case "$t_pct" in ''|*[!0-9]*) t_pct="" ;; esac
+            if [ -n "$t_pct" ] && [ "$t_pct" -ge 100 ]; then
+              printf '%s\tbudget-exceeded\n' "$task"
             fi
           fi ;;
       esac
@@ -845,6 +1262,9 @@ case "$sub" in
       m_hook_point="$(jq -r '.hook_point // empty' "$manifest")"
       dest="$(reviews_dest "$m_task" "$attempt" "$role" "$m_op" "$m_hook_point")"
       mv "$f" "$dest"
+      # T035: the manifest is about to be the last record of this job's engine,
+      # launcher and start time -- write the history line before deleting it.
+      history_append "$manifest" "$status"
       rm -f "$manifest"
       # Ledger-mark from the MANIFEST's engine (never the envelope's
       # self-reported one, even when present -- the cross-check above
@@ -1185,6 +1605,7 @@ case "$sub" in
         echo "gc-pending $job_id (envelope awaiting reconcile)"
         continue
       fi
+      history_append "$f" gc-dead
       quarantine_file "$f" gc-dead
       # `$rt/exits/$job_id` goes with the rest of this job's litter. It is
       # keyed on the job_id validated above (never on manifest-controlled
@@ -1280,5 +1701,5 @@ case "$sub" in
     fi
     printf '%s\n' "$plan_after"
     ;;
-  *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc|review-plan" ;;
+  *) orchid_die "usage: orchid jobs ls|prepare|check|reconcile|gc|review-plan" ;;
 esac

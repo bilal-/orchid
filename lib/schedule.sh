@@ -45,6 +45,47 @@ schedule_is_active_status() {
   _schedule_active_status "$1"
 }
 
+# schedule_budget_pct <status> <started-epoch> <budget-s> <now-epoch> -- how
+# much of an ATTEMPT's wall-clock budget has been consumed, as a whole
+# percentage on stdout; exit 1 with no output when no budget applies to that
+# task right now.
+#
+# The ONE home for that "does a budget apply, and how far in is it" question
+# (T035). `orchid jobs check` reports `<task> budget-exceeded` off it, and
+# `orchid jobs ls`'s BUDGET column renders the same number continuously, so
+# the table can never disagree with the escalation signal an operator is
+# about to act on: the column reads >=100% for exactly the tasks `check`
+# reports, because both ask this function.
+#
+# A budget applies only while the task sits in an ACTIVE status. It bounds an
+# attempt, and a task parked in `rework` (after `task retry`/`task unblock`)
+# or already `blocked` has no attempt in flight -- reporting one there is what
+# made the recovery path unconvergent (webBooks L006: the operator's own retry
+# verb handed the task back to a `jobs check` that re-blocked it on the next
+# pass). Deliberately independent of any JOB's liveness: `started_at` is
+# re-anchored at each dispatch, so an alive job whose task is past its budget
+# is precisely the runaway attempt the backstop exists to catch.
+#
+# Pure arithmetic over already-read values -- it reads no file and parses no
+# timestamp, so the callers keep their own frontmatter reads and their own
+# ISO-to-epoch parse (this codebase deliberately duplicates that five-line
+# GNU/BSD `date` idiom rather than growing a shared helper for it; see
+# runners/orchid-pump's own note). A percentage is clamped at 0 rather than
+# going negative, so a clock skew that puts `started_at` in the future reads
+# as "no time consumed yet" instead of as a nonsense negative column.
+schedule_budget_pct() {
+  local st="$1" started="$2" budget="$3" now="$4" elapsed
+  _schedule_active_status "$st" || return 1
+  case "$started" in ''|*[!0-9]*) return 1 ;; esac
+  case "$budget" in ''|*[!0-9]*) return 1 ;; esac
+  case "$now" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$started" -gt 0 ] || return 1
+  [ "$budget" -gt 0 ] || return 1
+  elapsed=$(( now - started ))
+  [ "$elapsed" -gt 0 ] || elapsed=0
+  echo "$(( elapsed * 100 / budget ))"
+}
+
 # schedule_split_deps <value> -- the task ids in a `depends_on` frontmatter
 # value, one per line, split on COMMAS as well as whitespace, empty tokens
 # skipped. The single home for what separates two dependency ids: both the

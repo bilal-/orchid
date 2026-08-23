@@ -50,6 +50,15 @@ source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
 source "$ORCHID_ROOT/lib/drive.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 
+# T035: name the automation that owns this pass, so every job launched from it
+# records who started it (`orchid jobs ls`'s LAUNCHER column). `:-` because
+# runners/orchid-pump sets `pump` around the drive it invokes and that is the
+# more useful attribution of the two: it is what distinguishes a job the
+# scheduled pump started from one the operator started by hand in a terminal,
+# and during the wasiyyat run those two wanted different responses and could
+# not be told apart at all. Read only by `jobs prepare`, which sanitizes it.
+export ORCHID_LAUNCHED_BY="${ORCHID_LAUNCHED_BY:-drive}"
+
 usage() {
   cat <<'EOF'
 usage: orchid drive [--help]
