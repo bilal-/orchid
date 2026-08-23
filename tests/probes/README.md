@@ -29,7 +29,7 @@ with this directory present).
 | `probe-codex-review-range.sh` | Does `codex exec review` accept an explicit base..head range, or only a single-ended selector? | **Free.** Reads `codex exec review --help` only; never runs an actual review. |
 | `probe-agy-stdin.sh` | Does `agy -p` accept the prompt via stdin (the `-` convention, or plain redirection)? | **Real quota, small.** Runs up to two short "reply with exactly OK" round trips against the real model. |
 | `probe-claude-implement.sh` | Can `claude -p --permission-mode acceptEdits` actually create a file and commit it, unattended? | **Real quota, larger.** Runs one full implement-shaped round trip (`claude -p ... --permission-mode acceptEdits`) against a scratch git repo. |
-| `probe-claude-tick.sh` | With `--allowedTools Bash` added (F8 fix, on top of `--permission-mode acceptEdits`), does headless claude actually EXECUTE `orchid` verbs by absolute binary path — real command output, not just a hallucinated `ORCHID-ACTION:` marker line with nothing behind it? | **Real quota, one round trip.** Asks claude to run `<abs>/bin/orchid version` and `<abs>/bin/orchid config list` in a scratch repo, echo the marker for each, and checks the transcript for the real output (this checkout's own `orchid version` line, e.g. `orchid 1.0.0-beta.1`, plus `integration_branch`). |
+| `probe-claude-tick.sh` | With `--allowedTools Bash` added (F8 fix, on top of `--permission-mode acceptEdits`), does headless claude actually EXECUTE `orchid` verbs by absolute binary path — real command output, not just a hallucinated `ORCHID-ACTION:` marker line with nothing behind it? | **Real quota, one round trip.** Asks claude to run `<abs>/bin/orchid version` and `<abs>/bin/orchid config list` in a scratch repo, echo the marker for each, and checks the transcript for the real output of both. Neither needle is ever handed to the model: the prompt carries only a generic hint of each command's shape, and the greps look for this checkout's own `orchid version` line and for a per-run token the probe seeds into the scratch repo's `orchid.config` as `integration_branch`. See "Evidence has to be independent of the prompt" below. |
 | `probe-stream-buffering.sh` | v1-m3 log-streaming fix: adapters now `tee` each CLI's stdout to the job log as it runs (`stdout="$(cli ... 2>err \| tee /dev/stderr)"`). That idiom proves bash's own plumbing doesn't buffer — whether the real `codex`/`claude` binaries buffer THEIR OWN stdout internally until the whole reply is ready (which would still leave the job log jumping from 0 to full size in one shot, right at exit) is a separate, unverified question. | **Real quota, one small round trip each.** Runs a "count to 5, one number per line" prompt through the exact adapter pipeline shape for codex and (separately) claude, sampling a scratch log's byte size once a second while each CLI runs. One `PROBE-RESULT:` line per engine: `STREAMS` (log grew before exit) or `BUFFERED` (log stayed empty until exit, then jumped). |
 | `probe-hermes.sh` | v1-m4 Task 6: (1) does `hermes --safe-mode -t clarify -z "<prompt>"` — the exact invocation `plugins/engines/hermes/run` uses for review/critique — still return the plain VERDICT/REASON contract text against the real CLI? (2) `hermes` has no `implement` path yet (flag research found no confinement flag; see `docs/engines/hermes.md`) — does a RELATIVE-path file write from `hermes --safe-mode -t file -z ...`, cwd-scoped to a scratch dir, land inside that scratch dir? (Deliberately does NOT test the absolute-path escape case for real — a `YES`/`PARTIAL` here narrows the open question, it does not close it.) | **Real quota, two small round trips.** One review-shaped reply, one short one-shot file-creation prompt in a scratch dir. Two `PROBE-RESULT:` lines, prefixed `review-shaped`/`implement-shaped`. |
 
@@ -40,6 +40,51 @@ codex and claude, in a single run). Don't loop them, don't wire them into
 CI, and don't run them more than needed to answer the question. Treat
 `probe-claude-implement.sh` in particular as the most expensive of the
 six — it drives a full implement-style agentic turn, not a one-line reply.
+
+## Evidence has to be independent of the prompt
+
+A probe that asks a model to run a command and then checks the reply is only
+worth its quota if the thing it checks for is something the model could not
+have produced *without* running the command. `probe-claude-tick.sh` broke that
+rule on one half and it went unnoticed for two milestones: the prompt said
+"its output looks like `orchid 1.0.0-beta.1`" and the probe then grepped the
+reply for `orchid 1.0.0-beta.1`, so an engine echoing the prompt back scored
+that half for free. Only the second half — the config check — still
+discriminated, and even it looked for the literal key name
+`integration_branch`, which an engine can guess without running anything.
+
+Both halves are now independent of the prompt:
+
+- The prompt describes only the **shape** of each command's output ("one short
+  line naming the tool and its version"; "a table of configuration keys and
+  their effective values"), never a value.
+- The version needle is this checkout's real `orchid version` output, read at
+  probe start (never hard-coded — a hard-coded one silently rotted to the
+  long-dead `1.0.0-m2` across two version bumps).
+- The config needle is a **per-run token** the probe writes into the scratch
+  repo's own `orchid.config` as `integration_branch`. Nothing can guess it;
+  only reading it back out of that repo prints it. That last part is the
+  bound worth knowing: the token is in a file, so an engine that reads the
+  file rather than running `orchid config list` would print it too. Narrowing
+  the needle to the tab-separated three-column line `config list` actually
+  emits would close that, at the price of a `NO` for every cooperative engine
+  that reformats the table — a false negative on a billed run, bought against
+  a shortcut nothing takes when it was told to run the command. The version
+  needle has no such shortcut (nothing in the scratch repo carries this
+  checkout's version line), and a `YES` requires both halves.
+- Both needles are checked for reachability in this checkout *before* any
+  quota is spent, so a probe that has become unsatisfiable reports
+  `ENV-UNAVAILABLE` rather than a confident `NO` about the engine.
+
+That rule is the one part of this directory that **is** covered by the
+automated suite, in `tests/test_probe_evidence.sh` (`bash
+tests/test_probe_evidence.sh`, and picked up by `tests/run.sh` like any other
+`test_*.sh`). It runs `probe-claude-tick.sh` three times against stub `claude`
+binaries on a PATH where the stub is the only one there is — an engine that
+echoes the prompt back, an engine that invents a plausible version line and
+config table, and an engine that honestly executes both verbs — and asserts
+that the first two are not scored `YES` while the third is. No engine is
+contacted and no quota is spent; the probe itself stays manual, as below.
 
 ## When/why to run
 
