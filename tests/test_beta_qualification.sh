@@ -395,4 +395,25 @@ case "$c_stdout" in
     fail "--no-run-verify executed nothing inside the target, so the in-place notice must not be printed: $c_stdout" ;;
 esac
 
+# ...and it goes to STDERR, which is not decoration. The last thing this harness
+# writes to stdout is the verdict line and the two `evidence:` paths, and that is
+# the stream a caller pipes or captures. A disclosure printed to stdout would be
+# spliced into it -- and BOTH assertions above would still pass, because each of
+# them captures `2>&1` and so cannot tell the two streams apart. Splitting them
+# here is what turns "the notice exists" into "the notice is on the stream the
+# operator reads and off the stream a program parses"; the design note at the
+# printf in scripts/beta-qualify.sh states that placement, and until now nothing
+# held it. Same fixture as run A, fresh --output because the harness refuses to
+# overwrite existing evidence.
+D_OUT="$W/out-streams"
+D_ERR="$W/streams-stderr.txt"
+d_stdout="$("$BASH" "$QUALIFY" --repo "$A_REPO" --output "$D_OUT" --label streams \
+  --bash "$BASH" --verify-timeout-s 60 2>"$D_ERR")" || true
+assert_present "IN PLACE inside --repo" "$D_ERR" \
+  "the in-place notice must be announced on stderr"
+case "$d_stdout" in
+  *"IN PLACE inside --repo"*)
+    fail "the in-place notice reached stdout, the stream that carries the verdict and the evidence paths a caller parses: $d_stdout" ;;
+esac
+
 exit 0
