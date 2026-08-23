@@ -1174,9 +1174,16 @@ drive_reviewer_envelope_engines() {
 }
 
 # drive_review_slots_unsatisfied <repo> <task> <routing> -- the rows of
-# <routing> (`orchid jobs review-plan`'s "<slot><TAB><engine><TAB><label>"
-# table) that have NO review of their own yet. Empty output means every routed
-# slot is covered.
+# <routing> (`orchid jobs review-plan`'s
+# "<slot><TAB><engine><TAB><independence-label><TAB><worktree|inline>" table)
+# that have NO review of their own yet. Empty output means every routed slot
+# is covered.
+#
+# Slot identity here is the ENGINE column and nothing else: the depth column
+# T012 appended is descriptive, and a row is never credited or withheld for
+# what it says. That is why this walk reads `cut -f2` rather than the whole
+# line -- a fifth column tomorrow must not silently change which slots this
+# reports as unfilled.
 #
 # Like the engine scan above, the rule itself lives in lib/review.sh
 # (`review_plan_unsatisfied`), where the plan's own verbs need it: `--repin`

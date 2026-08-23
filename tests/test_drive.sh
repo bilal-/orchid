@@ -337,7 +337,14 @@ mk_review_eng() {
 # Engine names in a routing row are plugin NAMES; an unresolvable one
 # qualifies to `orchid/<name>` (resolve_engine_qualified_id's documented
 # fallback), which is what these fixtures write into `.engine`.
-TWO_SLOTS="$(printf '1\talpha\tengine-independent\n2\tbeta\tengine-independent\n')"
+#
+# FOUR columns, and the two slots carry DIFFERENT depths on purpose (T012).
+# Attribution reads the engine column and nothing else, so every case below
+# runs against the row shape `orchid jobs review-plan` actually emits, and a
+# walk that ever keyed on the row's width or on its depth label would fail
+# here rather than in production. P34 is the sharp end of it: with only the
+# `inline` slot's review filed, the `worktree` slot must come back unfilled.
+TWO_SLOTS="$(printf '1\talpha\tengine-independent\tworktree\n2\tbeta\tengine-independent\tinline\n')"
 
 mk_policy_task P30 medium high
 mk_review_eng P30 "" approve orchid/alpha
@@ -360,7 +367,7 @@ mk_policy_task P32 medium high
 mk_review_eng P32 "" approve orchid/alpha
 mk_review_eng P32 ".2" approve orchid/alpha
 assert_eq "" "$(drive_review_slots_unsatisfied "$POLICY" P32 \
-  "$(printf '1\talpha\tengine-independent\n2\talpha\tsession-independent\n')")" \
+  "$(printf '1\talpha\tengine-independent\tworktree\n2\talpha\tsession-independent\tworktree\n')")" \
   "a routing table that asks ONE engine for both slots is satisfied by two of its reviews"
 
 # An adapter that names no engine cannot be attributed, so it is credited
@@ -376,6 +383,8 @@ mk_policy_task P34 medium high
 mk_review_eng P34 "" approve orchid/beta
 assert_eq 1 "$(drive_review_slots_unsatisfied "$POLICY" P34 "$TWO_SLOTS" | cut -f1)" \
   "attribution is by engine, not by slot order: beta's review covers SLOT 2"
+assert_eq worktree "$(drive_review_slots_unsatisfied "$POLICY" P34 "$TWO_SLOTS" | cut -f4)" \
+  "...and the unfilled row is returned WHOLE, depth column included, for the driver to read"
 
 # --- hook evidence is scoped to the current candidate, same as review ------
 mk_hook_env() {  # <id> <suffix> <candidate|-> -- a filed hook envelope
