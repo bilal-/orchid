@@ -181,26 +181,89 @@ assert_match "tests pass and the diff is scoped tightly" "$(jq -r .summary "$d/o
 # stderr -- which is what the launcher's redirect actually captures into the
 # job log). The fix tees agy's stdout to the adapter's own stderr as it
 # arrives. Simulate the launcher's redirect here (`>> log 2>&1`) around a
-# stub agy that sleeps between lines, and assert the log has grown partway
-# through the run -- not just after the adapter exits. ----------------------
+# stub agy, and assert the log has grown partway through the run -- not just
+# after the adapter exits.
+#
+# T019 (lesson L020): this case used to read the log at ONE fixed instant
+# (0.2s after launch) and assert it was already non-empty. On a loaded
+# machine the adapter can take longer than that to relay its first byte, so
+# the assertion failed for a scheduling reason and stranded six otherwise-
+# clean tasks in r-002. The property it checks is LIVENESS -- the log grows
+# while the adapter is still running -- so the sampler below waits, bounded,
+# for what it samples, and the stub cannot exit until this test releases it,
+# which removes the race outright instead of widening the window. Both edges
+# are pinned: 12b (a late first byte within the bound is not a stall) and
+# 12c (a genuine stall is still caught).
+#
+# log_grew_while_alive <log> <pid> <tries>: poll <log> once per 0.1s, up to
+# <tries> samples, succeeding the first time it is non-empty while <pid> is
+# still alive. Exhausting the bound, or <pid> exiting first, is a stall.
+log_grew_while_alive() {
+  local log="$1" pid="$2" tries="$3"
+  local i=0 size
+  while [ "$i" -lt "$tries" ]; do
+    kill -0 "$pid" 2>/dev/null || return 1
+    size="$(wc -c <"$log" | tr -d ' ')"
+    if [ "$size" -gt 0 ]; then return 0; fi
+    sleep 0.1
+    i=$((i+1))
+  done
+  return 1
+}
 d="$(build_request streaming review '#!/usr/bin/env bash
 echo "line one"
-sleep 0.7
+i=0
+while [ ! -e "'"$WORK"'/streaming.release" ] && [ "$i" -lt 450 ]; do sleep 0.1; i=$((i+1)); done
 echo "line two"
-sleep 0.7
 echo "VERDICT: approve"')"
 joblog="$d/out/job.log"; : > "$joblog"
 (run_adapter "$d" >>"$joblog" 2>&1) &
 adapter_pid=$!
-sleep 0.2
+midrun_grew=no
+log_grew_while_alive "$joblog" "$adapter_pid" 300 && midrun_grew=yes
 midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
+: > "$WORK/streaming.release"   # only now may the stub proceed to its VERDICT
 wait "$adapter_pid" || fail "streaming stub: adapter should exit 0"
 final_size="$(wc -c <"$joblog" | tr -d ' ')"
-[ "$midrun_size" -gt 0 ] || fail "streaming stub: job log must have grown WHILE the adapter was still running (was $midrun_size bytes at the midpoint) -- this is the stall-detector's liveness signal"
+assert_eq "yes" "$midrun_grew" "streaming stub: job log must have grown WHILE the adapter was still running -- this is the stall-detector's liveness signal"
 [ "$final_size" -ge "$midrun_size" ] || fail "streaming stub: job log must not shrink after the adapter exits"
 assert_match "line one" "$(cat "$joblog")" "streaming stub: the CLI's early output reached the job log"
 envelope_validate "$d/out/envelope.json" || fail "streaming stub: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "streaming stub: status ok"
+
+# --- 12b. L020's loaded-machine edge: the first byte arrives LATE -- well
+# past the 0.2s instant the old single-sample read -- but within the bound.
+# Under the pre-T019 shape this exact stub failed the suite and charged a
+# rework attempt; a late start is slowness, not a stall, and the bounded
+# sampler must ride it out. -------------------------------------------------
+d="$(build_request slowstart review '#!/usr/bin/env bash
+sleep 1.2
+echo "slow first line"
+i=0
+while [ ! -e "'"$WORK"'/slowstart.release" ] && [ "$i" -lt 450 ]; do sleep 0.1; i=$((i+1)); done
+echo "VERDICT: approve"')"
+joblog="$d/out/job.log"; : > "$joblog"
+(run_adapter "$d" >>"$joblog" 2>&1) &
+adapter_pid=$!
+slowstart_grew=no
+log_grew_while_alive "$joblog" "$adapter_pid" 300 && slowstart_grew=yes
+: > "$WORK/slowstart.release"
+wait "$adapter_pid" || fail "slowstart stub: adapter should exit 0"
+assert_eq "yes" "$slowstart_grew" "slowstart stub (L020): a first byte that is merely late, still inside the bound, must not read as a stall -- wait for what you sample"
+assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "slowstart stub: status ok"
+
+# --- 12c. L020's other edge: a GENUINE stall -- a producer that stays alive
+# and never writes a byte -- must still be reported. Drive the sampler
+# against a mute sleeper with a short bound: it must exhaust the bound and
+# fail, not pass vacuously, whichever way the scheduler leans. --------------
+stall_log="$WORK/stall.log"; : > "$stall_log"
+sleep 5 &
+stall_pid=$!
+stall_rc=0
+log_grew_while_alive "$stall_log" "$stall_pid" 8 || stall_rc=$?
+kill "$stall_pid" 2>/dev/null
+wait "$stall_pid" 2>/dev/null
+[ "$stall_rc" -ne 0 ] || fail "stall detector: a log that never grows while its producer stays alive must still be caught -- the liveness property is real and the sampler must not wave it through"
 
 # --- 13. v1-m3 round 2: adapter heartbeat. probe-stream-buffering.sh's real
 # run (codex/claude only -- agy wasn't part of that probe, but the same
