@@ -277,6 +277,46 @@ assert_match "covered   \[ledger\] $started_id .*\(task T010 via started_at\)" "
   "the ledger item is covered by the task whose text names it; the task AND the anchor are named back"
 
 # ---------------------------------------------------------------------------
+# 3b2 -- A COVERED LESSON, on both of the two anchors a lesson has. The brief
+# says an association may be "a keyword or lesson-id" one, and a lesson item
+# is the only carried kind that owns an id a task can name directly, so both
+# halves are pinned:
+#
+#   the KEYWORD half -- a distinctive term out of the lesson's statement;
+#   the ID half -- the bare `L001`, with the statement's terms gone.
+#
+# Without this, every `[lesson]` line in this suite is UNCOVERED or deferred
+# and nothing proves a lesson can be covered AT ALL. plancheck_lesson_items
+# builds its searchable text as `<id> <statement>`, so dropping the id from
+# it -- an edit no other assertion here would notice -- would silently retire
+# the lesson-id association the brief names, and every lesson would come back
+# demanding a deferral no task could ever satisfy.
+#
+# T012 is removed again at the end, so section 3c below still meets L001 as
+# an uncovered item and its deferral assertions are unchanged.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T012 "harden the lock helper against evaluated fragments" >/dev/null
+"$ORCHID_BIN" task set T012 acceptance_criteria \
+  "verb_lock_acquire must build its owner record without evaluating a jq-authored fragment" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "covering the lesson leaves the two open ledger items refusing the plan"
+assert_match "covered   \[lesson\] L001 .*\(task T012 via verb_lock_acquire\)" "$out" \
+  "a lesson is covered by a task naming a distinctive term of its statement, and that term is named back"
+
+"$ORCHID_BIN" task set T012 acceptance_criteria \
+  "the lesson recorded as L001 is what this rework has to satisfy" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "...still refused on the ledger items either way"
+assert_match "covered   \[lesson\] L001 .*\(task T012 via L001\)" "$out" \
+  "and the lesson id ALONE covers it — the association the brief names, with no statement term left in the task"
+
+rm .orchid/tasks/T012.md
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "dropping the covering task refuses the plan again"
+assert_match "UNCOVERED \[lesson\] L001" "$out" \
+  "...and returns the lesson to UNCOVERED, so the deferral below is met by an open item (and this arm was not vacuous)"
+
+# ---------------------------------------------------------------------------
 # 3c -- AN EXPLICITLY DEFERRED ITEM. Deferral is the release valve: the
 # operator may decline to schedule a carried item, but only by name and with
 # a reason, journaled before it counts. It reports as `deferred`, never as

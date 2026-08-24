@@ -348,14 +348,22 @@ plancheck_lesson_items() {
   local lf="$1" cutoff="$2"
   [ -f "$lf" ] || return 0
   awk -v cutoff="$cutoff" '
-    function emit(   s) {
+    function emit(   s, t) {
       if (id == "" || lstate != "active") return
       if (cutoff != "" && firstd != "" && firstd > cutoff) return
       # Same empty-field rule as plancheck_ledger_items above, same reason.
       s = (stmt == "" ? "(lesson has no statement)" : stmt)
       if (length(s) > 120) s = substr(s, 1, 117) "..."
       gsub(/\t/, " ", s)
-      printf "%s\tlesson\t%s\tanchor\t%s %s\n", id, s, id, stmt
+      # ...and the same tab rule for the TEXT field, which is built from the
+      # raw statement rather than from the truncated summary. A tab there is
+      # harmless only for as long as text stays the LAST field; squeezing it
+      # here means the five-field contract holds on its own terms instead of
+      # on that ordering. The id leads the text on purpose: a lesson id is
+      # one of the four anchor shapes, so a task naming `L013` and nothing
+      # else still covers it.
+      t = id " " stmt; gsub(/\t/, " ", t)
+      printf "%s\tlesson\t%s\tanchor\t%s\n", id, s, t
     }
     /^## L/ {
       emit()
