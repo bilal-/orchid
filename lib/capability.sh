@@ -176,12 +176,30 @@ _capability_have() {
 
 # capability_step_uncovered <step> <plugin-dir> -- the atoms <step> needs that
 # this plugin's manifest does not claim, one per line. No output means covered
-# (including for a step priced at nothing).
+# (including for a step priced at nothing) -- so a caller that reads the OUTPUT
+# alone gets an answer only for a step this kernel actually prices, and exit 3
+# says when it did not.
+#
+# WHY THE STEP IS RE-VALIDATED HERE, when capability_routing_refusal already
+# validated it before ever reaching this line. This function is reachable on
+# its own, and for a step name outside `_CAPABILITY_STEPS`
+# capability_step_requires prints nothing at all -- which this loop would then
+# report as "no atoms uncovered", admitting every actor it was asked about. A
+# typo pricing itself at nothing and thereby routing anything anywhere is the
+# one direction this whole file exists to close; the header refuses it in the
+# DATA (every step gets a row, and the row priced at nothing says why) and
+# capability_routing_refusal refuses it in the GATE (its exit 3), and leaving
+# it open in the helper both are built out of would be the same fail-open
+# arriving through the API. The status is the SAME 3 the gate answers with, and
+# nothing is printed with it: the two functions must not disagree about who is
+# at fault, and a caller reading only stdout must not be handed a clean-looking
+# answer to a question that was never priced.
 capability_step_uncovered() {
   local step="$1"
   local dir="$2"
   local have
   local atom
+  capability_step_valid "$step" || return 3
   have="$(_capability_have "$dir")"
   while IFS= read -r atom; do
     [ -n "$atom" ] || continue

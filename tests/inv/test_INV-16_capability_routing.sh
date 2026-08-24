@@ -197,6 +197,29 @@ case "$why" in
   *withshell*) fail "INV-16: a caller error must not name the actor at all — it is the one party here that is certainly not at fault" ;;
 esac
 
+# THE SAME CLOSED SET GATES THE HELPER THE REFUSAL IS BUILT OUT OF, and this is
+# the assertion the one above cannot make. capability_step_uncovered is
+# reachable on its own, and for an unknown step capability_step_requires prints
+# nothing — so a version that only looped would report "no atoms uncovered" and
+# hand every caller that read its OUTPUT the very fail-open the gate refuses,
+# arriving through the API instead of through the data. Same exit 3 the gate
+# answers with, because the two must not disagree about who is at fault; and
+# nothing on stdout, because a clean-looking answer to a question that was never
+# priced is exactly what a caller must not be able to read.
+rc=0; uncovered="$(capability_step_uncovered not_a_real_step "$WORK/eng/withshell")" || rc=$?
+assert_eq 3 "$rc" \
+  "INV-16: capability_step_uncovered must refuse an unknown step as a caller error (3), not report it as covered"
+assert_eq "" "$uncovered" \
+  "INV-16: and print nothing with it, so no caller reading stdout alone mistakes an unpriced step for a covered one"
+# The GREEN twin, against the same actor and the same helper: a step the kernel
+# does price still answers about the manifest, so the refusal above is the step
+# name being unknown and not the helper having stopped working.
+rc=0; uncovered="$(capability_step_uncovered mechanical "$WORK/eng/noshell")" || rc=$?
+assert_eq 0 "$rc" \
+  "INV-16: a kernel-owned step still answers from the manifest, so the caller-error refusal above is about the step name"
+assert_eq "shell" "$uncovered" \
+  "INV-16: and names the atom the actor did not claim"
+
 # ===========================================================================
 # 4 -- END TO END, and the hole a role gate cannot close. `orchid jobs prepare`
 # is where a (task, role, operation) triple is BOUND to an engine.
