@@ -279,6 +279,22 @@ slow_out="$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)"
 assert_match '^fail' "$slow_out" "a command that outlives worktree_prepare_timeout_s fails"
 assert_match 'timed out' "$slow_out" "the failure says it timed out rather than blaming the exit status"
 
+# A budget that is not a number falls back to the default instead of reaching
+# with_timeout's own `sleep` as its argument. That `sleep` fails the instant
+# it starts, so its watcher kills the command's process group immediately and
+# EVERY prepare becomes a zero-second timeout -- reported as the command
+# having timed out, which sends an operator to debug a command that was never
+# given a chance to run. A one-second command is what makes the difference
+# visible: under the fallback it has 900 seconds and finishes, under the bug
+# it is killed before it can.
+#
+# RED before the guard: `sleep abc` returns at once, the command below is
+# killed with it, and this reports fail/timed out rather than ok.
+printf 'worktree_prepare_timeout_s=abc\n' >> "$REPO/orchid.config"
+printf 'worktree_prepare=sleep 1\n' >> "$REPO/orchid.config"
+assert_match '^ok' "$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)" \
+  "a non-numeric worktree_prepare_timeout_s falls back to the default instead of killing the command at once"
+
 # ===========================================================================
 # 12 -- end to end: a dispatch whose prepare step fails parks the run on a
 # worktree-conflict boundary and leaves the task where it was. Advancing it
