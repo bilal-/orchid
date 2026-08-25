@@ -394,6 +394,13 @@ case "$c_stdout" in
   *"IN PLACE inside --repo"*)
     fail "--no-run-verify executed nothing inside the target, so the in-place notice must not be printed: $c_stdout" ;;
 esac
+# Both lines of it, not just the first. The notice is two printfs, and the
+# second is the one carrying the warning; a run that skipped the execution must
+# not warn about the privileges of a command it never ran.
+case "$c_stdout" in
+  *"does not sandbox it"*)
+    fail "--no-run-verify executed nothing inside the target, so the sandboxing warning must not be printed either: $c_stdout" ;;
+esac
 
 # ...and it goes to STDERR, which is not decoration. The last thing this harness
 # writes to stdout is the verdict line and the two `evidence:` paths, and that is
@@ -411,6 +418,18 @@ d_stdout="$("$BASH" "$QUALIFY" --repo "$A_REPO" --output "$D_OUT" --label stream
   --bash "$BASH" --verify-timeout-s 60 2>"$D_ERR")" || true
 assert_present "IN PLACE inside --repo" "$D_ERR" \
   "the in-place notice must be announced on stderr"
+
+# The notice is TWO lines, and the stream split has to hold for both. The first
+# says what is about to happen; the second is the one that says it is the
+# operator's own repository's code, running with the operator's privileges, and
+# that nothing here makes it safe. That second line is the whole reason the
+# decision in docs/specs/operations.md can rest on a notice instead of a gate,
+# so pinning only the first would leave the load-bearing half free to drift onto
+# stdout -- where it would be spliced into the verdict a caller parses, and
+# where the run-A assertions above could not see it, because they capture
+# `2>&1`.
+assert_present "does not sandbox it" "$D_ERR" \
+  "the notice's sandboxing warning must be on stderr too, not only its first line"
 
 # ...and it names NO PATH. `_scrub_guard` refuses to leave the target, output,
 # home or scratch paths in either evidence FILE, and the design note at the
@@ -430,6 +449,10 @@ assert_absent "$D_OUT" "$D_ERR" \
 case "$d_stdout" in
   *"IN PLACE inside --repo"*)
     fail "the in-place notice reached stdout, the stream that carries the verdict and the evidence paths a caller parses: $d_stdout" ;;
+esac
+case "$d_stdout" in
+  *"does not sandbox it"*)
+    fail "the notice's sandboxing warning reached stdout, the stream that carries the verdict and the evidence paths a caller parses: $d_stdout" ;;
 esac
 
 exit 0
