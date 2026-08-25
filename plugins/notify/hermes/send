@@ -166,6 +166,28 @@ if [ "${1:-}" = --inbound-probe ]; then
   #   2. failing that, the rows naming the gateway itself, then the rows whose
   #      LABEL is a status word, then the first line -- judged in that order
   #      until one of them determines something
+  #
+  # STEP 1 IS EXCLUSIVE, NOT MERELY FIRST-RANKED, and that is a choice with a
+  # visible cost: output that names the channel only in an ENUMERATION
+  #     gateway: running
+  #     platforms: telegram, discord
+  # answers UNDETERMINED, because the enumeration row is the only evidence
+  # considered and it carries no status word -- even though the gateway row
+  # directly above plainly says running. Ranking the tiers instead (channel
+  # rows first, then falling through to the gateway's own state) would answer
+  # REACHABLE there, and it is tempting because that verdict is right in this
+  # example. It is refused anyway, on this file's own priority: a row that
+  # names the channel and says something this probe cannot read is weak
+  # evidence that the CLI reports per-channel state AND that this channel's
+  # state is not one of the healthy words -- so falling through to the
+  # gateway's state would be inventing REACHABLE out of a line that was never
+  # understood, on a CLI whose output nobody here has ever observed. A wrong
+  # "undetermined" costs an operator one manual check; a wrong "reachable"
+  # tells them their answers are getting through while every one is dropped.
+  # Absence of a channel row (step 2's own case) is a different situation and
+  # is treated differently on purpose: nothing was misread there, because
+  # there was nothing to read. tests/test_notify_hermes_channel.sh pins both.
+  #
   # The channel name comes from config and is interpolated into an ERE, so a
   # name carrying regex metacharacters falls back to a FIXED-string match
   # instead -- an invalid-regex error from grep would otherwise end up quoted

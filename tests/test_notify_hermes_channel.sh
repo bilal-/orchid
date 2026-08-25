@@ -283,6 +283,34 @@ assert_eq "0" "$probe_rc" "an unrelated platform's dead row must not condemn a r
 probe telegram "gateway: running" 0
 assert_eq "0" "$probe_rc" "a channel the gateway status does not name must not be reported as unreachable on that basis alone"
 
+# ...but a channel the output DOES name, on a line carrying no status word, is
+# a different situation and is answered differently ON PURPOSE. Step 1 of the
+# ranking is EXCLUSIVE: when any row names the configured channel, those rows
+# are the only evidence considered, so an enumeration row wins over the
+# gateway headline above it and the verdict is UNDETERMINED. Ranking the tiers
+# instead would answer REACHABLE here, and that answer happens to be right in
+# this example -- which is exactly why the choice needs pinning rather than
+# leaving as a comment somebody later reads as an oversight. It is refused
+# because a row that names the channel and says something unreadable is weak
+# evidence that this CLI reports per-channel state AND that this channel's
+# state is not one of the healthy words; falling through to the gateway would
+# invent REACHABLE out of a line that was never understood. A wrong
+# "undetermined" costs one manual check; a wrong "reachable" tells an operator
+# their answers are landing while every one is dropped.
+probe telegram "$(printf 'gateway: running\nplatforms: telegram, discord\n')" 0
+assert_eq "2" "$probe_rc" "a row naming the channel with no status word decides the verdict, and it decides UNDETERMINED -- never REACHABLE borrowed from the gateway row above it"
+assert_match "not one this probe recognizes" "$probe_out" "the probe says it could not read the row rather than rounding it up"
+assert_match "platforms: telegram, discord" "$probe_out" "and quotes the channel row it could not read, not the gateway row it declined to fall back on"
+# The GREEN twin, and it is what makes the case above non-vacuous: strike the
+# enumeration row and the very same gateway line reads REACHABLE. So the 2
+# above is caused by that row, not by a gateway line this probe cannot judge.
+probe telegram "gateway: running" 0
+assert_eq "0" "$probe_rc" "the same gateway line without the enumeration row is REACHABLE -- the undetermined verdict above is caused by the channel row, not by unreadable gateway output"
+# ...and an unrelated platform's dead row still cannot reach any tier, even
+# when an enumeration row has already pinned the verdict to the channel tier.
+probe telegram "$(printf 'gateway: running\nplatforms: telegram, discord\ndiscord: disconnected\n')" 0
+assert_eq "2" "$probe_rc" "a sibling platform's dead row is neither a channel row, a gateway row nor a status label -- it cannot condemn a channel it says nothing about"
+
 # THE SERVICE-MANAGED SHAPE. A gateway supervised by launchd/systemd reports
 # through its supervisor: a unit HEADER on the line that names the gateway and
 # the actual verdict on an indented label line below it. Picking the gateway

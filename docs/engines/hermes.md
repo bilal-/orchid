@@ -329,6 +329,30 @@ status word (`Active:`, `Status:`, `State:`, `Health:`, `Service:`,
 `Gateway:`), then the first line — each in turn until one of them actually
 determines something.
 
+That first step is *exclusive*, not merely first-ranked, and it has a visible
+consequence worth knowing before you file it as a bug. Output that names your
+channel only in an enumeration —
+
+```
+gateway: running
+platforms: telegram, discord
+```
+
+— reports **UNDETERMINED**, even though the gateway line directly above says
+`running`: the enumeration row names the channel, so it is the only evidence
+considered, and it carries no status word. Falling through to the gateway's
+state there would be inventing REACHABLE out of a line the probe never
+understood, on a CLI whose output nobody has yet observed — and a row that
+names your channel while saying something unreadable is weak evidence that
+this build *does* report per-channel state and that yours is not in the
+healthy set. A wrong "undetermined" costs you one manual check; a wrong
+"reachable" tells you answers are landing while every one is dropped. A
+channel the output does not name at all is a different case and does fall
+through (nothing was misread there, because there was nothing to read). If
+you hit this, run `hermes gateway status` by hand and read it yourself — and
+report the wording, since that is the shape this probe is still waiting to be
+validated against.
+
 That last part is what a **service-managed** gateway needs. A gateway run
 under launchd or systemd reports through its supervisor, which puts a unit
 header on the line naming the gateway and the verdict on an indented label
