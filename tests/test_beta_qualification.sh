@@ -411,6 +411,22 @@ d_stdout="$("$BASH" "$QUALIFY" --repo "$A_REPO" --output "$D_OUT" --label stream
   --bash "$BASH" --verify-timeout-s 60 2>"$D_ERR")" || true
 assert_present "IN PLACE inside --repo" "$D_ERR" \
   "the in-place notice must be announced on stderr"
+
+# ...and it names NO PATH. `_scrub_guard` refuses to leave the target, output,
+# home or scratch paths in either evidence FILE, and the design note at the
+# printf states plainly that stderr is out of that guard's reach. On a run that
+# qualifies, `die` and `usage` never fire, so these two lines are the whole of
+# what this harness writes to stderr -- the guard's own rule is held here by
+# hand or it is not held on this stream at all. That matters most on exactly the
+# run the notice exists for: the operator being warned is pointing the harness
+# at a repository they cannot show anyone, and stderr is the stream they are
+# likeliest to tee into a log and paste. Non-vacuous by construction -- the
+# assertion just above proves $D_ERR is not empty.
+assert_absent "$A_REPO" "$D_ERR" \
+  "the in-place notice must not name the target repository path"
+assert_absent "$D_OUT" "$D_ERR" \
+  "the in-place notice must not name the evidence output path"
+
 case "$d_stdout" in
   *"IN PLACE inside --repo"*)
     fail "the in-place notice reached stdout, the stream that carries the verdict and the evidence paths a caller parses: $d_stdout" ;;

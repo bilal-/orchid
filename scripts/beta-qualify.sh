@@ -517,7 +517,9 @@ else
   # not happen, and warnings that fire when nothing happened are how an operator
   # learns to skip them. Stderr, not stdout: the two evidence paths this script
   # prints last are what a caller pipes. No path is named -- the operator passed
-  # --repo and knows what it is, and _scrub_guard does not reach stderr.
+  # --repo and knows what it is, and _scrub_guard reaches only the two evidence
+  # FILES, never this stream; tests/test_beta_qualification.sh holds that by
+  # hand, so keep these two lines path-free when you edit them.
   printf 'beta-qualify: executing the configured verify= command IN PLACE inside --repo, to time it.\n' >&2
   printf 'beta-qualify: that is repository-specific code, run with your privileges; this harness does not sandbox it. --no-run-verify skips it and records the timing probe as not-tested.\n' >&2
   verify_rc=0
