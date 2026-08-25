@@ -91,11 +91,13 @@ record, because runners/orchid-pump deliberately wakes no model for it.
 
 Between an implementer's envelope reconciling and `orchid verify` running,
 some candidates need execution-requiring mechanical work an engine profile
-cannot do at all: a lint fix, a release checksum re-pin, the mode bit on a new
-executable — and committing it moves the tree out from under the candidate the
-implementer's envelope was captured against. Where `handoff_before_verify`
-asks for that pause, a pass stops at
-an `operator-handoff` boundary instead of verifying — verifying first would
+cannot do at all: a lint fix, the mode bit on a newly added executable, a
+generator whose output is checked in (but never an artifact derived from the
+whole tree, such as a release-archive checksum — those belong to the
+integration branch) — and committing it moves the tree out from under the
+candidate the implementer's envelope was captured against. Where
+`handoff_before_verify` asks for that pause, a pass stops at an
+`operator-handoff` boundary instead of verifying — verifying first would
 spend one of the task's rework rounds on a failure nobody was going to
 fix in that round. The stop is on a durable acknowledgement bound to a
 candidate (`orchid task handoff <id> --ack --reason "..."`, which advances
@@ -1263,13 +1265,15 @@ drive_testing() {
   # THE OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm). Between
   # the implementer's envelope reconciling and `orchid verify` running there
   # is a point at which execution-requiring mechanical work belongs to an
-  # operator: a lint fix, a release checksum re-pin, the mode bit on a newly
-  # added executable. An engine profile that denies on the command STRING can
-  # perform none of it (lesson L017), so verifying before it has been done is
-  # not merely early -- it is a guaranteed FAIL that spends one of the task's
-  # rework rounds (`rework_max`, or its own `attempt_budget`) on work nobody
-  # was going to do in that round, and
-  # sends the implementer back a failure it cannot act on.
+  # operator: a lint fix, the mode bit on a newly added executable, a
+  # generator whose output is checked in -- but never an artifact derived from
+  # the WHOLE TREE, which conflicts unresolvably if regenerated per candidate
+  # and belongs to the integration branch instead (lesson L022). An engine
+  # profile that denies on the command STRING can perform none of it (lesson
+  # L017), so verifying before it has been done is not merely early -- it is
+  # a guaranteed FAIL that spends one of the task's rework rounds
+  # (`rework_max`, or its own `attempt_budget`) on work nobody was going to do
+  # in that round, and sends the implementer back a failure it cannot act on.
   #
   # Where a repository asks for that pause (`handoff_before_verify`), the pass
   # STOPS here at a named boundary instead of verifying. The stop is on the

@@ -115,8 +115,9 @@ testing_entry_blocker() {
 #
 #   * a DESCENDANT of the candidate it replaces. Every legitimate move of a
 #     candidate ADDS commits on top of work already captured -- an operator's
-#     fix, a re-pinned checksum, a mode bit -- so anything that does not
-#     contain that work is not this candidate's successor, whatever else it is.
+#     fix, a mode bit, a regenerated per-file artifact -- so anything that
+#     does not contain that work is not this candidate's successor, whatever
+#     else it is.
 #   * ON the branch the task record names. Descent alone still admits a commit
 #     made on a branch that merely forked from this candidate, which is what an
 #     operator working two tasks in two checkouts produces by mistake -- and it
@@ -937,8 +938,11 @@ case "$sub" in
     # T010: the verb that ACKNOWLEDGES a hand-off, and the only place a
     # `handoff_ack` is ever created -- the durable record that an
     # operator really performed this candidate's execution-requiring
-    # mechanical steps (a lint fix, a checksum re-pin, a mode bit on a new
-    # executable), the ones an engine profile that denies on the command
+    # mechanical steps (a lint fix, a mode bit on a new executable, a
+    # generator whose output is checked in -- but NEVER an artifact derived
+    # from the whole tree, which belongs to the integration branch and
+    # conflicts unresolvably if regenerated per candidate, lesson L022), the
+    # ones an engine profile that denies on the command
     # string cannot perform at all (lesson L017). PROTOCOL.md's THE TICK
     # names the point in the procedure where they happen; this verb is what
     # makes that point RESUMABLE, and it is why the pause is not an infinite
@@ -964,9 +968,9 @@ case "$sub" in
     # This is the defect the feature would otherwise institutionalise. The
     # candidate is captured when the implementer's envelope reconciles; the
     # hand-off's whole purpose is to COMMIT work after that -- a lint fix, a
-    # re-pinned checksum, a mode bit -- so by the time it is acknowledged the
-    # tree `orchid verify` will run is no longer the one the task record
-    # names. Acknowledging against the pre-hand-off sha would leave every
+    # mode bit, a regenerated per-file artifact -- so by the time it is
+    # acknowledged the tree `orchid verify` will run is no longer the one the
+    # task record names. Acknowledging against the pre-hand-off sha would leave every
     # downstream piece of evidence bound to a commit that was never the one
     # verified (lesson L025), inside the very procedure that formalises the
     # hand-off. So the ack reads HEAD of the tree verification will use --
@@ -1420,7 +1424,7 @@ case "$sub" in
       # AND THE HAND-OFF IS WITHDRAWN, NOT CARRIED (T026 rework). `handoff_ack`
       # asserts one thing about one commit: that an OPERATOR looked at that tree
       # and confirmed the mechanical steps it needed -- a mode bit on a new
-      # executable, a re-pinned formula checksum -- had been performed. The
+      # executable, a regenerated per-file artifact -- had been performed. The
       # commit being re-stamped here is one no operator has said that about; it
       # is, by construction, work committed since. Re-binding the ack onto it
       # would make that assertion on their behalf about a tree they never saw,

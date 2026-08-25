@@ -74,8 +74,10 @@ drive_threshold_rank() {
 #                        not look is fail-open, so it is refused in the same
 #                        direction as a tree that is genuinely in the way
 #   operator-handoff  -- the candidate's execution-requiring mechanical steps
-#                        (a lint fix, a checksum re-pin, a mode bit on a new
-#                        executable) are not acknowledged for THIS candidate.
+#                        (a lint fix, a mode bit on a new executable, a
+#                        generator whose output is checked in -- never an
+#                        artifact derived from the whole tree, lesson L022)
+#                        are not acknowledged for THIS candidate.
 #                        Deliberately settled by no verb below: none performs
 #                        the work, and a model able to acknowledge its own
 #                        hand-off would defeat the point of naming one at all

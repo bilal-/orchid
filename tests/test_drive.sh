@@ -1979,11 +1979,12 @@ assert_eq 1 "$(printf '%s\n' "$bagain" | grep -c 'Rework brief — exact locatio
 # acknowledgement, and a resume rule.
 #
 # The pause exists because some mechanical work in a candidate requires
-# EXECUTION -- a lint fix, a release checksum re-pin, the mode bit on a newly
-# added executable -- which an engine profile that denies on the command
-# string cannot perform at all. Verifying before it is done is a guaranteed
-# FAIL that spends one of the task's three rework rounds on work nobody was
-# going to do in that round.
+# EXECUTION -- a lint fix, the mode bit on a newly added executable, a
+# generator whose output is checked in (never an artifact derived from the
+# whole tree: lesson L022, and see the fixture note below) -- which an engine
+# profile that denies on the command string cannot perform at all. Verifying
+# before it is done is a guaranteed FAIL that spends one of the task's three
+# rework rounds on work nobody was going to do in that round.
 #
 # The two failure modes pinned here are opposite and equally fatal: a stop
 # with no way to record the work is an infinite loop, and a stop that clears
@@ -2115,7 +2116,15 @@ hrc=0; horchid task set H010 handoff_ack "$HHEAD" >/dev/null 2>&1 || hrc=$?
 # verbs agree about. The assertion below pins the commit's SHAPE -- exactly its
 # one file, no kernel state -- so a fixture that rots into a whole-index commit
 # fails as itself rather than as the hand-off it is supposed to be exercising.
-printf 'sha256 "0000"\n' > "$HWT/formula-pin.txt"
+#
+# THE FIXTURE'S MECHANICAL STEP IS A LINT FIX, deliberately, and not a
+# re-pinned release checksum -- which is what it used to be. A checksum
+# derived from the WHOLE TREE must never be a per-candidate hand-off at all
+# (lesson L022): every candidate would rewrite the same line differently and
+# the second to rebase would conflict on it forever. Naming it here, in the
+# fixture that teaches what a hand-off IS, recommended the one shape
+# PROTOCOL.md now forbids.
+printf 'lint fix 0000\n' > "$HWT/lint-fix.txt"
 
 # --- RED: THE ACK IS REFUSED WHILE THE TREE IS DIRTY -----------------------
 # The mechanical work now EXISTS, and it is not committed. Every sha this verb
@@ -2134,16 +2143,16 @@ hdirty_out="$(horchid task handoff H010 --ack \
   || fail "the ack was given over a dirty tree — verification would then run work no commit contains (it said: $hdirty_out)"
 assert_match "uncommitted changes" "$hdirty_out" \
   "and it refuses on the tree's STATE, which is the thing no sha comparison can see (it said: $hdirty_out)"
-assert_match "formula-pin.txt" "$hdirty_out" \
+assert_match "lint-fix.txt" "$hdirty_out" \
   "NAMING what is uncommitted — 'commit your changes' over a tree an operator believes is clean is the same unsatisfiable instruction this task exists to remove (it said: $hdirty_out)"
 assert_eq "$HHEAD" "$(hfield candidate_sha)" "the refused ack advanced nothing"
 assert_eq "" "$(hfield handoff_ack)" "and acknowledged nothing"
 
-git -C "$HWT" add formula-pin.txt || fail "fixture: could not stage the operator's mechanical change"
-git -C "$HWT" commit -q -m "H010: re-pin the formula checksum
+git -C "$HWT" add lint-fix.txt || fail "fixture: could not stage the operator's mechanical change"
+git -C "$HWT" commit -q -m "H010: apply the lint fix
 
 Orchid-Handoff: operator" || fail "fixture: the operator's mechanical commit did not land"
-assert_eq formula-pin.txt \
+assert_eq lint-fix.txt \
   "$(git -C "$HWT" diff-tree --no-commit-id --name-only -r HEAD)" \
   "fixture: the operator's mechanical commit carries exactly its one file and no kernel state"
 HHANDOFF_CAND="$(git -C "$HWT" rev-parse HEAD)"
@@ -2164,7 +2173,7 @@ assert_eq "$HHEAD" "$(hfield candidate_sha)" \
 # the feature that exists to end it. So the refusal is captured and QUOTED.
 hack_rc=0
 hack_out="$(horchid task handoff H010 --ack \
-  --reason "re-pinned Formula/orchid.rb and set the exec bit" 2>&1)" || hack_rc=$?
+  --reason "applied the lint fix and set the exec bit" 2>&1)" || hack_rc=$?
 [ "$hack_rc" -eq 0 ] \
   || fail "the ack verb refused the hand-off (exit $hack_rc) — it said: $hack_out"
 assert_match "candidate_sha advanced $HHEAD -> $HHANDOFF_CAND" "$hack_out" \
@@ -2191,7 +2200,7 @@ assert_match "operator hand-off acknowledged for candidate" "$(cat "$HANDOFF/.or
 # `handoff_ack`, `candidate_sha` and `HEAD` are one commit — and the tree still
 # does not match any of them. A resume that reads that as "already performed"
 # verifies work no commit contains.
-printf 'sha256 "3333"\n' > "$HWT/formula-pin.txt"
+printf 'lint fix 3333\n' > "$HWT/lint-fix.txt"
 assert_eq "$(hfield candidate_sha)" "$(hfield handoff_ack)" \
   "the two frontmatter fields agree"
 assert_eq "$HHANDOFF_CAND" "$(git -C "$HWT" rev-parse HEAD)" \
@@ -2200,7 +2209,7 @@ assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
   "yet the hand-off reads outstanding: three matching shas say nothing about the tree on top of them"
 assert_match "uncommitted changes" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
   "and the detail says which axis failed"
-assert_match "formula-pin.txt" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
+assert_match "lint-fix.txt" "$(handoff_state "$HANDOFF" H010 | cut -f2-)" \
   "naming the path, so the operator is not left to diff the tree themselves"
 rm -f "$HVERIFY_RAN"
 run_hdrive
@@ -2214,7 +2223,7 @@ assert_eq operator-handoff "$(hboundary | jq -r .kind)" \
 # the acknowledgement standing still names the tree that will run. (A post-ack
 # COMMIT is the other case, below, and that one does need re-acknowledging —
 # the two are different because one moved HEAD and the other did not.)
-git -C "$HWT" checkout -- formula-pin.txt || fail "fixture: could not restore the tree"
+git -C "$HWT" checkout -- lint-fix.txt || fail "fixture: could not restore the tree"
 assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
   "and a tree brought back into line with the acknowledged commit is satisfied again"
 
@@ -2303,8 +2312,8 @@ git -C "$HWT" branch -D alien >/dev/null 2>&1 || true
 # what an operator working two tasks in two checkouts produces by accident, and
 # it is the shape whose commits silently vanish from the branch that merges.
 git -C "$HWT" checkout -q --detach "$HHANDOFF_CAND" || fail "fixture: could not detach HEAD"
-printf 'sha256 "1111"\n' > "$HWT/formula-pin.txt"
-git -C "$HWT" add formula-pin.txt
+printf 'lint fix 1111\n' > "$HWT/lint-fix.txt"
+git -C "$HWT" add lint-fix.txt
 git -C "$HWT" commit -q -m "H010: a mechanical fix committed off the task branch
 
 Orchid-Handoff: operator" || fail "fixture: the off-branch commit did not land"
@@ -2324,14 +2333,14 @@ git -C "$HWT" checkout -q -f task/H010 || fail "fixture: could not return to the
 # --- A COMMIT MADE AFTER THE ACK REOPENS THE PAUSE -------------------------
 # The two frontmatter fields agreeing prove only that they were written
 # together. What the pause is about is a committed TREE — and an operator who
-# acknowledges, then commits once more (a second lint fix, a formula re-pinned
-# after re-reading the diff), leaves the record naming a tree that exists
+# acknowledges, then commits once more (a second lint fix, a mode bit spotted
+# on re-reading the diff), leaves the record naming a tree that exists
 # nowhere. A resume that read that as "already performed" would verify the
 # later tree and bind every downstream judgment to a commit nothing verified:
 # lesson L025 again, reached silently, because the fields still match.
-printf 'sha256 "2222"\n' > "$HWT/formula-pin.txt"
-git -C "$HWT" add formula-pin.txt
-git -C "$HWT" commit -q -m "H010: re-pin again, after acknowledging
+printf 'lint fix 2222\n' > "$HWT/lint-fix.txt"
+git -C "$HWT" add lint-fix.txt
+git -C "$HWT" commit -q -m "H010: a second mechanical fix, after acknowledging
 
 Orchid-Handoff: operator" || fail "fixture: the post-ack commit did not land"
 HHANDOFF_CAND2="$(git -C "$HWT" rev-parse HEAD)"

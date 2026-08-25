@@ -887,6 +887,20 @@ run_release_failure "$stale_release_repo" v1.2.3 \
 # tool into a fixture (which this file does, twice, above) is untouched.
 live_pin_pattern='REPO_ROOT'
 live_pin_pattern="${live_pin_pattern}[^\"]*pin-formula[.]sh\"?[[:space:]]+[-]-check"
+
+# A POSITIVE CONTROL FIRST, because the scan below is expected to match
+# nothing -- and a pattern that has quietly stopped matching anything at all
+# is indistinguishable from a clean tree. This is the exact line T030 removed
+# from this file, reassembled from fragments so that carrying it here still
+# does not trip the scan (no single fragment holds both `REPO_ROOT` and the
+# `--check` argument). If the pattern ever stops recognising the gate it
+# exists to forbid, this fails rather than the tripwire passing vacuously.
+live_pin_removed_line='  freshness_out="$("$BASH" "$'
+live_pin_removed_line="${live_pin_removed_line}REPO_ROOT/scripts/pin-formula.sh\" "
+live_pin_removed_line="${live_pin_removed_line}--check 2>&1)\" || rc=\$?"
+printf '%s\n' "$live_pin_removed_line" | grep -Eq "$live_pin_pattern" \
+  || fail "the per-candidate freshness-gate tripwire no longer matches the line it forbids -- the scan below proves nothing"
+
 while IFS= read -r shell_file; do
   [ -n "$shell_file" ] || continue
   grep -En "$live_pin_pattern" "$REPO_ROOT/$shell_file" >/dev/null \

@@ -1147,7 +1147,7 @@ ones its archetype never declares.
     **The tree is read, never inferred, and that third comparison is not
     belt-and-braces.** Two frontmatter fields agreeing prove only that they
     were written together. An operator who acknowledges and then commits once
-    more — a second lint fix, a formula re-pinned after re-reading the diff —
+    more — a second lint fix, a mode bit spotted on re-reading the diff —
     leaves both fields naming a tree that exists nowhere, still perfectly
     equal to each other. A resume reading that as "already performed" verifies
     the later tree and binds every downstream judgment to a commit nothing ever
