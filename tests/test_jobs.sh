@@ -1316,6 +1316,16 @@ FLATLOG
 # kill_stuck falls back to signalling the pid directly when pgid is 0.
 sleep 100 &
 cpu_stall_pid=$!
+# DISOWNED, as at the pgid guard far above and at every `sleep 100 &` in this
+# CPU block. Each of these six fixtures ends with its job reaped -- by `jobs
+# check` where the arm is meant to fire, by an explicit `kill` where it is
+# meant not to -- and bash announces every one of those reaps on stderr as
+# `tests/test_jobs.sh: line N: <pid> Terminated: 15 sleep 100`. That is the
+# `file: line N:` shape lib/findings.sh carries into a rework brief, so six
+# PASSING fixtures hand the next implementer six fabricated locations and
+# displace the real ones. They did exactly that to T018, whose own brief
+# arrived carrying these six lines and nothing else.
+disown 2>/dev/null || true
 jq -n --argjson pid "$cpu_stall_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUFLAT-a1-c0f00001", task:"TCPUFLAT", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1350,6 +1360,7 @@ cat > "$cpu_busy_log" <<'BUSYLOG'
 BUSYLOG
 sleep 100 &
 cpu_busy_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_busy_pid" --arg log "$cpu_busy_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUBUSY-a1-c0b00001", task:"TCPUBUSY", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1375,6 +1386,7 @@ cat > "$cpu_young_log" <<'YOUNGLOG'
 YOUNGLOG
 sleep 100 &
 cpu_young_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_young_pid" --arg log "$cpu_young_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUYOUNG-a1-c0900001", task:"TCPUYOUNG", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1398,6 +1410,7 @@ cat > "$cpu_stall_log" <<'FLATLOG2'
 FLATLOG2
 sleep 100 &
 cpu_off_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_off_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUOFF-a1-c0000001", task:"TCPUOFF", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1428,6 +1441,7 @@ cat > "$cpu_stall_log" <<'FLATLOG3'
 FLATLOG3
 sleep 100 &
 cpu_dflt_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_dflt_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUDFLT-a1-c0d00001", task:"TCPUDFLT", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1458,6 +1472,7 @@ cat > "$cpu_back_log" <<'BACKLOG'
 BACKLOG
 sleep 100 &
 cpu_back_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_back_pid" --arg log "$cpu_back_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUBACK-a1-c0e00001", task:"TCPUBACK", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
