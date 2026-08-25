@@ -14,6 +14,9 @@ depends_on:
 attempts: 0
 attempt_budget:
 infra_failures: 0
+rework_rounds: 0
+rework_signature:
+rework_signature_repeats: 0
 session_id:
 implementer_engine_id:
 base_sha:

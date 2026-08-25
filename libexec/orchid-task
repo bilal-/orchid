@@ -7,6 +7,7 @@ source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/findings.sh"
 source "$ORCHID_ROOT/lib/capability.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
+source "$ORCHID_ROOT/lib/rework.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; tasks="$state/tasks"
 sub="${1:-}"; shift || true
 tf() { echo "$tasks/$1.md"; }
@@ -677,6 +678,14 @@ case "$sub" in
       # rather than accepting one.
       prerequisite_ack)
         orchid_die "'prerequisite_ack' is kernel-owned — use task prereq-ack" ;;
+      # The rework-convergence record (T025). Written by exactly one place —
+      # the `to = rework` arm of `advance` below, from evidence it captured
+      # itself, under the same journal-first discipline `infra_failures` gets.
+      # Hand-writable counters here would let an attempt claim a fresh failure
+      # signature it never produced, which is precisely the judgment the
+      # driver's failover and non-convergence stop read off these fields.
+      rework_rounds|rework_signature|rework_signature_repeats)
+        orchid_die "'$key' is kernel-owned — it records captured rework evidence (task advance <id> rework)" ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -1091,6 +1100,55 @@ case "$sub" in
     # itself is made by the shared block further down, never here, so the
     # exemption and the opt-in cannot end up charging the same round twice.
     if [ "$to" = rework ]; then
+      # Argument validation is hoisted ahead of the capture below: the waiver
+      # check further down is the one way this arm can still die, and a died
+      # advance must not leave a captured round and bumped counters behind
+      # describing a transition that never happened.
+      if [ "$from" != merging ] && [ "$waive" -eq 1 ] && [ -z "$reason" ]; then
+        orchid_die "--waive-attempt requires --reason"
+      fi
+      # ---- Capture the failure BEFORE anything invalidates it (T025) ------
+      # This runs ahead of both the attempt accounting and the `rm -f` below,
+      # because the `rm -f` is what destroys it: the journalled reason on this
+      # very edge points at reviews/<id>-verify.log, and that pointer dangles
+      # the instant it is written (lesson L023). The copy lands at
+      # reviews/<id>-r<round>-rework.log, a path no evidence gate accepts (see
+      # lib/rework.sh), so INV-11 stays armed exactly as before while the
+      # output survives for the next attempt's input pack to carry.
+      #
+      # `rework_rounds` counts CAPTURED rounds, not rework entries: a rework
+      # with no failing evidence to capture (a rebase conflict, an operator
+      # advance) mints no file, so the counter and the files on disk can never
+      # disagree. Such a round also leaves `rework_signature`/`_repeats`
+      # untouched rather than resetting them -- an uncapturable round is an
+      # absence of evidence about convergence, and clearing the streak on it
+      # would hide a genuine repeat behind an unrelated interruption.
+      if rw_src="$(rework_evidence_source "$state" "$id" "$from")"; then
+        rw_round="$(fm_get "$f" rework_rounds)"
+        case "$rw_round" in ''|*[!0-9]*) rw_round=0 ;; esac
+        rw_round=$((rw_round + 1))
+        rw_dest="$(rework_log_path "$state" "$id" "$rw_round")"
+        atomic_write "$rw_dest" < "$rw_src"
+        rw_sig="$(rework_signature "$rw_dest")"
+        rw_prev_sig="$(fm_get "$f" rework_signature)"
+        rw_reps="$(fm_get "$f" rework_signature_repeats)"
+        case "$rw_reps" in ''|*[!0-9]*) rw_reps=0 ;; esac
+        if [ -n "$rw_prev_sig" ] && [ "$rw_sig" = "$rw_prev_sig" ]; then
+          rw_reps=$((rw_reps + 1)); rw_same="identical to the previous round"
+        else
+          rw_reps=1; rw_same="new"
+        fi
+        # Journal-first (INV-08 discipline), same as `infra-fail`: the fact is
+        # recorded before the counters that assert it. An unchanged signature
+        # is the whole point of the record -- it is evidence the loop is not
+        # converging, not a fresh failure, and it must be greppable as such
+        # without re-reading two logs by hand.
+        journal --task "$id" --kind intervention \
+          "rework evidence captured: reviews/$id-r$rw_round-rework.log; failure signature ${rw_sig:0:12} ($rw_same, repeat $rw_reps)"
+        fm_set "$f" rework_rounds "$rw_round"
+        fm_set "$f" rework_signature "$rw_sig"
+        fm_set "$f" rework_signature_repeats "$rw_reps"
+      fi
       if [ "$from" != merging ]; then
         if [ "$waive" -eq 1 ]; then
           [ -n "$reason" ] || orchid_die "--waive-attempt requires --reason"

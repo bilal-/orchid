@@ -8889,3 +8889,169 @@ for _vrc in 16 20; do
     || fail "T031: the verify exit-$_vrc arm must RETURN — a refusal that falls through is charged to the candidate as a failed round (arm: $_arm)"
 done
 red_case "both of drive_testing's verify-refusal arms return instead of falling into the rework accounting"
+
+# Part S (T025) -- THE REWORK-FEEDBACK CASE. A task whose verification fails
+# the same way every time.
+#
+# Dogfood finding F27: a task failed verify three times with the SAME two
+# assertions failing the SAME way, and the implementer kept changing
+# production code to satisfy them. Three attempts produced a BYTE-IDENTICAL
+# failure signature -- strong evidence the loop feeds back the same
+# information and gets the same answer.
+#
+# The proven root cause (lesson L023) is not that the brief forgets to
+# mention the failure. `orchid task advance <id> rework` DELETES
+# reviews/<id>-verify.log while the same call journals the reason "verify
+# failed: see .orchid/reviews/<id>-verify.log" -- the pointer dangles the
+# instant it is written, so rework arrives with nothing to act on. The
+# deletion is deliberate (it arms INV-11's gate), so the fix is to capture
+# the output first, not to stop deleting it.
+#
+# RED before this task at each of the three groups below: the second
+# attempt's input pack has no rework.md at all; nothing counts a repeated
+# signature, so nothing reroutes; and the run spends its whole attempt budget
+# re-asking an identically-answered question.
+# ===========================================================================
+RW="$WORK/rework"
+RWCTL="$WORK/rwctl"
+mkdir -p "$RW" "$RWCTL" "$WORK/eng/stubrw" "$WORK/eng/stubalt"
+cd "$RW" || exit 1
+git init -q .
+printf 'role.implementer=stubrw,stubalt\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+
+# mk_rw_engine <name> -- an implementer that commits SOMETHING (so a real
+# candidate exists to verify) and records what it was actually handed. The
+# recording is the point: the pack the next attempt receives is the artifact
+# under test, and reading it from the ENGINE's side is the only honest way to
+# assert it arrived.
+mk_rw_engine() {
+  local name="$1"
+  local dir="$WORK/eng/$name"
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$name" > "$dir/plugin.conf"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -eu'
+    printf 'CTL=%s\n' "$(printf '%q' "$RWCTL")"
+    printf 'ENGINE=%s\n' "$name"
+  } > "$dir/run"
+  cat >> "$dir/run" <<'EOF'
+req="$1"
+worktree="$(jq -r .worktree "$req")"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+attempt="$(jq -r .attempt "$req")"
+pack="$(jq -r .input_pack "$req")"
+if [ "${ORCHID_DRYRUN:-0}" = "1" ]; then
+  jq -n '{contract:1, job_id:"x", task:"x", operation:"implement", status:"ok", summary:"dryrun"}' > "$out"
+  exit 0
+fi
+# Which engine ran which attempt -- the failover assertion reads this.
+echo "$ENGINE" >> "$CTL/starts"
+# And the brief this attempt was actually handed, kept per-attempt so the
+# feedback assertion compares like with like.
+if [ -f "$pack/rework.md" ]; then cp "$pack/rework.md" "$CTL/rework-a$attempt.md"; fi
+cp "$pack/pack.json" "$CTL/pack-a$attempt.json"
+cd "$worktree" || exit 1
+echo "attempt $attempt by $ENGINE" > "attempt-$attempt.txt"
+git add "attempt-$attempt.txt"
+git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "stub: $task attempt $attempt"
+sha="$(git rev-parse HEAD)"
+jq -n --arg jid "$jid" --arg task "$task" --arg sha "$sha" --arg eng "test/$ENGINE" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    engine:$eng, summary:"stub implemented", commits:[$sha]}' > "$out.part"
+mv "$out.part" "$out"
+EOF
+  chmod +x "$dir/run"
+}
+mk_rw_engine stubrw
+mk_rw_engine stubalt
+
+# The fallback may only ACTIVATE once it has passed the capability suite for
+# this exact (engine, role) pair -- the same gate every other failover goes
+# through, recorded under the fixture HOME the driver itself inherits. Without
+# it the reroute below would correctly find nothing eligible and the third
+# attempt would (correctly, but uninterestingly) run on the primary again.
+capsuite_run stubalt implementer >/dev/null \
+  || fail "sanity: capsuite_run should pass for stubalt/implementer"
+
+ORCHID_REPO="$RW" "$ORCHID_BIN" init >/dev/null || fail "orchid init (rework-feedback fixture)"
+git checkout -q orchid/integration
+REPOCH="$(ORCHID_REPO="$RW" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+rworchid() { ORCHID_REPO="$RW" ORCHID_EPOCH="$REPOCH" "$ORCHID_BIN" "$@"; }
+rworchid requirements import "$WORK/requirements.md" >/dev/null
+rworchid task create R010 "fails the same way every time" >/dev/null
+# The failure that never changes. Its OUTPUT is byte-identical run to run;
+# only the verify log's volatile header (timestamp, sha, candidate) moves,
+# and that is exactly what the signature is defined to ignore.
+rworchid task set R010 verification_commands 'echo "FAIL OrderTest::testRoundTrip assertSame array order differs"; exit 1' >/dev/null
+rworchid plan apply --reason "initial plan" >/dev/null
+
+RWDRIVE_RC=0; RWDRIVE_OUT=""
+run_rwdrive() {
+  RWDRIVE_RC=0
+  RWDRIVE_OUT="$(ORCHID_REPO="$RW" ORCHID_EPOCH="$REPOCH" "$DRIVE" 2>&1)" || RWDRIVE_RC=$?
+}
+rwfield() { ORCHID_REPO="$RW" "$ORCHID_BIN" task show R010 | grep "^$1: " | cut -d' ' -f2-; }
+
+ri=0
+while [ "$ri" -lt 45 ]; do
+  run_rwdrive
+  [ "$(rwfield status)" = blocked ] && break
+  ri=$((ri + 1))
+  sleep 0.3
+done
+
+# --- 1. THE RED CASE: the next attempt's brief contains the failing output --
+[ -f "$RWCTL/rework-a2.md" ] \
+  || fail "the SECOND attempt's input pack must carry rework.md -- the previous attempt's failure, fed back (ri=$ri, out: $RWDRIVE_OUT)"
+grep -q "OrderTest::testRoundTrip assertSame" "$RWCTL/rework-a2.md" \
+  || fail "rework.md must contain the VERBATIM failing output, not a pointer to a log the same advance deleted"
+grep -q "^exit: 1$" "$RWCTL/rework-a2.md" \
+  || fail "rework.md carries the whole evidence log, exit code included"
+[ ! -f "$RWCTL/rework-a1.md" ] \
+  || fail "the FIRST attempt has no previous failure and must get no rework.md"
+assert_match '"rework.md"' "$(jq -c '[.items[].name]' "$RWCTL/pack-a2.json")" \
+  "rework.md is a declared item in the pack manifest the engine was handed"
+
+# --- 2. an unchanged signature is a REPEAT, and reroutes the next attempt ---
+[ -f "$RWCTL/rework-a3.md" ] || fail "the third attempt must also be handed a brief"
+grep -q "repeated 2 times in a row" "$RWCTL/rework-a3.md" \
+  || fail "the third attempt's brief must SAY the failure repeated unchanged ('you already tried this and got exactly this')"
+assert_eq "stubrw" "$(sed -n 1p "$RWCTL/starts")" "sanity: the first attempt ran on the chain's primary"
+assert_eq "stubrw" "$(sed -n 2p "$RWCTL/starts")" "sanity: one identical failure is not yet enough to reroute"
+assert_eq "stubalt" "$(sed -n 3p "$RWCTL/starts")" \
+  "a SECOND identical failure signature routes the next rework to a different engine in the role's chain (starts: $(tr '\n' ' ' < "$RWCTL/starts"))"
+# The reroute entry asserts "this attempt runs on <engine>", so it is written
+# by the pass that actually SPAWNS. A re-entrant pass (one that died between
+# the spawn and the advance) adopts the job already running on the OLD engine
+# and must journal nothing: an operator reads these entries to find out which
+# engine produced which candidate, and one spurious line per recovering pass
+# would make that unreadable.
+assert_eq 1 "$(grep -c "rework routed to a different engine" "$RW/.orchid/journal.md" 2>/dev/null || true)" \
+  "the reroute is journalled exactly once -- by the pass that spawned it, never by one that adopted an existing job"
+
+# --- 3. an unchanged signature is not-converging, not a fresh failure ------
+assert_eq blocked "$(rwfield status)" \
+  "three byte-identical failures stop the loop instead of spending the rest of the budget on it (ri=$ri, rc=$RWDRIVE_RC, out: $RWDRIVE_OUT)"
+assert_eq 3 "$(rwfield rework_signature_repeats)" "the streak counted every consecutive identical round"
+assert_eq 3 "$(rwfield rework_rounds)" "every round's evidence was captured, one file each"
+rwboundary="$(ORCHID_REPO="$RW" "$ORCHID_BIN" run boundary show 2>&1 || true)"
+assert_match "not converging" "$rwboundary" \
+  "the pass stops at a judgment boundary that says WHY, not a generic attempts-exhausted"
+rwblockers="$(cat "$RW/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "not converging" "$rwblockers" "and the operator is told on the surface they actually watch"
+
+# The evidence itself survived, one file per round -- and none of it can be
+# mistaken for verify evidence: the invalidating delete still happened.
+for r in 1 2 3; do
+  [ -f "$RW/.orchid/reviews/R010-r$r-rework.log" ] \
+    || fail "round $r's failing output must survive as its own captured log"
+done
+[ ! -f "$RW/.orchid/reviews/R010-verify.log" ] \
+  || fail "the invalidating delete still happens -- INV-11 stays armed (the capture is a copy, not a reprieve)"
+assert_eq 3 "$(rwfield attempts)" \
+  "an identical signature still CONSUMES its attempt (kernel.md: the <=3 cap targets repeated identical failures)"

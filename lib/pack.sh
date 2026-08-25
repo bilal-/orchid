@@ -11,6 +11,11 @@
 # everything, in a fixed order) -- lib/lessons.sh has no further
 # dependencies of its own, so there is no cycle risk.
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lessons.sh"
+# Same deliberate exception, same reason (T025): several test files source
+# lib/pack.sh directly with no ORCHID_ROOT set, and lib/rework.sh has no
+# dependencies of its own beyond lib/common.sh (which every caller of this
+# file already sources for atomic_write/config_get), so there is no cycle.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/rework.sh"
 
 # _pack_fm_field <task-file> <key> -- a single frontmatter value, same
 # one-key extraction the review/critique branch below inlines twice already
@@ -19,6 +24,82 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lessons.sh"
 # third time.
 _pack_fm_field() {
   awk -v k="$2" '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$1"
+}
+
+# _pack_rework_brief <state> <task> -- the rework brief, on stdout, or
+# nothing at all when this task has no captured failure to feed back (its
+# first attempt, or a rework nobody had evidence for).
+#
+# This is the OTHER half of the F27 fix. Capturing the failing output before
+# the kernel invalidates it (lib/rework.sh) only makes it survivable; a pack
+# that never carries it still hands the next attempt the same brief as the
+# last one, which is how three attempts came back byte-identical. The brief
+# leads with the CONVERGENCE fact, because that is the part a re-reading
+# implementer cannot derive for itself: whether the previous round's change
+# moved this failure at all.
+#
+# Verbatim output, never a summary: the whole finding is that a summarized
+# "verify failed" is what the loop already had.
+_pack_rework_brief() {
+  local state="$1" task="$2"
+  # Separate declaration on purpose: within ONE `local`, the earlier
+  # assignments have not taken effect yet, so `tf` would be built from the
+  # OUTER scope's $state/$task (ShellCheck SC2318).
+  local tf="$state/tasks/$task.md"
+  local latest prev rounds sig reps
+  latest="$(rework_latest_log "$state" "$task" 0)" || return 0
+  # An EMPTY captured round is not evidence, and the brief's own framing is
+  # what makes that dangerous: "the verbatim output of the run that FAILED is
+  # reproduced below" over zero bytes asserts that the failing run printed
+  # nothing, which is a claim about the failure rather than an absence of one.
+  # No brief at all is the honest reading, and it is what the pre-T025 loop
+  # already had -- so this degrades, never misleads. (`orchid verify` always
+  # writes at least a header and an `exit:` line, so this is a torn/truncated
+  # file, not an ordinary one.)
+  [ -s "$latest" ] || return 0
+  prev="$(rework_latest_log "$state" "$task" 1 2>/dev/null || true)"
+  rounds="$(_pack_fm_field "$tf" rework_rounds)"
+  sig="$(_pack_fm_field "$tf" rework_signature)"
+  reps="$(_pack_fm_field "$tf" rework_signature_repeats)"
+  case "$reps" in ''|*[!0-9]*) reps=1 ;; esac
+
+  echo "# Previous attempt (rework round ${rounds:-1}) — what it actually failed on"
+  echo
+  echo "You are reworking this task. The verbatim output of the run that FAILED"
+  echo "is reproduced below. It is not a summary and not a pointer: it is the"
+  echo "evidence itself, captured before the kernel invalidated it."
+  echo
+  echo "- failure signature: ${sig:-unknown}"
+  if [ "$reps" -ge 2 ]; then
+    echo "- **this signature has now repeated $reps times in a row, unchanged.**"
+    echo
+    echo "READ THAT AGAIN: the previous round's changes did not move this failure"
+    echo "by a single byte. You already tried a fix and got exactly this. Whatever"
+    echo "the last attempt did was either not the cause, or never reached the code"
+    echo "under test. Do not re-apply it in another form. Establish what is"
+    echo "actually being asserted, and what the failing value actually is, before"
+    echo "changing anything — including the possibility that the ASSERTION is the"
+    echo "defect and the production code is right."
+  else
+    echo "- this is the first time this particular failure has been seen."
+  fi
+  echo
+  echo '## The failing run, verbatim'
+  echo
+  cat "$latest"
+  if [ -n "$prev" ]; then
+    echo
+    if [ "$reps" -ge 2 ]; then
+      echo "## Versus the round before it"
+      echo
+      echo "Byte-identical after the volatile header (timestamp, shas, working"
+      echo "directory). There is no diff to show."
+    else
+      echo '## What changed since the round before it'
+      echo
+      diff -u "$prev" "$latest" || true
+    fi
+  fi
 }
 
 # _pack_build_plan <repo> <state> <dest> -- the plan-scoped pack (v1-m3):
@@ -336,6 +417,53 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
     return 12
   fi
 
+  # T025: rework.md -- the previous attempt's failure, fed back into the
+  # attempt that has to fix it. Budgeted FIRST among the truncatables (ahead
+  # of lessons.md and context.md): on a rework attempt this is the single
+  # most specific input in the pack, and it is the one input whose absence
+  # produced the identical-failure loop this feature exists to end.
+  # Truncated TAIL-KEPT (`tail -c`), the opposite of tasks.md/lessons.md's
+  # head-first trim and for a concrete reason: a suite's output ends with the
+  # failing assertions and the exit line, so keeping the head of a long log
+  # keeps the part that passed.
+  #
+  # `implement` only. A reviewer judges base_sha..candidate_sha as it stands,
+  # against the task spec -- handing it the previous attempt's failure would
+  # prejudge a candidate that no longer has that defect (or invite it to
+  # review a diff it cannot see), and no shipped review prompt asks for it.
+  if [ "$op" = implement ]; then
+    local rework_tmp rwroom rwbytes rwtrunc=false
+    rework_tmp="$(mktemp)"
+    # Failure here is contained, for two independent reasons. (1) pack_build
+    # runs inside runners/orchid-launch under `set -e`, so an unguarded
+    # non-zero from this call would abort the LAUNCH -- taking a whole
+    # dispatch down over an input that is optional by construction (a first
+    # attempt has none at all). (2) A brief that died partway through is not
+    # shipped half-written: "## The failing run, verbatim" with nothing under
+    # it reads as "the run produced no output", which is a worse lie than no
+    # brief. Truncating on failure degrades to exactly the pre-T025 behaviour
+    # -- no rework.md, recorded as such below -- and never to a wrong one.
+    if ! _pack_rework_brief "$state" "$task" > "$rework_tmp" 2>/dev/null; then
+      : > "$rework_tmp"
+    fi
+    if [ -s "$rework_tmp" ]; then
+      rwroom=$(( budget - used ))
+      if [ "$rwroom" -le 0 ]; then
+        omitted="${omitted:+$omitted,}\"rework.md\""
+      else
+        rwbytes="$(wc -c < "$rework_tmp")"
+        if [ "$rwbytes" -le "$rwroom" ]; then
+          cp "$rework_tmp" "$dest/rework.md"
+        else
+          tail -c "$rwroom" "$rework_tmp" > "$dest/rework.md"; rwtrunc=true
+        fi
+        used=$(( used + $(wc -c < "$dest/rework.md") ))
+        items="$items,{\"name\":\"rework.md\",\"bytes\":$(wc -c < "$dest/rework.md"),\"truncated\":$rwtrunc}"
+      fi
+    fi
+    rm -f "$rework_tmp"
+  fi
+
   # v1-m3 Task 11: lessons.md, ACTIVE blocks only (kernel.md's per-role
   # table: implementer/reviewer both receive "context.md + lessons.md +
   # ..."), budgeted BEFORE context.md -- docs/specs/plugins.md's trim order
@@ -386,7 +514,14 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
     used=$(( used + $(wc -c < "$dest/context.md") ))
     items="$items,{\"name\":\"context.md\",\"bytes\":$(wc -c < "$dest/context.md"),\"truncated\":$trunc}"
   else
-    omitted="\"context.md\""
+    # Appended, never assigned over. Every other arm in this function builds
+    # `omitted` with the `${omitted:+$omitted,}` idiom; this one used a bare
+    # assignment, so an absent context.md silently ERASED whatever was already
+    # recorded there -- lessons.md's own omission (both arms above), and, since
+    # T025, rework.md's. The pack then shipped claiming context.md was the only
+    # thing left out, which is exactly the kind of quiet dishonesty pack.json
+    # exists to prevent: an input the engine never received, recorded nowhere.
+    omitted="${omitted:+$omitted,}\"context.md\""
   fi
 
   if [ -n "$symbols_tmp" ]; then

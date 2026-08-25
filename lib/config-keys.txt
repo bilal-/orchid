@@ -29,6 +29,7 @@ infra_max
 rework_max
 handoff.pin_check
 flaky.quarantine
+rework_nonconvergence_max
 model
 effort
 rate_limit_backoff_s

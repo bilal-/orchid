@@ -188,7 +188,7 @@ stateDiagram-v2
     pending --> implementing: deps done - worktree created, base_sha recorded
     implementing --> testing: implementer envelope ok AND the worktree HEAD moved - candidate_sha set, no commit touches .orchid/
     testing --> reviewing: orchid verify PASS - the evidence log is the only gate (INV-11)
-    testing --> rework: verify FAIL - consumes an attempt
+    testing --> rework: verify FAIL - consumes an attempt, and the failing output is captured for the next one
     reviewing --> arbitrating: every required review envelope reconciled for this candidate
     arbitrating --> merging: approve - journaled reason required
     arbitrating --> rework: request-changes - journaled reason required
@@ -196,7 +196,7 @@ stateDiagram-v2
     merging --> rework: validation failed
     merging --> testing: base moved - rebase, then re-verify and re-review (INV-07)
     rework --> implementing: rework spec written (3 attempts max)
-    testing --> blocked: attempts exhausted - a human is pinged
+    testing --> blocked: attempts exhausted, or the same failure three times running - a human is pinged
     blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
     done --> [*]
     note right of blocked

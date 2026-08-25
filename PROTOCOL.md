@@ -2113,6 +2113,34 @@ ones its archetype never declares.
     carried, so the record of what each round was told survives; the
     instruction does not. Exactly one live brief reaches the pack: the one for
     the candidate now under work.
+    **That advance also captures what failed, before it destroys it.** The
+    same call deletes `reviews/<id>-verify.log` — deliberately, to arm
+    INV-11's gate — so the reason it journals points at a file that no longer
+    exists by the time anyone reads it, and the next attempt used to arrive
+    with nothing to act on (dogfood finding F27, lesson L023). It now copies
+    that log first, into `reviews/<id>-r<round>-rework.log`, and records the
+    round's `rework_signature` plus how many CONSECUTIVE rounds have produced
+    that identical signature (`rework_signature_repeats`) — see
+    docs/specs/kernel.md's attempt-fairness rule. Nothing here needs a
+    separate call; what the walk must do with the result is:
+
+    - the next dispatch's implementer pack carries `rework.md` (the previous
+      round's output, verbatim), so the brief can say "you already tried this
+      and got exactly this";
+    - at `rework_signature_repeats` ≥ 2, dispatch that rework to a DIFFERENT
+      engine in `role.implementer`'s chain — `runners/orchid-launch <id>
+      implementer implement --engine <next-eligible>`, excluding the task's
+      recorded `implementer_engine_id`, and journal the reroute. A chain with
+      no other eligible entry dispatches normally; this is a preference, not
+      a gate.
+    - at `rework_signature_repeats` ≥ `rework_nonconvergence_max` (config,
+      default 3), stop: `orchid notify --task <id> "rework loop is not
+      converging: ..."` then `orchid task advance <id> blocked --reason
+      "rework not converging: ..."`. An unchanged signature is evidence the
+      loop is not converging, not a fresh failure, and spending the rest of
+      the attempt budget re-asking an identically-answered question is the
+      exact behavior F27 recorded. It still consumed its attempt on the way
+      here — the waiver is for a signature that actually CHANGED.
 
     When the rework was caused by something `context.md` failed to state —
     not an actual defect in the candidate — this is a lesson-birth moment
@@ -2693,6 +2721,16 @@ one-pass driver could otherwise stop progressing in silence:
   `orchid run refresh-lease` is a named verb and takes no verb lock, so this
   neither writes state outside a verb nor can deadlock against the step it
   covers.
+- **A rework that changed nothing is not a fresh failure.** The driver takes
+  all three consequences of the `testing` FAIL arm above without a model:
+  the pack builder adds `rework.md` whenever a captured round exists, a
+  second identical `rework_signature` re-routes the dispatch through
+  `resolve_role_available`'s exclusion of the last attempt's engine, and
+  `rework_nonconvergence_max` identical rounds end the loop at `blocked`
+  with an `operator-decision` boundary. Every one of those reads a
+  structured field the kernel wrote (`rework_signature_repeats`,
+  `implementer_engine_id`), never prose from a log — a driver comparing two
+  logs by eye would be exactly the free-form judgment this file forbids it.
 - **One counter for the escalation ladder.** The prose ladder in step 2
   spends its first occurrence on a free relaunch that touches no counter; a
   driver has no per-attempt memory outside `.orchid/`, and a private

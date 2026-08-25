@@ -538,3 +538,43 @@ assert_match "Draft roadmap:" "$captured" "plan prompt: roadmap section present"
 assert_match "Build the widget." "$captured" "plan prompt: tasks.md body present"
 case "$captured" in *"Diff:"*) fail "plan prompt: must never contain the diff-based review prompt shape" ;; esac
 assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "plan prompt stub: approve-only reply still yields empty findings[]"
+
+# --- T025: a REWORK attempt's pack carries rework.md -- the verbatim output of
+# the run that failed last time, plus whether that failure has repeated
+# unchanged -- and this adapter is the LAST link in that chain. Capturing the
+# failure before the kernel invalidates it (lib/rework.sh) and budgeting it
+# into the pack (lib/pack.sh) both leave it sitting in a file the engine never
+# reads unless the implement prompt splices it in. Delete that one line and
+# every other assertion in this tree still passes while the loop goes on being
+# handed exactly the brief it was handed last time -- which IS dogfood finding
+# F27, not a proxy for it. Reuses test 11's stdin-capture stub, so this also
+# proves the brief travels on STDIN with the rest of the prompt (F2's argv
+# leading-dash hazard applies to every byte of it).
+d="$(build_request implrework implement "$codex_stdin_stub"$'\necho "engine edit" > rework_edit.txt\necho "Implemented the feature end to end."')"
+printf '%s\n' \
+  '# Previous attempt (rework round 2) - what it actually failed on' '' \
+  '- failure signature: 9f1c2ab34d55' \
+  '- **this signature has now repeated 2 times in a row, unchanged.**' '' \
+  '## The failing run, verbatim' '' \
+  'FAIL OrderTest::testRoundTrip assertSame array order differs' \
+  'exit: 1' > "$d/pack/rework.md"
+run_adapter "$d" || fail "rework-brief stub: adapter should exit 0"
+captured="$(cat "$d/out/stdin_capture.txt")"
+assert_match "FAIL OrderTest::testRoundTrip assertSame array order differs" "$captured" \
+  "implement prompt: rework.md's previous failing output reaches the engine VERBATIM"
+assert_match "repeated 2 times in a row" "$captured" \
+  "implement prompt: and the convergence fact with it -- the one thing a re-reading implementer cannot derive for itself"
+assert_match "Do the thing." "$captured" "implement prompt: the task spec is still there alongside the brief"
+assert_match "never touch any .orchid/ path" "$captured" \
+  "implement prompt: the rules still come last, so the brief reads as the most recent fact about the task rather than as the final instruction"
+
+# A FIRST attempt has no rework.md at all (pack.sh omits it rather than
+# shipping an empty one), so the prompt must be exactly what it always was --
+# no orphaned heading, nothing claiming a previous round that never happened.
+d="$(build_request implnorework implement "$codex_stdin_stub"$'\necho "engine edit" > norework_edit.txt\necho "Implemented the feature end to end."')"
+run_adapter "$d" || fail "no-rework stub: adapter should exit 0"
+captured="$(cat "$d/out/stdin_capture.txt")"
+assert_match "Do the thing." "$captured" "first-attempt prompt: the spec is still delivered"
+case "$captured" in
+  *"rework round"*) fail "first-attempt prompt: must not mention a rework round it never had" ;;
+esac

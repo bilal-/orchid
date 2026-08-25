@@ -650,6 +650,39 @@ buying a fresh implementation pass to reach the same tree.
   next attempt at a previous attempt's envelopes, so a stale non-ok
   implement envelope would read as this attempt's fresh failure. The counter
   is monotonic; the cap is what moves.
+- **The failure signature is mechanized, not eyeballed (v1.1).** "Disjoint
+  from the prior attempt's" above used to be a judgment a human made by
+  re-reading two logs — and could not make at all, because entry to `rework`
+  DELETES `reviews/<id>-verify.log` (arming INV-11's gate) while the same
+  call journals a reason pointing at it. The pointer dangled the instant it
+  was written, so the next attempt arrived with nothing to act on and the run
+  produced byte-identical failures attempt after attempt (dogfood finding
+  F27; lesson L023). `orchid task advance <id> rework` now COPIES the failing
+  evidence first — `reviews/<id>-verify.log`, or `reviews/<id>-merge.log` on
+  the `merging → rework` validation path — into `reviews/<id>-r<round>-rework.log`,
+  a round-scoped path no evidence gate anywhere accepts (INV-11 reads a
+  literal filename; every envelope glob keys on `-a<attempt>-*.json`), and
+  records that round's `rework_signature`: a digest of the evidence with its
+  volatile header (`date`/`sha`/`candidate`/`cwd`) stripped and the command,
+  output and exit code kept. `rework_signature_repeats` counts CONSECUTIVE
+  identical signatures. A rework with no failing evidence to capture (a
+  rebase conflict, an operator advance) mints no file and leaves the streak
+  alone — an absence of evidence about convergence, never a reset of it.
+  Three consequences, all deterministic:
+  - the next attempt's input pack carries `rework.md` — the previous round's
+    output VERBATIM, plus whether it repeated unchanged (docs/specs/plugins.md);
+  - a second identical signature routes the next dispatch to a different
+    engine in the role's failover chain (a preference: a chain with no other
+    eligible entry dispatches as usual and says so);
+  - `rework_nonconvergence_max` (config, default 3) consecutive identical
+    signatures stop the loop — `blocked`, plus an `operator-decision`
+    boundary. An unchanged signature is evidence the loop is not converging,
+    not a fresh failure.
+  An identical signature still CONSUMES its attempt. The waiver above is for
+  a signature that is disjoint — distinct forward progress — and the ≤3 cap
+  exists precisely to target repeated identical failures; waiving them would
+  make the one shape the budget exists to stop the one shape that never
+  spends it.
 - **A delivery that delivered nothing is an infra failure, not an attempt.**
   An `ok` implement envelope is the engine's own account of itself; the
   worktree is the only thing that can contradict it. When the envelope
@@ -827,7 +860,8 @@ buying a fresh implementation pass to reach the same tree.
   a candidate that never moved.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
-worktree, run_id, depends_on, attempts, attempt_budget, infra_failures, session_id,
+worktree, run_id, depends_on, attempts, attempt_budget, infra_failures,
+rework_rounds, rework_signature, rework_signature_repeats, session_id,
 implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
 blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
 acceptance_criteria, verification_commands, operator_prerequisite,
@@ -901,6 +935,11 @@ space-separated basenames of implement envelopes refused as no-op deliveries,
 appended by the orchestrator through `orchid task set` (INV-13) at the moment
 it refuses one; a basename carries its own attempt (`<id>-a<n>-implementer
 [.k].json`), so a mark can never mask a later attempt's envelope.
+The three `rework_*` fields (v1.1) are kernel-owned exactly like
+`attempts`/`infra_failures` — `orchid task set` refuses them by name, because
+the driver's failover and non-convergence stop are judgments read straight
+off them, and a hand-written counter could claim a fresh failure signature no
+attempt ever produced.
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance
@@ -1447,7 +1486,7 @@ recipients get what their judgment needs, nothing more:
 
 | Role | Receives |
 |---|---|
-| implementer | context.md + lessons.md + task body (incl. its OWN rework history and named dead-ends) |
+| implementer | context.md + lessons.md + task body (incl. its OWN rework history and named dead-ends) + rework.md on a rework attempt (the previous round's failure output, verbatim) |
 | reviewer | context.md + lessons.md + diff/manifest + acceptance criteria + stop condition (never other tasks' state) |
 | arbiter | both review envelopes + this task's journal history + diff on demand |
 | plan_critic | requirements + draft roadmap + concatenated tasks.md (every current `tasks/*.md`, tail-first truncatable) + lessons.md |

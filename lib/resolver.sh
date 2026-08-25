@@ -31,6 +31,15 @@ resolve_role() {  # repo role -> primary engine name (first entry of the chain)
 # config key to set, from THIS function, before resolve_role_available's own
 # chain-walk (which would otherwise just report an empty chain with no
 # disqualifiers, a confusing dead end for an operator).
+#
+# The optional third argument to resolve_role_available (below) names ONE
+# engine the caller wants skipped regardless of its chain position. Its only
+# user today is the driver's rework failover (T025): two consecutive attempts
+# whose failure output was byte-identical are evidence that THIS engine is not
+# converging on THIS task, so the next attempt is routed to the next entry in
+# the same role's chain. It is a preference, never a requirement -- a caller
+# that gets exit 14 back is expected to fall through to the unexcluded call
+# rather than stall the task over it.
 resolve_role_chain() {
   local repo="$1" role="$2" v
   v="$(config_get "$repo" "role.$role")"
@@ -342,7 +351,8 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
   echo "$engine"
 }
 
-# resolve_role_available <repo> <role> [step] -- walks resolve_role_chain and
+# resolve_role_available <repo> <role> [step] [exclude-engine] -- walks
+# resolve_role_chain and
 # prints the first entry that is (a) discovered (resolve_engine_dir), (b)
 # role-eligible (role_eligibility_reason), (c) -- when a <step> is given --
 # not refused that step by the kernel's own capability table, (d)
@@ -389,7 +399,7 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
 # plus lib/capability.sh when (and only when) they pass a <step>.
 resolve_role_available() {
   local repo="$1" role="$2" step="${3:-}"
-  local chain engine dir reason skip_engine="" idx=0 disq=""
+  local exclude="${4:-}" chain engine dir reason skip_engine="" idx=0 disq=""
   local why crc
 
   if [ -n "$step" ] && ! declare -F capability_routing_refusal >/dev/null 2>&1; then
@@ -410,6 +420,11 @@ resolve_role_available() {
 
     if [ -n "$skip_engine" ] && [ "$engine" = "$skip_engine" ]; then
       disq="$disq$engine: same engine as orchestrator (plan_critic cannot critique its own plan); "
+      continue
+    fi
+
+    if [ -n "$exclude" ] && [ "$engine" = "$exclude" ]; then
+      disq="$disq$engine: excluded by the caller; "
       continue
     fi
 

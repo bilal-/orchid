@@ -298,8 +298,9 @@ export ORCHID_EPOCH="$(cat .orchid/runtime/epoch)"
 
 ## Blocked tasks
 
-**Symptom:** a task sits in `blocked` (rework attempts exhausted, a genuine
-question raised via `orchid notify`, or an operator-invoked stop).
+**Symptom:** a task sits in `blocked` (rework attempts exhausted, a rework
+loop that stopped converging, a genuine question raised via `orchid notify`,
+or an operator-invoked stop).
 
 ```sh
 orchid task show <id>              # read the blocking reason + BLOCKERS.md
@@ -907,6 +908,25 @@ If the suite can migrate its own store instead — a fixture database, a temp
 file, an in-memory DB the tests build — do that and leave
 `operator_prerequisite` empty. It is the better answer wherever it is
 available; this is for where it is not.
+**"rework not converging" is a different block, and needs a different
+answer.** It means `rework_nonconvergence_max` (config, default 3)
+consecutive attempts produced a BYTE-IDENTICAL failure — the same command,
+the same output, the same exit code — so the loop is re-asking a question it
+has already been answered. Retrying it unchanged will produce a fourth
+identical failure. Read the captured evidence, which the kernel keeps one
+file per round precisely for this:
+
+```sh
+ls .orchid/reviews/<id>-r*-rework.log   # one per captured round, oldest first
+orchid task show <id>                   # rework_signature, rework_signature_repeats
+```
+
+Nothing in the candidate is moving that failure, so the useful question is
+usually about the assertion rather than the code under test: what is actually
+being asserted, and what is the failing value actually? Fold the answer into
+`orchid task unblock <id> --reason "..."` (it is recorded into the task body,
+and the next attempt's brief carries the failing output alongside it) rather
+than `orchid task retry`, which changes nothing.
 
 ## `plan apply` refuses: carried-forward items are unconsidered
 

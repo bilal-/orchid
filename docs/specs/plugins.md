@@ -102,6 +102,18 @@ honestly in `pack.json` (`{"name":"diff.patch","omitted":"worktree-read"}`).
 An inline-only engine gets no such relief — a diff that large still hits
 `input_overflow` exactly as above, since it has no other way to see it.
 
+**Rework packs (v1.1):** an `implement` pack for a task with captured rework
+evidence also carries `rework.md` — the previous round's failure output
+VERBATIM (never a summary: a summarized "verify failed" is exactly what the
+loop already had), led by whether that same failure has now repeated
+unchanged, and followed by a diff against the round before it when it has
+not. It is truncatable and is budgeted FIRST among the truncatables, ahead
+of `lessons.md`/`context.md` — on a rework attempt it is the most specific
+input in the pack — and it trims TAIL-KEPT, the opposite of the others,
+because a suite's output ends with the failing assertions. `implement` only:
+a reviewer judges `base_sha..candidate_sha` as it stands, and the previous
+attempt's failure would prejudge a candidate that no longer carries it.
+
 One adapter serves many roles by branching on `operation` — no pseudo-engine
 identities. Adapters never guess paths, never choose output locations, exit
 nonzero on detectable failure.
