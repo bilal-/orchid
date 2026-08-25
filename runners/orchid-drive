@@ -262,9 +262,25 @@ set_boundary() {
 orchestrator_surface="$(drive_orchestrator_surface "$repo")"
 
 if [ "$run_status" = planning ]; then
-  # Plan drafting is judgment work by definition (PROTOCOL.md PLANNING): a
-  # requirements import, a task breakdown and a critique loop are exactly the
-  # things deterministic policy has no business inventing.
+  # PLANNING runs no reconcile and no check (below): plan drafting is judgment
+  # work by definition (PROTOCOL.md PLANNING) and the orchestrator owns the
+  # plan/critique loop end to end. But it DOES launch jobs -- `plan critique`
+  # and the plan hook points are jobs like any other -- so a launcher that dies
+  # before its spawn line strands a never-started manifest in this phase too,
+  # and `jobs prepare` now refuses (exit 18) to mint a second manifest over
+  # one. Without a reaper here that refusal would be permanent: the phase that
+  # cannot run gc is the phase that can never clear the thing gc clears, and
+  # the run would be wedged in PLANNING with no operator action able to be
+  # taken from inside the loop. So the never-started reap -- and ONLY that,
+  # never the dead-job reap, which must not run before a reconcile this phase
+  # deliberately skips -- runs in every phase, PLANNING included.
+  #
+  # BOUNDED by `stall_minutes`, exactly as the non-planning path bounds the
+  # same class: a manifest younger than that may belong to a launcher sitting
+  # between its own `jobs prepare` and its spawn line right now.
+  planning_reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared \
+    --older-than-s "$(( $(config_get "$repo" stall_minutes 10) * 60 ))")"
+  [ -z "$planning_reap_out" ] || printf '%s\n' "$planning_reap_out"
   set_boundary planning "" "run_status is planning — drafting and critiquing the roadmap is judgment work (PROTOCOL.md PLANNING)"
 fi
 
@@ -275,7 +291,7 @@ fi
 # what is genuinely stalled, and only then does gc reap the manifests check
 # has already had its pass over.
 # ---------------------------------------------------------------------------
-reconcile_out=""; check_out=""; gc_out=""; reap_out=""
+reconcile_out=""; check_out=""; gc_out=""
 escalations=""
 if [ "$run_status" != planning ]; then
   reconcile_out="$("$ORCHID_BIN" jobs reconcile)"
@@ -289,11 +305,58 @@ if [ "$run_status" != planning ]; then
   # leaving an acceptable envelope" -- including the case `jobs check` just
   # killed for stalling or timing out. Collected BEFORE gc (which is about to
   # reap exactly these manifests, bar the one exception both it and the skip
-  # below make) together with the role/operation a relaunch needs.
+  # below make) together with the role/operation a relaunch needs, and with
+  # WHICH of the two ways the job ended without an envelope (it died, or it
+  # never started at all) so the ladder can say which.
+  _prepared_bound_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+  _sweep_now="$(date +%s)"
   for _mf in "$rt/jobs"/*.json; do
     [ -e "$_mf" ] || continue
+    # FAIL CLOSED on a manifest nothing can parse, exactly as
+    # libexec/orchid-jobs' job_never_started does ("an unreadable manifest
+    # falls back to the answer 'not this class'"), so a corrupt or truncated
+    # file is reaped by nothing, refused over by nothing, and escalated by
+    # nothing -- one posture in all three places rather than three.
+    #
+    # This guard REPLACES a shield the pid-0 arm below used to provide for
+    # free. Until this task the loop read `[ "$_mpid" != 0 ] || continue`, so
+    # the `|| echo 0` fallback on an unparseable file landed on `continue` and
+    # the corrupt manifest left the loop untouched. Now that pid 0 is a case
+    # this sweep HANDLES rather than skips, that same fallback would instead
+    # carry a corrupt manifest into the never-started arm, where the `@tsv`
+    # read below exits non-zero under this file's `set -euo pipefail` and
+    # takes the ENTIRE drive pass down with it -- a whole tick lost to one bad
+    # file, which is the same shape of silent wedge this task exists to close.
+    jq -e . "$_mf" >/dev/null 2>&1 || continue
     _mpid="$(jq -r '.pid' "$_mf" 2>/dev/null || echo 0)"
-    [ "$_mpid" != 0 ] || continue
+    if [ "$_mpid" = 0 ]; then
+      # ...and the OTHER way a job ends without an envelope, which used to
+      # reach no arm of this ladder at all (T027, dogfood F29): it never
+      # started. `jobs prepare` mints every manifest with pid 0 and the
+      # launcher stamps the real pid only after the spawn, so a pid-0 manifest
+      # with NO LOG (the launcher creates the log by redirecting the spawn into
+      # it) is a job that was minted and never run. Nothing about that is
+      # `dead`, `stalled` or `timeout`, so the ladder never engaged and the
+      # task simply waited on an envelope nobody was producing.
+      #
+      # The two lines below are libexec/orchid-jobs' job_never_started, inlined
+      # because a shell function does not cross a verb boundary. They must stay
+      # the same test: this sweep escalates exactly the class `jobs gc` reaps
+      # and `jobs prepare` refuses over, so a pid-0 manifest that HAS a log --
+      # a spawn whose pid stamp was lost, possibly with an engine still behind
+      # it -- is escalated by none of the three.
+      #
+      # BOUNDED by the same `stall_minutes` floor `jobs gc` uses to reap this
+      # class, and for the same reason: a manifest younger than that may belong
+      # to a launcher sitting between its own `jobs prepare` and its spawn line
+      # right now, and that one is going to run.
+      _mlog="$(jq -r '.log // ""' "$_mf" 2>/dev/null || echo)"
+      [ -z "$_mlog" ] || [ ! -e "$_mlog" ] || continue
+      [ $(( _sweep_now - $(file_mtime "$_mf") )) -gt "$_prepared_bound_s" ] || continue
+      escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // ""), "never-started"] | @tsv' "$_mf")
+"
+      continue
+    fi
     if kill -0 "$_mpid" 2>/dev/null; then continue; fi
     # ...UNLESS ITS ENVELOPE IS ALREADY WRITTEN. A job that exited between the
     # reconcile above and this liveness read is dead with its envelope sitting
@@ -308,30 +371,18 @@ if [ "$run_status" != planning ]; then
     # outstanding for one more pass and resolves on the next.
     _mjid="$(jq -r '.job_id // empty' "$_mf" 2>/dev/null || true)"
     if [ -n "$_mjid" ] && [ -e "$rt/spool/$_mjid.json" ]; then continue; fi
-    escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // "")] | @tsv' "$_mf")
+    escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // ""), "died"] | @tsv' "$_mf")
 "
   done
 
+  # gc reaps both classes the sweep above just collected: the dead manifests
+  # (`--older-than-s 0`, since `check` has already had its pass over them) and,
+  # under its own `stall_minutes` floor, the never-launched ones. The floor is
+  # gc's, not this caller's -- passing `0` cannot lower it, precisely so a
+  # launcher mid-flight between `prepare` and its spawn never has its pack and
+  # request document deleted underneath it.
   gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
   [ -z "$gc_out" ] || printf '%s\n' "$gc_out"
-
-  # ...and the SEPARATE mode ordinary gc deliberately skips: the `pid: 0`
-  # manifests `jobs prepare` minted for a launch that never spawned. Nothing
-  # else ever reaps them (the escalation sweep above skips pid 0, ordinary gc
-  # skips pid 0), and drive_job_outstanding below refuses to read one as a
-  # live job -- so without this pass a crashed launch would leave a manifest
-  # sitting in `jobs check`'s `prepared` column for the rest of the run.
-  #
-  # BOUNDED, never `--older-than-s 0`: a manifest younger than the bound may
-  # belong to a launch that is between `jobs prepare` and its own spawn line
-  # right now, and reaping that one would delete the pack and request document
-  # out from under a live launcher. `stall_minutes` is the bound -- the
-  # kernel's existing "this job has shown no sign of life for long enough to
-  # be called stuck" knob, and orders of magnitude longer than the
-  # prepare->spawn window it has to clear.
-  reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared \
-    --older-than-s "$(( $(config_get "$repo" stall_minutes 10) * 60 ))")"
-  [ -z "$reap_out" ] || printf '%s\n' "$reap_out"
 fi
 
 # ---------------------------------------------------------------------------
@@ -389,9 +440,37 @@ drive_lease_heartbeat_stop() {
 }
 
 # ---------------------------------------------------------------------------
-# Launch helper. Exit 14 (`no eligible engine`) is a WAIT, never a failure:
-# the ledger window reopens on its own and the identical dispatch succeeds on
-# a later pass with no operator action (PROTOCOL.md's Failover paragraph).
+# Launch helper. THREE outcomes, not two:
+#
+#   0        spawned.
+#   14/18    a WAIT, never a failure. 14 is `no eligible engine`: the ledger
+#            window reopens on its own and the identical dispatch succeeds on a
+#            later pass with no operator action (PROTOCOL.md's Failover
+#            paragraph). 18 is `this slot already has a never-started manifest`
+#            (libexec/orchid-jobs' prepare): nothing is running, nothing was
+#            spawned, and gc clears the orphan on its own once it is past
+#            `stall_minutes` -- in EVERY phase, planning included, which is
+#            what keeps this wait from being a state the run cannot leave.
+#            Neither spends a rung of the escalation ladder --
+#            a wait counted as a failure auto-blocks a task on the wall clock
+#            (the reasoning drive_escalate's own header spells out for 14).
+#   anything else
+#            A JOB FAILURE, and it is escalated HERE (T027, dogfood F29). A
+#            launcher that dies BEFORE its spawn line -- an input_overflow
+#            pack, a missing binary, a plugin that will not resolve -- produces
+#            no job, so `jobs check` has nothing to call dead, `reconcile` has
+#            no envelope to mark the engine with, and every caller below used
+#            to do nothing but print a note and move on. That is the run that
+#            re-attempted the same broken launch 73 times with not one journal
+#            entry to show for it. `task infra-fail` is the ladder's own
+#            counter: it journals its reason, and auto-blocks at `infra_max`,
+#            so a launch that cannot succeed now stops the task instead of
+#            being retried silently forever.
+#
+# The one exception is an OPTIONAL hook binding, which gates nothing: its
+# handler failing to launch must not spend the TASK's infra_failures budget,
+# exactly as the escalation sweep already refuses to spend one when an optional
+# handler dies. It is journaled instead, so the failure is still on the record.
 # ---------------------------------------------------------------------------
 drive_launch() {
   local task="$1" role="$2" op="$3" engine="${4:-}" point="${5:-}" rc=0
@@ -400,13 +479,26 @@ drive_launch() {
   [ -z "$engine" ] || largs+=(--engine "$engine")
   [ -z "$point" ] || largs+=(--hook "$point")
   "$ORCHID_ROOT/runners/orchid-launch" "${largs[@]}" || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    return 0
+  fi
   if [ "$rc" -eq 14 ]; then
     drive_note "$task: no eligible engine for role '$role' — waiting for the ledger window to reopen"
     return 14
   fi
-  if [ "$rc" -ne 0 ]; then
-    drive_note "$task: launch failed (role '$role', operation '$op', exit $rc)"
+  if [ "$rc" -eq 18 ]; then
+    drive_note "$task: an unlaunched $op manifest for this slot is still on disk — nothing was spawned; gc clears it once it is past stall_minutes"
+    return 18
   fi
+  drive_note "$task: launch failed (role '$role', operation '$op', exit $rc)"
+  if [ "$role" = hook ] && [ -n "$point" ] && ! drive_hook_has_required "$repo" "$point"; then
+    drive_note "$task: the $point hook is optional — not escalating (it gates nothing)"
+    "$ORCHID_BIN" journal add --task "$task" \
+      "optional $point hook launch failed (exit $rc): nothing was spawned" >/dev/null
+    return "$rc"
+  fi
+  drive_escalate "$task" "$role" "$op" "$point" \
+    "the launcher exited $rc without spawning a job"
   return "$rc"
 }
 
@@ -415,17 +507,24 @@ drive_launch() {
 #
 # A `pid: 0` manifest is deliberately NOT one. `orchid jobs prepare` mints
 # every manifest with pid 0 and runners/orchid-launch stamps the real pid only
-# after the spawn, so a pid-0 manifest means exactly one thing: a launch died
-# between minting the job and starting it, and nothing is running. Nothing
-# else in the kernel treats it as live either -- the escalation sweep above
-# skips pid 0, and ordinary `jobs gc` skips it by design -- so adopting one
-# here would advance a task into an active status behind a job that will never
-# produce an envelope: no `jobs check` finding, no infra-fail, no boundary,
-# just a task parked in `implementing` forever. That is precisely the
-# LAUNCH-FIRST-ADVANCE-ONLY-ON-A-SPAWN invariant drive_dispatch documents, so
-# a never-spawned manifest reads as "no job": the caller relaunches, and the
-# `gc --reap-prepared` pass above clears the orphan once it is old enough to
-# be certain no launch is still mid-flight over it.
+# after the spawn, so a pid-0 manifest is a job nothing has been observed
+# running for. Adopting one here would advance a task into an active status
+# behind a job that may never produce an envelope: no `jobs check` finding, no
+# infra-fail, no boundary, just a task parked in `implementing` forever. That
+# is precisely the LAUNCH-FIRST-ADVANCE-ONLY-ON-A-SPAWN invariant
+# drive_dispatch documents, so an unstamped manifest reads as "no job" and the
+# caller relaunches.
+#
+# Relaunching is SAFE for the never-started half of that class (pid 0 and no
+# log: the spawn line was never reached) and it is that half `jobs prepare`
+# refuses to duplicate and `jobs gc` reaps. For the other half -- pid 0 WITH a
+# log, i.e. a launcher killed inside the sub-second window between the spawn
+# and the pid stamp -- an engine may genuinely be running, and neither this
+# predicate nor gc can prove otherwise. Nothing retires those: `jobs check`
+# keeps reporting them `prepared` so the manifest, the only handle on that
+# process, stays on disk for an operator (docs/troubleshooting.md carries the
+# procedure). Reaping them to tidy the column would trade a visible oddity for
+# a silent second engine in the same worktree.
 drive_job_outstanding() {
   local task="$1" op="$2" point="${3:-}" mf
   for mf in "$rt/jobs"/*.json; do
@@ -617,16 +716,19 @@ drive_dispatch() {
     else
       lrc=0
       drive_launch "$id" "$role" "$op" || lrc=$?
-      if [ "$lrc" -eq 14 ]; then
-        # The documented WAIT. No boundary: nothing is wrong, and the window
-        # reopens without anyone doing anything.
+      if [ "$lrc" -eq 14 ] || [ "$lrc" -eq 18 ]; then
+        # The documented WAITs (see drive_launch). No boundary: nothing is
+        # wrong, and both clear without anyone doing anything -- the ledger
+        # window reopens on its own, and gc reaps the orphaned manifest.
         drive_note "$id: staying in $from — nothing was spawned, so there is nothing to wait for"
         return 0
       fi
       if [ "$lrc" -ne 0 ]; then
-        # Any OTHER launch failure is broken infrastructure, not a wait. The
-        # task still stays dispatchable, but silently retrying it every pass
-        # forever is the same disappearing-act this ordering exists to end.
+        # Any OTHER launch failure is broken infrastructure, not a wait.
+        # drive_launch has already journaled it and spent a rung of the
+        # escalation ladder (which auto-blocks at infra_max, so it cannot be
+        # retried forever); the boundary is what stops THIS pass and tells a
+        # human, since the task itself stays dispatchable.
         set_boundary operator-decision "$id" \
           "dispatch launch for role '$role' failed (exit $lrc); $id stays in $from and nothing was spawned"
         return 0
@@ -699,9 +801,10 @@ drive_implementing() {
   # Every sibling arm already asks this question before it spawns
   # (drive_hook_gate, drive_dispatch, drive_reviewing); this one asked nobody.
   #
-  # WHY THE GUARD LIVES HERE AND NOT IN `orchid jobs prepare`. Refusing a
-  # duplicate manifest for the same task+operation inside the mint verb looks
-  # like the stronger, more central fix. It is neither:
+  # WHY THE CONCURRENCY GUARD LIVES HERE AND NOT IN `orchid jobs prepare`.
+  # Refusing, inside the mint verb, to add a job while one is outstanding for
+  # the same task+operation looks like the stronger, more central fix. It is
+  # neither:
   #
   #   * It is WRONG for two of the four operations. A dual-review tier routes
   #     two `review` jobs for one task on purpose, each to a different engine
@@ -711,8 +814,8 @@ drive_implementing() {
   #     exemption list is a hardcoded policy branch inside a verb whose whole
   #     job is to mint an identity.
   #   * It cannot answer the question it would be asked. "Is a job already
-  #     outstanding" is not "does a manifest exist": a `pid: 0` manifest is a
-  #     launch that died before its spawn and nothing is running, which is
+  #     outstanding" is not "does a manifest exist": an unstamped manifest may
+  #     be a launch that died before its spawn with nothing running, which is
   #     exactly why drive_job_outstanding refuses to read one as live. prepare
   #     would have to re-derive that liveness rule, and getting it wrong turns a
   #     recoverable orphan into a permanent refusal to relaunch -- at the one
@@ -722,9 +825,25 @@ drive_implementing() {
   #     prepare mints identity; it is not told, and must not guess, whether its
   #     caller intends concurrency.
   #
-  # So concurrency stays a single driver-side question, asked by the one
-  # predicate all four arms share. libexec/orchid-jobs' `prepare` arm carries a
-  # pointer back to this note.
+  # So CONCURRENCY stays a single driver-side question, asked by the one
+  # predicate all four arms share. That is unchanged by T027, and this note is
+  # still the authority on it. libexec/orchid-jobs' `prepare` arm carries a
+  # pointer back to it.
+  #
+  # What T027 did add to `prepare` is not this guard and does not weaken any of
+  # the three arguments above. It refuses a second manifest only when the slot
+  # already holds a NEVER-STARTED one -- pid 0 AND no log, so the spawn line
+  # provably was never reached (libexec/orchid-jobs' job_never_started).
+  # Against each argument in turn: it is not operation-blind, because a
+  # legitimate duplicate is a second job someone intends to RUN and this only
+  # ever sees one that never ran; it does not re-derive a liveness rule it
+  # could get wrong, because "no engine was ever spawned" is not a guess; and
+  # it is not a dispatch decision, because refusing to mint a second orphan for
+  # a slot that already has one takes no position on how many engines may run
+  # -- it bounds this verb's OWN litter. The one hazard the second argument
+  # really names, a refusal that outlives the thing it refuses over, is closed
+  # by construction: the refusal and `jobs gc`'s reap share the one predicate,
+  # and that reap runs in every phase.
   if drive_job_outstanding "$id" implement; then
     drive_note "$id: awaiting the implementer envelope (a relaunched implement job is still running — the envelope it was launched over is not a fresh failure)"
     return 0
@@ -1183,12 +1302,13 @@ drive_blocked() {
 # ---------------------------------------------------------------------------
 #
 # ONE RUNG PER PASS, per task/operation/hook-point. The ladder counts JOB
-# FAILURES, and a pass has at most one of those per slot to report -- but two
-# separate arms can reach the same slot in one pass: the escalation sweep
-# above (a manifest whose pid is dead) and drive_implementing below (a
-# reconciled non-ok envelope, a refused no-op delivery, or a refusal already on
-# record with nothing left running -- one of the three at most, each returning
-# where it stands). They normally cannot both fire, because the
+# FAILURES, and a pass has at most one of those per slot to report -- but
+# several separate arms can reach the same slot in one pass: the escalation
+# sweep above (a manifest whose pid is dead, or one that never started at all),
+# drive_launch (a launcher that exited without spawning) and drive_implementing
+# below (a reconciled non-ok envelope, a refused no-op delivery, or a refusal
+# already on record with nothing left running -- one of the three at most, each
+# returning where it stands). They normally cannot both fire, because the
 # sweep's own relaunch leaves a live job the walk then defers to. `drive_launch`
 # exit 14 breaks exactly that: no engine was eligible, so nothing spawned, and
 # the walk reads the attempt's older non-ok envelope as a second failure. A
@@ -1198,10 +1318,16 @@ drive_blocked() {
 # pass already counted, so it needs no verb and leaves nothing behind.
 escalated_this_pass=" "
 drive_escalate() {
-  local id="$1" role="$2" op="$3" point="$4" why="$5" tf key
+  local id="$1" role="$2" op="$3" point="$4" why="$5" tf key tstatus
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
-    drive_note "$id: $why (no task file — nothing to escalate)"
+    # The reserved `plan` id, and anything else with no task file: there is no
+    # infra_failures counter to spend and no status to block. The failure is
+    # still journaled, because the alternative -- a note on stdout that the
+    # next pass overwrites -- is exactly the silence this ladder exists to end.
+    drive_note "$id: $why (no task file — journaled, but there is no counter to spend)"
+    "$ORCHID_BIN" journal add --task "$id" \
+      "$why (role $role, operation $op)" >/dev/null
     return 0
   fi
   key="$id:$op:$point"
@@ -1212,10 +1338,24 @@ drive_escalate() {
   esac
   escalated_this_pass="$escalated_this_pass$key "
   "$ORCHID_BIN" task infra-fail "$id" --reason "$why (role $role, operation $op)"
-  if [ "$(fm_get "$tf" status)" = blocked ]; then
+  tstatus="$(fm_get "$tf" status)"
+  if [ "$tstatus" = blocked ]; then
     drive_note "$id: infra_failures cap reached — now blocked"
     return 0
   fi
+  # A task still waiting to be dispatched is not relaunched from here either.
+  # Its failed job belongs to a dispatch that never completed, so the ordering
+  # that dispatch owns has not run: a task first dispatched into `pending` has
+  # no worktree recorded at all, and a relaunch made before the walk creates
+  # one hands the engine the REPOSITORY checkout as its workspace (both
+  # lib/pack.sh and the launcher fall back to the repo when the task records no
+  # worktree). drive_dispatch redoes the whole sequence in this same pass --
+  # worktree, then launch, then advance -- so nothing is lost by leaving it there.
+  case "$tstatus" in
+    pending|rework)
+      drive_note "$id: leaving the relaunch to the dispatch walk — $id is still $tstatus, so dispatch (not this ladder) is what launches it"
+      return 0 ;;
+  esac
   # A reviewer job is the one relaunch this ladder does NOT make. A review
   # belongs to a SLOT, and a slot's engine is decided by the routing table --
   # relaunching here would go back through the role's default chain and could
@@ -1241,6 +1381,11 @@ if [ -n "$escalations" ]; then
     _erole="$(printf '%s' "$_line" | cut -f2)"
     _eop="$(printf '%s' "$_line" | cut -f3)"
     _epoint="$(printf '%s' "$_line" | cut -f4)"
+    _ekind="$(printf '%s' "$_line" | cut -f5)"
+    case "$_ekind" in
+      never-started) _ewhy="job was prepared and never launched — no engine ever started, so no envelope was ever coming" ;;
+      *)             _ewhy="job died without an acceptable envelope" ;;
+    esac
     [ "$_etask" != plan ] || continue
     # An OPTIONAL hook point's handler dying is not an infrastructure failure
     # of the TASK: the binding gates nothing, so it must not spend the task's
@@ -1249,10 +1394,10 @@ if [ -n "$escalations" ]; then
     # steps over the point instead.
     if [ "$_erole" = hook ] && [ -n "$_epoint" ] && ! drive_hook_has_required "$repo" "$_epoint"; then
       optional_hooks_died="$optional_hooks_died$_etask:$_epoint "
-      drive_note "$_etask: the optional $_epoint hook died without an envelope — not escalating (it gates nothing)"
+      drive_note "$_etask: the optional $_epoint hook produced no envelope ($_ewhy) — not escalating (it gates nothing)"
       continue
     fi
-    drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "job died without an acceptable envelope"
+    drive_escalate "$_etask" "$_erole" "$_eop" "$_epoint" "$_ewhy"
   done <<< "$escalations"
 fi
 

@@ -70,6 +70,14 @@ export ORCHID_EPOCH
 m="$("$ORCHID_BIN" jobs prepare TB implementer implement --engine ovr1)"
 [ -f "$m" ] || fail "prepare --engine writes a manifest"
 assert_eq ovr1 "$(jq -r .engine "$m")" "prepare --engine records the override engine in the manifest"
+# This manifest is an ORPHAN by construction: nothing is going to launch it
+# (PROTOCOL.md is explicit that `jobs prepare` is never called separately
+# before a launch, precisely because it strands one). E below launches the same
+# task/role/operation for real, and since T027 a second manifest for a slot
+# that already has a never-started one is refused outright (exit 18) -- so the
+# fixture clears its own litter here rather than leaving the launch to trip
+# over it.
+rm -f "$m"
 
 # C -- an undiscovered engine name is refused with exit 14, never silently
 # accepted (the override names ANY discovered engine, not an arbitrary

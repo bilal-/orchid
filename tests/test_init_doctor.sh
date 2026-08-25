@@ -11,6 +11,34 @@ assert_match "integration branch exists or creatable" "$out0" "doctor pre-init: 
 assert_match "WARN: unattended trust \\(headless execution gated\\): denied" "$out0" \
   "doctor reports the default-denied unattended gate without blocking interactive readiness"
 
+# T027 (dogfood F29): the RESOLVED pack budget, with the layer it came from.
+# A pack over this budget fails the LAUNCH before any engine starts, and the
+# layer is where operators go wrong: a run failed every launch on the default
+# 65536 while its operator believed the 131072 they had set -- in the orchid
+# installation's own orchid.config, which is not a layer for the repo being
+# driven at all.
+assert_match "note: pack budget: pack_budget_bytes=65536 \\(from: default\\)" "$out0" \
+  "doctor prints the resolved pack budget and that it came from the built-in default"
+printf 'pack_budget_bytes=131072\n' >> orchid.config
+budget_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
+  || fail "doctor still passes with a repo-set pack budget"
+assert_match "note: pack budget: pack_budget_bytes=131072 \\(from: repo\\)" "$budget_doctor" \
+  "and follows the value to the layer that actually won it"
+assert_match "is NOT part of that chain" "$budget_doctor" \
+  "naming the file that is not a layer, since that is the mistake it exists to catch"
+# ...but only when it really is not a layer. Driving orchid's OWN repository
+# makes $ORCHID_ROOT/orchid.config the repo layer, and doctor claiming it is
+# never consulted would be false in exactly the situation orchid is in whenever
+# it dogfoods itself.
+self_doctor="$(ORCHID_REPO="$REPO_ROOT" ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor 2>&1 || true)"
+assert_match "This target IS the orchid installation" "$self_doctor" \
+  "driving orchid itself, doctor says the installation's own orchid.config IS the repo layer"
+# Herestring, never `echo | grep -q`: same SIGPIPE/pipefail trap helpers.sh
+# documents for assert_match — a matching grep exiting early would poison the
+# pipeline status and silently skip this `fail`.
+grep -q "is NOT part of that chain" <<<"$self_doctor" \
+  && fail "doctor must not tell a self-driving run that its own orchid.config is not a layer — it is"
+
 trust_out="$("$ORCHID_BIN" trust unattended "$WORK" --reason "doctor test fixture")" \
   || fail "doctor fixture acknowledgement must succeed"
 assert_match "reason: doctor test fixture" "$trust_out" \

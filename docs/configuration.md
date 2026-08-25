@@ -19,6 +19,16 @@ belong in `~/.orchid/config` — set once, apply to every repo. Per-repo facts
 Env vars are for one-off overrides (`ORCHID_<KEY>`, uppercased, `.`/`-` both
 map to `_` — e.g. `role.code-reviewer` overrides via `ORCHID_ROLE_CODE_REVIEWER`).
 
+`<repo>` above is the **target repository** — the one being driven
+(`$ORCHID_REPO`, else the current directory). The orchid installation's own
+`orchid.config` (the one sitting next to `bin/orchid` in a checkout of orchid
+itself) is **never** a layer, however plausible a global default it looks: a
+value set there applies to orchid's own repository when orchid is the repo
+being driven, and to nothing else. `~/.orchid/config` is the per-machine layer
+that does apply everywhere. This has now wedged two runs through
+`pack_budget_bytes` alone, so `orchid doctor` prints the resolved pack budget
+and the layer it came from on every invocation.
+
 `orchid config list` prints the **effective** value of every key together
 with which layer won it — never guess why a setting applies. `orchid config
 commit --reason "..."` is the safe way to land an `orchid.config` edit onto

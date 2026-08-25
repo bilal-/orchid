@@ -885,6 +885,7 @@ derived cache, rebuildable from it.
 | Mode | Defense |
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
+| Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
 | Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
 | Alive but not working | Opt-in CPU delta across the job's own heartbeat lines: with `cpu_stall_min_s` above zero (default 0: off — F35 retracted CPU as a sole progress signal, a healthy API-bound engine burns almost none), less than the floor across the last `stall_minutes` of heartbeats → `stalled` → kill, retry; a counter that goes backwards (pid reuse) is unknown and never kills. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
@@ -922,16 +923,35 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   reconcile manifests/spool. Never re-adopt ambiguous processes: job
   identity is job_id + pgid + start-time; unidentifiable → confirm
   termination, relaunch cleanly. Session resume is an optimization.
-- Prepared-never-launched manifests (m3 ledger, closed): a launcher crash
-  between `jobs prepare` and the actual spawn leaves a `pid: 0` manifest that
-  ordinary `jobs gc` deliberately skips (it isn't "dead", just never
-  started) and `jobs check` re-reports forever. `orchid jobs gc
-  --reap-prepared [--older-than-s N]` (v1-m4 — SHIPPED) is a SEPARATE,
-  exclusive gc mode targeting exactly those pid-0 manifests, age-gated off
-  the manifest FILE's own mtime (a never-launched manifest's `started_at` is
-  always 0); ordinary `gc` is unchanged and must still be invoked on its own
-  cadence (e.g. a separate cron line) — this is not folded into the default
-  pass.
+- Prepared-never-launched manifests (m3 ledger, closed; widened by T027): a
+  launcher that dies between `jobs prepare` and the actual spawn leaves a
+  `pid: 0` manifest. `jobs check` reports it as **`never-started`** (a pid-0
+  manifest with no log file — the launcher creates the log by redirecting the
+  spawn into it, so its absence proves the spawn line was never reached);
+  `prepared` is reserved for the genuine post-spawn/pre-stamp window a log
+  proves. Ordinary `jobs gc` reaps this class, age-gated off the manifest
+  FILE's own mtime (a never-launched manifest's `started_at` is always 0)
+  under a floor of `stall_minutes` — long enough that no launcher can still be
+  mid-flight over it, and not lowerable by `--older-than-s 0`. `orchid jobs gc
+  --reap-prepared [--older-than-s N]` (v1-m4) remains the exclusive,
+  floor-free form of the same reap. A manifest of this class older than the
+  floor also walks the escalation ladder, and `jobs prepare` refuses (exit 18)
+  to mint a second manifest for a slot that already has one — one orphan per
+  slot, not one per pass.
+
+  **`pid: 0` is not the test, and a `prepared` manifest is never reaped.**
+  The other half of the pid-0 class — pid 0 WITH a log — is a launcher killed
+  inside the sub-second window between the spawn and the pid stamp, so an
+  engine may be running with its pid recorded nowhere. The manifest is the
+  only handle on that process, and retiring it would both lose the handle and
+  clear the way for a second engine in the same worktree. So `check` reports
+  it `prepared` and neither gc mode nor the exit-18 refusal ever touches it;
+  the operator procedure is in `docs/troubleshooting.md`. The refusal and the
+  reap share ONE predicate (`libexec/orchid-jobs`' `job_never_started`)
+  deliberately: every manifest that can cause the refusal is one gc will
+  retire on its own, in every phase — `PLANNING` included, which runs the
+  never-started reap even though it runs no reconcile and no check — so
+  exit 18 can never become a state the run cannot leave.
 - Finished-between-reconcile-and-reap (T022, closed): a pass runs `jobs
   reconcile` then `jobs gc`, so a job that exits between the two is dead at
   reap time with its envelope written and still in the spool. It DELIVERED.
@@ -1269,4 +1289,8 @@ tightens the derived threshold (low tier → `high`, medium/high tier →
 Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
 failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
-boundary, 17 brokered command refused.
+boundary, 17 brokered command refused, 18 slot already holds a never-started
+manifest (T027). Every code means ONE condition: 18 is its own entry rather
+than a second meaning for 17 precisely because a caller that has to
+distinguish "the broker refused this command" from "wait, this slot has an
+orphan" cannot do it from a number two conditions share.

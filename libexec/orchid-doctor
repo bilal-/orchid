@@ -124,6 +124,25 @@ if [ "$greenfield" -eq 1 ]; then
 else
   [ -n "$(config_get "$repo" verify)" ] && ok "verify command configured" || bad "verify command (set 'verify=' in orchid.config)"
 fi
+
+# The RESOLVED pack budget, with where the value came from (T027, dogfood F29).
+# Printed rather than judged: no value is wrong here, but not knowing which one
+# is live has now wedged two runs. `pack_budget_bytes` is the budget every pack
+# is built against (lib/pack.sh), and a pack that overflows it fails the LAUNCH
+# (exit 12, `input_overflow`) before any engine starts -- so an operator
+# debugging "nothing ever runs" needs the effective number, not the one they
+# believe they set. The layer that surprises people is named explicitly: the
+# chain is anchored on the TARGET repository, so the orchid installation's own
+# orchid.config is read only when the installation IS the target -- which is
+# exactly what happens when orchid drives its own repository, and is why the
+# line below names the two cases separately instead of claiming the file is
+# never consulted. On any other target it contributes nothing, however
+# plausible a global default it looks; $HOME/.orchid/config is the file that
+# does that job.
+pack_budget="$(config_get "$repo" pack_budget_bytes 65536)"
+pack_budget_root_note="The orchid installation's own $ORCHID_ROOT/orchid.config is NOT part of that chain — set a cross-repo default in $HOME/.orchid/config instead."
+[ "$repo" != "$ORCHID_ROOT" ] || pack_budget_root_note="This target IS the orchid installation, so $ORCHID_ROOT/orchid.config is the repo layer above — on any OTHER target it would contribute nothing."
+echo "note: pack budget: pack_budget_bytes=$pack_budget (from: $(config_provenance "$repo" pack_budget_bytes)) — resolution order: \$ORCHID_PACK_BUDGET_BYTES, then $repo/orchid.config, then $HOME/.orchid/config, then the built-in default 65536. $pack_budget_root_note"
 for role in orchestrator implementer reviewer arbiter plan_critic; do
   # v1-m2: role.* is a failover chain, not a scalar. Only the PRIMARY (chain
   # entry 1) gates the doctor exit code -- missing/unresolvable primary is

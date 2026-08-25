@@ -1060,6 +1060,63 @@ it is deliberately not the first thing to reach for — task-splitting keeps
 every engine's job bounded and reviewable regardless of which one is
 bound to a role.
 
+**Check which budget is actually live before raising anything.** `orchid
+doctor` prints it — `note: pack budget: pack_budget_bytes=<n> (from: env|repo|
+user|default)` — and so does `orchid config list`. The value resolves against
+the **target repository**, so a `pack_budget_bytes=` line in the orchid
+installation's own `orchid.config` does nothing for the repo being driven; the
+per-machine layer that does is `~/.orchid/config`. A run that failed every
+launch on a 65536-byte budget while its operator believed 131072 was set had
+set it in the wrong file.
+
+## Every launch fails and nothing is ever reported
+
+**Symptom:** tasks sit in `pending` (or an active status) pass after pass;
+`orchid jobs check` lists manifests as `never-started`; `.orchid/runtime/jobs`
+has manifests with `pid 0`, `started_at 0` and no log file beside them in
+`runtime/logs`.
+
+The launcher does real work before it spawns: `orchid jobs prepare`, then the
+input pack. A failure in between (`input_overflow` above is the common one, a
+missing binary the next) means no engine ever started — so there is no job to
+call dead and no envelope to mark the engine with.
+
+What the kernel does about it, and what to look for:
+
+- The driver treats a non-zero launcher exit as a job failure: journaled, and
+  one rung of the escalation ladder (`orchid task infra-fail`), which blocks
+  the task at `infra_max`. So `orchid journal tail` names the exit code, and
+  a task that cannot be launched ends up `blocked`, not retried forever.
+- `orchid jobs prepare` refuses (exit 18) to mint a second manifest for a slot
+  that already has a never-started one, so a broken launch leaves ONE orphan,
+  not one per pass. That refusal is a wait, not a failure.
+- `orchid jobs gc` reaps a never-started manifest once it is older than
+  `stall_minutes`; after that, the identical dispatch is tried again. This reap
+  runs in every phase, `PLANNING` included, so exit 18 always clears on its
+  own. To clear one immediately (having checked no launcher is mid-flight over
+  it): `orchid jobs gc --reap-prepared --older-than-s 0`.
+
+Fix the underlying launch failure first — the pass output and
+`.orchid/runtime/pump.log` carry the launcher's own stderr — then
+`orchid task retry <id> --reason "..."` if the ladder already blocked it.
+
+**`prepared` is a different symptom, and nothing reaps it.** A manifest with
+`pid 0` that DOES have a log file was spawned — the launcher creates the log by
+redirecting the engine into it and stamps the pid only on the next line — and
+was then killed inside that window, so an engine may still be running with its
+pid recorded nowhere. The manifest is the only handle on it, so neither `gc`
+mode touches it and `orchid jobs prepare` does not refuse over it. This one is
+a manual call, and the log is the evidence:
+
+1. `tail -f` the manifest's `.log`. If it is still growing, the engine is
+   alive: leave the manifest alone and let the job finish and reconcile.
+2. If it has been quiet well past `stall_minutes`, confirm the process is gone
+   (`pgrep -f <job_id>`), kill anything it finds, then move the manifest to
+   `.orchid/runtime/quarantine/` by hand. The next pass relaunches the slot.
+
+Do not skip step 2's check. Retiring the manifest while the engine lives is
+what lets a second implementer be dispatched into the same worktree.
+
 ## Scheduled pump can't find jq / engine CLIs
 
 **Symptom:** `orchid service install` succeeds and `orchid service status`
