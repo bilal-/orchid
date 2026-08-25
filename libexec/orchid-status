@@ -315,7 +315,32 @@ if [ "$html" -eq 1 ]; then
       # own secret), never to this static page, which is the "check from
       # another room" surface and may be screen-shared.
       qtext="$(tail -n +2 "$qf" | grep -v '^nonce: ')"
-      blockers_html="$blockers_html<li><strong>$(orchid_html_escape "$qid")</strong>: <pre>$(orchid_html_escape "$qtext")</pre></li>
+      # The `choices: ` header (v1-m4 T009) comes out of the body too, but is
+      # NOT dropped. Unlike the nonce it is not a secret -- BLOCKERS.md and
+      # the outbound page both print it -- and this page is one of the
+      # surfaces on which a boundary has to say what may be ANSWERED, not
+      # just what is being decided. Left in place it would render as though
+      # the orchestrator had typed the machine CSV into its own question;
+      # rendered below it says the same thing in the display spelling.
+      #
+      # WHICH line is a header and which is body is decided by the SIDECAR's
+      # existence, never by the line's own prose -- the same gate
+      # libexec/orchid-answer uses to decide whether a set was declared at
+      # all. A question whose body merely begins "choices: ..." declared
+      # nothing, has no sidecar, and keeps its text exactly as written.
+      qchoices=""; qchoices_html=""
+      if [ -f "$rt/answers/$qid.choices" ]; then
+        qchoices="$(head -n1 "$rt/answers/$qid.choices")"
+        # Strip the ONE header line the notify verb wrote, matched whole and
+        # only at the front -- not every body line that looks like it.
+        qhdr="choices: $qchoices"
+        case "$qtext" in
+          "$qhdr")        qtext="" ;;
+          "$qhdr"$'\n'*)  qtext="${qtext#"$qhdr"$'\n'}" ;;
+        esac
+        qchoices_html="<div class=\"choices\">answers: $(orchid_html_escape "${qchoices//,/ | }")</div>"
+      fi
+      blockers_html="$blockers_html<li><strong>$(orchid_html_escape "$qid")</strong>: <pre>$(orchid_html_escape "$qtext")</pre>$qchoices_html</li>
 "
     done
   fi

@@ -70,6 +70,24 @@ qid="$("$ORCHID_BIN" notify --task T001 "waiting on operator input")"
 blocker_nonce="$(grep -m1 '^nonce: ' ".orchid/runtime/answers/$qid.question" | sed 's/^nonce: //')"
 [ -n "$blocker_nonce" ] || fail "test fixture: the planted blocker's .question file must carry a nonce line"
 
+# Two more open blockers for the declared-choice-set rendering (v1-m4 T009).
+# This page is one of the surfaces on which a boundary has to say what may be
+# ANSWERED, and the `.question` file is a header block plus a free-text body:
+# a header left in the body renders as though the orchestrator had typed the
+# machine CSV into its own question.
+#   qid_set  -- declares a set, so its `choices:` header is lifted out of the
+#               text and rendered as the answer set
+#   qid_prose-- declares NOTHING and merely BEGINS with the word, so its text
+#               must survive verbatim and no answer set may be invented
+# Which one is which is decided by the sidecar's existence, never by prose --
+# the same gate libexec/orchid-answer uses.
+qid_set="$("$ORCHID_BIN" notify --task T001 --choice approve --choice defer "promote the candidate?")"
+[ -f ".orchid/runtime/answers/$qid_set.choices" ] \
+  || fail "test fixture: a --choice notify must write the sidecar the page keys off"
+qid_prose="$("$ORCHID_BIN" notify --task T001 "choices: forged,notreal")"
+[ -f ".orchid/runtime/answers/$qid_prose.choices" ] \
+  && fail "test fixture: prose beginning 'choices: ' must NOT mint a sidecar — nothing below tests anything if it does"
+
 # Plant an engine ledger row (same direct-source pattern as tests/test_ledger.sh).
 (
   source "$REPO_ROOT/lib/common.sh"
@@ -93,11 +111,33 @@ echo "$content" | grep -qF "waiting on operator input" || fail "open blocker tex
 # belongs only to BLOCKERS.md/the outbound channel message -- this static
 # page (the "check from another room" surface, possibly screen-shared) must
 # never render it.
-echo "$content" | grep -qF "$blocker_nonce" && fail "open blocker's nonce must never appear on the status page"
+#
+# HERESTRING, never `echo "$content" | grep -qF`: `grep -q` exits the moment
+# it matches, `echo` then takes SIGPIPE, and `pipefail` turns the whole
+# pipeline nonzero -- so `&& fail` is skipped in exactly the case this line
+# exists to catch. Piped, this assertion could never fire.
+grep -qF "$blocker_nonce" <<<"$content" && fail "open blocker's nonce must never appear on the status page"
 echo "$content" | grep -qF "acme-engine" || fail "engines ledger row must appear in the page"
 echo "$content" | grep -qF 'T001' || fail "task table must list T001 in the page"
 echo "$content" | grep -qF 'T002' || fail "task table must list T002 in the page"
 echo "$content" | grep -qF 'waiting-deps (T001)' || fail "task table must include T002's explain predicate"
+
+# -- the declared answer set on the open-blockers panel (v1-m4 T009) --------
+# Scoped to the panel, because the journal tail below it echoes every
+# blocker's text verbatim and would satisfy a whole-page grep for the wrong
+# reason. Same awk range idiom the answered-blocker section further down uses.
+blockers_panel="$(awk '/Open blockers/,/Journal/' "$page")"
+grep -qF "answers: approve | defer" <<<"$blockers_panel" \
+  || fail "a blocker that declared a choice set must say what may be answered, in the display spelling"
+grep -qF "choices: approve,defer" <<<"$blockers_panel" \
+  && fail "the machine CSV header must be lifted OUT of the question text, not rendered as though the orchestrator typed it"
+# ...and the other edge: prose is not a declaration. A question that merely
+# begins "choices: " declared nothing, so its text survives byte-for-byte and
+# no answer set is invented for it.
+grep -qF "choices: forged,notreal" <<<"$blockers_panel" \
+  || fail "a question body beginning 'choices: ' must render verbatim — the sidecar's existence is the gate, never the prose"
+grep -qF "answers: forged | notreal" <<<"$blockers_panel" \
+  && fail "prose must never be promoted into a declared answer set on the status page"
 
 # Candidate-bound regression: --html and --explain are a supported
 # combination. Trust inspection must land in the page before the --html path
@@ -142,6 +182,13 @@ list_dir_entries "$(dirname "$page")" | grep -q '\.tmp\.' \
 # the journal's blocker_resolved entry -- only the open-blockers listing
 # itself is asserted here).
 "$ORCHID_BIN" answer "$qid" ack >/dev/null
+# The two choice-set blockers planted above are open too, and "no open
+# blockers" below means ALL of them: leaving either behind would make that
+# assertion fail for a reason that has nothing to do with what it tests.
+# `defer` for the one that declared a set, because `orchid answer` refuses
+# anything outside it; free text for the one that declared none.
+"$ORCHID_BIN" answer "$qid_set" defer >/dev/null
+"$ORCHID_BIN" answer "$qid_prose" "prose is still a legitimate answer" >/dev/null
 page2="$("$ORCHID_BIN" status --html)"
 blockers_section="$(awk '/Open blockers/,/Journal/' "$page2")"
 echo "$blockers_section" | grep -qF "$qid" && fail "an ANSWERED blocker must no longer be listed in Open blockers"

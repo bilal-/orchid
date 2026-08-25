@@ -1198,7 +1198,8 @@ evidence record to `reviews/acceptance.log` before `run_status: complete`.
 `orchid status --html` (v1-m4 — SHIPPED) is a separate output MODE, not an
 addition to that text report: it writes a self-contained static page (run
 header, task table with the same why-predicate text, engines ledger, open
-blockers, last-10 journal entries) to `status_page` (config, default
+blockers — each with its declared answer set, when the question was raised
+with one — last-10 journal entries) to `status_page` (config, default
 `runtime/status.html`) and prints ONLY the path it wrote on stdout — safety
 warnings (split-brain, stale checkout) still go to stderr in either mode.
 
