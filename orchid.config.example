@@ -77,6 +77,13 @@ pack_budget_bytes=65536
 # lessons_max_bytes=16384
 # gc_older_than_s=86400
 # infra_max=3
+# v1.1: the rework budget -- how many `attempts` a task may consume before
+# `orchid drive` stops retrying it and blocks it for a human. Was a
+# hardcoded 3 in the driver, changeable nowhere; raise it here for a repo
+# whose suites are slow to converge, or grant ONE task more rounds with
+# `orchid task retry <id> --reason "..." --attempts N` (which records an
+# `attempt_budget` in that task's frontmatter and journals the grant).
+# rework_max=3
 # model=
 # effort=medium
 # rate_limit_backoff_s=3600

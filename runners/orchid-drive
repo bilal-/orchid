@@ -96,7 +96,7 @@ executable — and committing it moves the tree out from under the candidate the
 implementer's envelope was captured against. Where `handoff_before_verify`
 asks for that pause, a pass stops at
 an `operator-handoff` boundary instead of verifying — verifying first would
-spend one of the task's three rework rounds on a failure nobody was going to
+spend one of the task's rework rounds on a failure nobody was going to
 fix in that round. The stop is on a durable acknowledgement bound to a
 candidate (`orchid task handoff <id> --ack --reason "..."`, which advances
 candidate_sha to the commit the hand-off itself produced — refusing a HEAD that
@@ -916,7 +916,7 @@ drive_implementing() {
 # foreground. There is no job here for check/reconcile to see.
 # ---------------------------------------------------------------------------
 drive_testing() {
-  local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts arc
+  local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts budget arc
   local hstate hdetail
   tf="$state/tasks/$id.md"
 
@@ -927,7 +927,8 @@ drive_testing() {
   # added executable. An engine profile that denies on the command STRING can
   # perform none of it (lesson L017), so verifying before it has been done is
   # not merely early -- it is a guaranteed FAIL that spends one of the task's
-  # three rework rounds on work nobody was going to do in that round, and
+  # rework rounds (`rework_max`, or its own `attempt_budget`) on work nobody
+  # was going to do in that round, and
   # sends the implementer back a failure it cannot act on.
   #
   # Where a repository asks for that pause (`handoff_before_verify`), the pass
@@ -977,15 +978,27 @@ drive_testing() {
     drive_note "$id: attached the on_verify_fail hook's guidance to the task"
   fi
 
-  # The <=3 rework budget is orchestrator-enforced (docs/specs/kernel.md), not
-  # a verb gate: no verb refuses a fourth rework on its own, so the driver is
+  # The rework budget is orchestrator-enforced (docs/specs/kernel.md), not a
+  # verb gate: no verb refuses a fourth rework on its own, so the driver is
   # what stops retrying and hands the task to a human.
-  attempts="$(fm_get "$tf" attempts)"
-  if [ "$attempts" -ge 3 ]; then
-    "$ORCHID_BIN" notify --task "$id" "attempts exhausted: see .orchid/reviews/$id-verify.log" >/dev/null
-    "$ORCHID_BIN" task advance "$id" blocked --reason "attempts exhausted" >/dev/null
-    drive_note "$id: verify FAIL, attempts exhausted — testing -> blocked"
-    set_boundary operator-decision "$id" "attempts exhausted after $attempts rework round(s): see .orchid/reviews/$id-verify.log"
+  #
+  # It used to be the literal `attempts >= 3` right here, with no
+  # configuration anywhere and `attempts` itself on `task set`'s kernel-owned
+  # deny-list -- so a task that had spent its rounds on causes T019 says must
+  # NOT be charged (an environment failure, an operator-caused no-op rebase)
+  # could not be given another one through ANY verb: `unblock` and `retry`
+  # both return it to `rework` without touching the counter, and it re-blocks
+  # on its very next verify failure. Hand-editing frontmatter was the only
+  # move left. Both layers are now named and recorded -- `rework_max`
+  # (config, default 3) for the repo, `attempt_budget` frontmatter for the
+  # one task, written by `orchid task retry --attempts N` (dogfood F28).
+  attempts="$(fm_get "$tf" attempts)"; [ -n "$attempts" ] || attempts=0
+  budget="$(schedule_attempt_budget "$repo" "$id")"
+  if [ "$attempts" -ge "$budget" ]; then
+    "$ORCHID_BIN" notify --task "$id" "attempts exhausted ($attempts/$budget): see .orchid/reviews/$id-verify.log" >/dev/null
+    "$ORCHID_BIN" task advance "$id" blocked --reason "attempts exhausted ($attempts/$budget)" >/dev/null
+    drive_note "$id: verify FAIL, attempts exhausted ($attempts/$budget) — testing -> blocked"
+    set_boundary operator-decision "$id" "attempts exhausted after $attempts of $budget rework round(s): see .orchid/reviews/$id-verify.log — orchid task retry $id --reason \"...\" [--attempts N] grants more; orchid task reverify $id --reason \"...\" re-runs verification alone"
     return 0
   fi
   if ! drive_has_transition "$arch" testing rework; then
@@ -1148,7 +1161,12 @@ drive_blocked() {
   hg=0
   drive_hook_gate "$id" on_blocker "$attempt" "$cand" || hg=$?
   [ "$hg" -ne 2 ] || return 0
-  set_boundary blocked-task "$id" "task is blocked — only an operator (orchid task unblock|retry) resolves it"
+  # The remedy list is the WHOLE list PROTOCOL.md's boundary table names, not
+  # the two verbs that predate `reverify` (T026 rework). This is the boundary
+  # an operator re-reads on every pass over an already-blocked task -- far
+  # more often than the one-shot exhaustion boundary above -- so a verb
+  # missing from HERE is a verb no operator discovers.
+  set_boundary blocked-task "$id" "task is blocked — only an operator (orchid task unblock|retry|reverify) resolves it"
   return 0
 }
 

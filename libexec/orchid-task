@@ -37,8 +37,235 @@ legal() {
   grep -qxF "$from:$to" <<< "$transitions"
 }
 
-needs_reason() { case "$1:$2" in
-  *:merging|*:blocked|arbitrating:rework|arbitrating:done) return 0;; *) return 1;; esac; }
+needs_reason() {
+  case "$1:$2" in
+    *:merging|*:blocked|arbitrating:rework|arbitrating:done) return 0 ;;
+  esac
+  # The reverify edge -- an idle status re-entering `testing` -- carries an
+  # operator judgment ("the tree is green, the failure was not the
+  # candidate's") that nothing else in the run records, so INV-08 applies to
+  # it whichever door it is taken through: `task reverify` demands `--reason`
+  # of its own accord, and a bare `task advance <id> testing` out of
+  # `blocked`/`rework` must not be the way to make the same claim silently.
+  # Keyed on the same idle -> `testing` predicate as the gate below, never on
+  # the literal pair `blocked|rework` (INV-05).
+  if schedule_is_active_status "$1"; then return 1; fi
+  [ "$2" = testing ]
+}
+
+# testing_entry_blocker <task-file> <candidate-sha> -- the entry-to-`testing`
+# preconditions that depend only on the candidate, not on the source status:
+# base_sha and candidate_sha both set, and no commit in `base..candidate`
+# touching `.orchid/` (INV-04). Echoes the refusal text and returns 1 when one
+# of them fails; silent, exit 0, when the candidate may enter `testing`.
+#
+# One function with two callers, deliberately (T026 rework): `advance` enforces
+# it on the edge itself, and `reverify` has to ask the SAME question about the
+# sha it is about to stamp BEFORE it stamps it -- a verb that mutated first and
+# asked afterwards would leave the task pointing at a candidate the very next
+# line refused. A second hand-written copy of the two checks in the second
+# caller could drift away from this one; a second call cannot.
+testing_entry_blocker() {
+  local f="$1" cand="$2" b walk
+  b="$(fm_get "$f" base_sha)"
+  if [ -z "$b" ] || [ -z "$cand" ]; then
+    echo "testing requires base_sha and candidate_sha set"; return 1
+  fi
+  # FAIL CLOSED WHEN THE WALK CANNOT BE DONE (T026 rework). This is an INV-04
+  # check, and the only evidence it has is the output of `git log base..cand`.
+  # If that command fails -- either sha not a commit in this repo, a corrupt or
+  # missing object, `$repo` not a git checkout at all -- it prints nothing and
+  # exits non-zero, and a `| grep -q` on its output then finds no `.orchid/`
+  # path for exactly the same reason it would on a genuinely clean range. The
+  # old form could not tell those two apart and admitted both, so a candidate
+  # whose history could not be READ was certified as containing no kernel-state
+  # commits. "I could not look" must never answer "nothing there": the walk is
+  # captured first, its exit status is checked on its own, and an unanswerable
+  # range is refused with the reason it could not be answered.
+  #
+  # stderr is folded into the capture so the refusal can QUOTE git's own
+  # diagnosis (`unknown revision`, `not a git repository`) instead of asking an
+  # operator to re-run the command by hand. On the success path git writes
+  # nothing there; a hypothetical warning that began with `.orchid/` would trip
+  # the scan below, which is a refusal -- the same direction this whole
+  # function fails in, never a pass.
+  if ! walk="$(git -C "$repo" log --format=%H --name-only "$b..$cand" 2>&1)"; then
+    echo "cannot walk $b..$cand in $repo, so nothing can confirm the candidate adds no .orchid/ commits — entry to testing refused (INV-04): $walk"
+    return 1
+  fi
+  if grep -q '^\.orchid/' <<< "$walk"; then
+    echo "commits touch .orchid/ — entry to testing refused (INV-04)"; return 1
+  fi
+  return 0
+}
+
+# candidate_lineage_blocker <cwd> <task-id> <old-candidate> <new-head> <branch>
+# -- may <new-head> be treated as this task's candidate? Echoes the refusal and
+# returns 1 when it may not; silent, exit 0, when it may.
+#
+# WHICH COMMIT IS ITSELF A GATE. Every path that moves `candidate_sha` onto
+# whatever `HEAD` happens to be is one `git checkout` away from a WORSE
+# mis-binding than the drift it exists to remove: a tree left on another task's
+# branch, a HEAD detached by a bisect, a worktree path since reused for
+# something else. The record would then name a commit that shares no history
+# with the work under judgment while every downstream gate -- the verify
+# evidence, the review envelopes bound to it, the merge -- carried on as though
+# it did. A clean tree is not the right tree, and nothing about "clean" says
+# whose it is. So the new commit must be BOTH:
+#
+#   * a DESCENDANT of the candidate it replaces. Every legitimate move of a
+#     candidate ADDS commits on top of work already captured -- an operator's
+#     fix, a re-pinned checksum, a mode bit -- so anything that does not
+#     contain that work is not this candidate's successor, whatever else it is.
+#   * ON the branch the task record names. Descent alone still admits a commit
+#     made on a branch that merely forked from this candidate, which is what an
+#     operator working two tasks in two checkouts produces by mistake -- and it
+#     is the shape whose commits silently vanish from the branch that merges.
+#
+# Every refusal names BOTH shas, because the whole content of the mistake is
+# which two commits were about to be conflated.
+#
+# T026 rework: two callers, deliberately -- `task handoff --ack`'s advance and
+# the `reverify` edge -- for the same reason testing_entry_blocker has two.
+# They are the only two paths that move a candidate sideways onto a tree an
+# operator produced, they are answerable to exactly the same question, and a
+# second hand-written copy of it in the second caller could drift away from
+# this one. A call cannot.
+candidate_lineage_blocker() {
+  local cwd="$1" cid="$2" old="$3" new="$4" br="$5"
+  if [ -n "$old" ]; then
+    # A recorded candidate that is not a commit HERE is reported as what it is.
+    # It would otherwise fall through to the descent refusal below and be
+    # described as an unrelated history, sending an operator to compare two
+    # commits when one of them does not exist in this checkout at all.
+    if ! git -C "$cwd" cat-file -e "$old^{commit}" 2>/dev/null; then
+      echo "the recorded candidate $old is not a commit in $cwd, so nothing can say whether $new continues it (the record names a tree this checkout does not have — check that the task's worktree is the one the work was done in)"
+      return 1
+    fi
+    if ! git -C "$cwd" merge-base --is-ancestor "$old" "$new" 2>/dev/null; then
+      echo "$new does not descend from the current candidate $old, so it is not this candidate's own line of work (HEAD of $cwd is on an unrelated history — check out the branch task $cid names, commit on top of $old, and re-run)"
+      return 1
+    fi
+  fi
+  if [ -n "$br" ]; then
+    if ! git -C "$cwd" rev-parse --verify --quiet "refs/heads/$br" >/dev/null 2>&1; then
+      echo "task $cid names branch '$br', which does not exist in $cwd, so nothing can confirm $new belongs to this task's line of work (create it at that commit, or point the record at the branch the work is really on with 'orchid task set $cid branch <name>')"
+      return 1
+    fi
+    if ! git -C "$cwd" merge-base --is-ancestor "$new" "refs/heads/$br" 2>/dev/null; then
+      echo "$new is not contained in task $cid's branch '$br' (HEAD of $cwd is detached, or on another branch — commit on '$br' and re-run; the candidate it would have replaced is ${old:-none})"
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# reverify_edge_gate <task-file> -- the preconditions for the OPERATOR edge
+# into `testing`: an IDLE status (`blocked`/`rework`) re-entering verification
+# with no implementation pass in between. That is the edge `task reverify`
+# names, and this is what makes it safe to take.
+#
+# T026 rework: these checks used to live inside `reverify` alone, while `task
+# advance` accepted the very same `blocked|rework -> testing` edge with none
+# of them -- a guarded door with an unguarded one beside it, so verification
+# could certify exactly the tree they exist to refuse just by taking the other
+# route. They are a function called from BOTH for the same reason
+# testing_entry_blocker is: two doors that are the same door cannot disagree.
+#
+# Three questions, in the order an operator can act on them: can the tree be
+# READ, is it CLEAN, and is the commit standing there THIS TASK'S (descended
+# from the candidate it would replace, on the branch the record names --
+# candidate_lineage_blocker).
+#
+# On success: echoes the task worktree's HEAD -- the only tree this edge may
+# hand to verification -- and returns 0. On refusal: prints the whole
+# operator-facing reason to stderr (multi-line, naming the offending paths or
+# the two shas) and returns 1; callers exit 3 and print nothing more.
+reverify_edge_gate() {
+  local f="$1" wt rvh rvst dirty rvid rvold rvlin
+  # The tree under test is read the same way the driver reads it when it hands
+  # an implementer's work to `testing`: worktree when set, repo otherwise.
+  wt="$(fm_get "$f" worktree)"; [ -n "$wt" ] || wt="$repo"
+  if ! rvh="$(git -C "$wt" rev-parse HEAD 2>/dev/null)"; then
+    echo "orchid: cannot read HEAD of the task worktree $wt — nothing to re-verify" >&2
+    return 1
+  fi
+  # A status this gate cannot READ is refused rather than read as clean: "I
+  # could not look" must never certify a tree.
+  if ! rvst="$(git -C "$wt" status --porcelain)"; then
+    echo "orchid: cannot read the status of the task worktree $wt — refusing to certify a tree this edge cannot inspect" >&2
+    return 1
+  fi
+  # A DIRTY worktree is refused, never certified. `orchid verify` runs the
+  # suite in exactly this directory but stamps its evidence with a sha, so an
+  # uncommitted change here is EXERCISED by the run while candidate_sha names a
+  # tree that never contained it: the evidence would then describe something
+  # that was never the candidate, and a later reviewer, merge, or re-run would
+  # be reading a PASS for a tree nobody can reconstruct (lesson L025).
+  # Untracked files count: a suite reads a new test file exactly as happily as
+  # a modified one. `.orchid/` is the one exclusion, and not as a convenience:
+  # it is kernel state that every verb writes into the working tree by design
+  # (the state dir is only committed at run/merge boundaries), INV-04 bars it
+  # from candidates outright, and it is therefore never part of what the
+  # operator is asking to have verified.
+  #
+  # Porcelain v1 is `XY <path>` -- except for a rename or copy, which is
+  # `XY <old> -> <new>`. THAT SECOND FORM IS WHY THIS IS NOT A PATH-PREFIX
+  # FILTER (T026 rework). A filter anchored at the path column reads only the
+  # left-hand side, so `R  .orchid/scratch -> libexec/orchid-thing` looks like
+  # kernel state and is dropped -- while what it actually stages is a candidate
+  # path holding content no commit contains. The whole gate would then pass, the
+  # suite would exercise that file, and candidate_sha would name the commit
+  # without it: precisely the mis-binding the refusal exists to stop, walked
+  # around by renaming rather than adding.
+  #
+  # So each record is parsed rather than prefix-matched. A rename/copy is
+  # skipped only when BOTH of its sides are kernel state; anything else, and
+  # anything that cannot be parsed as one of the two forms, is KEPT -- refused,
+  # never assumed tidy, the same direction every other check in this function
+  # fails in. (`.orchid/` itself is skipped for the reason above: it is kernel
+  # state, never part of the candidate.)
+  dirty="$(printf '%s\n' "$rvst" | awk '
+    # A leading quote is stripped first: porcelain quotes paths that contain
+    # control characters, quotes, backslashes or (by default) non-ASCII bytes.
+    function kernel(p) { sub(/^"/, "", p); return p ~ /^\.orchid\// }
+    { code = substr($0, 1, 2); rest = substr($0, 4) }
+    # R or C in EITHER status column means the record carries both paths.
+    code ~ /[RC]/ {
+      i = index(rest, " -> ")
+      if (i > 0 && kernel(substr(rest, 1, i - 1)) && kernel(substr(rest, i + 4))) next
+      print; next
+    }
+    kernel(rest) { next }
+    { print }')"
+  if [ -n "$dirty" ]; then
+    echo "orchid: the task worktree $wt has uncommitted changes — reverify refused" >&2
+    printf '%s\n' "$dirty" >&2
+    echo "orchid: verification runs in that worktree, so those would be exercised while candidate_sha named $rvh — commit them on the task branch (or discard them), then reverify" >&2
+    return 1
+  fi
+  # A CLEAN TREE IS NOT THE RIGHT TREE. Everything above this line asks whether
+  # the worktree is certifiable at all; nothing in it asks WHOSE work is
+  # standing there. A checkout left on another task's branch, a HEAD detached
+  # by a bisect, a worktree path reused for something else -- all clean, all
+  # certifiable, and adopting one as this task's candidate is a worse
+  # mis-binding than the dirty tree just refused, because every field then
+  # agrees and the evidence produced for it looks exactly right. So the
+  # commit's lineage is asked too, by the same function `task handoff --ack`
+  # asks it with (candidate_lineage_blocker).
+  #
+  # The candidate it must descend from is the one being replaced; on a task
+  # that has none yet, `base_sha` is the same claim made against the point the
+  # work forked from. With neither recorded there is no lineage to check here,
+  # and testing_entry_blocker refuses the entry outright a moment later.
+  rvid="$(fm_get "$f" id)"
+  rvold="$(fm_get "$f" candidate_sha)"; [ -n "$rvold" ] || rvold="$(fm_get "$f" base_sha)"
+  if ! rvlin="$(candidate_lineage_blocker "$wt" "$rvid" "$rvold" "$rvh" "$(fm_get "$f" branch)")"; then
+    echo "orchid: refusing to verify $rvh as task $rvid's candidate: $rvlin" >&2
+    return 1
+  fi
+  printf '%s\n' "$rvh"
+}
 
 rank() { case "$1" in low) echo 0;; medium) echo 1;; high) echo 2;; *) echo -1;; esac; }
 
@@ -161,6 +388,13 @@ case "$sub" in
         # candidate the rebase arm has already superseded -- which is the one
         # way this record could lie. `task handoff` derives the value itself.
         orchid_die "'handoff_ack' is kernel-owned — use task handoff <id> --ack|--clear (it is bound to the current candidate_sha, never set by hand)" ;;
+      # T026: the per-task rework budget joins the deny-list for the same
+      # reason `infra_failures` is on it -- it needs journal-first discipline
+      # and a recorded reason, which only `task retry --attempts N` gives it.
+      # Named separately from the line above so the diagnostic points at the
+      # ONE verb that writes it, not at all three.
+      attempt_budget)
+        orchid_die "'$key' is kernel-owned — use task retry <id> --reason \"...\" --attempts N" ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -243,7 +477,18 @@ case "$sub" in
     # supplied facts for worktree/base_sha (unchanged, set before this call)
     # -- only the schedule predicates (cap/exclusive/resources/deps) are
     # enforced HERE, fail-closed.
-    if { [ "$from" = pending ] || [ "$from" = rework ]; } && schedule_is_active_status "$to"; then
+    #
+    # The SOURCE side is keyed the same data-driven way as the destination
+    # (T026): "an idle status entering an active one" is what a dispatch IS,
+    # so the predicate is the negation of schedule_is_active_status rather
+    # than the literal pair `pending`/`rework`. That literal pair was every
+    # dispatch edge there was until `task reverify` added `blocked:testing`
+    # -- an idle status entering `testing`, i.e. a dispatch by every property
+    # this gate cares about, which the literal form silently exempted from
+    # the cap it exists to enforce. Active -> active (implementing->testing,
+    # testing->reviewing, ... , merging->testing) stays ungated exactly as
+    # before: those are phases of an attempt already counted, not dispatches.
+    if ! schedule_is_active_status "$from" && schedule_is_active_status "$to"; then
       blockers="$(schedule_dispatch_blockers "$repo" "$id")"
       if [ -n "$blockers" ]; then
         echo "orchid: dispatch refused for $id ($from -> $to):" >&2
@@ -255,10 +500,40 @@ case "$sub" in
       [ -n "$reason" ] || orchid_die "$from -> $to requires --reason (INV-08)"
     fi
     if [ "$to" = testing ]; then
-      b="$(fm_get "$f" base_sha)"; c="$(fm_get "$f" candidate_sha)"
-      [ -n "$b" ] && [ -n "$c" ] || orchid_die "testing requires base_sha and candidate_sha set"
-      if git -C "$repo" log --format=%H --name-only "$b..$c" 2>/dev/null | grep -q '^\.orchid/'; then
-        orchid_die "commits touch .orchid/ — entry to testing refused (INV-04)"
+      if ! schedule_is_active_status "$from"; then
+        # THE REVERIFY EDGE, arrived at through the public verb (T026 rework).
+        # `blocked|rework -> testing` is legal transition DATA, so this door
+        # is open to any operator and to any future caller; it therefore has
+        # to enforce exactly what `task reverify` enforces, or the safeguards
+        # are optional and the tree they refuse gets certified by whoever
+        # types the other command. Same function, so they cannot drift.
+        #
+        # The one thing this door cannot do is `reverify`'s re-stamp: an edge
+        # verb has no business silently rewriting the candidate under an
+        # operator who asked only for a transition. So it requires what the
+        # re-stamp would have produced -- candidate_sha IS the committed tree
+        # verification is about to run against -- and names the verb that
+        # does the re-stamping. Refusing is strictly stronger than fixing up.
+        adv_head="$(reverify_edge_gate "$f")" || exit 3
+        if [ "$adv_head" != "$(fm_get "$f" candidate_sha)" ]; then
+          echo "orchid: candidate_sha is not the HEAD of the task worktree — $from -> testing refused" >&2
+          echo "orchid: candidate_sha $(fm_get "$f" candidate_sha), worktree HEAD $adv_head — verification would run against the second and stamp its evidence with the first" >&2
+          echo "orchid: use \`orchid task reverify $id --reason \"...\"\`, which re-stamps the candidate from the worktree and journals why" >&2
+          exit 3
+        fi
+      fi
+      # Same two checks as before, now behind testing_entry_blocker so
+      # `reverify` can run them against its own candidate before it writes it.
+      #
+      # Exit 3, the code every refusal of an EDGE uses here -- an illegal
+      # transition, a dispatch the schedule declines, the reverify-edge gates --
+      # and the code `reverify` already exits with when it asks this same
+      # question a moment earlier. It used to `orchid_die` (exit 1) on this
+      # route alone, so one condition answered with two codes depending on which
+      # door was used, and a caller branching on the status could not tell a
+      # refused entry from a usage error.
+      if ! tblock="$(testing_entry_blocker "$f" "$(fm_get "$f" candidate_sha)")"; then
+        echo "orchid: $tblock" >&2; exit 3
       fi
       if [ "$from" = implementing ]; then
         # Kernel-derived, single-writer: this verb is the ONLY writer of
@@ -439,7 +714,19 @@ case "$sub" in
     # therefore reports no budget for it at all (see libexec/orchid-jobs),
     # and the rework -> active dispatch that follows re-anchors it here,
     # before the attempt it bounds actually starts.
-    if { [ "$from" = pending ] || [ "$from" = rework ]; } && schedule_is_active_status "$to"; then
+    #
+    # Keyed on the SAME idle -> active predicate as the dispatch gate above,
+    # and for the same T026 reason: `task reverify`'s `blocked -> testing`
+    # form is a dispatch into an active status, so it must carry a fresh
+    # anchor too. Under the old literal `pending|rework` pair it did not, and
+    # the leftover anchor was the previous attempt's — which is precisely the
+    # stale-anchor shape libexec/orchid-jobs' budget backstop keys on
+    # (`schedule_is_active_status` + `started_at` + `wallclock_budget_s`).
+    # A reverify out of `blocked` — the state the attempts-exhausted trap
+    # actually ends in — would therefore have re-entered `testing` already
+    # over budget and been escalated straight back to `blocked`, rebuilding
+    # the unconvergent recovery loop that gate's own comment records fixing.
+    if ! schedule_is_active_status "$from" && schedule_is_active_status "$to"; then
       fm_set "$f" started_at "$(now)"
     fi
     if [ "$to" = rework ]; then
@@ -497,6 +784,22 @@ case "$sub" in
       fi
       rm -f "$state/reviews/$id-verify.log"
       [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
+    fi
+    if [ "$to" = testing ] && ! schedule_is_active_status "$from"; then
+      # The other half of the reverify edge, and owned HERE rather than by
+      # `task reverify` for the same reason the gate above is: the whole point
+      # of re-entering `testing` from an idle status is a FRESH verify run, so
+      # a prior PASS must never satisfy INV-11's testing -> reviewing gate on
+      # the re-verified candidate's behalf -- and that must hold on the raw
+      # `task advance` route too, which used to leave the stale log sitting
+      # there. Emitted once, on the edge, rather than once per route (a
+      # per-route copy is how the two doors came to disagree in the first
+      # place). `orchid verify` overwrites the log anyway, so this is
+      # belt-and-braces; the case it actually closes is a hand-walk on to
+      # `reviewing` with no verify in between. The merge log is deliberately
+      # left alone: it is the record of a merge that really did happen, and
+      # this edge does not undo it.
+      rm -f "$state/reviews/$id-verify.log"
     fi
     if [ -n "$reason" ]; then
       kind=intervention
@@ -585,7 +888,8 @@ case "$sub" in
     ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
     echo "arbitrated $id: result=$result from=$from to=$to" ;;
   handoff)
-    # T010: the SOLE writer of `handoff_ack` -- the durable record that an
+    # T010: the verb that ACKNOWLEDGES a hand-off, and the only place a
+    # `handoff_ack` is ever created -- the durable record that an
     # operator really performed this candidate's execution-requiring
     # mechanical steps (a lint fix, a checksum re-pin, a mode bit on a new
     # executable), the ones an engine profile that denies on the command
@@ -603,6 +907,12 @@ case "$sub" in
     # moves -- which is exactly how `orchid merge`'s rebase arm invalidates it
     # (INV-07): a rebased tree is a different candidate, and work done on the
     # old one is not evidence about it.
+    #
+    # EVERY OTHER VERB THAT TOUCHES THE FIELD ONLY EVER WITHDRAWS IT (entry to
+    # `rework`, `unblock`, `retry`, `--clear`, and `reverify` when it re-stamps
+    # the candidate). Nothing but this arm writes a value into it, because
+    # writing one is an assertion an operator made about a specific commit and
+    # nothing else is in a position to make it for them.
     #
     # AND THE HAND-OFF ADVANCES THE CANDIDATE TO ITS OWN RESULTING COMMIT.
     # This is the defect the feature would otherwise institutionalise. The
@@ -727,37 +1037,15 @@ case "$sub" in
     fi
     if [ "$hhead" != "$cand" ]; then
       # WHICH COMMIT, THOUGH. Advancing to whatever HEAD happens to be is a
-      # WORSE mis-binding than the drift this advance exists to remove: a tree
-      # left on another task's branch, a HEAD detached by a bisect, a worktree
-      # path since reused for something else, and the record would name a
-      # commit that shares no history with the work under judgment while every
-      # downstream gate carries on as though it did. The drift at least named a
-      # commit that was really this candidate's.
-      #
-      # So the new commit must be BOTH:
-      #
-      #   * a DESCENDANT of the candidate it replaces. A hand-off only ever
-      #     adds commits on top of the implementer's work -- a lint fix, a
-      #     re-pinned checksum, a mode bit -- so anything that does not contain
-      #     that work is not this candidate's hand-off, whatever else it is.
-      #   * ON the branch the task record names. Descent alone still admits a
-      #     commit made on some other branch that happened to fork from this
-      #     candidate, which is exactly what an operator working two tasks in
-      #     two checkouts produces by mistake.
-      #
-      # Both refusals name BOTH shas, because the whole content of the mistake
-      # is which two commits were about to be conflated.
-      if ! git -C "$hcwd" merge-base --is-ancestor "$cand" "$hhead" 2>/dev/null; then
-        orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hhead does not descend from the current candidate $cand, so it is not this candidate's hand-off (HEAD of $hcwd is on an unrelated history — check out the task's own branch, commit the mechanical step on top of $cand, and re-run)"
-      fi
-      hbranch="$(fm_get "$f" branch)"
-      if [ -n "$hbranch" ]; then
-        if ! git -C "$hcwd" rev-parse --verify --quiet "refs/heads/$hbranch" >/dev/null 2>&1; then
-          orchid_die "refusing to advance candidate_sha $cand -> $hhead: task $id names branch '$hbranch', which does not exist in $hcwd, so nothing can confirm $hhead belongs to this task's line of work (create it at the hand-off commit, or point the record at the branch the work is really on with 'orchid task set $id branch <name>')"
-        fi
-        if ! git -C "$hcwd" merge-base --is-ancestor "$hhead" "refs/heads/$hbranch" 2>/dev/null; then
-          orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hhead is not contained in task $id's branch '$hbranch' (HEAD of $hcwd is detached, or on another branch — commit the mechanical step on '$hbranch' and re-run; the candidate it would have replaced is $cand)"
-        fi
+      # WORSE mis-binding than the drift this advance exists to remove, and the
+      # rule that says so -- descended from the candidate it replaces, and on
+      # the branch the task record names -- belongs to
+      # candidate_lineage_blocker, shared with the `reverify` edge (T026
+      # rework). That edge moves a candidate onto an operator's own tree for
+      # the same reasons this one does, so it has to answer the same question;
+      # two copies of it could answer differently, and a call cannot.
+      if ! hlin="$(candidate_lineage_blocker "$hcwd" "$id" "$cand" "$hhead" "$(fm_get "$f" branch)")"; then
+        orchid_die "refusing to advance candidate_sha $cand -> $hhead: $hlin"
       fi
       # INV-04, re-checked. Entry to `testing` scans base..candidate for
       # `.orchid/` commits, and this is the only other path that moves
@@ -825,6 +1113,13 @@ case "$sub" in
     [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     [ "$(fm_get "$f" status)" = blocked ] || orchid_die "$id is not blocked"
+    # Read BEFORE anything is written: schedule_attempt_budget dies on a
+    # misconfigured `rework_max`, and a die between the journal entry and the
+    # status write would leave exactly the orphan-with-no-state-change this
+    # verb's ordering exists to avoid. Only the WARNING it feeds is deferred
+    # to the end (it belongs after the transition it is about).
+    ub_attempts="$(fm_get "$f" attempts)"; [ -n "$ub_attempts" ] || ub_attempts=0
+    ub_budget="$(schedule_attempt_budget "$repo" "$id")"
     journal --task "$id" --kind intervention "unblock: $reason"
     # T010: same rework brief the advance:rework arm appends, and for the same
     # reason -- this is also an entry to rework, and the logs holding the
@@ -845,22 +1140,93 @@ case "$sub" in
       fm_set "$f" handoff_ack ""
     fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
-    echo "$id: blocked -> rework" ;;
+    echo "$id: blocked -> rework"
+    # WHERE THE REASON WENT, said out loud (dogfood F28). It is delivered by
+    # being written into the task body above, which is what `pack_build`
+    # copies verbatim into the implementer's capsule as `task.md` -- so the
+    # next implementer really does read it. That was invisible from outside:
+    # a reason that was ignored and a reason that was never delivered looked
+    # identical, which is why an operator could not tell a disobedient engine
+    # from a broken channel.
+    echo "$id: guidance delivered to the task body (see \`orchid task show $id\`) — the implementer's capsule copies it verbatim"
+    # `unblock` deliberately does NOT raise the attempt budget: it is the
+    # "something changed, here is the guidance" verb, and a task that lands
+    # back in `rework` with its budget already spent will re-block on its
+    # very next verify failure. Say so here rather than letting the operator
+    # rediscover it one wasted engine invocation later.
+    if [ "$ub_attempts" -ge "$ub_budget" ]; then
+      echo "$id: WARNING — attempts $ub_attempts/$ub_budget, so the next verify failure re-blocks it immediately; grant more with: orchid task retry $id --reason \"...\" --attempts N" >&2
+    fi ;;
   retry)
     verb_lock_guard "$repo"
-    epoch_require "$repo"; id="$1"; shift
-    if [ "${1:-}" = "--reason" ]; then
-      [ -n "${2:-}" ] || orchid_die "--reason requires a value"
-      reason="$2"
-    else
-      orchid_die "retry requires --reason"
-    fi
+    epoch_require "$repo"; id="${1:-}"; shift || true
+    # `--attempts N` (T026, dogfood F28): the supported way to give a task a
+    # fresh budget. Before it existed, `retry` restored STATUS and nothing
+    # else -- it returned an attempts-exhausted task to `rework` with its
+    # counter untouched, so the very next verify failure re-blocked it. The
+    # observed shape of that trap: a precise operator diagnosis, one more
+    # engine invocation, a byte-identical failure, immediately re-blocked.
+    #
+    # Hence the DEFAULT grant of 1, not 0. F28 asks for both halves -- "let
+    # retry grant an attempt OR take --attempts N" -- and the bare form is
+    # the one an operator reaches for: "I have diagnosed it, try again" has
+    # to mean the task actually gets a try. A grant is only ever applied when
+    # the budget is genuinely spent (`attempts + grant > budget` below), so
+    # the ordinary mid-budget retry still changes nothing but status and
+    # guidance, and repeated bare retries never compound -- the second one
+    # wants the same number the first already granted.
+    reason=""; grant=1; grant_asked=0
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      --attempts) [ -n "${2:-}" ] || orchid_die "--attempts requires a value"
+        # Same positive-integer guard lib/schedule.sh applies to the budget
+        # itself: `--attempts 0` grants nothing (say so instead of silently
+        # doing nothing), and a non-numeric value must never reach the
+        # arithmetic below.
+        case "$2" in
+          ''|*[!0-9]*|0*) orchid_die "--attempts must be a positive integer (got '$2')" ;;
+        esac
+        grant="$2"; grant_asked=1; shift 2 ;;
+      *) orchid_die "usage: orchid task retry <id> --reason \"...\" [--attempts N]" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task retry <id> --reason \"...\" [--attempts N]"
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    [ -n "$reason" ] || orchid_die "retry requires --reason"
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     case "$from" in
       blocked|rework) ;;
       *) echo "orchid: illegal retry from $from" >&2; exit 3 ;;
     esac
+    # Read BEFORE anything is written, exactly as `unblock` above does it and
+    # for the same reason: schedule_attempt_budget dies on a misconfigured
+    # `rework_max` (or a hand-edited `attempt_budget`), and a die AFTER the
+    # journal entry and the guidance append would leave the operator's reason
+    # recorded and pasted into the task body for a retry that never happened.
+    # Everything this verb can refuse on is therefore asked here, before the
+    # first mutation; the journal-first discipline below then orders the
+    # writes among themselves (INV-08).
+    attempts="$(fm_get "$f" attempts)"; [ -n "$attempts" ] || attempts=0
+    budget="$(schedule_attempt_budget "$repo" "$id")"
+    want=$(( attempts + grant ))
+    # AN EXPLICIT `--attempts N` THAT WOULD CHANGE NOTHING IS REFUSED, NOT
+    # SWALLOWED (T026 rework). The grant only ever raises the cap, so on a task
+    # still inside its budget the flag is satisfied before it is typed -- and
+    # the verb would then print the same "budget unchanged" line it prints for
+    # a bare retry, having silently declined the one thing the operator asked
+    # for. A flag that quietly does nothing is trusted for exactly as long as it
+    # takes to be blamed: the next failure looks like the budget was granted and
+    # spent. The bare form is untouched -- it asks for a retry and takes
+    # whatever round that needs -- because only an explicit number can be
+    # contradicted by the budget already in force.
+    #
+    # Refused BEFORE the journal entry and the guidance append below, like every
+    # other refusal in this verb: a retry that did not happen must not leave the
+    # operator's reason recorded and pasted into the task body.
+    if [ "$grant_asked" -eq 1 ] && [ "$want" -le "$budget" ]; then
+      orchid_die "--attempts $grant would grant task $id nothing: its budget is already $budget with $attempts spent, so it has $(( budget - attempts )) round(s) left and a grant only ever raises the cap (never lowers it). Retry on the rounds it already has with 'orchid task retry $id --reason \"...\"', or ask for one beyond them with '--attempts $(( budget - attempts + 1 ))' or more."
+    fi
     journal --task "$id" --kind intervention "retry: $reason"
     # T010: the same rework brief, lifted before the logs go (see the
     # advance:rework arm). `retry` is the verb an operator reaches for after
@@ -869,6 +1235,28 @@ case "$sub" in
     # is still bound to the candidate being retried -- and, in the same pass,
     # the briefs already in the body that describe a candidate it is not.
     refresh_briefs "$f" "$id" | atomic_write "$f"
+    # The reason is DELIVERED, not merely journaled -- the task body is the
+    # implementer's own input (pack_build copies this file into the capsule
+    # as task.md), and the journal is not. `unblock` has always written it
+    # here; `retry` did not, which meant "retry with a diagnosis attached"
+    # silently dropped the diagnosis on the floor and the next attempt
+    # repeated the same mistake with no way to tell why. Same shape as
+    # unblock's, so the two verbs deliver identically.
+    { cat "$f"; printf '\n**Operator guidance (%s):** %s\n' "$(now)" "$reason"; } | atomic_write "$f"
+    # Budget, journal-first (INV-08), and never a decrement of `attempts` --
+    # see schedule_attempt_budget's header for why winding the counter back
+    # would re-point this attempt at a previous attempt's envelopes. The
+    # grant only ever RAISES the cap: `attempts + grant` (read above, before
+    # the first write) can be lower than the budget already in force (a retry
+    # of a task that has spent nothing), and that must leave the existing
+    # budget alone rather than quietly shrinking it.
+    if [ "$want" -gt "$budget" ]; then
+      journal --task "$id" --kind intervention "retry: attempt budget $budget -> $want (granted $grant, attempts spent $attempts)"
+      fm_set "$f" attempt_budget "$want"
+      budget_note="attempt budget $budget -> $want (granted $grant, $attempts spent)"
+    else
+      budget_note="attempt budget unchanged at $budget ($attempts spent, $(( budget - attempts )) round(s) left)"
+    fi
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
     # with the advance:rework arm and orchid-merge's rebase-reset) -- and any
     # operator hand-off bound to the candidate being replaced.
@@ -877,7 +1265,154 @@ case "$sub" in
       fm_set "$f" handoff_ack ""
     fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
-    echo "$id: $from -> rework" ;;
+    echo "$id: $from -> rework"
+    echo "$id: guidance delivered to the task body (see \`orchid task show $id\`) — the implementer's capsule copies it verbatim"
+    echo "$id: $budget_note" ;;
+  reverify)
+    # T026 (dogfood F28, and twice more on r-002's T013/T014): the supported
+    # "the tree is green, just re-run verification" edge.
+    #
+    # Without it, an operator holding a candidate that failed for a reason
+    # that was NOT the candidate's fault -- a flaky suite, a fixture the
+    # operator has since fixed by hand, an environment problem -- had exactly
+    # one way back to a verify run: push the task backwards through `rework`
+    # and let an implementer redo work nobody claims is wrong. That path
+    # spends an attempt, and it discards the candidate's own evidence, since
+    # the fresh candidate_sha unbinds every reconciled review envelope. What
+    # operators did instead was fix the tree in the task worktree, commit on
+    # the task branch by hand, and `retry` with "the tree is already green" --
+    # a real recovery procedure with no verb, no journal kind, and no name in
+    # the protocol.
+    #
+    # So: `blocked|rework -> testing`, no attempt consumed, the candidate
+    # re-stamped from the worktree the operator actually fixed. This is the
+    # operator-side twin of `orchid merge`'s own exit-5 rebase reset, which
+    # already returns a task to `testing` for an unconditional re-verify
+    # without touching `attempts` (INV-07).
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; export ORCHID_EPOCH
+    id="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) orchid_die "usage: orchid task reverify <id> --reason \"...\"" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task reverify <id> --reason \"...\""
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    [ -n "$reason" ] || orchid_die "reverify requires --reason"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    from="$(fm_get "$f" status)"
+    case "$from" in
+      blocked|rework) ;;
+      *) echo "orchid: illegal reverify from $from (blocked or rework only)" >&2; exit 3 ;;
+    esac
+    # ---- EVERY refusal first, THEN the mutations -------------------------
+    # This verb writes candidate_sha and journals two entries, and it is the
+    # `task advance` call further down that owns the transition. So every
+    # condition that advance can refuse on is asked HERE, before the first
+    # write: an attempt at a dispatch the schedule forbids, or at a candidate
+    # the entry gate rejects, must leave the task exactly as it found it --
+    # not mutated and journalled into a move that never happened. Each check
+    # below is either the very function advance calls or advance's own
+    # extracted guard, so the two cannot drift apart.
+    #
+    # The archetype's edge is the first of them, for its own extra reason: an
+    # archetype that can never reach `testing` at all -- a report-outcome one,
+    # which by meta-contract has no such state -- has to be refused as data,
+    # not by a branch on its name (INV-05). The refusal is simply the absence
+    # of a declared edge.
+    rv_arch="$(fm_get "$f" archetype)"; [ -n "$rv_arch" ] || rv_arch=feature
+    if ! archetype_validate "$rv_arch" >/dev/null 2>&1; then
+      echo "orchid: archetype '$rv_arch' failed validation (rejected, fail closed)" >&2
+      exit 13
+    fi
+    legal "$from" testing "$rv_arch" || { echo "orchid: illegal $from -> testing" >&2; exit 3; }
+    # The candidate under test is whatever the operator's own fix left at the
+    # task worktree's HEAD, and the worktree has to be CLEAN to be certifiable
+    # at all. Both come from reverify_edge_gate, which is the same function
+    # `task advance` runs on this edge -- so the answer this verb pre-computes
+    # here is by construction the answer the advance below will reach, and
+    # neither route can certify a tree the other refuses.
+    rv_head="$(reverify_edge_gate "$f")" || exit 3
+    # The entry-to-`testing` gate, asked about the sha this verb is ABOUT to
+    # stamp rather than the stale one still in frontmatter -- advance would
+    # otherwise check the wrong candidate, or check the right one only after
+    # this verb had already written it.
+    rv_block="$(testing_entry_blocker "$f" "$rv_head")" || { echo "orchid: $rv_block" >&2; exit 3; }
+    # `testing` is an ACTIVE status and both source states are idle ones, so
+    # BOTH forms -- rework -> testing and blocked -> testing -- are dispatches
+    # and meet the ordinary dispatch gate (concurrency cap, exclusive/
+    # resources, deps). Deliberately: a re-verification runs the task's whole
+    # suite in its worktree, which is the contention that gate exists to
+    # bound. advance enforces it too, on the same schedule.sh predicate set;
+    # asking here as well is what keeps a cap/deps refusal from landing on a
+    # task this verb had already re-stamped and journalled.
+    rv_blockers="$(schedule_dispatch_blockers "$repo" "$id")"
+    if [ -n "$rv_blockers" ]; then
+      echo "orchid: dispatch refused for $id ($from -> testing):" >&2
+      printf '%s\n' "$rv_blockers" >&2
+      exit 3
+    fi
+    # ---- refusals are behind us; mutate ----------------------------------
+    # Re-stamped BEFORE the advance, because the evidence this edge exists to
+    # produce is sha-bound: `orchid verify` copies candidate_sha into its log
+    # and INV-11's testing -> reviewing gate compares the two, so a reverify
+    # that left a stale candidate_sha behind would produce a passing log that
+    # certifies the wrong tree. Journal-first within each write (INV-08).
+    rv_old="$(fm_get "$f" candidate_sha)"; rv_ack_note=""
+    journal --task "$id" --kind intervention "reverify: $reason"
+    if [ "$rv_head" != "$rv_old" ]; then
+      journal --task "$id" --kind intervention "reverify: candidate_sha ${rv_old:-none} -> $rv_head (HEAD of the task worktree)"
+      fm_set "$f" candidate_sha "$rv_head"
+      # AND THE HAND-OFF IS WITHDRAWN, NOT CARRIED (T026 rework). `handoff_ack`
+      # asserts one thing about one commit: that an OPERATOR looked at that tree
+      # and confirmed the mechanical steps it needed -- a mode bit on a new
+      # executable, a re-pinned formula checksum -- had been performed. The
+      # commit being re-stamped here is one no operator has said that about; it
+      # is, by construction, work committed since. Re-binding the ack onto it
+      # would make that assertion on their behalf about a tree they never saw,
+      # which is exactly the direction lib/handoff.sh exists to close: a HEAD
+      # that has moved past the ack reopens the pause.
+      #
+      # LINEAGE DOES NOT RESCUE IT. The gate above proved the new commit
+      # DESCENDS from the acknowledged one -- that the acknowledged work is
+      # still present. It proves nothing whatever about the commits stacked on
+      # top, and whether THOSE need mechanical steps is the only question the
+      # ack answers. Carrying it forward would buy a verification guaranteed to
+      # fail on the missing chmod, and charge a rework round for it.
+      #
+      # THIS STRANDS NOTHING. `reverify` leaves the task in `testing`, and
+      # `testing` is precisely the status `task handoff --ack` is legal from, so
+      # the boundary the next pass stops at costs the operator one command --
+      # the same one-command cost every other fail-closed axis on this field
+      # charges. Journalled and printed, because a withdrawal is an
+      # operator-visible consequence of the verb they just ran.
+      rv_ack="$(fm_get "$f" handoff_ack)"
+      if [ -n "$rv_ack" ]; then
+        journal --task "$id" --kind intervention "reverify: cleared the operator hand-off (bound to $rv_ack; the re-stamped candidate $rv_head is a commit no operator has acknowledged)"
+        fm_set "$f" handoff_ack ""
+        rv_ack_note="$id: the operator hand-off bound to $rv_ack was cleared — it says nothing about the re-stamped candidate $rv_head, so the hand-off reads outstanding again; acknowledge it with \`orchid task handoff $id --ack --reason \"...\"\` (legal from testing) once that commit's mechanical steps are done"
+      fi
+    fi
+    # Through `task advance`, never around it. The prechecks above make a
+    # refusal here vanishingly unlikely, but they do not make advance
+    # redundant: it is the single owner of the edge, and of everything that
+    # rides on it -- the transition write itself, the journal entry naming
+    # the reason, and the fresh `started_at` a dispatch into an active status
+    # gets (a re-verification is a new attempt-shaped unit of work, which is
+    # what the wall-clock anchor bounds). It re-checks the same predicates on
+    # its own account, so no future caller of this arm can walk past them.
+    # `set -e` propagates its exit code if it does refuse.
+    # That call is also what drops the stale verify evidence: the invalidation
+    # belongs to the EDGE (see advance's idle -> testing arm), not to this
+    # verb, so the raw-advance route gets it too and there is only ever one
+    # copy of it to keep in step.
+    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "$id" testing \
+      --reason "reverify: $reason" >/dev/null
+    echo "$id: $from -> testing (candidate $rv_head)"
+    echo "$id: no attempt consumed — the next pass re-runs verification (or run: orchid verify $id)"
+    [ -z "$rv_ack_note" ] || echo "$rv_ack_note" ;;
   infra-fail)
     # v0b2: the ONE owned path that may bump `infra_failures` — `task set`
     # denies it directly (see the `set` case's deny-list above) because this
@@ -910,5 +1445,5 @@ case "$sub" in
     else
       echo "$id: infra_failures $n/$max"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|unblock|retry|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|unblock|retry|reverify|infra-fail" ;;
 esac

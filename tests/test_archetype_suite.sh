@@ -33,6 +33,8 @@ merging:done
 merging:rework
 merging:testing
 rework:implementing
+rework:testing
+blocked:testing
 EOF
 )"
 
@@ -131,7 +133,13 @@ plant_reviewer_envelope_pair() {
 walk_full_archetype() {  # id archetype
   local id="$1" arch="$2"
   "$ORCHID_BIN" task create "$id" "full walk ($arch)" --archetype "$arch"
-  local sha="deadbeefcafebabe0000000000000000000000"
+  # This repo's OWN HEAD for both shas, so entry to `testing` scans a real,
+  # EMPTY range. It used to be a placeholder that exists nowhere, which made
+  # `git log <base>..<candidate>` fail rather than answer -- and T026 made
+  # that scan fail CLOSED, so an unanswerable range is now refused instead of
+  # being read as clean.
+  local sha
+  sha="$(git rev-parse HEAD)"
   "$ORCHID_BIN" task set "$id" base_sha "$sha"
   "$ORCHID_BIN" task set "$id" candidate_sha "$sha"
   "$ORCHID_BIN" task set "$id" verification_commands true

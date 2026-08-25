@@ -254,6 +254,10 @@ orchid answer <qid> <choice>        # answer an open question (if one exists)
 orchid task unblock <id> --reason "<qid>: <answer text>"
 # -- or, when nothing needs to change and it should just try again:
 orchid task retry <id> --reason "..."
+# -- ...and when the block was "attempts exhausted", grant rounds too:
+orchid task retry <id> --reason "..." --attempts 2
+# -- or, when the tree is already green and only verification needs re-running:
+orchid task reverify <id> --reason "..."
 ```
 
 `orchid task unblock`/`orchid task retry` are validated transitions:
@@ -264,6 +268,19 @@ from a raised question (`orchid notify`), answer it first
 `answer_allowlist` is configured — see
 [docs/engines/openclaw.md](./engines/openclaw.md#inbox-hardening-orchid-answer))
 so the guidance text exists before `unblock` folds it in.
+
+**Which of the three, and what each one actually does:**
+
+| verb | use it when | attempts | what the reason does |
+| --- | --- | --- | --- |
+| `task unblock` | the answer changes the plan | unchanged | written into the task body |
+| `task retry [--attempts N]` | nothing needs to change; `--attempts N` when it needs more than one more round | counter unchanged; the **budget** is raised to `attempts + N` (default `N` = 1) when the task has none left, never lowered | written into the task body |
+| `task reverify` | the tree is already green — the failure was environmental, or you fixed it yourself in the task worktree | **none consumed** | journaled |
+
+"Written into the task body" is the part that matters: the task file is what
+the implementer's capsule carries, so a diagnosis put there is genuinely read
+by the next attempt. Each verb prints a line telling you where the reason
+went, so you never have to guess whether it was delivered.
 
 ## A task sits in `testing` and nothing verifies it
 
@@ -322,9 +339,10 @@ anywhere.
 The acknowledgement is bound to the task's **current** `candidate_sha`, which
 is why the next pass proceeds and why nothing has to remember that you did it.
 It is invalidated the same way verify evidence is (INV-07): entry to `rework`,
-`orchid task unblock`, `orchid task retry`, and `orchid merge`'s rebase arm all
-clear it, because a rebased or reworked tree is a different candidate and work
-done on the old one is not evidence about it. If a pass stops again right after
+`orchid task unblock`, `orchid task retry`, `orchid task reverify`'s re-stamp,
+and `orchid merge`'s rebase arm all
+clear it, because a rebased, reworked or re-stamped tree is a different
+candidate and work done on the old one is not evidence about it. If a pass stops again right after
 you acknowledged, compare the two fields — `handoff_ack` naming a sha other
 than `candidate_sha` is exactly that invalidation, and the boundary reason
 prints both.
@@ -333,6 +351,152 @@ Set `handoff_before_verify=off` (the default) if your implementer can run the
 repository's own gates itself; nothing then gates and this boundary is never
 raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
 "The operator hand-off".
+
+## `attempts exhausted` — the task blocked and you have a diagnosis
+
+**Symptom:** a task blocks with `attempts exhausted (3/3)`. Before v1.1 the
+retry that followed restored the task's *status* without giving it a *round*,
+so the very next verify failure blocked it again with no progress in between.
+
+A retry now buys the round as well:
+
+```sh
+orchid task retry <id> --reason "the assertion wants 'ok', not 'OK'"
+```
+
+On a task with rounds left that changes nothing but status and guidance. On
+one with none left it grants exactly one — and says so
+(`attempt budget 3 -> 4`). Repeating it does not compound: the second retry
+wants the same number the first already granted.
+
+When one more round plainly is not enough, ask for the rest up front:
+
+```sh
+orchid task retry <id> --reason "the first two failures were the environment" --attempts 2
+```
+
+`--attempts N` is refused, not swallowed, when the task already has that many
+rounds left — a grant only ever raises the cap, so on a task inside its budget
+the flag would change nothing, and a flag that quietly does nothing gets
+trusted and then blamed for a round it never bought. The refusal shows the
+arithmetic and the smallest number that would work:
+
+```
+orchid: --attempts 1 would grant task T013 nothing: its budget is already 4
+with 3 spent, so it has 1 round(s) left and a grant only ever raises the cap
+(never lowers it). Retry on the rounds it already has with 'orchid task retry
+T013 --reason "..."', or ask for one beyond them with '--attempts 2' or more.
+```
+
+Either form records `attempt_budget: <attempts + N>` in the task's
+frontmatter (journaled, and refused through `orchid task set` — it is
+kernel-owned), and the driver enforces that number instead of the repo-wide
+`rework_max` (config, default 3 — raise it there if this is the whole repo's
+problem, not one task's). `attempts` itself is never wound back: it is the
+number every `reviews/<id>-a<n>-*.json` artifact is keyed on, so moving it
+would point the next attempt at a previous one's envelopes.
+
+If the candidate is fine and only the verification needs re-running, do not
+spend a round at all:
+
+```sh
+orchid task reverify <id> --reason "the suite failure was the sandbox, not the candidate"
+```
+
+`reverify` moves the task `blocked|rework → testing`, re-stamps
+`candidate_sha` from the task worktree's HEAD (so a fix you committed there
+by hand is what gets tested), drops the stale verify log, and consumes no
+attempt. A task whose archetype has no `testing` state at all — a
+report-outcome one — refuses it as an illegal transition, exit 3.
+
+**Commit your fix first.** `reverify` refuses a task worktree with
+uncommitted changes (exit 3), listing exactly what is in the way:
+
+```
+orchid: the task worktree /path/to/wt has uncommitted changes — reverify refused
+ M tests/test_thing.sh
+orchid: verification runs in that worktree, so those would be exercised while
+candidate_sha named 9c1f… — commit them on the task branch (or discard them),
+then reverify
+```
+
+That is not pedantry about tidiness. Verification runs *in* the worktree but
+the evidence it writes is bound to a **sha**, so an uncommitted edit is
+exercised by the run while `candidate_sha` names a tree that never contained
+it — a PASS certifying something nobody can check out again. Untracked files
+count for the same reason: a suite reads a brand-new test file as happily as
+an edited one. `.orchid/` is excluded, because orchid writes its own state
+into the working tree by design and INV-04 keeps it out of candidates anyway.
+
+**And a clean tree is not the right tree.** Being tidy says nothing about
+*whose* work is standing in the worktree, so the commit's lineage is a gate as
+much as the tree's state is: the HEAD `reverify` is about to stamp must
+**descend from the candidate it replaces** (an operator's fix only ever adds
+commits on top of the work under judgment) and be **contained in the branch the
+task record names** (descent alone still admits a commit made on a branch that
+merely forked from it — what working two tasks in two checkouts produces by
+accident, and the shape whose commits silently vanish from the branch that
+merges). Both refusals name both shas, because which two commits were about to
+be conflated is the whole content of the mistake:
+
+```
+orchid: refusing to verify 4ab7… as task T013's candidate: 4ab7… does not
+descend from the current candidate 9c1f…, so it is not this candidate's own
+line of work (HEAD of /path/to/wt is on an unrelated history — check out the
+branch task T013 names, commit on top of 9c1f…, and re-run)
+```
+
+Adopting whatever a clean HEAD happened to be is the *worse* mis-binding of the
+two: afterwards every field agrees and the evidence produced for it looks
+exactly right. `orchid task handoff --ack` moves a candidate onto an operator's
+tree for the same reasons and is held to the same rule, by the same code.
+
+If the record simply names the wrong branch (the work really is on another
+one), point it at the truth with `orchid task set <id> branch <name>` and
+re-run.
+
+Every condition `reverify` can refuse on — the archetype's edge, a dirty
+worktree, a commit that is not this task's, the entry-to-`testing` gate
+(exit 3, the same code on both routes), the dispatch predicates (concurrency
+cap, exclusive/resources, unmet deps) — is checked **before** it writes
+anything. A refused `reverify` leaves the task exactly as it found it: same
+status, same `candidate_sha`, nothing added to the journal.
+
+**If an operator hand-off was acknowledged, `reverify` withdraws it.**
+`handoff_ack` asserts one thing about one commit: that *you* looked at that tree
+and confirmed the mechanical steps it needed — a mode bit, a re-pinned formula
+checksum — were done. The commit `reverify` re-stamps to is by construction one
+you committed *since*, and nobody has said that about it. Carrying the
+acknowledgement forward would make that claim on your behalf about a tree you
+never reviewed, and would then buy a verification guaranteed to fail on the
+missing step and charge a rework round for it. Lineage does not change this: the
+gate above proves the acknowledged work is still *present*, and says nothing
+about whether the commits stacked on top need mechanical steps of their own.
+
+So the hand-off reads `outstanding` again and the next pass stops at the
+boundary. That costs one command and strands nothing: `reverify` leaves the task
+in `testing`, which is exactly the status `orchid task handoff <id> --ack
+--reason "..."` is legal from. Run it once the re-stamped candidate's own
+mechanical steps are done, and the pass proceeds.
+
+`blocked|rework → testing` is a declared transition, so `orchid task advance
+<id> testing --reason "..."` walks the same edge by hand. It is not a way
+round any of the above: the clean-worktree check, the lineage check and the
+reason requirement live on the **edge**, not in the verb, so that route
+enforces them too, and
+it additionally requires `candidate_sha` to already be the worktree's HEAD —
+the one thing it will not do for you is re-stamp it:
+
+```
+orchid: candidate_sha is not the HEAD of the task worktree — blocked -> testing refused
+orchid: candidate_sha 9c1f…, worktree HEAD 4ab7… — verification would run against
+the second and stamp its evidence with the first
+orchid: use `orchid task reverify <id> --reason "..."`, which re-stamps the
+candidate from the worktree and journals why
+```
+
+Use `reverify`. The raw edge exists because the transition table is data, not
+because it is a second, laxer procedure.
 
 ## One task needs a decision and the whole run stopped
 

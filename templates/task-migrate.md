@@ -12,6 +12,7 @@ run_id:
 # `done` before this one dispatches (e.g. `T001,T002`); each must already exist
 depends_on:
 attempts: 0
+attempt_budget:
 infra_failures: 0
 session_id:
 implementer_engine_id:

@@ -27,7 +27,18 @@ export ORCHID_ROOT="$REPO_ROOT"
 DRIVE="$REPO_ROOT/runners/orchid-drive"
 export ORCHID_ENGINES_DIR="$WORK/eng"
 export HOME="$MACHINE_HOME"
-edge_sha="deadbeefcafebabe0000000000000000000000"
+# The candidate range every fixture task below is given: the CURRENT scenario
+# repository's own HEAD, on both ends, so entry to `testing` scans a real,
+# EMPTY range. `use_repo` re-derives it for each disposable repo, because each
+# one has a root commit of its own and a sha from the previous repo would not
+# resolve here.
+#
+# It used to be one placeholder sha that exists in no repository at all, which
+# made `git log <base>..<candidate>` FAIL rather than answer -- and the INV-04
+# scan read that silence as a clean range. T026 made the scan fail CLOSED, so a
+# range nothing can walk is refused in the same direction every other
+# unreadable-input check in this codebase fails.
+edge_sha=""
 
 # --- hook plugins ----------------------------------------------------------
 # `hookok` reports success and carries a guidance artifact; `hookbad` reports
@@ -119,6 +130,8 @@ use_repo() {
   printf -- '---\nrun_status: running\nrun_id: r-001\n---\n# Roadmap\n' > "$d/.orchid/roadmap.md"
   cd "$d" || exit 1
   export ORCHID_REPO="$d"
+  # Re-derived per repo -- see the comment on `edge_sha` above.
+  edge_sha="$(git -C "$d" rev-parse HEAD)"
   ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
   export ORCHID_EPOCH
 }
@@ -127,8 +140,9 @@ status_of() { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
 field_of() { "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
 
 # to_arbitrating <id> -- the light-weight walk tests/test_task.sh uses for
-# archetype edge coverage: placeholder shas (a git log over an invalid range
-# prints nothing, so INV-04's scan never trips) plus verification_commands=true.
+# archetype edge coverage: this repo's own HEAD on both ends of the candidate
+# range (a real, EMPTY range, so INV-04's scan runs and finds nothing) plus
+# verification_commands=true.
 to_arbitrating() {
   local id="$1"
   "$ORCHID_BIN" task create "$id" "hook subject" >/dev/null
@@ -313,6 +327,27 @@ assert_eq reviewing "$(drive_dispatch_target review pending)" "the shipped revie
 assert_eq reviewing "$(drive_dispatch_target audit pending)" "a custom archetype dispatches into whatever IT declares"
 assert_eq reviewing "$(drive_dispatch_target audit rework)" "the same lookup serves the rework re-dispatch edge"
 assert_eq "" "$(drive_dispatch_target audit merging)" "a status the archetype declares no active edge out of yields nothing"
+
+# T026: the reverify edge (`<idle>:testing`) is NOT a dispatch target, and the
+# lookup must not depend on the ORDER an archetype lists its transitions in.
+# The scan is first-active-wins, so an archetype that merely wrote
+# `rework:testing` before `rework:implementing` would otherwise send every
+# reworked task straight back into verification of the candidate that just
+# failed -- no implementer spawned, no operator vouching for the tree, which
+# is the whole precondition that edge carries. This fixture writes them in
+# exactly that order.
+mkdir -p "$WORK/arch/reordered"
+printf 'manifest_version=1\nid=test/reordered\nversion=0.1.0\nkind=archetype\napi_version=1\noutcome=code\ntransitions=pending:implementing,implementing:testing,testing:reviewing,testing:rework,reviewing:arbitrating,arbitrating:merging,arbitrating:rework,merging:done,merging:rework,merging:testing,rework:testing,rework:implementing,blocked:testing\n' \
+  > "$WORK/arch/reordered/plugin.conf"
+archetype_validate reordered >/dev/null || fail "the reordered archetype fixture must satisfy the meta-contract"
+assert_eq implementing "$(drive_dispatch_target reordered rework)" \
+  "a rework dispatch still resolves to implementing with rework:testing listed FIRST — the reverify edge is never a dispatch target"
+assert_eq implementing "$(drive_dispatch_target reordered pending)" "and the ordinary pending edge is unaffected"
+assert_eq "" "$(drive_dispatch_target reordered blocked)" \
+  "a status whose only active edge IS the reverify one yields no dispatch target at all — blocked is resolved by an operator verb, never by the driver"
+assert_eq "" "$(drive_dispatch_target feature blocked)" "the same holds for the shipped feature archetype"
+assert_eq testing "$(drive_dispatch_target feature merging)" \
+  "and merging:testing — an ACTIVE source, orchid merge's own rebase reset — is untouched by that skip"
 
 assert_eq implementer "$(drive_role_for_status implementing | cut -f1)" "implementing waits on the implementer role"
 assert_eq reviewer "$(drive_role_for_status reviewing | cut -f1)" "reviewing waits on the reviewer role"

@@ -64,6 +64,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `spool_max_bytes` | `262144` | repo | v0 |
 | `gc_older_than_s` | `86400` | repo | v0 |
 | `infra_max` | `3` | repo | v0 |
+| `rework_max` | `3` | repo | v1.1 |
 | `model` | *(empty — engine's own default)* | repo or user | v0 |
 | `effort` | `medium` | repo or user | v0 |
 | `rate_limit_backoff_s` | `3600` | repo | v1-m2 |
@@ -114,6 +115,14 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   labels non-default bindings `unverified` until that suite passes them. See
   the [README's any-engine-any-role matrix](../README.md#any-engine-any-role)
   for the full picture and a worked swap example.
+- **`rework_max`** is the rework budget: the number of consumed `attempts` at
+  which `orchid drive` stops retrying a failing task and blocks it for a
+  human. It was a hardcoded `3` in the driver until v1.1. One task can be
+  given a larger budget of its own with `orchid task retry <id> --reason
+  "..." --attempts N` (recorded as `attempt_budget` in its frontmatter, and
+  journaled); this key is the repo-wide default everything else falls back
+  to. `infra_failures` never consume attempts, and neither does `orchid task
+  reverify`.
 - **`role.<id>.blocking=false`** marks a role (built-in or custom)
   non-blocking: a failed job for that role is journaled and the run
   continues rather than infra-failing (`docs/specs/operations.md`'s
@@ -135,7 +144,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   engine profile that denies on the command *string* and so can perform none
   of those: a drive pass then stops at an `operator-handoff` boundary instead
   of verifying a candidate that was never going to pass and spending one of
-  its three rework rounds on the failure. It ships `off`, and turning it on is
+  its rework rounds (`rework_max`, above) on the failure. It ships `off`, and turning it on is
   an operator decision landed through `orchid config commit --reason "..."`
   like any other config change — never a line a task's candidate adds to the
   live `orchid.config` of the run it is executing inside, which would switch a

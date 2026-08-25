@@ -40,7 +40,7 @@ set -euo pipefail
 # `trust`, `service`, `config`, `plugins`, `init`, `start`, `doctor`, `plan`,
 # `requirements`, `answer`, `merge`, `verify`, `jobs prepare|reconcile|gc`,
 # `run advance|accept|new|start|resume|boundary set`, `task
-# advance|set|create|unblock|retry|infra-fail` form; every tier-2 runner
+# advance|set|create|unblock|retry|reverify|infra-fail` form; every tier-2 runner
 # (nothing here can start an engine); every vendor CLI; and anything that
 # would be interpreted by a shell. This file never builds a shell string and
 # never evaluates one -- it validates argv, then `exec`s `bin/orchid` with the

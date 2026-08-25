@@ -823,6 +823,18 @@ assert_eq 16 "$SDRIVE_RC" "a pass with only blocked tasks still stops at a judgm
 assert_eq blocked-task "$(sboundary | jq -r .kind)" \
   "with nothing arbitrable in play, the blocked task IS the recorded boundary — this is precedence, not suppression"
 assert_eq S010 "$(sboundary | jq -r .task)" "and among equal-priority boundaries the lowest task id wins"
+# T026: the recurring blocked-task boundary is the message an operator re-reads
+# on EVERY pass over a parked task, so its remedy list has to be the whole list
+# PROTOCOL.md's boundary table names. `reverify` was missing from it while the
+# table already listed it -- a remedy nobody could discover from the one place
+# they were guaranteed to look.
+SBLOCKED_REASON="$(sboundary | jq -r .reason)"
+assert_match "orchid task unblock" "$SBLOCKED_REASON" \
+  "the blocked-task boundary names the verb that clears the block (reason: $SBLOCKED_REASON)"
+assert_match "retry" "$SBLOCKED_REASON" \
+  "and the one that grants another rework round (reason: $SBLOCKED_REASON)"
+assert_match "reverify" "$SBLOCKED_REASON" \
+  "and the one that re-runs verification alone — every remedy PROTOCOL.md's boundary table lists (reason: $SBLOCKED_REASON)"
 
 # Pass 2 -- S020 now sits at `arbitrating` over a request-changes review: an
 # arbitrable boundary, on a HIGHER task id than the blocked one. The reviewer
@@ -2370,6 +2382,73 @@ assert_match "^lib/gate\.sh:9: SC2086: Double quote to prevent globbing$" \
 # against is the one this rework round exists to replace.
 assert_eq "" "$(hfield handoff_ack)" "entry to rework clears the acknowledgement (INV-07 symmetry)"
 
+# --- A RE-STAMPED CANDIDATE IS A COMMIT NOBODY ACKNOWLEDGED ----------------
+# `reverify` RE-STAMPS candidate_sha onto the operator's own newer commit, and
+# `handoff_ack` asserts that the mechanical steps THAT commit needs have been
+# performed. Nobody has said that about the commit reverify just adopted — it
+# is, by construction, work committed since the ack — so the acknowledgement is
+# withdrawn and the pause reopens. Carrying it forward would certify on the
+# operator's behalf that their new commits need no chmod and no formula re-pin,
+# an assertion nobody made, and would buy a verification guaranteed to fail on
+# the missing step while charging a rework round for it.
+#
+# Lineage does not rescue it: the gate proved the new commit DESCENDS from the
+# acknowledged one, which says the acknowledged work is still there and says
+# nothing at all about the commits stacked on top.
+#
+# And the withdrawal strands nothing, which is what the tail of this block
+# proves: reverify leaves the task in `testing`, `--ack` is legal from
+# `testing`, so the boundary costs exactly one command and then the pass
+# verifies.
+horchid task advance H010 implementing --reason "fixture: re-dispatch" >/dev/null
+horchid task advance H010 testing --reason "fixture: implementer envelope ok" >/dev/null
+horchid task handoff H010 --ack --reason "fixture: this candidate's mechanical steps are done" >/dev/null
+assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" "fixture: the hand-off is acknowledged for this candidate"
+horchid task advance H010 blocked --reason "fixture: the suite failed for a reason that was not the candidate" >/dev/null
+HACK_BEFORE="$(hfield handoff_ack)"
+# The operator's own fix, committed on the task's branch — the move `reverify`
+# exists to support.
+printf 'the environment, fixed by hand\n' > "$HWT/operator-fix.txt"
+git -C "$HWT" add operator-fix.txt || fail "fixture: could not stage the operator's fix"
+git -C "$HWT" commit -q -m "H010: fix the fixture the suite kept tripping over" \
+  || fail "fixture: the operator's fix did not land"
+HREVERIFIED="$(git -C "$HWT" rev-parse HEAD)"
+[ "$HREVERIFIED" != "$HACK_BEFORE" ] \
+  || fail "fixture: the operator's commit did not move HEAD, so nothing below is under test"
+hrev_out="$(horchid task reverify H010 --reason "the failure was the sandbox; the fix is committed on the task branch")"
+assert_eq "$HREVERIFIED" "$(hfield candidate_sha)" "reverify re-stamps the candidate from the worktree HEAD"
+assert_eq "" "$(hfield handoff_ack)" \
+  "and CLEARS the acknowledgement — $HACK_BEFORE was acknowledged, $HREVERIFIED is a commit no operator has looked at"
+assert_eq outstanding "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "so the hand-off reads outstanding again, rather than certifying the operator's new commits on their behalf"
+assert_match "was cleared" "$hrev_out" \
+  "and the verb SAYS it withdrew the acknowledgement, because that is an operator-visible consequence of the verb they just ran (out: $hrev_out)"
+assert_match "orchid task handoff H010 --ack" "$hrev_out" \
+  "naming the one command that settles it again (out: $hrev_out)"
+assert_match "reverify: cleared the operator hand-off" "$(cat "$HANDOFF/.orchid/journal.md")" \
+  "and journals it, so the withdrawal is on the trail and not only on a terminal that has scrolled"
+rm -f "$HVERIFY_RAN"
+run_hdrive
+assert_eq 16 "$HDRIVE_RC" \
+  "the pass after a reverify stops at the reopened boundary (out: $HDRIVE_OUT)"
+[ ! -f "$HVERIFY_RAN" ] \
+  || fail "the pass verified a candidate whose hand-off is outstanding — a re-stamp must not inherit an ack"
+assert_eq testing "$(hfield status)" "fixture: and left the task in testing, which is where the remedy is legal"
+
+# THE ONE COMMAND, AND THEN THE PASS PROCEEDS. This is the half that makes the
+# withdrawal above a stop rather than a wedge: `--ack` is legal from `testing`,
+# reverify leaves the task in `testing`, so the operator is never pushed
+# backwards through `implementing` to clear it.
+horchid task handoff H010 --ack --reason "fixture: the re-stamped candidate needs no mechanical step" >/dev/null
+assert_eq satisfied "$(handoff_state "$HANDOFF" H010 | cut -f1)" \
+  "one command settles the reopened pause, from the status reverify itself left the task in"
+rm -f "$HVERIFY_RAN"
+run_hdrive
+[ -f "$HVERIFY_RAN" ] \
+  || fail "and then the pass VERIFIES — the reverify boundary must cost one command, not a round trip through implementing (rc=$HDRIVE_RC, out: $HDRIVE_OUT)"
+assert_eq rework "$(hfield status)" "and takes the verification failure's own edge from there"
+HHANDOFF_CAND="$HREVERIFIED"
+
 # --- the binding is to a COMMITTED CANDIDATE, not to a task or a moment ----
 # An acknowledgement made for one candidate must never read as satisfied for
 # another. This is the shape `orchid merge`'s rebase arm produces when it moves
@@ -3156,3 +3235,95 @@ assert_eq plan-apply "$r_plan_verb" \
 if drive_surface_admits soft "$r_plan_verb"; then
   fail "and none names 'orchid plan apply' either"
 fi
+
+# ===========================================================================
+# Part S -- the rework budget is CONFIGURATION, and one task can be granted
+# more of it (T026, dogfood F28).
+#
+# It used to be the literal `attempts >= 3` in this driver's testing arm.
+# With `attempts` on `task set`'s kernel-owned deny-list and both operator
+# recovery verbs (`unblock`, `retry`) returning a task to `rework` without
+# touching the counter, a task that had spent its rounds on causes the
+# protocol says must NOT be charged -- an environment failure, an
+# operator-caused no-op rebase -- could not be given another round through
+# ANY verb: it re-blocked on its very next verify failure, forever. The only
+# move left was hand-editing frontmatter.
+#
+# Three claims, in order: the repo-wide cap is read from config; a grant made
+# through the real verb actually buys another round from the DRIVER; and the
+# granted budget is itself a cap, not an unlock.
+#
+# No engine is ever started here: the task is parked in `testing` before each
+# pass, and the testing arm runs `orchid verify` in the pass's own foreground.
+# ===========================================================================
+CAPD="$WORK/attemptcap"
+mkdir -p "$CAPD"
+cd "$CAPD" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=1\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CAPD" "$ORCHID_BIN" init >/dev/null || fail "orchid init (attempt-budget fixture)"
+git checkout -q orchid/integration
+CEPOCH="$(ORCHID_REPO="$CAPD" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+corchid() { ORCHID_REPO="$CAPD" ORCHID_EPOCH="$CEPOCH" "$ORCHID_BIN" "$@"; }
+corchid requirements import "$WORK/requirements.md" >/dev/null
+corchid task create C010 "its suite fails and its budget is one round" >/dev/null
+corchid task set C010 verification_commands "exit 1" >/dev/null
+corchid plan apply --reason "initial plan" >/dev/null
+
+CTASK="$CAPD/.orchid/tasks/C010.md"
+CCAND="$(git -C "$CAPD" rev-parse HEAD)"
+fm_set "$CTASK" base_sha "$CCAND"
+fm_set "$CTASK" candidate_sha "$CCAND"
+fm_set "$CTASK" attempts 1
+cfield() { fm_get "$CTASK" "$1"; }
+CDRIVE_RC=0; CDRIVE_OUT=""
+# Parked in `testing` before every pass: this is a driver test, not a
+# lifecycle one -- what it measures is which way the testing arm turns when
+# the suite fails, given the budget in force.
+run_cdrive() {
+  fm_set "$CTASK" status testing
+  CDRIVE_RC=0
+  CDRIVE_OUT="$(ORCHID_REPO="$CAPD" ORCHID_EPOCH="$CEPOCH" "$DRIVE" 2>&1)" || CDRIVE_RC=$?
+}
+
+# 1. `rework_max=1` in orchid.config, one attempt already spent: the driver
+#    stops here. Under the old hardcoded 3 it would have reworked twice more.
+run_cdrive
+assert_eq blocked "$(cfield status)" \
+  "the rework budget comes from config: rework_max=1 with 1 attempt spent blocks instead of reworking (rc=$CDRIVE_RC, out: $CDRIVE_OUT)"
+assert_match "attempts exhausted \(1/1\)" "$CDRIVE_OUT" \
+  "and the pass reports the budget it enforced, not a bare 'exhausted' (out: $CDRIVE_OUT)"
+
+# 2. The operator grants two more rounds through the verb -- and the driver
+#    honors the grant on its very next pass.
+CGRANT_OUT="$(corchid task retry C010 --reason "both spent attempts were the environment, not the candidate" --attempts 2)"
+assert_eq 3 "$(cfield attempt_budget)" \
+  "task retry --attempts 2 records a per-task budget of attempts+2 (out: $CGRANT_OUT)"
+assert_eq 1 "$(cfield attempts)" \
+  "and never winds the attempt COUNTER back -- every reviews/<id>-a<n>-*.json stays keyed to the attempt that wrote it"
+run_cdrive
+assert_eq rework "$(cfield status)" \
+  "the granted budget really does buy another round from the driver (rc=$CDRIVE_RC, out: $CDRIVE_OUT)"
+assert_eq 2 "$(cfield attempts)" \
+  "and that round consumes an attempt like any other"
+
+# 3. The grant is a BUDGET, not an unlock: at attempts 3 of 3 the driver
+#    stops again, on the per-task number this time rather than the config one.
+run_cdrive
+assert_eq rework "$(cfield status)" "attempts 2 of 3 still has a round left"
+assert_eq 3 "$(cfield attempts)" "which it spends"
+run_cdrive
+assert_eq blocked "$(cfield status)" \
+  "and the granted budget is exhausted in its turn (rc=$CDRIVE_RC, out: $CDRIVE_OUT)"
+assert_match "attempts exhausted \(3/3\)" "$CDRIVE_OUT" \
+  "reported against the per-task budget the operator granted (out: $CDRIVE_OUT)"
+# The boundary the pass recorded is what an operator (or a woken orchestrator)
+# actually reads back, so the recovery verbs have to be named THERE, not only
+# in the pass's own console output.
+CBOUNDARY="$(ORCHID_REPO="$CAPD" "$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+assert_match "orchid task retry" "$CBOUNDARY" \
+  "the recorded boundary names the verb that grants more rounds (record: $CBOUNDARY)"
+assert_match "orchid task reverify" "$CBOUNDARY" \
+  "and the one that re-runs verification without spending any, so the operator is never left guessing which verbs exist (record: $CBOUNDARY)"

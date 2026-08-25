@@ -48,7 +48,8 @@ libexec/                    # TIER 1 — deterministic verbs: state transitions
                             #   anything it cannot do safely; every verb it
                             #   composes stays callable on its own
   orchid-run                #   start/resume/advance/accept/new — epochs, runs
-  orchid-task               #   create/show/list/set/advance/unblock/retry
+  orchid-task               #   create/show/list/set/advance/arbitrate/
+                            #   unblock/retry/reverify/infra-fail
   orchid-requirements       #   import (operator-owned exception)
   orchid-plan               #   apply/refresh-context (atomic transactions)
   orchid-verify             #   deterministic verification + evidence
@@ -146,7 +147,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 
 | File | Sole writer (verb) |
 |---|---|
-| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/handoff` |
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/handoff/infra-fail` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
@@ -284,8 +285,11 @@ across prose sections is normative HERE):**
 | merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
 | merging | `merge` exit 5 (`rebase_rereview_required`) | rebase done, SHAs updated; reviews invalidated | frontmatter, journal(`rebase_review`) | testing |
 | rework | `task advance` | rework spec written into task body | frontmatter | implementing |
-| any | `task advance --reason` | ≤3 attempts exhausted / budget / operator | frontmatter, journal | blocked |
-| blocked | `task unblock --reason` | guidance recorded | frontmatter, journal | rework |
+| any | `task advance --reason` | attempts exhausted (`rework_max`, default 3) / budget / operator | frontmatter, journal | blocked |
+| blocked | `task unblock --reason` | guidance recorded into the task BODY | frontmatter, journal | rework |
+| blocked \| rework | `task retry --reason [--attempts N]` | guidance recorded into the task BODY; raises `attempt_budget` to `attempts + N` (N defaults to 1) when the task has no rounds left | frontmatter, journal | rework |
+| blocked \| rework | `task reverify --reason` | task worktree CLEAN (`.orchid/` excluded) and its HEAD this task's own — descended from the current `candidate_sha` (or `base_sha` when there is none) and contained in the `branch` the record names; candidate re-stamped from that HEAD, any standing `handoff_ack` withdrawn with it (the new commit is one no operator has acknowledged); stale verify evidence dropped; **no attempt consumed** | frontmatter, journal | testing |
+| blocked \| rework | `task advance --reason` (the same edge, taken raw) | the SAME preconditions, enforced on the edge itself — clean worktree, lineage, and `candidate_sha` already equal to its HEAD (this route re-stamps nothing; it refuses and names `task reverify`) | frontmatter, journal | testing |
 
 **Enforcement ownership of the preconditions above:** preconditions marked
 deps/worktree/SHAs (deps done, worktree created, base_sha/candidate_sha set)
@@ -318,9 +322,17 @@ kernel invariants):
 ```
 pending → implementing → testing → reviewing → arbitrating → merging → done
                 ↑            │         │            │
-                └── rework (≤3) ───────┴────────────┤
+                └── rework (≤N) ───────┴────────────┤
                                                     └→ blocked
+        rework ──┐                    blocked ──┐
+                 └→ testing (reverify)          └→ testing (reverify)
 ```
+
+N is `rework_max` (config, default 3) unless an operator has granted this one
+task a larger `attempt_budget`. The two `reverify` edges consume no attempt:
+they re-run verification against a candidate the operator has fixed (or a
+suite that failed for reasons that were never the candidate's), instead of
+buying a fresh implementation pass to reach the same tree.
 
 - **testing** = `orchid verify <id>`: runs `verification_commands` in the
   task worktree; records evidence (command, cwd, SHA, timestamps, exit
@@ -510,9 +522,30 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   judges semantics. The orchestrator may pass `--waive-attempt --reason`
   when the failure signature is disjoint from the prior attempt's (distinct
   forward progress); the waiver is a journaled decision (kind
-  `attempt_waiver`). The ≤3 cap targets repeated identical failures; the
+  `attempt_waiver`). The cap targets repeated identical failures; the
   per-task wall-clock budget is the unconditional backstop.
-  `infra_failures` NEVER consume attempts.
+  `infra_failures` NEVER consume attempts, and neither does `task reverify`.
+- **The cap is `rework_max` (config, default 3), and an operator can raise
+  it for ONE task:** `orchid task retry <id> --reason "..." [--attempts N]`
+  records `attempt_budget: <attempts + N>` in that task's frontmatter,
+  journal-first, and the driver enforces whichever of the two applies (the
+  per-task grant wins). **`N` defaults to 1**, so a bare `retry` of a task
+  with no rounds left buys it exactly one — a retry that restored status
+  without a round was the trap this replaced. The grant only ever RAISES a
+  budget — a grant smaller than the budget already in force (every retry of
+  a task still inside its budget, and every repeat of the same bare retry)
+  leaves it alone. `attempt_budget`
+  is kernel-owned (`task set` refuses it) for the same reason
+  `infra_failures` is: it needs a recorded reason, not a bare frontmatter
+  write.
+  **A grant never winds `attempts` back**, deliberately: `attempts` is the
+  attempt NUMBER every per-attempt artifact is keyed on
+  (`reviews/<id>-a<attempts+1>-{implementer,reviewer}*.json`, read by `jobs
+  prepare`, by both kernel envelope gates in `task advance`, and by the
+  driver's own implement-failure predicate). Decrementing it would point the
+  next attempt at a previous attempt's envelopes, so a stale non-ok
+  implement envelope would read as this attempt's fresh failure. The counter
+  is monotonic; the cap is what moves.
 - **A delivery that delivered nothing is an infra failure, not an attempt.**
   An `ok` implement envelope is the engine's own account of itself; the
   worktree is the only thing that can contradict it. When the envelope
@@ -571,15 +604,20 @@ pending → implementing → testing → reviewing → arbitrating → merging �
   nothing proves a candidate exists and the refusal two bullets above stands.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
-worktree, run_id, depends_on, attempts, infra_failures, session_id,
+worktree, run_id, depends_on, attempts, attempt_budget, infra_failures, session_id,
 implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
 blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
 acceptance_criteria, verification_commands, resources, exclusive,
 wallclock_budget_s, started_at, created, updated`. `handoff_ack` (v1.1):
-kernel-owned and written by `orchid task handoff <id> --ack|--clear --reason
-"..."` ALONE — `orchid task set` refuses it by name, because its only legal
-value is the task's current `candidate_sha` at the moment of the ack and a
-hand-set field is the one way this record could lie. Empty means the
+kernel-owned: `orchid task set` refuses it by name, because its only legal
+value is the task's current `candidate_sha` and a hand-set field is the one way
+this record could lie. `orchid task handoff <id> --ack|--clear --reason "..."`
+is the only verb that CREATES one; every other verb that touches it only ever
+withdraws it (entry to `rework`, `unblock`, `retry`, and `task reverify` when it
+re-stamps the candidate — the commit it adopts is one no operator has
+acknowledged, and lineage proves only that the acknowledged work is still
+present, not that the commits on top of it need no mechanical steps). Empty
+means the
 `operator-handoff` boundary is outstanding; equal to `candidate_sha` AND to
 `HEAD` of the tree verification would run in, with that tree CLEAN, means the
 operator performed that candidate's execution-requiring mechanical steps and a
@@ -625,6 +663,8 @@ written by the orchestrator from a bound `hook.on_verify_fail` handler's
 "..."`, before the rework advance (PROTOCOL.md, THE TICK's `testing` FAIL
 arm) — the only frontmatter field a hook handler's own artifact ever
 reaches, and only through that ordinary verb, never written directly.
+`attempt_budget` (v1.1): empty on a fresh task, meaning "use `rework_max`";
+written only by `orchid task retry [--attempts N]` (see Attempt fairness).
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or
@@ -747,7 +787,7 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   BEFORE writing the state change — `task advance` to `merging`, `blocked`,
   and `rework`-from-`arbitrating` (both arbitration outcomes recorded);
   `task set risk_tier` (monotonicity enforced separately from prose);
-  `--waive-attempt`; `task unblock/retry`; `run accept`;
+  `--waive-attempt`; `task unblock/retry/reverify`; `run accept`;
   `lessons retire`. Sequential atomic writes (journal first, state second) mean
   crashes leave at most orphan journal entries (benign, re-runnable), never
   unjournaled state changes. This is INV-08's guarantee: no state change occurs
@@ -860,16 +900,24 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
 
 - Engine calls: deadline in the request (default 60 min), envelope checks,
   one auto-retry, then `infra_failures++` or rework per Attempt fairness;
-  3 rework attempts → `blocked`; repeated infra failures → engine marked
-  unavailable, task re-queued.
+  `rework_max` rework attempts (config, default 3; per-task
+  `attempt_budget` overrides) → `blocked`; repeated infra failures → engine
+  marked unavailable, task re-queued.
 - Rate limits: ledger-marked; task re-queues untouched; dispatch falls to
   the secondary (v1) or waits (v0). A window pauses an engine, never work.
 - Runaway: rework cap, concurrency cap, reviewer stop-conditions, per-task
   wall-clock budget.
 - Blockers: `BLOCKERS.md` + `orchid notify`. **Operator verbs:** `orchid
-  task unblock <id> [--reason "..."]` and `orchid task retry <id>` —
-  validated transitions, guidance recorded into the task body, intervention
-  logged in the audit trail. No hand-editing needed, ever.
+  task unblock <id> --reason "..."`, `orchid task retry <id> --reason "..."
+  [--attempts N]`, and `orchid task reverify <id> --reason "..."` —
+  validated transitions, guidance recorded into the task body (which is what
+  the implementer's capsule carries, so the reason really is delivered, and
+  each verb says so on its own stdout), intervention logged in the audit
+  trail. No hand-editing needed, ever. Choosing between them: `unblock` when
+  the answer changes the plan; `retry` when nothing needs to change (and
+  `--attempts N` when the task also needs more rounds than it has left);
+  `reverify` when the tree is already right and only the verification needs
+  re-running.
 - Crash/restart: `orchid-resume` = doctor → break stale lock if owner dead →
   reconcile manifests/spool. Never re-adopt ambiguous processes: job
   identity is job_id + pgid + start-time; unidentifiable → confirm
@@ -1146,7 +1194,13 @@ whole resume rule — `handoff_ack`, `candidate_sha` and the tree's `HEAD` all
 equal AND that tree clean means done and the walk proceeds, anything else means
 outstanding and it stops again — and it is invalidated exactly as INV-07
 invalidates verify evidence, so a rebased tree never inherits an
-acknowledgement made against the tree it replaced. The exact `file:line: RULE:
+acknowledgement made against the tree it replaced. `task reverify` drops it for
+the same reason: the commit it re-stamps to is one committed AFTER the ack and
+so one no operator has looked at, and descent proves the acknowledged work is
+still present rather than that the commits above it need no mechanical steps of
+their own. The boundary it reopens costs one command, not a wedge — `reverify`
+leaves the task in `testing`, and `testing` is the status `--ack` is legal
+from. The exact `file:line: RULE:
 message` locations of a failing gate travel into the next rework brief
 regardless of who acts on them (see PROTOCOL.md, THE TICK's `testing` arm):
 carrying the locations is what makes a routed fix satisfiable, and the hand-off

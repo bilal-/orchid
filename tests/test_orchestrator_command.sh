@@ -23,7 +23,10 @@ export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH
 
-edge_sha="deadbeefcafebabe0000000000000000000000"
+# This repo's own HEAD, for both shas: entry to `testing` scans a real, EMPTY
+# range. A placeholder that exists nowhere used to serve here, and T026 made
+# that scan fail CLOSED on a range `git log` cannot answer.
+edge_sha="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task create T001 "brokered subject" >/dev/null
 "$ORCHID_BIN" task set T001 base_sha "$edge_sha" >/dev/null
 "$ORCHID_BIN" task set T001 candidate_sha "$edge_sha" >/dev/null
@@ -127,6 +130,7 @@ refuse "editing task frontmatter"       task set T001 risk_tier high --reason x
 refuse "creating a task"                task create T099 "new"
 refuse "unblocking a task"              task unblock T001 --reason x
 refuse "retrying a task"                task retry T001 --reason x
+refuse "re-verifying a task"            task reverify T001 --reason x
 refuse "recording an infra failure"     task infra-fail T001 --reason x
 refuse "retiring a lesson"              lessons retire L001 --reason x
 refuse "consolidating lessons"          lessons consolidate

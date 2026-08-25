@@ -24,6 +24,13 @@ rc=0; archetype_dir no-such-archetype >/dev/null 2>&1 || rc=$?
 # -- feature reproduces today's exact transition table, as DATA --------------
 # This is the literal hardcoded `legal()` case table from before this task,
 # now required to live verbatim in plugins/archetypes/feature/plugin.conf.
+#
+# T026 grew it by exactly two rows -- `rework:testing` and `blocked:testing`,
+# the two source states `orchid task reverify` runs from. They are DATA here,
+# not a name branch in the verb (INV-05): an archetype with no `testing`
+# state (the report-outcome `review` archetype below) simply never declares
+# them, and `reverify` against such a task is refused as an illegal
+# transition rather than being special-cased by archetype name.
 expected_feature="$(cat <<'EOF'
 pending:implementing
 implementing:testing
@@ -36,6 +43,8 @@ merging:done
 merging:rework
 merging:testing
 rework:implementing
+rework:testing
+blocked:testing
 EOF
 )"
 actual_feature="$(archetype_transitions feature)"
