@@ -713,6 +713,22 @@ grep -qF 'unattended_trust_require' "$QUALIFY_SH" \
 grep -qF 'docs/specs/operations.md' "$QUALIFY_SH" \
   || fail "scripts/beta-qualify.sh must point at the recorded decision, so an editor tempted to add a gate finds the reasoning first"
 
+# ...and that last one is a grep over the FILE'S BYTES, which the header comment
+# alone satisfies. It cannot tell whether --help still says any of this. That
+# matters here more than usual: the decision above is that qualification carries
+# a stated exception INSTEAD of a gate, and --help is one of the two surfaces
+# stating it -- delete the paragraph, keep the header comment, and every
+# assertion so far still passes while the mitigation the decision rests on is
+# gone. So pin what --help PRINTS, exactly as the --help block earlier in this
+# file requires of the promise it guards. Folded first: both sentences straddle
+# a hard wrap in the usage text, and grep -qF over the raw output would never
+# match one.
+qualify_help_one_line="$(tr '\n' ' ' <<<"$qualify_help" | tr -s '[:space:]' ' ')"
+grep -qF 'That notice stands in place of a trust step: qualification is deliberately ungated' <<<"$qualify_help_one_line" \
+  || fail "scripts/beta-qualify.sh --help must say that the in-place notice stands IN PLACE OF a trust step and that qualification is ungated by design — the two halves are one claim and neither is safe alone"
+grep -qF 'See docs/specs/operations.md for that decision and what was rejected.' <<<"$qualify_help_one_line" \
+  || fail "scripts/beta-qualify.sh --help must send the operator who doubts that choice to the recorded decision, not only state its outcome"
+
 # The release-day checklist must include the local rehearsal.
 grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
   || fail "docs/install.md's release-day steps must include the local rehearsal"
