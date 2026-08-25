@@ -130,7 +130,17 @@ drive_boundary_wakes_orchestrator review-conflict arbitrating soft \
   || fail "a soft adapter is still woken for the arbitration its orchestrate contract asks it for"
 
 # Kinds no verb settles at all are operator-only on EVERY surface.
-for kind in blocked-task hook-failure worktree-conflict operator-handoff operator-decision; do
+#
+# `operator-handoff` (T010) and `task-prerequisite` (T024) are in this list on
+# purpose rather than by omission from the arbitrable one, and they are the two
+# entries whose absence would be invisible: each HAS a real settling verb
+# (`orchid task handoff --ack`, `orchid task prereq-ack`), so a future change
+# that taught `drive_boundary_settling_verb` to name either would look like a
+# tidy-up and would silently route the boundary to a woken model — whose only
+# available move is to claim work it cannot do. Listed here, that change fails
+# this loop instead. lib/drive.sh states the same policy in prose; this is
+# what makes the claim tested.
+for kind in blocked-task hook-failure worktree-conflict operator-handoff task-prerequisite operator-decision; do
   for surface in brokered soft; do
     assert_eq 0 "$(drive_boundary_priority "$kind" arbitrating "$surface")" \
       "a $kind boundary ranks below arbitrable ones on a $surface surface"
@@ -7271,3 +7281,313 @@ assert_match "chmod [+]x libexec/orchid-frob" "$MIX_FALLBACK_REASON" \
   "the waived reason still reports the candidate-dropped 755 bit as an operator step owed independently of the failure that was waived"
 assert_match "not attributable to the printed failures" "$MIX_FALLBACK_REASON" \
   "and labels the dropped bit as fallback state, so reporting it cannot be misread as letting it earn the waiver"
+# Part S (T024, dogfood F26) -- an operator prerequisite stops the pass BEFORE
+# it verifies.
+#
+# The failure this replaces: a task authors a database migration and tests
+# that exercise the altered table, nothing in the tick applies the migration
+# to the database the suite runs against, and the suite dies on the
+# ENVIRONMENT. Every downstream reading of that is wrong -- the log goes to a
+# reviewer as a candidate defect, `attempts` climbs, and three rounds later
+# the task is blocked over something that was never in it.
+#
+# So the subject here is what the pass does NOT do: it does not run the
+# suite, does not write evidence, and does not spend an attempt. The contrast
+# assertion is the same fixture after the acknowledgement, where a GENUINE
+# failure still costs exactly one attempt -- the gate must not have made
+# failures free.
+# ===========================================================================
+PRQ="$WORK/prereq"
+mkdir -p "$PRQ"
+cd "$PRQ" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$PRQ" "$ORCHID_BIN" init >/dev/null || fail "orchid init (prerequisite fixture)"
+git checkout -q orchid/integration
+QEPOCH="$(ORCHID_REPO="$PRQ" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+qorchid() { ORCHID_REPO="$PRQ" ORCHID_EPOCH="$QEPOCH" "$ORCHID_BIN" "$@"; }
+qfield() { fm_get "$PRQ/.orchid/tasks/Q010.md" "$1"; }
+QSTEP="apply db/migrate/0007_isolation.sql to the test database"
+qorchid requirements import "$WORK/requirements.md" >/dev/null
+qorchid task create Q010 "authors a migration it is not allowed to apply" >/dev/null
+# The suite leaves a MARKER and then FAILS. The marker, not the evidence log,
+# is what proves whether the command ran: entry to `rework` deletes the log
+# (INV-07 evidence invalidation), so after a genuine failing pass the log is
+# gone for a reason that has nothing to do with this subject. And the failure
+# is deliberate -- with the prerequisite outstanding the command must never
+# run at all, and once acknowledged its failure must be counted like any
+# other, so one command proves both halves. `orchid verify` runs it with the
+# repo root as cwd (this task has no worktree), so the marker lands here.
+qorchid task set Q010 verification_commands "touch verify-ran; exit 1" >/dev/null
+qorchid task set Q010 operator_prerequisite "$QSTEP" >/dev/null
+qorchid plan apply --reason "initial plan" >/dev/null
+
+QCAND="$(git -C "$PRQ" rev-parse HEAD)"
+fm_set "$PRQ/.orchid/tasks/Q010.md" status testing
+fm_set "$PRQ/.orchid/tasks/Q010.md" candidate_sha "$QCAND"
+
+QDRIVE_RC=0
+QDRIVE_OUT="$(ORCHID_REPO="$PRQ" ORCHID_EPOCH="$QEPOCH" "$DRIVE" 2>&1)" || QDRIVE_RC=$?
+assert_eq 16 "$QDRIVE_RC" "the pass stops at a judgment boundary (out: $QDRIVE_OUT)"
+assert_match "boundary \[task-prerequisite\] Q010" "$QDRIVE_OUT" \
+  "and it is the boundary that names the condition, not the operator-decision catch-all"
+assert_match "0007_isolation.sql" "$QDRIVE_OUT" \
+  "the reason carries the step a human must actually take"
+assert_match "orchid task prereq-ack Q010" "$QDRIVE_OUT" \
+  "...and the verb that records having taken it"
+[ ! -f "$PRQ/verify-ran" ] \
+  || fail "the verification command must not have run at all"
+[ ! -f "$PRQ/.orchid/reviews/Q010-verify.log" ] \
+  || fail "and no evidence may be written -- that log is the artifact this whole convention exists to never produce"
+assert_eq testing "$(qfield status)" "the task takes no transition"
+assert_eq 0 "$(qfield attempts)" "and spends no attempt on an environment problem"
+
+# The record went through the boundary verb, so the pump reads back the same
+# fact -- and because no verb an orchestrator can run applies a migration,
+# it is operator-only and reaches a human through `orchid notify`.
+qbound="$(ORCHID_REPO="$PRQ" "$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+assert_eq task-prerequisite "$(printf '%s' "$qbound" | jq -r '.kind // ""')" \
+  "the recorded boundary kind"
+assert_eq Q010 "$(printf '%s' "$qbound" | jq -r '.task // ""')" \
+  "bound to the task that declared the prerequisite"
+assert_match "notified" "$QDRIVE_OUT" \
+  "a boundary no admitted verb settles must raise the notify blocker instead of waking a model"
+grep -q "task-prerequisite" "$PRQ/.orchid/BLOCKERS.md" \
+  || fail "the blocker an operator actually reads must name the boundary"
+
+# -- acknowledged: the suite runs, and its real failure is counted -----------
+qorchid task prereq-ack Q010 --reason "applied 0007 to the fixture database" >/dev/null
+assert_eq "$QCAND" "$(qfield prerequisite_ack)" "the ack is bound to this candidate"
+
+QDRIVE_RC=0
+QDRIVE_OUT="$(ORCHID_REPO="$PRQ" ORCHID_EPOCH="$QEPOCH" "$DRIVE" 2>&1)" || QDRIVE_RC=$?
+[ -f "$PRQ/verify-ran" ] \
+  || fail "an acknowledged prerequisite must let the suite actually run (out: $QDRIVE_OUT)"
+assert_match "Q010: verify FAIL" "$QDRIVE_OUT" \
+  "and the pass reports the suite's own result (out: $QDRIVE_OUT)"
+assert_eq rework "$(qfield status)" "a failing suite still sends the task back"
+assert_eq 1 "$(qfield attempts)" \
+  "and a GENUINE failure still costs exactly one attempt -- the gate does not make failures free"
+
+# Rework replaced the candidate, so the acknowledgement dies with it while the
+# declaration survives: the next candidate is asked about again.
+assert_eq "" "$(qfield prerequisite_ack)" "entry to rework cleared the ack"
+assert_eq "$QSTEP" "$(qfield operator_prerequisite)" "...and left the declaration standing"
+
+rm -f "$PRQ/verify-ran"
+fm_set "$PRQ/.orchid/tasks/Q010.md" status testing
+QDRIVE_RC=0
+QDRIVE_OUT="$(ORCHID_REPO="$PRQ" ORCHID_EPOCH="$QEPOCH" "$DRIVE" 2>&1)" || QDRIVE_RC=$?
+assert_eq 16 "$QDRIVE_RC" "the next candidate raises the boundary again (out: $QDRIVE_OUT)"
+assert_match "boundary \[task-prerequisite\] Q010" "$QDRIVE_OUT" \
+  "a task that needed the step once needs it again for the migration the rework may rewrite"
+[ ! -f "$PRQ/verify-ran" ] \
+  || fail "and again without running the command"
+
+# -- an acknowledgement for a SUPERSEDED candidate is no acknowledgement -----
+# Every clear above routes through `rework`. The rebase-reset does not: it
+# rewrites `candidate_sha` and sends the task `merging` -> `testing` through
+# none of those verbs, so the ack survives in the frontmatter still naming the
+# pre-rebase candidate. It must stop counting anyway -- the re-verify a rebase
+# forces is exactly the run that must not be handed an environment nobody
+# re-vouched for. (tests/test_merge.sh drives this through a real `orchid
+# merge` rebase; here the frontmatter is moved directly, to reach the DRIVER's
+# arm with the fixture's own suite marker watching.)
+qorchid task prereq-ack Q010 --reason "applied 0007 for the pre-rebase candidate" >/dev/null
+assert_eq "$QCAND" "$(qfield prerequisite_ack)" "acknowledged for the candidate then in hand"
+QREBASED=cafecafecafecafecafecafecafecafecafecafe
+fm_set "$PRQ/.orchid/tasks/Q010.md" candidate_sha "$QREBASED"
+QDRIVE_RC=0
+QDRIVE_OUT="$(ORCHID_REPO="$PRQ" ORCHID_EPOCH="$QEPOCH" "$DRIVE" 2>&1)" || QDRIVE_RC=$?
+assert_eq 16 "$QDRIVE_RC" \
+  "a superseded acknowledgement stops the pass at the boundary, exactly as no acknowledgement does (out: $QDRIVE_OUT)"
+assert_match "boundary \[task-prerequisite\] Q010" "$QDRIVE_OUT" \
+  "...the same boundary kind, for the same reason"
+assert_match "superseded by $QREBASED" "$QDRIVE_OUT" \
+  "and the reason names the supersession, not a step the operator can see they already took"
+assert_eq "$QCAND" "$(qfield prerequisite_ack)" \
+  "the stale ack is left on file untouched -- it simply does not count; nothing pretends the operator withdrew it"
+[ ! -f "$PRQ/verify-ran" ] \
+  || fail "and the suite still never runs against the environment it was not vouched for"
+
+# ===========================================================================
+# Part T (T024 rework) -- the same wall at `merging`, through the driver.
+#
+# `orchid merge` re-runs the task's WHOLE verification suite against the same
+# external store before it advances the integration ref. Gated at `testing`
+# alone, the two stages would disagree about one condition: the same
+# unapplied migration waved through at verify and charged at merge, where the
+# nonzero-suite arm sends the task to `rework` and the merge log reads as a
+# candidate defect. So merge refuses on the same predicate with the same
+# judgment-boundary code, and THIS is the arm that turns that exit into the
+# boundary an operator actually sees -- the same kind Part S raises, because
+# it is the same condition and the same remedy.
+#
+# Continues from Part S's end state, where the acknowledgement is already
+# stale, so this also covers the stale-flavoured message at the merge stage.
+# The task needs the frontmatter `orchid merge` reads before its gate:
+# a branch, and a base_sha EQUAL to the integration head -- a stale base would
+# send it down the rebase-reset path instead, which runs no suite and is
+# deliberately left ungated (it is the transition that expires a stale ack,
+# not one that consumes it).
+#
+# tests/test_merge.sh drives the verb's own gate against a real repository,
+# including the merge that succeeds once the step is acknowledged. What is
+# proven here is only the driver's translation of exit 16 -- so the fixture
+# never has to reach `git worktree add`, and `task/Q010` need not exist.
+# ===========================================================================
+QMBASE="$(git -C "$PRQ" rev-parse orchid/integration)"
+qorchid task set Q010 branch task/Q010 >/dev/null
+qorchid task set Q010 base_sha "$QMBASE" >/dev/null
+fm_set "$PRQ/.orchid/tasks/Q010.md" status merging
+
+QDRIVE_RC=0
+QDRIVE_OUT="$(ORCHID_REPO="$PRQ" ORCHID_EPOCH="$QEPOCH" "$DRIVE" 2>&1)" || QDRIVE_RC=$?
+assert_eq 16 "$QDRIVE_RC" \
+  "an unacknowledged prerequisite stops the pass at merge too, not only at verify (out: $QDRIVE_OUT)"
+assert_match "boundary \[task-prerequisite\] Q010" "$QDRIVE_OUT" \
+  "the same boundary kind the testing arm raises -- never the operator-decision catch-all merge's other nonzero exits fall to"
+assert_match "superseded by $QREBASED" "$QDRIVE_OUT" \
+  "and the stale acknowledgement is named as stale here as well"
+assert_match "orchid task prereq-ack Q010" "$QDRIVE_OUT" \
+  "...with the verb that clears it"
+assert_eq merging "$(qfield status)" \
+  "the task stays in merging: nothing about the candidate is in question, so nothing is invalidated"
+[ ! -f "$PRQ/.orchid/reviews/Q010-merge.log" ] \
+  || fail "a refused merge writes no merge evidence -- that log is the artifact this convention exists to never produce"
+[ ! -f "$PRQ/verify-ran" ] \
+  || fail "and the suite never ran against the store nobody vouched for"
+
+# The refusal has to be clearable from the state it was raised in. Were
+# `merging` not an accepted status for the ack, the only route back to one
+# would be a trip through `rework`: a whole round -- implementer dispatch,
+# re-verify, re-review -- to re-derive a candidate that was already fine.
+qorchid task prereq-ack Q010 --reason "applied 0007 for the candidate now in hand" >/dev/null \
+  || fail "task prereq-ack must be accepted from merging -- a boundary an operator cannot clear where it was raised is not a remedy"
+assert_eq "$QREBASED" "$(qfield prerequisite_ack)" \
+  "and it binds to the candidate in hand, exactly as it does in testing"
+
+# ===========================================================================
+# Part U (T024 on T010's base) -- BOTH operator-owned stops on ONE task.
+#
+# `operator-handoff` (Part N) and `task-prerequisite` (Part S) sit at the same
+# point in the procedure and hold a candidate the same way, so nothing above
+# says what happens when one task carries both. Two things do, and each is a
+# claim PROTOCOL.md, kernel.md, lib/drive.sh and libexec/orchid-status now
+# make in prose:
+#
+#   1. The driver raises the HAND-OFF first. Not cosmetic: `task handoff --ack`
+#      ADVANCES candidate_sha, and `prerequisite_ack` is bound to candidate_sha
+#      by the same rule `handoff_ack` is -- so an operator routed to the
+#      prerequisite first pays for it. Raising the hand-off first is what walks
+#      them through in the order that costs one command each.
+#   2. Taking them in the WRONG order still converges, and says why. The
+#      binding is deliberately not relaxed for a hand-off (nothing in a sha
+#      compare can tell a re-pinned checksum from a rewritten migration), so
+#      the prerequisite really does expire -- and the boundary raised next must
+#      name the supersession rather than report a step the operator can see
+#      they already took.
+#
+# The wrong order is what is walked below, because it is the one with a cost
+# and therefore the one whose message has to be right.
+# ===========================================================================
+BOTH="$WORK/bothstops"
+mkdir -p "$BOTH"
+cd "$BOTH" || exit 1
+git init -q .
+printf 'handoff_before_verify=required\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$BOTH" "$ORCHID_BIN" init >/dev/null || fail "orchid init (both-stops fixture)"
+git checkout -q orchid/integration
+PEPOCH="$(ORCHID_REPO="$BOTH" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+porchid() { ORCHID_REPO="$BOTH" ORCHID_EPOCH="$PEPOCH" "$ORCHID_BIN" "$@"; }
+pfield() { ORCHID_REPO="$BOTH" "$ORCHID_BIN" task show P010 | grep "^$1: " | cut -d' ' -f2-; }
+pboundary() { ORCHID_REPO="$BOTH" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+PDRIVE_RC=0; PDRIVE_OUT=""
+run_pdrive() {
+  PDRIVE_RC=0
+  PDRIVE_OUT="$(ORCHID_REPO="$BOTH" ORCHID_EPOCH="$PEPOCH" "$DRIVE" 2>&1)" || PDRIVE_RC=$?
+}
+
+cat > "$WORK/requirements-both.md" <<'EOF'
+# Requirements
+- REQ-1: a task held by both operator-owned stops converges.
+EOF
+ORCHID_REPO="$BOTH" ORCHID_EPOCH="$PEPOCH" "$ORCHID_BIN" requirements import "$WORK/requirements-both.md" >/dev/null
+porchid task create P010 "needs a migration applied AND a checksum re-pinned" >/dev/null
+porchid plan apply --reason "initial plan" >/dev/null
+
+PVERIFY_RAN="$WORK/p010-verify-ran"
+porchid task set P010 verification_commands "touch $PVERIFY_RAN; exit 1" >/dev/null
+PSTEP="apply db/migrate/0009_both.sql to the test database"
+
+PHEAD="$(git -C "$BOTH" rev-parse HEAD)"
+PWT="$WORK/bothstops-wt"
+git -C "$BOTH" worktree add -q -b task/P010 "$PWT" "$PHEAD" \
+  || fail "fixture: could not create P010's task worktree"
+porchid task advance P010 implementing --reason "fixture dispatch" >/dev/null
+porchid task set P010 worktree "$PWT" >/dev/null
+porchid task set P010 branch task/P010 >/dev/null
+porchid task set P010 base_sha "$PHEAD" >/dev/null
+porchid task set P010 candidate_sha "$PHEAD" >/dev/null
+porchid task advance P010 testing --reason "fixture: implementer envelope ok" >/dev/null
+porchid task set P010 operator_prerequisite "$PSTEP" >/dev/null
+
+# Both outstanding. The pass must name the HAND-OFF, not the prerequisite.
+run_pdrive
+assert_eq 16 "$PDRIVE_RC" "a task held by both stops stops the pass (out: $PDRIVE_OUT)"
+assert_eq operator-handoff "$(pboundary | jq -r .kind)" \
+  "and the HAND-OFF is the one raised — its ack moves candidate_sha, so taking it second would expire whatever was acknowledged first"
+[ ! -f "$PVERIFY_RAN" ] || fail "nothing verified while either stop was outstanding"
+assert_match "awaiting-operator-handoff" \
+  "$(ORCHID_REPO="$BOTH" "$ORCHID_BIN" status --explain 2>/dev/null)" \
+  "status --explain names the same one, so the row and the boundary agree about which step comes first"
+
+# THE WRONG ORDER, walked deliberately. The operator applies the migration and
+# records it BEFORE performing the hand-off.
+porchid task prereq-ack P010 --reason "applied 0009 to the fixture database" >/dev/null
+assert_eq "$PHEAD" "$(pfield prerequisite_ack)" "the prerequisite is acknowledged against the candidate then in hand"
+
+printf 'sha256 "9999"\n' > "$PWT/formula-pin.txt"
+git -C "$PWT" add formula-pin.txt
+git -C "$PWT" commit -q -m "P010: re-pin the formula checksum
+
+Orchid-Handoff: operator" || fail "fixture: the operator's mechanical commit did not land"
+PHANDOFF_CAND="$(git -C "$PWT" rev-parse HEAD)"
+porchid task handoff P010 --ack --reason "re-pinned the formula" >/dev/null \
+  || fail "fixture: the hand-off ack was refused"
+assert_eq "$PHANDOFF_CAND" "$(pfield candidate_sha)" "the hand-off advanced the candidate to its own commit"
+assert_eq "$PHANDOFF_CAND" "$(pfield handoff_ack)" "and bound its acknowledgement to it"
+assert_eq "$PHEAD" "$(pfield prerequisite_ack)" \
+  "while the PREREQUISITE acknowledgement still names the candidate it was made against — nothing rewrote it"
+
+# ...so it no longer counts, and the next pass says exactly that.
+rm -f "$PVERIFY_RAN"
+run_pdrive
+assert_eq 16 "$PDRIVE_RC" "the pass stops again (out: $PDRIVE_OUT)"
+assert_eq task-prerequisite "$(pboundary | jq -r .kind)" \
+  "now at the PREREQUISITE: the hand-off's advance superseded an acknowledgement bound to the older candidate, and the binding is not relaxed for it"
+assert_match "superseded by $PHANDOFF_CAND" "$PDRIVE_OUT" \
+  "and the boundary NAMES the supersession — 'unacknowledged' to an operator who did apply the migration reads as a broken gate"
+assert_match "0009_both.sql" "$PDRIVE_OUT" "still carrying the step itself"
+[ ! -f "$PVERIFY_RAN" ] \
+  || fail "and still nothing verified: a superseded prerequisite is as unmet as an absent one"
+
+# One command settles it. The cost of the wrong order is exactly that, which
+# is why the ordering is a documented convention and not a gate.
+porchid task prereq-ack P010 --reason "0009 is applied; re-acknowledged for the hand-off's candidate" >/dev/null
+assert_eq "$PHANDOFF_CAND" "$(pfield prerequisite_ack)" "re-acknowledged against the candidate now in hand"
+run_pdrive
+[ -f "$PVERIFY_RAN" ] \
+  || fail "with both stops satisfied for the SAME candidate, the pass finally verifies (rc=$PDRIVE_RC, out: $PDRIVE_OUT)"
+assert_eq rework "$(pfield status)" "and takes the failing suite's own edge, exactly as it would with neither stop configured"
+
+# Entry to rework withdrew BOTH acknowledgements: the candidate they were made
+# against is the one this round exists to replace.
+assert_eq "" "$(pfield handoff_ack)" "rework clears the hand-off acknowledgement"
+assert_eq "" "$(pfield prerequisite_ack)" "and the prerequisite acknowledgement beside it"
+assert_eq "$PSTEP" "$(pfield operator_prerequisite)" \
+  "while the DECLARATION survives, so the next candidate is asked about again"

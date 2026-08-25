@@ -27,6 +27,8 @@ engine: __ENGINE__
 effort: medium
 acceptance_criteria:
 verification_commands:
+operator_prerequisite:
+prerequisite_ack:
 resources:
 exclusive: false
 wallclock_budget_s: 28800

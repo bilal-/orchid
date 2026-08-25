@@ -13,11 +13,12 @@ source "$(dirname "$0")/../helpers.sh"
 DRIVER="$REPO_ROOT/runners/orchid-drive"
 POLICY="$REPO_ROOT/lib/drive.sh"
 # T010: the driver reads verdicts from a SECOND policy library now
-# (lib/handoff.sh, the operator hand-off gate). Check 1 below applies to every
-# such library, not just the first one written -- a read-only rule that covers
-# only the file it was written for stops being an invariant the moment the
-# driver grows another input, and hiding a mutation behind one of them is
-# exactly what check 1 exists to prevent.
+# (lib/handoff.sh, the operator hand-off gate -- and, since T024, the operator
+# prerequisite gate beside it). Check 1 below applies to every such library,
+# not just the first one written -- a read-only rule that covers only the file
+# it was written for stops being an invariant the moment the driver grows
+# another input, and hiding a mutation behind one of them is exactly what
+# check 1 exists to prevent.
 #
 # An ARRAY, not a space-separated string: `$REPO_ROOT` is wherever the checkout
 # happens to live, and a path containing a space would split one library into

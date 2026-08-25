@@ -388,3 +388,175 @@ assert_eq "done" "$("$ORCHID_BIN" task show T008 | grep '^status: ' | cut -d' ' 
   "both candidates off one base reach done, with no operator intervention anywhere"
 git show "$integ:green-a.txt" >/dev/null 2>&1 || fail "candidate a's change is on the integration branch"
 git show "$integ:green-b.txt" >/dev/null 2>&1 || fail "candidate b's change is on the integration branch"
+# T024 rework: the rebase-reset expires an operator prerequisite acknowledgement.
+#
+# `prerequisite_ack` records the candidate_sha an operator acknowledged the
+# out-of-sandbox step for (canonically: "I applied this task's migration to
+# the database the suite runs against"). Every route into `rework` clears the
+# field -- but THIS path is not one of them. A stale base sends merge down the
+# rebase-reverify path: the candidate is rebased, `candidate_sha` is rewritten,
+# the task goes `merging` -> `testing`, and `rework` is never entered. The
+# acknowledgement therefore survives in the frontmatter, still naming the
+# pre-rebase candidate, and must NOT satisfy the gate for the rebased one --
+# otherwise the very event that forces a re-verify would hand that re-verify a
+# vouched-for environment nobody re-vouched for.
+#
+# Asserted against a REAL `orchid merge` rebase (exit 5), not a hand-written
+# candidate_sha, because the point is that this path reaches the gate without
+# going through any of the clearing verbs.
+# ---------------------------------------------------------------------------
+prereq7="apply db/migrate/0007_isolation.sql to the test database"
+"$ORCHID_BIN" task create T040 "declares an operator prerequisite, then gets rebased"
+git checkout -q -b task/T040 "$integ"
+echo seven > feature7.txt && git add feature7.txt && git commit -q -m "feature 7"
+cand7="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base7="$(git rev-parse "$integ")"
+
+"$ORCHID_BIN" task set T040 base_sha "$base7"
+"$ORCHID_BIN" task set T040 candidate_sha "$cand7"
+"$ORCHID_BIN" task set T040 verification_commands "test -f feature7.txt"
+"$ORCHID_BIN" task set T040 operator_prerequisite "$prereq7"
+"$ORCHID_BIN" task advance T040 implementing
+"$ORCHID_BIN" task advance T040 testing
+"$ORCHID_BIN" task prereq-ack T040 --reason "applied 0007 to the fixture database"
+assert_eq "$cand7" "$("$ORCHID_BIN" task show T040 | grep '^prerequisite_ack: ' | cut -d' ' -f2-)" \
+  "the ack names the candidate it was given for"
+git checkout -q task/T040
+"$ORCHID_BIN" verify T040 >/dev/null
+git checkout -q "$integ"
+"$ORCHID_BIN" task advance T040 reviewing
+plant_reviewer_envelope T040
+"$ORCHID_BIN" task advance T040 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task advance T040 merging --reason "approved for merge"
+
+# A parallel task lands on integration first -> stale base -> rebase-reset.
+echo other7 > parallel7.txt && git add parallel7.txt && git commit -q -m "parallel task landed first (T040)"
+rc=0; out7="$WORK/merge7.out"
+"$ORCHID_BIN" merge T040 >"$out7" 2>&1 || rc=$?
+assert_eq 5 "$rc" "stale base -> merge exits 5 (rebase-rereview required)"
+new_cand7="$("$ORCHID_BIN" task show T040 | grep '^candidate_sha: ' | cut -d' ' -f2-)"
+[ "$new_cand7" != "$cand7" ] || fail "test setup: the rebase must actually mint a new candidate_sha"
+assert_eq testing "$("$ORCHID_BIN" task show T040 | grep '^status: ' | cut -d' ' -f2)" \
+  "the rebase-reset lands the task back in testing"
+
+# The field is untouched -- no verb cleared it, and none should have. What
+# changed is the candidate underneath it.
+assert_eq "$cand7" "$("$ORCHID_BIN" task show T040 | grep '^prerequisite_ack: ' | cut -d' ' -f2-)" \
+  "the rebase-reset routes through no clearing verb, so the ack is still on file"
+assert_eq "$prereq7" "$("$ORCHID_BIN" task show T040 | grep '^operator_prerequisite: ' | cut -d' ' -f2-)" \
+  "...and the declaration stands"
+
+# THE POINT: it no longer satisfies the gate.
+[ ! -f .orchid/reviews/T040-verify.log ] || fail "test setup: the rebase-reset must have invalidated the verify evidence"
+git checkout -q task/T040
+rc=0; stale7="$("$ORCHID_BIN" verify T040 2>&1)" || rc=$?
+assert_eq 16 "$rc" \
+  "an acknowledgement for the pre-rebase candidate does NOT satisfy the gate for the rebased one -- verify refuses with the judgment-boundary code"
+assert_match "$cand7" "$stale7" "the refusal names the candidate the ack was for"
+assert_match "$new_cand7" "$stale7" "...and the candidate that superseded it"
+[ ! -f .orchid/reviews/T040-verify.log ] \
+  || fail "a refused verify writes no evidence, stale ack or no ack"
+
+# Re-acknowledged for the candidate now in hand, the run continues normally.
+"$ORCHID_BIN" task prereq-ack T040 --reason "re-applied 0007 for the rebased candidate"
+assert_eq "$new_cand7" "$("$ORCHID_BIN" task show T040 | grep '^prerequisite_ack: ' | cut -d' ' -f2-)" \
+  "the fresh ack binds to the rebased candidate"
+rc=0; "$ORCHID_BIN" verify T040 >/dev/null || rc=$?
+assert_eq 0 "$rc" "re-verify passes once the prerequisite is acknowledged for THIS candidate"
+git checkout -q "$integ"
+"$ORCHID_BIN" task advance T040 reviewing
+plant_reviewer_envelope T040
+"$ORCHID_BIN" task advance T040 arbitrating --reason "re-reviewed after rebase, approved"
+"$ORCHID_BIN" task advance T040 merging --reason "approved for merge"
+rc=0; "$ORCHID_BIN" merge T040 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "merge succeeds on the rebased candidate"
+assert_eq "done" "$("$ORCHID_BIN" task show T040 | grep '^status: ' | cut -d' ' -f2)" \
+  "and the task reaches done -- the gate delayed the run, it did not derail it"
+
+# ---------------------------------------------------------------------------
+# T024 rework: merge's revalidation gates on the prerequisite too.
+#
+# `orchid merge` re-runs the task's WHOLE verification suite against the same
+# external store before it advances the integration ref. Gated at `testing`
+# and not here, one unapplied migration would be forgiven at verify (exit 16,
+# no evidence, no attempt) and charged at merge, where the nonzero-suite arm
+# advances the task to `rework` with `validation_failed` and a merge log full
+# of "prepare() returned false" -- a whole rework round, implementer dispatch
+# and re-review included, spent on a candidate with nothing wrong with it.
+# The `merging`->`rework` edge deliberately charges no attempt, which makes it
+# worse rather than better here: the round happens and the counter does not
+# even record that it did.
+#
+# The route to an unmet ack in `merging` without hand-editing frontmatter:
+# redeclare the prerequisite. The operator acknowledged the step AS IT WAS
+# WORDED, so rewording it clears the ack (tests/test_task.sh covers that
+# clearing); here it is just the honest way to reach the state.
+#
+# The assertion that matters is not the exit code but that THE SUITE NEVER
+# RAN: `verification_commands` is a command that leaves a sentinel file
+# behind, so its absence after a refused merge is direct evidence no suite
+# touched the store -- which is the entire point of refusing before running
+# rather than after.
+# ---------------------------------------------------------------------------
+sentinel8="$WORK/t041-suite-ran"
+prereq8="apply db/migrate/0008_isolation.sql to the test database"
+"$ORCHID_BIN" task create T041 "declares an operator prerequisite, reaches merging"
+git checkout -q -b task/T041 "$integ"
+echo eight > feature8.txt && git add feature8.txt && git commit -q -m "feature 8"
+cand8="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base8="$(git rev-parse "$integ")"
+
+"$ORCHID_BIN" task set T041 base_sha "$base8"
+"$ORCHID_BIN" task set T041 candidate_sha "$cand8"
+"$ORCHID_BIN" task set T041 verification_commands "touch $sentinel8"
+"$ORCHID_BIN" task set T041 operator_prerequisite "$prereq8"
+"$ORCHID_BIN" task advance T041 implementing
+"$ORCHID_BIN" task advance T041 testing
+"$ORCHID_BIN" task prereq-ack T041 --reason "applied 0008 to the fixture database"
+git checkout -q task/T041
+"$ORCHID_BIN" verify T041 >/dev/null
+git checkout -q "$integ"
+[ -f "$sentinel8" ] || fail "test setup: an acknowledged prerequisite must let verify actually run the suite"
+rm -f "$sentinel8"
+"$ORCHID_BIN" task advance T041 reviewing
+plant_reviewer_envelope T041
+"$ORCHID_BIN" task advance T041 arbitrating --reason "single reviewer approved"
+"$ORCHID_BIN" task advance T041 merging --reason "approved for merge"
+
+# The step is reworded -- a different migration, not vouched for by anybody.
+"$ORCHID_BIN" task set T041 operator_prerequisite "apply db/migrate/0009_isolation.sql to the test database"
+assert_eq "" "$("$ORCHID_BIN" task show T041 | grep '^prerequisite_ack: ' | cut -d' ' -f2-)" \
+  "test setup: redeclaring the prerequisite cleared the acknowledgement"
+
+pre_integ8="$(git rev-parse "$integ")"
+pre_attempts8="$("$ORCHID_BIN" task show T041 | grep '^attempts: ' | cut -d' ' -f2)"
+rc=0; out8="$("$ORCHID_BIN" merge T041 2>&1)" || rc=$?
+assert_eq 16 "$rc" \
+  "merge refuses an unacknowledged prerequisite with the judgment-boundary code 16 -- never its FAIL code 1, which is what stops it reading as a bad candidate"
+[ ! -f "$sentinel8" ] \
+  || fail "a refused merge must not run the suite at all -- running it against an unmigrated store is the failure this gate exists to prevent"
+assert_eq merging "$("$ORCHID_BIN" task show T041 | grep '^status: ' | cut -d' ' -f2)" \
+  "the task stays in merging: nothing about the candidate is in question, so nothing is invalidated"
+assert_eq "$pre_integ8" "$(git rev-parse "$integ")" "the integration ref did not move"
+[ ! -f .orchid/reviews/T041-merge.log ] \
+  || fail "a refused merge writes no merge evidence -- that log is the artifact a reviewer would be spent on"
+assert_eq "$pre_attempts8" "$("$ORCHID_BIN" task show T041 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "and the attempt counter is untouched"
+assert_match "0009_isolation" "$out8" "the refusal names the step a human must take"
+assert_match "orchid task prereq-ack T041" "$out8" "...and the verb that records having taken it"
+
+# The refusal has to be actionable from the state it was raised in. Were
+# `merging` not an accepted status for the ack, the only route back to one
+# would be a trip through `rework`: a whole round -- implementer dispatch,
+# re-verify, re-review -- to re-derive a candidate that was already fine.
+"$ORCHID_BIN" task prereq-ack T041 --reason "applied 0009 for this candidate"
+assert_eq "$cand8" "$("$ORCHID_BIN" task show T041 | grep '^prerequisite_ack: ' | cut -d' ' -f2-)" \
+  "prereq-ack accepts merging as well as testing, and binds to the candidate in hand"
+
+rc=0; "$ORCHID_BIN" merge T041 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "re-run after the acknowledgement, merge proceeds normally"
+[ -f "$sentinel8" ] || fail "...and NOW the suite actually runs"
+assert_eq "done" "$("$ORCHID_BIN" task show T041 | grep '^status: ' | cut -d' ' -f2)" \
+  "the task reaches done -- the gate delayed the merge, it did not derail it"

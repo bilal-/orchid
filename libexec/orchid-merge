@@ -3,7 +3,7 @@ set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
-source "$ORCHID_ROOT/lib/resolver.sh"
+source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 # task set/advance below run as child processes of THIS verb; ORCHID_EPOCH
@@ -238,6 +238,21 @@ if [ "$integ_head" != "$base_sha" ]; then
   # hand-off was recorded.
   "$ORCHID_ROOT/bin/orchid" task handoff "$id" --clear \
     --reason "rebase minted candidate $new_candidate; a hand-off performed against $candidate_sha does not carry over (INV-07)" >/dev/null
+  # T024: `prerequisite_ack` is deliberately NOT cleared alongside it, and the
+  # asymmetry is the point rather than an oversight. Both acks are already
+  # dead here by the same rule — each is satisfied only while it equals the
+  # CURRENT `candidate_sha`, and this arm just moved it — so neither clear is
+  # load-bearing; what differs is what the stale VALUE is still worth. Emptying
+  # `prerequisite_ack` would destroy the one thing the next boundary needs to
+  # say: with the field gone it can only report "unacknowledged", to an
+  # operator who did apply the migration and will reasonably read that as a
+  # broken gate. Left standing, the same boundary says "acknowledged for
+  # candidate <old>, superseded by <new>" — which is true, and is the sentence
+  # that tells them the step must be re-taken for the rebased tree. The
+  # hand-off has no equivalent to lose (the work it names is IN the commits the
+  # rebase carried over, so there is nothing for the operator to re-do that the
+  # ordinary re-ack does not cover), so clearing it costs nothing there and
+  # buys the journal entry above.
   # Normative per kernel.md's decision-journal table: the rebase-reset is a
   # judgment-bearing event (evidence invalidated, re-review now mandatory) —
   # journal it as `rebase_review` so the decision trail shows why re-verify
@@ -247,6 +262,53 @@ if [ "$integ_head" != "$base_sha" ]; then
   "$ORCHID_ROOT/bin/orchid" task advance "$id" testing
   echo "rebase_rereview_required $id: base $base_sha -> $integ_head, candidate $candidate_sha -> $new_candidate"
   exit 5
+fi
+
+# T024 (dogfood F26): the SAME operator-prerequisite gate `orchid verify`
+# applies in `testing`, applied here because everything below runs the SAME
+# verification suite against the SAME external store. Without it the two
+# stages disagree about one condition: an unapplied migration is forgiven in
+# `testing` (exit 16, no evidence, no attempt) and charged here, where the
+# nonzero-suite arm at the bottom of this file advances the task to `rework`
+# with `validation_failed` and a merge log full of "prepare() returned
+# false". That is precisely the environment problem wearing the candidate's
+# clothes F26 exists to remove — and it lands a whole rework round on a
+# candidate with nothing wrong with it. The `merging`->`rework` edge charges
+# no attempt (`task advance` exempts it deliberately: this candidate was
+# independently verified once already), so the counter does not even record
+# that the round happened. One predicate (handoff_prereq_unmet), both
+# stages.
+#
+# Deliberately BELOW the rebase-reset above rather than beside the status
+# gate at the top of this verb. The rebase path runs no suite, so it has
+# nothing to protect — and it is the path that RESOLVES a stale ack, by
+# sending the task back to `testing` on a freshly minted candidate. Refusing
+# before it would park the run on a boundary whose own remedy sits on the
+# far side of the refusal.
+#
+# Exit 16 (the judgment-boundary code) and NOT merge's FAIL code 1, for the
+# reason verify uses it: nothing about the candidate is in question. The task
+# stays in `merging`, no evidence is written, no ref moves and no attempt is
+# spent — `orchid merge` is simply re-run once the step is acknowledged.
+# `orchid task prereq-ack` accepts `merging` for exactly this refusal.
+#
+# What this gate does NOT claim: the ack covers the step THIS task declared,
+# and the tree revalidated below is the candidate merged into an integration
+# branch that may have landed other tasks' migrations since. Those are their
+# own tasks' declarations, acknowledged when they verified. This closes the
+# stage disagreement; it is not a general assertion that the store matches
+# the merged tree.
+if handoff_prereq_unmet "$tf"; then
+  echo "merge refused: $id declares an operator prerequisite not acknowledged for this candidate: $(fm_get "$tf" operator_prerequisite)" >&2
+  # Same stale-ack disambiguation as `orchid verify`: a non-empty
+  # `prerequisite_ack` sitting in the frontmatter beside a "not acknowledged"
+  # refusal reads like a broken gate unless the message says the candidate
+  # moved underneath it.
+  if handoff_prereq_stale "$tf"; then
+    echo "orchid: the acknowledgement on file is for candidate $(fm_get "$tf" prerequisite_ack), superseded by $candidate_sha — the step must be re-taken and re-acknowledged for the current candidate" >&2
+  fi
+  echo "orchid: merge re-runs the same suite against the same store — do the step, then: orchid task prereq-ack $id --reason \"...\"" >&2
+  exit 16
 fi
 
 # Base current: merge the candidate in a detached temp worktree — never the

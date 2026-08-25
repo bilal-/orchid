@@ -99,26 +99,58 @@ _status_task_why() {
       [ -n "$why" ] || why="ready-to-dispatch" ;;
     implementing) why="awaiting-implementer-envelope" ;;
     testing)
-      # T010: a task held at the operator hand-off is NOT awaiting verify --
-      # nothing is going to run, and nothing will, until a human performs this
-      # candidate's execution-requiring steps and records them. Reporting it
-      # as `awaiting-verify` would describe a wait on the machine when the
-      # wait is on a person, which is the whole class of silence PROTOCOL.md's
-      # named pause exists to end. `off` and `satisfied` both read exactly as
-      # they did before this task, so a repository not using the gate sees no
-      # change at all.
+      # TWO operator-owned stops sit between here and a verify, and a task held
+      # at either is NOT awaiting one: nothing is going to run, and nothing
+      # will, until a human acts. Reporting `awaiting-verify` would describe a
+      # wait on the machine when the wait is on a person — the whole class of
+      # silence these named pauses exist to end — and would send the operator
+      # looking for a running suite that does not exist, at the one moment they
+      # are themselves the thing being waited on.
+      #
+      # The HAND-OFF is reported first, and that order is not cosmetic: its
+      # acknowledgement ADVANCES `candidate_sha` onto the commit the mechanical
+      # steps produced, which supersedes any prerequisite acknowledgement made
+      # before it. Naming it first is what points the operator at the step that
+      # must come first (PROTOCOL.md says so in the same order). `off` and
+      # `satisfied` both read exactly as they did before T010, so a repository
+      # not using the gate sees no change at all.
       if [ "$(handoff_state "$repo" "$id" | cut -f1)" = outstanding ]; then
         # No quotes in the predicate text: this same string is rendered into
         # the static status page's task table, and a stray `"` there is a
         # markup hazard for no benefit. The full invocation is in PROTOCOL.md
         # and in the boundary's own reason.
         why="awaiting-operator-handoff (orchid task handoff $id --ack)"
+      elif handoff_prereq_unmet "$(orchid_state "$repo")/tasks/$id.md"; then
+        why="awaiting-operator-prerequisite (orchid task prereq-ack $id)"
       else
         why="awaiting-verify (or rebase-pending)"
       fi ;;
     reviewing)    why="awaiting-review-envelopes" ;;
     arbitrating)  why="awaiting-arbitration" ;;
-    merging)      why="awaiting-merge" ;;
+    merging)
+      # Same reason as `testing` above, at the other stage that runs the
+      # suite: `orchid merge` re-runs it against the same external store and
+      # refuses on the same predicate (exit 16), so a task parked here on an
+      # unacknowledged prerequisite is not awaiting a merge — it is awaiting a
+      # human, and will keep doing so.
+      #
+      # Reported without checking whether the base is still current, which is
+      # the one case this can overstate: on a stale base merge rebase-resets to
+      # `testing` before it ever reaches the gate. The same hedge `testing`
+      # makes with "(or rebase-pending)" — a status line summarizes, and the
+      # driver's own `task-prerequisite` boundary, raised only when merge
+      # actually refused, is the authoritative signal.
+      #
+      # The hand-off is deliberately NOT consulted here: it is acknowledged
+      # from `testing` and no other status (its ack advances `candidate_sha`,
+      # which from `merging` would move the tree out from under a merge already
+      # in flight), so a task that reached `merging` at all has already passed
+      # that gate.
+      if handoff_prereq_unmet "$(orchid_state "$repo")/tasks/$id.md"; then
+        why="awaiting-operator-prerequisite (orchid task prereq-ack $id)"
+      else
+        why="awaiting-merge"
+      fi ;;
     blocked)      why="blocked (see: orchid journal show --task $id)" ;;
     done)         why="-" ;;
   esac

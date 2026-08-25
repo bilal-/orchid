@@ -396,6 +396,14 @@ case "$sub" in
       # ONE verb that writes it, not at all three.
       attempt_budget)
         orchid_die "'$key' is kernel-owned — use task retry <id> --reason \"...\" --attempts N" ;;
+      # Single-writer, same discipline as `infra_failures` and `handoff_ack`
+      # above: an acknowledgement that a human did something outside this
+      # repository is worth exactly as much as the journal entry behind it,
+      # and a bare frontmatter write carries none. `task prereq-ack` is the
+      # one path that records both, and it DERIVES the candidate it binds to
+      # rather than accepting one.
+      prerequisite_ack)
+        orchid_die "'prerequisite_ack' is kernel-owned — use task prereq-ack" ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -417,6 +425,34 @@ case "$sub" in
         [ -f "$tasks/$dep_id.md" ] || unknown_deps="$unknown_deps $dep_id"
       done < <(schedule_split_deps "$val")
       [ -z "$unknown_deps" ] || orchid_die "depends_on names no such task:$unknown_deps (ids are separated by commas or whitespace, and each must already exist as a task)"
+    fi
+    # A REDECLARED prerequisite is an unacknowledged one. The operator
+    # acknowledged the step AS IT WAS WORDED; replacing the wording replaces
+    # the step, and a surviving ack would silently vouch for work nobody did.
+    # Read before the write below, so the comparison sees the old value.
+    #
+    # Journaled, like every other write of this field. `prerequisite_ack` is
+    # kernel-owned precisely because an acknowledgement is worth the record
+    # behind it: `task prereq-ack` journals the stamp, the rework advance and
+    # `unblock`/`retry` each journal the intervention that clears it. This
+    # path clears it too, and a decision trail that shows an ack appearing and
+    # then silently gone -- with the operator's `--reason` for the ack still
+    # standing as the last word on the subject -- is the one shape that reads
+    # as an unexplained retraction. Journal-first (INV-08), and both the entry
+    # and the clear under the SAME non-empty guard: a redeclaration over an
+    # empty field retracts nothing, so it deserves no journal entry -- and
+    # `fm_set` on an absent key APPENDS it, which would give a
+    # `prerequisite_ack:` line to every task in a repository that never
+    # acknowledges one. Same reasoning as the rework arm's guard below, which
+    # follows T010's `handoff_ack` clear.
+    if [ "$key" = operator_prerequisite ] && \
+       [ "$val" != "$(fm_get "$f" operator_prerequisite)" ]; then
+      old_ack="$(fm_get "$f" prerequisite_ack)"
+      if [ -n "$old_ack" ]; then
+        journal --task "$id" --kind intervention \
+          "prerequisite redeclared — acknowledgement for candidate $old_ack cleared: \"$(fm_get "$f" operator_prerequisite)\" -> \"$val\""
+        fm_set "$f" prerequisite_ack ""
+      fi
     fi
     if [ "$key" = risk_tier ]; then
       reason=""
@@ -809,6 +845,25 @@ case "$sub" in
       if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
         fm_set "$f" verify_fail_pending ""
       fi
+      # The same invalidation, one field over (T024). An operator prerequisite
+      # is acknowledged FOR A CANDIDATE (`prerequisite_ack` holds that
+      # candidate_sha), and rework exists precisely to replace the candidate:
+      # the migration this task authors on the next attempt may not be the
+      # migration the operator applied for the last one. Cleared on every arm
+      # including merging->rework — a rebase conflict or a failed merge
+      # revalidation is still a candidate about to change. The declaration
+      # itself (`operator_prerequisite`) survives, so the task re-raises its
+      # boundary on its next pass through `testing` rather than quietly
+      # forgetting it needs one.
+      #
+      # Guarded on non-empty for T010's reason above, not merely to match it:
+      # an unguarded `fm_set` APPENDS the key to a task file that lacks it, so
+      # every task in every repository that never declares a prerequisite would
+      # grow a `prerequisite_ack:` line on its first rework — a field the run
+      # does not use, on tasks created before these templates existed.
+      if [ -n "$(fm_get "$f" prerequisite_ack)" ]; then
+        fm_set "$f" prerequisite_ack ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
       [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
     fi
@@ -984,6 +1039,19 @@ case "$sub" in
     # unmerged at the time of writing, and if it lands, this equality is the
     # state it would require -- nothing here depends on it either way.
     #
+    # AND IT SUPERSEDES ANY PREREQUISITE ACKNOWLEDGEMENT MADE BEFORE IT
+    # (T024). `prerequisite_ack` is bound to `candidate_sha` by the same rule
+    # this field is, so the advance above expires one taken earlier in the
+    # same pause -- correctly, since the binding cannot tell a re-pinned
+    # checksum from a rewritten migration. Nothing here compensates for that,
+    # deliberately: weakening the binding to special-case a hand-off is
+    # exactly the hole it was written to close. It is instead an ORDERING,
+    # stated in PROTOCOL.md, surfaced by `orchid status --explain` (which
+    # names the hand-off first) and raised first by the driver -- perform the
+    # hand-off, THEN acknowledge the prerequisite, and neither expires the
+    # other. An operator who does it the other way round pays one re-run of
+    # `orchid task prereq-ack`, and the boundary tells them exactly that.
+    #
     # `--clear` withdraws it. Idempotent by content, like `run boundary set`:
     # clearing a field that is already empty journals nothing, so the rebase
     # arm can call it unconditionally without one journal line per rebase on
@@ -1035,6 +1103,11 @@ case "$sub" in
     # there is nothing left for a hand-off to unblock. The refusal NAMES the
     # status it declined from, because which of those it was is the whole
     # content of the mistake.
+    #
+    # (`orchid task prereq-ack` accepts `merging` as well as `testing`, and the
+    # difference is not an inconsistency: that verb writes no candidate, so
+    # there is nothing for it to move out from under a merge -- and merge's own
+    # refusal has to be clearable from the state it fires in.)
     #
     # `--clear` is deliberately NOT restricted: it only ever WITHDRAWS, it is
     # what `orchid merge`'s rebase arm calls from `merging`, and a withdrawal
@@ -1144,6 +1217,96 @@ case "$sub" in
     journal --task "$id" --kind intervention "operator hand-off acknowledged for candidate $cand: $reason"
     fm_set "$f" handoff_ack "$cand"; fm_set "$f" updated "$(now)"
     echo "$id: operator hand-off acknowledged for candidate $cand" ;;
+  prereq-ack)
+    # T024 (dogfood F26). Some tasks cannot be verified by their own candidate
+    # alone: a schema task authors a migration, and the database its suite runs
+    # against is still unmigrated when the tick reaches `testing`. Nothing in
+    # the tick applies it — deliberately, because the sandbox that authors a
+    # migration is not where schema-write credentials for a shared store
+    # belong — so the suite fails with something like "prepare() returned
+    # false", the driver reads a nonzero exit as a bad candidate, and an
+    # attempt is spent on an environment problem.
+    #
+    # The convention that replaces that: the task DECLARES the step
+    # (`operator_prerequisite`, set when the task is planned — the implementer
+    # cannot set it, since its commits may not touch `.orchid/` at all), the
+    # run stops at a `task-prerequisite` judgment boundary before verifying,
+    # and this verb is how the operator says the step is done.
+    #
+    # It is bound to the CANDIDATE, not to the task: `prerequisite_ack` holds
+    # the candidate_sha it was given, and the gate (handoff_prereq_unmet)
+    # only counts it while it still names the task's CURRENT candidate_sha.
+    # An acknowledgement is a claim about one specific migration having been
+    # applied, and the next candidate may need a different one — so it expires
+    # the moment the candidate it named is superseded, whether by a route
+    # through `rework` (which clears the field outright) or by merge's
+    # rebase-reset, which mints a new candidate and never touches `rework`.
+    #
+    # THE THIRD WAY THE CANDIDATE MOVES is `orchid task handoff --ack` above,
+    # which advances `candidate_sha` onto the commit an operator hand-off
+    # produced. That expires an ack taken before it, which is why PROTOCOL.md
+    # orders the two stops — hand-off first, prerequisite second — and why the
+    # driver and `orchid status --explain` both name the hand-off first. The
+    # binding is not relaxed for it: it cannot tell a re-pinned checksum from a
+    # rewritten migration, and a rule that guessed would be the hole the
+    # binding exists to close. Doing them in the wrong order costs one re-run
+    # of this verb, and the boundary raised afterwards says exactly that.
+    #
+    # Deliberately UNLIKE `task handoff`, this verb writes no `candidate_sha`
+    # and reads no tree. The step it records happened outside this repository
+    # and left the candidate untouched, so there is no commit to advance to and
+    # no working tree whose cleanliness could bear on whether a migration ran.
+    verb_lock_guard "$repo"
+    epoch_require "$repo"; id="${1:-}"; shift || true
+    reason=""
+    while [ $# -gt 0 ]; do case "$1" in
+      --reason)
+        [ -n "${2:-}" ] || orchid_die "--reason requires a value"
+        reason="$2"; shift 2 ;;
+      *) orchid_die "usage: orchid task prereq-ack <id> --reason \"...\"" ;;
+    esac; done
+    [ -n "$id" ] || orchid_die "usage: orchid task prereq-ack <id> --reason \"...\""
+    # Reserved-id + existence guards before any read of the task file, same
+    # rationale as `set`/`unblock` above.
+    [ "$id" != plan ] || orchid_die "task id 'plan' is reserved (plan-scoped critique jobs)"
+    f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
+    [ -n "$reason" ] || orchid_die "task prereq-ack requires --reason (INV-08)"
+    prereq="$(fm_get "$f" operator_prerequisite)"
+    [ -n "$prereq" ] || \
+      orchid_die "$id declares no operator_prerequisite — nothing to acknowledge"
+    # `testing` and `merging`, and no other status. The line is not "wherever
+    # a candidate exists" but "wherever something actually READS this ack":
+    # `orchid verify` gates on it in `testing`, `orchid merge` gates on it in
+    # `merging` (both run the same suite against the same external store, so
+    # both refuse on the same predicate). Ack'ing anywhere else would stamp a
+    # field no verb consults from that state.
+    #
+    # Before `testing` it is not merely unread but meaningless: the candidate
+    # — and therefore the migration this claims to have applied — has not been
+    # written yet, so the ack would vouch for a file nobody has seen.
+    #
+    # `merging` is here because merge's own refusal has to be actionable.
+    # Without it the operator meets a `task-prerequisite` boundary they cannot
+    # clear from the state it was raised in: the only way back to an
+    # acknowledgeable status would be a trip through `rework`, spending a
+    # whole round — implementer dispatch, re-verify, re-review — to re-derive
+    # a candidate that was already fine. That is the cost F26 exists to
+    # remove, so the refusal must be clearable where it is raised.
+    from="$(fm_get "$f" status)"
+    case "$from" in
+      testing|merging) ;;
+      *)
+        echo "orchid: $id is not testing or merging (status: $from) — nothing reads a prerequisite acknowledgement from there" >&2
+        exit 3 ;;
+    esac
+    cand="$(fm_get "$f" candidate_sha)"
+    [ -n "$cand" ] || orchid_die "$id has no candidate_sha — nothing to bind the acknowledgement to"
+    # Journal-first (INV-08 discipline, as in infra-fail): the reason is
+    # recorded before the field it justifies is written.
+    journal --task "$id" --kind intervention \
+      "prerequisite acknowledged for candidate $cand ($prereq): $reason"
+    fm_set "$f" prerequisite_ack "$cand"; fm_set "$f" updated "$(now)"
+    echo "$id: prerequisite acknowledged for candidate $cand" ;;
   unblock)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; shift
@@ -1184,13 +1347,19 @@ case "$sub" in
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
     # with the advance:rework arm and orchid-merge's rebase-reset) -- and, on
     # the same grounds, any operator hand-off recorded against the candidate
-    # this rework round is about to replace.
+    # this rework round is about to replace, and the prerequisite
+    # acknowledgement bound to it. Both guarded on non-empty, for the reason
+    # the advance arm gives: an unguarded clear APPENDS the key to task files
+    # that never carried it.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     if [ -n "$(fm_get "$f" handoff_ack)" ]; then
       fm_set "$f" handoff_ack ""
     fi
     if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
       fm_set "$f" verify_fail_pending ""
+    fi
+    if [ -n "$(fm_get "$f" prerequisite_ack)" ]; then
+      fm_set "$f" prerequisite_ack ""
     fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework"
@@ -1312,13 +1481,18 @@ case "$sub" in
     fi
     # Entry to rework invalidates prior verify/merge evidence (INV-07 symmetry
     # with the advance:rework arm and orchid-merge's rebase-reset) -- and any
-    # operator hand-off bound to the candidate being replaced.
+    # operator hand-off bound to the candidate being replaced, and the
+    # prerequisite acknowledgement bound to it. Both guarded on non-empty, for
+    # the reason the advance arm gives.
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     if [ -n "$(fm_get "$f" handoff_ack)" ]; then
       fm_set "$f" handoff_ack ""
     fi
     if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
       fm_set "$f" verify_fail_pending ""
+    fi
+    if [ -n "$(fm_get "$f" prerequisite_ack)" ]; then
+      fm_set "$f" prerequisite_ack ""
     fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework"
@@ -1501,5 +1675,5 @@ case "$sub" in
     else
       echo "$id: infra_failures $n/$max"
     fi ;;
-  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|unblock|retry|reverify|infra-fail" ;;
+  *) orchid_die "usage: orchid task create|show|list|set|advance|arbitrate|handoff|prereq-ack|unblock|retry|reverify|infra-fail" ;;
 esac

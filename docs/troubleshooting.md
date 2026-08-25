@@ -770,6 +770,81 @@ candidate from the worktree and journals why
 Use `reverify`. The raw edge exists because the transition table is data, not
 because it is a second, laxer procedure.
 
+If the pass stops again with `awaiting-operator-prerequisite` instead, that is
+the OTHER operator-owned stop at this point — a step outside the repository,
+not inside the candidate — and the next section is the one you want. Do the
+hand-off first when both are outstanding: the `--ack` above advances
+`candidate_sha`, and a prerequisite acknowledged before it is superseded by
+that move.
+
+## A task's suite fails on the environment, not on the candidate
+
+**Symptom:** a task authored a schema migration and tests that exercise the
+altered table, and the suite dies with something like `Call to a member
+function execute() on bool` — `prepare()` returned false, because the columns
+do not exist yet. Apply the migration by hand and the same candidate passes.
+Left alone, the run treats this as a bad implementation: the failing log goes
+to a reviewer, the task goes to `rework`, and three rounds later it is
+`blocked` for a defect that was never in it.
+
+Nothing in the tick applies a migration a task itself just wrote, and that is
+deliberate — the sandbox that authors a migration is not where write access to
+a shared database belongs. Say so in the task instead, when you plan it:
+
+```sh
+orchid task set <id> operator_prerequisite "apply db/migrate/0007_*.sql to the test database"
+```
+
+Set it at planning time, not later: the implementer cannot set it at all,
+because its commits may not touch `.orchid/`. From then on the run stops
+before verifying — a `task-prerequisite` judgment boundary, an `orchid notify`
+blocker naming the step, and `orchid status --explain` reporting
+`awaiting-operator-prerequisite` rather than `awaiting-verify`. No suite runs,
+no evidence is written, no attempt is spent.
+
+Do the step, then record it:
+
+```sh
+orchid run boundary show            # which task, and the step it is waiting on
+orchid task prereq-ack <id> --reason "applied 0007 to orchid_test"
+orchid drive                        # the next pass verifies normally
+```
+
+The acknowledgement is bound to the candidate it was given for, and stops
+counting the moment that candidate is superseded. Any route into `rework`
+clears it, so the next attempt — which may author a different migration —
+asks again; the declaration itself survives. A merge that finds the base
+stale rebases the candidate and sends the task back to `testing` without
+passing through `rework` at all, and the ack expires there too: it still
+names the pre-rebase candidate, so the boundary re-raises and says so
+("acknowledged for candidate <old>, superseded by <new>"). If you reword the
+prerequisite, that clears it too, with a journal entry recording what was
+cleared. `prerequisite_ack` cannot be hand-set: `orchid task set` refuses it
+and points at `orchid task prereq-ack`.
+
+The same wall stands at `merging`, for the same reason: `orchid merge` re-runs
+the whole suite against the same database before it advances the integration
+branch. Unacknowledged there, it refuses with the same exit 16 and the same
+`task-prerequisite` boundary, leaves the task in `merging` — nothing merged,
+no evidence written, the integration ref untouched — and the fix is the same
+two commands:
+
+```sh
+orchid task prereq-ack <id> --reason "applied 0007 to orchid_test"
+orchid merge <id>                   # or just let the next pass run it
+```
+
+That is why `prereq-ack` accepts `merging` as well as `testing`. Were merge
+ungated, the one unapplied migration would be waved through at verify and
+charged here, where the failing suite sends the task to `rework` for a full
+round — implementer dispatch, re-verify, re-review — against a candidate that
+was already independently verified and has nothing wrong with it.
+
+If the suite can migrate its own store instead — a fixture database, a temp
+file, an in-memory DB the tests build — do that and leave
+`operator_prerequisite` empty. It is the better answer wherever it is
+available; this is for where it is not.
+
 ## One task needs a decision and the whole run stopped
 
 **Symptom:** `orchid drive` exited 16 (or the pump printed `judgment boundary

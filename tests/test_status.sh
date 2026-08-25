@@ -265,3 +265,65 @@ grep -q 'status_page' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md must document the status_page config key"
 grep -qi 'best-effort' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md must describe the status page regeneration as best-effort"
+
+# ===========================================================================
+# T024 (dogfood F26): a task parked at `testing` on an unacknowledged
+# operator prerequisite is NOT awaiting a verify. The driver refuses to start
+# one and will keep refusing until a human acts, so reporting "awaiting-
+# verify" sends the operator looking for a running suite that does not
+# exist -- at the one moment they are themselves the thing being waited on.
+# ===========================================================================
+"$ORCHID_BIN" task create T004 "authors a migration it is not allowed to apply" >/dev/null
+prq_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task set T004 base_sha "$prq_sha"
+"$ORCHID_BIN" task set T004 candidate_sha "$prq_sha"
+"$ORCHID_BIN" task advance T004 implementing >/dev/null
+"$ORCHID_BIN" task advance T004 testing >/dev/null
+assert_match "T004.*awaiting-verify" "$("$ORCHID_BIN" status --explain)" \
+  "a testing task that declares no prerequisite reports awaiting-verify, exactly as before"
+
+"$ORCHID_BIN" task set T004 operator_prerequisite "apply db/migrate/0007_isolation.sql to the test database"
+assert_match "T004.*awaiting-operator-prerequisite \(orchid task prereq-ack T004\)" \
+  "$("$ORCHID_BIN" status --explain)" \
+  "declared and unacknowledged, the row names the human as the thing being waited on -- and the verb that settles it"
+
+"$ORCHID_BIN" task prereq-ack T004 --reason "applied 0007 by hand" >/dev/null
+assert_match "T004.*awaiting-verify" "$("$ORCHID_BIN" status --explain)" \
+  "and acknowledging it hands the task straight back to the ordinary verify wait"
+
+# ...until the candidate moves out from under the acknowledgement. This is the
+# frontmatter merge's rebase-reset writes (new candidate_sha, back to
+# `testing`, through none of the verbs that clear the ack), and the row must
+# park on the operator again rather than report a verify wait nothing will
+# start.
+"$ORCHID_BIN" task set T004 candidate_sha cafecafecafecafecafecafecafecafecafecafe
+assert_match "T004.*awaiting-operator-prerequisite \(orchid task prereq-ack T004\)" \
+  "$("$ORCHID_BIN" status --explain)" \
+  "an acknowledgement for a superseded candidate leaves the human as the thing being waited on"
+
+# -- and the same at `merging` ----------------------------------------------
+# `orchid merge` re-runs the same suite against the same store and refuses on
+# the same predicate, so a task parked HERE on an unacknowledged prerequisite
+# is no more awaiting a merge than the one above was awaiting a verify -- the
+# verb will keep refusing until a human acts. Reported symmetrically, or the
+# row sends an operator looking for a merge that will never start.
+#
+# `status` is a report, not a gate, so it does not (and need not) distinguish
+# the one case this overstates: on a STALE base, merge rebase-resets to
+# `testing` before it ever reaches the gate. The driver's own boundary, raised
+# only when merge actually refused, is the authoritative signal.
+# No verb takes `testing` -> `merging`, so the frontmatter is moved directly
+# (same direct-source pattern as the ledger row above; fm_set needs
+# common.sh's atomic_write).
+(
+  source "$REPO_ROOT/lib/common.sh"
+  source "$REPO_ROOT/lib/frontmatter.sh"
+  fm_set "$WORK/.orchid/tasks/T004.md" status merging
+)
+assert_match "T004.*awaiting-operator-prerequisite \(orchid task prereq-ack T004\)" \
+  "$("$ORCHID_BIN" status --explain)" \
+  "a merging task blocked on the prerequisite names the human, not the merge"
+
+"$ORCHID_BIN" task prereq-ack T004 --reason "applied 0007 for the candidate now in hand" >/dev/null
+assert_match "T004.*awaiting-merge" "$("$ORCHID_BIN" status --explain)" \
+  "and acknowledging it hands the task back to the ordinary merge wait"

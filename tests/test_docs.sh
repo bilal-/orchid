@@ -795,6 +795,13 @@ grep -qF 'records the working-tree, `HEAD` and remote-ref half of the claim abov
 # to the sentences that have just become false. The discriminator is
 # mechanical: no line of that verb outside a comment mentions both shas today,
 # and any comparison of them necessarily would.
+#
+# T024 note: this verb DOES now refuse before running, on an unacknowledged
+# operator prerequisite -- and that is deliberately not what this tripwire
+# watches. The discriminator is the two SHAS appearing on one line together,
+# which the prerequisite gate never does (it compares an ack against
+# `candidate_sha` inside lib/handoff.sh, and prints, but never reads `$sha` --
+# that variable does not exist until the evidence header below it).
 VERIFY_SRC="$REPO_ROOT/libexec/orchid-verify"
 [ -f "$VERIFY_SRC" ] \
   || fail "libexec/orchid-verify must exist — the check below reads it as the source of truth about what verification does"
@@ -884,3 +891,57 @@ grep -qF 'an ack over a dirty tree is refused' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's hand-off procedure must say that --ack refuses over an uncommitted tree — an operator who hits that refusal with nothing in the procedure about it reads it as a broken verb"
 grep -qF 'acknowledged from `testing` only' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's hand-off procedure must say which status --ack is legal from — the advance it performs moves candidate_sha, which is destructive once reviewers hold that commit"
+
+# ===========================================================================
+# T024 -- the two operator-owned stops before verify are DISTINCT, and the
+# docs must say which comes first.
+#
+# `operator-handoff` (T010) and `task-prerequisite` (T024) sit at the same
+# point in the procedure and read almost identically at a glance: both hold a
+# candidate before verification on an acknowledgement bound to `candidate_sha`.
+# They are not the same thing, and the difference has a cost attached: the
+# hand-off's ack ADVANCES `candidate_sha`, which supersedes a prerequisite ack
+# taken before it. An operator who does them in the other order pays a re-run.
+#
+# Pinned on the folded text because each sentence straddles a hard wrap.
+# ===========================================================================
+printf '%s' "$protocol_one_line" | grep -qF 'Take the hand-off FIRST when both are outstanding' \
+  || fail "PROTOCOL.md must state which of the two operator-owned stops before verify to take first — the hand-off advances candidate_sha and expires a prerequisite ack made before it"
+printf '%s' "$kernel_one_line" | grep -qF 'the driver raises the hand-off first' \
+  || fail "docs/specs/kernel.md must record that the driver raises operator-handoff ahead of task-prerequisite, so the ordering is a documented property and not an accident of the code"
+
+# ===========================================================================
+# T024 -- the rejected alternative in kernel.md must not describe another
+# task's unlanded feature as existing fact.
+#
+# The operator-prerequisite section records why a `migrate=` step run as part
+# of `worktree_prepare` was rejected. That command is PROPOSED BY T023 and is
+# nowhere in this tree: no config key, no code. Argued in the present tense it
+# reads as a description of shipped behaviour, and a reader who greps for it
+# finds nothing -- the spec's own rejection becomes the least trustworthy
+# paragraph on the page.
+#
+# A tripwire in both directions, which is why it is a test and not a comment:
+#   - while nothing defines it, the paragraph must keep saying so and must
+#     name the task the design belongs to;
+#   - the moment something DOES define it, this fails on purpose. Those four
+#     reasons argue against a design as specified; once that design ships they
+#     have to be re-read against what actually shipped, instead of sitting
+#     there as hedging nobody revisits.
+# ===========================================================================
+wp_defined=0
+grep -qxF 'worktree_prepare' "$KEYFILE" && wp_defined=1
+grep -rqF 'worktree_prepare' "$REPO_ROOT/lib" "$REPO_ROOT/libexec" "$REPO_ROOT/runners" 2>/dev/null && wp_defined=1
+if [ "$wp_defined" -eq 0 ]; then
+  # Both assertions run against the whitespace-folded `kernel_one_line` built
+  # above, not the file. Each pins a whole SENTENCE, and a sentence in this
+  # spec is hard-wrapped across two lines -- `grep -F` on the raw file matches
+  # a line at a time, so it would report the paragraph missing whenever the
+  # prose happened to wrap mid-phrase, which is the normal state of it.
+  printf '%s' "$kernel_one_line" | grep -qF 'Nothing named `worktree_prepare` exists in this tree' \
+    || fail 'docs/specs/kernel.md rejects a worktree_prepare design that is not in this tree: it must say so plainly, not describe an unlanded feature in the present tense'
+  printf '%s' "$kernel_one_line" | grep -qF 'proposed by task T023' \
+    || fail 'docs/specs/kernel.md must name T023 as the task that proposes worktree_prepare, so the dependency is stated rather than implied'
+else
+  fail 'worktree_prepare now exists in this tree: docs/specs/kernel.md still argues against it as an unlanded T023 design, and that paragraph must be re-read against what actually shipped'
+fi

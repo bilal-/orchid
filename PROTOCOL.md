@@ -197,15 +197,26 @@ conjunction of three facts, and each of them is read from structured data:
 1. **Which verb records the result.** `review-evidence`/`review-conflict` →
    `orchid task arbitrate`. `planning` → `orchid plan apply`. `run-complete`
    → `orchid run accept --evidence`. `blocked-task`, `hook-failure`,
-   `worktree-conflict`, `operator-handoff` and `operator-decision` name none —
-   no procedure an orchestrator can run resolves them. `operator-handoff` is
-   the one whose omission is a POLICY choice rather than a gap: `orchid task
-   handoff --ack` is a real verb and the broker could be taught to admit it,
-   which is exactly why it must not be. That verb asserts that
-   execution-requiring work was performed by an actor able to perform it, and
-   a model that can run neither the linter nor `chmod`, acknowledging its own
-   hand-off, would recreate the unsatisfiable routing the hand-off exists to
-   prevent — now with a durable field claiming otherwise.
+   `worktree-conflict`, `operator-handoff`, `task-prerequisite` and
+   `operator-decision` name none — no procedure an orchestrator can run
+   resolves them.
+   The two operator-owned stops before verify are the deliberate cases rather
+   than gaps, and for the same reason: each HAS a verb, and naming it here
+   would route the boundary to a model whose only available move is to claim
+   work it did not do.
+   `operator-handoff` — `orchid task handoff --ack` is a real verb and the
+   broker could be taught to admit it, which is exactly why it must not be.
+   That verb asserts that execution-requiring work was performed by an actor
+   able to perform it, and a model that can run neither the linter nor
+   `chmod`, acknowledging its own hand-off, would recreate the unsatisfiable
+   routing the hand-off exists to prevent — now with a durable field claiming
+   otherwise.
+   `task-prerequisite` is the same case one step further out: `orchid task
+   prereq-ack` is a real verb and it does settle that boundary, but what it
+   records is that a HUMAN did something outside the repository — applied a
+   migration to a database, provisioned a credential. No model can do that
+   thing, so none may assert it was done, and the boundary is left unnamed
+   here so it reaches an operator through `orchid notify` instead.
 2. **Whether the resolved adapter's `command_surface` admits that verb.** A
    `brokered` adapter can run only the broker
    (`runners/orchid-orchestrator-command`), whose single state-changing
@@ -247,6 +258,7 @@ The kernel-owned boundary kinds:
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
 | `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository — or its state cannot be read at all, which is refused in the same direction rather than taken for a clean tree |
 | `operator-handoff` | `handoff_before_verify` is on and this candidate's execution-requiring mechanical steps are not acknowledged for it — see "The operator hand-off" below |
+| `task-prerequisite` | the task declares an `operator_prerequisite` — a step outside the sandbox its verification depends on — that nobody has acknowledged for this candidate; raised by either stage that runs the suite (see THE TICK's `testing` and `merging` steps) |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
 | `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree |
 
@@ -428,11 +440,22 @@ sequence in
    probe, a lint, a verification command — states its RED case in the
    acceptance criteria, in the Preamble's terms: which failure the check
    detects, and how the suite watches it fire. A task that cannot state one
-   has not yet described a check. `.orchid/roadmap.md` itself is the one piece of
-   durable state this protocol permits editing directly while still in
-   `planning` — it is only *committed* by step 3 below, so drafting it
-   (unlike every mutation THE TICK makes) is not yet a fenced, journaled
-   transition.
+   has not yet described a check. Include `operator_prerequisite` for any
+   task whose verification depends on a step taken OUTSIDE the sandbox —
+   canonically a schema task, whose migration must reach the database its
+   suite runs against — because PLANNING is the only time it can be set: the
+   implementer cannot, its commits may not touch `.orchid/` at all. Left
+   empty (the default, and the right answer wherever the suite can migrate
+   its own store) it changes nothing; set, it stops the tick at a
+   `task-prerequisite` boundary instead of verifying against an environment
+   the candidate cannot reach. THE TICK's `testing` step is normative, and
+   this applies to every archetype, not only the `migrate` one whose
+   template mentions it.
+
+   `.orchid/roadmap.md` itself is the one piece of durable state this
+   protocol permits editing directly while still in `planning` — it is only
+   *committed* by step 3 below, so drafting it (unlike every mutation THE
+   TICK makes) is not yet a fenced, journaled transition.
 
    If `hook.after_plan_draft` is bound, invoke it now — before the critique
    loop below ever runs — using the shape from the Preamble:
@@ -801,8 +824,13 @@ and every task that is ready to dispatch — never just one. `orchid status
 `ready-to-dispatch`, `awaiting-implementer-envelope`,
 `awaiting-operator-handoff`, `awaiting-verify`,
 `awaiting-review-envelopes`, `awaiting-arbitration`, `awaiting-merge`,
-`awaiting-rework-dispatch`, `blocked (see: ...)`) — use it to pick up where
-the run left off rather than re-deriving state by hand.
+`awaiting-rework-dispatch`, `awaiting-operator-prerequisite (orchid task
+prereq-ack <id>)` — reported from `testing` and from `merging` alike, since
+both stages refuse on it — `blocked (see: ...)`) — use it to pick up where
+the run left off rather than re-deriving state by hand. A task in `testing`
+held by both operator-owned stops reports the hand-off, which is the one to
+take first: acknowledging it advances `candidate_sha`, and that expires a
+prerequisite acknowledgement made before it.
 
 ```
 pending → implementing → testing → reviewing → arbitrating → merging → done
@@ -1213,6 +1241,24 @@ ones its archetype never declares.
     raised. Any value other than `off` reads as `required`, so a typo can only
     route more work to a human, never less.
 
+  **This is not the operator prerequisite, and a task can be held by both.**
+  The hand-off is repository CONFIG about mechanical work INSIDE the
+  candidate, and acknowledging it produces a commit and MOVES `candidate_sha`
+  onto it. The operator prerequisite (the `testing` bullet below) is a
+  PER-TASK declaration about a step OUTSIDE the repository, and acknowledging
+  it moves nothing, because nothing was committed. Clearing one says nothing
+  about the other.
+
+  **Take the hand-off FIRST when both are outstanding.** `prerequisite_ack` is
+  bound to `candidate_sha` by the same rule `handoff_ack` is, so the hand-off's
+  advance expires a prerequisite acknowledgement made before it — correctly,
+  since nothing in a sha comparison can tell a re-pinned checksum from a
+  rewritten migration. `orchid status --explain` names the hand-off first and
+  the driver raises it first, which routes you through them in the order that
+  costs one command each. Nothing enforces it: the wrong order costs one
+  re-run of `orchid task prereq-ack`, and the boundary raised afterwards names
+  the superseded candidate so you can see exactly why.
+
   **Why this does not contradict the rework brief below.** The `testing`
   bullet's FAIL arm carries a failing gate's exact `file:line: RULE: message`
   lines into the task body, where the next implementer reads them. That is
@@ -1234,6 +1280,58 @@ ones its archetype never declares.
   candidate's mechanical steps are acknowledged for it. Then `orchid verify
   <id>` — synchronous, run in the foreground of the tick itself; there is no
   job here, so nothing for `jobs check`/`jobs reconcile` to see.
+  - **First, the operator prerequisite, if the task declares one.** Some
+    tasks cannot be verified by their candidate alone. The canonical case is
+    a schema task: it authors a migration and the tests that prove behavior
+    against the altered table, and the database its suite runs against is
+    still unmigrated when the tick arrives here. Nothing in the tick applies
+    it — deliberately, because the sandbox that authors a migration is not
+    where write access to a shared store belongs. Run anyway, the suite fails
+    on the environment, the log reads like a defect in the candidate, and an
+    attempt is spent on it.
+    So a task whose verification depends on such a step declares it, at
+    PLANNING time, in one frontmatter field: `orchid task set <id>
+    operator_prerequisite "apply db/migrate/00NN_*.sql to the test database"`.
+    It is set THEN and not later because the implementer cannot set it at
+    all — its commits may not touch `.orchid/`, which INV-04 enforces at the
+    door of this very status (PLANNING step 2 names the field for exactly
+    this reason). If `operator_prerequisite` is non-empty and
+    `prerequisite_ack` does not equal the task's current `candidate_sha` —
+    empty, or naming a candidate this task has since superseded — **do not
+    verify**: raise a `task-prerequisite` boundary naming the step. `orchid
+    verify` refuses on the same condition on its own — exit **16**, the
+    judgment-boundary code rather than its FAIL code 1 — so no evidence is
+    written and no caller can mistake it for a failing candidate.
+    The operator does the step and records it: `orchid task prereq-ack <id>
+    --reason "..."`. That verb accepts `testing` and `merging` and no other
+    status — the two in which a verb actually reads the ack (before `testing`
+    the migration being acknowledged does not exist yet; `merging` is there
+    because `orchid merge` gates on the same condition, see that bullet) —
+    requires a `candidate_sha`, journals the reason, and stamps
+    `prerequisite_ack` with that candidate_sha. It counts for that candidate
+    and no other: an acknowledgement is a claim about ONE migration having
+    been applied, and the next candidate may need a different one. Every
+    path into `rework` —
+    the advance, `task unblock`, `task retry` — clears the ack along with the
+    verify evidence; and where a candidate is superseded WITHOUT passing
+    through `rework`, the comparison above is what expires it. `orchid
+    merge`'s rebase-reset is that case and it is not a corner: it takes the
+    task from `merging` back to `testing` on a freshly rebased
+    `candidate_sha`, and the ack for the pre-rebase candidate must not
+    satisfy the gate for the rebased one. Either way the declaration
+    survives, so the boundary re-raises for the new candidate. Redeclaring
+    the prerequisite (`task set operator_prerequisite`) clears the ack too —
+    the operator acknowledged the step as it was worded — and journals that
+    clearing as an `intervention`, like every other write of the field.
+    `prerequisite_ack` is kernel-owned — `task set` refuses it, `task
+    prereq-ack` is its single writer.
+    Leave the field empty whenever the suite can migrate its own store (a
+    fixture database, a temp file, an in-memory DB the tests build). That is
+    the better design; this convention is for the case where it is not
+    available.
+    Where the operator hand-off above is ALSO outstanding, take it first: its
+    ack advances `candidate_sha`, which expires a prerequisite ack made
+    before it. See "Take the hand-off FIRST" there.
   - PASS: `orchid task advance <id> reviewing --reason "verify passed"` (the
     kernel's own INV-11 gate independently re-checks that the evidence's
     `candidate:` line matches the task's current `candidate_sha` before
@@ -1641,6 +1739,22 @@ ones its archetype never declares.
     fix the missing/failing required hook (rerun it, or fix its handler)
     and retry `orchid merge <id>`; this is a hook-handler gap, never a
     candidate defect the way exit `1`'s `rework` is.
+  - status still `merging` with exit `16` (`merge refused: <id> declares an
+    operator prerequisite not acknowledged for this candidate`): the same
+    condition, the same boundary and the same remedy as the `testing` bullet
+    above — raise a `task-prerequisite` boundary naming the step. This verb
+    re-runs the task's whole verification suite against the same external
+    store, so it gates on the prerequisite exactly as `orchid verify` does;
+    gating one stage and not the other would forgive an unapplied migration
+    at verify and charge it here, where the failure arm sends the task to
+    `rework` and the log reads like a candidate defect. Nothing was merged,
+    no evidence was written and the integration ref did not move. The
+    operator takes the step, records it (`orchid task prereq-ack <id>
+    --reason "..."` — which accepts `merging` for this case), and `orchid
+    merge <id>` is simply re-run. If the message instead reports an
+    acknowledgement for a SUPERSEDED candidate, the step must be re-taken for
+    the current one: an ack is a claim about one migration, not about the
+    task.
 
 **4. Blockers.**
 If a notify channel is configured (`notify.channel`), the outbound message
@@ -1872,7 +1986,10 @@ one-pass driver could otherwise stop progressing in silence:
   acknowledgement proceeds (so the stop is not a loop), and a second pass
   without one stops again (so it is not a walk-past). The boundary is
   operator-only, so the pump wakes no model and one `orchid notify` blocker
-  per distinct record reaches a human instead.
+  per distinct record reaches a human instead. The operator prerequisite is
+  checked immediately after it, on the same pass and by the same rule; the
+  hand-off is raised first because its ack moves `candidate_sha` and would
+  otherwise expire a prerequisite ack taken before it.
 - **A finished run is handed off, not left polling.** When every task is
   `done`, the driver takes COMPLETION's step 1 itself (`orchid run advance
   accepting --reason "all tasks done"` — a transition whose whole
@@ -1937,10 +2054,14 @@ one-pass driver could otherwise stop progressing in silence:
    performed, and the walk proceeds to verification; anything else means they
    were not (or were performed against a candidate that has since moved, or a
    commit has landed since the acknowledgement), and the walk stops there
-   again. Nothing else records this, which is the point —
+   again. Read the operator PREREQUISITE the same way and in the same place —
+   `prerequisite_ack` equal to `candidate_sha` on a task that declares an
+   `operator_prerequisite` — for the same reason: nothing but those fields
+   records either stop. Nothing else records this, which is the point —
    a resumed session, a second driver pass and a second operator all read the
    same two fields and the same `HEAD` and reach the same answer. `orchid status
-   --explain` prints `awaiting-operator-handoff` for the outstanding case, and
+   --explain` prints `awaiting-operator-handoff` or
+   `awaiting-operator-prerequisite` for the outstanding cases, and
    `orchid run boundary show` names any boundary the last pass left recorded.
 7. Resume THE TICK above, starting at step 3 (the state-machine walk), now
    that jobs/state have been reconciled and the capsules are loaded.

@@ -1087,3 +1087,216 @@ git -C "$rn_wt" mv .orchid/scratch.txt .orchid/tasks/scratch.txt
 rn_ok="$(ORCHID_CONCURRENCY=99 "$ORCHID_BIN" task reverify T033 --reason "kernel state moved; the candidate is untouched")"
 assert_eq testing "$(tfield T033 status)" \
   "a rename entirely inside .orchid/ is still excluded -- the gate reads the whole record, it does not just refuse renames (out: $rn_ok)"
+# T024 (dogfood F26) -- operator prerequisites.
+#
+# Some tasks cannot be verified by their candidate alone: a schema task
+# authors a migration, and the database its suite runs against is still
+# unmigrated when the tick reaches `testing`. Run anyway, the suite fails on
+# the ENVIRONMENT ("Call to a member function execute() on bool", because
+# prepare() found no such column), the log reads like a defect in the
+# candidate, and an attempt is spent on it.
+#
+# The convention: the task declares the step in `operator_prerequisite`, and
+# nothing verifies it until an operator acknowledges that step FOR THIS
+# CANDIDATE. Every assertion below is about the fix's own behaviour, never
+# about the shape of the failure it replaces.
+# ============================================================================
+#
+# T004 (testing) and T009 (arbitrating) are both parked in ACTIVE statuses by
+# the time this section runs, which is exactly the default `concurrency` cap
+# of 2 -- so every dispatch edge below (pending/rework -> an active status
+# passes through schedule_dispatch_blockers) would be refused for a reason
+# that has nothing to do with this subject. Raised through the ordinary env
+# override rather than by disturbing the fixtures above.
+export ORCHID_CONCURRENCY=8
+"$ORCHID_BIN" task create T010 "authors a migration it is not allowed to apply"
+pre_sha="feedfacecafebeef000000000000000000000000"
+pre_step="apply db/migrate/0007_isolation.sql to the test database"
+"$ORCHID_BIN" task set T010 base_sha "$pre_sha"
+"$ORCHID_BIN" task set T010 candidate_sha "$pre_sha"
+"$ORCHID_BIN" task set T010 verification_commands true
+t010() { "$ORCHID_BIN" task show T010 | grep "^$1: " | cut -d' ' -f2-; }
+
+# The templates seed both fields empty, and a task that declares nothing is
+# affected in no way whatsoever -- this convention is opt-in per task.
+grep -q '^operator_prerequisite:$' .orchid/tasks/T010.md \
+  || fail "templates/task.md must seed an empty 'operator_prerequisite:' line"
+grep -q '^prerequisite_ack:$' .orchid/tasks/T010.md \
+  || fail "templates/task.md must seed an empty 'prerequisite_ack:' line"
+assert_eq "" "$(t010 operator_prerequisite)" "a fresh task declares no operator prerequisite"
+assert_eq "" "$(t010 prerequisite_ack)" "and has acknowledged nothing"
+
+# `prerequisite_ack` is kernel-owned. An acknowledgement that a human did
+# something OUTSIDE this repository is worth exactly the journal entry behind
+# it, and a bare frontmatter write carries none.
+rc=0; pre_set_out="$("$ORCHID_BIN" task set T010 prerequisite_ack "$pre_sha" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task set prerequisite_ack must be refused (kernel-owned, single writer)"
+assert_match "task prereq-ack" "$pre_set_out" "the refusal names the verb that does write it"
+assert_eq "" "$(t010 prerequisite_ack)" "the refused set wrote nothing"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+
+# Nothing declared: verify behaves exactly as it always has, evidence and all.
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "a task with no operator_prerequisite must verify exactly as before"
+[ -f .orchid/reviews/T010-verify.log ] \
+  || fail "...writing its evidence log as before"
+
+# ...and there is nothing to acknowledge, so the verb says so rather than
+# stamping a meaningless ack.
+rc=0; pre_none_out="$("$ORCHID_BIN" task prereq-ack T010 --reason "nothing to do" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "task prereq-ack must be refused when no operator_prerequisite is declared"
+assert_match "no operator_prerequisite" "$pre_none_out" "the refusal says why"
+
+# -- declared and unacknowledged: refused BEFORE the command runs -----------
+rm -f .orchid/reviews/T010-verify.log
+"$ORCHID_BIN" task set T010 operator_prerequisite "$pre_step"
+rc=0; pre_verify_out="$("$ORCHID_BIN" verify T010 2>&1)" || rc=$?
+assert_eq 16 "$rc" \
+  "verify refuses with the judgment-boundary code 16 -- never its own FAIL code 1, which is what makes this unmistakable for a failing candidate"
+assert_match "$pre_step" "$pre_verify_out" "the refusal names the step a human must take"
+assert_match "orchid task prereq-ack T010" "$pre_verify_out" "...and the verb that records having taken it"
+[ ! -f .orchid/reviews/T010-verify.log ] \
+  || fail "a refused verify must write NO evidence -- that log is precisely the artifact a reviewer and an attempt would be spent on"
+assert_eq 0 "$(t010 attempts)" "and refusing costs no attempt"
+assert_eq testing "$(t010 status)" "the task stays where it was"
+
+# The ack verb accepts `testing` and `merging` and no other status. The line
+# is "wherever a verb actually READS the ack", not "wherever a candidate
+# exists": `orchid verify` gates on it in `testing`, `orchid merge` gates on
+# it in `merging`. Anywhere else the call would stamp a field nothing
+# consults from that state -- and before `testing` the migration it claims to
+# have applied has not even been written.
+"$ORCHID_BIN" task advance T010 rework --reason "exercise the status gate from somewhere else"
+rc=0; pre_status_out="$("$ORCHID_BIN" task prereq-ack T010 --reason "far too early" 2>&1)" || rc=$?
+assert_eq 3 "$rc" "task prereq-ack from a status no gate reads exits 3"
+assert_match "is not testing or merging" "$pre_status_out" "...naming both states it does accept"
+assert_match "status: rework" "$pre_status_out" "...and the status it actually found"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+
+rc=0; "$ORCHID_BIN" task prereq-ack T010 2>/dev/null || rc=$?
+[ "$rc" -ne 0 ] || fail "task prereq-ack requires --reason (INV-08)"
+assert_eq "" "$(t010 prerequisite_ack)" "the reason-less call wrote nothing"
+
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0007 to orchid_test by hand" >/dev/null
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" \
+  "the acknowledgement is bound to the candidate it was given for, not to the task"
+grep -q "prerequisite acknowledged for candidate $pre_sha" .orchid/journal.md \
+  || fail "task prereq-ack must journal the acknowledgement before writing it (INV-08, journal-first)"
+grep -q "applied 0007 to orchid_test by hand" .orchid/journal.md \
+  || fail "...carrying the operator's own reason"
+
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "an acknowledged prerequisite lets verify run normally"
+[ -f .orchid/reviews/T010-verify.log ] || fail "...and write its evidence as usual"
+
+# -- the ack dies with the candidate ---------------------------------------
+# Rework exists to replace the candidate, and the migration the next attempt
+# authors may not be the migration the operator applied for the last one.
+"$ORCHID_BIN" task advance T010 rework --reason "the next attempt may author a different migration"
+assert_eq "" "$(t010 prerequisite_ack)" \
+  "entry to rework clears the ack, exactly as it clears the verify evidence beside it"
+assert_eq "$pre_step" "$(t010 operator_prerequisite)" \
+  "the DECLARATION survives -- the task still needs the step, it just needs it again"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "re-applied for the reworked candidate" >/dev/null
+"$ORCHID_BIN" task advance T010 blocked --reason "park it"
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" "blocking on its own changes no candidate, so the ack stands"
+"$ORCHID_BIN" task unblock T010 --reason "unpark it"
+assert_eq "" "$(t010 prerequisite_ack)" "task unblock lands the task in rework, so it clears the ack too"
+
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "re-applied once more" >/dev/null
+"$ORCHID_BIN" task advance T010 blocked --reason "park it again"
+"$ORCHID_BIN" task retry T010 --reason "nothing to change, just try again"
+assert_eq "" "$(t010 prerequisite_ack)" "task retry lands it in rework as well, so it clears the ack too"
+
+# -- the ack dies with the candidate it NAMED, not just with `rework` -------
+# The three clears above are the paths that go through `rework`. They cannot
+# be the whole binding: libexec/orchid-merge's rebase-reset rewrites
+# `candidate_sha` and sends the task `merging` -> `testing` without entering
+# `rework` at all, so the ack survives on file naming a candidate that no
+# longer exists. Here the frontmatter is moved directly (what that reset
+# writes); tests/test_merge.sh proves the same thing through a real `orchid
+# merge` rebase, and tests/test_drive.sh through the driver's own arm.
+pre_rebased="feedfacecafebeef0000000000000000deadbeef"
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0007 for the pre-rebase candidate" >/dev/null
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" "acknowledged for the candidate then in hand"
+rm -f .orchid/reviews/T010-verify.log
+"$ORCHID_BIN" task set T010 candidate_sha "$pre_rebased"
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" \
+  "no verb cleared the ack -- what changed is the candidate underneath it"
+pre_att="$(t010 attempts)"
+rc=0; pre_stale_out="$("$ORCHID_BIN" verify T010 2>&1)" || rc=$?
+assert_eq 16 "$rc" \
+  "an ack naming a superseded candidate does NOT satisfy the gate -- it is a claim about ONE candidate's migration, and this is a different candidate"
+assert_match "$pre_sha" "$pre_stale_out" "the refusal names the candidate the ack was for"
+assert_match "$pre_rebased" "$pre_stale_out" "...and the candidate that superseded it"
+[ ! -f .orchid/reviews/T010-verify.log ] \
+  || fail "a stale ack writes no evidence either -- same refusal, same silence"
+assert_eq "$pre_att" "$(t010 attempts)" "and still costs no attempt"
+
+"$ORCHID_BIN" task prereq-ack T010 --reason "re-applied for the rebased candidate" >/dev/null
+assert_eq "$pre_rebased" "$(t010 prerequisite_ack)" "re-acknowledging binds to the candidate now in hand"
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "...which satisfies the gate again"
+
+# Back to the fixture's baseline for the sections below: same candidate_sha as
+# before, task in `rework`. Waived, because nothing here was an attempt.
+"$ORCHID_BIN" task set T010 candidate_sha "$pre_sha"
+"$ORCHID_BIN" task advance T010 rework --waive-attempt \
+  --reason "fixture bookkeeping: restoring the baseline, no attempt was spent"
+
+# -- rewording the step un-acknowledges it ---------------------------------
+"$ORCHID_BIN" task advance T010 implementing
+"$ORCHID_BIN" task advance T010 testing
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0007" >/dev/null
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0008_isolation.sql to the test database"
+assert_eq "" "$(t010 prerequisite_ack)" \
+  "a redeclared prerequisite is an unacknowledged one -- the operator vouched for the step AS IT WAS WORDED"
+# ...and says so in the journal. `prerequisite_ack` is kernel-owned exactly
+# because an acknowledgement is worth the record behind it: the ack verb
+# journals the stamp, and every other clear (the rework advance, unblock,
+# retry) journals the intervention that clears it. An ack appearing in the
+# decision trail and then silently vanishing -- with the operator's own reason
+# for it still standing as the last word -- is an unexplained retraction.
+grep -q "prerequisite redeclared" .orchid/journal.md \
+  || fail "clearing the ack by redeclaration must be journaled, like every other write of that field"
+grep -q "acknowledgement for candidate $pre_sha cleared" .orchid/journal.md \
+  || fail "...naming the candidate whose acknowledgement was dropped"
+
+pre_j_before="$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)"
+"$ORCHID_BIN" task prereq-ack T010 --reason "applied 0008" >/dev/null
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0008_isolation.sql to the test database"
+assert_eq "$pre_sha" "$(t010 prerequisite_ack)" \
+  "an idempotent re-set of the SAME text is not a redeclaration and must leave the ack alone"
+assert_eq "$pre_j_before" "$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)" \
+  "...and journals nothing, because it cleared nothing"
+
+# A redeclaration over an EMPTY ack has nothing to retract, so it stays silent
+# too -- the entry marks a withdrawn acknowledgement, not every edit of the
+# declaration. (The first redeclaration below drops a real ack and does
+# journal; the second, over the field it just emptied, must not.)
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0009_isolation.sql to the test database"
+assert_eq "" "$(t010 prerequisite_ack)" "test setup: that redeclaration cleared the ack"
+pre_j_empty="$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)"
+"$ORCHID_BIN" task set T010 operator_prerequisite "apply db/migrate/0010_isolation.sql to the test database"
+assert_eq "$pre_j_empty" "$(grep -c 'prerequisite redeclared' .orchid/journal.md || true)" \
+  "redeclaring over an empty ack retracts nothing and journals nothing"
+
+# Withdrawing the declaration removes the gate entirely, ack or no ack.
+"$ORCHID_BIN" task set T010 operator_prerequisite ""
+"$ORCHID_BIN" task set T010 prerequisite_ack "" 2>/dev/null && \
+  fail "task set prerequisite_ack must stay refused even with an empty value"
+rm -f .orchid/reviews/T010-verify.log
+"$ORCHID_BIN" verify T010 >/dev/null \
+  || fail "with no declaration there is no gate, whatever prerequisite_ack happens to hold"
+[ -f .orchid/reviews/T010-verify.log ] || fail "...and verify writes evidence again"
