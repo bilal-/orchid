@@ -120,7 +120,11 @@ command surface admits that verb, and a task status that verb accepts -- so a
 review boundary is arbitrable from `arbitrating` and operator-only from
 `reviewing`. Every boundary the pass meets is printed either way, and one no
 admitted verb can settle also raises one `orchid notify` blocker per distinct
-record, because runners/orchid-pump deliberately wakes no model for it.
+record, because runners/orchid-pump deliberately wakes no model for it. That
+blocker DECLARES ITS ANSWER SET where the kind has one (lib/drive.sh's
+drive_boundary_choices), so the page an operator reads names the answers
+`orchid answer` will accept instead of leaving `<choice>` to be guessed; kinds
+with no enumerable set declare none and keep the free-text contract.
 
 Between an implementer's envelope reconciling and `orchid verify` running,
 some candidates need execution-requiring mechanical work an engine profile
@@ -313,6 +317,27 @@ set_boundary() {
   boundary_kind="$kind"; boundary_task="$task"; boundary_reason="$reason"
   boundary_status="$tstatus"
   return 0
+}
+
+# drive_notify <kind> <task|""> <text> -- raise the operator's page for a
+# boundary of that kind, DECLARING the answers `orchid answer` will accept for
+# it (lib/drive.sh's drive_boundary_choices). Every notify the driver sends
+# goes through here rather than calling the verb directly, because a page whose
+# `<choice>` placeholder is never filled in is exactly the page r-001 shipped
+# twenty-seven of: reachable, unanswerable, and silently accepting a typo as a
+# decision. A kind with no enumerable set passes no --choice at all and the
+# question keeps the free-text contract unchanged.
+drive_notify() {
+  local kind="$1" task="$2" text="$3" choice
+  local -a nargs
+  nargs=(notify)
+  [ -z "$task" ] || nargs+=(--task "$task")
+  while IFS= read -r choice; do
+    [ -n "$choice" ] || continue
+    nargs+=(--choice "$choice")
+  done <<< "$(drive_boundary_choices "$kind")"
+  nargs+=("$text")
+  "$ORCHID_BIN" "${nargs[@]}" >/dev/null
 }
 
 # ---------------------------------------------------------------------------
@@ -1868,7 +1893,9 @@ drive_testing() {
   attempts="$(fm_get "$tf" attempts)"; [ -n "$attempts" ] || attempts=0
   budget="$(schedule_attempt_budget "$repo" "$id")"
   if [ "$attempts" -ge "$budget" ]; then
-    "$ORCHID_BIN" notify --task "$id" "attempts exhausted ($attempts/$budget): see .orchid/reviews/$id-verify.log" >/dev/null
+    # The page is for a task this line is about to block, so declare the
+    # blocked-task answers while retaining T026's task-specific budget.
+    drive_notify blocked-task "$id" "attempts exhausted ($attempts/$budget): see .orchid/reviews/$id-verify.log"
     "$ORCHID_BIN" task advance "$id" blocked --reason "attempts exhausted ($attempts/$budget)" >/dev/null
     drive_note "$id: verify FAIL, attempts exhausted ($attempts/$budget) — testing -> blocked"
     set_boundary operator-decision "$id" "attempts exhausted after $attempts of $budget rework round(s): see .orchid/reviews/$id-verify.log — orchid task retry $id --reason \"...\" [--attempts N] grants more; orchid task reverify $id --reason \"...\" re-runs verification alone"
@@ -2475,7 +2502,7 @@ if [ -n "$check_out" ]; then
     _btask="$(printf '%s' "$_line" | cut -f1)"
     [ -f "$state/tasks/$_btask.md" ] || continue
     [ "$(fm_get "$state/tasks/$_btask.md" status)" != blocked ] || continue
-    "$ORCHID_BIN" notify --task "$_btask" "task wallclock budget exceeded" >/dev/null
+    drive_notify blocked-task "$_btask" "task wallclock budget exceeded"
     "$ORCHID_BIN" task advance "$_btask" blocked --reason "wallclock budget exceeded" >/dev/null
     drive_note "$_btask: wallclock budget exceeded — blocked"
   done <<< "$check_out"
@@ -2744,8 +2771,10 @@ if [ -n "$merging_ids" ]; then
             merge_evidence="${merge_evidence:-the verb produced no output}"
             merge_evidence="${merge_evidence:0:300}"
           fi
-          "$ORCHID_BIN" notify --task "$merge_id" \
-            "merge left task in merging: $merge_evidence" >/dev/null
+          # operator-decision: a config/CAS problem has no enumerable answer
+          # set, so this page stays free text on purpose.
+          drive_notify operator-decision "$merge_id" \
+            "merge left task in merging: $merge_evidence"
           set_boundary operator-decision "$merge_id" "merge left the task in merging (exit $merge_rc) — a config/CAS problem, not a candidate defect"
         fi ;;
       *)
@@ -2773,13 +2802,8 @@ if [ -n "$boundary_kind" ]; then
     prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
     if [ "$prev_kind" != "$boundary_kind" ] || [ "$prev_task" != "$boundary_task" ] || \
        [ "$prev_reason" != "$boundary_reason" ]; then
-      if [ -n "$boundary_task" ]; then
-        "$ORCHID_BIN" notify --task "$boundary_task" \
-          "judgment boundary [$boundary_kind] needs an operator: $boundary_reason" >/dev/null
-      else
-        "$ORCHID_BIN" notify \
-          "judgment boundary [$boundary_kind] needs an operator: $boundary_reason" >/dev/null
-      fi
+      drive_notify "$boundary_kind" "$boundary_task" \
+        "judgment boundary [$boundary_kind] needs an operator: $boundary_reason"
       drive_note "notified: [$boundary_kind] is operator-only, so no orchestrator will be woken for it"
     fi
   fi

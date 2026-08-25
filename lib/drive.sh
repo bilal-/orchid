@@ -350,6 +350,51 @@ drive_boundary_settling_verb() {
   esac
 }
 
+# drive_boundary_choices <kind> -- the answers `orchid answer` accepts for the
+# page THIS kind raises, one per line, or nothing when the kind has no
+# enumerable set. Declared with the question (`orchid notify --choice ...`),
+# printed on the page, and enforced by `orchid answer`, which refuses anything
+# outside the set and names the valid ones in the refusal.
+#
+# WHY THIS TABLE EXISTS AT ALL. A boundary that reaches a human reaches them as
+# one channel message, and r-001 shipped twenty-seven of those whose only
+# instruction was `orchid answer <qid> <choice> --nonce <n>` -- with <choice>
+# a free-text value validated against nothing. Answerable in principle,
+# unanswerable in practice: nothing on the page said what would be accepted,
+# and a typo was recorded silently as if it were a decision. That is lesson
+# L028 in the answer medium (a refusal that does not name the action which
+# clears it), and naming the set is the fix.
+#
+# The vocabulary is DECISIONS, and each one names the operator verb that
+# carries it out -- `unblock`/`retry` (`orchid task unblock|retry`),
+# `approve`/`request-changes` (`orchid task arbitrate --result`), `accept`
+# (`orchid run accept --evidence`), `acknowledged` (`orchid task handoff
+# --ack`). Recording the answer is not running the verb: nothing consumes a
+# `.answer` file automatically, so the page records what the operator decided
+# and the operator still runs it. Every value is one [A-Za-z0-9_-] word, which
+# is both what `orchid notify` requires (it has to survive as a single argv
+# word of `orchid answer`) and the narrower shape
+# runners/orchid-orchestrator-command admits, so a woken orchestrator can
+# declare the same sets from the brokered surface.
+#
+# KINDS DELIBERATELY ABSENT, and the absence is the point: `operator-decision`
+# is a CATCH-ALL whose reason text is composed per site (a refused advance, an
+# archetype with no edge, a status nobody recognized), `hook-failure` and
+# `worktree-conflict` are broken infrastructure, and `planning` is roadmap
+# drafting. None of those has an answer set anybody could enumerate honestly,
+# so they declare none and keep the free-text contract they have always had --
+# which is also why a set here can never become a way to refuse an operator's
+# legitimate prose.
+drive_boundary_choices() {
+  case "$1" in
+    blocked-task) printf 'unblock\nretry\ndefer\n' ;;
+    review-evidence|review-conflict) printf 'approve\nrequest-changes\ndefer\n' ;;
+    run-complete) printf 'accept\ndefer\n' ;;
+    operator-handoff) printf 'acknowledged\ndefer\n' ;;
+    *) return 0 ;;
+  esac
+}
+
 # drive_boundary_resolvable <kind> <task-status> <command_surface> -- 0 iff a
 # woken orchestrator could settle this exact boundary, right now, with a verb
 # its adapter admits and the task's current status allows. Fail-closed on

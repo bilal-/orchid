@@ -160,6 +160,57 @@ if drive_boundary_wakes_orchestrator run-complete "" nonsense; then
   fail "an unrecognized command_surface must fall back to brokered, never to soft"
 fi
 
+# --- the answers a boundary's page declares (T009) --------------------------
+# A boundary routed to a human arrives as ONE channel message, and r-001
+# shipped twenty-seven of those whose only instruction was `orchid answer
+# <qid> <choice> --nonce <n>` — with <choice> validated against nothing.
+# Answerable in principle, unanswerable in practice. So a kind with an
+# enumerable answer set declares it, and `orchid answer` gates on it.
+assert_eq "unblock
+retry
+defer" "$(drive_boundary_choices blocked-task)" \
+  "a blocked task's page names the two verbs that clear it, and the option to leave it parked"
+assert_eq "approve
+request-changes
+defer" "$(drive_boundary_choices review-evidence)" \
+  "a review boundary's page names the arbitration results"
+assert_eq "approve
+request-changes
+defer" "$(drive_boundary_choices review-conflict)" \
+  "...and a review CONFLICT names the same set, since the same verb records both"
+assert_eq "accept
+defer" "$(drive_boundary_choices run-complete)" \
+  "a finished run's page names the acceptance step"
+assert_eq "acknowledged
+defer" "$(drive_boundary_choices operator-handoff)" \
+  "a hand-off's page names the acknowledgement"
+
+# THE OTHER EDGE, and it is the one that keeps a declared set from becoming a
+# way to refuse an operator's legitimate prose: kinds whose reason text is
+# composed per site, or that are simply broken infrastructure, have no set
+# anybody could enumerate honestly. They must declare NONE, so `orchid answer`
+# keeps accepting free text for them exactly as it did before choice sets
+# existed. Without this half, "declare a set where there is one" would drift
+# into "declare a set everywhere", and the first page whose real answer is a
+# sentence would be refused.
+for kind in operator-decision hook-failure worktree-conflict planning nosuchkind; do
+  assert_eq "" "$(drive_boundary_choices "$kind")" \
+    "a $kind boundary has no enumerable answer set and must declare none"
+done
+
+# Every declared value has to survive as ONE argv word of `orchid answer` (and
+# as one entry of the comma-joined set recorded with the question), which is
+# also the shape runners/orchid-orchestrator-command admits — so a woken
+# orchestrator can declare the same sets from the brokered surface.
+for kind in blocked-task review-evidence review-conflict run-complete operator-handoff; do
+  while IFS= read -r _choice; do
+    [ -n "$_choice" ] || continue
+    case "$_choice" in
+      *[!A-Za-z0-9_-]*) fail "$kind declares '$_choice', which is not a single [A-Za-z0-9_-] word — it could not survive as one argument to \`orchid answer\`" ;;
+    esac
+  done <<< "$(drive_boundary_choices "$kind")"
+done
+
 # --- evidence arm ----------------------------------------------------------
 mk_policy_task P01 low high ""
 assert_eq evidence "$(decision_of P01)" "no candidate_sha at all is an evidence boundary"
@@ -1218,6 +1269,8 @@ assert_match "notified: \[review-evidence\] is operator-only" "$LDRIVE_OUT" \
 assert_match "judgment boundary \[review-evidence\] needs an operator" \
   "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
   "and the blocker really is recorded where an operator reads it"
+assert_match "^choices: approve \| request-changes \| defer\$" "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
+  "carrying the arbitration results as its declared answer set, not a bare <choice> placeholder"
 
 # One review per routed engine, and the same evidence set advances. (Both are
 # request-changes here so the walk stops at `arbitrating` instead of running
@@ -1491,6 +1544,19 @@ assert_match "notified: \[run-complete\] is operator-only" "$BDRIVE_OUT" \
 assert_match "judgment boundary \[run-complete\] needs an operator" \
   "$(cat "$BROK/.orchid/BLOCKERS.md")" \
   "and the blocker that tells the operator to run the acceptance step is really raised"
+
+# ...AND THAT PAGE SAYS WHAT MAY BE ANSWERED. This is the half r-001 shipped
+# without: twenty-seven boundaries whose only instruction was `orchid answer
+# <qid> <choice> --nonce <n>`, with <choice> validated against nothing — so
+# nothing on the page said what would be accepted and a typo was recorded
+# silently as a decision. Asserted on a REAL driver-raised page, not on the
+# verb in isolation: `orchid notify --choice` existing changes nothing at all
+# until the code that raises actual judgment boundaries passes it.
+assert_match "^choices: accept \| defer\$" "$(cat "$BROK/.orchid/BLOCKERS.md")" \
+  "the run-complete page names the answers 'orchid answer' will accept"
+assert_eq "accept,defer" "$(cat "$BROK/.orchid/runtime/answers/"*.choices)" \
+  "and records them as the machine set 'orchid answer' actually gates on, not as prose alone"
+
 if drive_boundary_wakes_orchestrator run-complete "" "$(drive_orchestrator_surface "$BROK")"; then
   fail "no model may be woken for a boundary whose only settling verb its adapter refuses"
 fi
@@ -3214,6 +3280,25 @@ assert_match "uncommitted work" "$UDRIVE_OUT" \
   "the pass names what actually happened — 'delivered nothing' would be a false report of a tree with the work in it"
 assert_match "half-done.txt" "$UDRIVE_OUT" \
   "and names the paths, so the operator can see what they are being asked to decide about without going looking"
+
+# THE FREE-TEXT EDGE of the declared-choice work (T009), pinned on a REAL
+# driver-raised page rather than on the verb in isolation. `operator-decision`
+# is the catch-all: its reason text is composed per site, so no set anybody
+# could enumerate honestly exists — "commit the work or throw it away" is a
+# call about somebody's real output, not a menu. Its page must therefore
+# declare NOTHING and keep the free-text contract `orchid answer` has always
+# had. Without this half, the fix for the unanswerable pages would drift into
+# refusing the operator's legitimate prose on the pages that need it.
+assert_match "judgment boundary \[operator-decision\] needs an operator" \
+  "$(cat "$UNCM/.orchid/BLOCKERS.md")" \
+  "precondition: a real page for this boundary was raised, so the two checks below are about its content and not about an absent file"
+if grep -q '^choices: ' "$UNCM/.orchid/BLOCKERS.md"; then
+  fail "an operator-decision page must declare no choice set — its answer is prose, and gating it on a menu would refuse the real reply"
+fi
+for _cf in "$UNCM/.orchid/runtime/answers/"*.choices; do
+  [ -e "$_cf" ] || continue
+  fail "and no machine choice-set record may exist for it either — the sidecar's existence IS the gate"
+done
 
 # ...and NOTHING IS CHARGED. Part O's rung belongs to a failure with a
 # deterministic recovery; this one is a stop, and a stop that also spent a rung

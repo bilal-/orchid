@@ -157,13 +157,15 @@ if [ "${1:-}" = --inbound-probe ]; then
   fi
   [ -n "$probe_out" ] || { echo "'hermes gateway status' exited 0 and printed nothing, so there is no state here to read"; exit 2; }
 
-  # WHICH LINE gets judged, most specific evidence first. Judging the whole
+  # WHICH LINES get judged, most specific evidence first. Judging the whole
   # blob would let one unrelated platform's row condemn a healthy return leg
   # (a multi-platform gateway prints several), which is the same false alarm
   # the word-boundary discipline below exists to prevent.
-  #   1. the row naming the configured channel -- the best evidence there is
-  #   2. failing that, the row naming the gateway itself
-  #   3. failing that, the first line
+  #   1. the rows naming the configured channel -- the best evidence there is,
+  #      and when there is any, it is the ONLY evidence considered
+  #   2. failing that, the rows naming the gateway itself, then the rows whose
+  #      LABEL is a status word, then the first line -- judged in that order
+  #      until one of them determines something
   # The channel name comes from config and is interpolated into an ERE, so a
   # name carrying regex metacharacters falls back to a FIXED-string match
   # instead -- an invalid-regex error from grep would otherwise end up quoted
@@ -177,68 +179,99 @@ if [ "${1:-}" = --inbound-probe ]; then
   # to the gateway's own state rather than declaring the return leg dead.
   case "$probe_channel" in
     *[!A-Za-z0-9_-]*)
-      probe_line="$(printf '%s\n' "$probe_out" | grep -iF -- "$probe_channel" | head -n1 || true)" ;;
+      probe_rows="$(grep -iF -- "$probe_channel" <<<"$probe_out" || true)" ;;
     *)
-      probe_line="$(printf '%s\n' "$probe_out" | grep -iE "(^|[^[:alnum:]_-])${probe_channel}([^[:alnum:]_-]|$)" | head -n1 || true)" ;;
+      probe_rows="$(grep -iE -e "(^|[^[:alnum:]_-])${probe_channel}([^[:alnum:]_-]|$)" <<<"$probe_out" || true)" ;;
   esac
-  if [ -z "$probe_line" ]; then
-    probe_line="$(printf '%s\n' "$probe_out" | grep -iE '(^|[^[:alnum:]_-])gateway([^[:alnum:]_-]|$)' | head -n1 || true)"
+  if [ -z "$probe_rows" ]; then
+    # THE SERVICE-MANAGED SHAPE, and why this is a ranked LIST rather than one
+    # picked line. A gateway run under launchd/systemd reports through its
+    # supervisor, which puts a unit HEADER on the line that names the gateway
+    #     * hermes-gateway.service - Hermes Gateway
+    # and the actual verdict on an indented label line below it
+    #          Active: active (running) since ...
+    # Picking the gateway row and taking its silence for the whole answer read
+    # that as "not one this probe recognizes" -- undetermined for a return leg
+    # that is plainly up, on the deployment shape a supervised gateway most
+    # commonly has. So the gateway rows are judged FIRST and, only if none of
+    # them determines anything, the status-LABEL rows are judged next.
+    #
+    # The label set is fixed and contains no platform name, so a per-platform
+    # row (`discord: disconnected`) still cannot reach this tier and condemn a
+    # channel it says nothing about -- which is the property step 1 above
+    # exists to protect.
+    probe_rows="$(grep -iE -e '(^|[^[:alnum:]_-])gateway([^[:alnum:]_-]|$)' <<<"$probe_out" || true)"
+    probe_labels="$(grep -iE -e '^[^[:alnum:]]*(active|status|state|health|service|gateway)[[:space:]]*[:=]' <<<"$probe_out" || true)"
+    probe_rows="$(printf '%s\n%s\n%s\n' "$probe_rows" "$probe_labels" "$probe_first" | grep -v '^[[:space:]]*$' || true)"
   fi
-  [ -n "$probe_line" ] || probe_line="$probe_first"
+  [ -n "$probe_rows" ] || probe_rows="$probe_first"
 
-  probe_lower="$(printf '%s' "$probe_line" | tr '[:upper:]' '[:lower:]')"
-  # Negatives FIRST: "not running" contains "running", so a positive-first
-  # order would read a stopped gateway as up -- the one mistake this probe
-  # must never make.
-  #
-  # But each negative is matched as a WHOLE WORD, and against the row with
-  # the channel's OWN NAME elided, because these run against an entire status
-  # row -- name included. Bare substrings fail in exactly the way this file
-  # also refuses to fail for `*ok*`/`*error*` below: `*down*` calls a channel
-  # named `downtime-alerts` dead, and reads a healthy "telegram connected
-  # (last shutdown 2d ago)" as NOT connected. Either one makes doctor print
-  # "Answers sent on this channel are being lost" about a row that says
-  # connected -- the false alarm that teaches an operator to ignore this
-  # line, on the one check whose whole job is to be believed.
-  #
-  # Each negated form is spelled out here rather than left to the positive
-  # test: "not ready" contains the whole word "ready", so a row hermes writes
-  # that way is a negation the positives would otherwise read as up.
   probe_channel_lower="$(printf '%s' "$probe_channel" | tr '[:upper:]' '[:lower:]')"
-  probe_status="${probe_lower//"$probe_channel_lower"/ }"
-  if grep -qE '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy)|stopped|disconnect(ed|ing)?|offline|unauthor[a-z]*|unhealthy|expired|down|unreachable)([^a-z0-9_-]|$)' \
-       <<<"$probe_status"; then
-    echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
-    exit 1
-  fi
-  # Deliberately NARROW, in both directions. No bare `*ok*`/`*fail*`/`*error*`
-  # substring tests: `*ok*` matches "broken" (and "token expired"), and a
-  # healthy row reading "running, 0 errors" would trip `*error*`. Either way a
-  # substring that loose invents a verdict out of a word fragment. A line
-  # matching neither list falls through to exit 2 below with its own text
-  # quoted, which is the honest answer for output nobody has verified against
-  # a live gateway yet. A truly down gateway is caught by the nonzero-exit
-  # branch above, not by string matching.
-  #
-  # `up` is absent from this list on purpose, though it is the word an
-  # operator would reach for: as a whole word it also matches "could not
-  # bring up the gateway", whose negation none of the forms above catch --
-  # a false REACHABLE, the worse of the two errors, out of a status line
-  # that says the opposite.
-  #
-  # And matched with the negatives' own two disciplines, WHOLE WORDS against
-  # the NAME-ELIDED row, because the same two failures mirror exactly onto
-  # this side: a bare `*active*` reads "inactive" as up, and a channel named
-  # `ready-queue` or `online-ops` would invent a verdict out of its own name.
-  # This direction is the worse one to get wrong -- a false NOT-reachable
-  # only cries wolf, while a false REACHABLE tells an operator their answers
-  # are getting through on a channel that is dropping every one of them.
-  if grep -qE '(^|[^a-z0-9_-])(running|connected|online|ready|active|healthy)([^a-z0-9_-]|$)' \
-       <<<"$probe_status"; then
-    echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
-    exit 0
-  fi
-  echo "hermes's gateway status line for channel '$probe_channel' is not one this probe recognizes: $probe_line"
+  probe_judged=""
+  while IFS= read -r probe_line; do
+    [ -n "$probe_line" ] || continue
+    # The line quoted back on an undetermined verdict is the FIRST (most
+    # specific) candidate, not the last one tried: the operator is being shown
+    # the evidence this probe would most like to have understood.
+    [ -n "$probe_judged" ] || probe_judged="$probe_line"
+    probe_lower="$(printf '%s' "$probe_line" | tr '[:upper:]' '[:lower:]')"
+    # Negatives FIRST: "not running" contains "running", so a positive-first
+    # order would read a stopped gateway as up -- the one mistake this probe
+    # must never make.
+    #
+    # But each negative is matched as a WHOLE WORD, and against the row with
+    # the channel's OWN NAME elided, because these run against an entire status
+    # row -- name included. Bare substrings fail in exactly the way this file
+    # also refuses to fail for `*ok*`/`*error*` below: `*down*` calls a channel
+    # named `downtime-alerts` dead, and reads a healthy "telegram connected
+    # (last shutdown 2d ago)" as NOT connected. Either one makes doctor print
+    # "Answers sent on this channel are being lost" about a row that says
+    # connected -- the false alarm that teaches an operator to ignore this
+    # line, on the one check whose whole job is to be believed.
+    #
+    # Each negated form is spelled out here rather than left to the positive
+    # test: "not ready" contains the whole word "ready", so a row hermes writes
+    # that way is a negation the positives would otherwise read as up. So is
+    # `inactive`, which is the whole word a service manager reports a stopped
+    # unit with (`Active: inactive (dead)`) -- without it the label row above
+    # would answer undetermined in exactly the case the tier was added for.
+    probe_status="${probe_lower//"$probe_channel_lower"/ }"
+    if grep -qE -e '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unhealthy|expired|down|unreachable)([^a-z0-9_-]|$)' \
+         <<<"$probe_status"; then
+      echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
+      exit 1
+    fi
+    # Deliberately NARROW, in both directions. No bare `*ok*`/`*fail*`/`*error*`
+    # substring tests: `*ok*` matches "broken" (and "token expired"), and a
+    # healthy row reading "running, 0 errors" would trip `*error*`. Either way a
+    # substring that loose invents a verdict out of a word fragment. A row
+    # matching neither list is not a verdict at all -- the next candidate is
+    # tried, and if none of them decides, exit 2 below quotes the first one,
+    # which is the honest answer for output nobody has verified against a live
+    # gateway yet. A truly down gateway is caught by the nonzero-exit branch
+    # above, not by string matching.
+    #
+    # `up` is absent from this list on purpose, though it is the word an
+    # operator would reach for: as a whole word it also matches "could not
+    # bring up the gateway", whose negation none of the forms above catch --
+    # a false REACHABLE, the worse of the two errors, out of a status line
+    # that says the opposite.
+    #
+    # And matched with the negatives' own two disciplines, WHOLE WORDS against
+    # the NAME-ELIDED row, because the same two failures mirror exactly onto
+    # this side: a bare `*active*` reads "deactivated" as up, and a channel
+    # named `ready-queue` or `online-ops` would invent a verdict out of its own
+    # name. This direction is the worse one to get wrong -- a false
+    # NOT-reachable only cries wolf, while a false REACHABLE tells an operator
+    # their answers are getting through on a channel that is dropping every one
+    # of them.
+    if grep -qE -e '(^|[^a-z0-9_-])(running|connected|online|ready|active|healthy)([^a-z0-9_-]|$)' \
+         <<<"$probe_status"; then
+      echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
+      exit 0
+    fi
+  done <<<"$probe_rows"
+  echo "hermes's gateway status line for channel '$probe_channel' is not one this probe recognizes: $probe_judged"
   exit 2
 fi
 

@@ -249,8 +249,13 @@ assert_match "NOT up" "$probe_out" "the probe says which way it decided"
 # ...and the positive side is held to the same two disciplines.
 probe ready-queue "ready-queue   flapping" 0
 assert_eq "2" "$probe_rc" "a channel whose NAME contains 'ready' must not invent a REACHABLE verdict out of its own name"
+probe telegram "gateway: deactivated" 0
+assert_eq "2" "$probe_rc" "a word merely CONTAINING 'active' is not the status word 'active'"
+# `inactive` is the exception, and a deliberate one: it is the whole word a
+# service manager reports a stopped unit with (`Active: inactive (dead)`), so
+# it is spelled out as a negation rather than left to fall through as unknown.
 probe telegram "gateway: inactive" 0
-assert_eq "2" "$probe_rc" "'inactive' must not match the status word 'active'"
+assert_eq "1" "$probe_rc" "'inactive' is a negation, never the status word 'active'"
 # `up` is deliberately not a positive word: as a whole word it also appears
 # in a sentence that says the opposite, and no negation above catches that
 # phrasing. Undetermined is the honest answer; REACHABLE would be the worse
@@ -277,6 +282,32 @@ assert_eq "0" "$probe_rc" "an unrelated platform's dead row must not condemn a r
 # gateway's own state rather than reporting the return leg dead.
 probe telegram "gateway: running" 0
 assert_eq "0" "$probe_rc" "a channel the gateway status does not name must not be reported as unreachable on that basis alone"
+
+# THE SERVICE-MANAGED SHAPE. A gateway supervised by launchd/systemd reports
+# through its supervisor: a unit HEADER on the line that names the gateway and
+# the actual verdict on an indented label line below it. Picking the gateway
+# row and taking its silence for the whole answer reported UNDETERMINED for a
+# return leg that is plainly up -- on the deployment shape a long-running
+# gateway most commonly has, which is to say on the r-001 setup itself. The
+# rows are judged in rank order until one of them decides instead.
+probe telegram "$(printf '* hermes-gateway.service - Hermes Gateway\n   Loaded: loaded (/etc/systemd/system/hermes-gateway.service; enabled)\n   Active: active (running) since Mon 2026-08-24 09:14:02 UTC\n')" 0
+assert_eq "0" "$probe_rc" "a service-managed gateway whose verdict is on a label line below the unit header is REACHABLE, not undetermined"
+assert_match "Active: active .running." "$probe_out" "the probe quotes the label row it actually decided on, not the unit header"
+# ...and the same shape reporting the outage reads as the outage, both ways a
+# supervisor spells it.
+probe telegram "$(printf '* hermes-gateway.service - Hermes Gateway\n   Active: inactive (dead) since Sun 2026-08-23 22:02:41 UTC\n')" 0
+assert_eq "1" "$probe_rc" "a service-managed gateway reported inactive is NOT reachable"
+probe telegram "$(printf 'Gateway: managed by launchd (com.orchid.hermes)\nState: not running\n')" 0
+assert_eq "1" "$probe_rc" "a launchd-managed gateway reported not running is NOT reachable"
+# The label tier must not become a back door for the unrelated-platform row
+# step 1 exists to keep out: a platform name is not a status label, so a dead
+# sibling channel still cannot condemn a running gateway.
+probe telegram "$(printf 'Gateway: managed by launchd (com.orchid.hermes)\nState: running\ndiscord: disconnected\n')" 0
+assert_eq "0" "$probe_rc" "an unrelated platform's row is not a status label and must not reach the label tier"
+# ...and the configured channel's OWN row still outranks every one of them,
+# supervisor header or not.
+probe telegram "$(printf '* hermes-gateway.service - Hermes Gateway\n   Active: active (running) since Mon 2026-08-24 09:14:02 UTC\n   telegram: disconnected\n')" 0
+assert_eq "1" "$probe_rc" "the configured channel's own row still decides, even under a healthy service-managed header"
 
 # No channel configured, and no CLI at all: both undetermined, both saying so.
 probe_rc=0

@@ -312,22 +312,47 @@ hermes gateway status                         # what the probe asks
   running/connected/online/ready/active/healthy.
 - **exit 1 — NOT REACHABLE.** `hermes gateway status` failed (gateway not
   running, socket refused, auth expired), or it answered and the judged line
-  carries a negation (`not running`, `stopped`, `disconnected`, `offline`,
-  `expired`, `down`, `unreachable`, `unhealthy`, …).
+  carries a negation (`not running`, `stopped`, `disconnected`, `inactive`,
+  `offline`, `expired`, `down`, `unreachable`, `unhealthy`, …).
 - **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
   `notify.channel` is unset, this build has no `gateway status` subcommand,
-  the command printed nothing, or the line isn't one the probe recognizes.
-  Doctor prints "undetermined" and the raw line — never `ok`.
+  the command printed nothing, or none of the candidate lines below is one
+  the probe recognizes. Doctor prints "undetermined" and the most specific of
+  those lines — never `ok`.
 
-**Which line gets judged**, most specific evidence first: the row naming the
-configured `notify.channel`, else the row naming the gateway itself, else the
-first line. Judging the whole output instead would let one unrelated
-platform's row condemn a healthy return leg. One deliberate difference from
-openclaw's probe: `openclaw channels status` is documented to *enumerate*
-channels, so a channel missing from it is a determination there (exit 1).
-Nothing establishes that `hermes gateway status` lists platforms at all, so a
-channel it does not name is absence of evidence here — the probe falls
-through to the gateway's own state rather than declaring the return leg dead.
+**Which lines get judged**, most specific evidence first. When the output
+names the configured `notify.channel` at all, those rows are the *only*
+evidence considered — judging the whole output instead would let one
+unrelated platform's row condemn a healthy return leg. When it does not, the
+rows naming the gateway itself are judged, then the rows whose **label** is a
+status word (`Active:`, `Status:`, `State:`, `Health:`, `Service:`,
+`Gateway:`), then the first line — each in turn until one of them actually
+determines something.
+
+That last part is what a **service-managed** gateway needs. A gateway run
+under launchd or systemd reports through its supervisor, which puts a unit
+header on the line naming the gateway and the verdict on an indented label
+line below it:
+
+```
+* hermes-gateway.service - Hermes Gateway
+     Active: active (running) since Mon 2026-08-24 09:14:02 UTC
+```
+
+Picking the gateway row and taking its silence for the whole answer reported
+UNDETERMINED for a return leg that is plainly up — on the deployment shape a
+long-running gateway most commonly has. The label tier is a fixed set of
+status words and contains no platform name, so a per-platform row
+(`discord: disconnected`) still cannot reach it and condemn a channel it says
+nothing about. `inactive` is in the negative vocabulary for the same reason:
+it is the whole word a service manager reports a stopped unit with.
+
+One deliberate difference from openclaw's probe: `openclaw channels status`
+is documented to *enumerate* channels, so a channel missing from it is a
+determination there (exit 1). Nothing establishes that `hermes gateway
+status` lists platforms at all, so a channel it does not name is absence of
+evidence here — the probe falls through to the gateway's own state rather
+than declaring the return leg dead.
 
 **What a REACHABLE result does and does not prove.** It proves the gateway
 your reply is delivered to is up. It does **not** prove anything on the

@@ -304,6 +304,20 @@ notify` blocker per distinct record — the surface that condition actually
 needs. The pump prints `pump: judgment boundary [<kind>] is operator-only —
 not waking an orchestrator` and exits 0.
 
+That blocker **declares its answer set** wherever the kind has one
+(`lib/drive.sh`'s `drive_boundary_choices`), so the page an operator reads
+names what `orchid answer` will accept instead of leaving `<choice>` to be
+guessed: `blocked-task` → `unblock | retry | defer`, `review-evidence` and
+`review-conflict` → `approve | request-changes | defer`, `run-complete` →
+`accept | defer`, `operator-handoff` → `acknowledged | defer`. Each value
+names the operator verb that carries the decision out (`orchid task
+unblock|retry`, `orchid task arbitrate --result`, `orchid run accept
+--evidence`, `orchid task handoff --ack`); recording the answer is not running
+the verb. The kinds whose reason text is composed per site — the
+`operator-decision` catch-all, `hook-failure`, `worktree-conflict`,
+`planning` — have no set anybody could enumerate honestly, so they declare
+none and their pages keep the free-text contract in full.
+
 These two questions used to differ, and the gap was a defect rather than a
 nuance: `run-complete` was classed as orchestrator-resolvable even though the
 broker refuses `orchid run accept`, so a finished run woke a model every
