@@ -235,7 +235,10 @@ assert_match "H001.*implementing" "$explain" "status --explain still shows H001'
 # rework, not yet re-dispatched; H002 is still pending) -- 0 active < cap 1
 # -- so the rework->implementing edge must succeed cleanly through the same
 # gate, proving it does not count the dispatching task against its own cap.
-edge_sha="deadbeefcafebabe0000000000000000000000"
+# repo2's own HEAD, for both shas: entry to `testing` scans a real, EMPTY
+# range. A placeholder that exists nowhere used to serve here, and T026 made
+# that scan fail CLOSED on a range `git log` cannot answer.
+edge_sha="$(git -C "$repo2" rev-parse HEAD)"
 "$ORCHID_BIN" task set H001 base_sha "$edge_sha" >/dev/null
 "$ORCHID_BIN" task set H001 candidate_sha "$edge_sha" >/dev/null
 "$ORCHID_BIN" task advance H001 testing >/dev/null

@@ -24,12 +24,16 @@ status_of() { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
 attempts_of() { "$ORCHID_BIN" task show "$1" | grep '^attempts: ' | cut -d' ' -f2; }
 
 # to_arbitrating <id> [--archetype <name>] -- the light-weight walk
-# tests/test_task.sh already uses for archetype edge coverage: placeholder
-# shas (a `git log <base>..<candidate>` over an invalid range prints nothing,
-# so INV-04's .orchid/ scan never trips) plus `verification_commands=true`
-# so `orchid verify` always PASSes, plus a planted reviewer envelope for the
-# kernel's own reviewing->arbitrating count gate.
-edge_sha="deadbeefcafebabe0000000000000000000000"
+# tests/test_task.sh already uses for archetype edge coverage: this repo's own
+# HEAD for both shas (a real, EMPTY `git log <base>..<candidate>` range, so
+# INV-04's `.orchid/` scan runs and finds nothing) plus
+# `verification_commands=true` so `orchid verify` always PASSes, plus a planted
+# reviewer envelope for the kernel's own reviewing->arbitrating count gate.
+#
+# A placeholder sha that exists nowhere used to serve here. T026 made the scan
+# fail CLOSED on a range `git log` cannot answer, so a non-existent range is
+# now refused rather than read as clean -- which is what it always was.
+edge_sha="$(git rev-parse HEAD)"
 to_arbitrating() {
   local id="$1"; shift
   "$ORCHID_BIN" task create "$id" "arbitrate subject" "$@" >/dev/null

@@ -8,6 +8,11 @@
 # surface) call schedule_dispatch_blockers rather than each growing their own
 # copy.
 #
+# T026 adds the OTHER runaway cap to the same file, for the same reason:
+# schedule_attempt_budget (bottom) is the single home for the rework budget
+# the driver stops at, shared by `runners/orchid-drive` and by the operator
+# verbs that report and raise it.
+#
 # Source AFTER lib/common.sh (orchid_state, config_get), lib/frontmatter.sh
 # (fm_get), and lib/manifest.sh (_manifest_split_csv, reused here for
 # `resources` comma-list splitting -- same trimmed/empty-skipping behavior
@@ -168,4 +173,53 @@ schedule_dispatch_blockers() {
     [ "$(fm_get "$state/tasks/$d.md" status 2>/dev/null)" = "done" ] || unmet="$unmet $d"
   done < <(schedule_split_deps "$deps")
   [ -z "$unmet" ] || echo "waiting-deps ($(printf '%s' "${unmet# }"))"
+}
+
+# schedule_attempt_budget <repo> <task-id> -- the rework cap that applies to
+# THIS task right now: the number of `attempts` at which the driver stops
+# retrying and hands the task to a human. The SINGLE home for that number,
+# for the same reason schedule_dispatch_blockers is the single home for the
+# dispatch predicates: `runners/orchid-drive` enforces it and `orchid task
+# retry`/`orchid task unblock` report against it, and two copies of a cap
+# drift the moment one of them is made configurable.
+#
+# Two layers, most specific first:
+#
+#   1. the task's own `attempt_budget` frontmatter grant, written ONLY by
+#      `orchid task retry --attempts N` (`task set` denies the key) -- the
+#      operator's recorded "this task gets more rounds";
+#   2. `rework_max` (config, default 3) -- the repo-wide budget, which used
+#      to be a literal `attempts >= 3` in the driver with no way to change
+#      it at all.
+#
+# WHY A BUDGET AND NOT A DECREMENT OF `attempts` (dogfood F28): the obvious
+# reading of "grant an attempt" is "give back one of the ones spent". It is
+# not available. `attempts` is the attempt NUMBER every per-attempt artifact
+# is keyed on -- `reviews/<id>-a<attempts+1>-{implementer,reviewer}*.json`,
+# read by `jobs prepare`, by both kernel envelope gates in `orchid task
+# advance`, by `lib/drive.sh`'s review policy and by the driver's own
+# implement-failure predicate. Winding it back would point the next attempt
+# at a PREVIOUS attempt's envelopes: a stale non-ok implement envelope would
+# read as this attempt's fresh failure, and a stale reviewer set as this
+# attempt's reviews. So `attempts` stays strictly monotonic and the CAP is
+# what moves.
+schedule_attempt_budget() {
+  local repo="$1" id="$2" state f v
+  state="$(orchid_state "$repo")"
+  f="$state/tasks/$id.md"
+  v=""
+  if [ -f "$f" ]; then
+    v="$(fm_get "$f" attempt_budget)"
+  fi
+  [ -n "$v" ] || v="$(config_get "$repo" rework_max 3)"
+  # Same fail-closed numeric guard, and the same `0*` rejection, the
+  # concurrency cap above documents: a hand-edited/misconfigured value must
+  # die cleanly here rather than feed a `-ge` comparison inside an unrelated
+  # caller, and a zero budget is never a legitimate rework budget (it blocks
+  # every task on its first verify failure) -- only a misconfiguration, with
+  # "00" being all-digits and so otherwise slipping past `*[!0-9]*`.
+  case "$v" in
+    ''|*[!0-9]*|0*) orchid_die "attempt budget must be a positive integer (got '$v')" ;;
+  esac
+  echo "$v"
 }

@@ -45,8 +45,17 @@
 # READS the result of that; see libexec/orchid-task.
 #
 # Pure policy, like lib/drive.sh: every function below READS (task
-# frontmatter, config) and prints. The acknowledgement itself has exactly one
-# writer, the `orchid task handoff` verb (libexec/orchid-task).
+# frontmatter, config) and prints. The acknowledgement is only ever CREATED by
+# the `orchid task handoff` verb (libexec/orchid-task); every other writer of
+# the field WITHDRAWS it -- entry to `rework`, `unblock`, `retry`, `--clear`,
+# and `task reverify` when it re-stamps the candidate onto the operator's own
+# HEAD. Reverify is worth naming because it is the one that looks like an
+# exception and is not: the candidate it stamps provably DESCENDS from the
+# acknowledged commit, but descent only proves the acknowledged work is still
+# present, never that the commits stacked on top need no mechanical steps of
+# their own -- which is the only thing the ack asserts. So the ack is dropped
+# and the pause below reopens against the new candidate, exactly as it does
+# for any other HEAD that has moved past it.
 #
 # Source AFTER lib/common.sh and lib/frontmatter.sh; it needs nothing else.
 

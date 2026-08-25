@@ -43,8 +43,9 @@ part of the architecture; this file never changes to suit one.*
   `orchid task advance` on `*→merging`, `*→blocked`, and `arbitrating→rework`
   specifically). This protocol requires it everywhere a human or a future
   resumer would otherwise have to guess *why*: every `task advance`, `task
-  unblock`, `task retry`, and `notify` call in the walk below carries one,
-  whether or not the verb itself would accept the omission.
+  unblock`, `task retry`, `task reverify`, and `notify` call in the walk
+  below carries one, whether or not the verb itself would accept the
+  omission.
 - **Concurrency, not "one active task."** Up to `concurrency` (config,
   default 2) tasks may hold a non-idle status — `implementing`, `testing`,
   `reviewing`, `arbitrating`, or `merging` — at the same time. Dispatch
@@ -222,7 +223,7 @@ The kernel-owned boundary kinds:
 | kind | raised when |
 | --- | --- |
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
-| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry` resolves it |
+| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it |
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
@@ -573,7 +574,14 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, or
   status, which matters here since neither `implementing` nor `reviewing`
   has a legal `rework` edge. An operator resolves it with `orchid task retry
   <task-id> --reason "..."` once the underlying infra issue is fixed —
-  `retry` moves `blocked→rework` without consuming an attempt.
+  `retry` moves `blocked→rework` without consuming an attempt, writes the
+  reason into the task body (where the implementer's own capsule carries it,
+  not the journal alone), grants the task a round when its budget is spent,
+  and takes `--attempts N` when it needs more than one. When the infra issue
+  was the ONLY
+  thing wrong and the candidate itself is fine, prefer `orchid task reverify
+  <task-id> --reason "..."`: it returns the task straight to `testing` for a
+  fresh verification run, with no implementation pass and no attempt spent.
 - *Recurring across attempts, and it looks like REPO behavior, not vendor
   noise:* the same dead/stalled/timeout signature repeating for a task
   across attempts — a flaky test, a flaky build step, anything the repo
@@ -672,9 +680,21 @@ the run left off rather than re-deriving state by hand.
 ```
 pending → implementing → testing → reviewing → arbitrating → merging → done
                 ↑            │         │            │
-                └── rework (≤3) ───────┴────────────┤
+                └── rework (≤N) ───────┴────────────┤
                                                     └→ blocked
+        rework ──┐                    blocked ──┐
+                 └→ testing (reverify)          └→ testing (reverify)
 ```
+
+N is `rework_max` (config, default 3), unless an operator has granted this
+one task a larger `attempt_budget` with `orchid task retry --attempts N`.
+The two `reverify` edges consume no attempt — they re-run verification
+against a candidate the operator has already fixed, instead of buying a
+fresh implementation pass to reach the same tree. Both are gated identically
+wherever they are taken from (the verb, or a bare `task advance <id>
+testing`, which reaches the same declared edge): a reason is required, the
+task worktree must be clean, and `candidate_sha` must already be that
+worktree's HEAD. Step **4. Blockers** below has the operator's side of it.
 
 This is the `feature` archetype's walk — the only shape this file spells
 out in prose. Every archetype declares its own transition subset
@@ -971,8 +991,9 @@ ones its archetype never declares.
   clean. That single rule answers all three questions a pause has to answer:
 
   - *What clears it.* Entry to `rework` (from any edge), `orchid task
-    unblock`, `orchid task retry`, and `orchid merge`'s rebase arm — the same
-    four places that invalidate verify evidence, for the same reason. A
+    unblock`, `orchid task retry`, `orchid task reverify`'s re-stamp, and
+    `orchid merge`'s rebase arm — the same places that invalidate verify
+    evidence, for the same reason. A
     rebased tree is a DIFFERENT candidate: work performed on the old one is
     not evidence about it, so an acknowledgement is never silently inherited
     across the `merging`→`testing` rebase edge, exactly as INV-07 requires of
@@ -1127,13 +1148,16 @@ ones its archetype never declares.
     something `context.md` failed to state — not an actual defect in the
     candidate — this is a lesson-birth moment (docs/specs/kernel.md,
     Cross-run lessons): `orchid lessons add --scope repo --invalidate-when
-    "..." "..."` before continuing. After 3 non-waived rework attempts
-    (`orchid task show <id>`'s `attempts` field), stop retrying
-    automatically: `orchid notify --task <id> "attempts exhausted: see
+    "..." "..."` before continuing. Once `attempts` (`orchid task show
+    <id>`) reaches the task's budget, stop retrying automatically: `orchid
+    notify --task <id> "attempts exhausted (<attempts>/<budget>): see
     .orchid/reviews/<id>-verify.log"` then `orchid task advance <id> blocked
-    --reason "attempts exhausted"`. The ≤3 cap is an orchestrator-enforced
-    budget (kernel.md), not a kernel-verb gate — no verb refuses a 4th
-    rework advance on its own.
+    --reason "attempts exhausted (<attempts>/<budget>)"`. The budget is
+    `rework_max` (config, default 3), or the task's own `attempt_budget`
+    when an operator has granted it one (`orchid task retry <id> --reason
+    "..." --attempts N`); it is an orchestrator-enforced budget (kernel.md),
+    not a kernel-verb gate — no verb refuses one more rework advance on its
+    own.
 
 - **reviewing** (`awaiting-review-envelopes`): apply the risk-tiered review
   policy from the Preamble — `orchid jobs review-plan <id>`, then
@@ -1239,9 +1263,54 @@ blocker, at your discretion. Consume an answer by reading
 once it exists — there is no verb that reads an answer back; `orchid answer`
 only ever writes one, for the human/channel side. Then resolve the task:
 `orchid task unblock <id> --reason "<qid>: <answer text>"` when the answer
-changes something about the plan (this records the text into the task body),
-or `orchid task retry <id> --reason "..."` when nothing needs to change and
-the task should simply run again.
+changes something about the plan, or `orchid task retry <id> --reason "..."`
+when nothing needs to change and the task should simply run again. **Both
+record the text into the task body**, which is the file `pack_build` copies
+into the implementer's capsule — so a reason really is delivered to the next
+attempt, and each verb prints a line saying where it went (the journal alone
+never reached an engine, which made "the guidance was ignored" and "the
+guidance was never delivered" indistinguishable from outside). Two more
+choices at this same moment:
+
+- The task has no rounds left (`attempts` is at its budget): `retry` grants
+  it one, journal-first, as an `attempt_budget` on that task — pass `orchid
+  task retry <id> --reason "..." --attempts N` when one plainly is not
+  enough. Either way the grant only ever raises the budget, so a retry of a
+  task still inside its budget grants nothing — and an explicit `--attempts N`
+  that would grant nothing is **refused** rather than swallowed, naming the
+  budget, what is spent, and the smallest number that would buy a round (a
+  flag that quietly does nothing is trusted, and then blamed for a round it
+  never bought). `unblock` deliberately grants nothing at all and warns on
+  stderr when it hands back a task with an empty budget.
+- **The tree is already green** — the failure was environmental, or you have
+  fixed it yourself in the task worktree and committed on the task branch:
+  `orchid task reverify <id> --reason "..."`. It moves `blocked|rework →
+  testing`, re-stamps `candidate_sha` from that worktree's HEAD, drops the
+  stale verify evidence, and spends no attempt — the supported form of what
+  operators used to do by hand and then describe in a `retry` reason. Commit
+  the fix first: a worktree with uncommitted changes is refused (exit 3,
+  listing them), because verification runs there while the evidence binds to
+  a sha — an uncommitted edit would be exercised by a run that certified a
+  tree which never contained it. **A clean tree is not the right tree**, so
+  the commit it would stamp must also descend from the candidate it replaces
+  and be contained in the branch the task record names; anything else is
+  refused naming both shas, because adopting whatever HEAD happens to be is a
+  worse mis-binding than the drift — every field agrees afterwards. That is
+  the same rule `task handoff --ack`'s advance is held to, in the same code.
+  An acknowledged hand-off is WITHDRAWN by the re-stamp, never carried: the
+  commit adopted is one committed after the ack, so no operator has said its
+  own mechanical steps are done, and descent proves only that the acknowledged
+  work is still present. The boundary that reopens costs one command rather
+  than a wedge — `reverify` leaves the task in `testing`, the one status
+  `handoff --ack` is legal from. Every refusal it can raise is checked before
+  it writes anything, so a refused `reverify` leaves the task untouched.
+  `blocked|rework → testing` is ordinary transition data, so `orchid task
+  advance <id> testing --reason "..."` reaches the same edge — and is held to
+  the same conditions, by the same code: a reason, a clean worktree, and a
+  `candidate_sha` that is already that worktree's HEAD. What that raw route
+  will not do is re-stamp the candidate for you; it refuses and names
+  `reverify`, which is the verb that does. Neither route can certify a tree
+  the other refuses.
 
 **5. Before sleeping.**
 `orchid status --explain` (so anything watching the terminal — or the next
@@ -1349,7 +1418,7 @@ one-pass driver could otherwise stop progressing in silence:
   Anything else: it stops at an `operator-handoff` boundary and exits 16,
   WITHOUT running `orchid verify` — a driver that verified first would fail a
   candidate whose remaining work nobody in that round was able to do, spend
-  one of three rework attempts on it, and send the implementer back a failure
+  one of its rework attempts on it, and send the implementer back a failure
   it cannot act on. Both halves of the resume rule fall out of that one
   comparison, with no state of the driver's own: a second pass after an
   acknowledgement proceeds (so the stop is not a loop), and a second pass

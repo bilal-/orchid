@@ -192,7 +192,8 @@ drive_surface_admits() {
 # result -- and admission is deliberately the separate axis above; the day an
 # adapter is asked to run one, it is one atom of data that changes.
 #
-# `blocked-task` (`task unblock`/`task retry`), `hook-failure` (its handler or
+# `blocked-task` (`task unblock`/`task retry`/`task reverify`), `hook-failure`
+# (its handler or
 # its binding is broken), `worktree-conflict` (a checkout that cannot be proven
 # to belong to this task), `operator-handoff` and the `operator-decision`
 # catch-all deliberately name none: no procedure an orchestrator can run
@@ -304,6 +305,21 @@ drive_has_transition() {
 # guessing. This is what makes the walk archetype-driven: `feature` yields
 # `implementing`, the shipped `review` archetype yields `reviewing`, and a
 # custom archetype yields whatever IT declares, with no name anywhere.
+#
+# One active status is NEVER a dispatch target: `<idle> -> testing`, the
+# operator's reverify edge (T026). That edge means "a human has vouched for
+# this tree, re-run verification against it" -- it is reached through `orchid
+# task reverify`, or through the `task advance` that enforces the identical
+# conditions, and both demand a recorded reason, a clean task worktree and a
+# candidate_sha that IS that worktree's HEAD. The driver deciding a queued
+# task needs no implementer is not that, and it is skipped explicitly here
+# rather than left to fall out of declaration order: the scan below is
+# first-active-wins over the archetype's `transitions=` list, so an archetype
+# that merely listed `rework:testing` ahead of `rework:implementing` would
+# send every reworked task straight back into verification of the candidate
+# that just failed -- spawning no engine, consuming the pass, and re-running
+# a suite nobody had fixed anything for. What a dispatch MEANS must not
+# depend on the order a config line happens to be written in.
 drive_dispatch_target() {
   local arch="$1" from="$2" line to transitions
   transitions="$(archetype_transitions "$arch" 2>/dev/null)" || return 0
@@ -315,6 +331,9 @@ drive_dispatch_target() {
       *) continue ;;
     esac
     to="${line#*:}"
+    if [ "$to" = testing ] && ! schedule_is_active_status "$from"; then
+      continue
+    fi
     if schedule_is_active_status "$to"; then
       printf '%s\n' "$to"
       return 0

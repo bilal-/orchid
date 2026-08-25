@@ -426,7 +426,9 @@ frontmatter), `reviews/` (envelopes + verify/merge evidence), `journal.md`
 **Guardrails:** rate limits pause one engine, never the run; a dead job is
 detected by pgid+start-time liveness, a hung one by log-mtime/size
 stalling, a spinning one by a false-positive-guarded duplicate-line check;
-three rework attempts exhausts to `blocked`; no tier-1 verb ever spawns a
+the rework budget (`rework_max`, default 3) exhausts to `blocked`, and an
+operator can grant one task more with `orchid task retry --attempts N`; no
+tier-1 verb ever spawns a
 long-lived process (INV-01). Orchid's deterministic verbs provide no push,
 deploy, or publish operation, and PROTOCOL.md instructs engines to treat
 external mutation as a blocker. The absent verb is Orchid's enforced
@@ -447,10 +449,16 @@ repo) the broker script included, so "never hand-edit `.orchid/`" remains
 prompt policy.
 
 **Operator verbs** (no hand-editing `.orchid/` ever needed):
-`orchid task unblock/retry <id> --reason "..."`, `orchid answer <qid>
-<choice>`, `orchid config commit --reason "..."`, `orchid run
-release-lease`, `orchid jobs gc --reap-prepared`. Full incident-by-incident
-detail: [troubleshooting.md](./docs/troubleshooting.md).
+`orchid task unblock/retry <id> --reason "..."` (`retry --attempts N` also
+grants a task more rework rounds), `orchid task reverify <id> --reason
+"..."` (the tree is already green — re-run verification, no implementation
+pass, no attempt spent; commit your fix on the task branch first, an
+uncommitted worktree is refused, as is a HEAD that is not this task's own —
+it must descend from the current candidate and sit on the branch the record
+names), `orchid answer <qid> <choice>`, `orchid config
+commit --reason "..."`, `orchid run release-lease`, `orchid jobs gc
+--reap-prepared`. Full incident-by-incident detail:
+[troubleshooting.md](./docs/troubleshooting.md).
 
 ## Before you point it at someone else's repo
 

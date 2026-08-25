@@ -23,6 +23,7 @@ lessons_max_bytes
 spool_max_bytes
 gc_older_than_s
 infra_max
+rework_max
 model
 effort
 rate_limit_backoff_s
