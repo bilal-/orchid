@@ -189,40 +189,27 @@ assert_match "tests pass and the diff is scoped tightly" "$(jq -r .summary "$d/o
 # machine the adapter can take longer than that to relay its first byte, so
 # the assertion failed for a scheduling reason and stranded six otherwise-
 # clean tasks in r-002. The property it checks is LIVENESS -- the log grows
-# while the adapter is still running -- so the sampler below waits, bounded,
-# for what it samples, and the stub cannot exit until this test releases it,
-# which removes the race outright instead of widening the window. Both edges
-# are pinned: 12b (a late first byte within the bound is not a stall) and
-# 12c (a genuine stall is still caught).
+# while the adapter is still running -- so the sampler waits, bounded, for
+# what it samples, and the stub cannot exit until this test releases it,
+# which removes the race outright instead of widening the window.
 #
-# log_grew_while_alive <log> <pid> <tries>: poll <log> once per 0.1s, up to
-# <tries> samples, succeeding the first time it is non-empty while <pid> is
-# still alive. Exhausting the bound, or <pid> exiting first, is a stall.
-log_grew_while_alive() {
-  local log="$1" pid="$2" tries="$3"
-  local i=0 size
-  while [ "$i" -lt "$tries" ]; do
-    kill -0 "$pid" 2>/dev/null || return 1
-    size="$(wc -c <"$log" | tr -d ' ')"
-    if [ "$size" -gt 0 ]; then return 0; fi
-    sleep 0.1
-    i=$((i+1))
-  done
-  return 1
-}
+# The sampler and the hold are tests/helpers.sh's `await_log_growth` and
+# `stub_hold_until`, SHARED with the seven sibling sites that carry the same
+# shape -- the streaming and heartbeat cases of all four engine-adapter test
+# files. Cases 12b and 12c below pin both of that shared sampler's edges once,
+# on behalf of all eight.
 d="$(build_request streaming review '#!/usr/bin/env bash
 echo "line one"
-i=0
-while [ ! -e "'"$WORK"'/streaming.release" ] && [ "$i" -lt 450 ]; do sleep 0.1; i=$((i+1)); done
+'"$(stub_hold_until "$WORK/streaming.release")"'
 echo "line two"
 echo "VERDICT: approve"')"
 joblog="$d/out/job.log"; : > "$joblog"
 (run_adapter "$d" >>"$joblog" 2>&1) &
 adapter_pid=$!
 midrun_grew=no
-log_grew_while_alive "$joblog" "$adapter_pid" 300 && midrun_grew=yes
+await_log_growth "$joblog" "$adapter_pid" && midrun_grew=yes
 midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
-: > "$WORK/streaming.release"   # only now may the stub proceed to its VERDICT
+release_stub "$WORK/streaming.release"   # only now may the stub reach its VERDICT
 wait "$adapter_pid" || fail "streaming stub: adapter should exit 0"
 final_size="$(wc -c <"$joblog" | tr -d ' ')"
 assert_eq "yes" "$midrun_grew" "streaming stub: job log must have grown WHILE the adapter was still running -- this is the stall-detector's liveness signal"
@@ -231,39 +218,51 @@ assert_match "line one" "$(cat "$joblog")" "streaming stub: the CLI's early outp
 envelope_validate "$d/out/envelope.json" || fail "streaming stub: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "streaming stub: status ok"
 
-# --- 12b. L020's loaded-machine edge: the first byte arrives LATE -- well
-# past the 0.2s instant the old single-sample read -- but within the bound.
-# Under the pre-T019 shape this exact stub failed the suite and charged a
-# rework attempt; a late start is slowness, not a stall, and the bounded
-# sampler must ride it out. -------------------------------------------------
+# --- 12b. L020's loaded-machine edge, pinned for the WHOLE family: the first
+# byte arrives LATE -- well past the 0.2s instant the old single-sample read
+# -- but within the bound. Under the pre-T019 shape this exact stub failed
+# the suite and charged a rework attempt; a late start is slowness, not a
+# stall, and the bounded sampler must ride it out. Asserted against the
+# shared helper, so it holds for every site that uses it, not just this one.
 d="$(build_request slowstart review '#!/usr/bin/env bash
 sleep 1.2
 echo "slow first line"
-i=0
-while [ ! -e "'"$WORK"'/slowstart.release" ] && [ "$i" -lt 450 ]; do sleep 0.1; i=$((i+1)); done
+'"$(stub_hold_until "$WORK/slowstart.release")"'
 echo "VERDICT: approve"')"
 joblog="$d/out/job.log"; : > "$joblog"
 (run_adapter "$d" >>"$joblog" 2>&1) &
 adapter_pid=$!
 slowstart_grew=no
-log_grew_while_alive "$joblog" "$adapter_pid" 300 && slowstart_grew=yes
-: > "$WORK/slowstart.release"
+await_log_growth "$joblog" "$adapter_pid" && slowstart_grew=yes
+release_stub "$WORK/slowstart.release"
 wait "$adapter_pid" || fail "slowstart stub: adapter should exit 0"
 assert_eq "yes" "$slowstart_grew" "slowstart stub (L020): a first byte that is merely late, still inside the bound, must not read as a stall -- wait for what you sample"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "slowstart stub: status ok"
 
-# --- 12c. L020's other edge: a GENUINE stall -- a producer that stays alive
-# and never writes a byte -- must still be reported. Drive the sampler
-# against a mute sleeper with a short bound: it must exhaust the bound and
-# fail, not pass vacuously, whichever way the scheduler leans. --------------
+# --- 12c. L020's other edge, also on behalf of the whole family: a GENUINE
+# stall -- a producer that stays alive and never writes a byte -- must still
+# be reported, by BOTH shared samplers. Drive each against a mute sleeper
+# with a short bound: each must exhaust the bound and fail, not pass
+# vacuously, whichever way the scheduler leans. This is what keeps the
+# de-flaking from having quietly deleted the property: the growth sampler
+# still catches an adapter that never relays a byte, and the heartbeat
+# sampler still catches one whose `[hb ` line never fires. -----------------
+# The mute producer outlives both bounds by a wide margin ON PURPOSE. If it
+# could exit first the sampler would still return failure -- so the assertions
+# below would still pass -- but for the wrong reason, and this case would stop
+# demonstrating that an EXHAUSTED BOUND is what reports a stall.
 stall_log="$WORK/stall.log"; : > "$stall_log"
-sleep 5 &
+sleep 30 &
 stall_pid=$!
 stall_rc=0
-log_grew_while_alive "$stall_log" "$stall_pid" 8 || stall_rc=$?
+await_log_growth "$stall_log" "$stall_pid" 8 || stall_rc=$?
+stall_hb_rc=0
+printf 'not a heartbeat line\n' > "$stall_log"
+await_log_heartbeat "$stall_log" "$stall_pid" 8 || stall_hb_rc=$?
 kill "$stall_pid" 2>/dev/null
 wait "$stall_pid" 2>/dev/null
 [ "$stall_rc" -ne 0 ] || fail "stall detector: a log that never grows while its producer stays alive must still be caught -- the liveness property is real and the sampler must not wave it through"
+[ "$stall_hb_rc" -ne 0 ] || fail "stall detector: a log that grows with NON-heartbeat output while its producer stays alive must still read as a missing heartbeat -- the heartbeat cases mean [hb specifically, not any byte"
 
 # --- 13. v1-m3 round 2: adapter heartbeat. probe-stream-buffering.sh's real
 # run (codex/claude only -- agy wasn't part of that probe, but the same
@@ -280,21 +279,27 @@ wait "$stall_pid" 2>/dev/null
 # (they're on stderr, structurally separate from the stub's real stdout --
 # $stdout is filled purely from the FIFO-relayed stdout content -- but
 # pinned here rather than left implicit).
+#
+# T019 (lesson L020): this is the SECOND shape of the same fault as case 12
+# above -- it used to sleep 1.3s and count `[hb ` lines at that one instant,
+# which is a deadline for the heartbeat rather than a test that one fires.
+# Same fix, same shared helpers: hold the stub open until the sampler has
+# seen a heartbeat, and only then let it exit.
 d="$(build_request heartbeat review '#!/usr/bin/env bash
-sleep 2.2
+'"$(stub_hold_until "$WORK/heartbeat.release")"'
 echo "VERDICT: approve"
 echo "REASON: heartbeat test reply"')"
 joblog="$d/out/job.log"; : > "$joblog"
 initial_mtime="$(file_mtime "$joblog")"
 ( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
 adapter_pid=$!
-# Sampled at 1.3s: comfortably after the first heartbeat (fires once the
-# 1s ORCHID_HB_INTERVAL_S override elapses) and comfortably before the
-# stub's own 2.2s exit -- genuinely mid-run on both sides.
-sleep 1.3
+midrun_hb=no
+await_log_heartbeat "$joblog" "$adapter_pid" && midrun_hb=yes
 midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"; midrun_hb_count="${midrun_hb_count:-0}"
 midrun_mtime="$(file_mtime "$joblog")"
+release_stub "$WORK/heartbeat.release"   # only now may the stub reach its VERDICT
 wait "$adapter_pid" || fail "heartbeat stub: adapter should exit 0"
+assert_eq "yes" "$midrun_hb" "heartbeat stub: a [hb line must appear WHILE the adapter is still running -- waited for, not sampled at one instant"
 [ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
 [ "$midrun_mtime" -ge "$initial_mtime" ] || fail "heartbeat stub: job log mtime must have advanced mid-run (initial=$initial_mtime midrun=$midrun_mtime)"
 envelope_validate "$d/out/envelope.json" || fail "heartbeat stub: envelope invalid"

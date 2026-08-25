@@ -25,6 +25,7 @@ gc_older_than_s
 infra_max
 rework_max
 handoff.pin_check
+flaky.quarantine
 model
 effort
 rate_limit_backoff_s

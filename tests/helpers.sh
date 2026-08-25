@@ -459,3 +459,120 @@ plant_reviewer_envelope() {
       verdict:"approve", scope_complete:true, summary:"fixture reviewer", candidate_sha:$cand}' \
     > ".orchid/reviews/$id-a$attempt-reviewer.json"
 }
+
+# --------------------------------------------------------------------------
+# MID-RUN LIVENESS SAMPLING (T019, lesson L020). ONE DESIGN FAULT, EIGHT SITES.
+#
+# Eight engine-adapter cases ask the same question -- has the job log MOVED
+# while the adapter is still running? -- in two shapes, in each of the four
+# engine-adapter test files (agy, claude, codex, hermes):
+#
+#   grown-while    the adapter must tee the CLI's output as it arrives, so the
+#                  log must be non-empty before the run ends.
+#   heartbeat      a CLI that writes NOTHING until it exits, where the only
+#                  thing that can move the log is lib/heartbeat.sh's
+#                  `[hb ...]` line.
+#
+# Every one of them used to answer it by sleeping a fixed interval and reading
+# the log ONCE, at that instant. That is not the property they mean. The
+# property is LIVENESS -- the log grows at SOME point during the run -- and a
+# single sample silently converts it into a DEADLINE the writer had to have
+# met by a wall-clock moment the fixture picked in advance.
+#
+# On a loaded machine it had not. Between them these sites stranded eight
+# tasks in r-002: the candidate was clean, the sampled instant arrived before
+# the scheduler had run the writer, the suite failed, and a rework attempt was
+# charged to a scheduling artifact. Measured over that run they were the
+# single largest consumer of the attempt budget -- larger than any real
+# defect. They are also why fixing one of them was not a fix: the report that
+# finally named the family called it four sites in three files and had itself
+# missed the two in tests/test_engine_hermes.sh, so a hand-counted census was
+# wrong twice over. tests/test_helpers.sh now takes that census by glob.
+#
+# THE FIX IS THE SAME AT EVERY SITE, AND IT IS TWO HALVES. Neither works
+# alone, and the second is the one that is easy to leave out:
+#
+#   WAIT FOR WHAT YOU SAMPLE. The samplers below POLL for the condition,
+#   bounded, instead of testing one instant. A first byte that is merely LATE
+#   is slowness, not a stall, and the sampler rides it out.
+#
+#   HOLD THE PRODUCER OPEN. `stub_hold_until` makes each fixture's stub wait
+#   on a release file the test creates only AFTER the sampler has returned, so
+#   "while it was still running" is a fact the test CONTROLS rather than a
+#   race it hopes to win. Without this half, a sampler patient enough to stop
+#   flaking would start passing for the wrong reason -- reading a log the
+#   adapter had already finished writing, which is exactly the buffered-until-
+#   exit defect these cases exist to catch.
+#
+# WHAT IS NOT WEAKENED, AND IT MATTERS THAT NOTHING IS. Exhausting the bound
+# is a FAILURE. So is the producer exiting before the log ever moved. A
+# genuine stall still fails, and both edges are pinned against these helpers
+# directly (tests/test_engine_agy.sh cases 12b and 12c) rather than asserted
+# here. tests/test_helpers.sh lints every engine-adapter file for the single-
+# instant shape, and requires each to call both samplers, so it cannot come
+# back one file at a time the way it spread.
+#
+# THE BOUNDS ARE NOT TIMINGS. The sampler's job is to bound a HANG, not to
+# time a machine, so it is set far longer than any healthy run needs; the
+# stub's hold is longer again, so the stub is never the thing that gives up
+# first and turns a sampler timeout into a confusing "producer exited" result.
+_ORCHID_LIVENESS_TRIES=300   # x 0.1s = 30s
+_ORCHID_STUB_HOLD_TRIES=600  # x 0.1s = 60s, deliberately outliving the above
+
+# _await_while_alive <pid> <tries> <cmd...> -- 0 at the first sample where
+# <cmd> succeeds while <pid> is still alive; 1 when <pid> exits first or the
+# bound is exhausted. Liveness is asked BEFORE the condition, so a producer
+# that has already finished can never be credited with having moved the log
+# "mid-run".
+_await_while_alive() {
+  local pid="$1" tries="$2"
+  shift 2
+  local i=0
+  while [ "$i" -lt "$tries" ]; do
+    kill -0 "$pid" 2>/dev/null || return 1
+    if "$@"; then return 0; fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  return 1
+}
+
+_log_has_bytes()     { [ -s "$1" ]; }
+_log_has_heartbeat() { grep -q '^\[hb ' "$1" 2>/dev/null; }
+
+# await_log_growth <log> <pid> [tries] -- <log> became non-empty while <pid>
+# was still alive.
+await_log_growth() {
+  _await_while_alive "$2" "${3:-$_ORCHID_LIVENESS_TRIES}" _log_has_bytes "$1"
+}
+
+# await_log_heartbeat <log> <pid> [tries] -- <log> gained a `[hb ` liveness
+# line while <pid> was still alive. Separate from the growth sampler because
+# the stubs it runs against emit nothing of their own until they exit: "the
+# log is non-empty" would be satisfied by the wrong thing there, and the
+# heartbeat is the whole subject of that case.
+await_log_heartbeat() {
+  _await_while_alive "$2" "${3:-$_ORCHID_LIVENESS_TRIES}" _log_has_heartbeat "$1"
+}
+
+# stub_hold_until <release-file> -- the shell fragment a fixture stub runs to
+# hold itself open until the test releases it. Emitted from here rather than
+# written out at each site so all eight carry the same bound and the same
+# shape, and so a reader who finds one of them lands on the narrative above.
+#
+# It writes NOTHING while it waits: the heartbeat cases depend on the stub
+# producing not one byte of its own, so a progress message here would make
+# them pass without a heartbeat ever firing.
+#
+# The bound is a backstop for a test that dies before releasing, so the stub
+# is reaped instead of surviving the suite; a released stub leaves the loop on
+# its next 0.1s tick.
+stub_hold_until() {
+  printf 'i=0; while [ ! -e "%s" ] && [ "$i" -lt %s ]; do sleep 0.1; i=$((i+1)); done' \
+    "$1" "$_ORCHID_STUB_HOLD_TRIES"
+}
+
+# release_stub <release-file> -- let a stub held by `stub_hold_until` proceed.
+# A named verb rather than a bare `: > "$f"` at eight sites, because WHEN it
+# is called is the load-bearing part: only after the sampler has returned.
+release_stub() { : > "$1"; }

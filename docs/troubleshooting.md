@@ -355,22 +355,28 @@ raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
 
 **Symptom:** `orchid task show <id>` shows `attempts` climbing (and eventually
 `blocked — attempts exhausted`) on verify failures the candidate did not
-cause — most often a package checksum only the operator can re-pin, or an
-executable that shipped without its mode bit.
+cause — a package checksum only the operator can re-pin, an executable that
+shipped without its mode bit, a fresh worktree that never received the
+`node_modules` the integration checkout has, or an assertion everyone already
+knows samples a race.
 
 The driver classifies a failed `orchid verify` before charging it, so those
-two rounds should be landing on `infra_failures` instead. Check which way a
-round went:
+rounds should be landing on `infra_failures` instead. Check which way a round
+went:
 
 ```sh
 orchid task show <id>              # attempts vs infra_failures
 orchid journal show --task <id>    # 'attempt_waiver' entries say why
 ```
 
-**Exactly two failures are waivable**, both hand-offs the protocol itself
-defines and neither of which the implementer profile may perform. There is
-nothing to configure — no signature list, and no way to declare a third. Each
-needs two things to hold, and each one alone is worth nothing:
+**Four failures are waivable**, and none of them is one the implementer can
+fix by trying again: the two operator hand-offs the protocol itself defines
+(a stale package pin, an executable left mode 644), gitignored build state the
+worktree never received, and an assertion the repository already recorded as
+known-flaky. A fifth verdict, `harness`, covers a run killed before it reached
+a verdict at all. There is no signature list and no way to declare a failure
+forgiven by its wording. Each needs two things to hold, and each one alone is
+worth nothing:
 
 1. **The state is proved against the world.** For the mode bit, orchid stats
    the files the candidate *added* (a `#!` file shipped mode 644) and the ones
@@ -382,10 +388,16 @@ needs two things to hold, and each one alone is worth nothing:
    it is not executable, as orchid's own is) and requires it to **report a
    file stale** — a nonzero exit is not enough, because a check that cannot
    find the formula or trips over metadata the candidate corrupted exits
-   nonzero too and re-pinning fixes neither. No sentence in the *failure* can
-   substitute for either proof, which is why an ordinary defect that merely
-   says `Permission denied` is charged.
-2. **This failure is attributed to that file**, in two steps, because one
+   nonzero too and re-pinning fixes neither. For the missing build state,
+   orchid *compares the two checkouts*: a directory that your own `.gitignore`
+   covers, that exists where the run was dispatched from, and that does not
+   exist in the worktree the verification ran in. For the flaky register,
+   orchid reads a file **your candidate did not change** — touching it removes
+   the route, which is what stops an implementer quarantining the assertion it
+   is failing. No sentence in the *failure* can substitute for any of those
+   proofs, which is why an ordinary defect that merely says `Permission
+   denied` is charged.
+2. **This failure is attributed to that artifact**, in two steps, because one
    fault does not fail one check — it strands a whole suite. First, some
    failing line must *name the file and report its fault*
    (`.../orchid-frob: Permission denied`, `libexec/orchid-frob is not
@@ -399,31 +411,47 @@ needs two things to hold, and each one alone is worth nothing:
    **boundary**, so an outstanding `bin/tool` never collects a real
    `bin/tool-helper: Permission denied`.
 
+   For a missing dependency tree the causal proof is the same shape asked of a
+   different fact: a line saying something **could not be resolved**, where
+   that something **lives inside the absent directory**. `error Command
+   "jest" not found` attributes to `mobile/node_modules` because
+   `mobile/node_modules/.bin/jest` is there in the checkout that still has it
+   — and attributes to nothing when the absent directory is an unrelated
+   `.cache`. That coincidence is exactly how an earlier version of this rule
+   waived failures it had no part in, and it is why the rule now asks the
+   filesystem instead of the sentence.
+
 Where the state is outstanding and the failure is not attributable to it, the
-attempt is **charged**, and the reason says the hand-off is outstanding and
-that attribution was not established — so you can clear it and still see that
-it was not what failed.
+attempt is **charged**, and the reason says what is outstanding and that
+attribution was not established — so you can clear it and still see that it
+was not what failed.
 
 **A round is never waived as a round.** It is waived only when *every* failing
-line in it is individually claimed. That cuts both ways: two hand-offs
-outstanding at once, each explaining part of the output, together waive the
-round; one more line neither of them owns charges it, and the reason quotes
-that line. Perform the hand-off (re-pin, `chmod +x`) and re-dispatch; the same
-failure charges afterwards, because the state it was proved against is gone.
-If a waived fault comes back a second time, the pass stops at an operator
-boundary rather than re-dispatching again — a fault only you can clear does
-not get better by being retried.
+line in it is individually claimed. That cuts both ways, and it works across
+classes: a stale pin explaining part of the output and an absent dependency
+tree explaining the rest together waive the round; one more line neither of
+them owns charges it, and the reason quotes that line. The class the journal
+*names* is the one somebody must act on first — `handoff`, then
+`environment`, then `flaky`, then `harness` — and every contributing class is
+named in the reason. Perform the hand-off (re-pin, `chmod +x`), provision the
+worktree, or fix the test, then re-dispatch; the same failure charges
+afterwards, because the state it was proved against is gone. If a waived fault
+comes back a second time — of any class — the pass stops at an operator
+boundary rather than re-dispatching again, because none of these gets better
+by being retried.
 
-**Anything else charges**, including a flaky test and a worktree missing
-gitignored build state that `git worktree add` cannot reproduce
-(`node_modules`, `vendor`, `.venv`). Orchid forgives only what it can prove,
-and it cannot prove either of those. Fix the test, or provision the worktree,
-then `orchid task retry <id> --reason "..."`, which returns a blocked task to
-`rework` without consuming an attempt. A test you have decided is genuinely
-non-deterministic is a lesson-birth moment for `orchid lessons add` — and a
-reason to make the test wait for what it is sampling. Forgiveness is bounded
-either way: repeated waived failures still block the task once
-`infra_failures` reaches `infra_max`.
+**Anything else charges**, including a flaky failure your repository never
+wrote down and a resolution failure whose subject is not inside the missing
+directory. Orchid forgives only what it can prove. Fix the test, or provision
+the worktree, then `orchid task retry <id> --reason "..."`, which returns a
+blocked task to `rework` without consuming an attempt. A test you have decided
+is genuinely non-deterministic is a lesson-birth moment for `orchid lessons
+add` — and, first, a reason to make the test **wait for what it is sampling**
+rather than read one instant. If you cannot make it deterministic today, put
+it in `flaky.quarantine` with the reason: an unreliable gate should announce
+that it is unreliable, not fail silently and not charge for a race.
+Forgiveness is bounded either way: repeated waived failures still block the
+task once `infra_failures` reaches `infra_max`.
 
 ## `attempts exhausted` — the task blocked and you have a diagnosis
 

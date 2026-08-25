@@ -809,10 +809,11 @@ ones its archetype never declares.
      integration checkout carries (`node_modules`, `vendor`, `.venv`, a
      symlink into a sibling checkout) is simply absent from the new
      checkout, and the task's first `orchid verify` there fails on missing
-     dependencies rather than on anything the implementer wrote — and is
-     CHARGED for it, because that is not one of the two hand-offs the
-     classifier can prove (see `testing` below). Provision such state in the
-     new worktree before dispatching.
+     dependencies rather than on anything the implementer wrote (lesson
+     L003). **Provision such state in the new worktree before dispatching** —
+     that is the fix, and the classifier is only the backstop: a failure that
+     round is classified `environment` and does NOT consume an attempt, but it
+     still costs `infra_failures` and still costs the round.
   2. Record the base: `orchid task set <id> base_sha <integration-branch
      HEAD sha>`.
   3. `orchid task advance <id> implementing --reason "dispatching: deps
@@ -1180,47 +1181,77 @@ ones its archetype never declares.
     `orchid task set <id> hook_guidance "<the guidance text>"`. Then,
     whether or not a hook fired, **classify the failure before charging it**
     — the attempt budget measures the CANDIDATE's quality, and a failure the
-    candidate did not cause must not spend it. There are exactly two verdicts
-    and no configuration:
-    - *Not the candidate.* One of the TWO operator hand-offs the protocol
-      itself defines — a stale package checksum, or an executable this
-      candidate left mode 644 — is outstanding, and every failing line in the
-      round is attributable to it. Both halves are required, and neither is
-      worth anything alone. The STATE is proved against the world, never read
-      from the failure's wording: the driver stats the files the candidate
-      ADDED and the files it MODIFIED whose base recorded mode 755 (a `#!`
-      file left mode 644 is the exec-bit hand-off's own state, whether the
-      candidate shipped it that way or dropped the bit while rewriting it),
-      and it RUNS the repository's package-pin freshness check
-      (`handoff.pin_check`, config, default `scripts/pin-formula.sh --check`;
-      never trusted when the candidate changed the check itself) and requires
-      it to REPORT A FILE STALE — a nonzero exit is not that report, since a
-      check that cannot find the formula or trips over metadata this candidate
-      corrupted exits nonzero too and re-pinning fixes neither. The
-      ATTRIBUTION is then required from the failure to that FILE: a failing
-      line that names it and reports its fault — refusing to execute that
-      path, or calling it stale. `Permission denied`, `is not executable` and
-      `checksum is stale` are all sentences an ordinary defect prints, so no
-      wording decides this on its own; and being outstanding is not being to
-      blame, since a repository whose sourced libraries carry `#!` lines at
-      mode 644 has the exec-bit state outstanding on any candidate that adds
-      one. Where the state holds and the failure is not attributable to it,
-      the attempt is CHARGED and the reason says attribution was not
-      established. Attribution is per FAILING LINE and takes two steps,
-      because one fault does not produce one failure: one line must both name
-      the file and report its fault (CAUSAL — the proof it blocked this run),
-      after which every failing line naming that file is its CASCADE, causal
-      wording or not. The path is matched at a BOUNDARY, never as a substring:
-      an outstanding `bin/tool` must not collect a genuine
-      `bin/tool-helper: Permission denied`. NO ROUND IS EVER WAIVED AS A
-      ROUND: it is waived only when every failing line in it is individually
-      claimed, so one round may hold a mix — two hand-offs each explaining
-      part of it are waived together, while one further unexplained line
-      charges it and the reason quotes that line. Such a round is charged to
+    candidate did not cause must not spend it. There is no signature list and
+    no way to declare a failure forgiven; every waiver is earned on the same
+    two halves, and neither half is worth anything alone:
+    - *Not the candidate.* Something is outstanding that the implementer
+      cannot fix by trying again, and every failing line in the round is
+      attributable to it. FOUR such things are recognized, each proved
+      against the WORLD rather than read from the failure's wording:
+      - `handoff` — a stale package checksum, or an executable this candidate
+        left mode 644. The driver stats the files the candidate ADDED and the
+        files it MODIFIED whose base recorded mode 755 (a `#!` file left mode
+        644 is the exec-bit hand-off's own state, whether the candidate
+        shipped it that way or dropped the bit while rewriting it), and it
+        RUNS the repository's package-pin freshness check
+        (`handoff.pin_check`, config, default `scripts/pin-formula.sh
+        --check`; never trusted when the candidate changed the check itself)
+        and requires it to REPORT A FILE STALE — a nonzero exit is not that
+        report, since a check that cannot find the formula or trips over
+        metadata this candidate corrupted exits nonzero too and re-pinning
+        fixes neither. Neither is a step an implementer profile may perform
+        (L017).
+      - `environment` — gitignored build state the integration checkout
+        carries and the task's worktree never received, proved by comparing
+        the two checkouts (lesson L003). Provisioning it is a DISPATCH step,
+        above; this classification is the backstop, not the fix.
+      - `flaky` — an assertion this repository ALREADY recorded as
+        known-flaky, in a register (`flaky.quarantine`, config, default
+        `tests/QUARANTINE.md`) that THIS CANDIDATE DID NOT TOUCH. That last
+        clause is the whole safety of it: an implementer cannot quarantine
+        the assertion it is failing, because changing the file removes the
+        route. Signatures are matched literally and claim only the lines they
+        match.
+      - `harness` — the run was KILLED before it reached a verdict (`orchid
+        verify` recorded exit 124, 137 or 143). This one forgives no failure,
+        because there is none: it is admitted only when the round left no
+        unexplained failing line, so a suite that printed real failures before
+        it died has already spoken about the candidate and those failures
+        charge.
+
+      The ATTRIBUTION is then required from the failure to that ARTIFACT: a
+      failing line that names the file and reports its fault — refusing to
+      execute that path, or calling it stale — or, for the absent build state,
+      a line reporting that something COULD NOT BE RESOLVED which LIVES INSIDE
+      the missing directory (`error Command "jest" not found` attributes to
+      `mobile/node_modules` because `mobile/node_modules/.bin/jest` is in the
+      checkout that has it, and attributes to nothing when the absent
+      directory is an unrelated `.cache`). `Permission denied`, `is not
+      executable`, `checksum is stale` and `Cannot find module` are all
+      sentences an ordinary defect prints, so no wording decides this on its
+      own; and being outstanding is not being to blame, since a repository
+      whose sourced libraries carry `#!` lines at mode 644 has the exec-bit
+      state outstanding on any candidate that adds one. Where the state holds
+      and the failure is not attributable to it, the attempt is CHARGED and
+      the reason says attribution was not established. Attribution is per
+      FAILING LINE and takes two steps, because one fault does not produce one
+      failure: one line must both name the artifact and report its fault
+      (CAUSAL — the proof it blocked this run), after which every failing line
+      naming it is its CASCADE, causal wording or not. The path is matched at
+      a BOUNDARY, never as a substring: an outstanding `bin/tool` must not
+      collect a genuine `bin/tool-helper: Permission denied`. NO ROUND IS EVER
+      WAIVED AS A ROUND: it is waived only when every failing line in it is
+      individually claimed, so one round may hold a mix ACROSS CLASSES — a
+      stale pin explaining six lines and an absent dependency tree explaining
+      four are waived together, while one further unexplained line charges it
+      and the reason quotes that line. The class NAMED is the one somebody
+      must act on first (`handoff`, then `environment`, then `flaky`, then
+      `harness`), and every contributing class is named in the reason.
+      Such a round is charged to
       `orchid task infra-fail <id> --reason "..."` — the environment budget,
       capped by `infra_max` (config, default 3) — and then enters rework
       WAIVED: `orchid task advance <id> rework --waive-attempt --reason
-      "verify failed (handoff, attempt not charged): <why>"`. The
+      "verify failed (<class>, attempt not charged): <why>"`. The
       `attempt_waiver` journal entry the waiver writes is what makes "this
       failure was not charged, and here is why" a durable fact rather than an
       inference from a counter that did not move. A waived round must produce
@@ -1228,21 +1259,21 @@ ones its archetype never declares.
       `attempts` where it is, so the re-dispatched round would otherwise
       resolve the previous round's envelope and re-verify a candidate that
       never moved. And it is waived ONCE: if a waived fault recurs on a task
-      that has ALREADY HAD ONE WAIVED, stop at an operator boundary instead of
-      re-dispatching, because a hand-off is a fault an operator clears and an
-      identical retry cannot. That guard counts the task's own waived rounds,
-      not `infra_failures`, which also counts unrelated harness faults.
+      that has ALREADY HAD ONE WAIVED — of ANY class — stop at an operator
+      boundary instead of re-dispatching, because none of these is a fault the
+      implementer can clear and an identical retry cannot fix any of them.
+      That guard counts the task's own waived rounds, not `infra_failures`,
+      which also counts unrelated harness faults.
     - *The candidate, or anything uncertain.* `orchid task advance <id>
       rework --reason "verify failed (candidate, attempt charged — <why>):
       see .orchid/reviews/<id>-verify.log"`, which consumes an attempt.
       Uncertainty always lands here: forgiving a real defect hides it, while
       charging a spurious failure costs one attempt, so the classification
-      fails toward the strict reading and states why it charged. That
-      includes a failure that merely COINCIDES with an outstanding hand-off,
-      and it includes every failure neither hand-off covers — a flaky test, a
-      worktree missing gitignored build state `git worktree add` cannot
-      reproduce, a harness fault. Orchid forgives only what it can prove, and
-      those it cannot.
+      fails toward the strict reading and states why it charged. That includes
+      a failure that merely COINCIDES with an outstanding fault; a resolution
+      failure whose subject is NOT inside the absent directory; a flaky-
+      looking failure the repository never wrote down; and every failure none
+      of the four covers. Orchid forgives only what it can prove.
 
     **Either advance carries the failing gate's exact locations into the brief,
     automatically.** Before it deletes the verify log, `orchid task advance
@@ -1307,9 +1338,14 @@ ones its archetype never declares.
     not an actual defect in the candidate — this is a lesson-birth moment
     (docs/specs/kernel.md, Cross-run lessons): `orchid lessons add --scope
     repo --invalidate-when "..." "..."` before continuing. A failure you can
-    see is non-deterministic is the same moment, and a reason to make the test
-    wait for what it samples: Orchid charges it, because it cannot prove
-    flakiness and will not guess at it.
+    see is non-deterministic is the same moment, and the first answer is to
+    make the test WAIT FOR WHAT IT SAMPLES rather than sample one instant.
+    Orchid never infers flakiness and will not guess at it, so an
+    unrecorded flake is CHARGED; what it does honour is a flake the repository
+    has already WRITTEN DOWN, in `flaky.quarantine`, before the candidate
+    existed. Quarantining is the second-best answer and it is a visible one:
+    an unreliable gate must announce that it is unreliable rather than fall
+    silent.
     Once the task's non-waived `attempts` count (`orchid task show <id>`)
     reaches its budget, stop retrying automatically: `orchid notify --task
     <id> "attempts exhausted (<attempts>/<budget>): see

@@ -76,6 +76,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `infra_max` | `3` | repo | v0 |
 | `rework_max` | `3` | repo | v1.1 |
 | `handoff.pin_check` | `scripts/pin-formula.sh --check` | repo | v1.1 |
+| `flaky.quarantine` | `tests/QUARANTINE.md` | repo | v1.1 |
 | `model` | *(empty — engine's own default)* | repo or user | v0 |
 | `effort` | `medium` | repo or user | v0 |
 | `rate_limit_backoff_s` | `3600` | repo | v1-m2 |
@@ -192,13 +193,13 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   INV-07 invalidates verify evidence. Any value
   other than `off` reads as `required`, so a typo can only route more work to
   a human, never less.
-- **Verification-failure classification** has **no configuration surface at
-  all**, and that is the design rather than an omission. A repository cannot
-  declare a signature that forgives its own failures: earlier versions of this
+- **Verification-failure classification** has **no signature surface**, and
+  that is the design rather than an omission. A repository cannot declare a
+  *failure sentence* that forgives its own rounds: earlier versions of this
   feature offered one, and every signature list, directory-name list and
   whole-round exemption in them ended up forgiving something it never meant
-  to. Exactly two failures are waivable, both hand-offs the protocol itself
-  defines and neither of which an implementer profile may perform:
+  to. Four failures are waivable, and each is **proved against the world**
+  rather than read out of the failure's wording:
   - **A package pin the repository's own freshness check reports stale**
     (`handoff.pin_check`, below).
   - **An executable this candidate left mode 644** — a file carrying a `#!`
@@ -206,22 +207,49 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     it *modified* that its `base_sha` recorded mode 755, which is what a
     rewrite that loses an exec bit looks like and is just as much the
     operator's `chmod`.
+  - **Gitignored build state the worktree never received** — a directory that
+    is present in the integration checkout, ignored by the repository's own
+    rules, and absent from the worktree the verification ran in. `git worktree
+    add` reproduces what git *tracks*, so `node_modules`, `vendor`, `.venv`
+    and a symlink into a sibling checkout simply are not there (lesson L003).
+  - **An assertion the repository already recorded as known-flaky**
+    (`flaky.quarantine`, below).
+
+  And one more that forgives no failure at all: a run **killed before it
+  reached a verdict** (`orchid verify` recorded exit 124, 137 or 143) reported
+  nothing about the candidate to forgive. It is admitted only when the round
+  left no unexplained failing line — a suite that printed real failures before
+  it was killed has already said something about the candidate, and those
+  failures charge.
 
   Each needs **two halves, and neither is worth anything alone**:
-  - *The state, proved against the world* — `stat` for the mode bit, and
-    *running* the freshness check for the pin. No sentence in the failure can
-    answer either question, because `Permission denied`, `is not executable`
-    and `checksum is stale` are all things an ordinary defect prints.
-  - *The attribution, from the failure to that file.* Per failing **line**,
-    and in two steps, because one fault does not produce one failure — it
-    produces a cascade. At least one failing line must **name that file** and
-    report its fault (refuse to execute it, or call it stale); that is the
+  - *The state, proved against the world* — `stat` for the mode bit, *running*
+    the freshness check for the pin, comparing the two checkouts for the
+    missing build state, and reading a register the candidate did not touch
+    for the flaky one. No sentence in the failure can answer any of those
+    questions, because `Permission denied`, `is not executable`, `checksum is
+    stale` and `Cannot find module` are all things an ordinary defect prints.
+  - *The attribution, from the failure to that artifact.* Per failing
+    **line**, and in two steps, because one fault does not produce one failure
+    — it produces a cascade. At least one failing line must **name that file**
+    and report its fault (refuse to execute it, or call it stale); that is the
     proof the outstanding state blocked this run. Every failing line that then
     names the file is part of its cascade, whether or not it repeats the
     causal wording (`runners/orchid-drive must exist and be executable` is
     unmistakably that mode bit's failure). The path is matched at a
     **boundary**, never as a substring: an outstanding `bin/tool` does not
     collect a genuine `bin/tool-helper: Permission denied`.
+
+    For the missing build state the causal proof is the same shape asked of a
+    different fact: a line reporting that something **could not be resolved**,
+    where the thing it could not resolve **lives inside the absent
+    directory**. `error Command "jest" not found` attributes to
+    `mobile/node_modules` because `mobile/node_modules/.bin/jest` exists in the
+    checkout that still has it — and attributes to nothing at all when the
+    absent directory is a `.cache` with no `jest` in it, which is exactly the
+    coincidence that made the first version of this arm dangerous. For the
+    flaky register the signature *is* the proof, matched literally and
+    claiming only the lines it matches.
 
   Being outstanding is not being to blame — a repository whose sourced
   libraries carry `#!` lines at mode 644 (orchid is one, in every `lib/*.sh`)
@@ -232,13 +260,18 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 
   **A round is never waived as a round.** It is waived only when *every*
   failing line in it has been individually claimed, which lets one round hold
-  a mix: two hand-offs outstanding at once, each explaining part of the
-  output, together account for all of it and it is waived; one further
-  unexplained line charges it and the reason quotes that line. What remains
-  forgiven, and is bounded on purpose: a candidate that produces *no failing
-  line of its own* while one of those states is outstanding is waived for that
-  round — an operator clears the state in seconds, the round is charged to
-  `infra_failures`, and it stops for a human if it recurs.
+  a mix *across classes*: a stale pin explaining six lines and an absent
+  dependency tree explaining four together account for all of it and it is
+  waived; one further unexplained line charges it and the reason quotes that
+  line. The class the journal *names* is the one somebody must act on first —
+  `handoff`, then `environment`, then `flaky`, then `harness` — and every
+  contributing class is named in the reason regardless. What remains forgiven,
+  and is bounded on purpose: a candidate that produces *no failing line of its
+  own* while one of those states is outstanding is waived for that round — an
+  operator clears the state in seconds, the round is charged to
+  `infra_failures`, and it stops for a human if it recurs. A candidate that
+  *hangs* is forgiven once by the killed-run rule for the same reason and
+  under the same bound.
 
   A waived round re-enters rework with `--waive-attempt`, and requires a
   *fresh* implement envelope of its own: `--waive-attempt` leaves `attempts`
@@ -266,6 +299,27 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   and *name* a file the repository tracks; that file is what the waiver is
   attributed to, and a check that fails silently proves nothing and forgives
   nothing. `none` disables the route.
+- **`flaky.quarantine`** — the known-flaky register the `flaky` route reads,
+  relative to the verified tree (default `tests/QUARANTINE.md` — orchid ships
+  one, with no entries and the reasoning written down). One entry per line,
+  `FLAKE: <literal substring of the failing line>` at **column 0** and
+  optionally ` -- <why>`; everything else in the file is prose the route
+  ignores (including an indented `FLAKE:`, so a register can document its own
+  format without that example becoming a live signature), so it can be the
+  document a human actually reads. **The safety here is not the
+  path, it is the timing:** a register *this candidate changed* is not an
+  authority on this candidate, so the moment a candidate touches the file the
+  route is gone and the round charges — an implementer cannot quarantine the
+  assertion it is failing. Three more things keep it narrow: a signature is
+  matched **literally**, never as a pattern, so no entry can be written that
+  matches everything; it must be at least 16 characters, so no entry can match
+  everything by being short; and it claims **only** the lines it matches, with
+  no cascade, so a suite that also prints an aggregate `3 tests failed` leaves
+  that line unexplained and charges the round. `none` disables the route.
+  Quarantining is the *second*-best answer — a case that reports without
+  failing the suite is still an unresolved problem, and the register is what
+  keeps it visible instead of silent. Making the test deterministic is the
+  first.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable
   reviewer/critic (the diff is swapped for a `diff.stat` summary, honestly
   recorded as omitted); an inline-only engine (agy, hermes) still gets the

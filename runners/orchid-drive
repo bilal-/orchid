@@ -798,7 +798,7 @@ drive_hook_gate() {
 # ---------------------------------------------------------------------------
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
-  local tf target outcome blockers plan action path branch integ integ_head arc lrc role_line role op
+  local tf target outcome blockers plan action path branch integ integ_head arc lrc role_line role op wtmiss
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
@@ -839,6 +839,23 @@ drive_dispatch() {
         fi
         drive_note "$id: created the dispatch worktree $path on $branch"
         "$ORCHID_BIN" task set "$id" worktree "$path"
+        # DETECT AND REPORT WHAT `worktree add` COULD NOT CARRY (lesson L003).
+        # It reproduces what git TRACKS, so a gitignored dependency tree the
+        # integration checkout carries -- `node_modules`, `vendor`, `.venv`, a
+        # symlink into a sibling checkout -- is simply not here, and the first
+        # `orchid verify` in this worktree fails on missing dependencies.
+        #
+        # Reported at the moment somebody can still act on it, rather than
+        # after a round has been spent discovering it. This is a NOTE and not a
+        # boundary on purpose: most ignored directories a worktree lacks are
+        # nobody's problem (a `.cache`, a stale `target`), and stopping a
+        # dispatch for every one of them would trade a lost attempt for a
+        # stalled run. The classifier is the backstop if this note goes unread
+        # -- such a round is `environment`, and charges no attempt.
+        wtmiss="$(drive_env_missing_state "$repo" "$path" || true)"
+        if [ -n "$wtmiss" ]; then
+          drive_note "$id: NOTE — the new worktree does not carry gitignored state the integration checkout has, which git worktree add cannot reproduce (L003); provision it there if the suite needs it: $(printf '%s' "$wtmiss" | tr '\n' ' ')"
+        fi
         ;;
       adopt)
         drive_note "$id: adopted the orphan dispatch worktree $path (created before its field was recorded)"
@@ -1351,15 +1368,22 @@ drive_testing() {
       set_boundary operator-decision "$id" "repeated non-candidate verify failures ($cls): $cls_reason"
       return 0
     fi
-    # A hand-off is a thing an OPERATOR clears -- a checksum re-pinned, an exec
-    # bit set. Re-dispatching the implementer against it produces the identical
+    # NONE of the waivable classes is a thing the IMPLEMENTER clears: a
+    # checksum is re-pinned by an operator, an exec bit set by one, a missing
+    # dependency tree provisioned by whoever dispatches, a quarantined
+    # assertion fixed in the test, and a killed run is nobody's to fix.
+    # Re-dispatching the implementer against any of them produces the identical
     # failure and nothing else, so the second one stops here rather than
     # grinding out the rest of `infra_max` on retries that cannot work. The
     # first still retries: the fault may have been cleared between the two
     # passes, and one bad round is not yet a reason to stop a run for a human.
+    #
+    # The count is across CLASSES on purpose (drive_waived_rounds): a task that
+    # waived a hand-off and then waived a missing dependency tree has had two
+    # rounds that told nobody anything about the candidate.
     if [ "$prior_waived" -ge 1 ]; then
       drive_note "$id: verify FAIL ($cls, $wmark) — recurring non-candidate fault, testing held for an operator"
-      set_boundary operator-decision "$id" "$cls verify failure on a task that has already had $prior_waived operator-clearable round(s) waived — an operator clears this, another identical re-dispatch cannot: $cls_reason"
+      set_boundary operator-decision "$id" "$cls verify failure on a task that has already had $prior_waived non-candidate round(s) waived — this is not something the implementer can clear, and another identical re-dispatch cannot: $cls_reason"
       return 0
     fi
     # The floor is recorded BEFORE the advance, while this round's envelopes

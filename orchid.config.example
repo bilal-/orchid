@@ -91,17 +91,27 @@ pack_budget_bytes=65536
 # rework_max=3
 # v1.1: verification-failure classification. A FAILED verify is classified
 # before it is charged, so the attempt budget keeps measuring the candidate
-# rather than the harness. There is nothing to configure and no signature list:
-# exactly two failures are waivable, both hand-offs the protocol itself defines
-# and neither of which an implementer profile may perform --
+# rather than the harness. There is no signature list, and no way to declare a
+# failure forgiven: four failures are waivable, and each is PROVED against the
+# world rather than read out of the failure's wording --
 #   - a package pin this repository's own freshness check REPORTS STALE, and
 #   - an executable this candidate left mode 644 (stat'ing the files it added,
 #     and the ones it modified whose base recorded mode 755, since a rewrite
-#     that drops an exec bit is the same hand-off).
+#     that drops an exec bit is the same hand-off), and
+#   - gitignored build state the integration checkout carries and the task's
+#     worktree never received, since `git worktree add` reproduces only what
+#     git TRACKS (lesson L003), and
+#   - an assertion this repository ALREADY recorded as known-flaky, in a
+#     register this candidate did not touch (flaky.quarantine, below).
+# Plus one that forgives no failure at all: a run KILLED before it reached a
+# verdict (exit 124/137/143) reported nothing about the candidate.
 # Each is proved against the world first, and then THIS failure must be
-# attributable to that file: a failing line naming it and refusing to execute
-# it, or naming it and calling it stale. Everything else charges, including a
-# failure that merely coincides with an outstanding hand-off.
+# attributable to that artifact: a failing line naming the file and refusing to
+# execute it, naming it and calling it stale, or reporting that something the
+# missing dependency tree PUBLISHES could not be resolved. Everything else
+# charges, including a failure that merely coincides with an outstanding fault.
+# A round is never waived as a round: one failing line nothing accounts for
+# charges it, and the reason quotes that line.
 #
 # The package-pin freshness check that route RUNS, relative to the verified
 # tree. Invoked only if it is a regular file there that states how it is run --
@@ -114,6 +124,21 @@ pack_budget_bytes=65536
 # the route.
 # Default: scripts/pin-formula.sh --check
 # handoff.pin_check=scripts/pin-formula.sh --check
+#
+# The known-flaky register the `flaky` route reads, relative to the verified
+# tree. One entry per line: `FLAKE: <literal substring of the failing line>`,
+# optionally followed by ` -- <why>`; everything else in the file is prose the
+# route ignores, so it can be the document a human actually reads. A signature
+# is matched LITERALLY (never as a pattern) and must be at least 16 characters,
+# so no entry can be written that matches everything, and it claims ONLY the
+# lines it matches -- an aggregate `3 tests failed` alongside it is unexplained
+# and charges the round.
+# THE SAFETY IS NOT THE PATH, IT IS THE TIMING: a register THIS CANDIDATE
+# CHANGED is not an authority on this candidate, so touching the file removes
+# the route entirely. An implementer cannot quarantine the assertion it is
+# failing. `none` disables the route.
+# Default: tests/QUARANTINE.md
+# flaky.quarantine=tests/QUARANTINE.md
 # model=
 # effort=medium
 # rate_limit_backoff_s=3600
