@@ -3437,10 +3437,21 @@ assert_eq 16 "$ODRIVE_RC" "and the pass hands off at a boundary"
 # other half of this predicate: what happens when there is NO receipt because
 # the pass that should have written one died first.
 #
-# RED before this rework: rung 2 came from the sweep, worded "prepared and
-# never launched" -- charged to the ageing of rung 1's corpse -- while this
-# pass's real, second launch failure went uncounted behind drive_escalate's
-# one-rung-per-slot-per-pass guard. Two rungs, one launch attempt.
+# TWO DIFFERENT REDs sit under this assertion, and they are not the same kind
+# of claim:
+#
+#   * AT THE PARENT, the count is 0, not 2 -- nothing charged a rung for a
+#     launch that failed before its spawn line, and nothing journaled it. That
+#     is the dogfood defect (F29) and the reason this whole Part exists.
+#   * AT AN EARLIER T027 ATTEMPT, the count was 2 for the WRONG reason: rung 2
+#     came from the sweep, worded "prepared and never launched", charged to the
+#     ageing of rung 1's corpse -- while this pass's real, second launch failure
+#     went uncounted behind drive_escalate's one-rung-per-slot-per-pass guard.
+#     Two rungs, one launch attempt. Self-inflicted; only this file ever saw it,
+#     and the `prepared and never launched` check below is what pins it dead.
+#
+# The parent half is what the numeric assertion proves; the wording assertions
+# are what separate the two.
 assert_eq 2 "$(ofield infra_failures)" \
   "two rungs for two attempted launches (out: $ODRIVE_OUT)"
 assert_eq 2 "$(grep -c "the launcher exited 12 without spawning a job" "$OVF/.orchid/journal.md")" \
@@ -3624,8 +3635,11 @@ assert_eq 0 "$(ufield infra_failures)" \
 # for. There is no pid to signal here, so the weaker consequence is the whole
 # consequence: report it, spend one rung, retire the manifest, keep the log.
 #
-# RED before this rework: `prepared` forever, reaped by nothing at any bound,
-# escalated by nothing, with the slot held open for the rest of the run.
+# RED at the parent: `prepared` forever, escalated by nothing, and skipped by
+# the ordinary `gc` the driver itself calls at every bound, so the slot stayed
+# held open for the rest of the run. (An operator invoking `--reap-prepared`
+# by hand could clear it there — on pid 0 alone, log growing or not — but the
+# unattended pass never did, and that is the arm this Part drives.)
 touch -t 202001010000 "$UORPHAN" "$ULOG"
 run_udrive
 assert_match "V010[[:space:]]+unstamped" "$UDRIVE_OUT" \
@@ -3733,9 +3747,15 @@ mk_stranded() {  # <job-id> [launch-exit] -- the manifest a launcher stranded
 # receipt for it, so the charge that mark was supposed to stand for never
 # landed.
 #
-# RED before this rework: the sweep skipped every manifest carrying the mark,
-# so this pass charged nothing and journaled nothing, and the failure stayed
-# invisible until gc retired the manifest it was written on.
+# RED at the parent: there is no sweep, no `launch_exit` mark and no charge of
+# any kind — a launcher that failed before its spawn line was invisible end to
+# end, which is the dogfood finding itself.
+#
+# RED at an earlier T027 attempt, and the reason this Part exists as its own
+# fixture: the sweep skipped every manifest carrying the mark, so this pass
+# charged nothing and journaled nothing, and the failure stayed invisible until
+# gc retired the manifest it was written on. Self-inflicted; the fix is that
+# the receipt, not the mark, is what deduplicates.
 mk_stranded j-e1-W010-a1-c0ffee01 12
 run_wdrive
 assert_eq 1 "$(wfield infra_failures)" \
@@ -3837,7 +3857,11 @@ xfield() { fm_get "$XTASK" "$1"; }
 XDRIVE_RC=0
 XDRIVE_OUT="$(ORCHID_REPO="$OPT" ORCHID_EPOCH="$XEPOCH" "$DRIVE" 2>&1)" || XDRIVE_RC=$?
 
-# RED before this rework: `testing`, on this pass and on every pass after it.
+# RED at the parent: `testing`, on this pass and on every pass after it. The
+# parent's step-over arm keys on `optional_hooks_died`, which is set only where
+# a hook job was LAUNCHED and then died without an envelope — a handler whose
+# launcher never reached its spawn line leaves no job to die, so it reached no
+# arm at all and the point was simply re-dispatched every pass.
 assert_eq rework "$(xfield status)" \
   "the step an OPTIONAL point guards is taken in the same pass its handler fails to launch — a deferral here is a park (rc=$XDRIVE_RC, out: $XDRIVE_OUT)"
 assert_match "could not be launched — stepping over it" "$XDRIVE_OUT" \

@@ -170,6 +170,14 @@
       of it is a spawn whose pid stamp was lost and may have an engine behind
       it — under its own `--prepared-older-than-s` bound, with every bound
       taken literally so an operator's `--older-than-s 0` honours zero.
+      **Scope, recorded because F41 asked for more than was wrong:** F41
+      described the operator's hand-sweep predicate, `pid == 0 || ! kill -0
+      <pid>`, and asked for a RED case per half. Only the `pid == 0` half was
+      ever broken. The `! kill -0` half — a job that launched and died without
+      an envelope — was already reaped by ordinary `gc --older-than-s 0`
+      before T027; the test that covers it is a regression tripwire, labelled
+      as one, and `tests/probes/probe-t027-parent-red.sh` checks that labelling
+      against the parent commit's own binary rather than against a comment.
   - **v1-m4 (ecosystem + polish) — SHIPPED:** split into release-blocking
     core and CONDITIONAL reference adapters, per this milestone's own escape
     hatch (upstream churn may drop an individual adapter from launch; a

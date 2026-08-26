@@ -935,10 +935,13 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   under `--prepared-older-than-s`, a bound SEPARATE from the dead-job one so a
   caller can hold this class back without holding back the dead jobs it wants
   reaped now. Every bound is taken literally: an operator's `--older-than-s 0`
-  honours zero on every class (F41 is that operator being quietly given
-  something else, twice). The unattended driver passes `stall_minutes` for
-  this class because *it* cannot know whether a launcher is mid-flight between
-  its own `prepare` and its spawn line. `orchid jobs gc --reap-prepared
+  honours zero on every class. (In F41 that operator got nothing back twice
+  because this class was skipped outright, not because their bound was
+  silently raised — the literal-bound rule is what keeps the fix from
+  reintroducing the same silence in the other spelling.) The unattended
+  driver passes `stall_minutes` for this class because *it* cannot know
+  whether a launcher is mid-flight between its own `prepare` and its spawn
+  line. `orchid jobs gc --reap-prepared
   [--older-than-s N] [--prepared-older-than-s N]` (v1-m4) remains the exclusive
   form of the same reap, touching nothing else — which is what makes it the one
   `PLANNING` can run. It honours either bound (the class-specific

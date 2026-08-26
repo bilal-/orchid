@@ -248,6 +248,13 @@ echo "$hostile_out" | grep -Eq "^gc (\.\.|/)" && fail "gc must never echo a reap
 # call the driver itself makes and the first one an operator reaches for -- and
 # 74 files were deleted by hand.
 #
+# SCOPE, STATED ONCE FOR EVERY CASE BELOW: the class being reaped here is the
+# pid-0 one, and that is the class the parent skipped outright
+# (`[ "$pid" != 0 ] || continue`). The dead-pid class was never skipped there
+# and is not fixed by any of this -- see the block much further down that says
+# so, and `bash tests/probes/probe-t027-parent-red.sh <base_sha>`, which runs
+# both classes through the parent's own binary and this one's.
+#
 # Age is measured off the manifest FILE's own mtime for both modes, since
 # `started_at` is always 0 for a never-launched manifest. EVERY BOUND IS TAKEN
 # LITERALLY -- there is no floor hidden inside the verb (T027 rework; the F41
@@ -311,9 +318,16 @@ grep -q "TPREPYOUNG" <<<"$split_gc_out" && fail "--prepared-older-than-s must ho
 # --prepared-older-than-s, so the one bound given applies to everything: the
 # SAME young manifest the call above deliberately spared is reaped by this one,
 # with no age of any kind standing between the operator and a manifest they
-# have already identified as an orphan. RED before this rework: the verb
-# silently raised 0 to `stall_minutes` and this call printed nothing at all,
-# which is what sent that operator to `rm` for the second run running.
+# have already identified as an orphan.
+#
+# RED twice over, for two different reasons, which is worth keeping straight:
+# at the PARENT this call printed nothing because ordinary gc skipped every
+# pid-0 manifest outright; at an earlier T027 attempt it printed nothing
+# because the verb silently raised the 0 the caller typed to `stall_minutes`.
+# The parent half is the dogfood defect -- what sent that operator to `rm` for
+# the second run running -- and is the one the probe's `gc-zero-never-started`
+# row proves; the second is a self-inflicted regression this rework removed,
+# and only this file ever saw it.
 zero_gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
 assert_match "^gc-prepared j-e1-TPREPYOUNG-a1-bbbb0001$" "$zero_gc_out" \
   "an explicit --older-than-s 0 honours zero on a known pid-0/no-log orphan"
@@ -413,9 +427,13 @@ assert_match "TLIVE	prepared" "$("$ORCHID_BIN" jobs check)" \
 # report changes, and the manifest becomes reapable — the manifest itself is
 # untouched, so the log's own mtime is doing all of the work.
 #
-# RED before this rework: `prepared` forever, reaped by nothing at any bound,
-# while runners/orchid-drive launched a second engine over it on the very next
-# pass.
+# RED at the parent, precisely: `prepared` forever from `jobs check`, skipped
+# by ordinary `gc` at every bound, while runners/orchid-drive read the same
+# manifest as "no job" and launched a second engine over it on the very next
+# pass. Not "reaped by nothing" -- the parent's `--reap-prepared` mode did
+# reap it, on pid 0 alone and with no regard for whether its log was still
+# growing, which is the opposite error and is why the two halves of the pid-0
+# class are separated by the log here rather than merged.
 touch -t 202001010000 "$rt/logs/j-prep-live.log"
 assert_match "TLIVE	unstamped" "$("$ORCHID_BIN" jobs check)" \
   "a spawn that never stamped a pid and then went silent is reported unstamped, not prepared forever"
@@ -444,21 +462,37 @@ assert_match "^gc-prepared j-e1-TLIVE-a1-cccc0002$" "$live_gone_out" \
   "and it is retired under the never-started reason"
 
 # ---------------------------------------------------------------------------
-# ...and the OTHER shape of the same operator complaint (dogfood F41).
+# ...and the OTHER half of the operator's predicate: NOT A FIX. A REGRESSION
+# TRIPWIRE, AND LABELLED AS ONE.
 #
 # The operator who deleted these by hand -- twice, on two separate runs --
 # found them with one predicate: `pid == 0 || ! kill -0 <pid>`. Everything
-# above is the first half of that `||`. This is the second: a job that DID
-# launch and then died without ever filing an envelope. It must be reaped by
-# the same call the operator reached for and the driver itself makes on every
-# pass, `orchid jobs gc --older-than-s 0` -- not merely by the generous
-# default bound the case at the top of this file happens to pass (86400).
+# above is the first half of that `||`, and it is what T027 actually fixed.
+# This is the second half: a job that DID launch and then died without ever
+# filing an envelope.
 #
-# Pinned separately from that case on purpose. `--older-than-s 0` is the ONE
-# bound whose behaviour the incident is about, and it is the bound the driver
-# hardcodes for this class -- so an assertion that the DEAD class takes it
-# literally is the tripwire that catches a future change quietly putting a
-# margin back under it, on either class.
+# T027's acceptance criteria calls that "the same defect as F29" and asks for
+# a RED case per shape. THERE IS NO RED CASE HERE TO WRITE. The parent commit
+# already reaps this manifest on this exact call: ordinary `gc`'s dead-job arm
+# takes `--older-than-s` literally there too, and the age it measures is
+# `now - started_at`, which for a real launched job is seconds. Only the pid-0
+# half was ever skipped (`[ "$pid" != 0 ] || continue`, right at the top of
+# that loop). Whatever sent the operator back to `rm` a second time, it was
+# not ordinary gc refusing to reap a dead pid.
+#
+# So this block asserts a behaviour the candidate INHERITED, which makes it a
+# regression tripwire and nothing more -- kept, because `--older-than-s 0` is
+# the one bound the incident is about and the one the driver hardcodes for the
+# unlaunched class, so a future change putting a margin back under either class
+# fails here first. Calling it a fix would have been the worse error: an
+# invented defect, "proved" by an assertion that passes on the parent too and
+# can therefore never fail.
+#
+# Checkable, not merely asserted: `bash tests/probes/probe-t027-parent-red.sh
+# <base_sha>` runs this shape and the two pid-0 shapes through the parent's own
+# binary and this checkout's, and its `gc-zero-dead-pid` row FAILS if this half
+# is ever re-labelled as newly fixed (its `gc-zero-never-started` and
+# `gc-zero-unstamped` rows are the RED proof for the half that is).
 # ---------------------------------------------------------------------------
 mkdir -p "$rt/packs/j-e1-TGONE-a1-dead0002"
 echo '{}' > "$rt/requests/j-e1-TGONE-a1-dead0002.json"
@@ -475,7 +509,7 @@ assert_match "TGONE	dead" "$("$ORCHID_BIN" jobs check)" \
   "a launched job whose pid is gone is reported dead — never-started is the other shape, not this one"
 gone_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
 assert_match "^gc j-e1-TGONE-a1-dead0002$" "$gone_out" \
-  "gc --older-than-s 0 reaps a job that died without an envelope (dogfood F41: this is the half the operator's '! kill -0' found)"
+  "gc --older-than-s 0 reaps a job that died without an envelope — INHERITED from the parent, not fixed here; this pins it against a future margin"
 [ ! -f "$rt/jobs/j-gone.json" ] || fail "the dead manifest must leave the jobs dir"
 [ -f "$rt/quarantine/j-gone.json.reason-gc-dead" ] || fail "and be quarantined as .reason-gc-dead, not silently deleted"
 [ ! -d "$rt/packs/j-e1-TGONE-a1-dead0002" ] || fail "the dead job's pack dir goes with it"
@@ -494,6 +528,15 @@ assert_match "^gc j-e1-TGONE-a1-dead0002$" "$gone_out" \
 # that one call, and re-run their sweep. Anything it still finds is a file they
 # would still be deleting by hand, whatever the per-shape assertions above say.
 # A future shape nobody thought to write a case for fails here first.
+#
+# MIXED BY CONSTRUCTION, and that is the point of it: shapes (1) and (2) are
+# what T027 fixed, shape (3) the parent already reaped (see the block above).
+# This case is about the operator's END STATE -- an empty sweep -- which is a
+# property of all three together and was not true before, because (1) and (2)
+# survived. It is deliberately NOT evidence that any individual shape here was
+# broken; the per-shape blocks above say which were, and
+# tests/probes/probe-t027-parent-red.sh settles it against the parent's own
+# binary rather than against a comment.
 # ---------------------------------------------------------------------------
 rm -f "$rt/jobs"/*.json          # clean slate: the sweep below must be exhaustive
 
@@ -510,7 +553,9 @@ jq -n '{job_id:"j-e1-TF41B-a1-f41b0001", task:"TF41B", attempt:1, role:"implemen
 echo f41-b-log > "$rt/logs/j-f41-b.log"
 touch -t 202001010000 "$rt/jobs/j-f41-b.json" "$rt/logs/j-f41-b.log"
 
-# (3) launched and died without an envelope -- a pid that is gone.
+# (3) launched and died without an envelope -- a pid that is gone. The
+# INHERITED shape: present so the sweep is exhaustive over the operator's
+# predicate, not because this half was ever broken.
 echo f41-c-log > "$rt/logs/j-f41-c.log"
 ( exit 0 ) & f41_pid=$!
 wait "$f41_pid" 2>/dev/null || true
