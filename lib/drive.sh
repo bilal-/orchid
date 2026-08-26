@@ -2188,49 +2188,72 @@ _drive_ere_escape() {
   printf '%s' "$out"
 }
 
-# _DRIVE_PATH_LEAD / _DRIVE_PATH_TAIL -- what must sit on either side of a path
-# for a line to have NAMED it rather than merely contained it.
+# _DRIVE_PATH_EXACT_LEAD / _DRIVE_PATH_TAIL -- what must sit on either side of
+# a path for a line to have NAMED it rather than merely contained it.
 #
 # THE SUBSTRING VERSION OF THIS WAS A REAL HOLE: with `bin/tool` awaiting
 # `chmod +x`, a genuine `bin/tool-helper: Permission denied` -- the candidate's
 # own defect, on a different file -- was attributed to the hand-off and the
-# round waived. The boundary is therefore the set of characters that can
-# CONTINUE a path: alphanumerics, `.`, `_`, `-`, and (trailing only) `/`. A `/`
-# may LEAD, so the relative form, the `./` form and the absolute path all still
-# count without any punctuation being parsed off.
+# round waived. A later boundary-only version still admitted any `/` before
+# the relative path, so `fixtures/bin/tool` could claim the same hand-off by
+# suffix. Identity is therefore explicit: the repository-relative spelling,
+# its `./` spelling, or the exact verification-root absolute spelling. A `/`
+# cannot lead the first two; it is part of the third spelling itself.
 #
 # `.` is excluded on the trailing side too, which costs a match on a diagnostic
 # that ends its sentence with `bin/tool.` -- deliberately, since including it
 # would let `bin/tool` claim `bin/tool.bak`. That loss is in the direction that
 # CHARGES, the only direction an error here may fall in.
-_DRIVE_PATH_LEAD='(^|[^[:alnum:]._-])'
+_DRIVE_PATH_EXACT_LEAD='(^|[^[:alnum:]._/-])'
 _DRIVE_PATH_TAIL='([^[:alnum:]._/-]|$)'
 
-# _drive_path_named_lines <path> <body> -- the lines of <body> that name <path>
-# at a boundary, one per line.
-_drive_path_named_lines() {
-  local p="$1" body="$2" esc
-  [ -n "$p" ] && [ -n "$body" ] || return 0
+# _drive_path_identity_ere <path> <root> -- an ERE matching only the three
+# spellings that identify <path>. Empty <root> deliberately loses the absolute
+# spelling in the fail-strict direction; production callers always know the
+# verification root, while focused callers that use only relative diagnostics
+# need not invent one.
+_drive_path_identity_ere() {
+  local p="$1" root="$2" esc forms abs
+  [ -n "$p" ] || return 0
   esc="$(_drive_ere_escape "$p")"
-  grep -E -- "$_DRIVE_PATH_LEAD$esc$_DRIVE_PATH_TAIL" <<< "$body" || true
+  forms="$esc|\\./$esc"
+  if [ -n "$root" ]; then
+    case "$root" in
+      /) abs="/$p" ;;
+      *) abs="${root%/}/$p" ;;
+    esac
+    forms="$forms|$(_drive_ere_escape "$abs")"
+  fi
+  printf '%s(%s)' "$_DRIVE_PATH_EXACT_LEAD" "$forms"
 }
 
-# _drive_artifact_causal <path> <causal-ere> <body> -- the lines of <body> that
-# name <path> at a boundary AND report the fault its hand-off is. Non-empty is
-# the proof that this outstanding state is what blocked THIS run.
+# _drive_path_named_lines <path> <root> <body> -- the lines of <body> that name
+# <path> by exact relative, ./-relative, or verification-root absolute
+# identity, one per line.
+_drive_path_named_lines() {
+  local p="$1" root="$2" body="$3" identity
+  [ -n "$p" ] && [ -n "$body" ] || return 0
+  identity="$(_drive_path_identity_ere "$p" "$root")"
+  [ -n "$identity" ] || return 0
+  grep -E -- "$identity$_DRIVE_PATH_TAIL" <<< "$body" || true
+}
+
+# _drive_artifact_causal <path> <causal-ere> <body> [root] -- the lines of
+# <body> that identify <path> AND report the fault its hand-off is. Non-empty
+# is the proof that this outstanding state is what blocked THIS run.
 #
 # Both halves on the SAME line, always: naming alone is what every assertion
 # inside a newly added file does, and a causal shape alone is what a candidate
 # writing where it may not prints about some other path entirely.
 _drive_artifact_causal() {
-  local p="$1" re="$2" body="$3"
+  local p="$1" re="$2" body="$3" root="${4:-}"
   [ -n "$p" ] && [ -n "$body" ] || return 0
-  _drive_path_named_lines "$p" "$body" | grep -E -- "$re" || true
+  _drive_path_named_lines "$p" "$root" "$body" | grep -E -- "$re" || true
 }
 
-# _drive_artifact_attribution <path> <causal-ere> <body> -- the lines of <body>
-# this artifact is answerable for, one per line. Empty means this failure is
-# not attributable to it.
+# _drive_artifact_attribution <path> <causal-ere> <body> [root] -- the lines of
+# <body> this artifact is answerable for, one per line. Empty means this
+# failure is not attributable to it.
 #
 # Causal first, then the cascade it caused. One fault does not fail one check:
 # the shell refuses a file once and every check that needed it reports in its
@@ -2243,26 +2266,26 @@ _drive_artifact_causal() {
 # The causal proof is what stops that from being a naming rule: without a line
 # that both names the artifact and reports its fault, nothing is claimed at all.
 _drive_artifact_attribution() {
-  local p="$1" re="$2" body="$3"
+  local p="$1" re="$2" body="$3" root="${4:-}"
   [ -n "$p" ] && [ -n "$body" ] || return 0
-  [ -n "$(_drive_artifact_causal "$p" "$re" "$body")" ] || return 0
-  _drive_path_named_lines "$p" "$body"
+  [ -n "$(_drive_artifact_causal "$p" "$re" "$body" "$root")" ] || return 0
+  _drive_path_named_lines "$p" "$root" "$body"
 }
 
 # The two artifacts, each with the fault its own hand-off IS. Named functions
 # rather than a regex argument at the call site, so a test can assert the layer
 # that broke and neither pattern can be handed to the other's file.
 drive_exec_bit_causal() {
-  _drive_artifact_causal "$1" "$_DRIVE_EXEC_REFUSAL_RE" "$2"
+  _drive_artifact_causal "$1" "$_DRIVE_EXEC_REFUSAL_RE" "$2" "${3:-}"
 }
 drive_exec_bit_attribution() {
-  _drive_artifact_attribution "$1" "$_DRIVE_EXEC_REFUSAL_RE" "$2"
+  _drive_artifact_attribution "$1" "$_DRIVE_EXEC_REFUSAL_RE" "$2" "${3:-}"
 }
 drive_pin_causal() {
-  _drive_artifact_causal "$1" "$_DRIVE_PIN_STALE_RE" "$2"
+  _drive_artifact_causal "$1" "$_DRIVE_PIN_STALE_RE" "$2" "${3:-}"
 }
 drive_pin_attribution() {
-  _drive_artifact_attribution "$1" "$_DRIVE_PIN_STALE_RE" "$2"
+  _drive_artifact_attribution "$1" "$_DRIVE_PIN_STALE_RE" "$2" "${3:-}"
 }
 
 # drive_unattributed_failures <body> <attributed> -- the failing lines of
@@ -2458,13 +2481,15 @@ _DRIVE_RESOLUTION_RE='[Nn]ot found|[Nn]o such file or directory|[Cc]annot find (
 # `node_modules-old/x` and `node_modules.bak/x` still match nothing.
 _DRIVE_ENV_CHILD_TAIL='/[[:alnum:]._-]'
 
-# _drive_env_named_lines <missing> <body> -- the lines of <body> that name the
-# absent directory <missing>, either exactly or by a path inside it.
+# _drive_env_named_lines <missing> <root> <body> -- the lines of <body> that
+# name the absent directory <missing>, either by one of its three exact
+# identities or by a path inside one of them.
 _drive_env_named_lines() {
-  local m="$1" body="$2" esc
+  local m="$1" root="$2" body="$3" identity
   [ -n "$m" ] && [ -n "$body" ] || return 0
-  esc="$(_drive_ere_escape "$m")"
-  grep -E -- "$_DRIVE_PATH_LEAD$esc($_DRIVE_PATH_TAIL|$_DRIVE_ENV_CHILD_TAIL)" \
+  identity="$(_drive_path_identity_ere "$m" "$root")"
+  [ -n "$identity" ] || return 0
+  grep -E -- "$identity($_DRIVE_PATH_TAIL|$_DRIVE_ENV_CHILD_TAIL)" \
     <<< "$body" || true
 }
 
@@ -2580,9 +2605,9 @@ _drive_env_line_resolves() {
   return 1
 }
 
-# drive_env_causal <repo> <missing> <body> -- the lines of <body> that report a
-# RESOLUTION failure whose subject lives inside <missing>. Non-empty is the
-# proof that this absent tree is what blocked THIS run.
+# drive_env_causal <repo> <missing> <body> [root] -- the lines of <body> that
+# report a RESOLUTION failure whose subject lives inside <missing>. Non-empty
+# is the proof that this absent tree is what blocked THIS run.
 #
 # Both halves on the SAME line, exactly as the hand-off arms require: a
 # resolution failure alone is what a typo'd import prints, and a token that
@@ -2594,7 +2619,7 @@ _drive_env_line_resolves() {
 # a classifier that runs on every failed verify becomes the slowest thing in
 # the pass.
 drive_env_causal() {
-  local repo="$1" m="$2" body="$3" line res named out=""
+  local repo="$1" m="$2" body="$3" root="${4:-}" line res named out=""
   [ -n "$m" ] && [ -n "$body" ] || return 0
   res="$(grep -E -- "$_DRIVE_RESOLUTION_RE" <<< "$body" || true)"
   [ -n "$res" ] || return 0
@@ -2604,7 +2629,7 @@ drive_env_causal() {
   # tree that is not there, and nothing else can be true of it -- or the line
   # holds a bare token the tree PUBLISHES, which is what a shell prints when a
   # command it cannot find would have come from `.bin`.
-  named="$(_drive_env_named_lines "$m" "$res")"
+  named="$(_drive_env_named_lines "$m" "$root" "$res")"
   [ -z "$named" ] || out="$named
 "
   while IFS= read -r line; do
@@ -2616,10 +2641,10 @@ drive_env_causal() {
   printf '%s' "$out"
 }
 
-# drive_env_attribution <repo> <missing> <body> -- the lines of <body> this
-# absent tree is answerable for. Causal first, then its cascade: every FAILING
-# line that NAMES the directory at a boundary. Empty means this failure is not
-# attributable to it.
+# drive_env_attribution <repo> <missing> <body> [root] -- the lines of <body>
+# this absent tree is answerable for. Causal first, then its cascade: every
+# FAILING line that NAMES the directory by identity. Empty means this failure
+# is not attributable to it.
 #
 # EXACTLY THE TWO SOURCES THE HAND-OFF ARMS HAVE, and the third one this used
 # to carry is gone. That third source claimed every failing line holding a
@@ -2649,9 +2674,9 @@ drive_env_causal() {
 # tests MEMBERSHIP, so a line claimed twice is claimed once; deduping here would
 # cost a fork per line to change nothing.
 drive_env_attribution() {
-  local repo="$1" m="$2" body="$3" fails causal named out=""
+  local repo="$1" m="$2" body="$3" root="${4:-}" fails causal named out=""
   [ -n "$m" ] && [ -n "$body" ] || return 0
-  causal="$(drive_env_causal "$repo" "$m" "$body")"
+  causal="$(drive_env_causal "$repo" "$m" "$body" "$root")"
   [ -n "$causal" ] || return 0
   # Keep each attributed diagnostic as its own record. Without this newline,
   # the first cascade line was glued to the causal line and the exact-line
@@ -2660,7 +2685,7 @@ drive_env_attribution() {
 "
   fails="$(drive_failure_lines "$body")"
   [ -n "$fails" ] || { printf '%s' "$out"; return 0; }
-  named="$(_drive_env_named_lines "$m" "$fails")"
+  named="$(_drive_env_named_lines "$m" "$root" "$fails")"
   [ -z "$named" ] || out="$out$named
 "
   printf '%s' "$out"
@@ -2924,7 +2949,7 @@ drive_waivable_outstanding() {
     if [ -z "$firstdrop" ] && _drive_exec_bit_dropped "$root" "$base" "$p"; then
       firstdrop="$p"
     fi
-    causal="$(drive_exec_bit_attribution "$p" "$body")"
+    causal="$(drive_exec_bit_attribution "$p" "$body" "$root")"
     [ -n "$causal" ] || continue
     attr="$attr$causal
 "
@@ -2959,7 +2984,7 @@ drive_waivable_outstanding() {
   # matters under a directory census.
   while IFS= read -r m; do
     [ -n "$m" ] || continue
-    envattr="$(drive_env_attribution "$repo" "$m" "$body")"
+    envattr="$(drive_env_attribution "$repo" "$m" "$body" "$root")"
     if [ -n "$envattr" ]; then
       envstate="$m is present in the integration checkout and absent from the worktree this candidate was verified in — it is gitignored, so creating the worktree from Git-tracked state could not reproduce it (lesson L003), and provisioning it there is a dispatch step rather than anything the implementer wrote"
       attr="$attr$envattr
@@ -2999,7 +3024,7 @@ drive_waivable_outstanding() {
   esac
   if [ -n "$pinpath" ]; then
     pinstate="the package pin recorded for $pinpath is stale — the repository's own freshness check ($cmd) reports it stale in this tree, and re-pinning it is the operator's outstanding step"
-    pinattr="$(drive_pin_attribution "$pinpath" "$body")"
+    pinattr="$(drive_pin_attribution "$pinpath" "$body" "$root")"
     if [ -n "$pinattr" ]; then
       attr="$attr$pinattr
 "
@@ -3181,7 +3206,7 @@ drive_verify_class() {
     # could not be determined, because the shas do not resolve -- proves
     # nothing here, and saying "no pin is stale" would be a claim orchid never
     # made.
-    printf 'candidate\tno waivable state is outstanding in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, this candidate left no executable mode 644, the worktree is missing no gitignored build state the integration checkout carries, no trusted known-flaky register covers this failure, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
+    printf 'candidate\tno failure-attributable waivable state was established in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, this candidate left no executable mode 644, no missing gitignored build state was attributable to this failure, no trusted known-flaky register covers this failure, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
     return 0
   fi
   hcls="${hand%%$'\t'*}"

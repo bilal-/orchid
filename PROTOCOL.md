@@ -1266,9 +1266,11 @@ ones its archetype never declares.
       FAILING LINE and takes two steps, because one fault does not produce one
       failure: one line must both name the artifact and report its fault
       (CAUSAL — the proof it blocked this run), after which every failing line
-      naming it is its CASCADE, causal wording or not. The path is matched at
-      a BOUNDARY, never as a substring: an outstanding `bin/tool` must not
-      collect a genuine `bin/tool-helper: Permission denied`. For the absent
+      naming it is its CASCADE, causal wording or not. The path must use its
+      exact repository-relative, `./`-relative, or worktree-root absolute
+      spelling, with a BOUNDARY after it: an outstanding `bin/tool` must not
+      collect a genuine `bin/tool-helper: Permission denied` or a distinct
+      `fixtures/bin/tool: Permission denied` by suffix. For the absent
       build state the CASCADE is that same naming rule and nothing wider: a
       failing line that merely mentions something living INSIDE the tree is not
       claimed — a dependency tree's direct children are ordinary words, and

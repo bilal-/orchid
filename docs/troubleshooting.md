@@ -406,9 +406,11 @@ worth nothing:
    `runners/orchid-drive must exist and be executable` and `T001 ... (last
    rc=126 ...)` are that mode bit's failures as surely as the refusal is.
    Without that first line, naming alone attributes nothing: every assertion
-   that fails inside a newly added file names it. The path is matched at a
-   **boundary**, so an outstanding `bin/tool` never collects a real
-   `bin/tool-helper: Permission denied`.
+   that fails inside a newly added file names it. The path must use its exact
+   repository-relative, `./`-relative, or worktree-root absolute spelling,
+   with a **boundary** after it. An outstanding `bin/tool` therefore never
+   collects a real `bin/tool-helper: Permission denied`, nor a distinct
+   `fixtures/bin/tool: Permission denied` by suffix.
 
    For a missing dependency tree the causal proof is the same shape asked of a
    different fact: a line saying something **could not be resolved**, where

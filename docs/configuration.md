@@ -240,9 +240,11 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     proof the outstanding state blocked this run. Every failing line that then
     names the file is part of its cascade, whether or not it repeats the
     causal wording (`runners/orchid-drive must exist and be executable` is
-    unmistakably that mode bit's failure). The path is matched at a
-    **boundary**, never as a substring: an outstanding `bin/tool` does not
-    collect a genuine `bin/tool-helper: Permission denied`.
+    unmistakably that mode bit's failure). The path must use its exact
+    repository-relative, `./`-relative, or worktree-root absolute spelling,
+    with a **boundary** after it: an outstanding `bin/tool` does not collect a
+    genuine `bin/tool-helper: Permission denied` or a distinct
+    `fixtures/bin/tool: Permission denied` by suffix.
 
     For the missing build state the causal proof is the same shape asked of a
     different fact: a line reporting that something **could not be resolved**,

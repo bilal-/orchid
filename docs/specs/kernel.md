@@ -644,12 +644,13 @@ buying a fresh implementation pass to reach the same tree.
   assertion). NAMING is the whole of the cascade rule, for the absent directory
   as much as for the file: a failing line that merely mentions something living
   inside it — a package name, which is an ordinary word — is not its cascade.
-  The path is matched at a boundary, so an outstanding `bin/tool`
-  cannot collect a failure on `bin/tool-helper`, nor a failure on
-  `bin/tool/child`, which is a different file again; the ONE relaxation is that
-  a path UNDER the absent directory names that directory, because there the
-  artifact is a whole tree that is not there and everything beneath it is
-  missing with it. Every route that reads an
+  The path must use its exact repository-relative, `./`-relative, or
+  verification-root absolute spelling, with a boundary after it. Thus an
+  outstanding `bin/tool` cannot collect a failure on `bin/tool-helper`, on
+  `bin/tool/child`, or on the distinct suffix `fixtures/bin/tool`; the ONE
+  relaxation is that a path UNDER the absent directory names that directory,
+  because there the artifact is a whole tree that is not there and everything
+  beneath it is missing with it. Every route that reads an
   authority out of the repository asks git what the candidate changed, and each
   CHARGES when git cannot be asked at all: a missing or unresolvable
   `base_sha`/`candidate_sha` yields the same empty diff as an untouched file,

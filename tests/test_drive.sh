@@ -4107,8 +4107,8 @@ mk_cls_task C01
 mk_cls_log C01 "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
 assert_eq candidate "$(class_of C01)" \
   "with no waivable state of any class outstanding, a verify failure charges the attempt — forgiveness is never the default"
-assert_match "no waivable state is outstanding" "$(reason_of C01)" \
-  "and it says why it charged, rather than charging silently"
+assert_match "no failure-attributable waivable state was established" "$(reason_of C01)" \
+  "and it says what was established before charging, rather than claiming the world contains no missing state it did not attribute"
 
 # The two sentences the earlier text classifiers keyed on, in a tree where
 # neither hand-off's state exists. Both charge: no wording is evidence.
@@ -4418,8 +4418,8 @@ assert_eq "" "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H01.md")" \
 hof_log "bash: $HOF/libexec/orchid-frob: Permission denied"
 assert_eq candidate "$(hof_cls | cut -f1)" \
   "so the identical sentence now charges: whatever this failure is, chmod is not the fix"
-assert_match "no waivable state is outstanding" "$(hof_cls | cut -f2-)" \
-  "and it says why it charged rather than charging silently"
+assert_match "no failure-attributable waivable state was established" "$(hof_cls | cut -f2-)" \
+  "and it says why it charged rather than charging silently or overstating what inspection established"
 hof_log "tests/test_writes.sh: FAIL: open('/etc/hosts', 'w'): Permission denied"
 assert_eq candidate "$(hof_cls | cut -f1)" \
   "and an ORDINARY test failure that merely says 'Permission denied' — a candidate writing where it may not — is charged, which every text rule got backwards"
@@ -4719,7 +4719,7 @@ assert_eq "" "$(drive_exec_bit_causal runners/csc-drive \
 assert_eq candidate "$(csc_cls | cut -f1)" \
   "and naming a file with an unset mode bit is NOT attributing a failure to it: without one line that actually refused to execute it, the cascade rule would forgive every assertion that fails inside any mode-644 file a candidate touches"
 
-# --- the boundary: a prefix is a different file ----------------------------
+# --- identity: neither a prefix nor an arbitrary suffix is the same file ---
 CSC_HELPER="/bin/bash: bin/csc-tool-helper: Permission denied
   FAIL: bin/csc-tool-helper exited 126"
 assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool "$CSC_HELPER")" \
@@ -4730,6 +4730,10 @@ assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool \
 assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool \
     "/bin/bash: bin/csc-tool/child: Permission denied")" \
   "and nor one on bin/csc-tool/child, which is a different file again — the environment arm alone treats a path under its artifact as that artifact, because its artifact is a DIRECTORY that is entirely absent (Part Y4), and that relaxation must not reach an arm whose artifact is a file"
+CSC_SUFFIX="/bin/bash: fixtures/bin/csc-tool: Permission denied
+  FAIL: fixtures/bin/csc-tool exited 126"
+assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool "$CSC_SUFFIX" "$CSC")" \
+  "nor may the relative hand-off path suffix-match a distinct deeper file — a slash before bin/csc-tool is not identity unless the whole spelling is this verification root's absolute path"
 csc_log "$CSC_HELPER"
 assert_eq candidate "$(csc_cls | cut -f1)" \
   "so the round charges, with the hand-off state genuinely outstanding on a DIFFERENT file the whole time"
@@ -4742,8 +4746,11 @@ assert_eq 3 "$(drive_exec_bit_attribution bin/csc-tool \
     "/bin/bash: bin/csc-tool: Permission denied
 /bin/bash: ./bin/csc-tool: Permission denied
 /bin/bash: $CSC/bin/csc-tool: Permission denied
-/bin/bash: bin/csc-tool-helper: Permission denied" | grep -c .)" \
+/bin/bash: bin/csc-tool-helper: Permission denied" "$CSC" | grep -c .)" \
   "the bare, the ./-prefixed and the absolute form all name the same file — punctuation around a path never has to be parsed off, and only the different file is excluded"
+csc_log "$CSC_SUFFIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "an outstanding bin/csc-tool does not waive a candidate permission failure on fixtures/bin/csc-tool — exact path identity, not a matching suffix, decides the round"
 
 # ===========================================================================
 # Part N2b -- the stale-pin hand-off, RUN rather than read.
@@ -5184,6 +5191,13 @@ assert_eq "" "$(drive_pin_attribution "Formula/orchid.rb" \
   "but naming the file without ever calling it stale claims NOTHING — the cascade rule may never open on its own"
 assert_eq "" "$(drive_pin_attribution "Formula/orchid.rb" "$ATT_BODY")" \
   "and a body that never mentions the pinned file at all attributes nothing, however stale the pin really is"
+assert_eq "" "$(drive_pin_attribution "Formula/orchid.rb" \
+    "  FAIL: fixtures/Formula/orchid.rb checksum is stale" "$MIX")" \
+  "a stale pin diagnostic for a distinct deeper path is not this repository's Formula/orchid.rb merely because its relative name is a suffix"
+assert_eq "  FAIL: $MIX/Formula/orchid.rb checksum is stale" \
+  "$(drive_pin_causal "Formula/orchid.rb" \
+      "  FAIL: $MIX/Formula/orchid.rb checksum is stale" "$MIX")" \
+  "while the exact verification-root absolute spelling still identifies the pin without weakening relative-path identity"
 
 # ===========================================================================
 # Part N3 -- the evidence attribution is decided against is the verification
@@ -5605,6 +5619,13 @@ assert_match ".cache" "$(drive_env_missing_state "$ENVR" "$ENVW")" \
 ev_log 'error Command "webpack-dev-server" not found'
 assert_eq candidate "$(ev_cls | cut -f1)" \
   "and a resolution failure for something NEITHER absent tree publishes is CHARGED — .cache/webpack is a directory, not a command named webpack-dev-server, and 'something is missing and something failed' is a coincidence rather than a cause"
+EV_UNATTRIBUTED_REASON="$(ev_cls | cut -f2-)"
+assert_match "no missing gitignored build state was attributable to this failure" "$EV_UNATTRIBUTED_REASON" \
+  "the charged-round reason reports the attribution decision instead of falsely saying this worktree carries build state the fixture proves it is missing"
+case "$EV_UNATTRIBUTED_REASON" in
+  *'worktree is missing no gitignored build state'*)
+    fail "a charged round must not deny the missing node_modules and .cache trees merely because neither explains this diagnostic ($EV_UNATTRIBUTED_REASON)" ;;
+esac
 
 # --- a defect landing in the same round is not laundered ------------------
 ev_log 'error Command "jest" not found
@@ -5642,6 +5663,12 @@ assert_match "mobile/node_modules" "$(ev_cls | cut -f2-)" \
 ev_log "ENOENT: no such file or directory, open 'mobile/node_modules-old/react-native/package.json'"
 assert_eq candidate "$(ev_cls | cut -f1)" \
   "while mobile/node_modules-old is a DIFFERENT directory that merely starts with the same characters, and it charges — opening the boundary for a child path must not open it for a longer name, which is the substring bug that waived a round over bin/tool-helper"
+ev_log "ENOENT: no such file or directory, open 'fixtures/mobile/node_modules/react-native/package.json'"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "and a path under fixtures/mobile/node_modules is not under the missing mobile/node_modules merely because the latter is its suffix — only the exact relative, ./, or worktree-root absolute identity may open the child-path rule"
+assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
+    "ENOENT: no such file or directory, open 'fixtures/mobile/node_modules/react-native/package.json'" "$ENVW")" \
+  "the environment causal layer itself rejects the deeper suffix, so an unrelated cascade cannot reopen attribution later"
 assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
     "ENOENT: no such file or directory, open 'mobile/node_modulesX/y'")" \
   "nor for a name continuing in any other character — asserted at the layer it lives in, because both readings of the class assertion above look identical from outside"
@@ -6245,7 +6272,7 @@ assert_eq candidate "$(hr_cls | cut -f1)" \
 case "$(hr_cls | cut -f2-)" in
   *'stopped short'*) fail "exit 1 is a verdict, not a truncation — reporting one here would put a sentence about a killed run on every ordinary failure in the repository" ;;
 esac
-assert_match "no waivable state is outstanding" "$(hr_cls | cut -f2-)" \
+assert_match "no failure-attributable waivable state was established" "$(hr_cls | cut -f2-)" \
   "it takes the ordinary strict default instead — and this is also what proves the WORDS 'Terminated: 15' decide nothing on their own, since this repository's own passing fixtures print exactly that line about processes they reaped on purpose"
 
 # ===========================================================================
