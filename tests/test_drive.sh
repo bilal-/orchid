@@ -4058,7 +4058,7 @@ else
   [ ! -f "$XHOOK_MF" ] \
     || fail "...and the manifest is still retired once it is accounted for (out: $XDRIVE_OUT)"
 fi
-# Part T -- classify a verification failure BEFORE anything charges it,
+# Part Y -- classify a verification failure BEFORE anything charges it,
 # against the policy function itself.
 #
 # The attempt budget is supposed to measure the CANDIDATE. Every assertion
@@ -4101,7 +4101,7 @@ reason_of() { classify "$1" | cut -f2-; }
 # rounds it never meant to; the fixture's `orchid.config` is empty here and
 # stays that way, because a repository cannot buy an amnesty for its own
 # failures at any price. (The one file a repository does own is the known-flaky
-# register of Part W, and what makes that safe is not the file: it is that a
+# register of Part Y5, and what makes that safe is not the file: it is that a
 # candidate which TOUCHES it loses the route.)
 mk_cls_task C01
 mk_cls_log C01 "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
@@ -4130,7 +4130,7 @@ assert_match "cannot be classified" "$(reason_of C07)" \
   "and the absence of evidence is stated, not glossed"
 
 # ===========================================================================
-# Part U -- both arms end to end, through the real driver and the real verbs.
+# Part Y2 -- both arms end to end, through the real driver and the real verbs.
 #
 # This is the acceptance claim in one place: the same pass, two tasks, two
 # failing suites, ONE candidate that ships a new verb at mode 644. C300's
@@ -4216,11 +4216,11 @@ assert_eq "" "$(cefield C400 implement_floor)" \
   "while a CHARGED round records none and needs none: attempts moved, so the previous round's envelopes are already unreachable by name"
 
 # ===========================================================================
-# Part S -- THE SAME SENTENCES, WITH NOTHING PROVED BEHIND THEM, ARE CHARGED.
+# Part Y3 -- THE SAME SENTENCES, WITH NOTHING PROVED BEHIND THEM, ARE CHARGED.
 #
 # Every line below is the WORDING of a failure orchid does forgive elsewhere:
-# an unresolvable dependency (Part V waives that one), the L020 streaming
-# assertion (Part W waives that one), a harness fault naming itself (Part X
+# an unresolvable dependency (Part Y4 waives that one), the L020 streaming
+# assertion (Part Y5 waives that one), a harness fault naming itself (Part Y6
 # waives a killed run). Here none of them has any state behind it -- there is
 # no missing dependency tree, no known-flaky register, and the run reached its
 # own verdict -- and all three charge.
@@ -4231,7 +4231,7 @@ assert_eq "" "$(cefield C400 implement_floor)" \
 # accounting, on the theory that an absent dependency tree invalidates the
 # whole run; that exemption let an unrelated ignored `.cache` directory plus
 # any `command not found` line waive every failure in a round. The class was
-# never the defect -- the exemption was. Part V brings the class back WITH the
+# never the defect -- the exemption was. Part Y4 brings the class back WITH the
 # accounting, and this part is what proves the sentence alone still buys
 # nothing.
 # ===========================================================================
@@ -4253,11 +4253,11 @@ nw_cls() {
       "$NOWAIVE/.orchid/reviews/NW1-verify.log" ) | cut -f1
 }
 assert_eq candidate "$(nw_cls 'error Command "jest" not found')" \
-  "a dependency that could not be resolved is CHARGED where NOTHING IS MISSING: this fixture's worktree is its own repo root, so no build state was left behind, and the sentence alone attributes to nothing (Part V is the same sentence with the tree actually absent)"
+  "a dependency that could not be resolved is CHARGED where NOTHING IS MISSING: this fixture's worktree is its own repo root, so no build state was left behind, and the sentence alone attributes to nothing (Part Y4 is the same sentence with the tree actually absent)"
 assert_eq candidate "$(nw_cls '  FAIL: streaming stub: job log must have grown WHILE the adapter was still running')" \
-  "and the L020 assertion is CHARGED where this repository never wrote it down: orchid never INFERS flakiness, and a register it does not have forgives nothing (Part W is the same line with the register present)"
+  "and the L020 assertion is CHARGED where this repository never wrote it down: orchid never INFERS flakiness, and a register it does not have forgives nothing (Part Y5 is the same line with the register present)"
 assert_eq candidate "$(nw_cls '  FAIL: T013 was stranded by a reaped job manifest')" \
-  "and a harness fault that NAMES ITSELF is charged on a run that reached its own verdict — the words are not the evidence; Part X waives a run that was killed, which is a fact about the exit status rather than about a sentence"
+  "and a harness fault that NAMES ITSELF is charged on a run that reached its own verdict — the words are not the evidence; Part Y6 waives a run that was killed, which is a fact about the exit status rather than about a sentence"
 
 # ===========================================================================
 # Part N2 -- the hand-offs the protocol itself defines need no per-repository
@@ -4268,9 +4268,9 @@ assert_eq candidate "$(nw_cls '  FAIL: T013 was stranded by a reaped job manifes
 # exec bit. A feature that only protects those hand-offs once a repository has
 # configured a signature protects nobody: the repository learns to configure
 # it by first losing the attempt the feature exists to save. So `handoff` is
-# recognized with nothing configured at all -- as are `environment` (Part V)
-# and `harness` (Part X). The one class that reads a repository-owned file is
-# `flaky` (Part W), and even there the file is not a signature list orchid
+# recognized with nothing configured at all -- as are `environment` (Part Y4)
+# and `harness` (Part Y6). The one class that reads a repository-owned file is
+# `flaky` (Part Y5), and even there the file is not a signature list orchid
 # trusts on sight: a register the CANDIDATE CHANGED is no authority on that
 # candidate, which is what makes it something a repository records rather than
 # something it can buy.
@@ -5426,7 +5426,7 @@ assert_eq 2 "$(crufield infra_failures)" \
   "while the environment budget still counts both charges, so a genuinely bad environment still terminates at infra_max"
 
 # ===========================================================================
-# Part V -- LESSON L003, THE NAMED CASE: a dispatch worktree that never
+# Part Y4 -- LESSON L003, THE NAMED CASE: a dispatch worktree that never
 # received the gitignored build state the integration checkout carries.
 #
 # `git worktree add` reproduces what git TRACKS. In the webBooks run
@@ -5590,7 +5590,7 @@ grep -q 'git worktree add cannot reproduce' "$DRIVE" \
   || fail "and it must SAY so in terms an operator can act on, naming the mechanism rather than reporting a bare list of paths"
 
 # ===========================================================================
-# Part W -- LESSON L020: a failure the repository ALREADY recorded as flaky.
+# Part Y5 -- LESSON L020: a failure the repository ALREADY recorded as flaky.
 #
 # Orchid never INFERS flakiness -- it cannot, from one run -- and this arm does
 # not ask it to. It reads a register the repository keeps, and the entire
@@ -5609,14 +5609,13 @@ mkdir -p "$QR/.orchid/tasks" "$QR/.orchid/reviews" "$QR/tests"
 cd "$QR" || exit 1
 git init -q .
 : > "$QR/orchid.config"
-# THE SIGNATURE IS THE HISTORICAL L020 ONE, TAKEN FROM ONE PLACE, and the
+# THE SIGNATURE IS READ OUT OF THE TREE, NEVER TYPED HERE, and the
 # assertion further down proves this exact text is still what orchid's own
-# engine-adapter suite prints when that liveness case genuinely fails. That
-# tie is what answers the obvious objection to a register with no live
-# entries: orchid DE-FLAKED the family rather than quarantining it, so nothing
-# in tests/QUARANTINE.md exercises this route in this repository -- and a route
-# nothing exercises is one nobody would notice breaking. Writing the signature
-# into the fixture by hand instead would prove only that grep works.
+# engine-adapter suite prints when that liveness case genuinely fails. Writing
+# the signature into the fixture by hand instead would prove only that grep
+# works; tying it to the tree is what makes every assertion below a fact about
+# this repository. The block at the end of this part then leaves the fixture
+# behind entirely and drives the same route through THE REGISTER ORCHID SHIPS.
 L020_SIG='job log must have grown WHILE the adapter was still running'
 {
   printf '%s\n' "# Known-flaky assertions. Each entry is one line beginning \`FLAKE:\`."
@@ -5651,17 +5650,17 @@ qr_cls() {
 L020_LINE="  FAIL: streaming stub: $L020_SIG -- the stall-detector liveness signal"
 
 # --- THE SIGNATURE IS THE ONE THIS REPOSITORY WOULD ACTUALLY PRINT --------
-# tests/QUARANTINE.md carries no live entries, on purpose: the L020 family was
-# made deterministic rather than forgiven, and an entry for those assertions
-# would forgive a genuine streaming regression as readily as a race. That
-# leaves this route with nothing to exercise it in orchid itself, and codex's
-# review was right to ask what then keeps it honest. This is the answer: the
-# fixture's entry is not invented text, it is the failure message the de-flaked
-# case still prints when the liveness property is genuinely violated. So the
-# route is proved against the exact string an operator would paste into the
-# register if this family ever came back -- and if that message is ever
-# reworded, this assertion fails and whoever reworded it learns that the
-# register's worked example has to move with it.
+# The fixture's entry is not invented text: it is the sentence orchid's own
+# liveness case really prints when that property is genuinely violated. So the
+# route below is proved against the exact string an operator would paste into a
+# register -- and if that sentence is ever reworded, this assertion fails and
+# whoever reworded it learns that the worked example has to move with it.
+#
+# Note what this fixture's entry deliberately IS: the sentence the LIVE,
+# de-flaked assertion prints. Quarantining that one for real would be wrong --
+# it waits for what it samples, so its failure is evidence -- and orchid's own
+# register does not. This is a fixture, and it is here to exercise the route's
+# mechanics on text that is guaranteed to still exist.
 grep -Fq -- "$L020_SIG" "$REPO_ROOT/tests/test_engine_agy.sh" \
   || fail "the L020 signature the fixture register below is built from must be the text tests/test_engine_agy.sh's liveness case really prints on failure — otherwise this part proves that grep matches a string this file made up, and the flaky route's only live subject in orchid goes untested"
 [ "${#L020_SIG}" -ge 16 ] \
@@ -5735,16 +5734,85 @@ mk_qr_task "$QRBASE" "$QRCAND"
 assert_eq flaky "$(qr_cls | cut -f1)" \
   "while the answerable, untouched case is unchanged — the guard closes the route on ignorance, never on the route"
 
-# --- ORCHID'S OWN REGISTER, and a tripwire on it --------------------------
-# Orchid ships the file its own default names, so the default path is real
-# rather than hypothetical and the format has one worked example in the tree.
-# It carries NO live entries, and this assertion is what keeps that a decision
-# somebody has to make out loud rather than a line that slips in.
+# --- ORCHID'S OWN REGISTER, LIVE, AND THE TRIPWIRE ON BOTH ITS ENDS -------
+# Everything above drives the classifier through a register this fixture wrote.
+# This drives it through THE FILE ORCHID SHIPS, committed as the fixture's BASE
+# so it is pre-candidate state in the sense the route requires -- which is the
+# only way to prove that the entry orchid actually carries would be honoured.
+#
+# That entry is L020's PRE-T019 sentence, and the pair of assertions at the end
+# is what makes carrying it safe. The de-flaked assertion still in the tree is
+# the stall detector's own evidence and must never be forgiven; the old
+# single-instant one cannot tell a stall from a loaded machine and is not
+# evidence about anything. They are different sentences, so an entry naming the
+# second cannot reach the first -- and if anyone ever rewords either of them
+# into the other's shape, one of these two fails and says so.
 [ -f "$REPO_ROOT/tests/QUARANTINE.md" ] \
   || fail "orchid must ship the register flaky.quarantine defaults to (tests/QUARANTINE.md), or its own default path is a path to nothing"
 ORCHID_FLAKES="$(grep -c '^FLAKE:' "$REPO_ROOT/tests/QUARANTINE.md" || true)"
-assert_eq 0 "$ORCHID_FLAKES" \
-  "and it carries NO live entries: the L020 liveness family was DE-FLAKED rather than quarantined (tests/helpers.sh's await_log_growth/await_log_heartbeat), and an entry for those assertions would forgive a genuine streaming regression as readily as a race — if this ever becomes non-zero, somebody has decided a gate may fail without failing, and this assertion is where they have to say so. An empty register is not an untested route: the fixture above proves recognition against the historical L020 signature, tied to the text this repository still prints"
+assert_eq 1 "$ORCHID_FLAKES" \
+  "and it carries EXACTLY ONE live entry — the pre-T019 L020 sentence, and nothing else. Every other liveness assertion was DE-FLAKED rather than quarantined (tests/helpers.sh's await_log_growth/await_log_heartbeat) and must stay chargeable. If this count ever moves, somebody has decided another gate may fail without failing, and this assertion is where they have to say so out loud"
+
+QS="$WORK/shipped-register"
+mkdir -p "$QS/.orchid/tasks" "$QS/.orchid/reviews" "$QS/tests"
+cd "$QS" || exit 1
+git init -q .
+: > "$QS/orchid.config"
+cp "$REPO_ROOT/tests/QUARANTINE.md" "$QS/tests/QUARANTINE.md"
+printf 'x\n' > "$QS/file.txt"
+git add -A
+git commit -q -m "fixture: orchid's own shipped register, as pre-candidate state"
+QSBASE="$(git -C "$QS" rev-parse HEAD)"
+printf 'y\n' > "$QS/file.txt"
+git add -A
+git commit -q -m "fixture: a candidate that does not touch the shipped register"
+QSCAND="$(git -C "$QS" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: QS1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$QS" "$QSBASE" "$QSCAND" > "$QS/.orchid/tasks/QS1.md"
+qs_log() {
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
+    "$QSCAND" "$QSCAND" "$QS" "$1" > "$QS/.orchid/reviews/QS1-verify.log"
+}
+qs_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$QS" "$QS/.orchid/tasks/QS1.md" \
+      "$QS/.orchid/reviews/QS1-verify.log" )
+}
+SHIPPED_SIGS="$(
+  HOME="$MACHINE_HOME"
+  drive_quarantine_signatures "$QS" "$QS" "$QS/.orchid/tasks/QS1.md"
+)"
+assert_eq 1 "$(grep -c . <<<"$SHIPPED_SIGS" || true)" \
+  "the shipped register parses to exactly one live signature through the real parser — the prose around it, including its own indented worked example of the format, is read as prose (got: $SHIPPED_SIGS)"
+assert_match "bytes at the midpoint" "$SHIPPED_SIGS" \
+  "and that signature is L020's PRE-T019 sentence: the single-instant shape, which samples one instant and cannot tell a stall from a scheduling artifact, so its failure is not evidence about a candidate"
+
+# THE ENTRY WORKS: the historical line, which a branch cut before the de-flaking
+# still prints, is waived against orchid's own shipped file.
+qs_log "  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "the pre-T019 L020 line — the one that stranded eight tasks in r-002 — is waived by the register orchid SHIPS, so a branch that still carries the old shape charges infra rather than a rework attempt"
+
+# AND IT CANNOT REACH THE ASSERTION THAT REPLACED IT. Taken verbatim from the
+# suite rather than retyped here: if the two sentences ever converge, this is
+# the line that stops it, and it can only do that by reading the real one.
+DEFLAKED_SRC="$(grep -F -m1 -- "$L020_SIG" "$REPO_ROOT/tests/test_engine_agy.sh" || true)"
+[ -n "$DEFLAKED_SRC" ] \
+  || fail "the de-flaked streaming assertion has vanished from tests/test_engine_agy.sh — the RED half below would then be asserting nothing"
+qs_log "  FAIL: $DEFLAKED_SRC"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "while the DE-FLAKED assertion that replaced it is NOT covered by that entry and charges — it waits for what it samples, so its failure means the adapter really did not stream, and forgiving it would forgive a genuine streaming regression"
+qs_engine_count=0
+for qs_engine_f in "$REPO_ROOT"/tests/test_engine_*.sh; do
+  [ -f "$qs_engine_f" ] || continue
+  qs_engine_count=$((qs_engine_count + 1))
+  if grep -Fq -- "$SHIPPED_SIGS" "$qs_engine_f"; then
+    fail "${qs_engine_f#"$REPO_ROOT"/} contains the sentence orchid's own register quarantines — a live engine-adapter case can now fail without failing, which is the one thing this register must never do to a gate that still works"
+  fi
+done
+[ "$qs_engine_count" -ge 4 ] \
+  || fail "that sweep looked at $qs_engine_count engine-adapter file(s) rather than the four that carry these cases — it would report a clean tree by finding nothing to read"
+cd "$QR" || exit 1
 
 # --- THE SAFETY PROPERTY: a register the candidate touched is no authority.
 # LAST in this part, deliberately: it leaves the register with an entry that
@@ -5762,7 +5830,7 @@ assert_eq candidate "$(qr_cls | cut -f1)" \
   "and the route is lost for entries the candidate did NOT write either, including the genuine L020 one — a file this candidate edited is not evidence about this candidate, and a per-entry rule would just move the abuse one line down"
 
 # ===========================================================================
-# Part X -- A RUN THAT NEVER REACHED A VERDICT.
+# Part Y6 -- A RUN THAT NEVER REACHED A VERDICT.
 #
 # A suite killed by a timeout, by the OOM killer, or by whatever reaped the
 # pass did not report that the candidate is bad. It reported nothing. This is
@@ -5820,7 +5888,7 @@ assert_eq candidate "$(hr_cls | cut -f1)" \
   "the WORDS 'Terminated: 15' forgive nothing on their own: this repository's own passing fixtures print exactly that line about processes they reaped on purpose, and the evidence is the exit status of the run"
 
 # ===========================================================================
-# Part Y -- THE POOL IS ACROSS CLASSES, NOT WITHIN ONE.
+# Part Y7 -- THE POOL IS ACROSS CLASSES, NOT WITHIN ONE.
 #
 # An earlier round required ONE artifact to account for the whole round, so a
 # round in which a stale pin explained six lines and a dropped mode bit
@@ -5837,7 +5905,7 @@ git -C "$MIXW" add libexec/orchid-frob
 git -C "$MIXW" commit -q -m "fixture: a candidate that also ships a verb at mode 644"
 fm_set "$ENVR/.orchid/tasks/EV1.md" base_sha "$(git -C "$MIXW" rev-parse HEAD~1)"
 fm_set "$ENVR/.orchid/tasks/EV1.md" candidate_sha "$(git -C "$MIXW" rev-parse HEAD)"
-# Both lines are FAILING lines here, unlike the bare yarn diagnostic Part V
+# Both lines are FAILING lines here, unlike the bare yarn diagnostic Part Y4
 # used. That is what makes this a pool rather than a short-circuit: the exec
 # bit explains one of them and cannot explain the other, so the round is
 # decided only after the missing tree has spoken too.

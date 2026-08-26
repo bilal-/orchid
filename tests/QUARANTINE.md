@@ -6,8 +6,8 @@ When a verification fails, the driver reads it, and a failing line that matches
 an entry here is classified `flaky` rather than `candidate` — it costs
 `infra_failures` and it does **not** consume a rework attempt.
 
-**It is currently empty of entries, on purpose.** That is not an oversight; see
-"Why L020 is not in here" below.
+It carries exactly **one** live entry, at the bottom of this file. Read "What
+the one live entry is, and what it cannot forgive" before adding a second.
 
 ## Format
 
@@ -48,7 +48,7 @@ An entry here stops an unreliable gate from charging for a race, but the gate is
 still unreliable, and this file is what keeps that visible instead of silent.
 Anything listed here is an open problem, not a resolved one.
 
-## Why L020 is not in here
+## L020, and why it is here in the shape it is
 
 Lesson L020 is the reason this register exists. Eight engine-adapter cases — the
 streaming and heartbeat liveness checks in each of `tests/test_engine_agy.sh`,
@@ -58,37 +58,60 @@ is a deadline for the writer, not the liveness property the cases mean, and on a
 loaded machine it stranded eight tasks in r-002 and charged each one a rework
 attempt for a scheduling artifact.
 
-They were **de-flaked rather than quarantined**: `tests/helpers.sh`'s
+All eight were **de-flaked rather than quarantined**: `tests/helpers.sh`'s
 `await_log_growth` / `await_log_heartbeat` poll for the condition under a bound,
 and `stub_hold_until` holds the fixture's stub open until the sampler has
 returned, so "while it was still running" is a fact the test controls rather
-than a race it hopes to win. Both edges are pinned in `tests/test_engine_agy.sh`
-(cases 12b and 12c), and `tests/test_helpers.sh` lints every engine-adapter file
-for the old single-instant shape so it cannot come back one file at a time.
+than a race it hopes to win. Every edge is pinned in `tests/test_engine_agy.sh`
+(cases 12b, 12c and 12d), and `tests/test_helpers.sh` lints every
+engine-adapter file for the old single-instant shape so it cannot come back one
+file at a time.
 
-Listing them here would be actively harmful now: those assertions are the stall
-detector's own evidence, and an entry would forgive a genuine streaming
-regression as readily as a race.
+**The de-flaked assertions are not quarantined and must never be.** They are
+the stall detector's own evidence: an entry naming them would forgive a genuine
+streaming regression as readily as a race.
 
-## What keeps an empty register honest
+## What the one live entry is, and what it cannot forgive
 
-A route nothing exercises is one nobody notices breaking, and this file
-exercises nothing. So the route is proved against the entry that *would* go
-here if the family ever came back. `tests/test_drive.sh` Part W builds its
-fixture register from the literal string
+The live entry below is not the de-flaked assertion. It is the **pre-T019
+single-instant assertion**, word for word, including the `(was 0 bytes at the
+midpoint)` clause that only the old shape ever printed. The de-flaked case
+prints a different sentence, so the entry cannot match it — and
+`tests/test_drive.sh` asserts exactly that, in both directions, against the
+files as they stand.
 
-```
-job log must have grown WHILE the adapter was still running
-```
+That distinction is the whole design, and it makes the entry mean something
+narrow and true: **an assertion that samples one instant is not evidence about
+a candidate.** It cannot tell a stall from a scheduling artifact — that is what
+it was measured doing eight times in one run — so its failure says nothing, and
+charging a rework attempt for it is the injustice this register exists to stop.
+The de-flaked assertion says something, is not listed, and charges.
 
-and asserts, in the same breath, that this is still the message
-`tests/test_engine_agy.sh` prints when that liveness case genuinely fails. If
-the message is ever reworded, that assertion fails and whoever reworded it
-learns that the worked example has to move with it. If the classifier ever
-stops recognising a pre-candidate signature, it fails there too.
+The entry is live rather than commented out because the shape is still
+reachable: a task branch cut before the de-flaking, a worktree that never
+rebased, a revert, a merge that resurrects the old hunk. In every one of those
+the old sentence comes back and this register catches it as `flaky` — costing
+`infra_failures`, escalating to a human on recurrence, and never consuming a
+rework attempt. It will retire itself: once no branch in flight can still print
+that sentence, delete the line.
 
-That is a proof about **recognition**, and deliberately not an amnesty: no line
-in this file forgives anything in orchid's own runs. Adding one is still a
-decision somebody has to make out loud — `tests/test_drive.sh` asserts this
-file's live entry count is zero, so the entry and the change to that assertion
-land in the same diff.
+Note what the timing rule does to this entry, and it is the right thing: the
+candidate that introduced this file **cannot** be forgiven by it, because that
+candidate changed it. It becomes an authority only for the candidates that come
+after.
+
+## What keeps the register honest
+
+`tests/test_drive.sh` exercises the route's mechanics — literal matching, the
+minimum length, the timing rule — against a fixture register it writes itself,
+whose signature it reads out of `tests/test_engine_agy.sh` rather than typing.
+It then parses **this** shipped file through the real parser and asserts that
+its live entries are exactly the one documented above; that the entry does
+match the pre-T019 line; that it does **not** match the assertion that replaced
+it; and that no engine-adapter file in the tree contains the sentence at all.
+So a second entry cannot slip in without somebody changing that count in the
+same diff and saying out loud that a gate may now fail without failing.
+
+<!-- Entries below. Column 0, one per line; see "Format" above. -->
+
+FLAKE: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- L020: the PRE-T019 single-instant shape only. It samples one instant and cannot tell a stall from a loaded machine, so its failure is not evidence about a candidate; it stranded eight tasks in r-002. The de-flaked replacement prints a different sentence and is deliberately NOT covered. Delete this line once no branch in flight can still print it.

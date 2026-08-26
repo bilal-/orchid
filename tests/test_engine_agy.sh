@@ -196,8 +196,10 @@ assert_match "tests pass and the diff is scoped tightly" "$(jq -r .summary "$d/o
 # The sampler and the hold are tests/helpers.sh's `await_log_growth` and
 # `stub_hold_until`, SHARED with the seven sibling sites that carry the same
 # shape -- the streaming and heartbeat cases of all four engine-adapter test
-# files. Cases 12b and 12c below pin both of that shared sampler's edges once,
-# on behalf of all eight.
+# files. Cases 12b, 12c and 12d below pin every edge of that shared sampler
+# once, on behalf of all eight -- including the one the waiting introduced:
+# `[hb ` lines do not count as growth, so the longer window cannot be filled
+# by the heartbeat and read as streaming.
 d="$(build_request streaming review '#!/usr/bin/env bash
 echo "line one"
 '"$(stub_hold_until "$WORK/streaming.release")"'
@@ -263,6 +265,40 @@ kill "$stall_pid" 2>/dev/null
 wait "$stall_pid" 2>/dev/null
 [ "$stall_rc" -ne 0 ] || fail "stall detector: a log that never grows while its producer stays alive must still be caught -- the liveness property is real and the sampler must not wave it through"
 [ "$stall_hb_rc" -ne 0 ] || fail "stall detector: a log that grows with NON-heartbeat output while its producer stays alive must still read as a missing heartbeat -- the heartbeat cases mean [hb specifically, not any byte"
+
+# --- 12d. THE HOLE THE DE-FLAKING WOULD OTHERWISE HAVE OPENED, pinned both
+# ways for the whole family. Waiting instead of sampling one instant is the
+# right fix, but it lengthens the window the streaming cases sit inside -- and
+# something else writes into that same job log while they wait:
+# lib/heartbeat.sh's `[hb ` line, which fires PRECISELY WHEN THE CLI HAS
+# WRITTEN NOTHING, because that is what it is for. The streaming fixtures do
+# not override ORCHID_HB_INTERVAL_S (only the heartbeat fixtures do), so they
+# run at the real 30s default and the growth sampler's own bound is 30s: the
+# two coincide, and a sampler that counted BYTES would accept the very defect
+# these cases exist to catch -- an adapter relaying not one byte until exit,
+# whose log grows on the heartbeat alone.
+#
+# So the growth sampler ignores `[hb ` lines, and both edges of that are pinned
+# here rather than left to the comment in tests/helpers.sh. RED: heartbeats
+# alone are NOT streaming, however many of them arrive. GREEN: heartbeats
+# INTERLEAVED with real relayed output are still streaming -- the fix must
+# ignore heartbeats, not be confused by them, or every real run (which always
+# has both) would read as a stall. Driven against the shared helper directly,
+# so it holds for all four engine-adapter files at once.
+hbonly_log="$WORK/hbonly.log"
+sleep 30 &
+hbonly_pid=$!
+printf '[hb 2026-08-26T00:00:00Z] engine pid %s cpu 0:00.01\n' "$hbonly_pid" > "$hbonly_log"
+printf '[hb 2026-08-26T00:00:01Z] engine pid %s cpu 0:00.02\n' "$hbonly_pid" >> "$hbonly_log"
+hbonly_rc=0
+await_log_growth "$hbonly_log" "$hbonly_pid" 8 || hbonly_rc=$?
+printf 'line one\n' >> "$hbonly_log"
+hbmixed_rc=0
+await_log_growth "$hbonly_log" "$hbonly_pid" 8 || hbmixed_rc=$?
+kill "$hbonly_pid" 2>/dev/null
+wait "$hbonly_pid" 2>/dev/null
+[ "$hbonly_rc" -ne 0 ] || fail "stall detector: a job log that has grown ONLY by heartbeat lines must NOT read as streaming -- the heartbeat fires exactly when the CLI has produced nothing, so counting its bytes as growth would wave through the buffered-until-exit defect this case exists to catch (L020's fix must not open that hole)"
+[ "$hbmixed_rc" -eq 0 ] || fail "stall detector: real relayed output INTERLEAVED with heartbeat lines must still read as streaming -- every live run carries both, so a growth check that heartbeats can spoil would report a stall on every healthy adapter"
 
 # --- 13. v1-m3 round 2: adapter heartbeat. probe-stream-buffering.sh's real
 # run (codex/claude only -- agy wasn't part of that probe, but the same

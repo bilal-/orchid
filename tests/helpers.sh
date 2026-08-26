@@ -467,8 +467,9 @@ plant_reviewer_envelope() {
 # while the adapter is still running? -- in two shapes, in each of the four
 # engine-adapter test files (agy, claude, codex, hermes):
 #
-#   grown-while    the adapter must tee the CLI's output as it arrives, so the
-#                  log must be non-empty before the run ends.
+#   grown-while    the adapter must tee the CLI's output as it arrives, so a
+#                  line of the CLI's OWN output -- never merely a heartbeat --
+#                  must reach the log before the run ends.
 #   heartbeat      a CLI that writes NOTHING until it exits, where the only
 #                  thing that can move the log is lib/heartbeat.sh's
 #                  `[hb ...]` line.
@@ -505,12 +506,12 @@ plant_reviewer_envelope() {
 #   exit defect these cases exist to catch.
 #
 # WHAT IS NOT WEAKENED, AND IT MATTERS THAT NOTHING IS. Exhausting the bound
-# is a FAILURE. So is the producer exiting before the log ever moved. A
-# genuine stall still fails, and both edges are pinned against these helpers
-# directly (tests/test_engine_agy.sh cases 12b and 12c) rather than asserted
-# here. tests/test_helpers.sh lints every engine-adapter file for the single-
-# instant shape, and requires each to call both samplers, so it cannot come
-# back one file at a time the way it spread.
+# is a FAILURE. So is the producer exiting before the log ever moved, and so is
+# a log that moved on heartbeats alone. A genuine stall still fails, and every
+# edge is pinned against these helpers directly (tests/test_engine_agy.sh cases
+# 12b, 12c and 12d) rather than asserted here. tests/test_helpers.sh lints every
+# engine-adapter file for the single-instant shape, and requires each to call
+# both samplers, so it cannot come back one file at a time the way it spread.
 #
 # THE BOUNDS ARE NOT TIMINGS. The sampler's job is to bound a HANG, not to
 # time a machine, so it is set far longer than any healthy run needs; the
@@ -537,20 +538,45 @@ _await_while_alive() {
   return 1
 }
 
-_log_has_bytes()     { [ -s "$1" ]; }
-_log_has_heartbeat() { grep -q '^\[hb ' "$1" 2>/dev/null; }
+# THE GROWTH SAMPLER DOES NOT COUNT HEARTBEATS, and that is not a detail.
+#
+# The streaming cases ask whether the ADAPTER RELAYED THE CLI'S OUTPUT while
+# the run was still going. But every adapter also runs lib/heartbeat.sh, whose
+# `[hb ...]` line lands in the same job log through the same redirect -- and
+# it lands there *precisely when the CLI has written nothing*, because that is
+# what the heartbeat exists for. So "the log is non-empty" is satisfied by the
+# exact failure the streaming cases are there to catch: an adapter that relays
+# not one byte until exit still grows its log, on the heartbeat alone.
+#
+# The window is not hypothetical. The streaming fixtures do not override
+# `ORCHID_HB_INTERVAL_S` (only the heartbeat fixtures do, to 1), so they run at
+# the real 30s default -- and this sampler's own bound is 30s. The two
+# coincide: a broken relay's first heartbeat arrives inside the bound the
+# sampler is still waiting out, and a byte-counting sampler would take it and
+# report streaming. Patience made the flake go away and would have made this
+# hole appear in the same change, which is why the fix is here rather than in
+# the bound: a bound is a number somebody will tune, and this is a fact about
+# WHAT COUNTS.
+#
+# `grep -qv` -- is there a line that is NOT a heartbeat -- rather than
+# subtracting counts: it is true at the first relayed byte and false for an
+# empty file, and it says the property in one read.
+_log_has_stream_bytes() { grep -qv '^\[hb ' "$1" 2>/dev/null; }
+_log_has_heartbeat()    { grep -q  '^\[hb ' "$1" 2>/dev/null; }
 
-# await_log_growth <log> <pid> [tries] -- <log> became non-empty while <pid>
-# was still alive.
+# await_log_growth <log> <pid> [tries] -- <log> gained a line that is NOT a
+# heartbeat while <pid> was still alive; that is, the adapter relayed the CLI's
+# own output mid-run. Heartbeat lines are ignored outright, so a log growing on
+# nothing but `[hb ` reads as a stall, which is what it is.
 await_log_growth() {
-  _await_while_alive "$2" "${3:-$_ORCHID_LIVENESS_TRIES}" _log_has_bytes "$1"
+  _await_while_alive "$2" "${3:-$_ORCHID_LIVENESS_TRIES}" _log_has_stream_bytes "$1"
 }
 
 # await_log_heartbeat <log> <pid> [tries] -- <log> gained a `[hb ` liveness
-# line while <pid> was still alive. Separate from the growth sampler because
-# the stubs it runs against emit nothing of their own until they exit: "the
-# log is non-empty" would be satisfied by the wrong thing there, and the
-# heartbeat is the whole subject of that case.
+# line while <pid> was still alive. The exact complement of the sampler above,
+# and the pair partitions the log between them: the stubs this one runs against
+# emit nothing of their own until they exit, so the heartbeat is the only thing
+# that can move their log and it is the whole subject of the case.
 await_log_heartbeat() {
   _await_while_alive "$2" "${3:-$_ORCHID_LIVENESS_TRIES}" _log_has_heartbeat "$1"
 }

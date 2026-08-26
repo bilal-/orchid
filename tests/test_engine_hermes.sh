@@ -279,8 +279,9 @@ assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "plan review stub: fi
 # liveness check, and a loaded machine misses it -- eight tasks in r-002 were
 # stranded and charged a rework attempt for a scheduling artifact. The
 # sampler now waits, bounded, for what it samples, and the stub is held open
-# until it has, so "still running" is a fact rather than a race. Both edges
-# of the shared helpers are pinned in tests/test_engine_agy.sh (12b, 12c);
+# until it has, so "still running" is a fact rather than a race. All the
+# edges of the shared helpers are pinned in tests/test_engine_agy.sh (12b, 12c
+# and 12d, which is why heartbeat lines do not count as growth here);
 # tests/helpers.sh carries the full narrative.
 d="$(build_request streaming review '#!/usr/bin/env bash
 echo "line one"
