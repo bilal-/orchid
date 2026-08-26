@@ -5391,6 +5391,7 @@ mkdir -p "$ENVR/mobile/node_modules/lodash"
 # arm, and it sits in the fixture throughout so every assertion below is made
 # in its presence rather than in a tree curated to avoid it.
 mkdir -p "$ENVR/.cache/webpack"
+printf 'cache fixture\n' > "$ENVR/.cache/webpack/state"
 
 # The dispatch worktree, created the way dispatch actually creates one, so the
 # absence being asserted is git's own behaviour rather than something the

@@ -1383,7 +1383,7 @@ drive_testing() {
     # rounds that told nobody anything about the candidate.
     if [ "$prior_waived" -ge 1 ]; then
       drive_note "$id: verify FAIL ($cls, $wmark) — recurring non-candidate fault, testing held for an operator"
-      set_boundary operator-decision "$id" "$cls verify failure on a task that has already had $prior_waived non-candidate round(s) waived — this is not something the implementer can clear, and another identical re-dispatch cannot: $cls_reason"
+      set_boundary operator-decision "$id" "$cls verify failure on a task that has already had $prior_waived non-candidate round(s) waived — an operator clears this; the implementer cannot, and another identical re-dispatch cannot: $cls_reason"
       return 0
     fi
     # The floor is recorded BEFORE the advance, while this round's envelopes

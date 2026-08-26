@@ -2353,7 +2353,11 @@ drive_env_attribution() {
   [ -n "$m" ] && [ -n "$body" ] || return 0
   causal="$(drive_env_causal "$repo" "$m" "$body")"
   [ -n "$causal" ] || return 0
-  out="$causal"
+  # Keep each attributed diagnostic as its own record. Without this newline,
+  # the first cascade line was glued to the causal line and the exact-line
+  # accounting below rejected evidence this function had just established.
+  out="$causal
+"
   fails="$(drive_failure_lines "$body")"
   [ -n "$fails" ] || { printf '%s' "$out"; return 0; }
   named="$(_drive_path_named_lines "$m" "$fails")"
