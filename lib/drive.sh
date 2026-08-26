@@ -1624,16 +1624,11 @@ _drive_verify_body() {
 # and no state can make an unrelated failure one (the attribution must be
 # established second). Every text rule this replaces had only the second half.
 #
-# THREE RESIDUALS, STATED RATHER THAN HIDDEN. (1) `drive_failure_lines` knows
-# the failure, refusal, resolution, and fatal shapes a test harness usually
-# prints; a harness whose unfamiliar failure it cannot see leaves the
-# accounting with nothing to object to, and the waiver then rests on state plus
-# attribution alone. That is weaker than the full rule and still strictly
-# stronger than any round before this one. (2) A cascade
+# TWO RESIDUALS, STATED RATHER THAN HIDDEN. (1) A cascade
 # line that names NEITHER the artifact nor a causal shape -- a suite that
 # reports only `FAIL: case 7` -- is unclaimed and charges the round. That is
 # the strict direction, and the price of not letting a proximity rule ("it
-# failed near something explained") forgive whatever else broke. (3) A
+# failed near something explained") forgive whatever else broke. (2) A
 # candidate whose ONLY failing lines are the hand-off's own -- a defect that
 # produces no diagnostic of its own -- is still forgiven for that round. It is
 # bounded: the state is one an operator clears in seconds, the round is charged
@@ -2157,6 +2152,23 @@ _DRIVE_FATAL_RE='(^|[^[:alnum:]_])([Pp][Aa][Nn][Ii][Cc]([Kk][Ee][Dd])?|[Ff][Aa][
 # before any waiver is considered.
 _DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff]ailed|[Ff]ailure|[Ff]ailures)([^[:alnum:]_]|\$)|(^|[^[:alnum:]_])[Ee]rror:|^not ok |[Aa]ssertion(Error| failed)|Traceback \\(most recent call last\\)|$_DRIVE_EXEC_REFUSAL_RE|$_DRIVE_RESOLUTION_RE|$_DRIVE_FATAL_RE"
 
+# _DRIVE_PROGRESS_LINE_RE -- lines that affirm progress rather than diagnose a
+# failed command. This is intentionally a CLOSED vocabulary. Once verify exits
+# non-zero, a non-empty line that is neither a reported failure above nor one
+# of these explicit progress records is uncertain evidence and therefore
+# charges the attempt. That is the only fail-closed answer possible for an
+# unfamiliar harness: extending a failure regex whenever a new spelling is
+# discovered always leaves the next spelling able to disappear beside an
+# attributable hand-off.
+#
+# A progress line has to say something structurally positive: a suite heading,
+# TAP success/plan/comment, a PASS marker, Orchid's state-transition trace, a
+# RED/GREEN demonstration record, a zero failure/error counter, an ordinary
+# named coverage counter, or a sentence ending in one of the two success forms
+# the shipped tests use. A bare diagnostic such as `widget went sideways` is
+# not progress merely because no known failure word appears in it.
+_DRIVE_PROGRESS_LINE_RE='^[[:space:]]*$|^[[:space:]]*==([[:space:]]|$)|^[[:space:]]*---[[:space:]]*$|^[[:space:]]*(CI )?PASS([:[:space:]].*)?$|^[[:space:]]*ok([[:space:]][0-9]+)?([[:space:]]+-.*)?$|^[[:space:]]*[0-9]+\.\.[0-9]+([[:space:]]*#.*)?$|^[[:space:]]*#[[:space:]]*(Subtest:|tests[[:space:]][0-9]+|suites[[:space:]][0-9]+|pass[[:space:]][0-9]+|fail[[:space:]]0|cancelled[[:space:]]0|skipped[[:space:]][0-9]+|todo[[:space:]][0-9]+|duration_ms[[:space:]][0-9.]+|SKIP([[:space:]]|$)|TODO([[:space:]]|$)).*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$|^[[:space:]]*[[:alnum:]_.-]+_(cases|count):[[:space:]]*[0-9]+[[:space:]]*$|^[[:space:]]*[[:alnum:]_.-]+_(failures|errors):[[:space:]]*0([[:space:]].*)?$|^[[:space:]]*T[0-9]+:[[:space:]]+[[:alnum:]_-]+[[:space:]]+->[[:space:]]+[[:alnum:]_-]+[[:space:]]*$|^[[:space:]]*.*(coverage complete|cases passed)[[:space:]]*$'
+
 # _DRIVE_QUOTE_MAX -- how much of an evidence line a journal reason quotes.
 _DRIVE_QUOTE_MAX=120
 
@@ -2178,10 +2190,34 @@ _drive_quote_line() {
   printf '%s' "$s"
 }
 
-# drive_failure_lines <body> -- the lines of <body> that report a failure.
-drive_failure_lines() {
+# drive_reported_failure_lines <body> -- lines whose own syntax reports a
+# failure. Only these may join a causal artifact's same-file cascade: an
+# UNKNOWN line always remains unattributed, even if it happens to name the
+# artifact, because naming cannot turn uncertainty into proof of causation.
+drive_reported_failure_lines() {
   [ -n "$1" ] || return 0
   grep -E -- "$_DRIVE_FAILURE_LINE_RE" <<< "$1" || true
+}
+
+# drive_failure_lines <body> -- every line that must be accounted for before a
+# failed verification may be waived. Reported failures are included directly;
+# explicit progress is excluded; everything else is uncertain and included in
+# the strict, charging direction. Preserve input order so a charged journal
+# reason quotes the first unexplained diagnostic the operator actually saw.
+drive_failure_lines() {
+  local out
+  [ -n "$1" ] || return 0
+  # Pass the patterns through the environment rather than awk -v: backslashes
+  # in -v string values are interpreted a second time by awk, which silently
+  # changes EREs such as the literal opening parenthesis in `Traceback (`.
+  out="$(ORCHID_DRIVE_FAILURE_RE="$_DRIVE_FAILURE_LINE_RE" \
+    ORCHID_DRIVE_PROGRESS_RE="$_DRIVE_PROGRESS_LINE_RE" \
+    awk '
+      $0 ~ ENVIRON["ORCHID_DRIVE_FAILURE_RE"] { print; next }
+      $0 ~ ENVIRON["ORCHID_DRIVE_PROGRESS_RE"] { next }
+      { print }
+    ' <<< "$1")"
+  [ -z "$out" ] || printf '%s\n' "$out"
 }
 
 # _drive_ere_escape <text> -- <text> with every ERE metacharacter backslashed.
@@ -2291,7 +2327,7 @@ _drive_artifact_attribution() {
   local p="$1" re="$2" body="$3" root="${4:-}"
   [ -n "$p" ] && [ -n "$body" ] || return 0
   [ -n "$(_drive_artifact_causal "$p" "$re" "$body" "$root")" ] || return 0
-  _drive_path_named_lines "$p" "$root" "$body"
+  _drive_path_named_lines "$p" "$root" "$(drive_reported_failure_lines "$body")"
 }
 
 # The two artifacts, each with the fault its own hand-off IS. Named functions
@@ -2704,7 +2740,10 @@ drive_env_attribution() {
   # accounting below rejected evidence this function had just established.
   out="$causal
 "
-  fails="$(drive_failure_lines "$body")"
+  # Unknown diagnostics are deliberately in the whole-round denominator but
+  # never in a naming cascade: only a line whose own syntax reports failure may
+  # be claimed after the resolution-causal line opens this route.
+  fails="$(drive_reported_failure_lines "$body")"
   [ -n "$fails" ] || { printf '%s' "$out"; return 0; }
   named="$(_drive_env_named_lines "$m" "$root" "$fails")"
   [ -z "$named" ] || out="$out$named

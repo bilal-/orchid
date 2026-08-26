@@ -307,7 +307,11 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   failing lines too, as are unmistakable fatal diagnostics such as `panic:`,
   `RuntimeError:`, and `Segmentation fault`; an attributable fault beside one
   cannot hide it. Word boundaries keep progress identifiers such as
-  `test_panic_recovery.sh` out. A separate outstanding state contributes no
+  `test_panic_recovery.sh` out. An unfamiliar non-empty line is not silently
+  dropped: unless it is one of the classifier's explicit progress records, it
+  is uncertain, stays unattributed, and charges. In particular, merely naming
+  the same artifact cannot pull an unknown line into that artifact's cascade.
+  A separate outstanding state contributes no
   attribution, but a waived reason still reports it when it is an operator
   action the candidate owes, such as a dropped 755 bit. What remains forgiven,
   and is bounded on purpose: a

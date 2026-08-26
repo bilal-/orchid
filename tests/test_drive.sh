@@ -4755,6 +4755,28 @@ out_of_memory cases passed"
 assert_eq "" "$(drive_failure_lines "$CSC_FATAL_PROGRESS")" \
   "progress paths, counters, and prose containing fatal vocabulary are not verdicts — boundaries keep the strict oracle usable rather than making every waiver charge"
 
+# No finite failure-word list can implement the strict default on its own. An
+# unfamiliar diagnostic is uncertainty, and uncertainty charges even when it
+# happens to name the same artifact as a proved hand-off. The naming cascade is
+# therefore restricted to lines that report a failure in their own syntax;
+# otherwise the fallback below would be added to the denominator and then
+# immediately claimed by the very artifact it is meant to remain independent
+# from.
+CSC_UNKNOWN_MIX="/bin/bash: runners/csc-drive: Permission denied
+runners/csc-drive produced an unfamiliar candidate verdict"
+assert_eq 1 "$(drive_reported_failure_lines "$CSC_UNKNOWN_MIX" | grep -c .)" \
+  "only the permission refusal reports a recognized failure — the second line exercises the unknown-diagnostic fallback rather than another keyword"
+assert_eq 2 "$(drive_failure_lines "$CSC_UNKNOWN_MIX" | grep -c .)" \
+  "the unfamiliar non-progress diagnostic still belongs to the round's fail-closed accounting universe"
+assert_eq "/bin/bash: runners/csc-drive: Permission denied" \
+  "$(drive_exec_bit_attribution runners/csc-drive "$CSC_UNKNOWN_MIX" "$CSC")" \
+  "an unknown line is never admitted to a same-file cascade merely because it names the attributed artifact"
+csc_log "$CSC_UNKNOWN_MIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "an unknown candidate diagnostic beside an attributable hand-off CHARGES rather than being waived by omission"
+assert_match "unfamiliar candidate verdict" "$(csc_cls | cut -f2-)" \
+  "and the charged reason quotes the uncertain line that prevented the waiver"
+
 # ...and the causal half is still required. The same cascade with its refusals
 # removed is the ambient shape -- a candidate's own assertions failing inside a
 # file it added -- and it charges.
