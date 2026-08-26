@@ -1298,7 +1298,12 @@ ones its archetype never declares.
       four are waived together, while one further unexplained line charges it
       and the reason quotes that line. The class NAMED is the one somebody
       must act on first (`handoff`, then `environment`, then `flaky`), and
-      every contributing class is named in the reason.
+      every contributing class is named in the reason. Resolution refusals
+      such as `missing-helper: command not found`, `ENOENT`, and `Cannot find
+      module` remain failing lines without a harness prefix. Separately
+      outstanding state grants no attribution, but a waived reason still
+      reports an operator action it proves is owed, such as restoring a
+      candidate-dropped 755 bit.
       Such a round is charged to
       `orchid task infra-fail <id> --reason "..."` — the environment budget,
       capped by `infra_max` (config, default 3) — and then enters rework

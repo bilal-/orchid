@@ -1625,10 +1625,11 @@ _drive_verify_body() {
 # established second). Every text rule this replaces had only the second half.
 #
 # THREE RESIDUALS, STATED RATHER THAN HIDDEN. (1) `drive_failure_lines` knows
-# the failure shapes a test harness usually prints; a harness whose failures it
-# cannot see leaves the accounting with nothing to object to, and the waiver
-# then rests on state plus attribution alone. That is weaker than the full rule
-# and still strictly stronger than any round before this one. (2) A cascade
+# the failure, refusal, and resolution shapes a test harness usually prints; a
+# harness whose unfamiliar failure it cannot see leaves the accounting with
+# nothing to object to, and the waiver then rests on state plus attribution
+# alone. That is weaker than the full rule and still strictly stronger than any
+# round before this one. (2) A cascade
 # line that names NEITHER the artifact nor a causal shape -- a suite that
 # reports only `FAIL: case 7` -- is unclaimed and charges the round. That is
 # the strict direction, and the price of not letting a proximity rule ("it
@@ -2114,6 +2115,14 @@ drive_handoff_stale_pin() {
 # each of these is a sentence an ordinary defect prints.
 _DRIVE_EXEC_REFUSAL_RE='[Pp]ermission denied|[Nn]ot executable|[Cc]annot execute|[Cc]ould not execute|[Nn]ot marked executable|[Ee]xec format error'
 
+# _DRIVE_RESOLUTION_RE -- a line saying something could not be RESOLVED. The
+# environment arm later requires the named subject to live inside a directory
+# proved missing; here the same diagnostic shapes belong to the round's
+# FAILURE universe whether or not that attribution succeeds. Otherwise an
+# attributable hand-off beside `missing-helper: command not found` can make the
+# second, unexplained failure invisible and waive the candidate's round.
+_DRIVE_RESOLUTION_RE='[Nn]ot found|[Nn]o such file or directory|[Cc]annot find (module|package)|ModuleNotFoundError|ImportError|ENOENT|[Cc]ould not resolve|[Uu]nable to resolve|[Cc]annot open'
+
 # _DRIVE_FAILURE_LINE_RE -- what a line REPORTING a failure looks like, across
 # the harnesses a repository is likely to run. Used for one question only: does
 # this round contain failures the hand-off does not account for?
@@ -2131,9 +2140,11 @@ _DRIVE_EXEC_REFUSAL_RE='[Pp]ermission denied|[Nn]ot executable|[Cc]annot execute
 # repository's own runner prints `== tests/test_failover.sh` for every file it
 # runs, and `orchid status` prints `infra_failures:`, and the leading bound
 # excludes `_` precisely so that second one stays a counter rather than a
-# failure -- and why `error` counts only with its colon, since "error
-# handling" is prose and `error:` is a compiler.
-_DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff]ailed|[Ff]ailure|[Ff]ailures)([^[:alnum:]_]|\$)|(^|[^[:alnum:]_])[Ee]rror:|^not ok |[Aa]ssertion(Error| failed)|Traceback \\(most recent call last\\)|$_DRIVE_EXEC_REFUSAL_RE"
+# failure -- and why `error` counts only with its colon, since "error handling"
+# is prose and `error:` is a compiler. Resolution refusals are different:
+# `command not found`, `ENOENT`, and `Cannot find module` are verdicts even
+# without a harness prefix, and must be visible before any waiver is considered.
+_DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff]ailed|[Ff]ailure|[Ff]ailures)([^[:alnum:]_]|\$)|(^|[^[:alnum:]_])[Ee]rror:|^not ok |[Aa]ssertion(Error| failed)|Traceback \\(most recent call last\\)|$_DRIVE_EXEC_REFUSAL_RE|$_DRIVE_RESOLUTION_RE"
 
 # _DRIVE_QUOTE_MAX -- how much of an evidence line a journal reason quotes.
 _DRIVE_QUOTE_MAX=120
@@ -2451,11 +2462,10 @@ _drive_exec_unblamed_clause() {
 # about the tree that is not there, whichever half of the arm reads it
 # (`_DRIVE_ENV_CHILD_TAIL` says why that is the environment arm's rule alone).
 
-# _DRIVE_RESOLUTION_RE -- a line saying something could not be RESOLVED. Only
-# ever matched together with a token that resolves inside the missing tree,
-# because on its own every one of these is a sentence an ordinary defect
-# prints -- a typo'd import is `Cannot find module` too.
-_DRIVE_RESOLUTION_RE='[Nn]ot found|[Nn]o such file or directory|[Cc]annot find (module|package)|ModuleNotFoundError|ImportError|ENOENT|[Cc]ould not resolve|[Uu]nable to resolve|[Cc]annot open'
+# `_DRIVE_RESOLUTION_RE` is declared with the failure-line oracle above. Here
+# it is narrowed by filesystem attribution: on its own every one of those
+# diagnostics is a sentence an ordinary defect prints -- a typo'd import is
+# `Cannot find module` too.
 
 # _DRIVE_ENV_CHILD_TAIL -- what may follow an absent DIRECTORY's name for the
 # line to have named something INSIDE it: a `/` and then a path character.
@@ -2863,15 +2873,22 @@ drive_cut_short_clause() {
     "$rc" "$what"
 }
 
-# _drive_waived <class> <states> <attributed> -- the waiver line, once the
-# accumulated attribution has been found to account for the whole round.
+# _drive_waived <class> <states> <attributed> [fallback] -- the waiver line,
+# once the accumulated attribution has been found to account for the whole
+# round. A fallback contributes no attribution and never earns the waiver; it
+# is reported because it can still be an independent operator action the next
+# pass owes, especially a candidate-dropped exec bit the base recorded at 755.
 _drive_waived() {
-  if [ -z "$3" ]; then
-    printf '%s\t%s, and this round left no failing line for anything else to explain\n' "$1" "$2"
+  local cls="$1" states="$2" attributed="$3" fallback="${4:-}" note
+  note="$states"
+  [ -z "$fallback" ] \
+    || note="$note (also outstanding, and not attributable to the printed failures: $fallback)"
+  if [ -z "$attributed" ]; then
+    printf '%s\t%s, and this round left no failing line for anything else to explain\n' "$cls" "$note"
     return 0
   fi
   printf '%s\t%s, and this failure is attributable to exactly that: "%s"\n' \
-    "$1" "$2" "$(_drive_quote_line "$3")"
+    "$cls" "$note" "$(_drive_quote_line "$attributed")"
 }
 
 # drive_waivable_outstanding <repo> <task-file> <verify-body> <verify-log> --
@@ -2970,7 +2987,7 @@ drive_waivable_outstanding() {
   # printed lines happened to name.
   if [ -z "$cut" ] && [ -n "$attr" ] \
      && why="$(_drive_attribution_check "$attr" "$body")"; then
-    _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr"
+    _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr" "$fallback"
     return 0
   fi
 
@@ -3011,7 +3028,7 @@ drive_waivable_outstanding() {
   # there is no verdict left for it to reach.
   if [ -z "$cut" ] && [ -n "$attr" ] \
      && why="$(_drive_attribution_check "$attr" "$body")"; then
-    _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr"
+    _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr" "$fallback"
     return 0
   fi
 
@@ -3040,7 +3057,7 @@ drive_waivable_outstanding() {
   why=""
   if [ -z "$cut" ] && [ -n "$attr" ] \
      && why="$(_drive_attribution_check "$attr" "$body")"; then
-    _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr"
+    _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr" "$fallback"
     return 0
   fi
 

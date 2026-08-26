@@ -302,11 +302,16 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   waived; one further unexplained line charges it and the reason quotes that
   line. The class the journal *names* is the one somebody must act on first —
   `handoff`, then `environment`, then `flaky` — and every contributing class
-  is named in the reason regardless. What remains forgiven, and is bounded on
-  purpose: a candidate that produces *no failing line of its own* while one of
-  those states is outstanding is waived for that round — an operator clears
-  the state in seconds, the round is charged to `infra_failures`, and it stops
-  for a human if it recurs.
+  is named in the reason regardless. Unprefixed resolution refusals such as
+  `missing-helper: command not found`, `ENOENT`, and `Cannot find module` are
+  failing lines too; an attributable fault beside one cannot hide it. A
+  separate outstanding state contributes no attribution, but a waived reason
+  still reports it when it is an operator action the candidate owes, such as a
+  dropped 755 bit. What remains forgiven, and is bounded on purpose: a
+  candidate that produces *no failing line of its own* while one of those
+  states is outstanding is waived for that round — an operator clears the
+  state in seconds, the round is charged to `infra_failures`, and it stops for
+  a human if it recurs.
 
   A waived round re-enters rework with `--waive-attempt`, and requires a
   *fresh* implement envelope of its own: `--waive-attempt` leaves `attempts`

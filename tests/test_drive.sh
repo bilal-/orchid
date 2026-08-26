@@ -4708,6 +4708,23 @@ case "$CSC_REASON" in
   *csc-tool*) fail "the OTHER outstanding exec-bit state was named as this round's cause: being outstanding is not being to blame, and a reason an operator acts on must name the one that is ($CSC_REASON)" ;;
 esac
 
+# A shell resolution refusal is a failure even without `FAIL:` or `error:` in
+# front of it. If the failure-line oracle drops it, the attributed exec-bit
+# line appears to account for the whole round and launders this second defect.
+CSC_RESOLUTION_MIX="/bin/bash: runners/csc-drive: Permission denied
+missing-helper: command not found"
+assert_eq 2 "$(drive_failure_lines "$CSC_RESOLUTION_MIX" | grep -c .)" \
+  "both the attributed refusal and the unrelated resolution refusal belong to the round's failure universe"
+assert_eq "missing-helper: command not found" \
+  "$(drive_unattributed_failures "$CSC_RESOLUTION_MIX" \
+      "$(drive_exec_bit_attribution runners/csc-drive "$CSC_RESOLUTION_MIX" "$CSC")")" \
+  "the hand-off claims its own permission refusal but cannot make an unadorned command-not-found diagnostic disappear"
+csc_log "$CSC_RESOLUTION_MIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "an unexplained resolution failure beside an attributable hand-off CHARGES the round rather than being waived by omission"
+assert_match "missing-helper: command not found" "$(csc_cls | cut -f2-)" \
+  "and the charged reason quotes the diagnostic that prevented the waiver"
+
 # ...and the causal half is still required. The same cascade with its refusals
 # removed is the ambient shape -- a candidate's own assertions failing inside a
 # file it added -- and it charges.
@@ -6312,3 +6329,28 @@ assert_eq candidate "$(ev_cls | cut -f1)" \
   "and one further line neither of them owns still charges the whole round — pooling relaxes WHO must explain a failure, never WHETHER every failure is explained"
 assert_match "widget returned 3" "$(ev_cls | cut -f2-)" \
   "quoting the line it could not attribute to either"
+
+# A state can remain owed without explaining this round. Make the helper
+# executable in a new base, then drop that recorded 755 bit in its candidate;
+# the environment failure below says nothing about the helper, so the bit must
+# not contribute attribution, but restoring it is still an operator action the
+# waived-round journal cannot hide.
+chmod +x "$MIXW/libexec/orchid-frob"
+git -C "$MIXW" add libexec/orchid-frob
+git -C "$MIXW" update-index --chmod=+x libexec/orchid-frob
+git -C "$MIXW" commit -q -m "fixture: executable helper becomes the next base"
+MIX_DROP_BASE="$(git -C "$MIXW" rev-parse HEAD)"
+chmod -x "$MIXW/libexec/orchid-frob"
+git -C "$MIXW" add libexec/orchid-frob
+git -C "$MIXW" update-index --chmod=-x libexec/orchid-frob
+git -C "$MIXW" commit -q -m "fixture: candidate drops the helper's exec bit"
+fm_set "$ENVR/.orchid/tasks/EV1.md" base_sha "$MIX_DROP_BASE"
+fm_set "$ENVR/.orchid/tasks/EV1.md" candidate_sha "$(git -C "$MIXW" rev-parse HEAD)"
+ev_log '  FAIL: yarn test: error Command "jest" not found'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "the missing dependency tree alone earns this waiver; an unrelated dropped exec bit is state, not attribution"
+MIX_FALLBACK_REASON="$(ev_cls | cut -f2-)"
+assert_match "chmod [+]x libexec/orchid-frob" "$MIX_FALLBACK_REASON" \
+  "the waived reason still reports the candidate-dropped 755 bit as an operator step owed independently of the failure that was waived"
+assert_match "not attributable to the printed failures" "$MIX_FALLBACK_REASON" \
+  "and labels the dropped bit as fallback state, so reporting it cannot be misread as letting it earn the waiver"
