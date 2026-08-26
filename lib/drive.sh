@@ -2840,6 +2840,12 @@ drive_waivable_outstanding() {
   # The verification ran in the task's worktree when it has one; that is the
   # tree whose state these questions are about.
   [ -n "$root" ] && [ -d "$root" ] || root="$repo"
+  # A stopped-short status has uncertain provenance and therefore vetoes every
+  # waiver, including one whose printed failure lines are otherwise fully
+  # attributable. Compute it before the three cost-saving early returns below;
+  # leaving it until the reporting block meant those returns never examined
+  # the status at all and could still forgive a candidate hang.
+  cut="$(drive_cut_short_clause "$log")"
 
   paths="$(drive_handoff_exec_bit "$root" "$tf")"
   while IFS= read -r p; do
@@ -2869,8 +2875,11 @@ drive_waivable_outstanding() {
     fi
   fi
 
-  # Waived on the exec bit alone: return before anything costlier is run.
-  if [ -n "$attr" ] && why="$(_drive_attribution_check "$attr" "$body")"; then
+  # Waived on the exec bit alone, but only when the run reached an ordinary
+  # verdict: uncertain stopped-short provenance charges regardless of what its
+  # printed lines happened to name.
+  if [ -z "$cut" ] && [ -n "$attr" ] \
+     && why="$(_drive_attribution_check "$attr" "$body")"; then
     _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr"
     return 0
   fi
@@ -2910,7 +2919,8 @@ drive_waivable_outstanding() {
 
   # Waived without ever running the pin check: it builds a release archive, and
   # there is no verdict left for it to reach.
-  if [ -n "$attr" ] && why="$(_drive_attribution_check "$attr" "$body")"; then
+  if [ -z "$cut" ] && [ -n "$attr" ] \
+     && why="$(_drive_attribution_check "$attr" "$body")"; then
     _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr"
     return 0
   fi
@@ -2938,7 +2948,8 @@ drive_waivable_outstanding() {
   fi
 
   why=""
-  if [ -n "$attr" ] && why="$(_drive_attribution_check "$attr" "$body")"; then
+  if [ -z "$cut" ] && [ -n "$attr" ] \
+     && why="$(_drive_attribution_check "$attr" "$body")"; then
     _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr"
     return 0
   fi
@@ -2949,16 +2960,26 @@ drive_waivable_outstanding() {
   # provenance charges here like every other uncertainty. It is REPORTED
   # instead, because an operator reading a charged round needs to know the run
   # also stopped where it did rather than wonder why the log ends there.
-  cut="$(drive_cut_short_clause "$log")"
   if [ -n "$cut" ]; then
-    # Nothing else to say about the round: the clause is the whole reason, and
-    # it already ends by saying the attempt is charged. Said on its own rather
-    # than wrapped in the "attribution was not established" tail below, which
-    # would be answering a question nobody asked -- there is no artifact here
-    # for anything to have been attributed to.
-    if [ -z "$states$fallback" ] \
-       && [ -z "$(drive_unattributed_failures "$body" "$attr")" ]; then
-      printf 'candidate\t%s\n' "$cut"
+    # When every printed failure IS attributable, say that honestly. The
+    # attempt still charges because the stopped-short status is an additional,
+    # unproved fact about the round; falling through to the generic tail would
+    # instead print "attribution was not established" with an empty reason,
+    # contradicting the evidence this function just accumulated.
+    if [ -z "$(drive_unattributed_failures "$body" "$attr")" ]; then
+      if [ -z "$states$fallback" ]; then
+        printf 'candidate\t%s\n' "$cut"
+        return 0
+      fi
+      if [ -n "$states" ]; then
+        note="$states"
+        [ -z "$fallback" ] \
+          || note="$note (also outstanding, and not attributable to the printed failures: $fallback)"
+      else
+        note="$fallback"
+      fi
+      printf 'candidate\t%s; every printed failing line is otherwise attributable, but %s\n' \
+        "$note" "$cut"
       return 0
     fi
     fallback="$fallback$fsep$cut"

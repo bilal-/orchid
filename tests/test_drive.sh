@@ -5745,9 +5745,9 @@ mk_qr_task() {  # <base-sha> <candidate-sha>
     "$QR" "$1" "$2" > "$QR/.orchid/tasks/QA1.md"
 }
 mk_qr_task "$QRBASE" "$QRCAND"
-qr_log() {
-  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$QRCAND" "$QRCAND" "$QR" "$1" > "$QR/.orchid/reviews/QA1-verify.log"
+qr_log() {  # <body> [exit-status]
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: %s\n' \
+    "$QRCAND" "$QRCAND" "$QR" "$1" "${2:-1}" > "$QR/.orchid/reviews/QA1-verify.log"
 }
 qr_cls() {
   ( HOME="$MACHINE_HOME"
@@ -5791,6 +5791,19 @@ assert_eq flaky "$(qr_cls | cut -f1)" \
   "the assertion that stranded eight tasks in r-002 was on this repository's register BEFORE this candidate, so its failure charges no attempt"
 assert_match "known-flaky" "$(qr_cls | cut -f2-)" \
   "and the reason says the register is what forgave it, not orchid's own judgement about the test"
+
+# A stopped-short status is an independent uncertainty and vetoes even this
+# otherwise complete attribution. This pins the ordering: if the waiver's
+# cost-saving return runs before the status is examined, this reads `flaky`
+# and silently forgives the candidate hang the status cannot rule out.
+qr_log "$L020_LINE" 143
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "a registered assertion alongside quiet exit 143 still CHARGES — the printed line is known-flaky, but the termination may be a candidate hang and uncertain provenance vetoes every waiver"
+assert_match "stopped short" "$(qr_cls | cut -f2-)" \
+  "and the charged mixed round reports the termination uncertainty rather than returning early from the flaky arm"
+assert_match "every printed failing line is otherwise attributable" "$(qr_cls | cut -f2-)" \
+  "while saying attribution DID succeed — the attempt charges for the independent termination uncertainty, not for an empty or falsely reported attribution failure"
+qr_log "$L020_LINE"
 
 # --- literal, never a pattern --------------------------------------------
 qr_log '  FAIL: widget returned 3, expected 4'
