@@ -1534,8 +1534,8 @@ _drive_verify_body() {
 # The round after them stopped reading the failure altogether and asked the
 # world two closed questions instead. That was the right KIND of evidence and
 # it was not enough on its own, because in this repository the answer is
-# AMBIENT: every `lib/*.sh` and `scripts/pin-formula.sh` is tracked mode 644
-# WITH a `#!` line, on purpose, because they are sourced or invoked as
+# AMBIENT: nearly every `lib/*.sh`, and `scripts/pin-formula.sh`, is tracked
+# mode 644 WITH a `#!` line, on purpose, because they are sourced or invoked as
 # `bash <file>`. So "this candidate added a file that carries a `#!` line and
 # is not executable" is simply true of any task that adds a library -- T010
 # added `lib/handoff.sh` -- and the round it then waived had nothing to do with
@@ -1635,15 +1635,60 @@ _DRIVE_PIN_CHECK_DEFAULT='scripts/pin-formula.sh --check'
 # direction that CHARGES, which is the only direction this may be wrong in.
 _drive_changed_paths() {
   local root="$1" base="$2" cand="$3" filter="${4:-}"
-  [ -n "$base" ] && [ -n "$cand" ] || return 0
-  [ -d "$root" ] || return 0
-  git -C "$root" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 0
-  git -C "$root" rev-parse -q --verify "$cand^{commit}" >/dev/null 2>&1 || return 0
+  _drive_changed_paths_answerable "$root" "$base" "$cand" || return 0
   if [ -n "$filter" ]; then
     git -C "$root" diff -z --name-only "--diff-filter=$filter" "$base" "$cand" 2>/dev/null | tr '\0' '\n'
   else
     git -C "$root" diff -z --name-only "$base" "$cand" 2>/dev/null | tr '\0' '\n'
   fi
+}
+
+# _drive_changed_paths_answerable <root> <base> <cand> -- 0 when git can be
+# asked what this candidate changed at all: both shas recorded, both resolving
+# to commits in a tree that is there.
+#
+# SPLIT OUT OF `_drive_changed_paths` BECAUSE THE EMPTY ANSWER IS AMBIGUOUS,
+# and the two readings of it point opposite ways. "git says this candidate
+# changed nothing" and "I could not ask git" are the same empty list, and a
+# caller that treats the list as the whole answer silently picks one of them.
+# Which one is safe depends entirely on what the caller does next -- see
+# `_drive_candidate_changed`.
+_drive_changed_paths_answerable() {
+  local root="$1" base="$2" cand="$3"
+  [ -n "$base" ] && [ -n "$cand" ] || return 1
+  [ -d "$root" ] || return 1
+  git -C "$root" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 1
+  git -C "$root" rev-parse -q --verify "$cand^{commit}" >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# _drive_candidate_changed <root> <base> <cand> <path> -- 0 when this candidate
+# changed <path>, AND ALSO when that question cannot be answered.
+#
+# THIS IS THE AUTHORITY GUARD, AND IT IS THE ONE PLACE IN THIS FILE WHERE AN
+# UNANSWERABLE QUESTION MUST READ AS *YES*. Every other proof here charges when
+# git cannot be asked, because it is asking git to establish a hand-off and an
+# unanswered question is no evidence. These two callers ask the inverse: they
+# have already found an authority in the tree -- a freshness check, a
+# known-flaky register -- and they are asking whether the candidate is allowed
+# to be judged by it. "I could not ask git" is not permission.
+#
+# The direction matters because both routes are the ones an implementer could
+# otherwise buy an amnesty from. A task file with no `base_sha`, a `base_sha`
+# that names a commit this tree does not carry, a `worktree` that has been
+# taken away -- each of them made `_drive_changed_paths` print an empty list,
+# which the callers read as "the candidate did not touch it", which reopened
+# the route over a register or a pin check the candidate may well have written.
+# The failure was silent in exactly the case a guard exists for.
+_drive_candidate_changed() {
+  local root="$1" base="$2" cand="$3" want="$4" p
+  # Unanswerable: fail closed. The route is lost and the round charges.
+  _drive_changed_paths_answerable "$root" "$base" "$cand" || return 0
+  while IFS= read -r p; do
+    [ "$p" = "$want" ] || continue
+    return 0
+  done < <(_drive_changed_paths "$root" "$base" "$cand")
+  return 1
 }
 
 # _drive_exec_bit_missing <path> -- 0 when <path> is in exactly the state the
@@ -1907,7 +1952,7 @@ _drive_pin_stale_path() {
 # archive -- a few seconds, paid only on a failure, after a verification run
 # that cost far more.
 drive_handoff_stale_pin() {
-  local repo="$1" root="$2" tf="$3" cmd script abs p rc interp out path
+  local repo="$1" root="$2" tf="$3" cmd script abs rc interp out path
   local -a parts=() pre=()
   cmd="$(config_get "$repo" handoff.pin_check "$_DRIVE_PIN_CHECK_DEFAULT")"
   [ -n "$cmd" ] || return 0
@@ -1919,11 +1964,14 @@ drive_handoff_stale_pin() {
   # Assigned on its own line, never as `local interp="$(...)"`, which would
   # swallow the status this branch turns on.
   interp="$(_drive_check_interp "$abs")" || return 0
-  while IFS= read -r p; do
-    [ "$p" = "$script" ] || continue
+  # A check this candidate changed is no authority on this candidate -- and
+  # nor is one where that could not be established, which is why this is
+  # `_drive_candidate_changed` and not a walk of the changed list (a task with
+  # no `base_sha` used to leave the route wide open).
+  if _drive_candidate_changed "$root" \
+      "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)" "$script"; then
     return 0
-  done < <(_drive_changed_paths "$root" \
-    "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)")
+  fi
   # `set --` then `shift`, rather than the array slice `"${parts[@]:1}"`: on a
   # one-word command line that slice is an EMPTY array reference, which bash
   # 3.2 -- the /bin/bash this project's own verification runs under -- treats
@@ -2167,6 +2215,44 @@ _drive_exec_state_clause() {
     "$p" "$origin" "$p"
 }
 
+# _drive_exec_unblamed_clause <root> <base> <path> -- the same outstanding
+# state, worded for a round in which NOTHING is attributed to it.
+#
+# THE CLAUSE ABOVE ASSERTS AN OPERATOR ACTION, AND ON AN UNBLAMED ROUND THAT
+# ASSERTION IS OFTEN FALSE. The exec-bit set is deliberately wider than "files
+# awaiting chmod +x", because nothing on disk tells a new verb shipped mode 644
+# apart from a library that is mode 644 on purpose because it is SOURCED -- and
+# in this repository nearly every `lib/*.sh`, `scripts/pin-formula.sh` and some
+# thirty files under `tests/` are the second kind. That is not one repository's
+# quirk either: a file meant to be `source`d or run as `bash <file>` has no use
+# for an exec bit, and plenty of projects never set one.
+#
+# ATTRIBUTION IS WHAT RESOLVES THE AMBIGUITY, and on a
+# charged round there is by definition no attribution to resolve it with. So a
+# task that added one sourced library was told, on every unrelated failure for
+# the rest of its life, that `chmod +x lib/whatever.sh` was an outstanding
+# operator step. It was not, nobody was waiting on it, and an operator who ran
+# it would have committed a mode change no reviewer asked for.
+#
+# THE DROPPED SHAPE IS NOT AMBIGUOUS AND KEEPS THE IMPERATIVE. There the base
+# tree recorded mode 755: something WAS executable and is not any more, and
+# restoring it is owed whether or not this round's failures noticed. Only the
+# ADDED shape -- the ambient one -- is reported rather than prescribed, and it
+# is still NAMED, because the point of a fallback is that the operator sees
+# what is open.
+_drive_exec_unblamed_clause() {
+  local root="$1" base="$2" p="$3"
+  if _drive_exec_bit_dropped "$root" "$base" "$p"; then
+    _drive_exec_state_clause "$root" "$base" "$p"
+    return 0
+  fi
+  # The word `chmod` does NOT appear in this clause, and that is the assertion
+  # a test can make about it: an operator who greps a charged round's reason
+  # for a command to run must find nothing, because there is nothing to run.
+  printf "this candidate added %s as a mode-644 file with a #! line, which is equally how a sourced library ships on purpose — nothing in this round was refused execution, so it is reported here rather than presented as a mode change anybody is waiting on" \
+    "$p"
+}
+
 # ===========================================================================
 # THE OTHER THREE CLASSES: environment, flaky, harness.
 #
@@ -2335,9 +2421,25 @@ drive_env_causal() {
 
 # drive_env_attribution <repo> <missing> <body> -- the lines of <body> this
 # absent tree is answerable for. Causal first, then its cascade: every FAILING
-# line that NAMES the directory at a boundary, and every failing line whose
-# subject resolves inside it. Empty means this failure is not attributable to
-# it.
+# line that NAMES the directory at a boundary. Empty means this failure is not
+# attributable to it.
+#
+# EXACTLY THE TWO SOURCES THE HAND-OFF ARMS HAVE, and the third one this used
+# to carry is gone. That third source claimed every failing line holding a
+# token that RESOLVED inside the absent tree, with no resolution shape required
+# of the line at all -- and a dependency tree's direct children are ordinary
+# words. `node_modules/lodash` exists, so `FAIL: lodash helper returned 3,
+# expected 4` resolved, and a plain candidate defect was waived as the missing
+# tree's cascade because the thing it was about happened to share a name with a
+# package. That is the same coincidence -- absent directory plus a sentence
+# that mentions something inside it -- that the exempt round-wide arm was
+# withdrawn for, reintroduced one line at a time.
+#
+# What is left is the rule the protocol states: a line must either report a
+# RESOLUTION failure whose subject lives inside the tree (causal), or NAME the
+# tree itself (cascade). The narrowing costs a cascade line that does neither
+# -- `FAIL: suite could not start` -- which is unclaimed and charges, and that
+# is the strict direction this classifier is required to lean in.
 #
 # The cascade is drawn from the failing lines rather than from the whole body
 # for the same reason the hand-off arms' cascade is drawn from a path match:
@@ -2345,11 +2447,11 @@ drive_env_causal() {
 # progress output that happens to mention the directory claims nothing because
 # there is nothing there to claim.
 #
-# Duplicates between the three sources are left in. `drive_unattributed_failures`
+# Duplicates between the two sources are left in. `drive_unattributed_failures`
 # tests MEMBERSHIP, so a line claimed twice is claimed once; deduping here would
 # cost a fork per line to change nothing.
 drive_env_attribution() {
-  local repo="$1" m="$2" body="$3" line fails causal named out=""
+  local repo="$1" m="$2" body="$3" fails causal named out=""
   [ -n "$m" ] && [ -n "$body" ] || return 0
   causal="$(drive_env_causal "$repo" "$m" "$body")"
   [ -n "$causal" ] || return 0
@@ -2363,12 +2465,6 @@ drive_env_attribution() {
   named="$(_drive_path_named_lines "$m" "$fails")"
   [ -z "$named" ] || out="$out$named
 "
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    _drive_env_line_resolves "$repo" "$m" "$line" || continue
-    out="$out$line
-"
-  done <<< "$fails"
   printf '%s' "$out"
 }
 
@@ -2400,7 +2496,8 @@ _DRIVE_QUARANTINE_MIN_LEN=16
 
 # drive_quarantine_signatures <repo> <root> <task-file> -- the known-flaky
 # signatures this repository recorded, one per line. Nothing when there is no
-# register, when it is not tracked, or when THIS CANDIDATE changed it.
+# register, when it is not tracked, when THIS CANDIDATE changed it, or when
+# whether this candidate changed it cannot be established at all.
 #
 # The format is one entry per line: `FLAKE: <literal substring>` and,
 # optionally, ` -- <why>`. Prose around them is ignored, so the register can be
@@ -2411,7 +2508,7 @@ _DRIVE_QUARANTINE_MIN_LEN=16
 # becoming a live signature -- the first thing anyone writing one of these
 # files does.
 drive_quarantine_signatures() {
-  local repo="$1" root="$2" tf="$3" rel abs line sig p edge sep=' -- '
+  local repo="$1" root="$2" tf="$3" rel abs line sig edge sep=' -- '
   rel="$(config_get "$repo" flaky.quarantine "$_DRIVE_QUARANTINE_DEFAULT")"
   [ -n "$rel" ] || return 0
   [ "$rel" != none ] || return 0
@@ -2421,11 +2518,13 @@ drive_quarantine_signatures() {
   abs="$root/$rel"
   [ -f "$abs" ] || return 0
   git -C "$root" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || return 0
-  while IFS= read -r p; do
-    [ "$p" = "$rel" ] || continue
+  # Same authority guard as the pin check, and fail-closed for the same reason:
+  # a register this candidate changed is no authority on it, and neither is one
+  # where "did this candidate change it?" has no answer.
+  if _drive_candidate_changed "$root" \
+      "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)" "$rel"; then
     return 0
-  done < <(_drive_changed_paths "$root" \
-    "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)")
+  fi
   while IFS= read -r line; do
     case "$line" in
       'FLAKE:'*) sig="${line#FLAKE:}" ;;
@@ -2554,7 +2653,8 @@ _drive_waived() {
 # and there is no verdict left to reach.
 drive_waivable_outstanding() {
   local repo="$1" tf="$2" body="$3" log="${4:-}" root base
-  local paths p first="" causal attr="" states="" sep="" fallback="" fsep=""
+  local paths p first="" firstdrop="" fbpath causal attr="" states="" sep=""
+  local fallback="" fsep=""
   local why="" note pin cmd="" pinpath="" pinattr pinstate
   local kinds="" m envattr envstate sig qattr cut
   base="$(fm_get "$tf" base_sha)"
@@ -2566,9 +2666,15 @@ drive_waivable_outstanding() {
   paths="$(drive_handoff_exec_bit "$root" "$tf")"
   while IFS= read -r p; do
     [ -n "$p" ] || continue
-    # The first outstanding path is remembered even if nothing blames it, so a
-    # charged round still tells the operator which state is open.
+    # One outstanding path is remembered even if nothing blames it, so a
+    # charged round still tells the operator which state is open. A DROPPED bit
+    # is preferred over an added one however git ordered them: it is the only
+    # one of the two shapes that is an operator action on its own evidence, so
+    # when a round holds both, the actionable one is what gets reported.
     [ -n "$first" ] || first="$p"
+    if [ -z "$firstdrop" ] && _drive_exec_bit_dropped "$root" "$base" "$p"; then
+      firstdrop="$p"
+    fi
     causal="$(drive_exec_bit_attribution "$p" "$body")"
     [ -n "$causal" ] || continue
     attr="$attr$causal
@@ -2577,9 +2683,12 @@ drive_waivable_outstanding() {
     sep='; and '
     kinds="$kinds handoff"
   done <<< "$paths"
-  if [ -n "$first" ] && [ -z "$states" ]; then
-    fallback="$(_drive_exec_state_clause "$root" "$base" "$first")"
-    fsep='; and '
+  if [ -z "$states" ]; then
+    fbpath="${firstdrop:-$first}"
+    if [ -n "$fbpath" ]; then
+      fallback="$(_drive_exec_unblamed_clause "$root" "$base" "$fbpath")"
+      fsep='; and '
+    fi
   fi
 
   # Waived on the exec bit alone: return before anything costlier is run.
@@ -2795,7 +2904,13 @@ drive_verify_class() {
   body="$(_drive_verify_body "$log")"
   hand="$(drive_waivable_outstanding "$repo" "$tf" "$body" "$log")"
   if [ -z "$hand" ]; then
-    printf 'candidate\tno waivable state is outstanding in this tree — no package pin is reported stale, this candidate left no executable mode 644, the worktree is missing no gitignored build state the integration checkout carries, nothing here is on a known-flaky register this candidate did not touch, and the run reached its own verdict — so nothing but the candidate is left to explain this round\n'
+    # Each clause says what was ESTABLISHED, not what is true of the world. The
+    # pin and register clauses in particular are worded around the authority
+    # guard: a check or a register this candidate wrote -- or one where that
+    # could not be determined, because the shas do not resolve -- proves
+    # nothing here, and saying "no pin is stale" would be a claim orchid never
+    # made.
+    printf 'candidate\tno waivable state is outstanding in this tree — no package pin is reported stale by a freshness check this candidate did not write, this candidate left no executable mode 644, the worktree is missing no gitignored build state the integration checkout carries, nothing here is on a known-flaky register this candidate did not touch, and the run reached its own verdict — so nothing but the candidate is left to explain this round\n'
     return 0
   fi
   hcls="${hand%%$'\t'*}"

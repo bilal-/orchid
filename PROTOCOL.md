@@ -1195,7 +1195,8 @@ ones its archetype never declares.
         shipped it that way or dropped the bit while rewriting it), and it
         RUNS the repository's package-pin freshness check
         (`handoff.pin_check`, config, default `scripts/pin-formula.sh
-        --check`; never trusted when the candidate changed the check itself)
+        --check`; never trusted when the candidate changed the check itself,
+        nor when whether it did cannot be established)
         and requires it to REPORT A FILE STALE — a nonzero exit is not that
         report, since a check that cannot find the formula or trips over
         metadata this candidate corrupted exits nonzero too and re-pinning
@@ -1207,11 +1208,12 @@ ones its archetype never declares.
         above; this classification is the backstop, not the fix.
       - `flaky` — an assertion this repository ALREADY recorded as
         known-flaky, in a register (`flaky.quarantine`, config, default
-        `tests/QUARANTINE.md`) that THIS CANDIDATE DID NOT TOUCH. That last
-        clause is the whole safety of it: an implementer cannot quarantine
-        the assertion it is failing, because changing the file removes the
-        route. Signatures are matched literally and claim only the lines they
-        match.
+        `tests/QUARANTINE.md`) that THIS CANDIDATE DID NOT TOUCH — and where
+        that question can be ANSWERED, since an unresolvable candidate is not
+        a candidate that touched nothing. That clause is the whole safety of
+        it: an implementer cannot quarantine the assertion it is failing,
+        because changing the file removes the route. Signatures are matched
+        literally and claim only the lines they match.
       - `harness` — the run was KILLED before it reached a verdict (`orchid
         verify` recorded exit 124, 137 or 143). This one forgives no failure,
         because there is none: it is admitted only when the round left no
@@ -1239,7 +1241,24 @@ ones its archetype never declares.
       (CAUSAL — the proof it blocked this run), after which every failing line
       naming it is its CASCADE, causal wording or not. The path is matched at
       a BOUNDARY, never as a substring: an outstanding `bin/tool` must not
-      collect a genuine `bin/tool-helper: Permission denied`. NO ROUND IS EVER
+      collect a genuine `bin/tool-helper: Permission denied`. For the absent
+      build state the CASCADE is that same naming rule and nothing wider: a
+      failing line that merely mentions something living INSIDE the tree is not
+      claimed — a dependency tree's direct children are ordinary words, and
+      `FAIL: lodash helper returned 3` is a defect about something that shares
+      a name with a package. EVERY ROUTE THAT READS AN AUTHORITY OUT OF THE
+      REPOSITORY asks git what this candidate changed — the pin check, the
+      known-flaky register, and the added/dropped file lists — and each of them
+      CHARGES when git cannot be asked at all: an absent, malformed or
+      unresolvable `base_sha`/`candidate_sha` produces the same empty diff an
+      untouched file does, and reading that as "untouched" hands the route back
+      to a candidate that may have written the authority itself. A charged
+      round REPORTS the outstanding state rather than prescribing a step for
+      it, with one exception: a DROPPED exec bit still names `chmod +x <path>`
+      as the operator's step, because the base tree recorded mode 755 and
+      restoring it is owed regardless. A file merely ADDED at mode 644 is named
+      and no more — that is equally how a sourced library ships.
+      NO ROUND IS EVER
       WAIVED AS A ROUND: it is waived only when every failing line in it is
       individually claimed, so one round may hold a mix ACROSS CLASSES — a
       stale pin explaining six lines and an absent dependency tree explaining

@@ -69,3 +69,26 @@ for the old single-instant shape so it cannot come back one file at a time.
 Listing them here would be actively harmful now: those assertions are the stall
 detector's own evidence, and an entry would forgive a genuine streaming
 regression as readily as a race.
+
+## What keeps an empty register honest
+
+A route nothing exercises is one nobody notices breaking, and this file
+exercises nothing. So the route is proved against the entry that *would* go
+here if the family ever came back. `tests/test_drive.sh` Part W builds its
+fixture register from the literal string
+
+```
+job log must have grown WHILE the adapter was still running
+```
+
+and asserts, in the same breath, that this is still the message
+`tests/test_engine_agy.sh` prints when that liveness case genuinely fails. If
+the message is ever reworded, that assertion fails and whoever reworded it
+learns that the worked example has to move with it. If the classifier ever
+stops recognising a pre-candidate signature, it fails there too.
+
+That is a proof about **recognition**, and deliberately not an amnesty: no line
+in this file forgives anything in orchid's own runs. Adding one is still a
+decision somebody has to make out loud — `tests/test_drive.sh` asserts this
+file's live entry count is zero, so the entry and the change to that assertion
+land in the same diff.

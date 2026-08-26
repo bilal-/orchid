@@ -421,10 +421,32 @@ worth nothing:
    waived failures it had no part in, and it is why the rule now asks the
    filesystem instead of the sentence.
 
+   Its cascade is the same rule as the mode bit's, too: a further failing line
+   is claimed when it **names the directory**. Merely mentioning something that
+   lives inside it is not enough — `node_modules/lodash` exists, so
+   `FAIL: lodash helper returned 3, expected 4` would otherwise be laundered as
+   a dependency-tree cascade because the thing under test shares a name with a
+   package. A dependency tree's direct children are ordinary words.
+
+   All three routes that read an authority out of your repository — the pin
+   check, the flaky register, and the added/dropped file lists — ask git what
+   this candidate changed, and **all of them charge when git cannot be asked**.
+   A task record with no `base_sha`, or one naming a commit the tree no longer
+   carries, produces an empty diff that reads exactly like "the candidate
+   changed nothing"; treating that as permission would have let a candidate
+   quarantine the assertion it was failing after all.
+
 Where the state is outstanding and the failure is not attributable to it, the
 attempt is **charged**, and the reason says what is outstanding and that
 attribution was not established — so you can clear it and still see that it
-was not what failed.
+was not what failed. It **reports** that state rather than prescribing an
+action for it, with one exception: a *dropped* exec bit still reads `chmod +x
+<path> is the operator's outstanding step`, because the base tree recorded mode
+755 and restoring it is owed whether or not this round's failures noticed. A
+file the candidate *added* at mode 644 is only named — nothing on disk tells a
+new verb awaiting `chmod +x` from a library that is 644 because it is
+*sourced*, attribution is what would have told them apart, and a charged round
+has none.
 
 **A round is never waived as a round.** It is waived only when *every* failing
 line in it is individually claimed. That cuts both ways, and it works across

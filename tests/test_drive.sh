@@ -4479,6 +4479,35 @@ case "$H02_REASON" in
   *lib-two-a*) fail "the library that merely sorted first was named as the hand-off: $H02_REASON" ;;
 esac
 
+# --- AN UNBLAMED 644 IS REPORTED, NOT PRESCRIBED ---------------------------
+# The same two files, and a round that failed on neither of them. With no
+# attribution to tell a new verb from a sourced library, the fallback used to
+# assert an operator ACTION about whichever path git listed first -- so a task
+# that added one library was told, on every unrelated failure for the rest of
+# its life, that `chmod +x lib-two-a.sh` was an outstanding operator step.
+# It was not: that file is mode 644 on purpose, nobody was waiting on it, and
+# an operator who followed the instruction would have committed a mode change
+# no reviewer asked for. In this repository that is not a corner case: nearly
+# every lib/*.sh, scripts/pin-formula.sh and some thirty files under tests/ are
+# exactly this shape, because a file that is sourced or run as `bash <file>`
+# has no use for an exec bit.
+#
+# The state is still SAID, because a charged round has to show what is open.
+# What is withdrawn is the imperative.
+printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
+  "$HOF" "tests/test_widget.sh: FAIL: widget returned 3, expected 4" \
+  > "$HOF/.orchid/reviews/H02-verify.log"
+assert_eq candidate "$(h02_cls | cut -f1)" \
+  "an ordinary assertion failure is charged with two mode-644 #! files outstanding, exactly as before — this is about what the reason SAYS, not about what it decides"
+H02_UNBLAMED="$(h02_cls | cut -f2-)"
+assert_match "lib-two-a" "$H02_UNBLAMED" \
+  "and the outstanding state is still named, because the point of reporting it on a charged round is that the operator can see what is open and rule it out"
+if grep -Fq 'chmod' <<<"$H02_UNBLAMED"; then
+  fail "but a round that blames it for nothing must not prescribe chmod +x on it: nothing on disk tells a new verb shipped 644 from a library that is 644 because it is SOURCED, attribution is what resolves that, and a charged round has none of it by definition (got: $H02_UNBLAMED)"
+fi
+assert_match "rather than presented as a mode change" "$H02_UNBLAMED" \
+  "the reason says so out loud instead of going quiet — an operator who reads that a file is 644 and that nothing here was refused execution has learned the true thing, and is not sent to run a command nobody needs"
+
 # --- THE MODE BIT A CANDIDATE DROPPED, NOT ONE IT NEVER SET ----------------
 # The shape that stranded THIS task, and the one an ADDED-only rule cannot see.
 # runners/orchid-drive was tracked 100755; an implementer round rewrote it and
@@ -4552,6 +4581,35 @@ assert_match "hof-drive" "$(h03_cls | cut -f2-)" \
 h03_log "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
 assert_eq candidate "$(h03_cls | cut -f1)" \
   "while an ordinary assertion failure is charged with the same dropped mode bit outstanding: this half is proof of STATE, and attribution is still required of the failure"
+
+# --- AND ON AN UNBLAMED ROUND THE DROPPED BIT OUTRANKS THE AMBIENT ONE ----
+# The two shapes are not equally actionable, and a round that holds both must
+# report the one that is. A dropped bit is an operator step on its own
+# evidence -- the base tree recorded mode 755, something WAS executable and is
+# not any more -- while an added 644 `#!` file is the ambient shape this
+# repository ships libraries in. git orders `lib-alpha.sh` before
+# `runners/hof-drive`, so a fallback that took whatever sorted first would
+# report the one nobody is waiting on and bury the one somebody is.
+printf '#!/usr/bin/env bash\n# sourced, never executed — mode 644 on purpose\n' \
+  > "$HOF/lib-alpha.sh"
+git -C "$HOF" add lib-alpha.sh
+git -C "$HOF" commit -q -m "fixture: the same rewrite, plus a sourced library that sorts first"
+HOF_DROP_MULTI="$(git -C "$HOF" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: H04\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$HOF" "$HOF_DROP_BASE" "$HOF_DROP_MULTI" > "$HOF/.orchid/tasks/H04.md"
+printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
+  "$HOF" "tests/test_widget.sh: FAIL: widget returned 3, expected 4" \
+  > "$HOF/.orchid/reviews/H04-verify.log"
+assert_eq 2 "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H04.md" | grep -c .)" \
+  "fixture: this candidate leaves BOTH shapes outstanding at once — a sourced library it added at 644 and a runner whose 755 it dropped — or the preference below has nothing to choose between"
+H04_REASON="$( ( HOME="$MACHINE_HOME"
+  drive_verify_class "$REPO_ROOT" "$HOF/.orchid/tasks/H04.md" \
+    "$HOF/.orchid/reviews/H04-verify.log" ) | cut -f2-)"
+assert_match "chmod [+]x runners/hof-drive" "$H04_REASON" \
+  "the DROPPED bit is what an unblamed round reports, with the imperative intact: it is owed whether or not this round's failures noticed, because the base tree is the evidence rather than the failure"
+case "$H04_REASON" in
+  *lib-alpha*) fail "and the ambient library that merely sorted first is not what the operator is pointed at: $H04_REASON" ;;
+esac
 
 # The operator performs the hand-off; the state is gone and the identical
 # failure charges, exactly as it does for the added shape.
@@ -4831,6 +4889,27 @@ assert_match "L017" "$(pin_cls P01 | cut -f2-)" \
 
 assert_eq candidate "$(pin_cls P02 | cut -f1)" \
   "but a candidate that CHANGED the pinning script gets no amnesty from it — a bug just introduced into a check fails exactly like a stale pin, and prints exactly what a stale pin prints, and that one is the implementer's"
+
+# --- AND THE AUTHORITY QUESTION FAILS CLOSED WHEN IT CANNOT BE ASKED -------
+# The narrowing above is only worth what it costs to SKIP, and skipping it was
+# free: "git says this candidate did not touch the check" and "I could not ask
+# git" are the same empty diff, and the route read both as permission. A task
+# file with no `base_sha`, or one naming a commit this tree does not carry --
+# the shape a re-pointed branch or a reaped worktree really produces -- handed
+# the amnesty back over a check the candidate may well have written. Both edges
+# are pinned per L034: every unanswerable form charges, and the answerable
+# untouched one still waives.
+mk_pin_task P06 "" "$PIN_CAND"
+assert_eq candidate "$(pin_cls P06 | cut -f1)" \
+  "with no base_sha there is no way to ask whether this candidate wrote the check that would forgive it, and an unanswerable authority question is not permission"
+mk_pin_task P07 "$PIN_BASE" ""
+assert_eq candidate "$(pin_cls P07 | cut -f1)" \
+  "and with no candidate_sha either — the guard needs both ends of the diff, and one end is no more an answer than none"
+mk_pin_task P08 "$PIN_BASE" 0000000000000000000000000000000000000000
+assert_eq candidate "$(pin_cls P08 | cut -f1)" \
+  "and a sha that does not RESOLVE in this tree answers nothing, which is the form the failure actually takes: the fields are present, so a guard that only checked for emptiness would walk straight past it"
+assert_eq handoff "$(pin_cls P01 | cut -f1)" \
+  "while the answerable, untouched case is untouched itself — the guard closes the route on ignorance, never on the route"
 
 # --- A NONZERO EXIT IS NOT A STALENESS REPORT ------------------------------
 # The narrowing this round exists for. `scripts/pin-formula.sh --check` exits 1
@@ -5458,6 +5537,34 @@ ev_log 'error Command "jest" not found
 assert_eq environment "$(ev_cls | cut -f1)" \
   "while a cascade line that NAMES the directory is attributed to it, exactly as a mode bit claims the lines naming its file — one fault does not produce one failing line"
 
+# --- THE CASCADE IS NAMING, NOT RESEMBLANCE -------------------------------
+# The coincidence above, one FAILING LINE at a time instead of one round at a
+# time, and it is the shape this arm carried until now: the cascade also
+# claimed any failing line holding a token that RESOLVED inside the absent
+# tree, with no resolution shape required of the line at all. A dependency
+# tree's direct children are ordinary words -- `lodash` is a package in
+# mobile/node_modules -- so an assertion that merely happened to be ABOUT
+# something sharing a package's name was waived as that tree's cascade. A
+# candidate defect is not laundered by vocabulary.
+[ -e "$ENVR/mobile/node_modules/lodash" ] \
+  || fail "fixture invalid: mobile/node_modules must publish a direct child named lodash, or the two assertions below prove nothing about resemblance"
+ev_log 'error Command "jest" not found
+  FAIL: lodash helper returned 3, expected 4'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "a failing line whose ONLY tie to the absent tree is a word matching one of its direct children is not that tree's cascade — it is a candidate defect about something with a package's name, and the absent tree must claim it no more readily than .cache claims a webpack-dev-server line"
+assert_match "lodash helper returned 3" "$(ev_cls | cut -f2-)" \
+  "and the reason quotes it, so an operator sees exactly what the attempt is being charged for"
+
+# --- ... while the GENUINE resolution cascade still waives -----------------
+# The same package name, in a line that REPORTS A RESOLUTION FAILURE. This is
+# what L003 actually prints once the first missing command has been hit, and
+# narrowing the cascade must not cost it: what was withdrawn is resemblance,
+# not the class.
+ev_log 'error Command "jest" not found
+  FAIL: Cannot find module lodash from mobile/src/App.js'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "a failing line that cannot RESOLVE something the absent tree publishes is still the absent tree's, so the arm remains live on the cascade it exists for"
+
 # --- and once the worktree is provisioned, the identical failure charges --
 mkdir -p "$ENVW/mobile/node_modules/.bin"
 ev_log 'error Command "jest" not found'
@@ -5502,12 +5609,21 @@ mkdir -p "$QR/.orchid/tasks" "$QR/.orchid/reviews" "$QR/tests"
 cd "$QR" || exit 1
 git init -q .
 : > "$QR/orchid.config"
-cat > "$QR/tests/QUARANTINE.md" <<'QEOF'
-# Known-flaky assertions. Each entry is one line beginning `FLAKE:`.
-FLAKE: job log must have grown WHILE the adapter was still running -- L020: samples one instant; being de-flaked
-FLAKE: short -- too short to be a signature, and must be ignored
-FLAKE: FAIL: .* returned -- deliberately regex-shaped, and must NOT be read as one
-QEOF
+# THE SIGNATURE IS THE HISTORICAL L020 ONE, TAKEN FROM ONE PLACE, and the
+# assertion further down proves this exact text is still what orchid's own
+# engine-adapter suite prints when that liveness case genuinely fails. That
+# tie is what answers the obvious objection to a register with no live
+# entries: orchid DE-FLAKED the family rather than quarantining it, so nothing
+# in tests/QUARANTINE.md exercises this route in this repository -- and a route
+# nothing exercises is one nobody would notice breaking. Writing the signature
+# into the fixture by hand instead would prove only that grep works.
+L020_SIG='job log must have grown WHILE the adapter was still running'
+{
+  printf '%s\n' '# Known-flaky assertions. Each entry is one line beginning `FLAKE:`.'
+  printf 'FLAKE: %s -- L020: samples one instant; the shape that stranded eight tasks\n' "$L020_SIG"
+  printf '%s\n' 'FLAKE: short -- too short to be a signature, and must be ignored'
+  printf '%s\n' 'FLAKE: FAIL: .* returned -- deliberately regex-shaped, and must NOT be read as one'
+} > "$QR/tests/QUARANTINE.md"
 printf 'x\n' > "$QR/file.txt"
 git add -A
 git commit -q -m "fixture: a repository with a known-flaky register"
@@ -5517,8 +5633,11 @@ git add -A
 git commit -q -m "fixture: a candidate that does NOT touch the register"
 QRCAND="$(git -C "$QR" rev-parse HEAD)"
 
-printf -- '---\nschema: 1\nid: QA1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
-  "$QR" "$QRBASE" "$QRCAND" > "$QR/.orchid/tasks/QA1.md"
+mk_qr_task() {  # <base-sha> <candidate-sha>
+  printf -- '---\nschema: 1\nid: QA1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$QR" "$1" "$2" > "$QR/.orchid/tasks/QA1.md"
+}
+mk_qr_task "$QRBASE" "$QRCAND"
 qr_log() {
   printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
     "$QRCAND" "$QRCAND" "$QR" "$1" > "$QR/.orchid/reviews/QA1-verify.log"
@@ -5529,7 +5648,24 @@ qr_cls() {
       "$QR/.orchid/reviews/QA1-verify.log" )
 }
 
-L020_LINE='  FAIL: streaming stub: job log must have grown WHILE the adapter was still running -- the stall-detector liveness signal'
+L020_LINE="  FAIL: streaming stub: $L020_SIG -- the stall-detector liveness signal"
+
+# --- THE SIGNATURE IS THE ONE THIS REPOSITORY WOULD ACTUALLY PRINT --------
+# tests/QUARANTINE.md carries no live entries, on purpose: the L020 family was
+# made deterministic rather than forgiven, and an entry for those assertions
+# would forgive a genuine streaming regression as readily as a race. That
+# leaves this route with nothing to exercise it in orchid itself, and codex's
+# review was right to ask what then keeps it honest. This is the answer: the
+# fixture's entry is not invented text, it is the failure message the de-flaked
+# case still prints when the liveness property is genuinely violated. So the
+# route is proved against the exact string an operator would paste into the
+# register if this family ever came back -- and if that message is ever
+# reworded, this assertion fails and whoever reworded it learns that the
+# register's worked example has to move with it.
+grep -Fq -- "$L020_SIG" "$REPO_ROOT/tests/test_engine_agy.sh" \
+  || fail "the L020 signature the fixture register below is built from must be the text tests/test_engine_agy.sh's liveness case really prints on failure — otherwise this part proves that grep matches a string this file made up, and the flaky route's only live subject in orchid goes untested"
+[ "${#L020_SIG}" -ge 16 ] \
+  || fail "and it must be long enough to be a legal signature (>= 16 characters), or the register would drop it and every assertion below would be about an entry that was never read"
 
 # --- the register itself, at the layer it lives in ------------------------
 QR_SIGS="$(
@@ -5569,6 +5705,36 @@ assert_eq candidate "$(qr_cls | cut -f1)" \
   "flaky.quarantine=none disables the route, so a repository that wants no register has none"
 : > "$QR/orchid.config"
 
+# --- THE AUTHORITY QUESTION FAILS CLOSED WHEN IT CANNOT BE ASKED ----------
+# The safety property at the end of this part is "a register the candidate
+# changed is no authority on it", and it was skippable for free: `git diff`
+# over a missing or unresolvable sha prints an empty list, which is
+# indistinguishable from "this candidate changed nothing", and the route read
+# both as permission. A task whose `base_sha` was never written -- or whose
+# recorded commit this tree no longer carries, which is what a re-pointed
+# branch leaves behind -- could therefore quarantine the assertion it was
+# failing after all. Every unanswerable form is charged, and the answerable one
+# is restored immediately afterwards so this is a guard rather than a deletion.
+qr_log "$L020_LINE"
+mk_qr_task "" "$QRCAND"
+assert_eq "" "$( ( HOME="$MACHINE_HOME"
+  drive_quarantine_signatures "$QR" "$QR" "$QR/.orchid/tasks/QA1.md" ) )" \
+  "with no base_sha, nothing can be asked about who wrote this register, so it yields NO signatures — asserted at the layer it lives in, because the class below would also read 'candidate' if the register had simply gone missing"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and the round charges: an unanswerable authority question is not permission, least of all on the one route an implementer could otherwise use to forgive its own failure"
+mk_qr_task "$QRBASE" ""
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and the same with no candidate_sha — one end of a diff is no more an answer than none"
+mk_qr_task "$QRBASE" 0000000000000000000000000000000000000000
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and a sha that does not RESOLVE in this tree charges too, which is the form this really takes: both fields are present, so a guard that only tested for emptiness would walk past it"
+mk_qr_task "not-a-sha-at-all" "$QRCAND"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and so does one that is not a sha at all — the guard turns on whether git ANSWERED, never on whether the field looked plausible"
+mk_qr_task "$QRBASE" "$QRCAND"
+assert_eq flaky "$(qr_cls | cut -f1)" \
+  "while the answerable, untouched case is unchanged — the guard closes the route on ignorance, never on the route"
+
 # --- ORCHID'S OWN REGISTER, and a tripwire on it --------------------------
 # Orchid ships the file its own default names, so the default path is real
 # rather than hypothetical and the format has one worked example in the tree.
@@ -5578,7 +5744,7 @@ assert_eq candidate "$(qr_cls | cut -f1)" \
   || fail "orchid must ship the register flaky.quarantine defaults to (tests/QUARANTINE.md), or its own default path is a path to nothing"
 ORCHID_FLAKES="$(grep -c '^FLAKE:' "$REPO_ROOT/tests/QUARANTINE.md" || true)"
 assert_eq 0 "$ORCHID_FLAKES" \
-  "and it carries NO live entries: the L020 liveness family was DE-FLAKED rather than quarantined (tests/helpers.sh's await_log_growth/await_log_heartbeat), and an entry for those assertions would forgive a genuine streaming regression as readily as a race — if this ever becomes non-zero, somebody has decided a gate may fail without failing, and this assertion is where they have to say so"
+  "and it carries NO live entries: the L020 liveness family was DE-FLAKED rather than quarantined (tests/helpers.sh's await_log_growth/await_log_heartbeat), and an entry for those assertions would forgive a genuine streaming regression as readily as a race — if this ever becomes non-zero, somebody has decided a gate may fail without failing, and this assertion is where they have to say so. An empty register is not an untested route: the fixture above proves recognition against the historical L020 signature, tied to the text this repository still prints"
 
 # --- THE SAFETY PROPERTY: a register the candidate touched is no authority.
 # LAST in this part, deliberately: it leaves the register with an entry that

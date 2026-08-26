@@ -292,7 +292,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   working interpreter is never run, and that is no pin route. It is never
   trusted when the candidate itself changed it (a bug an implementer just
   introduced into a pinning script fails exactly like a stale pin, and that is
-  the implementer's). **A nonzero exit does not prove the pin stale** — a
+  the implementer's), nor when that question cannot be answered at all — a
+  missing or unresolvable `base_sha`/`candidate_sha` yields the same empty diff
+  an untouched check does, and the route closes rather than guessing.
+  **A nonzero exit does not prove the pin stale** — a
   check that cannot find the formula, cannot find a git checkout, or trips
   over packaging metadata the candidate itself corrupted exits nonzero too,
   and re-pinning fixes none of those. The check must *say* something is stale
@@ -310,8 +313,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   path, it is the timing:** a register *this candidate changed* is not an
   authority on this candidate, so the moment a candidate touches the file the
   route is gone and the round charges — an implementer cannot quarantine the
-  assertion it is failing. Three more things keep it narrow: a signature is
-  matched **literally**, never as a pattern, so no entry can be written that
+  assertion it is failing. That question has to be *answerable*, too: a task
+  record whose `base_sha` or `candidate_sha` is missing or does not resolve in
+  the tree produces the same empty diff an untouched register does, and the
+  route closes rather than reading that as permission. Three more things keep
+  it narrow: a signature is matched
+  **literally**, never as a pattern, so no entry can be written that
   matches everything; it must be at least 16 characters, so no entry can match
   everything by being short; and it claims **only** the lines it matches, with
   no cascade, so a suite that also prints an aggregate `3 tests failed` leaves

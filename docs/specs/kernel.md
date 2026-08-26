@@ -635,8 +635,16 @@ buying a fresh implementation pass to reach the same tree.
   something that lives INSIDE the absent directory), which proves the state
   blocked this run, after which every failing line NAMING that artifact is part
   of the same cascade (one missing mode bit strands a whole suite, not one
-  assertion). The path is matched at a boundary, so an outstanding `bin/tool`
-  cannot collect a failure on `bin/tool-helper`. A non-`candidate` verdict
+  assertion). NAMING is the whole of the cascade rule, for the absent directory
+  as much as for the file: a failing line that merely mentions something living
+  inside it — a package name, which is an ordinary word — is not its cascade.
+  The path is matched at a boundary, so an outstanding `bin/tool`
+  cannot collect a failure on `bin/tool-helper`. Every route that reads an
+  authority out of the repository asks git what the candidate changed, and each
+  CHARGES when git cannot be asked at all: a missing or unresolvable
+  `base_sha`/`candidate_sha` yields the same empty diff as an untouched file,
+  and reading that as "untouched" would reopen the pin check and the flaky
+  register to a candidate that wrote them. A non-`candidate` verdict
   charges `infra_failures` rather than `attempts`, entering rework with
   `--waive-attempt` so the waiver's journal entry names the class and the
   reason. Four properties make this safe rather than a loophole: it forgives
