@@ -1087,13 +1087,20 @@ What the kernel does about it, and what to look for:
   one rung of the escalation ladder (`orchid task infra-fail`), which blocks
   the task at `infra_max`. So `orchid journal tail` names the exit code, and
   a task that cannot be launched ends up `blocked`, not retried forever.
-- That rung is spent ONCE. The launcher records its own exit status on the
-  manifest it strands (`launch_exit`), and the driver's ageing sweep skips a
-  manifest carrying it — the failure was already reported and counted. Only an
-  orphan nobody could report (a launcher killed asynchronously, a machine that
-  rebooted mid-launch) is escalated later on age. If you are auditing a
-  blocked task's `infra_failures`, every rung should have a journal entry
-  naming a launch that really was attempted.
+- That rung is spent ONCE, and never zero times. Two arms can charge the same
+  stranded launch — the driver's synchronous one and its ageing sweep, passes
+  later — and they deduplicate on the `job_id` of the manifest that launch left
+  behind. The receipt is the journal entry the charge itself wrote: every
+  launch-failure rung's reason ends `[ladder job <job_id>]`, and a charge whose receipt
+  is already on record is refused. So a pass killed between the launcher's exit
+  and the charge loses nothing (no receipt → the sweep counts it, and the
+  manifest is not reaped until after the ladder has run), and a pass that
+  charged is never charged again. If you are auditing a blocked task's
+  `infra_failures`, every rung should have a journal entry naming a launch that
+  really was attempted, and no two rungs should name the same `[ladder job ...]`.
+  `launch_exit` on the manifest is diagnostic only — it records *why* the
+  manifest was stranded, and the sweep quotes that exit code when it is the arm
+  that ends up charging.
 - `orchid jobs prepare` refuses (exit 18) to mint a second manifest for a slot
   that already has an unlaunched one, so a broken launch leaves ONE orphan,
   not one per pass. That refusal is a wait, not a failure.

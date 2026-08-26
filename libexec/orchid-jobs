@@ -1054,11 +1054,13 @@ case "$sub" in
         # mid-flight between its own `prepare` and its spawn line) pass their
         # own bound here; a human who has looked at the manifest gets the
         # number they typed. Defaults to --older-than-s, so an operator who
-        # gives one bound gets that bound applied to everything.
+        # gives one bound gets that bound applied to everything. Accepted under
+        # `--reap-prepared` too, where it is the more specific name for the only
+        # class that mode touches and therefore wins over --older-than-s.
         --prepared-older-than-s)
           [ -n "${2:-}" ] || orchid_die "--prepared-older-than-s requires a value"
           prepared_older_than_s_arg="$2"; shift 2 ;;
-        *) orchid_die "usage: orchid jobs gc [--older-than-s N] [--prepared-older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N]" ;;
+        *) orchid_die "usage: orchid jobs gc [--older-than-s N] [--prepared-older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N] [--prepared-older-than-s N]" ;;
       esac
     done
     mkdir -p "$quarantine_dir"
@@ -1083,8 +1085,18 @@ case "$sub" in
     # it at every bound, including 0 -- that one may have an engine behind it.
     # No epoch fence here either, for the same reason the whole `gc` arm isn't
     # fenced (runtime-only; see the arm's own header comment).
+    #
+    # BOTH BOUNDS ARE HONOURED HERE, with the specific one winning. This mode
+    # reaps exactly one class, and `--prepared-older-than-s` is that class's own
+    # bound: a caller that names it and is then silently given `--older-than-s`
+    # (or, worse, the 3600 default) has been told a number was applied that was
+    # not, which is the precise shape of dogfood F41 -- a bound typed and
+    # ignored. Parsing a flag and dropping it is the same defect one level up,
+    # so it is either honoured or refused, and honouring it costs nothing:
+    # `--older-than-s` still means what it always did when it is the only one
+    # given, so runners/orchid-drive's PLANNING reap is unchanged.
     if [ "$reap_prepared" -eq 1 ]; then
-      older_than_s="${older_than_s_arg:-3600}"
+      older_than_s="${prepared_older_than_s_arg:-${older_than_s_arg:-3600}}"
       for f in "$jobs_dir"/*.json; do
         [ -e "$f" ] || continue
         gc_reap_unlaunched "$f" "$now" "$older_than_s" "$stall_s"

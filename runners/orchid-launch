@@ -50,16 +50,24 @@ manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "${prepare_args[@]}")"
 # disk, from one whose launcher was killed asynchronously (a machine reboot,
 # an operator's Ctrl-C, the driver itself being felled mid-pass).
 #
-# They must not be treated the same, because ONE OF THEM HAS ALREADY BEEN
-# REPORTED. A synchronous non-zero exit is returned to whoever ran this
-# launcher, and when that caller is runners/orchid-drive it journals the
-# failure and spends a rung of the escalation ladder for it in that same pass.
-# Without this mark, the driver's ageing sweep found the corpse of that very
-# failure some passes later, could see only "prepared, never launched", and
-# charged a SECOND rung for it -- so one broken launch cost two rungs of a
-# three-rung ladder, and a real second launch failure went uncounted behind
-# the per-slot one-rung-per-pass guard. The mark is the fact that tells the
-# two apart, and it is written by the only process that knows it.
+# They must not be treated the same, because ONE OF THEM CAN SAY WHY. A
+# synchronous non-zero exit is returned to whoever ran this launcher, and when
+# that caller is runners/orchid-drive it journals the failure and spends a rung
+# of the escalation ladder for it in that same pass. Some passes later the
+# driver's ageing sweep meets the corpse of that very failure, and without this
+# mark all it can see is "prepared, never launched" -- the launcher's own exit
+# status, the single most useful thing anyone will ever learn about the
+# incident, is nowhere on disk. So the mark is written by the only process that
+# knows it.
+#
+# WHAT IT IS NOT is a claim that the failure has been ACCOUNTED FOR. It is
+# written here, BEFORE that caller has journaled or charged anything, so a pass
+# felled in between would leave a manifest asserting "already reported" about a
+# failure nobody reported -- and a sweep that skipped on the mark would skip it
+# forever. Whether a rung has been spent is decided instead by the receipt the
+# charge itself writes (`[ladder job <job_id>]` in the journal; lib/drive.sh's
+# drive_failure_charged), which cannot exist before the charge does. This mark
+# is diagnosis; that receipt is accounting.
 #
 # ONLY FOR A LAUNCH THAT NEVER SPAWNED, which is what the pid and log guards
 # below decide together -- the same pair every other reader of this manifest

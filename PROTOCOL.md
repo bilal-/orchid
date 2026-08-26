@@ -510,6 +510,16 @@ escalation ladder's "first occurrence → relaunch" never fires and the
 wallclock backstop (which only runs inside the manifest loop) goes silent
 too — the task simply waits forever.
 
+For the same reason the reap runs after `check`, it also runs **after the
+escalation ladder below has spent its rungs**, not before: a manifest is the
+only durable trace a failed job leaves, so a pass felled between the reap and
+the charge would have destroyed the evidence of a failure it never counted, with
+nothing left for any later pass to find. *Nothing is retired before it has been
+accounted for.* The one visible consequence is that the ladder's relaunch of a
+`never-started` job is refused (exit 18) while its orphan is still on disk and
+lands on the following pass instead; the dispatch walk, which runs after the
+reap, is unaffected.
+
 **`stalled` is decided on PROGRESS, not just on liveness.** A job earns it two
 ways, and both kill it: its log has not been written to for `stall_minutes`
 (the original test), OR — when an operator has opted in by setting
@@ -646,12 +656,24 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, `timeout`,
   re-attempted once per pass for 73 passes with no journal entry, no
   escalation and no engine ever marked.
 
-  **Count it once.** A launcher that exits non-zero of its own accord records
-  that exit on the manifest it strands (`launch_exit`), and the driver's
-  ageing sweep skips a manifest carrying that mark: the failure was reported
-  synchronously and has already spent its rung. Only an *unmarked* orphan — a
-  launcher killed asynchronously, a machine that rebooted mid-launch, nobody
-  to return an exit status to — is escalated by the sweep on age.
+  **Count it once — and never zero.** Two arms can charge one stranded launch:
+  the driver's synchronous one, with the launcher's exit status in hand, and its
+  ageing sweep, some passes later, reading the manifest that launch left behind.
+  They deduplicate on the **job\_id of that manifest**, and the receipt is the
+  journal entry the charge itself wrote: `orchid task infra-fail` is
+  journal-first, so a reason carrying `[ladder job <job_id>]` is durable proof that this
+  job was already counted, and a charge whose receipt is already on record is
+  refused. Charged synchronously → the sweep finds the receipt and skips.
+  Crashed before the charge → no receipt, and the sweep is the one that counts
+  it. A mark on the manifest cannot do this job: the launcher writes
+  `launch_exit` *before* the driver has journaled anything, so a pass felled in
+  that window would leave a manifest claiming a failure was reported that never
+  was, and a sweep keyed on the mark would skip it forever. `launch_exit` is
+  therefore kept for what it actually proves — *why* the manifest was stranded,
+  which is what the sweep puts in the journal when it is the one to charge — and
+  never for whether the failure was counted. The reap is what finally retires the
+  manifest, and it runs **after** the ladder in the same pass, so nothing is ever
+  thrown away before it has been accounted for.
 - *`never-started`* — a `pid: 0` manifest with no log at all, i.e. a job that
   was minted and whose launcher died before its spawn line. Nothing about it
   is `dead`/`stalled`/`timeout`, so it needs naming separately: no envelope is
@@ -1471,7 +1493,14 @@ one-pass driver could otherwise stop progressing in silence:
   - An `optional` point whose handler dies leaving NO envelope is noted and
     stepped over — it gates nothing, so it also never spends the task's
     `infra_failures` budget nor gets relaunched into the same wall pass after
-    pass.
+    pass. **A handler that could not even be launched is the same non-event**:
+    an optional binding whose launcher exits non-zero (an `input_overflow` pack,
+    a binary that will not resolve) is journaled, exempted from the ladder, and
+    stepped over in that same pass. Deferring it instead would hand the next
+    pass the identical broken launch to make the identical decision, and the
+    step it guards would be parked for as long as the launcher stayed broken —
+    an `optional` entry gating a transition, which is exactly what these rules
+    forbid.
   `on_verify_fail`'s guidance is attached via `orchid task set <id>
   hook_guidance` before the rework advance, exactly as above.
 - **A reviewer relaunch is keyed on the SLOT, never on a count.** `orchid

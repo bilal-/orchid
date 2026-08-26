@@ -885,7 +885,7 @@ derived cache, rebuildable from it.
 | Mode | Defense |
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
-| Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver, ONCE, since the launcher stamps `launch_exit` on the manifest it strands and the ageing sweep skips what has already been accounted for — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
+| Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver, EXACTLY ONCE, since both the synchronous charge and the ageing sweep deduplicate on the stranded manifest's `job_id` against the journal receipt the charge itself writes (`[ladder job <job_id>]`), so a pass that crashes before charging loses nothing and one that charged is never charged again — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
 | Spawned but never stamped | a launcher killed between the spawn and the pid stamp: an engine may be running with its pid recorded nowhere. Waited on while its log is still being written (never relaunched over — that is two engines in one worktree); reported `unstamped` and escalated once its log has been silent for `stall_minutes`, with the log kept when the manifest is reaped |
 | Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
@@ -939,8 +939,11 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   something else, twice). The unattended driver passes `stall_minutes` for
   this class because *it* cannot know whether a launcher is mid-flight between
   its own `prepare` and its spawn line. `orchid jobs gc --reap-prepared
-  [--older-than-s N]` (v1-m4) remains the exclusive form of the same reap,
-  touching nothing else — which is what makes it the one `PLANNING` can run.
+  [--older-than-s N] [--prepared-older-than-s N]` (v1-m4) remains the exclusive
+  form of the same reap, touching nothing else — which is what makes it the one
+  `PLANNING` can run. It honours either bound (the class-specific
+  `--prepared-older-than-s` wins where both are given): a flag this verb parses
+  and then ignores would be F41 one level up.
   A manifest of this class older than the bound also walks the escalation
   ladder, and `jobs prepare` refuses (exit 18) to mint a second manifest for a
   slot that already has one — one orphan per slot, not one per pass.

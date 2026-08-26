@@ -3430,9 +3430,12 @@ assert_eq 16 "$ODRIVE_RC" "and the pass hands off at a boundary"
 # later. Both fire on the same event, and the second one has no event of its
 # own -- it is reading a corpse.
 #
-# runners/orchid-launch stamps `launch_exit` on the manifest it abandons and
-# the sweep skips exactly those, so the ladder counts LAUNCHES here, and both
-# entries in the journal name the launcher's own exit code.
+# Every launch-failure rung carries a receipt naming the job it was charged
+# for (`[ladder job <job_id>]`), and the sweep refuses to charge a manifest whose
+# receipt is already on record -- so the ladder counts LAUNCHES here, and both
+# entries in the journal name the launcher's own exit code. Part W owns the
+# other half of this predicate: what happens when there is NO receipt because
+# the pass that should have written one died first.
 #
 # RED before this rework: rung 2 came from the sweep, worded "prepared and
 # never launched" -- charged to the ageing of rung 1's corpse -- while this
@@ -3641,3 +3644,209 @@ assert_match "never recorded a pid" "$(cat "$UNS/.orchid/journal.md")" \
 # the only evidence anyone will ever have of it.
 [ -f "$ULOG" ] \
   || fail "the reap must keep an unstamped job's log — unlike the dead-job reap, nothing here was ever killable"
+
+# ===========================================================================
+# Part W -- THE CRASH WINDOW. One physical launch failure is charged exactly
+# once: never twice, and NEVER ZERO TIMES (T027 rework).
+#
+# Part T pins the ordinary case: drive_launch has the launcher's non-zero exit
+# in hand, charges a rung for it, and the ageing sweep that meets the stranded
+# manifest some passes later does not charge a second one. What decided that
+# used to be a MARK the launcher writes on the manifest (`launch_exit`) -- and
+# the launcher writes it BEFORE this driver has journaled or charged anything.
+#
+# So there is a window. A pass felled inside it -- the machine reboots, a
+# second pump fences a fresh epoch, an operator hits Ctrl-C between the
+# launcher's exit and `orchid task infra-fail` -- leaves a manifest asserting
+# "already reported" about a failure nobody ever reported. A sweep keyed on
+# that mark then skips it on every pass until gc quietly retires the only
+# evidence of it: no rung, no journal entry, nothing. That is the same silence
+# this whole task exists to end, one level up from where it was found.
+#
+# The mark cannot be made to answer this. Written before the charge it loses
+# the failure; written after it, a crash in the new window pays for the same
+# event twice. Two non-atomic writes are not made exactly-once by ordering
+# them -- so "has this been counted" is asked of the receipt the CHARGE itself
+# wrote: `orchid task infra-fail` is journal-first, and every launch-failure
+# rung's reason carries `[ladder job <job_id>]`.
+#
+# Three passes, one fixture, and both directions of the same predicate.
+# ===========================================================================
+CW="$WORK/crashwindow"
+mkdir -p "$CW"
+cd "$CW" || exit 1
+git init -q .
+# stall_minutes=1 so an aged manifest is one `touch` away; infra_max=9 so the
+# cap never fires and every rung this Part counts stays legible as a number.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nstall_minutes=1\ninfra_max=9\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CW" "$ORCHID_BIN" init >/dev/null || fail "orchid init (crash-window fixture)"
+git checkout -q orchid/integration
+WEPOCH="$(ORCHID_REPO="$CW" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+worchid() { ORCHID_REPO="$CW" ORCHID_EPOCH="$WEPOCH" "$ORCHID_BIN" "$@"; }
+worchid requirements import "$WORK/requirements.md" >/dev/null
+worchid task create W010 "a pass died between the launcher's exit and the charge" >/dev/null
+worchid task set W010 verification_commands "true" >/dev/null
+worchid plan apply --reason "initial plan" >/dev/null
+# BLOCKED on purpose, and that is fixture rather than subject: the walk takes
+# no dispatch edge out of `blocked`, so every rung this Part counts comes from
+# the escalation ladder and from nothing else.
+worchid task advance W010 blocked --reason "fixture: parked so the walk launches nothing" >/dev/null
+
+WDRIVE_RC=0; WDRIVE_OUT=""
+run_wdrive() {
+  WDRIVE_RC=0
+  WDRIVE_OUT="$(ORCHID_REPO="$CW" ORCHID_EPOCH="$WEPOCH" "$DRIVE" 2>&1)" || WDRIVE_RC=$?
+}
+wfield() { ORCHID_REPO="$CW" "$ORCHID_BIN" task show W010 | grep "^$1: " | cut -d' ' -f2-; }
+WJOURNAL="$CW/.orchid/journal.md"
+# Straight at the FILE, and -F: the receipt is bracketed, so a regex reader
+# (assert_match uses grep -E) would read `[ladder job ...]` as a character class
+# and match on any single letter in it. Counted with -c, so what is asserted is
+# "exactly one" rather than "at least one". The token is spelled out here rather
+# than taken from drive_failure_receipt on purpose: a test that builds its
+# expectation with the function under test would pass on any format the two of
+# them happened to agree on, including one no reader ever matches.
+wreceipts() { grep -cF -e "[ladder job $1]" "$WJOURNAL" 2>/dev/null || true; }
+
+mkdir -p "$CW/.orchid/runtime/jobs"
+mk_stranded() {  # <job-id> [launch-exit] -- the manifest a launcher stranded
+  local jid="$1" lexit="${2:-}" f
+  f="$CW/.orchid/runtime/jobs/$jid.json"
+  if [ -n "$lexit" ]; then
+    jq -n --arg jid "$jid" --arg log "$CW/.orchid/runtime/logs/$jid.log" --argjson lexit "$lexit" \
+      '{job_id:$jid, task:"W010", attempt:1, role:"implementer", operation:"implement",
+        engine:"stubimpl", pid:0, pgid:0, started_at:0, log:$log, output:"/dev/null",
+        base_sha:"", candidate_sha:"", hook_point:"", launch_exit:$lexit}' > "$f"
+  else
+    jq -n --arg jid "$jid" --arg log "$CW/.orchid/runtime/logs/$jid.log" \
+      '{job_id:$jid, task:"W010", attempt:1, role:"implementer", operation:"implement",
+        engine:"stubimpl", pid:0, pgid:0, started_at:0, log:$log, output:"/dev/null",
+        base_sha:"", candidate_sha:"", hook_point:""}' > "$f"
+  fi
+  touch -t 202001010000 "$f"
+}
+
+# ---- pass 1: THE CRASH ITSELF. `launch_exit` is on the manifest, so a
+# launcher really did run and really did fail -- and the journal holds no
+# receipt for it, so the charge that mark was supposed to stand for never
+# landed.
+#
+# RED before this rework: the sweep skipped every manifest carrying the mark,
+# so this pass charged nothing and journaled nothing, and the failure stayed
+# invisible until gc retired the manifest it was written on.
+mk_stranded j-e1-W010-a1-c0ffee01 12
+run_wdrive
+assert_eq 1 "$(wfield infra_failures)" \
+  "a launch failure whose synchronous charge never landed is still counted — the mark is not a receipt (rc=$WDRIVE_RC, out: $WDRIVE_OUT)"
+assert_eq 1 "$(wreceipts j-e1-W010-a1-c0ffee01)" \
+  "and the charge writes its own receipt, keyed on the job that failure stranded"
+grep -qF -e "the launcher exited 12 without spawning a job" "$WJOURNAL" \
+  || fail "the sweep journals the launcher's OWN exit status, not 'prepared and never launched' — that exit code is the only diagnostic the incident left (out: $WDRIVE_OUT)"
+[ ! -f "$CW/.orchid/runtime/jobs/j-e1-W010-a1-c0ffee01.json" ] \
+  || fail "the manifest is retired once it has been charged (out: $WDRIVE_OUT)"
+
+# ---- pass 2: THE OTHER DIRECTION. The same job, the same manifest shape, and
+# now a receipt on record for it. Nothing may be charged again.
+#
+# This is the window the reap ordering opens on purpose: the ladder spends its
+# rungs BEFORE gc retires anything, so that a pass felled in between loses no
+# evidence -- which means a manifest can outlive its own charge. It must then
+# be recognised, and only the receipt can recognise it: `launch_exit` is
+# identical on this pass and the last.
+mk_stranded j-e1-W010-a1-c0ffee01 12
+run_wdrive
+assert_eq 1 "$(wfield infra_failures)" \
+  "a failure already on the ladder's record is not charged again (rc=$WDRIVE_RC, out: $WDRIVE_OUT)"
+assert_eq 1 "$(wreceipts j-e1-W010-a1-c0ffee01)" \
+  "and no second receipt is written for it either — one event, one entry"
+assert_match "already on the ladder's record" "$WDRIVE_OUT" \
+  "the pass says why it is not counting it, rather than skipping in silence (out: $WDRIVE_OUT)"
+
+# ---- pass 3: THE DEDUP IS KEYED ON THE JOB, never on the task or the slot. A
+# DIFFERENT stranded launch is a different failure and gets its own rung --
+# otherwise "never twice" would have been bought by never counting anything
+# after the first, which is the defect this Part opened with.
+mk_stranded j-e1-W010-a1-c0ffee02
+run_wdrive
+assert_eq 2 "$(wfield infra_failures)" \
+  "a second, distinct stranded job is a second rung (rc=$WDRIVE_RC, out: $WDRIVE_OUT)"
+assert_eq 1 "$(wreceipts j-e1-W010-a1-c0ffee02)" \
+  "with a receipt of its own"
+grep -qF -e "prepared and never launched" "$WJOURNAL" \
+  || fail "an orphan carrying no exit status is still the never-started class, and still says so (out: $WDRIVE_OUT)"
+
+# ---- and the predicate itself, both ways, with no fixture in the loop.
+drive_failure_charged "$CW" j-e1-W010-a1-c0ffee01 \
+  || fail "drive_failure_charged must find a receipt that is on record"
+drive_failure_charged "$CW" j-e1-W010-a1-nosuchjob \
+  && fail "and must not invent one for a job that was never charged"
+drive_failure_charged "$CW" "" \
+  && fail "an empty key is not a receipt — a caller with no job to name must never read as already charged"
+
+# ===========================================================================
+# Part X -- AN OPTIONAL HANDLER THAT CANNOT BE LAUNCHED GATES NOTHING EITHER
+# (T027 rework).
+#
+# `optional never gates` has two shapes and the kernel handled one of them. A
+# handler that SPAWNED and then died leaving no envelope is recorded by the
+# escalation sweep in a pass-local fact, and drive_hook_gate reads that fact
+# and steps over the point. A handler whose LAUNCHER failed -- the same
+# `input_overflow` pack, the same unresolvable binary this task exists for --
+# was journaled and correctly exempted from the ladder, and then recorded
+# nowhere at all.
+#
+# So the gate saw a point with no envelope and no reason to step over it,
+# deferred the step it guards "to the next pass", and the next pass ran the
+# identical broken launch to reach the identical conclusion. For a launcher
+# that is broken rather than unlucky, that is not a deferral, it is a park: an
+# `optional` binding holding a transition for as long as the breakage lasts.
+#
+# on_verify_fail is the sharpest of the five points to prove it on, because
+# drive_testing takes NO edge unless the gate returns satisfied -- a task whose
+# suite failed simply never reaches `rework`.
+# ===========================================================================
+OPT="$WORK/opthook"
+mkdir -p "$OPT"
+cd "$OPT" || exit 1
+git init -q .
+# pack_budget_bytes=1 fails every launch at pack_build (exit 12, the incident's
+# own code) with no fixture engine needed to fake it -- including the hook
+# job's. `hook.on_verify_fail=stubimpl` with no `:required` suffix is the
+# optional binding under test.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\npack_budget_bytes=1\nhook.on_verify_fail=stubimpl\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$OPT" "$ORCHID_BIN" init >/dev/null || fail "orchid init (optional-hook fixture)"
+git checkout -q orchid/integration
+XEPOCH="$(ORCHID_REPO="$OPT" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+xorchid() { ORCHID_REPO="$OPT" ORCHID_EPOCH="$XEPOCH" "$ORCHID_BIN" "$@"; }
+xorchid requirements import "$WORK/requirements.md" >/dev/null
+xorchid task create X010 "its suite fails and its on_verify_fail handler cannot be launched" >/dev/null
+xorchid task set X010 verification_commands "exit 1" >/dev/null
+xorchid plan apply --reason "initial plan" >/dev/null
+
+XTASK="$OPT/.orchid/tasks/X010.md"
+XCAND="$(git -C "$OPT" rev-parse HEAD)"
+fm_set "$XTASK" base_sha "$XCAND"
+fm_set "$XTASK" candidate_sha "$XCAND"
+fm_set "$XTASK" status testing
+xfield() { fm_get "$XTASK" "$1"; }
+
+XDRIVE_RC=0
+XDRIVE_OUT="$(ORCHID_REPO="$OPT" ORCHID_EPOCH="$XEPOCH" "$DRIVE" 2>&1)" || XDRIVE_RC=$?
+
+# RED before this rework: `testing`, on this pass and on every pass after it.
+assert_eq rework "$(xfield status)" \
+  "the step an OPTIONAL point guards is taken in the same pass its handler fails to launch — a deferral here is a park (rc=$XDRIVE_RC, out: $XDRIVE_OUT)"
+assert_match "could not be launched — stepping over it" "$XDRIVE_OUT" \
+  "and the pass names it as a step-over, the same wording the died-handler arm uses (out: $XDRIVE_OUT)"
+grep -qF -e "optional on_verify_fail hook launch failed (exit 12)" "$OPT/.orchid/journal.md" \
+  || fail "stepping over it is not forgetting it: the launch failure is still journaled (out: $XDRIVE_OUT)"
+assert_eq 0 "$(xfield infra_failures)" \
+  "an optional binding gates nothing, so its handler's launch failure spends none of the TASK's budget (out: $XDRIVE_OUT)"
+case "$XDRIVE_OUT" in
+  *"deferring the step it guards"*)
+    fail "nothing was dispatched, so there is nothing to wait for — deferring is what parked the transition (out: $XDRIVE_OUT)" ;;
+esac

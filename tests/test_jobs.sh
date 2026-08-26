@@ -337,6 +337,40 @@ grep -q "TPREPYOUNG" <<<"$reap_out" && fail "gc --reap-prepared must not touch t
 [ -f "$rt/quarantine/j-prep-x.json.reason-gc-prepared" ] || fail "gc --reap-prepared: quarantined as .reason-gc-prepared"
 [ -f "$rt/jobs/j-prep-young.json" ] || fail "gc --reap-prepared: young prepared manifest must survive"
 
+# ...AND `--prepared-older-than-s` MEANS SOMETHING IN THIS MODE TOO. It was
+# parsed here and then dropped on the floor: a caller naming the bound for the
+# only class this mode touches was silently given `--older-than-s`, or the 3600
+# default. That is the F41 defect one level up -- a bound typed and ignored --
+# so it is honoured, and being the more specific name for this class it wins.
+#
+# Both directions, because a flag that only ever reaps proves nothing: it must
+# be able to hold a manifest back as well as let it go.
+mk_prepared() {  # <file> <job-id> <task> -- an ancient never-launched manifest
+  jq -n --arg jid "$2" --arg task "$3" --arg log "$rt/logs/$1.log" \
+    '{job_id:$jid, task:$task, attempt:1, role:"implementer", operation:"implement",
+      engine:"fake", pid:0, pgid:0, started_at:0, log:$log, output:"/dev/null",
+      base_sha:"", candidate_sha:""}' > "$rt/jobs/$1.json"
+  touch -t 202001010000 "$rt/jobs/$1.json"
+}
+
+mk_prepared j-prep-bound-a j-e1-TPREPBOUNDA-a1-cccc0001 TPREPBOUNDA
+bound_reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 999999999 --prepared-older-than-s 60)"
+assert_match "^gc-prepared j-e1-TPREPBOUNDA-a1-cccc0001$" "$bound_reap_out" \
+  "gc --reap-prepared honours --prepared-older-than-s, and the class-specific bound wins over --older-than-s"
+[ ! -f "$rt/jobs/j-prep-bound-a.json" ] || fail "gc --reap-prepared: the manifest past --prepared-older-than-s must leave the jobs dir"
+
+mk_prepared j-prep-bound-b j-e1-TPREPBOUNDB-a1-cccc0002 TPREPBOUNDB
+bound_hold_out="$("$ORCHID_BIN" jobs gc --reap-prepared --prepared-older-than-s 999999999)"
+grep -q "TPREPBOUNDB" <<<"$bound_hold_out" && fail "gc --reap-prepared: --prepared-older-than-s must be able to HOLD a manifest back, not only reap one — an ignored flag would fall through to the 3600 default and reap this ancient manifest"
+[ -f "$rt/jobs/j-prep-bound-b.json" ] || fail "gc --reap-prepared: the manifest inside --prepared-older-than-s must survive"
+# ...and it is a bound, not a permanent exemption. Cleared here so the jobs dir
+# is left as this block found it -- at 3600, which the ancient manifest is past
+# and the young one from the block above is not, so the cleanup takes exactly
+# what it put there.
+"$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 3600 >/dev/null
+[ ! -f "$rt/jobs/j-prep-bound-b.json" ] || fail "gc --reap-prepared: a bound held back is not an exemption — the next call with a bound it passes takes it"
+[ -f "$rt/jobs/j-prep-young.json" ] || fail "and the cleanup must not have taken the young manifest with it"
+
 # ---------------------------------------------------------------------------
 # ...and the manifest no bound may reap WHILE ITS LOG IS STILL BEING WRITTEN:
 # pid 0 with a log.

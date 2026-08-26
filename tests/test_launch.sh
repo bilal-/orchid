@@ -330,18 +330,20 @@ assert_match "input_overflow" "$wt2_err" "inline-only engine: launcher surfaces 
 
 # ...AND THE MANIFEST IT ABANDONED SAYS SO (T027 rework).
 #
-# This is the launcher's only chance to record that it failed. It returns the
+# This is the launcher's only chance to record WHY it failed. It returns the
 # non-zero exit to its caller and is gone; the manifest `jobs prepare` minted
-# for it stays on disk, and on disk it is indistinguishable from one whose
-# launcher was killed asynchronously -- a reboot, a Ctrl-C, a felled driver.
-# One of those has already been reported to somebody and the other has not,
-# and only this process knows which this is.
+# for it stays on disk, and on disk it is otherwise indistinguishable from one
+# whose launcher was killed asynchronously -- a reboot, a Ctrl-C, a felled
+# driver. Only this process ever knew the exit status, so if it does not write
+# it here nobody can ever report it.
 #
-# runners/orchid-drive is the reader: it charges one rung for the exit it got
-# back here, and its ageing sweep skips a manifest carrying this mark so the
-# same physical failure is never charged a second time when its corpse ages
-# out. Without the mark the sweep cannot tell them apart, and tests/test_drive.sh
-# Part T is the end-to-end half of this assertion.
+# runners/orchid-drive is the reader, and it reads this for DIAGNOSIS only: its
+# ageing sweep quotes this exit code when it turns out to be the arm that
+# charges the failure. Whether a rung has already been spent is a different
+# question with a different answer -- the journal receipt the charge itself
+# writes -- precisely because this mark is written BEFORE any charge and would
+# otherwise let a crashed pass hide a failure forever. tests/test_drive.sh
+# Parts T and W are the two end-to-end halves of that.
 wt2_mf=""
 for _m in "$WORK/.orchid/runtime/jobs"/*.json; do
   [ -e "$_m" ] || continue
@@ -351,7 +353,7 @@ done
 [ -n "$wt2_mf" ] || fail "the failed launch must leave its prepared manifest behind for the driver to read"
 assert_eq 0 "$(jq -r '.pid' "$wt2_mf")" "nothing was spawned, so the pid is still the one prepare minted"
 assert_eq "$rc" "$(jq -r '.launch_exit // "unset"' "$wt2_mf")" \
-  "and the launcher stamps its OWN exit status on the manifest it abandoned — the fact that tells a reported failure from an unreported one"
+  "and the launcher stamps its OWN exit status on the manifest it abandoned — the only record anywhere of why this launch failed"
 
 # ===========================================================================
 # v1-m4 Task 2 (push prevention): `orchid init` installs a defense-in-depth
