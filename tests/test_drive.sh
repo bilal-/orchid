@@ -5619,7 +5619,7 @@ git init -q .
 # into the fixture by hand instead would prove only that grep works.
 L020_SIG='job log must have grown WHILE the adapter was still running'
 {
-  printf '%s\n' '# Known-flaky assertions. Each entry is one line beginning `FLAKE:`.'
+  printf '%s\n' "# Known-flaky assertions. Each entry is one line beginning \`FLAKE:\`."
   printf 'FLAKE: %s -- L020: samples one instant; the shape that stranded eight tasks\n' "$L020_SIG"
   printf '%s\n' 'FLAKE: short -- too short to be a signature, and must be ignored'
   printf '%s\n' 'FLAKE: FAIL: .* returned -- deliberately regex-shaped, and must NOT be read as one'
