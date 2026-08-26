@@ -5426,7 +5426,7 @@ assert_eq environment "$(ev_cls | cut -f1)" \
   "L003's own case: a worktree that never received mobile/node_modules could not resolve jest, and jest is what mobile/node_modules/.bin PUBLISHES — that is a fact about the filesystem, not a reading of the sentence, and it does not charge the attempt"
 assert_match "mobile/node_modules" "$(ev_cls | cut -f2-)" \
   "and the reason names the directory, because 'the environment' is not something anybody can provision"
-assert_match "worktree add" "$(ev_cls | cut -f2-)" \
+assert_match "creating the worktree from Git-tracked state" "$(ev_cls | cut -f2-)" \
   "and says why it is absent, so the reader learns the mechanism rather than the incident"
 
 # --- THE COINCIDENCE THAT BROKE THE OLD ARM, in the same tree -------------

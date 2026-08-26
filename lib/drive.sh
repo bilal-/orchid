@@ -2600,7 +2600,7 @@ drive_waivable_outstanding() {
     [ -n "$m" ] || continue
     envattr="$(drive_env_attribution "$repo" "$m" "$body")"
     if [ -n "$envattr" ]; then
-      envstate="$m is present in the integration checkout and absent from the worktree this candidate was verified in — it is gitignored, so git worktree add could not reproduce it (lesson L003), and provisioning it there is a dispatch step rather than anything the implementer wrote"
+      envstate="$m is present in the integration checkout and absent from the worktree this candidate was verified in — it is gitignored, so creating the worktree from Git-tracked state could not reproduce it (lesson L003), and provisioning it there is a dispatch step rather than anything the implementer wrote"
       attr="$attr$envattr
 "
       states="$states$sep$envstate"
