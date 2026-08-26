@@ -2152,22 +2152,26 @@ _DRIVE_FATAL_RE='(^|[^[:alnum:]_])([Pp][Aa][Nn][Ii][Cc]([Kk][Ee][Dd])?|[Ff][Aa][
 # before any waiver is considered.
 _DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff]ailed|[Ff]ailure|[Ff]ailures)([^[:alnum:]_]|\$)|(^|[^[:alnum:]_])[Ee]rror:|^not ok |[Aa]ssertion(Error| failed)|Traceback \\(most recent call last\\)|$_DRIVE_EXEC_REFUSAL_RE|$_DRIVE_RESOLUTION_RE|$_DRIVE_FATAL_RE"
 
-# _DRIVE_PROGRESS_LINE_RE -- lines that affirm progress rather than diagnose a
-# failed command. This is intentionally a CLOSED vocabulary. Once verify exits
-# non-zero, a non-empty line that is neither a reported failure above nor one
-# of these explicit progress records is uncertain evidence and therefore
-# charges the attempt. That is the only fail-closed answer possible for an
-# unfamiliar harness: extending a failure regex whenever a new spelling is
-# discovered always leaves the next spelling able to disappear beside an
-# attributable hand-off.
+# _DRIVE_PROGRESS_LINE_RE -- lines that affirm progress, success, or an
+# explicitly neutral not-tested claim rather than diagnose a failed command.
+# This is intentionally a CLOSED vocabulary. Once verify exits non-zero, a
+# non-empty line that is neither a reported failure above nor one of these
+# explicit non-failure records is uncertain evidence and therefore charges the
+# attempt. That is the only fail-closed answer possible for an unfamiliar
+# harness: extending a failure regex whenever a new spelling is discovered
+# always leaves the next spelling able to disappear beside an attributable
+# hand-off.
 #
 # A progress line has to say something structurally positive: a suite heading,
-# TAP success/plan/comment, a PASS marker, Orchid's state-transition trace, a
-# RED/GREEN demonstration record, a zero failure/error counter, an ordinary
-# named coverage counter, or a sentence ending in one of the two success forms
-# the shipped tests use. A bare diagnostic such as `widget went sideways` is
-# not progress merely because no known failure word appears in it.
-_DRIVE_PROGRESS_LINE_RE='^[[:space:]]*$|^[[:space:]]*==([[:space:]]|$)|^[[:space:]]*---[[:space:]]*$|^[[:space:]]*(CI )?PASS([:[:space:]].*)?$|^[[:space:]]*ok([[:space:]][0-9]+)?([[:space:]]+-.*)?$|^[[:space:]]*[0-9]+\.\.[0-9]+([[:space:]]*#.*)?$|^[[:space:]]*#[[:space:]]*(Subtest:|tests[[:space:]][0-9]+|suites[[:space:]][0-9]+|pass[[:space:]][0-9]+|fail[[:space:]]0|cancelled[[:space:]]0|skipped[[:space:]][0-9]+|todo[[:space:]][0-9]+|duration_ms[[:space:]][0-9.]+|SKIP([[:space:]]|$)|TODO([[:space:]]|$)).*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$|^[[:space:]]*[[:alnum:]_.-]+_(cases|count):[[:space:]]*[0-9]+[[:space:]]*$|^[[:space:]]*[[:alnum:]_.-]+_(failures|errors):[[:space:]]*0([[:space:]].*)?$|^[[:space:]]*T[0-9]+:[[:space:]]+[[:alnum:]_-]+[[:space:]]+->[[:space:]]+[[:alnum:]_-]+[[:space:]]*$|^[[:space:]]*.*(coverage complete|cases passed)[[:space:]]*$'
+# TAP success/plan/comment, a PASS or terminal standalone `OK` marker, Orchid's
+# state-transition trace, a RED/GREEN demonstration record, a zero
+# failure/error counter, an ordinary named coverage counter, or a sentence
+# ending in one of the two success forms the shipped tests use. Orchid's two
+# NOT-TESTED records are neutral by contract: they explicitly say a claim was
+# not made, rather than reporting either a pass or a failure. A bare diagnostic
+# such as `widget went sideways` is not progress merely because no known
+# failure word appears in it.
+_DRIVE_PROGRESS_LINE_RE='^[[:space:]]*$|^[[:space:]]*==([[:space:]]|$)|^[[:space:]]*---[[:space:]]*$|^[[:space:]]*(CI )?PASS([:[:space:]].*)?$|^[[:space:]]*[^[:space:]].*[[:space:]]OK[[:space:]]*$|^[[:space:]]*NOT-TESTED:[[:space:]]+.+ -- .+$|^[[:space:]]*not-tested:[[:space:]]+[0-9]+ claim[(]s[)] in this file were recorded as not-tested, never as passes[[:space:]]*$|^[[:space:]]*ok([[:space:]][0-9]+)?([[:space:]]+-.*)?$|^[[:space:]]*[0-9]+\.\.[0-9]+([[:space:]]*#.*)?$|^[[:space:]]*#[[:space:]]*(Subtest:|tests[[:space:]][0-9]+|suites[[:space:]][0-9]+|pass[[:space:]][0-9]+|fail[[:space:]]0|cancelled[[:space:]]0|skipped[[:space:]][0-9]+|todo[[:space:]][0-9]+|duration_ms[[:space:]][0-9.]+|SKIP([[:space:]]|$)|TODO([[:space:]]|$)).*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$|^[[:space:]]*[[:alnum:]_.-]+_(cases|count):[[:space:]]*[0-9]+[[:space:]]*$|^[[:space:]]*[[:alnum:]_.-]+_(failures|errors):[[:space:]]*0([[:space:]].*)?$|^[[:space:]]*T[0-9]+:[[:space:]]+[[:alnum:]_-]+[[:space:]]+->[[:space:]]+[[:alnum:]_-]+[[:space:]]*$|^[[:space:]]*.*(coverage complete|cases passed)[[:space:]]*$'
 
 # _DRIVE_QUOTE_MAX -- how much of an evidence line a journal reason quotes.
 _DRIVE_QUOTE_MAX=120
@@ -2201,9 +2205,10 @@ drive_reported_failure_lines() {
 
 # drive_failure_lines <body> -- every line that must be accounted for before a
 # failed verification may be waived. Reported failures are included directly;
-# explicit progress is excluded; everything else is uncertain and included in
-# the strict, charging direction. Preserve input order so a charged journal
-# reason quotes the first unexplained diagnostic the operator actually saw.
+# explicit progress/success/neutral records are excluded; everything else is
+# uncertain and included in the strict, charging direction. Preserve input
+# order so a charged journal reason quotes the first unexplained diagnostic the
+# operator actually saw.
 drive_failure_lines() {
   local out
   [ -n "$1" ] || return 0

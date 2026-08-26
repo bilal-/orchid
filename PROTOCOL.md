@@ -1305,9 +1305,11 @@ ones its archetype never declares.
       harness prefix. Progress identifiers such as `test_panic_recovery.sh`
       are excluded at word boundaries. That vocabulary is not an exemption:
       a non-empty line that is neither a recognized failure nor an explicit
-      progress record is uncertain and therefore remains an unattributed
-      failing line. Unknown lines cannot join a same-artifact cascade merely
-      by naming the artifact. Separately outstanding state grants no
+      progress, success, or neutral NOT-TESTED record is uncertain and
+      therefore remains an unattributed failing line. Orchid's terminal
+      terminal standalone `OK` and both NOT-TESTED forms are in that closed non-failure
+      vocabulary. Unknown lines cannot join a same-artifact cascade merely by
+      naming the artifact. Separately outstanding state grants no
       attribution, but a waived reason still reports an operator action it
       proves is owed, such as restoring a candidate-dropped 755 bit.
       Such a round is charged to

@@ -489,9 +489,11 @@ handoff therefore prevents a waiver. So do unmistakable fatal diagnostics
 such as `panic:`, `RuntimeError:`, and `Segmentation fault`; word boundaries
 exclude progress identifiers such as `test_panic_recovery.sh`. The named
 diagnostics are conveniences, not a finite allowlist: any unfamiliar non-empty
-line that is not an explicit progress record remains uncertain and charges,
-and it cannot be claimed by a same-artifact cascade just because it names that
-artifact. A separate
+line that is not an explicit progress, success, or neutral NOT-TESTED record
+remains uncertain and charges. Orchid's terminal standalone `OK` and both
+NOT-TESTED output forms are explicit members of that closed non-failure
+vocabulary. An unknown line cannot be claimed by a same-artifact cascade just
+because it names that artifact. A separate
 outstanding state does not earn attribution, but the waived reason retains it
 when it names an operator action still owed, such as a dropped 755 bit. Perform
 the hand-off (re-pin,

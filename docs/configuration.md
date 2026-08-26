@@ -308,9 +308,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   `RuntimeError:`, and `Segmentation fault`; an attributable fault beside one
   cannot hide it. Word boundaries keep progress identifiers such as
   `test_panic_recovery.sh` out. An unfamiliar non-empty line is not silently
-  dropped: unless it is one of the classifier's explicit progress records, it
-  is uncertain, stays unattributed, and charges. In particular, merely naming
-  the same artifact cannot pull an unknown line into that artifact's cascade.
+  dropped: unless it is one of the classifier's explicit progress, success,
+  or neutral NOT-TESTED records, it is uncertain, stays unattributed, and
+  charges. Orchid's terminal standalone `OK` and both NOT-TESTED output forms are
+  explicit members of that closed non-failure vocabulary. In particular,
+  merely naming the same artifact cannot pull an unknown line into that
+  artifact's cascade.
   A separate outstanding state contributes no
   attribution, but a waived reason still reports it when it is an operator
   action the candidate owes, such as a dropped 755 bit. What remains forgiven,

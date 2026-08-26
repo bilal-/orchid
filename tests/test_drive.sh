@@ -4777,6 +4777,29 @@ assert_eq candidate "$(csc_cls | cut -f1)" \
 assert_match "unfamiliar candidate verdict" "$(csc_cls | cut -f2-)" \
   "and the charged reason quotes the uncertain line that prevented the waiver"
 
+# The fallback remains usable against the output of Orchid's OWN complete
+# suite. tests/run.sh prints a heading for each file; several shipped tests end
+# in a standalone `OK`; and helpers.sh emits both NOT-TESTED records unconditionally
+# in files that make an explicit qualification gap visible. None is a pass for
+# the candidate defect, but none diagnoses one either. If even one stays in the
+# denominator, every full-suite stale-pin, exec-bit, environment, and L020
+# round becomes candidate-charged before its actual terminal fault is weighed.
+CSC_SHIPPED_NON_FAILURE="== /repo/tests/test_e2e_concurrency.sh
+e2e concurrency: OK
+== /repo/tests/test_schedule.sh
+unit: schedule_dispatch_blockers predicates OK
+  NOT-TESTED: source-tree-git-state -- this fixture deliberately has no checkout
+  not-tested: 1 claim(s) in this file were recorded as not-tested, never as passes
+  RED-CASE: the negative fixture was rejected
+  GREEN-CASE: the positive fixture was accepted
+  red-cases: 1 demonstrated in this file (green-cases: 1)"
+assert_eq "" "$(drive_failure_lines "$CSC_SHIPPED_NON_FAILURE")" \
+  "the shipped whole-suite headings, terminal OK records, and both explicit not-tested records are non-failures rather than permanent unattributed blockers"
+csc_log "$CSC_SHIPPED_NON_FAILURE
+/bin/bash: runners/csc-drive: Permission denied"
+assert_eq handoff "$(csc_cls | cut -f1)" \
+  "a representative full-suite body plus one fully attributable terminal hand-off still WAIVES — the strict unknown fallback must not make every real route inert"
+
 # ...and the causal half is still required. The same cascade with its refusals
 # removed is the ambient shape -- a candidate's own assertions failing inside a
 # file it added -- and it charges.
