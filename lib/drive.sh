@@ -1625,11 +1625,11 @@ _drive_verify_body() {
 # established second). Every text rule this replaces had only the second half.
 #
 # THREE RESIDUALS, STATED RATHER THAN HIDDEN. (1) `drive_failure_lines` knows
-# the failure, refusal, and resolution shapes a test harness usually prints; a
-# harness whose unfamiliar failure it cannot see leaves the accounting with
-# nothing to object to, and the waiver then rests on state plus attribution
-# alone. That is weaker than the full rule and still strictly stronger than any
-# round before this one. (2) A cascade
+# the failure, refusal, resolution, and fatal shapes a test harness usually
+# prints; a harness whose unfamiliar failure it cannot see leaves the
+# accounting with nothing to object to, and the waiver then rests on state plus
+# attribution alone. That is weaker than the full rule and still strictly
+# stronger than any round before this one. (2) A cascade
 # line that names NEITHER the artifact nor a causal shape -- a suite that
 # reports only `FAIL: case 7` -- is unclaimed and charges the round. That is
 # the strict direction, and the price of not letting a proximity rule ("it
@@ -2123,6 +2123,16 @@ _DRIVE_EXEC_REFUSAL_RE='[Pp]ermission denied|[Nn]ot executable|[Cc]annot execute
 # second, unexplained failure invisible and waive the candidate's round.
 _DRIVE_RESOLUTION_RE='[Nn]ot found|[Nn]o such file or directory|[Cc]annot find (module|package)|ModuleNotFoundError|ImportError|ENOENT|[Cc]ould not resolve|[Uu]nable to resolve|[Cc]annot open'
 
+# _DRIVE_FATAL_RE -- fatal diagnostics that do not need a harness's `FAIL:` or
+# `error:` prefix to be verdicts. Keep word boundaries around the prose forms:
+# this repository legitimately runs files such as `test_panic_recovery.sh` and
+# prints counters such as `fatal_errors: 0`, neither of which is a panic or a
+# fatal exit. Language exception names end in `Error:` or `Exception:` and are
+# admitted only as one token, which covers `RuntimeError:` and
+# `java.lang.IllegalStateException:` without matching ordinary "error
+# handling" prose.
+_DRIVE_FATAL_RE='(^|[^[:alnum:]_])([Pp][Aa][Nn][Ii][Cc]([Kk][Ee][Dd])?|[Ff][Aa][Tt][Aa][Ll]|[Ss]egmentation fault|[Aa]bort trap|[Bb]us error|[Ii]llegal instruction|[Ss]yntax error|[Uu]ndefined reference|[Uu]nhandled exception|[Uu]nhandled rejection|[Ss]tack overflow|[Oo]ut of memory)([^[:alnum:]_]|$)|(^|[[:space:]])[[:alnum:]_.]*(Error|Exception):|UnhandledPromiseRejection'
+
 # _DRIVE_FAILURE_LINE_RE -- what a line REPORTING a failure looks like, across
 # the harnesses a repository is likely to run. Used for one question only: does
 # this round contain failures the hand-off does not account for?
@@ -2142,9 +2152,10 @@ _DRIVE_RESOLUTION_RE='[Nn]ot found|[Nn]o such file or directory|[Cc]annot find (
 # excludes `_` precisely so that second one stays a counter rather than a
 # failure -- and why `error` counts only with its colon, since "error handling"
 # is prose and `error:` is a compiler. Resolution refusals are different:
-# `command not found`, `ENOENT`, and `Cannot find module` are verdicts even
-# without a harness prefix, and must be visible before any waiver is considered.
-_DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff]ailed|[Ff]ailure|[Ff]ailures)([^[:alnum:]_]|\$)|(^|[^[:alnum:]_])[Ee]rror:|^not ok |[Aa]ssertion(Error| failed)|Traceback \\(most recent call last\\)|$_DRIVE_EXEC_REFUSAL_RE|$_DRIVE_RESOLUTION_RE"
+# `command not found`, `ENOENT`, `Cannot find module`, `panic:`, and language
+# exceptions are verdicts even without a harness prefix, and must be visible
+# before any waiver is considered.
+_DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff]ailed|[Ff]ailure|[Ff]ailures)([^[:alnum:]_]|\$)|(^|[^[:alnum:]_])[Ee]rror:|^not ok |[Aa]ssertion(Error| failed)|Traceback \\(most recent call last\\)|$_DRIVE_EXEC_REFUSAL_RE|$_DRIVE_RESOLUTION_RE|$_DRIVE_FATAL_RE"
 
 # _DRIVE_QUOTE_MAX -- how much of an evidence line a journal reason quotes.
 _DRIVE_QUOTE_MAX=120

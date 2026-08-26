@@ -485,9 +485,12 @@ them owns charges it, and the reason quotes that line. The class the journal
 `environment`, then `flaky` — and every contributing class is
 named in the reason. Resolution refusals remain failing lines without a
 `FAIL:` prefix — `missing-helper: command not found` beside an attributed
-handoff therefore prevents a waiver. A separate outstanding state does not
-earn attribution, but the waived reason retains it when it names an operator
-action still owed, such as a dropped 755 bit. Perform the hand-off (re-pin,
+handoff therefore prevents a waiver. So do unmistakable fatal diagnostics
+such as `panic:`, `RuntimeError:`, and `Segmentation fault`; word boundaries
+exclude progress identifiers such as `test_panic_recovery.sh`. A separate
+outstanding state does not earn attribution, but the waived reason retains it
+when it names an operator action still owed, such as a dropped 755 bit. Perform
+the hand-off (re-pin,
 `chmod +x`), provision the worktree, or fix the test, then re-dispatch; the
 same failure charges afterwards, because the state it was proved against is
 gone. If a waived fault comes back a second time — of any class — the pass

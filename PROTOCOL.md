@@ -1300,10 +1300,12 @@ ones its archetype never declares.
       must act on first (`handoff`, then `environment`, then `flaky`), and
       every contributing class is named in the reason. Resolution refusals
       such as `missing-helper: command not found`, `ENOENT`, and `Cannot find
-      module` remain failing lines without a harness prefix. Separately
-      outstanding state grants no attribution, but a waived reason still
-      reports an operator action it proves is owed, such as restoring a
-      candidate-dropped 755 bit.
+      module`, and fatal runtime diagnostics such as `panic:`,
+      `RuntimeError:`, and `Segmentation fault`, remain failing lines without a
+      harness prefix. Progress identifiers such as `test_panic_recovery.sh`
+      are excluded at word boundaries. Separately outstanding state grants no
+      attribution, but a waived reason still reports an operator action it
+      proves is owed, such as restoring a candidate-dropped 755 bit.
       Such a round is charged to
       `orchid task infra-fail <id> --reason "..."` — the environment budget,
       capped by `infra_max` (config, default 3) — and then enters rework

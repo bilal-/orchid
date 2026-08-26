@@ -304,10 +304,13 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   `handoff`, then `environment`, then `flaky` — and every contributing class
   is named in the reason regardless. Unprefixed resolution refusals such as
   `missing-helper: command not found`, `ENOENT`, and `Cannot find module` are
-  failing lines too; an attributable fault beside one cannot hide it. A
-  separate outstanding state contributes no attribution, but a waived reason
-  still reports it when it is an operator action the candidate owes, such as a
-  dropped 755 bit. What remains forgiven, and is bounded on purpose: a
+  failing lines too, as are unmistakable fatal diagnostics such as `panic:`,
+  `RuntimeError:`, and `Segmentation fault`; an attributable fault beside one
+  cannot hide it. Word boundaries keep progress identifiers such as
+  `test_panic_recovery.sh` out. A separate outstanding state contributes no
+  attribution, but a waived reason still reports it when it is an operator
+  action the candidate owes, such as a dropped 755 bit. What remains forgiven,
+  and is bounded on purpose: a
   candidate that produces *no failing line of its own* while one of those
   states is outstanding is waived for that round — an operator clears the
   state in seconds, the round is charged to `infra_failures`, and it stops for

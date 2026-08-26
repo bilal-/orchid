@@ -4725,6 +4725,36 @@ assert_eq candidate "$(csc_cls | cut -f1)" \
 assert_match "missing-helper: command not found" "$(csc_cls | cut -f2-)" \
   "and the charged reason quotes the diagnostic that prevented the waiver"
 
+# Fatal language/runtime diagnostics carry their own verdict too. They need a
+# bounded family rather than a bare `panic` substring: progress identifiers and
+# counters use the same vocabulary and must not make every waiver inert.
+CSC_FATAL_MIX="/bin/bash: runners/csc-drive: Permission denied
+panic: candidate invariant broke
+RuntimeError: widget exploded
+Segmentation fault: 11
+ld: undefined reference to widget
+/bin/bash: syntax error near unexpected token
+fatal: allocator corrupted
+thread 'main' panicked at src/main.rs:9"
+assert_eq 8 "$(drive_failure_lines "$CSC_FATAL_MIX" | grep -c .)" \
+  "the attributed refusal and seven unmistakable panic, exception, crash, linker, syntax, and fatal diagnostics all belong to the failure universe"
+assert_eq 7 "$(drive_unattributed_failures "$CSC_FATAL_MIX" \
+    "$(drive_exec_bit_attribution runners/csc-drive "$CSC_FATAL_MIX" "$CSC")" | grep -c .)" \
+  "the exec-bit hand-off claims only its refusal and leaves every fatal candidate diagnostic to charge"
+csc_log "$CSC_FATAL_MIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "a panic beside an attributable hand-off CHARGES the round rather than disappearing outside the harness-prefix oracle"
+assert_match "panic: candidate invariant broke" "$(csc_cls | cut -f2-)" \
+  "and the charged reason leads with the fatal diagnostic the hand-off did not explain"
+CSC_FATAL_PROGRESS="== tests/test_panic_recovery.sh
+panic_cases: 4
+fatal_errors: 0
+exception_count: 0
+error handling coverage complete
+out_of_memory cases passed"
+assert_eq "" "$(drive_failure_lines "$CSC_FATAL_PROGRESS")" \
+  "progress paths, counters, and prose containing fatal vocabulary are not verdicts — boundaries keep the strict oracle usable rather than making every waiver charge"
+
 # ...and the causal half is still required. The same cascade with its refusals
 # removed is the ambient shape -- a candidate's own assertions failing inside a
 # file it added -- and it charges.
