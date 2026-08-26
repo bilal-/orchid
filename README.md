@@ -457,7 +457,9 @@ uncommitted worktree is refused, as is a HEAD that is not this task's own —
 it must descend from the current candidate and sit on the branch the record
 names), `orchid answer <qid> <choice>`, `orchid config
 commit --reason "..."`, `orchid run release-lease`, `orchid jobs gc
---reap-prepared`. Full incident-by-incident detail:
+--older-than-s 0` (zero means zero: a manifest you have identified as an
+orphan is cleared, whether its job never started or died without an
+envelope). Full incident-by-incident detail:
 [troubleshooting.md](./docs/troubleshooting.md).
 
 ## Before you point it at someone else's repo

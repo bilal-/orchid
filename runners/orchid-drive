@@ -276,8 +276,10 @@ if [ "$run_status" = planning ]; then
   # deliberately skips -- runs in every phase, PLANNING included.
   #
   # BOUNDED by `stall_minutes`, exactly as the non-planning path bounds the
-  # same class: a manifest younger than that may belong to a launcher sitting
-  # between its own `jobs prepare` and its spawn line right now.
+  # same class, and passed for the same reason: a manifest younger than that
+  # may belong to a launcher sitting between its own `jobs prepare` and its
+  # spawn line right now. The margin belongs to this unattended caller, not to
+  # the verb -- an operator typing `--older-than-s 0` gets 0.
   planning_reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared \
     --older-than-s "$(( $(config_get "$repo" stall_minutes 10) * 60 ))")"
   [ -z "$planning_reap_out" ] || printf '%s\n' "$planning_reap_out"
@@ -306,8 +308,9 @@ if [ "$run_status" != planning ]; then
   # killed for stalling or timing out. Collected BEFORE gc (which is about to
   # reap exactly these manifests, bar the one exception both it and the skip
   # below make) together with the role/operation a relaunch needs, and with
-  # WHICH of the two ways the job ended without an envelope (it died, or it
-  # never started at all) so the ladder can say which.
+  # WHICH of the three ways the job ended without an envelope (it died, it
+  # never started at all, or it was spawned and never stamped a pid and then
+  # went silent) so the ladder can say which.
   _prepared_bound_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
   _sweep_now="$(date +%s)"
   for _mf in "$rt/jobs"/*.json; do
@@ -330,30 +333,57 @@ if [ "$run_status" != planning ]; then
     jq -e . "$_mf" >/dev/null 2>&1 || continue
     _mpid="$(jq -r '.pid' "$_mf" 2>/dev/null || echo 0)"
     if [ "$_mpid" = 0 ]; then
-      # ...and the OTHER way a job ends without an envelope, which used to
-      # reach no arm of this ladder at all (T027, dogfood F29): it never
-      # started. `jobs prepare` mints every manifest with pid 0 and the
-      # launcher stamps the real pid only after the spawn, so a pid-0 manifest
-      # with NO LOG (the launcher creates the log by redirecting the spawn into
-      # it) is a job that was minted and never run. Nothing about that is
-      # `dead`, `stalled` or `timeout`, so the ladder never engaged and the
-      # task simply waited on an envelope nobody was producing.
+      # ...and the OTHER ways a job ends without an envelope, which used to
+      # reach no arm of this ladder at all (T027, dogfood F29). `jobs prepare`
+      # mints every manifest with pid 0 and the launcher stamps the real pid
+      # only after the spawn, so a pid-0 manifest is a job nothing ever saw
+      # running. Nothing about that is `dead`, `stalled` or `timeout`, so the
+      # ladder never engaged and the task simply waited on an envelope nobody
+      # was producing.
       #
-      # The two lines below are libexec/orchid-jobs' job_never_started, inlined
-      # because a shell function does not cross a verb boundary. They must stay
-      # the same test: this sweep escalates exactly the class `jobs gc` reaps
-      # and `jobs prepare` refuses over, so a pid-0 manifest that HAS a log --
-      # a spawn whose pid stamp was lost, possibly with an engine still behind
-      # it -- is escalated by none of the three.
+      # THE FAILURE THIS LADDER MUST NOT COUNT TWICE. A launcher that exits
+      # non-zero of its own accord has ALREADY been reported: the exit status
+      # went back to drive_launch in that pass, which journaled it and spent a
+      # rung for it, and runners/orchid-launch stamps `launch_exit` on the
+      # manifest it leaves behind to say so. Some passes later that corpse ages
+      # past the bound below, and without this skip the sweep charged a SECOND
+      # rung for the very same physical failure -- two of a three-rung ladder
+      # spent on one event, while the NEXT real launch failure went uncounted
+      # behind drive_escalate's one-rung-per-slot-per-pass guard. The mark is
+      # the whole difference between "nobody has accounted for this" and
+      # "someone already did"; an unmarked orphan (a launcher killed
+      # asynchronously, a machine that rebooted mid-launch) still belongs to
+      # this sweep, because for that one nothing else ever will. gc retires
+      # both either way, so a skipped manifest is not a retained one.
+      if jq -e 'has("launch_exit")' "$_mf" >/dev/null 2>&1; then continue; fi
+      # The lines below are libexec/orchid-jobs' job_never_started and
+      # job_unstamped_stale, inlined because a shell function does not cross a
+      # verb boundary. They must stay the same tests: this sweep escalates
+      # exactly the class `jobs gc` reaps and `jobs prepare` refuses over.
       #
-      # BOUNDED by the same `stall_minutes` floor `jobs gc` uses to reap this
-      # class, and for the same reason: a manifest younger than that may belong
-      # to a launcher sitting between its own `jobs prepare` and its spawn line
-      # right now, and that one is going to run.
+      # never-started (no log at all) is BOUNDED by `stall_minutes`, the same
+      # bound this pass hands gc below, and for the same reason: a manifest
+      # younger than that may belong to a launcher sitting between its own
+      # `jobs prepare` and its spawn line right now, and that one is going to
+      # run. unstamped (a log that exists but has not been written to in
+      # `stall_minutes`) carries its own bound in the predicate -- the spawn
+      # happened, so what is being waited on is output, not a launcher.
       _mlog="$(jq -r '.log // ""' "$_mf" 2>/dev/null || echo)"
-      [ -z "$_mlog" ] || [ ! -e "$_mlog" ] || continue
-      [ $(( _sweep_now - $(file_mtime "$_mf") )) -gt "$_prepared_bound_s" ] || continue
-      escalations="$escalations$(jq -r '[.task, .role, .operation, (.hook_point // ""), "never-started"] | @tsv' "$_mf")
+      if [ -z "$_mlog" ] || [ ! -e "$_mlog" ]; then
+        [ $(( _sweep_now - $(file_mtime "$_mf") )) -gt "$_prepared_bound_s" ] || continue
+        _mkind=never-started
+      else
+        [ $(( _sweep_now - $(file_mtime "$_mlog") )) -gt "$_prepared_bound_s" ] || continue
+        # ...UNLESS ITS ENVELOPE IS ALREADY WRITTEN, exactly as the dead arm
+        # below refuses to escalate a delivery that arrived. This one CAN have
+        # delivered: it was spawned. (The never-started arm above needs no such
+        # guard -- nothing ran to write anything.) `jobs gc` holds the manifest
+        # back for the same case, so the job simply resolves next pass.
+        _mjid="$(jq -r '.job_id // empty' "$_mf" 2>/dev/null || true)"
+        if [ -n "$_mjid" ] && [ -e "$rt/spool/$_mjid.json" ]; then continue; fi
+        _mkind=unstamped
+      fi
+      escalations="$escalations$(jq -r --arg kind "$_mkind" '[.task, .role, .operation, (.hook_point // ""), $kind] | @tsv' "$_mf")
 "
       continue
     fi
@@ -376,12 +406,20 @@ if [ "$run_status" != planning ]; then
   done
 
   # gc reaps both classes the sweep above just collected: the dead manifests
-  # (`--older-than-s 0`, since `check` has already had its pass over them) and,
-  # under its own `stall_minutes` floor, the never-launched ones. The floor is
-  # gc's, not this caller's -- passing `0` cannot lower it, precisely so a
-  # launcher mid-flight between `prepare` and its spawn never has its pack and
-  # request document deleted underneath it.
-  gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+  # (`--older-than-s 0`, since `check` has already had its pass over them) and
+  # the unlaunched ones (`--prepared-older-than-s`, this pass's own
+  # `stall_minutes` margin).
+  #
+  # THE MARGIN IS PASSED, NOT ASSUMED (T027 rework; dogfood F41). It exists
+  # because THIS caller is automatic and cannot know whether a launcher is
+  # sitting between its own `jobs prepare` and its spawn line right now --
+  # reaping that manifest would delete the pack and request document out from
+  # under a live launch. That is a fact about an unattended sweep, not about
+  # the verb, so it is spelled here where it is true. `orchid jobs gc
+  # --older-than-s 0` typed by an operator who has looked at the manifest means
+  # exactly what it says; the last two runs both ended with that operator
+  # deleting files by hand because it did not.
+  gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0 --prepared-older-than-s "$_prepared_bound_s")"
   [ -z "$gc_out" ] || printf '%s\n' "$gc_out"
 fi
 
@@ -467,6 +505,14 @@ drive_lease_heartbeat_stop() {
 #            so a launch that cannot succeed now stops the task instead of
 #            being retried silently forever.
 #
+#            ONE RUNG, ONCE. This is the only place that physical failure is
+#            counted. The manifest it strands is stamped `launch_exit` by
+#            runners/orchid-launch precisely so the ageing sweep at the top of
+#            the pass can tell it apart from an orphan nobody has accounted for
+#            and skip it -- otherwise the same launch is charged again days
+#            later when its corpse ages out, and the ladder blocks a task on
+#            arithmetic rather than on events.
+#
 # The one exception is an OPTIONAL hook binding, which gates nothing: its
 # handler failing to launch must not spend the TASK's infra_failures budget,
 # exactly as the escalation sweep already refuses to spend one when an optional
@@ -505,28 +551,38 @@ drive_launch() {
 # drive_job_outstanding <task> <operation> [hook-point] -- 0 iff a LIVE job
 # for that task/operation (and, for hooks, that point) is still on disk.
 #
-# A `pid: 0` manifest is deliberately NOT one. `orchid jobs prepare` mints
-# every manifest with pid 0 and runners/orchid-launch stamps the real pid only
-# after the spawn, so a pid-0 manifest is a job nothing has been observed
-# running for. Adopting one here would advance a task into an active status
-# behind a job that may never produce an envelope: no `jobs check` finding, no
+# A `pid: 0` manifest with NO LOG is deliberately NOT one. `orchid jobs
+# prepare` mints every manifest with pid 0 and runners/orchid-launch stamps the
+# real pid only after the spawn -- and it creates the log by redirecting that
+# spawn into it -- so pid 0 with no log is a job whose spawn line was provably
+# never reached. Adopting one here would advance a task into an active status
+# behind a job that will never produce an envelope: no `jobs check` finding, no
 # infra-fail, no boundary, just a task parked in `implementing` forever. That
 # is precisely the LAUNCH-FIRST-ADVANCE-ONLY-ON-A-SPAWN invariant
-# drive_dispatch documents, so an unstamped manifest reads as "no job" and the
-# caller relaunches.
+# drive_dispatch documents, so that manifest reads as "no job" and the caller
+# relaunches -- which is safe, because it is exactly the class `jobs prepare`
+# refuses to duplicate and `jobs gc` reaps.
 #
-# Relaunching is SAFE for the never-started half of that class (pid 0 and no
-# log: the spawn line was never reached) and it is that half `jobs prepare`
-# refuses to duplicate and `jobs gc` reaps. For the other half -- pid 0 WITH a
-# log, i.e. a launcher killed inside the sub-second window between the spawn
-# and the pid stamp -- an engine may genuinely be running, and neither this
-# predicate nor gc can prove otherwise. Nothing retires those: `jobs check`
-# keeps reporting them `prepared` so the manifest, the only handle on that
-# process, stays on disk for an operator (docs/troubleshooting.md carries the
-# procedure). Reaping them to tidy the column would trade a visible oddity for
-# a silent second engine in the same worktree.
+# A `pid: 0` manifest WITH A FRESH LOG IS ONE (T027 rework). That is a launcher
+# killed inside the window between the spawn and the pid stamp, and something
+# is writing to that log right now: an engine is running with its pid recorded
+# nowhere on disk. Reading it as "no job" is how a duplicate implementer got
+# into the same worktree -- and it made the careful retention everywhere else
+# pointless, since the manifest that was being kept as the only handle on that
+# process did not stop the second one being launched over it. So it counts as
+# outstanding, and the caller waits.
+#
+# BOUNDED, so that wait is not the new forever. `stall_minutes` without a line
+# of output is the kernel's existing standard for "this is not working"
+# (`jobs check` kills a stamped job over it); past that the manifest stops
+# counting here, `jobs check` reports it `unstamped`, the escalation sweep
+# spends one rung on it and `jobs gc` retires it -- keeping the log, since no
+# pid was ever recorded to kill and that log is the only evidence left. The
+# three converge on the same instant because all three ask the same predicate.
 drive_job_outstanding() {
-  local task="$1" op="$2" point="${3:-}" mf
+  local task="$1" op="$2" point="${3:-}"
+  local stall_s log mf
+  stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
   for mf in "$rt/jobs"/*.json; do
     [ -e "$mf" ] || continue
     [ "$(jq -r '.task' "$mf" 2>/dev/null || echo)" = "$task" ] || continue
@@ -534,7 +590,11 @@ drive_job_outstanding() {
     if [ -n "$point" ]; then
       [ "$(jq -r '.hook_point // ""' "$mf" 2>/dev/null || echo)" = "$point" ] || continue
     fi
-    [ "$(jq -r '.pid // 0' "$mf" 2>/dev/null || echo 0)" != 0 ] || continue
+    if [ "$(jq -r '.pid // 0' "$mf" 2>/dev/null || echo 0)" = 0 ]; then
+      log="$(jq -r '.log // ""' "$mf" 2>/dev/null || echo)"
+      [ -n "$log" ] && [ -e "$log" ] || continue
+      [ $(( $(date +%s) - $(file_mtime "$log") )) -le "$stall_s" ] || continue
+    fi
     return 0
   done
   return 1
@@ -1304,7 +1364,8 @@ drive_blocked() {
 # ONE RUNG PER PASS, per task/operation/hook-point. The ladder counts JOB
 # FAILURES, and a pass has at most one of those per slot to report -- but
 # several separate arms can reach the same slot in one pass: the escalation
-# sweep above (a manifest whose pid is dead, or one that never started at all),
+# sweep above (a manifest whose pid is dead, one that never started at all, or
+# one that was spawned and never stamped a pid),
 # drive_launch (a launcher that exited without spawning) and drive_implementing
 # below (a reconciled non-ok envelope, a refused no-op delivery, or a refusal
 # already on record with nothing left running -- one of the three at most, each
@@ -1384,6 +1445,7 @@ if [ -n "$escalations" ]; then
     _ekind="$(printf '%s' "$_line" | cut -f5)"
     case "$_ekind" in
       never-started) _ewhy="job was prepared and never launched — no engine ever started, so no envelope was ever coming" ;;
+      unstamped)     _ewhy="job was spawned but never recorded a pid, and wrote nothing for stall_minutes — there was no pid to signal and no envelope came" ;;
       *)             _ewhy="job died without an acceptable envelope" ;;
     esac
     [ "$_etask" != plan ] || continue

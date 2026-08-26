@@ -885,7 +885,8 @@ derived cache, rebuildable from it.
 | Mode | Defense |
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
-| Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
+| Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver, ONCE, since the launcher stamps `launch_exit` on the manifest it strands and the ageing sweep skips what has already been accounted for — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
+| Spawned but never stamped | a launcher killed between the spawn and the pid stamp: an engine may be running with its pid recorded nowhere. Waited on while its log is still being written (never relaunched over — that is two engines in one worktree); reported `unstamped` and escalated once its log has been silent for `stall_minutes`, with the log kept when the manifest is reaped |
 | Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
 | Alive but not working | Opt-in CPU delta across the job's own heartbeat lines: with `cpu_stall_min_s` above zero (default 0: off — F35 retracted CPU as a sole progress signal, a healthy API-bound engine burns almost none), less than the floor across the last `stall_minutes` of heartbeats → `stalled` → kill, retry; a counter that goes backwards (pid reuse) is unknown and never kills. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
@@ -931,27 +932,38 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   `prepared` is reserved for the genuine post-spawn/pre-stamp window a log
   proves. Ordinary `jobs gc` reaps this class, age-gated off the manifest
   FILE's own mtime (a never-launched manifest's `started_at` is always 0)
-  under a floor of `stall_minutes` — long enough that no launcher can still be
-  mid-flight over it, and not lowerable by `--older-than-s 0`. `orchid jobs gc
-  --reap-prepared [--older-than-s N]` (v1-m4) remains the exclusive,
-  floor-free form of the same reap. A manifest of this class older than the
-  floor also walks the escalation ladder, and `jobs prepare` refuses (exit 18)
-  to mint a second manifest for a slot that already has one — one orphan per
-  slot, not one per pass.
+  under `--prepared-older-than-s`, a bound SEPARATE from the dead-job one so a
+  caller can hold this class back without holding back the dead jobs it wants
+  reaped now. Every bound is taken literally: an operator's `--older-than-s 0`
+  honours zero on every class (F41 is that operator being quietly given
+  something else, twice). The unattended driver passes `stall_minutes` for
+  this class because *it* cannot know whether a launcher is mid-flight between
+  its own `prepare` and its spawn line. `orchid jobs gc --reap-prepared
+  [--older-than-s N]` (v1-m4) remains the exclusive form of the same reap,
+  touching nothing else — which is what makes it the one `PLANNING` can run.
+  A manifest of this class older than the bound also walks the escalation
+  ladder, and `jobs prepare` refuses (exit 18) to mint a second manifest for a
+  slot that already has one — one orphan per slot, not one per pass.
 
-  **`pid: 0` is not the test, and a `prepared` manifest is never reaped.**
-  The other half of the pid-0 class — pid 0 WITH a log — is a launcher killed
-  inside the sub-second window between the spawn and the pid stamp, so an
-  engine may be running with its pid recorded nowhere. The manifest is the
-  only handle on that process, and retiring it would both lose the handle and
-  clear the way for a second engine in the same worktree. So `check` reports
-  it `prepared` and neither gc mode nor the exit-18 refusal ever touches it;
-  the operator procedure is in `docs/troubleshooting.md`. The refusal and the
-  reap share ONE predicate (`libexec/orchid-jobs`' `job_never_started`)
-  deliberately: every manifest that can cause the refusal is one gc will
-  retire on its own, in every phase — `PLANNING` included, which runs the
-  never-started reap even though it runs no reconcile and no check — so
-  exit 18 can never become a state the run cannot leave.
+  **`pid: 0` is not the test.** The other half of the pid-0 class — pid 0 WITH
+  a log — is a launcher killed inside the sub-second window between the spawn
+  and the pid stamp, so an engine may be running with its pid recorded
+  nowhere. While that log is still being written the driver **waits** on the
+  manifest (`drive_job_outstanding` counts it as a live job) rather than
+  launching a second engine into the same worktree, and `check` reports it
+  `prepared`. Retention alone was never the answer: the manifest used to be
+  kept at every age while the driver read it as "no job" and relaunched over
+  it anyway, so the duplicate happened and the handle just accumulated. It
+  therefore CONVERGES — once the log has been silent for `stall_minutes`, the
+  same silence `check` kills a stamped job over, `check` reports `unstamped`,
+  the ladder spends one rung and gc retires the manifest, **keeping the log**
+  (no pid was ever recorded, so nothing was killable and that log is the only
+  surviving evidence). The refusal and the reap share ONE predicate
+  (`libexec/orchid-jobs`' `job_unlaunched_reapable`) deliberately: every
+  manifest that can cause the refusal is one gc will retire on its own, in
+  every phase — `PLANNING` included, which runs that reap even though it runs
+  no reconcile and no check — so exit 18 can never become a state the run
+  cannot leave.
 - Finished-between-reconcile-and-reap (T022, closed): a pass runs `jobs
   reconcile` then `jobs gc`, so a job that exits between the two is dead at
   reap time with its envelope written and still in the spool. It DELIVERED.
@@ -1289,7 +1301,7 @@ tightens the derived threshold (low tier → `high`, medium/high tier →
 Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
 failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
-boundary, 17 brokered command refused, 18 slot already holds a never-started
+boundary, 17 brokered command refused, 18 slot already holds an unlaunched
 manifest (T027). Every code means ONE condition: 18 is its own entry rather
 than a second meaning for 17 precisely because a caller that has to
 distinguish "the broker refused this command" from "wait, this slot has an

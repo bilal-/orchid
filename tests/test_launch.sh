@@ -328,6 +328,31 @@ rc=0; wt2_err="$("$REPO_ROOT/runners/orchid-launch" TWT2 inlinecritic review 2>&
 [ "$rc" -ne 0 ] || fail "inline-only engine: launcher must fail (input_overflow) for the same big diff, unchanged"
 assert_match "input_overflow" "$wt2_err" "inline-only engine: launcher surfaces input_overflow for the big diff"
 
+# ...AND THE MANIFEST IT ABANDONED SAYS SO (T027 rework).
+#
+# This is the launcher's only chance to record that it failed. It returns the
+# non-zero exit to its caller and is gone; the manifest `jobs prepare` minted
+# for it stays on disk, and on disk it is indistinguishable from one whose
+# launcher was killed asynchronously -- a reboot, a Ctrl-C, a felled driver.
+# One of those has already been reported to somebody and the other has not,
+# and only this process knows which this is.
+#
+# runners/orchid-drive is the reader: it charges one rung for the exit it got
+# back here, and its ageing sweep skips a manifest carrying this mark so the
+# same physical failure is never charged a second time when its corpse ages
+# out. Without the mark the sweep cannot tell them apart, and tests/test_drive.sh
+# Part T is the end-to-end half of this assertion.
+wt2_mf=""
+for _m in "$WORK/.orchid/runtime/jobs"/*.json; do
+  [ -e "$_m" ] || continue
+  [ "$(jq -r '.task // ""' "$_m")" = TWT2 ] || continue
+  wt2_mf="$_m"
+done
+[ -n "$wt2_mf" ] || fail "the failed launch must leave its prepared manifest behind for the driver to read"
+assert_eq 0 "$(jq -r '.pid' "$wt2_mf")" "nothing was spawned, so the pid is still the one prepare minted"
+assert_eq "$rc" "$(jq -r '.launch_exit // "unset"' "$wt2_mf")" \
+  "and the launcher stamps its OWN exit status on the manifest it abandoned — the fact that tells a reported failure from an unreported one"
+
 # ===========================================================================
 # v1-m4 Task 2 (push prevention): `orchid init` installs a defense-in-depth
 # `.git/hooks/pre-push` guard (PROTOCOL.md already forbids external

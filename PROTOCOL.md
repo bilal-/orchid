@@ -483,20 +483,23 @@ this run ever mistakes an in-progress tick for a stalled one.
 into `.orchid/reviews/` *before* anything gets judged as stuck — a job that
 completed since the last pass must never be mistaken for a dead one. Then
 `orchid jobs check` reports
-`never-started|prepared|running|dead|stalled|timeout|budget-exceeded`
+`never-started|prepared|unstamped|running|dead|stalled|timeout|budget-exceeded`
 for whatever reconcile left outstanding (`stalled`/`timeout` jobs are killed
 by `jobs check` itself as it reports them; `budget-exceeded` is report-only,
 see below) — running `check` here, before anything reaps a manifest, is what
 lets a job that died envelope-less between ticks (SIGKILL/OOM/adapter crash
 before it ever wrote a spool envelope) still get reported `dead` and walk the
 escalation ladder below, instead of being reaped silently before `check` ever
-sees it. Only THEN `orchid jobs gc --older-than-s 0` — reaps manifests whose
-pid is *already* dead (never kills anything live; the `0` just drops gc's
-normal age floor), plus never-started (`pid: 0` **and no log file**) manifests
-older than `stall_minutes`, which keep a floor of their own no matter how small
-an `--older-than-s` gc is given, since one younger than that may belong to a
-launcher sitting between its own `jobs prepare` and its spawn line right now —
-clears out whatever `check` just finished handling
+sees it. Only THEN `orchid jobs gc --older-than-s 0 --prepared-older-than-s
+<stall_minutes>` — reaps manifests whose pid is *already* dead (never kills
+anything live; the `0` just drops gc's normal age bound), plus the *unlaunched*
+ones: `pid: 0` **and no log file** (never started), or `pid: 0` with a log
+nothing has written to in `stall_minutes` (spawned, never stamped a pid, then
+silent). Both bounds are the CALLER's and both are taken literally — an
+operator's `orchid jobs gc --older-than-s 0` honours zero on every class. The
+driver passes the second bound because *it* cannot know whether a manifest
+seconds old belongs to a launcher sitting between its own `jobs prepare` and
+its spawn line right now. This clears out whatever `check` just finished handling
 (including the envelope-less case above), so a *later* pass never re-reports
 the *same* already-dead job as `dead` and triggers a second, false escalation
 for a failure this run already handled. gc runs strictly AFTER check has had
@@ -571,8 +574,8 @@ the same reason: a rung spent there is a rung spent on work that arrived, and
 it relaunches a second engine into the worktree over it. The job reads as
 outstanding for one more pass and resolves on the next.
 
-Escalation ladder for a job `jobs check` reports `dead`, `stalled`, `timeout`
-or `never-started` that reconcile above did **not** just resolve:
+Escalation ladder for a job `jobs check` reports `dead`, `stalled`, `timeout`,
+`never-started` or `unstamped` that reconcile above did **not** just resolve:
 
 - *First occurrence for this attempt:* relaunch — re-run `runners/orchid-launch
   <task-id> <role> <operation>` for the same task/role/operation. This is the
@@ -632,7 +635,7 @@ or `never-started` that reconcile above did **not** just resolve:
 - *A launch that FAILS is a job failure too.* `runners/orchid-launch` does
   real work before it spawns: it prepares the job, then builds the input
   pack. A non-zero exit from it — anything but `14` (`no eligible engine`,
-  the WAIT above) and `18` (`this slot already has a never-started manifest`,
+  the WAIT above) and `18` (`this slot already has an unlaunched manifest`,
   below) — means no engine started, so there is nothing for `jobs check` to
   call `dead`, no envelope for `reconcile` to mark the engine with, and no
   reason to expect one later. Treat it exactly like a dead job: journal it and
@@ -642,13 +645,30 @@ or `never-started` that reconcile above did **not** just resolve:
   `input_overflow` pack made every launch fail, and the same dispatch was
   re-attempted once per pass for 73 passes with no journal entry, no
   escalation and no engine ever marked.
+
+  **Count it once.** A launcher that exits non-zero of its own accord records
+  that exit on the manifest it strands (`launch_exit`), and the driver's
+  ageing sweep skips a manifest carrying that mark: the failure was reported
+  synchronously and has already spent its rung. Only an *unmarked* orphan — a
+  launcher killed asynchronously, a machine that rebooted mid-launch, nobody
+  to return an exit status to — is escalated by the sweep on age.
 - *`never-started`* — a `pid: 0` manifest with no log at all, i.e. a job that
   was minted and whose launcher died before its spawn line. Nothing about it
   is `dead`/`stalled`/`timeout`, so it needs naming separately: no envelope is
   coming, and the same ladder applies once the manifest is older than
   `stall_minutes` (younger than that, a launcher may still be mid-flight over
-  it — leave it alone). `orchid jobs gc` reaps it under that same floor, after
-  which the identical dispatch simply succeeds.
+  it — leave it alone). An unattended `orchid jobs gc` reaps it under that
+  same bound, after which the identical dispatch simply succeeds.
+- *`unstamped`* — a `pid: 0` manifest **with** a log that nothing has written
+  to in `stall_minutes`. The launcher creates the log by redirecting the spawn
+  into it and stamps the pid only on the line after, so this is a spawn whose
+  pid was recorded nowhere: an engine may be running and no signal can reach
+  it. While that log is still being written the driver **waits** on the
+  manifest — it is a live job, and launching a second engine over it puts two
+  into one worktree. Once the log goes silent for as long as `jobs check`
+  would kill a stamped job over, it walks this ladder once and `orchid jobs gc`
+  retires the manifest — **keeping the log**, which is the only surviving
+  record of whatever was spawned.
 - A `gc <job_id>` reap line printed this pass for a job whose task is still
   mid-flight (not `done`/`blocked`) is itself a signal to re-examine that
   task, not something to scroll past: with gc now running strictly after
@@ -1205,12 +1225,13 @@ ones its archetype never declares.
   requires N reconciled review envelope(s) for risk_tier <tier> (have
   <have>)" — until at least `review_required_count(risk_tier)` reviewer
   envelopes bound to the task's CURRENT `candidate_sha` have actually
-  reconciled; a slot whose job is still `running`/`prepared`/`never-started`,
-  or whose envelope was quarantined, never silently counts toward that number.
-  The escalation ladder for a dead/stalled/timeout/never-started reviewer job
-  is identical to implementing's, applied per slot — `reviewing` has no legal
-  `rework` edge either, so a repeat failure on any one slot also goes to
-  `blocked`.
+  reconciled; a slot whose job is still
+  `running`/`prepared`/`never-started`/`unstamped`, or whose envelope was
+  quarantined, never silently counts toward that number.
+  The escalation ladder for a dead/stalled/timeout/never-started/unstamped
+  reviewer job is identical to implementing's, applied per slot — `reviewing`
+  has no legal `rework` edge either, so a repeat failure on any one slot also
+  goes to `blocked`.
 
 - **arbitrating** (`awaiting-arbitration`): inline judgment, not a launched
   job — kernel.md is explicit that "the orchestrator implements nothing
@@ -1398,33 +1419,39 @@ one-pass driver could otherwise stop progressing in silence:
   that task and operation (a pass that died between the spawn and the
   advance) is adopted, never spawned a second time.
 
-  **A `pid: 0` manifest is not an outstanding job — and it is not a second
-  chance either.** `orchid jobs prepare` mints every manifest with `pid: 0`
-  and the launcher stamps the real pid only after the spawn, so a `pid: 0`
-  manifest means a launch died in between and nothing is running. Adopting
-  one would defeat the whole rule above — the task advances behind a job that
-  will never file an envelope. So the driver treats it as no job. But it does
-  not simply relaunch over it either: `jobs prepare` REFUSES to mint a second
-  manifest for a slot (task, attempt, role, operation, and for hooks the
-  point) that already has a NEVER-STARTED one, exiting 18. That refusal is a
-  WAIT, ranked with exit 14 — nothing was spawned, no rung of the ladder is
+  **A `pid: 0` manifest with no log is not an outstanding job — and it is not
+  a second chance either.** `orchid jobs prepare` mints every manifest with
+  `pid: 0` and the launcher stamps the real pid only after the spawn, so
+  `pid: 0` with no log means the spawn line was never reached and nothing is
+  running. Adopting one would defeat the whole rule above — the task advances
+  behind a job that will never file an envelope. So the driver treats it as no
+  job. But it does not simply relaunch over it either: `jobs prepare` REFUSES
+  to mint a second manifest for a slot (task, attempt, role, operation, and for
+  hooks the point) that already has an UNLAUNCHED one, exiting 18. That refusal
+  is a WAIT, ranked with exit 14 — nothing was spawned, no rung of the ladder is
   spent, and it clears itself, because the same pass's `orchid jobs gc` reaps
-  the orphan once it is older than `stall_minutes`, after which the identical
-  dispatch succeeds. Both the reap and the escalation of a never-started job
-  are BOUNDED by that floor, never by `--older-than-s 0`: a manifest younger
-  than it may belong to a launcher that is between `jobs prepare` and its own
-  spawn line right now, and reaping it would delete the pack and request
-  document out from under a live launch. (`orchid jobs gc --reap-prepared
-  [--older-than-s N]` is the same reap with no floor, for an operator who
-  knows what a particular manifest is.)
+  the orphan once it is older than the bound that pass hands the verb
+  (`stall_minutes`), after which the identical dispatch succeeds. That bound is
+  the unattended DRIVER's, passed as `--prepared-older-than-s`, and it is there
+  because a manifest younger than it may belong to a launcher that is between
+  `jobs prepare` and its own spawn line right now — reaping that one would
+  delete the pack and request document out from under a live launch. An
+  operator who has looked at a particular manifest gets the number they type:
+  `orchid jobs gc --older-than-s 0` honours zero.
+
+  **A `pid: 0` manifest WITH a fresh log IS an outstanding job.** The launcher
+  creates the log by redirecting the spawn into it, so that manifest is a spawn
+  whose pid was never recorded: an engine may be running with no signal able to
+  reach it. The driver waits on it rather than launching a second engine into
+  the same worktree, `check` reports it `prepared`, and nothing reaps it. That
+  wait is bounded, not permanent: once the log has been silent for
+  `stall_minutes`, `check` reports `unstamped`, the ladder spends one rung, and
+  `gc` retires the manifest while keeping the log.
 
   **The refusal and the reap are the same predicate, so exit 18 always
-  clears.** Both mean `pid: 0` AND no log file — the spawn line provably was
-  never reached. A `pid: 0` manifest that DOES have a log is a launcher killed
-  between the spawn and the pid stamp: an engine may be running behind it, so
-  `check` reports it `prepared`, nothing reaps it, and nothing refuses over it
-  either. And because a phase that cannot clear the orphan would be a phase
-  that can never leave the refusal, the never-started reap runs in EVERY
+  clears.** Both mean *unlaunched*: `pid: 0` and either no log at all or a log
+  silent past `stall_minutes`. And because a phase that cannot clear the orphan
+  would be a phase that can never leave the refusal, that reap runs in EVERY
   phase — including `PLANNING`, whose pass runs no reconcile and no check but
   does still launch `plan critique` and plan-hook jobs.
 - **Hooks are deferred, never skipped — and never gated past their job.** A

@@ -1087,35 +1087,51 @@ What the kernel does about it, and what to look for:
   one rung of the escalation ladder (`orchid task infra-fail`), which blocks
   the task at `infra_max`. So `orchid journal tail` names the exit code, and
   a task that cannot be launched ends up `blocked`, not retried forever.
+- That rung is spent ONCE. The launcher records its own exit status on the
+  manifest it strands (`launch_exit`), and the driver's ageing sweep skips a
+  manifest carrying it — the failure was already reported and counted. Only an
+  orphan nobody could report (a launcher killed asynchronously, a machine that
+  rebooted mid-launch) is escalated later on age. If you are auditing a
+  blocked task's `infra_failures`, every rung should have a journal entry
+  naming a launch that really was attempted.
 - `orchid jobs prepare` refuses (exit 18) to mint a second manifest for a slot
-  that already has a never-started one, so a broken launch leaves ONE orphan,
+  that already has an unlaunched one, so a broken launch leaves ONE orphan,
   not one per pass. That refusal is a wait, not a failure.
-- `orchid jobs gc` reaps a never-started manifest once it is older than
-  `stall_minutes`; after that, the identical dispatch is tried again. This reap
-  runs in every phase, `PLANNING` included, so exit 18 always clears on its
-  own. To clear one immediately (having checked no launcher is mid-flight over
-  it): `orchid jobs gc --reap-prepared --older-than-s 0`.
+- An unattended `orchid jobs gc` reaps a never-started manifest once it is
+  older than the bound the driver passes it (`stall_minutes`); after that, the
+  identical dispatch is tried again. This reap runs in every phase, `PLANNING`
+  included, so exit 18 always clears on its own. To clear one immediately,
+  having looked at it yourself: `orchid jobs gc --older-than-s 0` (zero means
+  zero — no floor is applied to what you type), or `orchid jobs gc
+  --reap-prepared --older-than-s 0` when nothing else may be touched, e.g.
+  mid-`PLANNING`, where no reconcile has run and the dead-job reap must not.
 
 Fix the underlying launch failure first — the pass output and
 `.orchid/runtime/pump.log` carry the launcher's own stderr — then
 `orchid task retry <id> --reason "..."` if the ladder already blocked it.
 
-**`prepared` is a different symptom, and nothing reaps it.** A manifest with
-`pid 0` that DOES have a log file was spawned — the launcher creates the log by
-redirecting the engine into it and stamps the pid only on the next line — and
-was then killed inside that window, so an engine may still be running with its
-pid recorded nowhere. The manifest is the only handle on it, so neither `gc`
-mode touches it and `orchid jobs prepare` does not refuse over it. This one is
-a manual call, and the log is the evidence:
+**`prepared` and `unstamped` are a different symptom: pid 0 WITH a log.** That
+manifest was spawned — the launcher creates the log by redirecting the engine
+into it and stamps the pid only on the next line — and was then killed inside
+that window, so an engine may still be running with its pid recorded nowhere.
+The log's mtime is what the kernel reads, and it separates the two reports:
 
-1. `tail -f` the manifest's `.log`. If it is still growing, the engine is
-   alive: leave the manifest alone and let the job finish and reconcile.
-2. If it has been quiet well past `stall_minutes`, confirm the process is gone
-   (`pgrep -f <job_id>`), kill anything it finds, then move the manifest to
-   `.orchid/runtime/quarantine/` by hand. The next pass relaunches the slot.
+- **`prepared`** — the log was written to within `stall_minutes`. Something is
+  producing output, so the driver WAITS on this manifest: it counts as a live
+  job, no second engine is launched over it, and no `gc` mode reaps it. Let it
+  finish and reconcile. If you want to watch it, `tail -f` the manifest's
+  `.log`.
+- **`unstamped`** — nothing has written to that log for `stall_minutes`, the
+  same silence `orchid jobs check` kills a *stamped* job over. The kernel
+  handles this one itself: one rung of the escalation ladder, then `gc`
+  retires the manifest (quarantined `.reason-gc-unstamped`) and the slot is
+  relaunched. **The log is deliberately kept**, unlike a dead job's — no pid
+  was ever recorded, so nothing here was ever killable, and that log is the
+  only surviving record of whatever was spawned.
 
-Do not skip step 2's check. Retiring the manifest while the engine lives is
-what lets a second implementer be dispatched into the same worktree.
+There is one thing the kernel cannot do for `unstamped` and you may still want
+to: kill the process, if it turns out to be alive but silent. `pgrep -f
+<job_id>` finds it; nothing else on this machine knows its pid.
 
 ## Scheduled pump can't find jq / engine CLIs
 

@@ -155,14 +155,21 @@
       greenfield dogfood — Distribution above — is the prototype for this,
       outside this repo).
     - **`jobs gc` cannot reap a pid-0 (prepared-never-launched) manifest.**
-      By design (INV-01-clean: gc never kills anything live), a manifest
-      whose launch failed before it ever recorded a real pid stays
-      `prepared` forever — `jobs gc` explicitly skips `pid: 0` entries, and
-      `jobs check` re-reports the same one every pass. Harmless today (rare:
-      only a launcher crash between `jobs prepare` and the actual spawn
-      produces one) but perpetual noise once it happens. Roadmap note: a
-      bounded pid-0 reap path (age-gated, distinct from the live-pid gc
-      path) for v1-m4.
+      *(Recorded as of v1-m3; CLOSED by T027 — see below.)* By design
+      (INV-01-clean: gc never kills anything live), a manifest whose launch
+      failed before it ever recorded a real pid stayed `prepared` forever —
+      `jobs gc` explicitly skipped `pid: 0` entries, and `jobs check`
+      re-reported the same one every pass. Judged harmless at the time
+      (rare: only a launcher crash between `jobs prepare` and the actual
+      spawn produces one) but perpetual noise once it happens. That judgment
+      was wrong twice over, which is what the dogfood findings below record:
+      the noise hid a whole run's worth of failed launches (F29), and the
+      manifests could not be cleared by the one call an operator reaches for
+      (F41), so they were deleted by hand on two separate runs. T027 makes
+      ordinary `jobs gc` reap the class — never on `pid: 0` alone, since half
+      of it is a spawn whose pid stamp was lost and may have an engine behind
+      it — under its own `--prepared-older-than-s` bound, with every bound
+      taken literally so an operator's `--older-than-s 0` honours zero.
   - **v1-m4 (ecosystem + polish) — SHIPPED:** split into release-blocking
     core and CONDITIONAL reference adapters, per this milestone's own escape
     hatch (upstream churn may drop an individual adapter from launch; a
@@ -175,9 +182,11 @@
       operator config-commit verb), closing the journal-loss incident's
       root cause; `orchid run release-lease` (clean-session-exit affordance
       so a session's own final tick no longer blocks `run new`/the pump for
-      up to `pump_stale_s`); `orchid jobs gc --reap-prepared` (bounded,
-      age-gated reap of pid-0 prepared-never-launched manifests, a separate
-      exclusive mode from ordinary gc); a baked pre-push hook (installed by
+      up to `pump_stale_s`); `orchid jobs gc --reap-prepared` (age-gated reap
+      of pid-0 prepared-never-launched manifests, a separate exclusive mode
+      from ordinary gc — which T027 has since taught to reap the same class
+      itself, leaving this mode as the touch-nothing-else form `PLANNING`
+      runs); a baked pre-push hook (installed by
       `orchid init`, `push_guard` config, refuses pushes to task branches or
       the integration branch with the branch name substituted in at install
       time, `ORCHID_ALLOW_PUSH=1` override).
