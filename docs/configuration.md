@@ -336,7 +336,8 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   nothing. `none` disables the route.
 - **`flaky.quarantine`** — the known-flaky register the `flaky` route reads,
   relative to the verified tree (default `tests/QUARANTINE.md` — orchid ships
-  one, carrying a single entry and the reasoning for it written down). One
+  one, carrying two entries for the two pre-T019 liveness-message families and
+  the reasoning for them written down). One
   entry per line,
   `FLAKE: <literal substring of the failing line>` at **column 0** and
   optionally ` -- <why>`; everything else in the file is prose the route

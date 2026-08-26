@@ -5743,7 +5743,7 @@ git init -q .
 # works; tying it to the tree is what makes every assertion below a fact about
 # this repository. The block at the end of this part then leaves the fixture
 # behind entirely and drives the same route through THE REGISTER ORCHID SHIPS.
-L020_SIG='job log must have grown WHILE the adapter was still running'
+L020_SIG='bounded growth wait must observe live stream bytes before adapter exit'
 {
   printf '%s\n' "# Known-flaky assertions. Each entry is one line beginning \`FLAKE:\`."
   printf '%s\n' 'FLAKE: short -- too short to be a signature, and must be ignored'
@@ -5800,7 +5800,7 @@ QR_SIGS="$(
   HOME="$MACHINE_HOME"
   drive_quarantine_signatures "$QR" "$QR" "$QR/.orchid/tasks/QA1.md"
 )"
-assert_match "job log must have grown" "$QR_SIGS" \
+assert_match "bounded growth wait" "$QR_SIGS" \
   "a FLAKE: entry long enough to be a signature is read out of the register"
 if grep -Fq 'short' <<<"$QR_SIGS"; then
   fail "a signature shorter than the minimum must be DROPPED — an entry that short would match half the output of any suite, which is a blanket amnesty spelled as a typo (got: $QR_SIGS)"
@@ -5922,18 +5922,18 @@ assert_eq flaky "$(qr_cls | cut -f1)" \
 # so it is pre-candidate state in the sense the route requires -- which is the
 # only way to prove that the entry orchid actually carries would be honoured.
 #
-# That entry is L020's PRE-T019 sentence, and the pair of assertions at the end
-# is what makes carrying it safe. The de-flaked assertion still in the tree is
-# the stall detector's own evidence and must never be forgiven; the old
-# single-instant one cannot tell a stall from a loaded machine and is not
-# evidence about anything. They are different sentences, so an entry naming the
-# second cannot reach the first -- and if anyone ever rewords either of them
-# into the other's shape, one of these two fails and says so.
+# Those entries are L020's TWO PRE-T019 diagnostic families, and the assertions
+# below are what make carrying them safe. The de-flaked assertions still in the
+# tree are the stall detector's own evidence and must never be forgiven; the old
+# single-instant families cannot tell a stall from a loaded machine and are not
+# evidence about anything. Their sentences are disjoint, so entries naming the
+# old families cannot reach the live ones -- and if anyone ever rewords either
+# side into the other's shape, this block fails and says so.
 [ -f "$REPO_ROOT/tests/QUARANTINE.md" ] \
   || fail "orchid must ship the register flaky.quarantine defaults to (tests/QUARANTINE.md), or its own default path is a path to nothing"
 ORCHID_FLAKES="$(grep -c '^FLAKE:' "$REPO_ROOT/tests/QUARANTINE.md" || true)"
-assert_eq 1 "$ORCHID_FLAKES" \
-  "and it carries EXACTLY ONE live entry — the pre-T019 L020 sentence, and nothing else. Every other liveness assertion was DE-FLAKED rather than quarantined (tests/helpers.sh's await_log_growth/await_log_heartbeat) and must stay chargeable. If this count ever moves, somebody has decided another gate may fail without failing, and this assertion is where they have to say so out loud"
+assert_eq 2 "$ORCHID_FLAKES" \
+  "and it carries EXACTLY TWO live entries — the pre-T019 stream-growth and heartbeat-count families, and nothing else. All eight live assertions were DE-FLAKED rather than quarantined (tests/helpers.sh's await_log_growth/await_log_heartbeat) and must stay chargeable. If this count ever moves, somebody has decided another gate may fail without failing, and this assertion is where they have to say so out loud"
 
 QS="$WORK/shipped-register"
 mkdir -p "$QS/.orchid/tasks" "$QS/.orchid/reviews" "$QS/tests"
@@ -5979,36 +5979,60 @@ SHIPPED_SIGS="$(
 # and requires it to match nothing. If the minimum ever drops, or the clip ever
 # grows, that is what says so.
 SHIPPED_SIGS_CLIPPED="$(cut -c1-15 <<<"$SHIPPED_SIGS" | tr '\n' '/')"
-assert_eq "" "$(drive_quarantine_attribution "$SHIPPED_SIGS" \
-    "  FAIL: a guard over the shipped register broke (got, clipped: $SHIPPED_SIGS_CLIPPED)")" \
-  "the clipped rendering must not be text the shipped register itself matches — this suite's failing lines land in a verify log the classifier then reads, so a guard that printed the live signature into its own FAIL line would be waived by the register it exists to police, and the one check standing between orchid and a silent second entry would fail without failing"
-assert_eq 1 "$(grep -c . <<<"$SHIPPED_SIGS" || true)" \
-  "the shipped register parses to exactly one live signature through the real parser — the prose around it, including its own indented worked example of the format, is read as prose (got, clipped: $SHIPPED_SIGS_CLIPPED)"
-assert_match "bytes at the midpoint" "$SHIPPED_SIGS" \
-  "and that signature is L020's PRE-T019 sentence: the single-instant shape, which samples one instant and cannot tell a stall from a scheduling artifact, so its failure is not evidence about a candidate"
+while IFS= read -r shipped_sig; do
+  [ -n "$shipped_sig" ] || continue
+  assert_eq "" "$(drive_quarantine_attribution "$shipped_sig" \
+      "  FAIL: a guard over the shipped register broke (got, clipped: $SHIPPED_SIGS_CLIPPED)")" \
+    "a clipped rendering must not be text either shipped signature matches — this suite's failing lines land in a verify log the classifier then reads, so a guard that printed a live signature into its own FAIL line would be waived by the register it exists to police"
+done <<< "$SHIPPED_SIGS"
+assert_eq 2 "$(grep -c . <<<"$SHIPPED_SIGS" || true)" \
+  "the shipped register parses to exactly two live signatures through the real parser — the prose around them, including its own indented worked example of the format, is read as prose (got, clipped: $SHIPPED_SIGS_CLIPPED)"
+assert_match "job log must have grown" "$SHIPPED_SIGS" \
+  "one signature is L020's pre-T019 stream-growth family"
+assert_match "job log must gain at least one" "$SHIPPED_SIGS" \
+  "and the other is L020's pre-T019 heartbeat-count family"
 
-# THE ENTRY WORKS: the historical line, which a branch cut before the de-flaking
-# still prints, is waived against orchid's own shipped file.
-qs_log "  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+# BOTH ENTRIES WORK, ON BOTH OLD LENGTHS. Agy/Claude/Codex carried longer
+# explanations while Hermes stopped at the common prefix; the common literal
+# must catch both without reaching any live bounded-wait assertion.
+OLD_GROWTH_SIG='streaming stub: job log must have grown WHILE the adapter was still running'
+OLD_HEARTBEAT_SIG='heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running'
+qs_log "  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
 assert_eq flaky "$(qs_cls | cut -f1)" \
-  "the pre-T019 L020 line — the one that stranded eight tasks in r-002 — is waived by the register orchid SHIPS, so a branch that still carries the old shape charges infra rather than a rework attempt"
+  "the long pre-T019 stream-growth diagnostic is waived by the shipped register"
+qs_log "  FAIL: $OLD_GROWTH_SIG"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "and Hermes's shorter pre-T019 stream-growth diagnostic is waived too"
+qs_log "  FAIL: $OLD_HEARTBEAT_SIG (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "the long pre-T019 heartbeat-count diagnostic is waived by the shipped register"
+qs_log "  FAIL: $OLD_HEARTBEAT_SIG"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "and Hermes's shorter pre-T019 heartbeat-count diagnostic is waived too"
 
-# AND IT CANNOT REACH THE ASSERTION THAT REPLACED IT. Taken verbatim from the
-# suite rather than retyped here: if the two sentences ever converge, this is
-# the line that stops it, and it can only do that by reading the real one.
-DEFLAKED_SRC="$(grep -F -m1 -- "$L020_SIG" "$REPO_ROOT/tests/test_engine_agy.sh" || true)"
-[ -n "$DEFLAKED_SRC" ] \
-  || fail "the de-flaked streaming assertion has vanished from tests/test_engine_agy.sh — the RED half below would then be asserting nothing"
-qs_log "  FAIL: $DEFLAKED_SRC"
+# AND NEITHER ENTRY CAN REACH THE ASSERTIONS THAT REPLACED IT. Taken verbatim
+# from the suite rather than retyped here: if an old and live sentence ever
+# converge, these are the lines that stop it.
+DEFLAKED_GROWTH_SRC="$(grep -F -m1 -- "$L020_SIG" "$REPO_ROOT/tests/test_engine_agy.sh" || true)"
+DEFLAKED_HEARTBEAT_SRC="$(grep -F -m1 -- 'bounded heartbeat wait must leave at least one persisted' "$REPO_ROOT/tests/test_engine_agy.sh" || true)"
+[ -n "$DEFLAKED_GROWTH_SRC" ] && [ -n "$DEFLAKED_HEARTBEAT_SRC" ] \
+  || fail "the two de-flaked liveness assertions have vanished from tests/test_engine_agy.sh — the RED halves below would then assert nothing"
+qs_log "  FAIL: $DEFLAKED_GROWTH_SRC"
 assert_eq candidate "$(qs_cls | cut -f1)" \
-  "while the DE-FLAKED assertion that replaced it is NOT covered by that entry and charges — it waits for what it samples, so its failure means the adapter really did not stream, and forgiving it would forgive a genuine streaming regression"
+  "the live bounded growth assertion is NOT covered and charges — it waits for what it samples, so its failure is evidence"
+qs_log "  FAIL: $DEFLAKED_HEARTBEAT_SRC"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "the live bounded heartbeat assertion is NOT covered and charges for the same reason"
 qs_engine_count=0
 for qs_engine_f in "$REPO_ROOT"/tests/test_engine_*.sh; do
   [ -f "$qs_engine_f" ] || continue
   qs_engine_count=$((qs_engine_count + 1))
-  if grep -Fq -- "$SHIPPED_SIGS" "$qs_engine_f"; then
-    fail "${qs_engine_f#"$REPO_ROOT"/} contains the sentence orchid's own register quarantines — a live engine-adapter case can now fail without failing, which is the one thing this register must never do to a gate that still works"
-  fi
+  while IFS= read -r shipped_sig; do
+    [ -n "$shipped_sig" ] || continue
+    if grep -Fq -- "$shipped_sig" "$qs_engine_f"; then
+      fail "${qs_engine_f#"$REPO_ROOT"/} contains a sentence orchid's own register quarantines — a live engine-adapter case can now fail without failing"
+    fi
+  done <<< "$SHIPPED_SIGS"
 done
 [ "$qs_engine_count" -ge 4 ] \
   || fail "that sweep looked at $qs_engine_count engine-adapter file(s) rather than the four that carry these cases — it would report a clean tree by finding nothing to read"
@@ -6055,10 +6079,12 @@ qo_task() { # <id> <worktree> <base> <candidate>
   printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
     "$1" "$2" "$3" "$4" > "$QO/.orchid/tasks/$1.md"
 }
-qo_log() { # <id> <worktree> <candidate>
+qo_log() { # <id> <worktree> <candidate> [failure-body]
+  local qo_body="${4:-}"
+  [ -n "$qo_body" ] \
+    || qo_body="  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
   printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$3" "$3" "$2" \
-    "  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal" \
+    "$3" "$3" "$2" "$qo_body" \
     > "$QO/.orchid/reviews/$1-verify.log"
 }
 qo_cls() { # <id>
@@ -6071,9 +6097,16 @@ qo_task QO1 "$QOW" "$QOBASE" "$QOCAND"
 qo_log QO1 "$QOW" "$QOCAND"
 assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
   "a carried task whose base and candidate both predate the register reads the clean tracked integration copy, so the exact pre-T019 failure no longer burns its attempt"
-assert_match "bytes at the midpoint" "$(drive_quarantine_signatures \
+qo_log QO1 "$QOW" "$QOCAND" \
+  "  FAIL: heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
+  "and the same carried task classifies the sibling pre-T019 heartbeat-count failure as flaky rather than charging it"
+assert_match "job log must have grown" "$(drive_quarantine_signatures \
     "$QO" "$QOW" "$QO/.orchid/tasks/QO1.md")" \
-  "and the fallback is proved at the register layer, not inferred from a class that might have found some other waiver"
+  "the fallback exposes the historical stream-growth signature at the register layer"
+assert_match "job log must gain at least one" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO1.md")" \
+  "and it exposes the historical heartbeat-count signature there too"
 
 # Integration's copy is a control-plane authority, not ambient bytes. A dirty
 # edit closes it just as a dirty candidate-owned register does.

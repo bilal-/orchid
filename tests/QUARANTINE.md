@@ -6,8 +6,9 @@ When a verification fails, the driver reads it, and a failing line that matches
 an entry here is classified `flaky` rather than `candidate` — it costs
 `infra_failures` and it does **not** consume a rework attempt.
 
-It carries exactly **one** live entry, at the bottom of this file. Read "What
-the one live entry is, and what it cannot forgive" before adding a second.
+It carries exactly **two** live entries, at the bottom of this file. Together
+they name the two pre-T019 liveness-message families. Read "What the two live
+entries are, and what they cannot forgive" before adding another.
 
 ## Format
 
@@ -90,32 +91,34 @@ file at a time.
 the stall detector's own evidence: an entry naming them would forgive a genuine
 streaming regression as readily as a race.
 
-## What the one live entry is, and what it cannot forgive
+## What the two live entries are, and what they cannot forgive
 
-The live entry below is not the de-flaked assertion. It is the **pre-T019
-single-instant assertion**, word for word, including the `(was 0 bytes at the
-midpoint)` clause that only the old shape ever printed. The de-flaked case
-prints a different sentence, so the entry cannot match it — and
-`tests/test_drive.sh` asserts exactly that, in both directions, against the
-files as they stand.
+The live entries below are not the de-flaked assertions. They are the common
+literal prefixes of the **two pre-T019 single-instant families**: one sampled
+ordinary stream growth, the other sampled heartbeat count. The common prefix
+is intentional: it includes the longer Agy/Claude/Codex diagnostics and the
+shorter Hermes diagnostics without broadening beyond those old families. The
+de-flaked cases describe their bounded waits with different sentences, so
+neither entry can match them — and `tests/test_drive.sh` asserts that in both
+directions across all four adapter files.
 
-That distinction is the whole design, and it makes the entry mean something
+That distinction is the whole design, and it makes the entries mean something
 narrow and true: **an assertion that samples one instant is not evidence about
 a candidate.** It cannot tell a stall from a scheduling artifact — that is what
 it was measured doing eight times in one run — so its failure says nothing, and
 charging a rework attempt for it is the injustice this register exists to stop.
 The de-flaked assertion says something, is not listed, and charges.
 
-The entry is live rather than commented out because the shape is still
+The entries are live rather than commented out because both shapes are still
 reachable: a task branch cut before the de-flaking, a worktree that never
-rebased, a revert, a merge that resurrects the old hunk. In every one of those
-the old sentence comes back and this register catches it as `flaky` — including
-branches cut before this file existed, through the fail-closed integration
-fallback above — costing `infra_failures`, escalating to a human on recurrence,
-and never consuming a rework attempt. It will retire itself: once no branch in
-flight can still print that sentence, delete the line.
+rebased, a revert, a merge that resurrects an old hunk. In every one of those
+an old sentence can come back and this register catches it as `flaky` —
+including branches cut before this file existed, through the fail-closed
+integration fallback above — costing `infra_failures`, escalating to a human on
+recurrence, and never consuming a rework attempt. They retire together: once
+no branch in flight can still print either family, delete both lines.
 
-Note what the timing rule does to this entry, and it is the right thing: the
+Note what the timing rule does to these entries, and it is the right thing: the
 candidate that introduced this file **cannot** be forgiven by it, because that
 candidate changed it. It becomes an authority only for the candidates that come
 after.
@@ -126,12 +129,14 @@ after.
 minimum length, the timing rule — against a fixture register it writes itself,
 whose signature it reads out of `tests/test_engine_agy.sh` rather than typing.
 It then parses **this** shipped file through the real parser and asserts that
-its live entries are exactly the one documented above; that the entry does
-match the pre-T019 line; that it does **not** match the assertion that replaced
-it; and that no engine-adapter file in the tree contains the sentence at all.
-So a second entry cannot slip in without somebody changing that count in the
-same diff and saying out loud that a gate may now fail without failing.
+its live entries are exactly the two documented above; that each entry matches
+its pre-T019 family, including Hermes's shorter form; that neither matches the
+assertions that replaced it; and that no engine-adapter file in the tree
+contains either sentence at all. So another entry cannot slip in without
+somebody changing that count in the same diff and saying out loud that a gate
+may now fail without failing.
 
 <!-- Entries below. Column 0, one per line; see "Format" above. -->
 
-FLAKE: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- L020: the PRE-T019 single-instant shape only. It samples one instant and cannot tell a stall from a loaded machine, so its failure is not evidence about a candidate; it stranded eight tasks in r-002. The de-flaked replacement prints a different sentence and is deliberately NOT covered. Delete this line once no branch in flight can still print it.
+FLAKE: streaming stub: job log must have grown WHILE the adapter was still running -- L020: the PRE-T019 single-instant stream-growth family only, including Hermes's shorter diagnostic. It samples one instant and cannot tell a stall from a loaded machine, so its failure is not evidence about a candidate. The bounded-wait replacement prints a different sentence and is deliberately NOT covered. Delete both L020 lines once no branch in flight can still print either old family.
+FLAKE: heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running -- L020: the PRE-T019 single-instant heartbeat-count family only, including Hermes's shorter diagnostic. It samples one instant and cannot tell a stall from a loaded machine, so its failure is not evidence about a candidate. The bounded-wait replacement prints a different sentence and is deliberately NOT covered. Delete both L020 lines once no branch in flight can still print either old family.
