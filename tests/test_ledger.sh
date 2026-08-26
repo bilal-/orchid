@@ -199,16 +199,15 @@ assert_eq 1 "$(jq -r '.acme.capability_refusals' "$flf")" "reconcile: the refusa
 # role's chain never silently shortens (the r-002 cascade started here).
 resolved="$("$ORCHID_BIN" jobs prepare T001 implementer implement)"
 assert_eq acme "$(jq -r .engine "$resolved")" "an engine that refused stays resolvable for the very next job"
-# That prepare was a resolution probe, never launched -- sweep its pid-0
-# manifest so the sections below start from the same clean runtime they used
-# to (ordinary `gc` deliberately skips pid-0 manifests; --reap-prepared is the
-# mode that targets exactly them). Best-effort, deliberately not asserted:
-# --reap-prepared compares the manifest's file mtime with `-gt`, so a manifest
-# minted in this same second is still too young and survives. Nothing below
-# depends on it either way -- `jobs reconcile` walks the SPOOL, not the
-# manifest dir, and a manifest with no envelope beside it is invisible to that
-# walk (which is exactly why the probe could not be left to the ordinary gc).
-"$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 0 >/dev/null
+# That prepare was a resolution probe, never launched, and its pid-0 manifest
+# must go before the section below prepares the SAME slot again: since T027
+# `jobs prepare` refuses (exit 18) to mint a second manifest for a slot that
+# already holds a never-started one, so leaving the probe's litter behind would
+# make the very next prepare fail. Removed directly rather than left to `gc
+# --reap-prepared`, which compares the manifest's file mtime with `-gt` and so
+# cannot retire one minted in this same second -- a best-effort sweep is no
+# longer good enough now that something downstream depends on it.
+rm -f "$resolved"
 
 before="$(jq -c . "$flf")"
 

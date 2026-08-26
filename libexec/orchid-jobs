@@ -73,6 +73,166 @@ kill_stuck() {
   fi
 }
 
+# THE never-started predicate: 0 iff this manifest was minted by `jobs prepare`
+# and no engine was ever spawned for it. THE one definition -- `check` reports
+# it, `gc` reaps exactly it, `prepare` refuses exactly over it, and
+# runners/orchid-drive escalates exactly it -- so the four can never drift into
+# disagreeing about which manifests are safe to retire.
+#
+# Liveness is read from the pid AND the log TOGETHER, never from the pid alone
+# (T027 rework; dogfood F29 is the reason the pid alone is not enough):
+#
+#   pid != 0            an engine was spawned and stamped. Live or dead is the
+#                       pid's own question, and `check`/`gc`'s dead-job arms
+#                       ask it with `kill -0`. Not this class.
+#   pid == 0, log EXISTS
+#                       the spawn DID happen: runners/orchid-launch creates the
+#                       log by redirecting the engine into it, and only stamps
+#                       the pid on the line after. So this is the genuine
+#                       sub-second post-spawn/pre-stamp window (or a launcher
+#                       killed inside it), and the engine MAY BE RUNNING RIGHT
+#                       NOW with no pid recorded anywhere. The manifest is the
+#                       only handle on it: retiring it would both lose that
+#                       handle and let a second engine be dispatched into the
+#                       same worktree, which is the duplicate-implementer
+#                       defect the kernel already guards against. Not this
+#                       class -- it is job_unstamped_stale's, below, which is
+#                       where that manifest eventually converges rather than
+#                       being retained forever.
+#   pid == 0, NO log    the spawn line was never reached -- a pack that
+#                       overflowed its budget, an engine binary that would not
+#                       resolve, a launcher killed before it got there. No
+#                       engine ran, none ever will, and no envelope is coming.
+#                       THIS class.
+job_never_started() {  # manifest
+  local f="$1" log
+  [ "$(jq -r '.pid // 0' "$f" 2>/dev/null || echo 1)" = 0 ] || return 1
+  # An unreadable manifest falls back to `/`, which exists -- i.e. to the
+  # answer "not this class", so a manifest nothing can parse is never reaped
+  # and never refused over. Every fallback here points the same way.
+  log="$(jq -r '.log // ""' "$f" 2>/dev/null || echo /)"
+  [ -z "$log" ] || [ ! -e "$log" ] || return 1
+  return 0
+}
+
+# THE OTHER unstamped class, and the one that used to be kept FOREVER: pid 0
+# with a log whose last write is more than <stall_s> seconds ago.
+#
+# job_never_started's note explains why a log-backed pid-0 manifest cannot
+# simply be reaped: an engine may be behind it with its pid recorded nowhere.
+# But "may be" is not "is", and retention alone was never a coherent answer to
+# it (T027 rework). The manifest was retained at every age while
+# runners/orchid-drive's drive_job_outstanding read the very same manifest as
+# "no job" and relaunched over it on the next pass -- so the duplicate engine
+# the retention was supposed to prevent happened anyway, and the manifest that
+# was supposed to be an operator's handle just accumulated. Both halves are
+# fixed together: the driver now DEFERS to this manifest while it is fresh
+# (no duplicate), and this predicate is what eventually ends it (no forever).
+#
+# The bound is `stall_minutes`, read from the LOG's mtime, and it is
+# deliberately the same test `check` already applies to a job that DID stamp a
+# pid: no write to the log for that long is the kernel's existing standard for
+# "this is not working", and there it is grounds for a KILL. Applying a
+# strictly weaker consequence (stop waiting on it, report it, retire the
+# manifest) to a job that never even got far enough to be killable is the
+# conservative side of that line, not a new risk. What cannot be done for this
+# class is the kill itself: there is no pid to signal. A live-but-silent engine
+# would therefore survive its manifest -- which is why the log is deliberately
+# NOT removed with it (see gc_reap_unlaunched), so the evidence outlives the
+# handle.
+job_unstamped_stale() {  # manifest now stall_s
+  local f="$1" now="$2" stall_s="$3" log log_mtime
+  [ "$(jq -r '.pid // 0' "$f" 2>/dev/null || echo 1)" = 0 ] || return 1
+  # Same fail-closed fallbacks as job_never_started: a manifest nothing can
+  # parse answers "not this class" to every question the kernel asks about it.
+  log="$(jq -r '.log // ""' "$f" 2>/dev/null || echo)"
+  [ -n "$log" ] && [ -e "$log" ] || return 1
+  log_mtime="$(file_mtime "$log")"
+  [ "$log_mtime" -gt 0 ] || return 1
+  [ $(( now - log_mtime )) -gt "$stall_s" ] || return 1
+  return 0
+}
+
+# THE reapable-unlaunched predicate: 0 iff this manifest never stamped a pid
+# AND is past the point where anything can still be waiting on it -- either
+# because no engine was ever spawned (job_never_started) or because the one
+# that may have been has not written a line in `stall_minutes`
+# (job_unstamped_stale). `gc` reaps exactly this, `prepare` refuses exactly
+# this, and runners/orchid-drive escalates exactly this, so the refusal can
+# only ever name something the reaper will clear on its own.
+job_unlaunched_reapable() {  # manifest now stall_s
+  job_never_started "$1" || job_unstamped_stale "$1" "$2" "$3"
+}
+
+# Reaps ONE reapable-unlaunched manifest (job_unlaunched_reapable above), if it
+# is older than <threshold> seconds. Shared verbatim by BOTH of `gc`'s modes
+# below -- ordinary `gc` (which reaps this class too, T027) and the explicit
+# `--reap-prepared` pass -- so the two can never drift.
+#
+# Age is measured off the manifest FILE's own mtime, never `started_at`: an
+# unlaunched manifest's started_at is always 0 (nothing but the pid stamp ever
+# sets it), so it carries no other signal for "how long has this sat here".
+# <threshold> is the CALLER's retention policy and nothing else -- there is no
+# floor hidden under it (T027 rework; dogfood F41 is an operator asking for
+# `--older-than-s 0` twice, on two separate runs, and being quietly given
+# something else). The safety that used to be spelled as a floor is in the
+# predicate instead, where it belongs: `stall_s` is what decides whether a
+# manifest is a candidate AT ALL, and a caller that needs a launcher-in-flight
+# margin on the never-started half passes its own threshold for it (the driver
+# does exactly that).
+#
+# Same suspect-fields validation as the dead-job reap (job_id must match the
+# exact shape `jobs prepare` mints) -- a hand-edited or corrupt job_id is
+# quarantined as `.reason-gc-suspect` and nothing it names is removed, since
+# job_id is what builds the `rm -rf` targets. `$rt/exits/<job_id>` is cleared
+# with the rest of the litter for symmetry with the dead-job reap; an
+# unlaunched job never wrote one, so in practice that path is simply absent.
+#
+# THE LOG IS NEVER REMOVED HERE, unlike the dead-job reap. A never-started job
+# never opened one -- that absence is what put it in the class. An unstamped
+# stale one has a log that is the only surviving record of whatever did get
+# spawned, and possibly the only thing still growing if that engine is alive
+# after all; deleting it would destroy the evidence at the exact moment the
+# handle goes away.
+gc_reap_unlaunched() {  # manifest now threshold stall_s
+  local f="$1" now="$2" threshold="$3" stall_s="$4"
+  local mtime age job_id base suspect reason
+  if job_never_started "$f"; then
+    reason=gc-prepared
+  elif job_unstamped_stale "$f" "$now" "$stall_s"; then
+    reason=gc-unstamped
+  else
+    return 0                                # spawned, or spawning: never reaped
+  fi
+  mtime="$(file_mtime "$f")"
+  age=$(( now - mtime ))
+  [ "$age" -gt "$threshold" ] || return 0   # too young: untouched
+  job_id="$(jq -r .job_id "$f")"
+  suspect=0
+  echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
+  if [ "$suspect" -eq 1 ]; then
+    base="$(basename "$f")"
+    quarantine_file "$f" gc-suspect
+    echo "gc-skip $base (suspect fields)"
+    return 0
+  fi
+  # THE SAME DELIVERY HOLD-BACK THE DEAD-JOB REAP MAKES (T022), for the same
+  # reason and by the same key. It can only ever matter for the `gc-unstamped`
+  # half -- that job WAS spawned, so it can write an envelope, and it can do it
+  # between this pass's `reconcile` and this reap. Reaping the manifest then
+  # destroys the delivery outright, because reconcile matches an envelope to
+  # its job THROUGH the manifest. A never-started job cannot reach this arm
+  # with a spool entry (nothing ran to write one), so for that half this is
+  # simply never true.
+  if [ -e "$spool_dir/$job_id.json" ]; then
+    echo "gc-pending $job_id (envelope awaiting reconcile)"
+    return 0
+  fi
+  quarantine_file "$f" "$reason"
+  rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$rt/exits/$job_id"
+  echo "$reason $job_id"
+}
+
 # Parses an ISO-8601 UTC timestamp (the exact shape `orchid-task`'s now()
 # emits, e.g. 2026-07-24T12:00:00Z) to epoch seconds; portable across GNU
 # date (-d) and BSD/macOS date (-j -f), since jobs check runs on both. Empty
@@ -237,15 +397,23 @@ case "$sub" in
   prepare)
     # tier-1: mints identity + writes the manifest only; never spawns (INV-01).
     #
-    # DELIBERATELY NOT a concurrency gate: this arm does not refuse a second
-    # manifest for a task+operation that already has one. Duplicates are
-    # legitimate here (a dual-review tier routes two `review` jobs for one
+    # NOT a concurrency gate: this arm does not refuse a second manifest for a
+    # task+operation that already has a RUNNING one. Duplicates of that kind
+    # are legitimate here (a dual-review tier routes two `review` jobs for one
     # task, a point with two bindings launches two `hook` jobs for one point),
-    # "already outstanding" is a LIVENESS question a pid-0 manifest answers
-    # `no`, and whether to have a second engine running is a tier-2 dispatch
-    # decision this verb is never told about. The single guard lives in
+    # and whether to have a second engine running is a tier-2 dispatch decision
+    # this verb is never told about. CONCURRENCY STAYS ENTIRELY IN
     # runners/orchid-drive, where every arm asks drive_job_outstanding before
-    # it spawns -- see drive_implementing's own note for the full reasoning.
+    # it spawns -- drive_implementing's note is the authority on that split and
+    # this arm does not amend it.
+    #
+    # The ONE duplicate it does refuse (T027, dogfood F29) is a different
+    # question, and deliberately not the one that note is about: not "is
+    # something running for this slot" (liveness, tier-2's) but "does this slot
+    # already hold a manifest for a job that will demonstrably never produce
+    # anything" (identity + this verb's own output). See the refusal below,
+    # which is keyed on the shared job_unlaunched_reapable predicate so it can
+    # only ever fire over a manifest the reaper is about to retire anyway.
     verb_lock_guard "$repo"
     epoch_require "$repo"
     task="$1"; role="$2"; operation="$3"; shift 3
@@ -370,6 +538,61 @@ case "$sub" in
       # there is nothing else to clean up here before exiting).
       engine="$(resolve_role_available "$repo" "$role")" || exit 14
     fi
+    # T027 (dogfood F29): refuse to mint a SECOND manifest for a job that
+    # already has an UNLAUNCHED one -- same task, same attempt, same role,
+    # same operation and (for hooks) the same point.
+    #
+    # This is the identity question, not the liveness one. An unlaunched
+    # manifest is a job that was minted and either never spawned at all
+    # (job_never_started: pid 0, no log) or spawned something that has not
+    # written a line in `stall_minutes` (job_unstamped_stale); minting another
+    # for the same slot cannot make either of them run, it only leaves a second
+    # orphan behind. A run whose launcher failed before its spawn line (an
+    # input_overflow pack, a missing binary) did exactly that once per pass for
+    # 73 passes: 73 manifests, all pid 0, no logs, no envelopes, nothing to
+    # reconcile and nothing to escalate. Whatever else is wrong, ONE orphan per
+    # slot is enough to diagnose it.
+    #
+    # NARROWED TO EXACTLY THE CLASS `gc` REAPS, which is what makes exit 18 a
+    # state that can always be left. The refusal and the reaper share ONE
+    # predicate (job_unlaunched_reapable), so every manifest that can cause
+    # this refusal is a manifest `orchid jobs gc` will retire on its own,
+    # after which the identical call succeeds with no operator action.
+    # Widening it by even one case -- refusing over a pid-0 manifest whose log
+    # is still being written to, say -- would refuse over something nothing
+    # reaps, and the refusal would be permanent.
+    #
+    # Exit 18 is a WAIT for the caller, not a failure (runners/orchid-drive's
+    # drive_launch treats it exactly like exit 14's closed ledger window):
+    # nothing is running and nothing was spawned. The launch failure that left
+    # the orphan is journaled and escalated where it happened, by the driver,
+    # so this refusal never has to double as the report of it.
+    #
+    # Keyed on hook_point as well as the four fields, because for a hook job
+    # the role positional is the literal "hook" for EVERY point: without it, an
+    # unlaunched `before_merge` handler would refuse an unrelated `on_blocker`
+    # one on the same attempt. Not keyed on engine: a re-dispatch that merely
+    # picked a different engine for the same slot is the same job, and the
+    # orphan is still the only thing that needs clearing.
+    #
+    # LAST of the refusals, deliberately: a mis-typed `--engine`, an unbound
+    # hook point and an empty failover chain are all faults in the CALL, and
+    # each must keep reporting itself (exit 14) rather than being masked by a
+    # wait about the state of the jobs directory.
+    dup_now="$(date +%s)"
+    dup_stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
+    for dupf in "$jobs_dir"/*.json; do
+      [ -e "$dupf" ] || continue
+      job_unlaunched_reapable "$dupf" "$dup_now" "$dup_stall_s" || continue
+      [ "$(jq -r '.task // ""' "$dupf" 2>/dev/null || echo)" = "$task" ] || continue
+      [ "$(jq -r '.attempt // 0' "$dupf" 2>/dev/null || echo)" = "$attempt" ] || continue
+      [ "$(jq -r '.role // ""' "$dupf" 2>/dev/null || echo)" = "$role" ] || continue
+      [ "$(jq -r '.operation // ""' "$dupf" 2>/dev/null || echo)" = "$operation" ] || continue
+      [ "$(jq -r '.hook_point // ""' "$dupf" 2>/dev/null || echo)" = "$hook_point" ] || continue
+      echo "orchid: $task attempt $attempt $role/$operation already has an unlaunched manifest ($(basename "$dupf" .json)) — refusing to prepare a second one; it is reaped by 'orchid jobs gc --older-than-s 0', or by 'orchid jobs gc --reap-prepared --older-than-s 0' when nothing else may be touched" >&2
+      exit 18
+    done
+
     epoch="$(epoch_current "$repo")"
     suffix="$(xxd -p -l2 /dev/urandom 2>/dev/null || printf '%04x' $$)"
     job_id="j-e${epoch}-${task}-a${attempt}-${suffix}"
@@ -442,7 +665,41 @@ case "$sub" in
             fi
           fi ;;
       esac
-      if [ "$pid" = 0 ]; then printf '%s\tprepared\n' "$task"; continue; fi
+      # pid 0 is a manifest `jobs prepare` minted and the launcher never
+      # stamped, and it has THREE very different meanings that used to be
+      # reported with the same word (T027, dogfood F29):
+      #
+      #   never-started -- there is no log file at all: no engine ran, none
+      #     ever will, and no envelope is coming. Reporting that as `prepared`
+      #     read as "queued, all fine" for the rest of the run -- 73 of them,
+      #     in the incident this arm comes from.
+      #   prepared -- a log exists AND has been written to within
+      #     `stall_minutes`, so the spawn DID happen and only the pid stamp is
+      #     missing. That is the genuine, sub-second window between `env ... &`
+      #     and the `jq` that records the pid, plus its crash case. Something
+      #     is producing output, so this is the one shape of pid-0 manifest the
+      #     driver waits on rather than relaunching over.
+      #   unstamped -- a log exists and NOTHING HAS WRITTEN TO IT for
+      #     `stall_minutes`: the same silence `check` kills a stamped job for,
+      #     on a job that never got far enough to have a pid to kill. This is
+      #     where `prepared` converges instead of being retained forever
+      #     (T027 rework); the driver escalates it once and `gc` retires the
+      #     manifest, deliberately leaving the log behind as the only surviving
+      #     record of whatever was spawned.
+      #
+      # Report-only, like every other line here: nothing is killed (there is no
+      # pid to signal), the driver decides what to escalate, and `gc` reaps.
+      if [ "$pid" = 0 ]; then
+        if job_never_started "$f"; then
+          printf '%s\tnever-started\n' "$task"
+        elif job_unstamped_stale "$f" "$now" "$stall_s"; then
+          echo "orchid: $task job $(jq -r .job_id "$f"): spawned but never recorded a pid, and its log has not been written to in ${stall_s}s — nothing can be signalled for it; the manifest is retired and $(jq -r .log "$f") is kept" >&2
+          printf '%s\tunstamped\n' "$task"
+        else
+          printf '%s\tprepared\n' "$task"
+        fi
+        continue
+      fi
       if ! kill -0 "$pid" 2>/dev/null; then printf '%s\tdead\n' "$task"; continue; fi
       pgid="$(jq -r .pgid "$f")"; log="$(jq -r .log "$f")"; started_at="$(jq -r .started_at "$f")"
       log_mtime="$(file_mtime "$log")"
@@ -765,7 +1022,9 @@ case "$sub" in
     ;;
   gc)
     # Runtime-only cleanup: reaps DEAD jobs' litter (manifest -> quarantine,
-    # plus its pack dir/request file/log) once past --older-than-s, and
+    # plus its pack dir/request file/log) once past --older-than-s, reaps
+    # UNLAUNCHED manifests (pid 0, and either no log at all or a log nothing has
+    # written to in `stall_minutes`) once past --prepared-older-than-s, and
     # separately sweeps orphaned pack/request entries that have no manifest
     # and no pending spool envelope. Unlike prepare/reconcile (which mutate
     # durable state under .orchid/tasks or .orchid/reviews), gc only ever
@@ -777,66 +1036,106 @@ case "$sub" in
     # holds trivially — there is no kill call to guard here at all.
     reap_prepared=0
     older_than_s_arg=""
+    prepared_older_than_s_arg=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --reap-prepared) reap_prepared=1; shift ;;
         --older-than-s)
           [ -n "${2:-}" ] || orchid_die "--older-than-s requires a value"
           older_than_s_arg="$2"; shift 2 ;;
-        *) orchid_die "usage: orchid jobs gc [--older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N]" ;;
+        # --prepared-older-than-s (T027 rework): the retention bound for the
+        # UNLAUNCHED class only, so a caller can hold that class back without
+        # also holding back the dead jobs it wants reaped now. It exists
+        # because the alternative -- a floor built into this verb, applied to
+        # whatever the operator typed -- is what dogfood F41 is a report of:
+        # `--older-than-s 0` on a known pid-0 orphan silently did something
+        # other than what it says. Automatic callers that need a margin
+        # (runners/orchid-drive, which cannot know whether a launcher is
+        # mid-flight between its own `prepare` and its spawn line) pass their
+        # own bound here; a human who has looked at the manifest gets the
+        # number they typed. Defaults to --older-than-s, so an operator who
+        # gives one bound gets that bound applied to everything. Accepted under
+        # `--reap-prepared` too, where it is the more specific name for the only
+        # class that mode touches and therefore wins over --older-than-s.
+        --prepared-older-than-s)
+          [ -n "${2:-}" ] || orchid_die "--prepared-older-than-s requires a value"
+          prepared_older_than_s_arg="$2"; shift 2 ;;
+        *) orchid_die "usage: orchid jobs gc [--older-than-s N] [--prepared-older-than-s N] | orchid jobs gc --reap-prepared [--older-than-s N] [--prepared-older-than-s N]" ;;
       esac
     done
     mkdir -p "$quarantine_dir"
     now="$(date +%s)"
+    # The liveness bound for the log-backed half of the unlaunched class, and
+    # NOT a retention policy: a caller's --older-than-s/--prepared-older-than-s
+    # says how long to keep a reapable manifest, while this says whether one is
+    # reapable at all. `stall_minutes` is the kernel's existing "no sign of life
+    # for long enough to call it stuck" knob -- the same one `check` kills a
+    # stamped job over -- so no new number is invented here.
+    stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
 
-    # --reap-prepared (v1-m4): a SEPARATE, exclusive mode from the ordinary
-    # dead-job reap below -- targets EXACTLY the pid==0 "prepared, never
-    # launched" manifests the ordinary loop deliberately skips (see its own
-    # comment just below), closing the live incident where an orphaned
-    # prepare-but-never-launch manifest (e.g. `runners/orchid-launch` dying
-    # between `jobs prepare` and the actual spawn) sat forever, re-reported
-    # as `prepared` by every `jobs check` call across two whole runs. A
-    # never-launched manifest's own `started_at` is always 0 (jobs prepare
-    # mints it that way), so age is instead measured off the manifest FILE's
-    # own mtime -- the only signal on disk for "how long has this sat
-    # prepared". Ordinary `gc` (no --reap-prepared) is UNCHANGED: it still
-    # skips every pid==0 manifest outright, so this must be invoked as its
-    # own explicit pass (e.g. a separate cron line) rather than folded into
-    # the default. Same suspect-fields validation as the dead-job reap below
-    # (job_id must match the exact shape `jobs prepare` generates) --
-    # quarantined as `.reason-gc-suspect`, never reaped, on any mismatch. No
-    # epoch fence here either, for the same reason the whole `gc` arm
-    # isn't fenced (runtime-only; see the arm's own header comment).
+    # --reap-prepared (v1-m4): the EXCLUSIVE, explicit form of the unlaunched
+    # reap -- unlaunched manifests only, nothing else touched, and
+    # `--older-than-s` (default 3600) taken literally. Ordinary `gc` reaps the
+    # same class (below) alongside dead jobs, so this mode is what an operator
+    # or a caller reaches for when it must not touch anything else: it is the
+    # reap runners/orchid-drive runs in PLANNING, where the dead-job reap must
+    # not run at all because that phase deliberately skips reconcile. It is NOT
+    # a wider hammer: it reaps exactly what job_unlaunched_reapable answers for,
+    # so a pid-0 manifest whose log was written within `stall_minutes` survives
+    # it at every bound, including 0 -- that one may have an engine behind it.
+    # No epoch fence here either, for the same reason the whole `gc` arm isn't
+    # fenced (runtime-only; see the arm's own header comment).
+    #
+    # BOTH BOUNDS ARE HONOURED HERE, with the specific one winning. This mode
+    # reaps exactly one class, and `--prepared-older-than-s` is that class's own
+    # bound: a caller that names it and is then silently given `--older-than-s`
+    # (or, worse, the 3600 default) has been told a number was applied that was
+    # not, which is the precise shape of dogfood F41 -- a bound typed and
+    # ignored. Parsing a flag and dropping it is the same defect one level up,
+    # so it is either honoured or refused, and honouring it costs nothing:
+    # `--older-than-s` still means what it always did when it is the only one
+    # given, so runners/orchid-drive's PLANNING reap is unchanged.
     if [ "$reap_prepared" -eq 1 ]; then
-      older_than_s="${older_than_s_arg:-3600}"
+      older_than_s="${prepared_older_than_s_arg:-${older_than_s_arg:-3600}}"
       for f in "$jobs_dir"/*.json; do
         [ -e "$f" ] || continue
-        pid="$(jq -r .pid "$f")"
-        [ "$pid" = 0 ] || continue   # only never-launched manifests
-        mtime="$(file_mtime "$f")"
-        age=$(( now - mtime ))
-        [ "$age" -gt "$older_than_s" ] || continue   # too young: untouched
-        job_id="$(jq -r .job_id "$f")"
-        suspect=0
-        echo "$job_id" | grep -qE '^j-e[0-9]+-[A-Za-z0-9_-]+-a[0-9]+-[0-9a-f]+$' || suspect=1
-        if [ "$suspect" -eq 1 ]; then
-          base="$(basename "$f")"
-          quarantine_file "$f" gc-suspect
-          echo "gc-skip $base (suspect fields)"
-          continue
-        fi
-        quarantine_file "$f" gc-prepared
-        rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$rt/exits/$job_id"
-        echo "gc-prepared $job_id"
+        gc_reap_unlaunched "$f" "$now" "$older_than_s" "$stall_s"
       done
       exit 0
     fi
 
     older_than_s="${older_than_s_arg:-$(config_get "$repo" gc_older_than_s 86400)}"
+    # T027 (dogfood F29/F41): ordinary `gc` reaps UNLAUNCHED manifests too. It
+    # used to skip every pid==0 manifest outright, which left `orchid jobs gc
+    # --older-than-s 0` -- the call the driver itself makes and the first one an
+    # operator reaches for -- with no effect at all on 74 of them. They were
+    # deleted by hand, on two separate runs.
+    #
+    # `pid == 0` is NOT the test. Half of that class has a log, which means the
+    # spawn happened and an engine may be running with its pid recorded
+    # nowhere; reaping one of those while it is still writing throws away the
+    # only handle on a live process. gc_reap_unlaunched asks
+    # job_unlaunched_reapable, which reads the pid, the log and the log's own
+    # mtime together, so a log-backed manifest is retired only once it has been
+    # silent for as long as `check` would kill a stamped job for.
+    #
+    # Its retention bound is SEPARATE from the dead-job one because its age
+    # anchor is different (file mtime, since started_at is 0 on anything that
+    # never stamped a pid) and because an automatic caller needs a margin that
+    # it does not need there -- a manifest seconds old may belong to a launcher
+    # sitting between its own `jobs prepare` and its spawn line right now, and
+    # reaping that one deletes the pack and request document out from under a
+    # live launch. That margin is the CALLER's to pass (see
+    # --prepared-older-than-s above), never this verb's to impose: an operator
+    # who says 0 gets 0.
+    prepared_older_than_s="${prepared_older_than_s_arg:-$older_than_s}"
     for f in "$jobs_dir"/*.json; do
       [ -e "$f" ] || continue
       pid="$(jq -r .pid "$f")"
-      [ "$pid" != 0 ] || continue          # never started: not "dead", just prepared
+      if [ "$pid" = 0 ]; then              # never started, or spawned-but-unstamped
+        gc_reap_unlaunched "$f" "$now" "$prepared_older_than_s" "$stall_s"
+        continue
+      fi
       if kill -0 "$pid" 2>/dev/null; then continue; fi   # still alive: untouched
       started_at="$(jq -r .started_at "$f")"
       age=$(( now - started_at ))

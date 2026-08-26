@@ -328,6 +328,33 @@ rc=0; wt2_err="$("$REPO_ROOT/runners/orchid-launch" TWT2 inlinecritic review 2>&
 [ "$rc" -ne 0 ] || fail "inline-only engine: launcher must fail (input_overflow) for the same big diff, unchanged"
 assert_match "input_overflow" "$wt2_err" "inline-only engine: launcher surfaces input_overflow for the big diff"
 
+# ...AND THE MANIFEST IT ABANDONED SAYS SO (T027 rework).
+#
+# This is the launcher's only chance to record WHY it failed. It returns the
+# non-zero exit to its caller and is gone; the manifest `jobs prepare` minted
+# for it stays on disk, and on disk it is otherwise indistinguishable from one
+# whose launcher was killed asynchronously -- a reboot, a Ctrl-C, a felled
+# driver. Only this process ever knew the exit status, so if it does not write
+# it here nobody can ever report it.
+#
+# runners/orchid-drive is the reader, and it reads this for DIAGNOSIS only: its
+# ageing sweep quotes this exit code when it turns out to be the arm that
+# charges the failure. Whether a rung has already been spent is a different
+# question with a different answer -- the journal receipt the charge itself
+# writes -- precisely because this mark is written BEFORE any charge and would
+# otherwise let a crashed pass hide a failure forever. tests/test_drive.sh
+# Parts T and W are the two end-to-end halves of that.
+wt2_mf=""
+for _m in "$WORK/.orchid/runtime/jobs"/*.json; do
+  [ -e "$_m" ] || continue
+  [ "$(jq -r '.task // ""' "$_m")" = TWT2 ] || continue
+  wt2_mf="$_m"
+done
+[ -n "$wt2_mf" ] || fail "the failed launch must leave its prepared manifest behind for the driver to read"
+assert_eq 0 "$(jq -r '.pid' "$wt2_mf")" "nothing was spawned, so the pid is still the one prepare minted"
+assert_eq "$rc" "$(jq -r '.launch_exit // "unset"' "$wt2_mf")" \
+  "and the launcher stamps its OWN exit status on the manifest it abandoned — the only record anywhere of why this launch failed"
+
 # ===========================================================================
 # v1-m4 Task 2 (push prevention): `orchid init` installs a defense-in-depth
 # `.git/hooks/pre-push` guard (PROTOCOL.md already forbids external

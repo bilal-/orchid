@@ -885,6 +885,8 @@ derived cache, rebuildable from it.
 | Mode | Defense |
 |---|---|
 | Dead | pgid + start-time liveness per `orchid jobs check` |
+| Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver, EXACTLY ONCE, since both the synchronous charge and the ageing sweep deduplicate on the stranded manifest's `job_id` against the journal receipt the charge itself writes (`[ladder job <job_id>]`), so a pass that crashes before charging loses nothing and one that charged is never charged again — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
+| Spawned but never stamped | a launcher killed between the spawn and the pid stamp: an engine may be running with its pid recorded nowhere. Waited on while its log is still being written (never relaunched over — that is two engines in one worktree); reported `unstamped` and escalated once its log has been silent for `stall_minutes`, with the log kept when the manifest is reaped |
 | Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
 | Alive but not working | Opt-in CPU delta across the job's own heartbeat lines: with `cpu_stall_min_s` above zero (default 0: off — F35 retracted CPU as a sole progress signal, a healthy API-bound engine burns almost none), less than the floor across the last `stall_minutes` of heartbeats → `stalled` → kill, retry; a counter that goes backwards (pid reuse) is unknown and never kills. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
@@ -922,16 +924,70 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   reconcile manifests/spool. Never re-adopt ambiguous processes: job
   identity is job_id + pgid + start-time; unidentifiable → confirm
   termination, relaunch cleanly. Session resume is an optimization.
-- Prepared-never-launched manifests (m3 ledger, closed): a launcher crash
-  between `jobs prepare` and the actual spawn leaves a `pid: 0` manifest that
-  ordinary `jobs gc` deliberately skips (it isn't "dead", just never
-  started) and `jobs check` re-reports forever. `orchid jobs gc
-  --reap-prepared [--older-than-s N]` (v1-m4 — SHIPPED) is a SEPARATE,
-  exclusive gc mode targeting exactly those pid-0 manifests, age-gated off
-  the manifest FILE's own mtime (a never-launched manifest's `started_at` is
-  always 0); ordinary `gc` is unchanged and must still be invoked on its own
-  cadence (e.g. a separate cron line) — this is not folded into the default
-  pass.
+- Prepared-never-launched manifests (m3 ledger, closed; widened by T027): a
+  launcher that dies between `jobs prepare` and the actual spawn leaves a
+  `pid: 0` manifest. `jobs check` reports it as **`never-started`** (a pid-0
+  manifest with no log file — the launcher creates the log by redirecting the
+  spawn into it, so its absence proves the spawn line was never reached);
+  `prepared` is reserved for the genuine post-spawn/pre-stamp window a log
+  proves. Ordinary `jobs gc` reaps this class, age-gated off the manifest
+  FILE's own mtime (a never-launched manifest's `started_at` is always 0)
+  under `--prepared-older-than-s`, a bound SEPARATE from the dead-job one so a
+  caller can hold this class back without holding back the dead jobs it wants
+  reaped now. Every bound is taken literally: an operator's `--older-than-s 0`
+  honours zero on every class. (In F41 that operator got nothing back twice
+  because this class was skipped outright, not because their bound was
+  silently raised — the literal-bound rule is what keeps the fix from
+  reintroducing the same silence in the other spelling.) The unattended
+  driver passes `stall_minutes` for this class because *it* cannot know
+  whether a launcher is mid-flight between its own `prepare` and its spawn
+  line. `orchid jobs gc --reap-prepared
+  [--older-than-s N] [--prepared-older-than-s N]` (v1-m4) remains the exclusive
+  form of the same reap, touching nothing else — which is what makes it the one
+  `PLANNING` can run. It honours either bound (the class-specific
+  `--prepared-older-than-s` wins where both are given): a flag this verb parses
+  and then ignores would be F41 one level up.
+  A manifest of this class older than the bound also walks the escalation
+  ladder, and `jobs prepare` refuses (exit 18) to mint a second manifest for a
+  slot that already has one — one orphan per slot, not one per pass.
+
+  **`pid: 0` is not the test.** The other half of the pid-0 class — pid 0 WITH
+  a log — is a launcher killed inside the sub-second window between the spawn
+  and the pid stamp, so an engine may be running with its pid recorded
+  nowhere. While that log is still being written the driver **waits** on the
+  manifest (`drive_job_outstanding` counts it as a live job) rather than
+  launching a second engine into the same worktree, and `check` reports it
+  `prepared`. Retention alone was never the answer: the manifest used to be
+  kept at every age while the driver read it as "no job" and relaunched over
+  it anyway, so the duplicate happened and the handle just accumulated. It
+  therefore CONVERGES — once the log has been silent for `stall_minutes`, the
+  same silence `check` kills a stamped job over, `check` reports `unstamped`,
+  the ladder spends one rung and gc retires the manifest, **keeping the log**
+  (no pid was ever recorded, so nothing was killable and that log is the only
+  surviving evidence). The refusal and the reap share ONE predicate
+  (`libexec/orchid-jobs`' `job_unlaunched_reapable`) deliberately: every
+  manifest that can cause the refusal is one gc will retire on its own, in
+  every phase — `PLANNING` included, which runs that reap even though it runs
+  no reconcile and no check — so exit 18 can never become a state the run
+  cannot leave.
+
+  **Nothing is retired before it has been charged, in `PLANNING` too.** That
+  phase is where the original F29 shape survived longest, because it is the one
+  phase whose launchers nobody wraps: `runners/orchid-launch plan plan_critic
+  critique` and the plan hook points are run by the orchestrator itself, so no
+  caller sees the non-zero exit and journals it. A reap that ran before the
+  ladder therefore deleted the incident's only trace. The driver now sweeps
+  before it reaps in every phase, narrowed in `PLANNING` to exactly the set
+  that phase retires — `job_unlaunched_reapable`, i.e. both halves of the pid-0
+  class, and not the dead-pid class, which `--reap-prepared` does not touch and
+  which cannot be judged without the reconcile that phase does not run.
+  Charging is keyed on the receipt the charge itself writes, so a pass felled
+  between the launcher's exit and the accounting is recovered by the next pass and counted
+  once either way. The reserved `plan` id has no task file and therefore no
+  `infra_failures` counter — its failures are journaled rather than charged,
+  which is a property of the id, not a reason to drop them. And the ladder
+  never relaunches in `PLANNING`: the phase dispatches nothing, so what it owes
+  a stranded launcher is a durable record and a cleared slot.
 - Finished-between-reconcile-and-reap (T022, closed): a pass runs `jobs
   reconcile` then `jobs gc`, so a job that exits between the two is dead at
   reap time with its envelope written and still in the spool. It DELIVERED.
@@ -1269,4 +1325,8 @@ tightens the derived threshold (low tier → `high`, medium/high tier →
 Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
 failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
-boundary, 17 brokered command refused.
+boundary, 17 brokered command refused, 18 slot already holds an unlaunched
+manifest (T027). Every code means ONE condition: 18 is its own entry rather
+than a second meaning for 17 precisely because a caller that has to
+distinguish "the broker refused this command" from "wait, this slot has an
+orphan" cannot do it from a number two conditions share.

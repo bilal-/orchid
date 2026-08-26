@@ -1060,6 +1060,95 @@ it is deliberately not the first thing to reach for — task-splitting keeps
 every engine's job bounded and reviewable regardless of which one is
 bound to a role.
 
+**Check which budget is actually live before raising anything.** `orchid
+doctor` prints it — `note: pack budget: pack_budget_bytes=<n> (from: env|repo|
+user|default)` — and so does `orchid config list`. The value resolves against
+the **target repository**, so a `pack_budget_bytes=` line in the orchid
+installation's own `orchid.config` does nothing for the repo being driven; the
+per-machine layer that does is `~/.orchid/config`. A run that failed every
+launch on a 65536-byte budget while its operator believed 131072 was set had
+set it in the wrong file.
+
+## Every launch fails and nothing is ever reported
+
+**Symptom:** tasks sit in `pending` (or an active status) pass after pass;
+`orchid jobs check` lists manifests as `never-started`; `.orchid/runtime/jobs`
+has manifests with `pid 0`, `started_at 0` and no log file beside them in
+`runtime/logs`.
+
+The launcher does real work before it spawns: `orchid jobs prepare`, then the
+input pack. A failure in between (`input_overflow` above is the common one, a
+missing binary the next) means no engine ever started — so there is no job to
+call dead and no envelope to mark the engine with.
+
+What the kernel does about it, and what to look for:
+
+- The driver treats a non-zero launcher exit as a job failure: journaled, and
+  one rung of the escalation ladder (`orchid task infra-fail`), which blocks
+  the task at `infra_max`. So `orchid journal tail` names the exit code, and
+  a task that cannot be launched ends up `blocked`, not retried forever.
+- That rung is spent ONCE, and never zero times. Two arms can charge the same
+  stranded launch — the driver's synchronous one and its ageing sweep, passes
+  later — and they deduplicate on the `job_id` of the manifest that launch left
+  behind. The receipt is the journal entry the charge itself wrote: every
+  launch-failure rung's reason ends `[ladder job <job_id>]`, and a charge whose receipt
+  is already on record is refused. So a pass killed between the launcher's exit
+  and the charge loses nothing (no receipt → the sweep counts it, and the
+  manifest is not reaped until after the ladder has run), and a pass that
+  charged is never charged again. If you are auditing a blocked task's
+  `infra_failures`, every rung should have a journal entry naming a launch that
+  really was attempted, and no two rungs should name the same `[ladder job ...]`.
+  `launch_exit` on the manifest is diagnostic only — it records *why* the
+  manifest was stranded, and the sweep quotes that exit code when it is the arm
+  that ends up charging.
+- `orchid jobs prepare` refuses (exit 18) to mint a second manifest for a slot
+  that already has an unlaunched one, so a broken launch leaves ONE orphan,
+  not one per pass. That refusal is a wait, not a failure.
+- An unattended `orchid jobs gc` reaps a never-started manifest once it is
+  older than the bound the driver passes it (`stall_minutes`); after that, the
+  identical dispatch is tried again. This reap runs in every phase, `PLANNING`
+  included, so exit 18 always clears on its own. To clear one immediately,
+  having looked at it yourself: `orchid jobs gc --older-than-s 0` (zero means
+  zero — no floor is applied to what you type), or `orchid jobs gc
+  --reap-prepared --older-than-s 0` when nothing else may be touched, e.g.
+  mid-`PLANNING`, where no reconcile has run and the dead-job reap must not.
+- **In `PLANNING` the journal is the only place this shows up, and it does.**
+  Nothing wraps the launchers there — you run `runners/orchid-launch plan
+  plan_critic critique` yourself — so no caller reports the exit code at the
+  time. A planning pass sweeps the unlaunched manifests it is about to retire,
+  journals each with the same `[ladder job ...]` receipt, spends a rung where
+  there is a task to spend it against, and only then reaps. The reserved `plan`
+  id has no task file and so no counter: read its failures with `orchid journal
+  show --task plan`. The pass never relaunches in that phase — clearing the
+  slot is all it does, and what to run next is yours to decide.
+
+Fix the underlying launch failure first — the pass output and
+`.orchid/runtime/pump.log` carry the launcher's own stderr — then
+`orchid task retry <id> --reason "..."` if the ladder already blocked it.
+
+**`prepared` and `unstamped` are a different symptom: pid 0 WITH a log.** That
+manifest was spawned — the launcher creates the log by redirecting the engine
+into it and stamps the pid only on the next line — and was then killed inside
+that window, so an engine may still be running with its pid recorded nowhere.
+The log's mtime is what the kernel reads, and it separates the two reports:
+
+- **`prepared`** — the log was written to within `stall_minutes`. Something is
+  producing output, so the driver WAITS on this manifest: it counts as a live
+  job, no second engine is launched over it, and no `gc` mode reaps it. Let it
+  finish and reconcile. If you want to watch it, `tail -f` the manifest's
+  `.log`.
+- **`unstamped`** — nothing has written to that log for `stall_minutes`, the
+  same silence `orchid jobs check` kills a *stamped* job over. The kernel
+  handles this one itself: one rung of the escalation ladder, then `gc`
+  retires the manifest (quarantined `.reason-gc-unstamped`) and the slot is
+  relaunched. **The log is deliberately kept**, unlike a dead job's — no pid
+  was ever recorded, so nothing here was ever killable, and that log is the
+  only surviving record of whatever was spawned.
+
+There is one thing the kernel cannot do for `unstamped` and you may still want
+to: kill the process, if it turns out to be alive but silent. `pgrep -f
+<job_id>` finds it; nothing else on this machine knows its pid.
+
 ## Scheduled pump can't find jq / engine CLIs
 
 **Symptom:** `orchid service install` succeeds and `orchid service status`

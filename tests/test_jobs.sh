@@ -27,7 +27,18 @@ jid="$(jq -r .job_id "$m")"
 assert_match "^j-e[0-9]+-T001-a1-" "$jid" "job id shape"
 assert_eq "fake" "$(jq -r .engine "$m")" "engine resolved from role"
 assert_eq "0" "$(jq -r .pid "$m")" "prepare does not spawn"
-assert_match "T001	prepared" "$("$ORCHID_BIN" jobs check)" "prepared state visible"
+# T027 (dogfood F29): a pid-0 manifest with NO LOG never reached the launcher's
+# spawn line, so no engine ran and none ever will. `jobs check` used to call
+# that `prepared` — indistinguishable from "queued and fine", which is how 73
+# of them stayed invisible for a whole run. It is `never-started`; `prepared`
+# now means only the genuine post-spawn/pre-stamp window, which a log proves.
+assert_match "T001	never-started" "$("$ORCHID_BIN" jobs check)" \
+  "a pid-0 manifest with no log is reported never-started, not prepared"
+m_log="$(jq -r .log "$m")"
+mkdir -p "$(dirname "$m_log")"; : > "$m_log"
+assert_match "T001	prepared" "$("$ORCHID_BIN" jobs check)" \
+  "the same manifest WITH a log is the real prepared window (spawned, pid not yet stamped)"
+rm -f "$m_log"
 
 # reconcile a good envelope
 out="$(jq -r .output "$m")"
@@ -227,16 +238,34 @@ echo "$hostile_out" | grep -Eq "^gc (\.\.|/)" && fail "gc must never echo a reap
 [ -f "$rt/quarantine/j-hostile.json.reason-gc-suspect" ] || fail "gc: hostile manifest quarantined as .reason-gc-suspect"
 
 # ---------------------------------------------------------------------------
-# v1-m4 Task 2 (the pid-0 ghost incident): `jobs gc --reap-prepared
-# [--older-than-s N]` (default 3600) is a SEPARATE mode targeting EXACTLY
-# the pid==0 "prepared, never launched" manifests -- e.g. `orchid-launch`
-# dying between `jobs prepare` and the actual spawn -- that plain `gc` (no
-# flag) deliberately skips outright (see the `[ "$pid" != 0 ] || continue`
-# line above), and which otherwise sat forever, re-reported as `prepared` by
-# every `jobs check` pass. Age is measured off the manifest FILE's own
-# mtime, since `started_at` is always 0 for a never-launched manifest.
+# The pid-0 ghost incident, in two rounds.
+#
+# v1-m4 Task 2 added `jobs gc --reap-prepared [--older-than-s N]` (default
+# 3600) as a SEPARATE mode targeting EXACTLY the pid==0 "prepared, never
+# launched" manifests -- e.g. `orchid-launch` dying between `jobs prepare` and
+# the actual spawn. T027 (dogfood F29) makes ORDINARY `gc` reap them too: a
+# whole run's worth of them survived `orchid jobs gc --older-than-s 0` -- the
+# call the driver itself makes and the first one an operator reaches for -- and
+# 74 files were deleted by hand.
+#
+# SCOPE, STATED ONCE FOR EVERY CASE BELOW: the class being reaped here is the
+# pid-0 one, and that is the class the parent skipped outright
+# (`[ "$pid" != 0 ] || continue`). The dead-pid class was never skipped there
+# and is not fixed by any of this -- see the block much further down that says
+# so, and `bash tests/probes/probe-t027-parent-red.sh <base_sha>`, which runs
+# both classes through the parent's own binary and this one's.
+#
+# Age is measured off the manifest FILE's own mtime for both modes, since
+# `started_at` is always 0 for a never-launched manifest. EVERY BOUND IS TAKEN
+# LITERALLY -- there is no floor hidden inside the verb (T027 rework; the F41
+# report is that same operator typing `--older-than-s 0` at a manifest they had
+# already identified by hand and being quietly given something else). The
+# margin an unattended sweep needs, for a launcher that may be mid-flight
+# between its own `prepare` and its spawn line, is a SEPARATE bound its caller
+# passes: `--prepared-older-than-s`, pinned in both directions below.
 # ---------------------------------------------------------------------------
 mkdir -p "$rt/jobs"
+printf 'stall_minutes=1\n' >> orchid.config   # a 60s bound the fixtures straddle
 
 # A genuinely old, never-launched manifest: must be reaped as gc-prepared.
 jq -n '{job_id:"j-e1-TPREP-a1-aaaa0001", task:"TPREP", attempt:1, role:"implementer", operation:"implement",
@@ -244,24 +273,318 @@ jq -n '{job_id:"j-e1-TPREP-a1-aaaa0001", task:"TPREP", attempt:1, role:"implemen
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-old.json"
 touch -t 202001010000 "$rt/jobs/j-prep-old.json"   # ancient mtime
 
-# A young, never-launched manifest: must survive (age gates it, just like
-# the dead-job reap above).
+# A young, never-launched manifest: 30 seconds old, i.e. strictly INSIDE the
+# 60s `stall_minutes` window this fixture sets. That window is the whole point
+# of the pair below -- one bound must spare it and another must reap it -- so
+# the age has to be neither 0 nor ancient, which no `touch -t` literal can be.
+# BSD/macOS `date -v` first, GNU `date -d` as the fallback, exactly the split
+# lib/common.sh's own timestamp parsing already carries; LOCAL time in both,
+# because that is what `touch -t` reads.
+#
+# The two assertions that use it are each other's guard: if this ageing
+# silently did nothing the manifest is 0s old and the `--older-than-s 0` call
+# spares it, and if it aged too far the `--prepared-older-than-s 60` call reaps
+# it. Either way a `fail` fires -- the window cannot quietly collapse and leave
+# the pair vacuous.
+back30="$(date -v-30S +%Y%m%d%H%M.%S 2>/dev/null || date -d '30 seconds ago' +%Y%m%d%H%M.%S)"
+jq -n '{job_id:"j-e1-TPREPYOUNG-a1-bbbb0001", task:"TPREPYOUNG", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-young.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-young.json"
+touch -t "$back30" "$rt/jobs/j-prep-young.json"
+
+# A LARGER bound holds both back: an operator asking for more retention gets
+# it, on this class too.
+long_gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 999999999)"
+# Herestring, never `echo | grep -q`: same SIGPIPE/pipefail trap helpers.sh
+# documents for assert_match — a matching grep exiting early would poison the
+# pipeline status and silently skip the `fail`. Same for every negative
+# assertion below.
+grep -q "TPREP" <<<"$long_gc_out" && fail "a large --older-than-s must still hold the prepared manifest back"
+[ -f "$rt/jobs/j-prep-old.json" ] || fail "a large --older-than-s must not reap the old prepared manifest"
+
+# THE SEPARATE BOUND, which is where the unattended sweep's margin lives. The
+# driver passes its own `stall_minutes` here precisely because it cannot know
+# whether a launcher is mid-flight; the aged manifest is past it and goes, the
+# young one is not and stays.
+split_gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0 --prepared-older-than-s 60)"
+assert_match "^gc-prepared j-e1-TPREP-a1-aaaa0001$" "$split_gc_out" \
+  "plain gc reaps an aged never-launched manifest (T027: it used to skip every pid==0 manifest outright)"
+grep -q "TPREPYOUNG" <<<"$split_gc_out" && fail "--prepared-older-than-s must hold back a manifest younger than the bound the caller passed"
+[ ! -f "$rt/jobs/j-prep-old.json" ] || fail "plain gc: the aged prepared manifest must leave the jobs dir"
+[ -f "$rt/quarantine/j-prep-old.json.reason-gc-prepared" ] || fail "plain gc: quarantined as .reason-gc-prepared"
+[ -f "$rt/jobs/j-prep-young.json" ] || fail "plain gc: the young prepared manifest must survive its caller's bound"
+
+# ...AND THE ZERO THE OPERATOR TYPED IS THE ZERO THEY GET (dogfood F41). No
+# --prepared-older-than-s, so the one bound given applies to everything: the
+# SAME young manifest the call above deliberately spared is reaped by this one,
+# with no age of any kind standing between the operator and a manifest they
+# have already identified as an orphan.
+#
+# RED twice over, for two different reasons, which is worth keeping straight:
+# at the PARENT this call printed nothing because ordinary gc skipped every
+# pid-0 manifest outright; at an earlier T027 attempt it printed nothing
+# because the verb silently raised the 0 the caller typed to `stall_minutes`.
+# The parent half is the dogfood defect -- what sent that operator to `rm` for
+# the second run running -- and is the one the probe's `gc-zero-never-started`
+# row proves; the second is a self-inflicted regression this rework removed,
+# and only this file ever saw it.
+zero_gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+assert_match "^gc-prepared j-e1-TPREPYOUNG-a1-bbbb0001$" "$zero_gc_out" \
+  "an explicit --older-than-s 0 honours zero on a known pid-0/no-log orphan"
+[ ! -f "$rt/jobs/j-prep-young.json" ] || fail "gc --older-than-s 0: the orphan the operator asked to clear must be gone"
+
+# The explicit mode, on its own aged fixture -- plus a fresh young one, since
+# the zero-bound call above cleared the first (that is what it is there to
+# prove) and this block needs an un-aged manifest of its own to spare.
+jq -n '{job_id:"j-e1-TPREPX-a1-aaaa0002", task:"TPREPX", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-x.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-x.json"
+touch -t 202001010000 "$rt/jobs/j-prep-x.json"
 jq -n '{job_id:"j-e1-TPREPYOUNG-a1-bbbb0001", task:"TPREPYOUNG", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-young.log", output:"/dev/null",
     base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-young.json"
 
-# Plain gc (no --reap-prepared) must still skip BOTH pid-0 manifests outright
-# -- unchanged existing behavior.
-plain_gc_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
-echo "$plain_gc_out" | grep -q "j-prep-old\|TPREP" && fail "plain gc must never touch a pid==0 (prepared) manifest, old or young"
-[ -f "$rt/jobs/j-prep-old.json" ] || fail "plain gc must not remove the old prepared manifest"
-
 reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 60)"
-assert_match "^gc-prepared j-e1-TPREP-a1-aaaa0001$" "$reap_out" "gc --reap-prepared reaps the old never-launched manifest"
-echo "$reap_out" | grep -q "TPREPYOUNG" && fail "gc --reap-prepared must not touch the young prepared manifest"
-[ ! -f "$rt/jobs/j-prep-old.json" ] || fail "gc --reap-prepared: old prepared manifest removed from jobs dir"
-[ -f "$rt/quarantine/j-prep-old.json.reason-gc-prepared" ] || fail "gc --reap-prepared: quarantined as .reason-gc-prepared"
+assert_match "^gc-prepared j-e1-TPREPX-a1-aaaa0002$" "$reap_out" "gc --reap-prepared reaps the old never-launched manifest"
+grep -q "TPREPYOUNG" <<<"$reap_out" && fail "gc --reap-prepared must not touch the young prepared manifest"
+[ ! -f "$rt/jobs/j-prep-x.json" ] || fail "gc --reap-prepared: old prepared manifest removed from jobs dir"
+[ -f "$rt/quarantine/j-prep-x.json.reason-gc-prepared" ] || fail "gc --reap-prepared: quarantined as .reason-gc-prepared"
 [ -f "$rt/jobs/j-prep-young.json" ] || fail "gc --reap-prepared: young prepared manifest must survive"
+
+# ...AND `--prepared-older-than-s` MEANS SOMETHING IN THIS MODE TOO. It was
+# parsed here and then dropped on the floor: a caller naming the bound for the
+# only class this mode touches was silently given `--older-than-s`, or the 3600
+# default. That is the F41 defect one level up -- a bound typed and ignored --
+# so it is honoured, and being the more specific name for this class it wins.
+#
+# Both directions, because a flag that only ever reaps proves nothing: it must
+# be able to hold a manifest back as well as let it go.
+mk_prepared() {  # <file> <job-id> <task> -- an ancient never-launched manifest
+  jq -n --arg jid "$2" --arg task "$3" --arg log "$rt/logs/$1.log" \
+    '{job_id:$jid, task:$task, attempt:1, role:"implementer", operation:"implement",
+      engine:"fake", pid:0, pgid:0, started_at:0, log:$log, output:"/dev/null",
+      base_sha:"", candidate_sha:""}' > "$rt/jobs/$1.json"
+  touch -t 202001010000 "$rt/jobs/$1.json"
+}
+
+mk_prepared j-prep-bound-a j-e1-TPREPBOUNDA-a1-cccc0001 TPREPBOUNDA
+bound_reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 999999999 --prepared-older-than-s 60)"
+assert_match "^gc-prepared j-e1-TPREPBOUNDA-a1-cccc0001$" "$bound_reap_out" \
+  "gc --reap-prepared honours --prepared-older-than-s, and the class-specific bound wins over --older-than-s"
+[ ! -f "$rt/jobs/j-prep-bound-a.json" ] || fail "gc --reap-prepared: the manifest past --prepared-older-than-s must leave the jobs dir"
+
+mk_prepared j-prep-bound-b j-e1-TPREPBOUNDB-a1-cccc0002 TPREPBOUNDB
+bound_hold_out="$("$ORCHID_BIN" jobs gc --reap-prepared --prepared-older-than-s 999999999)"
+grep -q "TPREPBOUNDB" <<<"$bound_hold_out" && fail "gc --reap-prepared: --prepared-older-than-s must be able to HOLD a manifest back, not only reap one — an ignored flag would fall through to the 3600 default and reap this ancient manifest"
+[ -f "$rt/jobs/j-prep-bound-b.json" ] || fail "gc --reap-prepared: the manifest inside --prepared-older-than-s must survive"
+# ...and it is a bound, not a permanent exemption. Cleared here so the jobs dir
+# is left as this block found it -- at 3600, which the ancient manifest is past
+# and the young one from the block above is not, so the cleanup takes exactly
+# what it put there.
+"$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 3600 >/dev/null
+[ ! -f "$rt/jobs/j-prep-bound-b.json" ] || fail "gc --reap-prepared: a bound held back is not an exemption — the next call with a bound it passes takes it"
+[ -f "$rt/jobs/j-prep-young.json" ] || fail "and the cleanup must not have taken the young manifest with it"
+
+# ---------------------------------------------------------------------------
+# ...and the manifest no bound may reap WHILE ITS LOG IS STILL BEING WRITTEN:
+# pid 0 with a log.
+#
+# `pid == 0` alone cannot mean "safe to reap". The launcher creates the log by
+# redirecting the engine into it and stamps the pid only on the line after, so
+# a pid-0 manifest that HAS a log was spawned -- an engine may be running
+# behind it right now with its pid recorded nowhere on disk. The manifest is
+# the only handle on that process. Reaping it loses the handle AND clears the
+# way for a second implementer in the same worktree, which is the exact
+# duplicate-implementer defect the kernel already guards against.
+#
+# So: ancient manifest, ancient-looking everything, log written a moment ago --
+# and both gc modes, at their most aggressive bound, must leave it alone.
+#
+# But NOT FOREVER (T027 rework). Retention on its own was never the answer to
+# "an engine might be running": the driver read the same manifest as "no job"
+# and relaunched over it anyway, so the duplicate happened and the manifest
+# just accumulated. What ends it is the log going quiet for `stall_minutes` --
+# the same silence `check` kills a stamped job for -- and the second half of
+# this block is that convergence.
+# ---------------------------------------------------------------------------
+jq -n '{job_id:"j-e1-TLIVE-a1-cccc0001", task:"TLIVE", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-live.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-live.json"
+mkdir -p "$rt/logs"; printf 'engine is running\n' > "$rt/logs/j-prep-live.log"
+touch -t 202001010000 "$rt/jobs/j-prep-live.json"   # as old as a manifest gets
+
+live_plain_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+grep -q "TLIVE\|j-prep-live" <<<"$live_plain_out" && fail "plain gc must never reap a pid-0 manifest that HAS a log — an engine may be running behind it"
+[ -f "$rt/jobs/j-prep-live.json" ] || fail "plain gc: the log-backed manifest is the only handle on that process and must survive"
+live_reap_out="$("$ORCHID_BIN" jobs gc --reap-prepared --older-than-s 0)"
+grep -q "TLIVE\|j-prep-live" <<<"$live_reap_out" && fail "gc --reap-prepared must not reap a log-backed manifest either — it is the explicit mode, not a wider hammer"
+[ -f "$rt/jobs/j-prep-live.json" ] || fail "gc --reap-prepared: the log-backed manifest must survive"
+assert_match "TLIVE	prepared" "$("$ORCHID_BIN" jobs check)" \
+  "and it keeps being REPORTED, so an operator can see what is being waited on"
+
+# ...AND IT CONVERGES. Age the LOG past `stall_minutes` (60s here) and nothing
+# has written a line for as long as `check` would kill a stamped job over. The
+# report changes, and the manifest becomes reapable — the manifest itself is
+# untouched, so the log's own mtime is doing all of the work.
+#
+# RED at the parent, precisely: `prepared` forever from `jobs check`, skipped
+# by ordinary `gc` at every bound, while runners/orchid-drive read the same
+# manifest as "no job" and launched a second engine over it on the very next
+# pass. Not "reaped by nothing" -- the parent's `--reap-prepared` mode did
+# reap it, on pid 0 alone and with no regard for whether its log was still
+# growing, which is the opposite error and is why the two halves of the pid-0
+# class are separated by the log here rather than merged.
+touch -t 202001010000 "$rt/logs/j-prep-live.log"
+assert_match "TLIVE	unstamped" "$("$ORCHID_BIN" jobs check)" \
+  "a spawn that never stamped a pid and then went silent is reported unstamped, not prepared forever"
+live_stale_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+assert_match "^gc-unstamped j-e1-TLIVE-a1-cccc0001$" "$live_stale_out" \
+  "and gc retires it under its own reason, distinct from a job that never started at all"
+[ ! -f "$rt/jobs/j-prep-live.json" ] || fail "the stale unstamped manifest must leave the jobs dir"
+[ -f "$rt/quarantine/j-prep-live.json.reason-gc-unstamped" ] || fail "quarantined as .reason-gc-unstamped, not silently deleted"
+# THE LOG SURVIVES, unlike the dead-job reap's. No pid was ever recorded, so
+# nothing could be signalled: if an engine really is alive behind this manifest
+# its output is the only evidence left, and the reap must not destroy it at the
+# exact moment the handle goes away.
+[ -f "$rt/logs/j-prep-live.log" ] \
+  || fail "gc must keep an unstamped job's log — it is the only surviving record of whatever was spawned"
+
+# The same shape with NO log at all is the other class, reported and reasoned
+# about separately -- the log is the whole difference, in both verbs.
+jq -n '{job_id:"j-e1-TLIVE-a1-cccc0002", task:"TLIVE", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-prep-nolog.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-prep-nolog.json"
+touch -t 202001010000 "$rt/jobs/j-prep-nolog.json"   # past any bound; the log's absence is the subject here
+assert_match "TLIVE	never-started" "$("$ORCHID_BIN" jobs check)" \
+  "without the log it is a job that never started"
+live_gone_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+assert_match "^gc-prepared j-e1-TLIVE-a1-cccc0002$" "$live_gone_out" \
+  "and it is retired under the never-started reason"
+
+# ---------------------------------------------------------------------------
+# ...and the OTHER half of the operator's predicate: NOT A FIX. A REGRESSION
+# TRIPWIRE, AND LABELLED AS ONE.
+#
+# The operator who deleted these by hand -- twice, on two separate runs --
+# found them with one predicate: `pid == 0 || ! kill -0 <pid>`. Everything
+# above is the first half of that `||`, and it is what T027 actually fixed.
+# This is the second half: a job that DID launch and then died without ever
+# filing an envelope.
+#
+# T027's acceptance criteria calls that "the same defect as F29" and asks for
+# a RED case per shape. THERE IS NO RED CASE HERE TO WRITE. The parent commit
+# already reaps this manifest on this exact call: ordinary `gc`'s dead-job arm
+# takes `--older-than-s` literally there too, and the age it measures is
+# `now - started_at`, which for a real launched job is seconds. Only the pid-0
+# half was ever skipped (`[ "$pid" != 0 ] || continue`, right at the top of
+# that loop). Whatever sent the operator back to `rm` a second time, it was
+# not ordinary gc refusing to reap a dead pid.
+#
+# So this block asserts a behaviour the candidate INHERITED, which makes it a
+# regression tripwire and nothing more -- kept, because `--older-than-s 0` is
+# the one bound the incident is about and the one the driver hardcodes for the
+# unlaunched class, so a future change putting a margin back under either class
+# fails here first. Calling it a fix would have been the worse error: an
+# invented defect, "proved" by an assertion that passes on the parent too and
+# can therefore never fail.
+#
+# Checkable, not merely asserted: `bash tests/probes/probe-t027-parent-red.sh
+# <base_sha>` runs this shape and the two pid-0 shapes through the parent's own
+# binary and this checkout's, and its `gc-zero-dead-pid` row FAILS if this half
+# is ever re-labelled as newly fixed (its `gc-zero-never-started` and
+# `gc-zero-unstamped` rows are the RED proof for the half that is).
+# ---------------------------------------------------------------------------
+mkdir -p "$rt/packs/j-e1-TGONE-a1-dead0002"
+echo '{}' > "$rt/requests/j-e1-TGONE-a1-dead0002.json"
+echo gone-log > "$rt/logs/j-gone.log"
+( exit 0 ) & gone_pid=$!
+wait "$gone_pid" 2>/dev/null || true
+jq -n --argjson pid "$gone_pid" --argjson started "$(( $(date +%s) - 5 ))" \
+  --arg log "$rt/logs/j-gone.log" \
+  '{job_id:"j-e1-TGONE-a1-dead0002", task:"TGONE", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-gone.json"
+
+assert_match "TGONE	dead" "$("$ORCHID_BIN" jobs check)" \
+  "a launched job whose pid is gone is reported dead — never-started is the other shape, not this one"
+gone_out="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+assert_match "^gc j-e1-TGONE-a1-dead0002$" "$gone_out" \
+  "gc --older-than-s 0 reaps a job that died without an envelope — INHERITED from the parent, not fixed here; this pins it against a future margin"
+[ ! -f "$rt/jobs/j-gone.json" ] || fail "the dead manifest must leave the jobs dir"
+[ -f "$rt/quarantine/j-gone.json.reason-gc-dead" ] || fail "and be quarantined as .reason-gc-dead, not silently deleted"
+[ ! -d "$rt/packs/j-e1-TGONE-a1-dead0002" ] || fail "the dead job's pack dir goes with it"
+[ ! -f "$rt/requests/j-e1-TGONE-a1-dead0002.json" ] || fail "the dead job's request file goes with it"
+[ ! -f "$rt/logs/j-gone.log" ] || fail "the dead job's log goes with it"
+
+# ---------------------------------------------------------------------------
+# ...AND THE OPERATOR'S OWN PREDICATE, RUN AS THEY RAN IT, MUST COME BACK EMPTY.
+#
+# Every case above pins one shape against one call. This pins the thing the
+# operator actually did: they swept `.orchid/runtime/jobs` with
+# `pid == 0 || ! kill -0 <pid>`, found manifests, and deleted them by hand --
+# on two separate runs, having first tried `orchid jobs gc --older-than-s 0`.
+#
+# So: seed one manifest of EVERY shape that predicate matches, make exactly
+# that one call, and re-run their sweep. Anything it still finds is a file they
+# would still be deleting by hand, whatever the per-shape assertions above say.
+# A future shape nobody thought to write a case for fails here first.
+#
+# MIXED BY CONSTRUCTION, and that is the point of it: shapes (1) and (2) are
+# what T027 fixed, shape (3) the parent already reaped (see the block above).
+# This case is about the operator's END STATE -- an empty sweep -- which is a
+# property of all three together and was not true before, because (1) and (2)
+# survived. It is deliberately NOT evidence that any individual shape here was
+# broken; the per-shape blocks above say which were, and
+# tests/probes/probe-t027-parent-red.sh settles it against the parent's own
+# binary rather than against a comment.
+# ---------------------------------------------------------------------------
+rm -f "$rt/jobs"/*.json          # clean slate: the sweep below must be exhaustive
+
+# (1) never started -- pid 0, no log ever opened.
+jq -n '{job_id:"j-e1-TF41A-a1-f41a0001", task:"TF41A", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-f41-a.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-f41-a.json"
+touch -t 202001010000 "$rt/jobs/j-f41-a.json"
+
+# (2) spawned, never stamped a pid, then silent -- pid 0 WITH a stale log.
+jq -n '{job_id:"j-e1-TF41B-a1-f41b0001", task:"TF41B", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:"'"$rt"'/logs/j-f41-b.log", output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-f41-b.json"
+echo f41-b-log > "$rt/logs/j-f41-b.log"
+touch -t 202001010000 "$rt/jobs/j-f41-b.json" "$rt/logs/j-f41-b.log"
+
+# (3) launched and died without an envelope -- a pid that is gone. The
+# INHERITED shape: present so the sweep is exhaustive over the operator's
+# predicate, not because this half was ever broken.
+echo f41-c-log > "$rt/logs/j-f41-c.log"
+( exit 0 ) & f41_pid=$!
+wait "$f41_pid" 2>/dev/null || true
+jq -n --argjson pid "$f41_pid" --argjson started "$(( $(date +%s) - 5 ))" \
+  --arg log "$rt/logs/j-f41-c.log" \
+  '{job_id:"j-e1-TF41C-a1-f41c0001", task:"TF41C", attempt:1, role:"implementer", operation:"implement",
+    engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:""}' > "$rt/jobs/j-f41-c.json"
+
+f41_before=0
+for f41_m in "$rt/jobs"/*.json; do
+  [ -e "$f41_m" ] || continue
+  f41_before=$((f41_before + 1))
+done
+assert_eq 3 "$f41_before" "the sweep below really has all three shapes to clear"
+
+"$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
+
+# THE OPERATOR'S SWEEP, verbatim in spirit: pid 0, or a pid nothing answers to.
+f41_left=""
+for f41_m in "$rt/jobs"/*.json; do
+  [ -e "$f41_m" ] || continue
+  f41_p="$(jq -r '.pid // 0' "$f41_m")"
+  if [ "$f41_p" = 0 ] || ! kill -0 "$f41_p" 2>/dev/null; then
+    f41_left="$f41_left $(basename "$f41_m")"
+  fi
+done
+assert_eq "" "$f41_left" \
+  "after ONE 'orchid jobs gc --older-than-s 0', the operator's own 'pid == 0 || ! kill -0' sweep finds nothing left to delete by hand (dogfood F29/F41)"
 
 # --reap-prepared's own suspect-fields validation (same discipline as the
 # ordinary dead-job reap): a hand-edited/corrupt job_id must never be reaped
@@ -424,6 +747,12 @@ assert_eq "1" "$(jq '.findings | length' ".orchid/reviews/plan-a1-plan_critic.js
 # the existing reviews/plan-a1-plan_critic.json and bumps to attempt 2.
 mp2="$("$ORCHID_BIN" jobs prepare plan plan_critic critique)"
 assert_eq "2" "$(jq -r .attempt "$mp2")" "plan job second attempt counts the prior reconciled envelope"
+# Orphan by construction: nothing launches this one, and since T027 a second
+# manifest for a slot that already holds a never-started one is refused
+# outright (exit 18). Later blocks in this file prepare plan/plan_critic/
+# critique again for this same attempt, so the fixture clears its own litter
+# here rather than leaving them to trip over it.
+rm -f "$mp2"
 
 # ---------------------------------------------------------------------------
 # v1-m3 final review (IMPORTANT 4): plan-scoped HOOK attempt counting. A
@@ -456,6 +785,8 @@ assert_match "plan	ok" "$mph1_line" "plan hook envelope reconciled"
 mph2="$("$ORCHID_BIN" jobs prepare plan hook hook --hook after_plan_draft)"
 assert_eq "2" "$(jq -r .attempt "$mph2")" \
   "second plan-hook prepare counts the prior reconciled envelope (regression: used to stay stuck at 1)"
+# Orphan by construction, cleared for the same reason $mp2 is above it.
+rm -f "$mph2"
 
 # ===========================================================================
 # T040 / dogfood finding F35 -- NEVER DISCARD WORK A JOB ALREADY COMPLETED.
@@ -807,3 +1138,104 @@ kill -0 "$cpu_back_pid" 2>/dev/null \
 red_case "a CPU counter that went backwards (pid reuse) is unknown: the job is left running, not killed"
 kill "$cpu_back_pid" 2>/dev/null || true
 rm -f "$rt/jobs/j-cpuback.json"
+
+# ---------------------------------------------------------------------------
+# T027 (dogfood F29): prepare refuses a SECOND manifest for a job that already
+# has an UNLAUNCHED one -- same task, attempt, role, operation and (for
+# hooks) the same point. A launcher that dies before its spawn line leaves one
+# behind; minting another cannot make the first one run, and a run that did it
+# once per pass ended with 73 identical pid-0 manifests, no logs and nothing to
+# reconcile. Exit 18 is a WAIT for the caller (like exit 14's closed ledger
+# window), and it clears itself: gc reaps the orphan and the identical call
+# then succeeds.
+#
+# The refusal is keyed on the SAME predicate gc's reap is
+# (job_unlaunched_reapable: pid 0, and either no log at all or one nothing has
+# written to in `stall_minutes`). That is what makes it a state that can always
+# be left, and the two assertions at the end of this block are the ones that
+# hold it there: a pid-0 manifest whose log is still being written is not
+# reapable, so it must not be refusable either -- refusing over something
+# nothing retires is a permanent refusal.
+# ---------------------------------------------------------------------------
+count_manifests() {  # task
+  local mf n=0
+  for mf in "$rt/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task // ""' "$mf" 2>/dev/null || echo)" = "$1" ] || continue
+    n=$((n + 1))
+  done
+  echo "$n"
+}
+
+"$ORCHID_BIN" task create TDUP "one orphan per slot is enough" >/dev/null
+dup1="$("$ORCHID_BIN" jobs prepare TDUP implementer implement)"
+assert_eq "0" "$(jq -r .pid "$dup1")" "the first prepare mints the usual unlaunched manifest"
+
+rc=0; dup_err="$("$ORCHID_BIN" jobs prepare TDUP implementer implement 2>&1 1>/dev/null)" || rc=$?
+assert_eq 18 "$rc" "a second prepare for the same never-started slot exits 18"
+assert_match "already has an unlaunched manifest" "$dup_err" \
+  "and says exactly what it found, naming the manifest an operator has to look at"
+assert_match "orchid jobs gc --reap-prepared --older-than-s 0" "$dup_err" \
+  "and names the immediate way out, so the refusal is never a dead end"
+assert_eq 1 "$(count_manifests TDUP)" "no second manifest was minted"
+
+# A DIFFERENT slot on the same task and attempt is a different job, and is
+# minted normally -- the refusal is keyed on the job's identity, not the task's.
+dup_rev="$("$ORCHID_BIN" jobs prepare TDUP plan_critic critique)"
+[ -f "$dup_rev" ] || fail "a different role/operation on the same attempt must still be prepared"
+assert_eq 2 "$(count_manifests TDUP)" "the second slot really got its own manifest"
+
+# Two hook points bind through the SAME role positional (the literal "hook"),
+# so the point is part of the key: an unlaunched before_merge handler must not
+# refuse an unrelated on_blocker one.
+printf 'hook.on_blocker=planhook\n' >> orchid.config
+dup_h1="$("$ORCHID_BIN" jobs prepare TDUP hook hook --hook after_plan_draft)"
+[ -f "$dup_h1" ] || fail "the first hook job for this attempt must be prepared"
+dup_h2="$("$ORCHID_BIN" jobs prepare TDUP hook hook --hook on_blocker)"
+[ -f "$dup_h2" ] || fail "a hook job for a DIFFERENT point is a different job, not a duplicate"
+rc=0; "$ORCHID_BIN" jobs prepare TDUP hook hook --hook after_plan_draft >/dev/null 2>&1 || rc=$?
+assert_eq 18 "$rc" "...but the same point twice, still unlaunched, is refused"
+
+# Once the manifest carries a real pid it is a LAUNCHED job, and this refusal
+# has nothing to say about it: whether a second engine may run for a slot is a
+# dispatch decision (runners/orchid-drive's drive_job_outstanding), never this
+# verb's.
+jq '.pid=424242 | .pgid=424242' "$dup1" > "$dup1.tmp" && mv "$dup1.tmp" "$dup1"
+dup_after_launch="$("$ORCHID_BIN" jobs prepare TDUP implementer implement)"
+[ -f "$dup_after_launch" ] || fail "prepare must not refuse over a manifest that really was launched"
+rm -f "$dup_after_launch"
+
+# And a pid-0 manifest whose log is STILL BEING WRITTEN must not be refused
+# over. Nothing reaps that one -- an engine may be running behind it -- so a
+# refusal keyed on it would be permanent, which is the one way this guard could
+# turn "retrying forever" into "never running again". The refusal and the reap
+# must cover EXACTLY the same manifests, and this is that assertion from the
+# refusal side.
+"$ORCHID_BIN" task create TDUPLOG "a manifest with a log is not an orphan" >/dev/null
+dup_c="$("$ORCHID_BIN" jobs prepare TDUPLOG implementer implement)"
+dup_c_log="$(jq -r .log "$dup_c")"
+mkdir -p "$(dirname "$dup_c_log")"; printf 'engine is running\n' > "$dup_c_log"
+dup_c2="$("$ORCHID_BIN" jobs prepare TDUPLOG implementer implement)" \
+  || fail "prepare must not refuse over a pid-0 manifest whose log is still being written — nothing reaps that one, so the refusal would never clear"
+[ -f "$dup_c2" ] || fail "the second manifest must really have been minted"
+
+# ...and the OTHER side of that same rule (T027 rework): once that log has been
+# silent past `stall_minutes` the manifest IS reapable, so it MUST be refusable
+# too. The refusal and the reap are one predicate; a manifest gc will retire
+# that prepare still mints over is the 73-orphans defect coming back for the
+# log-backed half of the class.
+rm -f "$dup_c2"
+touch -t 202001010000 "$dup_c_log"
+rc=0; dup_c_err="$("$ORCHID_BIN" jobs prepare TDUPLOG implementer implement 2>&1 1>/dev/null)" || rc=$?
+assert_eq 18 "$rc" \
+  "a pid-0 manifest whose log went silent past stall_minutes is unlaunched, and prepare refuses over it"
+assert_match "already has an unlaunched manifest" "$dup_c_err" \
+  "and says so in the same words, naming the manifest gc is about to retire"
+rm -f "$dup_c_log" "$dup_c"
+
+# And the refusal clears itself: gc reaps the orphan, the identical call works.
+touch -t 202001010000 "$dup_h1"
+"$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
+[ ! -f "$dup_h1" ] || fail "gc must reap the aged never-launched hook manifest"
+dup_h1b="$("$ORCHID_BIN" jobs prepare TDUP hook hook --hook after_plan_draft)"
+[ -f "$dup_h1b" ] || fail "once the orphan is reaped, the identical prepare succeeds with no operator action"

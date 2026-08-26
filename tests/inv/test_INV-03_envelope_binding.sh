@@ -71,6 +71,10 @@ printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","statu
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: operation mismatch quarantined"
 [ -e "$qd/$jid4.json.reason-mismatch" ] || fail "INV-03: operation-mismatch envelope quarantined with reason-mismatch"
 [ -f "$m4" ] || fail "INV-03: manifest survives operation mismatch"
+# Having served that assertion, it is cleared: an unlaunched manifest left on
+# disk is exactly what `jobs prepare` refuses to duplicate since T027, and the
+# reviewer/review slot is prepared again further down this same file.
+rm -f "$m4"
 
 # v0b2: same-attempt duplicate durable envelope. A relaunch of the same
 # attempt (two distinct job_ids, both legitimately mapping to the same
@@ -109,6 +113,9 @@ sz="$(wc -c < "$sp/$jid5.json" | tr -d ' ')"
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: oversize spool file quarantined"
 [ -e "$qd/$jid5.json.reason-oversize" ] || fail "INV-03: oversize envelope quarantined with reason-oversize"
 [ -f "$m5" ] || fail "INV-03: manifest survives oversize spool file"
+# Cleared for the same reason $m4 was: the implementer/implement slot is
+# prepared again below, and a stranded unlaunched manifest now refuses that.
+rm -f "$m5"
 
 # reset spool_max_bytes (raised above for the oversize case) back up so the
 # candidate_sha fixtures below aren't spuriously quarantined as oversize.

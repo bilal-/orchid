@@ -19,6 +19,16 @@ belong in `~/.orchid/config` — set once, apply to every repo. Per-repo facts
 Env vars are for one-off overrides (`ORCHID_<KEY>`, uppercased, `.`/`-` both
 map to `_` — e.g. `role.code-reviewer` overrides via `ORCHID_ROLE_CODE_REVIEWER`).
 
+`<repo>` above is the **target repository** — the one being driven
+(`$ORCHID_REPO`, else the current directory). The orchid installation's own
+`orchid.config` (the one sitting next to `bin/orchid` in a checkout of orchid
+itself) is **never** a layer, however plausible a global default it looks: a
+value set there applies to orchid's own repository when orchid is the repo
+being driven, and to nothing else. `~/.orchid/config` is the per-machine layer
+that does apply everywhere. This has now wedged two runs through
+`pack_budget_bytes` alone, so `orchid doctor` prints the resolved pack budget
+and the layer it came from on every invocation.
+
 `orchid config list` prints the **effective** value of every key together
 with which layer won it — never guess why a setting applies. `orchid config
 commit --reason "..."` is the safe way to land an `orchid.config` edit onto
@@ -93,6 +103,19 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 - **`verify`** has no default on purpose: `orchid doctor` FAILs preflight
   until it's set (`orchid.config`), except `--greenfield` mode, which skips
   this check pre-scaffold (nothing to verify yet).
+- **`stall_minutes`** is the kernel's one "no sign of life for long enough to
+  call it stuck" bound, and it is read in three places. For a job that stamped
+  a pid, `orchid jobs check` kills it and reports `stalled` after that long
+  without a write to its log. For a job that was spawned but never stamped a
+  pid (its launcher was killed in between), the same silence is what turns
+  `prepared` — which the driver WAITS on, since something is producing output
+  and a second engine in the same worktree is the worse outcome — into
+  `unstamped`, which walks the escalation ladder once and is then reaped, log
+  kept. And `runners/orchid-drive` passes it to `orchid jobs gc` as
+  `--prepared-older-than-s`, the margin an unattended sweep needs so it never
+  reaps a manifest out from under a launcher that is between its own `jobs
+  prepare` and its spawn line. That margin is the DRIVER's, not the verb's: an
+  operator running `orchid jobs gc --older-than-s 0` by hand gets zero.
 - **`cpu_stall_min_s`** (default `0`: the check is OFF until an operator
   opts in) is the CPU floor of the stall check. `stall_minutes` catches a
   job that stops writing to its log; this catches the job that keeps writing

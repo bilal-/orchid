@@ -11,6 +11,11 @@ role.implementer=codex
 role.reviewer=agy
 role.arbiter=claude
 role.plan_critic=codex
+# Read from the TARGET repository being driven (or ~/.orchid/config, or an
+# ORCHID_PACK_BUDGET_BYTES env override) -- never from the orchid
+# installation's own orchid.config. `orchid doctor` prints the resolved value
+# and the layer it came from; a pack over this budget fails the LAUNCH
+# (input_overflow) before any engine starts.
 pack_budget_bytes=65536
 
 # Custom roles (v1-m3 Task 7): a role.<id>= binding for any id that is NOT

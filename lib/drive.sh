@@ -356,6 +356,70 @@ drive_role_for_status() {
   esac
 }
 
+# drive_failure_charged <repo> <key> -- 0 iff this run's journal already
+# records an infrastructure-failure charge carrying <key>.
+#
+# THE IDEMPOTENCY KEY FOR ONE JOB FAILURE, and the whole reason the escalation
+# ladder can count one physical event exactly once across a crash. Two arms
+# charge the same stranded launch: the driver's `drive_launch`, synchronously,
+# with the launcher's non-zero exit still in hand, and its ageing sweep, some
+# passes later, reading the manifest that launch left behind. Only one of them
+# has an event; the other is looking at a corpse.
+#
+# A MARK ON THE MANIFEST CANNOT ARBITRATE BETWEEN THEM. Whichever order it is
+# written in, one crash window is left open and it is never the same one: mark
+# first and a process that dies before `task infra-fail` loses the charge
+# outright (the failure is then invisible forever, which is the exact silence
+# this ladder exists to end); charge first and a process that dies before the
+# mark pays for the same event twice, blocking a task on arithmetic. Two
+# non-atomic writes cannot be made exactly-once by ordering them.
+#
+# So the dedup asks for the receipt THE CHARGE ITSELF WROTE. `orchid task
+# infra-fail` is journal-first by construction (libexec/orchid-task: the reason
+# lands in journal.md before the counter it justifies is written), so a charge
+# whose reason carries the receipt token below has already recorded, durably,
+# that this job was counted. Charging is then at-least-once against a durable
+# key, which is exactly once. The only window left is inside infra-fail's own
+# journal-then-write pair -- not this file's to close, and orders of magnitude
+# tighter than a whole drive pass.
+#
+# `[ladder job <id>]`, not a bare `[job <id>]`, and the word carries weight: a
+# false positive here SILENCES A FAILURE, so the token must be one that only the
+# ladder ever writes. Any other journal line that happened to mention a job id
+# in brackets -- a note, an operator's own entry, some future diagnostic -- would
+# otherwise read as a charge that never happened, and the incident it was
+# standing in front of would go uncounted. runners/orchid-drive is the sole
+# writer of this token; nothing else in the kernel emits it. It writes it from
+# exactly three places, all of them accounting one job failure once:
+# drive_escalate (the charge), drive_launch's optional-hook arm and the
+# escalation sweep's optional-hook arm (the two halves of a failure that is
+# journaled but deliberately spends no rung -- the receipt is how they avoid
+# recording the same handler's collapse twice).
+#
+# Straight at the FILE, never `cat ... | grep -q`: under `set -o pipefail` a
+# grep that exits early on its first match SIGPIPEs its writer and poisons the
+# pipeline status, which is the trap tests/helpers.sh documents for assert_match
+# and the same one that would make this answer "no" precisely when it is "yes".
+# -F for the same reason the callers' own tests use it: the token is bracketed,
+# and a regex reader would take `[ladder job ...]` for a character class.
+drive_failure_charged() {
+  local repo="$1" key="$2" journal
+  [ -n "$key" ] || return 1
+  journal="$(orchid_state "$repo")/journal.md"
+  [ -f "$journal" ] || return 1
+  grep -qF -e "$(drive_failure_receipt "$key")" "$journal"
+}
+
+# drive_failure_receipt <key> -- the receipt token for a job failure, written
+# into the charge's own reason and looked for by drive_failure_charged above.
+# ONE function so the writer and the reader can never drift; empty for a caller
+# with no job to name, which is what makes the receipt optional at the call site
+# without any caller having to spell the format.
+drive_failure_receipt() {
+  [ -n "${1:-}" ] || return 0
+  printf ' [ladder job %s]' "$1"
+}
+
 # drive_envelope_has_blocking_finding <envelope> <blocking_severity> -- 0 iff
 # the envelope reports at least one finding at or above the task's blocking
 # threshold. Unknown finding severities rank 99 (see drive_finding_rank), so
