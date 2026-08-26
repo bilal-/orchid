@@ -3482,6 +3482,17 @@ grep -q "prepared and never launched" "$OVF/.orchid/journal.md" \
 # with a phase that can never proceed is not a fix.
 #
 # So: wedge the phase, then prove it gets out on its own.
+#
+# AND THEN THE HARDER HALF (T027 rework). Getting out is not enough if getting
+# out is how the evidence disappears. PLANNING is the one phase whose launchers
+# nothing wraps — the orchestrator runs `runners/orchid-launch plan plan_critic
+# critique` itself, PROTOCOL.md PLANNING step 2 — so there is no synchronous
+# caller to journal a non-zero exit, and a reap that ran before the ladder
+# deleted the incident outright. That is F29 verbatim, in the phase the fix had
+# not reached. The rest of this Part proves the ordering that closes it:
+# swept, journaled with the ladder's receipt, charged where a counter exists,
+# and only then reaped — recoverable across a crash, counted exactly once, and
+# never relaunched from a phase that dispatches nothing.
 # ===========================================================================
 PLN="$WORK/planning"
 mkdir -p "$PLN"
@@ -3541,6 +3552,43 @@ assert_match "gc-prepared j-e1-plan-a1-cafe" "$LDRIVE_OUT" \
   "and it reaps the stranded critique manifest, which nothing in PLANNING used to do"
 [ ! -f "$PLAN_ORPHAN" ] || fail "the stranded manifest must leave the jobs dir (out: $LDRIVE_OUT)"
 
+# ...AND THE REAP WAS PRECEDED BY AN ACCOUNT. This is the half F29 is actually
+# about, and PLANNING kept exactly the shape the finding describes right up to
+# this rework. A launcher that could not run left nothing at all behind — which
+# is how 73 identical launch failures produced not one journal line.
+#
+# RED, and checkable by hand rather than asserted: at candidate 4493cb5
+# runners/orchid-drive reaped in the PLANNING pre-pass (its `run_status =
+# planning` block, above both the sweep and the ladder), collected escalations
+# only under `run_status != planning`, and skipped the reserved `plan` id
+# outright in the ladder loop (`[ "$_etask" != plan ] || continue`). Three
+# independent reasons there is no journal entry to find, any one of them enough
+# on its own. `git show 4493cb5:runners/orchid-drive` shows all three.
+#
+# The receipt is the durable, exactly-once one the ladder writes; the prose is
+# what a human reads. Both, or the entry is either unfindable or uninformative.
+#
+# grep -qF STRAIGHT AT THE FILE, not assert_match: `[ladder job ...]` is a
+# character class to grep -E, and a pipe would hit the SIGPIPE/pipefail trap
+# helpers.sh documents.
+PLAN_JOURNAL="$PLN/.orchid/journal.md"
+grep -qF "[ladder job j-e1-plan-a1-cafe]" "$PLAN_JOURNAL" \
+  || fail "a PLANNING launch failure must be journaled with the ladder's receipt before its manifest is reaped (out: $LDRIVE_OUT)"
+grep -qF "prepared and never launched" "$PLAN_JOURNAL" \
+  || fail "...and the entry must say what actually happened to the job"
+# THE RESERVED PLAN ID, where no task counter exists. `orchid task create plan`
+# is refused outright, so there is nothing to charge — the failure is journaled
+# instead, and journaling it must not conjure a task file that would then
+# shadow every plan-scoped manifest.
+[ ! -f "$PLN/.orchid/tasks/plan.md" ] \
+  || fail "the reserved plan id must never acquire a task file"
+grep -qF "prepared and never launched" "$PLN/.orchid/runtime/journal-index/plan" \
+  || fail "the plan-scoped failure must be readable via 'orchid journal show --task plan'"
+# Journaled, not relaunched: PLANNING dispatches nothing, and the ladder must
+# not be the one thing in the pass that spawns an engine.
+ls "$PLN/.orchid/runtime/jobs"/*.json >/dev/null 2>&1 \
+  && fail "the PLANNING ladder must not relaunch — the jobs dir must be empty after the reap"
+
 lrc=0; PLAN_M="$(lorchid jobs prepare plan plan_critic critique)" || lrc=$?
 assert_eq 0 "$lrc" \
   "and the phase is out: the identical relaunch now succeeds, with no operator action"
@@ -3558,6 +3606,105 @@ LDRIVE_OUT="$(ORCHID_REPO="$PLN" ORCHID_EPOCH="$LEPOCH" "$DRIVE" 2>&1)" || true
 grep -q "gc-prepared" <<<"$LDRIVE_OUT" \
   && fail "a planning pass must not reap a manifest younger than stall_minutes (out: $LDRIVE_OUT)"
 [ -f "$PLAN_M" ] || fail "the fresh critique manifest must survive the pass"
+
+# CRASH RECOVERY, between the launch failure and the accounting for it.
+# `runners/orchid-launch` stamps `launch_exit` on the manifest it strands, and
+# in PLANNING nobody is standing there to read it: the orchestrator runs the
+# launcher itself, so the synchronous half of the accounting does not exist in
+# this phase at all. Whatever happens next -- the pump's lease is fenced, the
+# machine reboots, the operator Ctrl-Cs -- the exit status is on disk and
+# nothing has counted it.
+#
+# What must survive that is BOTH facts: the failure is on the record, AND it
+# says what the launcher actually did. Reporting this one as "prepared and
+# never launched" would throw away the single most useful thing the incident
+# left behind.
+PLAN_CRASH="$PLN/.orchid/runtime/jobs/j-e1-plan-a1-beef.json"
+jq -n '{job_id:"j-e1-plan-a1-beef", task:"plan", attempt:1, role:"plan_critic",
+        operation:"critique", engine:"stubreview", pid:0, pgid:0, started_at:0,
+        launch_exit:3,
+        log:"'"$PLN"'/.orchid/runtime/logs/j-e1-plan-a1-beef.log", output:"/dev/null",
+        base_sha:"", candidate_sha:"", hook_point:""}' > "$PLAN_CRASH"
+touch -t 202001010000 "$PLAN_CRASH"
+LDRIVE_OUT="$(ORCHID_REPO="$PLN" ORCHID_EPOCH="$LEPOCH" "$DRIVE" 2>&1)" || true
+grep -qF "[ladder job j-e1-plan-a1-beef]" "$PLAN_JOURNAL" \
+  || fail "a PLANNING launch failure whose synchronous charge never landed must be counted by the sweep (out: $LDRIVE_OUT)"
+grep -qF "the launcher exited 3 without spawning a job" "$PLAN_JOURNAL" \
+  || fail "...and the stamped exit status is what the entry must report"
+[ ! -f "$PLAN_CRASH" ] || fail "...and only then is the manifest reaped (out: $LDRIVE_OUT)"
+
+# THE OTHER SIDE OF THAT WINDOW: exactly once. A charge that DID land leaves
+# the ladder's receipt in the journal, and the sweep meeting the corpse of that
+# same failure some passes later must not write it down a second time -- while
+# still reaping the manifest, which is what stops it being met again forever.
+#
+# The receipt is seeded here exactly as a charge writes it, because in this
+# phase there is no drive_launch to write it for real.
+PLAN_DUP="$PLN/.orchid/runtime/jobs/j-e1-plan-a1-d0d0.json"
+lorchid journal add --task plan \
+  "the launcher exited 3 without spawning a job (role plan_critic, operation critique) [ladder job j-e1-plan-a1-d0d0]" >/dev/null
+jq -n '{job_id:"j-e1-plan-a1-d0d0", task:"plan", attempt:1, role:"plan_critic",
+        operation:"critique", engine:"stubreview", pid:0, pgid:0, started_at:0,
+        launch_exit:3,
+        log:"'"$PLN"'/.orchid/runtime/logs/j-e1-plan-a1-d0d0.log", output:"/dev/null",
+        base_sha:"", candidate_sha:"", hook_point:""}' > "$PLAN_DUP"
+touch -t 202001010000 "$PLAN_DUP"
+LDRIVE_OUT="$(ORCHID_REPO="$PLN" ORCHID_EPOCH="$LEPOCH" "$DRIVE" 2>&1)" || true
+assert_eq 1 "$(grep -cF "[ladder job j-e1-plan-a1-d0d0]" "$PLAN_JOURNAL")" \
+  "one physical launch failure is journaled exactly once, whichever arm got to it first (out: $LDRIVE_OUT)"
+[ ! -f "$PLAN_DUP" ] || fail "an already-counted failure is still reaped (out: $LDRIVE_OUT)"
+
+# THE SWEEP AND THE REAP MUST COVER THE SAME SET. PLANNING's reap is `jobs gc
+# --reap-prepared`, which retires libexec/orchid-jobs' job_unlaunched_reapable
+# — BOTH halves of the pid-0 class, the never-started one above and this one: a
+# manifest whose engine was spawned but never stamped a pid, whose log has then
+# been silent for `stall_minutes`. Sweeping only the first half would put the
+# phase straight back to retiring something it had never counted.
+PLAN_UNS="$PLN/.orchid/runtime/jobs/j-e1-plan-a1-0ff0.json"
+PLAN_UNS_LOG="$PLN/.orchid/runtime/logs/j-e1-plan-a1-0ff0.log"
+mkdir -p "$PLN/.orchid/runtime/logs"
+echo "engine started, then went quiet" > "$PLAN_UNS_LOG"
+touch -t 202001010000 "$PLAN_UNS_LOG"
+jq -n '{job_id:"j-e1-plan-a1-0ff0", task:"plan", attempt:1, role:"plan_critic",
+        operation:"critique", engine:"stubreview", pid:0, pgid:0, started_at:0,
+        log:"'"$PLAN_UNS_LOG"'", output:"/dev/null",
+        base_sha:"", candidate_sha:"", hook_point:""}' > "$PLAN_UNS"
+touch -t 202001010000 "$PLAN_UNS"
+LDRIVE_OUT="$(ORCHID_REPO="$PLN" ORCHID_EPOCH="$LEPOCH" "$DRIVE" 2>&1)" || true
+grep -qF "[ladder job j-e1-plan-a1-0ff0]" "$PLAN_JOURNAL" \
+  || fail "PLANNING must also account for the class its reap retires with a log attached (out: $LDRIVE_OUT)"
+grep -qF "spawned but never recorded a pid" "$PLAN_JOURNAL" \
+  || fail "...and name that shape rather than the never-started one"
+[ ! -f "$PLAN_UNS" ] || fail "...and the reap still retires it in the same pass (out: $LDRIVE_OUT)"
+[ -f "$PLAN_UNS_LOG" ] || fail "...keeping the log, which is the only evidence a never-stamped job leaves"
+
+# A TASK-OWNED manifest stranded during PLANNING. Tasks exist in this phase --
+# `orchid task create` is how the roadmap gets drafted, well before `plan
+# apply` -- so a stranded manifest here can have a real infra_failures counter
+# behind it, unlike the reserved `plan` id above.
+#
+# It is CHARGED (the counter is the point of having one) and it is NOT
+# RELAUNCHED: PLANNING dispatches nothing, the walk does not run, and a
+# relaunch from the ladder would be the only thing in the whole pass that
+# spawned an engine. The reap is what leaves the orchestrator free to launch it
+# itself when the plan loop is ready.
+lorchid task create P010 "drafted during planning, before plan apply" >/dev/null
+PLAN_TASK_M="$PLN/.orchid/runtime/jobs/j-e1-P010-a1-0001.json"
+jq -n '{job_id:"j-e1-P010-a1-0001", task:"P010", attempt:1, role:"implementer",
+        operation:"implement", engine:"stubimpl", pid:0, pgid:0, started_at:0,
+        log:"'"$PLN"'/.orchid/runtime/logs/j-e1-P010-a1-0001.log", output:"/dev/null",
+        base_sha:"", candidate_sha:"", hook_point:""}' > "$PLAN_TASK_M"
+touch -t 202001010000 "$PLAN_TASK_M"
+LDRIVE_OUT="$(ORCHID_REPO="$PLN" ORCHID_EPOCH="$LEPOCH" "$DRIVE" 2>&1)" || true
+assert_eq 1 "$(fm_get "$PLN/.orchid/tasks/P010.md" infra_failures)" \
+  "a task-owned launch failure in PLANNING spends its rung like any other (out: $LDRIVE_OUT)"
+grep -qF "[ladder job j-e1-P010-a1-0001]" "$PLAN_JOURNAL" \
+  || fail "...and carries the ladder's receipt, so it is counted exactly once"
+assert_match "not relaunching during PLANNING" "$LDRIVE_OUT" \
+  "...and the ladder says why it is not relaunching in this phase"
+[ ! -f "$PLAN_TASK_M" ] || fail "...and the manifest is reaped after the charge, not before it"
+ls "$PLN/.orchid/runtime/jobs"/j-*-P010-*.json >/dev/null 2>&1 \
+  && fail "PLANNING must not relaunch a task job — the phase dispatches nothing (out: $LDRIVE_OUT)"
 
 # ===========================================================================
 # Part V -- pid 0 WITH A LOG: wait on it, then CONVERGE on it (T027 rework).
@@ -3874,3 +4021,40 @@ case "$XDRIVE_OUT" in
   *"deferring the step it guards"*)
     fail "nothing was dispatched, so there is nothing to wait for — deferring is what parked the transition (out: $XDRIVE_OUT)" ;;
 esac
+
+# ...AND THAT ENTRY CARRIES THE LADDER'S RECEIPT, even though no rung is spent.
+# The exempt class needs the exactly-once key more than the charged one, not
+# less: nothing else about an optional handler's collapse is durable, and the
+# ageing sweep will meet the very same manifest again some passes later. Without
+# a shared key the two arms write the same event down twice — a journal that
+# reports a failure count nobody had.
+grep -qE "optional on_verify_fail hook launch failed \(exit 12\).*\[ladder job j-" \
+  "$OPT/.orchid/journal.md" \
+  || fail "an exempt launch failure must still be keyed by the manifest it stranded (out: $XDRIVE_OUT)"
+
+# So: age that manifest into the sweep's reach and prove the second arm holds
+# its tongue while still retiring it. This is the same crash-window the charged
+# path is careful about, on the path that spends nothing — and the manifest
+# really does have to go, or every later pass meets it again.
+XHOOK_MF=""
+for _xf in "$OPT/.orchid/runtime/jobs"/*.json; do
+  [ -e "$_xf" ] || continue
+  [ "$(jq -r '.role // ""' "$_xf")" = hook ] || continue
+  XHOOK_MF="$_xf"
+done
+if [ -z "$XHOOK_MF" ]; then
+  # Guarded rather than asserted-and-continued: every line below reads a job id
+  # off this path, so an empty one turns one honest fixture failure into a page
+  # of jq and touch errors that hide it.
+  fail "fixture sanity: the failed hook launch must have stranded a manifest to age"
+else
+  XHOOK_ID="$(jq -r .job_id "$XHOOK_MF")"
+  assert_eq 1 "$(grep -cF "[ladder job $XHOOK_ID]" "$OPT/.orchid/journal.md")" \
+    "fixture sanity: the synchronous arm wrote exactly one entry for this job"
+  touch -t 202001010000 "$XHOOK_MF"
+  XDRIVE_OUT="$(ORCHID_REPO="$OPT" ORCHID_EPOCH="$XEPOCH" "$DRIVE" 2>&1)" || true
+  assert_eq 1 "$(grep -cF "[ladder job $XHOOK_ID]" "$OPT/.orchid/journal.md")" \
+    "the sweep must not write down a failure its launcher already recorded (out: $XDRIVE_OUT)"
+  [ ! -f "$XHOOK_MF" ] \
+    || fail "...and the manifest is still retired once it is accounted for (out: $XDRIVE_OUT)"
+fi

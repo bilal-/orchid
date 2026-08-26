@@ -1112,6 +1112,15 @@ What the kernel does about it, and what to look for:
   zero — no floor is applied to what you type), or `orchid jobs gc
   --reap-prepared --older-than-s 0` when nothing else may be touched, e.g.
   mid-`PLANNING`, where no reconcile has run and the dead-job reap must not.
+- **In `PLANNING` the journal is the only place this shows up, and it does.**
+  Nothing wraps the launchers there — you run `runners/orchid-launch plan
+  plan_critic critique` yourself — so no caller reports the exit code at the
+  time. A planning pass sweeps the unlaunched manifests it is about to retire,
+  journals each with the same `[ladder job ...]` receipt, spends a rung where
+  there is a task to spend it against, and only then reaps. The reserved `plan`
+  id has no task file and so no counter: read its failures with `orchid journal
+  show --task plan`. The pass never relaunches in that phase — clearing the
+  slot is all it does, and what to run next is yours to decide.
 
 Fix the underlying launch failure first — the pass output and
 `.orchid/runtime/pump.log` carry the launcher's own stderr — then

@@ -446,6 +446,18 @@ sequence in
    the refusal clears without intervention; `orchid jobs gc --reap-prepared
    --older-than-s 0` clears it immediately. Fix the launch failure first — the
    launcher's stderr names it.
+
+   *That reap is preceded by an account, and the ordering is the point.* You
+   are the one running these launchers — there is no `orchid drive` wrapping
+   them in this phase — so nothing reports a launch failure synchronously, and
+   a reap that ran first would delete the only trace it left. A planning pass
+   therefore sweeps the unlaunched manifests it is about to retire, journals
+   each one (with the escalation ladder's own receipt, so a failure is written
+   down exactly once however many passes meet it), spends a rung against the
+   task where there is one, and only then reaps. The reserved `plan` id has no
+   task file and so no `infra_failures` counter to spend; its failures are
+   journaled and readable with `orchid journal show --task plan`. The pass
+   never *relaunches* in this phase — deciding what to run next is yours.
 3. `orchid plan apply --reason "..."` — commits every current `.orchid/`
    change (roadmap, tasks, requirements) onto the integration branch in one
    transaction, from whatever checkout you're in, without ever switching the

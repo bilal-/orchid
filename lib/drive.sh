@@ -388,8 +388,13 @@ drive_role_for_status() {
 # ladder ever writes. Any other journal line that happened to mention a job id
 # in brackets -- a note, an operator's own entry, some future diagnostic -- would
 # otherwise read as a charge that never happened, and the incident it was
-# standing in front of would go uncounted. runners/orchid-drive's drive_escalate
-# is the sole writer of this token; nothing else in the kernel emits it.
+# standing in front of would go uncounted. runners/orchid-drive is the sole
+# writer of this token; nothing else in the kernel emits it. It writes it from
+# exactly three places, all of them accounting one job failure once:
+# drive_escalate (the charge), drive_launch's optional-hook arm and the
+# escalation sweep's optional-hook arm (the two halves of a failure that is
+# journaled but deliberately spends no rung -- the receipt is how they avoid
+# recording the same handler's collapse twice).
 #
 # Straight at the FILE, never `cat ... | grep -q`: under `set -o pipefail` a
 # grep that exits early on its first match SIGPIPEs its writer and poisons the

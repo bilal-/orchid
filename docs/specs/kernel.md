@@ -970,6 +970,24 @@ ladder bounded by wall-clock budget; orchestrator token cost stays flat.
   every phase — `PLANNING` included, which runs that reap even though it runs
   no reconcile and no check — so exit 18 can never become a state the run
   cannot leave.
+
+  **Nothing is retired before it has been charged, in `PLANNING` too.** That
+  phase is where the original F29 shape survived longest, because it is the one
+  phase whose launchers nobody wraps: `runners/orchid-launch plan plan_critic
+  critique` and the plan hook points are run by the orchestrator itself, so no
+  caller sees the non-zero exit and journals it. A reap that ran before the
+  ladder therefore deleted the incident's only trace. The driver now sweeps
+  before it reaps in every phase, narrowed in `PLANNING` to exactly the set
+  that phase retires — `job_unlaunched_reapable`, i.e. both halves of the pid-0
+  class, and not the dead-pid class, which `--reap-prepared` does not touch and
+  which cannot be judged without the reconcile that phase does not run.
+  Charging is keyed on the receipt the charge itself writes, so a pass felled
+  between the launcher's exit and the accounting is recovered by the next pass and counted
+  once either way. The reserved `plan` id has no task file and therefore no
+  `infra_failures` counter — its failures are journaled rather than charged,
+  which is a property of the id, not a reason to drop them. And the ladder
+  never relaunches in `PLANNING`: the phase dispatches nothing, so what it owes
+  a stranded launcher is a durable record and a cleared slot.
 - Finished-between-reconcile-and-reap (T022, closed): a pass runs `jobs
   reconcile` then `jobs gc`, so a job that exits between the two is dead at
   reap time with its envelope written and still in the spool. It DELIVERED.

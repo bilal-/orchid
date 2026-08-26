@@ -61,9 +61,13 @@ set -uo pipefail
 #     integration branch, imported requirements, `plan apply` -- against BOTH
 #     trees, which is a fixture several times the size of everything below and
 #     a far larger surface for the harness itself to be wrong on.
-#     tests/test_drive.sh Part T owns those assertions; to see the parent side
-#     by hand, extract the parent tree (`git archive <ref> | tar -x -C /tmp/p`)
-#     and re-run Part T's fixture with $DRIVE and $ORCHID_BIN pointed at it.
+#     tests/test_drive.sh Part T owns those assertions, and Part U owns the
+#     PLANNING half of them (a phase whose launchers nothing wraps, so the
+#     ageing sweep is the only accounting a stranded one gets); to see the
+#     parent side by hand, extract the parent tree (`git archive <ref> | tar -x
+#     -C /tmp/p`) and re-run those fixtures with $DRIVE and $ORCHID_BIN pointed
+#     at it. Part U's fixture is the cheaper of the two — it never runs `plan
+#     apply`, so there is no planned run to build.
 #   * The pack-budget resolution ORDER itself (as opposed to `doctor` printing
 #     the resolved value, which is row 8). It is a property of lib/common.sh's
 #     config_get, which T027 did not change -- the finding was that nothing
