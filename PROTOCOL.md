@@ -1308,7 +1308,7 @@ ones its archetype never declares.
       progress, success, or neutral NOT-TESTED record is uncertain and
       therefore remains an unattributed failing line. Orchid's terminal
       standalone `OK` and both NOT-TESTED forms are in that closed non-failure
-      vocabulary. The shipped whole-suite runner also brackets every test with
+      vocabulary. The shipped whole-suite/CI harness also brackets every test with
       a token-bound `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair. Only
       a matching `END 0` proves that block's deliberately noisy negative
       fixtures are completed test output; a failed, incomplete, or mismatched

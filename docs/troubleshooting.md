@@ -492,7 +492,7 @@ diagnostics are conveniences, not a finite allowlist: any unfamiliar non-empty
 line that is not an explicit progress, success, or neutral NOT-TESTED record
 remains uncertain and charges. Orchid's terminal standalone `OK` and both
 NOT-TESTED output forms are explicit members of that closed non-failure
-vocabulary. The shipped whole-suite runner brackets each test with a
+vocabulary. The shipped whole-suite/CI harness brackets each test with a
 token-bound `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair; only the
 matching zero-result form proves that block's noisy negative fixtures belong to
 a completed test. Failed, incomplete, and mismatched blocks remain fully

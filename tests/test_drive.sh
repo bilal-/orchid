@@ -4843,6 +4843,10 @@ ORCHID-VERIFY-SEGMENT 902-2 END 0"
 assert_eq "an unfamiliar candidate diagnostic" \
   "$(drive_failure_lines "$CSC_MISMATCHED_SEGMENT")" \
   "a zero result for a different token cannot launder an unfinished test's output"
+assert_match "ORCHID-VERIFY-SEGMENT" "$(cat "$REPO_ROOT/tests/run.sh")" \
+  "the shipped aggregate runner emits the outcome records the classifier consumes"
+assert_match "ORCHID-VERIFY-SEGMENT" "$(cat "$REPO_ROOT/scripts/ci-local.sh")" \
+  "and CI's explicit invariant/documentation reruns emit the same records rather than reintroducing unbound fixture output"
 
 # ...and the causal half is still required. The same cascade with its refusals
 # removed is the ambient shape -- a candidate's own assertions failing inside a

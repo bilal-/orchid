@@ -312,7 +312,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   or neutral NOT-TESTED records, it is uncertain, stays unattributed, and
   charges. Orchid's terminal standalone `OK` and both NOT-TESTED output forms
   are explicit members of that closed non-failure vocabulary. Its shipped
-  whole-suite runner additionally brackets each test with a token-bound
+  whole-suite/CI harness additionally brackets each test with a token-bound
   `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair. A matching `END 0`
   proves that block's output came from a completed test, so deliberately noisy
   negative fixtures do not masquerade as this round's failure. Nonzero,

@@ -277,12 +277,21 @@ ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$ROOT/tests/run.sh"
 # status remains visible as first-class CI gates even if the aggregate runner
 # is reorganized later.
 echo "== Invariant tests"
+ci_segment_index=0
 for rel in "$ROOT"/tests/inv/test_*.sh; do
   [ -e "$rel" ] || continue
+  ci_segment_index=$((ci_segment_index + 1))
+  ci_segment_token="ci-$$-$ci_segment_index"
+  printf 'ORCHID-VERIFY-SEGMENT %s BEGIN %s\n' "$ci_segment_token" "$rel"
   ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$rel"
+  printf 'ORCHID-VERIFY-SEGMENT %s END 0\n' "$ci_segment_token"
 done
 
 echo "== Documentation checks"
+ci_segment_index=$((ci_segment_index + 1))
+ci_segment_token="ci-$$-$ci_segment_index"
+printf 'ORCHID-VERIFY-SEGMENT %s BEGIN %s\n' "$ci_segment_token" "$ROOT/tests/test_docs.sh"
 ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$ROOT/tests/test_docs.sh"
+printf 'ORCHID-VERIFY-SEGMENT %s END 0\n' "$ci_segment_token"
 
 echo "CI PASS"
