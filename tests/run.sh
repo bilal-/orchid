@@ -2,6 +2,7 @@
 set -u
 rc=0
 BASH_BIN="${ORCHID_TEST_BASH:-${BASH:-bash}}"
+segment_index=0
 # Every test file launched from here can tell it is part of a WHOLE-SUITE run
 # rather than a lone invocation. tests/test_hermetic_suite.sh is the only
 # consumer today, and it needs the distinction rather than assuming it: on a
@@ -23,6 +24,13 @@ ORCHID_SUITE_RUN="$(cd "$(dirname "$0")" && pwd -P)/run.sh"
 export ORCHID_SUITE_RUN
 for t in "$(dirname "$0")"/test_*.sh "$(dirname "$0")"/inv/test_*.sh; do
   [ -e "$t" ] || continue
-  echo "== $t"; "$BASH_BIN" "$t" || rc=1
+  segment_index=$((segment_index + 1))
+  segment_token="$$-$segment_index"
+  echo "== $t"
+  printf 'ORCHID-VERIFY-SEGMENT %s BEGIN %s\n' "$segment_token" "$t"
+  test_rc=0
+  "$BASH_BIN" "$t" || test_rc=$?
+  printf 'ORCHID-VERIFY-SEGMENT %s END %s\n' "$segment_token" "$test_rc"
+  [ "$test_rc" -eq 0 ] || rc=1
 done
 exit "$rc"

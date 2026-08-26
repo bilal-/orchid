@@ -4800,6 +4800,50 @@ csc_log "$CSC_SHIPPED_NON_FAILURE
 assert_eq handoff "$(csc_cls | cut -f1)" \
   "a representative full-suite body plus one fully attributable terminal hand-off still WAIVES — the strict unknown fallback must not make every real route inert"
 
+# The real suite deliberately exercises failed adapters, malformed replies,
+# refusal paths, and RED cases while the enclosing test itself succeeds. Those
+# diagnostics cannot be admitted to the global neutral vocabulary: the same
+# text outside a test that returned zero may be the fault being classified.
+# tests/run.sh therefore brackets each invocation and records its exact exit.
+# Only a matched END 0 proves the enclosed output was fixture/progress output.
+CSC_COMPLETED_SEGMENTS="ORCHID-VERIFY-SEGMENT 701-1 BEGIN /repo/tests/test_engine_agy.sh
+429 usage limit exceeded
+an otherwise unfamiliar fixture diagnostic
+  FAIL: the negative fixture was rejected as intended
+ORCHID-VERIFY-SEGMENT 701-1 END 0
+ORCHID-VERIFY-SEGMENT 701-2 BEGIN /repo/tests/test_engine_claude.sh
+ORCHID-VERIFY-SEGMENT 702-1 BEGIN /repo/tests/test_nested.sh
+RuntimeError: the nested negative fixture exploded as intended
+ORCHID-VERIFY-SEGMENT 702-1 END 0
+VERDICT: request-changes
+ORCHID-VERIFY-SEGMENT 701-2 END 0"
+assert_eq "" "$(drive_failure_lines "$CSC_COMPLETED_SEGMENTS")" \
+  "matched zero-result suite segments prove their arbitrary fixture output is non-failing, including a nested completed suite"
+
+CSC_FAILED_SEGMENT="ORCHID-VERIFY-SEGMENT 801-1 BEGIN /repo/tests/test_engine_agy.sh
+an unfamiliar candidate diagnostic
+/bin/bash: runners/csc-drive: Permission denied
+ORCHID-VERIFY-SEGMENT 801-1 END 1"
+assert_eq "an unfamiliar candidate diagnostic
+/bin/bash: runners/csc-drive: Permission denied" \
+  "$(drive_failure_lines "$CSC_FAILED_SEGMENT")" \
+  "a nonzero segment keeps both its unknown line and its reported refusal in strict whole-round accounting"
+
+CSC_INCOMPLETE_SEGMENT="ORCHID-VERIFY-SEGMENT 901-1 BEGIN /repo/tests/test_engine_agy.sh
+an unfamiliar candidate diagnostic
+/bin/bash: runners/csc-drive: Permission denied"
+assert_eq "an unfamiliar candidate diagnostic
+/bin/bash: runners/csc-drive: Permission denied" \
+  "$(drive_failure_lines "$CSC_INCOMPLETE_SEGMENT")" \
+  "a segment that stopped before recording an outcome proves nothing and remains fail-closed"
+
+CSC_MISMATCHED_SEGMENT="ORCHID-VERIFY-SEGMENT 902-1 BEGIN /repo/tests/test_engine_agy.sh
+an unfamiliar candidate diagnostic
+ORCHID-VERIFY-SEGMENT 902-2 END 0"
+assert_eq "an unfamiliar candidate diagnostic" \
+  "$(drive_failure_lines "$CSC_MISMATCHED_SEGMENT")" \
+  "a zero result for a different token cannot launder an unfinished test's output"
+
 # ...and the causal half is still required. The same cascade with its refusals
 # removed is the ambient shape -- a candidate's own assertions failing inside a
 # file it added -- and it charges.

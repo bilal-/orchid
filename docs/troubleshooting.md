@@ -492,7 +492,11 @@ diagnostics are conveniences, not a finite allowlist: any unfamiliar non-empty
 line that is not an explicit progress, success, or neutral NOT-TESTED record
 remains uncertain and charges. Orchid's terminal standalone `OK` and both
 NOT-TESTED output forms are explicit members of that closed non-failure
-vocabulary. An unknown line cannot be claimed by a same-artifact cascade just
+vocabulary. The shipped whole-suite runner brackets each test with a
+token-bound `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair; only the
+matching zero-result form proves that block's noisy negative fixtures belong to
+a completed test. Failed, incomplete, and mismatched blocks remain fully
+accountable. An unknown line cannot be claimed by a same-artifact cascade just
 because it names that artifact. A separate
 outstanding state does not earn attribution, but the waived reason retains it
 when it names an operator action still owed, such as a dropped 755 bit. Perform

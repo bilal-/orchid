@@ -1307,9 +1307,14 @@ ones its archetype never declares.
       a non-empty line that is neither a recognized failure nor an explicit
       progress, success, or neutral NOT-TESTED record is uncertain and
       therefore remains an unattributed failing line. Orchid's terminal
-      terminal standalone `OK` and both NOT-TESTED forms are in that closed non-failure
-      vocabulary. Unknown lines cannot join a same-artifact cascade merely by
-      naming the artifact. Separately outstanding state grants no
+      standalone `OK` and both NOT-TESTED forms are in that closed non-failure
+      vocabulary. The shipped whole-suite runner also brackets every test with
+      a token-bound `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair. Only
+      a matching `END 0` proves that block's deliberately noisy negative
+      fixtures are completed test output; a failed, incomplete, or mismatched
+      block remains in the accounting verbatim. Unknown lines cannot join a
+      same-artifact cascade merely by naming the artifact. Separately
+      outstanding state grants no
       attribution, but a waived reason still reports an operator action it
       proves is owed, such as restoring a candidate-dropped 755 bit.
       Such a round is charged to

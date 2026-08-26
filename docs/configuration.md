@@ -310,10 +310,15 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   `test_panic_recovery.sh` out. An unfamiliar non-empty line is not silently
   dropped: unless it is one of the classifier's explicit progress, success,
   or neutral NOT-TESTED records, it is uncertain, stays unattributed, and
-  charges. Orchid's terminal standalone `OK` and both NOT-TESTED output forms are
-  explicit members of that closed non-failure vocabulary. In particular,
-  merely naming the same artifact cannot pull an unknown line into that
-  artifact's cascade.
+  charges. Orchid's terminal standalone `OK` and both NOT-TESTED output forms
+  are explicit members of that closed non-failure vocabulary. Its shipped
+  whole-suite runner additionally brackets each test with a token-bound
+  `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair. A matching `END 0`
+  proves that block's output came from a completed test, so deliberately noisy
+  negative fixtures do not masquerade as this round's failure. Nonzero,
+  incomplete, and mismatched blocks remain fail-closed. In particular, merely
+  naming the same artifact cannot pull an unknown line into that artifact's
+  cascade.
   A separate outstanding state contributes no
   attribution, but a waived reason still reports it when it is an operator
   action the candidate owes, such as a dropped 755 bit. What remains forgiven,
