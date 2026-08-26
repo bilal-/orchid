@@ -1370,8 +1370,8 @@ drive_testing() {
     fi
     # NONE of the waivable classes is a thing the IMPLEMENTER clears: a
     # checksum is re-pinned by an operator, an exec bit set by one, a missing
-    # dependency tree provisioned by whoever dispatches, a quarantined
-    # assertion fixed in the test, and a killed run is nobody's to fix.
+    # dependency tree provisioned by whoever dispatches, and a quarantined
+    # assertion fixed in the test.
     # Re-dispatching the implementer against any of them produces the identical
     # failure and nothing else, so the second one stops here rather than
     # grinding out the rest of `infra_max` on retries that cannot work. The

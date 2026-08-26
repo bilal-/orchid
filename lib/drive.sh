@@ -1415,8 +1415,13 @@ drive_worktree_plan() {
 #   4. AN ASSERTION THE REPOSITORY ALREADY RECORDED AS FLAKY, in a register
 #      this candidate did not touch, matched literally.
 #
-# Plus one that is not a waiver of a failure at all: a run KILLED before it
-# reached a verdict reported nothing about the candidate to forgive.
+# A FIFTH WAS WITHDRAWN, AND IT IS WORTH KNOWING WHY: a run whose recorded exit
+# status is 124, 137 or 143 was taken to have been KILLED before it reached a
+# verdict, so there was nothing about the candidate to forgive. That premise
+# was assumed rather than proved -- the identical trailer is what a candidate
+# that HUNG leaves, and what a suite that exited with the status deliberately
+# leaves. It is now reported on a charged round instead
+# (`_DRIVE_CUT_SHORT_STATUSES`).
 #
 # 1 and 2 are hand-offs the protocol itself names -- an implementer profile may
 # not `chmod` and may not re-pin a checksum (L017). 3 is a dispatch step. 4 is
@@ -1475,14 +1480,27 @@ _drive_verify_body() {
 #   flaky        this repository recorded the failing assertion as known-flaky
 #                BEFORE this candidate, in a register the candidate did not
 #                touch (L020).
-#   harness      the run was killed before it reached a verdict, and left no
-#                failing line for anything else to explain.
+#
+# A RUN THAT WAS KILLED IS NOT A FOURTH CLASS, and it used to be. `orchid
+# verify` recording exit 124, 137 or 143 was read as "the harness reaped this
+# pass, so it never spoke about the candidate" and waived the round. That is
+# one reading of the status and not the only one: 143 is what a candidate's own
+# `exit 143` leaves behind, and a candidate that HANGS until a timeout reaps it
+# leaves the identical trailer. Nothing in the log distinguishes the three, so
+# the provenance was never proved -- it was assumed, on exactly the evidence
+# this classifier refuses everywhere else. The state is still REPORTED, because
+# an operator reading a charged round needs to know the run stopped rather than
+# finished, and the round CHARGES, because that is what an uncertain reading
+# does here.
 #
 # THE ONE CONFIGURABLE SURFACE IS THE FLAKY REGISTER'S PATH, and the thing that
 # makes it safe is not the path: it is that a register THIS CANDIDATE CHANGED
 # is not an authority on this candidate. An implementer cannot quarantine the
-# assertion it is failing, because touching the file removes the route. Every
-# other proof here has no configuration at all.
+# assertion it is failing, because touching the file removes the route -- and
+# cannot reach around that by leaving the entry UNCOMMITTED either, because
+# what is read has to be what `candidate_sha` records
+# (`_drive_authority_intact`, which the pin check takes too). Every other proof
+# here has no configuration at all.
 #
 # ATTRIBUTION IS PER FAILURE, AND THE UNIT IS THE FAILING LINE. Each
 # outstanding hand-off claims the individual failures it explains; what is
@@ -1568,7 +1586,10 @@ _drive_verify_body() {
 #                  corrupted exits nonzero too, and re-pinning fixes none of
 #                  those. Only a staleness line naming a file the repository
 #                  actually tracks establishes the hand-off, and that file is
-#                  what the waiver is then attributed to.
+#                  what the waiver is then attributed to. The check is only
+#                  RUN AS AN AUTHORITY under `_drive_authority_intact`: what
+#                  `candidate_sha` records, in the tree that was verified, or
+#                  no pin route at all.
 #
 #   ATTRIBUTION -- that THIS failure was caused by THAT file. Being
 #     outstanding is not being to blame: in this repository a mode-644 `#!`
@@ -1689,6 +1710,90 @@ _drive_candidate_changed() {
     return 0
   done < <(_drive_changed_paths "$root" "$base" "$cand")
   return 1
+}
+
+# _drive_blob_mode <root> <rev> <rel> -- the mode <rev> records for <rel>, when
+# <rev> resolves and carries <rel> as an ordinary file. Nonzero for anything
+# else: a rev this tree does not have, a path it does not carry, and a symlink
+# or a gitlink, none of which is a file orchid may run or read as an authority.
+#
+# Plain `ls-tree`, not `--format=%(objectmode)`, which needs git 2.36: the mode
+# is the first field of the default `<mode> <type> <sha>\t<path>` line in every
+# git that has ever shipped the verb.
+_drive_blob_mode() {
+  local root="$1" rev="$2" rel="$3" line mode
+  [ -n "$rev" ] || return 1
+  git -C "$root" rev-parse -q --verify "$rev^{commit}" >/dev/null 2>&1 || return 1
+  line="$(git -C "$root" ls-tree "$rev" -- "$rel" 2>/dev/null || true)"
+  [ -n "$line" ] || return 1
+  mode="${line%% *}"
+  case "$mode" in 100644|100755) ;; *) return 1 ;; esac
+  printf '%s' "$mode"
+}
+
+# _drive_authority_intact <root> <base> <cand> <rel> -- 0 only when <rel> may be
+# read as an AUTHORITY ON THIS CANDIDATE: a freshness check orchid will run, or
+# a known-flaky register orchid will believe.
+#
+# UNTOUCHED ACROSS `base..candidate` IS NOT ENOUGH, and that is what this
+# function exists to say. A diff of two commits answers a question about two
+# COMMITS, and what the driver actually runs and reads is the FILE IN THE
+# WORKTREE THE VERIFICATION RAN IN. Those come apart in every direction that
+# matters, and each of them was open:
+#
+#   NOT IN THE CANDIDATE AT ALL -- an untracked `scripts/pin-formula.sh`
+#     dropped into the worktree is in no diff, so it was "untouched", and it
+#     was also entirely the implementer's to write.
+#   TRACKED BUT DIRTY -- an edit left unstaged, or staged and not committed, is
+#     in no `base..candidate` diff either. The check that RUNS is the edited
+#     one; the register that is READ is the edited one.
+#   MISSING, OR NOT A FILE -- deleted from the worktree after the commit, or
+#     replaced by a symlink pointing somewhere else entirely.
+#
+# So the authority must be the same bytes and the same mode the candidate
+# RECORDED, in the tree that was verified. Everything is proved against
+# `candidate_sha` itself rather than against `HEAD`: the recorded candidate is
+# what the round is about, and a worktree whose HEAD has moved on is not
+# evidence about it either way.
+#
+# Unanswerable anywhere -- no shas, a sha this tree does not carry, a git that
+# will not answer -- closes the route, which charges. That is the same
+# direction every other proof here leans in, and on this route it is the one
+# that matters most: these are the two files an implementer could otherwise
+# write its own amnesty into.
+_drive_authority_intact() {
+  local root="$1" base="$2" cand="$3" rel="$4" abs mode
+  [ -n "$rel" ] || return 1
+  # Inside the verified tree only, so `candidate_sha` can be asked about it.
+  case "$rel" in /*|*..*) return 1 ;; esac
+  [ -d "$root" ] || return 1
+  # A check or a register THIS CANDIDATE CHANGED is no authority on it -- and
+  # nor is one where that could not be established at all.
+  if _drive_candidate_changed "$root" "$base" "$cand" "$rel"; then return 1; fi
+  # Carried by the recorded candidate itself, as an ordinary file. Assigned on
+  # its own line, never as `local mode="$(...)"`, which would swallow the
+  # status this turns on.
+  mode="$(_drive_blob_mode "$root" "$cand" "$rel")" || return 1
+  abs="$root/$rel"
+  [ -f "$abs" ] || return 1
+  [ ! -L "$abs" ] || return 1
+  # The mode, read off the filesystem rather than off git's record, because the
+  # exec bit is what decides HOW the pin check is invoked. A repository with
+  # `core.fileMode` off reports no mode change here, so this is asked directly.
+  if [ "$mode" = 100755 ]; then
+    [ -x "$abs" ] || return 1
+  else
+    [ ! -x "$abs" ] || return 1
+  fi
+  # And the bytes, both ends: the worktree against the candidate commit, and
+  # the index against it too. Porcelain `git diff` rather than `diff-index`
+  # plumbing, because it refreshes the index first -- plumbing reports a
+  # stat-dirty entry as a modification and would close the route on a file
+  # nobody had touched. The `--cached` half is not redundant: a change staged
+  # and then reverted in the worktree leaves the first half quiet.
+  git -C "$root" diff --quiet "$cand" -- "$rel" 2>/dev/null || return 1
+  git -C "$root" diff --cached --quiet "$cand" -- "$rel" 2>/dev/null || return 1
+  return 0
 }
 
 # _drive_exec_bit_missing <path> -- 0 when <path> is in exactly the state the
@@ -1960,18 +2065,24 @@ drive_handoff_stale_pin() {
   read -r -a parts <<< "$cmd"
   script="${parts[0]:-}"
   [ -n "$script" ] || return 0
-  case "$script" in /*) abs="$script" ;; *) abs="$root/$script" ;; esac
+  # Inside the verified tree, always. A check somewhere else on the machine is
+  # a file `candidate_sha` records nothing about, so nothing can establish that
+  # it is an authority on this candidate -- and the authority guard below would
+  # close the route on it anyway. Refused here so the reason is the path rather
+  # than a failed comparison.
+  case "$script" in /*|*..*) return 0 ;; esac
+  abs="$root/$script"
   # Assigned on its own line, never as `local interp="$(...)"`, which would
   # swallow the status this branch turns on.
   interp="$(_drive_check_interp "$abs")" || return 0
-  # A check this candidate changed is no authority on this candidate -- and
-  # nor is one where that could not be established, which is why this is
-  # `_drive_candidate_changed` and not a walk of the changed list (a task with
-  # no `base_sha` used to leave the route wide open).
-  if _drive_candidate_changed "$root" \
-      "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)" "$script"; then
-    return 0
-  fi
+  # A check this candidate changed is no authority on this candidate -- nor is
+  # one the candidate never recorded, nor one the verified worktree carries in
+  # any state but the one the candidate recorded, nor one where any of that
+  # could not be established at all. `_drive_authority_intact` is the whole of
+  # that question, and every unanswerable form of it closes the route.
+  _drive_authority_intact "$root" \
+    "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)" "$script" \
+    || return 0
   # `set --` then `shift`, rather than the array slice `"${parts[@]:1}"`: on a
   # one-word command line that slice is an EMPTY array reference, which bash
   # 3.2 -- the /bin/bash this project's own verification runs under -- treats
@@ -2254,7 +2365,7 @@ _drive_exec_unblamed_clause() {
 }
 
 # ===========================================================================
-# THE OTHER THREE CLASSES: environment, flaky, harness.
+# THE OTHER TWO CLASSES: environment, flaky.
 #
 # The two hand-offs above are not the only failures in which the code under
 # test is blameless, and this task exists because each of the others cost a
@@ -2270,15 +2381,14 @@ _drive_exec_unblamed_clause() {
 # ROUND forgives whatever else happened to be in it, and that is the one thing
 # this classifier may never do.
 #
-# So all five arms are the same shape, and the three below earn their waivers
-# on the identical two halves the hand-offs do:
+# So all four arms are the same shape, and the two below earn their waivers on
+# the identical two halves the hand-offs do:
 #
 #   STATE       proved against the WORLD, never read out of the failure's
 #               wording, and each answer is a THING -- a directory that is
 #               present in the integration checkout and absent from the
 #               dispatch worktree, a signature the repository recorded as
-#               flaky BEFORE this candidate, a recorded exit status saying the
-#               run was killed.
+#               flaky BEFORE this candidate.
 #   ATTRIBUTION per failing LINE, pooled with every other arm's, and then
 #               `_drive_attribution_check` requires the pool to account for the
 #               WHOLE round. One unexplained failing line still charges, and
@@ -2312,14 +2422,50 @@ _drive_exec_unblamed_clause() {
 # `mobile/node_modules/.bin/jest` exists in the checkout that has the tree --
 # and attributes to nothing at all when the missing directory is a `.cache`
 # with no `jest` in it, which is precisely the coincidence that broke the old
-# arm. Naming the directory outright counts too, for the cascade
-# (`ENOENT: no such file or directory, open '.../node_modules/x'`).
+# arm. NAMING the tree counts too, and so does naming a path INSIDE it --
+# `ENOENT: no such file or directory, open '.../node_modules/x'` is a sentence
+# about the tree that is not there, whichever half of the arm reads it
+# (`_DRIVE_ENV_CHILD_TAIL` says why that is the environment arm's rule alone).
 
 # _DRIVE_RESOLUTION_RE -- a line saying something could not be RESOLVED. Only
 # ever matched together with a token that resolves inside the missing tree,
 # because on its own every one of these is a sentence an ordinary defect
 # prints -- a typo'd import is `Cannot find module` too.
 _DRIVE_RESOLUTION_RE='[Nn]ot found|[Nn]o such file or directory|[Cc]annot find (module|package)|ModuleNotFoundError|ImportError|ENOENT|[Cc]ould not resolve|[Uu]nable to resolve|[Cc]annot open'
+
+# _DRIVE_ENV_CHILD_TAIL -- what may follow an absent DIRECTORY's name for the
+# line to have named something INSIDE it: a `/` and then a path character.
+#
+# THIS IS THE ONE PLACE THE ARTIFACT BOUNDARY OPENS, AND ONLY HERE. The general
+# rule (`_DRIVE_PATH_TAIL`) refuses a trailing `/` on purpose, because the
+# artifacts the other arms hold are FILES: `bin/tool` must not collect
+# `bin/tool-helper`, and it must not collect `bin/tool/child` either, which is a
+# different file that merely lives under a path spelled like it. Neither
+# exclusion is relaxed by anything here -- this pattern is used by the
+# environment arm alone, and the exact-boundary rule is what the arm's own
+# `_drive_env_named_lines` still carries as its first alternative.
+#
+# For an absent DIRECTORY the relationship is the opposite one: a path under it
+# is not a different artifact, it IS that artifact, because the directory is
+# what is missing and everything beneath it is missing with it. Without this the
+# arm could not claim the cascade its own header documents -- `ENOENT: no such
+# file or directory, open '.../node_modules/react-native/package.json'` names
+# `node_modules` only through a child path, is the commonest sentence L003
+# produces after the first missing command, and was charged.
+#
+# The `/` is required, so the exactness of the name itself is untouched:
+# `node_modules-old/x` and `node_modules.bak/x` still match nothing.
+_DRIVE_ENV_CHILD_TAIL='/[[:alnum:]._-]'
+
+# _drive_env_named_lines <missing> <body> -- the lines of <body> that name the
+# absent directory <missing>, either exactly or by a path inside it.
+_drive_env_named_lines() {
+  local m="$1" body="$2" esc
+  [ -n "$m" ] && [ -n "$body" ] || return 0
+  esc="$(_drive_ere_escape "$m")"
+  grep -E -- "$_DRIVE_PATH_LEAD$esc($_DRIVE_PATH_TAIL|$_DRIVE_ENV_CHILD_TAIL)" \
+    <<< "$body" || true
+}
 
 # drive_env_missing_state <repo> <root> -- every path that is ignored by
 # <repo>'s own rules, is a directory THERE, and does not exist in <root>, one
@@ -2408,14 +2554,25 @@ _drive_env_line_resolves() {
 # a classifier that runs on every failed verify becomes the slowest thing in
 # the pass.
 drive_env_causal() {
-  local repo="$1" m="$2" body="$3" line out=""
+  local repo="$1" m="$2" body="$3" line res named out=""
   [ -n "$m" ] && [ -n "$body" ] || return 0
+  res="$(grep -E -- "$_DRIVE_RESOLUTION_RE" <<< "$body" || true)"
+  [ -n "$res" ] || return 0
+  # TWO WAYS A RESOLUTION FAILURE'S SUBJECT IS SHOWN TO LIVE IN THE ABSENT TREE,
+  # and both are facts rather than readings. The line names a path inside it --
+  # an ENOENT quoting `.../node_modules/react-native/package.json` is about the
+  # tree that is not there, and nothing else can be true of it -- or the line
+  # holds a bare token the tree PUBLISHES, which is what a shell prints when a
+  # command it cannot find would have come from `.bin`.
+  named="$(_drive_env_named_lines "$m" "$res")"
+  [ -z "$named" ] || out="$named
+"
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     _drive_env_line_resolves "$repo" "$m" "$line" || continue
     out="$out$line
 "
-  done <<< "$(grep -E -- "$_DRIVE_RESOLUTION_RE" <<< "$body" || true)"
+  done <<< "$res"
   printf '%s' "$out"
 }
 
@@ -2437,9 +2594,10 @@ drive_env_causal() {
 #
 # What is left is the rule the protocol states: a line must either report a
 # RESOLUTION failure whose subject lives inside the tree (causal), or NAME the
-# tree itself (cascade). The narrowing costs a cascade line that does neither
-# -- `FAIL: suite could not start` -- which is unclaimed and charges, and that
-# is the strict direction this classifier is required to lean in.
+# tree -- exactly, or by a path under it, which is the same tree and not a
+# neighbouring one (cascade). The narrowing costs a cascade line that does
+# neither -- `FAIL: suite could not start` -- which is unclaimed and charges,
+# and that is the strict direction this classifier is required to lean in.
 #
 # The cascade is drawn from the failing lines rather than from the whole body
 # for the same reason the hand-off arms' cascade is drawn from a path match:
@@ -2462,7 +2620,7 @@ drive_env_attribution() {
 "
   fails="$(drive_failure_lines "$body")"
   [ -n "$fails" ] || { printf '%s' "$out"; return 0; }
-  named="$(_drive_path_named_lines "$m" "$fails")"
+  named="$(_drive_env_named_lines "$m" "$fails")"
   [ -z "$named" ] || out="$out$named
 "
   printf '%s' "$out"
@@ -2496,8 +2654,10 @@ _DRIVE_QUARANTINE_MIN_LEN=16
 
 # drive_quarantine_signatures <repo> <root> <task-file> -- the known-flaky
 # signatures this repository recorded, one per line. Nothing when there is no
-# register, when it is not tracked, when THIS CANDIDATE changed it, or when
-# whether this candidate changed it cannot be established at all.
+# register, when it is not tracked, when it is not an authority on this
+# candidate (`_drive_authority_intact`: changed by it, absent from it, or
+# sitting in the verified worktree in any state but the recorded one), or when
+# any of that cannot be established at all.
 #
 # The format is one entry per line: `FLAKE: <literal substring>` and,
 # optionally, ` -- <why>`. Prose around them is ignored, so the register can be
@@ -2518,13 +2678,14 @@ drive_quarantine_signatures() {
   abs="$root/$rel"
   [ -f "$abs" ] || return 0
   git -C "$root" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || return 0
-  # Same authority guard as the pin check, and fail-closed for the same reason:
-  # a register this candidate changed is no authority on it, and neither is one
-  # where "did this candidate change it?" has no answer.
-  if _drive_candidate_changed "$root" \
-      "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)" "$rel"; then
-    return 0
-  fi
+  # Same authority guard as the pin check, and fail-closed for the same reasons:
+  # a register this candidate changed is no authority on it, neither is one the
+  # candidate never recorded or that the verified worktree carries in some other
+  # state than the recorded one, and neither is one where any of those questions
+  # has no answer.
+  _drive_authority_intact "$root" \
+    "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)" "$rel" \
+    || return 0
   while IFS= read -r line; do
     case "$line" in
       'FLAKE:'*) sig="${line#FLAKE:}" ;;
@@ -2548,24 +2709,36 @@ drive_quarantine_attribution() {
   grep -F -- "$sig" <<< "$body" || true
 }
 
-# -- harness: the verification run never reached a verdict ------------------
+# -- a run that stopped short: REPORTED, and never waived --------------------
 #
-# A suite killed by its own timeout, by the OOM killer, or by whatever reaped
-# the pass did not report that the candidate is bad. It reported nothing. This
-# is the one arm whose state is not a file, and it is also the one that claims
-# no lines at all: there is no failure to attribute, which is the entire point.
+# THIS WAS A WAIVABLE CLASS AND IT IS NOT ONE ANY MORE, and the withdrawal is
+# the point rather than a simplification. The argument for it was that a suite
+# killed by its own timeout, by the OOM killer, or by whatever reaped the pass
+# never reported that the candidate is bad, so there is nothing to charge for.
 #
-# It is therefore admissible ONLY when the round has no unattributed failing
-# line left in it -- the same accounting as everything else, taken at its
-# limit. A suite that printed real failures before it was killed has told
-# orchid about the candidate, and those failures charge.
+# THE PREMISE WAS NEVER PROVED. `orchid verify` records the exit status of the
+# command line the repository configured, and 124, 137 and 143 are what THAT
+# process left behind -- not a fact about who ended it. Three different rounds
+# produce the identical trailer:
 #
-# ONE RESIDUAL, STATED RATHER THAN HIDDEN: a candidate that HANGS is killed
-# this way too, and hanging is a defect. That round is forgiven once. It is
-# bounded exactly as every other waiver here is -- charged to `infra_failures`,
-# and a second such round on the same task stops for a human instead of
-# re-dispatching -- and one free round is the price of not charging every
-# machine that ran out of wall clock.
+#   the harness reaped a pass that was still working -- nobody's defect;
+#   the CANDIDATE hung until a timeout reaped it -- squarely a defect, and the
+#     one a `timeout` in a verification command line exists to catch;
+#   the suite EXITED with that status on purpose, or propagated a child's --
+#     `exit 143` is a legal thing for a script to do, and a test runner that
+#     forwards a killed child's status does it without meaning anything by it.
+#
+# Nothing in the log tells them apart. The old arm read the first, waived the
+# round, and forgave a hang once per task -- a residual it stated out loud,
+# which is not the same as one it had earned. This classifier's own rule is
+# that where classification is uncertain the attempt is CHARGED and the reason
+# says why, and that rule was being applied to every other arm while this one
+# assumed its way past it.
+#
+# So the status is still READ, and what it produces is a REPORT on a charged
+# round: an operator seeing `attempt charged` needs to know the run also
+# stopped short, or they will read a truncated log as a mysterious silence. It
+# no longer produces a waiver, and no class is labelled `harness` any more.
 _DRIVE_CUT_SHORT_STATUSES=' 124 137 143 '
 
 # drive_verify_exit <verify-log> -- the `exit: N` trailer `orchid verify`
@@ -2579,19 +2752,24 @@ drive_verify_exit() {
   printf '%s' "$last"
 }
 
-# drive_cut_short_clause <verify-log> -- the state clause when the recorded
-# exit status says the run was killed rather than finished. Nothing otherwise.
+# drive_cut_short_clause <verify-log> -- the clause reporting that the recorded
+# exit status is one a killed run leaves behind. Nothing otherwise.
+#
+# It is worded as what orchid KNOWS and does not know, because that is the
+# whole of it: the status is a fact, and its provenance is not. The clause ends
+# by saying the round is charged, so the sentence an operator reads is complete
+# on its own wherever it is spliced in.
 drive_cut_short_clause() {
   local log="$1" rc what
   rc="$(drive_verify_exit "$log")"
   [ -n "$rc" ] || return 0
   case "$_DRIVE_CUT_SHORT_STATUSES" in *" $rc "*) ;; *) return 0 ;; esac
   case "$rc" in
-    124) what="its own timeout" ;;
-    137) what="SIGKILL (128+9) — an out-of-memory kill or a hard reap" ;;
-    *)   what="SIGTERM (128+15) — a timeout or a reap" ;;
+    124) what="the status its own timeout(1) leaves" ;;
+    137) what="128+9, an out-of-memory kill or a hard reap" ;;
+    *)   what="128+15, a timeout or a reap" ;;
   esac
-  printf 'the verification run was cut short: orchid verify recorded exit %s, %s, so the suite never reached a verdict about this candidate' \
+  printf 'the verification run stopped short of a verdict: orchid verify recorded exit %s (%s) — but that status is equally what a candidate that HUNG until something reaped it leaves, and what a suite that exited with it deliberately leaves, and nothing in this log tells the three apart, so the uncertain reading charges the attempt' \
     "$rc" "$what"
 }
 
@@ -2610,7 +2788,7 @@ _drive_waived() {
 # what every waivable class has to say about THIS failure, as
 # "<class><TAB><reason>":
 #
-#   handoff / environment / flaky / harness
+#   handoff / environment / flaky
 #              some class has state outstanding, failures are attributable to
 #              it, and TOGETHER the pool accounts for every failing line in the
 #              round. The class named is the one an operator would have to act
@@ -2633,12 +2811,12 @@ _drive_waived() {
 # is no more the candidate's than either half alone.
 #
 # THE CLASS NAMED IS THE ONE SOMEBODY MUST ACT ON FIRST, which is why the
-# precedence is handoff, then environment, then flaky, then harness rather than
-# alphabetical or first-to-fire: a hand-off is a step an operator performs, a
-# missing dependency tree is provisioning somebody must add, a quarantined
-# assertion is already on somebody's list, and a killed run is nobody's action
-# at all. Every contributing class is still NAMED in the reason regardless, so
-# the label chooses the headline and never hides the rest.
+# precedence is handoff, then environment, then flaky rather than alphabetical
+# or first-to-fire: a hand-off is a step an operator performs, a missing
+# dependency tree is provisioning somebody must add, and a quarantined
+# assertion is already on somebody's list. Every contributing class is still
+# NAMED in the reason regardless, so the label chooses the headline and never
+# hides the rest.
 #
 # The reason NAMES THE ARTIFACTS, never just the class. "waiting on an operator
 # hand-off" tells an operator nothing they can act on; "the exec bit is not set
@@ -2765,22 +2943,24 @@ drive_waivable_outstanding() {
     return 0
   fi
 
-  # -- harness: the run never reached a verdict. Asked LAST and admitted only
-  # when nothing at all is left unexplained, because it claims no lines: a
-  # suite that reported real failures before it was killed has told orchid
-  # about the candidate, and those failures are still the candidate's.
+  # -- a run that stopped short. This waives NOTHING (see the section header
+  # above `_DRIVE_CUT_SHORT_STATUSES`): the recorded status cannot tell a reap
+  # from a candidate that hung from a deliberate exit, and an unproved
+  # provenance charges here like every other uncertainty. It is REPORTED
+  # instead, because an operator reading a charged round needs to know the run
+  # also stopped where it did rather than wonder why the log ends there.
   cut="$(drive_cut_short_clause "$log")"
   if [ -n "$cut" ]; then
-    if [ -z "$(drive_unattributed_failures "$body" "$attr")" ]; then
-      states="$states$sep$cut"
-      kinds="$kinds harness"
-      _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr"
+    # Nothing else to say about the round: the clause is the whole reason, and
+    # it already ends by saying the attempt is charged. Said on its own rather
+    # than wrapped in the "attribution was not established" tail below, which
+    # would be answering a question nobody asked -- there is no artifact here
+    # for anything to have been attributed to.
+    if [ -z "$states$fallback" ] \
+       && [ -z "$(drive_unattributed_failures "$body" "$attr")" ]; then
+      printf 'candidate\t%s\n' "$cut"
       return 0
     fi
-    # Killed, but it had already reported failures of its own. Those are the
-    # candidate's and the round charges -- and the kill is still SAID, because
-    # an operator reading a charged round needs to know the run was also cut
-    # short rather than wonder why the log stops where it does.
     fallback="$fallback$fsep$cut"
     fsep='; and '
   fi
@@ -2808,14 +2988,19 @@ drive_waivable_outstanding() {
 # _drive_waived_class <kinds> -- the one class name a waiver is LABELLED with,
 # out of the space-separated kinds that contributed to it. Precedence is by
 # whose action clears it, most actionable first: an operator performs a
-# hand-off, somebody provisions a worktree, a quarantined assertion is already
-# on a list, and a killed run is nobody's action at all.
+# hand-off, somebody provisions a worktree, and a quarantined assertion is
+# already on a list.
+#
+# Only ever called with a non-empty <kinds>, since a waiver requires attributed
+# evidence and every arm that contributes evidence records its kind. `flaky` is
+# the last arm rather than a separate default arm, so there is no branch here
+# that can only be reached by a caller that stopped keeping its side of that
+# bargain.
 _drive_waived_class() {
   case " $1 " in
     *' handoff '*)     printf 'handoff' ;;
     *' environment '*) printf 'environment' ;;
-    *' flaky '*)       printf 'flaky' ;;
-    *)                 printf 'harness' ;;
+    *)                 printf 'flaky' ;;
   esac
 }
 
@@ -2846,8 +3031,8 @@ drive_waiver_reason() {
 #
 # NO WAIVABLE CLASS IS ONE THE IMPLEMENTER CAN CLEAR: a checksum is re-pinned
 # by an operator, an exec bit is set by one, a missing dependency tree is
-# provisioned by whoever dispatches, a quarantined assertion is fixed in the
-# test, and a killed run is nobody's to fix at all. Re-dispatching the
+# provisioned by whoever dispatches, and a quarantined assertion is fixed in
+# the test. Re-dispatching the
 # implementer against any of them produces the identical failure and nothing
 # else, so this count is what stops the second such round rather than grinding
 # out the rest of `infra_max` on retries that cannot work.
@@ -2910,7 +3095,7 @@ drive_verify_class() {
     # could not be determined, because the shas do not resolve -- proves
     # nothing here, and saying "no pin is stale" would be a claim orchid never
     # made.
-    printf 'candidate\tno waivable state is outstanding in this tree — no package pin is reported stale by a freshness check this candidate did not write, this candidate left no executable mode 644, the worktree is missing no gitignored build state the integration checkout carries, nothing here is on a known-flaky register this candidate did not touch, and the run reached its own verdict — so nothing but the candidate is left to explain this round\n'
+    printf 'candidate\tno waivable state is outstanding in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, this candidate left no executable mode 644, the worktree is missing no gitignored build state the integration checkout carries, nothing here is on a known-flaky register this candidate recorded and left intact, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
     return 0
   fi
   hcls="${hand%%$'\t'*}"
@@ -2919,8 +3104,7 @@ drive_verify_class() {
     case "$hcls" in
       handoff)     suffix="so this failure is waiting on an operator hand-off the implementer profile may not perform (L017)" ;;
       environment) suffix="so this failure is the dispatch environment's rather than the candidate's" ;;
-      flaky)       suffix="so this failure is one the repository had already declared unreliable before this candidate existed" ;;
-      *)           suffix="so this round produced no verdict about the candidate at all" ;;
+      *)           suffix="so this failure is one the repository had already declared unreliable before this candidate existed" ;;
     esac
     printf '%s\t%s, %s\n' "$hcls" "$hnote" "$suffix"
     return 0

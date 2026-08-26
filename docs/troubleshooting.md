@@ -373,8 +373,7 @@ orchid journal show --task <id>    # 'attempt_waiver' entries say why
 fix by trying again: the two operator hand-offs the protocol itself defines
 (a stale package pin, an executable left mode 644), gitignored build state the
 worktree never received, and an assertion the repository already recorded as
-known-flaky. A fifth verdict, `harness`, covers a run killed before it reached
-a verdict at all. There is no signature list and no way to declare a failure
+known-flaky. There is no signature list and no way to declare a failure
 forgiven by its wording. Each needs two things to hold, and each one alone is
 worth nothing:
 
@@ -422,8 +421,13 @@ worth nothing:
    filesystem instead of the sentence.
 
    Its cascade is the same rule as the mode bit's, too: a further failing line
-   is claimed when it **names the directory**. Merely mentioning something that
-   lives inside it is not enough — `node_modules/lodash` exists, so
+   is claimed when it **names the directory**, or names a path **inside** it —
+   `ENOENT: ... open '.../node_modules/x'` cannot be about anything but the
+   tree that is not there. That last part is the environment arm's alone,
+   because its artifact is a *directory* that is entirely absent; where the
+   artifact is a file, `bin/tool/child` is a different file and `bin/tool` does
+   not collect it. Merely mentioning something that
+   lives inside it is not enough either — `node_modules/lodash` exists, so
    `FAIL: lodash helper returned 3, expected 4` would otherwise be laundered as
    a dependency-tree cascade because the thing under test shares a name with a
    package. A dependency tree's direct children are ordinary words.
@@ -435,6 +439,17 @@ worth nothing:
    carries, produces an empty diff that reads exactly like "the candidate
    changed nothing"; treating that as permission would have let a candidate
    quarantine the assertion it was failing after all.
+
+   And for the two that read a *file* — the pin check and the register — being
+   untouched across `base_sha..candidate_sha` is not the whole question, because
+   what runs and what is read is the copy in the worktree the verification ran
+   in. Each is an authority only while it is **tracked in `candidate_sha`** and
+   the worktree copy is **byte- and mode-identical to what that commit
+   records**. An edit left unstaged, an edit staged and never committed, a file
+   dropped in untracked, one deleted, one chmod'd: none of them appears in that
+   diff, and every one of them closes the route and charges. If you keep a
+   register or a pinning script, commit changes to it — a working-tree edit
+   silently costs you the route for that round.
 
 Where the state is outstanding and the failure is not attributable to it, the
 attempt is **charged**, and the reason says what is outstanding and that
@@ -454,7 +469,7 @@ classes: a stale pin explaining part of the output and an absent dependency
 tree explaining the rest together waive the round; one more line neither of
 them owns charges it, and the reason quotes that line. The class the journal
 *names* is the one somebody must act on first — `handoff`, then
-`environment`, then `flaky`, then `harness` — and every contributing class is
+`environment`, then `flaky` — and every contributing class is
 named in the reason. Perform the hand-off (re-pin, `chmod +x`), provision the
 worktree, or fix the test, then re-dispatch; the same failure charges
 afterwards, because the state it was proved against is gone. If a waived fault
@@ -463,8 +478,15 @@ boundary rather than re-dispatching again, because none of these gets better
 by being retried.
 
 **Anything else charges**, including a flaky failure your repository never
-wrote down and a resolution failure whose subject is not inside the missing
-directory. Orchid forgives only what it can prove. Fix the test, or provision
+wrote down, a resolution failure whose subject is not inside the missing
+directory, and a run whose recorded exit status says it **stopped short**
+(124, 137, 143). That last one was a fifth verdict once, on the reading that
+the harness had reaped a pass which therefore never spoke about the candidate
+— but the same trailer is what a candidate that *hangs* until a timeout reaps
+it leaves, and what a suite that exits with the status deliberately leaves.
+Nothing in the log tells them apart, so the attempt is charged and the reason
+reports that the run stopped short, rather than leaving you to wonder why the
+log ends where it does. Orchid forgives only what it can prove. Fix the test, or provision
 the worktree, then `orchid task retry <id> --reason "..."`, which returns a
 blocked task to `rework` without consuming an attempt. A test you have decided
 is genuinely non-deterministic is a lesson-birth moment for `orchid lessons

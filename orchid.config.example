@@ -103,8 +103,12 @@ pack_budget_bytes=65536
 #     git TRACKS (lesson L003), and
 #   - an assertion this repository ALREADY recorded as known-flaky, in a
 #     register this candidate did not touch (flaky.quarantine, below).
-# Plus one that forgives no failure at all: a run KILLED before it reached a
-# verdict (exit 124/137/143) reported nothing about the candidate.
+# A run whose recorded exit status says it STOPPED SHORT (124/137/143) is
+# REPORTED and still charged. It was a fifth verdict once, on the reading that
+# the harness reaped a pass that therefore never spoke about the candidate --
+# but that is equally the trailer a candidate which HUNG until a timeout reaped
+# it leaves, and the one a suite that exits with the status deliberately
+# leaves, and nothing in the log tells them apart.
 # Each is proved against the world first, and then THIS failure must be
 # attributable to that artifact: a failing line naming the file and refusing to
 # execute it, naming it and calling it stale, or reporting that something the
@@ -112,6 +116,14 @@ pack_budget_bytes=65536
 # charges, including a failure that merely coincides with an outstanding fault.
 # A round is never waived as a round: one failing line nothing accounts for
 # charges it, and the reason quotes that line.
+# THE TWO ROUTES THAT READ A FILE OUT OF THIS REPOSITORY -- the pin check and
+# the register -- read it only while it is an AUTHORITY ON THE CANDIDATE:
+# untouched across base_sha..candidate_sha, tracked in candidate_sha, and
+# present in the verified worktree with the same bytes and mode that commit
+# records. An unstaged edit, a staged-and-uncommitted one, an untracked
+# drop-in, a deletion or a mode change closes the route -- none of them is
+# visible in a diff of two commits, and each is a file the implementer
+# controls.
 #
 # The package-pin freshness check that route RUNS, relative to the verified
 # tree. Invoked only if it is a regular file there that states how it is run --
@@ -120,8 +132,9 @@ pack_budget_bytes=65536
 # scripts/pin-formula.sh is run. Its nonzero EXIT is not enough: it must report
 # a file stale in words, because a check that cannot find the formula or trips
 # over metadata the candidate corrupted also exits nonzero and re-pinning fixes
-# neither. Never trusted when the candidate itself changed it. `none` disables
-# the route.
+# neither. Read only under the authority rule above, so a check the candidate
+# changed -- or edited in the worktree without committing -- forgives nothing.
+# `none` disables the route.
 # Default: scripts/pin-formula.sh --check
 # handoff.pin_check=scripts/pin-formula.sh --check
 #
@@ -136,7 +149,9 @@ pack_budget_bytes=65536
 # THE SAFETY IS NOT THE PATH, IT IS THE TIMING: a register THIS CANDIDATE
 # CHANGED is not an authority on this candidate, so touching the file removes
 # the route entirely. An implementer cannot quarantine the assertion it is
-# failing. That question must also be ANSWERABLE -- a task record whose
+# failing -- and cannot reach around that by leaving the entry uncommitted in
+# the worktree either, because the register is read only under the authority
+# rule above. That question must also be ANSWERABLE -- a task record whose
 # base_sha or candidate_sha is missing or does not resolve yields the same
 # empty diff an untouched register does, and the route closes rather than
 # reading that as permission. `none` disables the route.

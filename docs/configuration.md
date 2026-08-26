@@ -215,12 +215,16 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   - **An assertion the repository already recorded as known-flaky**
     (`flaky.quarantine`, below).
 
-  And one more that forgives no failure at all: a run **killed before it
-  reached a verdict** (`orchid verify` recorded exit 124, 137 or 143) reported
-  nothing about the candidate to forgive. It is admitted only when the round
-  left no unexplained failing line — a suite that printed real failures before
-  it was killed has already said something about the candidate, and those
-  failures charge.
+  A run whose recorded exit status says it **stopped short** (`orchid verify`
+  recorded exit 124, 137 or 143) is **reported and still charged**. It was a
+  fifth verdict once, on the reading that the harness had reaped a pass which
+  therefore never spoke about the candidate — and that reading was never
+  proved. The same trailer is what a candidate that *hangs* until a timeout
+  reaps it leaves, which is the very defect a `timeout` in a verification
+  command line exists to catch, and what a suite that exits with the status
+  deliberately leaves. Nothing in the log tells them apart, so it takes the
+  uncertain reading: the attempt is charged, and the reason says the run
+  stopped short so you are not left wondering why the log ends where it does.
 
   Each needs **two halves, and neither is worth anything alone**:
   - *The state, proved against the world* — `stat` for the mode bit, *running*
@@ -247,9 +251,29 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     `mobile/node_modules` because `mobile/node_modules/.bin/jest` exists in the
     checkout that still has it — and attributes to nothing at all when the
     absent directory is a `.cache` with no `jest` in it, which is exactly the
-    coincidence that made the first version of this arm dangerous. For the
+    coincidence that made the first version of this arm dangerous. Its cascade
+    claims a line that **names the directory**, or that names a path **inside**
+    it — `ENOENT: ... open '.../node_modules/x'` cannot be about anything but
+    the tree that is not there. That last part belongs to this arm alone,
+    because its artifact is a *directory* that is entirely absent; where the
+    artifact is a file, `bin/tool/child` is a different file and `bin/tool`
+    does not collect it either. For the
     flaky register the signature *is* the proof, matched literally and
     claiming only the lines it matches.
+
+  **Two of those proofs read a file out of your repository — the pin check and
+  the flaky register — and a file is an authority on a candidate only while it
+  is that candidate's own record of it.** Each is read only when it is
+  *untouched* across `base_sha..candidate_sha`, *tracked in* `candidate_sha` as
+  an ordinary file, and present in the verified worktree with the same bytes
+  and the same mode that commit records. The first clause alone is not the
+  question, because a diff of two commits cannot see the file that actually
+  ran: an edit left unstaged, an edit staged and never committed, a file
+  dropped in untracked, one deleted, and one whose mode has moved are all
+  invisible to it, and every one of them is a way to hand the driver a file the
+  implementer controls. Any of those, and any form of the question that cannot
+  be *answered* — a missing or unresolvable `base_sha`/`candidate_sha` produces
+  the same empty diff an untouched file does — closes the route and charges.
 
   Being outstanding is not being to blame — a repository whose sourced
   libraries carry `#!` lines at mode 644 (orchid is one, in every `lib/*.sh`)
@@ -264,14 +288,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   dependency tree explaining four together account for all of it and it is
   waived; one further unexplained line charges it and the reason quotes that
   line. The class the journal *names* is the one somebody must act on first —
-  `handoff`, then `environment`, then `flaky`, then `harness` — and every
-  contributing class is named in the reason regardless. What remains forgiven,
-  and is bounded on purpose: a candidate that produces *no failing line of its
-  own* while one of those states is outstanding is waived for that round — an
-  operator clears the state in seconds, the round is charged to
-  `infra_failures`, and it stops for a human if it recurs. A candidate that
-  *hangs* is forgiven once by the killed-run rule for the same reason and
-  under the same bound.
+  `handoff`, then `environment`, then `flaky` — and every contributing class
+  is named in the reason regardless. What remains forgiven, and is bounded on
+  purpose: a candidate that produces *no failing line of its own* while one of
+  those states is outstanding is waived for that round — an operator clears
+  the state in seconds, the round is charged to `infra_failures`, and it stops
+  for a human if it recurs.
 
   A waived round re-enters rework with `--waive-attempt`, and requires a
   *fresh* implement envelope of its own: `--waive-attempt` leaves `attempts`
@@ -289,12 +311,11 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   when it is executable, otherwise under the interpreter its own `#!` line
   names, which is how orchid runs its own mode-644
   `scripts/pin-formula.sh`; a file that is neither executable nor names a
-  working interpreter is never run, and that is no pin route. It is never
-  trusted when the candidate itself changed it (a bug an implementer just
-  introduced into a pinning script fails exactly like a stale pin, and that is
-  the implementer's), nor when that question cannot be answered at all — a
-  missing or unresolvable `base_sha`/`candidate_sha` yields the same empty diff
-  an untouched check does, and the route closes rather than guessing.
+  working interpreter is never run, and that is no pin route. It is read as an
+  authority only under the rule above: the candidate must not have changed it
+  (a bug an implementer just introduced into a pinning script fails exactly
+  like a stale pin, and that is the implementer's), the candidate must
+  *record* it, and the worktree must still carry what was recorded.
   **A nonzero exit does not prove the pin stale** — a
   check that cannot find the formula, cannot find a git checkout, or trips
   over packaging metadata the candidate itself corrupted exits nonzero too,
@@ -314,11 +335,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   path, it is the timing:** a register *this candidate changed* is not an
   authority on this candidate, so the moment a candidate touches the file the
   route is gone and the round charges — an implementer cannot quarantine the
-  assertion it is failing. That question has to be *answerable*, too: a task
-  record whose `base_sha` or `candidate_sha` is missing or does not resolve in
-  the tree produces the same empty diff an untouched register does, and the
-  route closes rather than reading that as permission. Three more things keep
-  it narrow: a signature is matched
+  assertion it is failing, and cannot reach around that by leaving the entry
+  uncommitted in the worktree either, because the register is read only under
+  the authority rule above. Three more things keep it narrow: a signature is
+  matched
   **literally**, never as a pattern, so no entry can be written that
   matches everything; it must be at least 16 characters, so no entry can match
   everything by being short; and it claims **only** the lines it matches, with

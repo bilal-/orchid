@@ -1186,7 +1186,7 @@ ones its archetype never declares.
     two halves, and neither half is worth anything alone:
     - *Not the candidate.* Something is outstanding that the implementer
       cannot fix by trying again, and every failing line in the round is
-      attributable to it. FOUR such things are recognized, each proved
+      attributable to it. THREE such things are recognized, each proved
       against the WORLD rather than read from the failure's wording:
       - `handoff` — a stale package checksum, or an executable this candidate
         left mode 644. The driver stats the files the candidate ADDED and the
@@ -1195,8 +1195,7 @@ ones its archetype never declares.
         shipped it that way or dropped the bit while rewriting it), and it
         RUNS the repository's package-pin freshness check
         (`handoff.pin_check`, config, default `scripts/pin-formula.sh
-        --check`; never trusted when the candidate changed the check itself,
-        nor when whether it did cannot be established)
+        --check`; only ever an AUTHORITY under the rule below)
         and requires it to REPORT A FILE STALE — a nonzero exit is not that
         report, since a check that cannot find the formula or trips over
         metadata this candidate corrupted exits nonzero too and re-pinning
@@ -1208,18 +1207,33 @@ ones its archetype never declares.
         above; this classification is the backstop, not the fix.
       - `flaky` — an assertion this repository ALREADY recorded as
         known-flaky, in a register (`flaky.quarantine`, config, default
-        `tests/QUARANTINE.md`) that THIS CANDIDATE DID NOT TOUCH — and where
-        that question can be ANSWERED, since an unresolvable candidate is not
-        a candidate that touched nothing. That clause is the whole safety of
-        it: an implementer cannot quarantine the assertion it is failing,
-        because changing the file removes the route. Signatures are matched
-        literally and claim only the lines they match.
-      - `harness` — the run was KILLED before it reached a verdict (`orchid
-        verify` recorded exit 124, 137 or 143). This one forgives no failure,
-        because there is none: it is admitted only when the round left no
-        unexplained failing line, so a suite that printed real failures before
-        it died has already spoken about the candidate and those failures
-        charge.
+        `tests/QUARANTINE.md`) that is an AUTHORITY under the rule below.
+        That rule is the whole safety of it: an implementer cannot quarantine
+        the assertion it is failing, because writing the entry removes the
+        route. Signatures are matched literally and claim only the lines they
+        match.
+
+      A REPOSITORY FILE IS AN AUTHORITY ON A CANDIDATE ONLY WHILE IT IS THE
+      CANDIDATE'S OWN RECORD OF IT, and both routes above turn on that: the
+      pin check and the register are read only when the file is UNTOUCHED
+      across `base_sha..candidate_sha`, TRACKED IN `candidate_sha` as an
+      ordinary file, and present in the verified worktree with the same bytes
+      and the same mode that commit records. A diff of two commits is not that
+      question — an edit left unstaged, an edit staged and uncommitted, a file
+      dropped in untracked, one deleted, and one whose mode has moved are all
+      invisible to it, and each of them is a way to hand the driver a file the
+      implementer controls. Any of them, and any form of the question that
+      cannot be ANSWERED at all, closes the route and charges.
+
+      A run whose recorded exit status says it STOPPED SHORT (`orchid verify`
+      recorded exit 124, 137 or 143) is REPORTED on the charged round and
+      forgives nothing. It was a fourth class once, on the reading that the
+      harness had reaped a pass which therefore never spoke about the
+      candidate; that reading was never proved. The identical trailer is what
+      a candidate that HANGS until a timeout reaps it leaves — the very defect
+      a `timeout` in a verification command line exists to catch — and what a
+      suite that exits with the status deliberately leaves. Nothing in the log
+      tells them apart, so it takes the uncertain reading below.
 
       The ATTRIBUTION is then required from the failure to that ARTIFACT: a
       failing line that names the file and reports its fault — refusing to
@@ -1246,7 +1260,11 @@ ones its archetype never declares.
       failing line that merely mentions something living INSIDE the tree is not
       claimed — a dependency tree's direct children are ordinary words, and
       `FAIL: lodash helper returned 3` is a defect about something that shares
-      a name with a package. EVERY ROUTE THAT READS AN AUTHORITY OUT OF THE
+      a name with a package. NAMING a path UNDER the absent directory does
+      count, and only for it: `ENOENT: ... open '.../node_modules/x'` cannot be
+      about anything but the tree that is not there, whereas for an artifact
+      that is a FILE `bin/tool/child` is a different file and `bin/tool` must
+      not collect it. EVERY ROUTE THAT READS AN AUTHORITY OUT OF THE
       REPOSITORY asks git what this candidate changed — the pin check, the
       known-flaky register, and the added/dropped file lists — and each of them
       CHARGES when git cannot be asked at all: an absent, malformed or
@@ -1264,8 +1282,8 @@ ones its archetype never declares.
       stale pin explaining six lines and an absent dependency tree explaining
       four are waived together, while one further unexplained line charges it
       and the reason quotes that line. The class NAMED is the one somebody
-      must act on first (`handoff`, then `environment`, then `flaky`, then
-      `harness`), and every contributing class is named in the reason.
+      must act on first (`handoff`, then `environment`, then `flaky`), and
+      every contributing class is named in the reason.
       Such a round is charged to
       `orchid task infra-fail <id> --reason "..."` — the environment budget,
       capped by `infra_max` (config, default 3) — and then enters rework
@@ -1291,8 +1309,10 @@ ones its archetype never declares.
       fails toward the strict reading and states why it charged. That includes
       a failure that merely COINCIDES with an outstanding fault; a resolution
       failure whose subject is NOT inside the absent directory; a flaky-
-      looking failure the repository never wrote down; and every failure none
-      of the four covers. Orchid forgives only what it can prove.
+      looking failure the repository never wrote down; a run whose recorded
+      exit status says it stopped short, since that status cannot tell a reap
+      from a candidate that hung; and every failure none of the three covers.
+      Orchid forgives only what it can prove.
 
     **Either advance carries the failing gate's exact locations into the brief,
     automatically.** Before it deletes the verify log, `orchid task advance

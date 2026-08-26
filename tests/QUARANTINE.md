@@ -40,6 +40,16 @@ authority on that candidate.** The moment a candidate's diff touches this file,
 the whole route is gone for that round — including for entries it did not
 write. An implementer cannot quarantine the assertion it is failing.
 
+**Nor can it reach around that by not committing.** A diff of two commits says
+nothing about the file that is actually read, so the rule is the whole
+question: this register is an authority only while it is untouched across
+`base_sha..candidate_sha`, **tracked in `candidate_sha`**, and present in the
+verified worktree with the **same bytes and mode that commit records**. An
+entry left unstaged, an entry staged and never committed, an untracked
+register dropped in where there was none, a deleted one, a chmod'd one — none
+of those appears in that diff, and every one of them closes the route and
+charges the round. If you add an entry here, commit it.
+
 ## Quarantining is the second-best answer
 
 The first is to make the test deterministic — usually by making it **wait for

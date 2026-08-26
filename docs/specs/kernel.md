@@ -277,7 +277,7 @@ across prose sections is normative HERE):**
 | pending | `task advance` | deps done; worktree created; base_sha set | frontmatter | implementing |
 | implementing | `task advance` | implementer envelope `ok`; the dispatch DELIVERED a candidate (orchestrator-checked before the verb is called — see below); candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
-| testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky/harness → `task infra-fail` + `--waive-attempt --reason` | frontmatter, journal | rework |
+| testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky → `task infra-fail` + `--waive-attempt --reason` | frontmatter, journal | rework |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
 | arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
 | arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
@@ -612,8 +612,8 @@ buying a fresh implementation pass to reach the same tree.
   checkout carries (lesson L003), and an assertion that samples a race, which
   in r-002 stranded eight tasks and outspent every real defect in the run
   (lesson L020). The deterministic driver therefore classifies a FAILED
-  `orchid verify`, and it can reach five verdicts — `candidate`, which
-  charges, and `handoff`, `environment`, `flaky` and `harness`, which do not.
+  `orchid verify`, and it can reach four verdicts — `candidate`, which
+  charges, and `handoff`, `environment` and `flaky`, which do not.
   There is NO signature surface: a repository cannot declare a failure
   *sentence* that forgives its own rounds, and the two hand-offs are
   recognized with no per-repo configuration at all, because the protocol
@@ -626,10 +626,14 @@ buying a fresh implementation pass to reach the same tree.
   to REPORT A FILE STALE — a nonzero exit alone is not that report, since a
   check that cannot find the formula or trips over metadata the candidate
   corrupted exits nonzero too and re-pinning fixes neither; it COMPARES the
-  two checkouts for an ignored directory the worktree never received; it reads
-  a known-flaky register that THIS CANDIDATE DID NOT TOUCH, which is what
-  stops an implementer quarantining the assertion it is failing; and it reads
-  the recorded exit status for a run that was KILLED rather than finished. The
+  two checkouts for an ignored directory the worktree never received; and it
+  reads a known-flaky register that THIS CANDIDATE DID NOT TOUCH, which is what
+  stops an implementer quarantining the assertion it is failing. A recorded
+  exit status saying the run STOPPED SHORT (124, 137, 143) was a fifth verdict
+  once and is not one now: that status is equally what a candidate which HUNG
+  until a timeout reaped it leaves, and what a suite that exits with it
+  deliberately leaves, so the provenance was assumed rather than proved. It is
+  reported on a charged round instead. The
   failure is then ATTRIBUTED to that artifact: a failing line must name it and
   report its fault (refuse to execute it, call it stale, or fail to resolve
   something that lives INSIDE the absent directory), which proves the state
@@ -639,12 +643,23 @@ buying a fresh implementation pass to reach the same tree.
   as much as for the file: a failing line that merely mentions something living
   inside it — a package name, which is an ordinary word — is not its cascade.
   The path is matched at a boundary, so an outstanding `bin/tool`
-  cannot collect a failure on `bin/tool-helper`. Every route that reads an
+  cannot collect a failure on `bin/tool-helper`, nor a failure on
+  `bin/tool/child`, which is a different file again; the ONE relaxation is that
+  a path UNDER the absent directory names that directory, because there the
+  artifact is a whole tree that is not there and everything beneath it is
+  missing with it. Every route that reads an
   authority out of the repository asks git what the candidate changed, and each
   CHARGES when git cannot be asked at all: a missing or unresolvable
   `base_sha`/`candidate_sha` yields the same empty diff as an untouched file,
   and reading that as "untouched" would reopen the pin check and the flaky
-  register to a candidate that wrote them. A non-`candidate` verdict
+  register to a candidate that wrote them. The two routes that read a FILE out
+  of the repository take that further, because a diff of two commits is not a
+  fact about the file that RAN: the pin check and the register are authorities
+  only while each is tracked in `candidate_sha` and the verified worktree
+  carries exactly the bytes and mode that commit records, so an unstaged edit,
+  a staged-and-uncommitted one, an untracked drop-in, a deletion and a mode
+  change each close the route — none of them appears in the diff, and every one
+  of them is a file the implementer controls. A non-`candidate` verdict
   charges `infra_failures` rather than `attempts`, entering rework with
   `--waive-attempt` so the waiver's journal entry names the class and the
   reason. Four properties make this safe rather than a loophole: it forgives
