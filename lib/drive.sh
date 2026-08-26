@@ -1498,9 +1498,11 @@ _drive_verify_body() {
 # is not an authority on this candidate. An implementer cannot quarantine the
 # assertion it is failing, because touching the file removes the route -- and
 # cannot reach around that by leaving the entry UNCOMMITTED either, because
-# what is read has to be what `candidate_sha` records
-# (`_drive_authority_intact`, which the pin check takes too). Every other proof
-# here has no configuration at all.
+# what is read normally has to be what `candidate_sha` records
+# (`_drive_authority_intact`, which the pin check takes too). The only bootstrap
+# is a task whose base AND candidate answerably predate the path: it can use a
+# clean tracked integration copy, which the candidate cannot write. Every other
+# proof here has no configuration at all.
 #
 # ATTRIBUTION IS PER FAILURE, AND THE UNIT IS THE FAILING LINE. Each
 # outstanding hand-off claims the individual failures it explains; what is
@@ -1772,7 +1774,6 @@ _drive_authority_intact() {
   if _drive_candidate_changed "$root" "$base" "$cand" "$rel"; then return 1; fi
   # Carried by the recorded candidate itself, as an ordinary file. Assigned on
   # its own line, never as `local mode="$(...)"`, which would swallow the
-  # status this turns on.
   mode="$(_drive_blob_mode "$root" "$cand" "$rel")" || return 1
   abs="$root/$rel"
   [ -f "$abs" ] || return 1
@@ -2522,10 +2523,22 @@ _drive_env_resolves() {
   return 0
 }
 
-# _drive_env_line_resolves <repo> <missing> <line> -- 0 when some token of
-# <line> resolves inside <missing>.
+# _drive_env_line_resolves <repo> <missing> <line> -- 0 when the SUBJECT of
+# <line>'s resolution failure resolves inside <missing>.
+#
+# Every token is not a subject. `ENOENT: ... open 'src/config.json'` contains
+# the word `open`, and a dependency tree commonly contains a package with that
+# name; treating every word as a candidate lets that coincidence waive a real
+# missing source file. The subject is instead taken only next to the diagnostic
+# words that introduce it (`Command "jest"`, `find module lodash`, `resolve
+# foo`, `open 'path'`). The shell's inverse spelling, `jest: command not found`,
+# is the one form whose subject precedes the marker.
+#
+# This parser deliberately recognises a small grammar. Missing an unfamiliar
+# diagnostic charges, while accepting an unrelated word forgives a candidate
+# defect; strict classification requires the first direction.
 _drive_env_line_resolves() {
-  local repo="$1" m="$2" line="$3" i=0
+  local repo="$1" m="$2" line="$3" i=0 expect=0 prev="" tok
   local -a words=()
   [ -n "$line" ] || return 1
   # `read -r -a` rather than an unquoted `for tok in $line`: word splitting
@@ -2534,8 +2547,35 @@ _drive_env_line_resolves() {
   read -r -a words <<< "$line"
   while [ -n "${words[i]:-}" ]; do
     _drive_strip_punct_into "${words[i]}"
+    tok="$_DRIVE_TOK"
     i=$((i + 1))
-    if _drive_env_resolves "$repo" "$m" "$_DRIVE_TOK"; then return 0; fi
+    [ -n "$tok" ] || continue
+
+    if [ "$expect" -eq 1 ]; then
+      # These are grammar between an introducer and its subject, as in
+      # `Unable to resolve module foo` and `No module named 'foo'`.
+      case "$tok" in
+        command|Command|COMMAND|module|Module|MODULE|package|Package|PACKAGE|named|Named|NAMED|file|File|FILE|directory|Directory|DIRECTORY)
+          prev="$tok"
+          continue
+          ;;
+      esac
+      _drive_env_resolves "$repo" "$m" "$tok" && return 0
+      expect=0
+    fi
+
+    case "$tok" in
+      command|Command|COMMAND)
+        # POSIX shells put the missing command immediately before this word;
+        # Yarn-style diagnostics put it immediately after.
+        _drive_env_resolves "$repo" "$m" "$prev" && return 0
+        expect=1
+        ;;
+      module|Module|MODULE|package|Package|PACKAGE|resolve|Resolve|RESOLVE|open|Open|OPEN)
+        expect=1
+        ;;
+    esac
+    prev="$tok"
   done
   return 1
 }
@@ -2652,12 +2692,39 @@ drive_env_attribution() {
 _DRIVE_QUARANTINE_DEFAULT='tests/QUARANTINE.md'
 _DRIVE_QUARANTINE_MIN_LEN=16
 
+# _drive_quarantine_integration_intact <repo> <root> <base> <cand> <rel> -- 0
+# when an old task branch may read <rel> from the integration checkout even
+# though neither of its own commits carries that path.
+#
+# This is the narrow bootstrap edge for a register introduced while older task
+# worktrees remain in flight. Requiring BOTH task commits to resolve and to
+# lack the path distinguishes that case from every candidate-controlled shape:
+# a candidate that adds the register has it in <cand>; one that deletes it had
+# it in <base>. Neither can fall through to the integration copy. The two
+# checkouts must also be distinct, and the integration copy must pass the same
+# byte/mode/index authority guard against its own HEAD. Anything unanswerable
+# charges.
+_drive_quarantine_integration_intact() {
+  local repo="$1" root="$2" base="$3" cand="$4" rel="$5" head line
+  [ -d "$repo" ] && [ -d "$root" ] || return 1
+  [ "$(cd "$repo" 2>/dev/null && pwd -P)" != "$(cd "$root" 2>/dev/null && pwd -P)" ] || return 1
+  _drive_changed_paths_answerable "$root" "$base" "$cand" || return 1
+  line="$(git -C "$root" ls-tree "$base" -- "$rel" 2>/dev/null)" || return 1
+  [ -z "$line" ] || return 1
+  line="$(git -C "$root" ls-tree "$cand" -- "$rel" 2>/dev/null)" || return 1
+  [ -z "$line" ] || return 1
+  head="$(git -C "$repo" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null)" || return 1
+  _drive_authority_intact "$repo" "$head" "$head" "$rel"
+}
+
 # drive_quarantine_signatures <repo> <root> <task-file> -- the known-flaky
 # signatures this repository recorded, one per line. Nothing when there is no
-# register, when it is not tracked, when it is not an authority on this
-# candidate (`_drive_authority_intact`: changed by it, absent from it, or
-# sitting in the verified worktree in any state but the recorded one), or when
-# any of that cannot be established at all.
+# register or when it is not an authority on this candidate. Normally that is
+# `_drive_authority_intact`: the candidate carries it unchanged and its live
+# bytes, mode, and index match the commit. A carried-over branch whose base and
+# candidate both answerably predate the path may instead use the clean tracked
+# integration copy above. A candidate addition, deletion, or edit never can,
+# and anything unanswerable charges.
 #
 # The format is one entry per line: `FLAKE: <literal substring>` and,
 # optionally, ` -- <why>`. Prose around them is ignored, so the register can be
@@ -2668,25 +2735,23 @@ _DRIVE_QUARANTINE_MIN_LEN=16
 # becoming a live signature -- the first thing anyone writing one of these
 # files does.
 drive_quarantine_signatures() {
-  local repo="$1" root="$2" tf="$3" rel abs line sig edge sep=' -- '
+  local repo="$1" root="$2" tf="$3" rel abs line sig edge base cand sep=' -- '
   rel="$(config_get "$repo" flaky.quarantine "$_DRIVE_QUARANTINE_DEFAULT")"
   [ -n "$rel" ] || return 0
   [ "$rel" != none ] || return 0
   # Inside the verified tree only: an absolute path is not something the
   # repository's own history can prove was recorded before this candidate.
   case "$rel" in /*|*..*) return 0 ;; esac
-  abs="$root/$rel"
-  [ -f "$abs" ] || return 0
-  git -C "$root" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 || return 0
-  # Same authority guard as the pin check, and fail-closed for the same reasons:
-  # a register this candidate changed is no authority on it, neither is one the
-  # candidate never recorded or that the verified worktree carries in some other
-  # state than the recorded one, and neither is one where any of those questions
-  # has no answer.
-  _drive_authority_intact "$root" \
-    "$(fm_get "$tf" base_sha)" "$(fm_get "$tf" candidate_sha)" "$rel" \
-    || return 0
-  while IFS= read -r line; do
+  base="$(fm_get "$tf" base_sha)"
+  cand="$(fm_get "$tf" candidate_sha)"
+  if _drive_authority_intact "$root" "$base" "$cand" "$rel"; then
+    abs="$root/$rel"
+  elif _drive_quarantine_integration_intact "$repo" "$root" "$base" "$cand" "$rel"; then
+    abs="$repo/$rel"
+  else
+    return 0
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       'FLAKE:'*) sig="${line#FLAKE:}" ;;
       *) continue ;;
@@ -3116,7 +3181,7 @@ drive_verify_class() {
     # could not be determined, because the shas do not resolve -- proves
     # nothing here, and saying "no pin is stale" would be a claim orchid never
     # made.
-    printf 'candidate\tno waivable state is outstanding in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, this candidate left no executable mode 644, the worktree is missing no gitignored build state the integration checkout carries, nothing here is on a known-flaky register this candidate recorded and left intact, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
+    printf 'candidate\tno waivable state is outstanding in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, this candidate left no executable mode 644, the worktree is missing no gitignored build state the integration checkout carries, no trusted known-flaky register covers this failure, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
     return 0
   fi
   hcls="${hand%%$'\t'*}"

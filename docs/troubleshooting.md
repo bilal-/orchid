@@ -418,7 +418,10 @@ worth nothing:
    — and attributes to nothing when the absent directory is an unrelated
    `.cache`. That coincidence is exactly how an earlier version of this rule
    waived failures it had no part in, and it is why the rule now asks the
-   filesystem instead of the sentence.
+   filesystem instead of the sentence. It asks about the diagnostic's subject,
+   not every token: `ENOENT: ... open 'src/config.json'` checks
+   `src/config.json`; a dependency package coincidentally named `open` is not
+   evidence about that missing source path.
 
    Its cascade is the same rule as the mode bit's, too: a further failing line
    is claimed when it **names the directory**, or names a path **inside** it —
@@ -450,6 +453,14 @@ worth nothing:
    diff, and every one of them closes the route and charges. If you keep a
    register or a pinning script, commit changes to it — a working-tree edit
    silently costs you the route for that round.
+
+   The flaky register has one carried-branch exception. When both the task's
+   base and candidate resolve and both predate the register path, the driver
+   may read the integration checkout's tracked copy while its index, bytes, and
+   mode are clean at integration `HEAD`. This is deliberately unavailable to a
+   candidate that added the path (candidate has it) or deleted it (base had it),
+   and any dirty or unanswerable state charges. It exists so a historical flake
+   learned after old worktrees were cut can protect those worktrees too.
 
 Where the state is outstanding and the failure is not attributable to it, the
 attempt is **charged**, and the reason says what is outstanding and that

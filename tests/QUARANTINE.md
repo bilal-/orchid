@@ -50,6 +50,15 @@ register dropped in where there was none, a deleted one, a chmod'd one — none
 of those appears in that diff, and every one of them closes the route and
 charges the round. If you add an entry here, commit it.
 
+There is one bootstrap edge for branches already in flight when a register is
+first introduced. If both the task's `base_sha` and `candidate_sha` resolve and
+both lack this path, the driver may read the integration checkout's copy
+instead — but only while that copy is tracked at integration `HEAD` and its
+index, bytes, and mode are clean. A candidate that adds this path no longer
+lacks it; one that deletes it had the path in its base. Neither can borrow the
+integration copy, so this exception reaches old branches without reopening
+self-quarantine.
+
 ## Quarantining is the second-best answer
 
 The first is to make the test deterministic — usually by making it **wait for
@@ -100,10 +109,11 @@ The de-flaked assertion says something, is not listed, and charges.
 The entry is live rather than commented out because the shape is still
 reachable: a task branch cut before the de-flaking, a worktree that never
 rebased, a revert, a merge that resurrects the old hunk. In every one of those
-the old sentence comes back and this register catches it as `flaky` — costing
-`infra_failures`, escalating to a human on recurrence, and never consuming a
-rework attempt. It will retire itself: once no branch in flight can still print
-that sentence, delete the line.
+the old sentence comes back and this register catches it as `flaky` — including
+branches cut before this file existed, through the fail-closed integration
+fallback above — costing `infra_failures`, escalating to a human on recurrence,
+and never consuming a rework attempt. It will retire itself: once no branch in
+flight can still print that sentence, delete the line.
 
 Note what the timing rule does to this entry, and it is the right thing: the
 candidate that introduced this file **cannot** be forgiven by it, because that

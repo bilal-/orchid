@@ -1213,9 +1213,9 @@ ones its archetype never declares.
         route. Signatures are matched literally and claim only the lines they
         match.
 
-      A REPOSITORY FILE IS AN AUTHORITY ON A CANDIDATE ONLY WHILE IT IS THE
-      CANDIDATE'S OWN RECORD OF IT, and both routes above turn on that: the
-      pin check and the register are read only when the file is UNTOUCHED
+      A REPOSITORY FILE IS NORMALLY AN AUTHORITY ON A CANDIDATE ONLY WHILE IT
+      IS THE CANDIDATE'S OWN RECORD OF IT, and both routes above turn on that:
+      the pin check and the register are read only when the file is UNTOUCHED
       across `base_sha..candidate_sha`, TRACKED IN `candidate_sha` as an
       ordinary file, and present in the verified worktree with the same bytes
       and the same mode that commit records. A diff of two commits is not that
@@ -1224,6 +1224,16 @@ ones its archetype never declares.
       invisible to it, and each of them is a way to hand the driver a file the
       implementer controls. Any of them, and any form of the question that
       cannot be ANSWERED at all, closes the route and charges.
+
+      The flaky register has one bootstrap edge that the executable pin check
+      does not: when BOTH task commits resolve and BOTH predate the register
+      path, the driver may read the integration checkout's tracked copy while
+      that copy is byte-, mode-, and index-clean at integration `HEAD`. This is
+      how an already-running branch can benefit from a historical flake learned
+      after it was cut. A candidate addition fails the "candidate lacks it"
+      half; a candidate deletion fails the "base lacks it" half. Neither can
+      substitute integration's authority for its own change, and an
+      unanswerable commit closes the route.
 
       A run whose recorded exit status says it STOPPED SHORT (`orchid verify`
       recorded exit 124, 137 or 143) is REPORTED on the charged round and
@@ -1242,7 +1252,10 @@ ones its archetype never declares.
       the missing directory (`error Command "jest" not found` attributes to
       `mobile/node_modules` because `mobile/node_modules/.bin/jest` is in the
       checkout that has it, and attributes to nothing when the absent
-      directory is an unrelated `.cache`). `Permission denied`, `is not
+      directory is an unrelated `.cache`). The filesystem lookup is applied
+      only to that diagnosed subject, not every word on the line: in `ENOENT:
+      ... open 'src/config.json'`, `src/config.json` is the subject and an
+      unrelated package named `open` proves nothing. `Permission denied`, `is not
       executable`, `checksum is stale` and `Cannot find module` are all
       sentences an ordinary defect prints, so no wording decides this on its
       own; and being outstanding is not being to blame, since a repository

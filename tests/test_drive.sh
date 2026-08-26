@@ -4294,14 +4294,11 @@ assert_eq candidate "$(nw_cls '  FAIL: T013 was stranded by a reaped job manifes
 #     that way or lost the bit while rewriting it.
 #   - RUN the repository's package-pin freshness check (Part N2b).
 #
-# The failure's wording is now irrelevant IN BOTH DIRECTIONS, and both
-# directions are asserted here. An exec-bit sentence with no such file charges;
-# an ordinary assertion failure with a mode-644 new script sitting in the tree
-# does not. That second one is a real defect going uncharged for one round. It
-# is the deliberate price of not guessing, it is bounded (an operator clears
-# the state in seconds, the round still costs `infra_failures`, and a second
-# such round stops for a human), and it is written down here rather than left
-# to be discovered.
+# State and attribution are independent, and both directions are asserted
+# here. An exec-bit sentence with no such file charges; an ordinary assertion
+# failure with a mode-644 new script sitting in the tree charges too. The state
+# says a hand-off is outstanding, but only a causal line plus its named cascade
+# says that hand-off blocked this round.
 # ===========================================================================
 HOF="$WORK/handoff"
 mkdir -p "$HOF/.orchid/tasks" "$HOF/.orchid/reviews" "$HOF/libexec" "$HOF/bin"
@@ -5552,6 +5549,10 @@ git commit -q -m "fixture: an integration checkout that ignores its dependency t
 mkdir -p "$ENVR/mobile/node_modules/.bin"
 printf '#!/usr/bin/env node\n' > "$ENVR/mobile/node_modules/.bin/jest"
 mkdir -p "$ENVR/mobile/node_modules/lodash"
+# `open` is deliberately present too. It is syntax in the standard ENOENT
+# diagnostic below, not that diagnostic's subject, and used to be accepted as
+# causal merely because every whitespace token on the line was searched.
+mkdir -p "$ENVR/mobile/node_modules/open"
 # An unrelated ignored directory, present here and absent there, with nothing
 # named `jest` anywhere inside it. This is the coincidence that broke the old
 # arm, and it sits in the fixture throughout so every assertion below is made
@@ -5645,6 +5646,24 @@ assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
     "ENOENT: no such file or directory, open 'mobile/node_modulesX/y'")" \
   "nor for a name continuing in any other character — asserted at the layer it lives in, because both readings of the class assertion above look identical from outside"
 
+# --- THE RESOLUTION SUBJECT, NOT AN UNRELATED WORD ON THE LINE ------------
+# `open` is both diagnostic grammar and the name of a real package in the
+# absent tree. The subject of this ENOENT is `src/config.json`; scanning every
+# token resolves `open` and launders the candidate's missing source file as an
+# environment gap. Subject binding keeps the filesystem proof attached to the
+# thing the line actually says it could not resolve.
+[ -e "$ENVR/mobile/node_modules/open" ] \
+  || fail "fixture invalid: the missing dependency tree must contain a package named open, or the token-laundering regression below proves nothing"
+ev_log "Error: ENOENT: no such file or directory, open 'src/config.json'"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "an ENOENT for src/config.json is CHARGED even though an unrelated token named open resolves inside the absent node_modules — only the diagnosed subject can establish causality"
+assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
+    "Error: ENOENT: no such file or directory, open 'src/config.json'")" \
+  "and the causal layer itself claims no line, proving the candidate verdict did not merely come from some later accounting accident"
+ev_log 'jest: command not found'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "the shell spelling with its subject before the command marker still attributes jest to the absent tree's .bin entry"
+
 # --- THE CASCADE IS NAMING, NOT RESEMBLANCE -------------------------------
 # The coincidence above, one FAILING LINE at a time instead of one round at a
 # time, and it is the shape this arm carried until now: the cascade also
@@ -5727,9 +5746,11 @@ git init -q .
 L020_SIG='job log must have grown WHILE the adapter was still running'
 {
   printf '%s\n' "# Known-flaky assertions. Each entry is one line beginning \`FLAKE:\`."
-  printf 'FLAKE: %s -- L020: samples one instant; the shape that stranded eight tasks\n' "$L020_SIG"
   printf '%s\n' 'FLAKE: short -- too short to be a signature, and must be ignored'
   printf '%s\n' 'FLAKE: FAIL: .* returned -- deliberately regex-shaped, and must NOT be read as one'
+  # No final newline on purpose: a text file is allowed to end here, and the
+  # reader must not silently discard its last (and most important) entry.
+  printf 'FLAKE: %s -- L020: samples one instant; the shape that stranded eight tasks' "$L020_SIG"
 } > "$QR/tests/QUARANTINE.md"
 printf 'x\n' > "$QR/file.txt"
 git add -A
@@ -5868,7 +5889,7 @@ assert_eq flaky "$(qr_cls | cut -f1)" \
 QR_REG="$QR/tests/QUARANTINE.md"
 QR_REG_BYTES="$WORK/qr-register.committed"
 cp "$QR_REG" "$QR_REG_BYTES"
-printf 'FLAKE: widget returned 3, expected 4 -- left in the worktree, never committed\n' >> "$QR_REG"
+printf '\nFLAKE: widget returned 3, expected 4 -- left in the worktree, never committed\n' >> "$QR_REG"
 qr_log '  FAIL: widget returned 3, expected 4'
 assert_eq candidate "$(qr_cls | cut -f1)" \
   "an entry the implementer left UNSTAGED in the verified worktree forgives nothing: the file being read is not the file the candidate recorded, and a diff of two commits cannot see the difference"
@@ -5991,13 +6012,113 @@ for qs_engine_f in "$REPO_ROOT"/tests/test_engine_*.sh; do
 done
 [ "$qs_engine_count" -ge 4 ] \
   || fail "that sweep looked at $qs_engine_count engine-adapter file(s) rather than the four that carry these cases — it would report a clean tree by finding nothing to read"
+
+# --- A CARRIED BRANCH CUT BEFORE THE REGISTER EXISTED ----------------------
+# This is r-002's live topology: task worktrees were cut before T019, while the
+# integration checkout receives the register only when T019 merges. Requiring
+# the register to exist in the old candidate makes the entry unreachable in
+# exactly the worktrees that can still print the old assertion. The narrow
+# fallback reads integration's copy only when BOTH task commits answerably lack
+# the path; candidate addition and deletion are pinned below as closed routes.
+QO="$WORK/old-register-control"
+QOW="$WORK/old-register-task"
+QOD="$WORK/deleted-register-task"
+mkdir -p "$QO"
+cd "$QO" || exit 1
+git init -q .
+: > "$QO/orchid.config"
+printf 'old\n' > "$QO/file.txt"
+git add -A
+git commit -q -m "fixture: base predates the quarantine register"
+QOBASE="$(git -C "$QO" rev-parse HEAD)"
+git -C "$QO" worktree add -q "$QOW" -b task/old-register "$QOBASE" 2>/dev/null \
+  || fail "fixture: could not create the pre-register task worktree"
+printf 'candidate\n' > "$QOW/file.txt"
+git -C "$QOW" add file.txt
+git -C "$QOW" commit -q -m "fixture: candidate also predates the register"
+QOCAND="$(git -C "$QOW" rev-parse HEAD)"
+
+# Integration learns the historical flake after that branch was cut. The task
+# worktree deliberately remains on QOCAND and therefore has no tests/ directory
+# at all, which is the state the fallback exists for rather than a staged copy
+# of the new file.
+mkdir -p "$QO/tests"
+cp "$REPO_ROOT/tests/QUARANTINE.md" "$QO/tests/QUARANTINE.md"
+git -C "$QO" add tests/QUARANTINE.md
+git -C "$QO" commit -q -m "fixture: integration records the historical flake"
+QOHEAD="$(git -C "$QO" rev-parse HEAD)"
+[ ! -e "$QOW/tests/QUARANTINE.md" ] \
+  || fail "fixture invalid: the carried task worktree unexpectedly received the post-cut register"
+
+mkdir -p "$QO/.orchid/tasks" "$QO/.orchid/reviews"
+qo_task() { # <id> <worktree> <base> <candidate>
+  printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$1" "$2" "$3" "$4" > "$QO/.orchid/tasks/$1.md"
+}
+qo_log() { # <id> <worktree> <candidate>
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
+    "$3" "$3" "$2" \
+    "  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal" \
+    > "$QO/.orchid/reviews/$1-verify.log"
+}
+qo_cls() { # <id>
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$QO" "$QO/.orchid/tasks/$1.md" \
+      "$QO/.orchid/reviews/$1-verify.log" )
+}
+
+qo_task QO1 "$QOW" "$QOBASE" "$QOCAND"
+qo_log QO1 "$QOW" "$QOCAND"
+assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
+  "a carried task whose base and candidate both predate the register reads the clean tracked integration copy, so the exact pre-T019 failure no longer burns its attempt"
+assert_match "bytes at the midpoint" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO1.md")" \
+  "and the fallback is proved at the register layer, not inferred from a class that might have found some other waiver"
+
+# Integration's copy is a control-plane authority, not ambient bytes. A dirty
+# edit closes it just as a dirty candidate-owned register does.
+QO_REG_BYTES="$WORK/old-register.committed"
+cp "$QO/tests/QUARANTINE.md" "$QO_REG_BYTES"
+printf '\nFLAKE: candidate bug that integration never committed\n' >> "$QO/tests/QUARANTINE.md"
+assert_eq candidate "$(qo_cls QO1 | cut -f1)" \
+  "a dirty integration register is no authority for an old branch — the fallback requires HEAD, index, bytes, and mode to agree"
+cp "$QO_REG_BYTES" "$QO/tests/QUARANTINE.md"
+assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
+  "restoring the clean integration authority restores the carried-branch waiver"
+
+# A candidate that ADDS the path cannot borrow integration's older/trusted
+# copy, even when the bytes happen to match. Its candidate commit carries the
+# path, so the both-commits-lack condition is false; its own authority is false
+# because it changed the register.
+mkdir -p "$QOW/tests"
+cp "$QO/tests/QUARANTINE.md" "$QOW/tests/QUARANTINE.md"
+git -C "$QOW" add tests/QUARANTINE.md
+git -C "$QOW" commit -q -m "fixture: candidate adds the register itself"
+QOADD="$(git -C "$QOW" rev-parse HEAD)"
+qo_task QO1 "$QOW" "$QOBASE" "$QOADD"
+qo_log QO1 "$QOW" "$QOADD"
+assert_eq candidate "$(qo_cls QO1 | cut -f1)" \
+  "a candidate-added register forgives nothing and cannot fall back to integration, even when it copied integration's exact bytes"
+
+# A candidate that DELETES a register is the other half: candidate lacks the
+# path, but base does not, so the fallback stays closed rather than undoing the
+# deletion from the control checkout behind the candidate's back.
+git -C "$QO" worktree add -q "$QOD" -b task/delete-register "$QOHEAD" 2>/dev/null \
+  || fail "fixture: could not create the register-deletion worktree"
+git -C "$QOD" rm -q tests/QUARANTINE.md
+git -C "$QOD" commit -q -m "fixture: candidate deletes the register"
+QODEL="$(git -C "$QOD" rev-parse HEAD)"
+qo_task QO2 "$QOD" "$QOHEAD" "$QODEL"
+qo_log QO2 "$QOD" "$QODEL"
+assert_eq candidate "$(qo_cls QO2 | cut -f1)" \
+  "a candidate-deleted register forgives nothing and cannot be resurrected from integration, because its base already carried the path"
 cd "$QR" || exit 1
 
 # --- THE SAFETY PROPERTY: a register the candidate touched is no authority.
 # LAST in this part, deliberately: it leaves the register with an entry that
 # would forgive `widget returned 3` outright, so every assertion above is made
 # against a register the candidate did not write.
-printf 'FLAKE: widget returned 3, expected 4 -- added by the candidate itself\n' >> "$QR/tests/QUARANTINE.md"
+printf '\nFLAKE: widget returned 3, expected 4 -- added by the candidate itself\n' >> "$QR/tests/QUARANTINE.md"
 git -C "$QR" add tests/QUARANTINE.md
 git -C "$QR" commit -q -m "fixture: the candidate quarantines its own failure"
 fm_set "$QR/.orchid/tasks/QA1.md" candidate_sha "$(git -C "$QR" rev-parse HEAD)"

@@ -251,7 +251,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     `mobile/node_modules` because `mobile/node_modules/.bin/jest` exists in the
     checkout that still has it — and attributes to nothing at all when the
     absent directory is a `.cache` with no `jest` in it, which is exactly the
-    coincidence that made the first version of this arm dangerous. Its cascade
+    coincidence that made the first version of this arm dangerous. Only the
+    diagnosed subject is looked up: `ENOENT: ... open 'src/config.json'` asks
+    about `src/config.json`, so an unrelated package named `open` cannot earn a
+    waiver. Its cascade
     claims a line that **names the directory**, or that names a path **inside**
     it — `ENOENT: ... open '.../node_modules/x'` cannot be about anything but
     the tree that is not there. That last part belongs to this arm alone,
@@ -262,8 +265,8 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     claiming only the lines it matches.
 
   **Two of those proofs read a file out of your repository — the pin check and
-  the flaky register — and a file is an authority on a candidate only while it
-  is that candidate's own record of it.** Each is read only when it is
+  the flaky register — and a file is normally an authority on a candidate only
+  while it is that candidate's own record of it.** Each is read only when it is
   *untouched* across `base_sha..candidate_sha`, *tracked in* `candidate_sha` as
   an ordinary file, and present in the verified worktree with the same bytes
   and the same mode that commit records. The first clause alone is not the
@@ -274,6 +277,14 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   implementer controls. Any of those, and any form of the question that cannot
   be *answered* — a missing or unresolvable `base_sha`/`candidate_sha` produces
   the same empty diff an untouched file does — closes the route and charges.
+
+  The flaky register alone has a bootstrap path for tasks already in flight
+  when the register is introduced. If both task commits resolve and both lack
+  the configured path, Orchid may read the integration checkout's tracked copy
+  while its index, bytes, and mode are clean at integration `HEAD`. A candidate
+  addition no longer lacks the path, and a candidate deletion had it in the
+  base, so neither can borrow that copy. An unanswerable history or dirty
+  integration register closes the route and charges.
 
   Being outstanding is not being to blame — a repository whose sourced
   libraries carry `#!` lines at mode 644 (orchid is one, in every `lib/*.sh`)
@@ -337,7 +348,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   route is gone and the round charges — an implementer cannot quarantine the
   assertion it is failing, and cannot reach around that by leaving the entry
   uncommitted in the worktree either, because the register is read only under
-  the authority rule above. Three more things keep it narrow: a signature is
+  the authority rule above. The integration bootstrap described above reaches
+  only branches whose base and candidate both predate the path. Three more
+  things keep it narrow: a signature is
   matched
   **literally**, never as a pattern, so no entry can be written that
   matches everything; it must be at least 16 characters, so no entry can match

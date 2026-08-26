@@ -637,7 +637,9 @@ buying a fresh implementation pass to reach the same tree.
   failure is then ATTRIBUTED to that artifact: a failing line must name it and
   report its fault (refuse to execute it, call it stale, or fail to resolve
   something that lives INSIDE the absent directory), which proves the state
-  blocked this run, after which every failing line NAMING that artifact is part
+  blocked this run. Resolution is bound to the diagnostic's subject — syntax
+  such as `open` in an ENOENT line is not searched as though it were the thing
+  that was missing — after which every failing line NAMING that artifact is part
   of the same cascade (one missing mode bit strands a whole suite, not one
   assertion). NAMING is the whole of the cascade rule, for the absent directory
   as much as for the file: a failing line that merely mentions something living
@@ -659,7 +661,14 @@ buying a fresh implementation pass to reach the same tree.
   carries exactly the bytes and mode that commit records, so an unstaged edit,
   a staged-and-uncommitted one, an untracked drop-in, a deletion and a mode
   change each close the route — none of them appears in the diff, and every one
-  of them is a file the implementer controls. A non-`candidate` verdict
+  of them is a file the implementer controls. The flaky register has one
+  fail-closed bootstrap for carried worktrees: when the task's base and
+  candidate both resolve and both lack the register path, a clean tracked copy
+  at integration `HEAD` may supply it. A candidate addition has the path in its
+  candidate; a deletion has it in its base; dirty integration bytes, mode, or
+  index fail the authority check. This lets a post-cut historical-flake entry
+  protect old branches without letting a candidate author or remove its own
+  amnesty. A non-`candidate` verdict
   charges `infra_failures` rather than `attempts`, entering rework with
   `--waive-attempt` so the waiver's journal entry names the class and the
   reason. Four properties make this safe rather than a loophole: it forgives
