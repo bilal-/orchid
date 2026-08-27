@@ -5038,6 +5038,12 @@ printf '#!/bin/sh\necho "pin-formula: Formula/orchid.rb is not valid Ruby (unter
 # staleness report has to name something an operator can act on.
 printf '#!/bin/sh\necho "pin-formula: packaging/nowhere.rb checksum is STALE" >&2\nexit 1\n' \
   > "$PIN/scripts/pin-unknownfile.sh"
+# A stateful freshness check for the pre/post boundary regression below. It is
+# fresh until the verification command creates an untracked trigger, then
+# prints the same attributable stale report as the shipped check. Inspecting it
+# after the command would therefore let the candidate manufacture a waiver.
+printf '#!/bin/sh\n[ ! -f .pin-stale-trigger ] || { echo "%s" >&2; exit 1; }\nexit 0\n' \
+  "$PIN_SAYS" > "$PIN/scripts/pin-dynamic.sh"
 git add scripts Formula/orchid.rb a.txt
 git commit -q -m "fixture: base"
 PIN_BASE="$(git -C "$PIN" rev-parse HEAD)"
@@ -5068,14 +5074,22 @@ PIN_FAILED_ON_OTHER="tests/test_widget.sh: FAIL: widget returned 3, expected 4"
 mk_pin_task() {
   printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
     "$1" "$PIN" "$2" "$3" > "$PIN/.orchid/tasks/$1.md"
-  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$PIN" "${4:-$PIN_FAILED_ON_IT}" \
-    > "$PIN/.orchid/reviews/$1-verify.log"
+  mk_prestate_log "$PIN" "$PIN/.orchid/tasks/$1.md" \
+    "$PIN/.orchid/reviews/$1-verify.log" "${4:-$PIN_FAILED_ON_IT}"
 }
 # pin_cls <id> [handoff.pin_check override]
 pin_cls() {
   ( HOME="$MACHINE_HOME"
-    [ "$#" -lt 2 ] || export ORCHID_HANDOFF_PIN_CHECK="$2"
+    pin_body="$(_drive_verify_body "$PIN/.orchid/reviews/$1-verify.log")"
+    if [ "$#" -ge 2 ]; then
+      export ORCHID_HANDOFF_PIN_CHECK="$2"
+    fi
+    # Each ordinary assertion arranges the state that exists BEFORE its
+    # simulated verifier command, so snapshot it here. P09 below is the one
+    # deliberate post-command mutation and calls drive_verify_class directly
+    # over the stored earlier snapshot instead of coming through this helper.
+    mk_prestate_log "$PIN" "$PIN/.orchid/tasks/$1.md" \
+      "$PIN/.orchid/reviews/$1-verify.log" "$pin_body"
     drive_verify_class "$PIN" "$PIN/.orchid/tasks/$1.md" "$PIN/.orchid/reviews/$1-verify.log" )
 }
 mk_pin_task P01 "$PIN_BASE" "$PIN_CAND"
@@ -5128,8 +5142,8 @@ git commit -q -m "fixture: a candidate that changed the check itself"
 PINT_CAND="$(git -C "$PINT" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: P02\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$PINT" "$PINT_BASE" "$PINT_CAND" > "$PINT/.orchid/tasks/P02.md"
-printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-  "$PINT" "$PIN_FAILED_ON_IT" > "$PINT/.orchid/reviews/P02-verify.log"
+mk_prestate_log "$PINT" "$PINT/.orchid/tasks/P02.md" \
+  "$PINT/.orchid/reviews/P02-verify.log" "$PIN_FAILED_ON_IT"
 assert_eq "" "$( ( HOME="$MACHINE_HOME"
   drive_handoff_stale_pin "$PINT" "$PINT" "$PINT/.orchid/tasks/P02.md" ) )" \
   "the route yields no answer at all over a check this candidate wrote — asserted at the layer it lives in, because the class below would read 'candidate' just as readily if the check had simply not run"
@@ -5267,6 +5281,33 @@ assert_eq candidate "$(pin_cls P01 'scripts/pin-nohashbang.sh --check' | cut -f1
   "a check that is neither executable nor states an interpreter is never run — the invocation comes from the file itself, never from a guess, so an unrunnable check stays 'no pin route' instead of becoming a nonzero exit read as staleness"
 assert_eq candidate "$(pin_cls P01 'scripts/pin-badinterp.sh --check' | cut -f1)" \
   "and neither is one whose #! names an interpreter that is not there — same silence, same charge"
+
+# --- THE CANDIDATE CANNOT CREATE STALENESS AFTER THE SNAPSHOT -------------
+# Snapshot the dynamic check while it is fresh, then simulate the verification
+# command creating release dirt before the verifier writes its final log. The
+# live post-run check now reports the exact hand-off shape, which is what the
+# old classifier trusted. The recorded pre-run empty value must win.
+mk_pin_task P09 "$PIN_BASE" "$PIN_CAND" "$PIN_FAILED_ON_IT"
+P09_PRE="$( ( HOME="$MACHINE_HOME"
+  export ORCHID_HANDOFF_PIN_CHECK='scripts/pin-dynamic.sh --check'
+  drive_verify_prestate_headers "$PIN" "$PIN/.orchid/tasks/P09.md" ) )"
+: > "$PIN/.pin-stale-trigger"
+P09_POST="$( ( HOME="$MACHINE_HOME"
+  export ORCHID_HANDOFF_PIN_CHECK='scripts/pin-dynamic.sh --check'
+  drive_handoff_stale_pin "$PIN" "$PIN" "$PIN/.orchid/tasks/P09.md" ) )"
+assert_match "Formula/orchid.rb" "$P09_POST" \
+  "fixture: after the simulated candidate command dirties release inputs, a post-run freshness check really would report a waivable stale pin"
+mk_prestate_log "$PIN" "$PIN/.orchid/tasks/P09.md" \
+  "$PIN/.orchid/reviews/P09-verify.log" "$PIN_FAILED_ON_IT" \
+  "bash tests/run.sh" 1 "$P09_PRE"
+assert_eq "" "$(_drive_verify_prestate_list "$PIN" \
+    "$PIN/.orchid/tasks/P09.md" "$PIN/.orchid/reviews/P09-verify.log" pin)" \
+  "the trusted pre-command snapshot remains fresh even though live post-run state is now stale"
+assert_eq candidate "$( ( HOME="$MACHINE_HOME"
+  drive_verify_class "$PIN" "$PIN/.orchid/tasks/P09.md" \
+    "$PIN/.orchid/reviews/P09-verify.log" ) | cut -f1)" \
+  "so a candidate cannot dirty release content during its own failing test and manufacture a stale-pin hand-off waiver"
+rm -f "$PIN/.pin-stale-trigger"
 
 # ===========================================================================
 # Part N2e -- TWO hand-offs outstanding, each to blame for part of one round.

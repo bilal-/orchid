@@ -1445,25 +1445,28 @@ drive_worktree_plan() {
 # This is captured by `orchid verify` BEFORE it runs the candidate-controlled
 # command and written by the verifier AFTER that command exits. That ordering
 # is the authority. Inspecting the worktree only after the command returns lets
-# the command manufacture either exemption it wants: chmod a committed 755
-# executable down to 644, or remove an ignored dependency tree, print the
-# corresponding diagnostic, and the post-run classifier sees exactly the
-# state that would waive it. A pre-run empty set remains empty however the
+# the command manufacture any of the three exemptions it wants: chmod a
+# committed 755 executable down to 644, remove an ignored dependency tree, or
+# dirty release inputs until the package-pin check turns stale, then print the
+# corresponding diagnostic. A pre-run empty value remains empty however the
 # candidate mutates its checkout while it is being tested.
 #
 # JSON keeps the header one line per field without inventing an escaping
 # grammar. The underlying discovery functions already choose the conservative
 # newline-delimited representation used everywhere else in this policy layer.
 drive_verify_prestate_headers() {
-  local repo="$1" tf="$2" root exec_missing env_missing exec_json env_json
+  local repo="$1" tf="$2" root exec_missing env_missing pin_stale
+  local exec_json env_json pin_json
   root="$(fm_get "$tf" worktree)"
   [ -n "$root" ] && [ -d "$root" ] || root="$repo"
   exec_missing="$(drive_handoff_exec_bit "$root" "$tf")"
   env_missing="$(drive_env_missing_state "$repo" "$root")"
+  pin_stale="$(drive_handoff_stale_pin "$repo" "$root" "$tf")"
   exec_json="$(printf '%s' "$exec_missing" | jq -Rs .)" || return 1
   env_json="$(printf '%s' "$env_missing" | jq -Rs .)" || return 1
-  printf 'prestate: 1\npre_exec_missing: %s\npre_env_missing: %s\n' \
-    "$exec_json" "$env_json"
+  pin_json="$(printf '%s' "$pin_stale" | jq -Rs .)" || return 1
+  printf 'prestate: 1\npre_exec_missing: %s\npre_env_missing: %s\npre_pin_stale: %s\n' \
+    "$exec_json" "$env_json" "$pin_json"
 }
 
 # _drive_verify_header_value <verify-log> <key> -- the one value for <key>
@@ -1487,13 +1490,13 @@ _drive_verify_header_value() {
 }
 
 # _drive_verify_prestate_valid <repo> <task-file> <verify-log> -- 0 only when
-# both pre-run sets are well-formed and the surrounding verifier header binds
+# all three pre-run values are well-formed and the verifier header binds
 # them to this task's CURRENT candidate and worktree. Any old log without the
-# marker, malformed JSON, moved candidate, or mismatched cwd closes both
+# marker, malformed JSON, moved candidate, or mismatched cwd closes all three
 # snapshot-backed routes and therefore charges; live post-run state is never a
 # compatibility fallback, because that fallback is the fabrication hole.
 _drive_verify_prestate_valid() {
-  local repo="$1" tf="$2" log="$3" root cand marker sha lcand lcwd ej vj
+  local repo="$1" tf="$2" log="$3" root cand marker sha lcand lcwd ej vj pj
   root="$(fm_get "$tf" worktree)"
   [ -n "$root" ] && [ -d "$root" ] || root="$repo"
   cand="$(fm_get "$tf" candidate_sha)"
@@ -1504,16 +1507,18 @@ _drive_verify_prestate_valid() {
   lcwd="$(_drive_verify_header_value "$log" cwd)" || return 1
   ej="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 1
   vj="$(_drive_verify_header_value "$log" pre_env_missing)" || return 1
+  pj="$(_drive_verify_header_value "$log" pre_pin_stale)" || return 1
   [ "$marker" = 1 ] || return 1
   [ "$sha" = "$cand" ] && [ "$lcand" = "$cand" ] || return 1
   [ "$lcwd" = "$root" ] || return 1
   git -C "$root" rev-parse -q --verify "$cand^{commit}" >/dev/null 2>&1 || return 1
   printf '%s' "$ej" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
   printf '%s' "$vj" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
+  printf '%s' "$pj" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
   return 0
 }
 
-# _drive_verify_prestate_list <repo> <task-file> <verify-log> <exec|env> -- a
+# _drive_verify_prestate_list <repo> <task-file> <verify-log> <exec|env|pin> -- a
 # validated pre-run list. Invalid evidence deliberately prints nothing.
 _drive_verify_prestate_list() {
   local repo="$1" tf="$2" log="$3" kind="$4" raw
@@ -1521,6 +1526,7 @@ _drive_verify_prestate_list() {
   case "$kind" in
     exec) raw="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 0 ;;
     env)  raw="$(_drive_verify_header_value "$log" pre_env_missing)" || return 0 ;;
+    pin)  raw="$(_drive_verify_header_value "$log" pre_pin_stale)" || return 0 ;;
     *) return 0 ;;
   esac
   printf '%s' "$raw" | jq -r . 2>/dev/null || true
@@ -2145,10 +2151,11 @@ _drive_pin_stale_path() {
 # stale pin, and forgiving that would hand straight back the amnesty this
 # rewrite withdrew. So a touched check yields no pin route, and charges.
 #
-# ONE RESIDUAL, STATED RATHER THAN HIDDEN: this runs on every FAILED verify in
-# a repository that has such a check, and the shipped default builds a release
-# archive -- a few seconds, paid only on a failure, after a verification run
-# that cost far more.
+# ONE COST, STATED RATHER THAN HIDDEN: trusted pre-command evidence means this
+# runs before EVERY verify in a repository that has such a check, and the
+# shipped default builds a release archive. Paying those few seconds on a pass
+# is the price of never letting a failed candidate manufacture pin staleness
+# before the classifier asks the question.
 drive_handoff_stale_pin() {
   local repo="$1" root="$2" tf="$3" cmd script abs rc interp out path
   local -a parts=() pre=()
@@ -3118,16 +3125,15 @@ _drive_waived() {
 # blame, all of them are named -- an operator who clears one, re-dispatches,
 # and walks into the other has learned nothing from the first journal line.
 #
-# THE ORDER OF EVALUATION IS COST, NOT PRIORITY. The exec-bit question is a
-# stat, the missing-state question is a `git status`, and the pin check builds
-# a release archive; the expensive ones are SKIPPED entirely once the pool
-# already accounts for the round, because all of them are equally admissible
-# and there is no verdict left to reach.
+# THE ORDER OF EVALUATION IS COST, NOT PRIORITY. The expensive pin check has
+# already run before the candidate command so its answer cannot be
+# manufactured; this function only decodes that evidence after cheaper
+# exec-bit and missing-state attribution have had their say.
 drive_waivable_outstanding() {
   local repo="$1" tf="$2" body="$3" log="${4:-}" root base
-  local paths p first="" firstdrop="" fbpath causal attr="" states="" sep=""
+  local paths="" p first="" firstdrop="" fbpath causal attr="" states="" sep=""
   local fallback="" fsep=""
-  local why="" note pin cmd="" pinpath="" pinattr pinstate
+  local why="" note pin="" cmd="" pinpath="" pinattr pinstate
   local kinds="" m envattr envstate sig qattr cut prestate=0
   base="$(fm_get "$tf" base_sha)"
   root="$(fm_get "$tf" worktree)"
@@ -3144,6 +3150,7 @@ drive_waivable_outstanding() {
   if _drive_verify_prestate_valid "$repo" "$tf" "$log"; then
     prestate=1
     paths="$(_drive_verify_prestate_list "$repo" "$tf" "$log" exec)"
+    pin="$(_drive_verify_prestate_list "$repo" "$tf" "$log" pin)"
   fi
   while IFS= read -r p; do
     [ -n "$p" ] || continue
@@ -3216,15 +3223,14 @@ drive_waivable_outstanding() {
     kinds="$kinds flaky"
   done <<< "$(drive_quarantine_signatures "$repo" "$root" "$tf")"
 
-  # Waived without ever running the pin check: it builds a release archive, and
-  # there is no verdict left for it to reach.
+  # Waived without consulting the already-captured pin proof: there is no
+  # verdict left for it to change.
   if [ -z "$cut" ] && [ -n "$attr" ] \
      && why="$(_drive_attribution_check "$attr" "$body")"; then
     _drive_waived "$(_drive_waived_class "$kinds")" "$states" "$attr" "$fallback"
     return 0
   fi
 
-  pin="$(drive_handoff_stale_pin "$repo" "$root" "$tf")"
   # Split on the FIRST newline, and require BOTH halves: command substitution
   # strips trailing newlines, so anything without one is not the two-line
   # answer this route promises and is treated as no answer at all.
@@ -3232,7 +3238,7 @@ drive_waivable_outstanding() {
     *$'\n'*) cmd="${pin%%$'\n'*}"; pinpath="${pin#*$'\n'}" ;;
   esac
   if [ -n "$pinpath" ]; then
-    pinstate="the package pin recorded for $pinpath is stale — the repository's own freshness check ($cmd) reports it stale in this tree, and re-pinning it is the operator's outstanding step"
+    pinstate="the package pin recorded for $pinpath was stale when verification began — the repository's own freshness check ($cmd) reported it stale before the candidate-controlled command ran, and re-pinning it is the operator's hand-off"
     pinattr="$(drive_pin_attribution "$pinpath" "$body" "$root")"
     if [ -n "$pinattr" ]; then
       attr="$attr$pinattr
@@ -3415,7 +3421,7 @@ drive_verify_class() {
     # could not be determined, because the shas do not resolve -- proves
     # nothing here, and saying "no pin is stale" would be a claim orchid never
     # made.
-    printf 'candidate\tno failure-attributable waivable state was established in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, no executable mode-644 hand-off was established by trusted pre-verification evidence, no missing gitignored build state was attributable to this failure from trusted pre-verification evidence, no trusted known-flaky register covers this failure, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
+    printf 'candidate\tno failure-attributable waivable state was established in this tree — no stale package pin was established by a freshness check captured in trusted pre-verification evidence, no executable mode-644 hand-off was established by trusted pre-verification evidence, no missing gitignored build state was attributable to this failure from trusted pre-verification evidence, no trusted known-flaky register covers this failure, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
     return 0
   fi
   hcls="${hand%%$'\t'*}"

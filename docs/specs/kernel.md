@@ -336,9 +336,9 @@ buying a fresh implementation pass to reach the same tree.
 
 - **testing** = `orchid verify <id>`: runs `verification_commands` in the
   task worktree; records evidence (command, cwd, SHA, timestamps, exit
-  codes, log digest), including the exec-bit and missing-build-state sets
-  captured before the candidate-controlled command starts. Sole acceptance
-  authority for tests.
+  codes, log digest), including the exec-bit set, missing-build-state set, and
+  stale-pin result captured before the candidate-controlled command starts.
+  Sole acceptance authority for tests.
 - **merging** = `orchid merge <id>`: serialized, transactional, and — round-4
   determinism fix — NEVER triggers reviews itself. If integration HEAD ≠
   `base_sha`, the verb performs the rebase, then exits
@@ -631,13 +631,14 @@ buying a fresh implementation pass to reach the same tree.
   two checkouts for an ignored directory the worktree never received; and it
   reads a known-flaky register that THIS CANDIDATE DID NOT TOUCH, which is what
   stops an implementer quarantining the assertion it is failing. The exec-bit
-  and ignored-directory sets are snapshot evidence written by `orchid verify`
-  before the candidate-controlled command runs, bound by the log's `sha`,
-  `candidate`, and `cwd` fields to the current task candidate and worktree.
-  They are never reconstructed from post-run state: doing so lets the command
-  strip a mode bit or remove ignored dependencies during its own test and
+  set, ignored-directory set, and pin-check result are snapshot evidence
+  written by `orchid verify` before the candidate-controlled command runs,
+  bound by the log's `sha`, `candidate`, and `cwd` fields to the current task
+  candidate and worktree. They are never reconstructed from post-run state:
+  doing so lets the command strip a mode bit, remove ignored dependencies, or
+  dirty release inputs until the pin check turns stale during its own test and
   create the very state that waives its diagnostic. Missing, malformed, and
-  mismatched snapshot fields close both routes and charge. A recorded
+  mismatched snapshot fields close all three routes and charge. A recorded
   exit status saying the run STOPPED SHORT (124, 137, 143) was a fifth verdict
   once and is not one now: that status is equally what a candidate which HUNG
   until a timeout reaped it leaves, and what a suite that exits with it

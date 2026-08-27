@@ -397,12 +397,13 @@ worth nothing:
    proofs, which is why an ordinary defect that merely says `Permission
    denied` is charged.
 
-   For the mode-bit and missing-build-state routes, “proved” means captured in
-   the `orchid verify` evidence header **before** the candidate's command
-   starts. The header is accepted only while its SHA, candidate, and cwd bind
-   it to the current task. Orchid deliberately does not rebuild those sets
-   from the worktree after a failure: a test command can change that worktree,
-   and post-run inspection would let it strip a bit or delete dependencies to
+   For the mode-bit, missing-build-state, and stale-pin routes, “proved” means
+   captured in the `orchid verify` evidence header **before** the candidate's
+   command starts. The header is accepted only while its SHA, candidate, and
+   cwd bind it to the current task. Orchid deliberately does not rebuild those
+   values from the worktree after a failure: a test command can change that
+   worktree, and post-run inspection would let it strip a bit, delete
+   dependencies, or dirty release inputs until the pin turns stale to
    manufacture its own waiver. Old or malformed evidence therefore charges.
 2. **This failure is attributed to that artifact**, in two steps, because one
    fault does not fail one check — it strands a whole suite. First, some
