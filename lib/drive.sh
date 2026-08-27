@@ -2277,11 +2277,13 @@ _DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff
 _DRIVE_QUALIFICATION_LINE_RE='^[[:space:]]*NOT-TESTED:[[:space:]]+.+ -- .+$|^[[:space:]]*not-tested:[[:space:]]+[0-9]+ claim[(]s[)] in this file were recorded as not-tested, never as passes[[:space:]]*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$'
 
 # _DRIVE_HARNESS_CONTEXT_LINE_RE -- the exact neutral prologue/epilogue Yarn
-# v1 prints around the L003 named failure. The causal line between them remains
-# a reported resolution failure. Keeping these three forms closed is what
-# makes the real four-line `yarn test` body waivable without making arbitrary
-# package-manager chatter disappear beside an attributed environment gap.
-_DRIVE_HARNESS_CONTEXT_LINE_RE='^[[:space:]]*yarn run v[0-9]+[.][0-9]+[.][0-9]+[[:space:]]*$|^[[:space:]]*[$][[:space:]]+jest[[:space:]]*$|^[[:space:]]*info Visit https://yarnpkg[.]com/en/docs/cli/run for documentation about this command[.][[:space:]]*$'
+# v1 prints around the L003 named failure. Its echoed command and exit-127
+# record are NOT globally neutral: drive_env_yarn_attribution claims them only
+# after trusted inventory and a causal resolution line prove that this Yarn
+# invocation could not run a command published by the absent tree. Keeping the
+# unconditional vocabulary to these two forms prevents arbitrary package-
+# manager chatter from disappearing beside an attributed environment gap.
+_DRIVE_HARNESS_CONTEXT_LINE_RE='^[[:space:]]*yarn run v[0-9]+[.][0-9]+[.][0-9]+[[:space:]]*$|^[[:space:]]*info Visit https://yarnpkg[.]com/en/docs/cli/run for documentation about this command[.][[:space:]]*$'
 
 # _DRIVE_PROGRESS_LINE_RE -- lines that affirm progress, success, or an
 # explicitly neutral not-tested claim rather than diagnose a failed command.
@@ -2933,6 +2935,58 @@ drive_env_causal() {
   printf '%s' "$out"
 }
 
+# drive_env_yarn_attribution <inventory> <missing> <body> -- Yarn v1 context
+# that belongs to a missing command already proved causal for <missing>.
+#
+# Yarn echoes an arbitrary package script, not just `$ jest`. The webBooks
+# L003 incident printed `$ tsx scripts/parseBooks.ts`, the shell's causal
+# `tsx: command not found`, and then `error Command failed with exit code
+# 127.`. Treating only `$ jest` as globally neutral charged that named incident;
+# treating every `$ ...` and exit record as neutral would let unrelated command
+# failures disappear. This bridge therefore opens only when:
+#
+#   * the body contains Yarn v1's exact version prologue;
+#   * the echoed command is in the trusted pre-command inventory for this
+#     proved-missing directory; and
+#   * the caller has already established a causal resolution failure for the
+#     same directory.
+#
+# The final condition is enforced by drive_env_attribution calling this only
+# after drive_env_causal returned evidence. The exact exit-127 record is
+# claimed only when at least one qualifying command echo was found. Return the
+# ORIGINAL lines so drive_unattributed_failures' exact membership test can
+# account for them.
+drive_env_yarn_attribution() {
+  local inventory="$1" m="$2" body="$3" line trimmed rest edge cmd
+  local echoes="" epilogue=""
+  grep -Eq '^[[:space:]]*yarn run v[0-9]+[.][0-9]+[.][0-9]+[[:space:]]*$' \
+    <<< "$body" || return 0
+
+  while IFS= read -r line; do
+    trimmed="$line"
+    edge="${trimmed%%[![:space:]]*}"; trimmed="${trimmed#"$edge"}"
+    edge="${trimmed##*[![:space:]]}"; trimmed="${trimmed%"$edge"}"
+    case "$trimmed" in
+      '$'*) ;;
+      *) continue ;;
+    esac
+    rest="${trimmed#\$}"
+    edge="${rest%%[![:space:]]*}"; rest="${rest#"$edge"}"
+    [ -n "$rest" ] || continue
+    cmd="${rest%%[[:space:]]*}"
+    _drive_env_resolves "$inventory" "$m" "$cmd" || continue
+    echoes="$echoes$line
+"
+  done <<< "$body"
+  [ -n "$echoes" ] || return 0
+
+  epilogue="$(grep -E \
+    '^[[:space:]]*error Command failed with exit code 127[.][[:space:]]*$' \
+    <<< "$body" || true)"
+  printf '%s' "$echoes"
+  [ -z "$epilogue" ] || printf '%s\n' "$epilogue"
+}
+
 # drive_env_attribution <inventory> <missing> <body> [root] -- the lines of
 # <body> this absent tree is answerable for. Causal first, then its cascade:
 # every FAILING line that NAMES the directory by identity. Empty means this
@@ -2966,7 +3020,8 @@ drive_env_causal() {
 # tests MEMBERSHIP, so a line claimed twice is claimed once; deduping here would
 # cost a fork per line to change nothing.
 drive_env_attribution() {
-  local inventory="$1" m="$2" body="$3" root="${4:-}" fails causal named out=""
+  local inventory="$1" m="$2" body="$3" root="${4:-}"
+  local fails causal yarn named out=""
   [ -n "$m" ] && [ -n "$body" ] || return 0
   causal="$(drive_env_causal "$inventory" "$m" "$body" "$root")"
   [ -n "$causal" ] || return 0
@@ -2974,6 +3029,9 @@ drive_env_attribution() {
   # the first cascade line was glued to the causal line and the exact-line
   # accounting below rejected evidence this function had just established.
   out="$causal
+"
+  yarn="$(drive_env_yarn_attribution "$inventory" "$m" "$body")"
+  [ -z "$yarn" ] || out="$out$yarn
 "
   # Unknown diagnostics are deliberately in the whole-round denominator but
   # never in a naming cascade: only a line whose own syntax reports failure may

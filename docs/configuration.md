@@ -259,7 +259,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     coincidence that made the first version of this arm dangerous. Only the
     diagnosed subject is looked up: `ENOENT: ... open 'src/config.json'` asks
     about `src/config.json`, so an unrelated package named `open` cannot earn a
-    waiver. Its cascade
+    waiver. Yarn v1's version/help records are exact neutral context, but its
+    echoed package command and `error Command failed with exit code 127.` are
+    attributed only after that command is present in the trusted missing-tree
+    inventory and a causal resolution line has opened the route. This covers
+    `$ jest` and `$ tsx scripts/parseBooks.ts` without making arbitrary command
+    echoes or exit records neutral. Its cascade
     claims a line that **names the directory**, or that names a path **inside**
     it — `ENOENT: ... open '.../node_modules/x'` cannot be about anything but
     the tree that is not there. That last part belongs to this arm alone,

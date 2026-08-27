@@ -4299,7 +4299,9 @@ nw_cls() {
 }
 assert_eq candidate "$(nw_cls 'error Command "jest" not found')" \
   "a dependency that could not be resolved is CHARGED where NOTHING IS MISSING: this fixture's worktree is its own repo root, so no build state was left behind, and the sentence alone attributes to nothing (Part Y4 is the same sentence with the tree actually absent)"
-assert_eq candidate "$(nw_cls '  FAIL: streaming stub: job log must have grown WHILE the adapter was still running')" \
+NOWAIVE_L020_SIG='streaming stub: job log must have grown '
+NOWAIVE_L020_SIG+='WHILE the adapter was still running'
+assert_eq candidate "$(nw_cls "  FAIL: $NOWAIVE_L020_SIG")" \
   "and the L020 assertion is CHARGED where this repository never wrote it down: orchid never INFERS flakiness, and a register it does not have forgives nothing (Part Y5 is the same line with the register present)"
 assert_eq candidate "$(nw_cls '  FAIL: T013 was stranded by a reaped job manifest')" \
   "and a harness fault that NAMES ITSELF is charged — the words are not the evidence, and neither, since this round, is the recorded exit status: Part Y6 charges a run that stopped short too, because that status cannot tell a reap from a candidate that hung"
@@ -5850,6 +5852,7 @@ git commit -q -m "fixture: an integration checkout that ignores its dependency t
 # entry point the tree PUBLISHES, and the fact the attribution turns on.
 mkdir -p "$ENVR/mobile/node_modules/.bin"
 printf '#!/usr/bin/env node\n' > "$ENVR/mobile/node_modules/.bin/jest"
+printf '#!/usr/bin/env node\n' > "$ENVR/mobile/node_modules/.bin/tsx"
 mkdir -p "$ENVR/mobile/node_modules/lodash"
 # `open` is deliberately present too. It is syntax in the standard ENOENT
 # diagnostic below, not that diagnostic's subject, and used to be accepted as
@@ -5922,18 +5925,46 @@ assert_eq candidate "$(ev_cls | cut -f1)" \
   "but the bound pre-command inventory has no fabricated subject, so candidate-created integration content cannot manufacture an environment waiver"
 rm -f "$ENVR/mobile/node_modules/.bin/fabricated"
 
-# Yarn v1 wraps that causal diagnostic in three neutral harness records. The
-# full real body must remain live, while anything beyond that closed grammar
-# keeps the strict default.
+# Yarn v1 wraps that causal diagnostic in deterministic harness records. The
+# version and help records are unconditionally neutral; the echoed command and
+# exit-127 record are attributed only after the missing-tree inventory proves
+# the command and a causal resolution failure opens the route. The full real
+# bodies must remain live, while anything beyond that closed grammar keeps the
+# strict default.
 YARN_L003_BODY='yarn run v1.22.19
 $ jest
 error Command "jest" not found
 info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
 ev_log "$YARN_L003_BODY"
-assert_eq 1 "$(drive_failure_lines "$YARN_L003_BODY" | grep -c .)" \
-  "the real four-line Yarn v1 failure has one diagnostic and three exact harness-context records, not four unexplained lines"
+assert_eq 2 "$(drive_failure_lines "$YARN_L003_BODY" | grep -c .)" \
+  "the Yarn command echo is not globally neutral: before environment attribution the denominator contains it and the causal diagnostic"
 assert_eq environment "$(ev_cls | cut -f1)" \
-  "the named L003 case is classified from the real yarn test body rather than an unrealistically isolated error line"
+  "the jest-shaped L003 case dynamically attributes the echoed command after the missing tree and causal diagnostic are proved"
+
+WEBBOOKS_L003_BODY='yarn run v1.22.19
+$ tsx scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 127.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+ev_log "$WEBBOOKS_L003_BODY"
+assert_eq 3 "$(drive_failure_lines "$WEBBOOKS_L003_BODY" | grep -c .)" \
+  "the actual webBooks shape keeps its command echo, causal diagnostic, and exit-127 record in the strict denominator before attribution"
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "L003's named webBooks body attributes the arbitrary tsx package-script echo and canonical exit-127 record only after trusted inventory proves tsx came from the absent tree"
+ev_log 'yarn run v1.22.19
+$ webpack scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 127.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "a Yarn echo for a command the missing tree did not publish stays unknown and keeps the exit-127 wrapper from being attributed, even beside a different causal environment failure"
+ev_log 'yarn run v1.22.19
+$ tsx scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "an unfamiliar Yarn exit record remains strict even when the echoed missing command is proved; only the canonical command-not-found status 127 is context"
 ev_log "$YARN_L003_BODY
 info an unfamiliar package-manager epilogue"
 assert_eq candidate "$(ev_cls | cut -f1)" \
@@ -6405,8 +6436,16 @@ assert_match "job log must gain at least one" "$SHIPPED_SIGS" \
 # BOTH ENTRIES WORK, ON BOTH OLD LENGTHS. Agy/Claude/Codex carried longer
 # explanations while Hermes stopped at the common prefix; the common literal
 # must catch both without reaching any live bounded-wait assertion.
-OLD_GROWTH_SIG='streaming stub: job log must have grown WHILE the adapter was still running'
-OLD_HEARTBEAT_SIG='heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running'
+OLD_GROWTH_SIG="$(grep -F 'job log must have grown' <<< "$SHIPPED_SIGS" || true)"
+OLD_HEARTBEAT_SIG="$(grep -F 'job log must gain at least one' <<< "$SHIPPED_SIGS" || true)"
+[ -n "$OLD_GROWTH_SIG" ] && [ -n "$OLD_HEARTBEAT_SIG" ] \
+  || fail "the two shipped signatures could not be selected by their clipped family names"
+while IFS= read -r shipped_sig; do
+  [ -n "$shipped_sig" ] || continue
+  if grep -Fq -- "$shipped_sig" "$REPO_ROOT/tests/test_drive.sh"; then
+    fail "tests/test_drive.sh embeds a live quarantine signature verbatim, so a failing self-check could print its own amnesty (got, clipped: $SHIPPED_SIGS_CLIPPED)"
+  fi
+done <<< "$SHIPPED_SIGS"
 qs_log "  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
 assert_eq flaky "$(qs_cls | cut -f1)" \
   "the long pre-T019 stream-growth diagnostic is waived by the shipped register"
@@ -6513,7 +6552,7 @@ qo_log() { # <id> <worktree> <candidate> [failure-body]
   local qo_body="${4:-}"
   [ -n "$qo_body" ] \
     || qo_body="looks fine
-  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
   printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
     "$3" "$3" "$2" "$qo_body" \
     > "$QO/.orchid/reviews/$1-verify.log"
@@ -6530,7 +6569,7 @@ assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
   "a carried task whose base and candidate both predate the register reads the clean tracked integration copy, so the exact pre-T019 failure no longer burns its attempt"
 qo_log QO1 "$QOW" "$QOCAND" \
   "VERDICT: approve
-  FAIL: heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+  FAIL: $OLD_HEARTBEAT_SIG (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
 assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
   "and the same carried task classifies the sibling pre-T019 heartbeat-count failure as flaky rather than charging it"
 assert_match "job log must have grown" "$(drive_quarantine_signatures \

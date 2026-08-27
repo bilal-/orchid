@@ -642,9 +642,13 @@ buying a fresh implementation pass to reach the same tree.
   mismatched snapshot fields close all three routes and charge. The missing
   tree's package/command inventory is captured at the same time and is the only
   authority for later resolution attribution; the classifier never reads
-  candidate-mutable integration contents after the command. A failed
-  verification body may include deterministic successful-fixture chatter from
-  an old runner that exposes a child's entire buffer after a later historical flake.
+  candidate-mutable integration contents after the command. Yarn v1 command
+  echoes and its exact exit-127 record remain strict until a command in that
+  inventory plus a causal resolution diagnostic attribute them to the absent
+  tree; only its exact version/help records are neutral without that proof. A
+  failed verification body may include deterministic successful-fixture
+  chatter from an old runner that exposes a child's entire buffer after a
+  later historical flake.
   The trusted register can name those lines exactly with `FLAKE-CONTEXT:`, but
   they are inert until a causal `FLAKE:` signature matches this body and cannot
   claim any unlisted line. This is closed companion accounting, not a

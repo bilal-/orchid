@@ -163,9 +163,12 @@ It then parses **this** shipped file through the real parser and asserts that
 its live signatures are exactly the two documented above; that each signature matches
 its pre-T019 family, including Hermes's shorter form; that neither matches the
 assertions that replaced it; and that no engine-adapter file in the tree
-contains either sentence at all. So another entry cannot slip in without
-somebody changing that count in the same diff and saying out loud that a gate
-may now fail without failing.
+contains either sentence at all. The classifier test source may exercise those
+sentences only by reading them from this register at runtime; a static tripwire
+refuses either signature verbatim in `tests/test_drive.sh`, where a failing
+self-check could otherwise print its own amnesty. So another entry cannot slip
+in without somebody changing that count in the same diff and saying out loud
+that a gate may now fail without failing.
 
 <!-- Causal signatures below. Column 0, one per line; see "Format" above. -->
 

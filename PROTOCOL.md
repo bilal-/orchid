@@ -1274,13 +1274,15 @@ ones its archetype never declares.
       the missing directory (`error Command "jest" not found` attributes to
       `mobile/node_modules` because `mobile/node_modules/.bin/jest` is in the
       checkout that has it, and attributes to nothing when the absent
-      directory is an unrelated `.cache`). Yarn v1's exact neutral wrapper —
-      `yarn run v<major>.<minor>.<patch>`, `$ jest`, and its canonical
-      `info Visit https://yarnpkg.com/en/docs/cli/run ...` epilogue — is
-      excluded from the failure denominator, while the resolution error
-      between them remains causal and any unfamiliar wrapper line remains
-      unknown and charges. The filesystem lookup is applied
-      only to that diagnosed subject, not every word on the line: in `ENOENT:
+      directory is an unrelated `.cache`). Yarn v1's exact version and help
+      records are neutral. Its `$ <command> ...` echo and exact `error Command
+      failed with exit code 127.` record stay in the failure denominator until
+      trusted pre-run inventory proves `<command>` was published by that
+      missing directory and a causal resolution line opens the environment
+      route. Thus the named webBooks `$ tsx scripts/parseBooks.ts` case is
+      attributed without making arbitrary package-manager chatter neutral;
+      any unfamiliar wrapper line still charges. The filesystem lookup is
+      applied only to that diagnosed subject, not every word on the line: in `ENOENT:
       ... open 'src/config.json'`, `src/config.json` is the subject and an
       unrelated package named `open` proves nothing. `Permission denied`, `is not
       executable`, `checksum is stale` and `Cannot find module` are all

@@ -440,7 +440,11 @@ worth nothing:
    filesystem instead of the sentence. It asks about the diagnostic's subject,
    not every token: `ENOENT: ... open 'src/config.json'` checks
    `src/config.json`; a dependency package coincidentally named `open` is not
-   evidence about that missing source path.
+   evidence about that missing source path. For Yarn v1, the version/help lines
+   are exact neutral context; `$ <command> ...` and `error Command failed with
+   exit code 127.` are claimed only when trusted inventory says that command
+   came from the absent tree and a causal resolution line is present. An
+   unfamiliar echo or exit record therefore still charges.
 
    Its cascade is the same rule as the mode bit's, too: a further failing line
    is claimed when it **names the directory**, or names a path **inside** it —
