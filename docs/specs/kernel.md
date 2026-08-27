@@ -697,9 +697,11 @@ buying a fresh implementation pass to reach the same tree.
   of them is a file the implementer controls. The flaky register has one
   fail-closed bootstrap for carried worktrees: when the task's base and
   candidate both resolve and both lack the register path, a clean tracked copy
-  at integration `HEAD` may supply it. A candidate addition has the path in its
-  candidate; a deletion has it in its base; dirty integration bytes, mode, or
-  index fail the authority check. This lets a post-cut historical-flake entry
+  at integration `HEAD` may supply it, but only while that HEAD is still the
+  exact commit captured before candidate-controlled verification began. A
+  candidate addition has the path in its candidate; a deletion has it in its
+  base; moved integration HEAD or dirty integration bytes, mode, or index fail
+  the authority check. This lets a post-cut historical-flake entry
   protect old branches without letting a candidate author or remove its own
   amnesty. A non-`candidate` verdict charges `infra_failures` rather than
   `attempts`. The `infra failure #N` intervention reason itself names the class

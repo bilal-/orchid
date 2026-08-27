@@ -42,6 +42,8 @@ assert_match '^pre_exec_missing: "' "$(cat "$log")" "evidence records the pre-ru
 assert_match '^pre_env_missing: "' "$(cat "$log")" "evidence records the pre-run missing-build-state set as one JSON string"
 assert_match '^pre_env_inventory: "' "$(cat "$log")" "evidence records the pre-run environment resolution inventory as one JSON string"
 assert_match '^pre_pin_stale: "' "$(cat "$log")" "evidence records the pre-run stale-pin proof as one JSON string"
+assert_match '^pre_integration_head: "[0-9a-f]{40}"$' "$(cat "$log")" \
+  "evidence binds old-branch control-plane authority to integration HEAD before candidate-controlled verification"
 assert_match "^exit: [1-9][0-9]*$" "$(cat "$log")" "evidence records nonzero exit (FAIL run)"
 
 touch "$WORK/marker.txt"

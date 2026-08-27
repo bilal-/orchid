@@ -6745,6 +6745,7 @@ done
 QO="$WORK/old-register-control"
 QOW="$WORK/old-register-task"
 QOD="$WORK/deleted-register-task"
+QOH="$WORK/hostile-register-task"
 mkdir -p "$QO"
 cd "$QO" || exit 1
 git init -q .
@@ -6777,13 +6778,18 @@ qo_task() { # <id> <worktree> <base> <candidate>
   printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
     "$1" "$2" "$3" "$4" > "$QO/.orchid/tasks/$1.md"
 }
-qo_log() { # <id> <worktree> <candidate> [failure-body]
-  local qo_body="${4:-}"
+qo_log() { # <id> <worktree> <candidate> [failure-body] [prestate-snapshot]
+  local qo_body="${4:-}" qo_snapshot
   [ -n "$qo_body" ] \
     || qo_body="looks fine
   FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
-  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$3" "$3" "$2" "$qo_body" \
+  if [ "$#" -ge 5 ]; then
+    qo_snapshot="$5"
+  else
+    qo_snapshot="$(drive_verify_prestate_headers "$QO" "$QO/.orchid/tasks/$1.md")"
+  fi
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n%s\n---\n%s\nexit: 1\n' \
+    "$3" "$3" "$2" "$qo_snapshot" "$qo_body" \
     > "$QO/.orchid/reviews/$1-verify.log"
 }
 qo_cls() { # <id>
@@ -6845,6 +6851,30 @@ qo_task QO2 "$QOD" "$QOHEAD" "$QODEL"
 qo_log QO2 "$QOD" "$QODEL"
 assert_eq candidate "$(qo_cls QO2 | cut -f1)" \
   "a candidate-deleted register forgives nothing and cannot be resurrected from integration, because its base already carried the path"
+
+# The integration authority is also a PRE-RUN fact. The verification command
+# executes candidate-controlled repository code and inherits enough context to
+# address the integration checkout. Without the captured-HEAD binding it can
+# commit a matching FLAKE entry there after verification begins; the fallback
+# then compares that malicious file to its own new HEAD, finds it perfectly
+# clean, and forgives the defect that wrote it.
+git -C "$QO" worktree add -q "$QOH" -b task/hostile-register "$QOCAND" 2>/dev/null \
+  || fail "fixture: could not create the old branch used by the hostile verifier"
+qo_task QO3 "$QOH" "$QOBASE" "$QOCAND"
+QO_PRE_ATTACK="$(drive_verify_prestate_headers "$QO" "$QO/.orchid/tasks/QO3.md")"
+printf '\nFLAKE: widget returned 3, expected 4 -- committed by candidate-controlled verification\n' \
+  >> "$QO/tests/QUARANTINE.md"
+git -C "$QO" add tests/QUARANTINE.md
+git -C "$QO" commit -q -m "fixture: verifier tries to mint its own integration waiver"
+qo_log QO3 "$QOH" "$QOCAND" '  FAIL: widget returned 3, expected 4' "$QO_PRE_ATTACK"
+assert_match "widget returned 3" "$(drive_quarantine_signatures \
+    "$QO" "$QOH" "$QO/.orchid/tasks/QO3.md")" \
+  "RED control: without a pre-verification HEAD binding, the old fallback trusts the verifier's newly committed integration entry"
+assert_eq "" "$(drive_quarantine_signatures \
+    "$QO" "$QOH" "$QO/.orchid/tasks/QO3.md" "$QOHEAD")" \
+  "GREEN control: binding the fallback to pre-verification HEAD exposes no signature after the verifier moves that ref"
+assert_eq candidate "$(qo_cls QO3 | cut -f1)" \
+  "a register committed to integration after verification began forgives nothing — current HEAD no longer matches the pre-verification control-plane authority"
 cd "$QR" || exit 1
 
 # --- THE SAFETY PROPERTY: a register the candidate touched is no authority.

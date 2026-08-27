@@ -1257,7 +1257,9 @@ ones its archetype never declares.
       The flaky register has one bootstrap edge that the executable pin check
       does not: when BOTH task commits resolve and BOTH predate the register
       path, the driver may read the integration checkout's tracked copy while
-      that copy is byte-, mode-, and index-clean at integration `HEAD`. This is
+      that copy is byte-, mode-, and index-clean at integration `HEAD`, and
+      that HEAD is still the exact commit captured before candidate-controlled
+      verification began. This is
       how an already-running branch can benefit from a historical flake learned
       after it was cut. A candidate addition fails the "candidate lacks it"
       half; a candidate deletion fails the "base lacks it" half. Neither can
