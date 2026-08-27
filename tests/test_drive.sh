@@ -4058,3 +4058,3013 @@ else
   [ ! -f "$XHOOK_MF" ] \
     || fail "...and the manifest is still retired once it is accounted for (out: $XDRIVE_OUT)"
 fi
+
+# ===========================================================================
+# Part X2 -- A DEFERRED on_verify_fail HOOK MUST NOT ERASE THE FAILED ROUND.
+#
+# The verifier below is deliberately intermittent: its first invocation fails
+# and every later invocation passes. Before the pending-failure receipt, pass 1
+# launched the asynchronous hook and returned before classification; pass 2
+# ran the verifier again, overwrote FAIL with PASS, and advanced to reviewing.
+# The failed round consumed neither budget nor a journal line. The correct
+# path runs the verifier ONCE, waits for the hook, then charges and journals the
+# original evidence before entering rework.
+# ===========================================================================
+mkdir -p "$WORK/eng/hookok"
+printf 'manifest_version=1\nid=test/hookok\nversion=0.1.0\nkind=hook\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/hookok/plugin.conf"
+cat > "$WORK/eng/hookok/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+cand="$(jq -r '.candidate_sha // ""' "$req")"
+jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
+  '{contract:1, job_id:$jid, task:$task, operation:"hook", status:"ok",
+    engine:"test/hookok", candidate_sha:$cand,
+    artifact:{guidance:"preserve the first failed round"}, summary:"hook ok"}' > "$out"
+EOF
+chmod +x "$WORK/eng/hookok/run"
+
+PF="$WORK/preserve-failed-verify"
+PF_COUNT="$WORK/preserve-failed-verify.count"
+PF_SCRIPT="$WORK/preserve-failed-verify.sh"
+mkdir -p "$PF"
+printf '0\n' > "$PF_COUNT"
+cat > "$PF_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+count_file="$1"
+n="$(cat "$count_file")"
+n=$((n + 1))
+printf '%s\n' "$n" > "$count_file"
+if [ "$n" -eq 1 ]; then
+  echo "candidate failed on the first run"
+  exit 1
+fi
+echo "a rerun would pass and erase the first failure"
+EOF
+chmod +x "$PF_SCRIPT"
+
+cd "$PF" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nhook.on_verify_fail=hookok\n' > orchid.config
+git add -A
+git commit -q -m "fixture: deferred failure hook"
+ORCHID_REPO="$PF" "$ORCHID_BIN" init >/dev/null || fail "orchid init (deferred-failure fixture)"
+git checkout -q orchid/integration
+PFEPOCH="$(ORCHID_REPO="$PF" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+pforchid() { ORCHID_REPO="$PF" ORCHID_EPOCH="$PFEPOCH" "$ORCHID_BIN" "$@"; }
+pforchid requirements import "$WORK/requirements.md" >/dev/null
+pforchid task create PF1 "its first failed verify must survive an asynchronous hook" >/dev/null
+PF_CMD="/bin/bash $(printf '%q' "$PF_SCRIPT") $(printf '%q' "$PF_COUNT")"
+pforchid task set PF1 verification_commands "$PF_CMD" >/dev/null
+pforchid plan apply --reason "initial plan" >/dev/null
+PFSHA="$(git -C "$PF" rev-parse HEAD)"
+PFTASK="$PF/.orchid/tasks/PF1.md"
+fm_set "$PFTASK" status testing
+fm_set "$PFTASK" base_sha "$PFSHA"
+fm_set "$PFTASK" candidate_sha "$PFSHA"
+fm_set "$PFTASK" worktree "$PF"
+pffield() { fm_get "$PFTASK" "$1"; }
+
+PF_RC=0
+PF_OUT="$(ORCHID_REPO="$PF" ORCHID_EPOCH="$PFEPOCH" "$DRIVE" 2>&1)" || PF_RC=$?
+assert_eq 0 "$PF_RC" "the pass that launches on_verify_fail defers cleanly (out: $PF_OUT)"
+assert_eq testing "$(pffield status)" "the hook deferral holds the task in testing"
+assert_eq 0 "$(pffield attempts)" "the attempt is not charged before its hook resolves"
+assert_eq 1 "$(cat "$PF_COUNT")" "the first pass ran the verifier exactly once"
+assert_match "^a1:$PFSHA:[0-9a-f]{64}$" "$(pffield verify_fail_pending)" \
+  "and pins that exact failed evidence before returning to the caller"
+
+_pf_i=0
+while [ "$_pf_i" -lt 30 ] && [ "$(pffield status)" = testing ]; do
+  PF_RC=0
+  PF_OUT="$(ORCHID_REPO="$PF" ORCHID_EPOCH="$PFEPOCH" "$DRIVE" 2>&1)" || PF_RC=$?
+  [ "$PF_RC" -eq 0 ] || break
+  _pf_i=$((_pf_i + 1))
+  [ "$(pffield status)" != testing ] || sleep 0.2
+done
+assert_eq rework "$(pffield status)" \
+  "once the hook resolves, the ORIGINAL failed round is classified and sent to rework (rc=$PF_RC, out: $PF_OUT)"
+assert_eq 1 "$(cat "$PF_COUNT")" \
+  "the resumed failure arm does not run the now-passing verifier a second time"
+assert_eq 1 "$(pffield attempts)" "the original candidate failure consumes exactly one attempt"
+assert_eq "" "$(pffield verify_fail_pending)" "entry to rework consumes the pending-failure receipt"
+assert_eq "preserve the first failed round" "$(pffield hook_guidance)" \
+  "the hook guidance still lands before the rework dispatch"
+grep -qF "candidate, attempt charged" "$PF/.orchid/journal.md" \
+  || fail "the preserved failed round must be journalled as charged (out: $PF_OUT)"
+
+# Part Y -- classify a verification failure BEFORE anything charges it,
+# against the policy function itself.
+#
+# The attempt budget is supposed to measure the CANDIDATE. Every assertion
+# below is really one of two claims: a failure the candidate did not cause
+# must not spend an attempt, and everything else -- including every case the
+# classifier cannot decide -- must. The second half is the one that has to
+# hold under pressure, and this part holds the two shapes that decide nothing
+# at all: a repository with NO waivable state of any class outstanding, and a
+# round with no evidence on disk to read.
+# ===========================================================================
+CLS="$WORK/classify"
+mkdir -p "$CLS/.orchid/tasks" "$CLS/.orchid/reviews"
+: > "$CLS/orchid.config"
+
+# mk_cls_task <id> [worktree]
+mk_cls_task() {
+  printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\n---\nbody\n' \
+    "$1" "${2:-}" > "$CLS/.orchid/tasks/$1.md"
+}
+# mk_cls_log <id> <output-body> [command] -- a legacy verify log. These strict-
+# default fixtures need no waivable prestate; the absence of trusted snapshot
+# fields must close those routes rather than falling back to live state.
+mk_cls_log() {
+  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: %s\n---\n%s\nexit: 1\n' \
+    "$CLS" "${3:-bash tests/run.sh}" "$2" > "$CLS/.orchid/reviews/$1-verify.log"
+}
+
+# mk_prestate_log <repo> <task-file> <log> <body> [command] [rc] [snapshot]
+# -- a failed verifier log carrying state captured before its command ran.
+# Supplying [snapshot] lets a regression capture it, mutate the worktree as a
+# hostile test command would, and only then write the final evidence.
+mk_prestate_log() {
+  local repo="$1" tf="$2" log="$3" body="$4"
+  local cmd="${5:-bash tests/run.sh}" rc="${6:-1}" snapshot root cand
+  root="$(fm_get "$tf" worktree)"
+  [ -n "$root" ] && [ -d "$root" ] || root="$repo"
+  cand="$(fm_get "$tf" candidate_sha)"; [ -n "$cand" ] || cand=none
+  if [ "$#" -ge 7 ]; then
+    snapshot="$7"
+  else
+    snapshot="$(drive_verify_prestate_headers "$repo" "$tf")"
+  fi
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: %s\n%s\n---\n%s\nexit: %s\n' \
+    "$cand" "$cand" "$root" "$cmd" "$snapshot" "$body" "$rc" > "$log"
+}
+# HOME is replaced for the call: config_get's third layer is $HOME/.orchid/
+# config, and a signature in the operator's own machine-local config must
+# never decide what this fixture asserts.
+classify() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$CLS" "$CLS/.orchid/tasks/$1.md" "$CLS/.orchid/reviews/$1-verify.log" )
+}
+class_of()  { classify "$1" | cut -f1; }
+reason_of() { classify "$1" | cut -f2-; }
+
+# --- the default is strict: nothing outstanding, so nothing is forgiven ----
+# THERE IS NO FAILURE SENTENCE TO DECLARE. Every previous shape of this feature
+# offered a per-repository signature list of failure TEXT, and each one forgave
+# rounds it never meant to; the fixture's `orchid.config` is empty here and
+# stays that way, because a repository cannot buy an amnesty for its own
+# failures at any price. (The one file a repository does own is the known-flaky
+# register of Part Y5, and what makes that safe is not the file: it is that a
+# candidate which TOUCHES it loses the route.)
+mk_cls_task C01
+mk_cls_log C01 "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+assert_eq candidate "$(class_of C01)" \
+  "with no waivable state of any class outstanding, a verify failure charges the attempt — forgiveness is never the default"
+assert_match "no failure-attributable waivable state was established" "$(reason_of C01)" \
+  "and it says what was established before charging, rather than claiming the world contains no missing state it did not attribute"
+
+# The two sentences the earlier text classifiers keyed on, in a tree where
+# neither hand-off's state exists. Both charge: no wording is evidence.
+mk_cls_task C02
+mk_cls_log C02 "tests/test_writes.sh: FAIL: open('/etc/hosts', 'w'): Permission denied"
+assert_eq candidate "$(class_of C02)" \
+  "a candidate writing where it may not says 'Permission denied' and is still the candidate's — the exec-bit route needs a file whose mode bit is really unset"
+mk_cls_task C03
+mk_cls_log C03 "pin-formula: Formula/orchid.rb checksum is STALE for the current content"
+assert_eq candidate "$(class_of C03)" \
+  "and a staleness SENTENCE forgives nothing on its own: this fixture has no pin check to run, so there is no stale-pin state to prove"
+
+# --- no evidence at all is uncertainty, and uncertainty charges -----------
+mk_cls_task C07
+rm -f "$CLS/.orchid/reviews/C07-verify.log"
+assert_eq candidate "$(class_of C07)" \
+  "with no verify evidence on disk the failure cannot be classified, so the strict reading applies"
+assert_match "cannot be classified" "$(reason_of C07)" \
+  "and the absence of evidence is stated, not glossed"
+
+# ===========================================================================
+# Part Y2 -- both arms end to end, through the real driver and the real verbs.
+#
+# This is the acceptance claim in one place: the same pass, two tasks, two
+# failing suites, ONE candidate that ships a new verb at mode 644. C300's
+# suite fails on the shell refusing that file; C400's fails on an ordinary
+# defect while the same mode bit is outstanding. Exactly one of them spends an
+# attempt.
+# ===========================================================================
+CLE="$WORK/classify-e2e"
+mkdir -p "$CLE"
+cd "$CLE" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CLE" "$ORCHID_BIN" init >/dev/null || fail "orchid init (classification e2e fixture)"
+git checkout -q orchid/integration
+CEPOCH="$(ORCHID_REPO="$CLE" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+ceorchid() { ORCHID_REPO="$CLE" ORCHID_EPOCH="$CEPOCH" "$ORCHID_BIN" "$@"; }
+ceorchid requirements import "$WORK/requirements.md" >/dev/null
+ceorchid task create C300 "its suite fails on the exec bit the operator has to set" >/dev/null
+ceorchid task set C300 verification_commands \
+  "echo /bin/bash: libexec/orchid-ce: Permission denied; exit 1" >/dev/null
+ceorchid task create C400 "its suite fails on an ordinary defect" >/dev/null
+ceorchid task set C400 verification_commands "echo widget returned 3, expected 4; exit 1" >/dev/null
+ceorchid plan apply --reason "initial plan" >/dev/null
+
+# The candidate: a new verb shipped mode 644 with a `#!` line, which is the
+# exec-bit hand-off's own state on disk and the one thing L017 forbids the
+# implementer to clear.
+CEBASE="$(git -C "$CLE" rev-parse HEAD)"
+mkdir -p "$CLE/libexec"
+printf '#!/usr/bin/env bash\necho ce\n' > "$CLE/libexec/orchid-ce"
+git -C "$CLE" add libexec/orchid-ce
+git -C "$CLE" commit -q -m "fixture: a candidate that ships a new verb at mode 644"
+CECAND="$(git -C "$CLE" rev-parse HEAD)"
+if [ -x "$CLE/libexec/orchid-ce" ]; then
+  fail "fixture invariant broken: libexec/orchid-ce must stay mode 644, or C300 has no hand-off to be waived for"
+fi
+for _t in C300 C400; do
+  fm_set "$CLE/.orchid/tasks/$_t.md" status testing
+  fm_set "$CLE/.orchid/tasks/$_t.md" base_sha "$CEBASE"
+  fm_set "$CLE/.orchid/tasks/$_t.md" candidate_sha "$CECAND"
+done
+
+CE_RC=0
+CE_OUT="$(ORCHID_REPO="$CLE" ORCHID_EPOCH="$CEPOCH" "$DRIVE" 2>&1)" || CE_RC=$?
+[ "$CE_RC" -eq 0 ] || [ "$CE_RC" -eq 16 ] \
+  || fail "the classification pass must complete normally (rc=$CE_RC): $CE_OUT"
+
+cefield() { ORCHID_REPO="$CLE" "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
+
+assert_eq rework "$(cefield C300 status)" \
+  "a hand-off failure still goes to rework — the work still needs doing (out: $CE_OUT)"
+assert_eq 0 "$(cefield C300 attempts)" \
+  "but it consumed NO attempt: the budget measures the candidate, and the candidate is not what failed"
+assert_eq 1 "$(cefield C300 infra_failures)" \
+  "it was charged to the environment budget instead, so a repeating fault still terminates at infra_max rather than looping free forever"
+
+assert_eq rework "$(cefield C400 status)" \
+  "an ordinary defect goes to rework (out: $CE_OUT)"
+assert_eq 1 "$(cefield C400 attempts)" \
+  "and DOES consume an attempt EVEN THOUGH the same mode bit is outstanding on its candidate too — being outstanding is not being to blame, and classification must not become a way for real defects to run free"
+assert_eq 0 "$(cefield C400 infra_failures)" \
+  "and never touches the environment budget"
+
+CE_JOURNAL="$(cat "$CLE/.orchid/journal.md")"
+assert_match "C300 attempt_waiver" "$CE_JOURNAL" \
+  "the uncharged round is journaled as an attempt_waiver, so 'not charged' is a durable fact and not an inference from a counter that did not move"
+assert_match "handoff, attempt not charged" "$CE_JOURNAL" \
+  "and the journal entry names the class and says the attempt was not charged"
+assert_match "orchid-ce" "$CE_JOURNAL" \
+  "naming the file the operator has to chmod, because a journal line an operator cannot act on is not a reason"
+assert_match "candidate, attempt charged" "$CE_JOURNAL" \
+  "while the charged round says so too — both arms are on the record, not just the unusual one"
+
+# The waived round records the implement-envelope floor it was entered at.
+# `--waive-attempt` holds `attempts` still on purpose, so without this the
+# re-dispatched round resolves the envelope of the round just waived and
+# re-verifies a candidate that never moved (Part N6 takes that apart).
+assert_eq "a1:0" "$(cefield C300 implement_floor)" \
+  "the waived round records the floor a fresh implement envelope must clear — attempt 1, and no envelope of its own yet"
+assert_eq "" "$(cefield C400 implement_floor)" \
+  "while a CHARGED round records none and needs none: attempts moved, so the previous round's envelopes are already unreachable by name"
+
+# A non-candidate round can terminate at infra_max BEFORE the waived rework
+# edge writes its attempt_waiver entry. The `infra failure #N` intervention
+# itself must therefore carry the same explicit marker; a stationary attempts
+# counter is not a durable explanation of why it stayed still.
+printf '\ninfra_max=1\n' >> "$CLE/orchid.config"
+fm_set "$CLE/.orchid/tasks/C300.md" status testing
+fm_set "$CLE/.orchid/tasks/C300.md" infra_failures 0
+fm_set "$CLE/.orchid/tasks/C400.md" status "done"
+CE_CAP_RC=0
+CE_CAP_OUT="$(ORCHID_REPO="$CLE" ORCHID_EPOCH="$CEPOCH" "$DRIVE" 2>&1)" || CE_CAP_RC=$?
+[ "$CE_CAP_RC" -eq 0 ] || [ "$CE_CAP_RC" -eq 16 ] \
+  || fail "the infra-cap pass must complete normally or at its boundary (rc=$CE_CAP_RC): $CE_CAP_OUT"
+assert_eq blocked "$(cefield C300 status)" \
+  "the classified hand-off failure blocks at infra_max before a rework edge can journal the waiver (out: $CE_CAP_OUT)"
+assert_eq 0 "$(cefield C300 attempts)" \
+  "and the cap exit still preserves the attempt budget"
+CE_CAP_REASON="$(awk '
+  /^## .* C300 intervention / { take=1; next }
+  /^## / { take=0 }
+  take && /^infra failure #[0-9]+:/ { last=$0; take=0 }
+  END { print last }
+' "$CLE/.orchid/journal.md")"
+assert_match "handoff, attempt not charged" "$CE_CAP_REASON" \
+  "the infra-failure record says explicitly that the capped round did not charge an attempt — this is the only durable entry that path reaches"
+
+# ===========================================================================
+# Part Y3 -- THE SAME SENTENCES, WITH NOTHING PROVED BEHIND THEM, ARE CHARGED.
+#
+# Every line below is the WORDING of a failure orchid does forgive elsewhere,
+# or once did: an unresolvable dependency (Part Y4 waives that one), the L020
+# streaming assertion (Part Y5 waives that one), a harness fault naming itself
+# (nothing waives that one -- Part Y6 charges even a run whose recorded exit
+# status says it stopped short). Here none of them has any state behind it --
+# there is no missing dependency tree, no known-flaky register, and the run
+# reached its own verdict -- and all three charge.
+#
+# THAT IS THE WHOLE SAFETY PROPERTY OF THIS CLASSIFIER, so it is asserted on
+# the sentences most likely to tempt a text rule. An earlier round of this
+# feature carried a build-state arm that was EXEMPT from the per-failure
+# accounting, on the theory that an absent dependency tree invalidates the
+# whole run; that exemption let an unrelated ignored `.cache` directory plus
+# any `command not found` line waive every failure in a round. The class was
+# never the defect -- the exemption was. Part Y4 brings the class back WITH the
+# accounting, and this part is what proves the sentence alone still buys
+# nothing.
+# ===========================================================================
+NOWAIVE="$WORK/not-waivable"
+mkdir -p "$NOWAIVE/.orchid/tasks" "$NOWAIVE/.orchid/reviews"
+cd "$NOWAIVE" || exit 1
+git init -q .
+printf 'x\n' > file.txt
+git add -A
+git commit -q -m "fixture: root"
+: > "$NOWAIVE/orchid.config"
+printf -- '---\nschema: 1\nid: NW1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\n---\nbody\n' \
+  "$NOWAIVE" > "$NOWAIVE/.orchid/tasks/NW1.md"
+nw_cls() {
+  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: yarn test\n---\n%s\nexit: 1\n' \
+    "$NOWAIVE" "$1" > "$NOWAIVE/.orchid/reviews/NW1-verify.log"
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$NOWAIVE" "$NOWAIVE/.orchid/tasks/NW1.md" \
+      "$NOWAIVE/.orchid/reviews/NW1-verify.log" ) | cut -f1
+}
+assert_eq candidate "$(nw_cls 'error Command "jest" not found')" \
+  "a dependency that could not be resolved is CHARGED where NOTHING IS MISSING: this fixture's worktree is its own repo root, so no build state was left behind, and the sentence alone attributes to nothing (Part Y4 is the same sentence with the tree actually absent)"
+NOWAIVE_L020_SIG='streaming stub: job log must have grown '
+NOWAIVE_L020_SIG+='WHILE the adapter was still running'
+assert_eq candidate "$(nw_cls "  FAIL: $NOWAIVE_L020_SIG")" \
+  "and the L020 assertion is CHARGED where this repository never wrote it down: orchid never INFERS flakiness, and a register it does not have forgives nothing (Part Y5 is the same line with the register present)"
+assert_eq candidate "$(nw_cls '  FAIL: T013 was stranded by a reaped job manifest')" \
+  "and a harness fault that NAMES ITSELF is charged — the words are not the evidence, and neither, since this round, is the recorded exit status: Part Y6 charges a run that stopped short too, because that status cannot tell a reap from a candidate that hung"
+
+# ===========================================================================
+# Part N2 -- the hand-offs the protocol itself defines need no per-repository
+# configuration, and they are PROVED against the world rather than read out of
+# the failure text.
+#
+# The implementer profile may not re-pin a package checksum and may not set an
+# exec bit. A feature that only protects those hand-offs once a repository has
+# configured a signature protects nobody: the repository learns to configure
+# it by first losing the attempt the feature exists to save. So `handoff` is
+# recognized with nothing configured at all -- as is `environment` (Part Y4).
+# The one class that reads a repository-owned file is
+# `flaky` (Part Y5), and even there the file is not a signature list orchid
+# trusts on sight: a register the CANDIDATE CHANGED is no authority on that
+# candidate, which is what makes it something a repository records rather than
+# something it can buy.
+#
+# EARLIER ROUNDS OF THIS FEATURE READ THE FAILURE TEXT, and each one forgave
+# defects it should have charged: first by matching `: Permission denied` and
+# `checksum is stale` outright, then by tokenizing a path out of those same
+# sentences and corroborating it against the tree. Every sentence involved is
+# one an ordinary bug prints -- a test that writes where it may not, a
+# validator reporting on a file's mode, a bug in the repository's own pinning
+# script -- so each round's answer was a narrower heuristic rather than a
+# different KIND of evidence.
+#
+# What is asserted below is the replacement: the hand-off arm's two closed
+# questions, each answered by the world, and nothing else forgiven by IT.
+#
+#   - STAT the files the candidate ADDED, and the ones it MODIFIED whose base
+#     recorded mode 755: a `#!` file with no execute permission is the
+#     exec-bit hand-off's own state on disk, whether the candidate shipped it
+#     that way or lost the bit while rewriting it.
+#   - RUN the repository's package-pin freshness check (Part N2b).
+#
+# State and attribution are independent, and both directions are asserted
+# here. An exec-bit sentence with no such file charges; an ordinary assertion
+# failure with a mode-644 new script sitting in the tree charges too. The state
+# says a hand-off is outstanding, but only a causal line plus its named cascade
+# says that hand-off blocked this round.
+# ===========================================================================
+HOF="$WORK/handoff"
+mkdir -p "$HOF/.orchid/tasks" "$HOF/.orchid/reviews" "$HOF/libexec" "$HOF/bin"
+cd "$HOF" || exit 1
+git init -q .
+printf 'fixture\n' > "$HOF/README"
+# A mode-644 file with a `#!` line that has been in the tree since BEFORE this
+# candidate. Present throughout everything below, and never recognized: an old
+# data-ish script nobody is waiting on is not an outstanding hand-off, and
+# treating it as one would forgive every failure this repository ever produces.
+printf '#!/usr/bin/env bash\necho old\n' > "$HOF/libexec/pre-existing"
+git add README libexec/pre-existing
+git commit -q -m "fixture: base"
+HOF_BASE="$(git -C "$HOF" rev-parse HEAD)"
+
+# What the candidate ADDED. Three files, and only one of them is the hand-off.
+printf '#!/usr/bin/env bash\necho frob\n' > "$HOF/libexec/orchid-frob"      # shipped 644
+printf '#!/usr/bin/env bash\necho ok\n'   > "$HOF/bin/already-chmodded"
+chmod +x "$HOF/bin/already-chmodded"                                        # hand-off done
+printf 'name: fixture\n'                  > "$HOF/libexec/fixture.yml"      # never executable
+git add libexec/orchid-frob bin/already-chmodded libexec/fixture.yml
+git commit -q -m "fixture: candidate"
+HOF_CAND="$(git -C "$HOF" rev-parse HEAD)"
+
+# mk_hof_task <base-sha> <candidate-sha>
+mk_hof_task() {
+  printf -- '---\nschema: 1\nid: H01\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$HOF" "$1" "$2" > "$HOF/.orchid/tasks/H01.md"
+}
+# hof_log <body>
+hof_log() {
+  mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H01.md" \
+    "$HOF/.orchid/reviews/H01-verify.log" "$1"
+}
+# Config from THIS repository, tree from the fixture: the claim is about orchid
+# as it actually ships (no handoff.pin_check declared), decided against a
+# candidate whose files this test controls.
+hof_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$REPO_ROOT" "$HOF/.orchid/tasks/H01.md" "$HOF/.orchid/reviews/H01-verify.log" )
+}
+mk_hof_task "$HOF_BASE" "$HOF_CAND"
+
+# The layer the hand-off is recognized THROUGH, asserted directly. It fails
+# silently when it fails -- a probe that says "no" is indistinguishable from
+# "no hand-off here", the class lands on `candidate`, and an implementer
+# forbidden to run `chmod` (L017) is charged for the operator's step. Asserted
+# here so a break says WHICH layer broke.
+assert_eq "libexec/orchid-frob" \
+  "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H01.md")" \
+  "of everything this candidate added, the exec-bit route names the one file that is meant to be run and cannot be: git says which files are new, stat says which of them is mode 644"
+if ! _drive_exec_bit_missing "$HOF/libexec/orchid-frob"; then
+  fail "a mode-644 file with a #! line IS the exec-bit hand-off's own state on disk — this probe is what separates it from a defect"
+fi
+if _drive_exec_bit_missing "$HOF/bin/already-chmodded"; then
+  fail "and a file whose exec bit is already set is NOT: the hand-off has been performed, so the same failure charges"
+fi
+if _drive_exec_bit_missing "$HOF/libexec/fixture.yml"; then
+  fail "nor is a plain data file that was never meant to be executed: the #! line is what makes chmod +x the whole fix"
+fi
+
+hof_log "bash: $HOF/libexec/orchid-frob: Permission denied"
+assert_eq handoff "$(hof_cls | cut -f1)" \
+  "the raw shape a repository with no gate of its own sees — the shell refusing a mode-644 executable — is a hand-off"
+assert_match "orchid-frob" "$(hof_cls | cut -f2-)" \
+  "and the reason names the file the operator has to chmod, not just the class"
+assert_match "L017" "$(hof_cls | cut -f2-)" \
+  "and says whose step is outstanding, citing the rule that forbids the implementer to take it"
+
+hof_log "FAIL: PROTOCOL.md names 'orchid frob' but libexec/orchid-frob is not executable"
+assert_eq handoff "$(hof_cls | cut -f1)" \
+  "the gated shape is the same hand-off and the same answer — the wording changed, the world did not"
+
+# --- BEING OUTSTANDING IS NOT BEING TO BLAME -------------------------------
+# The half that was missing until now, and the reason it matters HERE more
+# than anywhere: every lib/*.sh this repository ships is tracked mode 644 WITH
+# a `#!` line, because those are sourced rather than executed, so "this
+# candidate added a file that carries a #! line and is not executable" is
+# simply true of any task that adds a library -- T010 added lib/handoff.sh.
+# Nothing on disk tells that file apart from a new libexec/ verb genuinely
+# awaiting chmod +x, which is why the state cannot be narrowed out of the
+# problem and the FAILURE has to be attributable to the artifact as well.
+# Waiving on the state alone forgave whole rounds that had nothing to do with
+# a mode bit, and looked rigorous while doing it. The shapes below are the
+# ones that are not attributable.
+hof_log "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "an ordinary assertion failure is CHARGED while a mode-644 new executable sits in the tree: the state is outstanding, and nothing about this failure says the mode bit is why it failed"
+assert_match "attribution was not established" "$(hof_cls | cut -f2-)" \
+  "and it says exactly that, rather than charging silently or claiming the hand-off is absent"
+assert_match "orchid-frob" "$(hof_cls | cut -f2-)" \
+  "while STILL naming the outstanding state — an operator reading this journal entry can clear the hand-off and see that it was not what failed"
+
+hof_log "== libexec/orchid-frob
+  FAIL: libexec/orchid-frob printed 'frob' where the spec says 'frobbed'"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "NAMING the file is not attributing the failure to its mode bit — every assertion inside a newly added file names that file, which is exactly how an ambient proof launders a real defect"
+
+hof_log "tests/test_writes.sh: FAIL: open('/etc/hosts', 'w'): Permission denied"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "and a refusal about SOME OTHER path attributes nothing either: a candidate writing where it may not is the candidate's"
+
+# --- A HAND-OFF WAIVES ITS OWN FAILURE, NEVER THE ROUND AROUND IT ----------
+hof_log "bash: $HOF/libexec/orchid-frob: Permission denied
+tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "the hand-off's own refusal is attributed and the round is STILL charged, because a second failing line in it is not — a defect landing in the same round as a hand-off is precisely what must not be laundered"
+assert_match "further failing line" "$(hof_cls | cut -f2-)" \
+  "and the reason says how much it did not explain"
+assert_match "widget returned 3" "$(hof_cls | cut -f2-)" \
+  "quoting the first line it could not attribute, so the operator can see what is being charged for"
+
+# --- the operator performs the hand-off, and the state is gone -------------
+chmod +x "$HOF/libexec/orchid-frob"
+assert_eq "" "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H01.md")" \
+  "once the operator has run chmod +x there is no exec-bit state left to prove, even though the candidate still ADDED the file"
+hof_log "bash: $HOF/libexec/orchid-frob: Permission denied"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "so the identical sentence now charges: whatever this failure is, chmod is not the fix"
+assert_match "no failure-attributable waivable state was established" "$(hof_cls | cut -f2-)" \
+  "and it says why it charged rather than charging silently or overstating what inspection established"
+hof_log "tests/test_writes.sh: FAIL: open('/etc/hosts', 'w'): Permission denied"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "and an ORDINARY test failure that merely says 'Permission denied' — a candidate writing where it may not — is charged, which every text rule got backwards"
+hof_log "pin-formula: Formula/orchid.rb checksum is STALE for the current content"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "a staleness SENTENCE forgives nothing on its own either: this fixture has no pin check to run, so there is no stale-pin state to prove"
+
+# The mode-644 `#!` file that was in the tree before this candidate is still
+# there, and has decided nothing anywhere above.
+if [ -x "$HOF/libexec/pre-existing" ]; then
+  fail "fixture invariant broken: libexec/pre-existing must stay mode 644, or the next assertion proves nothing"
+fi
+assert_eq "" "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H01.md")" \
+  "a mode-644 #! file the candidate did NOT add is nobody's outstanding hand-off — ADDED is what makes it one, and without that every failure in a repository with one old 644 script would be forgiven forever"
+
+# --- no shas is no proof, and no proof charges -----------------------------
+mk_hof_task "" ""
+hof_log "bash: $HOF/libexec/orchid-frob: Permission denied"
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "a task with no base/candidate sha cannot be asked what it added, and 'I could not ask git' is not evidence of a hand-off"
+mk_hof_task "$HOF_BASE" 0000000000000000000000000000000000000000
+assert_eq candidate "$(hof_cls | cut -f1)" \
+  "nor is a sha that does not resolve in this tree"
+
+# --- EVERY added 644 `#!` file is offered to attribution, not just the first -
+# The realistic shape of this in orchid itself: one commit adds a sourced
+# library (mode 644 by convention, and nobody's hand-off) and a verb that
+# really is waiting for chmod +x. git orders the library first, so stopping at
+# the first would hand attribution the one file the failure says nothing about
+# and charge a round the operator owns.
+printf '#!/usr/bin/env bash\n# sourced, never executed — mode 644 on purpose\n' \
+  > "$HOF/lib-two-a.sh"
+printf '#!/usr/bin/env bash\necho two-b\n' > "$HOF/libexec/orchid-two-b"
+git -C "$HOF" add lib-two-a.sh libexec/orchid-two-b
+git -C "$HOF" commit -q -m "fixture: a sourced library and a verb, both mode 644"
+HOF_MULTI="$(git -C "$HOF" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: H02\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$HOF" "$HOF_CAND" "$HOF_MULTI" > "$HOF/.orchid/tasks/H02.md"
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H02.md" \
+  "$HOF/.orchid/reviews/H02-verify.log" \
+  "bash: $HOF/libexec/orchid-two-b: Permission denied"
+h02_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$REPO_ROOT" "$HOF/.orchid/tasks/H02.md" \
+      "$HOF/.orchid/reviews/H02-verify.log" )
+}
+assert_eq 2 "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H02.md" | grep -c .)" \
+  "both added mode-644 #! files are reported — which of them a failure blames is attribution's question, and it cannot answer it about a path it was never given"
+assert_eq handoff "$(h02_cls | cut -f1)" \
+  "and the round is waived on the one the shell actually refused"
+H02_REASON="$(h02_cls | cut -f2-)"
+assert_match "orchid-two-b" "$H02_REASON" \
+  "named in the reason, so the operator chmods the file that failed"
+case "$H02_REASON" in
+  *lib-two-a*) fail "the library that merely sorted first was named as the hand-off: $H02_REASON" ;;
+esac
+
+# --- AN UNBLAMED 644 IS REPORTED, NOT PRESCRIBED ---------------------------
+# The same two files, and a round that failed on neither of them. With no
+# attribution to tell a new verb from a sourced library, the fallback used to
+# assert an operator ACTION about whichever path git listed first -- so a task
+# that added one library was told, on every unrelated failure for the rest of
+# its life, that `chmod +x lib-two-a.sh` was an outstanding operator step.
+# It was not: that file is mode 644 on purpose, nobody was waiting on it, and
+# an operator who followed the instruction would have committed a mode change
+# no reviewer asked for. In this repository that is not a corner case: nearly
+# every lib/*.sh, scripts/pin-formula.sh and some thirty files under tests/ are
+# exactly this shape, because a file that is sourced or run as `bash <file>`
+# has no use for an exec bit.
+#
+# The state is still SAID, because a charged round has to show what is open.
+# What is withdrawn is the imperative.
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H02.md" \
+  "$HOF/.orchid/reviews/H02-verify.log" \
+  "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+assert_eq candidate "$(h02_cls | cut -f1)" \
+  "an ordinary assertion failure is charged with two mode-644 #! files outstanding, exactly as before — this is about what the reason SAYS, not about what it decides"
+H02_UNBLAMED="$(h02_cls | cut -f2-)"
+assert_match "lib-two-a" "$H02_UNBLAMED" \
+  "and the outstanding state is still named, because the point of reporting it on a charged round is that the operator can see what is open and rule it out"
+if grep -Fq 'chmod' <<<"$H02_UNBLAMED"; then
+  fail "but a round that blames it for nothing must not prescribe chmod +x on it: nothing on disk tells a new verb shipped 644 from a library that is 644 because it is SOURCED, attribution is what resolves that, and a charged round has none of it by definition (got: $H02_UNBLAMED)"
+fi
+assert_match "rather than presented as a mode change" "$H02_UNBLAMED" \
+  "the reason says so out loud instead of going quiet — an operator who reads that a file is 644 and that nothing here was refused execution has learned the true thing, and is not sent to run a command nobody needs"
+
+# --- THE MODE BIT A CANDIDATE DROPPED, NOT ONE IT NEVER SET ----------------
+# The shape that stranded THIS task, and the one an ADDED-only rule cannot see.
+# runners/orchid-drive was tracked 100755; an implementer round rewrote it and
+# the mode came back 100644; every drive invocation in its own suite then
+# returned 126 and 116 assertions cascaded from that one cause. The file was
+# MODIFIED, so `git diff --diff-filter=A` names it nowhere, no state is proved,
+# and the round charges -- orchid billing an attempt for exactly the hand-off
+# this whole feature exists to recognize. It is a shape and not an incident:
+# any engine whose file writes recreate a file at 0644 does this to every
+# executable it touches, and the implementer cannot chmod it back (L017).
+#
+# The fixture forces the INDEX mode with `git update-index --chmod`, never
+# relying on core.fileMode: what the base RECORDED is the whole question here,
+# and a checkout where git ignores the filesystem's mode bit would otherwise
+# make these assertions silently vacuous rather than failing.
+mkdir -p "$HOF/runners"
+printf '#!/usr/bin/env bash\necho drive\n' > "$HOF/runners/hof-drive"
+chmod +x "$HOF/runners/hof-drive"
+# Modified in the SAME candidate, and mode 644 in the base too: the ambient
+# shape, which must decide nothing. Without this file beside it the assertion
+# below would pass just as well for a rule that reported every modified 644
+# `#!` file -- which is the over-broad proof this task was sent back for.
+printf '#!/usr/bin/env bash\n# sourced, never executed\n' > "$HOF/lib-sourced.sh"
+git -C "$HOF" add runners/hof-drive lib-sourced.sh
+git -C "$HOF" update-index --chmod=+x runners/hof-drive
+git -C "$HOF" commit -q -m "fixture: an executable runner and a sourced library"
+HOF_DROP_BASE="$(git -C "$HOF" rev-parse HEAD)"
+
+printf '#!/usr/bin/env bash\necho drive v2\n' > "$HOF/runners/hof-drive"
+chmod -x "$HOF/runners/hof-drive"
+printf '#!/usr/bin/env bash\n# sourced, never executed, v2\n' > "$HOF/lib-sourced.sh"
+git -C "$HOF" add runners/hof-drive lib-sourced.sh
+git -C "$HOF" update-index --chmod=-x runners/hof-drive
+git -C "$HOF" commit -q -m "fixture: the rewrite that lost the runner's mode bit"
+HOF_DROP_CAND="$(git -C "$HOF" rev-parse HEAD)"
+
+printf -- '---\nschema: 1\nid: H03\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$HOF" "$HOF_DROP_BASE" "$HOF_DROP_CAND" > "$HOF/.orchid/tasks/H03.md"
+h03_log() {
+  mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H03.md" \
+    "$HOF/.orchid/reviews/H03-verify.log" "$1"
+}
+h03_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$REPO_ROOT" "$HOF/.orchid/tasks/H03.md" \
+      "$HOF/.orchid/reviews/H03-verify.log" )
+}
+
+if ! _drive_exec_bit_dropped "$HOF" "$HOF_DROP_BASE" runners/hof-drive; then
+  fail "the base recorded runners/hof-drive as mode 100755 — that record is the only thing that can tell a dropped exec bit from a file that never had one, and reading it is the layer everything below stands on"
+fi
+if _drive_exec_bit_dropped "$HOF" "$HOF_DROP_BASE" lib-sourced.sh; then
+  fail "a file the base recorded at mode 644 has dropped nothing, however often this candidate rewrote it — otherwise every modified sourced library in this repository would prove a hand-off, which is the ambient proof this task was sent back for"
+fi
+if _drive_exec_bit_dropped "$HOF" "$HOF_DROP_BASE" runners/never-existed; then
+  fail "and a path the base does not carry at all answers no rather than yes: 'I could not ask git' must charge"
+fi
+
+assert_eq "runners/hof-drive" \
+  "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H03.md")" \
+  "the exec-bit route names the runner whose mode this candidate DROPPED, and not the library it merely modified — an added-only rule names neither, which is how this task was stranded by the very hand-off it exists to classify"
+
+h03_log "bash: $HOF/runners/hof-drive: Permission denied"
+assert_eq handoff "$(h03_cls | cut -f1)" \
+  "so the shell's 126 on a runner that was executable until this candidate rewrote it is a hand-off, and charges no attempt"
+assert_match "MODIFIED, dropping the mode 755" "$(h03_cls | cut -f2-)" \
+  "with the reason saying WHICH shape it is: 'you rewrote a runner and lost its mode bit' and 'you shipped a new verb at 644' are the same chmod and a different thing to know about the round"
+assert_match "hof-drive" "$(h03_cls | cut -f2-)" \
+  "and naming the file, because a reason an operator cannot act on is not a reason"
+
+h03_log "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+assert_eq candidate "$(h03_cls | cut -f1)" \
+  "while an ordinary assertion failure is charged with the same dropped mode bit outstanding: this half is proof of STATE, and attribution is still required of the failure"
+
+# --- AND ON AN UNBLAMED ROUND THE DROPPED BIT OUTRANKS THE AMBIENT ONE ----
+# The two shapes are not equally actionable, and a round that holds both must
+# report the one that is. A dropped bit is an operator step on its own
+# evidence -- the base tree recorded mode 755, something WAS executable and is
+# not any more -- while an added 644 `#!` file is the ambient shape this
+# repository ships libraries in. git orders `lib-alpha.sh` before
+# `runners/hof-drive`, so a fallback that took whatever sorted first would
+# report the one nobody is waiting on and bury the one somebody is.
+printf '#!/usr/bin/env bash\n# sourced, never executed — mode 644 on purpose\n' \
+  > "$HOF/lib-alpha.sh"
+git -C "$HOF" add lib-alpha.sh
+git -C "$HOF" commit -q -m "fixture: the same rewrite, plus a sourced library that sorts first"
+HOF_DROP_MULTI="$(git -C "$HOF" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: H04\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$HOF" "$HOF_DROP_BASE" "$HOF_DROP_MULTI" > "$HOF/.orchid/tasks/H04.md"
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H04.md" \
+  "$HOF/.orchid/reviews/H04-verify.log" \
+  "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+assert_eq 2 "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H04.md" | grep -c .)" \
+  "fixture: this candidate leaves BOTH shapes outstanding at once — a sourced library it added at 644 and a runner whose 755 it dropped — or the preference below has nothing to choose between"
+H04_REASON="$( ( HOME="$MACHINE_HOME"
+  drive_verify_class "$REPO_ROOT" "$HOF/.orchid/tasks/H04.md" \
+    "$HOF/.orchid/reviews/H04-verify.log" ) | cut -f2-)"
+assert_match "chmod [+]x runners/hof-drive" "$H04_REASON" \
+  "the DROPPED bit is what an unblamed round reports, with the imperative intact: it is owed whether or not this round's failures noticed, because the base tree is the evidence rather than the failure"
+case "$H04_REASON" in
+  *lib-alpha*) fail "and the ambient library that merely sorted first is not what the operator is pointed at: $H04_REASON" ;;
+esac
+
+# The operator performs the hand-off; the state is gone and the identical
+# failure charges, exactly as it does for the added shape.
+chmod +x "$HOF/runners/hof-drive"
+assert_eq "" "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H03.md")" \
+  "once chmod +x has been run there is no state left to prove, even though the candidate's commit still records mode 644"
+h03_log "bash: $HOF/runners/hof-drive: Permission denied"
+assert_eq candidate "$(h03_cls | cut -f1)" \
+  "and the same sentence charges afterwards — whatever that refusal is now, chmod is not the fix"
+
+# The candidate-controlled verifier command must not be able to CREATE that
+# same state after the trusted snapshot. Capture an empty exec set while the
+# file is executable, strip it as the command could, and then file the exact
+# permission diagnostic that the old post-run classifier waived.
+H03_BEFORE_MUTATION="$(drive_verify_prestate_headers \
+  "$REPO_ROOT" "$HOF/.orchid/tasks/H03.md")"
+chmod -x "$HOF/runners/hof-drive"
+assert_eq "runners/hof-drive" \
+  "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H03.md")" \
+  "fixture: after the simulated command strips the bit, a post-run inspection really would see a waivable hand-off"
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H03.md" \
+  "$HOF/.orchid/reviews/H03-verify.log" \
+  "bash: $HOF/runners/hof-drive: Permission denied" \
+  "bash tests/run.sh" 1 "$H03_BEFORE_MUTATION"
+assert_eq candidate "$(h03_cls | cut -f1)" \
+  "but trusted pre-verification evidence says the bit was present, so a candidate cannot strip it during its test and manufacture its own hand-off waiver"
+chmod +x "$HOF/runners/hof-drive"
+
+# ===========================================================================
+# Part N2d -- ONE FAULT IS NOT ONE FAILING LINE, and a path is not a substring.
+#
+# Two errors, pulling opposite ways, and both were real.
+#
+# TOO NARROW. A missing mode bit does not produce a failure; it produces a
+# CASCADE. This task's own stranding was 116 assertions from ONE stripped bit
+# on runners/orchid-drive: the shell refused the file once, and every check
+# that needed it then failed in its own words -- `runners/orchid-drive must
+# exist and be executable`, `T001 must reach done ... (last rc=126 ...
+# Permission denied)`. An accounting that could only ever claim the lines
+# carrying a refusal SHAPE left the other hundred unexplained, and the round
+# charged. An arm that fires only when the round contains nothing else can
+# never fire when it matters, and one missing mode bit is when it matters.
+#
+# TOO LOOSE. The path was matched as a substring, so an outstanding `bin/tool`
+# collected a genuine `bin/tool-helper: Permission denied` -- a different file,
+# the candidate's own defect -- and waived the round on it.
+#
+# The fix for both is one shape: attribute per FAILURE, and match the path at a
+# BOUNDARY. What is left unclaimed decides the round, so a round may hold a mix
+# and still charge for the part nobody owns.
+# ===========================================================================
+CSC="$WORK/handoff-cascade"
+mkdir -p "$CSC/.orchid/tasks" "$CSC/.orchid/reviews" "$CSC/runners" "$CSC/bin"
+cd "$CSC" || exit 1
+git init -q .
+printf '#!/usr/bin/env bash\necho drive\n' > "$CSC/runners/csc-drive"
+chmod +x "$CSC/runners/csc-drive"
+printf 'fixture\n' > "$CSC/README"
+git add runners/csc-drive README
+git -C "$CSC" update-index --chmod=+x runners/csc-drive
+git commit -q -m "fixture: base, with an executable runner"
+CSC_BASE="$(git -C "$CSC" rev-parse HEAD)"
+
+# The candidate loses the runner's mode bit AND adds a new mode-644 `#!` helper
+# whose name is a strict PREFIX of another file's. Two outstanding exec-bit
+# states at once, which is what lets the assertions below separate "this one is
+# to blame" from "this one is merely open".
+printf '#!/usr/bin/env bash\necho drive v2\n' > "$CSC/runners/csc-drive"
+chmod -x "$CSC/runners/csc-drive"
+printf '#!/usr/bin/env bash\necho tool\n' > "$CSC/bin/csc-tool"
+git add runners/csc-drive bin/csc-tool
+git -C "$CSC" update-index --chmod=-x runners/csc-drive
+git commit -q -m "fixture: the rewrite that lost the mode bit, and a new 644 helper"
+CSC_CAND="$(git -C "$CSC" rev-parse HEAD)"
+
+printf -- '---\nschema: 1\nid: K01\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$CSC" "$CSC_BASE" "$CSC_CAND" > "$CSC/.orchid/tasks/K01.md"
+csc_log() {
+  mk_prestate_log "$REPO_ROOT" "$CSC/.orchid/tasks/K01.md" \
+    "$CSC/.orchid/reviews/K01-verify.log" "$1"
+}
+csc_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$REPO_ROOT" "$CSC/.orchid/tasks/K01.md" \
+      "$CSC/.orchid/reviews/K01-verify.log" )
+}
+assert_eq 2 "$(drive_handoff_exec_bit "$CSC" "$CSC/.orchid/tasks/K01.md" | grep -c .)" \
+  "fixture invariant: BOTH the dropped runner and the added helper are outstanding exec-bit states, or the mix this part is about does not exist"
+
+# --- the cascade, in the shape the harness really prints it ----------------
+# One refusal, then four downstream reports. Only two of the five carry a
+# refusal shape at all; every one of them NAMES the file whose mode bit is the
+# whole cause.
+CSC_CASCADE="== tests/test_drive.sh
+/bin/bash: runners/csc-drive: Permission denied
+  FAIL: runners/csc-drive must exist and be executable
+  FAIL: T001 must reach done under repeated deterministic passes alone (last rc=126, stderr=/bin/bash: runners/csc-drive: Permission denied)
+  FAIL: a reaped manifest strands T013 (runners/csc-drive exited 126)
+  FAIL: the boundary runners/csc-drive raised is not the one PROTOCOL.md names"
+csc_log "$CSC_CASCADE"
+assert_eq 5 "$(drive_failure_lines "$CSC_CASCADE" | grep -c .)" \
+  "five of those six lines report a failure — if the oracle miscounts them the accounting below decides the round on the wrong denominator"
+assert_eq 2 "$(drive_exec_bit_causal runners/csc-drive "$CSC_CASCADE" | grep -c .)" \
+  "and only TWO of the five refuse to execute the runner: requiring that shape of every line is exactly what made this arm inert for a cascade"
+assert_eq 5 "$(drive_exec_bit_attribution runners/csc-drive "$CSC_CASCADE" | grep -c .)" \
+  "while the attribution claims all five, because once a line has proved the mode bit blocked this run, every failing line naming that file is that mode bit's failure"
+assert_eq "" "$(drive_unattributed_failures "$CSC_CASCADE" \
+    "$(drive_exec_bit_attribution runners/csc-drive "$CSC_CASCADE")")" \
+  "leaving nothing unexplained, which is the only state a waiver is admissible in"
+assert_eq handoff "$(csc_cls | cut -f1)" \
+  "so a hundred-line cascade from one stripped mode bit is a hand-off and charges no attempt — this task was stranded by exactly this round, by the feature built to recognize it"
+CSC_REASON="$(csc_cls | cut -f2-)"
+assert_match "csc-drive" "$CSC_REASON" \
+  "with the reason naming the file the operator has to chmod"
+case "$CSC_REASON" in
+  *csc-tool*) fail "the OTHER outstanding exec-bit state was named as this round's cause: being outstanding is not being to blame, and a reason an operator acts on must name the one that is ($CSC_REASON)" ;;
+esac
+
+# A shell resolution refusal is a failure even without `FAIL:` or `error:` in
+# front of it. If the failure-line oracle drops it, the attributed exec-bit
+# line appears to account for the whole round and launders this second defect.
+CSC_RESOLUTION_MIX="/bin/bash: runners/csc-drive: Permission denied
+missing-helper: command not found"
+assert_eq 2 "$(drive_failure_lines "$CSC_RESOLUTION_MIX" | grep -c .)" \
+  "both the attributed refusal and the unrelated resolution refusal belong to the round's failure universe"
+assert_eq "missing-helper: command not found" \
+  "$(drive_unattributed_failures "$CSC_RESOLUTION_MIX" \
+      "$(drive_exec_bit_attribution runners/csc-drive "$CSC_RESOLUTION_MIX" "$CSC")")" \
+  "the hand-off claims its own permission refusal but cannot make an unadorned command-not-found diagnostic disappear"
+csc_log "$CSC_RESOLUTION_MIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "an unexplained resolution failure beside an attributable hand-off CHARGES the round rather than being waived by omission"
+assert_match "missing-helper: command not found" "$(csc_cls | cut -f2-)" \
+  "and the charged reason quotes the diagnostic that prevented the waiver"
+
+# Fatal language/runtime diagnostics carry their own verdict too. They need a
+# bounded family rather than a bare `panic` substring: progress identifiers and
+# counters use the same vocabulary and must not make every waiver inert.
+CSC_FATAL_MIX="/bin/bash: runners/csc-drive: Permission denied
+panic: candidate invariant broke
+RuntimeError: widget exploded
+Segmentation fault: 11
+ld: undefined reference to widget
+/bin/bash: syntax error near unexpected token
+fatal: allocator corrupted
+thread 'main' panicked at src/main.rs:9"
+assert_eq 8 "$(drive_failure_lines "$CSC_FATAL_MIX" | grep -c .)" \
+  "the attributed refusal and seven unmistakable panic, exception, crash, linker, syntax, and fatal diagnostics all belong to the failure universe"
+assert_eq 7 "$(drive_unattributed_failures "$CSC_FATAL_MIX" \
+    "$(drive_exec_bit_attribution runners/csc-drive "$CSC_FATAL_MIX" "$CSC")" | grep -c .)" \
+  "the exec-bit hand-off claims only its refusal and leaves every fatal candidate diagnostic to charge"
+csc_log "$CSC_FATAL_MIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "a panic beside an attributable hand-off CHARGES the round rather than disappearing outside the harness-prefix oracle"
+assert_match "panic: candidate invariant broke" "$(csc_cls | cut -f2-)" \
+  "and the charged reason leads with the fatal diagnostic the hand-off did not explain"
+CSC_FATAL_PROGRESS="== tests/test_panic_recovery.sh
+panic_cases: 4
+fatal_errors: 0
+exception_count: 0
+error handling coverage complete
+out_of_memory cases passed"
+assert_eq "" "$(drive_failure_lines "$CSC_FATAL_PROGRESS")" \
+  "progress paths, counters, and prose containing fatal vocabulary are not verdicts — boundaries keep the strict oracle usable rather than making every waiver charge"
+
+# No finite failure-word list can implement the strict default on its own. An
+# unfamiliar diagnostic is uncertainty, and uncertainty charges even when it
+# happens to name the same artifact as a proved hand-off. The naming cascade is
+# therefore restricted to lines that report a failure in their own syntax;
+# otherwise the fallback below would be added to the denominator and then
+# immediately claimed by the very artifact it is meant to remain independent
+# from.
+CSC_UNKNOWN_MIX="/bin/bash: runners/csc-drive: Permission denied
+runners/csc-drive produced an unfamiliar candidate verdict"
+assert_eq 1 "$(drive_reported_failure_lines "$CSC_UNKNOWN_MIX" | grep -c .)" \
+  "only the permission refusal reports a recognized failure — the second line exercises the unknown-diagnostic fallback rather than another keyword"
+assert_eq 2 "$(drive_failure_lines "$CSC_UNKNOWN_MIX" | grep -c .)" \
+  "the unfamiliar non-progress diagnostic still belongs to the round's fail-closed accounting universe"
+assert_eq "/bin/bash: runners/csc-drive: Permission denied" \
+  "$(drive_exec_bit_attribution runners/csc-drive "$CSC_UNKNOWN_MIX" "$CSC")" \
+  "an unknown line is never admitted to a same-file cascade merely because it names the attributed artifact"
+csc_log "$CSC_UNKNOWN_MIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "an unknown candidate diagnostic beside an attributable hand-off CHARGES rather than being waived by omission"
+assert_match "unfamiliar candidate verdict" "$(csc_cls | cut -f2-)" \
+  "and the charged reason quotes the uncertain line that prevented the waiver"
+
+# The fallback remains usable against the output of Orchid's OWN complete
+# suite. tests/run.sh prints a heading for each file; several shipped tests end
+# in a standalone `OK`; and helpers.sh emits both NOT-TESTED records unconditionally
+# in files that make an explicit qualification gap visible. None is a pass for
+# the candidate defect, but none diagnoses one either. If even one stays in the
+# denominator, every full-suite stale-pin, exec-bit, environment, and L020
+# round becomes candidate-charged before its actual terminal fault is weighed.
+CSC_SHIPPED_NON_FAILURE="== /repo/tests/test_e2e_concurrency.sh
+e2e concurrency: OK
+== /repo/tests/test_schedule.sh
+unit: schedule_dispatch_blockers predicates OK
+  NOT-TESTED: failure-triage -- this failed fixture deliberately has no checkout
+  not-tested: 1 claim(s) in this file were recorded as not-tested, never as passes
+  RED-CASE: the failure diagnostic was rejected by the gate
+  GREEN-CASE: the failed fixture's positive control was accepted
+  red-cases: 1 demonstrated in this file (green-cases: 1)"
+assert_eq "" "$(drive_failure_lines "$CSC_SHIPPED_NON_FAILURE")" \
+  "the shipped whole-suite headings, terminal OK records, and explicit qualification records stay non-failures even when their human labels name the failure they demonstrated"
+assert_eq "" "$(drive_reported_failure_lines "$CSC_SHIPPED_NON_FAILURE")" \
+  "the same qualification records cannot enter an artifact cascade merely because their labels say failure or failed"
+assert_eq "FAIL: candidate defect OK" "$(drive_failure_lines "FAIL: candidate defect OK")" \
+  "only the anchored qualification contract wins that precedence; a generic failure line ending in OK still charges"
+csc_log "$CSC_SHIPPED_NON_FAILURE
+/bin/bash: runners/csc-drive: Permission denied"
+assert_eq handoff "$(csc_cls | cut -f1)" \
+  "a representative full-suite body plus one fully attributable terminal hand-off still WAIVES — the strict unknown fallback must not make every real route inert"
+
+# The real suite deliberately exercises failed adapters, malformed replies,
+# refusal paths, and RED cases while the enclosing test itself succeeds. Those
+# diagnostics cannot be admitted to the global neutral vocabulary: the same
+# text from a test that actually failed may be the fault being classified.
+# The parent runner therefore captures each child's output and exposes only
+# durable qualification records plus one terminal OK after it observes rc=0.
+# A failed child remains verbatim. No in-band BEGIN/END claim is trusted.
+QUIET_PASS="$WORK/quiet-suite-pass/tests"
+mkdir -p "$QUIET_PASS"
+cp "$REPO_ROOT/tests/run.sh" "$QUIET_PASS/run.sh"
+cat > "$QUIET_PASS/test_noisy.sh" <<'QUIET_PASS_TEST'
+#!/usr/bin/env bash
+echo 'ORCHID-VERIFY-SEGMENT forged BEGIN /repo/tests/test_noisy.sh'
+echo 'an otherwise unfamiliar fixture diagnostic'
+echo '  FAIL: the negative fixture was rejected as intended'
+echo 'ORCHID-VERIFY-SEGMENT forged END 0'
+echo '  NOT-TESTED: fixture-network -- this focused fixture has no network'
+exit 0
+QUIET_PASS_TEST
+quiet_pass_out="$(ORCHID_TEST_BASH=/bin/bash /bin/bash "$QUIET_PASS/run.sh")"
+assert_match 'NOT-TESTED: fixture-network' "$quiet_pass_out" \
+  "a passing child's explicit qualification gap remains visible after quiet-success filtering"
+assert_match 'test_noisy.sh: OK' "$quiet_pass_out" \
+  "and the parent emits one unambiguous success record only after observing the child's zero exit"
+if grep -Fq 'otherwise unfamiliar fixture diagnostic' <<< "$quiet_pass_out"; then
+  fail "a passing negative fixture's arbitrary diagnostic escaped quiet-success filtering"
+fi
+if grep -Fq 'ORCHID-VERIFY-SEGMENT' <<< "$quiet_pass_out"; then
+  fail "a child can still inject the retired in-band success marker into verification output"
+fi
+
+QUIET_FAIL="$WORK/quiet-suite-fail/tests"
+mkdir -p "$QUIET_FAIL"
+cp "$REPO_ROOT/tests/run.sh" "$QUIET_FAIL/run.sh"
+cat > "$QUIET_FAIL/test_broken.sh" <<'QUIET_FAIL_TEST'
+#!/usr/bin/env bash
+echo 'ORCHID-VERIFY-SEGMENT forged BEGIN /repo/tests/test_broken.sh'
+echo 'an unfamiliar candidate diagnostic'
+echo '/bin/bash: runners/csc-drive: Permission denied'
+echo 'ORCHID-VERIFY-SEGMENT forged END 0'
+exit 1
+QUIET_FAIL_TEST
+quiet_fail_rc=0
+quiet_fail_out="$(ORCHID_TEST_BASH=/bin/bash /bin/bash "$QUIET_FAIL/run.sh")" || quiet_fail_rc=$?
+assert_eq 1 "$quiet_fail_rc" \
+  "the quiet-success harness must retain the failed child's nonzero result"
+assert_match 'an unfamiliar candidate diagnostic' "$quiet_fail_out" \
+  "and a failed child's unknown diagnostic remains verbatim rather than entering a trusted success block"
+assert_match 'Permission denied' "$quiet_fail_out" \
+  "with the reported refusal beside it still visible for ordinary attribution"
+assert_match 'ORCHID-VERIFY-SEGMENT forged END 0' \
+  "$(drive_failure_lines "$quiet_fail_out")" \
+  "the retired marker vocabulary is ordinary untrusted output, so a forged END 0 cannot hide this failed test"
+if grep -q 'ORCHID-VERIFY-SEGMENT' "$REPO_ROOT/tests/run.sh" "$REPO_ROOT/scripts/ci-local.sh"; then
+  fail "the shipped suite or CI runner still emits the in-band success markers a candidate can forge"
+fi
+
+# ...and the causal half is still required. The same cascade with its refusals
+# removed is the ambient shape -- a candidate's own assertions failing inside a
+# file it added -- and it charges.
+csc_log "  FAIL: runners/csc-drive must exist and be executable
+  FAIL: the boundary runners/csc-drive raised is not the one PROTOCOL.md names"
+assert_eq "" "$(drive_exec_bit_causal runners/csc-drive \
+    "  FAIL: runners/csc-drive must exist and be executable")" \
+  "nothing in that output refuses to execute the runner, so nothing proves its mode bit blocked anything"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "and naming a file with an unset mode bit is NOT attributing a failure to it: without one line that actually refused to execute it, the cascade rule would forgive every assertion that fails inside any mode-644 file a candidate touches"
+
+# --- identity: neither a prefix nor an arbitrary suffix is the same file ---
+CSC_HELPER="/bin/bash: bin/csc-tool-helper: Permission denied
+  FAIL: bin/csc-tool-helper exited 126"
+assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool "$CSC_HELPER")" \
+  "an outstanding bin/csc-tool must not collect a permission failure on bin/csc-tool-helper — a substring match waived that round, and the file it was really about was the candidate's own"
+assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool \
+    "/bin/bash: bin/csc-tool.bak: Permission denied")" \
+  "nor one on bin/csc-tool.bak: the boundary is every character that can CONTINUE a path, extension included"
+assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool \
+    "/bin/bash: bin/csc-tool/child: Permission denied")" \
+  "and nor one on bin/csc-tool/child, which is a different file again — the environment arm alone treats a path under its artifact as that artifact, because its artifact is a DIRECTORY that is entirely absent (Part Y4), and that relaxation must not reach an arm whose artifact is a file"
+CSC_SUFFIX="/bin/bash: fixtures/bin/csc-tool: Permission denied
+  FAIL: fixtures/bin/csc-tool exited 126"
+assert_eq "" "$(drive_exec_bit_attribution bin/csc-tool "$CSC_SUFFIX" "$CSC")" \
+  "nor may the relative hand-off path suffix-match a distinct deeper file — a slash before bin/csc-tool is not identity unless the whole spelling is this verification root's absolute path"
+csc_log "$CSC_HELPER"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "so the round charges, with the hand-off state genuinely outstanding on a DIFFERENT file the whole time"
+assert_match "attribution was not established" "$(csc_cls | cut -f2-)" \
+  "and says so, rather than charging silently"
+
+# The boundary admits every form a diagnostic really writes a path in, which is
+# the direction it must not have narrowed in.
+assert_eq 3 "$(drive_exec_bit_attribution bin/csc-tool \
+    "/bin/bash: bin/csc-tool: Permission denied
+/bin/bash: ./bin/csc-tool: Permission denied
+/bin/bash: $CSC/bin/csc-tool: Permission denied
+/bin/bash: bin/csc-tool-helper: Permission denied" "$CSC" | grep -c .)" \
+  "the bare, the ./-prefixed and the absolute form all name the same file — punctuation around a path never has to be parsed off, and only the different file is excluded"
+csc_log "$CSC_SUFFIX"
+assert_eq candidate "$(csc_cls | cut -f1)" \
+  "an outstanding bin/csc-tool does not waive a candidate permission failure on fixtures/bin/csc-tool — exact path identity, not a matching suffix, decides the round"
+
+# ===========================================================================
+# Part N2b -- the stale-pin hand-off, RUN rather than read.
+#
+# T014 burned three attempts on a stale Formula/orchid.rb it could not re-pin.
+# What makes that a hand-off is not the sentence the failure printed; it is
+# that the pin is stale, which is a question the repository's own freshness
+# check answers. So the driver runs it.
+#
+# RUNNING IT IS NOT THE SAME AS TRUSTING ITS EXIT STATUS, and that distinction
+# is the whole of this part's second half. `scripts/pin-formula.sh --check`
+# exits 1 when the checksum is stale AND when it cannot find the formula,
+# cannot find a git checkout, or trips over packaging metadata -- and the last
+# of those is something a CANDIDATE can do. Reading nonzero as staleness
+# therefore handed this hand-off's amnesty to a class of candidate defect. So
+# the check must positively REPORT a file stale, and that file must be one the
+# repository tracks; anything else is no proof, and no proof charges.
+#
+# Four narrowings are asserted, all in the charging direction: the check must
+# exist where the verification ran AND state how it is run, it must report
+# staleness rather than merely fail, the candidate must not have CHANGED the
+# check (a bug an implementer just introduced into a pinning script fails
+# exactly like a stale pin, and that one is theirs), and a repository may
+# switch the check out or turn the route off.
+#
+# THE EXEC BIT IS THE REPOSITORY'S CONVENTION, NOT ORCHID'S REQUIREMENT, and
+# that is not a detail: orchid's own scripts/pin-formula.sh is tracked mode 644
+# and invoked as `bash scripts/pin-formula.sh --check` everywhere it runs.
+# Requiring `-x` therefore made this route DEAD IN THE REPOSITORY THAT SHIPS
+# THE DEFAULT -- T014's stale pin, the case the route exists for, classified as
+# `candidate` in orchid itself, and no per-repo configuration could have fixed
+# it. So the fixture below ships its stand-in exactly as this repository ships
+# the real one, at mode 644, and the route reads the `#!` line to run it the
+# way its own repository does.
+# ===========================================================================
+assert_eq "" "$( ( HOME="$MACHINE_HOME"; config_get "$REPO_ROOT" handoff.pin_check ) )" \
+  "this repository declares no handoff.pin_check either, so what follows is about the shipped default"
+# The shipped default, as it actually sits in this checkout: whatever its mode,
+# the route must have a way to invoke it. This is the assertion that would have
+# caught the `-x` requirement, and it keeps holding if someone later chmods it.
+if ! _drive_check_interp "$REPO_ROOT/scripts/pin-formula.sh" >/dev/null; then
+  fail "orchid's own scripts/pin-formula.sh must be runnable by the pin route AS THIS REPOSITORY SHIPS IT (tracked mode 644, invoked as 'bash scripts/pin-formula.sh --check') — a route that cannot run the default it ships protects nobody from T014's case"
+fi
+
+PIN="$WORK/handoff-pin"
+mkdir -p "$PIN/.orchid/tasks" "$PIN/.orchid/reviews" "$PIN/scripts"
+cd "$PIN" || exit 1
+git init -q .
+# A stand-in for scripts/pin-formula.sh --check at the SHIPPED DEFAULT PATH and
+# at the shipped MODE (644, `#!` line, no exec bit), so this proves the
+# no-configuration claim about orchid as it really is, not about a fixture made
+# convenient. It reports STALE, on stderr and in the real one's own words --
+# naming the file it is stale ABOUT, which is what the waiver is attributed to.
+# The real one builds a release archive, which a fixture must not.
+PIN_PINNED_SHA='1111111111111111111111111111111111111111111111111111111111111111'
+PIN_EXPECTED_SHA='2222222222222222222222222222222222222222222222222222222222222222'
+PIN_SAYS="pin-formula: Formula/orchid.rb checksum is STALE for the current content
+pin-formula:   pinned:   $PIN_PINNED_SHA
+pin-formula:   expected: $PIN_EXPECTED_SHA
+pin-formula: run scripts/pin-formula.sh and commit the formula change (Formula/ is export-ignored, so the archive bytes stay identical)"
+printf '#!/bin/sh\necho "%s" >&2\nexit 1\n' "$PIN_SAYS" > "$PIN/scripts/pin-formula.sh"
+# The other branch, kept executable on purpose: a repository whose checks do
+# carry the exec bit is run directly, with no interpreter prefix at all.
+printf '#!/bin/sh\nexit 0\n' > "$PIN/scripts/pin-fresh.sh"
+chmod +x "$PIN/scripts/pin-fresh.sh"
+# The pinned file itself, TRACKED: a check may only report a file stale that
+# the repository actually carries, because "re-pin that" has to name something
+# an operator can re-pin.
+mkdir -p "$PIN/Formula"
+printf 'class Orchid < Formula\n  sha256 "deadbeef"\nend\n' > "$PIN/Formula/orchid.rb"
+printf 'a\n' > "$PIN/a.txt"
+# The alternative checks a later assertion points `handoff.pin_check` at, all
+# committed into the BASE. They are TRACKED and PRE-CANDIDATE on purpose: the
+# route reads a check as an authority only when the candidate recorded it and
+# the verified worktree still carries exactly what was recorded, so an
+# untracked stand-in would be refused at the door and every assertion below it
+# would pass for a reason that has nothing to do with what it is testing.
+# The first two are things orchid must decline to RUN, because neither the file
+# nor the world says how:
+printf 'exit 1\n' > "$PIN/scripts/pin-nohashbang.sh"           # states no interpreter
+printf '#!/no/such/interpreter\nexit 1\n' > "$PIN/scripts/pin-badinterp.sh"
+# And one that orchid CAN run and that fails without saying anything: a check
+# whose exit status is real and whose words are absent proves nothing about
+# WHY it is unhappy, and re-pinning is only the answer to one of those reasons.
+printf '#!/bin/sh\nexit 1\n' > "$PIN/scripts/pin-silent.sh"
+# THE CASE THIS PART'S SECOND HALF EXISTS FOR: the check failing for its OWN
+# reasons rather than reporting staleness. Both exit 1, exactly as the real
+# `scripts/pin-formula.sh` does through its `die` path, and the second is
+# something a CANDIDATE can cause by corrupting the formula it edits.
+printf '#!/bin/sh\necho "pin-formula: not a Git checkout: /x" >&2\nexit 1\n' \
+  > "$PIN/scripts/pin-nogit.sh"
+printf '#!/bin/sh\necho "pin-formula: Formula/orchid.rb is not valid Ruby (unterminated string on line 4)" >&2\nexit 1\n' \
+  > "$PIN/scripts/pin-corrupt.sh"
+# And one that says the right word about a file that is not in the tree: a
+# staleness report has to name something an operator can act on.
+printf '#!/bin/sh\necho "pin-formula: packaging/nowhere.rb checksum is STALE" >&2\nexit 1\n' \
+  > "$PIN/scripts/pin-unknownfile.sh"
+# A stateful freshness check for the pre/post boundary regression below. It is
+# fresh until the verification command creates an untracked trigger, then
+# prints the same attributable stale report as the shipped check. Inspecting it
+# after the command would therefore let the candidate manufacture a waiver.
+printf '#!/bin/sh\n[ ! -f .pin-stale-trigger ] || { echo "%s" >&2; exit 1; }\nexit 0\n' \
+  "$PIN_SAYS" > "$PIN/scripts/pin-dynamic.sh"
+git add scripts Formula/orchid.rb a.txt
+git commit -q -m "fixture: base"
+PIN_BASE="$(git -C "$PIN" rev-parse HEAD)"
+printf 'b\n' > "$PIN/b.txt"
+git add b.txt
+git commit -q -m "fixture: a candidate that left the check alone"
+PIN_CAND="$(git -C "$PIN" rev-parse HEAD)"
+if [ -x "$PIN/scripts/pin-formula.sh" ]; then
+  fail "fixture invariant broken: the stand-in must stay mode 644 like the real scripts/pin-formula.sh, or it stops proving the claim it is here for"
+fi
+
+# The verification output a repository whose suite RUNS the pin check actually
+# produces -- this repository's own tests/test_ci_release.sh interpolates the
+# check's output into its failure, which is what makes the tie provable.
+PIN_FAILED_ON_IT="  FAIL: Formula/orchid.rb checksum is stale for the current tree -- $PIN_SAYS"
+assert_eq 4 "$(drive_failure_lines "$PIN_FAILED_ON_IT" | grep -c .)" \
+  "the fixture is the shipped four-line failure body, not the one-line approximation that left three real continuation records unaccounted for"
+assert_eq 4 "$(drive_pin_attribution "Formula/orchid.rb" "$PIN_FAILED_ON_IT" "$PIN" | grep -c .)" \
+  "after the path+stale causal line opens the pin route, it claims the shipped pinned, expected, and one-command-remedy records from that same CI failure"
+assert_eq "" "$(drive_unattributed_failures "$PIN_FAILED_ON_IT" \
+    "$(drive_pin_attribution "Formula/orchid.rb" "$PIN_FAILED_ON_IT" "$PIN")")" \
+  "Orchid's own complete stale-pin body leaves no unknown continuation behind to make its hand-off waiver inert"
+# ... and one that failed on something else entirely while the pin happened to
+# be stale.
+PIN_FAILED_ON_OTHER="tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+
+# mk_pin_task <id> <base> <cand> [verify-body]
+mk_pin_task() {
+  printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$1" "$PIN" "$2" "$3" > "$PIN/.orchid/tasks/$1.md"
+  mk_prestate_log "$PIN" "$PIN/.orchid/tasks/$1.md" \
+    "$PIN/.orchid/reviews/$1-verify.log" "${4:-$PIN_FAILED_ON_IT}"
+}
+# pin_cls <id> [handoff.pin_check override]
+pin_cls() {
+  ( HOME="$MACHINE_HOME"
+    pin_body="$(_drive_verify_body "$PIN/.orchid/reviews/$1-verify.log")"
+    if [ "$#" -ge 2 ]; then
+      export ORCHID_HANDOFF_PIN_CHECK="$2"
+    fi
+    # Each ordinary assertion arranges the state that exists BEFORE its
+    # simulated verifier command, so snapshot it here. P09 below is the one
+    # deliberate post-command mutation and calls drive_verify_class directly
+    # over the stored earlier snapshot instead of coming through this helper.
+    mk_prestate_log "$PIN" "$PIN/.orchid/tasks/$1.md" \
+      "$PIN/.orchid/reviews/$1-verify.log" "$pin_body"
+    drive_verify_class "$PIN" "$PIN/.orchid/tasks/$1.md" "$PIN/.orchid/reviews/$1-verify.log" )
+}
+mk_pin_task P01 "$PIN_BASE" "$PIN_CAND"
+
+assert_eq "scripts/pin-formula.sh --check
+Formula/orchid.rb" "$( ( HOME="$MACHINE_HOME"
+  drive_handoff_stale_pin "$PIN" "$PIN" "$PIN/.orchid/tasks/P01.md" ) )" \
+  "the pin route's own answer is the command an operator re-runs and THE FILE it reported stale — a waiver with no file to attribute it to is not a waiver, and this is the layer that would fail silently if it broke"
+
+assert_eq handoff "$(pin_cls P01 | cut -f1)" \
+  "T014's case, decided by running the check: a mode-644 check at the shipped default path is run under its own #! interpreter, it reports Formula/orchid.rb stale in this tree, the failure names that file and calls it stale too, and re-pinning is the operator's"
+assert_match "scripts/pin-formula.sh --check" "$(pin_cls P01 | cut -f2-)" \
+  "and the reason names the check that proved it, so an operator can run the same command"
+assert_match "Formula/orchid.rb" "$(pin_cls P01 | cut -f2-)" \
+  "and names the file to re-pin, because a reason an operator cannot act on is not a reason"
+assert_match "L017" "$(pin_cls P01 | cut -f2-)" \
+  "and says whose step it is, citing the rule that forbids the implementer to take it"
+
+mk_pin_task P01 "$PIN_BASE" "$PIN_CAND" "$PIN_FAILED_ON_IT
+pin-formula: mirror upload deferred"
+assert_eq candidate "$(pin_cls P01 | cut -f1)" \
+  "an unfamiliar fourth-party pin continuation remains unknown and charges even beside the exact shipped four-line report"
+assert_match "mirror upload deferred" "$(pin_cls P01 | cut -f2-)" \
+  "with the charged reason naming the continuation the narrow shipped vocabulary did not claim"
+mk_pin_task P01 "$PIN_BASE" "$PIN_CAND"
+
+# --- THE CANDIDATE THAT WROTE THE CHECK GETS NOTHING FROM IT ---------------
+# In its OWN repository, so the tree it is judged in really is the tree its
+# candidate recorded. That matters more than it looks: the authority rule below
+# closes the route on a check the worktree carries in any state but the
+# recorded one, and reusing one checkout for two candidates would close it for
+# THAT reason instead — leaving this assertion green while proving nothing
+# about who wrote the check. The check here says the SAME words as P01's, so
+# what separates them is only ever "did this candidate change the check?" and
+# never how loudly the check complains.
+PINT="$WORK/handoff-pin-touched"
+mkdir -p "$PINT/.orchid/tasks" "$PINT/.orchid/reviews" "$PINT/scripts" "$PINT/Formula"
+cd "$PINT" || exit 1
+git init -q .
+: > "$PINT/orchid.config"
+printf '#!/bin/sh\necho "%s" >&2\nexit 1\n' "$PIN_SAYS" > "$PINT/scripts/pin-formula.sh"
+printf 'class Orchid < Formula\n  sha256 "deadbeef"\nend\n' > "$PINT/Formula/orchid.rb"
+git add scripts/pin-formula.sh Formula/orchid.rb
+git commit -q -m "fixture: base, with a check that reports the pin stale"
+PINT_BASE="$(git -C "$PINT" rev-parse HEAD)"
+printf '#!/bin/sh\n# the implementer edited the pinning script itself\necho "%s" >&2\nexit 1\n' \
+  "$PIN_SAYS" > "$PINT/scripts/pin-formula.sh"
+git add scripts/pin-formula.sh
+git commit -q -m "fixture: a candidate that changed the check itself"
+PINT_CAND="$(git -C "$PINT" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: P02\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$PINT" "$PINT_BASE" "$PINT_CAND" > "$PINT/.orchid/tasks/P02.md"
+mk_prestate_log "$PINT" "$PINT/.orchid/tasks/P02.md" \
+  "$PINT/.orchid/reviews/P02-verify.log" "$PIN_FAILED_ON_IT"
+assert_eq "" "$( ( HOME="$MACHINE_HOME"
+  drive_handoff_stale_pin "$PINT" "$PINT" "$PINT/.orchid/tasks/P02.md" ) )" \
+  "the route yields no answer at all over a check this candidate wrote — asserted at the layer it lives in, because the class below would read 'candidate' just as readily if the check had simply not run"
+assert_eq candidate "$( ( HOME="$MACHINE_HOME"
+  drive_verify_class "$PINT" "$PINT/.orchid/tasks/P02.md" \
+    "$PINT/.orchid/reviews/P02-verify.log" ) | cut -f1)" \
+  "so a candidate that CHANGED the pinning script gets no amnesty from it — a bug just introduced into a check fails exactly like a stale pin, and prints exactly what a stale pin prints, and that one is the implementer's"
+cd "$PIN" || exit 1
+
+# --- AND THE AUTHORITY QUESTION FAILS CLOSED WHEN IT CANNOT BE ASKED -------
+# The narrowing above is only worth what it costs to SKIP, and skipping it was
+# free: "git says this candidate did not touch the check" and "I could not ask
+# git" are the same empty diff, and the route read both as permission. A task
+# file with no `base_sha`, or one naming a commit this tree does not carry --
+# the shape a re-pointed branch or a reaped worktree really produces -- handed
+# the amnesty back over a check the candidate may well have written. Both edges
+# are pinned per L034: every unanswerable form charges, and the answerable
+# untouched one still waives.
+mk_pin_task P06 "" "$PIN_CAND"
+assert_eq candidate "$(pin_cls P06 | cut -f1)" \
+  "with no base_sha there is no way to ask whether this candidate wrote the check that would forgive it, and an unanswerable authority question is not permission"
+mk_pin_task P07 "$PIN_BASE" ""
+assert_eq candidate "$(pin_cls P07 | cut -f1)" \
+  "and with no candidate_sha either — the guard needs both ends of the diff, and one end is no more an answer than none"
+mk_pin_task P08 "$PIN_BASE" 0000000000000000000000000000000000000000
+assert_eq candidate "$(pin_cls P08 | cut -f1)" \
+  "and a sha that does not RESOLVE in this tree answers nothing, which is the form the failure actually takes: the fields are present, so a guard that only checked for emptiness would walk straight past it"
+assert_eq handoff "$(pin_cls P01 | cut -f1)" \
+  "while the answerable, untouched case is untouched itself — the guard closes the route on ignorance, never on the route"
+
+# --- AND THE AUTHORITY IS THE FILE THAT RAN, NOT A DIFF OF TWO COMMITS -----
+# `base..candidate` answers a question about two COMMITS. What this route
+# actually EXECUTES is the file in the worktree the verification ran in, and
+# those come apart in every direction that matters — none of which appears in
+# that diff at all:
+#
+#   an edit left UNSTAGED, or STAGED and not committed: the check that runs is
+#     the edited one, and the diff of two commits is empty;
+#   a file the candidate never recorded: an UNTRACKED `scripts/pin-formula.sh`
+#     dropped into the worktree is in no diff either, and is entirely the
+#     implementer's to have written;
+#   a file that is MISSING, or whose MODE has moved, so what runs is not what
+#     was recorded even where the bytes are.
+#
+# Each of them is a way to hand the driver a check the candidate controls while
+# leaving `base..candidate` clean, so each closes the route and charges. The
+# answerable, intact case is restored after every one of them, so this is a
+# guard rather than a deletion.
+# The check's committed bytes, written by the same printf that created it, so
+# "restored" means byte-identical to what the candidate recorded rather than
+# approximately the same.
+pin_check_restore() {
+  printf '#!/bin/sh\necho "%s" >&2\nexit 1\n' "$PIN_SAYS" > "$PIN/scripts/pin-formula.sh"
+}
+
+printf '#!/bin/sh\n# edited in the worktree and never committed\necho "%s" >&2\nexit 1\n' \
+  "$PIN_SAYS" > "$PIN/scripts/pin-formula.sh"
+assert_eq candidate "$(pin_cls P01 | cut -f1)" \
+  "an UNSTAGED edit to the check closes the route: the file that runs is the implementer's, the diff of two commits cannot see it, and a check the candidate is editing is no authority on the candidate"
+git -C "$PIN" add scripts/pin-formula.sh
+pin_check_restore
+assert_eq candidate "$(pin_cls P01 | cut -f1)" \
+  "and so does a STAGED one whose worktree copy has been put back — the bytes on disk match the candidate again, but the index does not, and a change one commit away from being the candidate's is not the candidate's authority"
+git -C "$PIN" add scripts/pin-formula.sh
+assert_eq handoff "$(pin_cls P01 | cut -f1)" \
+  "while restoring both ends restores the route, which is what makes the two assertions above a guard rather than a deletion"
+
+git -C "$PIN" rm -q --cached scripts/pin-formula.sh
+assert_eq candidate "$(pin_cls P01 | cut -f1)" \
+  "an UNTRACKED check is no authority either: the candidate recorded nothing about it, so nothing can establish that it was not the implementer who put it there"
+git -C "$PIN" add scripts/pin-formula.sh
+mv "$PIN/scripts/pin-formula.sh" "$PIN/scripts/pin-formula.sh.away"
+assert_eq candidate "$(pin_cls P01 | cut -f1)" \
+  "and a check MISSING from the verified worktree answers nothing at all"
+mv "$PIN/scripts/pin-formula.sh.away" "$PIN/scripts/pin-formula.sh"
+chmod +x "$PIN/scripts/pin-formula.sh"
+assert_eq candidate "$(pin_cls P01 | cut -f1)" \
+  "and a MODE that has moved closes it too — the recorded 644 is invoked under the interpreter its #! line names and an executable copy is invoked directly, so 'the same bytes' is not the same check being run"
+chmod -x "$PIN/scripts/pin-formula.sh"
+assert_eq handoff "$(pin_cls P01 | cut -f1)" \
+  "and every one of those restores to the route it started from"
+
+# --- A NONZERO EXIT IS NOT A STALENESS REPORT ------------------------------
+# The narrowing this round exists for. `scripts/pin-formula.sh --check` exits 1
+# when the checksum is stale AND when it dies for its own reasons -- no git
+# checkout, no formula, a formula the CANDIDATE just made unparseable. Only the
+# first is fixed by re-pinning, so only the first may waive; reading the exit
+# status alone handed a candidate a way to buy an amnesty by corrupting the
+# very file the check reads.
+assert_eq candidate "$(pin_cls P01 'scripts/pin-nogit.sh --check' | cut -f1)" \
+  "a check that fails because it could not RUN reports no staleness, and re-pinning would fix nothing — so the round charges"
+assert_eq candidate "$(pin_cls P01 'scripts/pin-corrupt.sh --check' | cut -f1)" \
+  "and a check that fails on a formula this candidate made unparseable is the CANDIDATE's failure: it exits exactly as a stale pin does, which is why the exit status may not be what decides"
+assert_eq candidate "$(pin_cls P01 'scripts/pin-unknownfile.sh --check' | cut -f1)" \
+  "and staleness reported about a file the repository does not track proves nothing an operator can act on — the file is required as well as the word"
+
+# --- THE PIN'S ATTRIBUTION: the failure must name that file, and call it
+# stale ---------------------------------------------------------------------
+# A stale pin is outstanding on the WHOLE TREE for as long as it is stale, so
+# it is the more ambient of the two hand-offs, not the less: every failure in
+# the repository coincides with it. What separates a round that failed ON it
+# from a round that merely failed BESIDE it is whether the verification said
+# so about that file.
+mk_pin_task P03 "$PIN_BASE" "$PIN_CAND" "$PIN_FAILED_ON_OTHER"
+assert_eq candidate "$(pin_cls P03 | cut -f1)" \
+  "the pin is stale and the suite failed on a widget assertion instead: this verification never ran the check, so a stale pin is not what failed here"
+assert_match "attribution was not established" "$(pin_cls P03 | cut -f2-)" \
+  "and the reason says so, naming the outstanding hand-off without hiding behind it"
+
+mk_pin_task P04 "$PIN_BASE" "$PIN_CAND" "$PIN_FAILED_ON_IT
+$PIN_FAILED_ON_OTHER"
+assert_eq candidate "$(pin_cls P04 | cut -f1)" \
+  "and a round that failed on the stale pin AND on a widget assertion is charged: the hand-off waives its own failure, never the defect that landed beside it"
+assert_match "further failing line" "$(pin_cls P04 | cut -f2-)" \
+  "saying how much of the round the hand-off did not account for"
+
+# The round that names the file without ever calling it stale: a suite that
+# happens to touch Formula/orchid.rb while the pin is genuinely stale. Naming
+# is the cascade rule, and the cascade needs a causal line before it opens.
+mk_pin_task P05 "$PIN_BASE" "$PIN_CAND" \
+  "  FAIL: Formula/orchid.rb must declare a bottle block"
+assert_eq candidate "$(pin_cls P05 | cut -f1)" \
+  "a failure that NAMES the pinned file without saying anything is stale is the candidate's — naming alone is what every assertion about a file does, and it is exactly how an ambient hand-off launders a defect"
+
+assert_eq candidate "$(pin_cls P01 'scripts/pin-silent.sh --check' | cut -f1)" \
+  "a check that fails and says NOTHING proves nothing: an exit status alone cannot say whether re-pinning is the fix, and it names no file to attribute a waiver to"
+
+assert_eq candidate "$(pin_cls P01 'scripts/pin-fresh.sh --check' | cut -f1)" \
+  "a check that reports FRESH forgives nothing: the route fires on the world's answer, not on the route existing — and this one is executable, so it is run directly, with no interpreter prefix"
+assert_eq candidate "$(pin_cls P01 none | cut -f1)" \
+  "handoff.pin_check=none turns the route off even with the check failing"
+assert_eq candidate "$(pin_cls P01 'scripts/not-here.sh --check' | cut -f1)" \
+  "a check that is not there answers nothing, and an unanswered question charges"
+assert_eq candidate "$(pin_cls P01 'scripts/pin-nohashbang.sh --check' | cut -f1)" \
+  "a check that is neither executable nor states an interpreter is never run — the invocation comes from the file itself, never from a guess, so an unrunnable check stays 'no pin route' instead of becoming a nonzero exit read as staleness"
+assert_eq candidate "$(pin_cls P01 'scripts/pin-badinterp.sh --check' | cut -f1)" \
+  "and neither is one whose #! names an interpreter that is not there — same silence, same charge"
+
+# --- THE CANDIDATE CANNOT CREATE STALENESS AFTER THE SNAPSHOT -------------
+# Snapshot the dynamic check while it is fresh, then simulate the verification
+# command creating release dirt before the verifier writes its final log. The
+# live post-run check now reports the exact hand-off shape, which is what the
+# old classifier trusted. The recorded pre-run empty value must win.
+mk_pin_task P09 "$PIN_BASE" "$PIN_CAND" "$PIN_FAILED_ON_IT"
+P09_PRE="$( ( HOME="$MACHINE_HOME"
+  export ORCHID_HANDOFF_PIN_CHECK='scripts/pin-dynamic.sh --check'
+  drive_verify_prestate_headers "$PIN" "$PIN/.orchid/tasks/P09.md" ) )"
+: > "$PIN/.pin-stale-trigger"
+P09_POST="$( ( HOME="$MACHINE_HOME"
+  export ORCHID_HANDOFF_PIN_CHECK='scripts/pin-dynamic.sh --check'
+  drive_handoff_stale_pin "$PIN" "$PIN" "$PIN/.orchid/tasks/P09.md" ) )"
+assert_match "Formula/orchid.rb" "$P09_POST" \
+  "fixture: after the simulated candidate command dirties release inputs, a post-run freshness check really would report a waivable stale pin"
+mk_prestate_log "$PIN" "$PIN/.orchid/tasks/P09.md" \
+  "$PIN/.orchid/reviews/P09-verify.log" "$PIN_FAILED_ON_IT" \
+  "bash tests/run.sh" 1 "$P09_PRE"
+assert_eq "" "$(_drive_verify_prestate_list "$PIN" \
+    "$PIN/.orchid/tasks/P09.md" "$PIN/.orchid/reviews/P09-verify.log" pin)" \
+  "the trusted pre-command snapshot remains fresh even though live post-run state is now stale"
+assert_eq candidate "$( ( HOME="$MACHINE_HOME"
+  drive_verify_class "$PIN" "$PIN/.orchid/tasks/P09.md" \
+    "$PIN/.orchid/reviews/P09-verify.log" ) | cut -f1)" \
+  "so a candidate cannot dirty release content during its own failing test and manufacture a stale-pin hand-off waiver"
+rm -f "$PIN/.pin-stale-trigger"
+
+# ===========================================================================
+# Part N2e -- TWO hand-offs outstanding, each to blame for part of one round.
+#
+# The round that used to be charged with nothing in it that was the
+# candidate's. Attribution stopped at the FIRST artifact it could blame and
+# then required that one to account for the whole output — so a round in which
+# a stale pin explained one failure and a dropped mode bit explained another
+# was charged in full, and an operator who owned every line of it read that the
+# implementer had failed.
+#
+# Per-failure attribution has no such notion of a winning artifact: each claims
+# the failures it explains, and what is left unclaimed is what decides. The
+# negative case is asserted immediately after, because pooling must not become
+# a way for two partial explanations to cover a third failure neither owns.
+# ===========================================================================
+MIX="$WORK/handoff-mixed"
+mkdir -p "$MIX/.orchid/tasks" "$MIX/.orchid/reviews" "$MIX/scripts" "$MIX/libexec"
+cd "$MIX" || exit 1
+git init -q .
+MIX_SAYS='pin-formula: Formula/orchid.rb checksum is STALE for the current content'
+printf '#!/bin/sh\necho "%s" >&2\nexit 1\n' "$MIX_SAYS" > "$MIX/scripts/pin-formula.sh"
+mkdir -p "$MIX/Formula"
+printf 'class Orchid < Formula\n  sha256 "deadbeef"\nend\n' > "$MIX/Formula/orchid.rb"
+printf 'fixture\n' > "$MIX/README"
+git add scripts/pin-formula.sh Formula/orchid.rb README
+git commit -q -m "fixture: base, with a check that reports the pin stale"
+MIX_BASE="$(git -C "$MIX" rev-parse HEAD)"
+printf '#!/usr/bin/env bash\necho mix\n' > "$MIX/libexec/orchid-mix"
+git add libexec/orchid-mix
+git commit -q -m "fixture: a candidate that ships a new verb at mode 644"
+MIX_CAND="$(git -C "$MIX" rev-parse HEAD)"
+
+printf -- '---\nschema: 1\nid: X01\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$MIX" "$MIX_BASE" "$MIX_CAND" > "$MIX/.orchid/tasks/X01.md"
+mix_log() {
+  mk_prestate_log "$REPO_ROOT" "$MIX/.orchid/tasks/X01.md" \
+    "$MIX/.orchid/reviews/X01-verify.log" "$1"
+}
+mix_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$REPO_ROOT" "$MIX/.orchid/tasks/X01.md" \
+      "$MIX/.orchid/reviews/X01-verify.log" )
+}
+MIX_BODY="  FAIL: release checksum gate — $MIX_SAYS
+/bin/bash: libexec/orchid-mix: Permission denied"
+
+assert_eq 1 "$(drive_unattributed_failures "$MIX_BODY" \
+    "$(drive_exec_bit_attribution libexec/orchid-mix "$MIX_BODY")" | grep -c .)" \
+  "the mode bit explains its own refusal and leaves the pin's failure unexplained, so on its own it can never waive this round"
+mix_log "$MIX_BODY"
+assert_eq handoff "$(mix_cls | cut -f1)" \
+  "but between them the two hand-offs account for every failing line, and a round in which nothing was the candidate's charges the candidate nothing"
+MIX_REASON="$(mix_cls | cut -f2-)"
+assert_match "orchid-mix" "$MIX_REASON" \
+  "with BOTH outstanding steps named — an operator who clears one, re-dispatches, and walks into the other has learned nothing from the first journal line"
+assert_match "scripts/pin-formula.sh --check" "$MIX_REASON" \
+  "the pin check included, by the command line they can run themselves"
+assert_match "Formula/orchid.rb" "$MIX_REASON" \
+  "and the file it reported stale, which is the one they re-pin"
+
+mix_log "$MIX_BODY
+tests/test_widget.sh: FAIL: widget returned 3, expected 4"
+assert_eq candidate "$(mix_cls | cut -f1)" \
+  "and one more failing line that neither hand-off owns charges the round: pooling is not a way for two partial explanations to cover a third failure that is the candidate's"
+assert_match "widget returned 3" "$(mix_cls | cut -f2-)" \
+  "quoting the line nobody accounted for"
+
+# ===========================================================================
+# Part N2c -- attribution asserted at the layer it lives in.
+#
+# A break in any of these layers is invisible in a class assertion: everything
+# simply charges, which is exactly what the strict default looks like when it
+# is working. So each is asserted directly, and a break says which one broke.
+# ===========================================================================
+# One body carrying every shape at once: a runner progress line, a progress
+# line for a file whose NAME contains "fail", an ordinary assertion failure, a
+# lower-case failure of the kind another language's harness prints, a shell
+# refusal, and a passing file's own summary.
+ATT_BODY="== tests/test_failover.sh
+== tests/test_frob.sh
+  FAIL: frob returned 3, expected 4
+1 failed, 42 passed in 3.10s
+bash: ./libexec/orchid-frob: Permission denied
+infra_failures: 0
+  red-cases: 2 demonstrated in this file (green-cases: 2)"
+
+assert_eq 3 "$(drive_failure_lines "$ATT_BODY" | grep -c .)" \
+  "exactly three of those seven lines report a failure — the count is what decides whether a hand-off explains the whole round, so both over- and under-counting decide rounds wrongly"
+if ! drive_failure_lines "$ATT_BODY" | grep -Fq "1 failed"; then
+  fail "a lower-case 'failed' summary IS a failure line: missing it is the direction that laundered a real defect beside an attributed hand-off, which is the whole reason this check exists"
+fi
+if drive_failure_lines "$ATT_BODY" | grep -Fq "infra_failures"; then
+  fail "and orchid's own 'infra_failures:' counter is NOT one — the word boundary excludes '_' exactly so a line orchid itself prints in status output cannot leave every round with an unexplained failure"
+fi
+if drive_failure_lines "$ATT_BODY" | grep -Fq "test_failover"; then
+  fail "the runner's own progress line for tests/test_failover.sh must not read as a failure: a failure oracle that fires on every run leaves an unexplained line in EVERY round, and no hand-off is ever waived again"
+fi
+if ! drive_failure_lines "$ATT_BODY" | grep -Fq "Permission denied"; then
+  fail "and a raw shell refusal IS a failure line: an unexplained refusal about some other path is something this round must be charged for"
+fi
+
+assert_eq "bash: ./libexec/orchid-frob: Permission denied" \
+  "$(drive_exec_bit_attribution "libexec/orchid-frob" "$ATT_BODY")" \
+  "the refusal line and only the refusal line: the path is matched inside it, so the ./ prefix and the punctuation around it never have to be parsed off"
+assert_eq "" "$(drive_exec_bit_attribution "tests/test_frob.sh" "$ATT_BODY")" \
+  "and a file this output NAMES but never refuses to execute attributes nothing — this is the ambient case, where a candidate adds a mode-644 file with a #! line and then fails an ordinary assertion inside it"
+
+assert_eq "  FAIL: frob returned 3, expected 4
+1 failed, 42 passed in 3.10s" \
+  "$(drive_unattributed_failures "$ATT_BODY" \
+      "$(drive_exec_bit_attribution "libexec/orchid-frob" "$ATT_BODY")")" \
+  "with the refusal attributed, the two failure reports that remain are unexplained — their presence is what charges the round"
+assert_eq "" "$(drive_unattributed_failures "$ATT_BODY" "$(drive_failure_lines "$ATT_BODY")")" \
+  "and an attribution covering every failing line leaves nothing, which is the only state a waiver is admissible in"
+
+# --- and the PIN's two layers, in the same body ----------------------------
+# The pin's causal shape is "this file is stale", exactly as the exec bit's is
+# "this file could not be executed". Both are asserted here against a body that
+# contains neither, because the mistake that matters is a rule that claims a
+# line it has no business claiming.
+PIN_BODY="  FAIL: Formula/orchid.rb checksum is stale for the current tree
+  FAIL: Formula/orchid.rb must declare a bottle block
+  FAIL: frob returned 3, expected 4"
+assert_eq "  FAIL: Formula/orchid.rb checksum is stale for the current tree" \
+  "$(drive_pin_causal "Formula/orchid.rb" "$PIN_BODY")" \
+  "one line both names the pinned file and calls it stale — that is the causal proof, and the only thing that opens the cascade"
+assert_eq 2 "$(drive_pin_attribution "Formula/orchid.rb" "$PIN_BODY" | grep -c .)" \
+  "after which the bottle-block failure, which names the same file, is part of the same cascade: one stale pin does not fail one check"
+assert_eq "" "$(drive_pin_attribution "Formula/orchid.rb" \
+    "  FAIL: Formula/orchid.rb must declare a bottle block")" \
+  "but naming the file without ever calling it stale claims NOTHING — the cascade rule may never open on its own"
+assert_eq "" "$(drive_pin_attribution "Formula/orchid.rb" "$ATT_BODY")" \
+  "and a body that never mentions the pinned file at all attributes nothing, however stale the pin really is"
+assert_eq "" "$(drive_pin_attribution "Formula/orchid.rb" \
+    "  FAIL: fixtures/Formula/orchid.rb checksum is stale" "$MIX")" \
+  "a stale pin diagnostic for a distinct deeper path is not this repository's Formula/orchid.rb merely because its relative name is a suffix"
+assert_eq "  FAIL: $MIX/Formula/orchid.rb checksum is stale" \
+  "$(drive_pin_causal "Formula/orchid.rb" \
+      "  FAIL: $MIX/Formula/orchid.rb checksum is stale" "$MIX")" \
+  "while the exact verification-root absolute spelling still identifies the pin without weakening relative-path identity"
+
+# ===========================================================================
+# Part N3 -- the evidence attribution is decided against is the verification
+# command's output, trimmed of exactly ONE line.
+#
+# `orchid verify` appends a trailing `exit: N`. A test suite is entitled to
+# print that text itself -- this file's own fixtures do -- and deleting every
+# such line would rewrite the evidence, dropping real output out of the body
+# attribution is decided against. The HEADER is excluded for the opposite
+# reason: it carries `command:` verbatim, so a path named there would be found
+# in every failure that repository ever produces.
+# ===========================================================================
+BODYLOG="$WORK/body-verify.log"
+printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: /x\ncommand: bash tests/run.sh\n---\ncase A: the verb under test printed exit: 0\nassertion failed: widget count\nexit: 1\n' \
+  > "$BODYLOG"
+BODY_OUT="$(_drive_verify_body "$BODYLOG")"
+assert_match "printed exit: 0" "$BODY_OUT" \
+  "a line the SUITE printed that happens to contain 'exit: N' stays in the body — only the verb's own trailer is the verb's to remove"
+assert_eq "assertion failed: widget count" "$(printf '%s\n' "$BODY_OUT" | tail -n1)" \
+  "and the trailing trailer is gone, so orchid's own bookkeeping is never read as evidence"
+case "$BODY_OUT" in
+  *"command: bash tests/run.sh"*) fail "the log HEADER leaked into the matched body: $BODY_OUT" ;;
+esac
+
+printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: /x\ncommand: bash tests/run.sh\n---\nexit: 1\n' \
+  > "$BODYLOG"
+assert_eq "" "$(_drive_verify_body "$BODYLOG")" \
+  "a verification that printed nothing at all yields an empty body, not the trailer"
+
+# ===========================================================================
+# Part N4 -- a refused advance must not spend environment budget either.
+#
+# `infra_failures` is a budget with its own auto-block. Charging it before the
+# archetype is known to declare a testing -> rework edge means a task that
+# CANNOT advance still pays, which is the same "charged for something that is
+# not the candidate" mistake this feature exists to end, one budget over.
+# ===========================================================================
+CLN="$WORK/classify-noedge"
+mkdir -p "$CLN"
+cd "$CLN" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CLN" "$ORCHID_BIN" init >/dev/null || fail "orchid init (no-edge fixture)"
+git checkout -q orchid/integration
+CNEPOCH="$(ORCHID_REPO="$CLN" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+CNARCH="$WORK/arch-noedge"
+mkdir -p "$CNARCH/noedge"
+# A code archetype that satisfies the meta-contract and simply declares no
+# testing -> rework edge.
+printf 'manifest_version=1\nid=test/noedge\nversion=0.1.0\nkind=archetype\napi_version=1\noutcome=code\ntransitions=pending:implementing,implementing:testing,testing:reviewing,reviewing:arbitrating,arbitrating:merging,merging:done\n' \
+  > "$CNARCH/noedge/plugin.conf"
+cnorchid() {
+  ORCHID_REPO="$CLN" ORCHID_EPOCH="$CNEPOCH" ORCHID_ARCHETYPES_DIR="$CNARCH" "$ORCHID_BIN" "$@"
+}
+cnorchid requirements import "$WORK/requirements.md" >/dev/null
+cnorchid task create C500 "its archetype cannot go to rework at all" --archetype noedge >/dev/null
+# This part is about the ORDER of the edge check and the charge, not about
+# which class was decided, so it uses the cheapest hand-off there is: a new
+# verb at mode 644, and a suite that reports the shell refusing it.
+cnorchid task set C500 verification_commands \
+  "echo /bin/bash: libexec/orchid-cn: Permission denied; exit 1" >/dev/null
+cnorchid plan apply --reason "initial plan" >/dev/null
+
+CNBASE="$(git -C "$CLN" rev-parse HEAD)"
+mkdir -p "$CLN/libexec"
+printf '#!/usr/bin/env bash\necho cn\n' > "$CLN/libexec/orchid-cn"
+git -C "$CLN" add libexec/orchid-cn
+git -C "$CLN" commit -q -m "fixture: a candidate that ships a new verb at mode 644"
+CNCAND="$(git -C "$CLN" rev-parse HEAD)"
+fm_set "$CLN/.orchid/tasks/C500.md" status testing
+fm_set "$CLN/.orchid/tasks/C500.md" base_sha "$CNBASE"
+fm_set "$CLN/.orchid/tasks/C500.md" candidate_sha "$CNCAND"
+
+CN_RC=0
+CN_OUT="$(ORCHID_REPO="$CLN" ORCHID_EPOCH="$CNEPOCH" ORCHID_ARCHETYPES_DIR="$CNARCH" "$DRIVE" 2>&1)" || CN_RC=$?
+[ "$CN_RC" -eq 0 ] || [ "$CN_RC" -eq 16 ] \
+  || fail "the no-edge pass must end at a boundary, not an error (rc=$CN_RC): $CN_OUT"
+
+cnfield() { ORCHID_REPO="$CLN" ORCHID_ARCHETYPES_DIR="$CNARCH" "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
+assert_eq testing "$(cnfield C500 status)" \
+  "with no testing -> rework edge declared the task does not move (out: $CN_OUT)"
+assert_eq 0 "$(cnfield C500 attempts)" \
+  "and spends no attempt"
+assert_eq 0 "$(cnfield C500 infra_failures)" \
+  "and no environment budget either: the edge is checked BEFORE anything is charged, so a refused advance costs nothing"
+assert_match "declares no testing -> rework edge" "$CN_OUT" \
+  "the pass stops at a named boundary saying exactly what is missing"
+CN_JOURNAL="$(cat "$CLN/.orchid/journal.md")"
+assert_match "C500 note" "$CN_JOURNAL" \
+  "the missing-edge path writes a task-scoped durable note before stopping — it never reaches task advance's attempt_waiver journal"
+assert_match "handoff, attempt not charged" "$CN_JOURNAL" \
+  "and that note explicitly says the non-candidate round did not charge an attempt, rather than leaving an operator to infer it from a counter"
+
+# The strict twin: the same missing edge cannot turn a CANDIDATE failure into
+# a free round. Clear the first pass's boundary through the public verb, leave
+# the same task and candidate in testing, and make its verifier fail on an
+# unrelated assertion that none of the positive-evidence waiver routes owns.
+cnorchid run boundary clear --reason "fixture: exercise the strict no-edge twin"
+cnorchid task set C500 verification_commands \
+  "echo tests/test_widget.sh: FAIL: widget mismatch; exit 1" >/dev/null
+CN_STRICT_RC=0
+CN_STRICT_OUT="$(ORCHID_REPO="$CLN" ORCHID_EPOCH="$CNEPOCH" ORCHID_ARCHETYPES_DIR="$CNARCH" "$DRIVE" 2>&1)" || CN_STRICT_RC=$?
+[ "$CN_STRICT_RC" -eq 16 ] \
+  || fail "the candidate no-edge pass must stop at its charged blocked boundary (rc=$CN_STRICT_RC): $CN_STRICT_OUT"
+assert_eq blocked "$(cnfield C500 status)" \
+  "a candidate failure with no rework edge takes the universal blocked fallback (out: $CN_STRICT_OUT)"
+assert_eq 1 "$(cnfield C500 attempts)" \
+  "and the missing archetype edge does not make that candidate round free"
+assert_eq 0 "$(cnfield C500 infra_failures)" \
+  "the strict candidate arm charges attempts, never the environment ladder"
+CN_STRICT_JOURNAL="$(cat "$CLN/.orchid/journal.md")"
+assert_match "candidate attempt #1 charged while blocking" "$CN_STRICT_JOURNAL" \
+  "the no-edge fallback records the exact charge durably"
+assert_match "declares no testing -> rework edge" "$CN_STRICT_JOURNAL" \
+  "and records why the charged round had to stop instead of entering rework"
+assert_match "attempt charged.*testing -> blocked" "$CN_STRICT_OUT" \
+  "the pass reports a charged state move rather than activity with no accounting"
+assert_match "task retry C500" "$CN_STRICT_OUT" \
+  "the resulting boundary names the supported route back through rework"
+assert_match "task reverify C500" "$CN_STRICT_OUT" \
+  "and also names the supported exact-candidate verification route"
+
+# The other half of the review finding is a DECLARED rework edge whose verb
+# refuses before charging. Make that refusal deterministic with a real live
+# verb-lock: the verifier waits on a sentinel, the fixture acquires the lock,
+# and the first task advance exhausts the one-second wait. As soon as its
+# refusal is visible, the fixture releases the lock, so the charge-and-block
+# fallback can acquire it and complete. No production test seam is involved.
+CLR="$WORK/classify-refused-rework"
+mkdir -p "$CLR"
+cd "$CLR" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nverb_lock_wait_s=1\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CLR" "$ORCHID_BIN" init >/dev/null || fail "orchid init (refused-rework fixture)"
+git checkout -q orchid/integration
+CLREPOCH="$(ORCHID_REPO="$CLR" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+clrorchid() { ORCHID_REPO="$CLR" ORCHID_EPOCH="$CLREPOCH" "$ORCHID_BIN" "$@"; }
+clrorchid requirements import "$WORK/requirements.md" >/dev/null
+clrorchid task create C501 "its declared rework edge refuses before charging" >/dev/null
+clrorchid task set C501 verification_commands \
+  "touch $CLR/verify-ready; while [ ! -f $CLR/verify-go ]; do sleep 0.05; done; echo tests/test_widget.sh: FAIL: widget mismatch; exit 1" >/dev/null
+clrorchid plan apply --reason "initial plan" >/dev/null
+CLRBASE="$(git -C "$CLR" rev-parse HEAD)"
+printf 'candidate\n' > "$CLR/candidate.txt"
+git -C "$CLR" add candidate.txt
+git -C "$CLR" commit -q -m "fixture: candidate"
+CLRCAND="$(git -C "$CLR" rev-parse HEAD)"
+fm_set "$CLR/.orchid/tasks/C501.md" status testing
+fm_set "$CLR/.orchid/tasks/C501.md" base_sha "$CLRBASE"
+fm_set "$CLR/.orchid/tasks/C501.md" candidate_sha "$CLRCAND"
+
+CLR_OUT_FILE="$WORK/classify-refused-rework.out"
+CLR_RC=0
+ORCHID_REPO="$CLR" ORCHID_EPOCH="$CLREPOCH" "$DRIVE" >"$CLR_OUT_FILE" 2>&1 &
+CLR_DRIVE_PID=$!
+CLR_WAIT=0
+while [ ! -f "$CLR/verify-ready" ] && kill -0 "$CLR_DRIVE_PID" 2>/dev/null; do
+  sleep 0.05
+  CLR_WAIT=$((CLR_WAIT + 1))
+  [ "$CLR_WAIT" -lt 200 ] || break
+done
+[ -f "$CLR/verify-ready" ] \
+  || fail "the refused-rework verifier never reached its synchronization point: $(cat "$CLR_OUT_FILE" 2>/dev/null)"
+
+CLR_RELEASE="$CLR/release-verb-lock"
+CLR_LOCK_READY="$CLR/verb-lock-ready"
+(
+  unset ORCHID_VERB_LOCK_HELD
+  verb_lock_acquire "$CLR"
+  touch "$CLR_LOCK_READY"
+  while [ ! -f "$CLR_RELEASE" ]; do sleep 0.05; done
+  verb_lock_release "$CLR"
+) &
+CLR_LOCK_PID=$!
+CLR_WAIT=0
+while [ ! -f "$CLR_LOCK_READY" ] && kill -0 "$CLR_LOCK_PID" 2>/dev/null; do
+  sleep 0.05
+  CLR_WAIT=$((CLR_WAIT + 1))
+  [ "$CLR_WAIT" -lt 200 ] || break
+done
+[ -f "$CLR_LOCK_READY" ] || fail "the refused-rework fixture could not acquire its live verb lock"
+touch "$CLR/verify-go"
+
+CLR_WAIT=0
+while ! grep -q "another verb is mid-transaction" "$CLR_OUT_FILE" 2>/dev/null && \
+      kill -0 "$CLR_DRIVE_PID" 2>/dev/null; do
+  sleep 0.05
+  CLR_WAIT=$((CLR_WAIT + 1))
+  [ "$CLR_WAIT" -lt 200 ] || break
+done
+grep -q "another verb is mid-transaction" "$CLR_OUT_FILE" 2>/dev/null \
+  || fail "the declared rework edge did not hit the deterministic verb-lock refusal: $(cat "$CLR_OUT_FILE" 2>/dev/null)"
+touch "$CLR_RELEASE"
+wait "$CLR_LOCK_PID" 2>/dev/null
+wait "$CLR_DRIVE_PID" || CLR_RC=$?
+CLR_OUT="$(cat "$CLR_OUT_FILE")"
+[ "$CLR_RC" -eq 16 ] \
+  || fail "the refused-rework pass must stop at its charged blocked boundary (rc=$CLR_RC): $CLR_OUT"
+clrfield() { ORCHID_REPO="$CLR" "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
+assert_eq blocked "$(clrfield C501 status)" \
+  "a pre-charge rework refusal falls back to blocked (out: $CLR_OUT)"
+assert_eq 1 "$(clrfield C501 attempts)" \
+  "and still consumes exactly one candidate attempt"
+assert_eq 0 "$(clrfield C501 infra_failures)" \
+  "a kernel transition refusal is not mischarged as an environment failure"
+CLR_JOURNAL="$(cat "$CLR/.orchid/journal.md")"
+assert_match "candidate attempt #1 charged while blocking" "$CLR_JOURNAL" \
+  "the refused-edge fallback durably records the charge"
+assert_match "after testing -> rework refused exit" "$CLR_JOURNAL" \
+  "and records the refusal that forced the blocked path"
+assert_match "attempt charged.*testing -> blocked after testing -> rework refused" "$CLR_OUT" \
+  "the pass reports the refused edge's charged fallback"
+
+# ===========================================================================
+# Part N5 -- a waived failure that RECURS goes to a human, not to another
+# identical re-dispatch.
+#
+# NO waivable class names a fault the IMPLEMENTER clears: a checksum is
+# re-pinned by an operator, an exec bit set by one, a dependency tree
+# provisioned by whoever dispatches, a quarantined assertion fixed in the test,
+# and a killed run is nobody's to fix. Re-dispatching the implementer against
+# any of them produces the very same failure, so grinding out the whole
+# `infra_max` budget on retries that cannot work only delays the human by three
+# rounds while the run looks busy. The first round still retries -- the fault
+# may have been cleared between the two passes -- and the second stops.
+#
+# The count is ACROSS classes (drive_waived_rounds reads every `attempt_waiver`
+# the driver wrote for this task, whatever it said): two rounds that told nobody
+# anything about the candidate are two rounds, not one of each.
+# ===========================================================================
+CRE="$WORK/classify-recur"
+mkdir -p "$CRE"
+cd "$CRE" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CRE" "$ORCHID_BIN" init >/dev/null || fail "orchid init (recurrence fixture)"
+git checkout -q orchid/integration
+CREPOCH="$(ORCHID_REPO="$CRE" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+crorchid() { ORCHID_REPO="$CRE" ORCHID_EPOCH="$CREPOCH" "$ORCHID_BIN" "$@"; }
+crorchid requirements import "$WORK/requirements.md" >/dev/null
+crorchid task create C700 "its suite fails on the same unset mode bit twice" >/dev/null
+crorchid task set C700 verification_commands \
+  "echo /bin/bash: libexec/orchid-cr: Permission denied; exit 1" >/dev/null
+crorchid plan apply --reason "initial plan" >/dev/null
+
+CRBASE="$(git -C "$CRE" rev-parse HEAD)"
+mkdir -p "$CRE/libexec"
+printf '#!/usr/bin/env bash\necho cr\n' > "$CRE/libexec/orchid-cr"
+git -C "$CRE" add libexec/orchid-cr
+git -C "$CRE" commit -q -m "fixture: a candidate that ships a new verb at mode 644"
+CRCAND="$(git -C "$CRE" rev-parse HEAD)"
+crfield() { ORCHID_REPO="$CRE" "$ORCHID_BIN" task show C700 | grep "^$1: " | cut -d' ' -f2-; }
+CR_RC=0; CR_OUT=""
+run_crdrive() {
+  # Re-armed the same way each round, so the ONLY thing that differs between
+  # the two passes is what the task's own ledger already records.
+  fm_set "$CRE/.orchid/tasks/C700.md" status testing
+  fm_set "$CRE/.orchid/tasks/C700.md" base_sha "$CRBASE"
+  fm_set "$CRE/.orchid/tasks/C700.md" candidate_sha "$CRCAND"
+  CR_RC=0
+  CR_OUT="$(ORCHID_REPO="$CRE" ORCHID_EPOCH="$CREPOCH" "$DRIVE" 2>&1)" || CR_RC=$?
+  [ "$CR_RC" -eq 0 ] || [ "$CR_RC" -eq 16 ] \
+    || fail "a recurrence pass must end normally or at a boundary (rc=$CR_RC): $CR_OUT"
+}
+
+run_crdrive
+assert_eq rework "$(crfield status)" \
+  "the FIRST hand-off failure still retries — one bad round is not yet a reason to stop a run for a human (out: $CR_OUT)"
+assert_eq 0 "$(crfield attempts)" \
+  "and consumes no attempt, as before"
+assert_eq 1 "$(crfield infra_failures)" \
+  "having been charged to the environment budget instead"
+
+run_crdrive
+assert_eq testing "$(crfield status)" \
+  "the SECOND does not move the task at all: it stops at an operator boundary rather than re-dispatching an implementer that cannot chmod anything (out: $CR_OUT)"
+assert_eq 0 "$(crfield attempts)" \
+  "still no attempt — stopping for a human must not become a back door to charging the candidate either"
+assert_eq 2 "$(crfield infra_failures)" \
+  "while the recurrence is still counted, so the ledger says what the environment actually cost"
+assert_match "an operator clears this" "$CR_OUT" \
+  "and the boundary says why another identical re-dispatch is not the answer"
+CR_INFRA_REASONS="$(awk '
+  /^## .* C700 intervention / { take=1; next }
+  /^## / { take=0 }
+  take && /^infra failure #[0-9]+:/ { print; take=0 }
+' "$CRE/.orchid/journal.md")"
+assert_eq 2 "$(printf '%s\n' "$CR_INFRA_REASONS" | grep -cF "$(drive_waiver_mark)" || true)" \
+  "both infra-failure entries explicitly say attempt not charged, including the recurring round that stops before a second attempt_waiver edge"
+
+# ===========================================================================
+# Part N6 -- a WAIVED round must have an implement envelope of its OWN.
+#
+# `--waive-attempt` leaves `attempts` where it is, by design: it is a waiver,
+# not a fresh attempt. That makes the re-dispatched round recompute the SAME
+# attempt number, so `reviews/<id>-a<K>-implementer.json` -- the envelope of
+# the round just waived -- is still resolvable by name. The first
+# `drive_implementing` pass after the waiver therefore consumed it, re-stamped
+# a worktree HEAD that had not moved as the candidate, and advanced straight
+# back to testing: a verify re-run against an unchanged candidate, failing for
+# the same reason, while the newly launched implementer was still writing to
+# that worktree.
+#
+# So a waived round records a FLOOR, and only an envelope above it counts. The
+# floor carries the attempt it was taken for, so it cannot outlive it.
+# ===========================================================================
+FLR="$WORK/implement-floor"
+mkdir -p "$FLR/.orchid/tasks" "$FLR/.orchid/reviews"
+printf -- '---\nschema: 1\nid: F01\nstatus: implementing\narchetype: feature\nattempts: 0\n---\nbody\n' \
+  > "$FLR/.orchid/tasks/F01.md"
+# mk_flr_env <sibling-suffix> <status> -- only the field the predicates read.
+mk_flr_env() {
+  printf '{"status":"%s"}\n' "$2" > "$FLR/.orchid/reviews/F01-a1-implementer$1.json"
+}
+flr_env() { drive_implement_envelope "$FLR" F01; }
+
+mk_flr_env "" ok
+assert_eq "$FLR/.orchid/reviews/F01-a1-implementer.json" "$(flr_env)" \
+  "an ordinary round resolves the attempt's ok implement envelope, as it always did"
+assert_eq 0 "$(drive_implement_floor "$FLR" F01)" \
+  "with no floor recorded nothing is excluded — this must stay the unwaived default, or every first round would stall"
+assert_eq "a1:1" "$(drive_implement_floor_mark "$FLR" F01)" \
+  "and the mark a waiver would record names the attempt and the highest envelope already on disk"
+
+fm_set "$FLR/.orchid/tasks/F01.md" implement_floor "a1:1"
+assert_eq "" "$(flr_env)" \
+  "THE FIX: once the round is waived, the envelope it produced no longer answers for the round that follows — a waived round must have a fresh one"
+if drive_implement_failed "$FLR" F01; then
+  fail "and 'no envelope of its own yet' is AWAITING, not FAILED — escalating here would spawn a second implementer into the same worktree"
+fi
+
+mk_flr_env ".2" ok
+assert_eq "$FLR/.orchid/reviews/F01-a1-implementer.2.json" "$(flr_env)" \
+  "the fresh implementer's own envelope is above the floor and resolves normally, so the waived round proceeds on its own work"
+
+mk_flr_env ".2" failed
+assert_eq "" "$(flr_env)" \
+  "a fresh implementer that reports non-ok produces no candidate"
+if ! drive_implement_failed "$FLR" F01; then
+  fail "but it IS a failure, and must escalate — the previous round's ok envelope is below the floor and must not answer this question either"
+fi
+
+fm_set "$FLR/.orchid/tasks/F01.md" attempts 1
+assert_eq 0 "$(drive_implement_floor "$FLR" F01)" \
+  "and a floor taken for attempt 1 is inert at attempt 2 rather than wrong: a charged round moves attempts, which already makes the old envelopes unreachable by name"
+
+# ===========================================================================
+# Part N7 -- the recurrence guard reads THIS TASK's own waived rounds, not the
+# shared `infra_failures` counter.
+#
+# `infra_failures` counts every environment charge a task ever took: a dead job
+# manifest, a launch that could not spawn, a reaped worktree. Keying the "this
+# fault has recurred" guard on it meant an unrelated earlier infra failure
+# suppressed the FIRST hand-off round -- the one round that is supposed to
+# retry, because the dispatch pass names the fault in the journal where an
+# operator may already have cleared it.
+# ===========================================================================
+WJ="$WORK/waived-journal.md"
+WMARK="$(drive_waiver_mark)"
+printf '# Journal\n\n' > "$WJ"
+assert_eq 0 "$(drive_waived_rounds "$WJ" W01)" \
+  "a task with no history has had nothing waived"
+{
+  printf '## 2026-08-10T00:00:00Z W01 intervention (operator e1)\n'
+  printf 'infra failure #1: implement job manifest was reaped\n\n'
+  printf '## 2026-08-10T00:01:00Z W02 attempt_waiver (operator e1)\n'
+  printf 'verify failed (handoff, %s): another task entirely\n\n' "$WMARK"
+} >> "$WJ"
+assert_eq 0 "$(drive_waived_rounds "$WJ" W01)" \
+  "an infra failure is not a waived round, and neither is another task's waiver — the guard is per-task and per-kind"
+{
+  printf '## 2026-08-10T00:02:00Z W01 attempt_waiver (operator e1)\n'
+  printf 'the operator waived this arbitration round on judgement\n\n'
+} >> "$WJ"
+assert_eq 0 "$(drive_waived_rounds "$WJ" W01)" \
+  "an operator's own arbitration waiver is a different decision and does not arm the guard either"
+{
+  printf '## 2026-08-10T00:03:00Z W01 attempt_waiver (operator e1)\n'
+  printf 'verify failed (handoff, %s): the exec bit is not set on libexec/orchid-frob\n\n' "$WMARK"
+} >> "$WJ"
+assert_eq 1 "$(drive_waived_rounds "$WJ" W01)" \
+  "while the driver's own waived verify round counts, which is exactly the history the guard means to ask about"
+
+assert_match "[(]handoff, ${WMARK}[)]" \
+  "$(drive_waiver_reason handoff "the exec bit is not set on libexec/orchid-frob")" \
+  "the waived round's reason carries its class beside the mark — that line is what drive_waived_rounds reads back out of the journal, and a writer and a reader that spell it separately drift apart silently, leaving a guard that counts nothing"
+{
+  printf '## 2026-08-10T00:04:00Z W01 attempt_waiver (operator e1)\n'
+  printf '%s\n\n' "$(drive_waiver_reason handoff "the package pin recorded for Formula/orchid.rb is stale")"
+} >> "$WJ"
+assert_eq 2 "$(drive_waived_rounds "$WJ" W01)" \
+  "and a second waived round counts as a second — the guard fires on the first recurrence, so this number is the whole of what it reads"
+
+# --- and it ANSWERS, rather than failing ------------------------------------
+# This is read through a command substitution inside a `set -euo pipefail`
+# runner, so its exit status is not advisory: a non-zero here is not "no waived
+# rounds", it is the whole pass dying mid-round with an exit code the driver
+# does not document and every task after this one in the walk untouched.
+wrc=0
+wout="$(drive_waived_rounds "$WJ" W01)" || wrc=$?
+assert_eq 0 "$wrc" \
+  "counting waived rounds must EXIT zero — the driver reads this through a command substitution under set -e, where a failure is a dead pass rather than a count"
+case "$wout" in
+  ''|*[!0-9]*)
+    fail "counting waived rounds must yield a number, not '$wout' — the recurrence guard compares it with -ge, and a non-number there is a second failure on top of the first" ;;
+esac
+assert_eq 0 "$(drive_waived_rounds "$WORK/no-such-journal.md" W01)" \
+  "a task in a run whose journal is not there yet has had nothing waived, and asking must not fail either"
+
+# --- and end to end: an unrelated infra failure must not suppress the first
+# waived round ------------------------------------------------------------
+CRU="$WORK/classify-recur-unrelated"
+mkdir -p "$CRU"
+cd "$CRU" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CRU" "$ORCHID_BIN" init >/dev/null || fail "orchid init (unrelated-infra fixture)"
+git checkout -q orchid/integration
+CRUEPOCH="$(ORCHID_REPO="$CRU" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+cruorchid() { ORCHID_REPO="$CRU" ORCHID_EPOCH="$CRUEPOCH" "$ORCHID_BIN" "$@"; }
+cruorchid requirements import "$WORK/requirements.md" >/dev/null
+cruorchid task create C800 "its FIRST waived failure follows an unrelated infra charge" >/dev/null
+cruorchid task set C800 verification_commands \
+  "echo /bin/bash: libexec/orchid-cru: Permission denied; exit 1" >/dev/null
+cruorchid plan apply --reason "initial plan" >/dev/null
+
+# The unrelated charge: a reaped job manifest, nothing to do with any hand-off
+# or with this task's verification. This is the state that used to make the
+# guard fire on the very first waived round.
+cruorchid task infra-fail C800 --reason "implement job manifest was reaped" >/dev/null
+CRUBASE="$(git -C "$CRU" rev-parse HEAD)"
+mkdir -p "$CRU/libexec"
+printf '#!/usr/bin/env bash\necho cru\n' > "$CRU/libexec/orchid-cru"
+git -C "$CRU" add libexec/orchid-cru
+git -C "$CRU" commit -q -m "fixture: a candidate that ships a new verb at mode 644"
+fm_set "$CRU/.orchid/tasks/C800.md" status testing
+fm_set "$CRU/.orchid/tasks/C800.md" base_sha "$CRUBASE"
+fm_set "$CRU/.orchid/tasks/C800.md" candidate_sha "$(git -C "$CRU" rev-parse HEAD)"
+
+CRU_RC=0
+CRU_OUT="$(ORCHID_REPO="$CRU" ORCHID_EPOCH="$CRUEPOCH" "$DRIVE" 2>&1)" || CRU_RC=$?
+[ "$CRU_RC" -eq 0 ] || [ "$CRU_RC" -eq 16 ] \
+  || fail "the unrelated-infra pass must end normally or at a boundary (rc=$CRU_RC): $CRU_OUT"
+crufield() { ORCHID_REPO="$CRU" "$ORCHID_BIN" task show C800 | grep "^$1: " | cut -d' ' -f2-; }
+assert_eq rework "$(crufield status)" \
+  "the FIRST waived round still retries even though infra_failures was already 1 for an unrelated reason — the guard asks this task's own waived history, not a shared counter (out: $CRU_OUT)"
+assert_eq 0 "$(crufield attempts)" \
+  "and it still consumes no attempt"
+assert_eq 2 "$(crufield infra_failures)" \
+  "while the environment budget still counts both charges, so a genuinely bad environment still terminates at infra_max"
+
+# ===========================================================================
+# Part Y4 -- LESSON L003, THE NAMED CASE: a dispatch worktree that never
+# received the gitignored build state the integration checkout carries.
+#
+# `git worktree add` reproduces what git TRACKS. In the webBooks run
+# `mobile/node_modules` existed in the integration checkout only as a
+# gitignored symlink into a sibling checkout, so every freshly created task
+# worktree came up without it, the first `orchid verify` there failed on
+# missing dependencies, and a rework attempt was charged for a gap in
+# PROVISIONING rather than a defect in the candidate. Every project that uses
+# worktrees rediscovers this by losing an attempt to it.
+#
+# THIS ARM EXISTED ONCE AND WAS DANGEROUS, and the difference is the whole
+# point of this part. It used to treat an absent ignored directory as
+# invalidating the WHOLE ROUND -- exempt from the per-failure accounting -- so
+# an unrelated `.cache` plus any `command not found` line waived every failure
+# in it. The exemption was the defect, not the class. What is asserted below is
+# the class WITH the accounting: the state is proved by comparing the two
+# checkouts, and the failure must then be attributed to that directory by a
+# fact about the FILESYSTEM -- the thing the round could not resolve is one
+# the absent tree PUBLISHES.
+#
+# Both edges are pinned, per lesson L034: the named case is waived, and every
+# shape of coincidence around it still charges.
+# ===========================================================================
+ENVR="$WORK/l003-repo"
+mkdir -p "$ENVR/.orchid/tasks" "$ENVR/.orchid/reviews" "$ENVR/mobile"
+cd "$ENVR" || exit 1
+git init -q .
+: > "$ENVR/orchid.config"
+printf 'node_modules/\n.cache/\n' > "$ENVR/.gitignore"
+printf 'x\n' > "$ENVR/mobile/app.js"
+git add -A
+git commit -q -m "fixture: an integration checkout that ignores its dependency tree"
+# The build state itself, created AFTER the commit and never tracked -- which
+# is exactly the state `git worktree add` cannot reproduce. `.bin/jest` is the
+# entry point the tree PUBLISHES, and the fact the attribution turns on.
+mkdir -p "$ENVR/mobile/node_modules/.bin"
+printf '#!/usr/bin/env node\n' > "$ENVR/mobile/node_modules/.bin/jest"
+printf '#!/usr/bin/env node\n' > "$ENVR/mobile/node_modules/.bin/tsx"
+mkdir -p "$ENVR/mobile/node_modules/lodash"
+# `open` is deliberately present too. It is syntax in the standard ENOENT
+# diagnostic below, not that diagnostic's subject, and used to be accepted as
+# causal merely because every whitespace token on the line was searched.
+mkdir -p "$ENVR/mobile/node_modules/open"
+# An unrelated ignored directory, present here and absent there, with nothing
+# named `jest` anywhere inside it. This is the coincidence that broke the old
+# arm, and it sits in the fixture throughout so every assertion below is made
+# in its presence rather than in a tree curated to avoid it.
+mkdir -p "$ENVR/.cache/webpack"
+printf 'cache fixture\n' > "$ENVR/.cache/webpack/state"
+
+# The dispatch worktree, created the way dispatch actually creates one, so the
+# absence being asserted is git's own behaviour rather than something the
+# fixture arranged.
+ENVW="$WORK/l003-worktree"
+git -C "$ENVR" worktree add -q "$ENVW" -b task/L003 2>/dev/null \
+  || fail "fixture: could not create the L003 dispatch worktree"
+[ ! -e "$ENVW/mobile/node_modules" ] \
+  || fail "fixture invalid: git worktree add reproduced a gitignored directory — the whole premise of lesson L003 is that it cannot"
+
+ENV_CAND="$(git -C "$ENVW" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: EV1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$ENVW" "$ENV_CAND" "$ENV_CAND" > "$ENVR/.orchid/tasks/EV1.md"
+ev_log() {
+  mk_prestate_log "$ENVR" "$ENVR/.orchid/tasks/EV1.md" \
+    "$ENVR/.orchid/reviews/EV1-verify.log" "$1" "yarn test"
+}
+ev_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$ENVR" "$ENVR/.orchid/tasks/EV1.md" \
+      "$ENVR/.orchid/reviews/EV1-verify.log" )
+}
+
+# --- the state itself, at the layer it lives in ---------------------------
+assert_match "mobile/node_modules" "$(drive_env_missing_state "$ENVR" "$ENVW")" \
+  "the missing build state is found by COMPARING the two checkouts: ignored here, present here, absent there"
+assert_eq "" "$(drive_env_missing_state "$ENVR" "$ENVR")" \
+  "and a task with no dispatch worktree of its own has none of this state by construction — there is no second checkout for anything to be missing from"
+ENV_INVENTORY="$(drive_env_inventory_state "$ENVR" \
+  "$(drive_env_missing_state "$ENVR" "$ENVW")")"
+assert_match $'mobile/node_modules\tjest' "$ENV_INVENTORY" \
+  "the verifier-owned environment inventory records the command the missing dependency tree published before candidate code runs"
+
+# --- the named case: waived, and it names the directory -------------------
+ev_log 'error Command "jest" not found'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "L003's own case: a worktree that never received mobile/node_modules could not resolve jest, and jest is what mobile/node_modules/.bin PUBLISHES — that is a fact about the filesystem, not a reading of the sentence, and it does not charge the attempt"
+assert_match "mobile/node_modules" "$(ev_cls | cut -f2-)" \
+  "and the reason names the directory, because 'the environment' is not something anybody can provision"
+assert_match "creating the worktree from Git-tracked state" "$(ev_cls | cut -f2-)" \
+  "and says why it is absent, so the reader learns the mechanism rather than the incident"
+
+# Capture the real missing tree and its published subjects, then let the
+# simulated candidate add a diagnostic-shaped command to the INTEGRATION
+# checkout after capture. The missing-directory snapshot alone is not enough:
+# a post-run resolver would find this new `.bin` entry and let candidate output
+# manufacture its own environment waiver.
+EV_BEFORE_INVENTORY_MUTATION="$(drive_verify_prestate_headers \
+  "$ENVR" "$ENVR/.orchid/tasks/EV1.md")"
+printf '#!/usr/bin/env node\n' > "$ENVR/mobile/node_modules/.bin/fabricated"
+assert_match $'mobile/node_modules\tfabricated' \
+  "$(drive_env_inventory_state "$ENVR" "mobile/node_modules")" \
+  "fixture: a live post-command inventory really would accept the fabricated command"
+mk_prestate_log "$ENVR" "$ENVR/.orchid/tasks/EV1.md" \
+  "$ENVR/.orchid/reviews/EV1-verify.log" \
+  'error Command "fabricated" not found' "yarn test" 1 \
+  "$EV_BEFORE_INVENTORY_MUTATION"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "but the bound pre-command inventory has no fabricated subject, so candidate-created integration content cannot manufacture an environment waiver"
+rm -f "$ENVR/mobile/node_modules/.bin/fabricated"
+
+# Yarn v1 wraps that causal diagnostic in deterministic harness records. The
+# version and help records are unconditionally neutral; the echoed command and
+# exit-127 record are attributed only after the missing-tree inventory proves
+# the command and a causal resolution failure opens the route. The full real
+# bodies must remain live, while anything beyond that closed grammar keeps the
+# strict default.
+YARN_L003_BODY='yarn run v1.22.19
+$ jest
+error Command "jest" not found
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+ev_log "$YARN_L003_BODY"
+assert_eq 2 "$(drive_failure_lines "$YARN_L003_BODY" | grep -c .)" \
+  "the Yarn command echo is not globally neutral: before environment attribution the denominator contains it and the causal diagnostic"
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "the jest-shaped L003 case dynamically attributes the echoed command after the missing tree and causal diagnostic are proved"
+
+WEBBOOKS_L003_BODY='yarn run v1.22.19
+$ tsx scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 127.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+ev_log "$WEBBOOKS_L003_BODY"
+assert_eq 3 "$(drive_failure_lines "$WEBBOOKS_L003_BODY" | grep -c .)" \
+  "the actual webBooks shape keeps its command echo, causal diagnostic, and exit-127 record in the strict denominator before attribution"
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "L003's named webBooks body attributes the arbitrary tsx package-script echo and canonical exit-127 record only after trusted inventory proves tsx came from the absent tree"
+ev_log 'yarn run v1.22.19
+$ webpack scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 127.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "a Yarn echo for a command the missing tree did not publish stays unknown and keeps the exit-127 wrapper from being attributed, even beside a different causal environment failure"
+ev_log 'yarn run v1.22.19
+$tsx scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 127.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "a noncanonical command echo without Yarn v1's dollar-space prefix remains unknown and charges rather than widening the exact wrapper grammar"
+ev_log 'yarn run v1.22.19
+$ tsx scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 1.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "an unfamiliar Yarn exit record remains strict even when the echoed missing command is proved; only the canonical command-not-found status 127 is context"
+ev_log "$YARN_L003_BODY
+info an unfamiliar package-manager epilogue"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "the Yarn allowance is closed: an unfamiliar banner remains uncertain and charges instead of disappearing beside the environment failure"
+
+# --- THE COINCIDENCE THAT BROKE THE OLD ARM, in the same tree -------------
+# `.cache` is missing from the worktree too, and it is missing for exactly the
+# same reason. It claims nothing, because nothing it publishes is what this
+# round could not find.
+assert_match ".cache" "$(drive_env_missing_state "$ENVR" "$ENVW")" \
+  "the unrelated ignored directory is equally absent, so this is not a fixture that avoided the hazard"
+ev_log 'error Command "webpack-dev-server" not found'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "and a resolution failure for something NEITHER absent tree publishes is CHARGED — .cache/webpack is a directory, not a command named webpack-dev-server, and 'something is missing and something failed' is a coincidence rather than a cause"
+EV_UNATTRIBUTED_REASON="$(ev_cls | cut -f2-)"
+assert_match "no missing gitignored build state was attributable to this failure" "$EV_UNATTRIBUTED_REASON" \
+  "the charged-round reason reports the attribution decision instead of falsely saying this worktree carries build state the fixture proves it is missing"
+case "$EV_UNATTRIBUTED_REASON" in
+  *'worktree is missing no gitignored build state'*)
+    fail "a charged round must not deny the missing node_modules and .cache trees merely because neither explains this diagnostic ($EV_UNATTRIBUTED_REASON)" ;;
+esac
+
+# --- a defect landing in the same round is not laundered ------------------
+ev_log 'error Command "jest" not found
+  FAIL: widget returned 3, expected 4'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "the absent tree explains the jest line and NOTHING explains the widget assertion, so the round is charged — a defect that happens to land beside a provisioning gap is precisely what must not be laundered"
+assert_match "widget returned 3" "$(ev_cls | cut -f2-)" \
+  "and the reason quotes the line it could not attribute"
+
+# --- the cascade IS claimed, so the arm is not inert on a real failure ----
+ev_log 'error Command "jest" not found
+  FAIL: mobile/node_modules is missing; run yarn install
+  FAIL: suite could not start'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "a cascade line that names NEITHER the directory nor anything it publishes is unclaimed and charges — the strict direction, and the price of not letting proximity forgive whatever else broke"
+ev_log 'error Command "jest" not found
+  FAIL: mobile/node_modules is missing; run yarn install'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "while a cascade line that NAMES the directory is attributed to it, exactly as a mode bit claims the lines naming its file — one fault does not produce one failing line"
+
+# --- A PATH INSIDE THE ABSENT TREE NAMES THE ABSENT TREE ------------------
+# The commonest sentence L003 produces after the first missing command, and it
+# was charged: the resolution failure quotes a path UNDER the directory rather
+# than the directory itself, and the general artifact boundary refuses a
+# trailing `/` on purpose -- because for the other arms the artifact is a FILE,
+# where `bin/tool/child` is a different file and must not be collected. For an
+# absent DIRECTORY the relationship is the opposite: everything beneath it is
+# missing with it, so a path under it is that tree and not a neighbour of it.
+# The exactness of the NAME is untouched, which is the RED half below.
+ev_log "ENOENT: no such file or directory, open '$ENVW/mobile/node_modules/react-native/package.json'"
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "an ENOENT quoting a path INSIDE the absent tree is that tree's failure — it cannot be about anything else, since the directory the path runs through is the one that is not there"
+assert_match "mobile/node_modules" "$(ev_cls | cut -f2-)" \
+  "and the reason still names the directory somebody has to provision"
+ev_log "ENOENT: no such file or directory, open 'mobile/node_modules-old/react-native/package.json'"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "while mobile/node_modules-old is a DIFFERENT directory that merely starts with the same characters, and it charges — opening the boundary for a child path must not open it for a longer name, which is the substring bug that waived a round over bin/tool-helper"
+ev_log "ENOENT: no such file or directory, open 'fixtures/mobile/node_modules/react-native/package.json'"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "and a path under fixtures/mobile/node_modules is not under the missing mobile/node_modules merely because the latter is its suffix — only the exact relative, ./, or worktree-root absolute identity may open the child-path rule"
+assert_eq "" "$(drive_env_causal "$ENV_INVENTORY" mobile/node_modules \
+    "ENOENT: no such file or directory, open 'fixtures/mobile/node_modules/react-native/package.json'" "$ENVW")" \
+  "the environment causal layer itself rejects the deeper suffix, so an unrelated cascade cannot reopen attribution later"
+assert_eq "" "$(drive_env_causal "$ENV_INVENTORY" mobile/node_modules \
+    "ENOENT: no such file or directory, open 'mobile/node_modulesX/y'")" \
+  "nor for a name continuing in any other character — asserted at the layer it lives in, because both readings of the class assertion above look identical from outside"
+
+# --- THE RESOLUTION SUBJECT, NOT AN UNRELATED WORD ON THE LINE ------------
+# `open` is both diagnostic grammar and the name of a real package in the
+# absent tree. The subject of this ENOENT is `src/config.json`; scanning every
+# token resolves `open` and launders the candidate's missing source file as an
+# environment gap. Subject binding keeps the filesystem proof attached to the
+# thing the line actually says it could not resolve.
+[ -e "$ENVR/mobile/node_modules/open" ] \
+  || fail "fixture invalid: the missing dependency tree must contain a package named open, or the token-laundering regression below proves nothing"
+ev_log "Error: ENOENT: no such file or directory, open 'src/config.json'"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "an ENOENT for src/config.json is CHARGED even though an unrelated token named open resolves inside the absent node_modules — only the diagnosed subject can establish causality"
+assert_eq "" "$(drive_env_causal "$ENV_INVENTORY" mobile/node_modules \
+    "Error: ENOENT: no such file or directory, open 'src/config.json'")" \
+  "and the causal layer itself claims no line, proving the candidate verdict did not merely come from some later accounting accident"
+ev_log 'jest: command not found'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "the shell spelling with its subject before the command marker still attributes jest to the absent tree's .bin entry"
+
+# --- THE CASCADE IS NAMING, NOT RESEMBLANCE -------------------------------
+# The coincidence above, one FAILING LINE at a time instead of one round at a
+# time, and it is the shape this arm carried until now: the cascade also
+# claimed any failing line holding a token that RESOLVED inside the absent
+# tree, with no resolution shape required of the line at all. A dependency
+# tree's direct children are ordinary words -- `lodash` is a package in
+# mobile/node_modules -- so an assertion that merely happened to be ABOUT
+# something sharing a package's name was waived as that tree's cascade. A
+# candidate defect is not laundered by vocabulary.
+[ -e "$ENVR/mobile/node_modules/lodash" ] \
+  || fail "fixture invalid: mobile/node_modules must publish a direct child named lodash, or the two assertions below prove nothing about resemblance"
+ev_log 'error Command "jest" not found
+  FAIL: lodash helper returned 3, expected 4'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "a failing line whose ONLY tie to the absent tree is a word matching one of its direct children is not that tree's cascade — it is a candidate defect about something with a package's name, and the absent tree must claim it no more readily than .cache claims a webpack-dev-server line"
+assert_match "lodash helper returned 3" "$(ev_cls | cut -f2-)" \
+  "and the reason quotes it, so an operator sees exactly what the attempt is being charged for"
+
+# --- ... while the GENUINE resolution cascade still waives -----------------
+# The same package name, in a line that REPORTS A RESOLUTION FAILURE. This is
+# what L003 actually prints once the first missing command has been hit, and
+# narrowing the cascade must not cost it: what was withdrawn is resemblance,
+# not the class.
+ev_log 'error Command "jest" not found
+  FAIL: Cannot find module lodash from mobile/src/App.js'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "a failing line that cannot RESOLVE something the absent tree publishes is still the absent tree's, so the arm remains live on the cascade it exists for"
+
+# --- and once the worktree is provisioned, the identical failure charges --
+mkdir -p "$ENVW/mobile/node_modules/.bin"
+ev_log 'error Command "jest" not found'
+ENV_LEFT="$(drive_env_missing_state "$ENVR" "$ENVW")"
+if grep -Fq 'mobile/node_modules' <<<"$ENV_LEFT"; then
+  fail "once the tree is there, there is no missing-state to prove for it — the same comparison that found it must stop finding it (still missing: $ENV_LEFT)"
+fi
+assert_match "[.]cache" "$ENV_LEFT" \
+  "while the unrelated ignored directory is STILL absent, so the assertion below is charged in its presence rather than in a tidied tree"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "so the identical sentence now charges: whatever this failure is, provisioning mobile/node_modules is no longer the answer"
+
+# Capture that healthy pre-run state, then let the simulated candidate command
+# delete it before printing the usual L003 diagnostic. A post-run comparison
+# sees the missing tree and would waive; the trusted empty snapshot must not.
+EV_BEFORE_MUTATION="$(drive_verify_prestate_headers \
+  "$ENVR" "$ENVR/.orchid/tasks/EV1.md")"
+rm -rf "$ENVW/mobile/node_modules"
+assert_match "mobile/node_modules" "$(drive_env_missing_state "$ENVR" "$ENVW")" \
+  "fixture: after the simulated command deletes dependencies, a post-run comparison really would see the L003 state"
+mk_prestate_log "$ENVR" "$ENVR/.orchid/tasks/EV1.md" \
+  "$ENVR/.orchid/reviews/EV1-verify.log" 'error Command "jest" not found' \
+  "yarn test" 1 "$EV_BEFORE_MUTATION"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "but trusted pre-verification evidence says node_modules was present, so a candidate cannot delete ignored dependencies during its test and manufacture an environment waiver"
+
+# --- and DISPATCH reports it, instead of leaving each project to discover it
+# by losing a round. The same predicate runs right after `git worktree add`, so
+# the gap is named at the moment somebody can still act on it. A source-level
+# tripwire rather than another end-to-end pass: the predicate's behaviour is
+# asserted directly above, and what this protects is that the driver still asks
+# it at dispatch, which is the part that would go quietly missing.
+grep -q 'drive_env_missing_state' "$DRIVE" \
+  || fail "runners/orchid-drive must ASK what the new worktree could not carry when it creates one (L003) — classifying the resulting failure afterwards is the backstop for a note that went unread, not a substitute for making the note"
+grep -q 'git worktree add cannot reproduce' "$DRIVE" \
+  || fail "and it must SAY so in terms an operator can act on, naming the mechanism rather than reporting a bare list of paths"
+
+# ===========================================================================
+# Part Y5 -- LESSON L020: a failure the repository ALREADY recorded as flaky.
+#
+# Orchid never INFERS flakiness -- it cannot, from one run -- and this arm does
+# not ask it to. It reads a register the repository keeps, and the entire
+# safety of it is in WHEN that register had to be written: a register THIS
+# CANDIDATE CHANGED is not an authority on this candidate. An implementer
+# cannot quarantine the assertion it is failing, because the moment its
+# candidate touches the file the route is gone and the round charges.
+#
+# The other narrowings are asserted here too, because each of them is what
+# stops a repository buying a blanket amnesty: signatures are matched
+# LITERALLY (never as patterns), must be long enough not to match everything by
+# accident, and ordinarily claim ONLY the lines they match. Exact companion
+# context is inert unless one of those signatures matched first, and any line
+# outside its closed list still charges.
+# ===========================================================================
+QR="$WORK/quarantine"
+mkdir -p "$QR/.orchid/tasks" "$QR/.orchid/reviews" "$QR/tests"
+cd "$QR" || exit 1
+git init -q .
+: > "$QR/orchid.config"
+# THE SIGNATURE IS READ OUT OF THE TREE, NEVER TYPED HERE, and the
+# assertion further down proves this exact text is still what orchid's own
+# engine-adapter suite prints when that liveness case genuinely fails. Writing
+# the signature into the fixture by hand instead would prove only that grep
+# works; tying it to the tree is what makes every assertion below a fact about
+# this repository. The block at the end of this part then leaves the fixture
+# behind entirely and drives the same route through THE REGISTER ORCHID SHIPS.
+L020_SIG='bounded growth wait must observe live stream bytes before adapter exit'
+{
+  printf '%s\n' "# Known-flaky assertions. Each entry is one line beginning \`FLAKE:\`."
+  printf '%s\n' 'FLAKE: short -- too short to be a signature, and must be ignored'
+  printf '%s\n' 'FLAKE: FAIL: .* returned -- deliberately regex-shaped, and must NOT be read as one'
+  printf '%s\n' 'FLAKE-CONTEXT: looks fine'
+  # No final newline on purpose: a text file is allowed to end here, and the
+  # reader must not silently discard its last (and most important) entry.
+  printf 'FLAKE: %s -- L020: samples one instant; the shape that stranded eight tasks' "$L020_SIG"
+} > "$QR/tests/QUARANTINE.md"
+printf 'x\n' > "$QR/file.txt"
+git add -A
+git commit -q -m "fixture: a repository with a known-flaky register"
+QRBASE="$(git -C "$QR" rev-parse HEAD)"
+printf 'y\n' > "$QR/file.txt"
+git add -A
+git commit -q -m "fixture: a candidate that does NOT touch the register"
+QRCAND="$(git -C "$QR" rev-parse HEAD)"
+
+mk_qr_task() {  # <base-sha> <candidate-sha>
+  printf -- '---\nschema: 1\nid: QA1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$QR" "$1" "$2" > "$QR/.orchid/tasks/QA1.md"
+}
+mk_qr_task "$QRBASE" "$QRCAND"
+qr_log() {  # <body> [exit-status]
+  local qr_snapshot
+  qr_snapshot="$(drive_verify_prestate_headers "$QR" "$QR/.orchid/tasks/QA1.md")"
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n%s\n---\n%s\nexit: %s\n' \
+    "$QRCAND" "$QRCAND" "$QR" "$qr_snapshot" "$1" "${2:-1}" > "$QR/.orchid/reviews/QA1-verify.log"
+}
+qr_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$QR" "$QR/.orchid/tasks/QA1.md" \
+      "$QR/.orchid/reviews/QA1-verify.log" )
+}
+
+L020_LINE="  FAIL: streaming stub: $L020_SIG -- the stall-detector liveness signal"
+
+# --- THE SIGNATURE IS THE ONE THIS REPOSITORY WOULD ACTUALLY PRINT --------
+# The fixture's entry is not invented text: it is the sentence orchid's own
+# liveness case really prints when that property is genuinely violated. So the
+# route below is proved against the exact string an operator would paste into a
+# register -- and if that sentence is ever reworded, this assertion fails and
+# whoever reworded it learns that the worked example has to move with it.
+#
+# Note what this fixture's entry deliberately IS: the sentence the LIVE,
+# de-flaked assertion prints. Quarantining that one for real would be wrong --
+# it waits for what it samples, so its failure is evidence -- and orchid's own
+# register does not. This is a fixture, and it is here to exercise the route's
+# mechanics on text that is guaranteed to still exist.
+grep -Fq -- "$L020_SIG" "$REPO_ROOT/tests/test_engine_agy.sh" \
+  || fail "the L020 signature the fixture register below is built from must be the text tests/test_engine_agy.sh's liveness case really prints on failure — otherwise this part proves that grep matches a string this file made up, and the flaky route's only live subject in orchid goes untested"
+[ "${#L020_SIG}" -ge 16 ] \
+  || fail "and it must be long enough to be a legal signature (>= 16 characters), or the register would drop it and every assertion below would be about an entry that was never read"
+
+# --- the register itself, at the layer it lives in ------------------------
+QR_SIGS="$(
+  HOME="$MACHINE_HOME"
+  drive_quarantine_signatures "$QR" "$QR" "$QR/.orchid/tasks/QA1.md"
+)"
+assert_match "bounded growth wait" "$QR_SIGS" \
+  "a FLAKE: entry long enough to be a signature is read out of the register"
+if grep -Fq 'short' <<<"$QR_SIGS"; then
+  fail "a signature shorter than the minimum must be DROPPED — an entry that short would match half the output of any suite, which is a blanket amnesty spelled as a typo (got: $QR_SIGS)"
+fi
+QR_CONTEXTS="$(
+  HOME="$MACHINE_HOME"
+  drive_quarantine_contexts "$QR" "$QR" "$QR/.orchid/tasks/QA1.md"
+)"
+assert_eq "looks fine" "$QR_CONTEXTS" \
+  "FLAKE-CONTEXT records are read from the same trusted register, including a short exact line that cannot open the route by itself"
+assert_eq "  looks fine  " "$(drive_quarantine_context_attribution \
+    "looks fine" $'different\n  looks fine  \nlooks fine today')" \
+  "context matches the whole normalized line, preserving its original bytes for exact accounting and never matching a longer line by substring"
+
+# --- the L020 line, waived, and it says what it is ------------------------
+qr_log "$L020_LINE"
+assert_eq flaky "$(qr_cls | cut -f1)" \
+  "the assertion that stranded eight tasks in r-002 was on this repository's register BEFORE this candidate, so its failure charges no attempt"
+assert_match "known-flaky" "$(qr_cls | cut -f2-)" \
+  "and the reason says the register is what forgave it, not orchid's own judgement about the test"
+
+# Old tests/run.sh prints a failed child's whole buffer, including deterministic
+# output from successful negative fixtures that ran before the historical
+# liveness assertion. A trusted exact companion line may close that real body,
+# but it is powerless without the registered assertion that causes the child
+# to be exposed.
+qr_log "looks fine
+$L020_LINE"
+assert_eq flaky "$(qr_cls | cut -f1)" \
+  "registered exact fixture context beside the causal L020 assertion is attributed with it, so old tests/run.sh's buffered successful chatter does not burn the attempt"
+qr_log 'looks fine'
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "the same registered context without a matching FLAKE signature is inert and charges — companion output can never open a waiver"
+qr_log 'looks fine today'
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "a longer line sharing the context text still charges, because companion matching is exact after surrounding-whitespace normalization"
+qr_log "$L020_LINE
+looks fine
+adapter fixture produced an unregistered sentence"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "causal L020 plus registered context plus one novel diagnostic still charges — the companion list is closed, not a failed-child cascade"
+assert_match "unregistered sentence" "$(qr_cls | cut -f2-)" \
+  "and the reason quotes the novel line that kept the mixed round chargeable"
+
+# A stopped-short status is an independent uncertainty and vetoes even this
+# otherwise complete attribution. This pins the ordering: if the waiver's
+# cost-saving return runs before the status is examined, this reads `flaky`
+# and silently forgives the candidate hang the status cannot rule out.
+qr_log "$L020_LINE" 143
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "a registered assertion alongside quiet exit 143 still CHARGES — the printed line is known-flaky, but the termination may be a candidate hang and uncertain provenance vetoes every waiver"
+assert_match "stopped short" "$(qr_cls | cut -f2-)" \
+  "and the charged mixed round reports the termination uncertainty rather than returning early from the flaky arm"
+assert_match "every printed failing line is otherwise attributable" "$(qr_cls | cut -f2-)" \
+  "while saying attribution DID succeed — the attempt charges for the independent termination uncertainty, not for an empty or falsely reported attribution failure"
+qr_log "$L020_LINE"
+
+# --- literal, never a pattern --------------------------------------------
+qr_log '  FAIL: widget returned 3, expected 4'
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "the regex-shaped entry 'FAIL: .* returned' does NOT match 'FAIL: widget returned 3' — signatures are matched literally, because a '.*' in a repository-controlled file would waive every round forever"
+
+# --- claims only its signature and registered exact context --------------
+qr_log "$L020_LINE
+  FAIL: widget returned 3, expected 4"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "a quarantined flake alongside a real assertion charges the round — the register excuses its signature and closed companion context, never an unlisted failure"
+assert_match "widget returned 3" "$(qr_cls | cut -f2-)" \
+  "and the reason quotes what it could not excuse"
+
+# --- and the route can be switched off outright ---------------------------
+printf 'flaky.quarantine=none\n' > "$QR/orchid.config"
+qr_log "$L020_LINE"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "flaky.quarantine=none disables the route, so a repository that wants no register has none"
+: > "$QR/orchid.config"
+
+# --- THE AUTHORITY QUESTION FAILS CLOSED WHEN IT CANNOT BE ASKED ----------
+# The safety property at the end of this part is "a register the candidate
+# changed is no authority on it", and it was skippable for free: `git diff`
+# over a missing or unresolvable sha prints an empty list, which is
+# indistinguishable from "this candidate changed nothing", and the route read
+# both as permission. A task whose `base_sha` was never written -- or whose
+# recorded commit this tree no longer carries, which is what a re-pointed
+# branch leaves behind -- could therefore quarantine the assertion it was
+# failing after all. Every unanswerable form is charged, and the answerable one
+# is restored immediately afterwards so this is a guard rather than a deletion.
+qr_log "$L020_LINE"
+mk_qr_task "" "$QRCAND"
+assert_eq "" "$( ( HOME="$MACHINE_HOME"
+  drive_quarantine_signatures "$QR" "$QR" "$QR/.orchid/tasks/QA1.md" ) )" \
+  "with no base_sha, nothing can be asked about who wrote this register, so it yields NO signatures — asserted at the layer it lives in, because the class below would also read 'candidate' if the register had simply gone missing"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and the round charges: an unanswerable authority question is not permission, least of all on the one route an implementer could otherwise use to forgive its own failure"
+mk_qr_task "$QRBASE" ""
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and the same with no candidate_sha — one end of a diff is no more an answer than none"
+mk_qr_task "$QRBASE" 0000000000000000000000000000000000000000
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and a sha that does not RESOLVE in this tree charges too, which is the form this really takes: both fields are present, so a guard that only tested for emptiness would walk past it"
+mk_qr_task "not-a-sha-at-all" "$QRCAND"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and so does one that is not a sha at all — the guard turns on whether git ANSWERED, never on whether the field looked plausible"
+mk_qr_task "$QRBASE" "$QRCAND"
+assert_eq flaky "$(qr_cls | cut -f1)" \
+  "while the answerable, untouched case is unchanged — the guard closes the route on ignorance, never on the route"
+
+# --- AND THE REGISTER THAT IS READ IS THE FILE, NOT A DIFF OF TWO COMMITS --
+# The timing rule is enforced with `git diff base..candidate`, and that diff
+# says nothing about the file the driver actually READS. An implementer that
+# cannot commit an entry into its own candidate can still leave one in the
+# worktree the verification runs in — unstaged, or staged and uncommitted —
+# and every one of those diffs is empty. It can drop in an untracked register
+# where there was none. So the register is an authority only while the verified
+# worktree still carries exactly the bytes and mode the candidate RECORDED, and
+# each way of not doing that closes the route and charges. The intact case is
+# restored after each, so this is a guard rather than a deletion.
+QR_REG="$QR/tests/QUARANTINE.md"
+QR_REG_BYTES="$WORK/qr-register.committed"
+cp "$QR_REG" "$QR_REG_BYTES"
+printf '\nFLAKE: widget returned 3, expected 4 -- left in the worktree, never committed\n' >> "$QR_REG"
+qr_log '  FAIL: widget returned 3, expected 4'
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "an entry the implementer left UNSTAGED in the verified worktree forgives nothing: the file being read is not the file the candidate recorded, and a diff of two commits cannot see the difference"
+git -C "$QR" add tests/QUARANTINE.md
+cp "$QR_REG_BYTES" "$QR_REG"
+# The L020 line from here on, and that is what keeps the rest of this block
+# from being vacuous: the worktree register is byte-identical to the candidate's
+# again, so a guard that only compared the worktree would open the route and
+# waive this line. `candidate` here is therefore a fact about the INDEX.
+qr_log "$L020_LINE"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "a STAGED entry whose worktree copy has been put back closes the route too — the bytes on disk match the candidate again, and the index still holds a register one commit away from being the candidate's own"
+git -C "$QR" add tests/QUARANTINE.md
+assert_eq flaky "$(qr_cls | cut -f1)" \
+  "while a register restored at both ends is an authority again"
+git -C "$QR" rm -q --cached tests/QUARANTINE.md
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "an UNTRACKED register is no authority at all — the candidate recorded nothing about it, so nothing establishes that it is not the implementer's own file"
+git -C "$QR" add tests/QUARANTINE.md
+mv "$QR_REG" "$QR_REG.away"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and a register MISSING from the verified worktree answers nothing"
+mv "$QR_REG.away" "$QR_REG"
+assert_eq flaky "$(qr_cls | cut -f1)" \
+  "and every one of those restores to the route it started from"
+
+# --- ORCHID'S OWN REGISTER, LIVE, AND THE TRIPWIRE ON BOTH ITS ENDS -------
+# Everything above drives the classifier through a register this fixture wrote.
+# This drives it through THE FILE ORCHID SHIPS, committed as the fixture's BASE
+# so it is pre-candidate state in the sense the route requires -- which is the
+# only way to prove that the entry orchid actually carries would be honoured.
+#
+# Those entries are L020's TWO PRE-T019 diagnostic families, and the assertions
+# below are what make carrying them safe. The de-flaked assertions still in the
+# tree are the stall detector's own evidence and must never be forgiven; the old
+# single-instant families cannot tell a stall from a loaded machine and are not
+# evidence about anything. Their sentences are disjoint, so entries naming the
+# old families cannot reach the live ones -- and if anyone ever rewords either
+# side into the other's shape, this block fails and says so.
+[ -f "$REPO_ROOT/tests/QUARANTINE.md" ] \
+  || fail "orchid must ship the register flaky.quarantine defaults to (tests/QUARANTINE.md), or its own default path is a path to nothing"
+ORCHID_FLAKES="$(grep -c '^FLAKE:' "$REPO_ROOT/tests/QUARANTINE.md" || true)"
+assert_eq 2 "$ORCHID_FLAKES" \
+  "and it carries EXACTLY TWO live entries — the pre-T019 stream-growth and heartbeat-count families, and nothing else. All eight live assertions were DE-FLAKED rather than quarantined (tests/helpers.sh's await_log_growth/await_log_heartbeat) and must stay chargeable. If this count ever moves, somebody has decided another gate may fail without failing, and this assertion is where they have to say so out loud"
+
+QS="$WORK/shipped-register"
+mkdir -p "$QS/.orchid/tasks" "$QS/.orchid/reviews" "$QS/tests"
+cd "$QS" || exit 1
+git init -q .
+: > "$QS/orchid.config"
+cp "$REPO_ROOT/tests/QUARANTINE.md" "$QS/tests/QUARANTINE.md"
+printf 'x\n' > "$QS/file.txt"
+git add -A
+git commit -q -m "fixture: orchid's own shipped register, as pre-candidate state"
+QSBASE="$(git -C "$QS" rev-parse HEAD)"
+printf 'y\n' > "$QS/file.txt"
+git add -A
+git commit -q -m "fixture: a candidate that does not touch the shipped register"
+QSCAND="$(git -C "$QS" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: QS1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$QS" "$QSBASE" "$QSCAND" > "$QS/.orchid/tasks/QS1.md"
+qs_log() {
+  local qs_snapshot
+  qs_snapshot="$(drive_verify_prestate_headers "$QS" "$QS/.orchid/tasks/QS1.md")"
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n%s\n---\n%s\nexit: 1\n' \
+    "$QSCAND" "$QSCAND" "$QS" "$qs_snapshot" "$1" > "$QS/.orchid/reviews/QS1-verify.log"
+}
+qs_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$QS" "$QS/.orchid/tasks/QS1.md" \
+      "$QS/.orchid/reviews/QS1-verify.log" )
+}
+SHIPPED_SIGS="$(
+  HOME="$MACHINE_HOME"
+  drive_quarantine_signatures "$QS" "$QS" "$QS/.orchid/tasks/QS1.md"
+)"
+SHIPPED_CONTEXTS="$(
+  HOME="$MACHINE_HOME"
+  drive_quarantine_contexts "$QS" "$QS" "$QS/.orchid/tasks/QS1.md"
+)"
+# THE DIAGNOSTIC IS CLIPPED, AND THAT IS NOT COSMETIC. Every failing line this
+# suite prints ends up in a verify log that orchid's own classifier then reads.
+# Interpolating the SHIPPED signature into a FAIL line would put that signature
+# in the output of the very guard that parses the register carrying it — so
+# this assertion breaking would produce a failure the register itself waives,
+# and the one check standing between orchid and a second live entry would fail
+# without failing. A clipped rendering is diagnostic enough and cannot contain
+# the whole signature, which is what `grep -F` matching needs.
+#
+# The clip is 15 characters because the register's own minimum signature length
+# is 16, but nothing here relies on my having read that constant correctly: the
+# assertion immediately below runs the clipped text through THE REAL MATCHER
+# and requires it to match nothing. If the minimum ever drops, or the clip ever
+# grows, that is what says so.
+SHIPPED_SIGS_CLIPPED="$(cut -c1-15 <<<"$SHIPPED_SIGS" | tr '\n' '/')"
+while IFS= read -r shipped_sig; do
+  [ -n "$shipped_sig" ] || continue
+  assert_eq "" "$(drive_quarantine_attribution "$shipped_sig" \
+      "  FAIL: a guard over the shipped register broke (got, clipped: $SHIPPED_SIGS_CLIPPED)")" \
+    "a clipped rendering must not be text either shipped signature matches — this suite's failing lines land in a verify log the classifier then reads, so a guard that printed a live signature into its own FAIL line would be waived by the register it exists to police"
+done <<< "$SHIPPED_SIGS"
+assert_eq 2 "$(grep -c . <<<"$SHIPPED_SIGS" || true)" \
+  "the shipped register parses to exactly two live signatures through the real parser — the prose around them, including its own indented worked example of the format, is read as prose (got, clipped: $SHIPPED_SIGS_CLIPPED)"
+assert_eq 51 "$(grep -c . <<<"$SHIPPED_CONTEXTS" || true)" \
+  "and it parses to exactly 51 closed companion lines — the unique non-empty successful-fixture output of the four pre-T019 engine-adapter tests, not an open-ended child block"
+assert_match "job log must have grown" "$SHIPPED_SIGS" \
+  "one signature is L020's pre-T019 stream-growth family"
+assert_match "job log must gain at least one" "$SHIPPED_SIGS" \
+  "and the other is L020's pre-T019 heartbeat-count family"
+
+# BOTH ENTRIES WORK, ON BOTH OLD LENGTHS. Agy/Claude/Codex carried longer
+# explanations while Hermes stopped at the common prefix; the common literal
+# must catch both without reaching any live bounded-wait assertion.
+OLD_GROWTH_SIG="$(grep -F 'job log must have grown' <<< "$SHIPPED_SIGS" || true)"
+OLD_HEARTBEAT_SIG="$(grep -F 'job log must gain at least one' <<< "$SHIPPED_SIGS" || true)"
+[ -n "$OLD_GROWTH_SIG" ] && [ -n "$OLD_HEARTBEAT_SIG" ] \
+  || fail "the two shipped signatures could not be selected by their clipped family names"
+while IFS= read -r shipped_sig; do
+  [ -n "$shipped_sig" ] || continue
+  if grep -Fq -- "$shipped_sig" "$REPO_ROOT/tests/test_drive.sh"; then
+    fail "tests/test_drive.sh embeds a live quarantine signature verbatim, so a failing self-check could print its own amnesty (got, clipped: $SHIPPED_SIGS_CLIPPED)"
+  fi
+done <<< "$SHIPPED_SIGS"
+qs_log "  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "the long pre-T019 stream-growth diagnostic is waived by the shipped register"
+qs_log "  FAIL: $OLD_GROWTH_SIG"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "and Hermes's shorter pre-T019 stream-growth diagnostic is waived too"
+qs_log "  FAIL: $OLD_HEARTBEAT_SIG (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "the long pre-T019 heartbeat-count diagnostic is waived by the shipped register"
+qs_log "  FAIL: $OLD_HEARTBEAT_SIG"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "and Hermes's shorter pre-T019 heartbeat-count diagnostic is waived too"
+
+# THE ACTUAL OLD-RUNNER SHAPE: every registered successful-fixture line is in
+# the same failed child buffer as the historical assertion. Drive the complete
+# closed set through classification rather than proving only a tidy one-line
+# rendering. The two strict edges immediately after it prove the list is not a
+# global neutral vocabulary and is not a failed-child cascade.
+qs_log "$SHIPPED_CONTEXTS
+  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "the full pre-T019 engine-adapter companion set plus its causal liveness signature classifies flaky, matching the buffered body carried branches really emit"
+qs_log "$SHIPPED_CONTEXTS"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "the full companion set without either historical signature charges — registered context is never globally neutral"
+qs_log "$SHIPPED_CONTEXTS
+  FAIL: $OLD_GROWTH_SIG
+adapter fixture emitted one novel diagnostic"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "one novel line beside the full companion set and causal signature still charges, preserving fail-closed mixed attribution"
+assert_match "one novel diagnostic" "$(qs_cls | cut -f2-)" \
+  "and the charged reason identifies the exact line outside the closed companion set"
+
+# AND NEITHER ENTRY CAN REACH THE ASSERTIONS THAT REPLACED IT. Taken verbatim
+# from the suite rather than retyped here: if an old and live sentence ever
+# converge, these are the lines that stop it.
+DEFLAKED_GROWTH_SRC="$(grep -F -m1 -- "$L020_SIG" "$REPO_ROOT/tests/test_engine_agy.sh" || true)"
+DEFLAKED_HEARTBEAT_SRC="$(grep -F -m1 -- 'bounded heartbeat wait must leave at least one persisted' "$REPO_ROOT/tests/test_engine_agy.sh" || true)"
+[ -n "$DEFLAKED_GROWTH_SRC" ] && [ -n "$DEFLAKED_HEARTBEAT_SRC" ] \
+  || fail "the two de-flaked liveness assertions have vanished from tests/test_engine_agy.sh — the RED halves below would then assert nothing"
+qs_log "  FAIL: $DEFLAKED_GROWTH_SRC"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "the live bounded growth assertion is NOT covered and charges — it waits for what it samples, so its failure is evidence"
+qs_log "  FAIL: $DEFLAKED_HEARTBEAT_SRC"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "the live bounded heartbeat assertion is NOT covered and charges for the same reason"
+qs_engine_count=0
+for qs_engine_f in "$REPO_ROOT"/tests/test_engine_*.sh; do
+  [ -f "$qs_engine_f" ] || continue
+  qs_engine_count=$((qs_engine_count + 1))
+  while IFS= read -r shipped_sig; do
+    [ -n "$shipped_sig" ] || continue
+    if grep -Fq -- "$shipped_sig" "$qs_engine_f"; then
+      fail "${qs_engine_f#"$REPO_ROOT"/} contains a sentence orchid's own register quarantines — a live engine-adapter case can now fail without failing"
+    fi
+  done <<< "$SHIPPED_SIGS"
+done
+[ "$qs_engine_count" -ge 4 ] \
+  || fail "that sweep looked at $qs_engine_count engine-adapter file(s) rather than the four that carry these cases — it would report a clean tree by finding nothing to read"
+
+# --- A CARRIED BRANCH CUT BEFORE THE REGISTER EXISTED ----------------------
+# This is r-002's live topology: task worktrees were cut before T019, while the
+# integration checkout receives the register only when T019 merges. Requiring
+# the register to exist in the old candidate makes the entry unreachable in
+# exactly the worktrees that can still print the old assertion. The narrow
+# fallback reads integration's copy only when BOTH task commits answerably lack
+# the path; candidate addition and deletion are pinned below as closed routes.
+QO="$WORK/old-register-control"
+QOW="$WORK/old-register-task"
+QOD="$WORK/deleted-register-task"
+QOH="$WORK/hostile-register-task"
+mkdir -p "$QO"
+cd "$QO" || exit 1
+git init -q .
+: > "$QO/orchid.config"
+printf 'old\n' > "$QO/file.txt"
+git add -A
+git commit -q -m "fixture: base predates the quarantine register"
+QOBASE="$(git -C "$QO" rev-parse HEAD)"
+git -C "$QO" worktree add -q "$QOW" -b task/old-register "$QOBASE" 2>/dev/null \
+  || fail "fixture: could not create the pre-register task worktree"
+printf 'candidate\n' > "$QOW/file.txt"
+git -C "$QOW" add file.txt
+git -C "$QOW" commit -q -m "fixture: candidate also predates the register"
+QOCAND="$(git -C "$QOW" rev-parse HEAD)"
+
+# Integration learns the historical flake after that branch was cut. The task
+# worktree deliberately remains on QOCAND and therefore has no tests/ directory
+# at all, which is the state the fallback exists for rather than a staged copy
+# of the new file.
+mkdir -p "$QO/tests"
+cp "$REPO_ROOT/tests/QUARANTINE.md" "$QO/tests/QUARANTINE.md"
+git -C "$QO" add tests/QUARANTINE.md
+git -C "$QO" commit -q -m "fixture: integration records the historical flake"
+QOHEAD="$(git -C "$QO" rev-parse HEAD)"
+[ ! -e "$QOW/tests/QUARANTINE.md" ] \
+  || fail "fixture invalid: the carried task worktree unexpectedly received the post-cut register"
+
+mkdir -p "$QO/.orchid/tasks" "$QO/.orchid/reviews"
+qo_task() { # <id> <worktree> <base> <candidate>
+  printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+    "$1" "$2" "$3" "$4" > "$QO/.orchid/tasks/$1.md"
+}
+qo_log() { # <id> <worktree> <candidate> [failure-body] [prestate-snapshot]
+  local qo_body="${4:-}" qo_snapshot
+  [ -n "$qo_body" ] \
+    || qo_body="looks fine
+  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+  if [ "$#" -ge 5 ]; then
+    qo_snapshot="$5"
+  else
+    qo_snapshot="$(drive_verify_prestate_headers "$QO" "$QO/.orchid/tasks/$1.md")"
+  fi
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n%s\n---\n%s\nexit: 1\n' \
+    "$3" "$3" "$2" "$qo_snapshot" "$qo_body" \
+    > "$QO/.orchid/reviews/$1-verify.log"
+}
+qo_cls() { # <id>
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$QO" "$QO/.orchid/tasks/$1.md" \
+      "$QO/.orchid/reviews/$1-verify.log" )
+}
+
+qo_task QO1 "$QOW" "$QOBASE" "$QOCAND"
+qo_log QO1 "$QOW" "$QOCAND"
+assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
+  "a carried task whose base and candidate both predate the register reads the clean tracked integration copy, so the exact pre-T019 failure no longer burns its attempt"
+qo_log QO1 "$QOW" "$QOCAND" \
+  "VERDICT: approve
+  FAIL: $OLD_HEARTBEAT_SIG (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
+  "and the same carried task classifies the sibling pre-T019 heartbeat-count failure as flaky rather than charging it"
+assert_match "job log must have grown" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO1.md")" \
+  "the fallback exposes the historical stream-growth signature at the register layer"
+assert_match "job log must gain at least one" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO1.md")" \
+  "and it exposes the historical heartbeat-count signature there too"
+
+# Integration's copy is a control-plane authority, not ambient bytes. A dirty
+# edit closes it just as a dirty candidate-owned register does.
+QO_REG_BYTES="$WORK/old-register.committed"
+cp "$QO/tests/QUARANTINE.md" "$QO_REG_BYTES"
+printf '\nFLAKE: candidate bug that integration never committed\n' >> "$QO/tests/QUARANTINE.md"
+assert_eq candidate "$(qo_cls QO1 | cut -f1)" \
+  "a dirty integration register is no authority for an old branch — the fallback requires HEAD, index, bytes, and mode to agree"
+cp "$QO_REG_BYTES" "$QO/tests/QUARANTINE.md"
+assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
+  "restoring the clean integration authority restores the carried-branch waiver"
+
+# A candidate that ADDS the path cannot borrow integration's older/trusted
+# copy, even when the bytes happen to match. Its candidate commit carries the
+# path, so the both-commits-lack condition is false; its own authority is false
+# because it changed the register.
+mkdir -p "$QOW/tests"
+cp "$QO/tests/QUARANTINE.md" "$QOW/tests/QUARANTINE.md"
+git -C "$QOW" add tests/QUARANTINE.md
+git -C "$QOW" commit -q -m "fixture: candidate adds the register itself"
+QOADD="$(git -C "$QOW" rev-parse HEAD)"
+qo_task QO1 "$QOW" "$QOBASE" "$QOADD"
+qo_log QO1 "$QOW" "$QOADD"
+assert_eq candidate "$(qo_cls QO1 | cut -f1)" \
+  "a candidate-added register forgives nothing and cannot fall back to integration, even when it copied integration's exact bytes"
+
+# A candidate that DELETES a register is the other half: candidate lacks the
+# path, but base does not, so the fallback stays closed rather than undoing the
+# deletion from the control checkout behind the candidate's back.
+git -C "$QO" worktree add -q "$QOD" -b task/delete-register "$QOHEAD" 2>/dev/null \
+  || fail "fixture: could not create the register-deletion worktree"
+git -C "$QOD" rm -q tests/QUARANTINE.md
+git -C "$QOD" commit -q -m "fixture: candidate deletes the register"
+QODEL="$(git -C "$QOD" rev-parse HEAD)"
+qo_task QO2 "$QOD" "$QOHEAD" "$QODEL"
+qo_log QO2 "$QOD" "$QODEL"
+assert_eq candidate "$(qo_cls QO2 | cut -f1)" \
+  "a candidate-deleted register forgives nothing and cannot be resurrected from integration, because its base already carried the path"
+
+# The integration authority is also a PRE-RUN fact. The verification command
+# executes candidate-controlled repository code and inherits enough context to
+# address the integration checkout. Without the captured-HEAD binding it can
+# commit a matching FLAKE entry there after verification begins; the fallback
+# then compares that malicious file to its own new HEAD, finds it perfectly
+# clean, and forgives the defect that wrote it.
+git -C "$QO" worktree add -q "$QOH" -b task/hostile-register "$QOCAND" 2>/dev/null \
+  || fail "fixture: could not create the old branch used by the hostile verifier"
+qo_task QO3 "$QOH" "$QOBASE" "$QOCAND"
+QO_PRE_ATTACK="$(drive_verify_prestate_headers "$QO" "$QO/.orchid/tasks/QO3.md")"
+printf '\nFLAKE: widget returned 3, expected 4 -- committed by candidate-controlled verification\n' \
+  >> "$QO/tests/QUARANTINE.md"
+git -C "$QO" add tests/QUARANTINE.md
+git -C "$QO" commit -q -m "fixture: verifier tries to mint its own integration waiver"
+qo_log QO3 "$QOH" "$QOCAND" '  FAIL: widget returned 3, expected 4' "$QO_PRE_ATTACK"
+assert_match "widget returned 3" "$(drive_quarantine_signatures \
+    "$QO" "$QOH" "$QO/.orchid/tasks/QO3.md")" \
+  "RED control: without a pre-verification HEAD binding, the old fallback trusts the verifier's newly committed integration entry"
+assert_eq "" "$(drive_quarantine_signatures \
+    "$QO" "$QOH" "$QO/.orchid/tasks/QO3.md" "$QOHEAD")" \
+  "GREEN control: binding the fallback to pre-verification HEAD exposes no signature after the verifier moves that ref"
+assert_eq candidate "$(qo_cls QO3 | cut -f1)" \
+  "a register committed to integration after verification began forgives nothing — current HEAD no longer matches the pre-verification control-plane authority"
+
+# The comparison base is another PRE-RUN authority. QOW's candidate added the
+# register itself, so QOBASE..QOADD correctly closes the route. If hostile
+# verification rewrites the task's base_sha to QOADD after the snapshot,
+# however, an unbound comparison becomes QOADD..QOADD and calls that same
+# candidate-authored file unchanged. Capture the honest base, perform that
+# mutation, and prove both sides explicitly before asking the classifier.
+qo_task QO4 "$QOW" "$QOBASE" "$QOADD"
+QO_BASE_PRE_ATTACK="$(drive_verify_prestate_headers \
+  "$QO" "$QO/.orchid/tasks/QO4.md")"
+fm_set "$QO/.orchid/tasks/QO4.md" base_sha "$QOADD"
+qo_log QO4 "$QOW" "$QOADD" "looks fine
+  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal" \
+  "$QO_BASE_PRE_ATTACK"
+assert_match "job log must have grown" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO4.md")" \
+  "RED control: an unbound post-run base_sha rewritten to candidate_sha makes the candidate-added register look unchanged"
+assert_eq "" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO4.md" \
+    "$(git -C "$QO" rev-parse HEAD)" "$QOBASE")" \
+  "GREEN control: the captured pre-verification base exposes the register as candidate-authored and therefore no authority"
+assert_eq candidate "$(qo_cls QO4 | cut -f1)" \
+  "rewriting base_sha after verification begins invalidates the snapshot and cannot turn a candidate-authored FLAKE entry into a waiver"
+cd "$QR" || exit 1
+
+# --- THE SAFETY PROPERTY: a register the candidate touched is no authority.
+# LAST in this part, deliberately: it leaves the register with an entry that
+# would forgive `widget returned 3` outright, so every assertion above is made
+# against a register the candidate did not write.
+printf '\nFLAKE: widget returned 3, expected 4 -- added by the candidate itself\n' >> "$QR/tests/QUARANTINE.md"
+git -C "$QR" add tests/QUARANTINE.md
+git -C "$QR" commit -q -m "fixture: the candidate quarantines its own failure"
+fm_set "$QR/.orchid/tasks/QA1.md" candidate_sha "$(git -C "$QR" rev-parse HEAD)"
+qr_log '  FAIL: widget returned 3, expected 4'
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "quarantining the assertion you are failing must be impossible: the candidate CHANGED the register, so there is no register — this is the whole safety of the flaky route, and without it a repository could buy an amnesty for any failure by writing one line"
+qr_log "looks fine
+$L020_LINE"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "and the route is lost for entries the candidate did NOT write either, including the genuine L020 one and its context — a file this candidate edited is not evidence about this candidate, and a per-entry rule would just move the abuse one line down"
+
+# ===========================================================================
+# Part Y6 -- A RUN THAT STOPPED SHORT IS REPORTED, AND STILL CHARGED.
+#
+# THIS PART USED TO ASSERT THE OPPOSITE, AND THE INVERSION IS THE POINT. Exit
+# 124, 137 or 143 was read as "the harness reaped this pass, so it never spoke
+# about the candidate" and waived the round under a fifth class, `harness`.
+# That premise was assumed rather than proved. The identical trailer is what a
+# candidate that HANGS until a timeout reaps it leaves -- which is a defect,
+# and precisely the defect a `timeout` in a verification command line is there
+# to catch -- and what a suite that exits with the status deliberately, or
+# forwards a killed child's, leaves. Nothing in the log tells the three apart.
+#
+# This classifier's own rule is that an uncertain reading CHARGES and says why,
+# and that rule was being applied to every other arm while this one assumed its
+# way past it. So the status is still READ and still REPORTED -- an operator
+# looking at a charged round must not be left wondering why the log stops where
+# it does -- and the attempt is charged. Both edges are pinned per L034: the
+# report is present, and the class is `candidate`.
+# ===========================================================================
+HRN="$WORK/harness"
+mkdir -p "$HRN/.orchid/tasks" "$HRN/.orchid/reviews"
+cd "$HRN" || exit 1
+git init -q .
+: > "$HRN/orchid.config"
+printf 'x\n' > "$HRN/file.txt"
+git add -A
+git commit -q -m "fixture: root"
+printf -- '---\nschema: 1\nid: HR1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\n---\nbody\n' \
+  "$HRN" > "$HRN/.orchid/tasks/HR1.md"
+hr_log() {  # <body> <rc>
+  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: %s\n' \
+    "$HRN" "$1" "$2" > "$HRN/.orchid/reviews/HR1-verify.log"
+}
+hr_cls() {
+  ( HOME="$MACHINE_HOME"
+    drive_verify_class "$HRN" "$HRN/.orchid/tasks/HR1.md" \
+      "$HRN/.orchid/reviews/HR1-verify.log" )
+}
+
+hr_log '== tests/test_engine_agy.sh
+Terminated: 15' 143
+assert_eq 143 "$(drive_verify_exit "$HRN/.orchid/reviews/HR1-verify.log")" \
+  "the recorded exit status is read from the verb's own trailer, which is a fact about the run rather than a sentence in it"
+assert_eq candidate "$(hr_cls | cut -f1)" \
+  "and a run that stopped at 143 CHARGES: that is equally the trailer a candidate which hung until something reaped it leaves, and equally the one a suite that exited 143 on purpose leaves, so the provenance an amnesty would need was never proved — only assumed"
+HR_REASON="$(hr_cls | cut -f2-)"
+assert_match "stopped short" "$HR_REASON" \
+  "the status is still REPORTED, because an operator reading a charged round must not be left wondering why the log ends where it does"
+assert_match "143" "$HR_REASON" \
+  "naming the status itself, which is the fact orchid actually has"
+assert_match "HUNG" "$HR_REASON" \
+  "and naming the reading it CANNOT rule out, which is why it charges rather than forgives"
+case "$HR_REASON" in
+  *'attempt not charged'*|*'not the candidate'*)
+    fail "a charged round's reason must not read as a waiver: this is the sentence an operator uses to tell 'we forgave this' from 'we could not tell' ($HR_REASON)" ;;
+esac
+hr_log 'timeout: sending signal TERM' 124
+assert_eq candidate "$(hr_cls | cut -f1)" \
+  "and so does a run its own timeout(1) killed — a timeout in a verification command line exists to catch a candidate that hangs, so waiving what it catches was forgiving the defect it was configured to find"
+assert_match "124" "$(hr_cls | cut -f2-)" \
+  "with that status named too"
+hr_log 'zsh: killed' 137
+assert_eq candidate "$(hr_cls | cut -f1)" \
+  "and one SIGKILLed, which is an out-of-memory reap and is also what a runaway candidate looks like from outside"
+
+# --- a killed run that had already reported real failures -----------------
+hr_log '  FAIL: widget returned 3, expected 4
+Terminated: 15' 143
+assert_eq candidate "$(hr_cls | cut -f1)" \
+  "a suite that printed a real assertion failure BEFORE it stopped is charged for that failure as well"
+assert_match "widget returned 3" "$(hr_cls | cut -f2-)" \
+  "and the reason quotes it, rather than letting the truncation speak for the round"
+assert_match "stopped short" "$(hr_cls | cut -f2-)" \
+  "while still reporting that the run stopped short, so both facts reach the operator"
+
+# --- and an ordinary failing exit is not a kill ---------------------------
+hr_log '== tests/test_engine_agy.sh
+Terminated: 15' 1
+assert_eq candidate "$(hr_cls | cut -f1)" \
+  "an ordinary failing exit charges too, and for its own reasons: nothing here stopped short, so the report above must not appear"
+case "$(hr_cls | cut -f2-)" in
+  *'stopped short'*) fail "exit 1 is a verdict, not a truncation — reporting one here would put a sentence about a killed run on every ordinary failure in the repository" ;;
+esac
+assert_match "no failure-attributable waivable state was established" "$(hr_cls | cut -f2-)" \
+  "it takes the ordinary strict default instead — and this is also what proves the WORDS 'Terminated: 15' decide nothing on their own, since this repository's own passing fixtures print exactly that line about processes they reaped on purpose"
+
+# ===========================================================================
+# Part Y7 -- THE POOL IS ACROSS CLASSES, NOT WITHIN ONE.
+#
+# An earlier round required ONE artifact to account for the whole round, so a
+# round in which a stale pin explained six lines and a dropped mode bit
+# explained four was charged with every failure in it an operator's. The same
+# reasoning applies across classes: a round that is half a missing dependency
+# tree and half an unset mode bit is no more the candidate's than either half
+# alone. What a waiver needs is that nothing is left over.
+# ===========================================================================
+MIXW="$WORK/l003-worktree"
+mkdir -p "$MIXW/libexec"
+printf '#!/usr/bin/env bash\necho frob\n' > "$MIXW/libexec/orchid-frob"
+chmod 644 "$MIXW/libexec/orchid-frob"
+git -C "$MIXW" add libexec/orchid-frob
+git -C "$MIXW" commit -q -m "fixture: a candidate that also ships a verb at mode 644"
+fm_set "$ENVR/.orchid/tasks/EV1.md" base_sha "$(git -C "$MIXW" rev-parse HEAD~1)"
+fm_set "$ENVR/.orchid/tasks/EV1.md" candidate_sha "$(git -C "$MIXW" rev-parse HEAD)"
+# Both lines are FAILING lines here, unlike the bare yarn diagnostic Part Y4
+# used. That is what makes this a pool rather than a short-circuit: the exec
+# bit explains one of them and cannot explain the other, so the round is
+# decided only after the missing tree has spoken too.
+ev_log '  FAIL: yarn test: error Command "jest" not found
+bash: libexec/orchid-frob: Permission denied'
+assert_eq handoff "$(ev_cls | cut -f1)" \
+  "two DIFFERENT classes, each explaining part of one round, together account for all of it and it is waived — and the class NAMED is the hand-off, the one an operator has to act on first"
+assert_match "mobile/node_modules" "$(ev_cls | cut -f2-)" \
+  "and the reason names the absent dependency tree"
+assert_match "orchid-frob" "$(ev_cls | cut -f2-)" \
+  "and the file awaiting chmod, because an operator who clears one, re-dispatches and walks into the other has learned nothing from the first journal line"
+ev_log '  FAIL: yarn test: error Command "jest" not found
+bash: libexec/orchid-frob: Permission denied
+  FAIL: widget returned 3, expected 4'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "and one further line neither of them owns still charges the whole round — pooling relaxes WHO must explain a failure, never WHETHER every failure is explained"
+assert_match "widget returned 3" "$(ev_cls | cut -f2-)" \
+  "quoting the line it could not attribute to either"
+
+# A state can remain owed without explaining this round. Make the helper
+# executable in a new base, then drop that recorded 755 bit in its candidate;
+# the environment failure below says nothing about the helper, so the bit must
+# not contribute attribution, but restoring it is still an operator action the
+# waived-round journal cannot hide.
+chmod +x "$MIXW/libexec/orchid-frob"
+git -C "$MIXW" add libexec/orchid-frob
+git -C "$MIXW" update-index --chmod=+x libexec/orchid-frob
+git -C "$MIXW" commit -q -m "fixture: executable helper becomes the next base"
+MIX_DROP_BASE="$(git -C "$MIXW" rev-parse HEAD)"
+chmod -x "$MIXW/libexec/orchid-frob"
+git -C "$MIXW" add libexec/orchid-frob
+git -C "$MIXW" update-index --chmod=-x libexec/orchid-frob
+git -C "$MIXW" commit -q -m "fixture: candidate drops the helper's exec bit"
+fm_set "$ENVR/.orchid/tasks/EV1.md" base_sha "$MIX_DROP_BASE"
+fm_set "$ENVR/.orchid/tasks/EV1.md" candidate_sha "$(git -C "$MIXW" rev-parse HEAD)"
+ev_log '  FAIL: yarn test: error Command "jest" not found'
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "the missing dependency tree alone earns this waiver; an unrelated dropped exec bit is state, not attribution"
+MIX_FALLBACK_REASON="$(ev_cls | cut -f2-)"
+assert_match "chmod [+]x libexec/orchid-frob" "$MIX_FALLBACK_REASON" \
+  "the waived reason still reports the candidate-dropped 755 bit as an operator step owed independently of the failure that was waived"
+assert_match "not attributable to the printed failures" "$MIX_FALLBACK_REASON" \
+  "and labels the dropped bit as fallback state, so reporting it cannot be misread as letting it earn the waiver"

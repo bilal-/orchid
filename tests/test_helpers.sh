@@ -248,5 +248,106 @@ ${f#"$REPO_ROOT"/}:$hit"
 done
 [ -z "$canon_hits" ] || fail "these fixtures capture cd_scratch's output without checking its status -- a refusal is then silently discarded and the path is rooted at '/'; use \`VAR=\"\$(cd_scratch ...)\" || { fail ...; exit 1; }\`:$canon_hits"
 
+# ---------------------------------------------------------------------------
+# T019 / lesson L020: the third suite-wide lint, and it exists because the
+# fault it names SPREAD. Eight engine-adapter cases asked "has the job log
+# moved while the adapter is still running?" by sleeping a fixed interval and
+# reading the log ONCE, at that instant -- which is a DEADLINE for the writer,
+# not the liveness property the case means. On a loaded machine the deadline is
+# missed, the suite fails, and the attempt budget is charged for a scheduling
+# artifact: eight tasks were stranded that way in r-002, more than any real
+# defect cost.
+#
+# Fixing one site was never the fix, and neither was counting them by hand. The
+# shape had been copied into the streaming case AND the heartbeat case of ALL
+# FOUR engine-adapter files -- the report that named this family as four sites
+# in three files had itself missed test_engine_hermes.sh's two -- so each round
+# of it blocked on a sibling nobody had named. tests/helpers.sh now carries the
+# bounded samplers (`await_log_growth`, `await_log_heartbeat`) and the stub
+# hold (`stub_hold_until`) all eight use; this lint is what stops the old shape
+# coming back one file at a time, the way it arrived, and what makes the census
+# a check rather than somebody's grep.
+#
+# WHAT IT MATCHES: a `midrun_*` sample whose immediately preceding statement is
+# a bare `sleep <n>`. That is precisely the banned idiom and nothing else --
+# a `sleep` before a bounded wait is fine, and a sample after one is the fix.
+# Comment lines are stripped first, for the same reason the two lints above
+# strip them: a fixture that DOCUMENTS the hazard must not be failed for
+# saying so, or the next person deletes the documentation instead of the bug.
+liveness_lint() {  # <file> -- one "line:text" per offending sample
+  awk '
+    /^[[:space:]]*#/ { next }
+    /^[[:space:]]*$/ { next }
+    {
+      if ($0 ~ /midrun_[A-Za-z0-9_]*=/ && prev ~ /^[[:space:]]*sleep[[:space:]]+[0-9.]+[[:space:]]*$/) {
+        print NR ":" $0
+      }
+      prev = $0
+    }
+  ' "$1"
+}
+
+# The RED half FIRST, because a lint proved only against a clean tree is a lint
+# proved against nothing: feed it the exact pre-T019 text of both shapes and
+# watch it fire on both. If this ever stops matching, the scan below is
+# reporting a clean tree because it can no longer see the defect.
+liveness_fixture="$(mktemp -d)/test_engine_fixture.sh"
+cat > "$liveness_fixture" <<'EOF'
+#!/usr/bin/env bash
+# the grown-while shape, verbatim as it stood before T019
+(run_adapter "$d" >>"$joblog" 2>&1) &
+adapter_pid=$!
+sleep 0.2
+midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
+wait "$adapter_pid"
+# the heartbeat-count shape, verbatim as it stood before T019
+( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
+adapter_pid=$!
+sleep 1.3
+midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"
+# and the FIXED shape, which must NOT be reported
+await_log_growth "$joblog" "$adapter_pid"
+midrun_grew="$(wc -c <"$joblog" | tr -d ' ')"
+EOF
+fixture_hits="$(liveness_lint "$liveness_fixture")"
+fixture_n="$(grep -c . <<<"$fixture_hits" || true)"
+[ "$fixture_n" -eq 2 ] \
+  || fail "the mid-run liveness lint no longer detects both pre-T019 shapes in a fixture carrying them (expected 2 hits, got ${fixture_n:-0}: $fixture_hits) -- the clean-tree scan below would then be passing because it cannot see the defect, not because the defect is gone"
+# Read through a herestring, never `printf ... | grep`: this file runs under
+# `pipefail` and `grep -q` exits at its first match, so the pipeline can report
+# the SIGPIPE and a `&& fail` guarded by it would be skipped in exactly the
+# case where the pattern IS present -- a negative assertion that fails open.
+grep -q 'midrun_grew' <<<"$fixture_hits" \
+  && fail "the mid-run liveness lint reports a sample taken AFTER a bounded wait -- that is the fix, and a lint that flags it would push fixtures back to the single-instant shape"
+rm -rf "$(dirname "$liveness_fixture")"
+
+# The GREEN half: the real engine files, which are what this is protecting.
+liveness_hits=""
+for f in "$REPO_ROOT"/tests/test_engine_*.sh; do
+  [ -f "$f" ] || continue
+  hit="$(liveness_lint "$f")"
+  [ -z "$hit" ] || liveness_hits="$liveness_hits
+${f#"$REPO_ROOT"/}:$hit"
+done
+[ -z "$liveness_hits" ] || fail "these fixtures sample a job log at ONE instant after a fixed sleep -- that is lesson L020's flake, which charged eight tasks a rework attempt for a scheduling artifact; wait for what you sample with tests/helpers.sh's await_log_growth/await_log_heartbeat and hold the stub open with stub_hold_until:$liveness_hits"
+
+# And the census, so the lint above cannot pass by finding nothing to look at.
+# Both shapes live in EVERY engine-adapter test file -- that is the fact the
+# report of this family got wrong -- so each of them must carry a call to each
+# sampler, by glob rather than by a list somebody has to remember to extend.
+# A file that loses one has either dropped the liveness case entirely or gone
+# back to sampling it by hand.
+engine_files=0
+for f in "$REPO_ROOT"/tests/test_engine_*.sh; do
+  [ -f "$f" ] || continue
+  engine_files=$((engine_files + 1))
+  grep -qE '^[[:space:]]*await_log_growth ' "$f" \
+    || fail "${f#"$REPO_ROOT"/} no longer waits for job-log growth with await_log_growth -- its streaming case has either gone back to sampling one instant or stopped checking liveness at all (L020)"
+  grep -qE '^[[:space:]]*await_log_heartbeat ' "$f" \
+    || fail "${f#"$REPO_ROOT"/} no longer waits for a [hb line with await_log_heartbeat -- its heartbeat case has either gone back to sampling one instant or stopped checking liveness at all (L020)"
+done
+[ "$engine_files" -ge 4 ] \
+  || fail "the mid-run liveness census matched $engine_files engine-adapter test file(s), fewer than the four that carry these cases -- it is checking a truncated list, so it would pass however many of them regressed"
+
 [ "$FAILS" -eq 0 ] && echo "helpers.sh WORK guard: OK"
 exit $((FAILS > 0))

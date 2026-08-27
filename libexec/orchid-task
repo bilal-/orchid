@@ -443,11 +443,13 @@ case "$sub" in
   advance)
     verb_lock_guard "$repo"
     epoch_require "$repo"; id="$1"; to="$2"; shift 2
-    reason=""; waive=0
+    reason=""; waive=0; charge=0
     while [ $# -gt 0 ]; do case "$1" in
       --reason) [ -n "${2:-}" ] || orchid_die "--reason requires a value"
         reason="$2"; shift 2;;
-      --waive-attempt) waive=1; shift;; *) shift;; esac; done
+      --waive-attempt) waive=1; shift;;
+      --charge-attempt) charge=1; shift;;
+      *) shift;; esac; done
     f="$(tf "$id")"; [ -f "$f" ] || orchid_die "no task $id"
     from="$(fm_get "$f" status)"
     arch="$(fm_get "$f" archetype)"; [ -n "$arch" ] || arch=feature
@@ -459,6 +461,22 @@ case "$sub" in
       exit 13
     fi
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    # A candidate failure normally charges through `testing -> rework`, whose
+    # existing accounting below increments `attempts`. Some valid code
+    # archetypes deliberately have no such edge, however, and a verb can also
+    # refuse that edge before it mutates. The driver still has to preserve the
+    # strict rule "candidate FAIL -> attempts++". This narrow fallback lets it
+    # charge the failed round while taking the universal escape hatch to
+    # `blocked`; it is not a general counter-writing option.
+    #
+    # Validate the complete shape before any write. In particular it cannot be
+    # combined with the semantic opposite (`--waive-attempt`) and cannot turn
+    # an arbitrary operator block into an attempt charge.
+    if [ "$charge" -eq 1 ]; then
+      [ "$waive" -eq 0 ] || orchid_die "--charge-attempt cannot be combined with --waive-attempt"
+      [ "$from" = testing ] && [ "$to" = blocked ] || \
+        orchid_die "--charge-attempt is only valid for testing -> blocked"
+    fi
     # v1-m2 Task 5 (keyed on active-status, not literally on `to=implementing`,
     # per final-review Finding 1): the kernel-side dispatch gate. Applies on
     # BOTH edges that actually dispatch a task (pending-> and rework->) INTO
@@ -782,6 +800,14 @@ case "$sub" in
       if [ -n "$(fm_get "$f" handoff_ack)" ]; then
         fm_set "$f" handoff_ack ""
       fi
+      # A deferred on_verify_fail hook pins one exact failed verifier log in
+      # `verify_fail_pending`. Leaving that receipt across a rework edge would
+      # make a later reverify of the same candidate resume evidence the edge is
+      # deleting below instead of running a fresh verifier. The edge owns both
+      # invalidations, so every caller gets the same symmetry.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
       [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
     fi
@@ -799,13 +825,33 @@ case "$sub" in
       # `reviewing` with no verify in between. The merge log is deliberately
       # left alone: it is the record of a merge that really did happen, and
       # this edge does not undo it.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
+    fi
+    # Journal the charge before changing the counter, then land the counter,
+    # receipt consumption, and status while this verb still owns the
+    # transaction lock. The attempt number is kernel-derived, so a caller
+    # cannot claim a different charge in prose than the one frontmatter gets.
+    if [ "$charge" -eq 1 ]; then
+      charge_n=$(( $(fm_get "$f" attempts) + 1 ))
+      reason="candidate attempt #$charge_n charged while blocking: $reason"
     fi
     if [ -n "$reason" ]; then
       kind=intervention
       [ "$from" = arbitrating ] && kind=arbitration
       [ "$to" = blocked ] && kind=blocker
       journal --task "$id" --kind "$kind" "$from -> $to: $reason"
+    fi
+    if [ "$charge" -eq 1 ]; then
+      fm_set "$f" attempts "$charge_n"
+      # The blocked state now durably accounts for this exact failed round.
+      # A deferred-hook receipt must not make a later retry resume and charge
+      # the same evidence a second time.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
     fi
     fm_set "$f" status "$to"; fm_set "$f" updated "$(now)"
     echo "$id: $from -> $to" ;;
@@ -1139,6 +1185,9 @@ case "$sub" in
     if [ -n "$(fm_get "$f" handoff_ack)" ]; then
       fm_set "$f" handoff_ack ""
     fi
+    if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+      fm_set "$f" verify_fail_pending ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework"
     # WHERE THE REASON WENT, said out loud (dogfood F28). It is delivered by
@@ -1263,6 +1312,9 @@ case "$sub" in
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     if [ -n "$(fm_get "$f" handoff_ack)" ]; then
       fm_set "$f" handoff_ack ""
+    fi
+    if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+      fm_set "$f" verify_fail_pending ""
     fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework"

@@ -276,13 +276,32 @@ ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$ROOT/tests/run.sh"
 # These are already part of tests/run.sh. Rehearse them explicitly so their
 # status remains visible as first-class CI gates even if the aggregate runner
 # is reorganized later.
+ci_run_test() {
+  local label="$1" out rc=0
+  shift
+  out="$(mktemp "${TMPDIR:-/tmp}/orchid-ci-test-output.XXXXXX")"
+  ORCHID_TEST_BASH="$BASH_BIN" "$@" > "$out" 2>&1 || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    # Match tests/run.sh's evidence-preserving quiet-success contract.  The
+    # parent observes the exit status before deciding what to expose, so test
+    # output cannot manufacture a successful framing record around a defect.
+    grep -E '^[[:space:]]*(NOT-TESTED:|not-tested:|RED-CASE:|GREEN-CASE:|red-cases:)' \
+      "$out" || true
+    printf '%s: OK\n' "$label"
+  else
+    cat "$out"
+  fi
+  rm -f "$out"
+  return "$rc"
+}
+
 echo "== Invariant tests"
 for rel in "$ROOT"/tests/inv/test_*.sh; do
   [ -e "$rel" ] || continue
-  ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$rel"
+  ci_run_test "$rel" "$BASH_BIN" "$rel"
 done
 
 echo "== Documentation checks"
-ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$ROOT/tests/test_docs.sh"
+ci_run_test "$ROOT/tests/test_docs.sh" "$BASH_BIN" "$ROOT/tests/test_docs.sh"
 
 echo "CI PASS"

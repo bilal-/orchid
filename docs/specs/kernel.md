@@ -277,7 +277,7 @@ across prose sections is normative HERE):**
 | pending | `task advance` | deps done; worktree created; base_sha set | frontmatter | implementing |
 | implementing | `task advance` | implementer envelope `ok`; the dispatch DELIVERED a candidate (orchestrator-checked before the verb is called — see below); candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
-| testing | `verify` FAIL → `task advance` | — (attempts++ unless `--waive-attempt --reason`) | frontmatter, journal | rework |
+| testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky → `task infra-fail` + `--waive-attempt --reason`. If a candidate failure cannot take `testing → rework` because the archetype omits that edge or the edge is refused before charging, `task advance blocked --charge-attempt --reason` preserves the strict charge in one locked transition while stopping for an operator. | frontmatter, journal | rework, or blocked on the charge fallback |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
 | arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
 | arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
@@ -336,7 +336,10 @@ buying a fresh implementation pass to reach the same tree.
 
 - **testing** = `orchid verify <id>`: runs `verification_commands` in the
   task worktree; records evidence (command, cwd, SHA, timestamps, exit
-  codes, log digest). Sole acceptance authority for tests.
+  codes, log digest), including the exec-bit set, missing-build-state set and
+  its resolution inventory, and stale-pin result captured before the
+  candidate-controlled command starts.
+  Sole acceptance authority for tests.
 - **merging** = `orchid merge <id>`: serialized, transactional, and — round-4
   determinism fix — NEVER triggers reviews itself. If integration HEAD ≠
   `base_sha`, the verb performs the rebase, then exits
@@ -524,6 +527,14 @@ buying a fresh implementation pass to reach the same tree.
   forward progress); the waiver is a journaled decision (kind
   `attempt_waiver`). The cap targets repeated identical failures; the
   per-task wall-clock budget is the unconditional backstop.
+  A candidate failure for which `testing -> rework` is unavailable or is
+  refused before it charges takes the single narrow fallback `task advance
+  <id> blocked --charge-attempt --reason "..."`. The flag is legal only on
+  `testing -> blocked`, is mutually exclusive with `--waive-attempt`, derives
+  the next attempt number itself, journals before mutation, clears any
+  deferred-failure receipt, and increments exactly once. This keeps the
+  canonical candidate-FAIL rule true without making `attempts` generally
+  writable.
   `infra_failures` NEVER consume attempts, and neither does `task reverify`.
 - **The cap is `rework_max` (config, default 3), and an operator can raise
   it for ONE task:** `orchid task retry <id> --reason "..." [--attempts N]`
@@ -602,6 +613,121 @@ buying a fresh implementation pass to reach the same tree.
   downstream — the budget for defects in work that WAS delivered — like any
   other delivered round. Both shas must be on record: with `base_sha` missing,
   nothing proves a candidate exists and the refusal two bullets above stands.
+- **Verification failures are classified before they are charged.** An
+  attempt budget that counts the harness's bad days is not measuring the
+  candidate: a stale package pin the implementer profile cannot re-pin and an
+  executable shipped without its mode bit are failures in which the code under
+  test is blameless, and each of them spent a rework attempt before this rule
+  existed. So were two more shapes that ran through the same wave: a task
+  worktree that never received the gitignored dependency tree the integration
+  checkout carries (lesson L003), and an assertion that samples a race, which
+  in r-002 stranded eight tasks and outspent every real defect in the run
+  (lesson L020). The deterministic driver therefore classifies a FAILED
+  `orchid verify`, and it can reach four verdicts — `candidate`, which
+  charges, and `handoff`, `environment` and `flaky`, which do not.
+  There is NO signature surface: a repository cannot declare a failure
+  *sentence* that forgives its own rounds, and the two hand-offs are
+  recognized with no per-repo configuration at all, because the protocol
+  rather than any one project is what names them.
+  Each is proved in two halves, and neither half is worth anything alone. The
+  STATE is proved against the world: the driver stats the files the candidate
+  ADDED and the ones it MODIFIED whose base recorded mode 755 (a rewrite that
+  loses an exec bit is the same hand-off as a new file that never carried
+  one); it RUNS the repository's own pin freshness check and requires it
+  to REPORT A FILE STALE — a nonzero exit alone is not that report, since a
+  check that cannot find the formula or trips over metadata the candidate
+  corrupted exits nonzero too and re-pinning fixes neither; it COMPARES the
+  two checkouts for an ignored directory the worktree never received; and it
+  reads a known-flaky register that THIS CANDIDATE DID NOT TOUCH, which is what
+  stops an implementer quarantining the assertion it is failing. The exec-bit
+  set, ignored-directory set, and pin-check result are snapshot evidence
+  written by `orchid verify` before the candidate-controlled command runs,
+  bound by the log's `sha`, `candidate`, `cwd`, and captured `base_sha` fields
+  to the current task candidate, worktree, and pre-run comparison base. They
+  are never reconstructed from post-run state:
+  doing so lets the command strip a mode bit, remove ignored dependencies, or
+  dirty release inputs until the pin check turns stale during its own test and
+  create the very state that waives its diagnostic. Missing, malformed, and
+  mismatched snapshot fields close all three routes and charge. The missing
+  tree's package/command inventory is captured at the same time and is the only
+  authority for later resolution attribution; the classifier never reads
+  candidate-mutable integration contents after the command. Yarn v1 command
+  echoes and its exact exit-127 record remain strict until a command in that
+  inventory plus a causal resolution diagnostic attribute them to the absent
+  tree; only its exact version/help records are neutral without that proof. A
+  failed verification body may include deterministic successful-fixture
+  chatter from an old runner that exposes a child's entire buffer after a
+  later historical flake.
+  The trusted register can name those lines exactly with `FLAKE-CONTEXT:`, but
+  they are inert until a causal `FLAKE:` signature matches this body and cannot
+  claim any unlisted line. This is closed companion accounting, not a
+  failed-child waiver. A recorded exit
+  status saying the run STOPPED SHORT (124, 137, 143) was a fifth verdict
+  once and is not one now: that status is equally what a candidate which HUNG
+  until a timeout reaped it leaves, and what a suite that exits with it
+  deliberately leaves, so the provenance was assumed rather than proved. It is
+  reported on a charged round instead. The
+  failure is then ATTRIBUTED to that artifact: a failing line must name it and
+  report its fault (refuse to execute it, call it stale, or fail to resolve
+  something that lives INSIDE the absent directory), which proves the state
+  blocked this run. Resolution is bound to the diagnostic's subject — syntax
+  such as `open` in an ENOENT line is not searched as though it were the thing
+  that was missing — after which every failing line NAMING that artifact is part
+  of the same cascade (one missing mode bit strands a whole suite, not one
+  assertion). NAMING is the whole of the cascade rule, for the absent directory
+  as much as for the file: a failing line that merely mentions something living
+  inside it — a package name, which is an ordinary word — is not its cascade.
+  The path must use its exact repository-relative, `./`-relative, or
+  verification-root absolute spelling, with a boundary after it. Thus an
+  outstanding `bin/tool` cannot collect a failure on `bin/tool-helper`, on
+  `bin/tool/child`, or on the distinct suffix `fixtures/bin/tool`; the ONE
+  relaxation is that a path UNDER the absent directory names that directory,
+  because there the artifact is a whole tree that is not there and everything
+  beneath it is missing with it. Every route that reads an
+  authority out of the repository asks git what the candidate changed, and each
+  CHARGES when git cannot be asked at all: a missing or unresolvable
+  `base_sha`/`candidate_sha` yields the same empty diff as an untouched file,
+  and reading that as "untouched" would reopen the pin check and the flaky
+  register to a candidate that wrote them. The two routes that read a FILE out
+  of the repository take that further, because a diff of two commits is not a
+  fact about the file that RAN: the pin check and the register are authorities
+  only while each is tracked in `candidate_sha` and the verified worktree
+  carries exactly the bytes and mode that commit records, so an unstaged edit,
+  a staged-and-uncommitted one, an untracked drop-in, a deletion and a mode
+  change each close the route — none of them appears in the diff, and every one
+  of them is a file the implementer controls. The flaky register has one
+  fail-closed bootstrap for carried worktrees: when the task's captured
+  pre-run base and candidate both resolve and both lack the register path, a
+  clean tracked copy at integration `HEAD` may supply it, but only while that
+  HEAD is still the exact commit captured before candidate-controlled
+  verification began. A
+  candidate addition has the path in its candidate; a deletion has it in its
+  base; moved integration HEAD or dirty integration bytes, mode, or index fail
+  the authority check. This lets a post-cut historical-flake entry
+  protect old branches without letting a candidate author or remove its own
+  amnesty. A non-`candidate` verdict charges `infra_failures` rather than
+  `attempts`. The `infra failure #N` intervention reason itself names the class
+  and says `attempt not charged`, because an infra cap or recurrence can stop
+  before the rework edge; a missing edge gets the same task-scoped note without
+  an infra charge. Entering rework with `--waive-attempt` adds an
+  `attempt_waiver` entry, and only that successful edge arms the recurrence
+  counter. Four properties make this safe rather than a loophole: it forgives
+  only on POSITIVE evidence, never on absence of it; every uncertain case (no
+  evidence log, no state outstanding, a known fault the failure cannot be
+  attributed to) charges and says why; NO ROUND IS EVER WAIVED AS A ROUND —
+  attribution is per failing LINE and a round is waived only when every line in
+  it is individually claimed, so a stale pin and an absent dependency tree each
+  explaining part of a round waive it together while one line neither owns
+  charges it with that line quoted, and the arm that once EXEMPTED a round from
+  that accounting is precisely how an unrelated ignored directory came to
+  waive failures it had no part in; and forgiveness is bounded — by
+  `infra_max`, which blocks the task rather than looping forever, and by the
+  recurrence guard, which stops a SECOND waived round on the same task, of any
+  class, at an operator boundary rather than re-dispatching an implementer that
+  cannot clear it. A waived round also
+  requires a FRESH implement envelope, since `--waive-attempt` holds
+  `attempts` still and the previous round's envelope would otherwise re-verify
+  a candidate that never moved.
 
 Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, attempt_budget, infra_failures, session_id,
@@ -652,6 +778,18 @@ header and runs; the equality the advance leaves behind is what INV-11's
 `testing → reviewing` gate reads out of that header afterwards. (A task
 proposing that verification refuse outright on a mismatch, T031, is unmerged at
 the time of writing; nothing above depends on it.)
+`implement_floor` (v1.1): driver-written, and no part of the schema-1 list
+above — it is absent from a task file until a round is waived, and inert once
+`attempts` moves past the attempt it names. Its value is `a<attempt>:<n>`, the
+implement-envelope sibling counter a WAIVED round's next envelope must exceed,
+so a waived round cannot re-resolve the envelope of the round it waived.
+`verify_fail_pending` (v1.1): driver-written, absent/empty normally. A bound
+asynchronous `on_verify_fail` hook defers the failure arm to a later pass, so
+the driver records `a<attempt>:<candidate_sha>:<verify-log-sha256>` before it
+launches the hook. A matching receipt makes the later pass resume and classify
+that exact failed log without rerunning the verifier and overwriting it. A
+digest mismatch or missing log charges under the strict default; entry to
+rework or a fresh reverify clears the receipt with the evidence it binds.
 `refused_envelopes` (v1.1): the
 space-separated basenames of implement envelopes refused as no-op deliveries,
 appended by the orchestrator through `orchid task set` (INV-13) at the moment

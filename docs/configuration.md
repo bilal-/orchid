@@ -75,6 +75,8 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `gc_older_than_s` | `86400` | repo | v0 |
 | `infra_max` | `3` | repo | v0 |
 | `rework_max` | `3` | repo | v1.1 |
+| `handoff.pin_check` | `scripts/pin-formula.sh --check` | repo | v1.1 |
+| `flaky.quarantine` | `tests/QUARANTINE.md` | repo | v1.1 |
 | `model` | *(empty — engine's own default)* | repo or user | v0 |
 | `effort` | `medium` | repo or user | v0 |
 | `rate_limit_backoff_s` | `3600` | repo | v1-m2 |
@@ -191,6 +193,224 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   INV-07 invalidates verify evidence. Any value
   other than `off` reads as `required`, so a typo can only route more work to
   a human, never less.
+- **Verification-failure classification** has **no signature surface**, and
+  that is the design rather than an omission. A repository cannot declare a
+  *failure sentence* that forgives its own rounds: earlier versions of this
+  feature offered one, and every signature list, directory-name list and
+  whole-round exemption in them ended up forgiving something it never meant
+  to. Four failures are waivable, and each is **proved against the world**
+  rather than read out of the failure's wording:
+  - **A package pin the repository's own freshness check reports stale**
+    (`handoff.pin_check`, below).
+  - **An executable this candidate left mode 644** — a file carrying a `#!`
+    line with no execute permission, either one it *added* at that mode or one
+    it *modified* that its `base_sha` recorded mode 755, which is what a
+    rewrite that loses an exec bit looks like and is just as much the
+    operator's `chmod`.
+  - **Gitignored build state the worktree never received** — a directory that
+    is present in the integration checkout, ignored by the repository's own
+    rules, and absent from the worktree the verification ran in. `git worktree
+    add` reproduces what git *tracks*, so `node_modules`, `vendor`, `.venv`
+    and a symlink into a sibling checkout simply are not there (lesson L003).
+    Orchid snapshots the package/command subjects that directory publishes
+    before verification too; post-command integration contents are not an
+    attribution authority.
+  - **An assertion the repository already recorded as known-flaky**
+    (`flaky.quarantine`, below).
+
+  A run whose recorded exit status says it **stopped short** (`orchid verify`
+  recorded exit 124, 137 or 143) is **reported and still charged**. It was a
+  fifth verdict once, on the reading that the harness had reaped a pass which
+  therefore never spoke about the candidate — and that reading was never
+  proved. The same trailer is what a candidate that *hangs* until a timeout
+  reaps it leaves, which is the very defect a `timeout` in a verification
+  command line exists to catch, and what a suite that exits with the status
+  deliberately leaves. Nothing in the log tells them apart, so it takes the
+  uncertain reading: the attempt is charged, and the reason says the run
+  stopped short so you are not left wondering why the log ends where it does.
+
+  Each needs **two halves, and neither is worth anything alone**:
+  - *The state, proved against the world* — `stat` for the mode bit, *running*
+    the freshness check for the pin, comparing the two checkouts for the
+    missing build state, and reading a register the candidate did not touch
+    for the flaky one. No sentence in the failure can answer any of those
+    questions, because `Permission denied`, `is not executable`, `checksum is
+    stale` and `Cannot find module` are all things an ordinary defect prints.
+  - *The attribution, from the failure to that artifact.* Per failing
+    **line**, and in two steps, because one fault does not produce one failure
+    — it produces a cascade. At least one failing line must **name that file**
+    and report its fault (refuse to execute it, or call it stale); that is the
+    proof the outstanding state blocked this run. Every failing line that then
+    names the file is part of its cascade, whether or not it repeats the
+    causal wording (`runners/orchid-drive must exist and be executable` is
+    unmistakably that mode bit's failure). The path must use its exact
+    repository-relative, `./`-relative, or worktree-root absolute spelling,
+    with a **boundary** after it: an outstanding `bin/tool` does not collect a
+    genuine `bin/tool-helper: Permission denied` or a distinct
+    `fixtures/bin/tool: Permission denied` by suffix.
+
+    For the missing build state the causal proof is the same shape asked of a
+    different fact: a line reporting that something **could not be resolved**,
+    where the thing it could not resolve **lives inside the absent
+    directory**. `error Command "jest" not found` attributes to
+    `mobile/node_modules` because `mobile/node_modules/.bin/jest` exists in the
+    checkout that still has it — and attributes to nothing at all when the
+    absent directory is a `.cache` with no `jest` in it, which is exactly the
+    coincidence that made the first version of this arm dangerous. Only the
+    diagnosed subject is looked up: `ENOENT: ... open 'src/config.json'` asks
+    about `src/config.json`, so an unrelated package named `open` cannot earn a
+    waiver. Yarn v1's version/help records are exact neutral context, but its
+    echoed package command and `error Command failed with exit code 127.` are
+    attributed only after that command is present in the trusted missing-tree
+    inventory and a causal resolution line has opened the route. This covers
+    `$ jest` and `$ tsx scripts/parseBooks.ts` without making arbitrary command
+    echoes or exit records neutral. Its cascade
+    claims a line that **names the directory**, or that names a path **inside**
+    it — `ENOENT: ... open '.../node_modules/x'` cannot be about anything but
+    the tree that is not there. That last part belongs to this arm alone,
+    because its artifact is a *directory* that is entirely absent; where the
+    artifact is a file, `bin/tool/child` is a different file and `bin/tool`
+    does not collect it either. For the
+    flaky register the signature *is* the proof, matched literally and
+    ordinarily claiming only the lines it matches. Exact registered companion
+    context can join only after that causal signature matches; it cannot open
+    the route and it cannot claim an unlisted line.
+
+  **Two of those proofs read a file out of your repository — the pin check and
+  the flaky register — and a file is normally an authority on a candidate only
+  while it is that candidate's own record of it.** Each is read only when it is
+  *untouched* across `base_sha..candidate_sha`, *tracked in* `candidate_sha` as
+  an ordinary file, and present in the verified worktree with the same bytes
+  and the same mode that commit records. The first clause alone is not the
+  question, because a diff of two commits cannot see the file that actually
+  ran: an edit left unstaged, an edit staged and never committed, a file
+  dropped in untracked, one deleted, and one whose mode has moved are all
+  invisible to it, and every one of them is a way to hand the driver a file the
+  implementer controls. Any of those, and any form of the question that cannot
+  be *answered* — a missing or unresolvable `base_sha`/`candidate_sha` produces
+  the same empty diff an untouched file does — closes the route and charges.
+
+  The flaky register alone has a bootstrap path for tasks already in flight
+  when the register is introduced. If both task commits resolve and both lack
+  the configured path, Orchid may read the integration checkout's tracked copy
+  while its index, bytes, and mode are clean at integration `HEAD`. A candidate
+  addition no longer lacks the path, and a candidate deletion had it in the
+  base, so neither can borrow that copy. An unanswerable history or dirty
+  integration register closes the route and charges.
+
+  Being outstanding is not being to blame — a repository whose sourced
+  libraries carry `#!` lines at mode 644 (orchid is one, in every `lib/*.sh`)
+  has that state outstanding on any candidate that adds one, and a stale pin
+  is outstanding on the whole tree for as long as it is stale. Where the state
+  is outstanding and the failure is not attributable to it, the attempt is
+  **charged** and the reason says attribution was not established.
+
+  **A round is never waived as a round.** It is waived only when *every*
+  failing line in it has been individually claimed, which lets one round hold
+  a mix *across classes*: a stale pin explaining six lines and an absent
+  dependency tree explaining four together account for all of it and it is
+  waived; one further unexplained line charges it and the reason quotes that
+  line. The class the journal *names* is the one somebody must act on first —
+  `handoff`, then `environment`, then `flaky` — and every contributing class
+  is named in the reason regardless. Unprefixed resolution refusals such as
+  `missing-helper: command not found`, `ENOENT`, and `Cannot find module` are
+  failing lines too, as are unmistakable fatal diagnostics such as `panic:`,
+  `RuntimeError:`, and `Segmentation fault`; an attributable fault beside one
+  cannot hide it. Word boundaries keep progress identifiers such as
+  `test_panic_recovery.sh` out. An unfamiliar non-empty line is not silently
+  dropped: unless it is one of the classifier's explicit progress, success,
+  or neutral NOT-TESTED records, it is uncertain, stays unattributed, and
+  charges. Orchid's terminal standalone `OK` and both NOT-TESTED output forms
+  are explicit members of that closed non-failure vocabulary. Its shipped
+  whole-suite/CI harness captures each child's output until the parent knows
+  its exit status. A passing child contributes only durable qualification
+  records and a terminal `<path>: OK`; a failing child contributes its output
+  verbatim. The classifier trusts no BEGIN/END text from candidate-controlled
+  output, so a test cannot print a success frame around a real defect. Anchored
+  NOT-TESTED/RED/GREEN records stay neutral when their labels describe a
+  `failure` or `failed` fixture; a generic terminal-OK line does not override
+  a failure match. Merely
+  naming the same artifact cannot pull an unknown line into that artifact's
+  cascade.
+  A separate outstanding state contributes no
+  attribution, but a waived reason still reports it when it is an operator
+  action the candidate owes, such as a dropped 755 bit. What remains forgiven,
+  and is bounded on purpose: a
+  candidate that produces *no failing line of its own* while one of those
+  states is outstanding is waived for that round — an operator clears the
+  state in seconds, the round is charged to `infra_failures`, and it stops for
+  a human if it recurs. Every non-candidate exit journals the canonical
+  `attempt not charged` reason: normally in the `infra failure #N`
+  intervention, or as a task note when the archetype declares no rework edge
+  and no infra charge is taken.
+
+  A waived round re-enters rework with `--waive-attempt`, and requires a
+  *fresh* implement envelope of its own: `--waive-attempt` leaves `attempts`
+  where it is, so without that the re-dispatched round would resolve the
+  previous round's envelope and re-verify a candidate that never moved. If a
+  waived fault recurs — a second waived round on the same task — the pass
+  stops at an operator boundary instead of re-dispatching, because a hand-off
+  is a fault an operator clears and an identical retry cannot. That guard
+  counts only this task's `attempt_waiver` entries rather than every journaled
+  non-candidate exit or `infra_failures`, which also counts unrelated harness
+  faults.
+- **`handoff.pin_check`** — the package-pin freshness check the `handoff`
+  route runs, as a command line relative to the verified tree
+  (default `scripts/pin-formula.sh --check`). It is only invoked when the
+  named script is a regular file there *and* states how to run it — directly
+  when it is executable, otherwise under the interpreter its own `#!` line
+  names, which is how orchid runs its own mode-644
+  `scripts/pin-formula.sh`; a file that is neither executable nor names a
+  working interpreter is never run, and that is no pin route. It is read as an
+  authority only under the rule above: the candidate must not have changed it
+  (a bug an implementer just introduced into a pinning script fails exactly
+  like a stale pin, and that is the implementer's), the candidate must
+  *record* it, and the worktree must still carry what was recorded.
+  **A nonzero exit does not prove the pin stale** — a
+  check that cannot find the formula, cannot find a git checkout, or trips
+  over packaging metadata the candidate itself corrupted exits nonzero too,
+  and re-pinning fixes none of those. The check must *say* something is stale
+  and *name* a file the repository tracks; that file is what the waiver is
+  attributed to, and a check that fails silently proves nothing and forgives
+  nothing. Orchid's shipped check reports the pinned checksum, expected
+  checksum, and one-command remedy on three continuation lines. Those exact
+  records are attributed with its causal `Formula/orchid.rb ... STALE` line;
+  an unfamiliar continuation from a custom check remains unknown and charges.
+  `none` disables the route.
+- **`flaky.quarantine`** — the known-flaky register the `flaky` route reads,
+  relative to the verified tree (default `tests/QUARANTINE.md` — orchid ships
+  one, carrying two signatures for the two pre-T019 liveness-message families,
+  their closed old-runner companion set, and the reasoning written down).
+  One causal entry per line,
+  `FLAKE: <literal substring of the failing line>` at **column 0** and
+  optionally ` -- <why>`. An exact companion line is
+  `FLAKE-CONTEXT: <whole normalized output line>` at column 0; it has no reason
+  suffix because everything after the colon is matched. Everything else is
+  prose the route ignores (including an indented `FLAKE:`, so a register can
+  document its own format without that example becoming a live signature), so
+  it can be the document a human actually reads. **The safety here is not the
+  path, it is the timing:** a register *this candidate changed* is not an
+  authority on this candidate, so the moment a candidate touches the file the
+  route is gone and the round charges — an implementer cannot quarantine the
+  assertion it is failing, and cannot reach around that by leaving the entry
+  uncommitted in the worktree either, because the register is read only under
+  the authority rule above. The integration bootstrap described above reaches
+  only branches whose base and candidate both predate the path. Three more
+  things keep it narrow: a signature is
+  matched
+  **literally**, never as a pattern, so no entry can be written that
+  matches everything; it must be at least 16 characters, so no entry can match
+  everything by being short; and it ordinarily claims **only** the lines its
+  signature matches. Companion records remain inert until a trusted signature
+  matched the same body, then claim only exact whole lines. They are a closed
+  accommodation for deterministic successful-fixture chatter exposed by an
+  old failed child, not a cascade: an aggregate `3 tests failed`, a novel
+  diagnostic, or any genuine unlisted failure remains unexplained and charges.
+  `none` disables the route.
+  Quarantining is the *second*-best answer — a case that reports without
+  failing the suite is still an unresolved problem, and the register is what
+  keeps it visible instead of silent. Making the test deterministic is the
+  first.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable
   reviewer/critic (the diff is swapped for a `diff.stat` summary, honestly
   recorded as omitted); an inline-only engine (agy, hermes) still gets the

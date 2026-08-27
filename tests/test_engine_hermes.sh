@@ -273,20 +273,31 @@ assert_eq "[]" "$(jq -c .findings "$d/out/envelope.json")" "plan review stub: fi
 
 # --- 14. v1-m3-style log streaming: job log must grow WHILE the adapter is
 # still running (stall-detector liveness signal), not just after exit. ------
+#
+# T019 (lesson L020): one of eight sites that used to answer that question by
+# sleeping a fixed 0.2s and reading the log ONCE. That is a deadline, not a
+# liveness check, and a loaded machine misses it -- eight tasks in r-002 were
+# stranded and charged a rework attempt for a scheduling artifact. The
+# sampler now waits, bounded, for what it samples, and the stub is held open
+# until it has, so "still running" is a fact rather than a race. All the
+# edges of the shared helpers are pinned in tests/test_engine_agy.sh (12b, 12c
+# and 12d, which is why heartbeat lines do not count as growth here);
+# tests/helpers.sh carries the full narrative.
 d="$(build_request streaming review '#!/usr/bin/env bash
 echo "line one"
-sleep 0.7
+'"$(stub_hold_until "$WORK/streaming.release")"'
 echo "line two"
-sleep 0.7
 echo "VERDICT: approve"')"
 joblog="$d/out/job.log"; : > "$joblog"
 (run_adapter "$d" >>"$joblog" 2>&1) &
 adapter_pid=$!
-sleep 0.2
+midrun_grew=no
+await_log_growth "$joblog" "$adapter_pid" && midrun_grew=yes
 midrun_size="$(wc -c <"$joblog" | tr -d ' ')"
+release_stub "$WORK/streaming.release"   # only now may the stub reach its VERDICT
 wait "$adapter_pid" || fail "streaming stub: adapter should exit 0"
 final_size="$(wc -c <"$joblog" | tr -d ' ')"
-[ "$midrun_size" -gt 0 ] || fail "streaming stub: job log must have grown WHILE the adapter was still running (was $midrun_size bytes at the midpoint)"
+assert_eq "yes" "$midrun_grew" "streaming stub: bounded growth wait must observe live stream bytes before adapter exit -- this is the stall-detector's liveness signal"
 [ "$final_size" -ge "$midrun_size" ] || fail "streaming stub: job log must not shrink after the adapter exits"
 assert_match "line one" "$(cat "$joblog")" "streaming stub: the CLI's early output reached the job log"
 envelope_validate "$d/out/envelope.json" || fail "streaming stub: envelope invalid"
@@ -294,19 +305,26 @@ assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "streaming stub: status
 
 # --- 15. adapter heartbeat: a CLI that writes NOTHING until the very end
 # still grows the job log mid-run via lib/heartbeat.sh's `[hb ...]` line. --
+#
+# T019 (lesson L020): the heartbeat half of the same family as case 14 above.
+# It used to sleep 1.3s and count `[hb ` lines at that instant, which makes a
+# deadline out of a liveness property; same fix, same shared helpers.
 d="$(build_request heartbeat review '#!/usr/bin/env bash
-sleep 2.2
+'"$(stub_hold_until "$WORK/heartbeat.release")"'
 echo "VERDICT: approve"
 echo "REASON: heartbeat test reply"')"
 joblog="$d/out/job.log"; : > "$joblog"
 initial_mtime="$(file_mtime "$joblog")"
 ( ORCHID_HB_INTERVAL_S=1 run_adapter "$d" >>"$joblog" 2>&1 ) &
 adapter_pid=$!
-sleep 1.3
+midrun_hb=no
+await_log_heartbeat "$joblog" "$adapter_pid" && midrun_hb=yes
 midrun_hb_count="$(grep -c '^\[hb ' "$joblog" 2>/dev/null || true)"; midrun_hb_count="${midrun_hb_count:-0}"
 midrun_mtime="$(file_mtime "$joblog")"
+release_stub "$WORK/heartbeat.release"   # only now may the stub reach its VERDICT
 wait "$adapter_pid" || fail "heartbeat stub: adapter should exit 0"
-[ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running"
+assert_eq "yes" "$midrun_hb" "heartbeat stub: a [hb line must appear WHILE the adapter is still running -- waited for, not sampled at one instant"
+[ "$midrun_hb_count" -ge 1 ] || fail "heartbeat stub: bounded heartbeat wait must leave at least one persisted [hb line before adapter exit"
 [ "$midrun_mtime" -ge "$initial_mtime" ] || fail "heartbeat stub: job log mtime must have advanced mid-run (initial=$initial_mtime midrun=$midrun_mtime)"
 envelope_validate "$d/out/envelope.json" || fail "heartbeat stub: envelope invalid"
 assert_eq "ok" "$(jq -r .status "$d/out/envelope.json")" "heartbeat stub: status ok"

@@ -37,6 +37,15 @@ assert_eq 1 "$rc" "no marker -> FAIL"
 assert_match "^FAIL$" "$(cat "$out")" "prints FAIL before marker exists"
 [ -f "$log" ] || fail "evidence log exists after FAIL run"
 assert_match "^command: test -f marker\.txt$" "$(cat "$log")" "evidence records exact command (FAIL run)"
+assert_match "^prestate: 1$" "$(cat "$log")" "evidence marks the trusted pre-verification snapshot contract"
+assert_match '^pre_base_sha: "(none|[0-9a-f]{40})"$' "$(cat "$log")" \
+  "evidence binds classifier authority comparisons to base_sha before candidate-controlled verification"
+assert_match '^pre_exec_missing: "' "$(cat "$log")" "evidence records the pre-run exec-bit set as one JSON string"
+assert_match '^pre_env_missing: "' "$(cat "$log")" "evidence records the pre-run missing-build-state set as one JSON string"
+assert_match '^pre_env_inventory: "' "$(cat "$log")" "evidence records the pre-run environment resolution inventory as one JSON string"
+assert_match '^pre_pin_stale: "' "$(cat "$log")" "evidence records the pre-run stale-pin proof as one JSON string"
+assert_match '^pre_integration_head: "[0-9a-f]{40}"$' "$(cat "$log")" \
+  "evidence binds old-branch control-plane authority to integration HEAD before candidate-controlled verification"
 assert_match "^exit: [1-9][0-9]*$" "$(cat "$log")" "evidence records nonzero exit (FAIL run)"
 
 touch "$WORK/marker.txt"
