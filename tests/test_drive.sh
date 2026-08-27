@@ -4078,12 +4078,31 @@ mk_cls_task() {
   printf -- '---\nschema: 1\nid: %s\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\n---\nbody\n' \
     "$1" "${2:-}" > "$CLS/.orchid/tasks/$1.md"
 }
-# mk_cls_log <id> <output-body> [command] -- the exact shape `orchid verify`
-# writes: five header lines, a `---` separator, the command's own output, and
-# a trailing `exit: N`.
+# mk_cls_log <id> <output-body> [command] -- a legacy verify log. These strict-
+# default fixtures need no waivable prestate; the absence of trusted snapshot
+# fields must close those routes rather than falling back to live state.
 mk_cls_log() {
   printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: %s\n---\n%s\nexit: 1\n' \
     "$CLS" "${3:-bash tests/run.sh}" "$2" > "$CLS/.orchid/reviews/$1-verify.log"
+}
+
+# mk_prestate_log <repo> <task-file> <log> <body> [command] [rc] [snapshot]
+# -- a failed verifier log carrying state captured before its command ran.
+# Supplying [snapshot] lets a regression capture it, mutate the worktree as a
+# hostile test command would, and only then write the final evidence.
+mk_prestate_log() {
+  local repo="$1" tf="$2" log="$3" body="$4"
+  local cmd="${5:-bash tests/run.sh}" rc="${6:-1}" snapshot root cand
+  root="$(fm_get "$tf" worktree)"
+  [ -n "$root" ] && [ -d "$root" ] || root="$repo"
+  cand="$(fm_get "$tf" candidate_sha)"; [ -n "$cand" ] || cand=none
+  if [ "$#" -ge 7 ]; then
+    snapshot="$7"
+  else
+    snapshot="$(drive_verify_prestate_headers "$repo" "$tf")"
+  fi
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: %s\n%s\n---\n%s\nexit: %s\n' \
+    "$cand" "$cand" "$root" "$cmd" "$snapshot" "$body" "$rc" > "$log"
 }
 # HOME is replaced for the call: config_get's third layer is $HOME/.orchid/
 # config, and a signature in the operator's own machine-local config must
@@ -4330,8 +4349,8 @@ mk_hof_task() {
 }
 # hof_log <body>
 hof_log() {
-  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$HOF" "$1" > "$HOF/.orchid/reviews/H01-verify.log"
+  mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H01.md" \
+    "$HOF/.orchid/reviews/H01-verify.log" "$1"
 }
 # Config from THIS repository, tree from the fixture: the claim is about orchid
 # as it actually ships (no handoff.pin_check declared), decided against a
@@ -4458,9 +4477,9 @@ git -C "$HOF" commit -q -m "fixture: a sourced library and a verb, both mode 644
 HOF_MULTI="$(git -C "$HOF" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: H02\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$HOF" "$HOF_CAND" "$HOF_MULTI" > "$HOF/.orchid/tasks/H02.md"
-printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-  "$HOF" "bash: $HOF/libexec/orchid-two-b: Permission denied" \
-  > "$HOF/.orchid/reviews/H02-verify.log"
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H02.md" \
+  "$HOF/.orchid/reviews/H02-verify.log" \
+  "bash: $HOF/libexec/orchid-two-b: Permission denied"
 h02_cls() {
   ( HOME="$MACHINE_HOME"
     drive_verify_class "$REPO_ROOT" "$HOF/.orchid/tasks/H02.md" \
@@ -4492,9 +4511,9 @@ esac
 #
 # The state is still SAID, because a charged round has to show what is open.
 # What is withdrawn is the imperative.
-printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-  "$HOF" "tests/test_widget.sh: FAIL: widget returned 3, expected 4" \
-  > "$HOF/.orchid/reviews/H02-verify.log"
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H02.md" \
+  "$HOF/.orchid/reviews/H02-verify.log" \
+  "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
 assert_eq candidate "$(h02_cls | cut -f1)" \
   "an ordinary assertion failure is charged with two mode-644 #! files outstanding, exactly as before — this is about what the reason SAYS, not about what it decides"
 H02_UNBLAMED="$(h02_cls | cut -f2-)"
@@ -4545,8 +4564,8 @@ HOF_DROP_CAND="$(git -C "$HOF" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: H03\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$HOF" "$HOF_DROP_BASE" "$HOF_DROP_CAND" > "$HOF/.orchid/tasks/H03.md"
 h03_log() {
-  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$HOF" "$1" > "$HOF/.orchid/reviews/H03-verify.log"
+  mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H03.md" \
+    "$HOF/.orchid/reviews/H03-verify.log" "$1"
 }
 h03_cls() {
   ( HOME="$MACHINE_HOME"
@@ -4595,9 +4614,9 @@ git -C "$HOF" commit -q -m "fixture: the same rewrite, plus a sourced library th
 HOF_DROP_MULTI="$(git -C "$HOF" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: H04\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$HOF" "$HOF_DROP_BASE" "$HOF_DROP_MULTI" > "$HOF/.orchid/tasks/H04.md"
-printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-  "$HOF" "tests/test_widget.sh: FAIL: widget returned 3, expected 4" \
-  > "$HOF/.orchid/reviews/H04-verify.log"
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H04.md" \
+  "$HOF/.orchid/reviews/H04-verify.log" \
+  "tests/test_widget.sh: FAIL: widget returned 3, expected 4"
 assert_eq 2 "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H04.md" | grep -c .)" \
   "fixture: this candidate leaves BOTH shapes outstanding at once — a sourced library it added at 644 and a runner whose 755 it dropped — or the preference below has nothing to choose between"
 H04_REASON="$( ( HOME="$MACHINE_HOME"
@@ -4617,6 +4636,24 @@ assert_eq "" "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H03.md")" \
 h03_log "bash: $HOF/runners/hof-drive: Permission denied"
 assert_eq candidate "$(h03_cls | cut -f1)" \
   "and the same sentence charges afterwards — whatever that refusal is now, chmod is not the fix"
+
+# The candidate-controlled verifier command must not be able to CREATE that
+# same state after the trusted snapshot. Capture an empty exec set while the
+# file is executable, strip it as the command could, and then file the exact
+# permission diagnostic that the old post-run classifier waived.
+H03_BEFORE_MUTATION="$(drive_verify_prestate_headers \
+  "$REPO_ROOT" "$HOF/.orchid/tasks/H03.md")"
+chmod -x "$HOF/runners/hof-drive"
+assert_eq "runners/hof-drive" \
+  "$(drive_handoff_exec_bit "$HOF" "$HOF/.orchid/tasks/H03.md")" \
+  "fixture: after the simulated command strips the bit, a post-run inspection really would see a waivable hand-off"
+mk_prestate_log "$REPO_ROOT" "$HOF/.orchid/tasks/H03.md" \
+  "$HOF/.orchid/reviews/H03-verify.log" \
+  "bash: $HOF/runners/hof-drive: Permission denied" \
+  "bash tests/run.sh" 1 "$H03_BEFORE_MUTATION"
+assert_eq candidate "$(h03_cls | cut -f1)" \
+  "but trusted pre-verification evidence says the bit was present, so a candidate cannot strip it during its test and manufacture its own hand-off waiver"
+chmod +x "$HOF/runners/hof-drive"
 
 # ===========================================================================
 # Part N2d -- ONE FAULT IS NOT ONE FAILING LINE, and a path is not a substring.
@@ -4668,8 +4705,8 @@ CSC_CAND="$(git -C "$CSC" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: K01\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$CSC" "$CSC_BASE" "$CSC_CAND" > "$CSC/.orchid/tasks/K01.md"
 csc_log() {
-  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$CSC" "$1" > "$CSC/.orchid/reviews/K01-verify.log"
+  mk_prestate_log "$REPO_ROOT" "$CSC/.orchid/tasks/K01.md" \
+    "$CSC/.orchid/reviews/K01-verify.log" "$1"
 }
 csc_cls() {
   ( HOME="$MACHINE_HOME"
@@ -5266,8 +5303,8 @@ MIX_CAND="$(git -C "$MIX" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: X01\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$MIX" "$MIX_BASE" "$MIX_CAND" > "$MIX/.orchid/tasks/X01.md"
 mix_log() {
-  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$MIX" "$1" > "$MIX/.orchid/reviews/X01-verify.log"
+  mk_prestate_log "$REPO_ROOT" "$MIX/.orchid/tasks/X01.md" \
+    "$MIX/.orchid/reviews/X01-verify.log" "$1"
 }
 mix_cls() {
   ( HOME="$MACHINE_HOME"
@@ -5756,11 +5793,12 @@ git -C "$ENVR" worktree add -q "$ENVW" -b task/L003 2>/dev/null \
 [ ! -e "$ENVW/mobile/node_modules" ] \
   || fail "fixture invalid: git worktree add reproduced a gitignored directory — the whole premise of lesson L003 is that it cannot"
 
-printf -- '---\nschema: 1\nid: EV1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\n---\nbody\n' \
-  "$ENVW" > "$ENVR/.orchid/tasks/EV1.md"
+ENV_CAND="$(git -C "$ENVW" rev-parse HEAD)"
+printf -- '---\nschema: 1\nid: EV1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
+  "$ENVW" "$ENV_CAND" "$ENV_CAND" > "$ENVR/.orchid/tasks/EV1.md"
 ev_log() {
-  printf 'date: 2026-08-10T00:00:00Z\nsha: deadbeef\ncandidate: deadbeef\ncwd: %s\ncommand: yarn test\n---\n%s\nexit: 1\n' \
-    "$ENVW" "$1" > "$ENVR/.orchid/reviews/EV1-verify.log"
+  mk_prestate_log "$ENVR" "$ENVR/.orchid/tasks/EV1.md" \
+    "$ENVR/.orchid/reviews/EV1-verify.log" "$1" "yarn test"
 }
 ev_cls() {
   ( HOME="$MACHINE_HOME"
@@ -5782,6 +5820,23 @@ assert_match "mobile/node_modules" "$(ev_cls | cut -f2-)" \
   "and the reason names the directory, because 'the environment' is not something anybody can provision"
 assert_match "creating the worktree from Git-tracked state" "$(ev_cls | cut -f2-)" \
   "and says why it is absent, so the reader learns the mechanism rather than the incident"
+
+# Yarn v1 wraps that causal diagnostic in three neutral harness records. The
+# full real body must remain live, while anything beyond that closed grammar
+# keeps the strict default.
+YARN_L003_BODY='yarn run v1.22.19
+$ jest
+error Command "jest" not found
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+ev_log "$YARN_L003_BODY"
+assert_eq 1 "$(drive_failure_lines "$YARN_L003_BODY" | grep -c .)" \
+  "the real four-line Yarn v1 failure has one diagnostic and three exact harness-context records, not four unexplained lines"
+assert_eq environment "$(ev_cls | cut -f1)" \
+  "the named L003 case is classified from the real yarn test body rather than an unrealistically isolated error line"
+ev_log "$YARN_L003_BODY
+info an unfamiliar package-manager epilogue"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "the Yarn allowance is closed: an unfamiliar banner remains uncertain and charges instead of disappearing beside the environment failure"
 
 # --- THE COINCIDENCE THAT BROKE THE OLD ARM, in the same tree -------------
 # `.cache` is missing from the worktree too, and it is missing for exactly the
@@ -5903,7 +5958,20 @@ assert_match "[.]cache" "$ENV_LEFT" \
   "while the unrelated ignored directory is STILL absent, so the assertion below is charged in its presence rather than in a tidied tree"
 assert_eq candidate "$(ev_cls | cut -f1)" \
   "so the identical sentence now charges: whatever this failure is, provisioning mobile/node_modules is no longer the answer"
+
+# Capture that healthy pre-run state, then let the simulated candidate command
+# delete it before printing the usual L003 diagnostic. A post-run comparison
+# sees the missing tree and would waive; the trusted empty snapshot must not.
+EV_BEFORE_MUTATION="$(drive_verify_prestate_headers \
+  "$ENVR" "$ENVR/.orchid/tasks/EV1.md")"
 rm -rf "$ENVW/mobile/node_modules"
+assert_match "mobile/node_modules" "$(drive_env_missing_state "$ENVR" "$ENVW")" \
+  "fixture: after the simulated command deletes dependencies, a post-run comparison really would see the L003 state"
+mk_prestate_log "$ENVR" "$ENVR/.orchid/tasks/EV1.md" \
+  "$ENVR/.orchid/reviews/EV1-verify.log" 'error Command "jest" not found' \
+  "yarn test" 1 "$EV_BEFORE_MUTATION"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "but trusted pre-verification evidence says node_modules was present, so a candidate cannot delete ignored dependencies during its test and manufacture an environment waiver"
 
 # --- and DISPATCH reports it, instead of leaving each project to discover it
 # by losing a round. The same predicate runs right after `git worktree add`, so

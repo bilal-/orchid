@@ -1438,6 +1438,94 @@ drive_worktree_plan() {
 # how an unrelated ignored directory came to waive failures it had no part in,
 # and it is back above WITH the accounting rather than around it.
 
+# drive_verify_prestate_headers <repo> <task-file> -- the state a failed
+# verification classifier is allowed to treat as having existed when the run
+# BEGAN, encoded as single-line JSON strings in verify-log header form.
+#
+# This is captured by `orchid verify` BEFORE it runs the candidate-controlled
+# command and written by the verifier AFTER that command exits. That ordering
+# is the authority. Inspecting the worktree only after the command returns lets
+# the command manufacture either exemption it wants: chmod a committed 755
+# executable down to 644, or remove an ignored dependency tree, print the
+# corresponding diagnostic, and the post-run classifier sees exactly the
+# state that would waive it. A pre-run empty set remains empty however the
+# candidate mutates its checkout while it is being tested.
+#
+# JSON keeps the header one line per field without inventing an escaping
+# grammar. The underlying discovery functions already choose the conservative
+# newline-delimited representation used everywhere else in this policy layer.
+drive_verify_prestate_headers() {
+  local repo="$1" tf="$2" root exec_missing env_missing exec_json env_json
+  root="$(fm_get "$tf" worktree)"
+  [ -n "$root" ] && [ -d "$root" ] || root="$repo"
+  exec_missing="$(drive_handoff_exec_bit "$root" "$tf")"
+  env_missing="$(drive_env_missing_state "$repo" "$root")"
+  exec_json="$(printf '%s' "$exec_missing" | jq -Rs .)" || return 1
+  env_json="$(printf '%s' "$env_missing" | jq -Rs .)" || return 1
+  printf 'prestate: 1\npre_exec_missing: %s\npre_env_missing: %s\n' \
+    "$exec_json" "$env_json"
+}
+
+# _drive_verify_header_value <verify-log> <key> -- the one value for <key>
+# before the evidence separator. Missing, duplicate, or separator-less headers
+# answer nonzero. The body can print header-shaped text; it is never searched.
+_drive_verify_header_value() {
+  local log="$1" key="$2"
+  [ -f "$log" ] || return 1
+  awk -v key="$key" '
+    BEGIN { prefix = key ": "; found = 0; separated = 0 }
+    /^---$/ { separated = 1; exit }
+    index($0, prefix) == 1 {
+      found++
+      value = substr($0, length(prefix) + 1)
+    }
+    END {
+      if (separated && found == 1) { print value; exit 0 }
+      exit 1
+    }
+  ' "$log"
+}
+
+# _drive_verify_prestate_valid <repo> <task-file> <verify-log> -- 0 only when
+# both pre-run sets are well-formed and the surrounding verifier header binds
+# them to this task's CURRENT candidate and worktree. Any old log without the
+# marker, malformed JSON, moved candidate, or mismatched cwd closes both
+# snapshot-backed routes and therefore charges; live post-run state is never a
+# compatibility fallback, because that fallback is the fabrication hole.
+_drive_verify_prestate_valid() {
+  local repo="$1" tf="$2" log="$3" root cand marker sha lcand lcwd ej vj
+  root="$(fm_get "$tf" worktree)"
+  [ -n "$root" ] && [ -d "$root" ] || root="$repo"
+  cand="$(fm_get "$tf" candidate_sha)"
+  [ -n "$cand" ] && [ "$cand" != none ] || return 1
+  marker="$(_drive_verify_header_value "$log" prestate)" || return 1
+  sha="$(_drive_verify_header_value "$log" sha)" || return 1
+  lcand="$(_drive_verify_header_value "$log" candidate)" || return 1
+  lcwd="$(_drive_verify_header_value "$log" cwd)" || return 1
+  ej="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 1
+  vj="$(_drive_verify_header_value "$log" pre_env_missing)" || return 1
+  [ "$marker" = 1 ] || return 1
+  [ "$sha" = "$cand" ] && [ "$lcand" = "$cand" ] || return 1
+  [ "$lcwd" = "$root" ] || return 1
+  git -C "$root" rev-parse -q --verify "$cand^{commit}" >/dev/null 2>&1 || return 1
+  printf '%s' "$ej" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
+  printf '%s' "$vj" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# _drive_verify_prestate_list <repo> <task-file> <verify-log> <exec|env> -- a
+# validated pre-run list. Invalid evidence deliberately prints nothing.
+_drive_verify_prestate_list() {
+  local repo="$1" tf="$2" log="$3" kind="$4" raw
+  _drive_verify_prestate_valid "$repo" "$tf" "$log" || return 0
+  case "$kind" in
+    exec) raw="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 0 ;;
+    env)  raw="$(_drive_verify_header_value "$log" pre_env_missing)" || return 0 ;;
+    *) return 0 ;;
+  esac
+  printf '%s' "$raw" | jq -r . 2>/dev/null || true
+}
+
 # _drive_verify_body <verify-log> -- just the verification command's OWN
 # output: everything after the log's `---` separator, minus the single
 # trailing `exit: N` line the verb appends.
@@ -2169,6 +2257,13 @@ _DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff
 # privilege: `FAIL: candidate defect OK` must still charge.
 _DRIVE_QUALIFICATION_LINE_RE='^[[:space:]]*NOT-TESTED:[[:space:]]+.+ -- .+$|^[[:space:]]*not-tested:[[:space:]]+[0-9]+ claim[(]s[)] in this file were recorded as not-tested, never as passes[[:space:]]*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$'
 
+# _DRIVE_HARNESS_CONTEXT_LINE_RE -- the exact neutral prologue/epilogue Yarn
+# v1 prints around the L003 named failure. The causal line between them remains
+# a reported resolution failure. Keeping these three forms closed is what
+# makes the real four-line `yarn test` body waivable without making arbitrary
+# package-manager chatter disappear beside an attributed environment gap.
+_DRIVE_HARNESS_CONTEXT_LINE_RE='^[[:space:]]*yarn run v[0-9]+[.][0-9]+[.][0-9]+[[:space:]]*$|^[[:space:]]*[$][[:space:]]+jest[[:space:]]*$|^[[:space:]]*info Visit https://yarnpkg[.]com/en/docs/cli/run for documentation about this command[.][[:space:]]*$'
+
 # _DRIVE_PROGRESS_LINE_RE -- lines that affirm progress, success, or an
 # explicitly neutral not-tested claim rather than diagnose a failed command.
 # This is intentionally a CLOSED vocabulary. Once verify exits non-zero, a
@@ -2243,10 +2338,12 @@ drive_failure_lines() {
   # changes EREs such as the literal opening parenthesis in `Traceback (`.
   out="$(ORCHID_DRIVE_FAILURE_RE="$_DRIVE_FAILURE_LINE_RE" \
     ORCHID_DRIVE_QUALIFICATION_RE="$_DRIVE_QUALIFICATION_LINE_RE" \
+    ORCHID_DRIVE_HARNESS_CONTEXT_RE="$_DRIVE_HARNESS_CONTEXT_LINE_RE" \
     ORCHID_DRIVE_PROGRESS_RE="$_DRIVE_PROGRESS_LINE_RE" \
     awk '
       $0 ~ ENVIRON["ORCHID_DRIVE_QUALIFICATION_RE"] { next }
       $0 ~ ENVIRON["ORCHID_DRIVE_FAILURE_RE"] { print; next }
+      $0 ~ ENVIRON["ORCHID_DRIVE_HARNESS_CONTEXT_RE"] { next }
       $0 ~ ENVIRON["ORCHID_DRIVE_PROGRESS_RE"] { next }
       { print }
     ' <<< "$1")"
@@ -2444,7 +2541,7 @@ _drive_exec_state_clause() {
   else
     origin="which this candidate added as a mode-644 file with a #! line"
   fi
-  printf "the exec bit is not set on %s, %s — chmod +x %s is the operator's outstanding step" \
+  printf "the exec bit was not set on %s when verification began, %s — chmod +x %s before verification is the operator's hand-off" \
     "$p" "$origin" "$p"
 }
 
@@ -2482,7 +2579,7 @@ _drive_exec_unblamed_clause() {
   # The word `chmod` does NOT appear in this clause, and that is the assertion
   # a test can make about it: an operator who greps a charged round's reason
   # for a command to run must find nothing, because there is nothing to run.
-  printf "this candidate added %s as a mode-644 file with a #! line, which is equally how a sourced library ships on purpose — nothing in this round was refused execution, so it is reported here rather than presented as a mode change anybody is waiting on" \
+  printf "this candidate began verification with %s as a mode-644 file with a #! line, which is equally how a sourced library ships on purpose — nothing in this round was refused execution, so it is reported here rather than presented as a mode change anybody is waiting on" \
     "$p"
 }
 
@@ -3031,7 +3128,7 @@ drive_waivable_outstanding() {
   local paths p first="" firstdrop="" fbpath causal attr="" states="" sep=""
   local fallback="" fsep=""
   local why="" note pin cmd="" pinpath="" pinattr pinstate
-  local kinds="" m envattr envstate sig qattr cut
+  local kinds="" m envattr envstate sig qattr cut prestate=0
   base="$(fm_get "$tf" base_sha)"
   root="$(fm_get "$tf" worktree)"
   # The verification ran in the task's worktree when it has one; that is the
@@ -3044,7 +3141,10 @@ drive_waivable_outstanding() {
   # the status at all and could still forgive a candidate hang.
   cut="$(drive_cut_short_clause "$log")"
 
-  paths="$(drive_handoff_exec_bit "$root" "$tf")"
+  if _drive_verify_prestate_valid "$repo" "$tf" "$log"; then
+    prestate=1
+    paths="$(_drive_verify_prestate_list "$repo" "$tf" "$log" exec)"
+  fi
   while IFS= read -r p; do
     [ -n "$p" ] || continue
     # One outstanding path is remembered even if nothing blames it, so a
@@ -3089,18 +3189,20 @@ drive_waivable_outstanding() {
   # lacks is ordinary -- a `.cache`, a `dist`, a stale `target` -- and listing
   # every one of them on every charged round would bury the sentence that
   # matters under a directory census.
-  while IFS= read -r m; do
-    [ -n "$m" ] || continue
-    envattr="$(drive_env_attribution "$repo" "$m" "$body" "$root")"
-    if [ -n "$envattr" ]; then
-      envstate="$m is present in the integration checkout and absent from the worktree this candidate was verified in — it is gitignored, so creating the worktree from Git-tracked state could not reproduce it (lesson L003), and provisioning it there is a dispatch step rather than anything the implementer wrote"
-      attr="$attr$envattr
+  if [ "$prestate" -eq 1 ]; then
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      envattr="$(drive_env_attribution "$repo" "$m" "$body" "$root")"
+      if [ -n "$envattr" ]; then
+        envstate="$m was present in the integration checkout and absent from the worktree when verification began — it is gitignored, so creating the worktree from Git-tracked state could not reproduce it (lesson L003), and provisioning it there is a dispatch step rather than anything the implementer wrote"
+        attr="$attr$envattr
 "
-      states="$states$sep$envstate"
-      sep='; and '
-      kinds="$kinds environment"
-    fi
-  done <<< "$(drive_env_missing_state "$repo" "$root")"
+        states="$states$sep$envstate"
+        sep='; and '
+        kinds="$kinds environment"
+      fi
+    done <<< "$(_drive_verify_prestate_list "$repo" "$tf" "$log" env)"
+  fi
 
   # -- flaky: signatures this repository recorded before this candidate.
   while IFS= read -r sig; do
@@ -3313,7 +3415,7 @@ drive_verify_class() {
     # could not be determined, because the shas do not resolve -- proves
     # nothing here, and saying "no pin is stale" would be a claim orchid never
     # made.
-    printf 'candidate\tno failure-attributable waivable state was established in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, this candidate left no executable mode 644, no missing gitignored build state was attributable to this failure, no trusted known-flaky register covers this failure, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
+    printf 'candidate\tno failure-attributable waivable state was established in this tree — no package pin is reported stale by a freshness check this candidate recorded and left intact, no executable mode-644 hand-off was established by trusted pre-verification evidence, no missing gitignored build state was attributable to this failure from trusted pre-verification evidence, no trusted known-flaky register covers this failure, and the recorded exit status is not one a killed run leaves — so nothing but the candidate is left to explain this round\n'
     return 0
   fi
   hcls="${hand%%$'\t'*}"

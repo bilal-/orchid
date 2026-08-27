@@ -1216,6 +1216,17 @@ ones its archetype never declares.
         route. Signatures are matched literally and claim only the lines they
         match.
 
+      The exec-bit and missing-build-state sets are captured by `orchid
+      verify` **before** it runs the candidate-controlled verification command,
+      then written into the evidence header after that command exits. The
+      classifier accepts them only when the log's `sha`, `candidate`, and
+      `cwd` still bind the snapshot to this task's current candidate and
+      worktree. It never falls back to inspecting live state after the run:
+      otherwise a candidate could strip a committed executable bit or delete
+      an ignored dependency tree during its own test, print the matching
+      diagnostic, and manufacture the post-run state that waives it. A legacy,
+      malformed, or mismatched snapshot closes both routes and charges.
+
       A REPOSITORY FILE IS NORMALLY AN AUTHORITY ON A CANDIDATE ONLY WHILE IT
       IS THE CANDIDATE'S OWN RECORD OF IT, and both routes above turn on that:
       the pin check and the register are read only when the file is UNTOUCHED
@@ -1255,7 +1266,12 @@ ones its archetype never declares.
       the missing directory (`error Command "jest" not found` attributes to
       `mobile/node_modules` because `mobile/node_modules/.bin/jest` is in the
       checkout that has it, and attributes to nothing when the absent
-      directory is an unrelated `.cache`). The filesystem lookup is applied
+      directory is an unrelated `.cache`). Yarn v1's exact neutral wrapper —
+      `yarn run v<major>.<minor>.<patch>`, `$ jest`, and its canonical
+      `info Visit https://yarnpkg.com/en/docs/cli/run ...` epilogue — is
+      excluded from the failure denominator, while the resolution error
+      between them remains causal and any unfamiliar wrapper line remains
+      unknown and charges. The filesystem lookup is applied
       only to that diagnosed subject, not every word on the line: in `ENOENT:
       ... open 'src/config.json'`, `src/config.json` is the subject and an
       unrelated package named `open` proves nothing. `Permission denied`, `is not

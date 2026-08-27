@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
+source "$ORCHID_ROOT/lib/drive.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 
@@ -27,6 +28,12 @@ sha="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
 # when nothing rm'd the log (see orchid-task).
 cand="$(fm_get "$tf" candidate_sha)"; [ -n "$cand" ] || cand=none
 
+# Capture classifier evidence before the candidate-controlled command runs.
+# The verifier writes it into the final log only after that command exits, so
+# removing ignored dependencies or stripping an exec bit during verification
+# cannot manufacture a waiver from post-run state.
+prestate_headers="$(drive_verify_prestate_headers "$repo" "$tf")"
+
 mkdir -p "$state/reviews"
 log="$state/reviews/$id-verify.log"
 out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-verify.XXXXXX")"
@@ -45,6 +52,7 @@ rc=0
   echo "candidate: $cand"
   echo "cwd: $cwd"
   echo "command: $cmd"
+  printf '%s\n' "$prestate_headers"
   echo "---"
   cat "$out_tmp"
   echo "exit: $rc"
