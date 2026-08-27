@@ -138,7 +138,7 @@ pack_budget_bytes=65536
 # Orchid's Formula checksum is therefore release-gated, not a hand-off.
 # `none` disables the route.
 # Default: none
-# handoff.pin_check=scripts/pin-formula.sh --check
+# handoff.pin_check=scripts/check-package-pin.sh --check
 #
 # The known-flaky register the `flaky` route reads, relative to the verified
 # tree. One entry per line: `FLAKE: <literal substring of the failing line>`,

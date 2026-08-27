@@ -2038,8 +2038,8 @@ drive_handoff_exec_bit() {
 # names nothing), and it must exist and be executable, so an unrunnable check
 # stays "no pin route" rather than becoming a nonzero exit read as staleness.
 # This is not a new trust boundary either -- the driver already runs this
-# repository's entire verification command line, and the path is config-named
-# with a default that must exist in the verified tree before anything is run.
+# repository's entire verification command line. When the opt-in is enabled,
+# its config-named path must exist in the verified tree before anything runs.
 _drive_check_interp() {
   local abs="$1" first
   local -a words=()
@@ -2073,8 +2073,8 @@ _drive_check_interp() {
 # word in a verify log establishes nothing on its own.
 _DRIVE_PIN_STALE_RE='(^|[^[:alnum:]_])[Ss][Tt][Aa][Ll][Ee]([^[:alnum:]_]|$)'
 
-# _DRIVE_PIN_REPORT_RE -- continuation records emitted by Orchid's shipped
-# default pin check after its causal staleness line. tests/test_ci_release.sh
+# _DRIVE_PIN_REPORT_RE -- continuation records emitted by Orchid's supported
+# pin-report format after its causal staleness line. tests/test_ci_release.sh
 # preserves the check's multi-line output in its FAIL report, so these three
 # records are part of that one failure even though only the first line names
 # Formula/orchid.rb. Keep this vocabulary exact: an unfamiliar continuation
