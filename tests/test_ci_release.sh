@@ -907,6 +907,17 @@ while IFS= read -r shell_file; do
     && fail "a shipped file re-introduced the per-candidate formula freshness gate (lesson L022): $shell_file"
 done <<< "$shell_list"
 
+# T019 added a trusted pre-command package-pin snapshot after this task's
+# preserved candidate was first written. It is part of the driven verification
+# chain even though it lives outside tests/run.sh, so the live-suite scan above
+# cannot see it. Keep its generic per-file route, but require explicit opt-in:
+# Orchid's unconfigured whole-tree Formula pin must not be built or checked for
+# every task before the release gate needs it.
+drive_pin_default="$(sed -n "s/^_DRIVE_PIN_CHECK_DEFAULT='\([^']*\)'$/\1/p" \
+  "$REPO_ROOT/lib/drive.sh")"
+assert_eq none "$drive_pin_default" \
+  "the driver package-pin prestate route defaults to none, so T019 cannot silently reintroduce the whole-tree Formula check into every task chain"
+
 # --- 6. scripts/pin-formula.sh must be executable in the index -------------
 # r-001 set this mode bit on a branch as an operator hand-off and shipped a
 # different commit, so the fix was silently dropped: the blob is identical to

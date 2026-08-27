@@ -125,17 +125,19 @@ pack_budget_bytes=65536
 # visible in a diff of two commits, and each is a file the implementer
 # controls.
 #
-# The package-pin freshness check that route RUNS, relative to the verified
-# tree. Invoked only if it is a regular file there that states how it is run --
-# directly when it carries the exec bit, otherwise under the interpreter its
-# own `#!` line names, which is how a mode-644 check like orchid's own
-# scripts/pin-formula.sh is run. Its nonzero EXIT is not enough: it must report
+# The candidate-local package-pin freshness check that route RUNS, relative to
+# the verified tree. Invoked only if it is a regular file there that states how
+# it is run -- directly when it carries the exec bit, otherwise under the
+# interpreter its own `#!` line names. Its nonzero EXIT is not enough: it must report
 # a file stale in words, because a check that cannot find the formula or trips
 # over metadata the candidate corrupted also exits nonzero and re-pinning fixes
 # neither. Read only under the authority rule above, so a check the candidate
 # changed -- or edited in the worktree without committing -- forgives nothing.
+# Do not configure a whole-tree derived artifact here: every candidate would
+# rewrite the same line and stale-base rebases would conflict (lesson L022).
+# Orchid's Formula checksum is therefore release-gated, not a hand-off.
 # `none` disables the route.
-# Default: scripts/pin-formula.sh --check
+# Default: none
 # handoff.pin_check=scripts/pin-formula.sh --check
 #
 # The known-flaky register the `flaky` route reads, relative to the verified

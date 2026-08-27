@@ -1226,13 +1226,13 @@ ones its archetype never declares.
         files it MODIFIED whose base recorded mode 755 (a `#!` file left mode
         644 is the exec-bit hand-off's own state, whether the candidate
         shipped it that way or dropped the bit while rewriting it), and it
-        RUNS the repository's package-pin freshness check
-        (`handoff.pin_check`, config, default `scripts/pin-formula.sh
-        --check`; only ever an AUTHORITY under the rule below)
+        RUNS the repository's explicitly configured candidate-local package-pin
+        freshness check (`handoff.pin_check`, config, default `none`; only ever
+        an AUTHORITY under the rule below)
         and requires it to REPORT A FILE STALE — a nonzero exit is not that
         report, since a check that cannot find the formula or trips over
         metadata this candidate corrupted exits nonzero too and re-pinning
-        fixes neither. Orchid's default check produces one four-line report:
+        fixes neither. Orchid's supported check contract admits a four-line report:
         its causal stale line plus exact pinned-checksum, expected-checksum,
         and one-command-remedy continuations. All four are attributed together;
         an unfamiliar continuation remains unknown and charges. Neither hand-off

@@ -5102,33 +5102,31 @@ assert_eq candidate "$(csc_cls | cut -f1)" \
 # exactly like a stale pin, and that one is theirs), and a repository may
 # switch the check out or turn the route off.
 #
-# THE EXEC BIT IS THE REPOSITORY'S CONVENTION, NOT ORCHID'S REQUIREMENT, and
-# that is not a detail: orchid's own scripts/pin-formula.sh is tracked mode 644
-# and invoked as `bash scripts/pin-formula.sh --check` everywhere it runs.
-# Requiring `-x` therefore made this route DEAD IN THE REPOSITORY THAT SHIPS
-# THE DEFAULT -- T014's stale pin, the case the route exists for, classified as
-# `candidate` in orchid itself, and no per-repo configuration could have fixed
-# it. So the fixture below ships its stand-in exactly as this repository ships
-# the real one, at mode 644, and the route reads the `#!` line to run it the
-# way its own repository does.
+# THE EXEC BIT IS THE REPOSITORY'S CONVENTION, NOT ORCHID'S REQUIREMENT. The
+# fixture below deliberately uses a mode-644 custom check with a `#!` line, so
+# the opt-in route proves it can honor repositories that invoke checks as
+# `bash <file>` even though Orchid's own restored release tool is mode 755.
+#
+# T030 makes this route OPT-IN. Orchid's Formula checksum is derived from the
+# whole tree, so checking it before every task verification recreates the
+# per-candidate obligation whose shared-line conflict this task removes. The
+# unconfigured case below must therefore stay closed; the rest of Part N2b
+# explicitly opts in and preserves T019's generic per-file pin classifier.
 # ===========================================================================
 assert_eq "" "$( ( HOME="$MACHINE_HOME"; config_get "$REPO_ROOT" handoff.pin_check ) )" \
-  "this repository declares no handoff.pin_check either, so what follows is about the shipped default"
-# The shipped default, as it actually sits in this checkout: whatever its mode,
-# the route must have a way to invoke it. This is the assertion that would have
-# caught the `-x` requirement, and it keeps holding if someone later chmods it.
-if ! _drive_check_interp "$REPO_ROOT/scripts/pin-formula.sh" >/dev/null; then
-  fail "orchid's own scripts/pin-formula.sh must be runnable by the pin route AS THIS REPOSITORY SHIPS IT (tracked mode 644, invoked as 'bash scripts/pin-formula.sh --check') — a route that cannot run the default it ships protects nobody from T014's case"
-fi
+  "this repository declares no candidate-local handoff.pin_check"
+assert_eq none "$_DRIVE_PIN_CHECK_DEFAULT" \
+  "the shipped default leaves package-pin classification off — Orchid's whole-tree Formula pin belongs to the release gate, never every task's pre-verification chain"
+[ -x "$REPO_ROOT/scripts/pin-formula.sh" ] \
+  || fail "scripts/pin-formula.sh must retain the executable mode restored by T030's operator hand-off"
 
 PIN="$WORK/handoff-pin"
 mkdir -p "$PIN/.orchid/tasks" "$PIN/.orchid/reviews" "$PIN/scripts"
 cd "$PIN" || exit 1
 git init -q .
-# A stand-in for scripts/pin-formula.sh --check at the SHIPPED DEFAULT PATH and
-# at the shipped MODE (644, `#!` line, no exec bit), so this proves the
-# no-configuration claim about orchid as it really is, not about a fixture made
-# convenient. It reports STALE, on stderr and in the real one's own words --
+# A stand-in for an explicitly configured pin check at a conventional path and
+# mode 644 (`#!` line, no exec bit), proving interpreter fallback remains live
+# for custom repositories. It reports STALE, on stderr and in the real tool's words --
 # naming the file it is stale ABOUT, which is what the waiver is attributed to.
 # The real one builds a release archive, which a fixture must not.
 PIN_PINNED_SHA='1111111111111111111111111111111111111111111111111111111111111111'
@@ -5188,7 +5186,7 @@ git add b.txt
 git commit -q -m "fixture: a candidate that left the check alone"
 PIN_CAND="$(git -C "$PIN" rev-parse HEAD)"
 if [ -x "$PIN/scripts/pin-formula.sh" ]; then
-  fail "fixture invariant broken: the stand-in must stay mode 644 like the real scripts/pin-formula.sh, or it stops proving the claim it is here for"
+  fail "fixture invariant broken: the custom stand-in must stay mode 644, or it stops proving interpreter fallback for an explicitly configured non-executable check"
 fi
 
 # The verification output a repository whose suite RUNS the pin check actually
@@ -5213,13 +5211,13 @@ mk_pin_task() {
   mk_prestate_log "$PIN" "$PIN/.orchid/tasks/$1.md" \
     "$PIN/.orchid/reviews/$1-verify.log" "${4:-$PIN_FAILED_ON_IT}"
 }
-# pin_cls <id> [handoff.pin_check override]
+# pin_cls <id> [handoff.pin_check override] -- this section tests the opt-in
+# route, so omission means its fixture's explicit check rather than the shipped
+# `none` default tested above.
 pin_cls() {
   ( HOME="$MACHINE_HOME"
     pin_body="$(_drive_verify_body "$PIN/.orchid/reviews/$1-verify.log")"
-    if [ "$#" -ge 2 ]; then
-      export ORCHID_HANDOFF_PIN_CHECK="$2"
-    fi
+    export ORCHID_HANDOFF_PIN_CHECK="${2:-scripts/pin-formula.sh --check}"
     # Each ordinary assertion arranges the state that exists BEFORE its
     # simulated verifier command, so snapshot it here. P09 below is the one
     # deliberate post-command mutation and calls drive_verify_class directly
@@ -5230,13 +5228,22 @@ pin_cls() {
 }
 mk_pin_task P01 "$PIN_BASE" "$PIN_CAND"
 
+assert_eq "" "$( ( HOME="$MACHINE_HOME"
+  drive_handoff_stale_pin "$PIN" "$PIN" "$PIN/.orchid/tasks/P01.md" ) )" \
+  "without an explicit handoff.pin_check the stale whole-tree pin is not inspected in a task's verification chain"
+assert_eq candidate "$( ( HOME="$MACHINE_HOME"
+  drive_verify_class "$PIN" "$PIN/.orchid/tasks/P01.md" \
+    "$PIN/.orchid/reviews/P01-verify.log" ) | cut -f1)" \
+  "and an unconfigured stale pin forgives no failure — default none removes the per-task check without making failures disappear"
+
 assert_eq "scripts/pin-formula.sh --check
 Formula/orchid.rb" "$( ( HOME="$MACHINE_HOME"
+  export ORCHID_HANDOFF_PIN_CHECK='scripts/pin-formula.sh --check'
   drive_handoff_stale_pin "$PIN" "$PIN" "$PIN/.orchid/tasks/P01.md" ) )" \
-  "the pin route's own answer is the command an operator re-runs and THE FILE it reported stale — a waiver with no file to attribute it to is not a waiver, and this is the layer that would fail silently if it broke"
+  "an explicitly configured pin route returns the command an operator re-runs and THE FILE it reported stale — opt-in preserves the generic per-file hand-off"
 
 assert_eq handoff "$(pin_cls P01 | cut -f1)" \
-  "T014's case, decided by running the check: a mode-644 check at the shipped default path is run under its own #! interpreter, it reports Formula/orchid.rb stale in this tree, the failure names that file and calls it stale too, and re-pinning is the operator's"
+  "the opt-in case runs a configured mode-644 check under its own #! interpreter, attributes its complete stale report, and leaves re-pinning to the operator"
 assert_match "scripts/pin-formula.sh --check" "$(pin_cls P01 | cut -f2-)" \
   "and the reason names the check that proved it, so an operator can run the same command"
 assert_match "Formula/orchid.rb" "$(pin_cls P01 | cut -f2-)" \
@@ -5265,10 +5272,10 @@ PINT="$WORK/handoff-pin-touched"
 mkdir -p "$PINT/.orchid/tasks" "$PINT/.orchid/reviews" "$PINT/scripts" "$PINT/Formula"
 cd "$PINT" || exit 1
 git init -q .
-: > "$PINT/orchid.config"
+printf '%s\n' 'handoff.pin_check=scripts/pin-formula.sh --check' > "$PINT/orchid.config"
 printf '#!/bin/sh\necho "%s" >&2\nexit 1\n' "$PIN_SAYS" > "$PINT/scripts/pin-formula.sh"
 printf 'class Orchid < Formula\n  sha256 "deadbeef"\nend\n' > "$PINT/Formula/orchid.rb"
-git add scripts/pin-formula.sh Formula/orchid.rb
+git add orchid.config scripts/pin-formula.sh Formula/orchid.rb
 git commit -q -m "fixture: base, with a check that reports the pin stale"
 PINT_BASE="$(git -C "$PINT" rev-parse HEAD)"
 printf '#!/bin/sh\n# the implementer edited the pinning script itself\necho "%s" >&2\nexit 1\n' \
@@ -5480,11 +5487,13 @@ MIX_CAND="$(git -C "$MIX" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: X01\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$MIX" "$MIX_BASE" "$MIX_CAND" > "$MIX/.orchid/tasks/X01.md"
 mix_log() {
-  mk_prestate_log "$REPO_ROOT" "$MIX/.orchid/tasks/X01.md" \
-    "$MIX/.orchid/reviews/X01-verify.log" "$1"
+  ( export ORCHID_HANDOFF_PIN_CHECK='scripts/pin-formula.sh --check'
+    mk_prestate_log "$REPO_ROOT" "$MIX/.orchid/tasks/X01.md" \
+      "$MIX/.orchid/reviews/X01-verify.log" "$1" )
 }
 mix_cls() {
   ( HOME="$MACHINE_HOME"
+    export ORCHID_HANDOFF_PIN_CHECK='scripts/pin-formula.sh --check'
     drive_verify_class "$REPO_ROOT" "$MIX/.orchid/tasks/X01.md" \
       "$MIX/.orchid/reviews/X01-verify.log" )
 }

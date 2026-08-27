@@ -75,7 +75,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `gc_older_than_s` | `86400` | repo | v0 |
 | `infra_max` | `3` | repo | v0 |
 | `rework_max` | `3` | repo | v1.1 |
-| `handoff.pin_check` | `scripts/pin-formula.sh --check` | repo | v1.1 |
+| `handoff.pin_check` | `none` | repo | v1.1 |
 | `flaky.quarantine` | `tests/QUARANTINE.md` | repo | v1.1 |
 | `model` | *(empty — engine's own default)* | repo or user | v0 |
 | `effort` | `medium` | repo or user | v0 |
@@ -358,13 +358,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   counts only this task's `attempt_waiver` entries rather than every journaled
   non-candidate exit or `infra_failures`, which also counts unrelated harness
   faults.
-- **`handoff.pin_check`** — the package-pin freshness check the `handoff`
-  route runs, as a command line relative to the verified tree
-  (default `scripts/pin-formula.sh --check`). It is only invoked when the
+- **`handoff.pin_check`** — an opt-in candidate-local package-pin freshness
+  check the `handoff` route runs, as a command line relative to the verified
+  tree (default `none`). It is only invoked when the
   named script is a regular file there *and* states how to run it — directly
   when it is executable, otherwise under the interpreter its own `#!` line
-  names, which is how orchid runs its own mode-644
-  `scripts/pin-formula.sh`; a file that is neither executable nor names a
+  names; a file that is neither executable nor names a
   working interpreter is never run, and that is no pin route. It is read as an
   authority only under the rule above: the candidate must not have changed it
   (a bug an implementer just introduced into a pinning script fails exactly
@@ -380,7 +379,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   checksum, and one-command remedy on three continuation lines. Those exact
   records are attributed with its causal `Formula/orchid.rb ... STALE` line;
   an unfamiliar continuation from a custom check remains unknown and charges.
-  `none` disables the route.
+  Never point this at an artifact derived from the whole tree: obliging every
+  candidate to regenerate one makes every branch rewrite the same line and
+  stale-base rebases conflict (lesson L022). Orchid therefore leaves this at
+  `none`; its Formula checksum is regenerated on integration at release time
+  and checked by `scripts/release.sh`. A repository with a genuinely
+  candidate-local/per-file pin can opt in. `none` disables the route.
 - **`flaky.quarantine`** — the known-flaky register the `flaky` route reads,
   relative to the verified tree (default `tests/QUARANTINE.md` — orchid ships
   one, carrying two signatures for the two pre-T019 liveness-message families,

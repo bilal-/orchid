@@ -390,12 +390,14 @@ worth nothing:
    it *modified* whose base recorded mode 755 (a rewrite that lost an exec bit
    — an engine whose file writes recreate a file at 0644 does this to every
    executable it touches, and it cannot `chmod` it back). For the pin, orchid
-   *runs* your own freshness check (`handoff.pin_check`, default
-   `scripts/pin-formula.sh --check`, run under its own `#!` interpreter when
-   it is not executable, as orchid's own is) and requires it to **report a
+   *runs* your explicitly configured candidate-local freshness check
+   (`handoff.pin_check`, default `none`, run under its own `#!` interpreter
+   when it is not executable) and requires it to **report a
    file stale** — a nonzero exit is not enough, because a check that cannot
    find the formula or trips over metadata the candidate corrupted exits
-   nonzero too and re-pinning fixes neither. For the missing build state,
+   nonzero too and re-pinning fixes neither. Never configure a whole-tree
+   release checksum here; those belong to the integration/release gate so task
+   branches do not conflict. For the missing build state,
    orchid *compares the two checkouts*: a directory that your own `.gitignore`
    covers, that exists where the run was dispatched from, and that does not
    exist in the worktree the verification ran in. For the flaky register,

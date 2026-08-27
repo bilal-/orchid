@@ -1689,10 +1689,10 @@ _drive_verify_body() {
 # The round after them stopped reading the failure altogether and asked the
 # world two closed questions instead. That was the right KIND of evidence and
 # it was not enough on its own, because in this repository the answer is
-# AMBIENT: nearly every `lib/*.sh`, and `scripts/pin-formula.sh`, is tracked
-# mode 644 WITH a `#!` line, on purpose, because they are sourced or invoked as
-# `bash <file>`. So "this candidate added a file that carries a `#!` line and
-# is not executable" is simply true of any task that adds a library -- T010
+# AMBIENT: nearly every `lib/*.sh` is tracked mode 644 WITH a `#!` line, on
+# purpose, because it is sourced. So "this candidate added a file that carries
+# a `#!` line and is not executable" is simply true of any task that adds a
+# library -- T010
 # added `lib/handoff.sh` -- and the round it then waived had nothing to do with
 # a mode bit. A proof that is genuinely evaluated but proves an ambient fact is
 # WORSE than an over-broad sentence match, because it looks rigorous.
@@ -1714,9 +1714,9 @@ _drive_verify_body() {
 #                  about it. `chmod +x` is the whole fix in both, and the
 #                  implementer profile may not run it (L017). Once the operator
 #                  has, `-x` is true and the state is gone.
-#     stale pin -- RUN the repository's package-pin freshness check
-#                  (`handoff.pin_check`, defaulting to orchid's own
-#                  `scripts/pin-formula.sh --check`) and require it to REPORT
+#     stale pin -- when the repository opts in, RUN its candidate-local
+#                  package-pin freshness check (`handoff.pin_check`) and
+#                  require it to REPORT
 #                  A FILE STALE. A nonzero exit is not that report: a check
 #                  that cannot find the formula, cannot find a git checkout,
 #                  or trips over packaging metadata this candidate itself
@@ -1770,13 +1770,14 @@ _drive_verify_body() {
 # to `infra_failures`, and a second waived round on the same task stops for a
 # human instead of re-dispatching.
 
-# _DRIVE_PIN_CHECK_DEFAULT -- the freshness check orchid ships for its own
-# package pin, used when a repository declares no `handoff.pin_check` of its
-# own. `none` opts out. The named script is only ever run when it is a regular
-# file inside the tree that was verified AND that file states how to run it
-# (see `_drive_check_interp`); anything else is simply "no pin route", which
-# charges.
-_DRIVE_PIN_CHECK_DEFAULT='scripts/pin-formula.sh --check'
+# _DRIVE_PIN_CHECK_DEFAULT -- opt out unless a repository explicitly names a
+# candidate-local pin check. A whole-tree derived artifact cannot safely be a
+# per-candidate hand-off: every branch rewrites the same line and the second
+# stale-base rebase conflicts (lesson L022/T030). Orchid's Formula pin is such
+# an artifact and is checked only by the release gate. Repositories with a
+# genuinely candidate-local/per-file pin may opt in through
+# `handoff.pin_check`; `none` keeps the route closed.
+_DRIVE_PIN_CHECK_DEFAULT='none'
 
 # _drive_changed_paths <root> <base> <cand> [diff-filter] -- paths <cand>
 # changed relative to <base>, one per line, optionally restricted to a
@@ -2028,13 +2029,9 @@ drive_handoff_exec_bit() {
 # that the FILE ITSELF states -- which is no pin route, which charges.
 #
 # The exec bit is the repository's convention to set, not orchid's to require.
-# Requiring it made the built-in route dead in the repository that ships the
-# default: orchid's own `scripts/pin-formula.sh` is tracked mode 644 and is
-# invoked as `bash scripts/pin-formula.sh --check` everywhere it runs, so a
-# stale pin -- T014's case, the whole reason this route exists -- classified as
-# `candidate` here with no configuration able to fix it, because the shipped
-# default could not be run at all. Reading the `#!` line runs it exactly as its
-# own repository does.
+# A configured custom check may intentionally be tracked mode 644 and invoked
+# as `bash <file>`; reading its `#!` line preserves that repository convention
+# instead of making the opt-in route depend on `-x`.
 #
 # Still narrow, and narrow in the charging direction: the interpreter comes
 # from the file rather than from a guess (no defaulting to `sh` for a file that
@@ -2193,10 +2190,11 @@ _drive_pin_stale_path() {
 # rewrite withdrew. So a touched check yields no pin route, and charges.
 #
 # ONE COST, STATED RATHER THAN HIDDEN: trusted pre-command evidence means this
-# runs before EVERY verify in a repository that has such a check, and the
-# shipped default builds a release archive. Paying those few seconds on a pass
-# is the price of never letting a failed candidate manufacture pin staleness
-# before the classifier asks the question.
+# runs before EVERY verify in a repository that explicitly configures such a
+# check. That cost is why the route is opt-in, and why a whole-tree release
+# checksum belongs at the release gate instead. When enabled, the pre-command
+# run is what prevents a failed candidate manufacturing pin staleness before
+# the classifier asks the question.
 drive_handoff_stale_pin() {
   local repo="$1" root="$2" tf="$3" cmd script abs rc interp out path
   local -a parts=() pre=()
@@ -2602,8 +2600,8 @@ _drive_exec_state_clause() {
 # ASSERTION IS OFTEN FALSE. The exec-bit set is deliberately wider than "files
 # awaiting chmod +x", because nothing on disk tells a new verb shipped mode 644
 # apart from a library that is mode 644 on purpose because it is SOURCED -- and
-# in this repository nearly every `lib/*.sh`, `scripts/pin-formula.sh` and some
-# thirty files under `tests/` are the second kind. That is not one repository's
+# in this repository nearly every `lib/*.sh` and some thirty files under
+# `tests/` are the second kind. That is not one repository's
 # quirk either: a file meant to be `source`d or run as `bash <file>` has no use
 # for an exec bit, and plenty of projects never set one.
 #
