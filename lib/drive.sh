@@ -1446,27 +1446,34 @@ drive_worktree_plan() {
 # command and written by the verifier AFTER that command exits. That ordering
 # is the authority. Inspecting the worktree only after the command returns lets
 # the command manufacture any of the three exemptions it wants: chmod a
-# committed 755 executable down to 644, remove an ignored dependency tree, or
+# committed 755 executable down to 644, remove an ignored dependency tree,
+# add a diagnostic-shaped command under an integration dependency tree, or
 # dirty release inputs until the package-pin check turns stale, then print the
 # corresponding diagnostic. A pre-run empty value remains empty however the
-# candidate mutates its checkout while it is being tested.
+# candidate mutates either checkout while it is being tested. The environment
+# inventory is the causal half of the missing-tree snapshot: it records which
+# package/command subjects the integration tree actually published before the
+# candidate-controlled command began, so attribution never needs to read that
+# mutable tree afterwards.
 #
 # JSON keeps the header one line per field without inventing an escaping
 # grammar. The underlying discovery functions already choose the conservative
 # newline-delimited representation used everywhere else in this policy layer.
 drive_verify_prestate_headers() {
-  local repo="$1" tf="$2" root exec_missing env_missing pin_stale
-  local exec_json env_json pin_json
+  local repo="$1" tf="$2" root exec_missing env_missing env_inventory pin_stale
+  local exec_json env_json inventory_json pin_json
   root="$(fm_get "$tf" worktree)"
   [ -n "$root" ] && [ -d "$root" ] || root="$repo"
   exec_missing="$(drive_handoff_exec_bit "$root" "$tf")"
   env_missing="$(drive_env_missing_state "$repo" "$root")"
+  env_inventory="$(drive_env_inventory_state "$repo" "$env_missing")"
   pin_stale="$(drive_handoff_stale_pin "$repo" "$root" "$tf")"
   exec_json="$(printf '%s' "$exec_missing" | jq -Rs .)" || return 1
   env_json="$(printf '%s' "$env_missing" | jq -Rs .)" || return 1
+  inventory_json="$(printf '%s' "$env_inventory" | jq -Rs .)" || return 1
   pin_json="$(printf '%s' "$pin_stale" | jq -Rs .)" || return 1
-  printf 'prestate: 1\npre_exec_missing: %s\npre_env_missing: %s\npre_pin_stale: %s\n' \
-    "$exec_json" "$env_json" "$pin_json"
+  printf 'prestate: 1\npre_exec_missing: %s\npre_env_missing: %s\npre_env_inventory: %s\npre_pin_stale: %s\n' \
+    "$exec_json" "$env_json" "$inventory_json" "$pin_json"
 }
 
 # _drive_verify_header_value <verify-log> <key> -- the one value for <key>
@@ -1490,13 +1497,14 @@ _drive_verify_header_value() {
 }
 
 # _drive_verify_prestate_valid <repo> <task-file> <verify-log> -- 0 only when
-# all three pre-run values are well-formed and the verifier header binds
-# them to this task's CURRENT candidate and worktree. Any old log without the
-# marker, malformed JSON, moved candidate, or mismatched cwd closes all three
-# snapshot-backed routes and therefore charges; live post-run state is never a
-# compatibility fallback, because that fallback is the fabrication hole.
+# all three pre-run states (including the environment state's causal
+# inventory) are well-formed and the verifier header binds them to this task's
+# CURRENT candidate and worktree. Any old log without the marker, malformed
+# JSON, moved candidate, or mismatched cwd closes all three snapshot-backed
+# routes and therefore charges; live post-run state is never a compatibility
+# fallback, because that fallback is the fabrication hole.
 _drive_verify_prestate_valid() {
-  local repo="$1" tf="$2" log="$3" root cand marker sha lcand lcwd ej vj pj
+  local repo="$1" tf="$2" log="$3" root cand marker sha lcand lcwd ej vj ij pj
   root="$(fm_get "$tf" worktree)"
   [ -n "$root" ] && [ -d "$root" ] || root="$repo"
   cand="$(fm_get "$tf" candidate_sha)"
@@ -1507,6 +1515,7 @@ _drive_verify_prestate_valid() {
   lcwd="$(_drive_verify_header_value "$log" cwd)" || return 1
   ej="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 1
   vj="$(_drive_verify_header_value "$log" pre_env_missing)" || return 1
+  ij="$(_drive_verify_header_value "$log" pre_env_inventory)" || return 1
   pj="$(_drive_verify_header_value "$log" pre_pin_stale)" || return 1
   [ "$marker" = 1 ] || return 1
   [ "$sha" = "$cand" ] && [ "$lcand" = "$cand" ] || return 1
@@ -1514,18 +1523,21 @@ _drive_verify_prestate_valid() {
   git -C "$root" rev-parse -q --verify "$cand^{commit}" >/dev/null 2>&1 || return 1
   printf '%s' "$ej" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
   printf '%s' "$vj" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
+  printf '%s' "$ij" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
   printf '%s' "$pj" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
   return 0
 }
 
-# _drive_verify_prestate_list <repo> <task-file> <verify-log> <exec|env|pin> -- a
-# validated pre-run list. Invalid evidence deliberately prints nothing.
+# _drive_verify_prestate_list <repo> <task-file> <verify-log>
+# <exec|env|env-inventory|pin> -- a validated pre-run list. Invalid evidence
+# deliberately prints nothing.
 _drive_verify_prestate_list() {
   local repo="$1" tf="$2" log="$3" kind="$4" raw
   _drive_verify_prestate_valid "$repo" "$tf" "$log" || return 0
   case "$kind" in
     exec) raw="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 0 ;;
     env)  raw="$(_drive_verify_header_value "$log" pre_env_missing)" || return 0 ;;
+    env-inventory) raw="$(_drive_verify_header_value "$log" pre_env_inventory)" || return 0 ;;
     pin)  raw="$(_drive_verify_header_value "$log" pre_pin_stale)" || return 0 ;;
     *) return 0 ;;
   esac
@@ -2729,28 +2741,106 @@ drive_env_missing_state() {
   return 0
 }
 
-# _drive_env_resolves <repo> <missing> <token> -- 0 when <token> names
-# something that exists INSIDE <missing> in the checkout that still has it.
-#
-# Three shapes, and only three, because a "find anything called <token>
-# anywhere under this tree" rule would resolve half the words in the English
-# language against a `node_modules`: the package itself (`node_modules/lodash`),
-# and the two conventional executable directories a dependency tree publishes
-# its commands in (`node_modules/.bin/jest`, `.venv/bin/pytest`,
-# `vendor/bin/phpunit`).
-_drive_env_resolves() {
-  local repo="$1" m="$2" t="$3"
+# _drive_env_token_allowed <token> -- whether a diagnostic token may name one
+# of the deliberately narrow subjects the missing tree publishes. Whitespace
+# can never survive the diagnostic tokenizer as one subject; an option,
+# absolute path, or traversal was already rejected by the live resolver and
+# remains rejected here.
+_drive_env_token_allowed() {
+  local t="$1"
   [ -n "$t" ] || return 1
-  # Never an option, never an absolute path, never a traversal: the answer has
-  # to be a name INSIDE the tree that is missing.
-  case "$t" in -*|/*) return 1 ;; esac
-  case "$t" in *..*) return 1 ;; esac
-  [ -e "$repo/$m/$t" ] || [ -e "$repo/$m/.bin/$t" ] || [ -e "$repo/$m/bin/$t" ] || return 1
+  case "$t" in -*|/*|*..*|*[[:space:]]*) return 1 ;; esac
   return 0
 }
 
-# _drive_env_line_resolves <repo> <missing> <line> -- 0 when the SUBJECT of
-# <line>'s resolution failure resolves inside <missing>.
+# drive_env_inventory_state <repo> <missing-list> -- verifier-owned
+# pre-command facts of the form "<missing><TAB><subject>", one per line.
+#
+# This is the causal half of `drive_env_missing_state`. Capturing only the
+# missing directory names is insufficient: the old classifier proved that a
+# diagnostic subject lived in a directory by reading the integration checkout
+# AFTER the candidate-controlled command. A hostile test could therefore add
+# `$repo/$missing/.bin/fabricated`, print `fabricated: command not found`, and
+# create the proof that waived it. The inventory is captured alongside the
+# missing set before that command and is the only resolution authority later.
+#
+# Keep the namespace deliberately narrow and bounded: direct package names,
+# one extra component for conventional scoped packages (`@scope/name`), and
+# the immediate children of `.bin` and `bin`. Those are the three published
+# shapes the classifier documents. A deeper or otherwise unfamiliar subject
+# is uncertain and charges rather than making every file below a large
+# dependency tree part of a potentially enormous evidence header.
+drive_env_inventory_state() {
+  local repo="$1" missing="$2" m base p name child child_name token sub
+  [ -d "$repo" ] || return 0
+  {
+    while IFS= read -r m; do
+      [ -n "$m" ] || continue
+      # The surrounding missing-state representation is line-oriented. A tab
+      # would also make this record ambiguous; omit it in the strict direction.
+      case "$m" in *$'\t'*) continue ;; esac
+      base="$repo/$m"
+      [ -d "$base" ] || continue
+
+      # A direct child is a package/subject in its own right. Dot entries need
+      # explicit patterns because the ordinary `*` glob does not include them.
+      for p in "$base"/* "$base"/.[!.]* "$base"/..?*; do
+        [ -e "$p" ] || continue
+        name="${p##*/}"
+        if _drive_env_token_allowed "$name"; then
+          printf '%s\t%s\n' "$m" "$name"
+        fi
+        case "$name" in
+          @*)
+            [ -d "$p" ] || continue
+            for child in "$p"/* "$p"/.[!.]* "$p"/..?*; do
+              [ -e "$child" ] || continue
+              child_name="${child##*/}"
+              token="$name/$child_name"
+              _drive_env_token_allowed "$token" || continue
+              printf '%s\t%s\n' "$m" "$token"
+            done
+            ;;
+        esac
+      done
+
+      # Dependency trees conventionally publish executables here. The
+      # diagnostic names `jest`, not `.bin/jest`, so store the basename too.
+      for sub in .bin bin; do
+        [ -d "$base/$sub" ] || continue
+        for p in "$base/$sub"/* "$base/$sub"/.[!.]* "$base/$sub"/..?*; do
+          [ -e "$p" ] || continue
+          name="${p##*/}"
+          _drive_env_token_allowed "$name" || continue
+          printf '%s\t%s\n' "$m" "$name"
+        done
+      done
+    done <<< "$missing"
+  } | LC_ALL=C sort -u
+}
+
+# _drive_env_resolves <inventory> <missing> <token> -- 0 when trusted
+# pre-command evidence says <token> named something published by <missing>.
+#
+# Three shapes, and only three, because a "find anything called <token>
+# anywhere under this tree" rule would resolve half the words in the English
+# language against a `node_modules`: the package itself (including a scoped
+# package), and the two conventional executable directories a dependency tree
+# publishes its commands in (`node_modules/.bin/jest`, `.venv/bin/pytest`,
+# `vendor/bin/phpunit`). No live filesystem lookup is permitted here.
+_drive_env_resolves() {
+  local inventory="$1" m="$2" t="$3" expected record
+  _drive_env_token_allowed "$t" || return 1
+  expected="$m"$'\t'"$t"
+  while IFS= read -r record; do
+    [ "$record" = "$expected" ] && return 0
+  done <<< "$inventory"
+  return 1
+}
+
+# _drive_env_line_resolves <inventory> <missing> <line> -- 0 when the SUBJECT
+# of <line>'s resolution failure was recorded inside <missing> before the
+# candidate-controlled command.
 #
 # Every token is not a subject. `ENOENT: ... open 'src/config.json'` contains
 # the word `open`, and a dependency tree commonly contains a package with that
@@ -2764,7 +2854,7 @@ _drive_env_resolves() {
 # diagnostic charges, while accepting an unrelated word forgives a candidate
 # defect; strict classification requires the first direction.
 _drive_env_line_resolves() {
-  local repo="$1" m="$2" line="$3" i=0 expect=0 prev="" tok
+  local inventory="$1" m="$2" line="$3" i=0 expect=0 prev="" tok
   local -a words=()
   [ -n "$line" ] || return 1
   # `read -r -a` rather than an unquoted `for tok in $line`: word splitting
@@ -2786,7 +2876,7 @@ _drive_env_line_resolves() {
           continue
           ;;
       esac
-      _drive_env_resolves "$repo" "$m" "$tok" && return 0
+      _drive_env_resolves "$inventory" "$m" "$tok" && return 0
       expect=0
     fi
 
@@ -2794,7 +2884,7 @@ _drive_env_line_resolves() {
       command|Command|COMMAND)
         # POSIX shells put the missing command immediately before this word;
         # Yarn-style diagnostics put it immediately after.
-        _drive_env_resolves "$repo" "$m" "$prev" && return 0
+        _drive_env_resolves "$inventory" "$m" "$prev" && return 0
         expect=1
         ;;
       module|Module|MODULE|package|Package|PACKAGE|resolve|Resolve|RESOLVE|open|Open|OPEN)
@@ -2806,9 +2896,10 @@ _drive_env_line_resolves() {
   return 1
 }
 
-# drive_env_causal <repo> <missing> <body> [root] -- the lines of <body> that
-# report a RESOLUTION failure whose subject lives inside <missing>. Non-empty
-# is the proof that this absent tree is what blocked THIS run.
+# drive_env_causal <inventory> <missing> <body> [root] -- the lines of <body>
+# that report a RESOLUTION failure whose subject the pre-command inventory says
+# lived inside <missing>. Non-empty is the proof that this absent tree blocked
+# THIS run.
 #
 # Both halves on the SAME line, exactly as the hand-off arms require: a
 # resolution failure alone is what a typo'd import prints, and a token that
@@ -2820,7 +2911,7 @@ _drive_env_line_resolves() {
 # a classifier that runs on every failed verify becomes the slowest thing in
 # the pass.
 drive_env_causal() {
-  local repo="$1" m="$2" body="$3" root="${4:-}" line res named out=""
+  local inventory="$1" m="$2" body="$3" root="${4:-}" line res named out=""
   [ -n "$m" ] && [ -n "$body" ] || return 0
   res="$(grep -E -- "$_DRIVE_RESOLUTION_RE" <<< "$body" || true)"
   [ -n "$res" ] || return 0
@@ -2835,17 +2926,17 @@ drive_env_causal() {
 "
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    _drive_env_line_resolves "$repo" "$m" "$line" || continue
+    _drive_env_line_resolves "$inventory" "$m" "$line" || continue
     out="$out$line
 "
   done <<< "$res"
   printf '%s' "$out"
 }
 
-# drive_env_attribution <repo> <missing> <body> [root] -- the lines of <body>
-# this absent tree is answerable for. Causal first, then its cascade: every
-# FAILING line that NAMES the directory by identity. Empty means this failure
-# is not attributable to it.
+# drive_env_attribution <inventory> <missing> <body> [root] -- the lines of
+# <body> this absent tree is answerable for. Causal first, then its cascade:
+# every FAILING line that NAMES the directory by identity. Empty means this
+# failure is not attributable to it.
 #
 # EXACTLY THE TWO SOURCES THE HAND-OFF ARMS HAVE, and the third one this used
 # to carry is gone. That third source claimed every failing line holding a
@@ -2875,9 +2966,9 @@ drive_env_causal() {
 # tests MEMBERSHIP, so a line claimed twice is claimed once; deduping here would
 # cost a fork per line to change nothing.
 drive_env_attribution() {
-  local repo="$1" m="$2" body="$3" root="${4:-}" fails causal named out=""
+  local inventory="$1" m="$2" body="$3" root="${4:-}" fails causal named out=""
   [ -n "$m" ] && [ -n "$body" ] || return 0
-  causal="$(drive_env_causal "$repo" "$m" "$body" "$root")"
+  causal="$(drive_env_causal "$inventory" "$m" "$body" "$root")"
   [ -n "$causal" ] || return 0
   # Keep each attributed diagnostic as its own record. Without this newline,
   # the first cascade line was glued to the causal line and the exact-line
@@ -3134,7 +3225,7 @@ drive_waivable_outstanding() {
   local paths="" p first="" firstdrop="" fbpath causal attr="" states="" sep=""
   local fallback="" fsep=""
   local why="" note pin="" cmd="" pinpath="" pinattr pinstate
-  local kinds="" m envattr envstate sig qattr cut prestate=0
+  local kinds="" m envattr envstate envinventory="" sig qattr cut prestate=0
   base="$(fm_get "$tf" base_sha)"
   root="$(fm_get "$tf" worktree)"
   # The verification ran in the task's worktree when it has one; that is the
@@ -3150,6 +3241,7 @@ drive_waivable_outstanding() {
   if _drive_verify_prestate_valid "$repo" "$tf" "$log"; then
     prestate=1
     paths="$(_drive_verify_prestate_list "$repo" "$tf" "$log" exec)"
+    envinventory="$(_drive_verify_prestate_list "$repo" "$tf" "$log" env-inventory)"
     pin="$(_drive_verify_prestate_list "$repo" "$tf" "$log" pin)"
   fi
   while IFS= read -r p; do
@@ -3199,7 +3291,7 @@ drive_waivable_outstanding() {
   if [ "$prestate" -eq 1 ]; then
     while IFS= read -r m; do
       [ -n "$m" ] || continue
-      envattr="$(drive_env_attribution "$repo" "$m" "$body" "$root")"
+      envattr="$(drive_env_attribution "$envinventory" "$m" "$body" "$root")"
       if [ -n "$envattr" ]; then
         envstate="$m was present in the integration checkout and absent from the worktree when verification began — it is gitignored, so creating the worktree from Git-tracked state could not reproduce it (lesson L003), and provisioning it there is a dispatch step rather than anything the implementer wrote"
         attr="$attr$envattr

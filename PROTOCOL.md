@@ -1216,15 +1216,17 @@ ones its archetype never declares.
         route. Signatures are matched literally and claim only the lines they
         match.
 
-      The exec-bit set, missing-build-state set, and stale-pin check result are
+      The exec-bit set, missing-build-state set **and the package/command
+      subjects those missing trees publish**, and stale-pin check result are
       captured by `orchid verify` **before** it runs the candidate-controlled
       verification command, then written into the evidence header after that
       command exits. The classifier accepts them only when the log's `sha`,
       `candidate`, and `cwd` still bind the snapshot to this task's current
       candidate and worktree. It never falls back to inspecting live state
       after the run: otherwise a candidate could strip a committed executable
-      bit, delete an ignored dependency tree, or dirty release inputs until the
-      pin check turns stale during its own test, print the matching diagnostic,
+      bit, delete an ignored dependency tree, add a fake `.bin` subject under
+      an integration dependency tree, or dirty release inputs until the pin
+      check turns stale during its own test, print the matching diagnostic,
       and manufacture the post-run state that waives it. A legacy, malformed,
       or mismatched snapshot closes all three routes and charges.
 

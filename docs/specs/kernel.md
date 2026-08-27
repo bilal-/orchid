@@ -336,8 +336,9 @@ buying a fresh implementation pass to reach the same tree.
 
 - **testing** = `orchid verify <id>`: runs `verification_commands` in the
   task worktree; records evidence (command, cwd, SHA, timestamps, exit
-  codes, log digest), including the exec-bit set, missing-build-state set, and
-  stale-pin result captured before the candidate-controlled command starts.
+  codes, log digest), including the exec-bit set, missing-build-state set and
+  its resolution inventory, and stale-pin result captured before the
+  candidate-controlled command starts.
   Sole acceptance authority for tests.
 - **merging** = `orchid merge <id>`: serialized, transactional, and — round-4
   determinism fix — NEVER triggers reviews itself. If integration HEAD ≠
@@ -638,8 +639,11 @@ buying a fresh implementation pass to reach the same tree.
   doing so lets the command strip a mode bit, remove ignored dependencies, or
   dirty release inputs until the pin check turns stale during its own test and
   create the very state that waives its diagnostic. Missing, malformed, and
-  mismatched snapshot fields close all three routes and charge. A recorded
-  exit status saying the run STOPPED SHORT (124, 137, 143) was a fifth verdict
+  mismatched snapshot fields close all three routes and charge. The missing
+  tree's package/command inventory is captured at the same time and is the only
+  authority for later resolution attribution; the classifier never reads
+  candidate-mutable integration contents after the command. A recorded exit
+  status saying the run STOPPED SHORT (124, 137, 143) was a fifth verdict
   once and is not one now: that status is equally what a candidate which HUNG
   until a timeout reaped it leaves, and what a suite that exits with it
   deliberately leaves, so the provenance was assumed rather than proved. It is

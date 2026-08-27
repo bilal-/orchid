@@ -5852,6 +5852,10 @@ assert_match "mobile/node_modules" "$(drive_env_missing_state "$ENVR" "$ENVW")" 
   "the missing build state is found by COMPARING the two checkouts: ignored here, present here, absent there"
 assert_eq "" "$(drive_env_missing_state "$ENVR" "$ENVR")" \
   "and a task with no dispatch worktree of its own has none of this state by construction — there is no second checkout for anything to be missing from"
+ENV_INVENTORY="$(drive_env_inventory_state "$ENVR" \
+  "$(drive_env_missing_state "$ENVR" "$ENVW")")"
+assert_match $'mobile/node_modules\tjest' "$ENV_INVENTORY" \
+  "the verifier-owned environment inventory records the command the missing dependency tree published before candidate code runs"
 
 # --- the named case: waived, and it names the directory -------------------
 ev_log 'error Command "jest" not found'
@@ -5861,6 +5865,25 @@ assert_match "mobile/node_modules" "$(ev_cls | cut -f2-)" \
   "and the reason names the directory, because 'the environment' is not something anybody can provision"
 assert_match "creating the worktree from Git-tracked state" "$(ev_cls | cut -f2-)" \
   "and says why it is absent, so the reader learns the mechanism rather than the incident"
+
+# Capture the real missing tree and its published subjects, then let the
+# simulated candidate add a diagnostic-shaped command to the INTEGRATION
+# checkout after capture. The missing-directory snapshot alone is not enough:
+# a post-run resolver would find this new `.bin` entry and let candidate output
+# manufacture its own environment waiver.
+EV_BEFORE_INVENTORY_MUTATION="$(drive_verify_prestate_headers \
+  "$ENVR" "$ENVR/.orchid/tasks/EV1.md")"
+printf '#!/usr/bin/env node\n' > "$ENVR/mobile/node_modules/.bin/fabricated"
+assert_match $'mobile/node_modules\tfabricated' \
+  "$(drive_env_inventory_state "$ENVR" "mobile/node_modules")" \
+  "fixture: a live post-command inventory really would accept the fabricated command"
+mk_prestate_log "$ENVR" "$ENVR/.orchid/tasks/EV1.md" \
+  "$ENVR/.orchid/reviews/EV1-verify.log" \
+  'error Command "fabricated" not found' "yarn test" 1 \
+  "$EV_BEFORE_INVENTORY_MUTATION"
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "but the bound pre-command inventory has no fabricated subject, so candidate-created integration content cannot manufacture an environment waiver"
+rm -f "$ENVR/mobile/node_modules/.bin/fabricated"
 
 # Yarn v1 wraps that causal diagnostic in three neutral harness records. The
 # full real body must remain live, while anything beyond that closed grammar
@@ -5935,10 +5958,10 @@ assert_eq candidate "$(ev_cls | cut -f1)" \
 ev_log "ENOENT: no such file or directory, open 'fixtures/mobile/node_modules/react-native/package.json'"
 assert_eq candidate "$(ev_cls | cut -f1)" \
   "and a path under fixtures/mobile/node_modules is not under the missing mobile/node_modules merely because the latter is its suffix — only the exact relative, ./, or worktree-root absolute identity may open the child-path rule"
-assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
+assert_eq "" "$(drive_env_causal "$ENV_INVENTORY" mobile/node_modules \
     "ENOENT: no such file or directory, open 'fixtures/mobile/node_modules/react-native/package.json'" "$ENVW")" \
   "the environment causal layer itself rejects the deeper suffix, so an unrelated cascade cannot reopen attribution later"
-assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
+assert_eq "" "$(drive_env_causal "$ENV_INVENTORY" mobile/node_modules \
     "ENOENT: no such file or directory, open 'mobile/node_modulesX/y'")" \
   "nor for a name continuing in any other character — asserted at the layer it lives in, because both readings of the class assertion above look identical from outside"
 
@@ -5953,7 +5976,7 @@ assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
 ev_log "Error: ENOENT: no such file or directory, open 'src/config.json'"
 assert_eq candidate "$(ev_cls | cut -f1)" \
   "an ENOENT for src/config.json is CHARGED even though an unrelated token named open resolves inside the absent node_modules — only the diagnosed subject can establish causality"
-assert_eq "" "$(drive_env_causal "$ENVR" mobile/node_modules \
+assert_eq "" "$(drive_env_causal "$ENV_INVENTORY" mobile/node_modules \
     "Error: ENOENT: no such file or directory, open 'src/config.json'")" \
   "and the causal layer itself claims no line, proving the candidate verdict did not merely come from some later accounting accident"
 ev_log 'jest: command not found'

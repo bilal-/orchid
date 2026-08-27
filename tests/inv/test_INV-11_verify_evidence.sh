@@ -40,6 +40,7 @@ assert_match "^command: test -f marker\.txt$" "$(cat "$log")" "evidence records 
 assert_match "^prestate: 1$" "$(cat "$log")" "evidence marks the trusted pre-verification snapshot contract"
 assert_match '^pre_exec_missing: "' "$(cat "$log")" "evidence records the pre-run exec-bit set as one JSON string"
 assert_match '^pre_env_missing: "' "$(cat "$log")" "evidence records the pre-run missing-build-state set as one JSON string"
+assert_match '^pre_env_inventory: "' "$(cat "$log")" "evidence records the pre-run environment resolution inventory as one JSON string"
 assert_match '^pre_pin_stale: "' "$(cat "$log")" "evidence records the pre-run stale-pin proof as one JSON string"
 assert_match "^exit: [1-9][0-9]*$" "$(cat "$log")" "evidence records nonzero exit (FAIL run)"
 

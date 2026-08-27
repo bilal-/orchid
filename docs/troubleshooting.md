@@ -399,12 +399,14 @@ worth nothing:
 
    For the mode-bit, missing-build-state, and stale-pin routes, “proved” means
    captured in the `orchid verify` evidence header **before** the candidate's
-   command starts. The header is accepted only while its SHA, candidate, and
-   cwd bind it to the current task. Orchid deliberately does not rebuild those
-   values from the worktree after a failure: a test command can change that
-   worktree, and post-run inspection would let it strip a bit, delete
-   dependencies, or dirty release inputs until the pin turns stale to
-   manufacture its own waiver. Old or malformed evidence therefore charges.
+   command starts. Missing-build-state evidence includes the package/command
+   subjects the integration tree published then, not a later read of that
+   tree. The header is accepted only while its SHA, candidate, and cwd bind it
+   to the current task. Orchid deliberately does not rebuild those values from
+   either checkout after a failure: a test command can strip a bit, delete
+   dependencies, add a fake `.bin` subject under integration, or dirty release
+   inputs until the pin turns stale to manufacture its own waiver. Old or
+   malformed evidence therefore charges.
 2. **This failure is attributed to that artifact**, in two steps, because one
    fault does not fail one check — it strands a whole suite. First, some
    failing line must *name the file and report its fault*
@@ -430,7 +432,8 @@ worth nothing:
    different fact: a line saying something **could not be resolved**, where
    that something **lives inside the absent directory**. `error Command
    "jest" not found` attributes to `mobile/node_modules` because
-   `mobile/node_modules/.bin/jest` is there in the checkout that still has it
+   `mobile/node_modules/.bin/jest` was recorded there before verification in
+   the checkout that still has it
    — and attributes to nothing when the absent directory is an unrelated
    `.cache`. That coincidence is exactly how an earlier version of this rule
    waived failures it had no part in, and it is why the rule now asks the

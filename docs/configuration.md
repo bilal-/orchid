@@ -212,6 +212,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     rules, and absent from the worktree the verification ran in. `git worktree
     add` reproduces what git *tracks*, so `node_modules`, `vendor`, `.venv`
     and a symlink into a sibling checkout simply are not there (lesson L003).
+    Orchid snapshots the package/command subjects that directory publishes
+    before verification too; post-command integration contents are not an
+    attribution authority.
   - **An assertion the repository already recorded as known-flaky**
     (`flaky.quarantine`, below).
 
