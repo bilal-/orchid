@@ -316,7 +316,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   its exit status. A passing child contributes only durable qualification
   records and a terminal `<path>: OK`; a failing child contributes its output
   verbatim. The classifier trusts no BEGIN/END text from candidate-controlled
-  output, so a test cannot print a success frame around a real defect. Merely
+  output, so a test cannot print a success frame around a real defect. Anchored
+  NOT-TESTED/RED/GREEN records stay neutral when their labels describe a
+  `failure` or `failed` fixture; a generic terminal-OK line does not override
+  a failure match. Merely
   naming the same artifact cannot pull an unknown line into that artifact's
   cascade.
   A separate outstanding state contributes no

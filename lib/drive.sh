@@ -2160,6 +2160,15 @@ _DRIVE_FATAL_RE='(^|[^[:alnum:]_])([Pp][Aa][Nn][Ii][Cc]([Kk][Ee][Dd])?|[Ff][Aa][
 # before any waiver is considered.
 _DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff]ailed|[Ff]ailure|[Ff]ailures)([^[:alnum:]_]|\$)|(^|[^[:alnum:]_])[Ee]rror:|^not ok |[Aa]ssertion(Error| failed)|Traceback \\(most recent call last\\)|$_DRIVE_EXEC_REFUSAL_RE|$_DRIVE_RESOLUTION_RE|$_DRIVE_FATAL_RE"
 
+# _DRIVE_QUALIFICATION_LINE_RE -- anchored records whose contract is to
+# describe a demonstrated negative/positive case or an explicit qualification
+# gap. Their human labels routinely contain words such as "failure" and
+# "failed"; those words describe the fixture the gate exercised, not this
+# verification's verdict. Give only these exact forms precedence over the
+# generic failure vocabulary. A terminal OK sentence does not get that
+# privilege: `FAIL: candidate defect OK` must still charge.
+_DRIVE_QUALIFICATION_LINE_RE='^[[:space:]]*NOT-TESTED:[[:space:]]+.+ -- .+$|^[[:space:]]*not-tested:[[:space:]]+[0-9]+ claim[(]s[)] in this file were recorded as not-tested, never as passes[[:space:]]*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$'
+
 # _DRIVE_PROGRESS_LINE_RE -- lines that affirm progress, success, or an
 # explicitly neutral not-tested claim rather than diagnose a failed command.
 # This is intentionally a CLOSED vocabulary. Once verify exits non-zero, a
@@ -2212,7 +2221,12 @@ _drive_quote_line() {
 # artifact, because naming cannot turn uncertainty into proof of causation.
 drive_reported_failure_lines() {
   [ -n "$1" ] || return 0
-  grep -E -- "$_DRIVE_FAILURE_LINE_RE" <<< "$1" || true
+  ORCHID_DRIVE_FAILURE_RE="$_DRIVE_FAILURE_LINE_RE" \
+    ORCHID_DRIVE_QUALIFICATION_RE="$_DRIVE_QUALIFICATION_LINE_RE" \
+    awk '
+      $0 ~ ENVIRON["ORCHID_DRIVE_QUALIFICATION_RE"] { next }
+      $0 ~ ENVIRON["ORCHID_DRIVE_FAILURE_RE"] { print }
+    ' <<< "$1"
 }
 
 # drive_failure_lines <body> -- every line that must be accounted for before a
@@ -2228,8 +2242,10 @@ drive_failure_lines() {
   # in -v string values are interpreted a second time by awk, which silently
   # changes EREs such as the literal opening parenthesis in `Traceback (`.
   out="$(ORCHID_DRIVE_FAILURE_RE="$_DRIVE_FAILURE_LINE_RE" \
+    ORCHID_DRIVE_QUALIFICATION_RE="$_DRIVE_QUALIFICATION_LINE_RE" \
     ORCHID_DRIVE_PROGRESS_RE="$_DRIVE_PROGRESS_LINE_RE" \
     awk '
+      $0 ~ ENVIRON["ORCHID_DRIVE_QUALIFICATION_RE"] { next }
       $0 ~ ENVIRON["ORCHID_DRIVE_FAILURE_RE"] { print; next }
       $0 ~ ENVIRON["ORCHID_DRIVE_PROGRESS_RE"] { next }
       { print }

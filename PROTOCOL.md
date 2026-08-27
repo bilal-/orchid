@@ -1316,7 +1316,11 @@ ones its archetype never declares.
       exposes only durable NOT-TESTED/RED/GREEN qualification records and one
       terminal `<path>: OK`; for a nonzero exit it exposes the child's output
       verbatim. Outcome therefore cannot be forged by printing an in-band
-      success marker from the child being judged. Unknown lines cannot join a
+      success marker from the child being judged. The anchored qualification
+      records remain neutral when their labels say `failure` or `failed` —
+      those words name the negative fixture they demonstrated — but a generic
+      line merely ending in `OK` gets no such precedence over a failure.
+      Unknown lines cannot join a
       same-artifact cascade merely by naming the artifact. Separately
       outstanding state grants no
       attribution, but a waived reason still reports an operator action it

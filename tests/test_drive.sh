@@ -4788,13 +4788,17 @@ CSC_SHIPPED_NON_FAILURE="== /repo/tests/test_e2e_concurrency.sh
 e2e concurrency: OK
 == /repo/tests/test_schedule.sh
 unit: schedule_dispatch_blockers predicates OK
-  NOT-TESTED: source-tree-git-state -- this fixture deliberately has no checkout
+  NOT-TESTED: failure-triage -- this failed fixture deliberately has no checkout
   not-tested: 1 claim(s) in this file were recorded as not-tested, never as passes
-  RED-CASE: the negative fixture was rejected
-  GREEN-CASE: the positive fixture was accepted
+  RED-CASE: the failure diagnostic was rejected by the gate
+  GREEN-CASE: the failed fixture's positive control was accepted
   red-cases: 1 demonstrated in this file (green-cases: 1)"
 assert_eq "" "$(drive_failure_lines "$CSC_SHIPPED_NON_FAILURE")" \
-  "the shipped whole-suite headings, terminal OK records, and both explicit not-tested records are non-failures rather than permanent unattributed blockers"
+  "the shipped whole-suite headings, terminal OK records, and explicit qualification records stay non-failures even when their human labels name the failure they demonstrated"
+assert_eq "" "$(drive_reported_failure_lines "$CSC_SHIPPED_NON_FAILURE")" \
+  "the same qualification records cannot enter an artifact cascade merely because their labels say failure or failed"
+assert_eq "FAIL: candidate defect OK" "$(drive_failure_lines "FAIL: candidate defect OK")" \
+  "only the anchored qualification contract wins that precedence; a generic failure line ending in OK still charges"
 csc_log "$CSC_SHIPPED_NON_FAILURE
 /bin/bash: runners/csc-drive: Permission denied"
 assert_eq handoff "$(csc_cls | cut -f1)" \

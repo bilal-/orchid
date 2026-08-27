@@ -501,7 +501,10 @@ vocabulary. The shipped whole-suite/CI parent captures each test's output and
 waits for its exit status: zero exposes durable qualification records plus a
 terminal `<path>: OK`, while nonzero exposes the child's output verbatim. No
 candidate-controlled BEGIN/END marker is trusted, so a test cannot forge a
-completed-success block around a real defect. An unknown line cannot be
+completed-success block around a real defect. Anchored NOT-TESTED/RED/GREEN
+records remain neutral when their labels name the `failure` or `failed`
+fixture they demonstrated; an arbitrary line ending in OK does not override a
+failure match. An unknown line cannot be
 claimed by a same-artifact cascade just
 because it names that artifact. A separate
 outstanding state does not earn attribution, but the waived reason retains it
