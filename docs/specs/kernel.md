@@ -642,8 +642,9 @@ buying a fresh implementation pass to reach the same tree.
   stops an implementer quarantining the assertion it is failing. The exec-bit
   set, ignored-directory set, and pin-check result are snapshot evidence
   written by `orchid verify` before the candidate-controlled command runs,
-  bound by the log's `sha`, `candidate`, and `cwd` fields to the current task
-  candidate and worktree. They are never reconstructed from post-run state:
+  bound by the log's `sha`, `candidate`, `cwd`, and captured `base_sha` fields
+  to the current task candidate, worktree, and pre-run comparison base. They
+  are never reconstructed from post-run state:
   doing so lets the command strip a mode bit, remove ignored dependencies, or
   dirty release inputs until the pin check turns stale during its own test and
   create the very state that waives its diagnostic. Missing, malformed, and
@@ -695,10 +696,11 @@ buying a fresh implementation pass to reach the same tree.
   a staged-and-uncommitted one, an untracked drop-in, a deletion and a mode
   change each close the route — none of them appears in the diff, and every one
   of them is a file the implementer controls. The flaky register has one
-  fail-closed bootstrap for carried worktrees: when the task's base and
-  candidate both resolve and both lack the register path, a clean tracked copy
-  at integration `HEAD` may supply it, but only while that HEAD is still the
-  exact commit captured before candidate-controlled verification began. A
+  fail-closed bootstrap for carried worktrees: when the task's captured
+  pre-run base and candidate both resolve and both lack the register path, a
+  clean tracked copy at integration `HEAD` may supply it, but only while that
+  HEAD is still the exact commit captured before candidate-controlled
+  verification began. A
   candidate addition has the path in its candidate; a deletion has it in its
   base; moved integration HEAD or dirty integration bytes, mode, or index fail
   the authority check. This lets a post-cut historical-flake entry

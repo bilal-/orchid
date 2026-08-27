@@ -31,8 +31,9 @@ cand="$(fm_get "$tf" candidate_sha)"; [ -n "$cand" ] || cand=none
 # Capture classifier evidence before the candidate-controlled command runs.
 # The verifier writes it into the final log only after that command exits, so
 # removing ignored dependencies, stripping an exec bit, dirtying release
-# inputs until the pin check turns stale, or moving integration HEAD onto a
-# candidate-authored flaky register during verification cannot manufacture a
+# inputs until the pin check turns stale, moving integration HEAD onto a
+# candidate-authored flaky register, or rewriting the task's base_sha to make
+# that register appear unchanged during verification cannot manufacture a
 # waiver from post-run state.
 prestate_headers="$(drive_verify_prestate_headers "$repo" "$tf")"
 

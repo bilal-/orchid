@@ -6399,8 +6399,10 @@ mk_qr_task() {  # <base-sha> <candidate-sha>
 }
 mk_qr_task "$QRBASE" "$QRCAND"
 qr_log() {  # <body> [exit-status]
-  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: %s\n' \
-    "$QRCAND" "$QRCAND" "$QR" "$1" "${2:-1}" > "$QR/.orchid/reviews/QA1-verify.log"
+  local qr_snapshot
+  qr_snapshot="$(drive_verify_prestate_headers "$QR" "$QR/.orchid/tasks/QA1.md")"
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n%s\n---\n%s\nexit: %s\n' \
+    "$QRCAND" "$QRCAND" "$QR" "$qr_snapshot" "$1" "${2:-1}" > "$QR/.orchid/reviews/QA1-verify.log"
 }
 qr_cls() {
   ( HOME="$MACHINE_HOME"
@@ -6616,8 +6618,10 @@ QSCAND="$(git -C "$QS" rev-parse HEAD)"
 printf -- '---\nschema: 1\nid: QS1\nstatus: testing\narchetype: feature\nattempts: 0\nworktree: %s\nbase_sha: %s\ncandidate_sha: %s\n---\nbody\n' \
   "$QS" "$QSBASE" "$QSCAND" > "$QS/.orchid/tasks/QS1.md"
 qs_log() {
-  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
-    "$QSCAND" "$QSCAND" "$QS" "$1" > "$QS/.orchid/reviews/QS1-verify.log"
+  local qs_snapshot
+  qs_snapshot="$(drive_verify_prestate_headers "$QS" "$QS/.orchid/tasks/QS1.md")"
+  printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n%s\n---\n%s\nexit: 1\n' \
+    "$QSCAND" "$QSCAND" "$QS" "$qs_snapshot" "$1" > "$QS/.orchid/reviews/QS1-verify.log"
 }
 qs_cls() {
   ( HOME="$MACHINE_HOME"
@@ -6875,6 +6879,29 @@ assert_eq "" "$(drive_quarantine_signatures \
   "GREEN control: binding the fallback to pre-verification HEAD exposes no signature after the verifier moves that ref"
 assert_eq candidate "$(qo_cls QO3 | cut -f1)" \
   "a register committed to integration after verification began forgives nothing — current HEAD no longer matches the pre-verification control-plane authority"
+
+# The comparison base is another PRE-RUN authority. QOW's candidate added the
+# register itself, so QOBASE..QOADD correctly closes the route. If hostile
+# verification rewrites the task's base_sha to QOADD after the snapshot,
+# however, an unbound comparison becomes QOADD..QOADD and calls that same
+# candidate-authored file unchanged. Capture the honest base, perform that
+# mutation, and prove both sides explicitly before asking the classifier.
+qo_task QO4 "$QOW" "$QOBASE" "$QOADD"
+QO_BASE_PRE_ATTACK="$(drive_verify_prestate_headers \
+  "$QO" "$QO/.orchid/tasks/QO4.md")"
+fm_set "$QO/.orchid/tasks/QO4.md" base_sha "$QOADD"
+qo_log QO4 "$QOW" "$QOADD" "looks fine
+  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal" \
+  "$QO_BASE_PRE_ATTACK"
+assert_match "job log must have grown" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO4.md")" \
+  "RED control: an unbound post-run base_sha rewritten to candidate_sha makes the candidate-added register look unchanged"
+assert_eq "" "$(drive_quarantine_signatures \
+    "$QO" "$QOW" "$QO/.orchid/tasks/QO4.md" \
+    "$(git -C "$QO" rev-parse HEAD)" "$QOBASE")" \
+  "GREEN control: the captured pre-verification base exposes the register as candidate-authored and therefore no authority"
+assert_eq candidate "$(qo_cls QO4 | cut -f1)" \
+  "rewriting base_sha after verification begins invalidates the snapshot and cannot turn a candidate-authored FLAKE entry into a waiver"
 cd "$QR" || exit 1
 
 # --- THE SAFETY PROPERTY: a register the candidate touched is no authority.

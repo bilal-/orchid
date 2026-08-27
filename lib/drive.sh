@@ -1461,10 +1461,16 @@ drive_worktree_plan() {
 # grammar. The underlying discovery functions already choose the conservative
 # newline-delimited representation used everywhere else in this policy layer.
 drive_verify_prestate_headers() {
-  local repo="$1" tf="$2" root exec_missing env_missing env_inventory pin_stale integration_head
-  local exec_json env_json inventory_json pin_json head_json
+  local repo="$1" tf="$2" root base_sha exec_missing env_missing env_inventory pin_stale integration_head
+  local base_json exec_json env_json inventory_json pin_json head_json
   root="$(fm_get "$tf" worktree)"
   [ -n "$root" ] && [ -d "$root" ] || root="$repo"
+  # `base_sha` is part of every authority comparison below. Capture it before
+  # candidate-controlled verification begins just like integration HEAD: if
+  # the command can rewrite the task's base to its own candidate afterwards,
+  # a candidate-authored quarantine register otherwise looks unchanged across
+  # base..candidate and becomes its own amnesty.
+  base_sha="$(fm_get "$tf" base_sha)"; [ -n "$base_sha" ] || base_sha=none
   exec_missing="$(drive_handoff_exec_bit "$root" "$tf")"
   env_missing="$(drive_env_missing_state "$repo" "$root")"
   env_inventory="$(drive_env_inventory_state "$repo" "$env_missing")"
@@ -1474,13 +1480,14 @@ drive_verify_prestate_headers() {
   # candidate-controlled code: otherwise the command can commit a matching
   # FLAKE entry there and have post-run classification trust the new HEAD.
   integration_head="$(git -C "$repo" rev-parse -q --verify 'HEAD^{commit}' 2>/dev/null || printf none)"
+  base_json="$(printf '%s' "$base_sha" | jq -Rs .)" || return 1
   exec_json="$(printf '%s' "$exec_missing" | jq -Rs .)" || return 1
   env_json="$(printf '%s' "$env_missing" | jq -Rs .)" || return 1
   inventory_json="$(printf '%s' "$env_inventory" | jq -Rs .)" || return 1
   pin_json="$(printf '%s' "$pin_stale" | jq -Rs .)" || return 1
   head_json="$(printf '%s' "$integration_head" | jq -Rs .)" || return 1
-  printf 'prestate: 1\npre_exec_missing: %s\npre_env_missing: %s\npre_env_inventory: %s\npre_pin_stale: %s\npre_integration_head: %s\n' \
-    "$exec_json" "$env_json" "$inventory_json" "$pin_json" "$head_json"
+  printf 'prestate: 1\npre_base_sha: %s\npre_exec_missing: %s\npre_env_missing: %s\npre_env_inventory: %s\npre_pin_stale: %s\npre_integration_head: %s\n' \
+    "$base_json" "$exec_json" "$env_json" "$inventory_json" "$pin_json" "$head_json"
 }
 
 # _drive_verify_header_value <verify-log> <key> -- the one value for <key>
@@ -1512,15 +1519,18 @@ _drive_verify_header_value() {
 # routes and therefore charges; live post-run state is never a compatibility
 # fallback, because that fallback is the fabrication hole.
 _drive_verify_prestate_valid() {
-  local repo="$1" tf="$2" log="$3" root cand marker sha lcand lcwd ej vj ij pj hj
+  local repo="$1" tf="$2" log="$3" root base cand marker sha lcand lcwd bj bpre ej vj ij pj hj
   root="$(fm_get "$tf" worktree)"
   [ -n "$root" ] && [ -d "$root" ] || root="$repo"
+  base="$(fm_get "$tf" base_sha)"
+  [ -n "$base" ] && [ "$base" != none ] || return 1
   cand="$(fm_get "$tf" candidate_sha)"
   [ -n "$cand" ] && [ "$cand" != none ] || return 1
   marker="$(_drive_verify_header_value "$log" prestate)" || return 1
   sha="$(_drive_verify_header_value "$log" sha)" || return 1
   lcand="$(_drive_verify_header_value "$log" candidate)" || return 1
   lcwd="$(_drive_verify_header_value "$log" cwd)" || return 1
+  bj="$(_drive_verify_header_value "$log" pre_base_sha)" || return 1
   ej="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 1
   vj="$(_drive_verify_header_value "$log" pre_env_missing)" || return 1
   ij="$(_drive_verify_header_value "$log" pre_env_inventory)" || return 1
@@ -1529,6 +1539,10 @@ _drive_verify_prestate_valid() {
   [ "$marker" = 1 ] || return 1
   [ "$sha" = "$cand" ] && [ "$lcand" = "$cand" ] || return 1
   [ "$lcwd" = "$root" ] || return 1
+  printf '%s' "$bj" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
+  bpre="$(printf '%s' "$bj" | jq -r . 2>/dev/null)" || return 1
+  [ "$bpre" = "$base" ] || return 1
+  git -C "$root" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 1
   git -C "$root" rev-parse -q --verify "$cand^{commit}" >/dev/null 2>&1 || return 1
   printf '%s' "$ej" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
   printf '%s' "$vj" | jq -e 'type == "string"' >/dev/null 2>&1 || return 1
@@ -1539,13 +1553,14 @@ _drive_verify_prestate_valid() {
 }
 
 # _drive_verify_prestate_list <repo> <task-file> <verify-log>
-# <exec|env|env-inventory|pin|integration-head> -- a validated pre-run value.
+# <base|exec|env|env-inventory|pin|integration-head> -- a validated pre-run value.
 # Invalid evidence
 # deliberately prints nothing.
 _drive_verify_prestate_list() {
   local repo="$1" tf="$2" log="$3" kind="$4" raw
   _drive_verify_prestate_valid "$repo" "$tf" "$log" || return 0
   case "$kind" in
+    base) raw="$(_drive_verify_header_value "$log" pre_base_sha)" || return 0 ;;
     exec) raw="$(_drive_verify_header_value "$log" pre_exec_missing)" || return 0 ;;
     env)  raw="$(_drive_verify_header_value "$log" pre_env_missing)" || return 0 ;;
     env-inventory) raw="$(_drive_verify_header_value "$log" pre_env_inventory)" || return 0 ;;
@@ -3115,7 +3130,8 @@ _drive_quarantine_integration_intact() {
   _drive_authority_intact "$repo" "$head" "$head" "$rel"
 }
 
-# _drive_quarantine_authority_file <repo> <root> <task-file> -- the register
+# _drive_quarantine_authority_file <repo> <root> <task-file> [expected-head]
+# [captured-base] -- the register
 # file this round may trust, or nothing. Normally the candidate carries it
 # unchanged and its live bytes, mode, and index match the commit. A carried-over
 # branch whose base and candidate both answerably predate the path may instead
@@ -3129,7 +3145,11 @@ _drive_quarantine_authority_file() {
   # Inside the verified tree only: an absolute path is not something the
   # repository's own history can prove was recorded before this candidate.
   case "$rel" in /*|*..*) return 0 ;; esac
-  base="$(fm_get "$tf" base_sha)"
+  # Classifier calls supply the base captured before candidate-controlled
+  # verification. The sentinel used when that evidence is absent cannot
+  # resolve, closing both authority routes. Direct policy-layer calls retain
+  # the task-file behavior used outside failure classification.
+  if [ "$#" -ge 5 ]; then base="$5"; else base="$(fm_get "$tf" base_sha)"; fi
   cand="$(fm_get "$tf" candidate_sha)"
   if _drive_authority_intact "$root" "$base" "$cand" "$rel"; then
     printf '%s' "$root/$rel"
@@ -3156,7 +3176,9 @@ _drive_quarantine_authority_file() {
 # files does.
 drive_quarantine_signatures() {
   local repo="$1" root="$2" tf="$3" abs line sig edge sep=' -- '
-  if [ "$#" -ge 4 ]; then
+  if [ "$#" -ge 5 ]; then
+    abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf" "$4" "$5")"
+  elif [ "$#" -ge 4 ]; then
     abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf" "$4")"
   else
     abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf")"
@@ -3184,7 +3206,9 @@ drive_quarantine_signatures() {
 # matcher below; an empty record is ignored.
 drive_quarantine_contexts() {
   local repo="$1" root="$2" tf="$3" abs line context edge
-  if [ "$#" -ge 4 ]; then
+  if [ "$#" -ge 5 ]; then
+    abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf" "$4" "$5")"
+  elif [ "$#" -ge 4 ]; then
     abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf" "$4")"
   else
     abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf")"
@@ -3365,7 +3389,7 @@ drive_waivable_outstanding() {
   local fallback="" fsep=""
   local why="" note pin="" cmd="" pinpath="" pinattr pinstate
   local kinds="" m envattr envstate envinventory="" sig qattr cut prestate=0
-  local qcontext qcontextattr qcausal=0 qhead=__unavailable__
+  local qcontext qcontextattr qcausal=0 qhead=__unavailable__ qbase=__unavailable__
   base="$(fm_get "$tf" base_sha)"
   root="$(fm_get "$tf" worktree)"
   # The verification ran in the task's worktree when it has one; that is the
@@ -3380,6 +3404,8 @@ drive_waivable_outstanding() {
 
   if _drive_verify_prestate_valid "$repo" "$tf" "$log"; then
     prestate=1
+    qbase="$(_drive_verify_prestate_list "$repo" "$tf" "$log" base)"
+    base="$qbase"
     paths="$(_drive_verify_prestate_list "$repo" "$tf" "$log" exec)"
     envinventory="$(_drive_verify_prestate_list "$repo" "$tf" "$log" env-inventory)"
     pin="$(_drive_verify_prestate_list "$repo" "$tf" "$log" pin)"
@@ -3455,7 +3481,7 @@ drive_waivable_outstanding() {
     states="$states${sep}this repository already records \"$(_drive_quote_line "$sig")\" as a known-flaky assertion, in a register this candidate did not touch — the test is the thing to fix, and until it is, its failure says nothing about this candidate"
     sep='; and '
     kinds="$kinds flaky"
-  done <<< "$(drive_quarantine_signatures "$repo" "$root" "$tf" "$qhead")"
+  done <<< "$(drive_quarantine_signatures "$repo" "$root" "$tf" "$qhead" "$qbase")"
 
   # Old tests/run.sh exposes a failed child's entire buffer. The registered
   # L020 assertions therefore arrive beside deterministic output from earlier
@@ -3470,7 +3496,7 @@ drive_waivable_outstanding() {
       [ -n "$qcontextattr" ] || continue
       attr="$attr$qcontextattr
 "
-    done <<< "$(drive_quarantine_contexts "$repo" "$root" "$tf" "$qhead")"
+    done <<< "$(drive_quarantine_contexts "$repo" "$root" "$tf" "$qhead" "$qbase")"
   fi
 
   # Waived without consulting the already-captured pin proof: there is no
