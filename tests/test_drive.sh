@@ -4058,6 +4058,106 @@ else
   [ ! -f "$XHOOK_MF" ] \
     || fail "...and the manifest is still retired once it is accounted for (out: $XDRIVE_OUT)"
 fi
+
+# ===========================================================================
+# Part X2 -- A DEFERRED on_verify_fail HOOK MUST NOT ERASE THE FAILED ROUND.
+#
+# The verifier below is deliberately intermittent: its first invocation fails
+# and every later invocation passes. Before the pending-failure receipt, pass 1
+# launched the asynchronous hook and returned before classification; pass 2
+# ran the verifier again, overwrote FAIL with PASS, and advanced to reviewing.
+# The failed round consumed neither budget nor a journal line. The correct
+# path runs the verifier ONCE, waits for the hook, then charges and journals the
+# original evidence before entering rework.
+# ===========================================================================
+mkdir -p "$WORK/eng/hookok"
+printf 'manifest_version=1\nid=test/hookok\nversion=0.1.0\nkind=hook\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/hookok/plugin.conf"
+cat > "$WORK/eng/hookok/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+cand="$(jq -r '.candidate_sha // ""' "$req")"
+jq -n --arg jid "$jid" --arg task "$task" --arg cand "$cand" \
+  '{contract:1, job_id:$jid, task:$task, operation:"hook", status:"ok",
+    engine:"test/hookok", candidate_sha:$cand,
+    artifact:{guidance:"preserve the first failed round"}, summary:"hook ok"}' > "$out"
+EOF
+chmod +x "$WORK/eng/hookok/run"
+
+PF="$WORK/preserve-failed-verify"
+PF_COUNT="$WORK/preserve-failed-verify.count"
+PF_SCRIPT="$WORK/preserve-failed-verify.sh"
+mkdir -p "$PF"
+printf '0\n' > "$PF_COUNT"
+cat > "$PF_SCRIPT" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+count_file="$1"
+n="$(cat "$count_file")"
+n=$((n + 1))
+printf '%s\n' "$n" > "$count_file"
+if [ "$n" -eq 1 ]; then
+  echo "candidate failed on the first run"
+  exit 1
+fi
+echo "a rerun would pass and erase the first failure"
+EOF
+chmod +x "$PF_SCRIPT"
+
+cd "$PF" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nhook.on_verify_fail=hookok\n' > orchid.config
+git add -A
+git commit -q -m "fixture: deferred failure hook"
+ORCHID_REPO="$PF" "$ORCHID_BIN" init >/dev/null || fail "orchid init (deferred-failure fixture)"
+git checkout -q orchid/integration
+PFEPOCH="$(ORCHID_REPO="$PF" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+pforchid() { ORCHID_REPO="$PF" ORCHID_EPOCH="$PFEPOCH" "$ORCHID_BIN" "$@"; }
+pforchid requirements import "$WORK/requirements.md" >/dev/null
+pforchid task create PF1 "its first failed verify must survive an asynchronous hook" >/dev/null
+PF_CMD="/bin/bash $(printf '%q' "$PF_SCRIPT") $(printf '%q' "$PF_COUNT")"
+pforchid task set PF1 verification_commands "$PF_CMD" >/dev/null
+pforchid plan apply --reason "initial plan" >/dev/null
+PFSHA="$(git -C "$PF" rev-parse HEAD)"
+PFTASK="$PF/.orchid/tasks/PF1.md"
+fm_set "$PFTASK" status testing
+fm_set "$PFTASK" base_sha "$PFSHA"
+fm_set "$PFTASK" candidate_sha "$PFSHA"
+fm_set "$PFTASK" worktree "$PF"
+pffield() { fm_get "$PFTASK" "$1"; }
+
+PF_RC=0
+PF_OUT="$(ORCHID_REPO="$PF" ORCHID_EPOCH="$PFEPOCH" "$DRIVE" 2>&1)" || PF_RC=$?
+assert_eq 0 "$PF_RC" "the pass that launches on_verify_fail defers cleanly (out: $PF_OUT)"
+assert_eq testing "$(pffield status)" "the hook deferral holds the task in testing"
+assert_eq 0 "$(pffield attempts)" "the attempt is not charged before its hook resolves"
+assert_eq 1 "$(cat "$PF_COUNT")" "the first pass ran the verifier exactly once"
+assert_match "^a1:$PFSHA:[0-9a-f]{64}$" "$(pffield verify_fail_pending)" \
+  "and pins that exact failed evidence before returning to the caller"
+
+_pf_i=0
+while [ "$_pf_i" -lt 30 ] && [ "$(pffield status)" = testing ]; do
+  PF_RC=0
+  PF_OUT="$(ORCHID_REPO="$PF" ORCHID_EPOCH="$PFEPOCH" "$DRIVE" 2>&1)" || PF_RC=$?
+  [ "$PF_RC" -eq 0 ] || break
+  _pf_i=$((_pf_i + 1))
+  [ "$(pffield status)" != testing ] || sleep 0.2
+done
+assert_eq rework "$(pffield status)" \
+  "once the hook resolves, the ORIGINAL failed round is classified and sent to rework (rc=$PF_RC, out: $PF_OUT)"
+assert_eq 1 "$(cat "$PF_COUNT")" \
+  "the resumed failure arm does not run the now-passing verifier a second time"
+assert_eq 1 "$(pffield attempts)" "the original candidate failure consumes exactly one attempt"
+assert_eq "" "$(pffield verify_fail_pending)" "entry to rework consumes the pending-failure receipt"
+assert_eq "preserve the first failed round" "$(pffield hook_guidance)" \
+  "the hook guidance still lands before the rework dispatch"
+grep -qF "candidate, attempt charged" "$PF/.orchid/journal.md" \
+  || fail "the preserved failed round must be journalled as charged (out: $PF_OUT)"
+
 # Part Y -- classify a verification failure BEFORE anything charges it,
 # against the policy function itself.
 #

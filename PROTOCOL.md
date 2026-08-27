@@ -1178,7 +1178,14 @@ ones its archetype never declares.
     shape: `runners/orchid-launch <id> hook hook --hook on_verify_fail`,
     then `orchid jobs reconcile`) — an ok envelope's `.artifact.guidance`
     string gets attached to the task BEFORE the rework advance below:
-    `orchid task set <id> hook_guidance "<the guidance text>"`. Then,
+    `orchid task set <id> hook_guidance "<the guidance text>"`. Because that
+    hook resolves on a later pass, record the failed round first as
+    `verify_fail_pending: a<attempt>:<candidate_sha>:<verify-log-sha256>`.
+    While that exact receipt is current the later pass resumes the FAIL arm
+    without running `orchid verify` again: the verifier's one mutable log must
+    not be overwritten by a transient PASS before the failed round is charged
+    and journalled. Missing or changed pinned evidence charges under the strict
+    default; rework/reverify invalidation clears the receipt. Then,
     whether or not a hook fired, **classify the failure before charging it**
     — the attempt budget measures the CANDIDATE's quality, and a failure the
     candidate did not cause must not spend it. There is no signature list and

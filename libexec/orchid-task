@@ -782,6 +782,14 @@ case "$sub" in
       if [ -n "$(fm_get "$f" handoff_ack)" ]; then
         fm_set "$f" handoff_ack ""
       fi
+      # A deferred on_verify_fail hook pins one exact failed verifier log in
+      # `verify_fail_pending`. Leaving that receipt across a rework edge would
+      # make a later reverify of the same candidate resume evidence the edge is
+      # deleting below instead of running a fresh verifier. The edge owns both
+      # invalidations, so every caller gets the same symmetry.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
       [ "$from" = merging ] || rm -f "$state/reviews/$id-merge.log"
     fi
@@ -799,6 +807,9 @@ case "$sub" in
       # `reviewing` with no verify in between. The merge log is deliberately
       # left alone: it is the record of a merge that really did happen, and
       # this edge does not undo it.
+      if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+        fm_set "$f" verify_fail_pending ""
+      fi
       rm -f "$state/reviews/$id-verify.log"
     fi
     if [ -n "$reason" ]; then
@@ -1139,6 +1150,9 @@ case "$sub" in
     if [ -n "$(fm_get "$f" handoff_ack)" ]; then
       fm_set "$f" handoff_ack ""
     fi
+    if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+      fm_set "$f" verify_fail_pending ""
+    fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: blocked -> rework"
     # WHERE THE REASON WENT, said out loud (dogfood F28). It is delivered by
@@ -1263,6 +1277,9 @@ case "$sub" in
     rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
     if [ -n "$(fm_get "$f" handoff_ack)" ]; then
       fm_set "$f" handoff_ack ""
+    fi
+    if [ -n "$(fm_get "$f" verify_fail_pending)" ]; then
+      fm_set "$f" verify_fail_pending ""
     fi
     fm_set "$f" status rework; fm_set "$f" updated "$(now)"
     echo "$id: $from -> rework"

@@ -1234,13 +1234,31 @@ drive_implementing() {
 # testing -- `orchid verify` runs synchronously, in this pass's own
 # foreground. There is no job here for check/reconcile to see.
 # ---------------------------------------------------------------------------
+drive_verify_fail_pending_consume() {
+  local id="$1" tf mark crc=0
+  tf="$state/tasks/$id.md"
+  mark="$(fm_get "$tf" verify_fail_pending)"
+  [ -n "$mark" ] || return 0
+  "$ORCHID_BIN" task set "$id" verify_fail_pending "" >/dev/null || crc=$?
+  if [ "$crc" -ne 0 ]; then
+    set_boundary operator-decision "$id" \
+      "the deferred verify failure was accounted, but its receipt '$mark' could not be consumed (exit $crc) — clear it with: orchid task set $id verify_fail_pending \"\""
+    return 1
+  fi
+  drive_note "$id: consumed deferred verify-failure receipt $mark"
+  return 0
+}
+
 drive_testing() {
   local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts budget arc
   local hstate hdetail
   local cls_line cls cls_reason prior_waived wmark waiver_reason
   local clsrc ifrc fsrc floor_mark jrc
+  local pending pending_prefix pending_digest evidence_digest resume_failure
+  local hook_bindings prc
   wmark="$(drive_waiver_mark)"
   tf="$state/tasks/$id.md"
+  cls=""; cls_line=""; evidence_digest=""
 
   # THE OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm). Between
   # the implementer's envelope reconciling and `orchid verify` running there
@@ -1269,10 +1287,51 @@ drive_testing() {
     return 0
   fi
 
+  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
+  cand="$(fm_get "$tf" candidate_sha)"; [ -n "$cand" ] || cand=none
+  pending="$(fm_get "$tf" verify_fail_pending)"
+  pending_prefix="a$attempt:$cand:"
+  resume_failure=0
+
+  # `on_verify_fail` is asynchronous: its job is launched in one pass and its
+  # envelope is reconciled in a later one. The failed verify evidence is a
+  # SINGLE mutable file, however. Re-running `orchid verify` while that hook is
+  # pending overwrites the failure before drive_verify_class can read it; a
+  # transient PASS then advances to reviewing with the failed round neither
+  # charged nor journalled. `verify_fail_pending` is the crash-resumption
+  # receipt for that exact round: attempt + candidate + evidence digest.
+  #
+  # A matching receipt means "resume the failure arm", never "verify again".
+  # A stale receipt is cleared before a genuinely new run. The digest is
+  # checked below, immediately before classification; changed or missing
+  # evidence fails CLOSED as candidate-owned rather than letting substituted
+  # bytes buy a waiver.
+  case "$pending" in
+    "$pending_prefix"*)
+      resume_failure=1
+      drive_note "$id: resuming the deferred verify failure for attempt $attempt without rerunning or overwriting its evidence"
+      ;;
+    "") ;;
+    *)
+      prc=0
+      "$ORCHID_BIN" task set "$id" verify_fail_pending "" >/dev/null || prc=$?
+      if [ "$prc" -ne 0 ]; then
+        set_boundary operator-decision "$id" \
+          "stale verify_fail_pending '$pending' could not be cleared (exit $prc) — clear it with: orchid task set $id verify_fail_pending \"\""
+        return 0
+      fi
+      pending=""
+      ;;
+  esac
+
   vrc=0
-  drive_lease_heartbeat_start
-  "$ORCHID_BIN" verify "$id" >/dev/null 2>&1 || vrc=$?
-  drive_lease_heartbeat_stop
+  if [ "$resume_failure" -eq 0 ]; then
+    drive_lease_heartbeat_start
+    "$ORCHID_BIN" verify "$id" >/dev/null 2>&1 || vrc=$?
+    drive_lease_heartbeat_stop
+  else
+    vrc=1
+  fi
   if [ "$vrc" -eq 0 ]; then
     if ! drive_has_transition "$arch" testing reviewing; then
       set_boundary operator-decision "$id" "archetype '$arch' declares no testing -> reviewing edge"
@@ -1289,8 +1348,27 @@ drive_testing() {
     return 0
   fi
 
-  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
-  cand="$(fm_get "$tf" candidate_sha)"
+  # Preserve this exact failure BEFORE a bound asynchronous hook can defer the
+  # rest of the arm. The task verb is the durable-state writer (INV-13); the
+  # driver never edits frontmatter directly. No binding means no deferral and
+  # therefore no receipt is needed.
+  hook_bindings="$(hooks_for "$repo" on_verify_fail)"
+  if [ "$resume_failure" -eq 0 ] && [ -n "$hook_bindings" ]; then
+    evidence_digest=missing
+    if [ -f "$state/reviews/$id-verify.log" ]; then
+      evidence_digest="$(_orchid_file_sha256 "$state/reviews/$id-verify.log")"
+      evidence_digest="${evidence_digest%% *}"
+    fi
+    pending="a$attempt:$cand:$evidence_digest"
+    prc=0
+    "$ORCHID_BIN" task set "$id" verify_fail_pending "$pending" >/dev/null || prc=$?
+    if [ "$prc" -ne 0 ]; then
+      set_boundary operator-decision "$id" \
+        "verify failed, but its deferred-hook receipt could not be recorded (exit $prc) — preserve this round with: orchid task set $id verify_fail_pending '$pending'"
+      return 0
+    fi
+  fi
+
   hg=0
   drive_hook_gate "$id" on_verify_fail "$attempt" "$cand" || hg=$?
   [ "$hg" -eq 0 ] || return 0
@@ -1316,11 +1394,26 @@ drive_testing() {
   # for, so it takes the strict default and SAYS the classifier itself is what
   # failed -- charging the attempt, exactly as an unreadable evidence log does.
   clsrc=0
-  cls_line="$(drive_verify_class "$repo" "$tf" "$state/reviews/$id-verify.log")" || clsrc=$?
-  if [ "$clsrc" -ne 0 ] || [ -z "$cls_line" ]; then
+  if [ "$resume_failure" -eq 1 ]; then
+    pending_digest="${pending##*:}"
+    evidence_digest=missing
+    if [ -f "$state/reviews/$id-verify.log" ]; then
+      evidence_digest="$(_orchid_file_sha256 "$state/reviews/$id-verify.log")"
+      evidence_digest="${evidence_digest%% *}"
+    fi
+  else
+    pending_digest="$evidence_digest"
+  fi
+  if [ "$resume_failure" -eq 1 ] && [ "$pending_digest" != "$evidence_digest" ]; then
+    cls=candidate
+    cls_reason="the failed evidence changed while its on_verify_fail hook was deferred (recorded digest $pending_digest, current digest $evidence_digest); charging per the strict default rather than classifying substituted or missing bytes"
+  else
+    cls_line="$(drive_verify_class "$repo" "$tf" "$state/reviews/$id-verify.log")" || clsrc=$?
+  fi
+  if [ -z "$cls" ] && { [ "$clsrc" -ne 0 ] || [ -z "$cls_line" ]; }; then
     cls=candidate
     cls_reason="the failure could not be classified — the classifier itself did not answer (exit $clsrc, ${#cls_line} bytes); charging per the strict default rather than forgiving a round nothing was able to read"
-  else
+  elif [ -z "$cls" ]; then
     cls="${cls_line%%$'\t'*}"
     cls_reason="${cls_line#*$'\t'}"
   fi
@@ -1348,6 +1441,7 @@ drive_testing() {
           "verify failed ($cls), the attempt was not charged, and the required journal record failed (exit $jrc); archetype '$arch' declares no testing -> rework edge"
         return 0
       fi
+      drive_verify_fail_pending_consume "$id" || return 0
       set_boundary operator-decision "$id" "verify failed ($cls) and archetype '$arch' declares no testing -> rework edge"
       return 0
     fi
@@ -1378,6 +1472,9 @@ drive_testing() {
       jrc=0
       "$ORCHID_BIN" journal add --task "$id" \
         "$waiver_reason — task infra-fail refused exit $ifrc, so the environment budget was not charged either" >/dev/null || jrc=$?
+      if [ "$jrc" -eq 0 ]; then
+        drive_verify_fail_pending_consume "$id" || return 0
+      fi
       set_boundary operator-decision "$id" \
         "task infra-fail refused this $cls verify failure (exit $ifrc), so the round was neither charged to the environment budget nor waived; attempt-not-charged journal record exit $jrc: $cls_reason"
       return 0
@@ -1402,6 +1499,7 @@ drive_testing() {
     # rounds that told nobody anything about the candidate.
     if [ "$prior_waived" -ge 1 ]; then
       drive_note "$id: verify FAIL ($cls, $wmark) — recurring non-candidate fault, testing held for an operator"
+      drive_verify_fail_pending_consume "$id" || return 0
       set_boundary operator-decision "$id" "$cls verify failure on a task that has already had $prior_waived non-candidate round(s) waived — an operator clears this; the implementer cannot, and another identical re-dispatch cannot: $cls_reason"
       return 0
     fi
@@ -1420,6 +1518,7 @@ drive_testing() {
       fsrc=1
     fi
     if [ "$fsrc" -ne 0 ]; then
+      drive_verify_fail_pending_consume "$id" || return 0
       set_boundary operator-decision "$id" \
         "the waived round's implement floor could not be recorded (exit $fsrc), and waiving without it re-verifies the candidate that just failed: $cls_reason"
       return 0
@@ -1428,6 +1527,7 @@ drive_testing() {
     "$ORCHID_BIN" task advance "$id" rework --waive-attempt \
       --reason "$waiver_reason" >/dev/null || arc=$?
     if [ "$arc" -ne 0 ]; then
+      drive_verify_fail_pending_consume "$id" || return 0
       set_boundary operator-decision "$id" "testing -> rework refused (exit $arc)"
       return 0
     fi
@@ -1451,6 +1551,15 @@ drive_testing() {
     return 0
   fi
   if ! drive_has_transition "$arch" testing rework; then
+    jrc=0
+    "$ORCHID_BIN" journal add --task "$id" \
+      "verify failed (candidate, attempt not charged): archetype '$arch' declares no testing -> rework edge; strict classification reason: $cls_reason" >/dev/null || jrc=$?
+    if [ "$jrc" -ne 0 ]; then
+      set_boundary operator-decision "$id" \
+        "verify failed (candidate), no testing -> rework edge exists, and the required journal record failed (exit $jrc)"
+      return 0
+    fi
+    drive_verify_fail_pending_consume "$id" || return 0
     set_boundary operator-decision "$id" "verify failed and archetype '$arch' declares no testing -> rework edge"
     return 0
   fi
@@ -1458,6 +1567,12 @@ drive_testing() {
   "$ORCHID_BIN" task advance "$id" rework \
     --reason "verify failed (candidate, attempt charged — $cls_reason): see .orchid/reviews/$id-verify.log" >/dev/null || arc=$?
   if [ "$arc" -ne 0 ]; then
+    jrc=0
+    "$ORCHID_BIN" journal add --task "$id" \
+      "verify failed (candidate, attempt not charged): testing -> rework refused exit $arc; strict classification reason: $cls_reason" >/dev/null || jrc=$?
+    if [ "$jrc" -eq 0 ]; then
+      drive_verify_fail_pending_consume "$id" || return 0
+    fi
     set_boundary operator-decision "$id" "testing -> rework refused (exit $arc)"
     return 0
   fi

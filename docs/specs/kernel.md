@@ -771,6 +771,13 @@ above — it is absent from a task file until a round is waived, and inert once
 `attempts` moves past the attempt it names. Its value is `a<attempt>:<n>`, the
 implement-envelope sibling counter a WAIVED round's next envelope must exceed,
 so a waived round cannot re-resolve the envelope of the round it waived.
+`verify_fail_pending` (v1.1): driver-written, absent/empty normally. A bound
+asynchronous `on_verify_fail` hook defers the failure arm to a later pass, so
+the driver records `a<attempt>:<candidate_sha>:<verify-log-sha256>` before it
+launches the hook. A matching receipt makes the later pass resume and classify
+that exact failed log without rerunning the verifier and overwriting it. A
+digest mismatch or missing log charges under the strict default; entry to
+rework or a fresh reverify clears the receipt with the evidence it binds.
 `refused_envelopes` (v1.1): the
 space-separated basenames of implement envelopes refused as no-op deliveries,
 appended by the orchestrator through `orchid task set` (INV-13) at the moment
