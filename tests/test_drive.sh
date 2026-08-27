@@ -5959,6 +5959,13 @@ info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this comm
 assert_eq candidate "$(ev_cls | cut -f1)" \
   "a Yarn echo for a command the missing tree did not publish stays unknown and keeps the exit-127 wrapper from being attributed, even beside a different causal environment failure"
 ev_log 'yarn run v1.22.19
+$tsx scripts/parseBooks.ts
+/bin/sh: tsx: command not found
+error Command failed with exit code 127.
+info Visit https://yarnpkg.com/en/docs/cli/run for documentation about this command.'
+assert_eq candidate "$(ev_cls | cut -f1)" \
+  "a noncanonical command echo without Yarn v1's dollar-space prefix remains unknown and charges rather than widening the exact wrapper grammar"
+ev_log 'yarn run v1.22.19
 $ tsx scripts/parseBooks.ts
 /bin/sh: tsx: command not found
 error Command failed with exit code 1.

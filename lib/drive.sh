@@ -2967,7 +2967,7 @@ drive_env_yarn_attribution() {
     edge="${trimmed%%[![:space:]]*}"; trimmed="${trimmed#"$edge"}"
     edge="${trimmed##*[![:space:]]}"; trimmed="${trimmed%"$edge"}"
     case "$trimmed" in
-      '$'*) ;;
+      '$ '*) ;;
       *) continue ;;
     esac
     rest="${trimmed#\$}"
