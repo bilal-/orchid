@@ -3003,12 +3003,14 @@ drive_env_attribution() {
 # THREE MORE THINGS KEEP IT NARROW. The signature is matched LITERALLY, never
 # as a pattern, so no entry can be written that matches everything. It must be
 # at least `_DRIVE_QUARANTINE_MIN_LEN` characters, so no entry can match
-# everything by being short. And it claims ONLY the lines it literally matches
-# -- there is no cascade here, because a quarantined assertion IS one line --
-# so a suite that also prints an aggregate `3 tests failed` leaves that line
-# unexplained and charges the round. That last one is a real limit and it is
-# the strict direction: a register may excuse the assertion it names and
-# nothing else.
+# everything by being short. And it ordinarily claims ONLY the lines it
+# literally matches. A register may also carry exact `FLAKE-CONTEXT:` lines
+# for deterministic successful-fixture chatter that an old runner exposes
+# when the child later fails. Those records are inert until a `FLAKE:`
+# signature in the same trusted register has actually matched this body, and
+# then claim only whole normalized lines. They are a closed companion list,
+# not a child-block cascade: an aggregate `3 tests failed`, a novel diagnostic,
+# or any other unlisted line remains unexplained and charges the round.
 _DRIVE_QUARANTINE_DEFAULT='tests/QUARANTINE.md'
 _DRIVE_QUARANTINE_MIN_LEN=16
 
@@ -3037,14 +3039,32 @@ _drive_quarantine_integration_intact() {
   _drive_authority_intact "$repo" "$head" "$head" "$rel"
 }
 
+# _drive_quarantine_authority_file <repo> <root> <task-file> -- the register
+# file this round may trust, or nothing. Normally the candidate carries it
+# unchanged and its live bytes, mode, and index match the commit. A carried-over
+# branch whose base and candidate both answerably predate the path may instead
+# use the clean tracked integration copy above. A candidate addition, deletion,
+# or edit never can, and anything unanswerable charges.
+_drive_quarantine_authority_file() {
+  local repo="$1" root="$2" tf="$3" rel base cand
+  rel="$(config_get "$repo" flaky.quarantine "$_DRIVE_QUARANTINE_DEFAULT")"
+  [ -n "$rel" ] || return 0
+  [ "$rel" != none ] || return 0
+  # Inside the verified tree only: an absolute path is not something the
+  # repository's own history can prove was recorded before this candidate.
+  case "$rel" in /*|*..*) return 0 ;; esac
+  base="$(fm_get "$tf" base_sha)"
+  cand="$(fm_get "$tf" candidate_sha)"
+  if _drive_authority_intact "$root" "$base" "$cand" "$rel"; then
+    printf '%s' "$root/$rel"
+  elif _drive_quarantine_integration_intact "$repo" "$root" "$base" "$cand" "$rel"; then
+    printf '%s' "$repo/$rel"
+  fi
+}
+
 # drive_quarantine_signatures <repo> <root> <task-file> -- the known-flaky
 # signatures this repository recorded, one per line. Nothing when there is no
-# register or when it is not an authority on this candidate. Normally that is
-# `_drive_authority_intact`: the candidate carries it unchanged and its live
-# bytes, mode, and index match the commit. A carried-over branch whose base and
-# candidate both answerably predate the path may instead use the clean tracked
-# integration copy above. A candidate addition, deletion, or edit never can,
-# and anything unanswerable charges.
+# trusted register for this candidate.
 #
 # The format is one entry per line: `FLAKE: <literal substring>` and,
 # optionally, ` -- <why>`. Prose around them is ignored, so the register can be
@@ -3055,22 +3075,9 @@ _drive_quarantine_integration_intact() {
 # becoming a live signature -- the first thing anyone writing one of these
 # files does.
 drive_quarantine_signatures() {
-  local repo="$1" root="$2" tf="$3" rel abs line sig edge base cand sep=' -- '
-  rel="$(config_get "$repo" flaky.quarantine "$_DRIVE_QUARANTINE_DEFAULT")"
-  [ -n "$rel" ] || return 0
-  [ "$rel" != none ] || return 0
-  # Inside the verified tree only: an absolute path is not something the
-  # repository's own history can prove was recorded before this candidate.
-  case "$rel" in /*|*..*) return 0 ;; esac
-  base="$(fm_get "$tf" base_sha)"
-  cand="$(fm_get "$tf" candidate_sha)"
-  if _drive_authority_intact "$root" "$base" "$cand" "$rel"; then
-    abs="$root/$rel"
-  elif _drive_quarantine_integration_intact "$repo" "$root" "$base" "$cand" "$rel"; then
-    abs="$repo/$rel"
-  else
-    return 0
-  fi
+  local repo="$1" root="$2" tf="$3" abs line sig edge sep=' -- '
+  abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf")"
+  [ -n "$abs" ] || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       'FLAKE:'*) sig="${line#FLAKE:}" ;;
@@ -3085,6 +3092,29 @@ drive_quarantine_signatures() {
   return 0
 }
 
+# drive_quarantine_contexts <repo> <root> <task-file> -- exact normalized
+# companion lines from the same trusted register. Contexts deliberately have
+# no minimum length and no per-line reason suffix: unlike signatures they can
+# never open the route, and every byte after `FLAKE-CONTEXT:` is the line that
+# must match. Surrounding register whitespace is normalized to mirror the body
+# matcher below; an empty record is ignored.
+drive_quarantine_contexts() {
+  local repo="$1" root="$2" tf="$3" abs line context edge
+  abs="$(_drive_quarantine_authority_file "$repo" "$root" "$tf")"
+  [ -n "$abs" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      'FLAKE-CONTEXT:'*) context="${line#FLAKE-CONTEXT:}" ;;
+      *) continue ;;
+    esac
+    edge="${context%%[![:space:]]*}"; context="${context#"$edge"}"
+    edge="${context##*[![:space:]]}"; context="${context%"$edge"}"
+    [ -n "$context" ] || continue
+    printf '%s\n' "$context"
+  done < "$abs"
+  return 0
+}
+
 # drive_quarantine_attribution <signature> <body> -- the lines of <body> that
 # literally contain <signature>. `grep -F`, never `grep -E`: a register is
 # repository-controlled text, and a `.*` in it would waive every round.
@@ -3092,6 +3122,27 @@ drive_quarantine_attribution() {
   local sig="$1" body="$2"
   [ -n "$sig" ] && [ -n "$body" ] || return 0
   grep -F -- "$sig" <<< "$body" || true
+}
+
+# drive_quarantine_context_attribution <context> <body> -- lines whose whole
+# text, after trimming surrounding whitespace, equals <context>. Keep and print
+# the original body line so drive_unattributed_failures' exact membership test
+# sees the same bytes it is accounting for. Context is consulted only after a
+# causal FLAKE signature has matched; that gate lives at the caller so this
+# primitive remains directly testable.
+drive_quarantine_context_attribution() {
+  local context="$1" body="$2" line normalized edge
+  [ -n "$context" ] && [ -n "$body" ] || return 0
+  edge="${context%%[![:space:]]*}"; context="${context#"$edge"}"
+  edge="${context##*[![:space:]]}"; context="${context%"$edge"}"
+  [ -n "$context" ] || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    normalized="$line"
+    edge="${normalized%%[![:space:]]*}"; normalized="${normalized#"$edge"}"
+    edge="${normalized##*[![:space:]]}"; normalized="${normalized%"$edge"}"
+    [ "$normalized" = "$context" ] || continue
+    printf '%s\n' "$line"
+  done <<< "$body"
 }
 
 # -- a run that stopped short: REPORTED, and never waived --------------------
@@ -3226,6 +3277,7 @@ drive_waivable_outstanding() {
   local fallback="" fsep=""
   local why="" note pin="" cmd="" pinpath="" pinattr pinstate
   local kinds="" m envattr envstate envinventory="" sig qattr cut prestate=0
+  local qcontext qcontextattr qcausal=0
   base="$(fm_get "$tf" base_sha)"
   root="$(fm_get "$tf" worktree)"
   # The verification ran in the task's worktree when it has one; that is the
@@ -3310,10 +3362,27 @@ drive_waivable_outstanding() {
     [ -n "$qattr" ] || continue
     attr="$attr$qattr
 "
+    qcausal=1
     states="$states${sep}this repository already records \"$(_drive_quote_line "$sig")\" as a known-flaky assertion, in a register this candidate did not touch — the test is the thing to fix, and until it is, its failure says nothing about this candidate"
     sep='; and '
     kinds="$kinds flaky"
   done <<< "$(drive_quarantine_signatures "$repo" "$root" "$tf")"
+
+  # Old tests/run.sh exposes a failed child's entire buffer. The registered
+  # L020 assertions therefore arrive beside deterministic output from earlier
+  # successful negative fixtures. Claim only the repository's closed list of
+  # exact companion lines, and only after a trusted causal signature above
+  # actually opened this route. Context on its own is never evidence of a
+  # flaky failure; any unlisted line remains in the strict denominator.
+  if [ "$qcausal" -eq 1 ]; then
+    while IFS= read -r qcontext; do
+      [ -n "$qcontext" ] || continue
+      qcontextattr="$(drive_quarantine_context_attribution "$qcontext" "$body")"
+      [ -n "$qcontextattr" ] || continue
+      attr="$attr$qcontextattr
+"
+    done <<< "$(drive_quarantine_contexts "$repo" "$root" "$tf")"
+  fi
 
   # Waived without consulting the already-captured pin proof: there is no
   # verdict left for it to change.

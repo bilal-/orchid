@@ -545,6 +545,10 @@ add` — and, first, a reason to make the test **wait for what it is sampling**
 rather than read one instant. If you cannot make it deterministic today, put
 it in `flaky.quarantine` with the reason: an unreliable gate should announce
 that it is unreliable, not fail silently and not charge for a race.
+If an old suite runner exposes deterministic successful-fixture output only
+because that later assertion failed, list each whole normalized line as
+`FLAKE-CONTEXT:` in the same register. Context never opens a waiver: the
+trusted `FLAKE:` signature must also match, and one unlisted line still charges.
 Forgiveness is bounded either way: repeated waived failures still block the
 task once `infra_failures` reaches `infra_max`.
 

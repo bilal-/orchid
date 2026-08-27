@@ -267,7 +267,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     artifact is a file, `bin/tool/child` is a different file and `bin/tool`
     does not collect it either. For the
     flaky register the signature *is* the proof, matched literally and
-    claiming only the lines it matches.
+    ordinarily claiming only the lines it matches. Exact registered companion
+    context can join only after that causal signature matches; it cannot open
+    the route and it cannot claim an unlisted line.
 
   **Two of those proofs read a file out of your repository — the pin check and
   the flaky register — and a file is normally an authority on a candidate only
@@ -368,14 +370,16 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   `none` disables the route.
 - **`flaky.quarantine`** — the known-flaky register the `flaky` route reads,
   relative to the verified tree (default `tests/QUARANTINE.md` — orchid ships
-  one, carrying two entries for the two pre-T019 liveness-message families and
-  the reasoning for them written down). One
-  entry per line,
+  one, carrying two signatures for the two pre-T019 liveness-message families,
+  their closed old-runner companion set, and the reasoning written down).
+  One causal entry per line,
   `FLAKE: <literal substring of the failing line>` at **column 0** and
-  optionally ` -- <why>`; everything else in the file is prose the route
-  ignores (including an indented `FLAKE:`, so a register can document its own
-  format without that example becoming a live signature), so it can be the
-  document a human actually reads. **The safety here is not the
+  optionally ` -- <why>`. An exact companion line is
+  `FLAKE-CONTEXT: <whole normalized output line>` at column 0; it has no reason
+  suffix because everything after the colon is matched. Everything else is
+  prose the route ignores (including an indented `FLAKE:`, so a register can
+  document its own format without that example becoming a live signature), so
+  it can be the document a human actually reads. **The safety here is not the
   path, it is the timing:** a register *this candidate changed* is not an
   authority on this candidate, so the moment a candidate touches the file the
   route is gone and the round charges — an implementer cannot quarantine the
@@ -387,9 +391,13 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   matched
   **literally**, never as a pattern, so no entry can be written that
   matches everything; it must be at least 16 characters, so no entry can match
-  everything by being short; and it claims **only** the lines it matches, with
-  no cascade, so a suite that also prints an aggregate `3 tests failed` leaves
-  that line unexplained and charges the round. `none` disables the route.
+  everything by being short; and it ordinarily claims **only** the lines its
+  signature matches. Companion records remain inert until a trusted signature
+  matched the same body, then claim only exact whole lines. They are a closed
+  accommodation for deterministic successful-fixture chatter exposed by an
+  old failed child, not a cascade: an aggregate `3 tests failed`, a novel
+  diagnostic, or any genuine unlisted failure remains unexplained and charges.
+  `none` disables the route.
   Quarantining is the *second*-best answer — a case that reports without
   failing the suite is still an unresolved problem, and the register is what
   keeps it visible instead of silent. Making the test deterministic is the

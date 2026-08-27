@@ -642,7 +642,13 @@ buying a fresh implementation pass to reach the same tree.
   mismatched snapshot fields close all three routes and charge. The missing
   tree's package/command inventory is captured at the same time and is the only
   authority for later resolution attribution; the classifier never reads
-  candidate-mutable integration contents after the command. A recorded exit
+  candidate-mutable integration contents after the command. A failed
+  verification body may include deterministic successful-fixture chatter from
+  an old runner that exposes a child's entire buffer after a later historical flake.
+  The trusted register can name those lines exactly with `FLAKE-CONTEXT:`, but
+  they are inert until a causal `FLAKE:` signature matches this body and cannot
+  claim any unlisted line. This is closed companion accounting, not a
+  failed-child waiver. A recorded exit
   status saying the run STOPPED SHORT (124, 137, 143) was a fifth verdict
   once and is not one now: that status is equally what a candidate which HUNG
   until a timeout reaped it leaves, and what a suite that exits with it

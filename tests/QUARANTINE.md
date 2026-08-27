@@ -6,23 +6,34 @@ When a verification fails, the driver reads it, and a failing line that matches
 an entry here is classified `flaky` rather than `candidate` — it costs
 `infra_failures` and it does **not** consume a rework attempt.
 
-It carries exactly **two** live entries, at the bottom of this file. Together
-they name the two pre-T019 liveness-message families. Read "What the two live
-entries are, and what they cannot forgive" before adding another.
+It carries exactly **two causal signatures**, at the bottom of this file.
+Together they name the two pre-T019 liveness-message families. A closed set of
+exact companion-context records follows them for the successful fixture output
+the old suite runner exposes when either assertion fails. Read "What the two
+live signatures are, and what they cannot forgive" before adding another.
 
 ## Format
 
-One entry per line, beginning `FLAKE:` **at column 0**, then a **literal
-substring** of the failing line, then optionally ` -- ` and why:
+There are two record types. A causal entry begins `FLAKE:` **at column 0**,
+then a **literal substring** of the failing line, then optionally ` -- ` and
+why:
 
 ```
     FLAKE: <literal substring of the failing line> -- <why, and what would remove it>
 ```
 
-Everything else in this file is prose the reader ignores, so this can stay the
-document a human actually reads. The template above is indented by four spaces
-precisely so that it is prose: an entry has to start at column 0, which is what
-keeps a worked example from becoming a live signature.
+A companion entry begins `FLAKE-CONTEXT:` at column 0, followed by one
+**whole line** after surrounding whitespace is normalized:
+
+```
+    FLAKE-CONTEXT: <exact successful-fixture output line>
+```
+
+Context has no reason suffix because every byte after the colon is matched.
+Explain a group in prose around it. Everything else in this file is prose the
+reader ignores, so this can stay the document a human actually reads. The
+templates above are indented by four spaces precisely so they are prose: a
+record has to start at column 0.
 
 Three things keep an entry from becoming a blanket amnesty, and they are worth
 knowing before you write one:
@@ -32,9 +43,12 @@ knowing before you write one:
   forever.
 - **At least 16 characters.** A short entry would match half the output of any
   suite.
-- **It claims only the lines it matches.** There is no cascade. If your suite
-  also prints an aggregate `3 tests failed`, that line is unexplained and the
-  round is charged anyway.
+- **It ordinarily claims only the lines the causal signature matches.**
+  Companion context is the sole extension: it is inert unless a causal
+  `FLAKE:` signature from this same trusted register matched this failed body
+  first, and then it claims only listed whole lines. There is no child-block
+  cascade. If the suite also prints `3 tests failed`, or one novel diagnostic,
+  that line is unexplained and the round is charged anyway.
 
 And one thing keeps it honest: **a register the candidate changed is not an
 authority on that candidate.** The moment a candidate's diff touches this file,
@@ -91,15 +105,15 @@ file at a time.
 the stall detector's own evidence: an entry naming them would forgive a genuine
 streaming regression as readily as a race.
 
-## What the two live entries are, and what they cannot forgive
+## What the two live signatures are, and what they cannot forgive
 
-The live entries below are not the de-flaked assertions. They are the common
+The live signatures below are not the de-flaked assertions. They are the common
 literal prefixes of the **two pre-T019 single-instant families**: one sampled
 ordinary stream growth, the other sampled heartbeat count. The common prefix
 is intentional: it includes the longer Agy/Claude/Codex diagnostics and the
 shorter Hermes diagnostics without broadening beyond those old families. The
 de-flaked cases describe their bounded waits with different sentences, so
-neither entry can match them — and `tests/test_drive.sh` asserts that in both
+neither signature can match them — and `tests/test_drive.sh` asserts that in both
 directions across all four adapter files.
 
 That distinction is the whole design, and it makes the entries mean something
@@ -109,14 +123,31 @@ it was measured doing eight times in one run — so its failure says nothing, an
 charging a rework attempt for it is the injustice this register exists to stop.
 The de-flaked assertion says something, is not listed, and charges.
 
-The entries are live rather than commented out because both shapes are still
+The signatures are live rather than commented out because both shapes are still
 reachable: a task branch cut before the de-flaking, a worktree that never
 rebased, a revert, a merge that resurrects an old hunk. In every one of those
 an old sentence can come back and this register catches it as `flaky` —
 including branches cut before this file existed, through the fail-closed
 integration fallback above — costing `infra_failures`, escalating to a human on
 recurrence, and never consuming a rework attempt. They retire together: once
-no branch in flight can still print either family, delete both lines.
+no branch in flight can still print either family, delete both signatures and
+their companion records.
+
+The companion records are the unique non-empty output lines emitted by the
+four pre-T019 engine-adapter tests before and after their liveness assertions.
+Those tests intentionally exercise alarming negative fixtures: malformed
+replies, rate limits, rejected operations, oversize packs, and reviewer
+findings. The current suite runner buffers a passing child and replaces that
+chatter with one `OK`; the old runner printed the same buffer verbatim when a
+later assertion failed. Without the companion set, the causal signature is
+recognized but its deterministic successful setup remains “unknown”, so the
+round still charges.
+
+The set does not make those lines neutral globally. It becomes active only in
+a body that also contains one of the two trusted historical signatures. The
+same line without that cause charges, any longer line that merely contains it
+charges, and any new line beside it charges. This preserves the mixed-failure
+rule while making the actual carried-branch body classifiable.
 
 Note what the timing rule does to these entries, and it is the right thing: the
 candidate that introduced this file **cannot** be forgiven by it, because that
@@ -129,14 +160,68 @@ after.
 minimum length, the timing rule — against a fixture register it writes itself,
 whose signature it reads out of `tests/test_engine_agy.sh` rather than typing.
 It then parses **this** shipped file through the real parser and asserts that
-its live entries are exactly the two documented above; that each entry matches
+its live signatures are exactly the two documented above; that each signature matches
 its pre-T019 family, including Hermes's shorter form; that neither matches the
 assertions that replaced it; and that no engine-adapter file in the tree
 contains either sentence at all. So another entry cannot slip in without
 somebody changing that count in the same diff and saying out loud that a gate
 may now fail without failing.
 
-<!-- Entries below. Column 0, one per line; see "Format" above. -->
+<!-- Causal signatures below. Column 0, one per line; see "Format" above. -->
 
 FLAKE: streaming stub: job log must have grown WHILE the adapter was still running -- L020: the PRE-T019 single-instant stream-growth family only, including Hermes's shorter diagnostic. It samples one instant and cannot tell a stall from a loaded machine, so its failure is not evidence about a candidate. The bounded-wait replacement prints a different sentence and is deliberately NOT covered. Delete both L020 lines once no branch in flight can still print either old family.
 FLAKE: heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running -- L020: the PRE-T019 single-instant heartbeat-count family only, including Hermes's shorter diagnostic. It samples one instant and cannot tell a stall from a loaded machine, so its failure is not evidence about a candidate. The bounded-wait replacement prints a different sentence and is deliberately NOT covered. Delete both L020 lines once no branch in flight can still print either old family.
+
+<!-- Closed companion context for the four pre-T019 engine-adapter files. -->
+
+FLAKE-CONTEXT: - `git diff --check` passes.
+FLAKE-CONTEXT: 429 usage limit exceeded
+FLAKE-CONTEXT: FINDING: <low|medium|high>: <title>
+FLAKE-CONTEXT: FINDING: bogus-severity: should be dropped
+FLAKE-CONTEXT: FINDING: bogus: severity token is not one of the three
+FLAKE-CONTEXT: FINDING: high: doctor claims inbound ok from an outbound-only fact
+FLAKE-CONTEXT: FINDING: high: ignored for review
+FLAKE-CONTEXT: FINDING: low: acceptance criteria too vague on T003
+FLAKE-CONTEXT: FINDING: low: comment says v1-m3 but the change is v1-m4
+FLAKE-CONTEXT: FINDING: medium:
+FLAKE-CONTEXT: FINDING: medium: missing rollback plan for T002
+FLAKE-CONTEXT: Implemented and committed.
+FLAKE-CONTEXT: Implemented the caching layer end to end.
+FLAKE-CONTEXT: Implemented the feature end to end.
+FLAKE-CONTEXT: Implemented via plain codex.
+FLAKE-CONTEXT: Implemented via stdin.
+FLAKE-CONTEXT: Nothing to do here.
+FLAKE-CONTEXT: ORCHID-ACTION: orchid task advance T001 implementing --reason tick
+FLAKE-CONTEXT: REASON: tests pass and the diff is scoped tightly
+FLAKE-CONTEXT: REASON: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+FLAKE-CONTEXT: Unauthorized: please login
+FLAKE-CONTEXT: VERDICT: approve
+FLAKE-CONTEXT: VERDICT: approve (draft, ignore)
+FLAKE-CONTEXT: VERDICT: approve OR request-changes
+FLAKE-CONTEXT: VERDICT: request-changes
+FLAKE-CONTEXT: ```
+FLAKE-CONTEXT: advancing the task
+FLAKE-CONTEXT: looks fine
+FLAKE-CONTEXT: nothing to do this tick
+FLAKE-CONTEXT: nothing to report
+FLAKE-CONTEXT: one more look...
+FLAKE-CONTEXT: orchid/agy: diff.patch is 200000 bytes (> agy_max_bytes=100000); route to a worktree-capable reviewer
+FLAKE-CONTEXT: orchid/agy: diff.patch is 500 bytes (> agy_max_bytes=100); route to a worktree-capable reviewer
+FLAKE-CONTEXT: orchid/agy: malformed reply (no VERDICT line); raw output follows:
+FLAKE-CONTEXT: orchid/agy: unsupported operation 'implement' (review|critique only)
+FLAKE-CONTEXT: orchid/claude: unsupported operation 'research'
+FLAKE-CONTEXT: orchid/codex-review: operation 'implement' not permitted for orchid/codex-review
+FLAKE-CONTEXT: orchid/codex: unsupported operation 'research'
+FLAKE-CONTEXT: orchid/hermes: diff.patch is 200000 bytes (> hermes_max_bytes=100000); route to a worktree-capable reviewer
+FLAKE-CONTEXT: orchid/hermes: diff.patch is 500 bytes (> hermes_max_bytes=100); route to a worktree-capable reviewer
+FLAKE-CONTEXT: orchid/hermes: malformed reply (no VERDICT line); raw output follows:
+FLAKE-CONTEXT: orchid/hermes: unsupported operation 'bogus' (review|critique only -- see docs/engines/hermes.md)
+FLAKE-CONTEXT: orchid/hermes: unsupported operation 'implement' (review|critique only -- see docs/engines/hermes.md)
+FLAKE-CONTEXT: orchid/hermes: unsupported operation 'orchestrate' (review|critique only -- see docs/engines/hermes.md)
+FLAKE-CONTEXT: orchid/hermes: unsupported operation 'research' (review|critique only -- see docs/engines/hermes.md)
+FLAKE-CONTEXT: rambling, no reply contract
+FLAKE-CONTEXT: reviewed the diff
+FLAKE-CONTEXT: some rambling output with no reply contract
+FLAKE-CONTEXT: thinking it over...
+FLAKE-CONTEXT: tick complete
+FLAKE-CONTEXT: working...

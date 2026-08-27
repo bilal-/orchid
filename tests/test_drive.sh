@@ -6058,10 +6058,12 @@ grep -q 'git worktree add cannot reproduce' "$DRIVE" \
 # cannot quarantine the assertion it is failing, because the moment its
 # candidate touches the file the route is gone and the round charges.
 #
-# The other three narrowings are asserted here too, because each of them is
-# what stops a repository buying a blanket amnesty: signatures are matched
+# The other narrowings are asserted here too, because each of them is what
+# stops a repository buying a blanket amnesty: signatures are matched
 # LITERALLY (never as patterns), must be long enough not to match everything by
-# accident, and claim ONLY the lines they match.
+# accident, and ordinarily claim ONLY the lines they match. Exact companion
+# context is inert unless one of those signatures matched first, and any line
+# outside its closed list still charges.
 # ===========================================================================
 QR="$WORK/quarantine"
 mkdir -p "$QR/.orchid/tasks" "$QR/.orchid/reviews" "$QR/tests"
@@ -6080,6 +6082,7 @@ L020_SIG='bounded growth wait must observe live stream bytes before adapter exit
   printf '%s\n' "# Known-flaky assertions. Each entry is one line beginning \`FLAKE:\`."
   printf '%s\n' 'FLAKE: short -- too short to be a signature, and must be ignored'
   printf '%s\n' 'FLAKE: FAIL: .* returned -- deliberately regex-shaped, and must NOT be read as one'
+  printf '%s\n' 'FLAKE-CONTEXT: looks fine'
   # No final newline on purpose: a text file is allowed to end here, and the
   # reader must not silently discard its last (and most important) entry.
   printf 'FLAKE: %s -- L020: samples one instant; the shape that stranded eight tasks' "$L020_SIG"
@@ -6137,6 +6140,15 @@ assert_match "bounded growth wait" "$QR_SIGS" \
 if grep -Fq 'short' <<<"$QR_SIGS"; then
   fail "a signature shorter than the minimum must be DROPPED — an entry that short would match half the output of any suite, which is a blanket amnesty spelled as a typo (got: $QR_SIGS)"
 fi
+QR_CONTEXTS="$(
+  HOME="$MACHINE_HOME"
+  drive_quarantine_contexts "$QR" "$QR" "$QR/.orchid/tasks/QA1.md"
+)"
+assert_eq "looks fine" "$QR_CONTEXTS" \
+  "FLAKE-CONTEXT records are read from the same trusted register, including a short exact line that cannot open the route by itself"
+assert_eq "  looks fine  " "$(drive_quarantine_context_attribution \
+    "looks fine" $'different\n  looks fine  \nlooks fine today')" \
+  "context matches the whole normalized line, preserving its original bytes for exact accounting and never matching a longer line by substring"
 
 # --- the L020 line, waived, and it says what it is ------------------------
 qr_log "$L020_LINE"
@@ -6144,6 +6156,29 @@ assert_eq flaky "$(qr_cls | cut -f1)" \
   "the assertion that stranded eight tasks in r-002 was on this repository's register BEFORE this candidate, so its failure charges no attempt"
 assert_match "known-flaky" "$(qr_cls | cut -f2-)" \
   "and the reason says the register is what forgave it, not orchid's own judgement about the test"
+
+# Old tests/run.sh prints a failed child's whole buffer, including deterministic
+# output from successful negative fixtures that ran before the historical
+# liveness assertion. A trusted exact companion line may close that real body,
+# but it is powerless without the registered assertion that causes the child
+# to be exposed.
+qr_log "looks fine
+$L020_LINE"
+assert_eq flaky "$(qr_cls | cut -f1)" \
+  "registered exact fixture context beside the causal L020 assertion is attributed with it, so old tests/run.sh's buffered successful chatter does not burn the attempt"
+qr_log 'looks fine'
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "the same registered context without a matching FLAKE signature is inert and charges — companion output can never open a waiver"
+qr_log 'looks fine today'
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "a longer line sharing the context text still charges, because companion matching is exact after surrounding-whitespace normalization"
+qr_log "$L020_LINE
+looks fine
+adapter fixture produced an unregistered sentence"
+assert_eq candidate "$(qr_cls | cut -f1)" \
+  "causal L020 plus registered context plus one novel diagnostic still charges — the companion list is closed, not a failed-child cascade"
+assert_match "unregistered sentence" "$(qr_cls | cut -f2-)" \
+  "and the reason quotes the novel line that kept the mixed round chargeable"
 
 # A stopped-short status is an independent uncertainty and vetoes even this
 # otherwise complete attribution. This pins the ordering: if the waiver's
@@ -6163,11 +6198,11 @@ qr_log '  FAIL: widget returned 3, expected 4'
 assert_eq candidate "$(qr_cls | cut -f1)" \
   "the regex-shaped entry 'FAIL: .* returned' does NOT match 'FAIL: widget returned 3' — signatures are matched literally, because a '.*' in a repository-controlled file would waive every round forever"
 
-# --- claims only what it matches -----------------------------------------
+# --- claims only its signature and registered exact context --------------
 qr_log "$L020_LINE
   FAIL: widget returned 3, expected 4"
 assert_eq candidate "$(qr_cls | cut -f1)" \
-  "a quarantined flake alongside a real assertion charges the round — the register excuses the line it names and nothing else"
+  "a quarantined flake alongside a real assertion charges the round — the register excuses its signature and closed companion context, never an unlisted failure"
 assert_match "widget returned 3" "$(qr_cls | cut -f2-)" \
   "and the reason quotes what it could not excuse"
 
@@ -6296,6 +6331,10 @@ SHIPPED_SIGS="$(
   HOME="$MACHINE_HOME"
   drive_quarantine_signatures "$QS" "$QS" "$QS/.orchid/tasks/QS1.md"
 )"
+SHIPPED_CONTEXTS="$(
+  HOME="$MACHINE_HOME"
+  drive_quarantine_contexts "$QS" "$QS" "$QS/.orchid/tasks/QS1.md"
+)"
 # THE DIAGNOSTIC IS CLIPPED, AND THAT IS NOT COSMETIC. Every failing line this
 # suite prints ends up in a verify log that orchid's own classifier then reads.
 # Interpolating the SHIPPED signature into a FAIL line would put that signature
@@ -6319,6 +6358,8 @@ while IFS= read -r shipped_sig; do
 done <<< "$SHIPPED_SIGS"
 assert_eq 2 "$(grep -c . <<<"$SHIPPED_SIGS" || true)" \
   "the shipped register parses to exactly two live signatures through the real parser — the prose around them, including its own indented worked example of the format, is read as prose (got, clipped: $SHIPPED_SIGS_CLIPPED)"
+assert_eq 51 "$(grep -c . <<<"$SHIPPED_CONTEXTS" || true)" \
+  "and it parses to exactly 51 closed companion lines — the unique non-empty successful-fixture output of the four pre-T019 engine-adapter tests, not an open-ended child block"
 assert_match "job log must have grown" "$SHIPPED_SIGS" \
   "one signature is L020's pre-T019 stream-growth family"
 assert_match "job log must gain at least one" "$SHIPPED_SIGS" \
@@ -6341,6 +6382,26 @@ assert_eq flaky "$(qs_cls | cut -f1)" \
 qs_log "  FAIL: $OLD_HEARTBEAT_SIG"
 assert_eq flaky "$(qs_cls | cut -f1)" \
   "and Hermes's shorter pre-T019 heartbeat-count diagnostic is waived too"
+
+# THE ACTUAL OLD-RUNNER SHAPE: every registered successful-fixture line is in
+# the same failed child buffer as the historical assertion. Drive the complete
+# closed set through classification rather than proving only a tidy one-line
+# rendering. The two strict edges immediately after it prove the list is not a
+# global neutral vocabulary and is not a failed-child cascade.
+qs_log "$SHIPPED_CONTEXTS
+  FAIL: $OLD_GROWTH_SIG (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+assert_eq flaky "$(qs_cls | cut -f1)" \
+  "the full pre-T019 engine-adapter companion set plus its causal liveness signature classifies flaky, matching the buffered body carried branches really emit"
+qs_log "$SHIPPED_CONTEXTS"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "the full companion set without either historical signature charges — registered context is never globally neutral"
+qs_log "$SHIPPED_CONTEXTS
+  FAIL: $OLD_GROWTH_SIG
+adapter fixture emitted one novel diagnostic"
+assert_eq candidate "$(qs_cls | cut -f1)" \
+  "one novel line beside the full companion set and causal signature still charges, preserving fail-closed mixed attribution"
+assert_match "one novel diagnostic" "$(qs_cls | cut -f2-)" \
+  "and the charged reason identifies the exact line outside the closed companion set"
 
 # AND NEITHER ENTRY CAN REACH THE ASSERTIONS THAT REPLACED IT. Taken verbatim
 # from the suite rather than retyped here: if an old and live sentence ever
@@ -6414,7 +6475,8 @@ qo_task() { # <id> <worktree> <base> <candidate>
 qo_log() { # <id> <worktree> <candidate> [failure-body]
   local qo_body="${4:-}"
   [ -n "$qo_body" ] \
-    || qo_body="  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
+    || qo_body="looks fine
+  FAIL: streaming stub: job log must have grown WHILE the adapter was still running (was 0 bytes at the midpoint) -- this is the stall-detector's liveness signal"
   printf 'date: 2026-08-10T00:00:00Z\nsha: %s\ncandidate: %s\ncwd: %s\ncommand: bash tests/run.sh\n---\n%s\nexit: 1\n' \
     "$3" "$3" "$2" "$qo_body" \
     > "$QO/.orchid/reviews/$1-verify.log"
@@ -6430,7 +6492,8 @@ qo_log QO1 "$QOW" "$QOCAND"
 assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
   "a carried task whose base and candidate both predate the register reads the clean tracked integration copy, so the exact pre-T019 failure no longer burns its attempt"
 qo_log QO1 "$QOW" "$QOCAND" \
-  "  FAIL: heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
+  "VERDICT: approve
+  FAIL: heartbeat stub: job log must gain at least one [hb line WHILE the adapter is still running (stub produced zero output of its own until exit) -- this is the liveness signal the stall detector depends on"
 assert_eq flaky "$(qo_cls QO1 | cut -f1)" \
   "and the same carried task classifies the sibling pre-T019 heartbeat-count failure as flaky rather than charging it"
 assert_match "job log must have grown" "$(drive_quarantine_signatures \
@@ -6490,9 +6553,10 @@ fm_set "$QR/.orchid/tasks/QA1.md" candidate_sha "$(git -C "$QR" rev-parse HEAD)"
 qr_log '  FAIL: widget returned 3, expected 4'
 assert_eq candidate "$(qr_cls | cut -f1)" \
   "quarantining the assertion you are failing must be impossible: the candidate CHANGED the register, so there is no register — this is the whole safety of the flaky route, and without it a repository could buy an amnesty for any failure by writing one line"
-qr_log "$L020_LINE"
+qr_log "looks fine
+$L020_LINE"
 assert_eq candidate "$(qr_cls | cut -f1)" \
-  "and the route is lost for entries the candidate did NOT write either, including the genuine L020 one — a file this candidate edited is not evidence about this candidate, and a per-entry rule would just move the abuse one line down"
+  "and the route is lost for entries the candidate did NOT write either, including the genuine L020 one and its context — a file this candidate edited is not evidence about this candidate, and a per-entry rule would just move the abuse one line down"
 
 # ===========================================================================
 # Part Y6 -- A RUN THAT STOPPED SHORT IS REPORTED, AND STILL CHARGED.

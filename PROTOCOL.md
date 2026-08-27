@@ -1213,8 +1213,13 @@ ones its archetype never declares.
         `tests/QUARANTINE.md`) that is an AUTHORITY under the rule below.
         That rule is the whole safety of it: an implementer cannot quarantine
         the assertion it is failing, because writing the entry removes the
-        route. Signatures are matched literally and claim only the lines they
-        match.
+        route. Signatures are matched literally and ordinarily claim only the
+        lines they match. A register may also list exact normalized
+        `FLAKE-CONTEXT:` companion lines for deterministic successful-fixture
+        output an old runner exposes when a later quarantined assertion fails.
+        Context is inert until a trusted signature matches this body; it is a
+        closed line list, never a failed-child cascade, so any novel or genuine
+        failure still charges.
 
       The exec-bit set, missing-build-state set **and the package/command
       subjects those missing trees publish**, and stale-pin check result are
