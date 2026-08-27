@@ -4234,6 +4234,31 @@ assert_eq "a1:0" "$(cefield C300 implement_floor)" \
 assert_eq "" "$(cefield C400 implement_floor)" \
   "while a CHARGED round records none and needs none: attempts moved, so the previous round's envelopes are already unreachable by name"
 
+# A non-candidate round can terminate at infra_max BEFORE the waived rework
+# edge writes its attempt_waiver entry. The `infra failure #N` intervention
+# itself must therefore carry the same explicit marker; a stationary attempts
+# counter is not a durable explanation of why it stayed still.
+printf '\ninfra_max=1\n' >> "$CLE/orchid.config"
+fm_set "$CLE/.orchid/tasks/C300.md" status testing
+fm_set "$CLE/.orchid/tasks/C300.md" infra_failures 0
+fm_set "$CLE/.orchid/tasks/C400.md" status "done"
+CE_CAP_RC=0
+CE_CAP_OUT="$(ORCHID_REPO="$CLE" ORCHID_EPOCH="$CEPOCH" "$DRIVE" 2>&1)" || CE_CAP_RC=$?
+[ "$CE_CAP_RC" -eq 0 ] || [ "$CE_CAP_RC" -eq 16 ] \
+  || fail "the infra-cap pass must complete normally or at its boundary (rc=$CE_CAP_RC): $CE_CAP_OUT"
+assert_eq blocked "$(cefield C300 status)" \
+  "the classified hand-off failure blocks at infra_max before a rework edge can journal the waiver (out: $CE_CAP_OUT)"
+assert_eq 0 "$(cefield C300 attempts)" \
+  "and the cap exit still preserves the attempt budget"
+CE_CAP_REASON="$(awk '
+  /^## .* C300 intervention / { take=1; next }
+  /^## / { take=0 }
+  take && /^infra failure #[0-9]+:/ { last=$0; take=0 }
+  END { print last }
+' "$CLE/.orchid/journal.md")"
+assert_match "handoff, attempt not charged" "$CE_CAP_REASON" \
+  "the infra-failure record says explicitly that the capped round did not charge an attempt — this is the only durable entry that path reaches"
+
 # ===========================================================================
 # Part Y3 -- THE SAME SENTENCES, WITH NOTHING PROVED BEHIND THEM, ARE CHARGED.
 #
@@ -5538,6 +5563,11 @@ assert_eq 0 "$(cnfield C500 infra_failures)" \
   "and no environment budget either: the edge is checked BEFORE anything is charged, so a refused advance costs nothing"
 assert_match "declares no testing -> rework edge" "$CN_OUT" \
   "the pass stops at a named boundary saying exactly what is missing"
+CN_JOURNAL="$(cat "$CLN/.orchid/journal.md")"
+assert_match "C500 note" "$CN_JOURNAL" \
+  "the missing-edge path writes a task-scoped durable note before stopping — it never reaches task advance's attempt_waiver journal"
+assert_match "handoff, attempt not charged" "$CN_JOURNAL" \
+  "and that note explicitly says the non-candidate round did not charge an attempt, rather than leaving an operator to infer it from a counter"
 
 # ===========================================================================
 # Part N5 -- a waived failure that RECURS goes to a human, not to another
@@ -5610,6 +5640,13 @@ assert_eq 2 "$(crfield infra_failures)" \
   "while the recurrence is still counted, so the ledger says what the environment actually cost"
 assert_match "an operator clears this" "$CR_OUT" \
   "and the boundary says why another identical re-dispatch is not the answer"
+CR_INFRA_REASONS="$(awk '
+  /^## .* C700 intervention / { take=1; next }
+  /^## / { take=0 }
+  take && /^infra failure #[0-9]+:/ { print; take=0 }
+' "$CRE/.orchid/journal.md")"
+assert_eq 2 "$(printf '%s\n' "$CR_INFRA_REASONS" | grep -cF "$(drive_waiver_mark)" || true)" \
+  "both infra-failure entries explicitly say attempt not charged, including the recurring round that stops before a second attempt_waiver edge"
 
 # ===========================================================================
 # Part N6 -- a WAIVED round must have an implement envelope of its OWN.

@@ -334,7 +334,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   candidate that produces *no failing line of its own* while one of those
   states is outstanding is waived for that round — an operator clears the
   state in seconds, the round is charged to `infra_failures`, and it stops for
-  a human if it recurs.
+  a human if it recurs. Every non-candidate exit journals the canonical
+  `attempt not charged` reason: normally in the `infra failure #N`
+  intervention, or as a task note when the archetype declares no rework edge
+  and no infra charge is taken.
 
   A waived round re-enters rework with `--waive-attempt`, and requires a
   *fresh* implement envelope of its own: `--waive-attempt` leaves `attempts`
@@ -343,8 +346,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   waived fault recurs — a second waived round on the same task — the pass
   stops at an operator boundary instead of re-dispatching, because a hand-off
   is a fault an operator clears and an identical retry cannot. That guard
-  counts *this task's own* waived rounds rather than `infra_failures`, which
-  also counts unrelated harness faults.
+  counts only this task's `attempt_waiver` entries rather than every journaled
+  non-candidate exit or `infra_failures`, which also counts unrelated harness
+  faults.
 - **`handoff.pin_check`** — the package-pin freshness check the `handoff`
   route runs, as a command line relative to the verified tree
   (default `scripts/pin-formula.sh --check`). It is only invoked when the

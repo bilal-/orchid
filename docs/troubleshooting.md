@@ -366,7 +366,7 @@ went:
 
 ```sh
 orchid task show <id>              # attempts vs infra_failures
-orchid journal show --task <id>    # 'attempt_waiver' entries say why
+orchid journal show --task <id>    # every non-candidate exit says 'attempt not charged'
 ```
 
 **Four failures are waivable**, and none of them is one the implementer can

@@ -1354,9 +1354,17 @@ ones its archetype never declares.
       capped by `infra_max` (config, default 3) — and then enters rework
       WAIVED: `orchid task advance <id> rework --waive-attempt --reason
       "verify failed (<class>, attempt not charged): <why>"`. The
-      `attempt_waiver` journal entry the waiver writes is what makes "this
-      failure was not charged, and here is why" a durable fact rather than an
-      inference from a counter that did not move. A waived round must produce
+      canonical reason is written into the `infra failure #N` intervention
+      entry first, so an infra cap, recurrence boundary, implement-floor
+      failure, or refused rework edge still leaves “attempt not charged”
+      durable even though it never reaches the waiver advance. An archetype
+      with no testing-to-rework edge is not infra-charged, so the driver writes
+      the same reason as a task-scoped journal note before stopping. A
+      successful advance adds its `attempt_waiver` entry; that kind alone arms
+      the recurrence counter.
+      Together those records make “this failure was not charged, and here is
+      why” a durable fact rather than an inference from a counter that did not
+      move. A waived round must produce
       a FRESH implement envelope of its own: `--waive-attempt` leaves
       `attempts` where it is, so the re-dispatched round would otherwise
       resolve the previous round's envelope and re-verify a candidate that

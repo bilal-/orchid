@@ -1237,8 +1237,8 @@ drive_implementing() {
 drive_testing() {
   local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts budget arc
   local hstate hdetail
-  local cls_line cls cls_reason prior_waived wmark
-  local clsrc ifrc fsrc floor_mark
+  local cls_line cls cls_reason prior_waived wmark waiver_reason
+  local clsrc ifrc fsrc floor_mark jrc
   wmark="$(drive_waiver_mark)"
   tf="$state/tasks/$id.md"
 
@@ -1326,12 +1326,28 @@ drive_testing() {
   fi
 
   if [ "$cls" != candidate ]; then
+    # This sentence is the durable contract of every non-candidate arm, not
+    # merely of the one that reaches `task advance --waive-attempt`. Several
+    # correct early exits preserve the attempts counter without taking that
+    # edge -- an infra cap blocks, recurrence holds in testing, and an
+    # archetype may declare no rework edge at all. If only the successful
+    # advance carries the marker, those equally uncharged outcomes leave an
+    # operator inferring policy from a counter that happened not to move.
+    waiver_reason="$(drive_waiver_reason "$cls" "$cls_reason")"
     # The edge is checked BEFORE anything is charged. A task whose archetype
     # has no testing -> rework edge is going to an operator either way, and
     # spending environment budget on a round that never advances would charge
     # for a refusal -- the same "charged for something that is not the
     # candidate" mistake this whole path exists to stop, one budget over.
     if ! drive_has_transition "$arch" testing rework; then
+      jrc=0
+      "$ORCHID_BIN" journal add --task "$id" \
+        "$waiver_reason — held in testing because archetype '$arch' declares no testing -> rework edge; neither the attempt nor the environment budget was charged" >/dev/null || jrc=$?
+      if [ "$jrc" -ne 0 ]; then
+        set_boundary operator-decision "$id" \
+          "verify failed ($cls), the attempt was not charged, and the required journal record failed (exit $jrc); archetype '$arch' declares no testing -> rework edge"
+        return 0
+      fi
       set_boundary operator-decision "$id" "verify failed ($cls) and archetype '$arch' declares no testing -> rework edge"
       return 0
     fi
@@ -1357,10 +1373,13 @@ drive_testing() {
     # undocumented exit code with the rest of the walk silently skipped.
     ifrc=0
     "$ORCHID_BIN" task infra-fail "$id" \
-      --reason "verify failed, but the candidate is not what failed ($cls): $cls_reason" >/dev/null || ifrc=$?
+      --reason "$waiver_reason" >/dev/null || ifrc=$?
     if [ "$ifrc" -ne 0 ]; then
+      jrc=0
+      "$ORCHID_BIN" journal add --task "$id" \
+        "$waiver_reason — task infra-fail refused exit $ifrc, so the environment budget was not charged either" >/dev/null || jrc=$?
       set_boundary operator-decision "$id" \
-        "task infra-fail refused this $cls verify failure (exit $ifrc), so the round was neither charged to the environment budget nor waived: $cls_reason"
+        "task infra-fail refused this $cls verify failure (exit $ifrc), so the round was neither charged to the environment budget nor waived; attempt-not-charged journal record exit $jrc: $cls_reason"
       return 0
     fi
     if [ "$(fm_get "$tf" status)" = blocked ]; then
@@ -1407,7 +1426,7 @@ drive_testing() {
     fi
     arc=0
     "$ORCHID_BIN" task advance "$id" rework --waive-attempt \
-      --reason "$(drive_waiver_reason "$cls" "$cls_reason")" >/dev/null || arc=$?
+      --reason "$waiver_reason" >/dev/null || arc=$?
     if [ "$arc" -ne 0 ]; then
       set_boundary operator-decision "$id" "testing -> rework refused (exit $arc)"
       return 0

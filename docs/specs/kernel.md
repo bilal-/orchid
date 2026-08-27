@@ -689,10 +689,13 @@ buying a fresh implementation pass to reach the same tree.
   candidate; a deletion has it in its base; dirty integration bytes, mode, or
   index fail the authority check. This lets a post-cut historical-flake entry
   protect old branches without letting a candidate author or remove its own
-  amnesty. A non-`candidate` verdict
-  charges `infra_failures` rather than `attempts`, entering rework with
-  `--waive-attempt` so the waiver's journal entry names the class and the
-  reason. Four properties make this safe rather than a loophole: it forgives
+  amnesty. A non-`candidate` verdict charges `infra_failures` rather than
+  `attempts`. The `infra failure #N` intervention reason itself names the class
+  and says `attempt not charged`, because an infra cap or recurrence can stop
+  before the rework edge; a missing edge gets the same task-scoped note without
+  an infra charge. Entering rework with `--waive-attempt` adds an
+  `attempt_waiver` entry, and only that successful edge arms the recurrence
+  counter. Four properties make this safe rather than a loophole: it forgives
   only on POSITIVE evidence, never on absence of it; every uncertain case (no
   evidence log, no state outstanding, a known fault the failure cannot be
   attributed to) charges and says why; NO ROUND IS EVER WAIVED AS A ROUND —
