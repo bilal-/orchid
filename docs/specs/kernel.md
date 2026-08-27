@@ -277,7 +277,7 @@ across prose sections is normative HERE):**
 | pending | `task advance` | deps done; worktree created; base_sha set | frontmatter | implementing |
 | implementing | `task advance` | implementer envelope `ok`; the dispatch DELIVERED a candidate (orchestrator-checked before the verb is called — see below); candidate_sha set; no commit touches `.orchid/` | frontmatter | testing |
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
-| testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky → `task infra-fail` + `--waive-attempt --reason` | frontmatter, journal | rework |
+| testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky → `task infra-fail` + `--waive-attempt --reason`. If a candidate failure cannot take `testing → rework` because the archetype omits that edge or the edge is refused before charging, `task advance blocked --charge-attempt --reason` preserves the strict charge in one locked transition while stopping for an operator. | frontmatter, journal | rework, or blocked on the charge fallback |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
 | arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
 | arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
@@ -527,6 +527,14 @@ buying a fresh implementation pass to reach the same tree.
   forward progress); the waiver is a journaled decision (kind
   `attempt_waiver`). The cap targets repeated identical failures; the
   per-task wall-clock budget is the unconditional backstop.
+  A candidate failure for which `testing -> rework` is unavailable or is
+  refused before it charges takes the single narrow fallback `task advance
+  <id> blocked --charge-attempt --reason "..."`. The flag is legal only on
+  `testing -> blocked`, is mutually exclusive with `--waive-attempt`, derives
+  the next attempt number itself, journals before mutation, clears any
+  deferred-failure receipt, and increments exactly once. This keeps the
+  canonical candidate-FAIL rule true without making `attempts` generally
+  writable.
   `infra_failures` NEVER consume attempts, and neither does `task reverify`.
 - **The cap is `rework_max` (config, default 3), and an operator can raise
   it for ONE task:** `orchid task retry <id> --reason "..." [--attempts N]`

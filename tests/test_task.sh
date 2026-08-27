@@ -157,6 +157,78 @@ sleep 1
 assert_eq "$started2" "$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | cut -d' ' -f2-)" \
   "implementing -> testing (same attempt) leaves started_at alone"
 
+# T019: a strict candidate failure normally charges on testing -> rework. A
+# valid custom code archetype may omit that edge, though, and the advance can
+# also refuse before it writes. The driver needs one narrow kernel-owned way
+# to preserve the charge while taking the universal blocked escape hatch.
+# `--charge-attempt` is that way: testing -> blocked only, journal-first,
+# exactly one increment, and consumption of the deferred-failure receipt whose
+# evidence it just accounted for.
+"$ORCHID_BIN" task create T005 "charge a candidate failure while blocking"
+"$ORCHID_BIN" task advance T005 implementing
+
+rc=0
+charge_source_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --reason "candidate failure with no rework edge" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse any source other than testing"
+assert_match "only valid for testing -> blocked" "$charge_source_out" \
+  "the source-shape refusal names the only legal edge"
+assert_eq implementing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
+  "a refused charge leaves status untouched"
+assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "and leaves attempts untouched"
+
+"$ORCHID_BIN" task set T005 base_sha "$head_sha"
+"$ORCHID_BIN" task set T005 candidate_sha "$head_sha"
+"$ORCHID_BIN" task advance T005 testing
+pending_receipt="a1:$head_sha:1111111111111111111111111111111111111111111111111111111111111111"
+"$ORCHID_BIN" task set T005 verify_fail_pending "$pending_receipt"
+
+rc=0
+charge_dest_out="$("$ORCHID_BIN" task advance T005 rework --charge-attempt \
+  --reason "wrong destination" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse any destination other than blocked"
+assert_match "only valid for testing -> blocked" "$charge_dest_out" \
+  "the destination-shape refusal names the only legal edge"
+assert_eq testing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
+  "a wrong-destination charge leaves status testing"
+assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "and does not accidentally take rework's ordinary charge"
+assert_eq "$pending_receipt" "$("$ORCHID_BIN" task show T005 | grep '^verify_fail_pending: ' | cut -d' ' -f2-)" \
+  "a refused charge does not consume the evidence receipt"
+
+rc=0
+charge_conflict_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --waive-attempt --reason "contradictory accounting" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt and --waive-attempt must be mutually exclusive"
+assert_match "cannot be combined" "$charge_conflict_out" \
+  "the contradictory accounting flags are refused explicitly"
+assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "the contradictory request mutates no attempt budget"
+
+charge_ok_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --reason "candidate failure with no rework edge")"
+assert_match "T005: testing -> blocked" "$charge_ok_out" \
+  "the valid fallback reports the edge it took"
+assert_eq blocked "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
+  "the candidate-failure fallback lands blocked"
+assert_eq 1 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "and charges exactly one candidate attempt"
+assert_eq "" "$("$ORCHID_BIN" task show T005 | grep '^verify_fail_pending: ' | cut -d' ' -f2-)" \
+  "the accounted round's deferred-failure receipt is consumed"
+assert_match "candidate attempt #1 charged while blocking: candidate failure with no rework edge" \
+  "$(cat .orchid/journal.md)" \
+  "the kernel-derived attempt number and reason are durable before the state move"
+
+rc=0
+charge_twice_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
+  --reason "must not charge twice" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a blocked task cannot be charged again with --charge-attempt"
+assert_match "only valid for testing -> blocked" "$charge_twice_out" \
+  "the repeat charge is rejected on its source state"
+assert_eq 1 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
+  "a repeated fallback cannot double-charge the round"
+
 # v0b2: `task infra-fail <id> --reason "..."` is the dedicated kernel-owned
 # path that bumps `infra_failures` (the general `task set` deny-list blocks
 # writing it any other way), journals an `intervention` entry, and — once

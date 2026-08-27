@@ -1395,6 +1395,14 @@ ones its archetype never declares.
       exit status says it stopped short, since that status cannot tell a reap
       from a candidate that hung; and every failure none of the three covers.
       Orchid forgives only what it can prove.
+      When the archetype declares no `testing -> rework` edge, or that advance
+      is refused before it charges, the driver takes the universal blocked edge
+      through `orchid task advance <id> blocked --charge-attempt --reason
+      "..."`. That flag is legal only for `testing -> blocked`, cannot be
+      combined with `--waive-attempt`, and journals and consumes exactly the
+      candidate attempt it blocks. The boundary names `task retry` and `task
+      reverify`; an absent or refused rework edge is never a free candidate
+      failure.
 
     **Either advance carries the failing gate's exact locations into the brief,
     automatically.** Before it deletes the verify log, `orchid task advance

@@ -1253,7 +1253,7 @@ drive_testing() {
   local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts budget arc
   local hstate hdetail
   local cls_line cls cls_reason prior_waived wmark waiver_reason
-  local clsrc ifrc fsrc floor_mark jrc
+  local clsrc ifrc fsrc floor_mark jrc barc after_attempts after_status
   local pending pending_prefix pending_digest evidence_digest resume_failure
   local hook_bindings prc
   wmark="$(drive_waiver_mark)"
@@ -1551,29 +1551,72 @@ drive_testing() {
     return 0
   fi
   if ! drive_has_transition "$arch" testing rework; then
-    jrc=0
-    "$ORCHID_BIN" journal add --task "$id" \
-      "verify failed (candidate, attempt not charged): archetype '$arch' declares no testing -> rework edge; strict classification reason: $cls_reason" >/dev/null || jrc=$?
-    if [ "$jrc" -ne 0 ]; then
+    # `testing -> rework` is the ordinary charge path, but it is not a
+    # meta-contract requirement for custom code archetypes. A genuine
+    # candidate failure must still consume its round. Charge and block in one
+    # locked kernel verb; leaving the task in testing with an uncharged defect
+    # would make repeated passes free.
+    barc=0
+    "$ORCHID_BIN" task advance "$id" blocked --charge-attempt \
+      --reason "verify failed (candidate, attempt charged — archetype '$arch' declares no testing -> rework edge; $cls_reason): see .orchid/reviews/$id-verify.log" >/dev/null || barc=$?
+    if [ "$barc" -ne 0 ]; then
+      jrc=0
+      "$ORCHID_BIN" journal add --task "$id" \
+        "verify failed (candidate, attempt not charged): archetype '$arch' declares no testing -> rework edge, and charge-and-block refused exit $barc; strict classification reason: $cls_reason" >/dev/null || jrc=$?
+      if [ "$jrc" -eq 0 ]; then
+        drive_verify_fail_pending_consume "$id" || return 0
+      fi
       set_boundary operator-decision "$id" \
-        "verify failed (candidate), no testing -> rework edge exists, and the required journal record failed (exit $jrc)"
+        "candidate verify failure could not be charged: archetype '$arch' declares no testing -> rework edge and testing -> blocked --charge-attempt refused (exit $barc; journal exit $jrc)"
       return 0
     fi
-    drive_verify_fail_pending_consume "$id" || return 0
-    set_boundary operator-decision "$id" "verify failed and archetype '$arch' declares no testing -> rework edge"
+    drive_note "$id: verify FAIL (candidate, attempt charged), testing -> blocked — archetype '$arch' declares no testing -> rework edge"
+    set_boundary operator-decision "$id" \
+      "candidate verify failure was charged and blocked because archetype '$arch' declares no testing -> rework edge — correct the archetype's recovery edges first; orchid task retry $id --reason \"...\" [--attempts N] moves it to rework only if that state has a dispatch edge, while orchid task reverify $id --reason \"...\" requires a declared blocked -> testing edge"
     return 0
   fi
   arc=0
   "$ORCHID_BIN" task advance "$id" rework \
     --reason "verify failed (candidate, attempt charged — $cls_reason): see .orchid/reviews/$id-verify.log" >/dev/null || arc=$?
   if [ "$arc" -ne 0 ]; then
+    # A refusal can happen before OR after the rework verb's journal-first
+    # accounting. Re-read both owned fields. Never double-charge a partially
+    # completed transaction, and never charge a task another actor already
+    # moved out of testing.
+    after_attempts="$(fm_get "$tf" attempts)"; [ -n "$after_attempts" ] || after_attempts=0
+    after_status="$(fm_get "$tf" status)"
+    if [ "$after_attempts" -gt "$attempts" ]; then
+      jrc=0
+      "$ORCHID_BIN" journal add --task "$id" \
+        "verify failed (candidate, attempt already charged): testing -> rework returned exit $arc after attempts moved $attempts -> $after_attempts; task status is $after_status, so the fallback did not charge it again" >/dev/null || jrc=$?
+      if [ "$jrc" -eq 0 ]; then
+        drive_verify_fail_pending_consume "$id" || return 0
+      fi
+      set_boundary operator-decision "$id" \
+        "testing -> rework returned exit $arc after charging the candidate attempt ($attempts -> $after_attempts; status $after_status) — inspect the interrupted transition; no second charge was made"
+      return 0
+    fi
+    if [ "$after_status" = testing ] && [ "$after_attempts" -eq "$attempts" ]; then
+      barc=0
+      "$ORCHID_BIN" task advance "$id" blocked --charge-attempt \
+        --reason "verify failed (candidate, attempt charged after testing -> rework refused exit $arc — $cls_reason): see .orchid/reviews/$id-verify.log" >/dev/null || barc=$?
+      if [ "$barc" -eq 0 ]; then
+        drive_note "$id: verify FAIL (candidate, attempt charged), testing -> blocked after testing -> rework refused exit $arc"
+        set_boundary operator-decision "$id" \
+          "candidate verify failure was charged and task blocked after testing -> rework refused (exit $arc) — orchid task retry $id --reason \"...\" [--attempts N] retries through rework; orchid task reverify $id --reason \"...\" re-runs verification alone"
+        return 0
+      fi
+    else
+      barc=not-attempted
+    fi
     jrc=0
     "$ORCHID_BIN" journal add --task "$id" \
-      "verify failed (candidate, attempt not charged): testing -> rework refused exit $arc; strict classification reason: $cls_reason" >/dev/null || jrc=$?
+      "verify failed (candidate, attempt not charged): testing -> rework refused exit $arc, then charge-and-block $barc (status $after_status, attempts $after_attempts); strict classification reason: $cls_reason" >/dev/null || jrc=$?
     if [ "$jrc" -eq 0 ]; then
       drive_verify_fail_pending_consume "$id" || return 0
     fi
-    set_boundary operator-decision "$id" "testing -> rework refused (exit $arc)"
+    set_boundary operator-decision "$id" \
+      "candidate verify failure could not be charged: testing -> rework refused (exit $arc), charge-and-block $barc (status $after_status, attempts $after_attempts; journal exit $jrc)"
     return 0
   fi
   drive_note "$id: verify FAIL (candidate, attempt charged), testing -> rework"

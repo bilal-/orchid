@@ -5671,6 +5671,128 @@ assert_match "C500 note" "$CN_JOURNAL" \
 assert_match "handoff, attempt not charged" "$CN_JOURNAL" \
   "and that note explicitly says the non-candidate round did not charge an attempt, rather than leaving an operator to infer it from a counter"
 
+# The strict twin: the same missing edge cannot turn a CANDIDATE failure into
+# a free round. Clear the first pass's boundary through the public verb, leave
+# the same task and candidate in testing, and make its verifier fail on an
+# unrelated assertion that none of the positive-evidence waiver routes owns.
+cnorchid run boundary clear --reason "fixture: exercise the strict no-edge twin"
+cnorchid task set C500 verification_commands \
+  "echo tests/test_widget.sh: FAIL: widget mismatch; exit 1" >/dev/null
+CN_STRICT_RC=0
+CN_STRICT_OUT="$(ORCHID_REPO="$CLN" ORCHID_EPOCH="$CNEPOCH" ORCHID_ARCHETYPES_DIR="$CNARCH" "$DRIVE" 2>&1)" || CN_STRICT_RC=$?
+[ "$CN_STRICT_RC" -eq 16 ] \
+  || fail "the candidate no-edge pass must stop at its charged blocked boundary (rc=$CN_STRICT_RC): $CN_STRICT_OUT"
+assert_eq blocked "$(cnfield C500 status)" \
+  "a candidate failure with no rework edge takes the universal blocked fallback (out: $CN_STRICT_OUT)"
+assert_eq 1 "$(cnfield C500 attempts)" \
+  "and the missing archetype edge does not make that candidate round free"
+assert_eq 0 "$(cnfield C500 infra_failures)" \
+  "the strict candidate arm charges attempts, never the environment ladder"
+CN_STRICT_JOURNAL="$(cat "$CLN/.orchid/journal.md")"
+assert_match "candidate attempt #1 charged while blocking" "$CN_STRICT_JOURNAL" \
+  "the no-edge fallback records the exact charge durably"
+assert_match "declares no testing -> rework edge" "$CN_STRICT_JOURNAL" \
+  "and records why the charged round had to stop instead of entering rework"
+assert_match "attempt charged.*testing -> blocked" "$CN_STRICT_OUT" \
+  "the pass reports a charged state move rather than activity with no accounting"
+assert_match "task retry C500" "$CN_STRICT_OUT" \
+  "the resulting boundary names the supported route back through rework"
+assert_match "task reverify C500" "$CN_STRICT_OUT" \
+  "and also names the supported exact-candidate verification route"
+
+# The other half of the review finding is a DECLARED rework edge whose verb
+# refuses before charging. Make that refusal deterministic with a real live
+# verb-lock: the verifier waits on a sentinel, the fixture acquires the lock,
+# and the first task advance exhausts the one-second wait. As soon as its
+# refusal is visible, the fixture releases the lock, so the charge-and-block
+# fallback can acquire it and complete. No production test seam is involved.
+CLR="$WORK/classify-refused-rework"
+mkdir -p "$CLR"
+cd "$CLR" || exit 1
+git init -q .
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nverb_lock_wait_s=1\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$CLR" "$ORCHID_BIN" init >/dev/null || fail "orchid init (refused-rework fixture)"
+git checkout -q orchid/integration
+CLREPOCH="$(ORCHID_REPO="$CLR" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+clrorchid() { ORCHID_REPO="$CLR" ORCHID_EPOCH="$CLREPOCH" "$ORCHID_BIN" "$@"; }
+clrorchid requirements import "$WORK/requirements.md" >/dev/null
+clrorchid task create C501 "its declared rework edge refuses before charging" >/dev/null
+clrorchid task set C501 verification_commands \
+  "touch $CLR/verify-ready; while [ ! -f $CLR/verify-go ]; do sleep 0.05; done; echo tests/test_widget.sh: FAIL: widget mismatch; exit 1" >/dev/null
+clrorchid plan apply --reason "initial plan" >/dev/null
+CLRBASE="$(git -C "$CLR" rev-parse HEAD)"
+printf 'candidate\n' > "$CLR/candidate.txt"
+git -C "$CLR" add candidate.txt
+git -C "$CLR" commit -q -m "fixture: candidate"
+CLRCAND="$(git -C "$CLR" rev-parse HEAD)"
+fm_set "$CLR/.orchid/tasks/C501.md" status testing
+fm_set "$CLR/.orchid/tasks/C501.md" base_sha "$CLRBASE"
+fm_set "$CLR/.orchid/tasks/C501.md" candidate_sha "$CLRCAND"
+
+CLR_OUT_FILE="$WORK/classify-refused-rework.out"
+CLR_RC=0
+ORCHID_REPO="$CLR" ORCHID_EPOCH="$CLREPOCH" "$DRIVE" >"$CLR_OUT_FILE" 2>&1 &
+CLR_DRIVE_PID=$!
+CLR_WAIT=0
+while [ ! -f "$CLR/verify-ready" ] && kill -0 "$CLR_DRIVE_PID" 2>/dev/null; do
+  sleep 0.05
+  CLR_WAIT=$((CLR_WAIT + 1))
+  [ "$CLR_WAIT" -lt 200 ] || break
+done
+[ -f "$CLR/verify-ready" ] \
+  || fail "the refused-rework verifier never reached its synchronization point: $(cat "$CLR_OUT_FILE" 2>/dev/null)"
+
+CLR_RELEASE="$CLR/release-verb-lock"
+CLR_LOCK_READY="$CLR/verb-lock-ready"
+(
+  unset ORCHID_VERB_LOCK_HELD
+  verb_lock_acquire "$CLR"
+  touch "$CLR_LOCK_READY"
+  while [ ! -f "$CLR_RELEASE" ]; do sleep 0.05; done
+  verb_lock_release "$CLR"
+) &
+CLR_LOCK_PID=$!
+CLR_WAIT=0
+while [ ! -f "$CLR_LOCK_READY" ] && kill -0 "$CLR_LOCK_PID" 2>/dev/null; do
+  sleep 0.05
+  CLR_WAIT=$((CLR_WAIT + 1))
+  [ "$CLR_WAIT" -lt 200 ] || break
+done
+[ -f "$CLR_LOCK_READY" ] || fail "the refused-rework fixture could not acquire its live verb lock"
+touch "$CLR/verify-go"
+
+CLR_WAIT=0
+while ! grep -q "another verb is mid-transaction" "$CLR_OUT_FILE" 2>/dev/null && \
+      kill -0 "$CLR_DRIVE_PID" 2>/dev/null; do
+  sleep 0.05
+  CLR_WAIT=$((CLR_WAIT + 1))
+  [ "$CLR_WAIT" -lt 200 ] || break
+done
+grep -q "another verb is mid-transaction" "$CLR_OUT_FILE" 2>/dev/null \
+  || fail "the declared rework edge did not hit the deterministic verb-lock refusal: $(cat "$CLR_OUT_FILE" 2>/dev/null)"
+touch "$CLR_RELEASE"
+wait "$CLR_LOCK_PID" 2>/dev/null
+wait "$CLR_DRIVE_PID" || CLR_RC=$?
+CLR_OUT="$(cat "$CLR_OUT_FILE")"
+[ "$CLR_RC" -eq 16 ] \
+  || fail "the refused-rework pass must stop at its charged blocked boundary (rc=$CLR_RC): $CLR_OUT"
+clrfield() { ORCHID_REPO="$CLR" "$ORCHID_BIN" task show "$1" | grep "^$2: " | cut -d' ' -f2-; }
+assert_eq blocked "$(clrfield C501 status)" \
+  "a pre-charge rework refusal falls back to blocked (out: $CLR_OUT)"
+assert_eq 1 "$(clrfield C501 attempts)" \
+  "and still consumes exactly one candidate attempt"
+assert_eq 0 "$(clrfield C501 infra_failures)" \
+  "a kernel transition refusal is not mischarged as an environment failure"
+CLR_JOURNAL="$(cat "$CLR/.orchid/journal.md")"
+assert_match "candidate attempt #1 charged while blocking" "$CLR_JOURNAL" \
+  "the refused-edge fallback durably records the charge"
+assert_match "after testing -> rework refused exit" "$CLR_JOURNAL" \
+  "and records the refusal that forced the blocked path"
+assert_match "attempt charged.*testing -> blocked after testing -> rework refused" "$CLR_OUT" \
+  "the pass reports the refused edge's charged fallback"
+
 # ===========================================================================
 # Part N5 -- a waived failure that RECURS goes to a human, not to another
 # identical re-dispatch.
