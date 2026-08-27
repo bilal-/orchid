@@ -1199,8 +1199,11 @@ ones its archetype never declares.
         and requires it to REPORT A FILE STALE — a nonzero exit is not that
         report, since a check that cannot find the formula or trips over
         metadata this candidate corrupted exits nonzero too and re-pinning
-        fixes neither. Neither is a step an implementer profile may perform
-        (L017).
+        fixes neither. Orchid's default check produces one four-line report:
+        its causal stale line plus exact pinned-checksum, expected-checksum,
+        and one-command-remedy continuations. All four are attributed together;
+        an unfamiliar continuation remains unknown and charges. Neither hand-off
+        is a step an implementer profile may perform (L017).
       - `environment` — gitignored build state the integration checkout
         carries and the task's worktree never received, proved by comparing
         the two checkouts (lesson L003). Provisioning it is a DISPATCH step,
@@ -1308,11 +1311,12 @@ ones its archetype never declares.
       progress, success, or neutral NOT-TESTED record is uncertain and
       therefore remains an unattributed failing line. Orchid's terminal
       standalone `OK` and both NOT-TESTED forms are in that closed non-failure
-      vocabulary. The shipped whole-suite/CI harness also brackets every test with
-      a token-bound `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair. Only
-      a matching `END 0` proves that block's deliberately noisy negative
-      fixtures are completed test output; a failed, incomplete, or mismatched
-      block remains in the accounting verbatim. Unknown lines cannot join a
+      vocabulary. The shipped whole-suite/CI harness captures each test's
+      output until the parent observes its exit status. For a zero exit it
+      exposes only durable NOT-TESTED/RED/GREEN qualification records and one
+      terminal `<path>: OK`; for a nonzero exit it exposes the child's output
+      verbatim. Outcome therefore cannot be forged by printing an in-band
+      success marker from the child being judged. Unknown lines cannot join a
       same-artifact cascade merely by naming the artifact. Separately
       outstanding state grants no
       attribution, but a waived reason still reports an operator action it

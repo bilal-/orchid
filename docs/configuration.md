@@ -312,11 +312,11 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   or neutral NOT-TESTED records, it is uncertain, stays unattributed, and
   charges. Orchid's terminal standalone `OK` and both NOT-TESTED output forms
   are explicit members of that closed non-failure vocabulary. Its shipped
-  whole-suite/CI harness additionally brackets each test with a token-bound
-  `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair. A matching `END 0`
-  proves that block's output came from a completed test, so deliberately noisy
-  negative fixtures do not masquerade as this round's failure. Nonzero,
-  incomplete, and mismatched blocks remain fail-closed. In particular, merely
+  whole-suite/CI harness captures each child's output until the parent knows
+  its exit status. A passing child contributes only durable qualification
+  records and a terminal `<path>: OK`; a failing child contributes its output
+  verbatim. The classifier trusts no BEGIN/END text from candidate-controlled
+  output, so a test cannot print a success frame around a real defect. Merely
   naming the same artifact cannot pull an unknown line into that artifact's
   cascade.
   A separate outstanding state contributes no
@@ -355,7 +355,11 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   and re-pinning fixes none of those. The check must *say* something is stale
   and *name* a file the repository tracks; that file is what the waiver is
   attributed to, and a check that fails silently proves nothing and forgives
-  nothing. `none` disables the route.
+  nothing. Orchid's shipped check reports the pinned checksum, expected
+  checksum, and one-command remedy on three continuation lines. Those exact
+  records are attributed with its causal `Formula/orchid.rb ... STALE` line;
+  an unfamiliar continuation from a custom check remains unknown and charges.
+  `none` disables the route.
 - **`flaky.quarantine`** — the known-flaky register the `flaky` route reads,
   relative to the verified tree (default `tests/QUARANTINE.md` — orchid ships
   one, carrying two entries for the two pre-T019 liveness-message families and

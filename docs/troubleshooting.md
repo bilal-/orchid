@@ -405,6 +405,11 @@ worth nothing:
    part of the same cascade and is attributed too, causal wording or not —
    `runners/orchid-drive must exist and be executable` and `T001 ... (last
    rc=126 ...)` are that mode bit's failures as surely as the refusal is.
+   Orchid's shipped Formula check is one four-line report: after its causal
+   stale line, the exact pinned-checksum, expected-checksum, and remedy records
+   are attributed too. An unfamiliar continuation remains unclaimed and
+   charges. This keeps the default route live without making arbitrary pin
+   checker prose neutral.
    Without that first line, naming alone attributes nothing: every assertion
    that fails inside a newly added file names it. The path must use its exact
    repository-relative, `./`-relative, or worktree-root absolute spelling,
@@ -492,11 +497,12 @@ diagnostics are conveniences, not a finite allowlist: any unfamiliar non-empty
 line that is not an explicit progress, success, or neutral NOT-TESTED record
 remains uncertain and charges. Orchid's terminal standalone `OK` and both
 NOT-TESTED output forms are explicit members of that closed non-failure
-vocabulary. The shipped whole-suite/CI harness brackets each test with a
-token-bound `ORCHID-VERIFY-SEGMENT ... BEGIN` / `END <exit>` pair; only the
-matching zero-result form proves that block's noisy negative fixtures belong to
-a completed test. Failed, incomplete, and mismatched blocks remain fully
-accountable. An unknown line cannot be claimed by a same-artifact cascade just
+vocabulary. The shipped whole-suite/CI parent captures each test's output and
+waits for its exit status: zero exposes durable qualification records plus a
+terminal `<path>: OK`, while nonzero exposes the child's output verbatim. No
+candidate-controlled BEGIN/END marker is trusted, so a test cannot forge a
+completed-success block around a real defect. An unknown line cannot be
+claimed by a same-artifact cascade just
 because it names that artifact. A separate
 outstanding state does not earn attribution, but the waived reason retains it
 when it names an operator action still owed, such as a dropped 755 bit. Perform

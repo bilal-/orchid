@@ -2,7 +2,8 @@
 set -u
 rc=0
 BASH_BIN="${ORCHID_TEST_BASH:-${BASH:-bash}}"
-segment_index=0
+suite_output="$(mktemp "${TMPDIR:-/tmp}/orchid-suite-output.XXXXXX")"
+trap 'rm -f "$suite_output"' EXIT
 # Every test file launched from here can tell it is part of a WHOLE-SUITE run
 # rather than a lone invocation. tests/test_hermetic_suite.sh is the only
 # consumer today, and it needs the distinction rather than assuming it: on a
@@ -24,13 +25,23 @@ ORCHID_SUITE_RUN="$(cd "$(dirname "$0")" && pwd -P)/run.sh"
 export ORCHID_SUITE_RUN
 for t in "$(dirname "$0")"/test_*.sh "$(dirname "$0")"/inv/test_*.sh; do
   [ -e "$t" ] || continue
-  segment_index=$((segment_index + 1))
-  segment_token="$$-$segment_index"
   echo "== $t"
-  printf 'ORCHID-VERIFY-SEGMENT %s BEGIN %s\n' "$segment_token" "$t"
   test_rc=0
-  "$BASH_BIN" "$t" || test_rc=$?
-  printf 'ORCHID-VERIFY-SEGMENT %s END %s\n' "$segment_token" "$test_rc"
-  [ "$test_rc" -eq 0 ] || rc=1
+  : > "$suite_output"
+  "$BASH_BIN" "$t" > "$suite_output" 2>&1 || test_rc=$?
+  if [ "$test_rc" -eq 0 ]; then
+    # A passing test is allowed to exercise deliberately alarming negative
+    # fixtures, but those fixture diagnostics are not this suite run's
+    # failures.  Keep the durable qualification records humans need and emit
+    # one unambiguous result line; a failed test is printed verbatim below.
+    # This is outcome-based filtering by the parent process, not an in-band
+    # BEGIN/END marker a child can forge in its own output.
+    grep -E '^[[:space:]]*(NOT-TESTED:|not-tested:|RED-CASE:|GREEN-CASE:|red-cases:)' \
+      "$suite_output" || true
+    printf '%s: OK\n' "$t"
+  else
+    cat "$suite_output"
+    rc=1
+  fi
 done
 exit "$rc"

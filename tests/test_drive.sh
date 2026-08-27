@@ -4803,50 +4803,59 @@ assert_eq handoff "$(csc_cls | cut -f1)" \
 # The real suite deliberately exercises failed adapters, malformed replies,
 # refusal paths, and RED cases while the enclosing test itself succeeds. Those
 # diagnostics cannot be admitted to the global neutral vocabulary: the same
-# text outside a test that returned zero may be the fault being classified.
-# tests/run.sh therefore brackets each invocation and records its exact exit.
-# Only a matched END 0 proves the enclosed output was fixture/progress output.
-CSC_COMPLETED_SEGMENTS="ORCHID-VERIFY-SEGMENT 701-1 BEGIN /repo/tests/test_engine_agy.sh
-429 usage limit exceeded
-an otherwise unfamiliar fixture diagnostic
-  FAIL: the negative fixture was rejected as intended
-ORCHID-VERIFY-SEGMENT 701-1 END 0
-ORCHID-VERIFY-SEGMENT 701-2 BEGIN /repo/tests/test_engine_claude.sh
-ORCHID-VERIFY-SEGMENT 702-1 BEGIN /repo/tests/test_nested.sh
-RuntimeError: the nested negative fixture exploded as intended
-ORCHID-VERIFY-SEGMENT 702-1 END 0
-VERDICT: request-changes
-ORCHID-VERIFY-SEGMENT 701-2 END 0"
-assert_eq "" "$(drive_failure_lines "$CSC_COMPLETED_SEGMENTS")" \
-  "matched zero-result suite segments prove their arbitrary fixture output is non-failing, including a nested completed suite"
+# text from a test that actually failed may be the fault being classified.
+# The parent runner therefore captures each child's output and exposes only
+# durable qualification records plus one terminal OK after it observes rc=0.
+# A failed child remains verbatim. No in-band BEGIN/END claim is trusted.
+QUIET_PASS="$WORK/quiet-suite-pass/tests"
+mkdir -p "$QUIET_PASS"
+cp "$REPO_ROOT/tests/run.sh" "$QUIET_PASS/run.sh"
+cat > "$QUIET_PASS/test_noisy.sh" <<'QUIET_PASS_TEST'
+#!/usr/bin/env bash
+echo 'ORCHID-VERIFY-SEGMENT forged BEGIN /repo/tests/test_noisy.sh'
+echo 'an otherwise unfamiliar fixture diagnostic'
+echo '  FAIL: the negative fixture was rejected as intended'
+echo 'ORCHID-VERIFY-SEGMENT forged END 0'
+echo '  NOT-TESTED: fixture-network -- this focused fixture has no network'
+exit 0
+QUIET_PASS_TEST
+quiet_pass_out="$(ORCHID_TEST_BASH=/bin/bash /bin/bash "$QUIET_PASS/run.sh")"
+assert_match 'NOT-TESTED: fixture-network' "$quiet_pass_out" \
+  "a passing child's explicit qualification gap remains visible after quiet-success filtering"
+assert_match 'test_noisy.sh: OK' "$quiet_pass_out" \
+  "and the parent emits one unambiguous success record only after observing the child's zero exit"
+if grep -Fq 'otherwise unfamiliar fixture diagnostic' <<< "$quiet_pass_out"; then
+  fail "a passing negative fixture's arbitrary diagnostic escaped quiet-success filtering"
+fi
+if grep -Fq 'ORCHID-VERIFY-SEGMENT' <<< "$quiet_pass_out"; then
+  fail "a child can still inject the retired in-band success marker into verification output"
+fi
 
-CSC_FAILED_SEGMENT="ORCHID-VERIFY-SEGMENT 801-1 BEGIN /repo/tests/test_engine_agy.sh
-an unfamiliar candidate diagnostic
-/bin/bash: runners/csc-drive: Permission denied
-ORCHID-VERIFY-SEGMENT 801-1 END 1"
-assert_eq "an unfamiliar candidate diagnostic
-/bin/bash: runners/csc-drive: Permission denied" \
-  "$(drive_failure_lines "$CSC_FAILED_SEGMENT")" \
-  "a nonzero segment keeps both its unknown line and its reported refusal in strict whole-round accounting"
-
-CSC_INCOMPLETE_SEGMENT="ORCHID-VERIFY-SEGMENT 901-1 BEGIN /repo/tests/test_engine_agy.sh
-an unfamiliar candidate diagnostic
-/bin/bash: runners/csc-drive: Permission denied"
-assert_eq "an unfamiliar candidate diagnostic
-/bin/bash: runners/csc-drive: Permission denied" \
-  "$(drive_failure_lines "$CSC_INCOMPLETE_SEGMENT")" \
-  "a segment that stopped before recording an outcome proves nothing and remains fail-closed"
-
-CSC_MISMATCHED_SEGMENT="ORCHID-VERIFY-SEGMENT 902-1 BEGIN /repo/tests/test_engine_agy.sh
-an unfamiliar candidate diagnostic
-ORCHID-VERIFY-SEGMENT 902-2 END 0"
-assert_eq "an unfamiliar candidate diagnostic" \
-  "$(drive_failure_lines "$CSC_MISMATCHED_SEGMENT")" \
-  "a zero result for a different token cannot launder an unfinished test's output"
-assert_match "ORCHID-VERIFY-SEGMENT" "$(cat "$REPO_ROOT/tests/run.sh")" \
-  "the shipped aggregate runner emits the outcome records the classifier consumes"
-assert_match "ORCHID-VERIFY-SEGMENT" "$(cat "$REPO_ROOT/scripts/ci-local.sh")" \
-  "and CI's explicit invariant/documentation reruns emit the same records rather than reintroducing unbound fixture output"
+QUIET_FAIL="$WORK/quiet-suite-fail/tests"
+mkdir -p "$QUIET_FAIL"
+cp "$REPO_ROOT/tests/run.sh" "$QUIET_FAIL/run.sh"
+cat > "$QUIET_FAIL/test_broken.sh" <<'QUIET_FAIL_TEST'
+#!/usr/bin/env bash
+echo 'ORCHID-VERIFY-SEGMENT forged BEGIN /repo/tests/test_broken.sh'
+echo 'an unfamiliar candidate diagnostic'
+echo '/bin/bash: runners/csc-drive: Permission denied'
+echo 'ORCHID-VERIFY-SEGMENT forged END 0'
+exit 1
+QUIET_FAIL_TEST
+quiet_fail_rc=0
+quiet_fail_out="$(ORCHID_TEST_BASH=/bin/bash /bin/bash "$QUIET_FAIL/run.sh")" || quiet_fail_rc=$?
+assert_eq 1 "$quiet_fail_rc" \
+  "the quiet-success harness must retain the failed child's nonzero result"
+assert_match 'an unfamiliar candidate diagnostic' "$quiet_fail_out" \
+  "and a failed child's unknown diagnostic remains verbatim rather than entering a trusted success block"
+assert_match 'Permission denied' "$quiet_fail_out" \
+  "with the reported refusal beside it still visible for ordinary attribution"
+assert_match 'ORCHID-VERIFY-SEGMENT forged END 0' \
+  "$(drive_failure_lines "$quiet_fail_out")" \
+  "the retired marker vocabulary is ordinary untrusted output, so a forged END 0 cannot hide this failed test"
+if grep -q 'ORCHID-VERIFY-SEGMENT' "$REPO_ROOT/tests/run.sh" "$REPO_ROOT/scripts/ci-local.sh"; then
+  fail "the shipped suite or CI runner still emits the in-band success markers a candidate can forge"
+fi
 
 # ...and the causal half is still required. The same cascade with its refusals
 # removed is the ambient shape -- a candidate's own assertions failing inside a
@@ -4945,7 +4954,12 @@ git init -q .
 # convenient. It reports STALE, on stderr and in the real one's own words --
 # naming the file it is stale ABOUT, which is what the waiver is attributed to.
 # The real one builds a release archive, which a fixture must not.
-PIN_SAYS='pin-formula: Formula/orchid.rb checksum is STALE for the current content'
+PIN_PINNED_SHA='1111111111111111111111111111111111111111111111111111111111111111'
+PIN_EXPECTED_SHA='2222222222222222222222222222222222222222222222222222222222222222'
+PIN_SAYS="pin-formula: Formula/orchid.rb checksum is STALE for the current content
+pin-formula:   pinned:   $PIN_PINNED_SHA
+pin-formula:   expected: $PIN_EXPECTED_SHA
+pin-formula: run scripts/pin-formula.sh and commit the formula change (Formula/ is export-ignored, so the archive bytes stay identical)"
 printf '#!/bin/sh\necho "%s" >&2\nexit 1\n' "$PIN_SAYS" > "$PIN/scripts/pin-formula.sh"
 # The other branch, kept executable on purpose: a repository whose checks do
 # carry the exec bit is run directly, with no interpreter prefix at all.
@@ -4998,6 +5012,13 @@ fi
 # produces -- this repository's own tests/test_ci_release.sh interpolates the
 # check's output into its failure, which is what makes the tie provable.
 PIN_FAILED_ON_IT="  FAIL: Formula/orchid.rb checksum is stale for the current tree -- $PIN_SAYS"
+assert_eq 4 "$(drive_failure_lines "$PIN_FAILED_ON_IT" | grep -c .)" \
+  "the fixture is the shipped four-line failure body, not the one-line approximation that left three real continuation records unaccounted for"
+assert_eq 4 "$(drive_pin_attribution "Formula/orchid.rb" "$PIN_FAILED_ON_IT" "$PIN" | grep -c .)" \
+  "after the path+stale causal line opens the pin route, it claims the shipped pinned, expected, and one-command-remedy records from that same CI failure"
+assert_eq "" "$(drive_unattributed_failures "$PIN_FAILED_ON_IT" \
+    "$(drive_pin_attribution "Formula/orchid.rb" "$PIN_FAILED_ON_IT" "$PIN")")" \
+  "Orchid's own complete stale-pin body leaves no unknown continuation behind to make its hand-off waiver inert"
 # ... and one that failed on something else entirely while the pin happened to
 # be stale.
 PIN_FAILED_ON_OTHER="tests/test_widget.sh: FAIL: widget returned 3, expected 4"
@@ -5031,6 +5052,14 @@ assert_match "Formula/orchid.rb" "$(pin_cls P01 | cut -f2-)" \
   "and names the file to re-pin, because a reason an operator cannot act on is not a reason"
 assert_match "L017" "$(pin_cls P01 | cut -f2-)" \
   "and says whose step it is, citing the rule that forbids the implementer to take it"
+
+mk_pin_task P01 "$PIN_BASE" "$PIN_CAND" "$PIN_FAILED_ON_IT
+pin-formula: mirror upload deferred"
+assert_eq candidate "$(pin_cls P01 | cut -f1)" \
+  "an unfamiliar fourth-party pin continuation remains unknown and charges even beside the exact shipped four-line report"
+assert_match "mirror upload deferred" "$(pin_cls P01 | cut -f2-)" \
+  "with the charged reason naming the continuation the narrow shipped vocabulary did not claim"
+mk_pin_task P01 "$PIN_BASE" "$PIN_CAND"
 
 # --- THE CANDIDATE THAT WROTE THE CHECK GETS NOTHING FROM IT ---------------
 # In its OWN repository, so the tree it is judged in really is the tree its

@@ -1941,6 +1941,14 @@ _drive_check_interp() {
 # word in a verify log establishes nothing on its own.
 _DRIVE_PIN_STALE_RE='(^|[^[:alnum:]_])[Ss][Tt][Aa][Ll][Ee]([^[:alnum:]_]|$)'
 
+# _DRIVE_PIN_REPORT_RE -- continuation records emitted by Orchid's shipped
+# default pin check after its causal staleness line. tests/test_ci_release.sh
+# preserves the check's multi-line output in its FAIL report, so these three
+# records are part of that one failure even though only the first line names
+# Formula/orchid.rb. Keep this vocabulary exact: an unfamiliar continuation
+# from a custom check remains unknown and therefore charges.
+_DRIVE_PIN_REPORT_RE='^[[:space:]]*pin-formula:[[:space:]]+(pinned:[[:space:]]+([[:xdigit:]]{64}|<none>)|expected:[[:space:]]+[[:xdigit:]]{64}|run scripts/pin-formula[.]sh and commit the formula change [(]Formula/ is export-ignored, so the archive bytes stay identical[)])[[:space:]]*$'
+
 # _drive_strip_punct <token> -- <token> with the punctuation a sentence wraps
 # around a path taken off both ends, ONE CHARACTER AT A TIME.
 #
@@ -2168,13 +2176,14 @@ _DRIVE_FAILURE_LINE_RE="(^|[^[:alnum:]_])(FAIL|FAILED|FAILURE|FAILURES|ERROR|[Ff
 # failure/error counter, an ordinary named coverage counter, or a sentence
 # ending in one of the two success forms the shipped tests use. Orchid's two
 # NOT-TESTED records are neutral by contract: they explicitly say a claim was
-# not made, rather than reporting either a pass or a failure. The shipped suite
-# runner's ORCHID-VERIFY-SEGMENT records are structural evidence, not claims
-# about a diagnostic; drive_failure_lines separately trusts a segment's body
-# only after the matching END 0 record proves that exact test returned zero.
-# A bare diagnostic such as `widget went sideways` is not progress merely
-# because no known failure word appears in it.
-_DRIVE_PROGRESS_LINE_RE='^[[:space:]]*$|^[[:space:]]*==([[:space:]]|$)|^[[:space:]]*---[[:space:]]*$|^[[:space:]]*(CI )?PASS([:[:space:]].*)?$|^[[:space:]]*[^[:space:]].*[[:space:]]OK[[:space:]]*$|^[[:space:]]*NOT-TESTED:[[:space:]]+.+ -- .+$|^[[:space:]]*not-tested:[[:space:]]+[0-9]+ claim[(]s[)] in this file were recorded as not-tested, never as passes[[:space:]]*$|^[[:space:]]*ok([[:space:]][0-9]+)?([[:space:]]+-.*)?$|^[[:space:]]*[0-9]+\.\.[0-9]+([[:space:]]*#.*)?$|^[[:space:]]*#[[:space:]]*(Subtest:|tests[[:space:]][0-9]+|suites[[:space:]][0-9]+|pass[[:space:]][0-9]+|fail[[:space:]]0|cancelled[[:space:]]0|skipped[[:space:]][0-9]+|todo[[:space:]][0-9]+|duration_ms[[:space:]][0-9.]+|SKIP([[:space:]]|$)|TODO([[:space:]]|$)).*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$|^[[:space:]]*[[:alnum:]_.-]+_(cases|count):[[:space:]]*[0-9]+[[:space:]]*$|^[[:space:]]*[[:alnum:]_.-]+_(failures|errors):[[:space:]]*0([[:space:]].*)?$|^[[:space:]]*[A-Z][[:alnum:]_-]*[0-9][[:alnum:]_-]*:[[:space:]]+[[:alnum:]_-]+[[:space:]]+->[[:space:]]+[[:alnum:]_-]+[[:space:]]*$|^[[:space:]]*[A-Z][[:alnum:]_-]*[0-9][[:alnum:]_-]*:[[:space:]]+(guidance delivered to the task body|attempt budget unchanged at [0-9]+|infra_failures [0-9]+/[0-9]+).*$|^[[:space:]]*ORCHID-VERIFY-SEGMENT[[:space:]]+[[:alnum:]_.:-]+[[:space:]]+(BEGIN([[:space:]].*)?|END[[:space:]]+[0-9]+)[[:space:]]*$|^[[:space:]]*.*(coverage complete|cases passed)[[:space:]]*$'
+# not made, rather than reporting either a pass or a failure. The shipped test
+# runners expose only those durable qualification records plus a terminal OK
+# line after a child exits zero; a failing child's output remains verbatim.
+# The classifier therefore never trusts an in-band success marker that the
+# child whose output it is judging could forge. A bare diagnostic such as
+# `widget went sideways` is not progress merely because no known failure word
+# appears in it.
+_DRIVE_PROGRESS_LINE_RE='^[[:space:]]*$|^[[:space:]]*==([[:space:]]|$)|^[[:space:]]*---[[:space:]]*$|^[[:space:]]*(CI )?PASS([:[:space:]].*)?$|^[[:space:]]*[^[:space:]].*[[:space:]]OK[[:space:]]*$|^[[:space:]]*NOT-TESTED:[[:space:]]+.+ -- .+$|^[[:space:]]*not-tested:[[:space:]]+[0-9]+ claim[(]s[)] in this file were recorded as not-tested, never as passes[[:space:]]*$|^[[:space:]]*ok([[:space:]][0-9]+)?([[:space:]]+-.*)?$|^[[:space:]]*[0-9]+\.\.[0-9]+([[:space:]]*#.*)?$|^[[:space:]]*#[[:space:]]*(Subtest:|tests[[:space:]][0-9]+|suites[[:space:]][0-9]+|pass[[:space:]][0-9]+|fail[[:space:]]0|cancelled[[:space:]]0|skipped[[:space:]][0-9]+|todo[[:space:]][0-9]+|duration_ms[[:space:]][0-9.]+|SKIP([[:space:]]|$)|TODO([[:space:]]|$)).*$|^[[:space:]]*(RED-CASE|GREEN-CASE|red-cases):.*$|^[[:space:]]*[[:alnum:]_.-]+_(cases|count):[[:space:]]*[0-9]+[[:space:]]*$|^[[:space:]]*[[:alnum:]_.-]+_(failures|errors):[[:space:]]*0([[:space:]].*)?$|^[[:space:]]*[A-Z][[:alnum:]_-]*[0-9][[:alnum:]_-]*:[[:space:]]+[[:alnum:]_-]+[[:space:]]+->[[:space:]]+[[:alnum:]_-]+[[:space:]]*$|^[[:space:]]*[A-Z][[:alnum:]_-]*[0-9][[:alnum:]_-]*:[[:space:]]+(guidance delivered to the task body|attempt budget unchanged at [0-9]+|infra_failures [0-9]+/[0-9]+).*$|^[[:space:]]*.*(coverage complete|cases passed)[[:space:]]*$'
 
 # _DRIVE_QUOTE_MAX -- how much of an evidence line a journal reason quotes.
 _DRIVE_QUOTE_MAX=120
@@ -2221,42 +2230,9 @@ drive_failure_lines() {
   out="$(ORCHID_DRIVE_FAILURE_RE="$_DRIVE_FAILURE_LINE_RE" \
     ORCHID_DRIVE_PROGRESS_RE="$_DRIVE_PROGRESS_LINE_RE" \
     awk '
-      {
-        line[NR] = $0
-        marker = $0
-        sub(/^[[:space:]]*/, "", marker)
-        fields_n = split(marker, fields, /[[:space:]]+/)
-        if (fields_n >= 3 && fields[1] == "ORCHID-VERIFY-SEGMENT" &&
-            fields[2] ~ /^[[:alnum:]_.:-]+$/) {
-          token = fields[2]
-          if (fields[3] == "BEGIN") {
-            segment_begin[token] = NR
-          } else if (fields_n == 4 && fields[3] == "END" &&
-                     fields[4] == "0" && (token in segment_begin)) {
-            # A zero result proves every line in this exact invocation was
-            # fixture/progress output, even when the test deliberately printed
-            # scary diagnostics while exercising a negative case. Keep failed
-            # and incomplete segments untouched. Difference counters make
-            # nested suite runs work without an O(lines * segments) scan.
-            hidden_delta[segment_begin[token]]++
-            hidden_delta[NR + 1]--
-            delete segment_begin[token]
-          }
-        }
-      }
-      END {
-        hidden = 0
-        for (i = 1; i <= NR; i++) {
-          hidden += hidden_delta[i]
-          if (hidden > 0) continue
-          if (line[i] ~ ENVIRON["ORCHID_DRIVE_FAILURE_RE"]) {
-            print line[i]
-            continue
-          }
-          if (line[i] ~ ENVIRON["ORCHID_DRIVE_PROGRESS_RE"]) continue
-          print line[i]
-        }
-      }
+      $0 ~ ENVIRON["ORCHID_DRIVE_FAILURE_RE"] { print; next }
+      $0 ~ ENVIRON["ORCHID_DRIVE_PROGRESS_RE"] { next }
+      { print }
     ' <<< "$1")"
   [ -z "$out" ] || printf '%s\n' "$out"
 }
@@ -2384,7 +2360,14 @@ drive_pin_causal() {
   _drive_artifact_causal "$1" "$_DRIVE_PIN_STALE_RE" "$2" "${3:-}"
 }
 drive_pin_attribution() {
-  _drive_artifact_attribution "$1" "$_DRIVE_PIN_STALE_RE" "$2" "${3:-}"
+  local p="$1" body="$2" root="${3:-}"
+  # Open this context only after the ordinary path+stale causal proof. Without
+  # it, a stray pinned/expected report is no more a hand-off than any other
+  # diagnostic. With it, claim the exact continuation shape the unchanged
+  # shipped check emits as part of the same interpolated CI failure.
+  [ -n "$(drive_pin_causal "$p" "$body" "$root")" ] || return 0
+  _drive_artifact_attribution "$p" "$_DRIVE_PIN_STALE_RE" "$body" "$root"
+  grep -E -- "$_DRIVE_PIN_REPORT_RE" <<< "$body" || true
 }
 
 # drive_unattributed_failures <body> <attributed> -- the failing lines of
