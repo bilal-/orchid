@@ -795,6 +795,13 @@ grep -qF 'records the working-tree, `HEAD` and remote-ref half of the claim abov
 # to the sentences that have just become false. The discriminator is
 # mechanical: no line of that verb outside a comment mentions both shas today,
 # and any comparison of them necessarily would.
+#
+# T024 note: this verb DOES now refuse before running, on an unacknowledged
+# operator prerequisite -- and that is deliberately not what this tripwire
+# watches. The discriminator is the two SHAS appearing on one line together,
+# which the prerequisite gate never does (it compares an ack against
+# `candidate_sha` inside lib/handoff.sh, and prints, but never reads `$sha` --
+# that variable does not exist until the evidence header below it).
 VERIFY_SRC="$REPO_ROOT/libexec/orchid-verify"
 [ -f "$VERIFY_SRC" ] \
   || fail "libexec/orchid-verify must exist — the check below reads it as the source of truth about what verification does"
@@ -884,3 +891,108 @@ grep -qF 'an ack over a dirty tree is refused' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's hand-off procedure must say that --ack refuses over an uncommitted tree — an operator who hits that refusal with nothing in the procedure about it reads it as a broken verb"
 grep -qF 'acknowledged from `testing` only' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's hand-off procedure must say which status --ack is legal from — the advance it performs moves candidate_sha, which is destructive once reviewers hold that commit"
+
+# ===========================================================================
+# T024 -- the two operator-owned stops before verify are DISTINCT, and the
+# docs must say which comes first.
+#
+# `operator-handoff` (T010) and `task-prerequisite` (T024) sit at the same
+# point in the procedure and read almost identically at a glance: both hold a
+# candidate before verification on an acknowledgement bound to `candidate_sha`.
+# They are not the same thing, and the difference has a cost attached: the
+# hand-off's ack ADVANCES `candidate_sha`, which supersedes a prerequisite ack
+# taken before it. An operator who does them in the other order pays a re-run.
+#
+# Pinned on the folded text because each sentence straddles a hard wrap.
+# ===========================================================================
+printf '%s' "$protocol_one_line" | grep -qF 'Take the hand-off FIRST when both are outstanding' \
+  || fail "PROTOCOL.md must state which of the two operator-owned stops before verify to take first — the hand-off advances candidate_sha and expires a prerequisite ack made before it"
+printf '%s' "$kernel_one_line" | grep -qF 'the driver raises the hand-off first' \
+  || fail "docs/specs/kernel.md must record that the driver raises operator-handoff ahead of task-prerequisite, so the ordering is a documented property and not an accident of the code"
+
+# ...and the docs must not present that supersession as a closed list of
+# verbs. Three routes move `candidate_sha` without any clear of the ack --
+# merge's rebase-reset, `task reverify`'s re-stamp, and the hand-off's own
+# advance -- and only the SHA comparison catches all three. Prose that names
+# one of them as "the" case invites the maintenance a comparison exists to
+# avoid: a fourth mover added later, and a reader who goes looking for the
+# clear it was supposed to have remembered.
+printf '%s' "$protocol_one_line" | grep -qF 'not a list of verbs to keep in step' \
+  || fail "PROTOCOL.md's prerequisite bullet must say the binding is a comparison rather than a list of clearing verbs — merge's rebase-reset is one candidate mover among several (task reverify and the hand-off ack are others), and naming it as the only one is the reading that goes stale"
+printf '%s' "$protocol_one_line" | grep -qF '`orchid task reverify` re-stamps `candidate_sha`' \
+  || fail "PROTOCOL.md's prerequisite bullet must name task reverify among the candidate moves that expire an acknowledgement — it re-stamps candidate_sha and reaches testing from blocked without entering rework, so no clear on any rework path sees it"
+
+# ===========================================================================
+# T024 -- the rejected alternative in kernel.md must not describe another
+# task's unlanded feature as existing fact.
+#
+# The operator-prerequisite section records why a `migrate=` step run as part
+# of `worktree_prepare` was rejected. That command is PROPOSED BY T023 and is
+# nowhere in this tree: no config key, no code. Argued in the present tense it
+# reads as a description of shipped behaviour, and a reader who greps for it
+# finds nothing -- the spec's own rejection becomes the least trustworthy
+# paragraph on the page.
+#
+# A tripwire in both directions, which is why it is a test and not a comment:
+#   - while nothing defines it, the paragraph must keep saying so and must
+#     name the task the design belongs to;
+#   - the moment something DOES define it, this fails on purpose. Those four
+#     reasons argue against a design as specified; once that design ships they
+#     have to be re-read against what actually shipped, instead of sitting
+#     there as hedging nobody revisits.
+# ===========================================================================
+wp_defined=0
+grep -qxF 'worktree_prepare' "$KEYFILE" && wp_defined=1
+grep -rqF 'worktree_prepare' "$REPO_ROOT/lib" "$REPO_ROOT/libexec" "$REPO_ROOT/runners" 2>/dev/null && wp_defined=1
+if [ "$wp_defined" -eq 0 ]; then
+  # Both assertions run against the whitespace-folded `kernel_one_line` built
+  # above, not the file. Each pins a whole SENTENCE, and a sentence in this
+  # spec is hard-wrapped across two lines -- `grep -F` on the raw file matches
+  # a line at a time, so it would report the paragraph missing whenever the
+  # prose happened to wrap mid-phrase, which is the normal state of it.
+  printf '%s' "$kernel_one_line" | grep -qF 'Nothing named `worktree_prepare` exists in this tree' \
+    || fail 'docs/specs/kernel.md rejects a worktree_prepare design that is not in this tree: it must say so plainly, not describe an unlanded feature in the present tense'
+  printf '%s' "$kernel_one_line" | grep -qF 'proposed by task T023' \
+    || fail 'docs/specs/kernel.md must name T023 as the task that proposes worktree_prepare, so the dependency is stated rather than implied'
+else
+  fail 'worktree_prepare now exists in this tree: docs/specs/kernel.md still argues against it as an unlanded T023 design, and that paragraph must be re-read against what actually shipped'
+fi
+
+# ===========================================================================
+# T024 -- PLANNING step 2 is the ONLY place `operator_prerequisite` can be
+# named, so it has to name it there.
+#
+# The field is settable at exactly one moment in a run's life: while the plan
+# is being drafted. The implementer cannot set it afterwards -- its commits
+# may not touch `.orchid/` at all, and INV-04 refuses entry to `testing` over
+# one that does -- so a planner who never reads the word never writes it, and
+# the whole convention silently applies to nothing.
+#
+# templates/task-migrate.md's prose is NOT a substitute, and that is the
+# regression this pins: a task whose migration is incidental (a `feature`
+# that alters a table, a `test` archetype exercising one) never renders that
+# template and its planner never sees the instruction. THE TICK's `testing`
+# step describes the gate for whoever meets it; only PLANNING step 2 reaches
+# the one actor who can prevent meeting it.
+#
+# Sliced to step 2 rather than grepped over the whole file, because "PROTOCOL
+# mentions the field somewhere" is exactly the state this replaces -- it was
+# already described at length under THE TICK while step 2 said nothing.
+# ===========================================================================
+planning_step2="$(sed -n '/^## PLANNING/,/^## THE TICK/p' "$REPO_ROOT/PROTOCOL.md" \
+  | sed -n '/^2\. Draft the roadmap/,/^3\. /p' \
+  | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+# The slice's own witness, asserted before anything is read out of it. Both
+# range markers are ordinary prose headings and either could be reworded; an
+# empty slice would otherwise fail the two checks below with "the docs lost
+# this sentence", which is a lie about which thing broke.
+[ -n "$planning_step2" ] \
+  || fail 'test bug, not a docs failure: the PLANNING-step-2 slice came back empty — one of the sed range markers (## PLANNING, ## THE TICK, "2. Draft the roadmap", "3. ") no longer matches PROTOCOL.md'
+printf '%s' "$planning_step2" | grep -qF 'orchid task create' \
+  || fail 'test bug, not a docs failure: the PLANNING-step-2 slice does not contain the task-drafting step it is supposed to be — re-check the sed range before reading the assertions below'
+# Folded, like every other pinned sentence here: this one is hard-wrapped
+# mid-phrase in the source and `grep -F` matches a line at a time.
+printf '%s' "$planning_step2" | grep -qF 'Include `operator_prerequisite` for any task whose verification depends on a step taken OUTSIDE the sandbox' \
+  || fail "PROTOCOL.md's PLANNING step 2 must tell the planner to set operator_prerequisite — it is the only moment in a run when that field can be written, so a planner who is not told there is never told at all"
+printf '%s' "$planning_step2" | grep -qF 'this applies to every archetype, not only the `migrate` one' \
+  || fail "PROTOCOL.md's PLANNING step 2 must say the field applies to every archetype — left to templates/task-migrate.md alone, a feature or test task that happens to alter a schema never carries the instruction"

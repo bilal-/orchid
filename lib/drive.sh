@@ -82,6 +82,18 @@ drive_threshold_rank() {
 #                        the work, and a model able to acknowledge its own
 #                        hand-off would defeat the point of naming one at all
 #                        (lesson L017; lib/handoff.sh)
+#   task-prerequisite -- the task declares an `operator_prerequisite` (a step
+#                        outside the sandbox its verification depends on --
+#                        canonically applying, to the database the suite runs
+#                        against, the migration this very task authored) that
+#                        nobody has acknowledged for this candidate. Raised
+#                        INSTEAD of verifying, so the environment's problem is
+#                        never reported as the candidate's. The SECOND
+#                        operator-owned stop at the same point in the
+#                        procedure as `operator-handoff`, and a distinct one:
+#                        that one is repository config about work inside the
+#                        candidate, this one is a per-task declaration about
+#                        the world outside it (lib/handoff.sh)
 #   run-complete      -- every task is `done`; PROTOCOL.md's COMPLETION
 #                        procedure (acceptance checks, then `orchid run
 #                        accept --evidence`) is still to be run
@@ -92,7 +104,7 @@ drive_threshold_rank() {
 #                        real work uncommitted in the task worktree -- whether
 #                        that is committed or thrown away is a decision about
 #                        somebody's output, not a rung of a ladder)
-_DRIVE_BOUNDARY_KINDS=" planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-handoff run-complete operator-decision "
+_DRIVE_BOUNDARY_KINDS=" planning blocked-task review-evidence review-conflict hook-failure worktree-conflict operator-handoff task-prerequisite run-complete operator-decision "
 
 drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
   case "$_DRIVE_BOUNDARY_KINDS" in
@@ -197,17 +209,31 @@ drive_surface_admits() {
 # `blocked-task` (`task unblock`/`task retry`/`task reverify`), `hook-failure`
 # (its handler or
 # its binding is broken), `worktree-conflict` (a checkout that cannot be proven
-# to belong to this task), `operator-handoff` and the `operator-decision`
-# catch-all deliberately name none: no procedure an orchestrator can run
-# resolves them.
+# to belong to this task), `operator-handoff`, `task-prerequisite` and the
+# `operator-decision` catch-all deliberately name none: no procedure an
+# orchestrator can run resolves them.
 #
-# `operator-handoff` is the one whose omission is a POLICY choice rather than
-# a gap. `orchid task handoff --ack` is a real verb, and the broker could be
-# taught to admit it -- which is exactly why it must not be. The verb asserts
-# that execution-requiring work was performed by an actor able to perform it;
-# a model that can run no linter and no chmod, acknowledging its own hand-off,
-# would turn the record into the same unsatisfiable routing the hand-off
-# exists to prevent, with a durable field now claiming otherwise.
+# The two operator-owned stops before verify are the cases whose omission is a
+# POLICY choice rather than a gap, and both for the same reason: each HAS a
+# verb, and naming it here would route the boundary to a woken orchestrator
+# whose only available move is to claim work it did not do.
+#
+# `operator-handoff` -- `orchid task handoff --ack` is a real verb, and the
+# broker could be taught to admit it, which is exactly why it must not be. The
+# verb asserts that execution-requiring work was performed by an actor able to
+# perform it; a model that can run no linter and no chmod, acknowledging its
+# own hand-off, would turn the record into the same unsatisfiable routing the
+# hand-off exists to prevent, with a durable field now claiming otherwise.
+#
+# `task-prerequisite` is the sharpest case of that, and it is deliberate rather
+# than an omission. `orchid task prereq-ack` IS a verb, and it is the verb that
+# settles this boundary — but what it records is that a HUMAN did something
+# outside this repository (applied a migration to a database, provisioned a
+# credential, started a service). No model can do that thing, so no model may
+# assert it was done; naming the verb here would route the boundary to a woken
+# orchestrator whose only honest move is to lie. Left unnamed, it takes the
+# notify path to an operator, which is the surface the condition actually
+# needs. This is why `_DRIVE_BROKERED_WRITE_VERBS` lists neither of them.
 drive_boundary_settling_verb() {
   case "$1" in
     review-evidence|review-conflict) printf 'task-arbitrate\n' ;;

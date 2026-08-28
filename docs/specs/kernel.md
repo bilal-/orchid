@@ -147,7 +147,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 
 | File | Sole writer (verb) |
 |---|---|
-| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/handoff/infra-fail` |
+| `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/handoff/prereq-ack/infra-fail` |
 | `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
@@ -737,7 +737,8 @@ Frontmatter (`schema: 1`): `id, title, status, archetype, scaffold, branch,
 worktree, run_id, depends_on, attempts, attempt_budget, infra_failures, session_id,
 implementer_engine_id, base_sha, candidate_sha, refused_envelopes, risk_tier,
 blocking_severity, stop_condition, hook_guidance, handoff_ack, engine, effort,
-acceptance_criteria, verification_commands, resources, exclusive,
+acceptance_criteria, verification_commands, operator_prerequisite,
+prerequisite_ack, resources, exclusive,
 wallclock_budget_s, started_at, created, updated`. `handoff_ack` (v1.1):
 kernel-owned: `orchid task set` refuses it by name, because its only legal
 value is the task's current `candidate_sha` and a hand-set field is the one way
@@ -794,6 +795,15 @@ launches the hook. A matching receipt makes the later pass resume and classify
 that exact failed log without rerunning the verifier and overwriting it. A
 digest mismatch or missing log charges under the strict default; entry to
 rework or a fresh reverify clears the receipt with the evidence it binds.
+That advance also expires `prerequisite_ack` below, and it is the expiry an
+operator meets by hand: the two acks share a binding rule, so a
+prerequisite acknowledged before the hand-off is superseded by it. It is one
+of several candidate moves that expire an ack without clearing it (`orchid
+merge`'s rebase-reset and `task reverify`'s re-stamp are the others), which
+is why the binding is a comparison against the current `candidate_sha` and
+not a list of verbs that must each remember to clear the field. The
+ordering PROTOCOL.md gives — hand-off first, prerequisite second — is what
+avoids paying for that, and it is a convention, not a gate.
 `refused_envelopes` (v1.1): the
 space-separated basenames of implement envelopes refused as no-op deliveries,
 appended by the orchestrator through `orchid task set` (INV-13) at the moment
@@ -807,6 +817,100 @@ arm) — the only frontmatter field a hook handler's own artifact ever
 reaches, and only through that ordinary verb, never written directly.
 `attempt_budget` (v1.1): empty on a fresh task, meaning "use `rework_max`";
 written only by `orchid task retry [--attempts N]` (see Attempt fairness).
+
+**Operator prerequisites (v1.1, dogfood F26 — how a schema task gets its own
+migration applied before verify).** A task whose verification depends on a
+step taken OUTSIDE the sandbox declares that step in
+`operator_prerequisite`; `prerequisite_ack` holds the `candidate_sha` an
+operator acknowledged it for. A non-empty declaration whose ack does not
+equal the task's current `candidate_sha` — empty, or naming a superseded
+candidate — means the tick stops at a `task-prerequisite` judgment boundary
+INSTEAD of verifying: `orchid verify` refuses with exit 16 (the
+judgment-boundary code, never its own FAIL code 1) before writing any
+evidence, and the deterministic driver raises the boundary a step earlier so
+no lease work is spent on it either. `orchid task prereq-ack <id> --reason
+"..."` is the single writer of the ack, accepts `testing` and `merging`, and
+journals the reason; every path into `rework` clears the ack, and redeclaring
+the prerequisite clears it too (journaled as `intervention`, like every other
+write of the field). The SHA binding is what covers supersession that never
+routes through `rework` — the rebase rule below invalidates reviews on any
+candidate change, and it invalidates this acknowledgement on the same event
+and for the same reason. Full normative text: PROTOCOL.md, THE TICK's
+`testing` and `merging` steps.
+
+**Both stages that run the suite gate on it, not just the first.** `orchid
+merge` re-runs the task's whole verification suite against the same external
+store before it advances the integration ref, so it applies the same
+predicate and refuses the same way (exit 16, task left in `merging`, no
+evidence, no ref moved, no attempt spent). Gating only `testing` would make
+the two stages disagree about one condition: the same unapplied migration
+would be forgiven at verify and charged at merge, where the nonzero-suite arm
+advances the task to `rework` with `validation_failed` — the environment
+problem wearing the candidate's clothes, now costing a full rework round on a
+candidate that is not defective. The `merging`→`rework` edge charges no
+attempt (that exemption is deliberate: the candidate was independently
+verified once already), so the round is not even recorded as one.
+The gate sits AFTER the rebase-reset in that verb, not before it: the rebase
+path runs no suite and is itself the route that expires a stale ack (back to
+`testing` on a new candidate), so refusing ahead of it would park the run on
+a boundary whose remedy lies past the refusal. `merging` is an accepted
+status for `prereq-ack` for that refusal and no other reason. The ack covers
+the step THIS task declared; other tasks' migrations reachable from the
+integration branch are their own declarations, acknowledged when they
+verified.
+
+The motivating case is exact. A task authored a database migration and tests
+proving isolation against the altered table. The suite died with `Call to a
+member function execute() on bool` — `prepare()` returned false, because the
+columns did not exist yet. Nothing in the tick applies a migration the task
+itself just wrote; the operator applied it by hand and the same candidate
+passed, 6 tests and 94 assertions. Until then it presented as a bad
+implementation and consumed attempts.
+
+*The rejected alternative, and why.* The other candidate was a `migrate=`
+step run against the test database as part of `worktree_prepare`, the
+per-checkout preparation command **proposed by task T023**. Nothing named
+`worktree_prepare` exists in this tree: no config key, no code, no test.
+Rejecting it therefore rejects a design, not a shipped mechanism, and the
+four reasons below argue against that design as T023 specifies it — they are
+not observations of running behaviour. That is also the first reason to
+reject it: choosing it would have made a dogfood finding about attempts being
+spent on environment problems wait on another task's unlanded feature, and
+would have coupled this convention to a design still open to change. What
+ships here depends on no unlanded work — two frontmatter fields, `orchid
+verify`, `orchid merge` and the driver.
+
+Four reasons the design itself does not answer the finding:
+
+1. **It would run at the wrong moment — decisive on its own.**
+   `worktree_prepare` is specified to run once, when a checkout is CREATED,
+   stamped per checkout per command text. A task's dispatch worktree is
+   created before the implementer has authored the migration, and the stamp
+   means it would not run again on the pass that verifies the candidate. The
+   exact failure above would survive unchanged.
+2. **It would be the wrong scope.** That command prepares a CHECKOUT; a
+   migration mutates an external, shared store. Above concurrency 1, several
+   tasks' worktrees would prepare against one database, and the first
+   migration to land would silently change what every other task's verify
+   sees. Nothing in a per-checkout stamp can express that.
+3. **It would put schema-write credentials in the sandbox that writes the
+   migration** — the one place the finding itself argues they should not be.
+   The prerequisite convention leaves them with the operator.
+4. **It could not fail honestly.** A failed prepare parks the run on a
+   `worktree-conflict` boundary, which describes a checkout that cannot be
+   proven to belong to the task. That is the same category error — an
+   environment problem wearing the candidate's clothes — this finding exists
+   to remove.
+
+Should T023 land, none of this changes: `worktree_prepare` would be a good
+place to build a per-checkout fixture, and a suite that migrates its own
+store needs no acknowledgement at all (below). It would still not be the
+place to migrate a shared external one.
+
+Neither mechanism is preferred over a suite that migrates its own store (a
+fixture, a temp file, an in-memory database the tests build). Where that is
+available it is strictly better, and `operator_prerequisite` should be left
+empty.
 
 **Review immutability:** reviewers inspect exactly `base_sha..candidate_sha`;
 any candidate change invalidates reviews (see rebase rule). Incomplete or
@@ -1381,9 +1485,10 @@ is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
 exit code — returned by `drive` when a pass stopped at one, and by `run
 boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
-`operator-handoff`, `run-complete`, `operator-decision`. `orchid task
-arbitrate` is the sole explicit judgment-result verb; see PROTOCOL.md's
-"Judgment boundaries" section for the non-overlapping arbitration truth table.
+`operator-handoff`, `task-prerequisite`, `run-complete`, `operator-decision`.
+`orchid task arbitrate` is the sole explicit judgment-result verb; see
+PROTOCOL.md's "Judgment boundaries" section for the non-overlapping
+arbitration truth table.
 
 `operator-handoff` (v1.1) is the one raised BETWEEN an implementer's envelope
 reconciling and verification, where `handoff_before_verify` asks for it: some
@@ -1423,6 +1528,14 @@ message` locations of a failing gate travel into the next rework brief
 regardless of who acts on them (see PROTOCOL.md, THE TICK's `testing` arm):
 carrying the locations is what makes a routed fix satisfiable, and the hand-off
 is what stops it being routed to an actor that cannot perform it.
+
+`task-prerequisite` (v1.1, below) is the SECOND operator-owned stop at that
+same point and a distinct one: `operator-handoff` is repository config about
+mechanical work inside the candidate whose acknowledgement moves
+`candidate_sha`; `task-prerequisite` is a per-task declaration about a step
+outside the repository whose acknowledgement moves nothing. A task can be held
+by both, and the driver raises the hand-off first — its advance would
+otherwise expire a prerequisite acknowledgement taken before it.
 
 One boundary is recorded per pass, chosen by whether a woken orchestrator
 could actually SETTLE it ahead of the ones only an operator can, then by

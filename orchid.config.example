@@ -197,6 +197,15 @@ pack_budget_bytes=65536
 # `orchid config commit --reason "..."`.
 # handoff_before_verify=off
 
+# NOTE (T024, dogfood F26): the OPERATOR PREREQUISITE is a different stop at
+# the same point, and it has no config key at all. A task whose verification
+# depends on a step taken OUTSIDE this repository -- canonically applying, to
+# the database its suite runs against, the migration that task itself authored
+# -- declares it per task at planning time (`orchid task set <id>
+# operator_prerequisite "..."`), because only some tasks have one and a task
+# that needs a migration applied needs it applied in every repository. See
+# PROTOCOL.md's `testing` step.
+
 # v1-m3: kernel-owned hook points (docs/specs/plugins.md, Hooks section).
 # Each hook.<point> is an ordered, comma-separated list of plugin NAMEs (the
 # short discovery name, e.g. "stubhook" -- a qualified id like "acme/stubhook"

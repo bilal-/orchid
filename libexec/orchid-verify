@@ -2,6 +2,7 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/drive.sh"
+source "$ORCHID_ROOT/lib/handoff.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 
@@ -9,6 +10,44 @@ id="${1:-}"
 [ -n "$id" ] || orchid_die "usage: orchid verify <task-id>"
 tf="$state/tasks/$id.md"
 [ -f "$tf" ] || orchid_die "no task $id"
+
+# T024 (dogfood F26): an OPERATOR PREREQUISITE this task declared and nobody
+# has acknowledged for this candidate. Refused here, before the command runs
+# and before one byte of evidence is written — a suite run against a store the
+# candidate's own migration has not been applied to produces a log that reads
+# like a defect in the candidate ("Call to a member function execute() on
+# bool", because prepare() found no such column), and that log is exactly the
+# artifact a reviewer, a rework round and an attempt would then be spent on.
+#
+# The exit code is 16, the judgment-boundary code, NOT verify's own FAIL code
+# 1: the whole point is that this is not a failing candidate, and no caller
+# reading an exit status should have to guess which one it is. The
+# deterministic driver checks the same predicate a step earlier and never
+# reaches here; this gate is what makes the convention hold for the
+# hand-executed walk (PROTOCOL.md's `testing` step) and for an operator typing
+# `orchid verify <id>` at a terminal, rather than being driver policy alone.
+#
+# The OPERATOR HAND-OFF (T010, lib/handoff.sh) is the other stop at this point
+# in the procedure and is deliberately NOT enforced here: it is a repository
+# POLICY about who performs mechanical work inside the candidate, held by the
+# driver and reported by `orchid status`, and an operator who types `orchid
+# verify` by hand has by that act taken the decision it exists to route. This
+# gate is different in kind — the suite would run against a store its own
+# migration never reached, so the run produces a log that is wrong about the
+# candidate no matter who asked for it.
+if handoff_prereq_unmet "$tf"; then
+  echo "orchid: $id declares an operator prerequisite not acknowledged for this candidate: $(fm_get "$tf" operator_prerequisite)" >&2
+  # A stale ack is the confusing case, so it is named: the frontmatter DOES
+  # carry a `prerequisite_ack`, and an operator reading "not acknowledged"
+  # beside it would reasonably conclude the gate is broken rather than that
+  # the candidate moved underneath the acknowledgement (canonically merge's
+  # rebase-reset). Say which candidate it was for, and which one is current.
+  if handoff_prereq_stale "$tf"; then
+    echo "orchid: the acknowledgement on file is for candidate $(fm_get "$tf" prerequisite_ack), superseded by $(fm_get "$tf" candidate_sha) — the step must be re-taken and re-acknowledged for the current candidate" >&2
+  fi
+  echo "orchid: do that, then record it: orchid task prereq-ack $id --reason \"...\"" >&2
+  exit 16
+fi
 
 # Command source: task frontmatter first, config fallback second; neither
 # present is a hard error (there is nothing deterministic to run).

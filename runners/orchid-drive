@@ -118,6 +118,32 @@ stops again the moment a rebase, a fresh rework round, or one more commit moves
 the tree out from under it. The boundary is operator-only by design: no verb an
 orchestrator can run performs the work.
 
+A task that declares an `operator_prerequisite` -- a step outside the sandbox
+its verification depends on, canonically applying to the test database the
+migration that task itself authored -- is NOT verified until an operator
+acknowledges that step for the current candidate (`orchid task prereq-ack
+<id> --reason "..."`). Until then the pass stops at a `task-prerequisite`
+boundary: no suite run, no evidence written, no attempt spent, so an
+environment problem is never recorded as a failing candidate. The
+acknowledgement holds only for the `candidate_sha` it was given for, so it
+stops counting the moment that candidate is superseded -- by any route into
+`rework` (which clears it outright) and by merge's rebase-reset (which mints
+a new candidate without passing through `rework` at all).
+
+The same condition stops the same pass at `merging`, not only at `testing`:
+`orchid merge` re-runs that same suite against that same store before it
+touches the integration ref, so it refuses on the same predicate (exit 16)
+and this driver raises the same `task-prerequisite` boundary. Gating one
+stage and not the other would forgive an unapplied migration in `testing` and
+charge it at merge, where the failure arm sends the task to `rework` and it
+reads as a candidate defect.
+
+The two stops are distinct and a task can be held by both. The hand-off is
+repository config about mechanical work INSIDE the candidate; the prerequisite
+is a per-task declaration about the world OUTSIDE it. The hand-off is raised
+first, and that order matters: acknowledging it advances candidate_sha, which
+would expire a prerequisite acknowledgement taken before it.
+
 A pass that reads every task as `done` takes COMPLETION's mechanical first
 step (`orchid run advance accepting`) and stops at a `run-complete` boundary,
 so a finished headless run hands off instead of polling forever. Against a
@@ -1292,11 +1318,36 @@ drive_testing() {
   # from being an infinite loop in one direction and a silent walk-past in the
   # other -- and it is why the acknowledgement dies with the candidate it was
   # made against (a rebase, a fresh rework round), rather than with the task.
+  #
+  # RAISED BEFORE THE PREREQUISITE BELOW, and the order is load-bearing rather
+  # than arbitrary (T024). Acknowledging a hand-off ADVANCES `candidate_sha`
+  # onto the commit the mechanical steps produced, and `prerequisite_ack` is
+  # bound to `candidate_sha` by the same rule `handoff_ack` is -- so an
+  # operator who takes the prerequisite first has it expired by the hand-off
+  # they take second, and meets this arm again. Raising the hand-off first is
+  # what routes them through the two stops in the order that costs one command
+  # each. Nothing is enforced by it: taking them out of order still converges,
+  # one extra `prereq-ack` later, and the boundary raised then says exactly
+  # which candidate the expired acknowledgement was for.
   hstate="$(handoff_state "$repo" "$id")"
   if [ "$(printf '%s' "$hstate" | cut -f1)" = outstanding ]; then
     hdetail="$(printf '%s' "$hstate" | cut -f2-)"
     set_boundary operator-handoff "$id" \
       "verification is held until this candidate's operator-owned mechanical steps are performed and recorded — $hdetail (then: orchid task handoff $id --ack --reason ...)"
+    return 0
+  fi
+
+  # BEFORE the suite runs, not after it fails (T024, dogfood F26). A declared
+  # step outside this sandbox must be acknowledged for the current candidate.
+  # Stop without evidence or an attempt charge until it is.
+  if handoff_prereq_unmet "$tf"; then
+    if handoff_prereq_stale "$tf"; then
+      set_boundary task-prerequisite "$id" \
+        "operator prerequisite acknowledged for candidate $(fm_get "$tf" prerequisite_ack), superseded by $(fm_get "$tf" candidate_sha): $(fm_get "$tf" operator_prerequisite) — re-take it for the current candidate, then: orchid task prereq-ack $id --reason \"...\""
+    else
+      set_boundary task-prerequisite "$id" \
+        "unacknowledged operator prerequisite: $(fm_get "$tf" operator_prerequisite) — do it, then: orchid task prereq-ack $id --reason \"...\""
+    fi
     return 0
   fi
 
@@ -1342,6 +1393,14 @@ drive_testing() {
     drive_lease_heartbeat_start
     "$ORCHID_BIN" verify "$id" >/dev/null 2>&1 || vrc=$?
     drive_lease_heartbeat_stop
+    # `orchid verify` independently enforces the same gate. State can change
+    # after the preflight above; exit 16 is still an operator stop, never a
+    # candidate failure or a spent attempt.
+    if [ "$vrc" -eq 16 ]; then
+      set_boundary task-prerequisite "$id" \
+        "orchid verify refused: an operator prerequisite is not acknowledged for this candidate — orchid task prereq-ack $id --reason \"...\""
+      return 0
+    fi
   else
     vrc=1
   fi
@@ -2234,6 +2293,28 @@ if [ -n "$merging_ids" ]; then
       merging)
         if [ "$merge_rc" -eq 15 ]; then
           set_boundary hook-failure "$merge_id" "merge refused: a required before_merge hook has no ok envelope for this candidate"
+        elif [ "$merge_rc" -eq 16 ]; then
+          # T024 (dogfood F26). `orchid merge` gates its revalidation on the
+          # same operator prerequisite `orchid verify` gates on, and refuses
+          # with the judgment-boundary code rather than running the suite. Same
+          # boundary KIND as the testing arm above, because it is the same
+          # condition and the same remedy — an operator takes the step and runs
+          # `orchid task prereq-ack` (which accepts `merging` for this).
+          #
+          # Not pre-checked before the `orchid merge` call the way the testing
+          # arm pre-checks before `orchid verify`, and that asymmetry is
+          # deliberate: whether the prerequisite matters here depends on
+          # whether the base has moved, which only merge knows. On a stale base
+          # it rebase-resets to `testing` without running any suite, and that
+          # reset is what CLEARS a stale ack. Pre-empting it here would raise a
+          # boundary in place of the transition that resolves it.
+          if handoff_prereq_stale "$merge_tf"; then
+            set_boundary task-prerequisite "$merge_id" \
+              "merge refused: the prerequisite acknowledgement is for candidate $(fm_get "$merge_tf" prerequisite_ack), superseded by $(fm_get "$merge_tf" candidate_sha): $(fm_get "$merge_tf" operator_prerequisite) — re-take it, then: orchid task prereq-ack $merge_id --reason \"...\""
+          else
+            set_boundary task-prerequisite "$merge_id" \
+              "merge refused: merge re-runs the suite against the same store and the operator prerequisite is unacknowledged for this candidate: $(fm_get "$merge_tf" operator_prerequisite) — do it, then: orchid task prereq-ack $merge_id --reason \"...\""
+          fi
         else
           "$ORCHID_BIN" notify --task "$merge_id" \
             "merge left task in merging: see .orchid/reviews/$merge_id-merge.log" >/dev/null

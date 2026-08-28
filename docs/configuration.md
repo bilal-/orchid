@@ -421,6 +421,19 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   failing the suite is still an unresolved problem, and the register is what
   keeps it visible instead of silent. Making the test deterministic is the
   first.
+
+  It is not the only operator-owned stop at that point, and it is not the one
+  a schema task needs. `handoff_before_verify` is about mechanical work
+  INSIDE the candidate, so it is repository-wide config and its
+  acknowledgement moves `candidate_sha` onto the commit that work produced.
+  The OPERATOR PREREQUISITE (T024, dogfood F26) is about a step OUTSIDE the
+  repository that a candidate's verification depends on — applying a
+  migration to the database the suite runs against, provisioning a
+  credential — so it has **no config key**: it is declared per task at
+  planning time in `operator_prerequisite`, acknowledged with `orchid task
+  prereq-ack <id> --reason "..."`, and it never moves the candidate, because
+  nothing was committed. A task can be held by both, and clearing one says
+  nothing about the other. See PROTOCOL.md's `testing` step.
 - **`pack_diff_inline_max_bytes`** only relieves a `workspace_read`-capable
   reviewer/critic (the diff is swapped for a `diff.stat` summary, honestly
   recorded as omitted); an inline-only engine (agy, hermes) still gets the

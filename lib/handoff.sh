@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
-# lib/handoff.sh -- the OPERATOR HAND-OFF: read-only policy over the pause
+# lib/handoff.sh -- the OPERATOR-OWNED STOPS: read-only policy over the pause
 # PROTOCOL.md's THE TICK names between an implementer's envelope reconciling
 # and `orchid verify` running.
+#
+# There are TWO of them, and they share this file because they share that one
+# point in the procedure. The first half of this file is the OPERATOR HAND-OFF
+# (T010): mechanical work INSIDE the candidate that requires execution. The
+# second half is the OPERATOR PREREQUISITE (T024, dogfood F26): a step OUTSIDE
+# the repository that the candidate's verification depends on. Their headers
+# below say plainly how they differ; the short version is that a hand-off
+# produces a commit and moves `candidate_sha` onto it, while a prerequisite
+# changes the world outside this tree and leaves the candidate exactly as it
+# was.
 #
 # WHAT THE PAUSE IS FOR. Some steps in a candidate are mechanical and require
 # EXECUTION: setting the mode bit on a newly added executable, applying a
@@ -269,4 +279,123 @@ handoff_state() {
     return 0
   fi
   printf 'satisfied\toperator hand-off acknowledged for candidate %s\n' "$cand"
+}
+
+# ---------------------------------------------------------------------------
+# THE OPERATOR PREREQUISITE (T024, dogfood F26)
+# ---------------------------------------------------------------------------
+# The second operator-owned stop at the same point in the procedure, and a
+# DIFFERENT thing from the hand-off above. The distinction is worth stating
+# once, because the two are easy to conflate and their remedies do not
+# substitute for one another:
+#
+#   the hand-off       mechanical work INSIDE the candidate that requires
+#                      execution -- a lint fix, a checksum re-pin, a mode bit.
+#                      It produces a COMMIT, so acknowledging it ADVANCES
+#                      `candidate_sha` onto that commit. It is asked for by
+#                      repository CONFIG (`handoff_before_verify`) and so
+#                      applies to every task in the repository alike.
+#   the prerequisite   a step OUTSIDE this repository that the candidate's
+#                      verification depends on -- canonically applying, to the
+#                      database the suite runs against, the migration this very
+#                      task authored. It produces NO commit and the candidate
+#                      does not move; what changes is the world the suite runs
+#                      in. It is DECLARED PER TASK, at planning time, because
+#                      only some tasks have one.
+#
+# So a task can be held by both, or by either, and clearing one says nothing
+# about the other. What they share is the shape of the record -- an
+# acknowledgement bound to a candidate_sha, satisfied only while it still
+# names the current one -- which is why the policy for both lives here.
+#
+# Two plain frontmatter fields, no new storage:
+#
+#   operator_prerequisite -- the declaration. Written when the task is
+#                            PLANNED (`orchid task set <id>
+#                            operator_prerequisite "..."`), because the
+#                            implementer never can: its commits may not touch
+#                            `.orchid/` at all (INV-04 refuses entry to
+#                            `testing` over it), so a task cannot declare its
+#                            own prerequisite from inside the sandbox.
+#   prerequisite_ack      -- the candidate_sha the operator acknowledged it
+#                            for. Single-writer (`orchid task prereq-ack`),
+#                            and cleared wherever prior verify evidence is
+#                            invalidated -- entry to rework, unblock,
+#                            retry -- so a reworked candidate, whose
+#                            migration may be a different migration, always
+#                            re-asks.
+
+# handoff_prereq_unmet <task-file> -- 0 iff this task declares an OPERATOR
+# PREREQUISITE and nobody has acknowledged that step for the current
+# candidate.
+#
+# The ack SATISFIES the gate only while it still names the current
+# `candidate_sha`, and that comparison -- not the clears listed above -- is
+# what makes the binding real. The clears cannot carry it alone: they fire on
+# the three paths that route through `rework`, and the sharpest way a
+# candidate is superseded routes through none of them. libexec/orchid-merge's
+# rebase-reset takes a task straight from `merging` back to `testing`, sets a
+# NEW `candidate_sha` and deletes the verify evidence, without any advance to
+# `rework` -- so a bare non-empty test would let an ack for the pre-rebase
+# candidate wave through a suite run against a rebased one, which is exactly
+# the reading ("someone applied the migration this candidate needs") the field
+# exists to make impossible. Superseded means unmet, at the moment the SHA
+# moves, whatever moved it. The two mechanisms are complements: the clears
+# cover the window where the candidate is about to be replaced but the SHA has
+# not moved yet (rework is entered before the next attempt commits anything),
+# the comparison covers every way the SHA moves without passing through it.
+# `handoff_state` above binds its own acknowledgement by the same rule, for
+# the same reason.
+#
+# An empty ack is unmet by the same rule and is checked first only to keep the
+# diagnostic honest: `candidate_sha` is itself empty before `testing`, and
+# comparing empty to empty would read "acknowledged" for a task nobody has
+# acknowledged anything about.
+#
+# UNLIKE `handoff_state`, this reads ONE task file and nothing else -- no
+# config, no git, no repo. That is not an oversight: the declaration IS the
+# gate (there is no config key to turn it on, because a task that needs a
+# migration applied needs it applied in every repository), and the candidate
+# does not move across the pause, so there is no HEAD to compare and no tree
+# whose cleanliness could mean anything here. It is also why four verbs can
+# call it cheaply: libexec/orchid-verify and libexec/orchid-merge (the two
+# verbs that run the suite against the store — both refuse rather than run it,
+# on this one predicate, so the two stages cannot disagree about the same
+# condition), runners/orchid-drive (raises the boundary instead of spending a
+# round) and libexec/orchid-status (says why the task is parked, at either
+# stage).
+#
+# `orchid task prereq-ack` is deliberately NOT among them, and the omission is
+# a decision rather than a gap: it is the verb that SETTLES this predicate, so
+# gating it on the predicate would refuse exactly the operator whose ack is
+# already current — someone who re-applied the migration after a store reset
+# and wants the journal to say so, or who simply ran the command twice. Its own
+# preconditions (a declaration to acknowledge, a `candidate_sha` to bind to, a
+# status where something reads the field) are the ones that mean anything for a
+# write; "is it already satisfied" means nothing for one. Every caller above
+# READS the gate to decide whether to proceed; the ack verb is the only one
+# that answers it, and an answer does not need permission from the question.
+# tests/test_task.sh pins the re-acknowledgement as accepted and idempotent.
+handoff_prereq_unmet() {
+  local f="$1" ack
+  [ -f "$f" ] || return 1
+  [ -n "$(fm_get "$f" operator_prerequisite)" ] || return 1
+  ack="$(fm_get "$f" prerequisite_ack)"
+  [ -n "$ack" ] || return 0
+  [ "$ack" != "$(fm_get "$f" candidate_sha)" ]
+}
+
+# handoff_prereq_stale <task-file> -- 0 iff the gate is unmet SPECIFICALLY
+# because the acknowledgement on file names a candidate this task has since
+# superseded (as opposed to there being no acknowledgement at all). Callers
+# use it for one thing only: a refusal that says "the ack you are looking at
+# is for the previous candidate" instead of "unacknowledged" while a
+# non-empty `prerequisite_ack` sits in the frontmatter contradicting it.
+# Never a second gate -- handoff_prereq_unmet above is the only predicate
+# anything decides on.
+handoff_prereq_stale() {
+  local f="$1" ack
+  handoff_prereq_unmet "$f" || return 1
+  ack="$(fm_get "$f" prerequisite_ack)"
+  [ -n "$ack" ]
 }
