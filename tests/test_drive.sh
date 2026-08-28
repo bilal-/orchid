@@ -1255,13 +1255,19 @@ mk_pin_repo "$WORK/pin-write-fail" L022
 drive_journal_bin="$REPO_ROOT/libexec/orchid-journal"
 drive_journal_backup="$WORK/orchid-journal.drive-backup"
 cp "$drive_journal_bin" "$drive_journal_backup"
-printf '#!/usr/bin/env bash\ncase " $* " in *" --kind review_plan "*) exit 71 ;; esac\nexec /bin/bash %q "$@"\n' \
-  "$drive_journal_backup" > "$drive_journal_bin"
-chmod +x "$drive_journal_bin"
-
-pindrive
-cp "$drive_journal_backup" "$drive_journal_bin"
-chmod +x "$drive_journal_bin"
+drive_rc_file="$WORK/orchid-journal.drive.rc"
+drive_out_file="$WORK/orchid-journal.drive.out"
+(
+  trap 'cp "$drive_journal_backup" "$drive_journal_bin"; chmod +x "$drive_journal_bin"' EXIT
+  printf '#!/usr/bin/env bash\ncase " $* " in *" --kind review_plan "*) exit 71 ;; esac\nexec /bin/bash %q "$@"\n' \
+    "$drive_journal_backup" > "$drive_journal_bin"
+  chmod +x "$drive_journal_bin"
+  pindrive
+  printf '%s\n' "$PIN_RC" > "$drive_rc_file"
+  printf '%s' "$PIN_OUT" > "$drive_out_file"
+)
+PIN_RC="$(cat "$drive_rc_file")"
+PIN_OUT="$(cat "$drive_out_file")"
 assert_eq 16 "$PIN_RC" \
   "RED: a review-plan pin failure stops the pass at a visible boundary (out: $PIN_OUT)"
 assert_eq reviewing "$(pinstatus)" "and leaves the task in reviewing"
@@ -1285,6 +1291,25 @@ assert_eq revalpha "$(printf '%s\n' "$green_plan" | sed -n 1p | cut -f2)" \
   "GREEN: after the write path is restored, the same slot plan pins normally"
 [ -f "$(review_plan_file "$PIN_REPO" L022)" ] \
   || fail "GREEN: the successful command stores the candidate-bound plan"
+
+# --- H2d: diagnostics are never reviewer rows ------------------------------
+# A damaged record for one engine makes ledger_available's jq complain on
+# stderr while routing can still produce valid rows from the other engines.
+# The old `2>&1` capture fed that diagnostic to the dispatch loop as if it
+# were another tabular slot. A diagnostic on an otherwise successful pin is
+# now a fail-closed boundary, never a launch with words from jq as the slot.
+mk_pin_repo "$WORK/pin-diagnostic" L023
+printf '{"revalpha":"not-an-engine-record"}\n' > "$PIN_REPO/.orchid/runtime/engines.json"
+pindrive
+assert_eq 16 "$PIN_RC" \
+  "RED: a successful review-plan command carrying a degraded-read diagnostic stops at a boundary (out: $PIN_OUT)"
+assert_eq reviewing "$(pinstatus)" "and leaves the task in reviewing"
+assert_eq review-evidence "$(pinboundary | jq -r .kind)" \
+  "the mixed diagnostic/table output is classified as a review-evidence prerequisite failure"
+assert_match "review-plan pin failed" "$(pinboundary | jq -r .reason)" \
+  "the diagnostic is surfaced instead of becoming a reviewer slot"
+[ -z "$(list_dir_files "$PIN_REPO/.orchid/runtime/jobs")" ] \
+  || fail "RED: a review-plan diagnostic must dispatch no reviewer"
 
 # ===========================================================================
 # Part I -- THE RUN-COMPLETE CASE. `orchid run accept --evidence` is the only

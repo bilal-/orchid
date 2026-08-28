@@ -351,7 +351,9 @@ review_plan_store() {
 # (kernel INV-08). A helper that computes and writes in one call makes that
 # ordering impossible to enforce at the verb boundary.
 review_plan_pin_rows() {
-  local repo="$1" id="$2" rows
+  local repo="$1" id="$2" rows cand
+  cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
+  [ -n "$cand" ] || return 1
   if rows="$(review_plan_pinned "$repo" "$id")"; then
     printf '%s\n' "$rows"
     return 0
@@ -439,7 +441,9 @@ review_plan_unsatisfied() {
 # degraded independence and has to be labeled as such rather than arrived at
 # by accident.
 review_plan_repin_rows() {
-  local repo="$1" id="$2" old live unsat unsat_slots kept used rows impl
+  local repo="$1" id="$2" old live unsat unsat_slots kept used rows impl cand
+  cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
+  [ -n "$cand" ] || return 1
   old="$(review_plan "$repo" "$id")"
   live="$(review_routing "$repo" "$id")"
   [ -n "$live" ] || return 1

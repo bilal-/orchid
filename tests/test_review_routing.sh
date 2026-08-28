@@ -401,6 +401,10 @@ mk_p_task() {
   "$ORCHID_BIN" task set "$1" risk_tier medium --reason "two reviewer slots" >/dev/null
   "$ORCHID_BIN" task set "$1" candidate_sha "$head_p" >/dev/null
 }
+mk_p_unbound_task() {
+  "$ORCHID_BIN" task create "$1" "unbound pinned-plan fixture" >/dev/null
+  "$ORCHID_BIN" task set "$1" risk_tier medium --reason "two reviewer slots" >/dev/null
+}
 # mk_p_review <task> <suffix> <qualified-engine-id|-> -- an ok, scope-complete,
 # candidate-bound reviewer envelope, filed exactly where `jobs reconcile` files
 # one. `-` is an adapter that omitted the optional `.engine` field.
@@ -416,6 +420,23 @@ p_journal() { "$ORCHID_BIN" journal show --task "$1" 2>/dev/null || true; }
 p_pin_lines() { grep -c 'review plan pinned' <<< "$(p_journal "$1")" || true; }
 
 TWO_ENGINE_PLAN="$(printf '1\tagy\tengine-independent\n2\tcodex-review\tengine-independent')"
+
+# A writing plan command must reject an unbound round BEFORE its journal
+# entry. `review_plan_store` has always refused the eventual file write; the
+# ordering matters because journaling first otherwise records a pin that can
+# never exist.
+mk_p_unbound_task TP0
+for unbound_mode in --pin --repin; do
+  unbound_rc=0
+  unbound_err="$("$ORCHID_BIN" jobs review-plan TP0 "$unbound_mode" 2>&1)" || unbound_rc=$?
+  [ "$unbound_rc" -ne 0 ] || fail "RED: $unbound_mode must refuse a task with no candidate_sha"
+  assert_match "there is none to bind to until the task has a candidate_sha" "$unbound_err" \
+    "$unbound_mode explains that an unbound evidence round cannot be pinned"
+done
+[ ! -e "$(review_plan_file "$repoP" TP0)" ] \
+  || fail "RED: rejected unbound plan commands must leave no pin behind"
+assert_eq 0 "$(p_pin_lines TP0)" \
+  "RED: rejected unbound plan commands must not journal a pin they could not store"
 
 # ---------------------------------------------------------------------------
 # P -- `--pin` writes the table down, once, bound to the attempt AND the
@@ -567,12 +588,18 @@ pinV="$(review_plan_file "$repoP" TP6)"
 journal_bin="$REPO_ROOT/libexec/orchid-journal"
 journal_backup="$WORK/orchid-journal.backup"
 cp "$journal_bin" "$journal_backup"
-printf '#!/usr/bin/env bash\nexit 71\n' > "$journal_bin"
-chmod +x "$journal_bin"
-rc=0
-errV="$("$ORCHID_BIN" jobs review-plan TP6 --pin 2>&1)" || rc=$?
-cp "$journal_backup" "$journal_bin"
-chmod +x "$journal_bin"
+rc_file="$WORK/orchid-journal.rc"
+err_file="$WORK/orchid-journal.err"
+(
+  trap 'cp "$journal_backup" "$journal_bin"; chmod +x "$journal_bin"' EXIT
+  printf '#!/usr/bin/env bash\nexit 71\n' > "$journal_bin"
+  chmod +x "$journal_bin"
+  injected_rc=0
+  "$ORCHID_BIN" jobs review-plan TP6 --pin > /dev/null 2> "$err_file" || injected_rc=$?
+  printf '%s\n' "$injected_rc" > "$rc_file"
+)
+rc="$(cat "$rc_file")"
+errV="$(cat "$err_file")"
 
 [ "$rc" -ne 0 ] || fail "RED: --pin must fail when its required journal record fails"
 [ ! -e "$pinV" ] \

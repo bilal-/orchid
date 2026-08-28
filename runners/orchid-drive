@@ -1633,7 +1633,7 @@ drive_testing() {
 # ---------------------------------------------------------------------------
 drive_reviewing() {
   local id="$1" arch="$2" tf tier need have routing unsat line slot eng label lrc arc
-  local pin_rc pin_detail
+  local pin_rc pin_detail pin_output pin_line pin_slot pin_eng pin_label pin_extra pin_valid
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = reviewing ] || return 0
   tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
@@ -1659,9 +1659,28 @@ drive_reviewing() {
   # nobody. A reviewing task with no candidate_sha is likewise malformed,
   # rather than permission to use an unbound live plan.
   pin_rc=0
-  routing="$("$ORCHID_BIN" jobs review-plan "$id" --pin 2>&1)" || pin_rc=$?
+  pin_output="$("$ORCHID_BIN" jobs review-plan "$id" --pin 2>&1)" || pin_rc=$?
+  routing=""; pin_detail=""
+  while IFS= read -r pin_line; do
+    [ -n "$pin_line" ] || continue
+    pin_slot=""; pin_eng=""; pin_label=""; pin_extra=""; pin_valid=true
+    IFS=$'\t' read -r pin_slot pin_eng pin_label pin_extra <<< "$pin_line"
+    case "$pin_slot" in ''|*[!0-9]*) pin_valid=false ;; esac
+    [ -n "$pin_eng" ] || pin_valid=false
+    case "$pin_label" in engine-independent|session-independent) ;; *) pin_valid=false ;; esac
+    [ -z "$pin_extra" ] || pin_valid=false
+    if [ "$pin_valid" = true ]; then
+      routing="${routing}${routing:+$'\n'}${pin_line}"
+    else
+      pin_detail="${pin_detail}${pin_detail:+$' '}${pin_line}"
+    fi
+  done <<< "$pin_output"
+  # A successful pin has one stdout grammar: three-column slot rows. Keep a
+  # diagnostic written to stderr out of that table, and fail closed on it --
+  # degraded ledger reads must not turn a jq diagnostic into a reviewer slot.
+  if [ "$pin_rc" -eq 0 ] && [ -n "$pin_detail" ]; then pin_rc=1; fi
   if [ "$pin_rc" -ne 0 ]; then
-    pin_detail="$(printf '%s\n' "$routing" | tail -n 2 | tr '\n' ' ')"
+    [ -n "$pin_detail" ] || pin_detail="$(printf '%s\n' "$pin_output" | tail -n 2 | tr '\n' ' ')"
     [ -n "$pin_detail" ] || pin_detail="no diagnostic returned"
     set_boundary review-evidence "$id" \
       "review-plan pin failed (exit $pin_rc), so no reviewer was dispatched: $pin_detail Expected: repair the durable review-plan/journal write path and rerun drive"
