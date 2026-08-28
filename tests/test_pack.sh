@@ -313,6 +313,31 @@ grep -q "theLineThatMatters" "$WORK/prw_trim/rework.md" \
   || fail "the trim keeps the TAIL — the failing assertions, not the filler that passed"
 grep -q "PASSED filler 1$" "$WORK/prw_trim/rework.md" \
   && fail "the trim really dropped the head of a long log"
+# ...and the trim is TAIL-KEPT over the captured LOG, never over the brief
+# that frames it. The preamble -- the round number, the signature, and whether
+# it has repeated unchanged -- is at the TOP, so a whole-file tail trim drops
+# exactly the sentence this whole feature exists to deliver and hands the
+# engine an unlabelled fragment of somebody's test output. That is not a
+# degraded brief, it is the pre-T025 brief with extra noise: finding F27 again,
+# reached by the budget instead of by the dangling pointer.
+grep -q "^# Previous attempt (rework round 1)" "$WORK/prw_trim/rework.md" \
+  || fail "the trim must keep the brief's PREAMBLE whole — it is the frame that makes the log underneath it mean anything"
+grep -q "first time this particular failure" "$WORK/prw_trim/rework.md" \
+  || fail "the convergence fact survives the trim: it is the one thing a re-reading implementer cannot derive for itself"
+grep -q "^## The failing run, verbatim" "$WORK/prw_trim/rework.md" \
+  || fail "the heading that labels the trimmed log survives with it"
+
+# A budget with room for the preamble and not one byte more omits rework.md
+# outright rather than shipping a brief whose "the verbatim output of the run
+# that FAILED is reproduced below" has nothing below it -- the same lie the
+# empty-capture guard refuses to tell, reached from the other direction.
+tight_head=$(( $(wc -c < .orchid/tasks/T001.md) + 24 ))
+printf 'pack_budget_bytes=%s\n' "$tight_head" > orchid.config
+pack_build "$WORK" T001 implement "$WORK/prw_nohead" || fail "implement pack build (preamble does not fit)"
+[ ! -f "$WORK/prw_nohead/rework.md" ] \
+  || fail "a budget too small for the preamble must omit rework.md, not ship a headless fragment (shipped $(wc -c < "$WORK/prw_nohead/rework.md") bytes)"
+assert_match '"rework.md"' "$(jq -c '.omitted' "$WORK/prw_nohead/pack.json")" \
+  "and the omission is RECORDED — an input the engine never received, named nowhere, is what pack.json exists to prevent"
 rm -f orchid.config .orchid/reviews/T001-r1-rework.log
 
 # A captured round that is EMPTY -- a torn write, a copy interrupted midway --

@@ -26,8 +26,8 @@ _pack_fm_field() {
   awk -v k="$2" '/^---$/{n++;next} n==1 && index($0,k": ")==1{print substr($0,length(k)+3)}' "$1"
 }
 
-# _pack_rework_brief <state> <task> -- the rework brief, on stdout, or
-# nothing at all when this task has no captured failure to feed back (its
+# _pack_rework_brief <state> <task> [section] -- the rework brief, on stdout,
+# or nothing at all when this task has no captured failure to feed back (its
 # first attempt, or a rework nobody had evidence for).
 #
 # This is the OTHER half of the F27 fix. Capturing the failing output before
@@ -40,8 +40,25 @@ _pack_fm_field() {
 #
 # Verbatim output, never a summary: the whole finding is that a summarized
 # "verify failed" is what the loop already had.
+#
+# `section` splits that into the two halves the BUDGET has to treat
+# differently, and exists for exactly one reason: rework.md trims tail-kept,
+# and the convergence preamble is at the TOP.
+#
+#   head -- the round number, the signature, and whether it has repeated
+#           unchanged, down to and including the heading that labels the log.
+#           Small, bounded, and the single most valuable thing in the pack:
+#           an implementer that loses it is back to re-reading raw output
+#           with no idea it has already seen it, which IS finding F27.
+#   body -- the captured log itself and the diff against the round before,
+#           in that order. Unbounded (a suite's whole output), and the only
+#           part it is ever correct to cut.
+#
+# Default `all` keeps the whole brief on stdout for any caller that has no
+# budget to spend -- the two sections concatenate to exactly it.
 _pack_rework_brief() {
   local state="$1" task="$2"
+  local section="${3:-all}"
   # Separate declaration on purpose: within ONE `local`, the earlier
   # assignments have not taken effect yet, so `tf` would be built from the
   # OUTER scope's $state/$task (ShellCheck SC2318).
@@ -63,41 +80,51 @@ _pack_rework_brief() {
   reps="$(_pack_fm_field "$tf" rework_signature_repeats)"
   case "$reps" in ''|*[!0-9]*) reps=1 ;; esac
 
-  echo "# Previous attempt (rework round ${rounds:-1}) — what it actually failed on"
-  echo
-  echo "You are reworking this task. The verbatim output of the run that FAILED"
-  echo "is reproduced below. It is not a summary and not a pointer: it is the"
-  echo "evidence itself, captured before the kernel invalidated it."
-  echo
-  echo "- failure signature: ${sig:-unknown}"
-  if [ "$reps" -ge 2 ]; then
-    echo "- **this signature has now repeated $reps times in a row, unchanged.**"
+  if [ "$section" != body ]; then
+    echo "# Previous attempt (rework round ${rounds:-1}) — what it actually failed on"
     echo
-    echo "READ THAT AGAIN: the previous round's changes did not move this failure"
-    echo "by a single byte. You already tried a fix and got exactly this. Whatever"
-    echo "the last attempt did was either not the cause, or never reached the code"
-    echo "under test. Do not re-apply it in another form. Establish what is"
-    echo "actually being asserted, and what the failing value actually is, before"
-    echo "changing anything — including the possibility that the ASSERTION is the"
-    echo "defect and the production code is right."
-  else
-    echo "- this is the first time this particular failure has been seen."
-  fi
-  echo
-  echo '## The failing run, verbatim'
-  echo
-  cat "$latest"
-  if [ -n "$prev" ]; then
+    echo "You are reworking this task. The verbatim output of the run that FAILED"
+    echo "is reproduced below. It is not a summary and not a pointer: it is the"
+    echo "evidence itself, captured before the kernel invalidated it."
     echo
+    echo "- failure signature: ${sig:-unknown}"
     if [ "$reps" -ge 2 ]; then
-      echo "## Versus the round before it"
+      echo "- **this signature has now repeated $reps times in a row, unchanged.**"
       echo
-      echo "Byte-identical after the volatile header (timestamp, shas, working"
-      echo "directory). There is no diff to show."
+      echo "READ THAT AGAIN: the previous round's changes did not move this failure"
+      echo "by a single byte. You already tried a fix and got exactly this. Whatever"
+      echo "the last attempt did was either not the cause, or never reached the code"
+      echo "under test. Do not re-apply it in another form. Establish what is"
+      echo "actually being asserted, and what the failing value actually is, before"
+      echo "changing anything — including the possibility that the ASSERTION is the"
+      echo "defect and the production code is right."
     else
-      echo '## What changed since the round before it'
+      echo "- this is the first time this particular failure has been seen."
+    fi
+    echo
+    echo '## The failing run, verbatim'
+    echo
+  fi
+  if [ "$section" != head ]; then
+    cat "$latest"
+    if [ -n "$prev" ]; then
       echo
-      diff -u "$prev" "$latest" || true
+      if [ "$reps" -ge 2 ]; then
+        echo "## Versus the round before it"
+        echo
+        echo "Byte-identical after the volatile header (timestamp, shas, working"
+        echo "directory). There is no diff to show."
+      else
+        echo '## What changed since the round before it'
+        echo
+        # Header lines included on purpose. They are volatile by design (the
+        # signature strips them precisely so a re-run does not read as a new
+        # failure), but this diff is read by a HUMAN-facing implementer, and a
+        # hunk showing only `date:`/`sha:` moving is itself the answer to "did
+        # anything change" -- silently hiding it would leave an empty diff
+        # under a heading promising one.
+        diff -u "$prev" "$latest" || true
+      fi
     fi
   fi
 }
@@ -427,13 +454,25 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
   # failing assertions and the exit line, so keeping the head of a long log
   # keeps the part that passed.
   #
+  # But tail-kept applies to the LOG, not to the brief that frames it. The
+  # brief's preamble -- the round number, the signature, and "this signature
+  # has now repeated N times in a row, unchanged" -- sits at the top, so a
+  # whole-file tail trim would drop precisely the sentence this feature
+  # exists to deliver and hand the engine an unlabelled fragment of somebody's
+  # test output instead. That is not a degraded brief; it is the pre-T025
+  # brief with extra noise, i.e. finding F27 again. So the two halves are
+  # budgeted separately (_pack_rework_brief's `section` argument): the
+  # preamble is kept WHOLE or the input is omitted outright, and only the
+  # captured log underneath it is ever cut.
+  #
   # `implement` only. A reviewer judges base_sha..candidate_sha as it stands,
   # against the task spec -- handing it the previous attempt's failure would
   # prejudge a candidate that no longer has that defect (or invite it to
   # review a diff it cannot see), and no shipped review prompt asks for it.
   if [ "$op" = implement ]; then
-    local rework_tmp rwroom rwbytes rwtrunc=false
-    rework_tmp="$(mktemp)"
+    local rework_head rework_body
+    local rwroom rwhbytes rwbbytes rwbodyroom rwtrunc=false
+    rework_head="$(mktemp)"; rework_body="$(mktemp)"
     # Failure here is contained, for two independent reasons. (1) pack_build
     # runs inside runners/orchid-launch under `set -e`, so an unguarded
     # non-zero from this call would abort the LAUNCH -- taking a whole
@@ -443,25 +482,37 @@ pack_build() {  # repo task op dest [hook-point|workspace_read=1] ; exit 12 = in
     # it reads as "the run produced no output", which is a worse lie than no
     # brief. Truncating on failure degrades to exactly the pre-T025 behaviour
     # -- no rework.md, recorded as such below -- and never to a wrong one.
-    if ! _pack_rework_brief "$state" "$task" > "$rework_tmp" 2>/dev/null; then
-      : > "$rework_tmp"
+    # BOTH halves are cleared when EITHER fails: a body with no preamble is
+    # the unlabelled fragment described above, and a preamble with no body
+    # claims an output that is not there.
+    if ! _pack_rework_brief "$state" "$task" head > "$rework_head" 2>/dev/null \
+       || ! _pack_rework_brief "$state" "$task" body > "$rework_body" 2>/dev/null; then
+      : > "$rework_head"; : > "$rework_body"
     fi
-    if [ -s "$rework_tmp" ]; then
+    if [ -s "$rework_head" ] && [ -s "$rework_body" ]; then
       rwroom=$(( budget - used ))
-      if [ "$rwroom" -le 0 ]; then
+      rwhbytes="$(wc -c < "$rework_head")"
+      # `-le`, not `-lt`: room for the preamble and not one byte more leaves
+      # nothing of the failure itself, and a brief that says "the verbatim
+      # output is reproduced below" with nothing below it is the same lie the
+      # empty-capture guard above refuses to tell.
+      if [ "$rwroom" -le "$rwhbytes" ]; then
         omitted="${omitted:+$omitted,}\"rework.md\""
       else
-        rwbytes="$(wc -c < "$rework_tmp")"
-        if [ "$rwbytes" -le "$rwroom" ]; then
-          cp "$rework_tmp" "$dest/rework.md"
+        cat "$rework_head" > "$dest/rework.md"
+        rwbodyroom=$(( rwroom - rwhbytes ))
+        rwbbytes="$(wc -c < "$rework_body")"
+        if [ "$rwbbytes" -le "$rwbodyroom" ]; then
+          cat "$rework_body" >> "$dest/rework.md"
         else
-          tail -c "$rwroom" "$rework_tmp" > "$dest/rework.md"; rwtrunc=true
+          tail -c "$rwbodyroom" "$rework_body" >> "$dest/rework.md"
+          rwtrunc=true
         fi
         used=$(( used + $(wc -c < "$dest/rework.md") ))
         items="$items,{\"name\":\"rework.md\",\"bytes\":$(wc -c < "$dest/rework.md"),\"truncated\":$rwtrunc}"
       fi
     fi
-    rm -f "$rework_tmp"
+    rm -f "$rework_head" "$rework_body"
   fi
 
   # v1-m3 Task 11: lessons.md, ACTIVE blocks only (kernel.md's per-role

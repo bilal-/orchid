@@ -110,7 +110,12 @@ unchanged, and followed by a diff against the round before it when it has
 not. It is truncatable and is budgeted FIRST among the truncatables, ahead
 of `lessons.md`/`context.md` — on a rework attempt it is the most specific
 input in the pack — and it trims TAIL-KEPT, the opposite of the others,
-because a suite's output ends with the failing assertions. `implement` only:
+because a suite's output ends with the failing assertions. Tail-kept applies
+to the captured LOG, not to the brief framing it: the preamble (round number,
+signature, and whether it repeated unchanged) is kept WHOLE or `rework.md` is
+omitted outright and recorded in `omitted`, because a tail trim over the whole
+file would drop precisely that preamble and leave an unlabelled fragment of
+test output — the pre-v1.1 brief with extra noise. `implement` only:
 a reviewer judges `base_sha..candidate_sha` as it stands, and the previous
 attempt's failure would prejudge a candidate that no longer carries it.
 
