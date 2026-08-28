@@ -263,6 +263,83 @@ assert_match "UNCOVERED \[ledger\] $cilocal_id" "$out" \
   "a MECHANICAL frontmatter value must never count as coverage — every task's chain names the same suite scripts"
 
 # ---------------------------------------------------------------------------
+# 3a3 -- A LESSON THIS RUN'S OWN PLANNING WROTE IS NOT CARRIED FORWARD.
+# Nothing is carried from the run you are still scoping, so
+# plancheck_lesson_items skips a block whose `first:` postdates this
+# journal's own first entry -- and that comparison is the one branch of the
+# whole check that no assertion above reaches. Its two failure directions are
+# not symmetric, which is why it is pinned in both:
+#
+#   DROP the cutoff and every lesson an operator writes while planning comes
+#     back demanding a deferral. Noisy, wrong, and obvious on the first run.
+#   INVERT it and the lessons `orchid run new` actually carried across the
+#     rollover disappear from the report instead -- a silent pass over the
+#     exact class of knowledge this feature exists to force someone to read,
+#     and indistinguishable from a plan that considered all of them.
+#
+# So the just-written lesson and the carried one (L001) are asserted in the
+# same breath: a comparison that has stopped discriminating between them
+# fails here whichever way it broke.
+#
+# THE DATES ARE PINNED RATHER THAN LEFT TO THE CLOCK. `lessons add` stamps
+# `first:` with the current second and the rollover entry that defines the
+# cutoff was written moments earlier in the same fixture, so whether the verb
+# produces a strictly LATER timestamp is a fact about machine load, not about
+# behaviour -- and this suite has been stranded by scheduling-dependent
+# assertions before (L020). Pinning the field makes each side of the boundary
+# a property instead of a race, and makes the third case below -- the tie,
+# which lib/plancheck.sh resolves deliberately toward INCLUDING the lesson --
+# expressible at all.
+#
+# pin_lesson_first <id> <iso8601> rewrites just that block's `first:` line;
+# the header match is on the id token, so no other block moves.
+# ---------------------------------------------------------------------------
+pin_lesson_first() {
+  awk -v id="$1" -v d="$2" '
+    /^## L/ { inblk = ($2 == id) }
+    inblk && index($0, "first: ") == 1 { print "first: " d; next }
+    { print }
+  ' .orchid/lessons.md > "$WORK/lessons.pinned"
+  mv "$WORK/lessons.pinned" .orchid/lessons.md
+}
+
+# The new block is L002 again: `run new` dropped the RETIRED L002 on the way
+# into r-002, and lessons_next_id counts what is present. Incidental here --
+# the retired block's own absence is asserted above, before this one exists.
+"$ORCHID_BIN" lessons add --scope repo --invalidate-when "n/a" \
+  "plancheck_cutoff_probe belongs to the plan being drafted, not to the run it carries from" >/dev/null
+own_lesson="$(awk '/^## L/ { last = $2 } END { print last }' .orchid/lessons.md)"
+[ -n "$own_lesson" ] || fail "fixture assumption broken: lessons add wrote no block to read back"
+cutoff="$(awk '/^## [0-9]/ { print $2; exit }' .orchid/journal.md)"
+[ -n "$cutoff" ] || fail "fixture assumption broken: this run's journal has no first entry to date the cutoff from"
+
+pin_lesson_first "$own_lesson" "9999-01-01T00:00:00Z"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "the ledger items are still unconsidered either way"
+assert_match "left 4 carried-forward item" "$out" \
+  "a lesson written after this run's journal opened is not a carried-forward item"
+grep -q "$own_lesson" <<<"$out" \
+  && fail "...and it is not reported at all: nothing is carried forward out of the run being planned"
+assert_match "UNCOVERED \[lesson\] L001" "$out" \
+  "THE OTHER HALF: the lesson run new really did carry across the rollover is still checked, so the cutoff DISCRIMINATES rather than just excluding"
+
+# The tie. Journal and lesson timestamps are both second-resolution, so a
+# rollover and a lesson written in the same second are indistinguishable
+# here; the costs of the two mistakes are not equal, so a tie includes.
+pin_lesson_first "$own_lesson" "$cutoff"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "...still refused, with one more item to consider"
+assert_match "left 5 carried-forward item" "$out" \
+  "a lesson dated exactly AT the boundary is included — an ambiguous second resolves toward asking the question"
+assert_match "UNCOVERED \[lesson\] $own_lesson" "$out" "...and is named, so the operator can answer it"
+
+# Back out of the way: every section below counts four carried items, and
+# this probe is not one of them.
+pin_lesson_first "$own_lesson" "9999-01-01T00:00:00Z"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_match "left 4 carried-forward item" "$out" "the probe is out of the way again"
+
+# ---------------------------------------------------------------------------
 # 3b -- A COVERED ITEM. T010's acceptance criteria name the field, so the
 # item is associated with a task and the question has been asked -- and the
 # report says WHICH term earned it, because a `covered` line nobody can check

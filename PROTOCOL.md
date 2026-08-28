@@ -554,9 +554,14 @@ sequence in
    items** — entries in that archived journal recorded with the `ledger`
    kind, or naming themselves a "ledger candidate"/"ledger item" in prose,
    which is how every pre-`ledger`-kind run wrote them — and **active
-   lessons** carried across the rollover. Run it here, inside the critique
-   loop, where the plan is still cheap to change; step 3 runs it again and
-   REFUSES on the same condition, so it is not a report anyone can skip.
+   lessons** carried across the rollover. A lesson written during THIS
+   run's own planning is neither: nothing is carried forward out of the run
+   you are still scoping, so it is skipped. One dated at the rollover
+   boundary itself is included, because both timestamps are
+   second-resolution and a tie resolves toward asking the question. Run it
+   here, inside the critique loop, where the plan is still cheap to change;
+   step 3 runs it again and REFUSES on the same condition, so it is not a
+   report anyone can skip.
 
    **The unit is the FINDING, not the journal entry.** A single arbitration
    entry routinely records several unrelated defects — "carried as ledger
