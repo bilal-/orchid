@@ -56,7 +56,7 @@
 # and reports it as the CALLER's error (its exit 3), never as something the
 # resolved actor failed to declare.
 # Space-padded for the substring membership idiom this codebase already uses.
-_CAPABILITY_STEPS=" implement review critique hook orchestrate mechanical "
+_CAPABILITY_STEPS=" implement review critique research hook orchestrate mechanical "
 
 capability_step_valid() {  # step -> 0 iff kernel-owned
   case "$_CAPABILITY_STEPS" in
@@ -121,6 +121,40 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # built to stop. Both rows are load bearing there and defense in depth for the
 # built-in five, which is the same division of labour the header describes.
 #
+# `research` IS AN OPERATION THIS KERNEL ALREADY NAMES, and leaving it out of
+# the set above was the one way this table could refuse work without ever
+# pricing it. docs/specs/plugins.md's request union is `implement | review |
+# critique | research | hook | orchestrate`, so `orchid jobs prepare <task>
+# <role> research` is a well-formed call on a documented operation -- and an
+# unpriced step is not answered "needs nothing" by the gate, it is answered
+# with the CALLER-ERROR arm (exit 3, "no step named research exists"). That
+# reports a documented operation as a malformed request, sends an operator to
+# look for a typo there is not, and -- because the arm reaches the caller as
+# `orchid_die`'s exit 1 rather than as this file's 19 -- lands in
+# runners/orchid-drive as an ordinary launch failure and spends a rung of the
+# task's infra_failures ladder on infrastructure that is not broken. That is
+# precisely the mis-attribution this whole file exists to end, arriving through
+# the gate that was built to end it.
+#
+# It is priced at `structured_text` AND `citations` because that is what the
+# kernel already says the work produces: plugins.md's envelope union is
+# `research` -> `citations[]` + `summary`, the same sentence that gives
+# `critique` its `findings[]`. Both atoms are kernel-known
+# (lib/capabilities.txt), and the shipped custom-role example agrees --
+# `acme/researcher`'s descriptor requires `structured_text,citations`, which is
+# why `agy` is refused that role for lacking the second (tests/
+# test_custom_roles.sh). So this row stands to the researcher role exactly as
+# the `review` row stands to roles/reviewer.role: defense in depth where a
+# descriptor already asks for the same atoms, load bearing the moment a custom
+# role asks for nothing.
+#
+# Pricing it is deliberately NOT a claim that the operation is finished. No
+# shipped adapter serves it (the engines answer `unsupported operation
+# 'research'`) and lib/envelope.sh does not yet implement its payload union, so
+# a research job still fails downstream exactly as it did before this file
+# existed. The point is only that it must fail THERE, on its own merits, rather
+# than be refused here as a step the kernel has never heard of.
+#
 # `hook` is the one step priced at NOTHING, and it is a statement rather than
 # an omission. A hook handler is bound by NAME from `hook.<point>` config and
 # reaches no role gate at all (libexec/orchid-jobs' hook arm), and this kernel
@@ -135,6 +169,7 @@ capability_step_requires() {
   case "$1" in
     implement) printf 'workspace_write\n' ;;
     review|critique) printf 'structured_text\n' ;;
+    research) printf 'structured_text\ncitations\n' ;;
     orchestrate) printf 'shell\ngit\n' ;;
     mechanical) printf 'shell\n' ;;
     hook) ;;

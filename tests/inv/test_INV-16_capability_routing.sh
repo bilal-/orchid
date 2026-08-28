@@ -115,6 +115,8 @@ assert_eq "structured_text" "$(capability_step_requires review)" \
   "INV-16: review needs structured_text — with this row empty, a capability-free actor reaching review through a custom role met no gate at all"
 assert_eq "structured_text" "$(capability_step_requires critique)" \
   "INV-16: critique needs structured_text for the same reason review does — it returns the same kind of structured envelope"
+assert_eq "$(printf 'structured_text\ncitations')" "$(capability_step_requires research)" \
+  "INV-16: research needs structured_text and citations — docs/specs/plugins.md's envelope union for it is citations[] + summary, the same sentence that gives critique its findings[]"
 # The one row priced at nothing, asserted so it stays a DECISION. A row that
 # quietly emptied would make this gate stop firing while every refusal above
 # still passed; a row that quietly gained an atom would refuse hook handlers
@@ -821,3 +823,56 @@ case "$(fold_doc "$REPO_ROOT/docs/configuration.md")" in
     fail "INV-16: docs/configuration.md must not tell an operator this config key is unnecessary — the arm that would make it so is gated out by roles/implementer.role, so the key is still the only cover for a profile that declares shell without being granted it" ;;
 esac
 red_case 'the docs stopped advertising an automatic hand-off pause that roles/implementer.role makes unreachable, and the role requirement they now rest on is pinned beside them so neither half can move alone'
+
+# ===========================================================================
+# 9 -- EVERY OPERATION THE KERNEL NAMES IS PRICED, and the one that was not.
+#
+# The closed step set is only safe while it is closed over the operations that
+# can actually reach `orchid jobs prepare`. docs/specs/plugins.md's request
+# union is `implement | review | critique | research | hook | orchestrate`, and
+# `research` was absent from `_CAPABILITY_STEPS` -- so a well-formed call on a
+# documented operation met the CALLER-ERROR arm (exit 3, "no step named
+# research exists") instead of being priced. That is not a harmless gap in a
+# gate that only ever refuses:
+#
+#   * it reports a documented operation as a malformed request, and sends an
+#     operator looking for a typo that is not there;
+#   * the arm reaches the caller as `orchid_die`'s exit 1, NOT as this
+#     feature's 19 -- so runners/orchid-drive reads it as an ordinary launch
+#     failure and spends a rung of the task's infra_failures ladder on
+#     infrastructure that is not broken. That is the exact mis-attribution
+#     INV-16 exists to end, arriving through the gate built to end it.
+#
+# TWO-WAY, because either half moving alone is a defect. If the spec drops
+# `research` from the union this row should go with it; if the row is dropped
+# while the spec still names it, the gate silently starts refusing a documented
+# operation as unknown again. Prose is FOLDED before matching, as in 8b.
+# ===========================================================================
+capability_step_valid research \
+  || fail "INV-16: research must be a kernel-owned step — docs/specs/plugins.md names it in the request union, so an unpriced research reaches the caller-error arm and is charged to the infra ladder as a malformed request"
+case "$(fold_doc "$REPO_ROOT/docs/specs/plugins.md")" in
+  *"implement | review | critique | research | hook | orchestrate"*) ;;
+  *) fail "INV-16: docs/specs/plugins.md must still name research in the request union — if it was removed deliberately, drop the research row from _CAPABILITY_STEPS in the same change, because the two together are what keep prepare from refusing a documented operation as unknown" ;;
+esac
+
+# RED: an actor declaring the structured half and NOT the citations half. As in
+# 2, it declares everything around the one atom that matters, so the refusal
+# cannot be a sparse manifest being rejected by anything.
+mk_engine nociter "structured_text,workspace_read,workspace_write,shell,git"
+rc=0; why="$(capability_routing_refusal research nociter)" || rc=$?
+assert_eq 1 "$rc" \
+  "INV-16: a research step must be REFUSED (exit 1) against an actor that declares no citations — and exit 1 is the point: 3 would blame the caller for a step the kernel does name"
+assert_match "missing: citations" "$why" \
+  "INV-16: naming the exact atom, so this is a capability decision rather than the step name being unrecognised"
+case "$why" in
+  *"no step named"*) fail "INV-16: research must not be answered as an unknown step — that is the caller-error arm, and it exits 1 through orchid_die rather than 19, so the driver charges the infra ladder for it" ;;
+esac
+red_case 'a research step routed to an actor declaring every atom but citations was refused as a capability shortfall naming citations, instead of being answered as a step the kernel has never heard of'
+
+# GREEN twin: the same step, the same call, the one atom added.
+mk_engine withciter "structured_text,workspace_read,workspace_write,shell,git,citations"
+rc=0; why="$(capability_routing_refusal research withciter)" || rc=$?
+assert_eq 0 "$rc" \
+  "INV-16: the same research step must be routable to an actor that DOES declare citations — otherwise the refusal above is not about capabilities at all"
+assert_eq "" "$why" "INV-16: an admitted routing says nothing (it is not a grant, so it makes no claim)"
+green_case 'the same research step routed to the same actor plus a citations declaration was admitted silently, so the refusal above is a capability decision and research is genuinely priced rather than merely accepted'

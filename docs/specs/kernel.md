@@ -1749,8 +1749,17 @@ and `git` (the same implication `lib/conform.sh` already uses to decide which
 operations to probe a plugin for), `review` and `critique` need
 `structured_text` (both produce an envelope the kernel parses a verdict and
 `findings[]` out of; the built-in judging roles require the same atom, so the
-rows are defense in depth there and load bearing under a custom role), and the
+rows are defense in depth there and load bearing under a custom role),
+`research` needs `structured_text` and `citations` (its envelope union is
+`citations[]` + `summary`, and `acme/researcher`'s own descriptor asks for the
+same two — the same defense-in-depth relationship `review` has to
+`roles/reviewer.role`), and the
 `mechanical` step — the candidate's execution-requiring work — needs `shell`.
+Every operation the request union names is priced, including one no shipped
+adapter serves yet: an unpriced step is not answered "needs nothing" but with
+the caller-error arm, which reports a documented operation as a malformed
+request and reaches the driver as an ordinary launch failure charged to the
+task's `infra_failures` ladder.
 `hook` is the one step priced at nothing, deliberately: a handler is bound by
 name from config rather than by role at all, and no hook contract has ever
 asked one for a capability. A row priced at nothing is a statement, never an
