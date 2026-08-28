@@ -1630,16 +1630,18 @@ _drive_verify_body() {
 # finished, and the round CHARGES, because that is what an uncertain reading
 # does here.
 #
-# THE ONE CONFIGURABLE SURFACE IS THE FLAKY REGISTER'S PATH, and the thing that
-# makes it safe is not the path: it is that a register THIS CANDIDATE CHANGED
-# is not an authority on this candidate. An implementer cannot quarantine the
-# assertion it is failing, because touching the file removes the route -- and
-# cannot reach around that by leaving the entry UNCOMMITTED either, because
-# what is read normally has to be what `candidate_sha` records
-# (`_drive_authority_intact`, which the pin check takes too). The only bootstrap
-# is a task whose base AND candidate answerably predate the path: it can use a
-# clean tracked integration copy, which the candidate cannot write. Every other
-# proof here has no configuration at all.
+# THE TWO CONFIGURABLE SURFACES ARE THE FLAKY REGISTER'S PATH AND THE OPT-IN
+# CANDIDATE-LOCAL PIN CHECK. What makes the register safe is not its path: it is
+# that a register THIS CANDIDATE CHANGED is not an authority on this candidate.
+# An implementer cannot quarantine the assertion it is failing, because
+# touching the file removes the route -- and cannot reach around that by
+# leaving the entry UNCOMMITTED either, because what is read normally has to be
+# what `candidate_sha` records (`_drive_authority_intact`, which the pin check
+# takes too). The only register bootstrap is a task whose base AND candidate
+# answerably predate the path: it can use a clean tracked integration copy,
+# which the candidate cannot write. The pin route defaults to `none` and must
+# name a candidate-local check explicitly; the exec-mode and missing-build-
+# state proofs need no per-repository configuration.
 #
 # ATTRIBUTION IS PER FAILURE, AND THE UNIT IS THE FAILING LINE. Each
 # outstanding hand-off claims the individual failures it explains; what is

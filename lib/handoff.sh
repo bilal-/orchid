@@ -194,8 +194,8 @@ handoff_worktree_dirty() {
 # WHY THE HEAD COMPARE IS PART OF THE RESUME RULE, not a detail of the ack.
 # Two frontmatter fields agreeing prove only that they were written together.
 # The thing the pause is actually about is a COMMITTED TREE -- and an operator
-# who acknowledges, then commits once more (a second lint fix, a formula they
-# re-pinned after re-reading the diff) leaves the record naming a tree that no
+# who acknowledges, then commits once more (a second lint fix, a mode bit they
+# restored after re-reading the diff) leaves the record naming a tree that no
 # longer exists anywhere. On a resume that reads `already performed` and
 # verifies the later tree, every downstream judgment is bound to a commit
 # nothing ever verified, which is lesson L025 reached by a different road --

@@ -536,10 +536,11 @@ claimed by a same-artifact cascade just
 because it names that artifact. A separate
 outstanding state does not earn attribution, but the waived reason retains it
 when it names an operator action still owed, such as a dropped 755 bit. Perform
-the hand-off (re-pin,
-`chmod +x`), provision the worktree, or fix the test, then re-dispatch; the
-same failure charges afterwards, because the state it was proved against is
-gone. If a waived fault comes back a second time — of any class — the pass
+the proved hand-off (refresh the explicitly configured candidate-local
+artifact or restore its mode with `chmod +x`), provision the worktree, or fix
+the test, then re-dispatch; the same failure charges afterwards, because the
+state it was proved against is gone. If a waived fault comes back a second
+time — of any class — the pass
 stops at an operator boundary rather than re-dispatching again, because none
 of these gets better by being retried.
 

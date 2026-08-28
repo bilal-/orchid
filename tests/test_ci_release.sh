@@ -925,29 +925,71 @@ assert_eq none "$drive_pin_default" \
 # of them makes task branches rewrite Formula/orchid.rb and recreates the RED
 # rebase above. Keep both the old phrases absent and the replacement rule
 # present, so a deletion cannot satisfy this check by making the docs silent.
-grep -Fq 're-pinning a release checksum' "$REPO_ROOT/orchid.config.example" \
+# Fold first, following tests/test_docs.sh's established idiom: these are prose
+# claims, not source lines, and an ordinary Markdown re-wrap must not break the
+# gate or let a stale phrase straddle two lines undetected.
+t030_folded_file() {
+  tr '\n' ' ' < "$1" | tr -s '[:space:]' ' '
+}
+t030_folded_shell_comments() {
+  sed 's/^[[:space:]]*#[[:space:]]*//' "$1" \
+    | tr '\n' ' ' \
+    | tr -s '[:space:]' ' '
+}
+t030_config_guidance="$(t030_folded_file "$REPO_ROOT/orchid.config.example")"
+t030_troubleshooting_guidance="$(t030_folded_file "$REPO_ROOT/docs/troubleshooting.md")"
+t030_kernel_guidance="$(t030_folded_file "$REPO_ROOT/docs/specs/kernel.md")"
+t030_drive_guidance="$(t030_folded_shell_comments "$REPO_ROOT/lib/drive.sh")"
+t030_handoff_guidance="$(t030_folded_shell_comments "$REPO_ROOT/lib/handoff.sh")"
+
+grep -Fq 're-pinning a release checksum' <<<"$t030_config_guidance" \
   && fail "orchid.config.example still describes a whole-tree release checksum as a candidate hand-off"
-grep -Fq 'a re-pinned formula checksum' "$REPO_ROOT/docs/troubleshooting.md" \
+grep -Fq 'a re-pinned formula checksum' <<<"$t030_troubleshooting_guidance" \
   && fail "troubleshooting still describes the Formula checksum as candidate hand-off evidence"
 while IFS= read -r guidance_file; do
   [ -n "$guidance_file" ] || continue
+  guidance_text="$(t030_folded_file "$REPO_ROOT/$guidance_file")"
   grep -Fq 're-pinning Formula/orchid.rb after any change to shipped bytes' \
-    "$REPO_ROOT/$guidance_file" \
+    <<<"$guidance_text" \
     && fail "$guidance_file still labels per-change Formula re-pinning as operator-owned candidate work"
 done <<'EOF'
 docs/beta-qualification.md
 scripts/beta-qualify.sh
 EOF
+grep -Fq 'recognized with no per-repo configuration at all' \
+  <<<"$t030_kernel_guidance" \
+  && fail "kernel.md still claims the opt-in candidate-local pin route needs no configuration"
+grep -Fq 'Every other proof here has no configuration at all' \
+  <<<"$t030_drive_guidance" \
+  && fail "lib/drive.sh still contradicts its opt-in candidate-local pin route"
+grep -Fq 'a formula they re-pinned after re-reading the diff' \
+  <<<"$t030_handoff_guidance" \
+  && fail "lib/handoff.sh still offers whole-tree Formula pinning as candidate hand-off work"
+grep -Fq 'Perform the hand-off (re-pin, `chmod +x`)' \
+  <<<"$t030_troubleshooting_guidance" \
+  && fail "troubleshooting still gives an unqualified re-pin as candidate hand-off work"
 
 grep -Fq 'Never use this pause to re-pin a whole-tree release checksum' \
-  "$REPO_ROOT/orchid.config.example" \
+  <<<"$t030_config_guidance" \
   || fail "candidate hand-off configuration no longer says whole-tree release pins belong elsewhere"
 grep -Fq 'preparation, never a candidate hand-off' \
-  "$REPO_ROOT/docs/beta-qualification.md" \
+  <<<"$(t030_folded_file "$REPO_ROOT/docs/beta-qualification.md")" \
   || fail "beta qualification no longer distinguishes Formula release preparation from candidate hand-offs"
 grep -Fq 'is never such a hand-off' \
-  "$REPO_ROOT/docs/troubleshooting.md" \
+  <<<"$t030_troubleshooting_guidance" \
   || fail "troubleshooting no longer distinguishes Formula release preparation from candidate hand-offs"
+grep -Fq 'candidate-local pin hand-off is available only when the repository explicitly configures `handoff.pin_check` (default `none`)' \
+  <<<"$t030_kernel_guidance" \
+  || fail "kernel.md no longer says the candidate-local pin route is explicit opt-in with a default-none setting"
+grep -Fq 'The pin route defaults to `none` and must name a candidate-local check explicitly' \
+  <<<"$t030_drive_guidance" \
+  || fail "lib/drive.sh no longer documents the default-none candidate-local pin route"
+grep -Fq 'a mode bit they restored after re-reading the diff' \
+  <<<"$t030_handoff_guidance" \
+  || fail "lib/handoff.sh no longer uses a candidate-local mechanical hand-off in its post-ack example"
+grep -Fq 'refresh the explicitly configured candidate-local artifact or restore its mode with `chmod +x`' \
+  <<<"$t030_troubleshooting_guidance" \
+  || fail "troubleshooting no longer limits the pin hand-off to an explicitly configured candidate-local artifact"
 
 # --- 7. scripts/pin-formula.sh must be executable in the index -------------
 # r-001 set this mode bit on a branch as an operator hand-off and shipped a

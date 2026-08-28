@@ -626,21 +626,25 @@ buying a fresh implementation pass to reach the same tree.
   `orchid verify`, and it can reach four verdicts — `candidate`, which
   charges, and `handoff`, `environment` and `flaky`, which do not.
   There is NO signature surface: a repository cannot declare a failure
-  *sentence* that forgives its own rounds, and the two hand-offs are
-  recognized with no per-repo configuration at all, because the protocol
-  rather than any one project is what names them.
+  *sentence* that forgives its own rounds. The exec-bit hand-off is recognized
+  with no per-repo configuration because the protocol rather than any one
+  project names it. The candidate-local pin hand-off is available only when
+  the repository explicitly configures `handoff.pin_check` (default `none`);
+  a whole-tree release pin must stay in the integration/release gate rather
+  than being configured as candidate work.
   Each is proved in two halves, and neither half is worth anything alone. The
   STATE is proved against the world: the driver stats the files the candidate
   ADDED and the ones it MODIFIED whose base recorded mode 755 (a rewrite that
   loses an exec bit is the same hand-off as a new file that never carried
-  one); it RUNS the repository's own pin freshness check and requires it
-  to REPORT A FILE STALE — a nonzero exit alone is not that report, since a
-  check that cannot find the formula or trips over metadata the candidate
-  corrupted exits nonzero too and re-pinning fixes neither; it COMPARES the
-  two checkouts for an ignored directory the worktree never received; and it
-  reads a known-flaky register that THIS CANDIDATE DID NOT TOUCH, which is what
-  stops an implementer quarantining the assertion it is failing. The exec-bit
-  set, ignored-directory set, and pin-check result are snapshot evidence
+  one); when explicitly configured, it RUNS the repository's candidate-local
+  pin freshness check and requires it to REPORT A FILE STALE — a nonzero exit
+  alone is not that report, since a check that cannot find the formula or trips
+  over metadata the candidate corrupted exits nonzero too and refreshing the
+  candidate-local artifact fixes neither; it COMPARES the two checkouts for an
+  ignored directory the worktree never received; and it reads a known-flaky
+  register that THIS CANDIDATE DID NOT TOUCH, which is what stops an
+  implementer quarantining the assertion it is failing. The exec-bit set,
+  ignored-directory set, and enabled pin-check result are snapshot evidence
   written by `orchid verify` before the candidate-controlled command runs,
   bound by the log's `sha`, `candidate`, `cwd`, and captured `base_sha` fields
   to the current task candidate, worktree, and pre-run comparison base. They
