@@ -292,17 +292,25 @@ This is not a fault — it is the operator hand-off doing its job. Your
 repository set `handoff_before_verify=required`, which says the implementer
 here is an engine profile that cannot execute anything (it denies on the
 command *string*), so this candidate's mechanical work — applying a linter's
-own fix, re-pinning a release checksum, setting the mode bit on a newly added
-executable — has to be done by you. The pass stops rather than verifying a
-candidate that was never going to pass and spending one of the task's three
-rework rounds on it.
+own fix, setting the mode bit on a newly added executable, running a generator
+whose output is checked in — has to be done by you. The pass stops rather than
+verifying a candidate that was never going to pass and spending one of the
+task's three rework rounds on it.
+
+One thing is deliberately *not* on that list: an artifact derived from the
+whole tree, such as the release-archive checksum pinned into
+`Formula/orchid.rb`. Regenerating one per candidate makes every candidate
+rewrite the same line to a different value, and the second to merge then
+conflicts on it with nobody in the loop able to resolve it. Those are
+regenerated on the integration branch instead — see
+[contributing.md](./contributing.md#release-rehearsal).
 
 ```sh
 orchid run boundary show           # what is being held, and why
 orchid task show <id>              # candidate_sha, and handoff_ack beside it
 # ...do the mechanical work in the task's worktree and commit it, giving each
 # such commit the trailer "Orchid-Handoff: operator", then:
-orchid task handoff <id> --ack --reason "re-pinned the formula; set the exec bit"
+orchid task handoff <id> --ack --reason "applied the lint fix; set the exec bit"
 ```
 
 Commit first, acknowledge second: `--ack` moves `candidate_sha` forward to the
@@ -355,9 +363,9 @@ raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
 
 **Symptom:** `orchid task show <id>` shows `attempts` climbing (and eventually
 `blocked — attempts exhausted`) on verify failures the candidate did not
-cause — a package checksum only the operator can re-pin, an executable that
-shipped without its mode bit, a fresh worktree that never received the
-`node_modules` the integration checkout has, or an assertion everyone already
+cause — a candidate-local package checksum only the operator can re-pin, an
+executable that shipped without its mode bit, a fresh worktree that never
+received the `node_modules` the integration checkout has, or an assertion everyone already
 knows samples a race.
 
 The driver classifies a failed `orchid verify` before charging it, so those
@@ -382,12 +390,14 @@ worth nothing:
    it *modified* whose base recorded mode 755 (a rewrite that lost an exec bit
    — an engine whose file writes recreate a file at 0644 does this to every
    executable it touches, and it cannot `chmod` it back). For the pin, orchid
-   *runs* your own freshness check (`handoff.pin_check`, default
-   `scripts/pin-formula.sh --check`, run under its own `#!` interpreter when
-   it is not executable, as orchid's own is) and requires it to **report a
+   *runs* your explicitly configured candidate-local freshness check
+   (`handoff.pin_check`, default `none`, run under its own `#!` interpreter
+   when it is not executable) and requires it to **report a
    file stale** — a nonzero exit is not enough, because a check that cannot
    find the formula or trips over metadata the candidate corrupted exits
-   nonzero too and re-pinning fixes neither. For the missing build state,
+   nonzero too and re-pinning fixes neither. Never configure a whole-tree
+   release checksum here; those belong to the integration/release gate so task
+   branches do not conflict. For the missing build state,
    orchid *compares the two checkouts*: a directory that your own `.gitignore`
    covers, that exists where the run was dispatched from, and that does not
    exist in the worktree the verification ran in. For the flaky register,
@@ -411,16 +421,17 @@ worth nothing:
    fault does not fail one check — it strands a whole suite. First, some
    failing line must *name the file and report its fault*
    (`.../orchid-frob: Permission denied`, `libexec/orchid-frob is not
-   executable`, `Formula/orchid.rb ... is STALE`); that is the proof the state
+   executable`, `package/component.pin ... is STALE`); that is the proof the state
    blocked this run. After it, every failing line that *names* the file is
    part of the same cascade and is attributed too, causal wording or not —
    `runners/orchid-drive must exist and be executable` and `T001 ... (last
    rc=126 ...)` are that mode bit's failures as surely as the refusal is.
-   Orchid's shipped Formula check is one four-line report: after its causal
-   stale line, the exact pinned-checksum, expected-checksum, and remedy records
-   are attributed too. An unfamiliar continuation remains unclaimed and
-   charges. This keeps the default route live without making arbitrary pin
-   checker prose neutral.
+   The legacy Orchid-format pin report has three exact continuations after its
+   causal stale line — pinned checksum, expected checksum, and remedy — which
+   are attributed too when an opt-in checker emits that format. An unfamiliar
+   continuation remains unclaimed and charges. The route defaults to `none`;
+   this compatibility grammar does not make Orchid's whole-tree Formula pin a
+   candidate hand-off.
    Without that first line, naming alone attributes nothing: every assertion
    that fails inside a newly added file names it. The path must use its exact
    repository-relative, `./`-relative, or worktree-root absolute spelling,
@@ -525,10 +536,11 @@ claimed by a same-artifact cascade just
 because it names that artifact. A separate
 outstanding state does not earn attribution, but the waived reason retains it
 when it names an operator action still owed, such as a dropped 755 bit. Perform
-the hand-off (re-pin,
-`chmod +x`), provision the worktree, or fix the test, then re-dispatch; the
-same failure charges afterwards, because the state it was proved against is
-gone. If a waived fault comes back a second time — of any class — the pass
+the proved hand-off (refresh the explicitly configured candidate-local
+artifact or restore its mode with `chmod +x`), provision the worktree, or fix
+the test, then re-dispatch; the same failure charges afterwards, because the
+state it was proved against is gone. If a waived fault comes back a second
+time — of any class — the pass
 stops at an operator boundary rather than re-dispatching again, because none
 of these gets better by being retried.
 
@@ -668,8 +680,10 @@ status, same `candidate_sha`, nothing added to the journal.
 
 **If an operator hand-off was acknowledged, `reverify` withdraws it.**
 `handoff_ack` asserts one thing about one commit: that *you* looked at that tree
-and confirmed the mechanical steps it needed — a mode bit, a re-pinned formula
-checksum — were done. The commit `reverify` re-stamps to is by construction one
+and confirmed the mechanical steps it needed — a mode bit, a linter fix, or a
+regenerated candidate-local file — were done. A whole-tree release checksum
+is never such a hand-off; it is pinned on integration at release time. The
+commit `reverify` re-stamps to is by construction one
 you committed *since*, and nobody has said that about it. Carrying the
 acknowledgement forward would make that claim on your behalf about a tree you
 never reviewed, and would then buy a verification guaranteed to fail on the

@@ -242,20 +242,34 @@ sha256_file() {
   fi
 }
 
-# Regression (T004 rework): Formula/orchid.rb's pinned checksum must stay
-# fresh for the tree that carries it -- a repair commit that changes shipped
-# bytes without re-pinning the formula previously went undetected until the
-# release gate at tag time. Enforced here on the live checkout at every run;
-# skipped inside an extracted release archive, which by design has neither a
-# Git checkout at this root nor a Formula/ directory. On failure the message
-# carries pin-formula's own output, which names the exact expected checksum
-# and the one-command remedy.
-if [ "$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)" = "$REPO_ROOT" ] \
-   && [ -f "$REPO_ROOT/Formula/orchid.rb" ]; then
-  rc=0
-  freshness_out="$("$BASH" "$REPO_ROOT/scripts/pin-formula.sh" --check 2>&1)" || rc=$?
-  [ "$rc" -eq 0 ] || fail "Formula/orchid.rb checksum is stale for the current tree -- $freshness_out"
-fi
+# T030 removed the live-checkout freshness gate that used to stand here.
+#
+# It was a T004 regression check: run `scripts/pin-formula.sh --check`
+# against $REPO_ROOT on every suite run, so a commit that changed shipped
+# bytes without re-pinning the formula failed immediately instead of at tag
+# time. The intent was right and the fixpoint it defended is still defended
+# -- but the placement made a DERIVED artifact a per-candidate obligation,
+# and that deadlocks the orchestrator (lesson L022, found live in r-002).
+#
+# The chain: this suite is every task's verification_commands, so every
+# candidate had to re-pin, so every candidate rewrote the SAME single
+# `sha256` line in Formula/orchid.rb to a DIFFERENT value. The first task
+# merges. The second one's base is now stale, libexec/orchid-merge rebases
+# it onto the new integration HEAD, and the replay conflicts on exactly that
+# line. The rebase aborts, merge advances the task to `rework`, and rework
+# dispatches the implementer -- which under the restricted profile (L017)
+# cannot run git, cannot run scripts/pin-formula.sh and cannot compute a
+# SHA-256. It produces no commit, the candidate is unchanged, and the same
+# conflict recurs forever, with no operator in a headless run to break it.
+#
+# So the obligation moved to where the pin actually lives rather than being
+# deleted. No task branch touches Formula/orchid.rb at all now, which is what
+# leaves nothing to conflict. The pin is regenerated ONCE on the integration
+# branch at release time (`scripts/pin-formula.sh`, docs/install.md's
+# release-day steps), and scripts/release.sh refuses to verify a tag whose
+# formula checksum does not equal the archive it just built -- so a stale pin
+# still cannot ship. The T030 section at the end of this file proves both
+# halves, and pins a tripwire so this gate cannot come back here.
 
 write_formula() {
   local repo="$1" version="$2" sha="$3"
@@ -695,5 +709,301 @@ printf '%s\n' "$pre_list" | grep -v "^orchid-$pre_version/" \
   && fail "prerelease archive contains an entry outside its suffixed prefix"
 printf '%s\n' "$pre_list" | grep -qxF "orchid-$pre_version/release/metadata.conf" \
   || fail "prerelease archive is missing release/metadata.conf under its suffixed prefix"
+
+# ===========================================================================
+# T030: the formula pin is a DERIVED artifact of the integration branch, and
+# pinning it per candidate deadlocks the orchestrator (lesson L022).
+#
+# The five checks below are one argument, in order:
+#
+#   1. RED -- two candidates off one base that each re-pin genuinely DO
+#      collide. The second one's rebase conflicts, in Formula/orchid.rb, on
+#      the one line both rewrote. This is the deadlock's mechanism, proven
+#      rather than asserted, so the rest of the section is answering a real
+#      failure and not a hypothetical one.
+#   2. GREEN -- the same two candidates under the shipped design, where
+#      neither touches Formula/orchid.rb: the second rebases clean, both
+#      land in sequence, and no operator step happens anywhere between them.
+#   3. The obligation MOVED, it did not vanish: the pin on the integration
+#      tip is now stale, one pin-formula run on that branch makes it fresh
+#      in a formula-only commit, and the release gate then verifies the tag.
+#      That is T004's fixed point, kept, but proven where the pin lives.
+#   4. A stale pin still FAILS the release gate, so nothing can ship on one.
+#   5. A tripwire, so the per-candidate gate cannot come back to this file.
+#
+# All of this runs at the git level, on a real fixture, because that is the
+# layer the conflict happens at. The same two-candidates-in-sequence property
+# is proven through the `orchid merge` verb itself in tests/test_merge.sh.
+# ===========================================================================
+
+# A fixture repository carrying the REAL pin-formula tool, with its baseline
+# formula pinned for its own content, plus the branch name and commit the two
+# candidates below will both fork from.
+t030_fixture() {
+  local repo="$1"
+  cp "$REPO_ROOT/scripts/pin-formula.sh" "$repo/scripts/pin-formula.sh"
+  commit_fixture "$repo" "carry the pin-formula tool"
+  "$BASH" "$repo/scripts/pin-formula.sh" >/dev/null 2>&1 \
+    || fail "T030 setup: could not pin $repo's baseline formula"
+  commit_fixture "$repo" "pin the baseline formula"
+}
+
+# One candidate: fork $base, add ONE new shipped file, commit. lib/ is not
+# export-ignored, so the new file moves the archive bytes and therefore the
+# checksum -- which is exactly what used to oblige every candidate to re-pin.
+# It is read by none of release.sh's version/URL/placeholder cross-checks, so
+# the ONLY variable between the two scenarios below is `$repin`.
+t030_candidate() {
+  local repo="$1" base="$2" who="$3" repin="$4"
+  git -C "$repo" checkout -q -b "task/$who" "$base"
+  printf '%s\n' '#!/usr/bin/env bash' "echo candidate $who" > "$repo/lib/feature-$who.sh"
+  if [ "$repin" = repin ]; then
+    "$BASH" "$repo/scripts/pin-formula.sh" >/dev/null 2>&1 \
+      || fail "T030 setup: candidate $who could not re-pin under the old contract"
+  fi
+  commit_fixture "$repo" "candidate $who"
+}
+
+# --- 1. RED: the per-candidate re-pin is what collides ---------------------
+deadlock_repo="$(clone_fixture t030-deadlock)"
+t030_fixture "$deadlock_repo"
+deadlock_integ="$(git -C "$deadlock_repo" symbolic-ref --short HEAD)"
+deadlock_base="$(git -C "$deadlock_repo" rev-parse HEAD)"
+
+# The old contract, replayed exactly: change shipped bytes, then re-pin in the
+# same commit, because the suite would otherwise fail this candidate.
+t030_candidate "$deadlock_repo" "$deadlock_base" a repin
+t030_candidate "$deadlock_repo" "$deadlock_base" b repin
+
+deadlock_pin_a="$(git -C "$deadlock_repo" show "task/a:Formula/orchid.rb" \
+  | sed -n 's/^[[:space:]]*sha256 "\([^"]*\)"$/\1/p')"
+deadlock_pin_b="$(git -C "$deadlock_repo" show "task/b:Formula/orchid.rb" \
+  | sed -n 's/^[[:space:]]*sha256 "\([^"]*\)"$/\1/p')"
+if [ -z "$deadlock_pin_a" ] || [ -z "$deadlock_pin_b" ]; then
+  fail "T030 setup: both re-pinning candidates must carry a pinned checksum"
+fi
+[ "$deadlock_pin_a" != "$deadlock_pin_b" ] \
+  || fail "T030 setup: the two re-pinning candidates must pin DIFFERENT checksums"
+
+# Candidate a lands first, exactly as merge would land it.
+git -C "$deadlock_repo" checkout -q "$deadlock_integ"
+git -C "$deadlock_repo" merge -q --no-ff -m "merge candidate a" task/a \
+  || fail "T030 setup: the first re-pinning candidate should still merge cleanly"
+
+# Candidate b is now on a stale base. This is libexec/orchid-merge's rebase
+# arm, and it is where the run used to die.
+rc=0
+git -C "$deadlock_repo" rebase "$deadlock_integ" task/b >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "T030 premise broken: two candidates that each re-pin no longer conflict on rebase"
+deadlock_conflicts="$(git -C "$deadlock_repo" diff --name-only --diff-filter=U)"
+assert_match 'Formula/orchid.rb' "$deadlock_conflicts" \
+  "the per-candidate re-pin is what conflicts, in Formula/orchid.rb itself"
+git -C "$deadlock_repo" rebase --abort >/dev/null 2>&1 || true
+
+# --- 2. GREEN: the shipped design, same two candidates ---------------------
+# Nothing here re-pins, because nothing in a candidate's verification chain
+# asks it to any more. That single difference is the whole fix.
+land_repo="$(clone_fixture t030-sequential)"
+t030_fixture "$land_repo"
+land_integ="$(git -C "$land_repo" symbolic-ref --short HEAD)"
+land_base="$(git -C "$land_repo" rev-parse HEAD)"
+land_base_formula="$(git -C "$land_repo" show "$land_base:Formula/orchid.rb")"
+
+for who in a b; do
+  t030_candidate "$land_repo" "$land_base" "$who" no-repin
+  assert_eq "$land_base_formula" "$(git -C "$land_repo" show "task/$who:Formula/orchid.rb")" \
+    "candidate $who leaves Formula/orchid.rb byte-identical to its base"
+done
+
+git -C "$land_repo" checkout -q "$land_integ"
+git -C "$land_repo" merge -q --no-ff -m "merge candidate a" task/a \
+  || fail "the first candidate must land"
+
+# The stale-base rebase that used to abort. No conflict, so no advance to
+# rework, so no implementer is dispatched for work it cannot perform.
+rc=0
+git -C "$land_repo" rebase "$land_integ" task/b >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "the second candidate rebases onto the new base without a conflict"
+git -C "$land_repo" checkout -q "$land_integ"
+git -C "$land_repo" merge -q --no-ff -m "merge candidate b" task/b \
+  || fail "the second candidate must land too"
+
+# Both landed, and no operator touched anything in between.
+git -C "$land_repo" show "$land_integ:lib/feature-a.sh" >/dev/null 2>&1 \
+  || fail "candidate a's change is missing from the integration branch"
+git -C "$land_repo" show "$land_integ:lib/feature-b.sh" >/dev/null 2>&1 \
+  || fail "candidate b's change is missing from the integration branch"
+assert_eq "$land_base_formula" "$(git -C "$land_repo" show "$land_integ:Formula/orchid.rb")" \
+  "no task branch wrote Formula/orchid.rb, so the integration tip still carries the base pin"
+
+# --- 3. The obligation moved to the integration branch ---------------------
+# The pin is now genuinely stale for what the branch carries -- the fixed
+# point T004 established is still a real obligation, it just belongs here.
+rc=0
+stale_out="$("$BASH" "$land_repo/scripts/pin-formula.sh" --check 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "two landed candidates must leave the integration branch's pin stale"
+assert_match 'STALE' "$stale_out" "the integration branch's stale pin is named as such"
+
+"$BASH" "$land_repo/scripts/pin-formula.sh" >/dev/null 2>&1 \
+  || fail "pin-formula could not re-pin the integration branch"
+land_repin_dirty="$(git -C "$land_repo" status --porcelain=v1 --untracked-files=all | awk '{print $NF}')"
+assert_eq "Formula/orchid.rb" "$land_repin_dirty" \
+  "re-pinning the integration branch rewrites Formula/orchid.rb and nothing else"
+commit_fixture "$land_repo" "re-pin the formula for the integration branch"
+"$BASH" "$land_repo/scripts/pin-formula.sh" --check >/dev/null 2>&1 \
+  || fail "pin-formula --check rejects the checksum it just pinned on the integration branch"
+
+# ...and the release gate agrees, on the tag, which is the property that had
+# to survive this whole redesign: what ships is what the formula describes.
+git -C "$land_repo" tag -f v1.2.3 >/dev/null
+land_release_out="$("$BASH" "$land_repo/scripts/release.sh" \
+  --tag v1.2.3 --output "$WORK/t030-release" --bash "$BASH" 2>&1)" \
+  || fail "release gate rejected an integration branch whose pin was just refreshed: $land_release_out"
+assert_match 'release verified: v1.2.3' "$land_release_out" \
+  "one re-pin on the integration branch is enough to satisfy the release gate"
+
+# --- 4. A stale pin still fails the release gate ---------------------------
+# The gate moved; it did not soften. This is the only thing standing between
+# a stale pin and a shipped archive now, so it is asserted directly, and on
+# the remedy text too -- an operator meeting this message is the one person
+# who has to know which branch to run the tool on.
+stale_release_repo="$(clone_fixture t030-stale-pin)"
+printf '%s\n' '#!/usr/bin/env bash' 'echo shipped' > "$stale_release_repo/lib/feature-a.sh"
+commit_fixture "$stale_release_repo" "change shipped bytes without re-pinning"
+git -C "$stale_release_repo" tag -f v1.2.3 >/dev/null
+run_release_failure "$stale_release_repo" v1.2.3 \
+  'formula checksum mismatch' t030-stale-pin
+run_release_failure "$stale_release_repo" v1.2.3 \
+  'pin-formula\.sh.* on the integration branch' t030-stale-pin-remedy
+
+# --- 5. Tripwire: the per-candidate gate must not come back ----------------
+# Assembled at runtime from fragments, the same way the mktemp and find scans
+# above are, so this file can carry the check without matching it itself --
+# and so no file is excluded from the scan, least of all this one, which is
+# where the gate lived. What is forbidden is narrow and exact: RUNNING
+# pin-formula against the live checkout from inside the suite. Copying the
+# tool into a fixture (which this file does, twice, above) is untouched.
+live_pin_pattern='REPO_ROOT'
+live_pin_pattern="${live_pin_pattern}[^\"]*pin-formula[.]sh\"?[[:space:]]+[-]-check"
+
+# A POSITIVE CONTROL FIRST, because the scan below is expected to match
+# nothing -- and a pattern that has quietly stopped matching anything at all
+# is indistinguishable from a clean tree. This is the exact line T030 removed
+# from this file, reassembled from fragments so that carrying it here still
+# does not trip the scan (no single fragment holds both `REPO_ROOT` and the
+# `--check` argument). If the pattern ever stops recognising the gate it
+# exists to forbid, this fails rather than the tripwire passing vacuously.
+live_pin_removed_line='  freshness_out="$("$BASH" "$'
+live_pin_removed_line="${live_pin_removed_line}REPO_ROOT/scripts/pin-formula.sh\" "
+live_pin_removed_line="${live_pin_removed_line}--check 2>&1)\" || rc=\$?"
+printf '%s\n' "$live_pin_removed_line" | grep -Eq "$live_pin_pattern" \
+  || fail "the per-candidate freshness-gate tripwire no longer matches the line it forbids -- the scan below proves nothing"
+
+while IFS= read -r shell_file; do
+  [ -n "$shell_file" ] || continue
+  grep -En "$live_pin_pattern" "$REPO_ROOT/$shell_file" >/dev/null \
+    && fail "a shipped file re-introduced the per-candidate formula freshness gate (lesson L022): $shell_file"
+done <<< "$shell_list"
+
+# T019 added a trusted pre-command package-pin snapshot after this task's
+# preserved candidate was first written. It is part of the driven verification
+# chain even though it lives outside tests/run.sh, so the live-suite scan above
+# cannot see it. Keep its generic per-file route, but require explicit opt-in:
+# Orchid's unconfigured whole-tree Formula pin must not be built or checked for
+# every task before the release gate needs it.
+drive_pin_default="$(sed -n "s/^_DRIVE_PIN_CHECK_DEFAULT='\([^']*\)'$/\1/p" \
+  "$REPO_ROOT/lib/drive.sh")"
+assert_eq none "$drive_pin_default" \
+  "the driver package-pin prestate route defaults to none, so T019 cannot silently reintroduce the whole-tree Formula check into every task chain"
+
+# --- 6. Guidance must not put the Formula back in a candidate hand-off ------
+# Moving the executable gate is insufficient if the shipped operator guidance
+# still tells somebody to perform the same write by hand. These are the exact
+# stale instructions found after the behavior was already green: following any
+# of them makes task branches rewrite Formula/orchid.rb and recreates the RED
+# rebase above. Keep both the old phrases absent and the replacement rule
+# present, so a deletion cannot satisfy this check by making the docs silent.
+# Fold first, following tests/test_docs.sh's established idiom: these are prose
+# claims, not source lines, and an ordinary Markdown re-wrap must not break the
+# gate or let a stale phrase straddle two lines undetected.
+t030_folded_file() {
+  tr '\n' ' ' < "$1" | tr -s '[:space:]' ' '
+}
+t030_folded_shell_comments() {
+  sed 's/^[[:space:]]*#[[:space:]]*//' "$1" \
+    | tr '\n' ' ' \
+    | tr -s '[:space:]' ' '
+}
+t030_config_guidance="$(t030_folded_file "$REPO_ROOT/orchid.config.example")"
+t030_troubleshooting_guidance="$(t030_folded_file "$REPO_ROOT/docs/troubleshooting.md")"
+t030_kernel_guidance="$(t030_folded_file "$REPO_ROOT/docs/specs/kernel.md")"
+t030_drive_guidance="$(t030_folded_shell_comments "$REPO_ROOT/lib/drive.sh")"
+t030_handoff_guidance="$(t030_folded_shell_comments "$REPO_ROOT/lib/handoff.sh")"
+
+grep -Fq 're-pinning a release checksum' <<<"$t030_config_guidance" \
+  && fail "orchid.config.example still describes a whole-tree release checksum as a candidate hand-off"
+grep -Fq 'a re-pinned formula checksum' <<<"$t030_troubleshooting_guidance" \
+  && fail "troubleshooting still describes the Formula checksum as candidate hand-off evidence"
+while IFS= read -r guidance_file; do
+  [ -n "$guidance_file" ] || continue
+  guidance_text="$(t030_folded_file "$REPO_ROOT/$guidance_file")"
+  grep -Fq 're-pinning Formula/orchid.rb after any change to shipped bytes' \
+    <<<"$guidance_text" \
+    && fail "$guidance_file still labels per-change Formula re-pinning as operator-owned candidate work"
+done <<'EOF'
+docs/beta-qualification.md
+scripts/beta-qualify.sh
+EOF
+grep -Fq 'recognized with no per-repo configuration at all' \
+  <<<"$t030_kernel_guidance" \
+  && fail "kernel.md still claims the opt-in candidate-local pin route needs no configuration"
+grep -Fq 'Every other proof here has no configuration at all' \
+  <<<"$t030_drive_guidance" \
+  && fail "lib/drive.sh still contradicts its opt-in candidate-local pin route"
+grep -Fq 'a formula they re-pinned after re-reading the diff' \
+  <<<"$t030_handoff_guidance" \
+  && fail "lib/handoff.sh still offers whole-tree Formula pinning as candidate hand-off work"
+grep -Fq 'Perform the hand-off (re-pin, `chmod +x`)' \
+  <<<"$t030_troubleshooting_guidance" \
+  && fail "troubleshooting still gives an unqualified re-pin as candidate hand-off work"
+
+grep -Fq 'Never use this pause to re-pin a whole-tree release checksum' \
+  <<<"$t030_config_guidance" \
+  || fail "candidate hand-off configuration no longer says whole-tree release pins belong elsewhere"
+grep -Fq 'preparation, never a candidate hand-off' \
+  <<<"$(t030_folded_file "$REPO_ROOT/docs/beta-qualification.md")" \
+  || fail "beta qualification no longer distinguishes Formula release preparation from candidate hand-offs"
+grep -Fq 'is never such a hand-off' \
+  <<<"$t030_troubleshooting_guidance" \
+  || fail "troubleshooting no longer distinguishes Formula release preparation from candidate hand-offs"
+grep -Fq 'candidate-local pin hand-off is available only when the repository explicitly configures `handoff.pin_check` (default `none`)' \
+  <<<"$t030_kernel_guidance" \
+  || fail "kernel.md no longer says the candidate-local pin route is explicit opt-in with a default-none setting"
+grep -Fq 'The pin route defaults to `none` and must name a candidate-local check explicitly' \
+  <<<"$t030_drive_guidance" \
+  || fail "lib/drive.sh no longer documents the default-none candidate-local pin route"
+grep -Fq 'a mode bit they restored after re-reading the diff' \
+  <<<"$t030_handoff_guidance" \
+  || fail "lib/handoff.sh no longer uses a candidate-local mechanical hand-off in its post-ack example"
+grep -Fq 'refresh the explicitly configured candidate-local artifact or restore its mode with `chmod +x`' \
+  <<<"$t030_troubleshooting_guidance" \
+  || fail "troubleshooting no longer limits the pin hand-off to an explicitly configured candidate-local artifact"
+
+# --- 7. scripts/pin-formula.sh must be executable in the index -------------
+# r-001 set this mode bit on a branch as an operator hand-off and shipped a
+# different commit, so the fix was silently dropped: the blob is identical to
+# main's, the mode is not. It is harmless only because every caller spells
+# `bash scripts/pin-formula.sh`; its release-tooling siblings ci-local.sh and
+# release.sh are both 100755. Asserted on the INDEX rather than with `[ -x ]`
+# so it is the committed tree being judged and not a checkout's local umask.
+# Skipped inside an extracted release archive, which has no Git checkout at
+# this root -- the same guard the removed freshness gate used.
+if [ "$(git -C "$REPO_ROOT" rev-parse --show-toplevel 2>/dev/null || true)" = "$REPO_ROOT" ]; then
+  pin_mode="$(git -C "$REPO_ROOT" ls-files -s -- scripts/pin-formula.sh | awk '{print $1}')"
+  assert_eq 100755 "$pin_mode" \
+    "scripts/pin-formula.sh is executable in the index (operator hand-off: chmod +x scripts/pin-formula.sh)"
+fi
 
 exit 0

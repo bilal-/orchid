@@ -4,16 +4,37 @@
 # and `orchid verify` running.
 #
 # WHAT THE PAUSE IS FOR. Some steps in a candidate are mechanical and require
-# EXECUTION: re-pinning a release checksum in a formula, setting the mode bit
-# on a newly added executable, applying a linter's own fix. An engine profile
-# that denies on the command STRING can perform none of them -- it cannot run
-# the linter, the checksum tool, or `chmod` (lesson L017) -- so routing them
+# EXECUTION: setting the mode bit on a newly added executable, applying a
+# linter's own fix, running a generator whose output is checked in. An engine
+# profile that denies on the command STRING can perform none of them -- it
+# cannot run the linter, the generator, or `chmod` (lesson L017) -- so routing them
 # to it produces a rework round that could never have succeeded and spends one
 # of the task's three attempts on it. Until this file, those steps were
 # performed by an operator BY HABIT, at a point in the procedure that nothing
 # named; and a point nothing names is a point a deterministic driver walks
 # straight past, running `orchid verify` against a candidate that was never
 # going to pass.
+#
+# WHAT MUST NEVER BE ON THAT LIST. An artifact derived from the WHOLE TREE --
+# the release-archive checksum pinned into Formula/orchid.rb is the case that
+# bit (lesson L022) -- must not be regenerated per candidate, by this pause or
+# by anything else. Every candidate would rewrite the same line to a different
+# value, so the second one to reach `orchid merge`'s stale-base rebase
+# conflicts on it, lands in `rework`, and is handed to an implementer that
+# cannot regenerate it either; nothing in that loop terminates. Such artifacts
+# belong to the integration branch, regenerated there once after merges land
+# or at release time, and gated at the release gate.
+#
+# WHAT PERFORMING IT BY HABIT RISKS. A hand-off can also be LOST after being
+# performed: done outside this pause, late in a candidate's life, on a branch
+# tip that is not what eventually merged, the work is silently dropped from
+# the shipped tree and nothing fails at the time -- an exec-bit hand-off once
+# shipped exactly that way, identical blob, wrong mode. Same failure family
+# as lessons L017 and L021: mechanical work done out-of-band leaves no
+# machine-checkable trace tying it to the candidate under judgment. The sha
+# binding below is the countermeasure -- the ack names the commit the work
+# produced, so work the shipped candidate lacks surfaces as a mismatch
+# instead of a habit nobody re-checks.
 #
 # WHAT IT IS NOT. It is not a claim about who may SEE a lint finding. The
 # exact `file:line: RULE: message` locations travel into the brief regardless
@@ -173,8 +194,8 @@ handoff_worktree_dirty() {
 # WHY THE HEAD COMPARE IS PART OF THE RESUME RULE, not a detail of the ack.
 # Two frontmatter fields agreeing prove only that they were written together.
 # The thing the pause is actually about is a COMMITTED TREE -- and an operator
-# who acknowledges, then commits once more (a second lint fix, a formula they
-# re-pinned after re-reading the diff) leaves the record naming a tree that no
+# who acknowledges, then commits once more (a second lint fix, a mode bit they
+# restored after re-reading the diff) leaves the record naming a tree that no
 # longer exists anywhere. On a resume that reads `already performed` and
 # verifies the later tree, every downstream judgment is bound to a commit
 # nothing ever verified, which is lesson L025 reached by a different road --

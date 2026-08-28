@@ -410,7 +410,8 @@ fi
 # implementer-shell -- the no-shell implementer profile, half one.
 #
 # An implementer that cannot run a command cannot run a repository script (a
-# checksum pin, a codegen step, a formatter) and cannot change a file mode.
+# candidate-local codegen step, a lockfile refresh, a formatter) and cannot
+# change a file mode.
 # Both are silent, recurring operator hand-offs, and both are headless
 # DEADLOCKS: no other actor in the loop can perform them either, so a task
 # needing one can neither finish nor fail.
@@ -524,25 +525,26 @@ fi
 
 # ===========================================================================
 # merge-rebase-regeneration -- the headless deadlock this repository met for
-# real. `orchid merge` rebases the candidate onto the integration head. Any
-# committed artifact derived from the tree's exact content -- a checksum pin, a
-# lockfile, a generated file -- is invalidated by that rebase, and the
-# post-rebase re-verification then fails. Regenerating it needs an actor able
-# to run a command. On a no-shell profile there is none, in or out of the loop,
-# and the run stops with nobody able to move it.
+# real. `orchid merge` rebases the candidate onto the integration head. A
+# committed candidate-local artifact derived from nearby content -- a lockfile
+# or generated file -- can be invalidated by that rebase, and post-rebase
+# verification then fails. Regenerating it needs an actor able to run a
+# command. On a no-shell profile there is none in the loop, and the run stops
+# with nobody able to move it. A whole-tree release checksum is deliberately
+# excluded: T030 places it on integration at release time, never in a candidate.
 # ===========================================================================
 probe_start
 probe_stop
 MERGE_TESTED="derived from the resolved implementer plugin's declared capabilities; no merge was performed against the target repository"
-MERGE_WHY="orchid merge rebases the candidate, which invalidates any committed artifact derived from the tree's exact content, and then re-verifies; regenerating one needs an actor able to run a command"
+MERGE_WHY="orchid merge rebases the candidate, which can invalidate a committed candidate-local generated artifact, and then re-verifies; regenerating one needs an actor able to run a command, while whole-tree release artifacts must not live on candidate branches"
 if [ "$IMPLEMENTER_SHELL" = present ]; then
-  record merge-rebase-regeneration "an in-loop actor can regenerate content-derived artifacts after the merge rebase" pass true \
+  record merge-rebase-regeneration "an in-loop actor can regenerate candidate-local artifacts after the merge rebase" pass true \
     "$MERGE_TESTED" "$MERGE_WHY" \
-    "the resolved implementer declares the shell capability, so a rework attempt after a failed post-rebase verification can regenerate a content-derived artifact in-loop -- subject to the implementer-command-execution probe, which this harness cannot settle"
+    "the resolved implementer declares the shell capability, so a rework attempt after a failed post-rebase verification can regenerate a candidate-local artifact in-loop -- subject to the implementer-command-execution probe, which this harness cannot settle"
 else
-  record merge-rebase-regeneration "an in-loop actor can regenerate content-derived artifacts after the merge rebase" fail true \
+  record merge-rebase-regeneration "an in-loop actor can regenerate candidate-local artifacts after the merge rebase" fail true \
     "$MERGE_TESTED" "$MERGE_WHY" \
-    "the resolved implementer cannot run a command, so a content-derived artifact invalidated by the merge rebase has no in-loop actor able to regenerate it; if this repository commits such an artifact, an unattended run deadlocks there and only the operator can clear it"
+    "the resolved implementer cannot run a command, so a candidate-local generated artifact invalidated by the merge rebase has no in-loop actor able to regenerate it; if this repository commits such an artifact, an unattended run deadlocks there and only the operator can clear it"
 fi
 
 # ===========================================================================
@@ -713,7 +715,7 @@ jq -s \
       "any publication, tag, push, or release of this build",
       "the blocker round trip end to end, including the inbound answering agent",
       "one task per implementer profile whose acceptance requires executing a repository script or changing a file mode",
-      "re-pinning Formula/orchid.rb after any change to shipped bytes",
+      "re-pinning Formula/orchid.rb once on the integration branch at release time, immediately before the local release gate",
       "chmod +x on any newly added libexec verb"
     ]}' \
   "$PROBES" > "$JSON_OUT" || die "cannot write $JSON_OUT"

@@ -87,9 +87,15 @@ from the source archive, avoiding a checksum self-reference.
 2. Re-pin the formula checksum with the canonical tool (the same fixed
    mtime, prefix, and tree inputs the verifier uses — it snapshots current
    content through a disposable, config-isolated Git repository and rewrites
-   `Formula/orchid.rb` in place; `--check` verifies without rewriting, and the
-   test suite runs that check on every commit so a stale pin can never linger
-   unnoticed):
+   `Formula/orchid.rb` in place; `--check` verifies without rewriting).
+
+   Expect the pin to be stale when you arrive here, and re-pin on the
+   integration branch. That is deliberate: the checksum is derived from the
+   whole tree, so obliging every branch to re-pin would have every branch
+   rewrite the same line to a different value, and the second one to merge
+   would conflict with no way to resolve it unattended. Nothing upstream of
+   this step re-pins, and step 4's release gate is what refuses to ship if
+   you skip it — see [contributing.md](./contributing.md#release-rehearsal):
 
    ```sh
    /bin/bash scripts/pin-formula.sh

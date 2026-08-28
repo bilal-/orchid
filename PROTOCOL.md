@@ -954,16 +954,42 @@ ones its archetype never declares.
 
   **The operator hand-off (`orchid task handoff`).** Some steps in a
   candidate are mechanical and require EXECUTION: applying a linter's own
-  fix, re-pinning a release checksum (`scripts/pin-formula.sh`), setting the
-  mode bit on a newly added executable. An engine profile that denies on the
+  fix, setting the mode bit on a newly added executable, running a generator
+  whose output is checked in. An engine profile that denies on the
   command **string** can perform none of them — it cannot run the linter, the
-  checksum tool, or `chmod` — so a rework round routed to it for that work is
+  generator, or `chmod` — so a rework round routed to it for that work is
   an instruction it could never satisfy, and it spends one of the task's three
   attempts finding that out. These steps therefore belong to the OPERATOR, and
   this is the point in the procedure where they happen. Before this they were
   performed here anyway, by habit, at a point nothing named — and a point
   nothing names is a point a driver walks straight past, running `orchid
   verify` against a candidate that was never going to pass.
+
+  One kind of mechanical step must NEVER be on this list, however routinely a
+  repository's own conventions ask for it: regenerating an artifact whose
+  value is derived from the WHOLE TREE, such as a release-archive checksum
+  pinned into a packaging file. Every candidate would rewrite the same line to
+  a different value, so the first one merges and the second one conflicts on
+  it in the stale-base rebase below — which aborts, sends the task to
+  `rework`, and dispatches an implementer that cannot regenerate the artifact
+  either. Nothing in that loop terminates and no attempt of it is free. A
+  tree-wide derived artifact belongs to the INTEGRATION BRANCH: regenerate it
+  there once, after merges have landed or at release time, and gate it at the
+  release gate rather than in any task's `verification_commands`.
+
+  A step that DOES belong on the list can still be lost after being
+  performed. Done by habit rather than through this pause — late in a
+  candidate's life, on a branch tip that is not what eventually merged — an
+  operator hand-off is silently DROPPED from the shipped tree, and nothing
+  fails at the time. It has happened: an exec-bit hand-off performed on a
+  task branch whose tip never merged shipped the identical blob with the
+  wrong mode, harmless only because every caller spelled `bash <path>`. That
+  is the failure family lessons L017 and L021 record — mechanical work done
+  out-of-band leaves no machine-checkable trace tying it to the candidate
+  under judgment — and the acknowledgement in step 2 below is the
+  countermeasure: it advances `candidate_sha` to the commit the hand-off
+  itself produced, so work the shipped tree lacks is a sha mismatch a gate
+  refuses rather than a habit nobody re-checks.
 
   So, with the task now in `testing` and before step 3's `testing` bullet
   runs anything:
@@ -1121,7 +1147,7 @@ ones its archetype never declares.
     **The tree is read, never inferred, and that third comparison is not
     belt-and-braces.** Two frontmatter fields agreeing prove only that they
     were written together. An operator who acknowledges and then commits once
-    more — a second lint fix, a formula re-pinned after re-reading the diff —
+    more — a second lint fix, a mode bit spotted on re-reading the diff —
     leaves both fields naming a tree that exists nowhere, still perfectly
     equal to each other. A resume reading that as "already performed" verifies
     the later tree and binds every downstream judgment to a commit nothing ever
@@ -1200,13 +1226,13 @@ ones its archetype never declares.
         files it MODIFIED whose base recorded mode 755 (a `#!` file left mode
         644 is the exec-bit hand-off's own state, whether the candidate
         shipped it that way or dropped the bit while rewriting it), and it
-        RUNS the repository's package-pin freshness check
-        (`handoff.pin_check`, config, default `scripts/pin-formula.sh
-        --check`; only ever an AUTHORITY under the rule below)
+        RUNS the repository's explicitly configured candidate-local package-pin
+        freshness check (`handoff.pin_check`, config, default `none`; only ever
+        an AUTHORITY under the rule below)
         and requires it to REPORT A FILE STALE — a nonzero exit is not that
         report, since a check that cannot find the formula or trips over
         metadata this candidate corrupted exits nonzero too and re-pinning
-        fixes neither. Orchid's default check produces one four-line report:
+        fixes neither. Orchid's supported check contract admits a four-line report:
         its causal stale line plus exact pinned-checksum, expected-checksum,
         and one-command-remedy continuations. All four are attributed together;
         an unfamiliar continuation remains unknown and charges. Neither hand-off
