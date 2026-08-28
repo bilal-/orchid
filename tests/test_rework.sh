@@ -95,6 +95,25 @@ mk_log "$C/reviews/T001-verify.log" 2026-08-01T00:00:00Z aaaa /tmp/w "all good" 
 rc=0; rework_evidence_source "$C" T001 merging >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a PASSING verify log is never captured as the failure that caused a rework"
 
+# Neither is a ZERO-BYTE log, and this is the arm that keeps the convergence
+# counters honest rather than the brief readable. An empty file digests to a
+# perfectly stable signature, so two torn writes in a row would read as one
+# identical failure repeating -- and the driver would reroute the role and
+# block the task as "not converging" on the strength of no output at all.
+# Asserted at the SIGNATURE level too, because "the digests match" is exactly
+# the fact the streak is built from: without the guard, these two are equal
+# and the second capture increments the streak.
+: > "$C/reviews/T001-verify.log"
+rc=0; rework_evidence_source "$C" T001 testing >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a zero-byte verify log is a torn write, not a failure that printed nothing"
+: > "$C/reviews/T001-empty2.log"
+empty_sig="$(rework_signature "$C/reviews/T001-verify.log")"
+[ -n "$empty_sig" ] \
+  || fail "witness: an empty log still digests to SOMETHING -- if it did not, the comparison below would pass vacuously"
+assert_eq "$empty_sig" "$(rework_signature "$C/reviews/T001-empty2.log")" \
+  "two empty logs DO share one signature -- which is why the guard above has to sit at the capture, not at the compare"
+rm -f "$C/reviews/T001-empty2.log"
+
 # ===========================================================================
 # Part B -- the kernel verb. The capture happens BEFORE the invalidating
 # delete, and the delete still happens.

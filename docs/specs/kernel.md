@@ -679,10 +679,13 @@ buying a fresh implementation pass to reach the same tree.
     boundary. An unchanged signature is evidence the loop is not converging,
     not a fresh failure.
   An identical signature still CONSUMES its attempt. The waiver above is for
-  a signature that is disjoint — distinct forward progress — and the ≤3 cap
-  exists precisely to target repeated identical failures; waiving them would
-  make the one shape the budget exists to stop the one shape that never
-  spends it.
+  a signature that is disjoint — distinct forward progress — and the attempt
+  cap exists precisely to target repeated identical failures; waiving them
+  would make the one shape the budget exists to stop the one shape that never
+  spends it. Written as "the attempt cap" rather than a number on purpose:
+  the non-convergence stop is a SECOND, tighter backstop with its own key
+  (`rework_nonconvergence_max`), and stating the attempt budget's size here
+  would put a duplicate of it in a paragraph that has no business owning it.
 - **A delivery that delivered nothing is an infra failure, not an attempt.**
   An `ok` implement envelope is the engine's own account of itself; the
   worktree is the only thing that can contradict it. When the envelope

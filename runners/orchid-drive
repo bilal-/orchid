@@ -2279,7 +2279,7 @@ drive_testing() {
   # an identical signature CONSUMES its attempt. docs/specs/kernel.md's
   # attempt-fairness rule reserves `--waive-attempt` for a failure signature
   # DISJOINT from the prior attempt's -- "distinct forward progress" -- and
-  # says the <=3 cap "targets repeated identical failures". Waiving the
+  # says the cap "targets repeated identical failures". Waiving the
   # identical case would invert that: the one shape the budget exists to stop
   # would be the one shape that never spends it, and a task could loop
   # forever on a wall it is not moving. The convergence stop below is what

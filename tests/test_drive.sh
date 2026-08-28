@@ -8219,7 +8219,6 @@ grep -q "unexpected status" <<<"$GDRIVE_OUT" \
   && fail "the merging arm must recognise the blocked outcome its own verb produces"
 assert_eq "$GBASE" "$(git -C "$GATEREPO" rev-parse orchid/integration)" \
   "and after both rounds the integration ref has still never moved"
-
 # T023: THIS is the half of the `blocked` arm that names a validation log, and
 # it may do so only because the log is THERE -- the gate ran, wrote it, and
 # recorded what went red in it. Part ZP below drives the other route to the
@@ -8890,8 +8889,15 @@ for _vrc in 16 20; do
 done
 red_case "both of drive_testing's verify-refusal arms return instead of falling into the rework accounting"
 
-# Part S (T025) -- THE REWORK-FEEDBACK CASE. A task whose verification fails
+# Part AA (T025) -- THE REWORK-FEEDBACK CASE. A task whose verification fails
 # the same way every time.
+#
+# Lettered AA, not S or Z: this Part is APPENDED to a file whose letters are
+# claimed by other tasks landing in parallel. `S` through `Y7` are already
+# taken (S is T026's configurable rework budget), and T007 now owns Z. A clash
+# is worse than cosmetic here -- two Parts under one label make every prose
+# cross-reference ambiguous, and the next task to append picks its label by
+# reading this list.
 #
 # Dogfood finding F27: a task failed verify three times with the SAME two
 # assertions failing the SAME way, and the implementer kept changing
@@ -9054,4 +9060,4 @@ done
 [ ! -f "$RW/.orchid/reviews/R010-verify.log" ] \
   || fail "the invalidating delete still happens -- INV-11 stays armed (the capture is a copy, not a reprieve)"
 assert_eq 3 "$(rwfield attempts)" \
-  "an identical signature still CONSUMES its attempt (kernel.md: the <=3 cap targets repeated identical failures)"
+  "an identical signature still CONSUMES its attempt (kernel.md: the attempt cap targets repeated identical failures)"

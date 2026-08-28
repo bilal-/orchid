@@ -912,7 +912,7 @@ available; this is for where it is not.
 answer.** It means `rework_nonconvergence_max` (config, default 3)
 consecutive attempts produced a BYTE-IDENTICAL failure — the same command,
 the same output, the same exit code — so the loop is re-asking a question it
-has already been answered. Retrying it unchanged will produce a fourth
+has already been answered. Retrying it unchanged will produce one more
 identical failure. Read the captured evidence, which the kernel keeps one
 file per round precisely for this:
 
@@ -926,7 +926,8 @@ usually about the assertion rather than the code under test: what is actually
 being asserted, and what is the failing value actually? Fold the answer into
 `orchid task unblock <id> --reason "..."` (it is recorded into the task body,
 and the next attempt's brief carries the failing output alongside it) rather
-than `orchid task retry`, which changes nothing.
+than `orchid task retry`, which buys the loop more rounds without changing
+anything about the question it is being asked.
 
 ## `plan apply` refuses: carried-forward items are unconsidered
 

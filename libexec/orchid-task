@@ -1116,6 +1116,18 @@ case "$sub" in
       # lib/rework.sh), so INV-11 stays armed exactly as before while the
       # output survives for the next attempt's input pack to carry.
       #
+      # NOT a duplicate of `refresh_briefs` below, which lifts the same log in
+      # the same window (T010, lesson L017). That one extracts the LOCATIONS a
+      # failing gate named -- `file:line: RULE: message` -- into the task BODY,
+      # so an actor that cannot open or re-run a log still learns where to
+      # look. It is a distillation, and it is empty for exactly the failure
+      # this task was opened over: an assertion diff carries no `file:line:`
+      # anywhere, so F27's task got a brief with nothing in it. This capture
+      # keeps the bytes THEMSELVES, in a file, for the pack to carry verbatim
+      # -- and it is the only one of the two that can answer "is this the same
+      # failure as last time", because a distillation cannot be compared for
+      # byte-identity with anything.
+      #
       # `rework_rounds` counts CAPTURED rounds, not rework entries: a rework
       # with no failing evidence to capture (a rebase conflict, an operator
       # advance) mints no file, so the counter and the files on disk can never

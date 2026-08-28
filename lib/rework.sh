@@ -118,6 +118,19 @@ rework_evidence_source() {
     src="$state/reviews/$id-verify.log"
   fi
   [ -n "$src" ] || return 1
+  # A ZERO-BYTE log is not evidence either, and its absence is the more
+  # dangerous of the two: an empty file has a perfectly stable digest, so two
+  # torn writes in a row read as ONE IDENTICAL FAILURE REPEATING. The driver
+  # would then reroute the role to another engine and block the task as "not
+  # converging" on the strength of no output at all -- a confident,
+  # fully-journalled judgment derived from nothing. `orchid verify` always
+  # writes at least a header and an `exit:` line, so this is a torn or
+  # truncated file rather than an ordinary one, and refusing to capture it
+  # degrades to the pre-T025 behaviour (no captured round, streak untouched)
+  # rather than to a wrong one. lib/pack.sh guards the same shape at the READ
+  # end; this is the write end, and it is the one that keeps the counters
+  # honest.
+  [ -s "$src" ] || return 1
   [ "$(tail -n1 "$src")" != "exit: 0" ] || return 1
   printf '%s\n' "$src"
 }

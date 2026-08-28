@@ -225,7 +225,7 @@ pack_budget_bytes=65536
 # human. An unchanged signature means the previous round's changes did not move
 # the failure at all -- more attempts at that point re-ask a question already
 # answered identically (dogfood finding F27). 0 disables the stop, leaving the
-# ordinary <=3 attempt budget as the only backstop.
+# ordinary attempt budget as the only backstop.
 # rework_nonconvergence_max=3
 # model=
 # effort=medium
