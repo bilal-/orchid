@@ -540,32 +540,49 @@ assert_match $'^2\tagy\tsession-independent$' "$repinT" \
 ledger_mark "$repoP" codex-review ok
 
 # ---------------------------------------------------------------------------
-# U -- JOURNAL FIRST. Failure injection stubs only the journal verb while the
+# U -- adoption preserves independence even with EXTRA evidence. Checking
+# distinctness across every filed envelope and then taking the first N is not
+# enough: A,A,B contains two distinct engines, but its first two do not.
+# ---------------------------------------------------------------------------
+mk_p_task TP7
+planU="$("$ORCHID_BIN" jobs review-plan TP7 --pin)"
+assert_eq "$TWO_ENGINE_PLAN" "$planU" "fixture: TP7 requires two distinct engines"
+mk_p_review TP7 "" orchid/codex-review
+mk_p_review TP7 ".2" orchid/codex-review
+mk_p_review TP7 ".3" orchid/claude
+adoptU="$("$ORCHID_BIN" jobs review-plan TP7 --adopt-evidence)"
+assert_eq "$(printf '1\tcodex-review\tengine-independent\n2\tclaude\tengine-independent')" "$adoptU" \
+  "A,A,B evidence adopts the first two DISTINCT engines A,B, not the first two envelopes A,A"
+assert_eq "" "$(review_plan_unsatisfied "$repoP" TP7 "$(review_plan "$repoP" TP7)")" \
+  "and both independently adopted slots are credited by evidence already on disk"
+
+# ---------------------------------------------------------------------------
+# V -- JOURNAL FIRST. Failure injection stubs only the journal verb while the
 # review-plan destination remains writable. A write-before-journal
 # implementation leaves the pin behind and this RED case catches it; the same
 # command with the real journal restored is the GREEN twin.
 # ---------------------------------------------------------------------------
 mk_p_task TP6
-pinU="$(review_plan_file "$repoP" TP6)"
+pinV="$(review_plan_file "$repoP" TP6)"
 journal_bin="$REPO_ROOT/libexec/orchid-journal"
 journal_backup="$WORK/orchid-journal.backup"
 cp "$journal_bin" "$journal_backup"
 printf '#!/usr/bin/env bash\nexit 71\n' > "$journal_bin"
 chmod +x "$journal_bin"
 rc=0
-errU="$("$ORCHID_BIN" jobs review-plan TP6 --pin 2>&1)" || rc=$?
+errV="$("$ORCHID_BIN" jobs review-plan TP6 --pin 2>&1)" || rc=$?
 cp "$journal_backup" "$journal_bin"
 chmod +x "$journal_bin"
 
 [ "$rc" -ne 0 ] || fail "RED: --pin must fail when its required journal record fails"
-[ ! -e "$pinU" ] \
+[ ! -e "$pinV" ] \
   || fail "RED: a failed journal write must leave no review-plan mutation behind"
-assert_match "cannot journal the review-plan change" "$errU" \
+assert_match "cannot journal the review-plan change" "$errV" \
   "the refusal identifies the journal-first failure and says no plan was written"
 
-planU="$("$ORCHID_BIN" jobs review-plan TP6 --pin)"
-assert_eq "$TWO_ENGINE_PLAN" "$planU" \
+planV="$("$ORCHID_BIN" jobs review-plan TP6 --pin)"
+assert_eq "$TWO_ENGINE_PLAN" "$planV" \
   "GREEN: with the journal restored, the same computed plan is accepted"
-[ -f "$pinU" ] || fail "GREEN: the journaled review plan is then stored"
+[ -f "$pinV" ] || fail "GREEN: the journaled review plan is then stored"
 diff -q "$journal_bin" "$journal_backup" >/dev/null 2>&1 \
   || fail "the journal executable must be restored byte-for-byte after failure injection"

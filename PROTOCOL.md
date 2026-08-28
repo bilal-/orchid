@@ -1533,7 +1533,7 @@ ones its archetype never declares.
     reaches this budget check, which is the point of classifying first.
 
 - **reviewing** (`awaiting-review-envelopes`): apply the risk-tiered review
-  policy from the Preamble — `orchid jobs review-plan <id>`, then
+  policy from the Preamble — `orchid jobs review-plan <id> --pin`, then
   `runners/orchid-launch <id> reviewer review --engine <slot-engine>` for
   every printed slot. Once step 2's reconcile has produced a verdict for
   every dispatched slot: `orchid task advance <id> arbitrating --reason

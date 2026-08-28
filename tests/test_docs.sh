@@ -420,6 +420,13 @@ assert_match 'review-plan <id> --pin` FIRST' "$protocol_one_line" \
   "PROTOCOL.md's risk-tiered review policy must tell whoever dispatches the slots to PIN the table, not merely to read it"
 assert_match "Pin BEFORE launching the first slot" "$protocol_one_line" \
   "...and must say the pin precedes the first launch, since a plan pinned afterwards could already have moved between the two dispatches"
+# The main TICK repeats the concrete reviewing procedure much later than the
+# Preamble. Assert that block on its own: a correct Preamble cannot rescue a
+# later copy-and-paste command that reads the live plan immediately before it
+# tells the operator to launch every returned slot.
+protocol_reviewing="$(sed -n '/^- \*\*reviewing\*\*/,/^- \*\*arbitrating\*\*/p' "$REPO_ROOT/PROTOCOL.md" | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+assert_match 'review-plan <id> --pin' "$protocol_reviewing" \
+  "PROTOCOL.md's concrete reviewing arm must pin the plan it immediately dispatches, not contradict the Preamble with a bare read"
 
 kernel_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/kernel.md" | tr -s '[:space:]' ' ')"
 assert_match "one \`medium\` finding turns an all-\`approve\`" "$kernel_one_line" \

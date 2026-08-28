@@ -616,19 +616,45 @@ review_plan_adopt_evidence_rows() {
 "
   done <<< "$filed"
 
+  # Select the evidence engines the adopted slots will name. Required
+  # distinct engines come first, in first-filing order; only then fill any
+  # remaining degraded/session-independent slots from the unused envelope
+  # pool. This ordering matters when more envelopes exist than slots. With
+  # filed engines A,A,B and a two-distinct-engine plan, checking distinctness
+  # over ALL evidence and then taking the first two would land A,A -- silently
+  # lowering the independence the precheck just claimed to preserve while B
+  # sat unused in the third envelope.
+  local selected="" pool="$named" seen=" " selected_n=0
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    case "$seen" in *" $name "*) continue ;; esac
+    seen="$seen$name "
+    selected="$selected$name
+"
+    selected_n=$(( selected_n + 1 ))
+    pool="$(_review_pool_take "$pool" "$name")" || return 1
+    [ "$selected_n" -ge "$want_distinct" ] && break
+  done <<< "$named"
+  while [ "$selected_n" -lt "$need" ] && IFS= read -r name; do
+    [ -n "$name" ] || continue
+    selected="$selected$name
+"
+    selected_n=$(( selected_n + 1 ))
+  done <<< "$pool"
+
   impl="$(review_implementer_engine "$repo" "$id")"
   local eng label used=" "
   rows=""; i=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     i=$(( i + 1 ))
-    # Slot i takes the i-th named review when there is one; slots left over
-    # (covered by an anonymous envelope, which is creditable to any of them)
-    # keep the engine the plan already named. The label is re-derived, never
-    # carried over: an adopted engine that is the implementer's own, or one a
-    # slot above already holds, is degraded independence and has to say so --
-    # the same two rules `review_routing` labels by.
-    eng="$(printf '%s\n' "$named" | sed -n "${i}p")"
+    # Slot i takes the i-th selected evidence engine when there is one; slots
+    # left over (covered by an anonymous envelope, which is creditable to any
+    # of them) keep the engine the plan already named. The label is re-derived,
+    # never carried over: an adopted engine that is the implementer's own, or
+    # one a slot above already holds, is degraded independence and has to say
+    # so -- the same two rules `review_routing` labels by.
+    eng="$(printf '%s\n' "$selected" | sed -n "${i}p")"
     [ -n "$eng" ] || eng="$(printf '%s' "$line" | cut -f2)"
     label="engine-independent"
     case "$used" in *" $eng "*) label="session-independent" ;; esac

@@ -217,17 +217,8 @@ ledger_effective_status() {
 # accumulating below it, so an operator sees it coming -- "-" otherwise.
 # Prints nothing when the ledger is missing or empty; callers (e.g. `orchid
 # status`) supply the "(no engine events yet)" placeholder.
-# ledger_show <repo> -- one line per engine: <engine>\t<status>\t<detail>
-# (detail = "until <iso>" for rate_limited; otherwise "failures <n>" whenever
-# consecutive_failures>0 -- whether status has already flipped to "failing"
-# at threshold or is still sub-threshold "ok", so an operator sees an engine
-# accumulating failures before it actually goes unavailable -- and/or
-# "refusals <n>" whenever capability_refusals>0, appended after the failure
-# count when both are nonzero; "-" when there is nothing to report). Prints
-# nothing when the ledger is missing or empty; callers (e.g. `orchid status`)
-# supply the "(no engine events yet)" placeholder.
-#
-# The refusal count is what makes a capability refusal visible instead of
+# A capability refusal is appended as "refusals <n>", after the failure count
+# when both exist. That count makes a capability refusal visible instead of
 # silent (dogfood F12): it never affects availability, so `orchid status` is
 # the only place an operator can see that an engine keeps declining the work
 # it is handed -- and see it WITHOUT the word "failures" next to a
