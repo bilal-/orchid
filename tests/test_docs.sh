@@ -945,3 +945,42 @@ if [ "$wp_defined" -eq 0 ]; then
 else
   fail 'worktree_prepare now exists in this tree: docs/specs/kernel.md still argues against it as an unlanded T023 design, and that paragraph must be re-read against what actually shipped'
 fi
+
+# ===========================================================================
+# T024 -- PLANNING step 2 is the ONLY place `operator_prerequisite` can be
+# named, so it has to name it there.
+#
+# The field is settable at exactly one moment in a run's life: while the plan
+# is being drafted. The implementer cannot set it afterwards -- its commits
+# may not touch `.orchid/` at all, and INV-04 refuses entry to `testing` over
+# one that does -- so a planner who never reads the word never writes it, and
+# the whole convention silently applies to nothing.
+#
+# templates/task-migrate.md's prose is NOT a substitute, and that is the
+# regression this pins: a task whose migration is incidental (a `feature`
+# that alters a table, a `test` archetype exercising one) never renders that
+# template and its planner never sees the instruction. THE TICK's `testing`
+# step describes the gate for whoever meets it; only PLANNING step 2 reaches
+# the one actor who can prevent meeting it.
+#
+# Sliced to step 2 rather than grepped over the whole file, because "PROTOCOL
+# mentions the field somewhere" is exactly the state this replaces -- it was
+# already described at length under THE TICK while step 2 said nothing.
+# ===========================================================================
+planning_step2="$(sed -n '/^## PLANNING/,/^## THE TICK/p' "$REPO_ROOT/PROTOCOL.md" \
+  | sed -n '/^2\. Draft the roadmap/,/^3\. /p' \
+  | tr '\n' ' ' | tr -s '[:space:]' ' ')"
+# The slice's own witness, asserted before anything is read out of it. Both
+# range markers are ordinary prose headings and either could be reworded; an
+# empty slice would otherwise fail the two checks below with "the docs lost
+# this sentence", which is a lie about which thing broke.
+[ -n "$planning_step2" ] \
+  || fail 'test bug, not a docs failure: the PLANNING-step-2 slice came back empty — one of the sed range markers (## PLANNING, ## THE TICK, "2. Draft the roadmap", "3. ") no longer matches PROTOCOL.md'
+printf '%s' "$planning_step2" | grep -qF 'orchid task create' \
+  || fail 'test bug, not a docs failure: the PLANNING-step-2 slice does not contain the task-drafting step it is supposed to be — re-check the sed range before reading the assertions below'
+# Folded, like every other pinned sentence here: this one is hard-wrapped
+# mid-phrase in the source and `grep -F` matches a line at a time.
+printf '%s' "$planning_step2" | grep -qF 'Include `operator_prerequisite` for any task whose verification depends on a step taken OUTSIDE the sandbox' \
+  || fail "PROTOCOL.md's PLANNING step 2 must tell the planner to set operator_prerequisite — it is the only moment in a run when that field can be written, so a planner who is not told there is never told at all"
+printf '%s' "$planning_step2" | grep -qF 'this applies to every archetype, not only the `migrate` one' \
+  || fail "PROTOCOL.md's PLANNING step 2 must say the field applies to every archetype — left to templates/task-migrate.md alone, a feature or test task that happens to alter a schema never carries the instruction"
