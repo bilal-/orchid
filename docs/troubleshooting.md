@@ -133,16 +133,34 @@ the record's `passes` counter whenever the record is unchanged by content. Once
 model for it:
 
 ```
-pump: judgment boundary [run-complete] has survived 4 passes unchanged
+pump: judgment boundary [review-conflict] has survived 4 passes unchanged
   (pump_wake_max=3) — not waking an orchestrator again; an operator has been
   notified
 ```
 
+What the counter charges is a WAKEUP, not merely a pass. A pass that could not
+wake anyone — the boundary is operator-only, or no orchestrator engine resolves
+(rate-limited, ledger-disabled, none configured) — is recorded but not counted,
+so an engine outage cannot quietly spend the budget on your behalf.
+
 The driver raises the blocker on the same pass, exactly once. Read it in
 `.orchid/BLOCKERS.md`, or with `orchid run boundary show`, and act on the
-boundary yourself — a `run-complete` boundary wants the acceptance checks and
-`orchid run accept --reason ... --evidence ...`, which no orchestrator can
-perform on your behalf. The counter resets the moment the boundary changes.
+boundary yourself — a `review-conflict` boundary wants `orchid task arbitrate`.
+The counter resets the moment the boundary changes.
+
+A **finished** run never gets this far and has its own line. No command surface
+admits `orchid run accept`, so a `run-complete` boundary is operator-only and
+the pump declines it before the budget applies at all:
+
+```
+pump: judgment boundary [run-complete] is operator-only — not waking an
+  orchestrator
+```
+
+That one wants the acceptance checks and `orchid run accept --reason ...
+--evidence ...`, which no orchestrator can perform on your behalf. It is also
+why a completed run stops costing wakeups but does **not** stop the schedule —
+see [Tearing it down](./quickstart.md#tearing-it-down).
 
 ## An installed service runs on schedule but nothing happens
 

@@ -3552,18 +3552,30 @@ if [ -n "$boundary_kind" ]; then
   # The record is read BEFORE it is written, and written before the notify
   # decision below, because that decision now needs both halves: which record
   # was there a moment ago (the dedup), and what the `passes` counter reads
-  # AFTER this pass has been counted (the wake budget).
+  # after this pass has been accounted for (the wake budget).
   prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
   prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
   prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
   prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
 
-  if [ -n "$boundary_task" ]; then
-    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --task "$boundary_task" \
-      --reason "$boundary_reason" >/dev/null
-  else
-    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --reason "$boundary_reason" >/dev/null
+  # WILL THIS PASS ACTUALLY SPEND A WAKEUP? The counter the wake budget reads
+  # is charged here, so it is charged only when the answer is yes. Both ways of
+  # answering no are quiet, ordinary states that must not consume budget: the
+  # boundary is operator-only (the pump exits at its step 5c), or no
+  # orchestrator engine resolves at all -- rate-limited, ledger-disabled, none
+  # configured -- and the pump exits one step later at its step 6. Neither asks
+  # a model anything, so neither is evidence that asking one does not work.
+  bset_args=(--kind "$boundary_kind")
+  [ -z "$boundary_task" ] || bset_args+=(--task "$boundary_task")
+  bset_args+=(--reason "$boundary_reason")
+  # `! { a && b; }` rather than an empty `then` branch: this file runs under
+  # `set -e`, where a bare `a && b` statement whose left side fails would abort
+  # the pass outright.
+  if ! { drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" \
+           "$orchestrator_surface" && drive_orchestrator_available "$repo"; }; then
+    bset_args+=(--no-count)
   fi
+  "$ORCHID_BIN" run boundary set "${bset_args[@]}" >/dev/null
 
   now_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
   boundary_passes="$(printf '%s' "$now_boundary" | jq -r '.passes // 1' 2>/dev/null || echo 1)"

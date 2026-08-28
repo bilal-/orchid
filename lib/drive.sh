@@ -649,6 +649,30 @@ drive_wake_budget_max() {
   printf '%s\n' "$n"
 }
 
+# drive_orchestrator_available <repo> -- 0 iff an orchestrator engine resolves
+# right now. This is the SAME question runners/orchid-pump asks at its step 6,
+# and it is asked here for the budget's sake: a pass on which the pump will
+# exit at that step spends no wakeup, so it must not spend budget either.
+#
+# Without it the counter would measure wall passes rather than wakeups, and a
+# rate-limited or ledger-disabled orchestrator would exhaust the budget over
+# four quiet passes without a single model having been asked -- permanently
+# declining to wake one for a boundary it could have settled the moment the
+# outage lifted, under a blocker naming wakeups that never happened. That is a
+# worse failure than the unbounded polling this budget exists to stop, because
+# it stops a run that was still making progress.
+#
+# `brokered` is deliberately NOT the same answer: drive_orchestrator_surface
+# reports an unavailable orchestrator as `brokered` because that is the
+# narrowest honest SURFACE, and a brokered surface still admits `orchid task
+# arbitrate` -- so an arbitration boundary reads as orchestrator-resolvable
+# while nobody can actually be woken for it. Availability is its own fact.
+drive_orchestrator_available() {
+  local engine
+  engine="$(resolve_role_available "$1" orchestrator 2>/dev/null)" || return 1
+  [ -n "$engine" ]
+}
+
 # drive_wake_budget_exhausted <passes> <max> -- 0 iff this boundary has now
 # survived MORE passes than the budget allows, i.e. <max> wakeups have already
 # been spent on it and changed nothing. Strictly greater-than: on the pass

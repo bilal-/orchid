@@ -777,17 +777,29 @@ fi
 # boundary an orchestrator CAN settle gets a BOUNDED number of tries at it.
 # "Could settle" is static -- a kind, a task status, a manifest label -- so it
 # is satisfied identically on the hundredth pass as on the first, and it cannot
-# notice that the record has not changed by a character in between. A run whose
-# every task is already `done` is exactly that shape: the acceptance evidence
-# behind `orchid run accept` is a human's, so no number of wakeups will ever
-# move it. The live-run finding is the same: eight consecutive wakeups with no
-# legal transition available, the interval shrinking rather than the polling
+# notice that the record has not changed by a character in between. The
+# live-run finding is exactly that: eight consecutive wakeups with no legal
+# transition available, the interval shrinking rather than the polling
 # stopping.
+#
+# The boundary that reaches here is a `review-conflict`/`review-evidence` one
+# over an `arbitrating` task -- the only shape any surface admits a settling
+# verb for. A finished run does NOT reach here: no surface admits `orchid run
+# accept`, so `run-complete` is operator-only and 5c above declines it without
+# ever spending a wakeup. Two mechanisms, one required outcome; this one bounds
+# the case where a model genuinely could act and repeatedly did not.
 #
 # `passes` is the boundary record's own counter -- `orchid run boundary set`
 # bumps it whenever the record it is handed is unchanged by content and resets
 # it to 1 when it is not -- so it counts passes THIS EXACT boundary has
-# survived. Once it exceeds pump_wake_max, the wakeups already spent on it
+# survived. What it charges is a WAKEUP: runners/orchid-drive passes
+# `--no-count` on any pass that cannot spend one, which is exactly the two
+# steps above (5c's operator-only boundary, and step 6's unresolvable
+# orchestrator). Otherwise a rate-limited engine would exhaust this budget over
+# four quiet passes without a model ever having been asked, and the refusal
+# below would be reporting wakeups that never happened.
+#
+# Once it exceeds pump_wake_max, the wakeups already spent on it
 # demonstrably changed nothing, and runners/orchid-drive has raised the blocker
 # that reaches a human on the same pass (it reads this same predicate, from
 # lib/drive.sh, for the mirror-image decision). So the pump stops waking a

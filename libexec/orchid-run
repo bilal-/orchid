@@ -131,7 +131,7 @@ case "$sub" in
       set)
         verb_lock_guard "$repo"
         epoch_require "$repo"; export ORCHID_EPOCH
-        bkind=""; btask=""; breason=""
+        bkind=""; btask=""; breason=""; bnocount=0
         while [ $# -gt 0 ]; do case "$1" in
           --kind)
             [ -n "${2:-}" ] || orchid_die "--kind requires a value"
@@ -142,6 +142,14 @@ case "$sub" in
           --reason)
             [ -n "${2:-}" ] || orchid_die "--reason requires a value"
             breason="$2"; shift 2 ;;
+          # --no-count: record the boundary WITHOUT charging a wakeup to it.
+          # The counter below is spent by the wake budget, and a budget is only
+          # honest if what it counts is what it claims to count -- see the
+          # comment on `passes` itself. The caller (runners/orchid-drive) is
+          # the one component positioned to know whether this pass can actually
+          # produce a wakeup, so it says so here rather than leaving the record
+          # to assume every pass did.
+          --no-count) bnocount=1; shift ;;
           *) shift ;;
         esac; done
         [ -n "$bkind" ] || orchid_die "usage: orchid run boundary set --kind <kind> [--task <id>] --reason \"...\""
@@ -163,6 +171,16 @@ case "$sub" in
         # precisely the content comparison already being made two lines below,
         # and a separate counter would need to re-derive that comparison to
         # know when to zero itself.
+        #
+        # WHAT IT COUNTS IS WAKEUPS, NOT WALL PASSES, and `--no-count` is how
+        # that stays true. A pass on which no orchestrator can be woken at all
+        # -- the boundary is operator-only, or no orchestrator engine resolves
+        # (rate-limited, ledger-disabled, no engine configured) -- spends no
+        # wakeup, so it must not spend budget either. Counting it would let a
+        # transient engine outage exhaust the budget without a single model
+        # ever having been asked, permanently parking a boundary an
+        # orchestrator could have settled the moment the outage lifted, under
+        # a blocker claiming wakeups that never happened.
         bprev_kind=""; bprev_task=""; bprev_reason=""; bprev_passes=0
         if [ -f "$bfile" ]; then
           bprev_kind="$(jq -r '.kind // ""' "$bfile" 2>/dev/null || echo "")"
@@ -174,6 +192,13 @@ case "$sub" in
           esac
         fi
         if [ "$bprev_kind" = "$bkind" ] && [ "$bprev_task" = "$btask" ] && [ "$bprev_reason" = "$breason" ]; then
+          if [ "$bnocount" -eq 1 ]; then
+            # No wakeup was available to spend, so the record is left exactly
+            # as it was -- not rewritten with the same number, which would be
+            # an identical file relanded for nothing.
+            echo "boundary unchanged: $bkind${btask:+ ($btask)} (pass $bprev_passes, uncounted — no orchestrator wakeup was available)"
+            exit 0
+          fi
           bnext_passes=$(( bprev_passes + 1 ))
           # Bump in place: `at` and `epoch` keep naming when this boundary was
           # FIRST recorded (a record that restamped itself every pass would
@@ -192,9 +217,17 @@ case "$sub" in
           echo "boundary unchanged: $bkind${btask:+ ($btask)} (pass $bnext_passes)"
           exit 0
         fi
+        # A brand-new boundary starts at 1 wakeup spent when this pass will
+        # spend one, and at 0 when it cannot -- the same accounting as the
+        # unchanged branch above, applied to the record's first pass so that a
+        # boundary first met during an engine outage does not begin its life
+        # already one wakeup down.
+        bfirst_passes=1
+        [ "$bnocount" -eq 0 ] || bfirst_passes=0
         jq -n --arg k "$bkind" --arg t "$btask" --arg r "$breason" \
+          --argjson p "$bfirst_passes" \
           --arg e "$(epoch_current "$repo")" --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-          '{schema:1, kind:$k, task:$t, reason:$r, epoch:($e|tonumber? // 0), at:$at, passes:1}' \
+          '{schema:1, kind:$k, task:$t, reason:$r, epoch:($e|tonumber? // 0), at:$at, passes:$p}' \
           | atomic_write "$bfile"
         bjargs=(--kind blocker)
         [ -z "$btask" ] || bjargs=(--task "$btask" --kind blocker)

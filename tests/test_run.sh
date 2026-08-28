@@ -270,15 +270,13 @@ rc=0; ORCHID_EPOCH=$(( ORCHID_EPOCH - 1 )) "$ORCHID_BIN" run release-lease >/dev
 # T036 -- THE WAKE BUDGET, and the boundary record's `passes` counter it is
 # answered from.
 #
-# A run whose tasks are ALL done raises the same `run-complete` boundary on
-# every pass, forever: `orchid run accept` demands an operator's evidence file,
-# so nothing an orchestrator does moves it. Against an adapter whose command
-# surface admits `run accept` -- any `soft` adapter -- that boundary reads as
-# orchestrator-RESOLVABLE on every one of those passes, because resolvability
-# is a static property of (kind, task status, surface) and cannot notice that
-# the record has not changed by a character. That is how a FINISHED run woke a
-# model eight consecutive times in the live run and, because the notify path is
-# suppressed for anything orchestrator-resolvable, never told the human.
+# The live finding was a pump that woke an orchestrator pass after pass over a
+# boundary no wakeup moved -- eight consecutive times, with the interval
+# shrinking rather than the polling stopping. Resolvability alone cannot stop
+# it: "an orchestrator could settle this" is a static property of (kind, task
+# status, command_surface), so it is satisfied identically on the hundredth
+# pass as on the first and cannot notice that the record has not changed by a
+# character in between.
 #
 # The counter that CAN notice is the boundary record's own `passes`: `orchid
 # run boundary set` bumps it whenever the record it is handed is unchanged by
@@ -286,6 +284,18 @@ rc=0; ORCHID_EPOCH=$(( ORCHID_EPOCH - 1 )) "$ORCHID_BIN" run release-lease >/dev
 # wake) and the driver (which raises the blocker instead) read one predicate
 # over it, in lib/drive.sh, so the two can never disagree about whether a
 # boundary is still worth a model's time.
+#
+# THE BOUNDARY DRIVEN HERE IS `review-conflict` OVER AN `arbitrating` TASK, and
+# that choice is load-bearing. It is the shape a woken orchestrator really can
+# settle -- `orchid task arbitrate` is in the write set BOTH surfaces admit
+# (lib/drive.sh's _DRIVE_BROKERED_WRITE_VERBS), and the task's status allows it
+# -- so it is the only shape where an unbounded wake loop is still possible at
+# all, and therefore the only one a budget can be shown to bound. A
+# `run-complete` boundary is NOT that shape: no surface admits `orchid run
+# accept`, so it is operator-only on every one of them and the pump declines it
+# one gate earlier, at 5c. That half of the finding is asserted at the end of
+# this block, on its own terms -- a run whose tasks are all done must wake
+# nobody, which is a different mechanism with the same required outcome.
 #
 # Driven end to end through the real pump against a real stub orchestrator:
 # what is being proven is that a wake STOPS HAPPENING, and only a spawn that
@@ -309,9 +319,6 @@ WB_BARE="$WB/bare"; mkdir -p "$WB_BARE"
 
 # A `soft` orchestrator: no `command_surface` key at all, which INV-14 reads as
 # soft (a manifest may weaken its own claim by omission, never strengthen it).
-# That is the half of the classification where run-complete IS an orchestrator
-# procedure -- and therefore the only half where an unbounded wake loop was
-# ever possible.
 mkdir -p "$WB/eng/wbstub"
 printf 'manifest_version=1\nid=test/wbstub\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
   > "$WB/eng/wbstub/plugin.conf"
@@ -350,14 +357,28 @@ WB_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH="$WB_EPOCH"
 echo "# Requirements" > .orchid/requirements.md
 "$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
-"$ORCHID_BIN" task create W001 "the only task, and it is finished" >/dev/null
+"$ORCHID_BIN" task create W001 "a contested review, parked for arbitration" >/dev/null
+"$ORCHID_BIN" task create W002 "already finished" >/dev/null
 "$ORCHID_BIN" plan apply --reason "wake-budget fixture" >/dev/null
+# W001 is parked at `arbitrating` over a request-changes review: the
+# `review-conflict` boundary, settled by `orchid task arbitrate`, which is the
+# one write BOTH command surfaces admit. This is the exact fixture shape
+# tests/test_pump.sh uses to reach the LLM hand-off at all.
+#
 # `done` is QUOTED. Bare, it is a shell keyword sitting in argument position,
 # which is exactly the shape ShellCheck flags (SC1010) and ci-local runs at
 # --severity=warning, so the linter -- not bash -- is what would reject it.
 # Every other fixture in this suite that plants a finished status spells it
 # the same way (tests/test_drive.sh's F010/B010 fixtures).
-fm_set "$WB_WT/.orchid/tasks/W001.md" status "done"
+WB_CAND=7777777777777777777777777777777777777777
+fm_set "$WB_WT/.orchid/tasks/W001.md" status arbitrating
+fm_set "$WB_WT/.orchid/tasks/W001.md" candidate_sha "$WB_CAND"
+fm_set "$WB_WT/.orchid/tasks/W002.md" status "done"
+mkdir -p "$WB_WT/.orchid/reviews"
+jq -n --arg cand "$WB_CAND" \
+  '{contract:1, job_id:"j-fixture-W001", task:"W001", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:"wake-budget fixture review",
+    candidate_sha:$cand, findings:[]}' > "$WB_WT/.orchid/reviews/W001-a1-reviewer.json"
 unset ORCHID_EPOCH
 HOME="$HOME" "$ORCHID_BIN" trust unattended "$WB_WT" --reason "wake-budget fixture" >/dev/null \
   || fail "wake-budget fixture: unattended acknowledgement"
@@ -403,19 +424,56 @@ printf 'pump_wake_max=0\n' > "$WB_CFG/orchid.config"
 assert_eq 3 "$(drive_wake_budget_max "$WB_CFG")" \
   "a zero budget falls back to the default rather than to 'never wake an orchestrator at all'"
 
+# -- an OUTAGE spends no budget --------------------------------------------
+# Asked before anything else drives this boundary, because it is about the
+# counter's very first pass as much as its later ones.
+#
+# What the budget charges must be a WAKEUP, not a wall pass. These four passes
+# meet a repository whose orchestrator role resolves to nothing at all -- the
+# same state a rate-limited or ledger-disabled engine leaves -- so the pump
+# reaches its step 6, reports no capable orchestrator, and exits without asking
+# any model anything. Counting them would let a transient engine outage exhaust
+# the budget on a boundary a model was never given a chance at, and then
+# permanently decline to wake one the moment the outage lifted, under a blocker
+# claiming wakeups that never happened. That is a worse failure than the
+# unbounded polling the budget exists to stop: it parks a run that was still
+# capable of moving.
+#
+# Appended, never overwritten -- last-match-wins is what makes the restore
+# below a one-line append too.
+printf 'role.orchestrator=nosuchengine\n' >> "$WB_WT/orchid.config"
+wb_pass=1
+while [ "$wb_pass" -le 4 ]; do
+  wb_stale_lease
+  wb_outage="$(ORCHID_REPO="$WB_WT" "$WB_PUMP" 2>&1)" || true
+  wb_pass=$((wb_pass + 1))
+done
+assert_match 'no capable orchestrator available' "$wb_outage" \
+  "sanity: with no orchestrator resolvable the pump really is exiting at its availability probe"
+assert_eq review-conflict "$(wb_field '.kind // ""')" \
+  "a contested review parks the run on the review-conflict boundary -- the one an orchestrator can settle"
+assert_eq W001 "$(wb_field '.task // ""')" "and the record names the contested task"
+assert_eq 0 "$(wb_wakes)" "sanity: an unresolvable orchestrator role wakes nobody"
+assert_eq 0 "$(wb_field '.passes // 0')" \
+  "four passes on which nobody COULD be woken charge nothing to the wake budget"
+red_case "an engine outage records the boundary but spends none of its wake budget"
+
 # -- GREEN: within budget, the pump really does wake an orchestrator -------
+# The outage is over. If those four passes had been charged, this repository
+# would already be over a budget of 3 and the very first pass below would
+# decline -- so the wake count here is the outage arm's proof as much as its
+# own.
+printf 'role.orchestrator=wbstub\n' >> "$WB_WT/orchid.config"
 wb_pass=1
 while [ "$wb_pass" -le 3 ]; do
   wb_stale_lease
   ORCHID_REPO="$WB_WT" "$WB_PUMP" >/dev/null 2>&1 || true
   wb_pass=$((wb_pass + 1))
 done
-assert_eq run-complete "$(wb_field '.kind // ""')" \
-  "a run whose every task is done parks on the run-complete boundary"
-assert_eq accepting "$(fm_get "$WB_WT/.orchid/roadmap.md" run_status)" \
-  "COMPLETION's mechanical half is taken without an operator verb -- the run does leave 'running' on its own"
+assert_eq review-conflict "$(wb_field '.kind // ""')" \
+  "the boundary is unmoved: the woken orchestrator settled nothing"
 assert_eq 3 "$(wb_field '.passes // 0')" \
-  "three passes over one unchanged boundary are counted on the record itself"
+  "three wakeups over one unchanged boundary are counted on the record itself"
 assert_eq 3 "$(wb_wakes)" \
   "and while the budget lasts the pump really does wake an orchestrator, once per pass"
 green_case "an orchestrator-settleable boundary is woken for, once per pass, while its wake budget lasts"
@@ -429,13 +487,13 @@ assert_eq 4 "$(wb_field '.passes // 0')" "the fourth pass is counted like any ot
 assert_match "has survived 4 passes unchanged \(pump_wake_max=3\)" "$wb_red" \
   "the pump says exactly why it declined, and against which budget"
 assert_eq 3 "$(wb_wakes)" \
-  "and spawned nobody: a run whose tasks are all done stops waking an orchestrator"
-red_case "a run whose tasks are all done stops waking an orchestrator once its wake budget is spent"
+  "and spawned nobody: a boundary no wakeup has moved stops being worth a model's time"
+red_case "a boundary that three orchestrator wakeups did not move stops waking a fourth"
 
 # The human is finally told -- on the pass the budget runs out, and only then.
 # For every pass before it the boundary looked orchestrator-resolvable, which
 # is precisely what kept this notify suppressed while the run polled a model.
-assert_match "judgment boundary \[run-complete\] has survived 3 orchestrator wakeup\(s\) unchanged" \
+assert_match "judgment boundary \[review-conflict\] has survived 3 orchestrator wakeup\(s\) unchanged" \
   "$(cat "$WB_WT/.orchid/BLOCKERS.md")" \
   "the blocker that reaches a human is raised when the wakeups are proven not to have worked"
 wb_blocker_lines="$(wc -l < "$WB_WT/.orchid/BLOCKERS.md")"
@@ -448,9 +506,10 @@ assert_eq "$wb_blocker_lines" "$(wc -l < "$WB_WT/.orchid/BLOCKERS.md")" \
   "and raises no second blocker: the budget runs out exactly once per boundary"
 
 # -- the counter resets when the boundary actually CHANGES -----------------
-# Without this the budget would be a one-way latch: a run that got past its
-# finished state (an operator adds a task, a review lands) would never wake an
-# orchestrator again, which is a worse failure than the one being fixed.
+# Without this the budget would be a one-way latch: a run that got past the
+# parked condition (an operator arbitrates, a new review lands) would never
+# wake an orchestrator again, which is a worse failure than the one being
+# fixed.
 ORCHID_EPOCH="$(ORCHID_REPO="$WB_WT" "$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH
 ORCHID_REPO="$WB_WT" "$ORCHID_BIN" run boundary set --kind operator-decision \
@@ -459,3 +518,34 @@ ORCHID_REPO="$WB_WT" "$ORCHID_BIN" run boundary set --kind operator-decision \
 assert_eq 1 "$(wb_field '.passes // 0')" \
   "a boundary that differs by content resets the counter -- the budget is per-boundary, never a latch"
 unset ORCHID_EPOCH
+
+# -- RED: a run whose tasks are ALL done wakes nobody at all ----------------
+# The other half of the live finding, and a DIFFERENT mechanism from the budget
+# above: `orchid run accept --reason --evidence` is admitted by no command
+# surface, so `run-complete` is operator-only on every one of them and the pump
+# declines it at 5c without spending a single wakeup -- not after three, not
+# ever. The budget never even gets to apply, which is why this is asserted
+# separately rather than folded into the arms above.
+#
+# The review envelope goes with the status: a `done` task with a contested
+# review still in reviews/ is not the finished run this is about.
+rm -f "$WB_WT/.orchid/reviews/W001-a1-reviewer.json"
+fm_set "$WB_WT/.orchid/tasks/W001.md" status "done"
+wb_wakes_before_done="$(wb_wakes)"
+wb_pass=1
+while [ "$wb_pass" -le 3 ]; do
+  wb_stale_lease
+  wb_done_out="$(ORCHID_REPO="$WB_WT" "$WB_PUMP" 2>&1)" || true
+  wb_pass=$((wb_pass + 1))
+done
+assert_eq run-complete "$(wb_field '.kind // ""')" \
+  "a run whose every task is done parks on the run-complete boundary"
+assert_eq accepting "$(fm_get "$WB_WT/.orchid/roadmap.md" run_status)" \
+  "COMPLETION's mechanical half is taken without an operator verb -- the run does leave 'running' on its own"
+assert_match 'is operator-only — not waking an orchestrator' "$wb_done_out" \
+  "and the pump says so, naming the boundary it declined"
+assert_eq "$wb_wakes_before_done" "$(wb_wakes)" \
+  "a finished run wakes nobody -- not once, let alone every pump_interval_s forever"
+assert_eq 0 "$(wb_field '.passes // 0')" \
+  "and charges nothing to the wake budget: no wakeup was ever available to spend"
+red_case "a run whose tasks are all done stops waking an orchestrator"

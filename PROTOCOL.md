@@ -3218,13 +3218,21 @@ is normal, never an error:
   character in three passes. The boundary record's own `passes` counter can:
   `orchid run boundary set` bumps it whenever the record it is handed is
   unchanged by content and resets it to 1 when it is not, so it counts passes
-  this exact boundary has survived. Once it exceeds the budget the pump stops
+  this exact boundary has survived. What it counts is WAKEUPS, not wall
+  passes — the driver passes `--no-count` on any pass that cannot spend one
+  (the boundary is operator-only, or no orchestrator engine resolves at all:
+  rate-limited, ledger-disabled, none configured), because a pass that asked
+  no model anything is no evidence that asking one does not work. Without
+  that, a transient engine outage would exhaust the budget over four quiet
+  passes and park a settleable boundary permanently. Once it exceeds the budget the pump stops
   waking a model for it (`pump: judgment boundary [<kind>] has survived N
   passes unchanged`, exit 0) and the driver raises the `orchid notify` blocker
-  that reaches a human — exactly once, on the pass the budget runs out. A run
-  whose tasks are all `done` is what this exists for: the acceptance evidence
-  behind `orchid run accept` is a human's, so no number of wakeups moves it.
-  With all four satisfied, the
+  that reaches a human — exactly once, on the pass the budget runs out. What
+  this bounds is the `review-conflict`/`review-evidence` shape over an
+  `arbitrating` task, the only one any surface admits a settling verb for; a
+  finished run never reaches it, because no surface admits `orchid run accept`
+  and the operator-only gate above declines `run-complete` without spending a
+  wakeup at all. With all four satisfied, the
   pump probes `resolve_role_available orchestrator` and `exec`s
   `runners/orchid-tick` — the only path that reaches it, since a pass the
   deterministic policy can resolve on its own goes through

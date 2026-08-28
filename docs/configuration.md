@@ -353,9 +353,16 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   status and the resolved adapter's `command_surface`; it is satisfied
   identically on the hundredth pass as on the first, and cannot notice that the
   record has not changed by a character in between. The boundary record's own
-  `passes` counter can, and this is what it is compared against. A run whose
-  tasks are all `done` is the case this exists for: `orchid run accept` demands
-  an operator's evidence file, so no number of wakeups will ever move it. Raise
+  `passes` counter can, and this is what it is compared against. It counts
+  WAKEUPS: a pass on which nobody could be woken — the boundary is
+  operator-only, or no orchestrator engine resolves (rate-limited,
+  ledger-disabled, none configured) — is recorded but not charged, so an engine
+  outage cannot spend the budget without a model ever being asked. In practice
+  the boundaries this bounds are `review-conflict`/`review-evidence` over an
+  `arbitrating` task — the only shape any surface admits a settling verb for. A
+  finished run is handled one gate earlier and never reaches the budget: no
+  surface admits `orchid run accept`, so `run-complete` is operator-only and
+  the pump declines it without spending a wakeup at all. Raise
   it if your orchestrator legitimately needs more passes to settle a boundary;
   a value of `0` or a malformed one falls back to the default rather than to
   either extreme.
