@@ -1090,41 +1090,13 @@ drive_reviewer_envelope_count() {
 # `ok`, bound to the current candidate_sha): the QUALIFIED engine id that
 # envelope reports, or a bare `-` when it reports none.
 #
-# `.engine` is the only durable record of WHICH engine produced a filed
-# review: `orchid jobs reconcile` cross-checks it against the job manifest's
-# own engine (so it cannot be forged past reconcile) and then deletes the
-# manifest, leaving the envelope as the sole survivor. Adapters that omit the
-# field -- it is optional, and today's fixtures exercise that -- yield `-`,
-# which drive_review_slots_unsatisfied treats as attributable to any slot.
+# The scan itself lives in lib/review.sh (`review_filed_engines`) because the
+# `--adopt-evidence` remedy there has to read exactly the same set this
+# matching does: a plan re-pinned onto evidence the driver would then decline
+# to credit would be a second dead end wearing the first one's remedy. This
+# name stays as the driver-side spelling its own tests already use.
 drive_reviewer_envelope_engines() {
-  local repo="$1" id="$2" state tf attempt cand f e
-  state="$(orchid_state "$repo")"; tf="$state/tasks/$id.md"
-  attempt=$(( $(fm_get "$tf" attempts) + 1 ))
-  cand="$(fm_get "$tf" candidate_sha)"
-  [ -n "$cand" ] || return 0
-  for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
-    [ -e "$f" ] || continue
-    [ "$(envelope_field "$f" '.status // empty' 2>/dev/null || true)" = ok ] || continue
-    [ "$(envelope_field "$f" '.candidate_sha // empty' 2>/dev/null || true)" = "$cand" ] || continue
-    e="$(envelope_field "$f" '.engine // empty' 2>/dev/null || true)"
-    printf '%s\n' "${e:--}"
-  done
-}
-
-# _drive_pool_take <pool> <want> -- prints <pool> minus the FIRST line equal
-# to <want>; exit 1 (pool printed unchanged) when there is none. Consuming
-# rather than merely testing is what gives the matching below multiplicity:
-# one envelope can satisfy exactly one slot.
-_drive_pool_take() {
-  local want="$2" line found=0 out=""
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    if [ "$found" -eq 0 ] && [ "$line" = "$want" ]; then found=1; continue; fi
-    out="$out$line
-"
-  done <<< "$1"
-  printf '%s' "$out"
-  [ "$found" -eq 1 ]
+  review_filed_engines "$1" "$2"
 }
 
 # drive_review_slots_unsatisfied <repo> <task> <routing> -- the rows of
@@ -1132,48 +1104,14 @@ _drive_pool_take() {
 # table) that have NO review of their own yet. Empty output means every routed
 # slot is covered.
 #
-# Keyed on SLOT IDENTITY, never on a count. A count is the wrong key the
-# moment a slot is relaunched: with slot 1 routed to engine A and slot 2 to
-# engine B, a relaunch that lands a SECOND A review takes the count to the
-# tier's required number, and a count-keyed driver would then both stop
-# dispatching slot 2 and hand `drive_review_decision` two reviews from one
-# engine to approve unanimously -- defeating the engine independence the whole
-# risk-tiered review policy exists to enforce (docs/specs/kernel.md,
-# "Independence"). Here A's second review can only ever satisfy a slot the
-# routing table itself routed to A, which is exactly the degraded case
-# `review_routing` already labels `session-independent` and journals.
-#
-# Envelopes that name no engine (`-`) are matched LAST, after every exact
-# attribution has been made, and can stand in for any remaining slot: an
-# adapter that omits `.engine` leaves nothing to attribute by, and refusing to
-# credit its review would relaunch a slot forever.
+# Like the engine scan above, the rule itself lives in lib/review.sh
+# (`review_plan_unsatisfied`), where the plan's own verbs need it: `--repin`
+# has to know which rows are already covered so it can freeze them, and
+# `--adopt-evidence` produces a table this must then credit. One rule, read
+# from one place, or the remedy and the gate drift apart and a task can be
+# handed a plan the driver still refuses.
 drive_review_slots_unsatisfied() {
-  local repo="$1" id="$2" routing="$3" pool line eng qid unmatched out
-  pool="$(drive_reviewer_envelope_engines "$repo" "$id")"
-
-  unmatched=""
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    eng="$(printf '%s' "$line" | cut -f2)"
-    qid="$(resolve_engine_qualified_id "$eng" 2>/dev/null || true)"
-    [ -n "$qid" ] || qid="$eng"
-    if pool="$(_drive_pool_take "$pool" "$qid")"; then
-      continue
-    fi
-    unmatched="$unmatched$line
-"
-  done <<< "$routing"
-
-  out=""
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    if pool="$(_drive_pool_take "$pool" -)"; then
-      continue
-    fi
-    out="$out$line
-"
-  done <<< "$unmatched"
-  printf '%s' "$out"
+  review_plan_unsatisfied "$1" "$2" "$3"
 }
 
 # -- worktree identity ------------------------------------------------------

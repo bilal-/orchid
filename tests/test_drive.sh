@@ -1127,6 +1127,191 @@ assert_eq review-conflict "$(lboundary | jq -r .kind)" \
   "and the pass then stops on the verdicts themselves, not on the evidence set"
 
 # ===========================================================================
+# Part H2 -- THE PLAN MUST NOT MOVE UNDER ITS OWN EVIDENCE (T039, lesson
+# L027). Part H proves a slot is keyed on IDENTITY; this proves that identity
+# is PINNED for the life of the attempt, and that a task whose plan no longer
+# matches its evidence has a way out that is a verb.
+#
+# Found live on r-002: a task collected two valid, candidate-bound reviews
+# from two different engines, and one of those engines THEN hit its
+# consecutive-failure threshold on unrelated work. `jobs review-plan` is
+# computed from engine health, so the slot that engine had been dispatched for
+# was re-routed to somebody else, and the review it had already filed counted
+# for nothing. The feature archetype declares reviewing -> arbitrating as the
+# only forward edge, that edge is gated on slot coverage, and `task arbitrate`
+# refuses any status but arbitrating -- so the task could not advance, could
+# not rework, could not be arbitrated. The only move left was hand-editing
+# durable state.
+#
+# Each case gets its OWN run: a pass walks every task, and two fixtures parked
+# in `reviewing` in one repo would launch jobs and record boundaries for each
+# other's assertions.
+# ===========================================================================
+PCAND=6666666666666666666666666666666666666666
+pinorchid()  { ORCHID_REPO="$PIN_REPO" ORCHID_EPOCH="$PIN_EPOCH" "$ORCHID_BIN" "$@"; }
+pindrive()   { PIN_RC=0; PIN_OUT="$(ORCHID_REPO="$PIN_REPO" ORCHID_EPOCH="$PIN_EPOCH" "$DRIVE" 2>&1)" || PIN_RC=$?; }
+pinstatus()  { ORCHID_REPO="$PIN_REPO" "$ORCHID_BIN" task show "$PIN_TASK" | grep '^status: ' | cut -d' ' -f2; }
+pinboundary(){ ORCHID_REPO="$PIN_REPO" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+# mk_pin_repo <dir> <task-id> -- an initialized run whose only task is a
+# medium-tier one parked in `reviewing` on PCAND, reviewed by the same two
+# stub engines Part H uses (revalpha, revbeta; implementer stubimpl).
+mk_pin_repo() {
+  PIN_REPO="$1"; PIN_TASK="$2"
+  mkdir -p "$PIN_REPO"
+  cd "$PIN_REPO" || exit 1
+  git init -q .
+  printf 'role.implementer=stubimpl\nrole.reviewer=revalpha\nreview.medium=revalpha,revbeta\n' > orchid.config
+  git add -A
+  git commit -q -m "fixture: config"
+  ORCHID_REPO="$PIN_REPO" "$ORCHID_BIN" init >/dev/null || fail "orchid init (pinned-plan fixture $PIN_TASK)"
+  git checkout -q orchid/integration
+  PIN_EPOCH="$(ORCHID_REPO="$PIN_REPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+  pinorchid requirements import "$WORK/requirements.md" >/dev/null
+  pinorchid task create "$PIN_TASK" "pinned plan fixture" >/dev/null
+  pinorchid plan apply --reason "initial plan" >/dev/null
+  pinorchid task set "$PIN_TASK" risk_tier medium --reason "fixture: two reviewer slots" >/dev/null
+  fm_set "$PIN_REPO/.orchid/tasks/$PIN_TASK.md" status reviewing
+  fm_set "$PIN_REPO/.orchid/tasks/$PIN_TASK.md" candidate_sha "$PCAND"
+  mkdir -p "$PIN_REPO/.orchid/reviews"
+}
+# mk_pin_review <suffix> <qualified-engine-id> <verdict> -- one filed review.
+# Both fixtures below use request-changes so the walk stops at `arbitrating`
+# on the VERDICTS instead of running on into a merge these fixtures have no
+# real candidate for.
+mk_pin_review() {
+  jq -n --arg jid "j-fixture-$PIN_TASK-$1" --arg task "$PIN_TASK" --arg cand "$PCAND" \
+        --arg e "$2" --arg v "$3" \
+    '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
+      verdict:$v, scope_complete:true, summary:"pinned-plan fixture",
+      candidate_sha:$cand, engine:$e, findings:[]}' \
+    > "$PIN_REPO/.orchid/reviews/$PIN_TASK-a1-reviewer$1.json"
+}
+# fail_engine <engine> -- three consecutive failures, the threshold at which
+# the ledger stops offering an engine at all.
+fail_engine() {
+  ledger_mark "$PIN_REPO" "$1" failed
+  ledger_mark "$PIN_REPO" "$1" failed
+  ledger_mark "$PIN_REPO" "$1" failed
+  ledger_available "$PIN_REPO" "$1" && fail "fixture: $1 must be ledger-unavailable after three consecutive failures"
+}
+
+# --- H2a: an engine that fails AFTER filing a valid review ------------------
+mk_pin_repo "$WORK/pin-fail-after" L020
+pplan="$(pinorchid jobs review-plan L020 --pin)"
+assert_eq revalpha "$(printf '%s\n' "$pplan" | sed -n 1p | cut -f2)" "fixture: slot 1 is pinned to revalpha"
+assert_eq revbeta  "$(printf '%s\n' "$pplan" | sed -n 2p | cut -f2)" "fixture: slot 2 is pinned to revbeta"
+
+mk_pin_review "" test/revalpha request-changes     # slot 1 files a real review...
+fail_engine revalpha                               # ...and only THEN goes down
+mk_pin_review ".2" test/revbeta request-changes    # slot 2 files too
+
+# The fixture is only worth anything if live routing really has moved off the
+# failing engine -- otherwise the pin is being credited with an outcome
+# nothing threatened.
+[ "$(review_routing "$PIN_REPO" L020 | sed -n 1p | cut -f2)" != revalpha ] \
+  || fail "fixture: live routing must have re-routed slot 1 off the failing engine, or this case proves nothing"
+
+pindrive
+assert_eq arbitrating "$(pinstatus)" \
+  "an engine that fails AFTER filing a valid review does not invalidate that review: the task still reaches arbitrating (rc=$PIN_RC, out: $PIN_OUT)"
+assert_eq review-conflict "$(pinboundary | jq -r .kind)" \
+  "and the pass stops on the verdicts themselves, not on an evidence set that stopped adding up"
+
+# --- H2b: a plan that no longer matches its evidence has a legal exit -------
+# No pin was ever taken for this attempt (the r-002 shape, and the shape of
+# any task already mid-flight when this kernel lands), so the driver's own
+# first pass pins a table computed AFTER the engine went down -- and the two
+# reviews on disk cannot all be credited to it.
+mk_pin_repo "$WORK/pin-wedged" L021
+fail_engine revalpha
+mk_pin_review "" test/revalpha request-changes
+mk_pin_review ".2" test/revbeta request-changes
+
+pindrive
+assert_eq 16 "$PIN_RC" "a plan that no longer matches its evidence stops the pass at a judgment boundary (out: $PIN_OUT)"
+assert_eq reviewing "$(pinstatus)" "and takes no transition"
+assert_eq review-evidence "$(pinboundary | jq -r .kind)" "the boundary names the evidence problem"
+assert_match "independence is unproven" "$(pinboundary | jq -r .reason)" "...in structured terms"
+assert_match "adopt-evidence" "$(pinboundary | jq -r .reason)" \
+  "and NAMES THE ACTION EXPECTED — a boundary raised while the task is reviewing, where no arbitration verb is legal, leaves an operator nothing but a hand-edit unless it says which verb settles it"
+
+# The exit itself. A verb, refused if it would lower the independence bar
+# (tests/test_review_routing.sh covers both refusals), and recorded.
+pinorchid jobs review-plan L021 --adopt-evidence >/dev/null \
+  || fail "--adopt-evidence must accept two reviews from two DIFFERENT engines against a plan that has re-routed under them"
+assert_match "review plan pinned for attempt 1 \(adopt\)" "$(cat "$PIN_REPO/.orchid/journal.md")" \
+  "the adoption is journaled, with the table it landed"
+
+pindrive
+assert_eq arbitrating "$(pinstatus)" \
+  "and the task moves: a plan that no longer matched its evidence had a supported way forward that was not an operator editing durable state (rc=$PIN_RC, out: $PIN_OUT)"
+
+# --- H2c: a failed pin is surfaced and dispatches NO reviewer --------------
+# Stub only the nested journal verb that makes `review-plan --pin` durable;
+# reconciliation, boundary storage, runtime jobs, and routing all remain
+# functional. The old fail-open path suppressed this refusal, recomputed the
+# live table, and launched both slots against a plan that did not exist.
+mk_pin_repo "$WORK/pin-write-fail" L022
+drive_journal_bin="$REPO_ROOT/libexec/orchid-journal"
+drive_journal_backup="$WORK/orchid-journal.drive-backup"
+cp "$drive_journal_bin" "$drive_journal_backup"
+drive_rc_file="$WORK/orchid-journal.drive.rc"
+drive_out_file="$WORK/orchid-journal.drive.out"
+(
+  trap 'cp "$drive_journal_backup" "$drive_journal_bin"; chmod +x "$drive_journal_bin"' EXIT
+  printf '#!/usr/bin/env bash\ncase " $* " in *" --kind review_plan "*) exit 71 ;; esac\nexec /bin/bash %q "$@"\n' \
+    "$drive_journal_backup" > "$drive_journal_bin"
+  chmod +x "$drive_journal_bin"
+  pindrive
+  printf '%s\n' "$PIN_RC" > "$drive_rc_file"
+  printf '%s' "$PIN_OUT" > "$drive_out_file"
+)
+PIN_RC="$(cat "$drive_rc_file")"
+PIN_OUT="$(cat "$drive_out_file")"
+assert_eq 16 "$PIN_RC" \
+  "RED: a review-plan pin failure stops the pass at a visible boundary (out: $PIN_OUT)"
+assert_eq reviewing "$(pinstatus)" "and leaves the task in reviewing"
+assert_eq review-evidence "$(pinboundary | jq -r .kind)" \
+  "the boundary classifies the failed review-evidence prerequisite"
+assert_match "review-plan pin failed" "$(pinboundary | jq -r .reason)" \
+  "and surfaces the failed pin instead of discarding its stderr"
+assert_match "no reviewer was dispatched" "$(pinboundary | jq -r .reason)" \
+  "with the fail-closed outcome explicit"
+[ -z "$(list_dir_files "$PIN_REPO/.orchid/runtime/jobs")" ] \
+  || fail "RED: no reviewer job may be prepared or launched when its plan was not pinned"
+[ ! -e "$(review_plan_file "$PIN_REPO" L022)" ] \
+  || fail "RED: the failed pin transaction must leave no plan behind"
+diff -q "$drive_journal_bin" "$drive_journal_backup" >/dev/null 2>&1 \
+  || fail "the journal executable must be restored byte-for-byte after driver failure injection"
+
+# GREEN twin: restore only the injected journal fault. The identical pin can
+# now journal and store its table, proving the RED case did not break routing.
+green_plan="$(pinorchid jobs review-plan L022 --pin)"
+assert_eq revalpha "$(printf '%s\n' "$green_plan" | sed -n 1p | cut -f2)" \
+  "GREEN: after the write path is restored, the same slot plan pins normally"
+[ -f "$(review_plan_file "$PIN_REPO" L022)" ] \
+  || fail "GREEN: the successful command stores the candidate-bound plan"
+
+# --- H2d: diagnostics are never reviewer rows ------------------------------
+# A damaged record for one engine makes ledger_available's jq complain on
+# stderr while routing can still produce valid rows from the other engines.
+# The old `2>&1` capture fed that diagnostic to the dispatch loop as if it
+# were another tabular slot. A diagnostic on an otherwise successful pin is
+# now a fail-closed boundary, never a launch with words from jq as the slot.
+mk_pin_repo "$WORK/pin-diagnostic" L023
+printf '{"revalpha":"not-an-engine-record"}\n' > "$PIN_REPO/.orchid/runtime/engines.json"
+pindrive
+assert_eq 16 "$PIN_RC" \
+  "RED: a successful review-plan command carrying a degraded-read diagnostic stops at a boundary (out: $PIN_OUT)"
+assert_eq reviewing "$(pinstatus)" "and leaves the task in reviewing"
+assert_eq review-evidence "$(pinboundary | jq -r .kind)" \
+  "the mixed diagnostic/table output is classified as a review-evidence prerequisite failure"
+assert_match "review-plan pin failed" "$(pinboundary | jq -r .reason)" \
+  "the diagnostic is surfaced instead of becoming a reviewer slot"
+[ -z "$(list_dir_files "$PIN_REPO/.orchid/runtime/jobs")" ] \
+  || fail "RED: a review-plan diagnostic must dispatch no reviewer"
+
+# ===========================================================================
 # Part I -- THE RUN-COMPLETE CASE. `orchid run accept --evidence` is the only
 # verb that closes a finished run, and runners/orchid-orchestrator-command
 # does not admit it. So against a `command_surface=brokered` orchestrator a

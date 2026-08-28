@@ -237,6 +237,16 @@ journaled — and `high` risk queues rather than accept the weaker guarantee.
 LLM evaluators measurably favor their own generations
 ([research.md](./research.md)); this topology is the countermeasure.
 
+**And the slot table is pinned for the life of an attempt.** Routing reads
+engine health, so it is a moving table; a review is judged against the one
+its attempt was dispatched under (`orchid jobs review-plan <id> --pin`,
+stored beside the envelopes it credits). Recomputing it instead cost r-002 a
+task outright: an engine filed a valid review, went unavailable on unrelated
+work minutes later, and the slot it had been dispatched for was reassigned —
+leaving evidence nothing could credit, on the only edge out of `reviewing`,
+in a status from which no arbitration verb is legal. Independence you can
+recompute is not independence you can prove.
+
 ## 5. Epoch fencing: two writers, one survivor
 
 <!-- Grounded in docs/specs/kernel.md's normative process model (epochs,

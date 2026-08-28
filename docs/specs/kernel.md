@@ -155,7 +155,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 | `journal.md` | `orchid journal add` (also auto-written by reason-bearing verbs) |
 | `lessons.md` | `orchid lessons add/update/retire/consolidate` |
 | `baseline.md` | `orchid init` |
-| `reviews/*` | `orchid jobs reconcile` (envelopes, including hook-point envelopes filed as `<task>-a<n>-hook-<point>.json`, and the plan-critique envelopes filed as `plan-a<n>-plan_critic.json`), `orchid verify`/`orchid merge` (evidence), `orchid run accept` (acceptance) |
+| `reviews/*` | `orchid jobs reconcile` (envelopes, including hook-point envelopes filed as `<task>-a<n>-hook-<point>.json`, and the plan-critique envelopes filed as `plan-a<n>-plan_critic.json`), `orchid verify`/`orchid merge` (evidence), `orchid run accept` (acceptance), `orchid jobs review-plan --pin\|--repin\|--adopt-evidence` (the pinned reviewer-slot plan, `<task>-a<n>.review-plan.json` — see "Independence") |
 | `plugins.lock` | `orchid plugins lock` |
 | `BLOCKERS.md` | `orchid notify` |
 | `runs/<run_id>/` | `orchid run new` (archival move of the just-finished run's `tasks/`, `reviews/`, `journal.md`, `roadmap.md`, `BLOCKERS.md` — written once, at rollover, never touched again) |
@@ -829,6 +829,19 @@ LABELED AND JOURNALED as such — never silently. `medium`/`high` → dual
 review (worktree-capable for depth + engine-independent for diversity).
 Two-engine installs are "degraded independence": medium accepts labeled
 session independence; high queues for engine independence.
+**The routing table is pinned per attempt.** Routing is computed from engine
+health, so reading it twice can give two different tables — and a review
+already filed against the first one then belongs to no slot in the second.
+That is a dead end, not a degradation: the only forward edge out of
+`reviewing` is gated on slot coverage, and `orchid task arbitrate` is illegal
+from that status (r-002, lesson L027). So `orchid jobs review-plan <task>
+--pin` writes the table to `reviews/<task>-a<n>.review-plan.json`, bound to
+the attempt and the `candidate_sha`, and every reader gets that table back
+until one of the two moves. `--repin` (rebind the unfilled slots to live
+routing, freezing the covered ones) and `--adopt-evidence` (re-pin onto the
+engines that actually reviewed, refused when it would name fewer distinct
+engines than the plan it replaces) are the recorded exits, and the
+`review-evidence` boundary names whichever one it expects.
 **Inline-review blind-spot guard:** inline prompts include the pack
 manifest AND the changed-symbol list; routing upgrades to a
 worktree-capable reviewer when changed symbols are referenced in un-diffed
@@ -920,7 +933,8 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
 - **Entry kinds (closed set):** `arbitration` (BOTH outcomes), `risk_change`,
   `attempt_waiver`, `kill` (spinning/stall, dead-end named), `blocker`,
   `blocker_resolved`, `rebase_review` (delta-vs-full classification),
-  `plan_revision`, `acceptance`, `intervention` (operator verbs log
+  `plan_revision`, `review_plan` (pin, re-pin, or evidence adoption for one
+  review attempt), `acceptance`, `intervention` (operator verbs log
   automatically; also the kind used for a lock-break entry written by
   `orchid run start|resume` when it breaks a stale lock), `lesson` (mirrored
   to `lessons.md`).

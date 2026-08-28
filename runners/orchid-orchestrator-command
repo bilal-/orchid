@@ -192,7 +192,15 @@ case "$verb" in
     ;;
   jobs)
     [ "${2:-}" = review-plan ] || refuse "jobs ${2:-<missing>} is not admitted (only review-plan)"
-    [ "$#" -eq 3 ] || refuse "jobs review-plan takes exactly one task id"
+    # T039: the verb itself now also takes `--pin|--repin|--adopt-evidence`,
+    # each of which WRITES the pinned slot plan. None is admitted here, and
+    # the arity check is what refuses them -- so the message says which form
+    # this surface allows rather than claiming the verb has no other. A
+    # brokered orchestrator is woken to judge a boundary, not to dispatch
+    # reviewer slots (the driver does that, and pins as it goes), so the bare
+    # read is exactly what it needs: it returns the PINNED table, i.e. the
+    # plan the evidence under judgment was actually dispatched against.
+    [ "$#" -eq 3 ] || refuse "jobs review-plan is admitted only as a bare read of one task id (its --pin/--repin/--adopt-evidence forms write the slot plan and are not admitted here)"
     is_id "$3" || refuse "'$3' is not a valid task id"
     ;;
   journal)
