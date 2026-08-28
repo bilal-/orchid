@@ -65,10 +65,23 @@ exec "$BASH" "\$@"
 EOF
 chmod +x "$marker_wrapper"
 : > "$marker_probe"
-"$BASH" "$CI" --bash "$marker_wrapper" --list-shell >/dev/null \
+# CLEARED FIRST, and the probe is worth nothing without this. Hosted CI, and
+# the pre-push command docs/contributing.md prescribes, both run this suite
+# THROUGH scripts/ci-local.sh — which exports the marker before tests/run.sh
+# starts, so by the time this file runs there it is already 1 in this shell's
+# own environment and the child below would inherit it whether or not the
+# export under test still existed. That is the one context where this
+# assertion runs most often, and it is precisely the context where it would
+# have passed a ci-local.sh with its export line deleted: a check reporting
+# success without having tested anything. Cleared in a SUBSHELL, never here:
+# the value is genuine information about where this run is happening, and
+# tests/test_merge.sh's own scenarios depend on knowing it, so it must survive
+# this probe rather than be spent by it.
+( unset ORCHID_MERGE_GATE_ACTIVE
+  "$BASH" "$CI" --bash "$marker_wrapper" --list-shell >/dev/null ) \
   || fail "ci-local --list-shell failed through the marker-probe interpreter"
 assert_match "^1$" "$(cat "$marker_probe")" \
-  "ci-local.sh exports ORCHID_MERGE_GATE_ACTIVE into the processes it spawns (merge-gate recursion guard)"
+  "ci-local.sh exports ORCHID_MERGE_GATE_ACTIVE into the processes it spawns, ON ITS OWN — the probe was launched with the marker cleared from its parent (merge-gate recursion guard)"
 
 # The probe above proves the marker is set where it is first observable; this
 # proves nothing later takes it away again. One `export`, no `unset` — the

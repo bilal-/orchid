@@ -596,7 +596,12 @@ gate_marker="$WORK/gate-ran.txt"
 # against the merged tree rather than the candidate branch or the repo root"
 # are the same assertion.
 gate_pass="ls >> $gate_marker"
-gate_fail="ls >> $gate_marker; exit 3"
+# The red body also prints ONE gcc-shaped diagnostic, which is not decoration:
+# the routing half of this feature (see "(B, continued)") is that a gate
+# failure has to arrive in the next brief as a LOCATION, and a gate that
+# failed silently could not tell a working carry from a broken one.
+gate_diag='lib/example.sh:12: SC2086: Double quote to prevent globbing.'
+gate_fail="ls >> $gate_marker; echo '$gate_diag'; exit 3"
 
 set_gate() {  # rewrite orchid.config; an EMPTY argument means "no merge_gate key"
   {
@@ -662,6 +667,26 @@ assert_match "gate_failed" "$(cat .orchid/journal.md)" "gate failure journals it
 log10=".orchid/reviews/T010-merge.log"
 assert_match "^gate_status: ran$" "$(cat "$log10")" "merge evidence records that the gate ran"
 assert_match "^exit: 3$" "$(cat "$log10")" "the gate's own exit status is what the log carries"
+
+# (B, continued) THE ROUTING HALF, asserted here rather than after (B2)
+# because it is a statement about the state the FAILED merge just left behind.
+# It is also the reason this task lands after T010 rather than before it. Once
+# the gate fires for every task its failures become the rework
+# path for every task — and a `file:line: RULE:` location is not actionable by
+# an implementer that cannot run the linter that produced it (lesson L017). So
+# it is not enough that the gate blocks: its own diagnostics have to reach the
+# body the next implementer is handed. lib/findings.sh scrapes the SAME
+# `<id>-merge.log` this verb just wrote, and the gate's output is appended to
+# that log's captured body ahead of the same trailing `exit:` line findings.sh
+# keys on — asserted here end to end rather than argued in a comment, because
+# every part of that sentence is a thing a later edit could quietly break: the
+# banner could be written after the `exit:` line, the gate could get a log of
+# its own, or the sha binding could stop matching.
+body10="$(cat .orchid/tasks/T010.md)"
+assert_match "$gate_diag" "$body10" \
+  "the RED GATE's own location reaches the next implementer's brief — not just the log it cannot open"
+assert_match "orchid:rework-brief candidate=$cand10" "$body10" \
+  "and it arrives bound to the candidate that failed, in a real brief block"
 
 # (B2) same candidate, gate removed -> it merges. This is what makes (B) a
 # statement about the GATE rather than about some incidental property of

@@ -35,6 +35,12 @@ into only reaches the tasks whose author remembered it (docs/configuration.md,
   run per merge and tell nobody anything new. `--no-tests` stops right after
   ShellCheck and prints `CI PASS (static checks only; --no-tests)`. Hosted CI
   and your own pre-push run still take the flagless form: the whole thing.
+  Note what that leaves standing, though: "the task's own suite" is whatever
+  that task's `verification_commands` named, which is often two or three files
+  rather than `tests/run.sh`. The gate raises the *static* floor for every
+  task; how much *testing* a given merge got is still up to whoever wrote the
+  task. Run the flagless form before you push, because a merge will not run it
+  for you.
 - **ShellCheck is now load-bearing for merging, not just for CI.** Without it
   installed, this script exits 1, and so does every merge.
 - **The nesting is guarded, and the guard is why this script exports

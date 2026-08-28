@@ -292,15 +292,27 @@ shellcheck --norc --shell=bash --severity=warning -- "${SHELLCHECK_PATHS[@]}"
 # runs one. Everything below runs test scripts — the aggregate suite, then the
 # invariant and documentation rehearsals. `--no-tests` is the cut between
 # them, and it exists for one caller: this repository's `merge_gate`
-# (orchid.config; libexec/orchid-merge). At merge, the merged tree ALREADY
-# gets a full suite run, because `orchid merge` runs the task's
+# (orchid.config; libexec/orchid-merge). At merge, the merged tree has already
+# had THE TASK'S OWN suite run on it, because `orchid merge` runs that task's
 # `verification_commands` (or, failing that, config `verify`) in the same temp
 # worktree first. What that run does NOT give you is any of the static half
 # above — no task's own suite has ever included the ShellCheck gate, which is
 # the whole of lesson L016: seventeen findings behind a green suite. So the
 # floor this repository sets for itself is that static half alone. Adding the
-# test half to it would re-run, on the identical tree, a suite that had just
+# test half to it would re-run, on the identical tree, tests that had just
 # finished; the cut here is where the reason to run something stops.
+#
+# SAY THE LIMIT OUT LOUD, because it is L016's own shape one level in. "The
+# task's own suite" is not "the full suite": `verification_commands` is
+# authored per task, and a narrowly-scoped task names two or three files, not
+# tests/run.sh. So what `--no-tests` leaves in the floor is the static half
+# only, and the TEST half of a merge's coverage is still exactly as wide as
+# the task author made it. This cut does not fix that and is not pretending
+# to — it fixes the half no task ever named at all. A repository that wants
+# its whole suite in the floor drops `--no-tests` from its `merge_gate` and
+# pays a second full run on every merge; that is the honest price of the
+# stronger guarantee, and it is a repository-level decision rather than one
+# this script should make by omission.
 #
 # It is a cut, not a filter: a static check added ANYWHERE above this line is
 # in the gate automatically, with nothing to remember and nothing to enrol.

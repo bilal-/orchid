@@ -137,6 +137,14 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     gate ships bypassable. The one skip it does make is not textual — the gate
     is skipped when the task's own suite already failed, since that merge is
     going to `rework` regardless.
+  - **What a narrow gate does not cover, said plainly.** "The task's own
+    suite" is whatever that task's author wrote in `verification_commands`,
+    which for a tightly-scoped task is a couple of files rather than the whole
+    suite. So a `--no-tests`-style gate raises the *static* floor for every
+    task and leaves the *test* coverage of a merge exactly as wide as each
+    author made it — the r-001 defect narrowed, not abolished. Choose
+    knowingly: put in this key what must hold for every merge regardless of
+    who wrote the task, and accept the second run if that includes tests.
   - **Recursion.** A gate that runs the repository's own suite will re-enter
     `orchid merge` through that suite's tests. `orchid merge` sets
     `ORCHID_MERGE_GATE_ACTIVE` in the gate command's environment and refuses
