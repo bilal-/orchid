@@ -177,9 +177,12 @@ pack_budget_bytes=65536
 
 # v1.1: the OPERATOR HAND-OFF (PROTOCOL.md, THE TICK's implementing arm).
 # Some candidates need mechanical work that requires EXECUTION -- applying a
-# linter's own fix, re-pinning a release checksum, setting the mode bit on a
-# newly added executable -- and an engine profile that denies on the command
-# STRING can perform none of it. Set this to `required` when your implementer
+# linter's own fix, setting the mode bit on a newly added executable, or
+# running a candidate-local generator whose output is checked in -- and an
+# engine profile that denies on the command STRING can perform none of it.
+# Never use this pause to re-pin a whole-tree release checksum: that belongs
+# on the integration branch at release time (see `handoff.pin_check` above).
+# Set this to `required` when your implementer
 # is such a profile: a drive pass then STOPS at an `operator-handoff` boundary
 # after the implementer's envelope reconciles and BEFORE `orchid verify`,
 # instead of verifying a candidate that was never going to pass and spending a

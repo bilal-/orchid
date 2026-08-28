@@ -363,9 +363,9 @@ raised. See [configuration.md](./configuration.md) and PROTOCOL.md's
 
 **Symptom:** `orchid task show <id>` shows `attempts` climbing (and eventually
 `blocked — attempts exhausted`) on verify failures the candidate did not
-cause — a package checksum only the operator can re-pin, an executable that
-shipped without its mode bit, a fresh worktree that never received the
-`node_modules` the integration checkout has, or an assertion everyone already
+cause — a candidate-local package checksum only the operator can re-pin, an
+executable that shipped without its mode bit, a fresh worktree that never
+received the `node_modules` the integration checkout has, or an assertion everyone already
 knows samples a race.
 
 The driver classifies a failed `orchid verify` before charging it, so those
@@ -421,16 +421,17 @@ worth nothing:
    fault does not fail one check — it strands a whole suite. First, some
    failing line must *name the file and report its fault*
    (`.../orchid-frob: Permission denied`, `libexec/orchid-frob is not
-   executable`, `Formula/orchid.rb ... is STALE`); that is the proof the state
+   executable`, `package/component.pin ... is STALE`); that is the proof the state
    blocked this run. After it, every failing line that *names* the file is
    part of the same cascade and is attributed too, causal wording or not —
    `runners/orchid-drive must exist and be executable` and `T001 ... (last
    rc=126 ...)` are that mode bit's failures as surely as the refusal is.
-   Orchid's shipped Formula check is one four-line report: after its causal
-   stale line, the exact pinned-checksum, expected-checksum, and remedy records
-   are attributed too. An unfamiliar continuation remains unclaimed and
-   charges. This keeps the default route live without making arbitrary pin
-   checker prose neutral.
+   The legacy Orchid-format pin report has three exact continuations after its
+   causal stale line — pinned checksum, expected checksum, and remedy — which
+   are attributed too when an opt-in checker emits that format. An unfamiliar
+   continuation remains unclaimed and charges. The route defaults to `none`;
+   this compatibility grammar does not make Orchid's whole-tree Formula pin a
+   candidate hand-off.
    Without that first line, naming alone attributes nothing: every assertion
    that fails inside a newly added file names it. The path must use its exact
    repository-relative, `./`-relative, or worktree-root absolute spelling,
@@ -678,8 +679,10 @@ status, same `candidate_sha`, nothing added to the journal.
 
 **If an operator hand-off was acknowledged, `reverify` withdraws it.**
 `handoff_ack` asserts one thing about one commit: that *you* looked at that tree
-and confirmed the mechanical steps it needed — a mode bit, a re-pinned formula
-checksum — were done. The commit `reverify` re-stamps to is by construction one
+and confirmed the mechanical steps it needed — a mode bit, a linter fix, or a
+regenerated candidate-local file — were done. A whole-tree release checksum
+is never such a hand-off; it is pinned on integration at release time. The
+commit `reverify` re-stamps to is by construction one
 you committed *since*, and nobody has said that about it. Carrying the
 acknowledgement forward would make that claim on your behalf about a tree you
 never reviewed, and would then buy a verification guaranteed to fail on the

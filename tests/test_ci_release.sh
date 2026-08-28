@@ -918,7 +918,38 @@ drive_pin_default="$(sed -n "s/^_DRIVE_PIN_CHECK_DEFAULT='\([^']*\)'$/\1/p" \
 assert_eq none "$drive_pin_default" \
   "the driver package-pin prestate route defaults to none, so T019 cannot silently reintroduce the whole-tree Formula check into every task chain"
 
-# --- 6. scripts/pin-formula.sh must be executable in the index -------------
+# --- 6. Guidance must not put the Formula back in a candidate hand-off ------
+# Moving the executable gate is insufficient if the shipped operator guidance
+# still tells somebody to perform the same write by hand. These are the exact
+# stale instructions found after the behavior was already green: following any
+# of them makes task branches rewrite Formula/orchid.rb and recreates the RED
+# rebase above. Keep both the old phrases absent and the replacement rule
+# present, so a deletion cannot satisfy this check by making the docs silent.
+grep -Fq 're-pinning a release checksum' "$REPO_ROOT/orchid.config.example" \
+  && fail "orchid.config.example still describes a whole-tree release checksum as a candidate hand-off"
+grep -Fq 'a re-pinned formula checksum' "$REPO_ROOT/docs/troubleshooting.md" \
+  && fail "troubleshooting still describes the Formula checksum as candidate hand-off evidence"
+while IFS= read -r guidance_file; do
+  [ -n "$guidance_file" ] || continue
+  grep -Fq 're-pinning Formula/orchid.rb after any change to shipped bytes' \
+    "$REPO_ROOT/$guidance_file" \
+    && fail "$guidance_file still labels per-change Formula re-pinning as operator-owned candidate work"
+done <<'EOF'
+docs/beta-qualification.md
+scripts/beta-qualify.sh
+EOF
+
+grep -Fq 'Never use this pause to re-pin a whole-tree release checksum' \
+  "$REPO_ROOT/orchid.config.example" \
+  || fail "candidate hand-off configuration no longer says whole-tree release pins belong elsewhere"
+grep -Fq 'preparation, never a candidate hand-off' \
+  "$REPO_ROOT/docs/beta-qualification.md" \
+  || fail "beta qualification no longer distinguishes Formula release preparation from candidate hand-offs"
+grep -Fq 'is never such a hand-off' \
+  "$REPO_ROOT/docs/troubleshooting.md" \
+  || fail "troubleshooting no longer distinguishes Formula release preparation from candidate hand-offs"
+
+# --- 7. scripts/pin-formula.sh must be executable in the index -------------
 # r-001 set this mode bit on a branch as an operator hand-off and shipped a
 # different commit, so the fix was silently dropped: the blob is identical to
 # main's, the mode is not. It is harmless only because every caller spells

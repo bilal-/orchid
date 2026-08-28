@@ -79,7 +79,7 @@ guess. Pass `--no-run-verify` to skip it — the timing probe is then recorded a
 | `implementer-shell` | yes | Resolves `role.implementer` and reads the winning plugin's declared `capabilities=`. No `shell` means running a repository script and changing a file mode are operator hand-offs no in-loop actor can perform — a headless deadlock. |
 | `implementer-command-execution` | no (`not-tested`) | Whether the adapter *actually grants* command execution, which is a different fact from the manifest declaration. See below. |
 | `verify-duration` | yes | Times one real `verify=` run against `pump_stale_s`. The driver holds no lease refresh across a synchronous verification and the merge re-verifies after its rebase, so one pass costs roughly twice the verify duration with the lease untouched. |
-| `merge-rebase-regeneration` | yes | The merge rebase invalidates any committed artifact derived from the tree's exact content (a checksum pin, a lockfile, a generated file). Regenerating one needs an actor that can run a command. |
+| `merge-rebase-regeneration` | yes | The merge rebase can invalidate a committed candidate-local artifact (a lockfile or generated file). Regenerating one needs an actor that can run a command; whole-tree release pins are excluded because they belong on integration at release time. |
 | `stale-run-lock-visibility` | no | Plants a dead-owner run lock in the harness's own disposable scratch repository and checks whether a read-only command reports it. Recorded as `not-tested` — not as a gap — if the scratch repository could not be created or `orchid status --explain` never returned a report, because a check that could not run is not evidence that the behaviour is missing. |
 | `notify-return-leg` | no (`not-tested`) | Records whether an outbound channel is *configured*; never that it works. See below. |
 
@@ -256,9 +256,11 @@ Run it directly:
 - **Publication** of any kind: pushing a tag, uploading an archive, updating a
   tap, or announcing a release. The release gate builds and verifies locally and
   stops there ([install.md](./install.md)).
-- **Re-pinning `Formula/orchid.rb`** after any change to shipped bytes, and
-  **`chmod +x`** on any newly added `libexec` verb. Both are hand-offs on a
-  no-shell implementer profile.
+- **Re-pinning `Formula/orchid.rb` once on the integration branch at release
+  time**, immediately before the local release gate. This is release
+  preparation, never a candidate hand-off. **`chmod +x`** on a newly added
+  `libexec` verb remains a candidate hand-off on a no-shell implementer
+  profile.
 
 ## See also
 

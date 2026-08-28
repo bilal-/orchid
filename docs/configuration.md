@@ -375,11 +375,12 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   and re-pinning fixes none of those. The check must *say* something is stale
   and *name* a file the repository tracks; that file is what the waiver is
   attributed to, and a check that fails silently proves nothing and forgives
-  nothing. The supported Orchid-format report carries the pinned checksum,
+  nothing. The legacy Orchid-format report carries the pinned checksum,
   expected checksum, and one-command remedy on three continuation lines.
-  Those exact records are attributed with its causal
-  `Formula/orchid.rb ... STALE` line;
-  an unfamiliar continuation from a custom check remains unknown and charges.
+  Those exact records are attributed with an opt-in checker's causal tracked-
+  file `... STALE` line; an unfamiliar continuation remains unknown and
+  charges. This compatibility grammar does not opt Orchid's Formula pin back
+  in.
   Never point this at an artifact derived from the whole tree: obliging every
   candidate to regenerate one makes every branch rewrite the same line and
   stale-base rebases conflict (lesson L022). Orchid therefore leaves this at

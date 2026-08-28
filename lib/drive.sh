@@ -1385,9 +1385,11 @@ drive_worktree_plan() {
 # -- verification-failure classification ------------------------------------
 # The attempt budget is supposed to measure the CANDIDATE's quality. Left
 # unclassified it measures the harness's bad days instead: in r-002's
-# bootstrap wave, a stale Formula pin the implementer profile cannot re-pin and
-# an executable that shipped without its mode bit each consumed rework attempts
-# and drove tasks to `blocked` without a single defect in the code under test.
+# bootstrap wave, a stale Formula pin the implementer profile could not re-pin
+# and an executable that shipped without its mode bit each consumed rework
+# attempts and drove tasks to `blocked` without a single defect in the code
+# under test. T030 moved that whole-tree Formula pin to the release gate; the
+# pin class that remains here is explicitly configured and candidate-local.
 # Two more classes of the same injustice ran through that wave: a task worktree
 # that never received the gitignored dependency tree the integration checkout
 # carries (lesson L003), and an assertion the repository already knew sampled a
@@ -1667,13 +1669,14 @@ _drive_verify_body() {
 # a missing dependency tree claims the lines whose subject lives inside it and
 # no others, exactly as a mode bit claims the lines that name the file.
 
-# -- the two hand-offs, recognized without configuration --------------------
+# -- exec-bit hand-off plus an opt-in candidate-local pin hand-off -----------
 #
-# They are named by the protocol rather than by any one project (an
-# implementer profile may not set an exec bit and may not re-pin a package
-# checksum, L017), so a repository that has configured nothing must still be
-# protected from them -- otherwise it learns to configure them by first losing
-# the attempt this feature exists to save.
+# Both are named by the protocol rather than by any one project (an
+# implementer profile may not set an exec bit or regenerate a candidate-local
+# package pin, L017). The exec-bit route needs no configuration because the
+# candidate's file mode is the proof. The pin route is deliberately opt-in:
+# Orchid cannot guess whether a repository's pin is candidate-local, and a
+# whole-tree pin configured here would recreate L022's shared-line conflict.
 #
 # RECOGNITION IS NOT A CLASSIFIER OF FAILURE TEXT, AND IT IS NOT A PROOF OF
 # STATE EITHER. It is both, and each half is a veto over the other.
@@ -2073,12 +2076,12 @@ _drive_check_interp() {
 # word in a verify log establishes nothing on its own.
 _DRIVE_PIN_STALE_RE='(^|[^[:alnum:]_])[Ss][Tt][Aa][Ll][Ee]([^[:alnum:]_]|$)'
 
-# _DRIVE_PIN_REPORT_RE -- continuation records emitted by Orchid's supported
-# pin-report format after its causal staleness line. tests/test_ci_release.sh
-# preserves the check's multi-line output in its FAIL report, so these three
-# records are part of that one failure even though only the first line names
-# Formula/orchid.rb. Keep this vocabulary exact: an unfamiliar continuation
-# from a custom check remains unknown and therefore charges.
+# _DRIVE_PIN_REPORT_RE -- legacy-compatible continuation records after a
+# causal staleness line. Orchid's Formula tool originally established this
+# exact four-line format. It is no longer a per-candidate check (T030), but an
+# explicitly configured candidate-local checker may retain that format; the
+# three exact continuations then belong to its one failure. Keep the
+# vocabulary exact: an unfamiliar continuation remains unknown and charges.
 _DRIVE_PIN_REPORT_RE='^[[:space:]]*pin-formula:[[:space:]]+(pinned:[[:space:]]+([[:xdigit:]]{64}|<none>)|expected:[[:space:]]+[[:xdigit:]]{64}|run scripts/pin-formula[.]sh and commit the formula change [(]Formula/ is export-ignored, so the archive bytes stay identical[)])[[:space:]]*$'
 
 # _drive_strip_punct <token> -- <token> with the punctuation a sentence wraps
@@ -2126,12 +2129,11 @@ _drive_strip_punct() {
 # tracks in <root>. Nothing when the check said no such thing, which charges.
 #
 # THIS IS THE DIFFERENCE BETWEEN "THE PIN IS STALE" AND "THE CHECK FAILED",
-# and an exit status cannot draw it. `scripts/pin-formula.sh` exits 1 when the
-# recorded checksum is stale AND when it cannot find the formula, cannot find a
-# git checkout, or trips over packaging metadata this candidate itself
-# corrupted -- and re-pinning fixes only the first. Reading a nonzero exit as
-# staleness therefore handed an operator hand-off's amnesty to a whole class of
-# candidate defect.
+# and an exit status cannot draw it. A freshness checker can exit 1 both when
+# its recorded value is stale and when it cannot find its input, cannot find a
+# git checkout, or trips over metadata this candidate itself corrupted -- and
+# regenerating fixes only the first. Reading a nonzero exit as staleness would
+# hand an operator hand-off's amnesty to a whole class of candidate defect.
 #
 # The FILE is required as well as the word, for two reasons that are really
 # one: a waiver must be attributable to something, and a token that names a
@@ -2179,8 +2181,8 @@ _drive_pin_stale_path() {
 #
 # Running a repository's own script is not a new trust boundary: the driver
 # already executes that repository's entire verification command line, and this
-# one is named by config with a default that must exist in the verified tree,
-# and must state how it is run, before it is invoked at all
+# one is explicitly named by config, must exist in the verified tree, and must
+# state how it is run before it is invoked at all
 # (`_drive_check_interp`).
 #
 # One narrowing matters, and it is the hole the text-matching rounds left open:
