@@ -142,6 +142,33 @@ while IFS= read -r _step; do
   fi
 done <<< "$(printf '%s' "$_CAPABILITY_STEPS" | tr ' ' '\n')"
 
+# AND EXHAUSTIVE OVER WHERE EACH ROW IS ENFORCED, which is the half the gate
+# above cannot see. `lib/capability.sh` prices the work in one place and names
+# the GATE that acts on each price in another — a paragraph that opens "WHERE
+# EACH ROW IS ENFORCED" and then enumerates the rows. Pricing a step without
+# adding it there leaves a row whose gate nobody has chosen, and the file reads
+# as though somebody did: that is exactly what happened when `research` was
+# added to `_CAPABILITY_STEPS` and the enumeration was not, so the one row with
+# no role gate behind it was the one row the paragraph never placed.
+#
+# Matched on the BACKTICKED name, the form the paragraph uses for every row,
+# because a bare substring passes on a word that merely contains it (`review`
+# inside `reviewer`, `implement` inside `implementer`) — a false pass in an
+# assertion whose entire job is to catch an omission. The backtick lives in a
+# variable: written inline inside the double quotes this comparison needs, it
+# would be command substitution rather than a character.
+_bt='`'
+_enforced="$(sed -n '/WHERE EACH ROW IS ENFORCED/,/^#$/p' "$REPO_ROOT/lib/capability.sh")"
+[ -n "$_enforced" ] \
+  || fail "INV-16: lib/capability.sh has no 'WHERE EACH ROW IS ENFORCED' paragraph — without it this gate passes vacuously and the enumeration it guards is unguarded"
+while IFS= read -r _step; do
+  [ -n "$_step" ] || continue
+  case "$_enforced" in
+    *"$_bt$_step$_bt"*) ;;
+    *) fail "INV-16: step '$_step' is priced but named nowhere in lib/capability.sh's 'WHERE EACH ROW IS ENFORCED' paragraph — every row is enforced somewhere (or, like 'hook', priced at nothing and said to be), and a row with no stated gate is one nobody chose" ;;
+  esac
+done <<< "$(printf '%s' "$_CAPABILITY_STEPS" | tr ' ' '\n')"
+
 # ===========================================================================
 # 2 -- RED: a shell-requiring step routed to an actor declaring NO shell.
 #

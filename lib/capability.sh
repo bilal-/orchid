@@ -92,18 +92,28 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # `shell` is its floor (lesson L017; lib/handoff.sh's header).
 #
 # WHERE EACH ROW IS ENFORCED, because the answer is not uniform. `implement`,
-# `review`, `critique` and `orchestrate` are enforced at `orchid jobs prepare`,
-# the one place a (task, role, operation) triple is bound to an engine. For the
+# `review`, `critique`, `research` and `orchestrate` are enforced at `orchid
+# jobs prepare`, the one place a (task, role, operation) triple is bound to an
+# engine (prepare validates no operation NAME of its own -- only `hook` gets a
+# special case there, for its mandatory `--hook` -- so every one of them
+# reaches this table). For the
 # five BUILT-IN roles those rows restate a floor the role gate already holds
 # (and cannot be shadowed past -- lib/roles.sh refuses a custom role whose id
 # equals a core one, INV-10), so there they are defense in depth; they become
 # load bearing
 # the moment a CUSTOM role is bound, which is the case whose descriptor its own
-# publisher writes. Note that `orchestrate` reaches prepare only that way --
+# publisher writes. `research` is only ever the second of those: no built-in
+# role carries it, so its row has no role gate standing behind it at all.
+# Note that `orchestrate` reaches prepare only that way --
 # runners/orchid-tick builds its own request document and never mints a job --
 # so the tick's own orchestrator is gated by roles/orchestrator.role, not here.
 # `mechanical` is enforced at lib/handoff.sh, because it is a step no adapter
-# is dispatched for at all.
+# is dispatched for at all. `hook` is the one row with no enforcement site
+# anywhere, because it is priced at nothing and the gate returns before it so
+# much as resolves the actor -- a statement about the WORK, not a row this
+# paragraph forgot. All seven rows are accounted for above, and that is the
+# point of saying EACH: a step added to `_CAPABILITY_STEPS` without a home in
+# this paragraph is a step whose gate nobody has chosen.
 #
 # `review` and `critique` need `structured_text`, and pricing them at nothing
 # was this table's own fail-open. What both steps produce is a STRUCTURED reply
