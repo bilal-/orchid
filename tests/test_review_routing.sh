@@ -538,3 +538,34 @@ assert_match $'^1\tagy\tengine-independent$' "$repinT" \
 assert_match $'^2\tagy\tsession-independent$' "$repinT" \
   "and rebinds only the unfilled slot — labeled session-independent, because one engine covering two slots is degraded independence however it was arrived at"
 ledger_mark "$repoP" codex-review ok
+
+# ---------------------------------------------------------------------------
+# U -- JOURNAL FIRST. Failure injection stubs only the journal verb while the
+# review-plan destination remains writable. A write-before-journal
+# implementation leaves the pin behind and this RED case catches it; the same
+# command with the real journal restored is the GREEN twin.
+# ---------------------------------------------------------------------------
+mk_p_task TP6
+pinU="$(review_plan_file "$repoP" TP6)"
+journal_bin="$REPO_ROOT/libexec/orchid-journal"
+journal_backup="$WORK/orchid-journal.backup"
+cp "$journal_bin" "$journal_backup"
+printf '#!/usr/bin/env bash\nexit 71\n' > "$journal_bin"
+chmod +x "$journal_bin"
+rc=0
+errU="$("$ORCHID_BIN" jobs review-plan TP6 --pin 2>&1)" || rc=$?
+cp "$journal_backup" "$journal_bin"
+chmod +x "$journal_bin"
+
+[ "$rc" -ne 0 ] || fail "RED: --pin must fail when its required journal record fails"
+[ ! -e "$pinU" ] \
+  || fail "RED: a failed journal write must leave no review-plan mutation behind"
+assert_match "cannot journal the review-plan change" "$errU" \
+  "the refusal identifies the journal-first failure and says no plan was written"
+
+planU="$("$ORCHID_BIN" jobs review-plan TP6 --pin)"
+assert_eq "$TWO_ENGINE_PLAN" "$planU" \
+  "GREEN: with the journal restored, the same computed plan is accepted"
+[ -f "$pinU" ] || fail "GREEN: the journaled review plan is then stored"
+diff -q "$journal_bin" "$journal_backup" >/dev/null 2>&1 \
+  || fail "the journal executable must be restored byte-for-byte after failure injection"

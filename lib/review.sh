@@ -180,7 +180,7 @@ review_routing() {
 # tier asked for. THE PLAN MOVED UNDER THE EVIDENCE.
 #
 # So the plan is pinned. Once an attempt has a candidate to review, the table
-# is written down once (`review_plan_pin`, through `orchid jobs review-plan
+# is written down once (`review_plan_pin_rows`, through `orchid jobs review-plan
 # <id> --pin`) and every later reader gets THAT table back until the attempt
 # or the candidate changes -- whichever engines are healthy at the moment of
 # reading. Evidence keeps counting against the slots it was dispatched for,
@@ -238,7 +238,7 @@ review_plan_file() {
 # collation this runs under. So the shell hands back the SECOND review first.
 #
 # That is harmless for the pool matching below, which is order-free by
-# construction. It is not harmless for `review_plan_adopt_evidence`, which
+# construction. It is not harmless for `review_plan_adopt_evidence_rows`, which
 # credits the i-th filed review to slot i: read in glob order, a two-review
 # adoption pins slot 1 to whichever engine happened to file second, silently
 # transposing the table against the evidence it is supposed to be recording.
@@ -340,12 +340,17 @@ review_plan_store() {
   printf '%s\n' "$json" | atomic_write "$f"
 }
 
-# review_plan_pin <repo> <task> -- pin the effective plan for this attempt and
-# print it. IDEMPOTENT: a pin already bound to the current candidate is
-# returned untouched (so a driver may call this every pass without rewriting
-# state or journaling a change that did not happen). Exit 1 when the task has
-# no candidate_sha yet -- there is nothing to bind a plan to.
-review_plan_pin() {
+# review_plan_pin_rows <repo> <task> -- COMPUTE the table `--pin` should land
+# and print it, without writing durable state. IDEMPOTENT: a pin already bound
+# to the current candidate is returned untouched (so the verb can recognize a
+# no-op). Exit 1 when the task has no candidate_sha yet -- there is nothing to
+# bind a plan to.
+#
+# Keeping computation separate from review_plan_store is deliberate: the
+# writing verb must journal the exact rows FIRST and only then store them
+# (kernel INV-08). A helper that computes and writes in one call makes that
+# ordering impossible to enforce at the verb boundary.
+review_plan_pin_rows() {
   local repo="$1" id="$2" rows
   if rows="$(review_plan_pinned "$repo" "$id")"; then
     printf '%s\n' "$rows"
@@ -353,7 +358,6 @@ review_plan_pin() {
   fi
   rows="$(review_routing "$repo" "$id")"
   [ -n "$rows" ] || return 1
-  review_plan_store "$repo" "$id" "$rows" || return 1
   printf '%s\n' "$rows"
 }
 
@@ -420,9 +424,10 @@ review_plan_unsatisfied() {
   printf '%s' "$out"
 }
 
-# review_plan_repin <repo> <task> -- rebind this attempt to the LIVE routing
-# table, EXCEPT for the slots that already have a review of their own: those
-# rows are frozen exactly as they are.
+# review_plan_repin_rows <repo> <task> -- COMPUTE the table `--repin` should
+# land, without writing it. It rebinds this attempt to the LIVE routing table,
+# EXCEPT for the slots that already have a review of their own: those rows are
+# frozen exactly as they are.
 #
 # That exception is the whole design. A repin that recomputed every row would
 # be the defect this file exists to fix, offered as its own remedy: it would
@@ -433,13 +438,12 @@ review_plan_unsatisfied() {
 # engine a frozen row is already using, because two slots on one engine is
 # degraded independence and has to be labeled as such rather than arrived at
 # by accident.
-review_plan_repin() {
+review_plan_repin_rows() {
   local repo="$1" id="$2" old live unsat unsat_slots kept used rows impl
   old="$(review_plan "$repo" "$id")"
   live="$(review_routing "$repo" "$id")"
   [ -n "$live" ] || return 1
   if [ -z "$old" ]; then
-    review_plan_store "$repo" "$id" "$live" || return 1
     printf '%s\n' "$live"
     return 0
   fi
@@ -502,15 +506,14 @@ review_plan_repin() {
     # another slot already holds is degraded independence regardless of its
     # relation to the implementer, exactly as `review_routing`'s own
     # fewer-engines-than-slots fallback says.
-    label=engine-independent
-    case "$used" in *" $eng "*) label=session-independent ;; esac
-    [ "$eng" != "$impl" ] || label=session-independent
+    label="engine-independent"
+    case "$used" in *" $eng "*) label="session-independent" ;; esac
+    [ "$eng" != "$impl" ] || label="session-independent"
     used="$used$eng "
     rows="$rows$(printf '%s\t%s\t%s' "$i" "$eng" "$label")
 "
   done
   [ -n "$rows" ] || return 1
-  review_plan_store "$repo" "$id" "$rows" || return 1
   printf '%s' "$rows"
 }
 
@@ -562,12 +565,13 @@ _review_distinct_count() {
   echo "$n"
 }
 
-# review_plan_adopt_evidence <repo> <task> -- re-pin this attempt's plan onto
-# the engines that ACTUALLY filed valid, candidate-bound reviews, and print
-# the new table. This is the recorded exit for a task whose plan no longer
-# matches its evidence: the reviews on hand were dispatched, filed and
-# reconciled against slots that have since been re-routed, and crediting them
-# to the slots they came from is the whole of the remedy.
+# review_plan_adopt_evidence_rows <repo> <task> -- COMPUTE the table
+# `--adopt-evidence` should land, without writing it: re-pin this attempt's
+# plan onto the engines that ACTUALLY filed valid, candidate-bound reviews.
+# This is the recorded exit for a task whose plan no longer matches its
+# evidence: the reviews on hand were dispatched, filed and reconciled against
+# slots that have since been re-routed, and crediting them to the slots they
+# came from is the whole of the remedy.
 #
 # It may never buy a task its exit by lowering the bar, so it refuses unless
 # BOTH hold, with a diagnostic naming which one failed:
@@ -578,7 +582,7 @@ _review_distinct_count() {
 #     a plan that asked for two different ones -- that is precisely the
 #     same-engine pair the independence policy exists to refuse, and it stays
 #     refused.
-review_plan_adopt_evidence() {
+review_plan_adopt_evidence_rows() {
   local repo="$1" id="$2" plan filed need n_filed line qid name impl rows i
   plan="$(review_plan "$repo" "$id")"
   [ -n "$plan" ] || { echo "orchid: $id has no review plan to adopt evidence into" >&2; return 1; }
@@ -626,14 +630,13 @@ review_plan_adopt_evidence() {
     # the same two rules `review_routing` labels by.
     eng="$(printf '%s\n' "$named" | sed -n "${i}p")"
     [ -n "$eng" ] || eng="$(printf '%s' "$line" | cut -f2)"
-    label=engine-independent
-    case "$used" in *" $eng "*) label=session-independent ;; esac
-    [ "$eng" != "$impl" ] || label=session-independent
+    label="engine-independent"
+    case "$used" in *" $eng "*) label="session-independent" ;; esac
+    [ "$eng" != "$impl" ] || label="session-independent"
     used="$used$eng "
     rows="$rows$(printf '%s\t%s\t%s' "$i" "$eng" "$label")
 "
   done <<< "$plan"
 
-  review_plan_store "$repo" "$id" "$rows" || return 1
   printf '%s' "$rows"
 }

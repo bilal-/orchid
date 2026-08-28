@@ -933,7 +933,8 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
 - **Entry kinds (closed set):** `arbitration` (BOTH outcomes), `risk_change`,
   `attempt_waiver`, `kill` (spinning/stall, dead-end named), `blocker`,
   `blocker_resolved`, `rebase_review` (delta-vs-full classification),
-  `plan_revision`, `acceptance`, `intervention` (operator verbs log
+  `plan_revision`, `review_plan` (pin, re-pin, or evidence adoption for one
+  review attempt), `acceptance`, `intervention` (operator verbs log
   automatically; also the kind used for a lock-break entry written by
   `orchid run start|resume` when it breaks a stale lock), `lesson` (mirrored
   to `lessons.md`).

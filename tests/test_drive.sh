@@ -1246,6 +1246,46 @@ pindrive
 assert_eq arbitrating "$(pinstatus)" \
   "and the task moves: a plan that no longer matched its evidence had a supported way forward that was not an operator editing durable state (rc=$PIN_RC, out: $PIN_OUT)"
 
+# --- H2c: a failed pin is surfaced and dispatches NO reviewer --------------
+# Stub only the nested journal verb that makes `review-plan --pin` durable;
+# reconciliation, boundary storage, runtime jobs, and routing all remain
+# functional. The old fail-open path suppressed this refusal, recomputed the
+# live table, and launched both slots against a plan that did not exist.
+mk_pin_repo "$WORK/pin-write-fail" L022
+drive_journal_bin="$REPO_ROOT/libexec/orchid-journal"
+drive_journal_backup="$WORK/orchid-journal.drive-backup"
+cp "$drive_journal_bin" "$drive_journal_backup"
+printf '#!/usr/bin/env bash\ncase " $* " in *" --kind review_plan "*) exit 71 ;; esac\nexec /bin/bash %q "$@"\n' \
+  "$drive_journal_backup" > "$drive_journal_bin"
+chmod +x "$drive_journal_bin"
+
+pindrive
+cp "$drive_journal_backup" "$drive_journal_bin"
+chmod +x "$drive_journal_bin"
+assert_eq 16 "$PIN_RC" \
+  "RED: a review-plan pin failure stops the pass at a visible boundary (out: $PIN_OUT)"
+assert_eq reviewing "$(pinstatus)" "and leaves the task in reviewing"
+assert_eq review-evidence "$(pinboundary | jq -r .kind)" \
+  "the boundary classifies the failed review-evidence prerequisite"
+assert_match "review-plan pin failed" "$(pinboundary | jq -r .reason)" \
+  "and surfaces the failed pin instead of discarding its stderr"
+assert_match "no reviewer was dispatched" "$(pinboundary | jq -r .reason)" \
+  "with the fail-closed outcome explicit"
+[ -z "$(list_dir_files "$PIN_REPO/.orchid/runtime/jobs")" ] \
+  || fail "RED: no reviewer job may be prepared or launched when its plan was not pinned"
+[ ! -e "$(review_plan_file "$PIN_REPO" L022)" ] \
+  || fail "RED: the failed pin transaction must leave no plan behind"
+diff -q "$drive_journal_bin" "$drive_journal_backup" >/dev/null 2>&1 \
+  || fail "the journal executable must be restored byte-for-byte after driver failure injection"
+
+# GREEN twin: restore only the injected journal fault. The identical pin can
+# now journal and store its table, proving the RED case did not break routing.
+green_plan="$(pinorchid jobs review-plan L022 --pin)"
+assert_eq revalpha "$(printf '%s\n' "$green_plan" | sed -n 1p | cut -f2)" \
+  "GREEN: after the write path is restored, the same slot plan pins normally"
+[ -f "$(review_plan_file "$PIN_REPO" L022)" ] \
+  || fail "GREEN: the successful command stores the candidate-bound plan"
+
 # ===========================================================================
 # Part I -- THE RUN-COMPLETE CASE. `orchid run accept --evidence` is the only
 # verb that closes a finished run, and runners/orchid-orchestrator-command

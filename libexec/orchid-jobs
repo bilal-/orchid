@@ -1255,21 +1255,30 @@ case "$sub" in
     plan_before="$(review_plan_pinned "$repo" "$task" 2>/dev/null || true)"
     case "$plan_mode" in
       pin)
-        plan_after="$(review_plan_pin "$repo" "$task")" || \
+        plan_after="$(review_plan_pin_rows "$repo" "$task")" || \
           orchid_die "cannot pin a review plan for $task — a plan is bound to a round of evidence, and there is none to bind to until the task has a candidate_sha (and a routable slot)" ;;
       repin)
-        plan_after="$(review_plan_repin "$repo" "$task")" || \
+        plan_after="$(review_plan_repin_rows "$repo" "$task")" || \
           orchid_die "cannot re-pin a review plan for $task — a plan is bound to a round of evidence, and there is none to bind to until the task has a candidate_sha (and a routable slot)" ;;
-      # review_plan_adopt_evidence prints its own refusal (which of the two
+      # review_plan_adopt_evidence_rows prints its own refusal (which of the two
       # conditions failed, with the counts) to stderr; repeating it here would
       # replace a specific diagnostic with a generic one.
-      adopt) plan_after="$(review_plan_adopt_evidence "$repo" "$task")" || exit 1 ;;
+      adopt) plan_after="$(review_plan_adopt_evidence_rows "$repo" "$task")" || exit 1 ;;
     esac
-    printf '%s\n' "$plan_after"
+    # INV-08 ordering: compute the complete replacement first, journal that
+    # exact table, and only then mutate the pin. A failed journal write must
+    # leave no new/replaced review-plan file behind. If the process dies after
+    # the journal but before the store, the orphan entry is benign and the
+    # idempotent next invocation retries; the reverse order would leave an
+    # unjournaled durable-state change.
     if [ "$plan_after" != "$plan_before" ]; then
       ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --task "$task" --kind review_plan \
-        "review plan pinned for attempt $(review_plan_attempt "$repo" "$task") ($plan_mode): $(printf '%s\n' "$plan_after" | while IFS=$'\t' read -r s e l; do printf 'slot %s=%s/%s ' "$s" "$e" "$l"; done)" >/dev/null
+        "review plan pinned for attempt $(review_plan_attempt "$repo" "$task") ($plan_mode): $(printf '%s\n' "$plan_after" | while IFS=$'\t' read -r s e l; do printf 'slot %s=%s/%s ' "$s" "$e" "$l"; done)" >/dev/null \
+        || orchid_die "cannot journal the review-plan change for $task; no review plan was written"
+      review_plan_store "$repo" "$task" "$plan_after" \
+        || orchid_die "journaled the review-plan change for $task but could not store it; retry the same idempotent command"
     fi
+    printf '%s\n' "$plan_after"
     ;;
   *) orchid_die "usage: orchid jobs prepare|check|reconcile|gc|review-plan" ;;
 esac

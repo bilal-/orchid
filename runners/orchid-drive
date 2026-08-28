@@ -1633,6 +1633,7 @@ drive_testing() {
 # ---------------------------------------------------------------------------
 drive_reviewing() {
   local id="$1" arch="$2" tf tier need have routing unsat line slot eng label lrc arc
+  local pin_rc pin_detail
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = reviewing ] || return 0
   tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
@@ -1650,10 +1651,27 @@ drive_reviewing() {
   # still being recomputed live re-routes a slot the moment its engine's
   # health changes, and the review that slot already filed then belongs to
   # nothing -- the r-002 dead end (lib/review.sh's "PINNED plan" header).
-  # A task with no candidate_sha cannot be pinned (nothing to bind to) and
-  # falls back to the live table, which is all it could have had anyway.
-  routing="$("$ORCHID_BIN" jobs review-plan "$id" --pin 2>/dev/null || true)"
-  [ -n "$routing" ] || routing="$("$ORCHID_BIN" jobs review-plan "$id" 2>/dev/null || true)"
+  # Pinning is a dispatch precondition, not a best-effort optimization. If its
+  # durable write or journal record fails, falling back to the live table and
+  # launching reviewers recreates the exact race this pin closes: evidence is
+  # produced against a plan that was never recorded and may move before the
+  # next pass. Preserve the verb's diagnostic in the boundary and dispatch
+  # nobody. A reviewing task with no candidate_sha is likewise malformed,
+  # rather than permission to use an unbound live plan.
+  pin_rc=0
+  routing="$("$ORCHID_BIN" jobs review-plan "$id" --pin 2>&1)" || pin_rc=$?
+  if [ "$pin_rc" -ne 0 ]; then
+    pin_detail="$(printf '%s\n' "$routing" | tail -n 2 | tr '\n' ' ')"
+    [ -n "$pin_detail" ] || pin_detail="no diagnostic returned"
+    set_boundary review-evidence "$id" \
+      "review-plan pin failed (exit $pin_rc), so no reviewer was dispatched: $pin_detail Expected: repair the durable review-plan/journal write path and rerun drive"
+    return 0
+  fi
+  if [ -z "$routing" ]; then
+    set_boundary review-evidence "$id" \
+      "review-plan pin returned no slots, so no reviewer was dispatched. Expected: repair reviewer routing and rerun drive"
+    return 0
+  fi
   unsat=""
   if [ -n "$routing" ]; then
     unsat="$(drive_review_slots_unsatisfied "$repo" "$id" "$routing")"
