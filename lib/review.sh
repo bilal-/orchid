@@ -266,6 +266,32 @@ review_routing() {
   printf '2\t%s\t%s\t%s\n' "$slot2_engine" "$slot2_label" "$(review_engine_depth "$slot2_engine")"
 }
 
+# review_plan_row_valid <row> -- exit 0 iff <row> is one well-formed row of the
+# grammar `review_routing` prints and `orchid jobs review-plan` re-emits:
+# <slot>\t<engine>\t<engine-independent|session-independent>\t
+# <worktree|inline>, and NOTHING after it. Readers that dispatch off the table
+# fail closed on anything else, so a jq diagnostic or a stray stderr line can
+# never be mistaken for a reviewer slot.
+#
+# It lives HERE, beside the function that emits the grammar, rather than at
+# the reading end where it started. A validator kept next to its consumer
+# drifts the moment the table grows a column, and it drifts SILENTLY in the
+# safe-looking direction: runners/orchid-drive's copy pinned the row at
+# exactly three fields and rejected any fourth, so T012's depth column made
+# every row of a perfectly good pin read as a diagnostic, emptied the routing
+# table, and stopped the driver from dispatching a reviewer at ANY tier. One
+# definition, next to the printf that decides the shape, is what keeps the
+# next column from doing it again.
+review_plan_row_valid() {
+  local slot eng label depth extra
+  IFS=$'\t' read -r slot eng label depth extra <<< "$1"
+  case "$slot" in ''|*[!0-9]*) return 1 ;; esac
+  [ -n "$eng" ] || return 1
+  case "$label" in engine-independent|session-independent) ;; *) return 1 ;; esac
+  case "$depth" in worktree|inline) ;; *) return 1 ;; esac
+  [ -z "$extra" ] || return 1
+}
+
 # ===========================================================================
 # The PINNED plan (T039, run r-002's lesson L027)
 # ===========================================================================

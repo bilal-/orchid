@@ -314,3 +314,50 @@ assert_eq 1 "$(drive_boundary_priority review-evidence arbitrating brokered)" \
   "a depth shortfall lands on a boundary a woken orchestrator can actually settle"
 drive_boundary_wakes_orchestrator review-evidence arbitrating brokered \
   || fail "...and it really does wake one, rather than waiting on a human forever"
+
+# ===========================================================================
+# H -- the ROW GRAMMAR, and the widening tripwire.
+#
+# runners/orchid-drive dispatches off `orchid jobs review-plan --pin`'s
+# stdout and validates every line before it will treat one as a slot: stderr
+# is merged into that read, so a jq diagnostic must never become a reviewer.
+# That validator used to be a private copy inside `drive_reviewing` which
+# pinned the row at THREE fields and rejected any fourth -- so the moment this
+# task appended the depth column, every row of a perfectly good pin read as a
+# diagnostic, the routing table came back empty, and the driver raised
+# "review-plan pin failed" instead of dispatching, at EVERY tier. Nothing
+# caught it: the routing tests read the verb's stdout directly and never go
+# through the driver's parse.
+#
+# So the rule now lives in lib/review.sh next to the printf that decides the
+# shape, and the first assertions below are anchored on `review_routing`'s
+# ACTUAL output rather than on a literal row. A fifth column fails here, on
+# the emitter's own bytes, instead of silently in production.
+# ===========================================================================
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  review_plan_row_valid "$row" \
+    || fail "the driver's row validator rejects a row review_routing itself emitted: '$row'"
+done <<< "$outD"
+while IFS= read -r row; do
+  [ -n "$row" ] || continue
+  review_plan_row_valid "$row" \
+    || fail "the driver's row validator rejects an inline-only routing row: '$row'"
+done <<< "$outE"
+
+review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline')" \
+  || fail "the canonical four-column row is a dispatchable slot"
+review_plan_row_valid "$(printf '1\tagy\tengine-independent')" \
+  && fail "a three-column row is NOT dispatchable -- depth is never defaulted in at the reading end"
+review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline\tsixth')" \
+  && fail "a fifth column is refused rather than ignored: a reader must not dispatch a grammar it does not know"
+review_plan_row_valid "$(printf '1\tagy\tengine-independent\tdeep')" \
+  && fail "an unrecognized depth label is refused"
+review_plan_row_valid "$(printf 'slot-one\tagy\tengine-independent\tinline')" \
+  && fail "a non-numeric slot is refused"
+review_plan_row_valid "$(printf '1\t\tengine-independent\tinline')" \
+  && fail "a row naming no engine is refused"
+review_plan_row_valid "$(printf '1\tagy\tprobably-independent\tinline')" \
+  && fail "an unrecognized independence label is refused"
+review_plan_row_valid 'jq: error: null (null) has no keys' \
+  && fail "a diagnostic merged in from stderr is never read as a reviewer slot"
