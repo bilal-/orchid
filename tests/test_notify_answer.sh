@@ -230,3 +230,30 @@ qidN="$("$ORCHID_BIN" notify "no sidecar was ever minted for this one")"
 outN="$("$ORCHID_BIN" answer "$qidN" "whatever the operator wants to say")"
 assert_match "whatever the operator wants to say" "$outN" \
   "an ABSENT sidecar is not a lost one: free text stays accepted exactly as it was before choice sets existed"
+
+# --- and the two files are minted in the order that fails CLOSED -------------
+# The gate above is built from two facts that live in two different files, and
+# `orchid notify` writes them with two separate `atomic_write` calls -- so
+# there is a window between them, and which file lands first decides what a
+# notify interrupted inside that window leaves behind. The `.question` file's
+# existence is what makes a qid ANSWERABLE; the `.choices` file's existence is
+# what GATES the answer. Question first would leave an answerable, ungated
+# question -- the declared set silently not enforced, which is the one
+# fail-open direction this whole feature exists to close and the case above
+# refuses even when the sidecar is merely unreadable. Sidecar first can only
+# ever leave a declared set whose question was never minted, which `orchid
+# answer` refuses at its first gate ("unknown question") and nothing else
+# reads.
+#
+# Asserted against the SOURCE, because the property is about a crash window:
+# every run that completes leaves both files, so no black-box assertion can
+# tell the two orders apart. Same static-lint shape tests/test_engine_claude.sh
+# uses on its adapter's instruction block, and `grep -F` so the `$rt`/`$qid`
+# in the pattern are matched as the literal text they are.
+notify_src="$REPO_ROOT/libexec/orchid-notify"
+choices_ln="$(grep -Fn 'atomic_write "$rt/answers/$qid.choices"' "$notify_src" | cut -d: -f1)"
+question_ln="$(grep -Fn 'atomic_write "$rt/answers/$qid.question"' "$notify_src" | cut -d: -f1)"
+[ -n "$choices_ln" ] && [ -n "$question_ln" ] \
+  || fail "test fixture: could not locate both runtime/answers writes in $notify_src, so the order below is untested rather than satisfied"
+[ "$choices_ln" -lt "$question_ln" ] \
+  || fail "orchid notify must write the .choices sidecar BEFORE the .question file (found .choices at line $choices_ln, .question at $question_ln) — the other order leaves an answerable, ungated question if the verb dies between the two writes"

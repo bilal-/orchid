@@ -117,32 +117,48 @@ header="## $qid"
   echo "reply: ORCHID_REPO=\"$repo\" orchid answer $qid <choice> --nonce $nonce"
 } | atomic_write "$state/BLOCKERS.md"
 
-# Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
-# existence is what makes a qid "known" to `orchid answer`. First line
-# records the originating task (or "none"), so `orchid answer` can resolve
-# blocker_resolved back into the same task's journal view; second line is
-# the nonce above; a `choices:` line (CSV, only when a set was declared)
-# is the human-readable record of the permitted answers, which `orchid
-# status` renders on its blockers page; the free-text body follows. This is
-# an internal file format, not a public contract.
 mkdir -p "$rt/answers"
+
+# The MACHINE-READABLE record of the declared set, in its own file, because
+# `orchid answer` gates free text on it and prose must not be able to switch
+# that gate on. The `choices:` line below sits at exactly the position the
+# free-text body would otherwise start at, and that body is arbitrary text an
+# orchestrator chose: a blocker reading "choices: rollback,retry" is
+# indistinguishable from a declared set by any line-matching rule, and reading
+# it as one would refuse the operator's legitimate free-text answer while
+# naming choices nobody ever declared. This file's mere EXISTENCE is the
+# declaration instead — a question minted without --choice has none, so
+# `orchid answer` accepts free text for it, and so does every question minted
+# before choice sets existed.
+#
+# WRITTEN FIRST, ahead of the .question file, and the order is the whole
+# point. These are two separate atomic writes, so there is a window between
+# them; the `.question` file's existence is what makes a qid ANSWERABLE and
+# the `.choices` file's existence is what GATES the answer. Question first
+# would put the gate's off-state inside that window: a notify interrupted
+# between the two writes (a killed verb, a full disk, a machine that went
+# down) leaves a question that is answerable and ungated, so the very value
+# the declaration existed to refuse is accepted silently — the fail-OPEN this
+# feature exists to close, in the one case it is least able to justify.
+# Sidecar first inverts it: the window can only ever hold a declared set whose
+# question was never minted, which `orchid answer` refuses at its first gate
+# ("unknown question") and nothing else reads. Fail closed, in the direction
+# the rest of this feature already fails.
+[ -z "$choices" ] || printf '%s\n' "$choices" | atomic_write "$rt/answers/$qid.choices"
+
+# Runtime-only inbox marker (gitignored, like jobs/spool/etc.) — its mere
+# existence is what makes a qid "known" to `orchid answer`, which is why it
+# is written LAST of the two. First line records the originating task (or
+# "none"), so `orchid answer` can resolve blocker_resolved back into the same
+# task's journal view; second line is the nonce above; a `choices:` line (CSV,
+# only when a set was declared) is the human-readable record of the permitted
+# answers, kept here so the question carries its own trace of what was
+# declared even if the sidecar is later lost; the free-text body follows. This
+# is an internal file format, not a public contract.
 { printf 'task: %s\n' "${task:-none}"; printf 'nonce: %s\n' "$nonce"
   [ -z "$choices" ] || printf 'choices: %s\n' "$choices"
   printf '%s\n' "$text"; } \
   | atomic_write "$rt/answers/$qid.question"
-
-# ...and the MACHINE-READABLE record of the same set, in its own file,
-# because `orchid answer` gates free text on it and prose must not be able
-# to switch that gate on. The `choices:` line above sits at exactly the
-# position the free-text body would otherwise start at, and that body is
-# arbitrary text an orchestrator chose: a blocker reading "choices:
-# rollback,retry" is indistinguishable from a declared set by any
-# line-matching rule, and reading it as one would refuse the operator's
-# legitimate free-text answer while naming choices nobody ever declared.
-# This file's mere EXISTENCE is the declaration instead — a question minted
-# without --choice has none, so `orchid answer` accepts free text for it,
-# and so does every question minted before choice sets existed.
-[ -z "$choices" ] || printf '%s\n' "$choices" | atomic_write "$rt/answers/$qid.choices"
 
 # v1-m4 Task 7 (OUTBOX pattern, INV-01): `orchid notify` is tier-1 and must
 # NEVER spawn (INV-01) -- so when a channel is configured, this only WRITES
