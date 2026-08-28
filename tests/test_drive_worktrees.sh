@@ -368,10 +368,16 @@ assert_eq 1 "$wt_count3" "the refused pass left exactly one worktree for the bra
 # file holds the task rows the driver never got to walk.
 # ===========================================================================
 STDIN_CAPTURE="$WORK/prep-stdin-capture"
+STDIN_RAN="$WORK/prep-stdin-ran"
 : > "$STDIN_CAPTURE"
+: > "$STDIN_RAN"
 cat > "$WORK/prep-stdin.sh" <<'EOF'
 #!/usr/bin/env bash
 set -eu
+# Announce the run BEFORE reading stdin, so the witness below is written even
+# on the buggy path where this command blocks on, or is truncated by, the
+# driver's worklist.
+printf '%s\n' "$ORCHID_TASK" >> "$2"
 # Every version of this hazard reduces to the same act: the command reads
 # stdin. An installer asking to continue, a bootstrap with a bare `read`, a
 # pipeline ending in `cat` -- whatever it is for, if the driver's worklist is
@@ -380,7 +386,8 @@ set -eu
 cat >> "$1"
 EOF
 chmod +x "$WORK/prep-stdin.sh"
-printf 'worktree_prepare=%s %s\n' "$WORK/prep-stdin.sh" "$STDIN_CAPTURE" >> "$REPO/orchid.config"
+printf 'worktree_prepare=%s %s %s\n' \
+  "$WORK/prep-stdin.sh" "$STDIN_CAPTURE" "$STDIN_RAN" >> "$REPO/orchid.config"
 
 # W9 sits out this pass for the reason W8 sat out the last one.
 "$ORCHID_BIN" task advance W9 blocked --reason "fixture: excluded from the stdin pass" >/dev/null
@@ -395,5 +402,23 @@ assert_eq implementing "$(fm_get "$state_tasks/WS2.md" status)" \
   "the walk reaches the SECOND task too — a prepare command that reads stdin must not truncate it"
 assert_match "WS2: prepared the dispatch worktree" "$out5" \
   "the second task's own prepare step ran, so the walk really did continue past the first"
+# The witness that keeps the assertion below from passing vacuously. An empty
+# capture file is equally what a prepare command that NEVER RAN leaves behind,
+# and this file stacks eight `worktree_prepare=` lines in one config -- so the
+# whole case rests on config_get taking the last of them (lib/common.sh's
+# _cfg_file_get, `tail -n1`). Should that precedence ever change, an earlier
+# case's command would run here instead, the capture would still be empty, and
+# the one assertion the operator objection this part exists for turns on would
+# report a redirection nobody exercised. Naming the tasks is what makes it
+# specific: this command, in both dispatches, and no other.
+# `|| true`, never `|| echo 0`: on an empty file `grep -c` PRINTS its 0 and
+# THEN exits 1, so the fallback would append a second line and the failure
+# message would read "got '0<newline>0'" -- noise in the one place a reader is
+# already trying to work out what broke. The file is created above, so a
+# missing-file case cannot arise.
+assert_eq 2 "$(grep -c . "$STDIN_RAN" || true)" \
+  "the stdin-reading prepare command is the one that actually ran, once per dispatched task"
+assert_match 'WS2' "$(cat "$STDIN_RAN")" \
+  "and it ran for the SECOND task too -- the dispatch that a truncated walk would never reach"
 assert_eq "" "$(cat "$STDIN_CAPTURE")" \
   "the prepare command's stdin is /dev/null — it read nothing, because there was nothing there to read"
