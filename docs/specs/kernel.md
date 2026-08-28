@@ -795,9 +795,13 @@ launches the hook. A matching receipt makes the later pass resume and classify
 that exact failed log without rerunning the verifier and overwriting it. A
 digest mismatch or missing log charges under the strict default; entry to
 rework or a fresh reverify clears the receipt with the evidence it binds.
-That advance is also the third way `prerequisite_ack` below expires, and the
-one an operator meets by hand: the two acks share a binding rule, so a
-prerequisite acknowledged before the hand-off is superseded by it. The
+That advance also expires `prerequisite_ack` below, and it is the expiry an
+operator meets by hand: the two acks share a binding rule, so a
+prerequisite acknowledged before the hand-off is superseded by it. It is one
+of several candidate moves that expire an ack without clearing it (`orchid
+merge`'s rebase-reset and `task reverify`'s re-stamp are the others), which
+is why the binding is a comparison against the current `candidate_sha` and
+not a list of verbs that must each remember to clear the field. The
 ordering PROTOCOL.md gives — hand-off first, prerequisite second — is what
 avoids paying for that, and it is a convention, not a gate.
 `refused_envelopes` (v1.1): the

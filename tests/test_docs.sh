@@ -910,6 +910,18 @@ printf '%s' "$protocol_one_line" | grep -qF 'Take the hand-off FIRST when both a
 printf '%s' "$kernel_one_line" | grep -qF 'the driver raises the hand-off first' \
   || fail "docs/specs/kernel.md must record that the driver raises operator-handoff ahead of task-prerequisite, so the ordering is a documented property and not an accident of the code"
 
+# ...and the docs must not present that supersession as a closed list of
+# verbs. Three routes move `candidate_sha` without any clear of the ack --
+# merge's rebase-reset, `task reverify`'s re-stamp, and the hand-off's own
+# advance -- and only the SHA comparison catches all three. Prose that names
+# one of them as "the" case invites the maintenance a comparison exists to
+# avoid: a fourth mover added later, and a reader who goes looking for the
+# clear it was supposed to have remembered.
+printf '%s' "$protocol_one_line" | grep -qF 'not a list of verbs to keep in step' \
+  || fail "PROTOCOL.md's prerequisite bullet must say the binding is a comparison rather than a list of clearing verbs — merge's rebase-reset is one candidate mover among several (task reverify and the hand-off ack are others), and naming it as the only one is the reading that goes stale"
+printf '%s' "$protocol_one_line" | grep -qF '`orchid task reverify` re-stamps `candidate_sha`' \
+  || fail "PROTOCOL.md's prerequisite bullet must name task reverify among the candidate moves that expire an acknowledgement — it re-stamps candidate_sha and reaches testing from blocked without entering rework, so no clear on any rework path sees it"
+
 # ===========================================================================
 # T024 -- the rejected alternative in kernel.md must not describe another
 # task's unlanded feature as existing fact.

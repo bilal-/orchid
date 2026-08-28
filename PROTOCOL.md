@@ -1315,10 +1315,16 @@ ones its archetype never declares.
     the advance, `task unblock`, `task retry` — clears the ack along with the
     verify evidence; and where a candidate is superseded WITHOUT passing
     through `rework`, the comparison above is what expires it. `orchid
-    merge`'s rebase-reset is that case and it is not a corner: it takes the
-    task from `merging` back to `testing` on a freshly rebased
+    merge`'s rebase-reset is the sharpest such case and not a corner: it
+    takes the task from `merging` back to `testing` on a freshly rebased
     `candidate_sha`, and the ack for the pre-rebase candidate must not
-    satisfy the gate for the rebased one. Either way the declaration
+    satisfy the gate for the rebased one. It is not the only such move, which is
+    why the rule is the comparison and not a list of verbs to keep in step:
+    `orchid task reverify` re-stamps `candidate_sha` onto the task
+    worktree's HEAD and lands in `testing` from `blocked` without entering
+    `rework` either, and `orchid task handoff --ack` advances it onto the
+    commit the mechanical steps produced. Each expires an earlier ack by the
+    same comparison, with no clear of its own. Either way the declaration
     survives, so the boundary re-raises for the new candidate. Redeclaring
     the prerequisite (`task set operator_prerequisite`) clears the ack too —
     the operator acknowledged the step as it was worded — and journals that

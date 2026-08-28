@@ -1189,6 +1189,25 @@ grep -q "prerequisite acknowledged for candidate $pre_sha" .orchid/journal.md \
 grep -q "applied 0007 to orchid_test by hand" .orchid/journal.md \
   || fail "...carrying the operator's own reason"
 
+# Acknowledging again, over a gate that is ALREADY satisfied, is accepted.
+# The verb does not gate on the predicate the other four callers gate on
+# (lib/handoff.sh says why): it is the verb that SETTLES that predicate, and
+# refusing it while satisfied would refuse the operator who re-applied the
+# migration after a store reset and wants the decision trail to say so -- or
+# who simply ran the command twice. Pinned because "no precondition" is
+# invisible in the source: a later reader finds the other callers gating and
+# nothing here, and a well-meant symmetry fix would break exactly this.
+pre_reack_ack="$(t010 prerequisite_ack)"
+pre_reack_j="$(grep -c "prerequisite acknowledged for candidate $pre_sha" .orchid/journal.md || true)"
+rc=0; "$ORCHID_BIN" task prereq-ack T010 --reason "re-applied 0007 after resetting orchid_test" >/dev/null || rc=$?
+assert_eq 0 "$rc" \
+  "re-acknowledging a prerequisite already acknowledged for THIS candidate is accepted -- the ack verb settles the gate, it does not read it"
+assert_eq "$pre_reack_ack" "$(t010 prerequisite_ack)" \
+  "...and is idempotent in the field: same candidate in, same candidate out"
+assert_eq "$((pre_reack_j + 1))" \
+  "$(grep -c "prerequisite acknowledged for candidate $pre_sha" .orchid/journal.md || true)" \
+  "...while still journaling the second reason, which is the whole point of allowing it"
+
 "$ORCHID_BIN" verify T010 >/dev/null \
   || fail "an acknowledged prerequisite lets verify run normally"
 [ -f .orchid/reviews/T010-verify.log ] || fail "...and write its evidence as usual"

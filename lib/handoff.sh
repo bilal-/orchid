@@ -357,13 +357,25 @@ handoff_state() {
 # gate (there is no config key to turn it on, because a task that needs a
 # migration applied needs it applied in every repository), and the candidate
 # does not move across the pause, so there is no HEAD to compare and no tree
-# whose cleanliness could mean anything here. It is also why five verbs can
+# whose cleanliness could mean anything here. It is also why four verbs can
 # call it cheaply: libexec/orchid-verify and libexec/orchid-merge (the two
 # verbs that run the suite against the store — both refuse rather than run it,
 # on this one predicate, so the two stages cannot disagree about the same
 # condition), runners/orchid-drive (raises the boundary instead of spending a
-# round), libexec/orchid-status (says why the task is parked, at either stage)
-# and libexec/orchid-task (the ack verb's own precondition).
+# round) and libexec/orchid-status (says why the task is parked, at either
+# stage).
+#
+# `orchid task prereq-ack` is deliberately NOT among them, and the omission is
+# a decision rather than a gap: it is the verb that SETTLES this predicate, so
+# gating it on the predicate would refuse exactly the operator whose ack is
+# already current — someone who re-applied the migration after a store reset
+# and wants the journal to say so, or who simply ran the command twice. Its own
+# preconditions (a declaration to acknowledge, a `candidate_sha` to bind to, a
+# status where something reads the field) are the ones that mean anything for a
+# write; "is it already satisfied" means nothing for one. Every caller above
+# READS the gate to decide whether to proceed; the ack verb is the only one
+# that answers it, and an answer does not need permission from the question.
+# tests/test_task.sh pins the re-acknowledgement as accepted and idempotent.
 handoff_prereq_unmet() {
   local f="$1" ack
   [ -f "$f" ] || return 1
