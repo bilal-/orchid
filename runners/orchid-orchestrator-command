@@ -21,6 +21,7 @@ set -euo pipefail
 #     task show <id>
 #     task list
 #     status [--explain]
+#     jobs ls [--all]
 #     jobs review-plan <id>
 #     journal tail [-n <count>]
 #     journal show --task <id>
@@ -65,6 +66,7 @@ The brokered, judgment-only command surface. Admitted forms:
 
   task show <id>                     task list
   status [--explain]                 jobs review-plan <id>
+  jobs ls [--all]
   journal tail [-n <count>]          journal show --task <id>
   lessons list --active              run boundary show
   task arbitrate <id> --result approve|request-changes --reason <text>
@@ -191,17 +193,33 @@ case "$verb" in
     fi
     ;;
   jobs)
-    [ "${2:-}" = review-plan ] || refuse "jobs ${2:-<missing>} is not admitted (only review-plan)"
-    # T039: the verb itself now also takes `--pin|--repin|--adopt-evidence`,
-    # each of which WRITES the pinned slot plan. None is admitted here, and
-    # the arity check is what refuses them -- so the message says which form
-    # this surface allows rather than claiming the verb has no other. A
-    # brokered orchestrator is woken to judge a boundary, not to dispatch
-    # reviewer slots (the driver does that, and pins as it goes), so the bare
-    # read is exactly what it needs: it returns the PINNED table, i.e. the
-    # plan the evidence under judgment was actually dispatched against.
-    [ "$#" -eq 3 ] || refuse "jobs review-plan is admitted only as a bare read of one task id (its --pin/--repin/--adopt-evidence forms write the slot plan and are not admitted here)"
-    is_id "$3" || refuse "'$3' is not a valid task id"
+    case "${2:-}" in
+      review-plan)
+        # T039: the writing --pin/--repin/--adopt-evidence forms are not
+        # admitted to this judgment-only broker. The bare read returns the
+        # effective pinned table the evidence was dispatched against.
+        [ "$#" -eq 3 ] || refuse "jobs review-plan is admitted only as a bare read of one task id (its --pin/--repin/--adopt-evidence forms write the slot plan and are not admitted here)"
+        is_id "$3" || refuse "'$3' is not a valid task id"
+        ;;
+      ls)
+        # T035: the read-only process table, admitted because the seat this
+        # broker guards was ONE OF THE TWO READERS THAT GOT F36 WRONG -- a
+        # woken orchestrator reported a critique as actively working, and
+        # quoted its findings, while the job had been dead for twelve and a
+        # half hours. It had no way to ask; now it does, and the answer
+        # computes liveness instead of believing a manifest.
+        #
+        # `--all` is the only modifier admitted. `--watch` in particular is
+        # refused: a broker that admits it hands a woken model a command that
+        # never returns, and this surface exists to bound exactly that.
+        if [ "$#" -eq 3 ]; then
+          [ "$3" = --all ] || refuse "jobs ls accepts only --all"
+        elif [ "$#" -ne 2 ]; then
+          refuse "jobs ls accepts at most --all"
+        fi
+        ;;
+      *) refuse "jobs ${2:-<missing>} is not admitted (only ls, review-plan)" ;;
+    esac
     ;;
   journal)
     case "${2:-}" in

@@ -81,6 +81,12 @@ assert_match "T001" "$(admit 'task list' task list)" "task list is admitted"
 admit 'status' status >/dev/null
 admit 'status --explain' status --explain >/dev/null
 admit 'jobs review-plan' jobs review-plan T001 >/dev/null
+# T035: the read-only process table. This seat was one of the two readers that
+# got dogfood F36 wrong -- a woken orchestrator reported a critique as actively
+# working, and quoted its findings, while the job had been dead for twelve and
+# a half hours. It had no admitted way to ask whether anything was alive.
+admit 'jobs ls' jobs ls >/dev/null
+admit 'jobs ls --all' jobs ls --all >/dev/null
 admit 'journal tail' journal tail >/dev/null
 admit 'journal tail -n' journal tail -n 5 >/dev/null
 admit 'journal show' journal show --task T001 >/dev/null
@@ -125,6 +131,10 @@ refuse "running the verification suite" verify T001
 refuse "preparing a job"                jobs prepare T001 implementer implement
 refuse "reconciling jobs"               jobs reconcile
 refuse "collecting jobs"                jobs gc
+# A command that never returns is exactly what this surface exists to bound:
+# admitting the table does not admit polling it forever.
+refuse "watching the job table"         jobs ls --watch
+refuse "an unadmitted jobs ls modifier" jobs ls --tsv
 refuse "advancing the run"              run advance accepting --reason x
 refuse "accepting the run"              run accept --reason x --evidence /dev/null
 refuse "rolling the run over"           run new --reason x

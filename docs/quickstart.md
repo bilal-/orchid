@@ -317,10 +317,36 @@ and `orchid service uninstall` intentionally remain available.
 ```sh
 orchid status               # task table, engines, open questions
 orchid status --explain     # + unattended gate/provenance and dispatch reasons
+orchid status --jobs        # + a process table for the run in place of the
+                             # bare task/state pairs (see below)
 orchid status --html        # writes a static page to runtime/status.html —
                              # open it directly, "check from another room"
 orchid status --html --explain # + gate/provenance in page; stdout remains its path
 ```
+
+A run's jobs get their own table — one row per outstanding job, with the job
+id, task, role, operation, attempt, engine, pid, state, age, elapsed, budget
+consumed, who launched it, and its log path:
+
+```sh
+orchid jobs ls              # the process table
+orchid jobs ls --watch      # ... refreshed every 5s (--interval N to change)
+orchid jobs ls --all        # + jobs that already finished: what this task ran,
+                             # in what order, and how long each took
+```
+
+Two things it is careful about. **State is computed, never read**: a manifest
+records the pid its launcher stamped and nothing ever unstamps it, so every row
+asks the same predicates as `jobs check` — a stamped job whose process is gone
+reads `dead` (or `delivered`, if its envelope is written and simply not
+reconciled yet); `pid: 0` with no log reads `never-started`, with a fresh log
+reads `prepared`, and with a log silent past `stall_minutes` reads `unstamped`.
+**Age is shown beside it**: `AGE` is how long since the job last wrote anything.
+Dead jobs without envelopes, never-started jobs past the threshold, unstamped
+jobs, and running jobs silent past the threshold get a `WARNING:` line on
+stderr — which `orchid status` prints in every mode, with no flag, because a
+run whose only in-flight job died is exactly the state nobody thinks to go
+looking at a table for.
 
 A genuine blocker raises a question in `BLOCKERS.md` and (if you configured
 [a notify channel](./engines/openclaw.md)) pings you outside the terminal.

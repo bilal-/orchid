@@ -201,6 +201,13 @@ fi
 
 _orchid_entry_restore_operator_path
 
+# T035: every job launched below this line -- by the deterministic driver, or
+# by an LLM orchestrator this pump wakes -- belongs to the scheduled pump, not
+# to an operator sitting at a terminal. Exported once here, ahead of both
+# handoffs, so `jobs prepare` records it on each manifest and `orchid jobs ls`
+# can tell an operator which of the two started the job they are looking at.
+export ORCHID_LAUNCHED_BY=pump
+
 # 4. Lease staleness. `iso_to_epoch` is replicated here (not shared via
 # lib/) rather than sourced from libexec/orchid-jobs: runners can't source
 # libexec (that's tier-1 verb-dispatch code, not a library), and this
