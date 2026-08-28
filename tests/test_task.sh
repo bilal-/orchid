@@ -1102,15 +1102,15 @@ assert_eq testing "$(tfield T033 status)" \
 # about the shape of the failure it replaces.
 # ============================================================================
 #
-# T004 (testing) and T009 (arbitrating) are both parked in ACTIVE statuses by
-# the time this section runs, which is exactly the default `concurrency` cap
-# of 2 -- so every dispatch edge below (pending/rework -> an active status
-# passes through schedule_dispatch_blockers) would be refused for a reason
-# that has nothing to do with this subject. Raised through the ordinary env
-# override rather than by disturbing the fixtures above.
-export ORCHID_CONCURRENCY=8
+# Earlier sections intentionally park several tasks in active statuses, and
+# that population grows as independent regression cases are appended. Keep
+# this prerequisite fixture isolated from their scheduling side effects: its
+# subject is the acknowledgement state machine, not the repository-wide cap.
+export ORCHID_CONCURRENCY=99
 "$ORCHID_BIN" task create T010 "authors a migration it is not allowed to apply"
-pre_sha="feedfacecafebeef000000000000000000000000"
+# T031 now validates every candidate relation before admitting `testing`, so
+# this fixture uses real commits instead of the pre-T031 synthetic SHA.
+pre_sha="$(git rev-parse HEAD)"
 pre_step="apply db/migrate/0007_isolation.sql to the test database"
 "$ORCHID_BIN" task set T010 base_sha "$pre_sha"
 "$ORCHID_BIN" task set T010 candidate_sha "$pre_sha"
@@ -1225,7 +1225,8 @@ assert_eq "" "$(t010 prerequisite_ack)" "task retry lands it in rework as well, 
 # longer exists. Here the frontmatter is moved directly (what that reset
 # writes); tests/test_merge.sh proves the same thing through a real `orchid
 # merge` rebase, and tests/test_drive.sh through the driver's own arm.
-pre_rebased="feedfacecafebeef0000000000000000deadbeef"
+git commit -q --allow-empty -m "fixture: rebased prerequisite candidate"
+pre_rebased="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task advance T010 implementing
 "$ORCHID_BIN" task advance T010 testing
 "$ORCHID_BIN" task prereq-ack T010 --reason "applied 0007 for the pre-rebase candidate" >/dev/null
@@ -1249,11 +1250,11 @@ assert_eq "$pre_rebased" "$(t010 prerequisite_ack)" "re-acknowledging binds to t
 "$ORCHID_BIN" verify T010 >/dev/null \
   || fail "...which satisfies the gate again"
 
-# Back to the fixture's baseline for the sections below: same candidate_sha as
-# before, task in `rework`. Waived, because nothing here was an attempt.
-"$ORCHID_BIN" task set T010 candidate_sha "$pre_sha"
+# Keep the real rebased candidate as the fixture's baseline for the sections
+# below, with the task in `rework`. Waived, because nothing here was an attempt.
 "$ORCHID_BIN" task advance T010 rework --waive-attempt \
   --reason "fixture bookkeeping: restoring the baseline, no attempt was spent"
+pre_sha="$pre_rebased"
 
 # -- rewording the step un-acknowledges it ---------------------------------
 "$ORCHID_BIN" task advance T010 implementing
