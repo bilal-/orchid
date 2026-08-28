@@ -729,6 +729,32 @@ grep -qF 'That notice stands in place of a trust step: qualification is delibera
 grep -qF 'See docs/specs/operations.md for that decision and what was rejected.' <<<"$qualify_help_one_line" \
   || fail "scripts/beta-qualify.sh --help must send the operator who doubts that choice to the recorded decision, not only state its outcome"
 
+# ...and one last two-way assertion, this one about the CALLERS rather than the
+# script. The third reason in that spec section turns on a fact nothing above
+# touches: "the harness is a foreground command with two required paths on it,
+# never scheduled and never invoked by the kernel". That is the whole of why the
+# unattended gate's subject is a different one -- the gate exists because nobody
+# is in front of the pump, and this argument is that somebody is always in front
+# of qualification. Wire it into a runner, a service unit or a kernel verb and
+# that sentence is false and the third reason collapses -- while
+# scripts/beta-qualify.sh has not changed by one byte and every assertion above
+# still passes. So it is pinned where it can actually break.
+qualify_caller_roots=("$REPO_ROOT/lib" "$REPO_ROOT/libexec" "$REPO_ROOT/runners")
+for qualify_caller_root in "${qualify_caller_roots[@]}"; do
+  [ -d "$qualify_caller_root" ] \
+    || fail "$qualify_caller_root is missing, so the kernel-caller search below would pass by looking at nothing"
+done
+# Non-vacuous by construction: the same search shape, over the same roots, has
+# to find something that IS there. `unattended_trust_require` is called from
+# exactly the three surfaces that spec section names, all three under these
+# roots, so an empty control result means the search itself is broken -- moved
+# directories, a wrong root -- rather than that the kernel is clean.
+grep -rqF 'unattended_trust_require' "${qualify_caller_roots[@]}" \
+  || fail "the kernel-caller search cannot even find an unattended_trust_require call, so it is searching nothing and proves nothing about qualification"
+qualify_callers="$(grep -rlF 'beta-qualify' "${qualify_caller_roots[@]}" || true)"
+[ -z "$qualify_callers" ] \
+  || fail "docs/specs/operations.md rests part of this decision on qualification being 'never scheduled and never invoked by the kernel', but kernel code now names the harness: $qualify_callers — if that changed on purpose, the third reason has to be remade and this assertion changed with it"
+
 # The release-day checklist must include the local rehearsal.
 grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
   || fail "docs/install.md's release-day steps must include the local rehearsal"

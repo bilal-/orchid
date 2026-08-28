@@ -277,11 +277,23 @@ never timed, trading a stated execution exception for a quietly weaker headline.
 A default that must be overridden to produce the report's most important number
 is not a safer default, only a less-read one.
 
-**What would reopen this.** The balance rests on the harness executing nothing
-but the operator-configured `verify=` command. If a probe is ever added that
-runs something else in the target — spawning an engine, executing a repository
-hook, running a plugin entrypoint from the target tree — the exposure stops
-being one readable line of config and this decision has to be made again.
+**What would reopen this.** Two facts hold the balance up, and either one going
+means this decision has to be made again rather than quietly inherited.
+
+The first is that the harness executes nothing but the operator-configured
+`verify=` command. If a probe is ever added that runs something else in the
+target — spawning an engine, executing a repository hook, running a plugin
+entrypoint from the target tree — the exposure stops being one readable line of
+config.
+
+The second is that qualification stays a foreground command nobody schedules.
+The third reason above is *only* true while no runner, service unit or kernel
+verb invokes `scripts/beta-qualify.sh`: the moment one does, the operator this
+argument assumes is standing in front of it is not there, and the stderr notice
+carrying the mitigation is printing to nobody. That one is held by
+`tests/test_docs.sh`, which fails if any file under `lib/`, `libexec/` or
+`runners/` so much as names the harness — a change that would otherwise leave
+this section false without touching a byte of it.
 
 ## Operator walkthrough (the human's seat)
 
