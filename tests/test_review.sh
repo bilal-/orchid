@@ -361,3 +361,68 @@ review_plan_row_valid "$(printf '1\tagy\tprobably-independent\tinline')" \
   && fail "an unrecognized independence label is refused"
 review_plan_row_valid 'jq: error: null (null) has no keys' \
   && fail "a diagnostic merged in from stderr is never read as a reviewer slot"
+
+# ===========================================================================
+# I -- ROUTING NEVER QUEUES, AND `high` IS NOT A THIRD POLICY.
+#
+# Part E proved an inline-only install is still routed both slots at
+# `medium`. `high` has to behave identically, and that is worth its own
+# assertion rather than being left implied: "refuse to route, or refuse to
+# dispatch, without a worktree-capable engine" is precisely the alternative
+# docs/specs/kernel.md records as REJECTED, and it is also the behaviour
+# README.md and docs/architecture.md used to attribute to `high` in the very
+# paragraphs this decision governs ("`high` instead queues, waiting for a
+# genuinely engine-independent reviewer to become available"). No such
+# branch has ever existed: review_routing, review_required_count and
+# libexec/orchid-task's reviewing -> arbitrating gate all read `medium` and
+# `high` through the same arm. Part J holds the docs to that, and this Part
+# is what makes Part J falsifiable rather than prose agreeing with prose.
+# ===========================================================================
+export ORCHID_ENGINES_DIR="$WORK/engC"   # Parts C/D/E's fixture engines
+repoI="$WORK/repoI"
+mk_routing_repo "$repoI" \
+  'role.implementer=inlineimpl
+role.reviewer=inlinerev1
+review.high=inlinerev1,inlinerev2
+' TI high
+outI="$(review_routing "$repoI" TI)"
+assert_eq 2 "$(printf '%s\n' "$outI" | wc -l | tr -d ' ')" \
+  "high tier routes BOTH slots on an inline-only install -- it never queues for a reviewer nobody installed"
+assert_match $'^1\tinlinerev1\tengine-independent\tinline$' "$outI" \
+  "high: slot 1 is filled, and honestly labeled inline"
+assert_match $'^2\tinlinerev2\tengine-independent\tinline$' "$outI" \
+  "high: slot 2 is filled too, from the tier chain, exactly as medium fills it"
+assert_eq "$(review_required_count medium)" "$(review_required_count high)" \
+  "high and medium ask for the same NUMBER of reviews"
+review_depth_required high \
+  || fail "...and for the same depth -- high is medium's policy, not a stricter routing rule"
+unset ORCHID_ENGINES_DIR
+
+# ===========================================================================
+# J -- and the operator-facing docs must not re-assert the guarantee Part I
+# just refuted.
+#
+# Folded to one line before either check: both claims straddled a hard wrap
+# in their source files, so a scan of the raw lines would have missed them
+# and this tripwire would have passed with the claim still sitting there --
+# the same reason tests/test_docs.sh folds PROTOCOL.md before asserting on
+# it.
+#
+# TWO-WAY on purpose. A bare "must not say X" is satisfied by deleting the
+# whole paragraph, which would take the labeled-fallback guarantee (which is
+# real, and load-bearing) down with the queueing claim (which never was). So
+# each file is also held to stating what the kernel actually does.
+# ===========================================================================
+readme_folded="$(tr '\n' ' ' < "$REPO_ROOT/README.md" | tr -s '[:space:]' ' ')"
+arch_folded="$(tr '\n' ' ' < "$REPO_ROOT/docs/architecture.md" | tr -s '[:space:]' ' ')"
+queue_claim='`?high`?( risk)? (instead )?queues'
+
+grep -Eq "$queue_claim" <<< "$readme_folded" \
+  && fail "README.md says high-risk review QUEUES for a better reviewer; no such branch exists (Part I), and refusing at the routing end is the alternative docs/specs/kernel.md records as rejected"
+grep -Eq "$queue_claim" <<< "$arch_folded" \
+  && fail "docs/architecture.md says high-risk review QUEUES for a better reviewer; no such branch exists (Part I), and refusing at the routing end is the alternative docs/specs/kernel.md records as rejected"
+
+grep -Fq 'both accept a labeled session-independent fallback' <<< "$readme_folded" \
+  || fail "README.md must still describe the labeled session-independent fallback both tiers really take -- the queueing claim is to be CORRECTED, not deleted along with the guarantee that replaces it"
+grep -Fq 'Routing never withholds a slot' <<< "$arch_folded" \
+  || fail "docs/architecture.md must state that routing fills and labels a slot rather than withholding it, or the diagram's degraded-independence branch has nothing behind it"

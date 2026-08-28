@@ -69,13 +69,13 @@ part of the architecture; this file never changes to suit one.*
   review-plan <id> --pin` FIRST, every attempt: it prints the routing table
   for the task's CURRENT `risk_tier`, one line per required slot — `<slot>
   <engine>	<engine-independent|session-independent>	<worktree|inline>`
-  — computed from
-  `role.reviewer`'s chain, the `review.<tier>` chain, engine discovery,
-  role eligibility, and the ledger, all at once. Never re-derive this by
-  hand. Launch each printed slot with `runners/orchid-launch <id> reviewer
-  review --engine <slot-engine>` — `--engine` is exactly how a second (or
-  third) slot's engine differs from whatever `role.reviewer` would resolve
-  to on its own.
+  — computed from `role.reviewer`'s chain, the `review.<tier>` chain,
+  engine discovery, role eligibility, and the ledger, all at once, plus
+  each slot's manifest capabilities for that last column. Never re-derive
+  this by hand. Launch each printed slot with `runners/orchid-launch <id>
+  reviewer review --engine <slot-engine>` — `--engine` is exactly how a
+  second (or third) slot's engine differs from whatever `role.reviewer`
+  would resolve to on its own.
   **The table is PINNED for the life of an attempt, by WHOEVER dispatches
   it.** `orchid jobs review-plan <id> --pin` writes it down, bound to the
   task's `attempts`+1 and its current `candidate_sha`; every later read —

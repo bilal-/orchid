@@ -212,7 +212,7 @@ flowchart LR
         R1["reviewer slot 1<br/>agy - engine-independent"]
     end
     subgraph SC["Session C - medium/high risk only"]
-        R2["reviewer slot 2 - worktree-capable<br/>engine-independent, or session-independent<br/>labeled and journaled as degraded"]
+        R2["reviewer slot 2 - worktree-capable wherever the install has one<br/>engine-independent, or session-independent<br/>depth and independence both labeled and journaled"]
     end
     ARB["arbiter - claude by default<br/>inline judgment on disagreement, journaled"]
     IMP -->|"adapter commits the edits"| CAND
@@ -232,10 +232,16 @@ which died with its session by design ([specs/kernel.md](./specs/kernel.md),
 "Memory & resumption"). Independence is enforced by the resolver against
 the task's recorded `implementer_engine_id`, in two grades: *engine
 independence* (different vendor) preferred, *session independence* (same
-vendor, fresh session) accepted at `medium` risk only when labeled and
-journaled — and `high` risk queues rather than accept the weaker guarantee.
-LLM evaluators measurably favor their own generations
-([research.md](./research.md)); this topology is the countermeasure.
+vendor, fresh session) accepted at `medium` and `high` alike, but only when
+labeled in the routing table and journaled before the slot is dispatched.
+Routing never withholds a slot to hold out for a better reviewer: a tier
+that cannot be filled independently is filled and labeled, and a shortfall
+is judged where the evidence is judged rather than where the slots are
+allocated — see the depth paragraph below, and
+[specs/kernel.md](./specs/kernel.md), "Review depth", for why refusing at
+the routing end was rejected. LLM evaluators measurably favor their own
+generations ([research.md](./research.md)); this topology is the
+countermeasure.
 
 **And the slot table is pinned for the life of an attempt.** Routing reads
 engine health, so it is a moving table; a review is judged against the one
