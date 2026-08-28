@@ -191,3 +191,42 @@ assert_match "let us discuss it first" "$outX" \
   || fail "a question minted WITH --choice must record the declared set in its own file"
 assert_eq "approve,request-changes,defer" "$(cat ".orchid/runtime/answers/$qidC.choices")" \
   "the recorded set is the CSV the refusal above names, verbatim"
+
+# --- a DECLARATION THAT CANNOT BE READ is refused, never waved through -------
+# The sidecar's EXISTENCE is the declaration, so the gate has to key on that
+# same fact. A sidecar that exists but yields no choice — a truncated runtime,
+# a restored backup, or a producer that died and still landed its zero bytes
+# through `atomic_write` — is "a set was declared and the record of it is
+# gone", NOT "no set was declared". Reading those two as one answer resolves
+# it the wrong way: every value sails through for a question whose page told
+# the operator their answer would be checked, and the refusal that names the
+# valid choices never fires. Both edges, since the whole point is that the two
+# cases are distinguishable.
+#
+# RED. `approve` is deliberately a value that WAS declared: the refusal has to
+# be about the unreadable record, not about the value being out of set.
+qidE="$("$ORCHID_BIN" notify --choice approve --choice defer "answer me after the sidecar is lost")"
+: > ".orchid/runtime/answers/$qidE.choices"
+rc=0
+errE="$("$ORCHID_BIN" answer "$qidE" approve 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a question whose declared set cannot be read must refuse the answer, not accept it because the file happened to be empty"
+assert_match "declared a choice set" "$errE" \
+  "the refusal says a set WAS declared — the operator is owed the difference between a lost record and no record"
+assert_match "$qidE.choices" "$errE" \
+  "and names the file, because restoring or re-raising it is an operator's move and nothing here can reconstruct it"
+if grep -q "is not among" <<<"$errE"; then
+  fail "an unreadable declaration must not be reported as an out-of-set value — that would name a set nobody can read as though it had been checked"
+fi
+[ ! -f ".orchid/runtime/answers/$qidE.answer" ] \
+  || fail "an answer refused for an unreadable declaration must never be recorded as answered"
+
+# GREEN, the edge this must not swallow: no sidecar AT ALL still declares
+# nothing and still takes free text. Same shape as qidE above, one difference
+# — the file is absent rather than empty — so the two conditions are pinned
+# apart rather than by one of them alone.
+qidN="$("$ORCHID_BIN" notify "no sidecar was ever minted for this one")"
+[ ! -f ".orchid/runtime/answers/$qidN.choices" ] \
+  || fail "test fixture: a notify with no --choice must mint no sidecar, or the contrast below tests nothing"
+outN="$("$ORCHID_BIN" answer "$qidN" "whatever the operator wants to say")"
+assert_match "whatever the operator wants to say" "$outN" \
+  "an ABSENT sidecar is not a lost one: free text stays accepted exactly as it was before choice sets existed"

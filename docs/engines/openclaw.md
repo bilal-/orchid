@@ -236,7 +236,17 @@ opt-in per call.** The gate is `answer_allowlist` being configured at all
   on. `orchid answer` refuses any value outside a declared set, and the
   refusal names the valid ones — so a typo is caught, never silently
   recorded as a decision. A question that declares no set has no such file
-  and keeps the free-text contract unchanged.
+  and keeps the free-text contract unchanged. Existence being the
+  declaration cuts both ways: a `.choices` file that exists but yields no
+  readable choice (a truncated runtime, a restored backup) means *the set
+  was declared and its record is gone*, which is not the same as *no set was
+  declared* — `orchid answer` refuses that question rather than accepting a
+  value the declaration would have gated, and names the file, because
+  restoring or re-raising the question is an operator's move. `orchid status
+  --html` resolves the same state the other way, as a display surface
+  should: it renders no answer set at all rather than a bare `answers:`
+  naming nothing, and leaves the `choices:` header in the question text as
+  the last surviving trace of what was declared.
 
 **Nonce entropy.** Minting the nonce itself refuses to degrade silently:
 if `notify.channel` OR `answer_allowlist` is configured (i.e. a real

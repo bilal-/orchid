@@ -328,9 +328,20 @@ if [ "$html" -eq 1 ]; then
       # libexec/orchid-answer uses to decide whether a set was declared at
       # all. A question whose body merely begins "choices: ..." declared
       # nothing, has no sidecar, and keeps its text exactly as written.
+      #
+      # ...and a sidecar that exists but yields no readable set renders
+      # NOTHING here rather than a bare "answers:" with no answers after it,
+      # which would be the same unanswerable page this whole feature exists
+      # to retire. Its `choices:` header stays in the body too: with no set to
+      # print in its place, dropping the line would delete the only remaining
+      # trace of what was declared. Unlike libexec/orchid-answer -- which is a
+      # GATE and refuses this case outright -- a display surface fails safe by
+      # showing what it has and inventing nothing.
       qchoices=""; qchoices_html=""
       if [ -f "$rt/answers/$qid.choices" ]; then
-        qchoices="$(head -n1 "$rt/answers/$qid.choices")"
+        qchoices="$(head -n1 "$rt/answers/$qid.choices" 2>/dev/null || true)"
+      fi
+      if [ -n "$qchoices" ]; then
         # Strip the ONE header line the notify verb wrote, matched whole and
         # only at the front -- not every body line that looks like it.
         qhdr="choices: $qchoices"
