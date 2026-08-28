@@ -889,6 +889,25 @@ assert_match "retry" "$SBLOCKED_REASON" \
 assert_match "reverify" "$SBLOCKED_REASON" \
   "and the one that re-runs verification alone — every remedy PROTOCOL.md's boundary table lists (reason: $SBLOCKED_REASON)"
 
+# ...AND SO DOES EVERY OTHER SITE THAT RAISES THIS KIND. The pass above can
+# only reach the one boundary a fixture can walk to; the driver raises the
+# same kind from a second place -- `merging -> blocked`, where an environment
+# nobody repaired has charged the infra ladder to its cap -- which an
+# end-to-end case could reach only by driving a merge through `infra_max`
+# passes. A shorter list at THAT site is the identical T026 defect for
+# whichever route happened to park the task, and it would sail past the
+# assertions above, because they read a different boundary. So the source is
+# counted instead: every site raises one, and every site spells the whole
+# list. The first check is the non-vacuity witness -- rename `set_boundary`
+# or the message and both counts fall to zero, which would otherwise compare
+# equal and prove nothing.
+BT_SITES="$(grep -c 'set_boundary blocked-task' "$DRIVE" || true)"
+BT_FULL="$(grep -c 'orchid task unblock|retry|reverify' "$DRIVE" || true)"
+[ "$BT_SITES" -gt 1 ] \
+  || fail "runners/orchid-drive should raise blocked-task from more than one site (found $BT_SITES) — this count is what keeps the remedy list honest at all of them"
+assert_eq "$BT_SITES" "$BT_FULL" \
+  "every blocked-task boundary the driver raises names the WHOLE remedy list PROTOCOL.md's table gives (unblock|retry|reverify), not a shorter one at a second site"
+
 # Pass 2 -- S020 now sits at `arbitrating` over a request-changes review: an
 # arbitrable boundary, on a HIGHER task id than the blocked one. The reviewer
 # envelope and the frontmatter are written directly, so the pass is decided

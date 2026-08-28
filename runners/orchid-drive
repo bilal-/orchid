@@ -2437,8 +2437,19 @@ if [ -n "$merging_ids" ]; then
         # counter blocks the task at `infra_max`. Reported as the blocked task
         # it is, through the boundary that owns that state, rather than as a
         # merge that went somewhere nobody anticipated.
+        #
+        # WORD FOR WORD the message the other blocked-task boundary in this
+        # file raises, and the remedy list is the whole one PROTOCOL.md's
+        # boundary table names -- `reverify` included, which is legal out of
+        # `blocked` (libexec/orchid-task's reverify edge) exactly as the other
+        # two are. T026 is the reason that list is spelled in full: a boundary
+        # an operator re-reads on every pass over a parked task is the one
+        # place they are guaranteed to look, so a remedy missing from it is a
+        # remedy nobody can discover. A second site raising the same kind with
+        # a shorter list would put that defect back for whichever route
+        # happened to park the task -- here, an environment nobody repaired.
         set_boundary blocked-task "$merge_id" \
-          "task is blocked — only an operator (orchid task unblock|retry) resolves it" ;;
+          "task is blocked — only an operator (orchid task unblock|retry|reverify) resolves it" ;;
       merging)
         if [ "$merge_rc" -eq 15 ]; then
           set_boundary hook-failure "$merge_id" "merge refused: a required before_merge hook has no ok envelope for this candidate"
