@@ -1429,7 +1429,7 @@ ones its archetype never declares.
      read from frontmatter — name the same commit, and the INV-11 gate on
      `testing → reviewing` accepts the evidence. (T031 has since landed the
      verify-side half: `orchid verify` now compares the two BEFORE running and
-     refuses outright, exit 18, when they disagree. So this equality is no
+     refuses outright, exit 20, when they disagree. So this equality is no
      longer merely what makes the evidence admissible afterwards — it is the
      precondition for the suite running at all, and a hand-off that committed
      without advancing `candidate_sha` would now stop the task at a
@@ -1686,7 +1686,7 @@ ones its archetype never declares.
     kernel's own INV-11 gate independently re-checks that the evidence's
     `candidate:` line matches the task's current `candidate_sha` before
     allowing the transition).
-  - REFUSED (exit 18): the working tree `orchid verify` was asked to run in
+  - REFUSED (exit 20): the working tree `orchid verify` was asked to run in
     is not the recorded `candidate_sha` — either it was already at a
     different HEAD, or it moved while the suite ran. Nothing about the
     candidate has been established, so this is NOT a FAIL and must never

@@ -344,7 +344,7 @@ buying a fresh implementation pass to reach the same tree.
   Sole acceptance authority for tests.
 
   **The tree that runs must be the tree the evidence names (T031).** The verb
-  REFUSES — exit 18, naming both SHAs — when the worktree's HEAD is not the
+  REFUSES — exit 20, naming both SHAs — when the worktree's HEAD is not the
   task's recorded `candidate_sha`, and refuses again when HEAD moved while
   the suite was running (the header carries `sha:` and `head_after:` for
   exactly that comparison). Refusal is distinct from FAIL: nothing was
@@ -862,7 +862,7 @@ hit: a hand-off exists to commit work AFTER the candidate was captured, so
 without the advance the record would name a commit that was never the one
 verified — the drift lesson L025 records — and it is the one other path that
 moves `candidate_sha` past INV-04's gate. Since T031 landed, `orchid verify`
-itself compares the two BEFORE running and refuses on a mismatch (exit 18,
+itself compares the two BEFORE running and refuses on a mismatch (exit 20,
 naming both shas), so the equality the advance leaves behind is the
 precondition for the suite running at all — and it is still what INV-11's
 `testing → reviewing` gate reads out of the evidence header afterwards.
@@ -2091,7 +2091,9 @@ Exit-code registry: 2 unknown verb, 3 illegal transition, 5
 `rebase_rereview_required`, 12 `input_overflow`, 13 plugin validation
 failure, 14 no eligible engine, 15 hook handler failure, 16 judgment
 boundary, 17 brokered command refused, 18 slot already holds an unlaunched
-manifest (T027). Every code means ONE condition: 18 is its own entry rather
+manifest (T027), 20 verification refused because its worktree is not the
+recorded candidate or moved during the suite (T031). Every code means ONE
+condition: 18 is its own entry rather
 than a second meaning for 17 precisely because a caller that has to
 distinguish "the broker refused this command" from "wait, this slot has an
 orphan" cannot do it from a number two conditions share; 19 step not routable

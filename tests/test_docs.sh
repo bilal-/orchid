@@ -808,7 +808,7 @@ grep -qF 'records the working-tree, `HEAD` and remote-ref half of the claim abov
 #
 # T031 HAS SINCE LANDED, and this tripwire fired in exactly the direction it
 # was built to fire: the docs no longer say `orchid verify` compares nothing,
-# because it now does (exit 18 on a mismatch, before the suite runs). The
+# because it now does (exit 20 on a mismatch, before the suite runs). The
 # assertion below is unchanged and still runs BOTH ways -- the day someone
 # reverts or reshapes that comparison out of the verb, it sends them straight
 # back to the sentences that would have become false again. The discriminator

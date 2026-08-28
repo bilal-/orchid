@@ -120,9 +120,10 @@ log="$state/reviews/$id-verify.log"
 # So verification refuses a tree that is not the recorded candidate, naming
 # both SHAs, and re-reads HEAD afterwards so a tree that moved DURING the run
 # (the same live-worktree race, just later) can never be reported as a clean
-# pass either. Exit 18 — kernel exit-code registry: 14 no eligible engine, 15
+# pass either. Exit 20 — kernel exit-code registry: 14 no eligible engine, 15
 # hook handler failure, 16 judgment boundary, 17 brokered command refused, 18
-# verification refused (the tree is not the candidate). Distinct from FAIL
+# slot already holds an unlaunched manifest, 20 verification refused (the tree
+# is not the candidate). Distinct from FAIL
 # (exit 1) on purpose: a drifted worktree is a boundary for a human, not a
 # rework round for the implementer.
 #
@@ -150,7 +151,7 @@ verify_refuse() {
   } | atomic_write "$log"
   echo "orchid: verify refused for $id: $why" >&2
   echo "REFUSED"
-  exit 18
+  exit 20
 }
 
 if [ "$cand" != none ] && [ "$sha" != "$cand" ]; then
@@ -206,7 +207,7 @@ drifted=0
 if [ "$drifted" -eq 1 ]; then
   echo "orchid: verify refused for $id: $cwd moved from $sha to $sha_after while the suite ran" >&2
   echo "REFUSED"
-  exit 18
+  exit 20
 fi
 
 if [ "$rc" -eq 0 ]; then

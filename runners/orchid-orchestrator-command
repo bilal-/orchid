@@ -49,7 +49,8 @@ set -euo pipefail
 #
 # Refusals exit 17 (kernel exit-code registry: ... 15 hook handler failure,
 # 16 judgment boundary, 17 brokered command refused, 18 slot already holds an
-# unlaunched manifest, 19 step not routable to the resolved actor).
+# unlaunched manifest, 19 step not routable to the resolved actor, 20
+# verification refused because its worktree drifted).
 
 self="$0"
 while [ -L "$self" ]; do

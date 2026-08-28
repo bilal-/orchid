@@ -1789,7 +1789,7 @@ drive_testing() {
     if [ "$vrc" -eq 16 ]; then
       set_boundary task-prerequisite "$id" \
         "orchid verify refused: an operator prerequisite is not acknowledged for this candidate — orchid task prereq-ack $id --reason \"...\""
-    elif [ "$vrc" -eq 18 ]; then
+    elif [ "$vrc" -eq 20 ]; then
       # T031: the verifier refused because the worktree was not the recorded
       # candidate (or moved while the suite ran). That establishes no defect
       # in the candidate, so stop for the operator instead of charging it.

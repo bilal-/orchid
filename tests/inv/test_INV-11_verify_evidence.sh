@@ -330,7 +330,7 @@ cand7="$(git -C "$WORK" commit-tree "$head_sha^{tree}" -p "$head_sha" -m "T007 c
 drift_head="$(git -C "$WORK" rev-parse HEAD)"
 [ "$drift_head" != "$cand7" ] || fail "sanity: T007's checkout must not already be at the candidate"
 rc=0; drift_err="$("$ORCHID_BIN" verify T007 2>&1 1>/dev/null)" || rc=$?
-assert_eq 18 "$rc" "T031: verify against a drifted worktree exits 18 (refused), never 0 or 1"
+assert_eq 20 "$rc" "T031: verify against a drifted worktree exits 20 (refused), never 0 or 1"
 # Here-strings, not `echo | grep -q`: this file runs under `pipefail`, and
 # `grep -q` exits at its first match, so a long-enough left-hand side takes
 # SIGPIPE and the pipeline reports 141 for a pattern that DID match. An
@@ -355,7 +355,7 @@ assert_match "^refused: " "$(tail -n1 "$drift_log")" "T031: the refusal is the l
 rc=0; err="$("$ORCHID_BIN" task advance T007 reviewing 2>&1 1>/dev/null)" || rc=$?
 [ "$rc" -ne 0 ] || fail "T031: a refused verify must never produce admissible evidence — reviewing must be refused"
 assert_eq testing "$("$ORCHID_BIN" task show T007 | grep '^status: ' | cut -d' ' -f2)" "T031: refused advance leaves T007 at testing"
-red_case "a verification aimed at a worktree that is not the recorded candidate exits 18, names both shas, and produces evidence the INV-11 gate cannot admit"
+red_case "a verification aimed at a worktree that is not the recorded candidate exits 20, names both shas, and produces evidence the INV-11 gate cannot admit"
 
 # ...and the same task passes the moment the tree really is the candidate.
 rc=0; verify_at "$cand7" T007 || rc=$?
@@ -388,8 +388,8 @@ rc=0; moved_err="$("$ORCHID_BIN" verify T008 2>&1 1>/dev/null)" || rc=$?
 moved_head="$(git -C "$WORK" rev-parse HEAD)"
 git -C "$WORK" reset -q --hard "$t008_restore"
 
-assert_eq 18 "$rc" "T031: a suite whose tree moved underneath it is refused (18), never reported as a PASS"
-# Exit 18 alone tells an operator that something was refused, not WHAT drifted.
+assert_eq 20 "$rc" "T031: a suite whose tree moved underneath it is refused (20), never reported as a PASS"
+# Exit 20 alone tells an operator that something was refused, not WHAT drifted.
 # The diagnostic has to name both ends of the move -- the tree the suite was
 # asked to certify and the tree it finished on -- or the refusal is unactionable.
 assert_match "$cand8" "$moved_err" "T031: the drift diagnostic names the recorded candidate the suite started against"
