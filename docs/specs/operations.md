@@ -324,6 +324,21 @@ this section false without touching a byte of it.
 - **v0/v1 seam:** `orchid notify` (question-id minted by the kernel,
   multiple-choice preferred) → `BLOCKERS.md` + terminal; `orchid answer
   <qid> <choice>` — idempotent, expiring, consumed by the next tick.
+- **Multiple choice is DECLARED, and enforced (v1-m4 T009) — SHIPPED:**
+  `orchid notify [--choice <value>]...` records the permitted answers with the
+  question (a `runtime/answers/<qid>.choices` sidecar) and names them on every
+  surface the question reaches — `BLOCKERS.md`, the channel page, and
+  `orchid status --html`. `orchid answer` then refuses a value outside the
+  set and lists the valid ones in the refusal, so a typo can no longer be
+  recorded silently as a decision. The gate keys on the sidecar's EXISTENCE,
+  never on the question's prose: a question minted with no `--choice` has no
+  sidecar and keeps the free-text contract in full, which is the contract
+  every question raised before this shipped still has. A sidecar that exists
+  but yields no readable choice is refused rather than waved through — "the
+  record of a declared set is gone" is not "no set was declared".
+  `runners/orchid-drive` declares the set for every boundary kind that has
+  one (`lib/drive.sh`'s `drive_boundary_choices`; PROTOCOL.md's boundary
+  table), and the kinds whose answer is genuinely prose declare none.
 - **v1-m4 channels — three explicit actors (round-4 topology fix) — SHIPPED:**
   (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
   access) — `orchid notify` (tier-1) never spawns it directly; it only

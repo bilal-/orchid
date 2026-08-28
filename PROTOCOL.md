@@ -309,14 +309,23 @@ That blocker **declares its answer set** wherever the kind has one
 names what `orchid answer` will accept instead of leaving `<choice>` to be
 guessed: `blocked-task` → `unblock | retry | defer`, `review-evidence` and
 `review-conflict` → `approve | request-changes | defer`, `run-complete` →
-`accept | defer`, `operator-handoff` → `acknowledged | defer`. Each value
-names the operator verb that carries the decision out (`orchid task
-unblock|retry`, `orchid task arbitrate --result`, `orchid run accept
---evidence`, `orchid task handoff --ack`); recording the answer is not running
-the verb. The kinds whose reason text is composed per site — the
-`operator-decision` catch-all, `hook-failure`, `worktree-conflict`,
-`planning` — have no set anybody could enumerate honestly, so they declare
-none and their pages keep the free-text contract in full.
+`accept | defer`, `operator-handoff` and `task-prerequisite` →
+`acknowledged | defer`. Each value names the operator verb that carries the
+decision out (`orchid task unblock|retry`, `orchid task arbitrate --result`,
+`orchid run accept --evidence`, `orchid task handoff --ack`, `orchid task
+prereq-ack`); recording the answer is not running the verb. Note that the last
+two declare a set even though no settling verb is named for them above:
+those are different questions. No MODEL may assert a hand-off or an
+out-of-sandbox prerequisite was performed, but the human the page reaches can,
+and every reason text either kind raises already ends in the verb that records
+it — so the boundaries that reached a human precisely because no automation
+could take them are the last ones that should ship a bare `<choice>`. The
+kinds whose reason text is composed per site — the `operator-decision`
+catch-all, `hook-failure`, `worktree-conflict`, `planning` — have no set
+anybody could enumerate honestly, so they declare none and their pages keep
+the free-text contract in full. Those two lists together cover the boundary-kind
+table exhaustively: a kind in neither would fall through to no set at all and
+ship the unanswerable page by default, so a new kind must join one of them.
 
 These two questions used to differ, and the gap was a defect rather than a
 nuance: `run-complete` was classed as orchestrator-resolvable even though the

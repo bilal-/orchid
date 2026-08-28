@@ -369,13 +369,26 @@ drive_boundary_settling_verb() {
 # carries it out -- `unblock`/`retry` (`orchid task unblock|retry`),
 # `approve`/`request-changes` (`orchid task arbitrate --result`), `accept`
 # (`orchid run accept --evidence`), `acknowledged` (`orchid task handoff
-# --ack`). Recording the answer is not running the verb: nothing consumes a
+# --ack` for a hand-off, `orchid task prereq-ack` for a prerequisite).
+# Recording the answer is not running the verb: nothing consumes a
 # `.answer` file automatically, so the page records what the operator decided
 # and the operator still runs it. Every value is one [A-Za-z0-9_-] word, which
 # is both what `orchid notify` requires (it has to survive as a single argv
 # word of `orchid answer`) and the narrower shape
 # runners/orchid-orchestrator-command admits, so a woken orchestrator can
 # declare the same sets from the brokered surface.
+#
+# THE TWO ACKNOWLEDGEMENT KINDS ANSWER ALIKE, and that is why
+# `task-prerequisite` sits beside `operator-handoff` here rather than in the
+# absent list below. Both are boundaries drive_boundary_settling_verb names no
+# verb for -- deliberately, because no MODEL may assert either was done -- and
+# both nevertheless have exactly one operator verb that settles them, named in
+# every reason text either one raises (`orchid task handoff --ack`, `orchid
+# task prereq-ack`). Those are different axes: "can a woken orchestrator record
+# this" and "can the page tell a human what they may answer". Reading the first
+# as the second is what leaves the hardest boundaries -- the ones that reached
+# a human precisely because no automation could take them -- as the bare
+# `<choice>` placeholder this table exists to retire.
 #
 # KINDS DELIBERATELY ABSENT, and the absence is the point: `operator-decision`
 # is a CATCH-ALL whose reason text is composed per site (a refused advance, an
@@ -385,12 +398,19 @@ drive_boundary_settling_verb() {
 # so they declare none and keep the free-text contract they have always had --
 # which is also why a set here can never become a way to refuse an operator's
 # legitimate prose.
+#
+# THOSE TWO LISTS PARTITION `_DRIVE_BOUNDARY_KINDS`, exhaustively, and
+# tests/test_drive.sh walks that variable to hold them to it. A kind that is in
+# neither is not a third policy -- it is a kind nobody decided about, which
+# resolves silently to the `*)` arm and ships the unanswerable page for exactly
+# the boundary whose paragraph was forgotten. So a new kind fails that walk
+# until it is named in one list or the other.
 drive_boundary_choices() {
   case "$1" in
     blocked-task) printf 'unblock\nretry\ndefer\n' ;;
     review-evidence|review-conflict) printf 'approve\nrequest-changes\ndefer\n' ;;
     run-complete) printf 'accept\ndefer\n' ;;
-    operator-handoff) printf 'acknowledged\ndefer\n' ;;
+    operator-handoff|task-prerequisite) printf 'acknowledged\ndefer\n' ;;
     *) return 0 ;;
   esac
 }

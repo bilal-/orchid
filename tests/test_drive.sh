@@ -184,6 +184,19 @@ defer" "$(drive_boundary_choices run-complete)" \
 assert_eq "acknowledged
 defer" "$(drive_boundary_choices operator-handoff)" \
   "a hand-off's page names the acknowledgement"
+# ...and so does a PREREQUISITE, for the same reason and with the same words.
+# These two are the entries whose omission would be invisible, and in exactly
+# the opposite direction from the loop at the top of this file: there, naming a
+# settling verb for either would wrongly route the boundary to a woken model,
+# so both must name none. Here, that same "no verb" is NOT a reason to declare
+# no answer set — every reason text `task-prerequisite` raises already ends in
+# `orchid task prereq-ack <id> --reason "..."`, so the page can say what will
+# be accepted even though no model may say it. Confusing the two axes leaves
+# the boundaries that reached a human precisely BECAUSE no automation could
+# take them as the bare `<choice>` placeholder this whole feature retires.
+assert_eq "acknowledged
+defer" "$(drive_boundary_choices task-prerequisite)" \
+  "an unacknowledged operator prerequisite's page names the acknowledgement too — 'no orchestrator verb' is not 'no answer a human may give'"
 
 # THE OTHER EDGE, and it is the one that keeps a declared set from becoming a
 # way to refuse an operator's legitimate prose: kinds whose reason text is
@@ -198,11 +211,47 @@ for kind in operator-decision hook-failure worktree-conflict planning nosuchkind
     "a $kind boundary has no enumerable answer set and must declare none"
 done
 
+# ...AND THE TWO LISTS ABOVE PARTITION THE KERNEL'S OWN SET OF KINDS. Walked
+# out of `_DRIVE_BOUNDARY_KINDS` rather than retyped, because a kind spelled
+# only here would be checked against nothing. This is the assertion that would
+# have caught `task-prerequisite`: it was in `_DRIVE_BOUNDARY_KINDS`, named in
+# lib/drive.sh's own settling-verb prose and in the loop at the top of this
+# file, yet appeared in neither T009 list — so it fell through to the `*)` arm
+# and shipped the unanswerable page, silently, for one of the boundaries that
+# most needs a human. A kind in neither list is not a third policy; it is a
+# kind nobody decided about.
+choices_declared=" blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite "
+choices_none=" planning hook-failure worktree-conflict operator-decision "
+# `read -ra` rather than an unquoted expansion: same split on the same IFS,
+# without asking shellcheck to accept a bare `$var` in a `for` list.
+read -ra kinds_all <<< "$_DRIVE_BOUNDARY_KINDS"
+# Counted BEFORE the walk, not after: an empty list would walk zero kinds and
+# satisfy the loop below without checking anything at all, and `"${arr[@]}"` on
+# an empty array is itself an unbound-variable error under `set -u` on bash
+# 3.2. Either way the count has to be the first thing asserted.
+[ "${#kinds_all[@]}" -eq 10 ] \
+  || fail "expected all 10 kernel boundary kinds, read ${#kinds_all[@]} — _DRIVE_BOUNDARY_KINDS changed, so the partition below needs re-deciding rather than re-counting"
+for kind in "${kinds_all[@]}"; do
+  case "$choices_declared" in
+    *" $kind "*)
+      [ -n "$(drive_boundary_choices "$kind")" ] \
+        || fail "$kind is listed as declaring an answer set but drive_boundary_choices returns none for it"
+      continue ;;
+  esac
+  case "$choices_none" in
+    *" $kind "*)
+      assert_eq "" "$(drive_boundary_choices "$kind")" \
+        "$kind is listed as declaring no answer set, and must declare none"
+      continue ;;
+  esac
+  fail "boundary kind '$kind' is in _DRIVE_BOUNDARY_KINDS but in neither T009 list — decide whether its page can name the answers 'orchid answer' will accept, add it to the right list in lib/drive.sh's drive_boundary_choices, and say so here"
+done
+
 # Every declared value has to survive as ONE argv word of `orchid answer` (and
 # as one entry of the comma-joined set recorded with the question), which is
 # also the shape runners/orchid-orchestrator-command admits — so a woken
 # orchestrator can declare the same sets from the brokered surface.
-for kind in blocked-task review-evidence review-conflict run-complete operator-handoff; do
+for kind in blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite; do
   while IFS= read -r _choice; do
     [ -n "$_choice" ] || continue
     case "$_choice" in
@@ -7568,6 +7617,19 @@ assert_match "notified" "$QDRIVE_OUT" \
   "a boundary no admitted verb settles must raise the notify blocker instead of waking a model"
 grep -q "task-prerequisite" "$PRQ/.orchid/BLOCKERS.md" \
   || fail "the blocker an operator actually reads must name the boundary"
+
+# ...AND IT SAYS WHAT MAY BE ANSWERED (T009). Pinned here, on a page a real
+# driver pass raised, because this kind is the one where the two axes are
+# easiest to confuse: no orchestrator verb settles it — no model may assert a
+# migration was applied — yet the human it reaches has exactly one verb to run,
+# and the reason line three assertions above already names it. "No verb a model
+# may run" is not "no answer a human may give", and reading it as such is how
+# this kind alone kept the bare `<choice>` placeholder while every other
+# operator-only boundary declared its set.
+assert_match "^choices: acknowledged \| defer\$" "$(cat "$PRQ/.orchid/BLOCKERS.md")" \
+  "the prerequisite blocker names the answers 'orchid answer' will accept, beside the reply command"
+assert_eq "acknowledged,defer" "$(cat "$PRQ/.orchid/runtime/answers/"*.choices)" \
+  "and records them as the machine set 'orchid answer' actually gates on, not as prose alone"
 
 # -- acknowledged: the suite runs, and its real failure is counted -----------
 qorchid task prereq-ack Q010 --reason "applied 0007 to the fixture database" >/dev/null
