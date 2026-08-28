@@ -769,6 +769,7 @@ candidate from the worktree and journals why
 
 Use `reverify`. The raw edge exists because the transition table is data, not
 because it is a second, laxer procedure.
+
 ## `plan apply` refuses: carried-forward items are unconsidered
 
 **Symptom:** `orchid plan apply` exits 3 without committing anything, listing

@@ -545,6 +545,7 @@ sequence in
    task file and so no `infra_failures` counter to spend; its failures are
    journaled and readable with `orchid journal show --task plan`. The pass
    never *relaunches* in this phase — deciding what to run next is yours.
+
    **The carry-forward cross-check.** A run does not start from nothing:
    `orchid run new` archived the previous run's journal under
    `.orchid/runs/<prev>/` and carried its ACTIVE lessons into
