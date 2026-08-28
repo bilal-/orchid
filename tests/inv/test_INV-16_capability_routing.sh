@@ -596,12 +596,14 @@ cd "$erepo" || exit 1
 git init -q .
 # role.runner is the custom role from part 4 -- its descriptor asks for nothing,
 # so the ROLE gate admits `noshell` and the step table is what refuses.
-# role.implementer is bound to the same actor to keep the WALK inert: the
-# built-in implementer role's own descriptor requires `shell`, so every
-# pending task's dispatch is refused at exit 14 -- the documented WAIT, which
-# raises no boundary and spawns nothing. infra_max sits well above the rungs
-# this fixture spends so the ladder's auto-block cannot end it early.
-printf 'role.implementer=noshell\nrole.runner=noshell\ninfra_max=9\n' > orchid.config
+# The tasks are advanced to `implementing` below so the ordinary dispatch walk
+# is inert: this part exercises the escalation ladder's relaunch, not a fresh
+# pending-task dispatch. That distinction became load-bearing when T027 made
+# pending/rework recovery belong to the dispatch walk (which owns worktree
+# preparation) instead of relaunching it early from the ladder. infra_max sits
+# well above the rungs this fixture spends so the ladder's auto-block cannot
+# end it early.
+printf 'role.implementer=noshell\nrole.runner=noshell\ninfra_max=9\nconcurrency=10\n' > orchid.config
 git add -A
 git commit -q -m "fixture: config"
 ORCHID_REPO="$erepo" "$ORCHID_BIN" init >/dev/null \
@@ -616,20 +618,13 @@ cat > "$WORK/requirements-erepo.md" <<'EOF'
 EOF
 "$ORCHID_BIN" requirements import "$WORK/requirements-erepo.md" >/dev/null
 
-# EGATE never finishes, and every other task depends on it, so the WALK finds
-# nothing dispatchable and this part measures the escalation sweep alone. (The
-# dependency is circular on purpose: EGATE waits on EONE just as EONE waits on
-# EGATE, so no task in this repository is ever dispatchable and no engine is
-# ever spawned by the walk.)
-"$ORCHID_BIN" task create EGATE "holds every other task out of the walk" >/dev/null
 "$ORCHID_BIN" task create EONE "its refusal wins the pass's boundary" >/dev/null
 "$ORCHID_BIN" task create ETWO "its refusal is held behind EONE's" >/dev/null
 "$ORCHID_BIN" task create ETHREE "the green twin: the same relaunch, admitted" >/dev/null
-for _e in EONE ETWO ETHREE; do
-  "$ORCHID_BIN" task set "$_e" depends_on EGATE >/dev/null
-done
-"$ORCHID_BIN" task set EGATE depends_on EONE >/dev/null
 "$ORCHID_BIN" plan apply --reason "initial plan" >/dev/null
+printf '%s\n' EONE ETWO ETHREE | while IFS= read -r _e; do
+  "$ORCHID_BIN" task advance "$_e" implementing --reason "fixture: active job already dispatched" >/dev/null
+done
 
 # eplant <task> <hex-suffix> -- the manifest of a job that has already died,
 # exactly the shape `orchid jobs prepare` mints (the job_id and log path are
@@ -681,8 +676,8 @@ assert_eq 1 "$(efield EONE infra_failures)" \
   "INV-16: the ladder spent exactly the one rung the DEAD JOB earned; the refusal itself charges nothing, because no rung can clear it"
 assert_eq 1 "$(efield ETWO infra_failures)" \
   "INV-16: same for the task whose refusal was held — being held changes what is recorded, never what is charged"
-assert_eq pending "$(efield EONE status)" \
-  "INV-16: and no task was advanced behind a step that was never routed"
+assert_eq implementing "$(efield EONE status)" \
+  "INV-16: and the task stays in its pre-existing active status rather than advancing behind a step that was never routed"
 red_case "a capability refusal on the escalation ladder's relaunch raised the named operator hand-off and journaled it, instead of being swallowed by the ladder and left to burn infra_failures to blocked"
 
 # THE PASS THE DEDUP IS ABOUT. The same two refusals recur (a real run re-reaches
@@ -701,7 +696,7 @@ assert_eq 1 "$(erefusals EONE)" \
   "INV-16: and the winning task's line is not repeated either"
 
 # GREEN twin, through the same runner: only the bound engine changes.
-printf 'role.implementer=noshell\nrole.runner=withshell\ninfra_max=9\n' > "$erepo/orchid.config"
+printf 'role.implementer=noshell\nrole.runner=withshell\ninfra_max=9\nconcurrency=10\n' > "$erepo/orchid.config"
 eplant ETHREE 00e5
 run_edrive
 assert_eq 0 "$(erefusals ETHREE)" \
