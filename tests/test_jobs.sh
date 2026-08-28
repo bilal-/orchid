@@ -805,8 +805,8 @@ rm -f "$mph2"
 # believes the file describes 73 never-launched jobs as 73 identical
 # `prepared` lines -- which is exactly what happened, and the only way to find
 # they were corpses was cat-ing manifests and noticing `pid: 0, started_at 0`.
-# Three manifests, identical in every respect a reader could get from the file
-# alone; the kernel is what tells them apart.
+# A stamped-live job, a stamped-dead job, and all three pid-0 shapes pin the
+# operator table to the same liveness vocabulary as `jobs check`.
 # ---------------------------------------------------------------------------
 ls_now="$(date +%s)"
 sleep 100 &
@@ -832,29 +832,50 @@ jq -n '{job_id:"j-e1-TLS-a5-3333cccc", task:"TLS", attempt:5, role:"implementer"
     base_sha:"", candidate_sha:"", launched_by:"operator"}' > "$rt/jobs/j-ls-prep.json"
 touch -t 202001010000 "$rt/jobs/j-ls-prep.json"   # prepared long ago, never launched
 
+echo fresh-log > "$rt/logs/j-ls-prepared.log"
+jq -n --arg log "$rt/logs/j-ls-prepared.log" \
+  '{job_id:"j-e1-TLS-a6-4444dddd", task:"TLS", attempt:6, role:"reviewer", operation:"review",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:"", launched_by:"drive"}' > "$rt/jobs/j-ls-prepared.json"
+
+echo stale-log > "$rt/logs/j-ls-unstamped.log"
+touch -t 202001010000 "$rt/logs/j-ls-unstamped.log"
+jq -n --arg log "$rt/logs/j-ls-unstamped.log" \
+  '{job_id:"j-e1-TLS-a7-7777aaaa", task:"TLS", attempt:7, role:"reviewer", operation:"review",
+    engine:"fake", pid:0, pgid:0, started_at:0, log:$log, output:"/dev/null",
+    base_sha:"", candidate_sha:"", launched_by:"pump"}' > "$rt/jobs/j-ls-unstamped.json"
+
 ls_out="$("$ORCHID_BIN" jobs ls 2>/dev/null)"
 assert_match "^JOB[[:space:]]+TASK[[:space:]]+ROLE[[:space:]]+OP[[:space:]]+ATT[[:space:]]+ENGINE[[:space:]]+PID[[:space:]]+STATE[[:space:]]+AGE[[:space:]]+ELAPSED[[:space:]]+BUDGET[[:space:]]+LAUNCHER[[:space:]]+LOG$" \
   "$ls_out" "jobs ls renders one header row with every column the operator asked for"
-assert_match "j-e1-TLS-a3-1111aaaa[[:space:]]+TLS[[:space:]]+reviewer[[:space:]]+review[[:space:]]+3[[:space:]]+fake[[:space:]]+$ls_live_pid[[:space:]]+running[[:space:]]" \
+assert_match "j-e1-TLS-a3-1111aaaa[[:space:]]+TLS[[:space:]]+reviewer[[:space:]]+review[[:space:]]+3[[:space:]]+fake[[:space:]]+${ls_live_pid}[[:space:]]+running[[:space:]]" \
   "$ls_out" "a job whose pid is alive renders running, with its role, op, attempt and engine on the row"
-assert_match "j-e1-TLS-a4-2222bbbb[[:space:]]+TLS[[:space:]]+plan_critic[[:space:]]+critique[[:space:]]+4[[:space:]]+fake[[:space:]]+$ls_dead_pid[[:space:]]+dead[[:space:]]" \
+assert_match "j-e1-TLS-a4-2222bbbb[[:space:]]+TLS[[:space:]]+plan_critic[[:space:]]+critique[[:space:]]+4[[:space:]]+fake[[:space:]]+${ls_dead_pid}[[:space:]]+dead[[:space:]]" \
   "$ls_out" "a job whose pid is gone renders dead — the manifest still says it launched"
 assert_match "j-e1-TLS-a5-3333cccc[[:space:]]+TLS[[:space:]]+implementer[[:space:]]+implement[[:space:]]+5[[:space:]]+fake[[:space:]]+0[[:space:]]+never-started[[:space:]]" \
-  "$ls_out" "a pid-0 manifest renders never-started"
+  "$ls_out" "a pid-0 manifest with no log renders never-started"
+assert_match "j-e1-TLS-a6-4444dddd[[:space:]]+TLS[[:space:]]+reviewer[[:space:]]+review[[:space:]]+6[[:space:]]+fake[[:space:]]+0[[:space:]]+prepared[[:space:]]" \
+  "$ls_out" "a pid-0 manifest with a fresh log renders prepared — the engine may still be running"
+assert_match "j-e1-TLS-a7-7777aaaa[[:space:]]+TLS[[:space:]]+reviewer[[:space:]]+review[[:space:]]+7[[:space:]]+fake[[:space:]]+0[[:space:]]+unstamped[[:space:]]" \
+  "$ls_out" "a pid-0 manifest with a stale log renders unstamped, not prepared forever"
 # Herestrings, not `echo ... | grep -q`, for every negative below: this file
 # runs under `set -o pipefail`, and grep -q exits at its first match, which
 # SIGPIPEs the upstream echo mid-write -- pipefail then promotes that 141 to
 # the pipeline's status and the check silently reports the opposite of what it
 # saw (helpers.sh documents the same hazard for assert_match).
-grep -q "prepared" <<< "$ls_out" \
-  && fail "F29: a never-launched manifest must NEVER render as 'prepared' in the operator table — that word is what made 73 corpses read as 73 healthy jobs"
+grep -E "j-e1-TLS-a5-3333cccc.*[[:space:]]prepared[[:space:]]" <<< "$ls_out" \
+  && fail "F29: a pid-0 manifest with no log must never render prepared — that word made 73 corpses read as healthy jobs"
 
 # The machine surface is deliberately untouched: `jobs check` is what THE TICK
 # is specified against, it kills what it calls stalled, and it still answers in
 # its own vocabulary. The point is that the OPERATOR view no longer inherits it.
 ls_check_out="$(ORCHID_TIMEOUT_MINUTES=60 "$ORCHID_BIN" jobs check)"
+assert_match "TLS[[:space:]]+never-started" "$ls_check_out" \
+  "jobs check and the table agree that pid 0 with no log is never-started"
 assert_match "TLS	prepared" "$ls_check_out" \
-  "jobs check keeps its documented vocabulary (the table is a new surface, not a rewrite of the protocol one)"
+  "jobs check and the table agree that pid 0 with a fresh log is prepared"
+assert_match "TLS[[:space:]]+unstamped" "$ls_check_out" \
+  "jobs check and the table agree that pid 0 with a stale log is unstamped"
 
 # The three columns nothing else in the kernel could answer: who launched it.
 assert_match "j-e1-TLS-a3-1111aaaa.*[[:space:]]drive[[:space:]]" "$ls_out" \
@@ -880,6 +901,10 @@ assert_match "j-e1-TLS-a4-2222bbbb .* last wrote [0-9]+d[0-9]+h ago" "$ls_warn" 
   "the age of the last thing it wrote is in the warning itself (F36: the timestamp was the signal nobody read)"
 assert_match "WARNING: job j-e1-TLS-a5-3333cccc .* never started \(pid 0\)" "$ls_warn" \
   "a manifest that has sat prepared past the stall threshold is called out too — nothing is running for it"
+assert_match "WARNING: job j-e1-TLS-a7-7777aaaa .* spawned but never stamped a pid" "$ls_warn" \
+  "a log-backed pid-0 job silent past the stall threshold is called out as unstamped"
+grep -q "j-e1-TLS-a6-4444dddd" <<< "$ls_warn" \
+  && fail "a fresh log-backed pid-0 job may still be running and must not be warned about"
 grep -q "j-e1-TLS-a3-1111aaaa" <<< "$ls_warn" \
   && fail "a live job that wrote to its log a moment ago must not be warned about"
 
@@ -946,17 +971,20 @@ rm -f "$rt/jobs/j-ls-del.json" "$rt/spool/j-e1-TDEL-a1-5555eeee.json"
 # ambient environment landing in a manifest a tab-separated table later
 # renders, so it is sanitized rather than trusted verbatim.
 # ---------------------------------------------------------------------------
-"$ORCHID_BIN" task create TLAUNCH "launcher-attribution" >/dev/null
-ls_m_pump="$(ORCHID_LAUNCHED_BY=pump "$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+"$ORCHID_BIN" task create TLAUNCHP "launcher-attribution-pump" >/dev/null
+"$ORCHID_BIN" task create TLAUNCHD "launcher-attribution-default" >/dev/null
+"$ORCHID_BIN" task create TLAUNCHH "launcher-attribution-hostile" >/dev/null
+"$ORCHID_BIN" task create TLAUNCHE "launcher-attribution-empty" >/dev/null
+ls_m_pump="$(ORCHID_LAUNCHED_BY=pump "$ORCHID_BIN" jobs prepare TLAUNCHP implementer implement)"
 assert_eq "pump" "$(jq -r .launched_by "$ls_m_pump")" \
   "jobs prepare records the automation that owns the launch"
-ls_m_default="$("$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+ls_m_default="$("$ORCHID_BIN" jobs prepare TLAUNCHD implementer implement)"
 assert_eq "operator" "$(jq -r .launched_by "$ls_m_default")" \
   "a hand-run launch, inheriting nothing, records operator"
-ls_m_hostile="$(ORCHID_LAUNCHED_BY="$(printf 'ev\til\nx')" "$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+ls_m_hostile="$(ORCHID_LAUNCHED_BY="$(printf 'ev\til\nx')" "$ORCHID_BIN" jobs prepare TLAUNCHH implementer implement)"
 assert_eq "evilx" "$(jq -r .launched_by "$ls_m_hostile")" \
   "a launcher value carrying a tab or a newline is stripped before it can splice a table row apart"
-ls_m_empty="$(ORCHID_LAUNCHED_BY='!!!' "$ORCHID_BIN" jobs prepare TLAUNCH implementer implement)"
+ls_m_empty="$(ORCHID_LAUNCHED_BY='!!!' "$ORCHID_BIN" jobs prepare TLAUNCHE implementer implement)"
 assert_eq "operator" "$(jq -r .launched_by "$ls_m_empty")" \
   "a launcher value with nothing legible left in it falls back to operator, never to empty"
 
@@ -979,7 +1007,7 @@ echo '{"contract":1,"job_id":"j-e1-T001-a9-4444dddd","task":"T001","operation":"
 "$ORCHID_BIN" jobs reconcile >/dev/null
 
 ls_all_out="$("$ORCHID_BIN" jobs ls --all 2>/dev/null)"
-assert_match "j-e1-T001-a9-4444dddd[[:space:]]+T001[[:space:]]+implementer[[:space:]]+implement[[:space:]]+9[[:space:]]+fake[[:space:]]+$ls_hist_pid[[:space:]]+ok[[:space:]]" \
+assert_match "j-e1-T001-a9-4444dddd[[:space:]]+T001[[:space:]]+implementer[[:space:]]+implement[[:space:]]+9[[:space:]]+fake[[:space:]]+${ls_hist_pid}[[:space:]]+ok[[:space:]]" \
   "$ls_all_out" "a reconciled job stays answerable after its manifest is gone, with the envelope's own outcome"
 ls_all_tsv="$("$ORCHID_BIN" jobs ls --all --tsv 2>/dev/null)"
 ls_hist_elapsed="$(awk -F'\t' '$1 == "j-e1-T001-a9-4444dddd" { print $10; exit }' <<< "$ls_all_tsv")"

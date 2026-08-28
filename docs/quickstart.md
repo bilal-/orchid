@@ -337,14 +337,16 @@ orchid jobs ls --all        # + jobs that already finished: what this task ran,
 
 Two things it is careful about. **State is computed, never read**: a manifest
 records the pid its launcher stamped and nothing ever unstamps it, so every row
-asks the kernel — a job whose process is gone reads `dead` (or `delivered`, if
-its envelope is written and simply not reconciled yet), and one that never
-spawned reads `never-started`. **Age is shown beside it**: `AGE` is how long
-since the job last wrote anything, and a job that has gone quiet past
-`stall_minutes`, died without leaving an envelope, or never started at all also
-gets a `WARNING:` line on stderr — which `orchid status` prints in every mode,
-with no flag, because a run whose only in-flight job died is exactly the state
-nobody thinks to go looking at a table for.
+asks the same predicates as `jobs check` — a stamped job whose process is gone
+reads `dead` (or `delivered`, if its envelope is written and simply not
+reconciled yet); `pid: 0` with no log reads `never-started`, with a fresh log
+reads `prepared`, and with a log silent past `stall_minutes` reads `unstamped`.
+**Age is shown beside it**: `AGE` is how long since the job last wrote anything.
+Dead jobs without envelopes, never-started jobs past the threshold, unstamped
+jobs, and running jobs silent past the threshold get a `WARNING:` line on
+stderr — which `orchid status` prints in every mode, with no flag, because a
+run whose only in-flight job died is exactly the state nobody thinks to go
+looking at a table for.
 
 A genuine blocker raises a question in `BLOCKERS.md` and (if you configured
 [a notify channel](./engines/openclaw.md)) pings you outside the terminal.

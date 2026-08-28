@@ -621,10 +621,11 @@ enough to answer "which of these two jobs is which, and do I intervene". `jobs
 ls` (also `orchid status --jobs`, and a Jobs section on the static page)
 renders one row per outstanding job — job id, task, role, operation, attempt,
 engine, pid, state, age, elapsed, percentage of `wallclock_budget_s` consumed,
-who launched it, and its log path. It computes liveness with `kill -0` exactly
-as `check` does rather than believing the manifest, so a `pid: 0` manifest
-reads `never-started`, a job whose process is gone reads `dead`, and the
-hold-back case above reads `delivered`. It is read-only and kills nothing (the
+who launched it, and its log path. It computes liveness with the same
+predicates as `check` rather than believing the manifest: `pid: 0` with no log
+reads `never-started`, with a fresh log reads `prepared`, and with a log silent
+past `stall_minutes` reads `unstamped`; a stamped job whose process is gone
+reads `dead`, and the hold-back case above reads `delivered`. It is read-only and kills nothing (the
 stall/timeout kill stays `check`'s alone), so it is safe to run from a second
 terminal mid-pass; `--watch` polls it, `--all` adds jobs that have already
 finished. The two conditions that mean nothing is happening — a job dead with

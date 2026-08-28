@@ -147,18 +147,19 @@ Two columns settle this symptom:
   stamped and nothing ever unstamps it, so the file reads the same whether the
   process is running or was killed yesterday. Every row asks the kernel
   instead: `running`, `dead` (process gone, no envelope — this one needs you),
-  `delivered` (process gone, envelope written and waiting for the next
-  `orchid jobs reconcile` — this one does not), or `never-started` (a `pid: 0`
-  manifest whose launcher died before it spawned; clear those with `orchid
-  jobs gc --reap-prepared`).
+  or `delivered` (process gone, envelope written and waiting for the next
+  `orchid jobs reconcile` — this one does not). For `pid: 0`, no log means
+  `never-started`, a fresh log means `prepared` (the engine may still be
+  running), and a log silent past `stall_minutes` means `unstamped`; the
+  latter two are explained in detail below.
 - **AGE is how long since the job last wrote anything.** Content in a log says
   nothing about whether the process behind it still exists; the log's mtime
   does. An `AGE` of `12h30m` beside a `dead` state is the whole diagnosis.
 
-You do not have to remember to run it. A job that is dead with no envelope, one
-that has been silent past `stall_minutes`, and one that never started at all
-each print a `WARNING:` line on stderr that `orchid status` shows in every
-mode, with no flag:
+You do not have to remember to run it. A job that is dead with no envelope,
+never-started past the threshold, unstamped, or running but silent past
+`stall_minutes` prints a `WARNING:` line on stderr that `orchid status` shows
+in every mode, with no flag:
 
 ```
 WARNING: job j-e12-T031-a4-9c2f (T031 reviewer/review a4, claude, pid 40122, by pump) is dead and left no envelope — it ran 41m18s and last wrote 12h31m ago; escalate or relaunch (log: ...)

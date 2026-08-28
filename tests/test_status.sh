@@ -223,7 +223,7 @@ assert_match "last wrote [0-9]+d[0-9]+h ago" "$st_plain_err" \
 st_jobs="$("$ORCHID_BIN" status --jobs 2>/dev/null)"
 assert_match "^JOB[[:space:]]+TASK[[:space:]]+ROLE[[:space:]]+OP[[:space:]]+ATT[[:space:]]+ENGINE[[:space:]]+PID[[:space:]]+STATE[[:space:]]+AGE[[:space:]]+ELAPSED[[:space:]]+BUDGET[[:space:]]+LAUNCHER[[:space:]]+LOG$" \
   "$st_jobs" "status --jobs renders the process table"
-assert_match "j-e1-T001-a1-9999ffff[[:space:]]+T001[[:space:]]+reviewer[[:space:]]+review[[:space:]]+1[[:space:]]+acme-engine[[:space:]]+$st_dead_pid[[:space:]]+dead[[:space:]]" \
+assert_match "j-e1-T001-a1-9999ffff[[:space:]]+T001[[:space:]]+reviewer[[:space:]]+review[[:space:]]+1[[:space:]]+acme-engine[[:space:]]+${st_dead_pid}[[:space:]]+dead[[:space:]]" \
   "$st_jobs" "one row per outstanding job: which job, whose work, which engine, which pid, and its computed state"
 grep -Eq "^T001[[:space:]]dead$" <<< "$st_jobs" \
   && fail "--jobs replaces the bare task/state pair rather than printing both"

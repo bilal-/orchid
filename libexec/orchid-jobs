@@ -234,6 +234,7 @@ gc_reap_unlaunched() {  # manifest now threshold stall_s
     echo "gc-pending $job_id (envelope awaiting reconcile)"
     return 0
   fi
+  history_append "$f" "$reason"
   quarantine_file "$f" "$reason"
   rm -rf "$rt/packs/$job_id" "$rt/requests/$job_id.json" "$rt/exits/$job_id"
   echo "$reason $job_id"
@@ -458,11 +459,12 @@ history_append() {
 #   LIVENESS IS COMPUTED, NEVER READ. A manifest records the pid its launcher
 #   stamped and nothing ever unstamps it: the process can be gone for hours
 #   and the file still reads exactly as it did while it was running. So every
-#   row asks the kernel (`kill -0`), exactly as `jobs check` does, and a pid of
-#   0 -- what `jobs prepare` mints, and only runners/orchid-launch ever
-#   overwrites -- renders as `never-started`. Dogfood F29 was 73 never-launched
-#   manifests rendering as 73 identical `prepared` lines; the only way to find
-#   they were corpses was cat-ing manifests and noticing `pid: 0`.
+#   row uses the same predicates as `jobs check`: a stamped pid is probed with
+#   `kill -0`; pid 0 with no log is `never-started`, with a fresh log is
+#   `prepared`, and with a stale log is `unstamped`. Dogfood F29 was 73
+#   never-launched manifests rendering as 73 identical `prepared` lines; the
+#   only way to find they were corpses was cat-ing manifests and noticing
+#   `pid: 0` with no log.
 #
 #   AGE SITS BESIDE LIVENESS. Dogfood F36: a session told its operator a
 #   critique was "actively working" and quoted its recent findings while that
@@ -517,11 +519,12 @@ fmt_dur() {
 # it. The key is the job's start time, falling back to the last thing that
 # touched it, so the table reads oldest-first: the order jobs actually ran in.
 jobs_rows() {
-  local show_all="${1:-0}" now f raw
+  local show_all="${1:-0}" now stall_s f raw
   local jid jtask jrole jop jatt jengine jpid jstarted jlog jby jstate
   local age_src age elapsed pct tf key
   local t_status t_started t_budget
   now="$(date +%s)"
+  stall_s=$(( $(config_get "$repo" stall_minutes 10) * 60 ))
   for f in "$jobs_dir"/*.json; do
     [ -e "$f" ] || continue
     # `blank` on every string cell, and `select` rather than a `//""` on
@@ -546,7 +549,16 @@ jobs_rows() {
     # case `jobs gc` holds a manifest back for), so calling it `dead` would
     # send an operator escalating a delivery that arrived.
     if [ "$jpid" -le 0 ]; then
-      jstate=never-started
+      if job_never_started "$f"; then
+        jstate=never-started
+      elif job_unstamped_stale "$f" "$now" "$stall_s"; then
+        jstate=unstamped
+      else
+        # A log-backed pid-0 manifest inside the stall bound is the real
+        # post-spawn/pre-stamp window. The engine may still be running, so
+        # this is deliberately not reported as never-started or reaped.
+        jstate=prepared
+      fi
     elif kill -0 "$jpid" 2>/dev/null; then
       jstate=running
     else
@@ -559,7 +571,7 @@ jobs_rows() {
 
     # AGE is time since the job last WROTE, which is the log's mtime -- the
     # signal that was sitting on disk, unlooked-at, through both multi-hour
-    # F36 stalls. A never-launched job has no log, so its manifest's own mtime
+    # F36 stalls. A never-started job has no log, so its manifest's own mtime
     # answers the only question there is about it: how long it has sat there.
     # `!= -` because that is what the producer above renders an absent log as;
     # a bare `-n` would stat a relative path named `-` in whatever directory
@@ -714,6 +726,8 @@ jobs_warnings() {
         if [ "${age:-0}" -gt "$stall_s" ] 2>/dev/null; then
           echo "WARNING: job $label was prepared $(fmt_dur "$age") ago and never started (pid 0) — nothing is running for it (clear with: orchid jobs gc --reap-prepared)" >&2
         fi ;;
+      unstamped)
+        echo "WARNING: job $label spawned but never stamped a pid and last wrote $(fmt_dur "$age") ago — nothing is visibly progressing; orchid jobs gc will retire the manifest but keep its log (log: $jlog)" >&2 ;;
       running)
         if [ "${age:-0}" -gt "$stall_s" ] 2>/dev/null; then
           echo "WARNING: job $label is alive but last wrote $(fmt_dur "$age") ago — past the $(fmt_dur "$stall_s") stall threshold (log: $jlog)" >&2
