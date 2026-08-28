@@ -669,6 +669,92 @@ grep -qF 'scripts/beta-qualify.sh' "$REPO_ROOT/docs/specs/plugins.md" \
 grep -qF 'Qualify a repository before acknowledging it' "$REPO_ROOT/PROTOCOL.md" \
   || fail "PROTOCOL.md's HEADLESS OPERATION section must tell an operator to qualify before acknowledging"
 
+# T011 -- THAT ORDER IS A DECISION, AND A DECISION RECORDED ONLY AS AN OUTCOME
+# IS ONE NOBODY CAN REVISIT.
+#
+# The harness runs the target's own verify= command in place with no
+# acknowledgement of any kind, which is repository content reaching execution.
+# Keeping it ungated was chosen over two live alternatives -- a narrower
+# qualification-scoped acknowledgement, and making --no-run-verify the default
+# -- and the next person to notice the exposure will reach for one of exactly
+# those two. So the spec must carry the reasoning, BOTH rejected options, and
+# the condition that would reopen the question; losing any of them sends that
+# person round the same loop with no record that it was already walked.
+#
+# Folded first, then grep -qF: these are prose SENTENCES, every one of them
+# straddles a hard wrap in the source, and a fixed-string search over the raw
+# file would never match one.
+ops_spec_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/operations.md" | tr -s '[:space:]' ' ')"
+grep -qF 'Qualification stays ungated anyway.' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must record the decision that beta qualification takes no trust step of its own"
+grep -qF 'It would invert the documented order.' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must say why requiring an acknowledgement to qualify would invert the documented order"
+grep -qF 'Rejected: a qualification-scoped acknowledgement' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must record the narrower qualification-scoped acknowledgement as a REJECTED alternative rather than omit it"
+grep -qF 'Rejected: making `--no-run-verify` the default' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must record making --no-run-verify the default as a REJECTED alternative"
+grep -qF 'What would reopen this.' <<<"$ops_spec_one_line" \
+  || fail "docs/specs/operations.md must state what would make this decision have to be made again"
+
+# The two surfaces that would otherwise state the order without the reasoning.
+beta_md_one_line="$(tr '\n' ' ' < "$BETA_MD" | tr -s '[:space:]' ' ')"
+grep -qF 'no acknowledgement of its own' <<<"$beta_md_one_line" \
+  || fail "docs/beta-qualification.md must tell a tester plainly that qualification needs no trust step of its own"
+grep -qF 'specs/operations.md' <<<"$beta_md_one_line" \
+  || fail "docs/beta-qualification.md must point at the recorded decision instead of restating only its outcome"
+grep -qF 'requires no acknowledgement of its own' <<<"$protocol_one_line" \
+  || fail "PROTOCOL.md must say that beta qualification itself requires no acknowledgement, not only that it never grants one"
+
+# TWO-WAY, against the code. While qualification is ungated the docs must say
+# so; the day someone gates it, this fails and sends them to the sentences that
+# have just become false rather than leaving the spec quietly wrong.
+grep -qF 'unattended_trust_require' "$QUALIFY_SH" \
+  && fail "scripts/beta-qualify.sh now gates itself on the unattended acknowledgement, which inverts the order PROTOCOL.md and docs/specs/operations.md document — if that decision has changed, change those two and this assertion with it"
+grep -qF 'docs/specs/operations.md' "$QUALIFY_SH" \
+  || fail "scripts/beta-qualify.sh must point at the recorded decision, so an editor tempted to add a gate finds the reasoning first"
+
+# ...and that last one is a grep over the FILE'S BYTES, which the header comment
+# alone satisfies. It cannot tell whether --help still says any of this. That
+# matters here more than usual: the decision above is that qualification carries
+# a stated exception INSTEAD of a gate, and --help is one of the two surfaces
+# stating it -- delete the paragraph, keep the header comment, and every
+# assertion so far still passes while the mitigation the decision rests on is
+# gone. So pin what --help PRINTS, exactly as the --help block earlier in this
+# file requires of the promise it guards. Folded first: both sentences straddle
+# a hard wrap in the usage text, and grep -qF over the raw output would never
+# match one.
+qualify_help_one_line="$(tr '\n' ' ' <<<"$qualify_help" | tr -s '[:space:]' ' ')"
+grep -qF 'That notice stands in place of a trust step: qualification is deliberately ungated' <<<"$qualify_help_one_line" \
+  || fail "scripts/beta-qualify.sh --help must say that the in-place notice stands IN PLACE OF a trust step and that qualification is ungated by design — the two halves are one claim and neither is safe alone"
+grep -qF 'See docs/specs/operations.md for that decision and what was rejected.' <<<"$qualify_help_one_line" \
+  || fail "scripts/beta-qualify.sh --help must send the operator who doubts that choice to the recorded decision, not only state its outcome"
+
+# ...and one last two-way assertion, this one about the CALLERS rather than the
+# script. The third reason in that spec section turns on a fact nothing above
+# touches: "the harness is a foreground command with two required paths on it,
+# never scheduled and never invoked by the kernel". That is the whole of why the
+# unattended gate's subject is a different one -- the gate exists because nobody
+# is in front of the pump, and this argument is that somebody is always in front
+# of qualification. Wire it into a runner, a service unit or a kernel verb and
+# that sentence is false and the third reason collapses -- while
+# scripts/beta-qualify.sh has not changed by one byte and every assertion above
+# still passes. So it is pinned where it can actually break.
+qualify_caller_roots=("$REPO_ROOT/lib" "$REPO_ROOT/libexec" "$REPO_ROOT/runners")
+for qualify_caller_root in "${qualify_caller_roots[@]}"; do
+  [ -d "$qualify_caller_root" ] \
+    || fail "$qualify_caller_root is missing, so the kernel-caller search below would pass by looking at nothing"
+done
+# Non-vacuous by construction: the same search shape, over the same roots, has
+# to find something that IS there. `unattended_trust_require` is called from
+# exactly the three surfaces that spec section names, all three under these
+# roots, so an empty control result means the search itself is broken -- moved
+# directories, a wrong root -- rather than that the kernel is clean.
+grep -rqF 'unattended_trust_require' "${qualify_caller_roots[@]}" \
+  || fail "the kernel-caller search cannot even find an unattended_trust_require call, so it is searching nothing and proves nothing about qualification"
+qualify_callers="$(grep -rlF 'beta-qualify' "${qualify_caller_roots[@]}" || true)"
+[ -z "$qualify_callers" ] \
+  || fail "docs/specs/operations.md rests part of this decision on qualification being 'never scheduled and never invoked by the kernel', but kernel code now names the harness: $qualify_callers — if that changed on purpose, the third reason has to be remade and this assertion changed with it"
+
 # The release-day checklist must include the local rehearsal.
 grep -qF 'tests/test_e2e_release_rehearsal.sh' "$REPO_ROOT/docs/install.md" \
   || fail "docs/install.md's release-day steps must include the local rehearsal"

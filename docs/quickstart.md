@@ -387,6 +387,15 @@ codes, and outcomes, never contents, paths, prompts, diffs, or secrets. What it
 cannot test locally, including the inbound half of the blocker round trip, it
 records as `not-tested` with the reason rather than as a pass.
 
+It executes exactly one thing inside that repository, and it says so on stderr
+as it does: the repository's own configured `verify=` command, once, in place,
+so the timing is measured instead of guessed. On someone else's project, read
+their `verify=` line before you run this — it is their code, running with your
+privileges, and the harness does not sandbox it. `--no-run-verify` skips it and
+records that probe as `not-tested`. Qualification itself asks for no
+acknowledgement; `orchid trust unattended` comes *after* this, once you know the
+repository is drivable.
+
 Full checklist, including the manual steps no harness can perform:
 [beta-qualification.md](./beta-qualification.md).
 
