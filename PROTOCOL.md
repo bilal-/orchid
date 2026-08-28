@@ -422,10 +422,20 @@ incomplete review set is never also reported as a conflict, and vice versa:
    evidence of a broken gate). `plugins/engines/codex/run` and the other
    shipped `review` adapters still ask for a `VERDICT:` line only and write
    `findings: []` verbatim (`FINDING:` lines are requested by the `critique`
-   prompt alone). For those reviewers the `blocking_severity` gate is
-   **inert**, and a deterministic approval rests on `verdict` and
-   `scope_complete` alone. Check which adapter reviewed before reading a
-   clean gate as a second opinion you are already getting.
+   prompt alone). On an approving review from those reviewers the
+   `blocking_severity` gate is **inert**, and a deterministic approval rests
+   on `verdict` and `scope_complete` alone. Check which adapter reviewed
+   before reading a clean gate as a second opinion you are already getting.
+   **Where a verdict-only adapter WITHHOLDS approval, the gate is not inert
+   any more** (dogfood F32): `orchid jobs reconcile` lifts the reviewer's
+   free-text `summary` into `findings[]` as one `high`-severity entry marked
+   `synthesized: true`, printing a `synthesized-finding:` line as it files
+   the envelope, because an objection that exists only as prose contributes
+   nothing to any severity gate — and the danger there is not the
+   disagreement (which blocks on its own) but the next reviewer who approves
+   while keeping the same caveat. The envelope is filed, never quarantined:
+   `findings: []` is what those adapters write on every review, so refusing
+   it would throw the objection away.
    **And read the live case the other way round, because it is the one that
    will surprise you:** where `findings[]` IS populated, a **non-empty** one
    blocks an otherwise-approving review. Read the TASK's own
@@ -446,7 +456,12 @@ incomplete review set is never also reported as a conflict, and vice versa:
    finding, mixed verdicts, or a non-scope-complete review. → boundary
    `review-conflict`, **no transition**. Deciding what to do about a real
    disagreement is judgment, and a driver that auto-reworked on it would be
-   making exactly the call it is not entitled to make.
+   making exactly the call it is not entitled to make. The boundary's reason
+   carries the objection, not just its existence:
+   `<file>:verdict=request-changes:findings=0 (summary: "…")` — the verdict,
+   whether the severity gate had anything to weigh, and a one-line excerpt of
+   what the reviewer actually said. Read it before opening the envelope; two
+   dogfood runs lost the substance because the record named only the verdict.
 
 **`orchid task arbitrate` is the sole explicit judgment-result verb.**
 `orchid task arbitrate <id> --result approve|request-changes --reason "..."

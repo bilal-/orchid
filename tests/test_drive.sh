@@ -995,7 +995,14 @@ assert_eq 16 "$rc" "the boundary is readable back through its own verb, also wit
 assert_eq review-conflict "$(printf '%s' "$boundary" | jq -r .kind)" "the boundary kind names a review conflict, not a generic failure"
 assert_eq T002 "$(printf '%s' "$boundary" | jq -r .task)" "the boundary names the task awaiting judgment"
 assert_match "verdict=request-changes" "$(printf '%s' "$boundary" | jq -r .reason)" \
-  "the boundary reason quotes the structured field that produced it, never prose from the review"
+  "the boundary reason quotes the structured field that produced the decision"
+# T033/F32, and the two-way tripwire on the sentence above: the DECISION is
+# still made from structured fields alone, but the reason now CARRIES the
+# rejecting review's summary ("stub review", per the stub engine above) for
+# the human it wakes. A record that names only the verdict sent two dogfood
+# operators to `jq` the raw envelope to find out what was actually wrong.
+assert_match "summary: .stub review." "$(printf '%s' "$boundary" | jq -r .reason)" \
+  "and it carries the rejecting review's own summary, so the arbiter is not sent to the raw envelope to find the objection"
 
 # ...and because the task really is `arbitrating`, `orchid task arbitrate`
 # would run: this is the one shape a woken orchestrator settles in one call,

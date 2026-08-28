@@ -531,6 +531,26 @@ assert_match "walked EVERY task" "$drive_help_one_line" \
 stale_help="$(grep -rln "adapter never fills findings" "$REPO_ROOT/runners" "$REPO_ROOT/libexec" "$REPO_ROOT/bin" 2>/dev/null || true)"
 [ -z "$stale_help" ] || fail "stale L006 severity-gate claim still shipped in: $stale_help"
 
+# T033 (dogfood F32): the severity-gate claim moved again, and this help is
+# the site that was left behind LAST time it moved -- the block above exists
+# because of exactly that. `orchid jobs reconcile` now composes a finding from
+# a non-approve review's free-text summary, so "an empty findings[] blocks
+# nothing" is true only of an APPROVING review. Unqualified, it tells an
+# operator who then sees a `high` entry in a filed envelope that the reviewer
+# put it there. Both halves are pinned so neither can drift on its own: the
+# assertion above keeps the approving half, these keep the scope and the
+# marker that distinguishes a kernel-composed entry from a reviewer's own.
+assert_match "approving review an empty findings\[\] blocks nothing" "$drive_help_one_line" \
+  "orchid drive --help must scope its empty-findings claim to an APPROVING review — reconcile synthesizes a finding for one that withholds approval"
+assert_match "synthesized-finding:" "$drive_help_one_line" \
+  "orchid drive --help must name the line reconcile prints when it composes a finding from a non-approve review's summary"
+assert_match "synthesized: true" "$drive_help_one_line" \
+  "orchid drive --help must say a synthesized entry is marked, so it is never read as the reviewer's own severity call"
+# ...and the marker is a plugin CONTRACT too: an adapter author reading only
+# the spec has to be able to tell a kernel-composed finding from their own.
+assert_match "synthesized: true" "$plugins_spec_one_line" \
+  "docs/specs/plugins.md must document the synthesized finding's marker as part of the envelope contract"
+
 # v1-m4 T006, the notify return leg: the two manifest keys doctor's check
 # reads are a plugin CONTRACT, so they belong in the plugin spec — an
 # operator writing a notify plugin has nowhere else to learn them.

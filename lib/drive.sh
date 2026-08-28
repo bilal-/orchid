@@ -784,8 +784,11 @@ drive_envelope_has_blocking_finding() {
 #
 # The three arms are mutually exclusive and evaluated in that order, so an
 # incomplete review set is never also reported as a conflict (and vice
-# versa). No prose is parsed anywhere: every input is a structured envelope
-# field the kernel already validates.
+# versa). No prose is parsed anywhere: every input to the DECISION is a
+# structured envelope field the kernel already validates. The conflict arm
+# QUOTES a rejecting review's summary into its detail (F32, below), which is
+# the prose firewall observed rather than bent -- the text is carried for the
+# human the boundary wakes, and nothing here branches on a byte of it.
 #
 # THE EVIDENCE SET IS EXACTLY THE ONE THE KERNEL GATE COUNTS, and this
 # function's job is to mirror libexec/orchid-task's reviewing->arbitrating
@@ -828,8 +831,21 @@ drive_envelope_has_blocking_finding() {
 # and write `findings: []` verbatim (`FINDING:` lines are requested by their
 # CRITIQUE prompt alone) -- for those reviewers the severity gate is INERT
 # and deterministic approval rests on `verdict` + `scope_complete` alone.
-# Either way an EMPTY findings[] blocks nothing: an engine that reports no
-# findings is a valid review, and this gate has always read `[]` that way.
+# Either way an EMPTY findings[] on an APPROVING review blocks nothing: an
+# engine that reports no findings is a valid review, and this gate has always
+# read `[]` that way.
+#
+# ON A NON-APPROVING REVIEW IT IS NOT THE SAME SENTENCE (dogfood F32). A
+# reviewer that withholds approval while filing `findings: []` has put its
+# objection somewhere this gate cannot look -- the free-text `summary` -- and
+# the line the approve arm prints ("no finding at or above <severity>") would
+# then be reporting a weighing that never happened. `orchid jobs reconcile`
+# closes that at the FILING end: it lifts such a summary into findings[] as it
+# makes the envelope durable, so what arrives here already carries the
+# substance. The conflict arm below closes the rest at the READING end -- it
+# says `findings=0` when an envelope reaches it with an empty array anyway (an
+# older kernel's file, or a synthesis reconcile refused), and it carries the
+# summary excerpt into the detail that becomes the boundary record.
 #
 # REVIEW DEPTH (v1.1, T012 -- lesson L010, evidenced on run r-001's T003). At
 # `medium`/`high` the count is not the whole bar: at least one of the counted
@@ -901,7 +917,7 @@ drive_envelope_has_blocking_finding() {
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
-  local plan pin_state
+  local plan pin_state entry nfind excerpt
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -953,7 +969,30 @@ drive_review_decision() {
     if [ "$verdict" = approve ]; then
       approve_n=$(( approve_n + 1 ))
     else
-      conflicts="$conflicts $base:verdict=${verdict:-none}"
+      # THE OBJECTION TRAVELS WITH THE VERDICT (dogfood F32). `<file>:verdict=
+      # request-changes` names the fact and hides the content: on both runs
+      # that hit this, the actionable defect was sitting in the envelope's
+      # `summary` and the operator found it only by hand-jq-ing the raw file.
+      # This detail becomes the `review-conflict` boundary's reason, which is
+      # what the arbiter is shown and what `orchid notify` carries, so the
+      # substance belongs in it -- excerpted and folded to one line, since
+      # this record is TAB-separated (envelope_summary_excerpt's own note).
+      #
+      # `findings=0` is stated explicitly rather than left to be inferred:
+      # reconcile lifts a prose-only objection into findings[] as it files it,
+      # so an envelope that still reaches here with an empty array predates
+      # that (an older kernel's reviews/ file) or had its synthesis refused.
+      # Either way the severity gate below is weighing nothing for it, and
+      # that has to be said where the decision is read rather than discovered.
+      entry="$base:verdict=${verdict:-none}"
+      nfind="$(envelope_field "$f" '(.findings // []) | length' 2>/dev/null || true)"
+      # Unreadable counts as none: a count this function could not take is not
+      # evidence that the gate has something to weigh.
+      [ -n "$nfind" ] || nfind=0
+      [ "$nfind" != 0 ] || entry="$entry:findings=0"
+      excerpt="$(envelope_summary_excerpt "$f")"
+      [ -z "$excerpt" ] || entry="$entry (summary: \"$excerpt\")"
+      conflicts="$conflicts $entry"
     fi
     if [ "$scope" != true ]; then
       conflicts="$conflicts $base:scope_complete=false"

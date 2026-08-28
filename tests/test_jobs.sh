@@ -1861,3 +1861,98 @@ assert_match "already resolved" "$recy_err" \
   "T031: and names that, rather than accepting a finding about a job nothing was ever running for (got: $recy_err)"
 [ ! -e "$rt/exits/$recy_jid" ] || fail "T031: and writes nothing for it"
 red_case "record-exit is admitted only for the unresolved class — an already-resolved job is refused, not overwritten with a finding it does not need"
+# T033 (dogfood F32, reproduced independently in r-002): A NON-APPROVE VERDICT
+# MUST CARRY A FINDING THE SEVERITY GATE CAN SEE.
+#
+# The shape: `verdict: request-changes`, `findings: []`, and the entire
+# substance of the objection in the free-text `summary`. Filed that way, the
+# envelope contributes NOTHING to any severity-based gate -- lib/drive.sh's
+# approve arm reports "no finding at or above <severity>" by reading
+# findings[], and it read an empty array. The danger is not the disagreement
+# (a request-changes verdict blocks on its own); it is the AGREEMENT, where a
+# reviewer approves while keeping the same prose caveat and the field the gate
+# consults is empty.
+#
+# `orchid jobs reconcile` is where that closes, because it is the one place
+# every envelope passes through on its way to becoming durable evidence. The
+# pair below is fed to the GATE ITSELF (drive_envelope_has_blocking_finding,
+# lib/drive.sh), not to a proxy for it, before and after filing.
+# ---------------------------------------------------------------------------
+# Sourced for the gate function alone; lib/drive.sh defines functions and
+# three constants at source time and reads nothing. Last block in this file,
+# so nothing downstream inherits the sourced definitions.
+source "$REPO_ROOT/lib/drive.sh"
+# `critic` (declared above, capabilities=structured_text) satisfies the
+# reviewer role's own `requires=structured_text`, so prepare resolves it
+# rather than refusing at the door with exit 14. This is the only
+# `role.reviewer=` line in this fixture's config, so last-wins settles nothing
+# here.
+printf 'role.reviewer=critic\n' >> orchid.config
+
+objection="prepareBackupAttempt() can return run_id 0 after a best-effort startRun() failure, yet the handler still flushes started, so a committed running row is not guaranteed before the early response"
+
+mrev="$("$ORCHID_BIN" jobs prepare T001 reviewer review)"
+[ -f "$mrev" ] || fail "reviewer manifest written: role.reviewer=critic must resolve, or every assertion below is vacuous"
+mrev_jid="$(jq -r .job_id "$mrev")"; mrev_out="$(jq -r .output "$mrev")"
+jq -n --arg jid "$mrev_jid" --arg s "$objection" \
+  '{contract:1, job_id:$jid, task:"T001", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:$s, findings:[]}' \
+  > "$mrev_out"
+
+# The defect itself, demonstrated on the envelope exactly as the reviewer
+# wrote it: the gate has nothing to weigh. Kept aside because reconcile is
+# about to consume the spool copy.
+cp "$mrev_out" "$WORK/asfiled-request-changes.json"
+if drive_envelope_has_blocking_finding "$WORK/asfiled-request-changes.json" medium; then
+  fail "fixture is not the defect: the as-written prose-only objection already carries a blocking finding"
+fi
+
+rev_line="$("$ORCHID_BIN" jobs reconcile)"
+filed=".orchid/reviews/T001-a1-reviewer.json"
+# FILED, never quarantined: the shipped verdict-only review adapters write
+# `findings: []` verbatim on every review, so rejecting this envelope would
+# throw a legitimate objection away and leave the task short of its review
+# count with nothing for the operator to read.
+[ -f "$filed" ] || fail "a request-changes review with an empty findings[] must still be filed -- quarantining it would destroy the objection it carries"
+assert_match "synthesized-finding: T001-a1-reviewer[.]json" "$rev_line" \
+  "reconcile says out loud that it composed a finding: a prose-only objection is accepted, never silently"
+assert_eq "1" "$(jq '.findings | length' "$filed")" \
+  "the filed envelope carries one finding synthesized from its summary"
+assert_eq "high" "$(jq -r '.findings[0].severity' "$filed")" \
+  "synthesized at high severity -- the one value no task's blocking_severity can filter out"
+assert_match "prepareBackupAttempt" "$(jq -r '.findings[0].title' "$filed")" \
+  "the synthesized finding carries the reviewer's own words, not a paraphrase"
+assert_match "synthesized from summary" "$(jq -r '.findings[0].title' "$filed")" \
+  "and says on its face that the kernel composed it, so it is never read as the reviewer's own severity call"
+assert_eq "true" "$(jq -r '.findings[0].synthesized' "$filed")" "the entry is marked synthesized"
+assert_eq "$objection" "$(jq -r '.findings[0].detail' "$filed")" \
+  "the summary survives WHOLE in detail, so the truncated title costs nothing"
+assert_eq "$objection" "$(jq -r '.summary' "$filed")" \
+  "and the reviewer's own summary is left exactly as it was written"
+drive_envelope_has_blocking_finding "$filed" high \
+  || fail "the synthesized finding must reach the severity gate even at the strictest threshold"
+red_case "a request-changes envelope with findings: [] reaches the severity gate: reconcile lifts its summary into a high-severity finding instead of filing an empty array the gate weighs as nothing"
+
+# The twin, and the reason the check above is detection rather than a rule
+# that rewrites every envelope it sees: an APPROVING review with an empty
+# findings[] is the ordinary output of every verdict-only adapter and must
+# pass through untouched. The trigger is WITHHELD APPROVAL, not an empty
+# array.
+mrev2="$("$ORCHID_BIN" jobs prepare T001 reviewer review)"
+mrev2_jid="$(jq -r .job_id "$mrev2")"; mrev2_out="$(jq -r .output "$mrev2")"
+jq -n --arg jid "$mrev2_jid" \
+  '{contract:1, job_id:$jid, task:"T001", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"scope covered, nothing to report", findings:[]}' \
+  > "$mrev2_out"
+rev2_line="$("$ORCHID_BIN" jobs reconcile)"
+filed2=".orchid/reviews/T001-a1-reviewer.2.json"
+[ -f "$filed2" ] || fail "the approving review is filed under the collision suffix, same attempt"
+assert_eq "0" "$(jq '.findings | length' "$filed2")" \
+  "an approving review that found nothing keeps its empty findings[] -- reporting no findings is a valid review"
+case "$rev2_line" in
+  *"synthesized-finding: T001-a1-reviewer.2.json"*)
+    fail "reconcile synthesized a finding into an APPROVING review: the trigger must be a withheld verdict, not an empty array" ;;
+esac
+drive_envelope_has_blocking_finding "$filed2" medium \
+  && fail "an approving review with no findings must not block: nothing may be invented into it"
+green_case "an approving review with findings: [] is filed byte-for-byte as written, and still blocks nothing"

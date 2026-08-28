@@ -2152,8 +2152,24 @@ reply for `FINDING: <low|medium|high>: <title>` lines alongside the
 there; the other shipped `review` adapters ask for a `VERDICT:` line only and
 always write `findings: []` (`FINDING:` lines belong to the `critique`
 prompt), so with them approval turns on `verdict` and `scope_complete` alone.
-An empty `findings[]` is never itself a signal — a reviewer that found
-nothing to report writes the same empty array. A NON-empty one, though, is
+On an APPROVING review an empty `findings[]` is never itself a signal — a
+reviewer that found nothing to report writes the same empty array. On one
+that WITHHOLDS approval it is, and the two must not be read the same way
+(dogfood F32, reproduced independently in r-002): a `request-changes` verdict
+whose whole substance sits in the free-text `summary` leaves every
+severity-based gate weighing an empty array, and the approval line's "no
+finding at or above `<severity>`" would then report a weighing that never
+happened. `orchid jobs reconcile` closes that where the envelope becomes
+durable evidence — it lifts such a summary into `findings[]` as one
+`high`-severity entry marked `synthesized: true` (docs/specs/plugins.md has
+the exact shape), so what any gate later reads carries the objection. The
+envelope is never quarantined for it: the verdict-only adapters above write
+`findings: []` on every review, so refusing it would destroy real objections
+and park the task at a `review-evidence` boundary with nothing to read. The
+`review-conflict` boundary record names the gap and the substance too —
+`<file>:verdict=request-changes:findings=0 (summary: "…")` — because the
+arbiter that record wakes should not have to `jq` the raw envelope to learn
+what the objection was. A NON-empty `findings[]`, however it got there, is
 decisive on its own: on a task whose `blocking_severity` is `medium` — the
 fallback when the field is absent, and what `templates/task-migrate.md` and
 `templates/task-refactor.md` ship, though `templates/task.md` and

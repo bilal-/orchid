@@ -86,14 +86,28 @@ adapter that asks a review for `FINDING: <low|medium|high>: <title>` lines and
 parses them makes the clause LIVE: one finding at or above the task's own
 blocking_severity (`orchid task show <id>`; `medium` is only the fallback when
 the field is absent, and the shipped archetypes do not agree on one) stops the
-pass at a judgment boundary even though every verdict said `approve`. An adapter that asks for a VERDICT line only always
-writes findings[] empty, and for it approval rests on verdict + scope_complete.
+pass at a judgment boundary even though every verdict said `approve`. An
+adapter that asks for a VERDICT line only writes findings[] empty on every
+review it files, and on an APPROVING one from it approval rests on verdict +
+scope_complete.
 The shipped review adapters are split between those two shapes, and this text
 claims nothing about which shape the reviewer YOU have bound is: read that
 adapter's own reply contract, or PROTOCOL.md's deterministic-approval arm,
-before reading a clean gate as a second opinion you are already getting. An
-empty findings[] blocks nothing either way -- a reviewer that found nothing is
-a valid review, not a missing one.
+before reading a clean gate as a second opinion you are already getting. On an
+approving review an empty findings[] blocks nothing either way -- a reviewer
+that found nothing is a valid review, not a missing one.
+
+On a review that WITHHOLDS approval it does not stay empty, and an operator
+reading the filed envelope should know why the entry is there. An objection
+that exists only as prose contributes nothing to any severity gate, so
+`orchid jobs reconcile` composes ONE finding from that review's free-text
+summary as it files the envelope, at severity `high` -- the one rank no task's
+blocking_severity filters out -- and prints a `synthesized-finding:` line
+naming the file it landed in. Such an entry is tagged `synthesized: true` and
+carries the summary whole in its detail: it is the kernel's fail-closed
+reading of a withheld verdict, never the reviewer's own severity call. An
+adapter that files its own findings is never touched, so the way to keep the
+severity yours is to report it.
 
 At risk_tier `medium` or `high` that arbitration also needs DEPTH: at least one
 of the counted reviews has to be credited to a `worktree` slot -- one routed to

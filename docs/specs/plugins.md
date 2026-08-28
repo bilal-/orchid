@@ -129,6 +129,21 @@ artifact per hook schema; `orchestrate` → `actions[]` (the verb invocations
 the tick performed, for audit). An `ok` missing its operation's required
 payload is `malformed`.
 
+**A non-approve verdict must carry a finding.** `findings[]` is the only
+field any severity gate reads. An `ok` `review`/`critique` that withholds
+approval while reporting `findings: []` has therefore put its objection
+somewhere no gate can weigh it — free-text `summary` — and every
+severity-based decision downstream is then made against an empty array. Such
+an envelope is still ACCEPTED (the shipped verdict-only adapters write
+`findings: []` verbatim on every review, so refusing it would quarantine
+legitimate objections), but `orchid jobs reconcile` composes ONE finding from
+the summary as it files it, at `severity: high` — the one value no task's
+`blocking_severity` filters out — tagged with a `source` of
+`orchid:synthesized-from-summary` and `synthesized: true`, and with the
+summary kept whole in `detail`. Reconcile prints a `synthesized-finding:`
+line naming the filed envelope when it does. An adapter that files its own
+findings is never touched, so the way to keep severity yours is to report it.
+
 **`failure_kind` — a refusal is not a fault (v1-m5).** Optional, and
 meaningful only on a non-`ok` envelope (`capability` or `engine`; absent means
 `engine`, so every adapter written before this field keeps its exact
