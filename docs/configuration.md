@@ -51,6 +51,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 |---|---|---|---|
 | `integration_branch` | `orchid/integration` | repo | v0 |
 | `verify` | *(none — required)* | repo | v0 |
+| `merge_gate` | *(unset — no gate)* | repo | v1.1 |
 | `concurrency` | `2` | repo or user | v0 (1) / v1-m2 (2 + scheduling) |
 | `role.orchestrator` | `claude` (fallback chain default: `claude,codex`) | repo or user | v0 |
 | `role.implementer` | `codex` (fallback chain default: `codex,claude`) | repo or user | v0 |
@@ -105,6 +106,47 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 - **`verify`** has no default on purpose: `orchid doctor` FAILs preflight
   until it's set (`orchid.config`), except `--greenfield` mode, which skips
   this check pre-scaffold (nothing to verify yet).
+- **`merge_gate`** is the repository's own floor: one command, run by `orchid
+  merge` on the MERGED tree in its temp worktree, in addition to whatever the
+  task named in `verification_commands`. It is the answer to a specific
+  failure — a repo-wide check that each task has to opt into reaches only the
+  tasks whose author remembered it, which in r-001 meant `scripts/ci-local.sh`
+  ran for two tasks out of eight while seventeen ShellCheck findings piled up
+  behind a green suite. So the resolution order is deliberately the reverse of
+  `verify`'s: `verify` is a *fallback* a task overrides with its own
+  `verification_commands`, while `merge_gate` is read from repo config only
+  and no task frontmatter can switch it off.
+  - **It blocks, it does not merely run.** Its exit status joins the task
+    suite's, and the integration-ref advance is already conditional on that
+    being zero — so a red gate returns the task to `rework` (journaled
+    `gate_failed`, distinct from `validation_failed`) with the integration ref
+    untouched.
+  - **What it costs, and how to keep that small.** `orchid merge` runs the
+    task's `verification_commands` on the merged tree *first*, so a gate that
+    repeats the test suite pays for that suite twice per merge and learns
+    nothing the second time. Name the checks a task's own suite does **not**
+    already run. Orchid's own gate is
+    `scripts/ci-local.sh --bash /bin/bash --no-tests`: every static check and
+    ShellCheck, no second suite — which is exactly the half of the r-001
+    failure no task ever opted into, at seconds rather than minutes. What
+    remains is once per *merge* in any case:
+    `orchid verify`, which runs on every attempt, is untouched, so the inner
+    loop stays fast. Orchid will not deduplicate the overlap for you: the only
+    way to detect it is to ask whether the task's command *looks like* it
+    contains the gate, and satisfaction decided by string compare is how a
+    gate ships bypassable. The one skip it does make is not textual — the gate
+    is skipped when the task's own suite already failed, since that merge is
+    going to `rework` regardless.
+  - **Recursion.** A gate that runs the repository's own suite will re-enter
+    `orchid merge` through that suite's tests. `orchid merge` sets
+    `ORCHID_MERGE_GATE_ACTIVE` in the gate command's environment and refuses
+    to open a second level when it sees it; `scripts/ci-local.sh` sets it too,
+    for a direct run with no merge above it. A skipped gate is recorded in the
+    merge log as `gate_status: skipped-nested` and announced on stderr — never
+    passed off as a pass.
+  - Distinct from **`hook.before_merge`**, which is an engine hook satisfied by
+    a reconciled envelope and refuses the verb before any merge is attempted
+    (exit 15). `merge_gate` is a shell command scored on its exit status.
 - **`stall_minutes`** is the kernel's one "no sign of life for long enough to
   call it stuck" bound, and it is read in three places. For a job that stamped
   a pid, `orchid jobs check` kills it and reports `stalled` after that long

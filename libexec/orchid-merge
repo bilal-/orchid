@@ -331,12 +331,106 @@ cmd="$(fm_get "$tf" verification_commands)"
 [ -n "$cmd" ] || cmd="$(config_get "$repo" verify)"
 [ -n "$cmd" ] || orchid_die "no verification_commands on task $id and no config 'verify' set — nothing to run"
 
+# --- the repo-wide merge gate (T007; lesson L016) --------------------------
+# `verification_commands` is authored PER TASK, so a repo-wide check added
+# part-way through a run reaches only the tasks written after it AND told
+# about it. In r-001 that check was `scripts/ci-local.sh`: it existed for the
+# whole run, two of eight tasks named it, seventeen ShellCheck findings
+# accumulated behind a green suite, and the run-level criterion "the
+# configured ShellCheck gate passes" was failing on the integration branch the
+# entire time. Nobody bypassed anything — six task authors simply never opted
+# in, which is the defect restated: a gate whose reach depends on an author
+# remembering it is not a gate.
+#
+# `merge_gate` is that check named ONCE, for the repository, in orchid.config.
+# Every task inherits it because no task is consulted about it — it is read
+# here, from repo config, and a task's own frontmatter cannot switch it off.
+# That is deliberately the OPPOSITE resolution order from `cmd` above:
+# `verification_commands` is this candidate's own suite and belongs to the
+# task, while this is the repository's floor and belongs to the repository.
+#
+# WHERE IT RUNS, AND WHY IT BLOCKS RATHER THAN MERELY RUNS. In `$wt` — the
+# detached temp worktree holding the ALREADY-MERGED tree, so what is judged is
+# what would land on integration, not the candidate branch in isolation — and
+# its exit status folds into the same `rc` the task's own suite feeds. The
+# block is therefore structural rather than bolted on: the ref advance below
+# is already guarded by `[ "$rc" -eq 0 ]`, so a failing gate never reaches it.
+# Running the gate and then merging anyway is the exact failure this exists to
+# remove, which is why the gate gets no arm of its own on the success side —
+# there is no branch here that could be written to advance the ref past a red
+# gate, because there is no branch here at all.
+#
+# THE COST, said plainly, and where it is NOT paid. By the time the gate runs,
+# `$cmd` above has already run the task's own suite on this same tree, so a
+# gate that repeats that suite pays for it twice per merge and learns nothing
+# the second time. This code cannot detect the overlap — the only way to do it
+# from here is to ask whether the task's command "looks like" it contains the
+# gate, and satisfaction decided by string compare is how a gate ships
+# bypassable. So the overlap is avoided where it CAN be avoided honestly, in
+# the choosing of the command: a `merge_gate` should name the checks a task's
+# suite does not already run. Orchid's own is `scripts/ci-local.sh
+# --no-tests` — static checks and ShellCheck, which is precisely the half of
+# L016 no task ever opted into, and seconds rather than a second full suite.
+# What is left after that choice is cheap, and it is once per MERGE in any
+# case: `orchid verify` runs on every attempt and is untouched, so the fast
+# inner loop stays fast. Exactly one deduplication is made in code, and it is
+# not textual: the gate is skipped when the task's own suite has ALREADY
+# failed, since this merge is going to `rework` either way and the run buys
+# nothing that the next round will not produce.
+#
+# WHAT IT COSTS IN ROUTING. Once this fires for every task, its failures
+# become the rework path for every task — and a ShellCheck location is not
+# actionable by an implementer that cannot run a linter. That is why this
+# lands after T010 rather than before it: `lib/findings.sh` scrapes THIS log,
+# gate output included (it is appended to the same captured body, ahead of the
+# same trailing `exit:` line that file keys on), and carries the exact
+# `file:line: RULE:` lines into the next brief.
+#
+# RECURSION. If the gate is the repository's own suite, and that suite
+# exercises `orchid merge`, the gate re-enters itself. ORCHID_MERGE_GATE_ACTIVE
+# is what stops it: set in the gate command's own environment below, so every
+# nested `orchid merge` underneath it — at any depth, through any number of
+# fixtures — sees it and declines to open a second level. `scripts/ci-local.sh`
+# sets it too, covering the other direction (an operator or hosted CI running
+# the suite directly, where a test's `orchid merge` would otherwise be free to
+# open the first level). A skip is NEVER silent: it is recorded in the evidence
+# log and said on stderr, because a marker left set in some ambient environment
+# would otherwise disable this gate everywhere while every merge went on
+# reporting a pass — L016 again, this time wearing its own fix's clothes.
+gate_cmd="$(config_get "$repo" merge_gate)"
+gate_status=none
+gate_rc=0
+[ -z "$gate_cmd" ] || gate_status=configured
+
 mkdir -p "$state/reviews"
 log="$state/reviews/$id-merge.log"
 out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-merge-verify.XXXXXX")"
 
 rc=0
 ( cd "$wt" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || rc=$?
+
+if [ "$gate_status" = configured ]; then
+  if [ -n "${ORCHID_MERGE_GATE_ACTIVE:-}" ]; then
+    gate_status=skipped-nested
+    echo "orchid: merge_gate skipped for $id: this merge already runs inside a merge_gate (ORCHID_MERGE_GATE_ACTIVE is set) — the outer gate is the one judging this tree" >&2
+  elif [ "$rc" -ne 0 ]; then
+    gate_status=skipped-suite-failed
+  else
+    gate_status=ran
+    # A banner, so the two commands' output is separable in one log. It is
+    # deliberately NOT a bare `---`: that line is the header terminator both
+    # `orchid verify` and `orchid merge` write, and lib/findings.sh stops
+    # parsing the header at the first one — a second bare `---` down in the
+    # body would be harmless today only by accident of ordering.
+    printf '\n== merge_gate: %s\n' "$gate_cmd" >>"$out_tmp"
+    # Set for THIS command only, never exported for the whole verb: the
+    # marker's job is to describe the subtree beneath the gate, and a
+    # verb-wide export would also reach the `task advance` calls below, which
+    # are not the gate and are not running inside one.
+    ( cd "$wt" && ORCHID_MERGE_GATE_ACTIVE=1 bash -c "$gate_cmd" ) >>"$out_tmp" 2>&1 || gate_rc=$?
+    if [ "$gate_rc" -ne 0 ]; then rc="$gate_rc"; fi
+  fi
+fi
 
 {
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -350,6 +444,15 @@ rc=0
   echo "candidate: $candidate_sha"
   echo "cwd: $wt"
   echo "command: $cmd"
+  # Reported whenever a gate is CONFIGURED, including on the two paths where
+  # it did not actually run. "this repository configures no gate" and "a gate
+  # was configured and passed over" are different facts about a merge, and a
+  # reader has to be able to tell them apart: an ABSENT `gate:` line means the
+  # repository set none, and never that one was skipped quietly.
+  if [ "$gate_status" != none ]; then
+    echo "gate: $gate_cmd"
+    echo "gate_status: $gate_status"
+  fi
   echo "---"
   cat "$out_tmp"
   echo "exit: $rc"
@@ -534,5 +637,16 @@ if [ "$rc" -eq 0 ]; then
   exit 0
 fi
 
+# A DISTINCT reason from `validation_failed`, though both route identically
+# (rework, integration ref untouched, same exit 1). They are not the same
+# finding: `validation_failed` says this candidate's own suite is red, while
+# this says the candidate is red against a check the REPOSITORY applies to
+# everything and that the task was never asked about. An operator reading the
+# journal should not have to open the log to tell which of those happened —
+# the second one is frequently not the task author's doing at all.
+if [ "$gate_status" = ran ] && [ "$gate_rc" -ne 0 ]; then
+  "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "gate_failed: repo-wide merge_gate exited $gate_rc — see reviews/$id-merge.log"
+  exit 1
+fi
 "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "validation_failed: see reviews/$id-merge.log"
 exit 1

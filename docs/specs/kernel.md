@@ -281,8 +281,9 @@ across prose sections is normative HERE):**
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
 | arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
 | arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
-| merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite green | integration ref, evidence, frontmatter | done |
+| merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite AND `merge_gate` green | integration ref, evidence, frontmatter | done |
 | merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
+| merging | `merge` exit 1 (`gate_failed`) → `task advance` | repo-wide `merge_gate` red; integration ref untouched | evidence, frontmatter | rework |
 | merging | `merge` exit 5 (`rebase_rereview_required`) | rebase done, SHAs updated; reviews invalidated | frontmatter, journal(`rebase_review`) | testing |
 | rework | `task advance` | rework spec written into task body | frontmatter | implementing |
 | any | `task advance --reason` | attempts exhausted (`rework_max`, default 3) / budget / operator | frontmatter, journal | blocked |
@@ -354,6 +355,26 @@ buying a fresh implementation pass to reach the same tree.
   exact candidate to rework with logs. **v0 baseline semantics:** the suite
   must pass, full stop; `baseline.md` records pre-existing failures for
   humans. Baseline-aware comparison is post-v1.
+  **The repo-wide gate (`merge_gate`, T007, lesson L016).** "The suite" above
+  is TWO commands, not one: the task's `verification_commands`, and the
+  repository's `merge_gate` if one is configured — both run in that temp
+  worktree, against the merged tree. The second exists because the first is
+  authored PER TASK, so a repo-wide check added mid-run reaches only the tasks
+  written after it and told about it: in r-001 `scripts/ci-local.sh` was named
+  by two of eight tasks, and the run-level "the configured ShellCheck gate
+  passes" criterion was failing on the integration branch throughout while
+  every task's own suite was green. `merge_gate` is read from repo config
+  ONLY — deliberately not overridable from task frontmatter the way `verify`
+  is, since a floor a task can lower is not a floor. Its status folds into the
+  same one the ref advance is already conditional on, so it blocks rather than
+  merely reports (`gate_failed` → `rework`, ref untouched); it is skipped when
+  the task's own suite has already failed, and NEVER skipped by matching the
+  task's command text against the gate's. A gate that runs the repository's
+  own suite re-enters this verb through it, so `merge` sets
+  `ORCHID_MERGE_GATE_ACTIVE` in the gate command's environment and declines to
+  open a second level when it is already set (`scripts/ci-local.sh` sets it
+  too, for a direct run); a skip is written into the merge log as
+  `gate_status: skipped-nested` and said on stderr, never reported as a pass.
   **Consequences of the ref-only advance (m3 ledger, found live):** the
   integration-ref advance above is a bare `git update-ref` — it never touches
   any OTHER checkout of that branch, by design, since it must not write into

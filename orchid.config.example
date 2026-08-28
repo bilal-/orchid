@@ -1,5 +1,22 @@
 integration_branch=orchid/integration
 verify=npm test
+# The repository's own floor, checked once per merge on the MERGED tree, in
+# addition to whatever the task named for itself. Set it here and every task
+# inherits it: unlike `verify` (which a task overrides with its own
+# `verification_commands`), nothing a task writes can switch this off. That is
+# the whole point -- a repo-wide check that each task has to opt into reaches
+# only the tasks whose author remembered it. A failing gate sends the task to
+# `rework` and leaves the integration ref exactly where it was. Unset (the
+# default) means no gate and no cost.
+#
+# Name the part of your checks that a task's own suite does NOT already
+# cover -- lint, formatting, a licence scan. `orchid merge` has already run
+# the task's `verification_commands` on this very tree by the time the gate
+# fires, so a gate that repeats the test suite pays for it twice per merge for
+# nothing. Orchid's own gate below is `scripts/ci-local.sh --no-tests` for
+# exactly that reason: static checks and ShellCheck, no second suite. See
+# docs/configuration.md.
+# merge_gate=/bin/bash scripts/ci-local.sh --bash /bin/bash --no-tests
 # Roles are configuration — see docs/configuration.md. Each role.* value is a
 # comma-separated failover chain, primary first (e.g.
 # role.implementer=codex,claude): a fallback engine only ever activates once

@@ -1754,16 +1754,27 @@ ones its archetype never declares.
   below refuse outright (exit 15, `merge blocked: required before_merge hook
   '<id>' has no ok envelope for this candidate`) rather than running the
   merge at all; an `optional` entry never gates it either way, invoked or
-  not. `orchid merge <id>`, then branch on the task's **post-merge status**
+  not. Separately, and needing nothing from the orchestrator at all, the verb
+  runs the repository's own `merge_gate` (config, default *unset*) on the
+  merged tree alongside the task's `verification_commands` — a floor set once
+  for the repository that every task inherits, precisely because a check each
+  task has to opt into reaches only the tasks whose author remembered it. It
+  blocks: a red gate returns the task to `rework` with the integration ref
+  untouched, exactly as a red task suite does. Nothing here needs invoking or
+  reconciling; see docs/configuration.md for its cost and its recursion guard.
+  `orchid merge <id>`, then branch on the task's **post-merge status**
   (`orchid task show <id>`) — never on the exit code alone: exit `1` is
   ambiguous between two different outcomes below, so the status is the only
   reliable signal. The verb already performs the resulting `task advance`
   internally in every case that actually changes status, so there is no
   separate advance call to make here:
   - status `done` (exit was `0`): merged.
-  - status `rework` (exit was `1`, `validation_failed` / merge or rebase
-    conflict; verb already journaled and advanced it): continue the walk's
-    rework handling on the next pass.
+  - status `rework` (exit was `1`, `validation_failed` / `gate_failed` /
+    merge or rebase conflict; verb already journaled and advanced it):
+    continue the walk's rework handling on the next pass. `gate_failed` means
+    the repo-wide `merge_gate` failed rather than the candidate's own suite —
+    same routing, but a failure the task was never asked about and frequently
+    not its author's doing, so say which one when you brief the rework.
   - status `testing`, with a fresh `base_sha`/`candidate_sha` and invalidated
     evidence (exit was `5`, `rebase_rereview_required`; verb already
     journaled this with kind `rebase_review`): classifying the coming

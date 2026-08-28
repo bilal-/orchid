@@ -560,3 +560,219 @@ assert_eq 0 "$rc" "re-run after the acknowledgement, merge proceeds normally"
 [ -f "$sentinel8" ] || fail "...and NOW the suite actually runs"
 assert_eq "done" "$("$ORCHID_BIN" task show T041 | grep '^status: ' | cut -d' ' -f2)" \
   "the task reaches done -- the gate delayed the merge, it did not derail it"
+# ---------------------------------------------------------------------------
+# T007: the repo-wide `merge_gate`.
+#
+# The defect this covers is r-001's, not a hypothetical: `scripts/ci-local.sh`
+# existed for the whole run and only two of eight tasks named it in their own
+# `verification_commands`, because that field is authored per task. So the
+# things asserted below are, in order, the things that were missing — the gate
+# reaches a task that never opted in; a RED gate stops the integration ref
+# rather than merely printing; and the nesting the first two create
+# terminates.
+#
+# Every scenario here deliberately uses a CHEAP gate command (`ls`), never the
+# repository's real suite. The gate's content is not what is under test — its
+# reach, its authority over the ref, and its recursion behaviour are.
+#
+# The fixture task ids continue from T008 above rather than restarting: T007
+# and T008 are already spent on the T030 re-derivation scenarios, and reusing
+# either would inherit that task's status and branch instead of walking a
+# fresh one.
+#
+# `unset`, not `export ...=`: this file runs inside `scripts/ci-local.sh` in
+# CI, which sets the recursion marker for exactly the reason section (C)
+# below exercises. With it inherited, every gate here would correctly skip
+# and (A) and (B) would assert nothing at all — a green suite proving the
+# opposite of what it claims, which is the shape of the original defect.
+# ---------------------------------------------------------------------------
+unset ORCHID_MERGE_GATE_ACTIVE
+
+gate_marker="$WORK/gate-ran.txt"
+: > "$gate_marker"
+
+# `ls` is the gate body throughout: it exits 0, and it writes the merged
+# tree's own file list into the marker, so "the gate ran" and "the gate ran
+# against the merged tree rather than the candidate branch or the repo root"
+# are the same assertion.
+gate_pass="ls >> $gate_marker"
+gate_fail="ls >> $gate_marker; exit 3"
+
+set_gate() {  # rewrite orchid.config; an EMPTY argument means "no merge_gate key"
+  {
+    echo "integration_branch=$integ"
+    [ -z "$1" ] || echo "merge_gate=$1"
+  } > orchid.config
+}
+
+# --- (A) a task that never opted in is gated anyway, and a green gate lets
+# the merge through -------------------------------------------------------
+set_gate "$gate_pass"
+
+"$ORCHID_BIN" task create T009 "gated without opting in"
+git checkout -q -b task/T009 "$integ"
+echo nine > feature9.txt && git add feature9.txt && git commit -q -m "feature 9"
+cand9="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base9="$(git rev-parse "$integ")"
+
+# The whole point of the scenario: this task's own verification_commands says
+# nothing whatsoever about the gate.
+walk_to_merging T009 task/T009 "$base9" "$cand9" "test -f feature9.txt"
+vc9="$("$ORCHID_BIN" task show T009 | grep '^verification_commands: ' | cut -d' ' -f2-)"
+assert_eq "test -f feature9.txt" "$vc9" "task's own verification_commands never names the gate"
+
+rc=0; "$ORCHID_BIN" merge T009 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "green gate -> merge still exits 0"
+assert_eq "done" "$("$ORCHID_BIN" task show T009 | grep '^status: ' | cut -d' ' -f2)" "green gate -> task reaches done"
+assert_match "feature9\.txt" "$(cat "$gate_marker")" "gate RAN, and ran against the merged tree (its listing carries the candidate's file)"
+
+log9=".orchid/reviews/T009-merge.log"
+assert_match "^gate: ls >> " "$(cat "$log9")" "merge evidence records the gate command"
+assert_match "^gate_status: ran$" "$(cat "$log9")" "merge evidence records that the gate ran"
+assert_match "^== merge_gate: ls >> " "$(cat "$log9")" "the gate's output is captured into the log body under its own banner"
+assert_match "^exit: 0$" "$(cat "$log9")" "the log still ends in the single exit: line lib/findings.sh keys on"
+assert_eq "exit: 0" "$(tail -n1 "$log9")" "gate output never displaces the trailing exit: line"
+
+# --- (B) a RED gate blocks: the integration ref does not move -------------
+# The candidate's OWN suite passes here. Anything that stops this merge is
+# therefore the gate and nothing else — and (B2) below closes that argument
+# by re-merging the very same candidate with the gate removed.
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T010 "red gate must block"
+git checkout -q -b task/T010 "$integ"
+echo ten > feature10.txt && git add feature10.txt && git commit -q -m "feature 10"
+cand10="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base10="$(git rev-parse "$integ")"
+
+walk_to_merging T010 task/T010 "$base10" "$cand10" "test -f feature10.txt"
+
+pre_integ10="$(git rev-parse "$integ")"
+rc=0; "$ORCHID_BIN" merge T010 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red gate -> merge exits 1"
+assert_eq rework "$("$ORCHID_BIN" task show T010 | grep '^status: ' | cut -d' ' -f2)" "red gate -> task returns to rework"
+post_integ10="$(git rev-parse "$integ")"
+assert_eq "$pre_integ10" "$post_integ10" "red gate -> integration ref is EXACTLY where it was"
+git show "$integ:feature10.txt" >/dev/null 2>&1 \
+  && fail "red gate -> the candidate's file must NOT be on the integration branch"
+assert_match "gate_failed" "$(cat .orchid/journal.md)" "gate failure journals its own reason, distinct from validation_failed"
+
+log10=".orchid/reviews/T010-merge.log"
+assert_match "^gate_status: ran$" "$(cat "$log10")" "merge evidence records that the gate ran"
+assert_match "^exit: 3$" "$(cat "$log10")" "the gate's own exit status is what the log carries"
+
+# (B2) same candidate, gate removed -> it merges. This is what makes (B) a
+# statement about the GATE rather than about some incidental property of
+# T010: with nothing else changed, dropping the gate is sufficient to let the
+# identical tree through.
+set_gate ""
+walk_to_merging T010 task/T010 "$base10" "$cand10" "test -f feature10.txt"
+rc=0; "$ORCHID_BIN" merge T010 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "same candidate merges once the gate is removed -> the gate was the only blocker"
+assert_eq "done" "$("$ORCHID_BIN" task show T010 | grep '^status: ' | cut -d' ' -f2)" "ungated re-merge reaches done"
+log10b=".orchid/reviews/T010-merge.log"
+grep -q '^gate' "$log10b" && fail "no gate configured -> the log carries no gate lines at all"
+
+# --- (C) the recursion guard --------------------------------------------
+# The loop this closes: merge -> gate -> the repository's suite -> a test that
+# runs `orchid merge` -> that merge's gate -> the suite again. The marker is
+# set by `orchid merge` in the gate's own environment (and by
+# scripts/ci-local.sh for a direct run), so the INNER merge declines to open a
+# second level. Exercised here by standing in for that inner merge directly:
+# same red gate as (B), which blocked; with the marker set it must not.
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T011 "recursion guard"
+git checkout -q -b task/T011 "$integ"
+echo eleven > feature11.txt && git add feature11.txt && git commit -q -m "feature 11"
+cand11="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base11="$(git rev-parse "$integ")"
+
+walk_to_merging T011 task/T011 "$base11" "$cand11" "test -f feature11.txt"
+
+marker_before11="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0
+ORCHID_MERGE_GATE_ACTIVE=1 "$ORCHID_BIN" merge T011 >"$WORK/merge11.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" "nested merge -> the gate is skipped, so the red gate cannot block it"
+assert_eq "done" "$("$ORCHID_BIN" task show T011 | grep '^status: ' | cut -d' ' -f2)" "nested merge still reaches done"
+marker_after11="$(wc -l < "$gate_marker" | tr -d ' ')"
+assert_eq "$marker_before11" "$marker_after11" "nested merge did not EXECUTE the gate (marker unchanged)"
+
+# A skip must never be silent — a marker left set in some ambient environment
+# would otherwise disable the gate everywhere while every merge reported a
+# pass, which is the original defect with the fix's name on it.
+log11=".orchid/reviews/T011-merge.log"
+assert_match "^gate: ls >> " "$(cat "$log11")" "a skipped gate is still named in the evidence"
+assert_match "^gate_status: skipped-nested$" "$(cat "$log11")" "the evidence says the gate was skipped, not that it passed"
+assert_match "merge_gate skipped" "$(cat "$WORK/merge11.out")" "the skip is announced, not silent"
+
+# --- (D) no gate configured is a total no-op ------------------------------
+# T001-T008 above all ran with no `merge_gate` key and behaved exactly as they
+# always did; this makes that an assertion of its own rather than an
+# incidental property of the other coverage, in the same spirit as the
+# hook.before_merge regression further up.
+set_gate ""
+"$ORCHID_BIN" task create T012 "no gate configured"
+git checkout -q -b task/T012 "$integ"
+echo twelve > feature12.txt && git add feature12.txt && git commit -q -m "feature 12"
+cand12="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base12="$(git rev-parse "$integ")"
+
+walk_to_merging T012 task/T012 "$base12" "$cand12" "test -f feature12.txt"
+marker_before12="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T012 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "unconfigured gate -> merge proceeds unchanged (exit 0)"
+assert_eq "done" "$("$ORCHID_BIN" task show T012 | grep '^status: ' | cut -d' ' -f2)" "unconfigured gate -> task still reaches done"
+assert_eq "$marker_before12" "$(wc -l < "$gate_marker" | tr -d ' ')" "unconfigured gate -> nothing was executed"
+
+# --- (E) the one dedup made in code: a red task suite skips the gate ------
+# libexec/orchid-merge makes exactly one deduplication, and it is not
+# textual: when the task's own suite has ALREADY failed, the gate is not run,
+# because the merge is going to `rework` either way and running it buys
+# nothing the next round would not produce. The gate configured here is the
+# RED one, which is what lets this scenario tell "skipped" apart from "ran,
+# and the suite merely won the race for the exit code": had the gate run, the
+# marker would have grown and the journal would say gate_failed. Neither may
+# happen — the failure is the suite's own, and it must be reported as such,
+# because a `gate_failed` here would send the next rework brief chasing a
+# gate that never executed.
+set_gate "$gate_fail"
+
+suite_red="$WORK/suite-goes-red.flag"
+"$ORCHID_BIN" task create T013 "red suite pre-empts the gate"
+git checkout -q -b task/T013 "$integ"
+echo thirteen > feature13.txt && git add feature13.txt && git commit -q -m "feature 13"
+cand13="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base13="$(git rev-parse "$integ")"
+
+# Green at walk time (INV-11's real `orchid verify` must pass to reach
+# `merging`), red at merge time: the flag appears in between, so the merge's
+# own run of the suite is the first one to fail.
+walk_to_merging T013 task/T013 "$base13" "$cand13" "test ! -f $suite_red"
+: > "$suite_red"
+
+pre_integ13="$(git rev-parse "$integ")"
+marker_before13="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T013 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red suite -> merge exits 1"
+assert_eq rework "$("$ORCHID_BIN" task show T013 | grep '^status: ' | cut -d' ' -f2)" "red suite -> task returns to rework"
+assert_eq "$pre_integ13" "$(git rev-parse "$integ")" "red suite -> integration ref untouched"
+assert_eq "$marker_before13" "$(wc -l < "$gate_marker" | tr -d ' ')" "red suite -> the gate was not EXECUTED (marker unchanged)"
+
+log13=".orchid/reviews/T013-merge.log"
+assert_match "^gate: ls >> " "$(cat "$log13")" "a suite-skipped gate is still named in the evidence"
+assert_match "^gate_status: skipped-suite-failed$" "$(cat "$log13")" "the evidence says the suite's failure pre-empted the gate"
+assert_eq "exit: 1" "$(tail -n1 "$log13")" "the log carries the SUITE's exit status, never the skipped gate's 3"
+
+# The routing half, scoped to THIS task's journal entries — the run-wide
+# journal already carries validation_failed from the earlier plain red-suite
+# scenario, so matching the whole file would prove nothing.
+journal13="$("$ORCHID_BIN" journal show --task T013)"
+assert_match "validation_failed" "$journal13" "red suite journals validation_failed"
+grep -q "gate_failed" <<<"$journal13" \
+  && fail "red suite must NOT journal gate_failed — the gate never ran"

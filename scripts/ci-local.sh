@@ -6,13 +6,30 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BASH_BIN="${BASH:-/bin/bash}"
 LIST_ONLY=0
+RUN_TESTS=1
+
+# Recursion guard for the repo-wide merge gate (T007, libexec/orchid-merge).
+# When this script IS a repository's `merge_gate`, `orchid merge` already sets
+# this marker in the gate's environment; setting it here covers the other
+# direction — an operator, or the hosted CI job in .github/workflows/ci.yml,
+# running the suite DIRECTLY with no merge above it, where any `orchid merge`
+# a test spawns would otherwise be free to open the first level of the loop
+# and re-enter this file. Between the two, the nesting is closed from both
+# ends.
+#
+# Set before the arguments are parsed, so no early-exit path (`--help`,
+# `--list-shell`) is a hole a later addition could fall through, and a long
+# way ahead of the `tests/run.sh` invocation at the bottom, which is where the
+# re-entry would actually happen.
+export ORCHID_MERGE_GATE_ACTIVE=1
 
 usage() {
   cat <<'EOF'
-usage: scripts/ci-local.sh [--bash /path/to/bash] [--list-shell]
+usage: scripts/ci-local.sh [--bash /path/to/bash] [--list-shell] [--no-tests]
 
   --bash PATH    use PATH for syntax checks and every test script
   --list-shell   print every discovered shipped shell script, then exit
+  --no-tests     run every static check, run no test script, then exit
 EOF
 }
 
@@ -25,6 +42,7 @@ while [ "$#" -gt 0 ]; do
       ;;
     --bash=*) BASH_BIN="${1#--bash=}"; shift ;;
     --list-shell) LIST_ONLY=1; shift ;;
+    --no-tests) RUN_TESTS=0; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "ci-local: unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
@@ -269,6 +287,30 @@ unset SHELLCHECK_OPTS || true
 # Ignore repository-parent and user/global rc files so ambient configuration
 # cannot suppress a warning that CI is responsible for detecting.
 shellcheck --norc --shell=bash --severity=warning -- "${SHELLCHECK_PATHS[@]}"
+
+# Everything above this line is static: it reads the shipped scripts and never
+# runs one. Everything below runs test scripts — the aggregate suite, then the
+# invariant and documentation rehearsals. `--no-tests` is the cut between
+# them, and it exists for one caller: this repository's `merge_gate`
+# (orchid.config; libexec/orchid-merge). At merge, the merged tree ALREADY
+# gets a full suite run, because `orchid merge` runs the task's
+# `verification_commands` (or, failing that, config `verify`) in the same temp
+# worktree first. What that run does NOT give you is any of the static half
+# above — no task's own suite has ever included the ShellCheck gate, which is
+# the whole of lesson L016: seventeen findings behind a green suite. So the
+# floor this repository sets for itself is that static half alone. Adding the
+# test half to it would re-run, on the identical tree, a suite that had just
+# finished; the cut here is where the reason to run something stops.
+#
+# It is a cut, not a filter: a static check added ANYWHERE above this line is
+# in the gate automatically, with nothing to remember and nothing to enrol.
+# tests/test_ci_release.sh runs this flag for real and asserts what it printed,
+# so a new section added below the line by mistake is caught rather than
+# silently skipped at every merge.
+if [ "$RUN_TESTS" -eq 0 ]; then
+  echo "CI PASS (static checks only; --no-tests)"
+  exit 0
+fi
 
 echo "== Full test suite"
 ORCHID_TEST_BASH="$BASH_BIN" "$BASH_BIN" "$ROOT/tests/run.sh"

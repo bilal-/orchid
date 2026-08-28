@@ -1,5 +1,6 @@
 integration_branch
 verify
+merge_gate
 concurrency
 role.orchestrator
 role.implementer
