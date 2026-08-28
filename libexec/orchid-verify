@@ -101,6 +101,62 @@ prestate_headers="$(drive_verify_prestate_headers "$repo" "$tf")"
 
 mkdir -p "$state/reviews"
 log="$state/reviews/$id-verify.log"
+
+# ---------------------------------------------------------------------------
+# T031 (INV-11, defeated from the inside on r-002): the tree that RUNS must be
+# the tree the evidence NAMES.
+#
+# `runners/orchid-drive` captures candidate_sha by reading the task worktree's
+# HEAD at the moment it reconciles the implementer envelope; this verb then
+# runs the suite in that same LIVE worktree, at whatever HEAD it holds when
+# the command actually starts. Those are not the same instant. On T013 they
+# diverged by 19 minutes: drive recorded 4bb8d03, the implementer job was
+# still alive and committed 680cfc0, and the verification exercised 680cfc0
+# while writing `sha: 4bb8d03` into its own header. INV-11's testing ->
+# reviewing gate compares the evidence's `candidate:` line to the task's
+# CURRENT candidate_sha — both 4bb8d03 — so a PASS would have been admitted
+# on the strength of executing a DIFFERENT commit. It failed only by luck.
+#
+# So verification refuses a tree that is not the recorded candidate, naming
+# both SHAs, and re-reads HEAD afterwards so a tree that moved DURING the run
+# (the same live-worktree race, just later) can never be reported as a clean
+# pass either. Exit 18 — kernel exit-code registry: 14 no eligible engine, 15
+# hook handler failure, 16 judgment boundary, 17 brokered command refused, 18
+# verification refused (the tree is not the candidate). Distinct from FAIL
+# (exit 1) on purpose: a drifted worktree is a boundary for a human, not a
+# rework round for the implementer.
+#
+# `candidate: none` is NOT drift. Nothing has claimed a candidate yet, the
+# evidence says so, and INV-11's gate already refuses a vacuous none-to-none
+# match outright — refusing here too would only break `orchid verify` as an
+# ordinary pre-dispatch smoke check.
+# ---------------------------------------------------------------------------
+verify_refuse() {
+  local why="$1"
+  {
+    echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    echo "sha: $sha"
+    # Same field, same meaning, same place as on a run that really executed:
+    # the tree this verb was looking at when it stopped. Nothing ran, so
+    # nothing could have moved HEAD, and saying that explicitly is what keeps
+    # `head_after:` a field a reader can compare against `sha:` unconditionally
+    # rather than one it has to branch on the presence of.
+    echo "head_after: $sha"
+    echo "candidate: $cand"
+    echo "cwd: $cwd"
+    echo "command: $cmd"
+    echo "---"
+    echo "refused: $why"
+  } | atomic_write "$log"
+  echo "orchid: verify refused for $id: $why" >&2
+  echo "REFUSED"
+  exit 18
+}
+
+if [ "$cand" != none ] && [ "$sha" != "$cand" ]; then
+  verify_refuse "$cwd is at HEAD $sha, but the task's recorded candidate_sha is $cand — the tree is not the candidate, so nothing was run"
+fi
+
 out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-verify.XXXXXX")"
 trap 'rm -f "$out_tmp"' EXIT
 
@@ -121,9 +177,18 @@ trap 'rm -f "$out_tmp"' EXIT
 rc=0
 ( cd "$cwd" && ORCHID_REPO_ROOT="$root" bash -c "$cmd" ) >"$out_tmp" 2>&1 </dev/null || rc=$?
 
+# The tree that ACTUALLY ran, read back after the suite finished. A worktree
+# still owned by a live implementer can move under a running suite, in which
+# case no single SHA describes what was exercised and the evidence must say
+# exactly that rather than pick one.
+sha_after="$(git -C "$cwd" rev-parse HEAD 2>/dev/null || echo none)"
+drifted=0
+[ "$sha" = "$sha_after" ] || drifted=1
+
 {
   echo "date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "sha: $sha"
+  echo "head_after: $sha_after"
   echo "candidate: $cand"
   echo "cwd: $cwd"
   echo "command: $cmd"
@@ -131,7 +196,18 @@ rc=0
   echo "---"
   cat "$out_tmp"
   echo "exit: $rc"
+  # Last line, deliberately: INV-11's gate admits evidence only when
+  # `tail -n1` is exactly `exit: 0`, so a run whose tree moved underneath it
+  # is inadmissible by construction, whatever the suite's own exit code said.
+  [ "$drifted" -eq 0 ] || \
+    echo "refused: $cwd moved from $sha to $sha_after WHILE the suite ran — this evidence describes no single tree"
 } | atomic_write "$log"
+
+if [ "$drifted" -eq 1 ]; then
+  echo "orchid: verify refused for $id: $cwd moved from $sha to $sha_after while the suite ran" >&2
+  echo "REFUSED"
+  exit 18
+fi
 
 if [ "$rc" -eq 0 ]; then
   echo "PASS"

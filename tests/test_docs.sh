@@ -798,27 +798,26 @@ grep -qF 'records the working-tree, `HEAD` and remote-ref half of the claim abov
 # The operator hand-off leaves `candidate_sha` equal to the `HEAD` its own
 # commits produced, and it is tempting to explain that by naming the check that
 # would consume the equality: a verification that REFUSES to run when the two
-# disagree. No such refusal is in this tree -- `libexec/orchid-verify` records
-# both shas into its evidence header and runs regardless; the gate that reads
-# them is INV-11's, on the `testing -> reviewing` advance, afterwards. A task
-# proposing the verify-side refusal (T031) is unmerged. A doc that describes an
-# unmerged task's design in the present tense is indistinguishable, to every
-# later reader, from one describing shipped behaviour, and the cost lands on
-# whoever trusts it.
+# disagree. When this tripwire was written no such refusal was in the tree --
+# `libexec/orchid-verify` recorded both shas into its evidence header and ran
+# regardless, and the only gate that read them was INV-11's, on the
+# `testing -> reviewing` advance, afterwards. The task proposing the
+# verify-side refusal (T031) was unmerged, and a doc that describes an unmerged
+# task's design in the present tense is indistinguishable, to every later
+# reader, from one describing shipped behaviour.
 #
-# So this is a TWO-WAY tripwire on the source, not a one-off correction of the
-# prose. While `orchid verify` compares nothing, the docs must say so; the day
-# it does compare, the same assertion fails and sends the person who landed it
-# to the sentences that have just become false. The discriminator is
-# mechanical: no line of that verb outside a comment mentions both shas today,
-# and any comparison of them necessarily would.
+# T031 HAS SINCE LANDED, and this tripwire fired in exactly the direction it
+# was built to fire: the docs no longer say `orchid verify` compares nothing,
+# because it now does (exit 18 on a mismatch, before the suite runs). The
+# assertion below is unchanged and still runs BOTH ways -- the day someone
+# reverts or reshapes that comparison out of the verb, it sends them straight
+# back to the sentences that would have become false again. The discriminator
+# is mechanical: a line of that verb outside a comment mentions both shas
+# exactly when it compares them.
 #
-# T024 note: this verb DOES now refuse before running, on an unacknowledged
-# operator prerequisite -- and that is deliberately not what this tripwire
-# watches. The discriminator is the two SHAS appearing on one line together,
-# which the prerequisite gate never does (it compares an ack against
-# `candidate_sha` inside lib/handoff.sh, and prints, but never reads `$sha` --
-# that variable does not exist until the evidence header below it).
+# T024's prerequisite refusal is deliberately not what this tripwire watches:
+# that gate compares an acknowledgement against `candidate_sha` without
+# comparing the verifier's `$sha` to the recorded candidate.
 VERIFY_SRC="$REPO_ROOT/libexec/orchid-verify"
 [ -f "$VERIFY_SRC" ] \
   || fail "libexec/orchid-verify must exist — the check below reads it as the source of truth about what verification does"

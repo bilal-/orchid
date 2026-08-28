@@ -292,7 +292,13 @@ assert_eq "$before_attempts" "$(fm_get "$repoW/.orchid/tasks/TW1.md" attempts)" 
 cand2_w="$(git -C "$repoW" commit-tree "$head_w^{tree}" -p "$head_w" -m "TW1 round 2 fix")"
 "$ORCHID_BIN" task set TW1 candidate_sha "$cand2_w" >/dev/null
 "$ORCHID_BIN" task advance TW1 testing >/dev/null
+# T031: `orchid verify` refuses a tree that is not the recorded candidate, so
+# round 2's candidate has to actually be checked out for the run. cand2_w
+# shares head_w's tree, so this is a pure HEAD move; restoring afterwards
+# keeps TW2/TW3 below (which pin themselves to head_w) honest.
+git -C "$repoW" reset -q --hard "$cand2_w"
 "$ORCHID_BIN" verify TW1 >/dev/null
+git -C "$repoW" reset -q --hard "$head_w"
 "$ORCHID_BIN" task advance TW1 reviewing --reason "round 2 verify passed" >/dev/null
 
 # The stale round-1 envelope (candidate_sha == head_w) is STILL on disk at

@@ -38,6 +38,10 @@ export HOME="$MACHINE_HOME"
 # scan read that silence as a clean range. T026 made the scan fail CLOSED, so a
 # range nothing can walk is refused in the same direction every other
 # unreadable-input check in this codebase fails.
+#
+# T031 additionally requires that real HEAD: verify now refuses a worktree
+# that is not the recorded candidate, and H4 depends on verify genuinely
+# running and failing.
 edge_sha=""
 
 # --- hook plugins ----------------------------------------------------------

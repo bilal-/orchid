@@ -1349,6 +1349,36 @@ case "$sub" in
         echo "quarantined: $base (unknown-job)"
         continue
       fi
+      # T031: AN ENVELOPE IS A COMPLETION REPORT. A job that has not exited
+      # has not completed, so its envelope is not yet a completion signal --
+      # DEFER it, leaving both the spool file and the manifest exactly where
+      # they are for a later pass.
+      #
+      # Reconciling early is what defeated INV-11 from the inside on r-002.
+      # `runners/orchid-drive`'s drive_implementing treats a reconciled `ok`
+      # implement envelope as "the implementer is done", captures candidate_sha
+      # from the worktree's HEAD right then, and advances implementing ->
+      # testing. On T013 the implementer job was still alive when its envelope
+      # landed and committed AGAIN 19 minutes later, so the captured candidate
+      # (4bb8d03) was never final and the verification that ran afterwards
+      # exercised a different commit (680cfc0). Nothing downstream could tell:
+      # reconcile DELETES the manifest, so by the time the driver looks there
+      # is no job left to ask about, and `drive_job_outstanding` reports the
+      # task as having nothing running.
+      #
+      # A pid of 0 is deliberately not "alive": `jobs prepare` mints every
+      # manifest that way and only `orchid-launch` stamps a real pid, so a
+      # pid-0 manifest means nothing was ever spawned (matching `gc`'s and
+      # `drive_job_outstanding`'s reading of the same field). `kill -0 0`
+      # would signal our OWN process group, so the check must never reach it.
+      #
+      # Deferral is bounded by `jobs check`, which kills a job that stalls or
+      # times out; the envelope reconciles on the pass after that.
+      m_pid="$(jq -r '.pid // 0' "$manifest" 2>/dev/null || echo 0)"
+      if [ "$m_pid" != 0 ] && kill -0 "$m_pid" 2>/dev/null; then
+        echo "deferred: $base (job $jid still running, pid $m_pid)"
+        continue
+      fi
       m_task="$(jq -r .task "$manifest")"; e_task="$(envelope_field "$f" .task)"
       m_base="$(jq -r .base_sha "$manifest")"; m_cand="$(jq -r .candidate_sha "$manifest")"
       m_op="$(jq -r .operation "$manifest")"

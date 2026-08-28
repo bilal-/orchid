@@ -1305,6 +1305,20 @@ ones its archetype never declares.
      after the envelope has reconciled and before anything verifies the
      candidate.
 
+  An envelope only reaches step 2's reconcile once its job has genuinely
+  EXITED — `orchid jobs reconcile` defers (prints `deferred: <file> (job
+  <id> still running, pid <n>)`) any spool envelope whose manifest still
+  names a live pid, leaving both the envelope and the manifest in place for a
+  later pass. That is what makes the `git -C <worktree> rev-parse HEAD` above
+  a FINAL answer: an
+  implementer that files its report and keeps working can otherwise commit
+  again after the read, and the candidate recorded here would name a commit
+  nobody ever verified (r-002/T013, lesson L025). The deferral is bounded by
+  `jobs check`, which kills a job that stalls or times out; the envelope
+  reconciles on the pass after that, and the exclusion above — a manifest
+  whose envelope is still spooled is never escalated — is what keeps that
+  kill from being read as a death.
+
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a
   repeat failure goes to `blocked`, never `rework`) — as does the clean-tree
@@ -1413,11 +1427,13 @@ ones its archetype never declares.
      `candidate_sha` equal to the tree that runs, so `orchid verify`'s two
      header lines — `sha:`, read from the tree it ran in, and `candidate:`,
      read from frontmatter — name the same commit, and the INV-11 gate on
-     `testing → reviewing` accepts the evidence. (As this ships, `orchid
-     verify` itself does not compare the two before running; a task proposing
-     that it refuse outright, T031, is unmerged at the time of writing. If it
-     lands, this equality is the state it would require — the hand-off does
-     not depend on it either way.)
+     `testing → reviewing` accepts the evidence. (T031 has since landed the
+     verify-side half: `orchid verify` now compares the two BEFORE running and
+     refuses outright, exit 18, when they disagree. So this equality is no
+     longer merely what makes the evidence admissible afterwards — it is the
+     precondition for the suite running at all, and a hand-off that committed
+     without advancing `candidate_sha` would now stop the task at a
+     `worktree-conflict` boundary rather than quietly certify the wrong tree.)
 
      **What it will advance TO is itself a gate.** Adopting whatever `HEAD`
      happens to be would trade this drift for a worse mis-binding: a record
@@ -1670,6 +1686,16 @@ ones its archetype never declares.
     kernel's own INV-11 gate independently re-checks that the evidence's
     `candidate:` line matches the task's current `candidate_sha` before
     allowing the transition).
+  - REFUSED (exit 18): the working tree `orchid verify` was asked to run in
+    is not the recorded `candidate_sha` — either it was already at a
+    different HEAD, or it moved while the suite ran. Nothing about the
+    candidate has been established, so this is NOT a FAIL and must never
+    consume a rework attempt: stop at a `worktree-conflict` boundary and
+    report both SHAs (the refusal names them, and so does the evidence log's
+    `sha:`/`head_after:`/`candidate:` header). The evidence written for a
+    refused run always ends in a `refused: ...` line rather than `exit: 0`,
+    so INV-11's gate refuses it on its own even if someone tries the advance
+    anyway.
   - FAIL: if `hook.on_verify_fail` is bound, invoke it first (Preamble
     shape: `runners/orchid-launch <id> hook hook --hook on_verify_fail`,
     then `orchid jobs reconcile`) — an ok envelope's `.artifact.guidance`

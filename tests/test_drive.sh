@@ -8372,3 +8372,334 @@ grep -q "unexpected status" <<<"$ZPDRIVE_OUT" \
 # own last line.
 assert_match "cannot prepare the merge validation worktree" "$ZPDRIVE_OUT" \
   "the pass still names the environment failure that parked the task"
+
+# Part AB (T031, r-002 lesson L025) -- AN ENVELOPE IS NOT A COMPLETION SIGNAL
+# WHILE ITS JOB IS STILL ALIVE.
+#
+# `drive_implementing` captures candidate_sha by reading the task worktree's
+# HEAD at the instant it sees a reconciled `ok` implement envelope. On T013
+# the implementer job filed its envelope and KEPT WORKING: it committed again
+# 19 minutes later, so the candidate recorded from that first read (4bb8d03)
+# was never final, and the verification that ran afterwards exercised 680cfc0
+# while the evidence header claimed 4bb8d03. Nothing downstream could notice,
+# because `jobs reconcile` deletes the manifest -- by the time the driver
+# looked, there was no job left to ask about.
+#
+# The stub below reproduces exactly that shape: commit, file the envelope,
+# stay alive, commit again. A pass taken while it is still running must move
+# NOTHING, and the candidate finally recorded must be the job's LAST commit.
+# ===========================================================================
+LIVEREPO="$WORK/liveimpl"
+LIVECTL="$WORK/ctl-live"
+mkdir -p "$LIVEREPO" "$LIVECTL" "$WORK/eng/stublate"
+cd "$LIVEREPO" || exit 1
+git init -q .
+printf 'role.implementer=stublate\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+
+printf 'manifest_version=1\nid=test/stublate\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stublate/plugin.conf"
+{
+  echo '#!/usr/bin/env bash'
+  echo 'set -eu'
+  printf 'CTL=%s\n' "$(printf '%q' "$LIVECTL")"
+} > "$WORK/eng/stublate/run"
+cat >> "$WORK/eng/stublate/run" <<'EOF'
+req="$1"
+worktree="$(jq -r .worktree "$req")"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+[ "$(jq -r .operation "$req")" = implement ] || exit 1
+cd "$worktree" || exit 1
+
+echo early > early.txt
+git add early.txt
+git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "early candidate"
+
+# File the envelope through a rename so a reconcile racing this write can
+# never see a half-written file -- then KEEP RUNNING, which is the whole
+# point of this stub.
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"envelope filed while the job is still working"}' > "$out.part"
+mv "$out.part" "$out"
+
+# Bounded, so a failing assertion upstream can never leave this looping.
+n=0
+while [ ! -f "$CTL/release" ] && [ "$n" -lt 900 ]; do sleep 0.1; n=$((n + 1)); done
+
+echo late > late.txt
+git add late.txt
+git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "late candidate"
+EOF
+chmod +x "$WORK/eng/stublate/run"
+
+ORCHID_REPO="$LIVEREPO" "$ORCHID_BIN" init >/dev/null || fail "orchid init (live-implementer fixture)"
+git checkout -q orchid/integration
+LIVE_EPOCH="$(ORCHID_REPO="$LIVEREPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+liveorchid() { ORCHID_REPO="$LIVEREPO" ORCHID_EPOCH="$LIVE_EPOCH" "$ORCHID_BIN" "$@"; }
+liveorchid requirements import "$WORK/requirements.md" >/dev/null
+liveorchid task create L020 "its implementer keeps committing after the envelope" >/dev/null
+liveorchid task set L020 verification_commands "test -f late.txt" >/dev/null
+liveorchid plan apply --reason "initial plan" >/dev/null
+
+LIVE_RC=0
+LIVE_OUT=""
+run_live() {
+  LIVE_RC=0
+  LIVE_OUT="$(ORCHID_REPO="$LIVEREPO" ORCHID_EPOCH="$LIVE_EPOCH" "$DRIVE" 2>&1)" || LIVE_RC=$?
+}
+live_field() { ORCHID_REPO="$LIVEREPO" "$ORCHID_BIN" task show L020 | grep "^$1: " | cut -d' ' -f2-; }
+live_status() { live_field status; }
+# 0 as soon as no manifest in this repo names a pid that is still alive.
+live_job_gone() {
+  local i=0 mf pid alive
+  while [ "$i" -lt 200 ]; do
+    alive=0
+    for mf in "$LIVEREPO/.orchid/runtime/jobs"/*.json; do
+      [ -e "$mf" ] || continue
+      pid="$(jq -r '.pid // 0' "$mf" 2>/dev/null || echo 0)"
+      [ "$pid" != 0 ] || continue
+      if kill -0 "$pid" 2>/dev/null; then alive=1; fi
+    done
+    [ "$alive" -eq 1 ] || return 0
+    i=$((i + 1)); sleep 0.1
+  done
+  return 1
+}
+
+# Dispatch: worktree, launch, pending -> implementing.
+i=0
+while [ "$i" -lt 20 ]; do
+  run_live
+  [ "$(live_status)" = implementing ] && break
+  [ "$LIVE_RC" -eq 0 ] || break
+  i=$((i + 1)); sleep 0.2
+done
+assert_eq implementing "$(live_status)" "L020 dispatched to implementing (rc=$LIVE_RC, out: $LIVE_OUT)"
+LIVE_WT="$(live_field worktree)"
+[ -n "$LIVE_WT" ] && [ -d "$LIVE_WT" ] || fail "L020 must have a dispatch worktree on disk (got '$LIVE_WT')"
+
+# Wait for the stub to file its envelope -- while deliberately still running.
+live_spool=""
+i=0
+while [ "$i" -lt 200 ]; do
+  for _sf in "$LIVEREPO/.orchid/runtime/spool"/*.json; do
+    [ -e "$_sf" ] || continue
+    live_spool="$_sf"; break
+  done
+  [ -z "$live_spool" ] || break
+  i=$((i + 1)); sleep 0.1
+done
+[ -n "$live_spool" ] || fail "the live-implementer stub never filed its envelope into the spool"
+early_sha="$(git -C "$LIVE_WT" rev-parse HEAD)"
+
+# THE RED CASE. A pass taken now sees a valid, `ok`, well-formed implement
+# envelope for a job that is still alive and still committing.
+run_live
+assert_eq implementing "$(live_status)" \
+  "T031: an envelope from a still-running job must not advance the task (rc=$LIVE_RC, out: $LIVE_OUT)"
+assert_eq "" "$(live_field candidate_sha)" \
+  "T031: no candidate may be captured while the job that produces it is still committing"
+[ -e "$live_spool" ] \
+  || fail "T031: the envelope must stay in the spool -- reconciling it deletes the manifest, and with it the only record that the job is alive (out: $LIVE_OUT)"
+[ -z "$(list_dir_files "$LIVEREPO/.orchid/reviews" | grep 'L020-a1-implementer')" ] \
+  || fail "T031: a live job's envelope must not be filed into reviews/ (out: $LIVE_OUT)"
+assert_match "deferred: " "$LIVE_OUT" "T031: the pass says out loud that it deferred the envelope"
+red_case "an implement envelope filed by a still-running job advances nothing and captures no candidate"
+
+# Let the stub finish its real work -- the commit T013's driver never waited for.
+touch "$LIVECTL/release"
+live_job_gone || fail "the live-implementer stub never exited"
+late_sha="$(git -C "$LIVE_WT" rev-parse HEAD)"
+[ "$late_sha" != "$early_sha" ] \
+  || fail "sanity: the stub must have committed AFTER filing its envelope (early=$early_sha)"
+
+# Now, and only now, the envelope is a completion signal -- and the candidate
+# captured is the job's last commit, not the one it happened to be at when it
+# filed its report.
+i=0
+while [ "$i" -lt 40 ]; do
+  run_live
+  [ "$(live_status)" = implementing ] || break
+  [ "$LIVE_RC" -eq 0 ] || break
+  i=$((i + 1)); sleep 0.2
+done
+[ "$(live_status)" != implementing ] \
+  || fail "L020 must leave implementing once its job has exited (rc=$LIVE_RC, out: $LIVE_OUT)"
+assert_eq "$late_sha" "$(live_field candidate_sha)" \
+  "T031: the recorded candidate is the tree the job actually left behind, not the one it reported from"
+[ "$(live_field candidate_sha)" != "$early_sha" ] \
+  || fail "T031: candidate_sha is the pre-envelope commit — the premature capture is back (out: $LIVE_OUT)"
+green_case "once the job has genuinely exited the same envelope advances the task, on its LAST commit"
+
+# ===========================================================================
+# Part AB (T031) -- A DEFERRED ENVELOPE IS NOT A DEAD JOB.
+#
+# Step 2 of the tick collects "escalation candidates" off the manifests that
+# SURVIVED reconcile: a manifest whose pid was really launched and is no
+# longer alive used to mean exactly one thing -- "a job that died without
+# leaving an acceptable envelope" -- because reconcile deleted the manifest
+# of every job that did leave one. Part AA's deferral breaks that premise.
+# Reconcile now leaves a live job's envelope in the spool AND its manifest in
+# jobs/, so a job that files its report and is then killed by `jobs check`
+# for stalling reaches the sweep looking exactly like a job that died with
+# nothing to show for it. That is not a corner case: reconcile, check and the
+# sweep run in that order inside ONE pass, so `jobs check`'s own stall-kill
+# is what turns a deferred manifest into a dead one.
+#
+# Escalating it spends the task's infra_failures budget on a job that
+# SUCCEEDED and relaunches a SECOND implementer into the same worktree -- two
+# engines committing to one candidate, which is the exact failure T031 exists
+# to close. `jobs gc` already spares such a manifest for precisely this
+# reason; the sweep ten lines above it must too.
+# ===========================================================================
+STALLREPO="$WORK/stallimpl"
+mkdir -p "$STALLREPO" "$WORK/eng/stubstall"
+cd "$STALLREPO" || exit 1
+git init -q .
+printf 'role.implementer=stubstall\nrole.reviewer=stubreview\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+
+printf 'manifest_version=1\nid=test/stubstall\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
+  > "$WORK/eng/stubstall/plugin.conf"
+cat > "$WORK/eng/stubstall/run" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"
+worktree="$(jq -r .worktree "$req")"
+out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"
+task="$(jq -r .task "$req")"
+[ "$(jq -r .operation "$req")" = implement ] || exit 1
+cd "$worktree" || exit 1
+
+echo stalled > stalled.txt
+git add stalled.txt
+git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "the candidate this job really produced"
+
+# Filed through a rename within the spool directory itself (same filesystem,
+# so the rename is atomic), exactly as Part AA's stub does: a reconcile racing
+# this write must never see a half-written envelope.
+jq -n --arg jid "$jid" --arg task "$task" \
+  '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
+    summary:"report filed, then this job stopped making progress"}' > "$out.part"
+mv "$out.part" "$out"
+
+# ...and then STOP MAKING PROGRESS, with no signal handler of any kind.
+# `jobs check` is what ends this job, and `exec` makes the pid recorded in the
+# manifest the pid of a process that dies the instant it is signalled -- so by
+# the time the same pass reaches its escalation sweep, that manifest reads as
+# a dead job whose envelope is still sitting in the spool. That state is what
+# is under test; nothing here depends on when the stub would have exited on
+# its own.
+exec sleep 60
+EOF
+chmod +x "$WORK/eng/stubstall/run"
+
+ORCHID_REPO="$STALLREPO" "$ORCHID_BIN" init >/dev/null || fail "orchid init (stalled-implementer fixture)"
+git checkout -q orchid/integration
+STALL_EPOCH="$(ORCHID_REPO="$STALLREPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+stallorchid() { ORCHID_REPO="$STALLREPO" ORCHID_EPOCH="$STALL_EPOCH" "$ORCHID_BIN" "$@"; }
+stallorchid requirements import "$WORK/requirements.md" >/dev/null
+stallorchid task create S030 "its implementer stalls after filing the envelope" >/dev/null
+stallorchid task set S030 verification_commands "test -f stalled.txt" >/dev/null
+stallorchid plan apply --reason "initial plan" >/dev/null
+
+STALL_RC=0
+STALL_OUT=""
+run_stall() {
+  STALL_RC=0
+  STALL_OUT="$(ORCHID_REPO="$STALLREPO" ORCHID_EPOCH="$STALL_EPOCH" "$DRIVE" 2>&1)" || STALL_RC=$?
+}
+stall_field() { ORCHID_REPO="$STALLREPO" "$ORCHID_BIN" task show S030 | grep "^$1: " | cut -d' ' -f2-; }
+stall_status() { stall_field status; }
+# S030's own manifests, by content rather than by counting the whole
+# directory: the point of every assertion below is how many implement jobs
+# exist for THIS task, and nothing else in the fixture should be able to
+# perturb that number.
+stall_manifests() {
+  local mf
+  for mf in "$STALLREPO/.orchid/runtime/jobs"/*.json; do
+    [ -e "$mf" ] || continue
+    [ "$(jq -r '.task' "$mf" 2>/dev/null || echo)" = S030 ] || continue
+    printf '%s\n' "$mf"
+  done
+}
+stall_manifest_count() { stall_manifests | wc -l | tr -d ' '; }
+
+# Dispatch: worktree, launch, pending -> implementing.
+i=0
+while [ "$i" -lt 20 ]; do
+  run_stall
+  [ "$(stall_status)" = implementing ] && break
+  [ "$STALL_RC" -eq 0 ] || break
+  i=$((i + 1)); sleep 0.2
+done
+assert_eq implementing "$(stall_status)" "S030 dispatched to implementing (rc=$STALL_RC, out: $STALL_OUT)"
+STALL_WT="$(stall_field worktree)"
+[ -n "$STALL_WT" ] && [ -d "$STALL_WT" ] || fail "S030 must have a dispatch worktree on disk (got '$STALL_WT')"
+assert_eq 1 "$(stall_manifest_count)" "sanity: exactly one implement job was launched for S030"
+
+# Wait for the stub to file its envelope -- while deliberately still running.
+stall_spool=""
+i=0
+while [ "$i" -lt 200 ]; do
+  for _sf in "$STALLREPO/.orchid/runtime/spool"/*.json; do
+    [ -e "$_sf" ] || continue
+    stall_spool="$_sf"; break
+  done
+  [ -z "$stall_spool" ] || break
+  i=$((i + 1)); sleep 0.1
+done
+[ -n "$stall_spool" ] || fail "the stalling stub never filed its envelope into the spool"
+stall_cand="$(git -C "$STALL_WT" rev-parse HEAD)"
+
+# Make the job STALLED on the kernel's own terms: `jobs check` reads the job
+# log's mtime against `stall_minutes`, and this job has written nothing to its
+# log since the launcher created it. Backdating that one file is what the
+# passage of time would do, without making the test wait for it.
+stall_manifest="$(stall_manifests | head -n1)"
+[ -n "$stall_manifest" ] && [ -f "$stall_manifest" ] || fail "sanity: could not locate S030's job manifest"
+stall_log="$(jq -r .log "$stall_manifest")"
+[ -f "$stall_log" ] || fail "sanity: the launcher must have created the job log at $stall_log"
+touch -t 200001010101 "$stall_log" || fail "sanity: could not backdate the job log"
+
+# THE RED CASE. One pass: reconcile DEFERS the envelope (the job is alive),
+# `jobs check` then kills that job for stalling, and the escalation sweep now
+# meets a dead manifest whose envelope is perfectly good and still spooled.
+run_stall
+assert_match "deferred: " "$STALL_OUT" "sanity: reconcile deferred the envelope of the still-running job"
+assert_match "stalled" "$STALL_OUT" "sanity: jobs check found the job stalled and killed it"
+[ -e "$stall_spool" ] \
+  || fail "T031: the deferred envelope must survive the pass that killed its job (out: $STALL_OUT)"
+assert_eq 0 "$(stall_field infra_failures)" \
+  "T031: a job that filed a good envelope is never 'a job that died without an acceptable envelope' (out: $STALL_OUT)"
+# Fed by here-string, never by a pipe: under `set -o pipefail` a `printf | grep -q`
+# whose pattern IS found returns 141 (printf takes SIGPIPE), so the `&& fail`
+# would be skipped in exactly the case this assertion exists to catch.
+grep -q "died without an acceptable envelope" <<<"$STALL_OUT" \
+  && fail "T031: the escalation sweep must skip a manifest whose envelope is still waiting in the spool (out: $STALL_OUT)"
+assert_eq 1 "$(stall_manifest_count)" \
+  "T031: no second implementer may be launched into a worktree whose first one already reported (out: $STALL_OUT)"
+assert_eq implementing "$(stall_status)" "T031: S030 stays in implementing while its envelope waits (out: $STALL_OUT)"
+red_case "a stall-killed job whose envelope is still spooled costs no infra_failure and spawns no second implementer"
+
+# ...and the envelope the sweep declined to bury still becomes the candidate.
+i=0
+while [ "$i" -lt 40 ]; do
+  run_stall
+  [ "$(stall_status)" != implementing ] && break
+  [ "$STALL_RC" -eq 0 ] || break
+  i=$((i + 1)); sleep 0.2
+done
+[ "$(stall_status)" != implementing ] \
+  || fail "S030 must leave implementing once its deferred envelope reconciles (rc=$STALL_RC, out: $STALL_OUT)"
+assert_eq "$stall_cand" "$(stall_field candidate_sha)" \
+  "T031: the candidate is the commit the killed job actually left behind"
+assert_eq 0 "$(stall_field infra_failures)" \
+  "T031: the whole sequence spent no infra_failure — nothing about this job was an infrastructure failure"
+green_case "the deferred envelope still reconciles and supplies the candidate the killed job really produced"

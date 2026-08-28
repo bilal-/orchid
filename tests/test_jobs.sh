@@ -1588,3 +1588,58 @@ touch -t 202001010000 "$dup_h1"
 [ ! -f "$dup_h1" ] || fail "gc must reap the aged never-launched hook manifest"
 dup_h1b="$("$ORCHID_BIN" jobs prepare TDUP hook hook --hook after_plan_draft)"
 [ -f "$dup_h1b" ] || fail "once the orphan is reaped, the identical prepare succeeds with no operator action"
+# T031 (r-002, lesson L025): AN ENVELOPE IS A COMPLETION REPORT, and a job
+# that has not exited has not completed. Reconciling one early is what let
+# T013 certify the wrong commit: reconcile filed the implement envelope and
+# DELETED the manifest, `runners/orchid-drive` read that as "the implementer
+# is done" and captured candidate_sha from the worktree's HEAD -- while the
+# job was still alive and went on to commit again 19 minutes later. Once the
+# manifest is gone there is nothing left on disk that says a job is running,
+# so this is the only place the truth still exists.
+#
+# A live pid must therefore DEFER: envelope stays in the spool, manifest
+# stays in jobs/, nothing is filed and nothing is quarantined.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TDEFER "envelope filed by a job that is still running" >/dev/null
+mlive="$("$ORCHID_BIN" jobs prepare TDEFER implementer implement)"
+live_jid="$(jq -r .job_id "$mlive")"
+live_out="$(jq -r .output "$mlive")"
+sleep 30 &
+live_engine_pid=$!
+# started_at deliberately in the past, so the gc assertion below turns on the
+# spool guard rather than on gc's own age bound.
+jq --argjson pid "$live_engine_pid" '.pid=$pid | .pgid=$pid | .started_at=((now|floor) - 600)' \
+  "$mlive" > "$mlive.tmp" && mv "$mlive.tmp" "$mlive"
+printf '{"contract":1,"job_id":"%s","task":"TDEFER","operation":"implement","status":"ok","summary":"filed early"}' \
+  "$live_jid" > "$live_out"
+
+live_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^deferred: " "$live_line" "T031: reconcile defers an envelope whose job is still running"
+[ -f "$live_out" ] || fail "T031: a deferred envelope must stay in the spool"
+[ -f "$mlive" ] || fail "T031: a deferred envelope's manifest must survive — it is the only record that the job is alive"
+[ ! -f ".orchid/reviews/TDEFER-a1-implementer.json" ] || fail "T031: a live job's envelope must not be filed to reviews/"
+for _q in "$rt/quarantine/$live_jid.json".*; do
+  [ -e "$_q" ] || continue
+  fail "T031: deferring is not quarantining — the envelope is good, just early (found $_q)"
+done
+red_case "reconcile defers a still-running job's envelope instead of filing it as a completion report"
+
+kill "$live_engine_pid" 2>/dev/null || true
+wait "$live_engine_pid" 2>/dev/null || true
+kill -0 "$live_engine_pid" 2>/dev/null && fail "sanity: the fixture engine pid should be gone"
+
+# Deferral makes a dead job's manifest reachable by gc with its envelope still
+# unreconciled (`jobs check` kills a job that stalls AFTER filing its report).
+# gc must spare it, exactly as the orphan sweep already spares pack/request
+# litter with a pending spool file: reaping it here would strand real
+# evidence, and the next reconcile would quarantine it as `unknown-job`.
+"$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
+[ -f "$mlive" ] || fail "T031: gc must spare a dead job's manifest while its envelope is still waiting in the spool"
+[ -f "$live_out" ] || fail "T031: gc must not touch the pending spool envelope either"
+
+# ...and now the envelope reconciles normally.
+live_line2="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TDEFER	ok" "$live_line2" "T031: the deferred envelope reconciles on the pass after the job exits"
+[ -f ".orchid/reviews/TDEFER-a1-implementer.json" ] || fail "T031: the envelope is filed once its job has exited"
+[ ! -f "$mlive" ] || fail "T031: the manifest is deleted once its envelope is genuinely reconciled"
+green_case "the same envelope reconciles normally on the pass after its job exits — deferral delays, never discards"

@@ -23,9 +23,8 @@ export ORCHID_REPO="$WORK" HOME="$MACHINE_HOME"
 ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
 export ORCHID_EPOCH
 
-# This repo's own HEAD, for both shas: entry to `testing` scans a real, EMPTY
-# range. A placeholder that exists nowhere used to serve here, and T026 made
-# that scan fail CLOSED on a range `git log` cannot answer.
+# The fixture's own HEAD makes a real, empty INV-04 range and honestly
+# satisfies T031's worktree/candidate drift check.
 edge_sha="$(git rev-parse HEAD)"
 "$ORCHID_BIN" task create T001 "brokered subject" >/dev/null
 "$ORCHID_BIN" task set T001 base_sha "$edge_sha" >/dev/null

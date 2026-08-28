@@ -133,11 +133,8 @@ plant_reviewer_envelope_pair() {
 walk_full_archetype() {  # id archetype
   local id="$1" arch="$2"
   "$ORCHID_BIN" task create "$id" "full walk ($arch)" --archetype "$arch"
-  # This repo's OWN HEAD for both shas, so entry to `testing` scans a real,
-  # EMPTY range. It used to be a placeholder that exists nowhere, which made
-  # `git log <base>..<candidate>` fail rather than answer -- and T026 made
-  # that scan fail CLOSED, so an unanswerable range is now refused instead of
-  # being read as clean.
+  # The fixture's own HEAD, not a placeholder: base == candidate makes a real,
+  # empty INV-04 range and satisfies T031's worktree/candidate drift check.
   local sha
   sha="$(git rev-parse HEAD)"
   "$ORCHID_BIN" task set "$id" base_sha "$sha"

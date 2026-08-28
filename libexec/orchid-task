@@ -1078,10 +1078,10 @@ case "$sub" in
     # first. That leaves the two equal, so `orchid verify`'s two header lines
     # (`sha:`, read from the tree it ran in, and `candidate:`, read from
     # frontmatter) agree, and the INV-11 gate on `testing -> reviewing` accepts
-    # the evidence. As this ships, `orchid verify` itself does not compare them
-    # before running; a task proposing that it refuse outright (T031) is
-    # unmerged at the time of writing, and if it lands, this equality is the
-    # state it would require -- nothing here depends on it either way.
+    # the evidence. Since T031 landed, `orchid verify` itself compares them
+    # BEFORE running and refuses outright (exit 18) when they disagree, so this
+    # equality is no longer only what makes the evidence admissible afterwards
+    # -- it is the precondition for the suite running at all.
     #
     # AND IT SUPERSEDES ANY PREREQUISITE ACKNOWLEDGEMENT MADE BEFORE IT
     # (T024). `prerequisite_ack` is bound to `candidate_sha` by the same rule

@@ -342,6 +342,21 @@ buying a fresh implementation pass to reach the same tree.
   its resolution inventory, and stale-pin result captured before the
   candidate-controlled command starts.
   Sole acceptance authority for tests.
+
+  **The tree that runs must be the tree the evidence names (T031).** The verb
+  REFUSES — exit 18, naming both SHAs — when the worktree's HEAD is not the
+  task's recorded `candidate_sha`, and refuses again when HEAD moved while
+  the suite was running (the header carries `sha:` and `head_after:` for
+  exactly that comparison). Refusal is distinct from FAIL: nothing was
+  established about the candidate, so the driver stops at a
+  `worktree-conflict` boundary instead of spending a rework attempt. A
+  refused run's evidence ends in a `refused: ...` line, so INV-11's
+  `tail -n1 == "exit: 0"` gate can never admit it. `candidate: none` (no
+  candidate recorded yet) is not drift and still runs. This closes the hole
+  r-002/T013 walked through: the driver captured `candidate_sha` from a live
+  worktree's HEAD, the implementer job was still running and committed again,
+  and the verification exercised the newer commit while the evidence — and
+  therefore INV-11's gate — named the older one.
 - **merging** = `orchid merge <id>`: serialized, transactional, and — round-4
   determinism fix — NEVER triggers reviews itself. If integration HEAD ≠
   `base_sha`, the verb performs the rebase, then exits
@@ -846,12 +861,11 @@ removes — and re-running entry-to-`testing`'s `.orchid/` scan over
 hit: a hand-off exists to commit work AFTER the candidate was captured, so
 without the advance the record would name a commit that was never the one
 verified — the drift lesson L025 records — and it is the one other path that
-moves `candidate_sha` past INV-04's gate. As this ships, `orchid verify` itself
-does not compare the two before running — it records both into its evidence
-header and runs; the equality the advance leaves behind is what INV-11's
-`testing → reviewing` gate reads out of that header afterwards. (A task
-proposing that verification refuse outright on a mismatch, T031, is unmerged at
-the time of writing; nothing above depends on it.)
+moves `candidate_sha` past INV-04's gate. Since T031 landed, `orchid verify`
+itself compares the two BEFORE running and refuses on a mismatch (exit 18,
+naming both shas), so the equality the advance leaves behind is the
+precondition for the suite running at all — and it is still what INV-11's
+`testing → reviewing` gate reads out of the evidence header afterwards.
 `implement_floor` (v1.1): driver-written, and no part of the schema-1 list
 above — it is absent from a task file until a round is waived, and inert once
 `attempts` moves past the attempt it names. Its value is `a<attempt>:<n>`, the
@@ -1613,7 +1627,11 @@ semantic correctness beyond declared verification commands.
 - INV-09 repo-local plugins never execute without an out-of-repo trust
   record
 - INV-10 duplicate plugin IDs are an error, never a shadow
-- INV-11 `verify` evidence is the only path to a passing `testing` state
+- INV-11 `verify` evidence is the only path to a passing `testing` state, and
+  it may only ever describe the recorded candidate: verification refuses a
+  tree that is not `candidate_sha` (before OR during the run), and an
+  envelope from a job that has not exited is not a completion signal, so the
+  candidate captured from a worktree's HEAD is always final
 - INV-12 non-truncatable inputs over budget fail with `input_overflow`,
   never silently truncate
 - INV-13 the deterministic driver mutates durable/cross-process state only
