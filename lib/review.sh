@@ -401,15 +401,46 @@ review_filed_engines() {
 # this attempt AND is bound to the task's CURRENT candidate_sha. Exit 1
 # (printing nothing) otherwise, so callers fall through to live routing.
 review_plan_pinned() {
-  local repo="$1" id="$2" f cand rows
+  local repo="$1" id="$2" f cand rows normalized="" slot engine label depth
   cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
   [ -n "$cand" ] || return 1
   f="$(review_plan_file "$repo" "$id")"
   [ -f "$f" ] || return 1
   [ "$(jq -r '.candidate_sha // empty' "$f" 2>/dev/null || true)" = "$cand" ] || return 1
-  rows="$(jq -r '.slots[]? | [(.slot|tostring), .engine, .label] | @tsv' "$f" 2>/dev/null || true)"
+  rows="$(jq -r '.slots[]? | [(.slot|tostring), .engine, .label, (.depth // "")] | @tsv' "$f" 2>/dev/null || true)"
   [ -n "$rows" ] || return 1
-  printf '%s\n' "$rows"
+  # Pins written before T012 have no depth field. Keep those durable plans
+  # readable, but fail closed while normalizing: depth is a positive claim, so
+  # an engine that cannot currently prove workspace_read is `inline`. A later
+  # writing `review-plan --pin` migrates the normalized rows into the file.
+  while IFS=$'\t' read -r slot engine label depth; do
+    [ -n "$slot" ] && [ -n "$engine" ] && [ -n "$label" ] || continue
+    case "$depth" in
+      worktree|inline) ;;
+      *) depth="$(review_engine_depth "$engine")" ;;
+    esac
+    normalized="$normalized$(printf '%s\t%s\t%s\t%s' "$slot" "$engine" "$label" "$depth")
+"
+  done <<< "$rows"
+  [ -n "$normalized" ] || return 1
+  printf '%s' "$normalized"
+}
+
+# review_plan_depth_persisted <repo> <task> -- true only when every row in the
+# current candidate-bound pin carries T012's fourth (depth) field. Used by the
+# writing verb to migrate a pre-T012 three-column pin even when its normalized
+# table is otherwise identical, while the bare read remains read-only.
+review_plan_depth_persisted() {
+  local repo="$1" id="$2" f cand
+  cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
+  [ -n "$cand" ] || return 1
+  f="$(review_plan_file "$repo" "$id")"
+  [ -f "$f" ] || return 1
+  jq -e --arg cand "$cand" '
+    (.candidate_sha // "") == $cand
+    and ((.slots // []) | length > 0)
+    and all(.slots[]; (.depth == "worktree" or .depth == "inline"))
+  ' "$f" >/dev/null 2>&1
 }
 
 # review_plan <repo> <task> -- the EFFECTIVE table every reader should use:
@@ -443,7 +474,8 @@ review_plan_store() {
     --arg at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
       {contract:1, attempt:($attempt|tonumber), candidate_sha:$cand, pinned_at:$at,
        slots:[inputs | select(length > 0) | split("\t")
-              | {slot:(.[0]|tonumber), engine:.[1], label:.[2]}]}')" || return 1
+              | {slot:(.[0]|tonumber), engine:.[1], label:.[2],
+                 depth:(if .[3] == "worktree" then "worktree" else "inline" end)}]}')" || return 1
   [ -n "$json" ] || return 1
   printf '%s\n' "$json" | atomic_write "$f"
 }
@@ -549,7 +581,7 @@ review_plan_unsatisfied() {
 # degraded independence and has to be labeled as such rather than arrived at
 # by accident.
 review_plan_repin_rows() {
-  local repo="$1" id="$2" old live unsat unsat_slots kept used rows impl cand
+  local repo="$1" id="$2" old live unsat unsat_slots kept used rows impl cand depth
   cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
   [ -n "$cand" ] || return 1
   old="$(review_plan "$repo" "$id")"
@@ -622,7 +654,8 @@ review_plan_repin_rows() {
     case "$used" in *" $eng "*) label="session-independent" ;; esac
     [ "$eng" != "$impl" ] || label="session-independent"
     used="$used$eng "
-    rows="$rows$(printf '%s\t%s\t%s' "$i" "$eng" "$label")
+    depth="$(review_engine_depth "$eng")"
+    rows="$rows$(printf '%s\t%s\t%s\t%s' "$i" "$eng" "$label" "$depth")
 "
   done
   [ -n "$rows" ] || return 1
@@ -695,7 +728,7 @@ _review_distinct_count() {
 #     same-engine pair the independence policy exists to refuse, and it stays
 #     refused.
 review_plan_adopt_evidence_rows() {
-  local repo="$1" id="$2" plan filed need n_filed line qid name impl rows i
+  local repo="$1" id="$2" plan filed need n_filed line qid name impl rows i depth
   plan="$(review_plan "$repo" "$id")"
   [ -n "$plan" ] || { echo "orchid: $id has no review plan to adopt evidence into" >&2; return 1; }
   filed="$(review_filed_engines "$repo" "$id")"
@@ -772,7 +805,8 @@ review_plan_adopt_evidence_rows() {
     case "$used" in *" $eng "*) label="session-independent" ;; esac
     [ "$eng" != "$impl" ] || label="session-independent"
     used="$used$eng "
-    rows="$rows$(printf '%s\t%s\t%s' "$i" "$eng" "$label")
+    depth="$(review_engine_depth "$eng")"
+    rows="$rows$(printf '%s\t%s\t%s\t%s' "$i" "$eng" "$label" "$depth")
 "
   done <<< "$plan"
 
