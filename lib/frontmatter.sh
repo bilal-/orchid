@@ -114,6 +114,20 @@ fm_write_task() {
 # file that is renamed ONLY when awk succeeded AND produced a non-empty
 # document. A failed rewrite can no longer leave a truncated task behind: the
 # original file is never opened for writing at all.
+#
+# ENVIRON, NEVER `-v` (T034). The guard above rejects a value that ARRIVES with
+# a newline in it, but `-v v=...` is not a plain assignment: POSIX requires awk
+# to process escape sequences in a `-v` operand, so the two characters `\` `n`
+# typed on a command line -- `orchid task set T1 acceptance_criteria 'a\nb'`,
+# which is an ordinary thing to write about a separator -- reach awk's `v` as a
+# REAL newline that the case above never saw. That value then prints as two
+# lines: the key's line is truncated at `a` and the remainder lands as a bogus
+# frontmatter line of its own. Not the zero-byte destruction F34 found, but the
+# same rule broken by the same field, and silently. `ENVIRON[...]` is a byte-
+# for-byte read of the environment with no escape processing anywhere in it, so
+# what the operator typed is what the file gets. The key travels the same way:
+# it is caller-supplied too, and there is no reason to leave one operand in a
+# quoting regime the other one needed to escape.
 fm_set() {
   local f="$1" k="$2" v="$3" t=""
   case "$v" in
@@ -122,7 +136,8 @@ fm_set() {
       return 1 ;;
   esac
   t="$(mktemp "$f.fmset.XXXXXX")" || return 1
-  if awk -v k="$k" -v v="$v" '
+  if ORCHID_FM_KEY="$k" ORCHID_FM_VAL="$v" awk '
+    BEGIN { k = ENVIRON["ORCHID_FM_KEY"]; v = ENVIRON["ORCHID_FM_VAL"] }
     /^---$/ { n++; if (n==2 && !done) { print k ": " v; done=1 }; print; next }
     n==1 && index($0,k": ")==1 { print k ": " v; done=1; next }
     n==1 && $0==k":" { print k ": " v; done=1; next }

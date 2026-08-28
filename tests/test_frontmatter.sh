@@ -57,6 +57,23 @@ fm_set "$WORK/T004.md" hook_guidance "shrink the diff and retry" \
 assert_eq "shrink the diff and retry" "$(fm_get "$WORK/T004.md" hook_guidance)" "an accepted value round-trips"
 assert_match "Body4." "$(cat "$WORK/T004.md")" "and the body survives the accepted write"
 
+# The newline the guard above CANNOT see, because it does not exist yet when
+# the guard runs. awk processes escape sequences in a `-v` operand (POSIX), so
+# the two characters `\` `n` -- what an operator flattening prose onto one line
+# actually types -- used to reach awk as a REAL newline and split the value
+# across two frontmatter lines: the key truncated at "before", the rest landing
+# as a bogus `and after` line. fm_set reads both operands out of ENVIRON now,
+# which has no escape processing, so the value is stored byte-for-byte.
+lit_before="$(grep -c '' "$WORK/T004.md")"
+fm_set "$WORK/T004.md" hook_guidance 'before\nand after\ttabbed' \
+  || fail "fm_set must accept a value containing literal backslash escapes"
+assert_eq 'before\nand after\ttabbed' "$(fm_get "$WORK/T004.md" hook_guidance)" \
+  "a literal backslash-n is stored as the two characters it is, never expanded into a real newline"
+assert_eq "$lit_before" "$(grep -c '' "$WORK/T004.md")" \
+  "and the file gained no lines -- an expanded escape would have split one frontmatter line into two"
+assert_eq 1 "$(grep -c '^hook_guidance: ' "$WORK/T004.md")" \
+  "exactly one hook_guidance line, so the value did not leave a stray remainder behind"
+
 # An ALREADY-empty target: awk has nothing to print, so the old pipeline
 # "succeeded" over and over against a file with nothing in it. That is why the
 # destruction stayed silent -- every later write reported success too.

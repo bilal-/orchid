@@ -1425,6 +1425,7 @@ assert_match "newline" "$create_nl_out" "the create refusal names the constraint
 # answering about a task with nothing in it.
 # ---------------------------------------------------------------------------
 "$ORCHID_BIN" task create T011 "the shape a destroyed task file leaves behind"
+cp ".orchid/tasks/T011.md" "$T034_KEEP/T011.before"
 : > ".orchid/tasks/T011.md"
 [ ! -s ".orchid/tasks/T011.md" ] || fail "fixture: T011.md must be zero bytes for this case to mean anything"
 
@@ -1454,3 +1455,12 @@ show_ok_out="$("$ORCHID_BIN" task show T010)" || fail "task show on a healthy ta
 assert_match "^id: T010$" "$show_ok_out" "task show on a healthy task still prints its frontmatter"
 assert_match "^status: pending$" "$show_ok_out" "task show on a healthy task prints the whole document, not just a probe"
 green_case 'task show against an intact task file: printed in full, exit 0'
+
+# T011 is restored before this file ends. A deliberately damaged task file left
+# lying in the fixture is a trap for whatever case gets appended after this one:
+# `task list` renders it as a row of empty fields and every scheduler read in
+# this repo would see a task with no status at all -- which is exactly the
+# failure this block is about, arriving as an unrelated test's mystery.
+cp "$T034_KEEP/T011.before" ".orchid/tasks/T011.md"
+"$ORCHID_BIN" task show T011 >/dev/null \
+  || fail "the fixture teardown must leave T011 readable again"

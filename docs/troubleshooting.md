@@ -1686,6 +1686,10 @@ rewrite has succeeded and produced a non-empty document, so a failed write
 cannot truncate a task. `orchid task show` exits non-zero on an empty or
 unparseable task file, and `orchid doctor` FAILs on one, naming the path.
 
+Flattening with a literal `\n` is safe and stores those two characters
+verbatim — it is **not** expanded into a real newline, so it cannot split the
+value across two frontmatter lines.
+
 **Recovering a file already destroyed** — the frontmatter is recoverable
 wherever it was last committed, and often from a review pack:
 
