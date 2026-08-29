@@ -117,12 +117,18 @@ is_kind() {
 # Task and lesson identifiers: a conservative, path-safe shape. No slashes, no
 # dots, so nothing here can ever be steered into a traversal by a verb that
 # builds a path out of it.
+# HERESTRINGS, never `printf ... | grep -q` (T016's sweep of the class T010
+# named): `grep -q` exits at its first match and SIGPIPEs its producer, and
+# under this file's `set -o pipefail` the pipeline reports that kill-by-signal
+# status instead of grep's own 0 -- so a well-formed id or count reads as
+# malformed and a legitimate command is refused. `<<<` feeds grep from a temp
+# file, so there is no pipe, no SIGPIPE, and the status is the matcher's alone.
 is_id() {
-  printf '%s' "$1" | grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$'
+  grep -qE '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$' <<<"$1"
 }
 
 is_count() {
-  printf '%s' "$1" | grep -qE '^[1-9][0-9]{0,3}$'
+  grep -qE '^[1-9][0-9]{0,3}$' <<<"$1"
 }
 
 # Free text: any non-empty single argument WITHOUT a newline. The newline ban

@@ -444,7 +444,17 @@ buying a fresh implementation pass to reach the same tree.
     (lesson L018, observed live for a full day). Every verb therefore
     REFUSES to run when `ORCHID_ROOT` is a checkout parked on the
     integration branch whose **index** does not match HEAD for the kernel
-    paths (`orchid_root_stale`, enforced at `lib/common.sh` source time).
+    paths (`orchid_root_stale`, armed at `lib/common.sh` source time). The
+    branch half is answered from Git's on-disk HEAD and spends no
+    subprocess; the index comparison needs `git`, and a `git` against any
+    repository is exactly what the unattended-trust contract forbids a
+    process that may still be looking for an acknowledgement. So the
+    comparison is not made at source time at all: an ordinary verb fires it
+    the instant this library finishes loading, and a trust-boundary entry
+    point fires it where it restores the operator PATH, which is the line
+    at which its authorization decision is made. An entry point that
+    refuses before that line executed nothing but its own gate, so there
+    was nothing for this one to stop.
     The INDEX, not the working tree: `git update-ref` moves the branch
     without touching either, so the index left describing the commit the
     branch moved off IS the record of the fall behind — while an operator
@@ -1879,6 +1889,12 @@ semantic correctness beyond declared verification commands.
 - INV-13 the deterministic driver mutates durable/cross-process state only
   through named verbs, and decides only on structured fields
 - INV-14 no kernel source branches on any discovered engine identifier
+- INV-15 no enforcement gate is reachable only by a per-task opt-in, and none
+  is blind in the environment it is deployed in: every static check in
+  `scripts/ci-local.sh` sits inside the `--no-tests` merge floor, every
+  `tests/inv/` gate loads `tests/helpers.sh` so its recorded RED/GREEN cases
+  are enforced at run time rather than in text, and every kernel entry point
+  that arms the stale-root guard reaches a site that fires it
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a
   named, journaled boundary instead

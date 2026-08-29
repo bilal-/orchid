@@ -468,7 +468,17 @@ _svc_status_linux() {
       echo "DRY-RUN: crontab -l 2>/dev/null | grep -F $(printf '%q' "$marker")"
       echo "  confirmed: unknown (--dry-run -- not queried)"
     else
-      if crontab -l 2>/dev/null | grep -qF "$marker"; then
+      # Captured first, then matched with a herestring -- never `crontab -l |
+      # grep -qF` (T016's sweep of the class T010 named). `grep -q` exits at
+      # its first match and SIGPIPEs `crontab`, and under this file's `set -o
+      # pipefail` that kill-by-signal status becomes the pipeline's, so an
+      # installed schedule reads as "confirmed: no". This is the shape with
+      # the largest real producer in the kernel -- an operator's whole crontab
+      # -- so a long one makes the race likelier rather than rarer, and the
+      # answer is what an operator checking whether `install` took reads.
+      local cron_lines
+      cron_lines="$(crontab -l 2>/dev/null || true)"
+      if grep -qF "$marker" <<<"$cron_lines"; then
         echo "  confirmed: yes"
       else
         echo "  confirmed: no"
@@ -519,6 +529,18 @@ case "$sub" in
     # Status/uninstall remain available after revocation so an operator can
     # always inspect or remove an existing schedule.
     unattended_trust_require "$repo" "service installation" || exit 1
+    # The stale-root gate, at the first line its own contract allows (T016).
+    # This runner holds the fixed entry PATH for its whole run and so never
+    # calls _orchid_entry_restore_operator_path, which is where lib/common.sh
+    # fires the gate for every other trust-boundary entry point -- so without
+    # this call the gate would arm here and never fire, and an `orchid service
+    # install` run out of a stale integration checkout would render its
+    # scheduler artifacts from pre-merge templates. Every arm of this dispatch
+    # carries the call rather than one placement covering all three: `install`
+    # is the only one that crosses the unattended boundary, so it is the only
+    # one whose call has to wait for it, and a shared placement would either
+    # sit ahead of that boundary or leave the other two ungated.
+    orchid_root_stale_gate
     interval_s="${interval_arg:-$(config_get "$repo" pump_interval_s 240)}"
     case "$interval_s" in
       ''|*[!0-9]*) orchid_die "--interval-s must be a positive integer (got '$interval_s')" ;;
@@ -531,6 +553,9 @@ case "$sub" in
     fi
     ;;
   uninstall)
+    # No unattended boundary on this arm (removal stays available after a
+    # revocation), so the gate fires at once -- see the `install` arm above.
+    orchid_root_stale_gate
     if [ "$plat" = darwin ]; then
       _svc_uninstall_darwin "$repo" "$dry_run"
     else
@@ -538,6 +563,9 @@ case "$sub" in
     fi
     ;;
   status)
+    # Likewise ungated by trust, so likewise fired at once. `status` always
+    # exits 0 on its own account; a stale-root refusal is not its own account.
+    orchid_root_stale_gate
     if [ "$plat" = darwin ]; then
       _svc_status_darwin "$repo" "$dry_run"
     else

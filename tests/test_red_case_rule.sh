@@ -23,6 +23,16 @@
 #     `# RED:` annotation, a `# GREEN:` annotation, a `red_case` call and a
 #     `green_case` call. Cheap, and it reads only text -- which is why it is
 #     NOT the load-bearing half and is not trusted on its own for any file.
+#
+#     The gap that leaves, and where it is closed: a NEW file under tests/inv/
+#     can satisfy all four of those and never source tests/helpers.sh at all,
+#     in which case the runtime half below is never installed and the file is
+#     enrolled on paper and enforced nowhere. That is not checked here, it is
+#     checked in tests/inv/test_INV-15_no_optional_gate.sh section 2, which
+#     requires every tests/inv/ gate to LOAD helpers.sh and ships the fixture
+#     that proves such a file is refused. Said here because this is the file a
+#     reader comes to for the rule, and a rule with a known hole and no
+#     pointer to where it is closed is the hole.
 #   * RUNTIME (tests/helpers.sh's EXIT trap): an ENROLLED file that RECORDS no
 #     RED case, or no GREEN case, when it actually runs FAILS -- whatever its
 #     comments say. A call in a comment, in a heredoc, or in a branch nothing

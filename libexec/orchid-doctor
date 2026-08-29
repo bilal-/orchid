@@ -238,7 +238,7 @@ lockfile="$repo/.orchid/plugins.lock"
 if [ -f "$lockfile" ]; then
   if lock_out="$(ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" plugins verify-lock 2>&1)"; then
     ok "plugin lock: no drift ($lockfile)"
-  elif echo "$lock_out" | grep -qi "corrupt"; then
+  elif grep -qi "corrupt" <<<"$lock_out"; then
     # A corrupt/unparsable lockfile (merge conflict, truncation, ...) is a
     # distinct condition from drift -- the message must say "corrupt", not
     # "drift", so an operator doesn't mistake "the file won't even parse"

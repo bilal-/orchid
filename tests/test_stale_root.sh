@@ -893,10 +893,28 @@ assert_match "^gate: true$" "$(cat "$selfroot/.orchid/reviews/TS5-merge.log")" \
 # written; tests/test_unattended_trust.sh fences the same boundary from the
 # other side (its fast-guard shim fails on ANY git or mktemp before an
 # acknowledgement). So the branch half of the guard is answered from Git's
-# own on-disk HEAD and spawns NO git, and the content half -- the one that
-# does need git -- is reachable only for a checkout parked on the integration
-# branch, which is orchid's own root and never a repository a run was pointed
-# at.
+# own on-disk HEAD and spawns NO git.
+#
+# THE CONTENT HALF USED TO BE EXCUSED HERE, AND THE EXCUSE WAS FALSE (T016,
+# lesson L036). This block used to end "...and the content half -- the one
+# that does need git -- is reachable only for a checkout parked on the
+# integration branch, which is orchid's own root and never a repository a run
+# was pointed at". Both clauses are true and the conclusion does not follow:
+# orchid is SELF-HOSTED, so its own root is routinely parked on exactly that
+# branch, and there the content half ran at source time and spent a `git`
+# before any acknowledgement had been found. tests/test_unattended_trust.sh
+# caught it -- five FAILs -- but only when the checkout happened to be on that
+# branch, which no task worktree and no merge-validation worktree ever is, so
+# every gate in the run passed the defect through. That is the whole reason
+# INV-15 exists (tests/inv/test_INV-15_no_optional_gate.sh): a gate whose
+# revalidation environment differs from the deployed one in the dimension
+# under test is reachable and BLIND.
+#
+# So the content half no longer runs at source time at all. Both directions
+# are pinned below, because either alone is satisfiable by a dead guard: a
+# bare `source` of the library must spend NO git even on a stale integration
+# root, and the SAME root must still refuse -- with its content comparison
+# actually made -- when a real entry point runs out of it.
 #
 # What is fenced here is git, exactly, and not "subprocesses" in general: a
 # root that HAS a branch still pays config_get's tr/sed/grep/tail/cut to learn
@@ -959,13 +977,36 @@ assert_eq 0 "$rc" "a dirty development root sources the library without refusing
 [ ! -s "$guard_log" ] \
   || fail "the stale-root guard spent a Git subprocess ahead of the unattended-trust gate ($(tr '\n' ' ' < "$guard_log"))"
 
-# ...and giving that up bought nothing: the refusal still fires, off a linked
-# worktree whose branch is only knowable through its gitdir pointer.
+# The STALE root, sourced the same bare way -- the shape tests/test_unattended_
+# trust.sh's fast-guard fixture has, and the shape a self-hosted checkout was
+# failing on. Loading the library is not running a verb, so there is nothing
+# for the guard to refuse and nothing that justifies a `git`.
 source_guarded "$guardstale"
+assert_eq 0 "$rc" \
+  "sourcing the library out of a STALE integration root is not itself running a verb, so it must not refuse"
+[ ! -s "$guard_log" ] \
+  || fail "the stale-root guard spent a Git subprocess at source time on a stale root, which is the call the unattended-trust contract forbids before an acknowledgement is found ($(tr '\n' ' ' < "$guard_log"))"
+
+# ...and giving that up bought nothing: the SAME root still refuses the moment
+# a real entry point runs out of it, off a linked worktree whose branch is only
+# knowable through its gitdir pointer, and the content comparison it is now
+# allowed really is made. Without this half the two assertions above would be
+# satisfied by a guard that had simply been switched off.
+#
+# The logging git is deliberately NOT used here, and could not be: bin/orchid
+# overwrites PATH with the fixed machine-local prefixes as its first act, so a
+# shim in $guard_bin is invisible to everything downstream of it -- which is
+# the property that entry point exists for. The evidence that the comparison
+# was made is therefore taken from the refusal's own OBSERVATION instead: it
+# names the staged kernel path, and `templates/.keep` is a string only
+# `git diff --cached` can have produced here.
+run_version "$guardstale"
 assert_eq 1 "$rc" \
-  "a stale linked-worktree root is still refused, with its branch read from the gitdir pointer"
-grep -q '^git ' "$guard_log" \
-  || fail "the refusal is allowed its content comparison and must actually make one"
+  "a stale linked-worktree root is still refused when a verb runs out of it, with its branch read from the gitdir pointer"
+assert_match "refusing to run: the checkout orchid itself runs from" "$out" \
+  "and it is the stale-root refusal, not some other failure of the fixture launcher"
+assert_match "templates/\.keep" "$out" \
+  "the refusal is allowed its content comparison and must actually make one — the staged path it reports can only come from that comparison"
 
 # ===========================================================================
 # 12 -- a merge that changes ONLY PROTOCOL.md is stale like any other
@@ -1085,9 +1126,11 @@ assert_eq "$handedit_before" "$(git -C "$root" show ":libexec/orchid-version")" 
 # explicit rather than silent (docs/troubleshooting.md, "Why doctor and
 # status refuse too").
 #
-# Mechanically there is no list to get wrong: the refusal fires when
-# lib/common.sh is SOURCED, and every verb sources it. A second verb stands
-# in for all of them here, so an exemption added later has to break this.
+# Mechanically there is no list to get wrong: the refusal is armed when
+# lib/common.sh is SOURCED, every verb sources it, and the arming is what
+# every firing site reads (T016 moved the git-spending half off source time;
+# it did not make any verb opt in). A second verb stands in for all of them
+# here, so an exemption added later has to break this.
 rc=0
 # Spelled `''` rather than left bare: an empty value before a line continuation
 # is ambiguous to a reader and to a linter alike (SC1007 -- is the next line a
