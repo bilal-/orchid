@@ -204,16 +204,19 @@ stuck.** A pass that meets a boundary still walks every other task and takes
 every edge policy allows; the record is written and 16 returned at the END of
 that pass, not the moment the boundary was met. What it asks of a caller is
 that the decision reach a human, which the pass has already done by raising
-one `orchid notify` blocker per distinct record whenever no admitted verb can
+one `orchid notify` blocker per distinct stop whenever no admitted verb can
 settle it — and then that the caller KEEP DRIVING. **One page per stop, and
-the record is the only thing that counts them.** The de-dup compares the
-record about to be written against the one on disk, field by field, so a page
-raised outside that comparison — a pass that notifies about a task and then
-records a boundary for the same task, or records the stop in words its own
-later passes will not recompute — is a second `qid` for one decision. The
+the stop is what counts them — not the record.** A page raised outside that
+counting — a pass that notifies about a task and then records a boundary for
+the same task, or records the stop in words its own later passes will not
+recompute — is a second `qid` for one decision. The
 operator answers one of them; the rest sit in `BLOCKERS.md` unanswered until
 `answer_expiry_s` turns them into refusals, and nothing on the page says which
-of the duplicates was the live one. `orchid drive` is
+of the duplicates was the live one. Counting off the RECORD instead fails the
+same sentence in the other direction: only one boundary is recorded per pass, so
+every other stop that pass met has no record to be compared against and is
+announced to nobody — which is how a run with many blocked tasks pages about
+exactly one of them, forever. `orchid drive` is
 idempotent, so a boundaried task re-reports the identical record on the next
 pass at no cost while every unrelated task keeps advancing. Reading 16 as
 "stop and fetch a human" is how one task's arbitration parks a whole roadmap:
@@ -228,6 +231,11 @@ operator-only boundary on every pass until a human runs `task
 unblock`/`task retry`, would permanently mask a later task's arbitrable one
 and spend an LLM wakeup per pump cycle on a decision the woken model has no
 verb to make.
+
+**That precedence chooses the record and nothing else.** Every operator-only
+boundary the pass met is still paged, so a stop that loses the slot loses no
+page: masking a stop for the purpose of the RECORD is a ranking, while masking it
+for the purpose of the PAGE is silence.
 
 **"Could settle" is never a property of the kind alone.** It is the
 conjunction of three facts, and each of them is read from structured data:
@@ -308,7 +316,7 @@ recorded `kind`, the named task's current status, and the resolved adapter's
 `command_surface`. A boundary no admitted verb can settle wakes nobody: it
 would recur identically until a HUMAN acts, so the pump refuses to spend a
 wakeup per cycle re-reading it, and the driver instead raises one `orchid
-notify` blocker per distinct record — the surface that condition actually
+notify` blocker per distinct stop — the surface that condition actually
 needs. The pump prints `pump: judgment boundary [<kind>] is operator-only —
 not waking an orchestrator` and exits 0.
 
@@ -1516,7 +1524,7 @@ ones its archetype never declares.
     16. It never verifies-and-fails, so no attempt is spent. The boundary is
     operator-only by design (see the settling-verb list above), so the pump
     wakes no model for it and the driver raises one `orchid notify` blocker per
-    distinct record — the surface a human actually reads. Left `off` — the
+    distinct stop — the surface a human actually reads. Left `off` — the
     default, and the right setting wherever the implementer can run the
     repository's own gates itself — nothing gates and no boundary is ever
     raised. Any value other than `off` reads as `required`, so a typo can only
@@ -2493,7 +2501,7 @@ one-pass driver could otherwise stop progressing in silence:
   acknowledgement proceeds (so the stop is not a loop), and a second pass
   without one stops again (so it is not a walk-past). The boundary is
   operator-only, so the pump wakes no model and one `orchid notify` blocker
-  per distinct record reaches a human instead. The operator prerequisite is
+  per distinct stop reaches a human instead. The operator prerequisite is
   checked immediately after it, on the same pass and by the same rule; the
   hand-off is raised first because its ack moves `candidate_sha` and would
   otherwise expire a prerequisite ack taken before it.

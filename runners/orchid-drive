@@ -114,13 +114,15 @@ reviewer slot is ever withheld for being inline.
 
 At most one judgment boundary is recorded per pass. A boundary a woken
 orchestrator could actually settle outranks one only an operator can, and
-task-id order decides among equals. "Could settle" is computed per boundary,
+task-id order decides among equals. That ranking decides which stop is RECORDED
+and nothing else: a stop that loses the slot does not lose its page. "Could
+settle" is computed per boundary,
 not per kind: it needs a verb that records the result, an adapter whose
 command surface admits that verb, and a task status that verb accepts -- so a
 review boundary is arbitrable from `arbitrating` and operator-only from
 `reviewing`. Every boundary the pass meets is printed either way, and one no
 admitted verb can settle also raises one `orchid notify` blocker per distinct
-record, because runners/orchid-pump deliberately wakes no model for it. That
+STOP, because runners/orchid-pump deliberately wakes no model for it. That
 blocker DECLARES ITS ANSWER SET where the kind has one (lib/drive.sh's
 drive_boundary_choices), so the page an operator reads names the answers
 `orchid answer` will accept instead of leaving `<choice>` to be guessed; kinds
@@ -131,15 +133,25 @@ at, and from `arbitrating` it names the arbitration results -- naming the
 arbitration results from `reviewing` would invite three answers whose verb
 exits 3 while refusing the two that would have worked.
 
-"Per distinct record" is the WHOLE page budget for a stop, including the stops
-this driver creates itself. When a pass blocks a task -- attempts exhausted, or
-the wallclock backstop -- it does not page and then record; it records the
-blocked-task boundary the block produced, in the same words the walk will
-compose for that task on every later pass, and the de-dup at the foot of this
-file does the rest. A notify raised outside that record is de-duplicated
-against nothing, so it is a second question for one decision: the operator
-answers one qid, and the others stand in BLOCKERS.md until answer_expiry_s
-turns them into refusals.
+"Per distinct stop" is the WHOLE page budget, and it is a budget in both
+directions -- no stop is asked about twice, and no stop goes unasked. When a
+pass blocks a task -- attempts exhausted, the wallclock backstop, a merge whose
+gate stayed red -- it does not page and then record; it records the blocked-task
+boundary the block produced, in the same words the walk will compose for that
+task on every later pass, and the de-dup at the foot of this file does the rest.
+A notify raised outside that route is de-duplicated against nothing, so it is a
+second question for one decision: the operator answers one qid, and the others
+stand in BLOCKERS.md until answer_expiry_s turns them into refusals.
+
+The other direction is why the budget counts STOPS and not records. Only one
+boundary is recorded per pass, so reading the budget off the record left every
+stop that lost the ranking with nothing to be compared against and no page at
+all -- and blocked tasks all rank equal, so one of them held the slot on every
+pass while the rest of a parked run stayed silent. The pass therefore pages every
+operator-only stop it met, and asks per stop whether a page carrying that exact
+text is already on record (lib/drive.sh's drive_page_on_record: a question still
+awaiting an answer, or one already answered, is that stop's page; one that
+expired unanswered is not, because `orchid answer` would now refuse it).
 
 Between an implementer's envelope reconciling and `orchid verify` running,
 some candidates need execution-requiring mechanical work an engine profile
@@ -205,7 +217,7 @@ Exit codes:
       the next pass at no cost: keep driving. The only thing 16 asks of an
       unattended caller is that the boundary reach a human — which the pass
       has already done, by raising one `orchid notify` blocker per distinct
-      record whenever no admitted verb can settle it.
+      stop whenever no admitted verb can settle it.
   1   a precondition failed (uninitialized, split-brain, or a verb refused).
       THIS is the code that means the pass could not be made at all.
 EOF
@@ -288,6 +300,25 @@ export ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"
 # ---------------------------------------------------------------------------
 boundary_kind=""; boundary_task=""; boundary_reason=""; boundary_status=""
 
+# EVERY boundary the pass MEETS, not just the one it records: one line per
+# distinct stop, holding `<kind>`, `<task>`, `<status>` and `<reason>`
+# separated by US (\037) -- see set_boundary for why not a tab. The record
+# is still one -- that is the kernel's shape -- but the PAGE budget is per
+# distinct stop, and a stop that lost the ranking has no record for the de-dup
+# at the foot of this file to compare, so without this list it is compared
+# against nothing and announced to nobody. Blocked tasks are the case that made
+# it matter: they all rank equal, so task-id order decides, so one blocked task
+# took the slot on every pass and every other blocked task in the run was
+# silent. See drive_page_on_record in lib/drive.sh for what stops the extra
+# pages from repeating.
+#
+# Pass-local, like `optional_hooks_died` and `escalated_this_pass`: a fact about
+# what THIS pass met, so it needs no verb and leaves nothing behind. Reasons are
+# single-line by construction (drive_blocked_reason clips through
+# _drive_quote_line, and every set_boundary literal is one line), so one
+# separated line per boundary is a lossless carrier for them.
+boundaries_met=""
+
 # Which adapter would the pump wake, and what can it actually run? Resolved
 # once per pass, just after the lease refresh below (step 1 stays literally
 # first). `brokered` when no orchestrator engine resolves at all -- then
@@ -311,13 +342,44 @@ drive_task_status() {
 # verb and leaves nothing behind.
 optional_hooks_died=" "
 set_boundary() {
-  local kind="$1" task="$2" reason="$3" note tstatus
+  local kind="$1" task="$2" reason="$3" note tstatus met_row flat
+  local nl=$'\n' sep=$'\037'
   if [ -n "$task" ]; then
     note="boundary [$kind] $task: $reason"
   else
     note="boundary [$kind]: $reason"
   fi
   tstatus="$(drive_task_status "$task")"
+  # Recorded on the way past, BEFORE the ranking decides anything: a stop the
+  # pass met is a stop a human may need, whether or not it wins the one record
+  # slot. Deduplicated on the whole row, so an arm that raises the identical
+  # boundary twice in one pass is still one stop and still one page.
+  # US (\037) as the field separator, deliberately not a tab: tab is an IFS
+  # WHITESPACE character, so `IFS=$'\t' read` collapses a run of them into one
+  # delimiter and a run-level boundary (empty task) would hand the reader its
+  # status in the task slot. A non-whitespace separator preserves the empty
+  # field.
+  #
+  # The REASON is flattened onto one line for the row, and the reader flattens
+  # the recorded reason the same way before comparing the two. Rows are
+  # newline-delimited, so a reason carrying a newline would otherwise split into
+  # two rows and page a truncated question -- and a page text spanning lines
+  # cannot be matched back by drive_page_on_record's whole-LINE test either, so
+  # every later pass would read it as a stop that had never been paged. The
+  # BOUNDARY RECORD keeps the reason exactly as the arm wrote it; only the page
+  # is flattened, which is what a one-line phone notification wanted anyway.
+  #
+  # Flattened by parameter expansion rather than through `tr`, and the reader
+  # does the same, because the two sides must be BYTE-identical or the recorded
+  # stop pages once per pass: a `$( ... | tr )` round trip turns a trailing
+  # newline into a trailing space on one side and drops it on the other. Every
+  # reason reaches here with its trailing newline already stripped (each call
+  # site passes a literal or a `$( )` capture), so the two are then the same.
+  flat="${reason//$nl/ }"; flat="${flat//$'\r'/ }"; flat="${flat//$sep/ }"
+  met_row="$kind$sep$task$sep$tstatus$sep$flat"
+  if ! grep -qxF -e "$met_row" <<<"$boundaries_met"; then
+    boundaries_met="${boundaries_met:+$boundaries_met$nl}$met_row"
+  fi
   if [ -n "$boundary_kind" ] && \
      [ "$(drive_boundary_priority "$kind" "$tstatus" "$orchestrator_surface")" -le \
        "$(drive_boundary_priority "$boundary_kind" "$boundary_status" "$orchestrator_surface")" ]; then
@@ -352,18 +414,25 @@ set_boundary() {
 #
 # EXACTLY ONE CALLER, at the foot of this file, and that is an invariant rather
 # than an accident of the current arms. PROTOCOL.md promises one blocker per
-# DISTINCT boundary record, and the only thing that can keep that promise is the
-# de-dup there: it compares the record it is about to write against the one on
-# disk, field by field, so a condition that persists for a hundred passes raises
-# one page. A notify sent from anywhere else is outside that comparison
-# altogether -- it cannot be de-duplicated against anything, and it mints a
-# second qid for a stop the boundary is about to page for by itself. Four arms
-# did exactly that -- the exhausted-budget arm and the wallclock backstop, each
-# paging a task it was about to block, and the stuck-merge and blocked-merge
-# arms, each paging a boundary it recorded in the same breath. All four now
-# record and let the record page. A new stop that needs a human takes the same
-# route: set_boundary (or drive_block_boundary, when the stop is a blocked
-# task), never a notify of its own.
+# DISTINCT STOP, and the only thing that can keep that promise is the de-dup
+# there: it asks, per stop, whether a page carrying exactly this text is already
+# on record (lib/drive.sh's drive_page_on_record) and whether the boundary
+# RECORD it is about to write already says the same thing, so a condition that
+# persists for a hundred passes raises one page. A notify sent from anywhere else
+# is outside that comparison altogether -- it cannot be de-duplicated against
+# anything, and it mints a second qid for a stop the loop is about to page for by
+# itself. Four arms did exactly that -- the exhausted-budget arm and the
+# wallclock backstop, each paging a task it was about to block, and the
+# stuck-merge and blocked-merge arms, each paging a boundary it recorded in the
+# same breath. All four now record and let the record page. A new stop that needs
+# a human takes the same route: set_boundary (or drive_block_boundary, when the
+# stop is a blocked task), never a notify of its own.
+#
+# RECORDING IS NOT LOSING THE PAGE, which is the half the first repair of those
+# four arms got wrong: the pass records ONE boundary, so a stop that lost the
+# ranking used to leave nothing for the de-dup to compare and was never paged at
+# all. `set_boundary` therefore accumulates every stop the pass meets and the
+# loop pages each of them; the ranking still decides only which one is RECORDED.
 #
 # THE COUNT IS THE GUARD, in both spellings. tests/test_notify_hermes_channel.sh
 # holds this file to ONE drive_notify call site AND to zero lines that run the
@@ -2886,26 +2955,64 @@ fi
 if [ -n "$boundary_kind" ]; then
   # A boundary no orchestrator procedure resolves is one runners/orchid-pump
   # deliberately will NOT wake a model for, so the only way it reaches a human
-  # is a notification. Sent exactly once per distinct record: the previous
-  # record is read back through the same verb and compared field by field, so
-  # a condition that persists for a hundred passes raises one blocker, not a
-  # hundred.
-  if ! drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" "$orchestrator_surface"; then
-    prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
-    prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
-    prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
-    prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
-    if [ "$prev_kind" != "$boundary_kind" ] || [ "$prev_task" != "$boundary_task" ] || \
-       [ "$prev_reason" != "$boundary_reason" ]; then
-      # `$boundary_status` -- the status read when this boundary was RAISED, the
-      # same one drive_boundary_priority ranked it with. The page's answer set
-      # and the ranking are two readings of one fact, so they come from one
-      # reading of it (lib/drive.sh's drive_boundary_choices).
-      drive_notify "$boundary_kind" "$boundary_task" "$boundary_status" \
-        "judgment boundary [$boundary_kind] needs an operator: $boundary_reason"
-      drive_note "notified: [$boundary_kind] is operator-only, so no orchestrator will be woken for it"
+  # is a notification. Sent exactly once per distinct STOP -- every operator-only
+  # boundary this pass MET, not only the one it recorded.
+  #
+  # THE RECORD IS ONE; THE STOPS ARE NOT, and reading the budget off the record
+  # starved the difference. This loop used to run over `$boundary_kind` alone,
+  # de-duplicated against the previous record read back through the same verb.
+  # That is a complete rule only while one stop exists: a pass that meets several
+  # records the highest-ranked one, and every other stop it met leaves no record,
+  # so the comparison has nothing to say about it and it is announced to nobody.
+  # Blocked tasks are where that bit. They are all operator-only, so they all
+  # rank equal, so the first in task-id order takes the slot on every pass --
+  # forever, since only a human clears a block. Twenty-six other blocked tasks
+  # raised no page at all, and none of them was masked by a DECISION: they were
+  # masked by a slot. That silence is also a regression this task introduced by
+  # its own repair, because the four arms that block a task used to page it
+  # directly, outside the ranking, before those pages were retired as duplicates.
+  #
+  # So the pass pages every operator-only stop it met, and the de-dup moves off
+  # the record and onto the stop: lib/drive.sh's drive_page_on_record asks
+  # whether a question carrying exactly this page text is already on record and
+  # still counts as that stop's page. A condition persisting for a hundred passes
+  # still raises one blocker -- its own, standing unanswered, is what silences
+  # the ninety-nine. The previous RECORD is still consulted first, unchanged, so
+  # the recorded boundary's own de-dup is exactly what it was even where the
+  # runtime questions have been swept away.
+  prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+  prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
+  prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
+  prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
+  # Flattened by the SAME three expansions set_boundary applies to the reason it
+  # puts in a row -- see there for why this may not go through `tr`. Comparing a
+  # recorded multi-line reason against its flattened row would never match, and
+  # the recorded stop would page once per pass.
+  prev_reason="${prev_reason//$'\n'/ }"
+  prev_reason="${prev_reason//$'\r'/ }"
+  prev_reason="${prev_reason//$'\037'/ }"
+  while IFS=$'\037' read -r page_kind page_task page_status page_reason; do
+    [ -n "$page_kind" ] || continue
+    # `$page_status` -- the status read when this boundary was RAISED, the same
+    # one drive_boundary_priority ranked it with. The page's answer set and the
+    # ranking are two readings of one fact, so they come from one reading of it
+    # (lib/drive.sh's drive_boundary_choices), which is why the status rides in
+    # the accumulated row rather than being re-read here.
+    if drive_boundary_wakes_orchestrator "$page_kind" "$page_status" "$orchestrator_surface"; then
+      continue
     fi
-  fi
+    if [ "$prev_kind" = "$page_kind" ] && [ "$prev_task" = "$page_task" ] && \
+       [ "$prev_reason" = "$page_reason" ]; then
+      continue
+    fi
+    page_text="judgment boundary [$page_kind] needs an operator: $page_reason"
+    if drive_page_on_record "$repo" "$page_text"; then
+      drive_note "not notified: [$page_kind]${page_task:+ $page_task} already has a page on record for this stop"
+      continue
+    fi
+    drive_notify "$page_kind" "$page_task" "$page_status" "$page_text"
+    drive_note "notified: [$page_kind] is operator-only, so no orchestrator will be woken for it"
+  done <<< "$boundaries_met"
   if [ -n "$boundary_task" ]; then
     "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --task "$boundary_task" \
       --reason "$boundary_reason" >/dev/null

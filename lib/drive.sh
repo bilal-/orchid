@@ -4141,6 +4141,80 @@ drive_blocked_reason() {
     "$what" "$id" "$id" "$id"
 }
 
+# drive_page_on_record <repo> <text> -- 0 iff a page carrying EXACTLY this text
+# is already on record and still counts as this stop's page: a question that is
+# still waiting for an answer and still answerable, or one that has been
+# answered. Nonzero when nothing on record carries the text, or when the only
+# questions that do have expired unanswered.
+#
+# WHY THE DRIVER NEEDS A PER-STOP ORACLE AND NOT JUST THE BOUNDARY RECORD. The
+# kernel stores ONE boundary record, and a pass that meets several may record
+# only the highest-ranked one. The de-dup at the foot of runners/orchid-drive
+# compares the record it is about to write against the one on disk, so it can
+# only ever speak for the stop that WON that slot -- and every other stop the
+# pass met is compared against nothing at all, because it leaves no record to
+# compare. That was survivable while four arms paged the task they blocked
+# directly; it stopped being survivable when those arms were repaired to record
+# instead of page. Blocked tasks are all operator-only, so they all rank equal,
+# so task-id order decides: the lowest-id blocked task took the slot on every
+# pass and the twenty-six stops behind it were never announced to anybody. One
+# page for twenty-seven decisions is the same defect as twenty-seven pages for
+# one, in the direction that is harder to notice.
+#
+# So the budget is per distinct STOP rather than per recorded record, and this
+# is what makes that countable without inventing durable state: a page IS a
+# question, and a question is a file. `runtime/answers/<qid>.question` carries
+# the page text as its own line, `<qid>.answer` beside it says an operator has
+# decided, and mtime past `answer_expiry_s` says `orchid answer` would now
+# refuse it (libexec/orchid-answer's own refusal, mirrored by libexec/
+# orchid-doctor's inbound check -- three readers, one rule).
+#
+# THE THREE ANSWERS, AND WHY EXPIRY IS THE ONLY ONE THAT RE-PAGES. An OPEN
+# question is the operator's outstanding page: raising a second one for the same
+# stop is the duplicate-qid defect section 12 of
+# tests/test_notify_hermes_channel.sh exists for. An ANSWERED one suppresses
+# too, and must: a stop that persists after `defer` would otherwise mint a fresh
+# page on every pass, one per answer, forever. An EXPIRED unanswered one is the
+# case that pages again, and that is the point -- the operator cannot answer it
+# any more, so for them it is not a page at all.
+#
+# The residual gap is stated rather than hidden: a stop that recurs with a
+# BYTE-IDENTICAL page text after its first page was answered is read as the same
+# stop and not re-paged. In practice the texts carry the counters that move
+# (`attempts exhausted (3/3)`, `(4/6)`), so a genuine recurrence composes
+# different text; a recurrence that does not is one an operator has already
+# answered in those exact words.
+#
+# Matched with `grep -qxF -e`: a whole LINE equal to the text, so no header line
+# of the question file can match it (they are `task: `/`nonce: `/`choices: `
+# prefixed and the text is not), and `-e` because a page text is not this
+# reader's business to constrain -- one starting with `-` must not become a
+# grep option.
+drive_page_on_record() {
+  local repo="$1" text="$2" rt qf qid expiry now mt
+  # The path is composed rather than taken from lib/common.sh's orchid_runtime,
+  # which mkdir -p's what it returns: this file is read-only (see its header),
+  # and libexec/orchid-doctor's inbound check reads the same directory the same
+  # way for the same reason.
+  rt="$repo/.orchid/runtime"
+  [ -d "$rt/answers" ] || return 1
+  expiry="$(config_get "$repo" answer_expiry_s 86400)"
+  case "$expiry" in ''|*[!0-9]*) expiry=86400 ;; esac
+  now="$(date -u +%s)"
+  for qf in "$rt"/answers/*.question; do
+    [ -f "$qf" ] || continue
+    grep -qxF -e "$text" "$qf" 2>/dev/null || continue
+    qid="$(basename "$qf" .question)"
+    [ ! -f "$rt/answers/$qid.answer" ] || return 0
+    # Unreadable mtime is bucketed with expired for the same reason `orchid
+    # answer` refuses it: unanswerable either way, so it is not a live page.
+    mt="$(file_mtime "$qf")"
+    [ "$mt" -gt 0 ] || continue
+    [ $(( now - mt )) -gt "$expiry" ] || return 0
+  done
+  return 1
+}
+
 drive_verify_class() {
   local repo="$1" tf="$2" log="$3" body hand hcls hnote suffix
 

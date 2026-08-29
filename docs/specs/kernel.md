@@ -2017,7 +2017,7 @@ for that same set by its orchestrate prompt and enforced on none of it; an
 unrecognized label reads as `brokered`), and the named task's CURRENT status
 (`task arbitrate` refuses anything but `arbitrating`, exit 3). The pump asks
 the identical question before waking a model; anything that fails it wakes
-nobody and the driver raises one `orchid notify` blocker per distinct record
+nobody and the driver raises one `orchid notify` blocker per distinct stop
 instead. On both shipped surfaces that makes `planning` and `run-complete`
 operator-only: nothing admits `plan apply` or `run accept`.
 

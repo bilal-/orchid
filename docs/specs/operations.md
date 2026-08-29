@@ -357,11 +357,14 @@ this section false without touching a byte of it.
   where that verb exits 3. Declaring one state's verbs on the other state's
   page is the self-contradiction the gate makes worst: the page invites answers
   that cannot be carried out and refuses the ones that can.
-  **One stop raises one page.** `runners/orchid-drive` sends every page from
-  the single call site behind the boundary record, because the record is the
-  only thing that de-duplicates them: it is read back and compared field by
-  field, so a condition that persists for a hundred passes raises one blocker.
-  A notify raised anywhere else is compared against nothing. Three arms used to
+  **One stop raises one page, and every stop raises one.** `runners/orchid-drive`
+  sends every page from a single call site, over the list of every boundary the
+  pass MET, de-duplicated per stop: a page carrying that exact text which is
+  already on record — a question still awaiting an answer, or one already
+  answered — is that stop's page, and only a question that expired unanswered
+  (which `orchid answer` would now refuse) counts as no page at all. So a
+  condition that persists for a hundred passes raises one blocker. A notify
+  raised anywhere else is compared against nothing. Three arms used to
   do exactly that — the exhausted-budget arm and the wallclock backstop, each
   paging a task it was about to block, and the stuck-merge arm, paging a
   boundary it recorded in the same breath — so one decision reached the
@@ -372,6 +375,13 @@ this section false without touching a byte of it.
   recorded as a `blocked-task` boundary in the same words every later pass over
   that task recomputes, so the block pages once and the passes after it page
   not at all.
+  De-duplicating against the boundary RECORD instead — which is what the first
+  repair of those arms did — fails the same sentence in the other direction.
+  Only one boundary is recorded per pass, so a stop that loses the ranking has
+  no record to be compared against and raises no page at all; blocked tasks all
+  rank equal, so the lowest-id one held the slot on every pass and every other
+  blocked task in the run was silent. The ranking decides which stop is
+  RECORDED, never which stops are paged.
 - **v1-m4 channels — three explicit actors (round-4 topology fix) — SHIPPED:**
   (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
   access) — `orchid notify` (tier-1) never spawns it directly; it only

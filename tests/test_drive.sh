@@ -1097,12 +1097,39 @@ assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$SBLOCKERS" \
 # dead site kept this comparison equal while the route it was written for got
 # the other arm's message. What is kept here is the part a fixture cannot
 # reach: a THIRD site, added later, for a route no fixture yet walks.
-BT_SITES="$(grep -c 'set_boundary blocked-task' "$DRIVE" || true)"
-BT_FULL="$(grep -c 'orchid task unblock|retry|reverify' "$DRIVE" || true)"
-[ "$BT_SITES" -gt 1 ] \
-  || fail "runners/orchid-drive should raise blocked-task from more than one site (found $BT_SITES) — this count is what keeps the remedy list honest at all of them"
-assert_eq "$BT_SITES" "$BT_FULL" \
-  "every blocked-task boundary the driver raises names the WHOLE remedy list PROTOCOL.md's table gives (unblock|retry|reverify), not a shorter one at a second site"
+BT_SITES="$(grep -Ec '^[[:space:]]*drive_block_boundary \"\$' "$DRIVE" || true)"
+[ "$BT_SITES" -gt 2 ] \
+  || fail "runners/orchid-drive should route each blocking arm and the blocked-task walk through drive_block_boundary (found $BT_SITES call sites)"
+assert_eq 0 "$(grep -c 'set_boundary blocked-task' "$DRIVE" || true)" \
+  "no site may bypass the shared cause-and-remedy composer with a shorter blocked-task reason"
+assert_match 'orchid task unblock %s, orchid task retry %s \[--attempts N\], or orchid task reverify %s' \
+  "$(sed -n '/^drive_blocked_reason()/,/^}/p' "$ROOT/lib/drive.sh")" \
+  "the shared blocked boundary composer names the WHOLE remedy list"
+
+# ...AND THE STOP THAT LOST THE RANKING STILL REACHES A HUMAN (T009). Both
+# S010 and S020 are blocked on this pass, both operator-only, so they rank
+# equal and task-id order gives S010 the one record slot. Counting the page
+# budget off that RECORD leaves S020 compared against nothing and paged not at
+# all -- and since only a human clears a block, S010 holds the slot on every
+# later pass too, so S020's stop is never announced. One page for two decisions
+# here; one page for twenty-seven in a run the size of r-001. The RECORD is
+# still one (asserted above); the PAGES are per stop.
+squestions() { find "$STARVE/.orchid/runtime/answers" -name '*.question' 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq 2 "$(squestions)" \
+  "both blocked tasks raised a page — losing the record slot is a ranking, not silence (out: $SDRIVE_OUT)"
+assert_match "\(task: S020\)" "$SBLOCKERS" \
+  "...and the page for the stop that lost the ranking names its own task"
+assert_match "fixture: parked for now" "$SBLOCKERS" \
+  "...and states ITS cause, not the recorded boundary's — two stops, two decisions, two pages"
+# ...and a repeated pass adds neither, which is the other direction of the same
+# budget: both questions are still standing unanswered, and an outstanding page
+# IS that stop's page. Without this half the fix above would trade a starved
+# stop for a page per pass, which is the duplicate defect T009 started from.
+run_sdrive
+assert_eq 2 "$(squestions)" \
+  "a repeated pass raises no second page for either stop — one page per distinct stop, in both directions (out: $SDRIVE_OUT)"
+assert_eq S010 "$(sboundary | jq -r .task)" \
+  "and the ranking is unchanged by any of it: the same stop still holds the record slot"
 
 # Pass 2 -- S020 now sits at `arbitrating` over a request-changes review: an
 # arbitrable boundary, on a HIGHER task id than the blocked one. The reviewer
@@ -1708,7 +1735,7 @@ if drive_boundary_wakes_orchestrator run-complete "" "$(drive_orchestrator_surfa
 fi
 
 # Repeating the pass raises no SECOND blocker: the record is unchanged, and
-# the notify is sent once per distinct record, not once per pass.
+# the notify is sent once per distinct stop, not once per pass.
 b_blockers_before="$(wc -l < "$BROK/.orchid/BLOCKERS.md")"
 BDRIVE_RC=0
 BDRIVE_OUT="$(ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$DRIVE" 2>&1)" || BDRIVE_RC=$?
@@ -3881,8 +3908,8 @@ assert_match "attempts exhausted \(1/1\)" "$CDRIVE_OUT" \
 # ONE STOP, ONE PAGE (T009). A page is a question with its own qid, nonce and
 # `.answer` file, so the count matters: two pages for one decision are two
 # questions, and answering either says nothing about the other. PROTOCOL.md's
-# budget is one blocker per DISTINCT boundary record, enforced by the
-# field-by-field de-dup at the foot of the driver -- and this arm defeated it
+# budget is one blocker per DISTINCT STOP, enforced by the
+# per-stop de-dup at the foot of the driver -- and this arm defeated it
 # twice. It raised its own `orchid notify` and THEN recorded an
 # `operator-decision` boundary the foot of the file notified for as well (two
 # qids on this pass), after which the blocked walk restated the same stop in a
@@ -3912,7 +3939,7 @@ assert_eq blocked "$(cfield status)" \
 assert_eq blocked-task "$(ORCHID_REPO="$CAPD" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
   "the stop is recorded under the kind the task's own status names — the kind the walk will keep recomputing"
 assert_eq 1 "$(cquestions)" \
-  "and no second question is minted for it: one blocker per distinct record, and the record did not change (out: $CDRIVE_OUT)"
+  "and no second question is minted for it: one blocker per distinct stop, and the stop did not change (out: $CDRIVE_OUT)"
 
 # 2. The operator grants two more rounds through the verb -- and the driver
 #    honors the grant on its very next pass.

@@ -789,6 +789,76 @@ probe telegram "hermes: error: 'gateway status' terminated by another client ses
 assert_eq "2" "$probe_rc" "a CLI session displaced by a newer one has determined nothing about the gateway it never got to ask"
 assert_match "not evidence about the gateway" "$probe_out" "the probe says the query broke rather than claiming the return leg did"
 
+# A DENIAL MUST NAME THE RIVAL IT DENIES, and this is the false-health family the
+# rule above shipped with. The competitor's adjective was OPTIONAL in the denial
+# pattern, so two opposite sentences elided as one phrase:
+#     no other listener   -- this gateway holds the stream alone   (health)
+#     no listener         -- nothing is consuming the stream       (the outage)
+# The second had its one piece of evidence stripped out and the row was then read
+# as REACHABLE off the `running` beside it: doctor printing "Answers sent on this
+# channel are being lost" INVERTED -- telling an operator their replies land while
+# the row says nothing is there to receive them.
+#
+# RED -- the absence, with no rival named, at each of the two positive tiers.
+probe telegram "hermes-gateway: running (pid 4242, no listener attached)" 0
+assert_eq "2" "$probe_rc" "'no listener' is the absence of the thing, not the denial of a rival — a row this probe cannot rank must not be acquitted by the 'running' beside it"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "a gateway reporting no listener must never read as a live return leg -- that is the false REACHABLE this case exists to prevent"
+assert_match "not one this probe recognizes" "$probe_out" "the probe admits it could not read the clause rather than convicting on it"
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, no session)" 0
+assert_eq "2" "$probe_rc" "...and the pid tier is held to it too: a live pid proves a process exists, never that anything is attached to its stream"
+probe telegram "hermes-gateway: running (pid 4242, no consumer for the update stream)" 0
+assert_eq "2" "$probe_rc" "...in the gateway's other noun for the same fact"
+# GREEN -- the denial that DOES name a rival still elides, so this is the
+# adjective being read rather than the whole rule being switched off. These are
+# the same rows pinned above, set beside their RED twins on purpose: one word
+# apart, opposite verdicts.
+probe telegram "hermes-gateway: running (pid 4242, no other listener)" 0
+assert_eq "0" "$probe_rc" "'no OTHER listener' names the rival it denies and is still the cleanest health report there is"
+probe telegram "hermes-gateway: running (pid 4242, without a second poller)" 0
+assert_eq "0" "$probe_rc" "...and an article between the denial and the rival does not break it"
+# ...and the SEVERITY arm keeps its adjective-free form, because `no conflicts`
+# denies the incident itself and there is no rival to name in it.
+probe telegram "hermes-gateway: running (pid 4242, no conflicts)" 0
+assert_eq "0" "$probe_rc" "a severity denied without a rival is still a denial -- there is no such thing as 'another conflict' to name"
+
+# A ROW'S LABEL IS ITS SUBJECT, NEVER ITS STATE, and this is the other
+# false-health family -- reached through the service-managed tier's own admission
+# rule, on the vocabulary that tier was added for. `Active:` is how systemd names
+# the field, so the whole word `active` sits in EVERY one of those rows, before
+# the colon, whatever the state printed after it. The positive test matched the
+# label and reported a dead unit as REACHABLE.
+#
+# RED -- the transcript `systemctl status` prints for a gateway that died. The
+# unit header, the Loaded line and the Active line are byte-for-byte the shape
+# already pinned healthy further up; only the state word differs.
+probe telegram "$(printf '* hermes-gateway.service - Hermes Gateway\n   Loaded: loaded (/etc/systemd/system/hermes-gateway.service; enabled)\n   Active: failed (Result: exit-code) since Tue 2026-08-26 11:04:19 UTC\n')" 0
+assert_eq "2" "$probe_rc" "a unit systemd reports as failed must not be read as up by the word 'Active' in its own field name"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "the label tier must never report a failed unit as up -- that is the false REACHABLE this case exists to prevent"
+# ...and every other state that field can carry, none of which is 'active'.
+probe telegram "   Active: activating (auto-restart) (Result: exit-code)" 0
+assert_eq "2" "$probe_rc" "'activating' is not 'active', and the label above it is not a state either"
+probe telegram "   Active: deactivating (stop-sigterm)" 0
+assert_eq "2" "$probe_rc" "...and a unit on its way down is not 'active' either — undetermined is the honest answer, REACHABLE was not"
+# GREEN -- the label goes, the state it introduces stays, so the tier still
+# decides in both directions. Without these the RED cases above would pass on a
+# probe that had simply stopped reading label rows at all.
+probe telegram "   Active: active (running) since Mon 2026-08-24 09:14:02 UTC" 0
+assert_eq "0" "$probe_rc" "the state AFTER the label still reports health -- eliding the field name is not deafness to the row"
+assert_match "up: .*Active: active" "$probe_out" "and the probe quotes the row verbatim, elision notwithstanding"
+probe telegram "   Active: inactive (dead) since Sun 2026-08-23 22:02:41 UTC" 0
+assert_eq "1" "$probe_rc" "...and the outage after the label is still the outage"
+# ...and the `=` spelling of the same field, which the label tier admits too and
+# which is where the misread is at its plainest: the row says false and the
+# probe said up.
+probe telegram "Active = false" 0
+assert_eq "2" "$probe_rc" "a boolean-valued field is not a state word, and its NAME is not one either — 'Active = false' must never read as up"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "a row whose value is 'false' must not be reported up by the word in its field name"
+probe telegram "Gateway: running" 0
+assert_eq "0" "$probe_rc" "...and a label whose value IS a state word still decides, so the elision costs the tier nothing"
+
 # THE LAST-RESORT TIER, and the subject it may not borrow. Output carrying no
 # channel row, no gateway row and no status label still deserves a reading --
 # a `gateway status` answering with the bare word `running` has said
@@ -1610,8 +1680,8 @@ drive_src="$REPO_ROOT/runners/orchid-drive"
 drive_notify_calls="$(grep -cE '^[[:space:]]*drive_notify ' "$drive_src" || true)"
 assert_eq "1" "$drive_notify_calls" \
   "runners/orchid-drive must raise its pages from exactly ONE call site — every other one is a page nothing de-duplicates (found $drive_notify_calls)"
-assert_match "boundary_kind" "$(grep -E '^[[:space:]]*drive_notify ' "$drive_src" || true)" \
-  "...and that site is the boundary record's own, so the page and the record are the same fact"
+assert_match "boundaries_met" "$(grep -E -A 3 '^[[:space:]]*drive_notify ' "$drive_src" || true)" \
+  "...and that site is fed by the list of boundaries the pass MET, so every stop it met is a stop it can page"
 if grep -qE '^[[:space:]]*drive_notify blocked-task' "$drive_src"; then
   fail "no arm may page a task it is blocking: the page for that stop belongs to the blocked-task boundary the block produces, which is the only thing that de-dups it against the next pass"
 fi
@@ -1699,3 +1769,99 @@ errM="$(page_orchid answer "$qidM2" "re-run the gate by hand" 2>&1 1>/dev/null)"
   || fail "a refused answer must never be recorded as one"
 assert_match "unblock \| retry \| reverify \| defer" "$errM" \
   "...and the refusal names what would be accepted (L028)"
+
+# ===========================================================================
+# 12f -- AND EVERY STOP GETS ONE: THE OTHER DIRECTION OF THE SAME BUDGET.
+#
+# Sections 12a-12e are all about the duplicate: one stop, two qids. Repairing
+# it by moving the four arms' pages behind the boundary RECORD broke the
+# sentence at its other end, and that failure is quieter and worse.
+#
+# At most ONE boundary is recorded per pass. Blocked tasks are all
+# operator-only, so drive_boundary_priority ranks them all equal, so
+# set_boundary's hold keeps the first one met and task-id order decides. Read
+# the page budget off the record and every other stop the pass met has no
+# record to be compared against -- and no page. Only a human clears a block, so
+# the winner never yields: in a run with twenty-seven blocked tasks the operator
+# is paged about one of them, forever, and the twenty-six others are not
+# waiting on a decision anybody knows to make. One page for twenty-seven
+# decisions is the same defect as twenty-seven pages for one, in the direction
+# nobody notices, and it is a defect this task introduced with its own repair --
+# before it, those arms paged the task they blocked directly, outside the
+# ranking.
+#
+# So the budget counts STOPS. Two properties, pinned in the two halves below:
+# the pass pages every stop it MET (not just the one it recorded), and the
+# de-dup that keeps that from becoming a page per pass is per stop, not per
+# record.
+
+# --- 12f-i: the de-dup oracle, on real questions ---------------------------
+# drive_page_on_record is what replaces the field-by-field record comparison for
+# every stop that has no record. It is asked of the real thing: questions minted
+# by `orchid notify` into this fixture repo, read back through the same runtime
+# layout `orchid answer` and `orchid doctor` read.
+page_orchid task create T907 "lose the ranking to a lower task id" >/dev/null \
+  || fail "fixture task for the starvation section must be creatable"
+page_orchid task advance T907 blocked \
+  --reason "attempts exhausted (2/2): see .orchid/reviews/T907-verify.log" >/dev/null \
+  || fail "fixture: blocking T907 must succeed"
+strv_reason="$(drive_blocked_reason T907 "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T907)")"
+strv_text="judgment boundary [blocked-task] needs an operator: $strv_reason"
+
+# RED for the oracle's first answer: a stop nothing has paged for has no page,
+# whatever else is standing in this repo's inbox (sections 12a-12e left several
+# questions there, which is exactly the noise a subject-blind oracle would trip
+# on).
+if drive_page_on_record "$PAGE_REPO" "$strv_text"; then
+  fail "a stop no question carries must read as unpaged, or the pass would stay silent about it forever"
+fi
+strv_qid="$(page_block_notify T907 "$strv_text")" \
+  || fail "fixture: the starved stop's page must be raisable"
+# GREEN: an OPEN question is that stop's page, and it is what silences the next
+# hundred passes -- the property section 12's whole preamble is about.
+drive_page_on_record "$PAGE_REPO" "$strv_text" \
+  || fail "a question still waiting for an answer IS that stop's page: raising a second one is the duplicate qid this section exists to prevent"
+# ...and an ANSWERED one still is. Without this half a stop that persists after
+# `defer` mints a fresh page on every pass -- one per answer, forever -- which is
+# the duplicate defect wearing the repair's clothes.
+page_orchid answer "$strv_qid" defer >/dev/null \
+  || fail "fixture: the starved stop's page must be answerable"
+drive_page_on_record "$PAGE_REPO" "$strv_text" \
+  || fail "an answered question is still that stop's page — a persisting stop must not re-page once per answer"
+# ...and the ONE case that pages again: a question that expired unanswered, which
+# `orchid answer` itself refuses (libexec/orchid-answer's expiry arm). For the
+# operator that is not a page at all.
+strv_qid2="$(page_block_notify T907 "$strv_text")" \
+  || fail "fixture: a second question is needed to age one out"
+touch -t 200001010000 "$PAGE_REPO/.orchid/runtime/answers/$strv_qid2.question" \
+  || fail "fixture: the aged question's mtime must be settable"
+rm -f "$PAGE_REPO/.orchid/runtime/answers/$strv_qid.question" \
+      "$PAGE_REPO/.orchid/runtime/answers/$strv_qid.answer"
+if drive_page_on_record "$PAGE_REPO" "$strv_text"; then
+  fail "a question aged past answer_expiry_s can no longer be answered, so it is not a page: the stop must be raisable again"
+fi
+
+# --- 12f-ii: RED — the pass pages what it MET, not what it recorded ---------
+# The structural half, in the same spirit as 12c/12d: the property is about a
+# code path only a multi-task driver pass reaches, and what makes it hold is
+# where the accumulation happens. `set_boundary` must record the stop BEFORE the
+# ranking's hold discards it -- accumulating after the hold would collect only
+# the boundaries that already won, which is the starved behaviour with extra
+# machinery.
+sb_start="$(grep -n '^set_boundary()' "$drive_src" | cut -d: -f1)"
+sb_acc="$(grep -n 'boundaries_met="\${boundaries_met' "$drive_src" | cut -d: -f1)"
+sb_held="$(grep -n 'is already this pass' "$drive_src" | cut -d: -f1)"
+[ -n "$sb_start" ] && [ -n "$sb_acc" ] && [ -n "$sb_held" ] \
+  || fail "fixture: set_boundary, its accumulation and its hold must all be locatable in $drive_src (start=$sb_start acc=$sb_acc held=$sb_held)"
+[ "$sb_acc" -gt "$sb_start" ] \
+  || fail "the stop must be accumulated INSIDE set_boundary, where every arm of the driver goes through it (start=$sb_start acc=$sb_acc)"
+[ "$sb_acc" -lt "$sb_held" ] \
+  || fail "the stop must be accumulated BEFORE the ranking holds it: a list built after the hold holds only the winners, which is the starvation this section is about (acc=$sb_acc held=$sb_held)"
+# ...and the page loop really reads that list rather than the single recorded
+# boundary. Without this the accumulation could be dead code and 12f-i would
+# still pass on the oracle alone.
+page_loop="$(grep -E -A 3 '^[[:space:]]*drive_notify ' "$drive_src" || true)"
+assert_match 'done <<< "\$boundaries_met"' "$page_loop" \
+  "the one page producer is driven by the boundaries the pass MET — a loop over the record alone can only ever page one stop"
+assert_match "drive_page_on_record" "$drive_code" \
+  "...and each of those pages is de-duplicated per stop, which is the only thing that stops a list of stops from becoming a list of pages per pass"
