@@ -377,9 +377,11 @@ _pump_drain_outbox() {
   done
 }
 
-# _pump_capability_handoff <repo> <detail> -- what the pre-wake probe does with
-# a chain NO PASS CAN FIX. Prints the operator-facing line, and records it
-# exactly once, durably, as a blocker.
+# _pump_capability_handoff <repo> <detail> <epoch> -- what the pre-wake probe
+# does with a chain NO PASS CAN FIX. Prints the operator-facing line, and
+# records it exactly once, durably, as a blocker. <epoch> is this pass's own,
+# sampled where the drive returned it rather than read here -- see THE EPOCH IS
+# THE ONE THE DRIVE JUST FENCED below.
 #
 # WHY THIS EXISTS AT ALL. Step 6's probe has always exited 0 on an unavailable
 # orchestrator, and that is right: a rate limit, an unproven fallback, a plugin

@@ -1864,6 +1864,16 @@ that record's single routine writer, and a pump overwriting it would destroy the
 record naming the task actually waiting while the two writers alternated one
 journal line per pass.
 
+The same chain is read once more, and it asks the same operation-aware
+question for the same reason. `drive_orchestrator_surface` predicts the
+`command_surface` of the adapter that wake would spawn, and
+`drive_boundary_wakes_orchestrator` decides from that prediction whether a
+judgment boundary is offered to a model at all or routed to a human. A
+prediction that stopped at a role-eligible but incapable primary, while both
+runners failed over to the capable entry behind it, would decide that from the
+manifest of an adapter nobody is going to spawn — so it walks the chain with the
+`orchestrate` step too, and names the entry the wake will actually use.
+
 That same slot is also why the boundary names a VERB and not only a key. The
 advice for a refused step is "perform it, or bind an actor whose manifest
 covers it at <key>", and for a reviewer slot the key alone cannot reach the

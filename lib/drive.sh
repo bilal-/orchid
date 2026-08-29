@@ -10,6 +10,10 @@
 # Source AFTER lib/common.sh, lib/frontmatter.sh, lib/manifest.sh,
 # lib/archetype.sh, lib/schedule.sh, lib/envelope.sh, lib/resolver.sh,
 # lib/review.sh and lib/hooks.sh -- this file calls into all of them.
+# lib/capability.sh is needed too, but by CALL time rather than by source time:
+# drive_orchestrator_surface asks resolve_role_available to consult its table,
+# and a caller that never sources it gets the narrowest surface instead of an
+# answer read off the wrong manifest (see that function's own note).
 #
 # INV-05/INV-14 discipline: no decision below reads a plugin's NAME. Task
 # routing is driven by the archetype's declared `transitions=`/`outcome=`
@@ -387,9 +391,25 @@ drive_boundary_wakes_orchestrator() {
 #
 # Read-only, like everything else in this file: resolve_role_available walks
 # the chain, the ledger and the capsuite and mutates none of them.
+#
+# THE `orchestrate` STEP IS PASSED because this function's whole claim is that
+# it names the adapter the pump WOULD wake, and the pump's own probe asks the
+# step-aware question (runners/orchid-pump step 6, runners/orchid-tick's
+# resolution). Asked without it, this walk stops at a role-eligible but
+# incapable primary while both runners fail over to the capable entry behind it
+# -- and this function then reads the wrong manifest's `command_surface`,
+# deciding drive_boundary_wakes_orchestrator from a label belonging to an
+# adapter nobody will spawn. On the shipped tree the two questions coincide
+# (roles/orchestrator.role requires `shell,git` and the step prices exactly
+# those), so this matters precisely where an operator has supplied a descriptor
+# asking for less -- the same place INV-16 is load bearing everywhere else.
+# Callers must therefore have lib/capability.sh sourced; one that has not gets
+# resolve_role_available's exit 3, which lands on the `brokered` arm below --
+# the narrowest surface, so a missing `source` cannot widen what a boundary is
+# allowed to be handed to.
 drive_orchestrator_surface() {
   local repo="$1" engine dir surface
-  engine="$(resolve_role_available "$repo" orchestrator 2>/dev/null)" || {
+  engine="$(resolve_role_available "$repo" orchestrator orchestrate 2>/dev/null)" || {
     printf 'brokered\n'; return 0
   }
   [ -n "$engine" ] || { printf 'brokered\n'; return 0; }

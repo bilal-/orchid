@@ -1631,3 +1631,74 @@ PRC=0; POUT="$("$REPO_ROOT/runners/orchid-pump" 2>&1)" || PRC=$?
 assert_eq 1 "$(pw_handoffs)" \
   "INV-16: and a successful wake raises no hand-off of its own"
 green_case 'the identical pump pass, with only the ledger mark cleared, woke the orchestrator adapter that declares shell and git — so the two refusals above are decisions about the chain rather than a pump that had stopped waking anything'
+
+# ===========================================================================
+# 13 -- THE PREDICTION MUST NAME THE ENTRY THE WAKE WILL ACTUALLY USE.
+#
+# Part 11c made selection operation-aware, so an incapable primary is failed
+# over rather than settled on. lib/drive.sh's drive_orchestrator_surface asks
+# the SAME chain a second question -- "what command_surface will the adapter
+# the pump wakes declare?" -- and its answer feeds
+# drive_boundary_wakes_orchestrator, which is what decides whether a judgment
+# boundary is offered to a model at all or routed to a human. Two readings of
+# one chain that disagree about WHICH ENTRY wins is a decision made from the
+# manifest of an adapter nobody is going to spawn: the pump fails over to the
+# capable entry and reports on the incapable one's label.
+#
+# On the shipped tree the two questions coincide, because
+# roles/orchestrator.role requires `shell,git` and the orchestrate row prices
+# exactly those -- so the role gate stops the incapable primary before either
+# question is asked. They come apart in the one place this whole file is about:
+# a descriptor asking for LESS than the work costs. That descriptor is
+# kernel-shipped for this role, so the fixture must supply its own; it is
+# written LAST, after every part above has run against the real one.
+# ===========================================================================
+printf 'id=orchestrator\ndescription=INV-16: an operator descriptor asking for less than the orchestrate step costs\n' \
+  > "$WORK/roles/orchestrator.role"
+
+# <name> <capabilities> <command_surface> -- mk_engine plus the one manifest
+# key this part reads. Nothing is spawned here either: drive_orchestrator_surface
+# resolves and reads a declaration.
+mk_surface_engine() {
+  local name="$1" caps="$2" surface="$3" dir
+  dir="$WORK/eng/$name"
+  mkdir -p "$dir"
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=%s\nentrypoint=run\ncommand_surface=%s\n' \
+    "$name" "$caps" "$surface" > "$dir/plugin.conf"
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$dir/run"
+  chmod +x "$dir/run"
+}
+mk_surface_engine surfshort "structured_text" soft
+mk_surface_engine surfcapable "shell,git" brokered
+
+srepo="$WORK/surfchain"; mkdir -p "$srepo"
+printf 'role.orchestrator=surfshort,surfcapable\n' > "$srepo/orchid.config"
+
+# The premises, asserted rather than assumed. The labels differ (so the two
+# readings are distinguishable at all), the role gate ADMITS the primary under
+# the descriptor just written (so only the step table can move past it), the
+# step table REFUSES it, and the fallback is capsuite-proven (so the wake really
+# does reach it rather than stopping at an unproven entry).
+assert_eq soft "$(manifest_get "$WORK/eng/surfshort" command_surface soft)" \
+  "INV-16 fixture: the incapable primary declares the unrestricted label"
+assert_eq brokered "$(manifest_get "$WORK/eng/surfcapable" command_surface soft)" \
+  "INV-16 fixture: and the capable fallback the restricted one, or the two readings cannot be told apart"
+role_eligible orchestrator "$WORK/eng/surfshort" \
+  || fail "INV-16 fixture: the supplied descriptor must ADMIT the primary, or this part is the role gate doing its old job"
+src=0; capability_routing_refusal orchestrate surfshort >/dev/null 2>&1 || src=$?
+assert_eq 1 "$src" \
+  "INV-16 fixture: the step table must REFUSE the primary the orchestrate step, or there is nothing to fail over from"
+capsuite_run surfcapable orchestrator >/dev/null \
+  || fail "INV-16 fixture: capsuite_run must pass the fallback for the orchestrator role, or the wake stops at an unproven entry instead"
+
+assert_eq brokered "$(drive_orchestrator_surface "$srepo")" \
+  "INV-16: the surface is read off the entry the wake will actually use — reporting the incapable primary's label decides a judgment boundary from the manifest of an adapter nobody will spawn"
+red_case 'the surface prediction the driver and the pump both consult followed the same operation-aware walk the wake does and reported the capable fallback command_surface, instead of the label of the role-eligible primary that cannot perform the orchestrate step'
+
+# GREEN twin -- and it is still the WINNER's label, not a constant. Same
+# function, same repository, one entry, capable, declaring the other label.
+mk_surface_engine surfsoft "shell,git" soft
+printf 'role.orchestrator=surfsoft\n' > "$srepo/orchid.config"
+assert_eq soft "$(drive_orchestrator_surface "$srepo")" \
+  "INV-16: a capable orchestrator's own label is still what is reported — the skip above is a failover decision, not the prediction collapsing to the narrowest answer"
+green_case 'the same prediction against a single capable entry declaring the unrestricted surface reported that label, so skipping an incapable entry narrows nothing on its own'
