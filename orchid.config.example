@@ -44,9 +44,11 @@ pack_budget_bytes=65536
 # labels each slot `worktree` or `inline`, its depth pass searches past this
 # chain into role.reviewer's chain and the implementer's own engine to find a
 # worktree-capable slot, and `orchid drive` will not make a DETERMINISTIC
-# approval at those tiers unless one of the counted reviews came from a
-# worktree-capable engine — it stops at an arbitrable `review-evidence`
-# boundary instead. Nothing here refuses a slot or an engine over depth: an
+# approval at those tiers unless one of the counted reviews is credited to a
+# `worktree` slot of the attempt's PINNED plan — it stops at an arbitrable
+# `review-evidence` boundary instead. Credit follows the pin, so changing an
+# engine's binding or capabilities after a review is filed neither withdraws
+# that review's depth nor grants it any. Nothing here refuses a slot or an engine over depth: an
 # install whose only reviewers are inline still gets every slot, and still
 # reviews every task; what it does not get is an approval no human read.
 # Built-in defaults shown here:

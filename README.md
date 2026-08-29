@@ -361,9 +361,10 @@ depth asks what it can *see*. An inline reviewer (`agy`, `hermes`) judges
 the diff text alone and cannot open a file the diff never showed it; a
 worktree-capable one (`codex-review`, `codex`, `claude`) can. So at
 `medium`/`high` a deterministic approval needs at least one review from a
-worktree-capable engine as well as the tier's count: without one,
-`orchid drive` reports unproven review depth and hands the decision to an
-arbiter instead of approving on its own authority. No slot is ever refused
+`worktree` slot as well as the tier's count: without one, `orchid drive`
+reports unproven review depth and hands the decision to an arbiter instead
+of approving on its own authority. The slot is read from the attempt's
+pinned plan, so what a review is credited never changes after it is filed. No slot is ever refused
 for being inline — an install whose only reviewers are inline still reviews
 every task; what it does not get is an approval no human read. (The
 decision, and the alternatives rejected with it, are recorded in

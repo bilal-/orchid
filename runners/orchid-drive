@@ -89,14 +89,17 @@ empty findings[] blocks nothing either way -- a reviewer that found nothing is
 a valid review, not a missing one.
 
 At risk_tier `medium` or `high` that arbitration also needs DEPTH: at least one
-of the counted reviews has to come from a worktree-capable engine (manifest
-capability `workspace_read`) -- one that could open a file the diff never
-showed it. Drawn by capability again, never by engine name. Without one this
-pass reports unproven review depth and stops at a `review-evidence` boundary
-rather than approving; `orchid task arbitrate` settles it, so an install whose
-only reviewers are inline is slowed to a human decision per medium-tier task,
-never blocked. `low` asks for no depth at all, and no reviewer slot is ever
-withheld for being inline.
+of the counted reviews has to be credited to a `worktree` slot -- one routed to
+an engine that could open a file the diff never showed it (manifest capability
+`workspace_read`). Drawn by capability again, never by engine name, and read
+from the plan PINNED for the attempt rather than from the manifests as they
+stand when this pass runs: a review's depth is settled when it is dispatched,
+so uninstalling or rebinding an engine afterwards can neither withdraw nor
+grant it. Without one this pass reports unproven review depth and stops at a
+`review-evidence` boundary rather than approving; `orchid task arbitrate`
+settles it, so an install whose only reviewers are inline is slowed to a human
+decision per medium-tier task, never blocked. `low` asks for no depth at all,
+and no reviewer slot is ever withheld for being inline.
 
 At most one judgment boundary is recorded per pass. A boundary a woken
 orchestrator could actually settle outranks one only an operator can, and

@@ -986,12 +986,28 @@ rejected. The inline slot did this four times in one run.
    order of names in one config key. A slot filled that way is labeled
    `session-independent`, which is exactly what caught the r-001 defect.
 3. A DETERMINISTIC approval additionally requires depth evidence: at least
-   one of the counted reviews must come from a worktree-capable engine,
-   attributed by the envelope's own `.engine`. Without it the driver reports
-   `evidence` and stops at a `review-evidence` boundary on an `arbitrating`
-   task — arbitrable, so `orchid task arbitrate` (and, on a brokered
-   surface, a woken orchestrator reading the diff) settles it. An all-inline
-   routing table is journaled before dispatch, never silent.
+   one of the counted reviews must be credited to a slot the PINNED plan
+   calls `worktree`. Without it the driver reports `evidence` and stops at a
+   `review-evidence` boundary on an `arbitrating` task — arbitrable, so
+   `orchid task arbitrate` (and, on a brokered surface, a woken orchestrator
+   reading the diff) settles it. An all-inline routing table is journaled
+   before dispatch, never silent.
+4. **Depth is attributed through the pin, never re-derived at judging
+   time.** A review is credited to a slot by its own `.engine` — the field
+   `orchid jobs reconcile` cross-checks against the job manifest before
+   filing — using the same matching that decides which slot a review COVERS,
+   so the two answers cannot drift apart. The DEPTH claim itself is then
+   read off that slot's fourth column. Asking the engine's manifest instead
+   ("can it open a checkout right now") re-opens, one column to the right,
+   the dead end pinning the plan closed: an uninstall, a rebind, or an edit
+   to one `capabilities=` line between filing and judging would silently
+   withdraw a filed review's depth, and a task would lose its deterministic
+   approval over a change that is not evidence. Two cases are credited no
+   depth, both deliberately: an envelope naming no engine (depth is a
+   positive claim, and there is nothing to attribute it to) and a review
+   from an engine the plan never routed to (`--adopt-evidence` is the
+   recorded verb that re-pins a plan onto the engines that actually
+   reviewed, recomputing the depth column at that journaled write).
 
 **agy is not dropped, and no slot is ever refused for being inline.** On a
 diff it can genuinely inspect, an inline engine is the only real engine

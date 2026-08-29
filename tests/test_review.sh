@@ -12,8 +12,10 @@
 #             fills slot 2 searching past `review.<tier>` into
 #             `role.reviewer`'s chain and the implementer's own engine; and
 #             `drive_review_decision` refusing a DETERMINISTIC approval at
-#             medium/high when no counted review came from a worktree-
-#             capable engine.
+#             medium/high when no counted review is credited to a `worktree`
+#             slot -- credited off the attempt's PINNED plan and the same
+#             slot matching that decides which slot a review fills, never off
+#             a manifest read taken at judging time (Part K).
 #
 #   UNCHANGED an inline-only install still gets its full complement of
 #             slots -- no slot is ever refused, dropped or left unfilled for
@@ -55,9 +57,10 @@ review_depth_required bogus-tier || fail "an unrecognized risk_tier must require
 review_depth_required "" || fail "an empty risk_tier must require depth (fail-safe)"
 
 # ===========================================================================
-# B -- the capability predicates, against the REAL shipped manifests. These
-# are what "worktree-capable" means anywhere in this policy: the engine
-# declares `workspace_read`, so it can open a file the diff never showed it.
+# B -- what a routing row CLAIMS, and what a filed review is CREDITED. Both
+# against the REAL shipped manifests, because the claim being tested is about
+# what a named engine could see: "worktree-capable" means the engine declares
+# `workspace_read`, so it can open a file the diff never showed it.
 # ===========================================================================
 assert_eq inline "$(review_engine_depth agy)" \
   "agy declares structured_text only -- it judges the diff text alone"
@@ -68,22 +71,42 @@ assert_eq inline "$(review_engine_depth hermes)" "hermes is the other shipped in
 assert_eq inline "$(review_engine_depth zqxwv-no-such-engine)" \
   "a name that resolves to nothing reads inline -- depth is a positive claim, never a default"
 
-# review_qid_worktree_capable takes the QUALIFIED id an envelope carries,
-# not the plugin directory name a routing row carries.
-review_qid_worktree_capable orchid/codex-review \
-  || fail "a review filed by orchid/codex-review is depth evidence"
-review_qid_worktree_capable orchid/agy \
-  && fail "a review filed by orchid/agy is NOT depth evidence"
-review_qid_worktree_capable "" \
-  && fail "an envelope that names no engine at all is not depth evidence"
-review_qid_worktree_capable orchid/zqxwv-no-such-engine \
-  && fail "an engine not installed here cannot be shown to have opened anything"
+# That predicate answers what a routing ROW claims. What a filed REVIEW is
+# credited is a different question with a different key, and
+# `review_plan_depth_count` is the only function that answers it: a plan,
+# plus the qualified ids the envelopes carry. Depth comes off the plan's
+# fourth column -- never off the engine's manifest as it reads at judging
+# time -- so the cases below are the whole of the gate's attribution rule.
+depth_row() {  # <engine> <depth> -- a one-slot plan routing <engine>
+  printf '1\t%s\tengine-independent\t%s\n' "$1" "$2"
+}
+assert_eq 1 "$(review_plan_depth_count "$(depth_row codex-review worktree)" orchid/codex-review)" \
+  "a review filed by orchid/codex-review against the worktree slot it was routed to IS depth evidence"
+assert_eq 0 "$(review_plan_depth_count "$(depth_row agy inline)" orchid/agy)" \
+  "a review filed against an inline slot is not"
+assert_eq 0 "$(review_plan_depth_count "$(depth_row codex-review worktree)" -)" \
+  "an envelope naming NO engine is credited the slot but never its depth -- depth is a positive claim"
+assert_eq 0 "$(review_plan_depth_count "$(depth_row codex-review worktree)" orchid/agy)" \
+  "and a review from an engine this slot was never routed to is credited neither the slot nor its depth"
+
+# The depth column is read from the PLAN, so a slot pinned `worktree` keeps
+# its credit even when the engine that filled it can no longer be resolved
+# here at all -- an uninstall between filing and judging is not evidence
+# about the review that was already filed. This is the pinned-round rule in
+# its smallest form; Part K walks it end to end through the gate.
+assert_eq 1 "$(review_plan_depth_count "$(depth_row zqxwv-no-such-engine worktree)" orchid/zqxwv-no-such-engine)" \
+  "an engine that has since vanished does not retroactively make its review shallow"
+assert_eq 0 "$(review_plan_depth_count "$(depth_row codex-review inline)" orchid/codex-review)" \
+  "...and the converse: a slot pinned inline is not upgraded by what its engine's manifest says today"
 
 # ===========================================================================
-# C -- the qualified-id round trip, which is the part a naive `${qid##*/}`
-# would get wrong. A third-party publisher's manifest id need not agree with
-# its plugin DIRECTORY name, and the answer must come from the manifest that
-# actually claims the id -- never from a lucky suffix match.
+# C -- the third-party publisher cases. A publisher's manifest id need not
+# agree with its plugin DIRECTORY name, and a plan row carries the NAME while
+# an envelope carries the ID, so crediting a review means crossing that
+# boundary. It is crossed in the safe direction only: the ROW's name -- a
+# name this install resolved -- is qualified through its own manifest and
+# compared whole. An envelope's `orchid/<anything>` is never stripped back to
+# a bare name, so no publisher can name its way onto another's slot.
 # ===========================================================================
 export ORCHID_ENGINES_DIR="$WORK/engC"; mkdir -p "$ORCHID_ENGINES_DIR"
 mk_engine() {  # <dir-name> <manifest-id> <capabilities>
@@ -97,19 +120,20 @@ mk_engine() {  # <dir-name> <manifest-id> <capabilities>
 # A publisher whose directory name and id agree: the ordinary third-party
 # case, and it must work exactly like a first-party one.
 mk_engine twin acme/twin structured_text,workspace_read
-review_qid_worktree_capable acme/twin \
-  || fail "a third-party worktree-capable engine whose dir name matches its id IS depth evidence"
-# ...and one where they do NOT agree. `acme/other` names a worktree-capable
-# manifest, but no engine directory called `other` exists, so nothing here
-# can be shown to have read a workspace.
+assert_eq 1 "$(review_plan_depth_count "$(depth_row twin worktree)" acme/twin)" \
+  "a third-party worktree slot is credited by the manifest id its envelope reports"
+# ...and one where dir name and id do NOT agree. The row says `oddname`; the
+# envelope says `acme/other`; only the manifest ties them together, and a
+# reader that expected `orchid/<row-name>` would credit nothing.
 mk_engine oddname acme/other structured_text,workspace_read
-review_qid_worktree_capable acme/other \
-  && fail "an id whose bare name resolves to no engine dir must not be credited with depth"
-# The inverse trap: a dir called `other` that is NOT the publisher's engine
-# must not be able to answer for `acme/other` either.
+assert_eq 1 "$(review_plan_depth_count "$(depth_row oddname worktree)" acme/other)" \
+  "a slot whose plugin DIRECTORY name differs from its publisher's id is credited through that manifest, not through the name's shape"
+# The inverse trap, and the reason the crossing is one-directional: a dir
+# called `other` belonging to someone else must not be able to answer for
+# `acme/other`.
 mk_engine other someone-else/other structured_text,workspace_read
-review_qid_worktree_capable acme/other \
-  && fail "an unrelated engine sharing the bare name must not answer for another publisher's id"
+assert_eq 0 "$(review_plan_depth_count "$(depth_row other worktree)" acme/other)" \
+  "an unrelated engine sharing the bare name answers for nobody: the row qualifies to someone-else/other, which acme/other is not"
 
 # ===========================================================================
 # D -- routing: the DEPTH PASS SEARCHES PAST review.<tier>.
@@ -439,3 +463,89 @@ grep -Fq 'Routing never withholds a slot' <<< "$arch_folded" \
   || fail "docs/architecture.md must state that routing fills and labels a slot rather than withholding it, or the diagram's degraded-independence branch has nothing behind it"
 grep -Fq 'accept labeled session independence rather than withhold a slot' <<< "$kernel_folded" \
   || fail "docs/specs/kernel.md must state what BOTH tiers really do with degraded independence -- deleting the sentence would drop the labeled-fallback guarantee along with the queueing claim"
+
+# ===========================================================================
+# K -- DEPTH IS ATTRIBUTED FROM THE PINNED ROUND, not from a manifest read
+# taken at judging time.
+#
+# This is the same defect T039 fixed for routing, in the other column. That
+# task pinned the plan because live routing MOVED UNDER FILED EVIDENCE: an
+# engine went `failing` on unrelated work, its slot re-routed, and the review
+# it had already filed became attributable to no slot at all -- leaving a task
+# whose evidence was complete with no legal exit. Reading the DEPTH claim off
+# the installed manifests at arbitration time left exactly that hole open one
+# column to the right: uninstall a plugin, rebind a name, or edit one
+# `capabilities=` line between filing and judging, and a filed review's depth
+# is silently withdrawn. Nothing about the review changed.
+#
+# So the credit follows the pin, through the same slot matching that decides
+# which slot a review COVERS. Both directions are asserted below, because only
+# the pair distinguishes "reads the pin" from "reads nothing".
+# ===========================================================================
+mk_pin() {  # <id> <slot1-engine> <slot1-depth> <slot2-engine> <slot2-depth>
+  jq -n --arg cand "$PCAND" --arg e1 "$2" --arg d1 "$3" --arg e2 "$4" --arg d2 "$5" \
+    '{contract:1, attempt:1, candidate_sha:$cand, pinned_at:"2026-02-01T00:00:00Z",
+      slots:[{slot:1, engine:$e1, label:"engine-independent", depth:$d1},
+             {slot:2, engine:$e2, label:"engine-independent", depth:$d2}]}' \
+    > "$POLICY/.orchid/reviews/$1-a1.review-plan.json"
+}
+
+# --- RED: the round was dispatched to a worktree-capable engine, and that
+# --- engine is GONE by the time the reviews are judged. Nothing here can
+# --- resolve it, so no manifest read can support its depth.
+mk_task K01 medium high
+mk_review_by K01 "" approve orchid/ghostrev
+mk_review_by K01 ".2" approve orchid/agy
+assert_eq inline "$(review_engine_depth ghostrev)" \
+  "premise: ghostrev resolves to no installed engine, so a live capability read can prove nothing about it"
+assert_eq evidence "$(decision_of K01)" \
+  "with no pin, the depth claim has nowhere to come from and the set is unproven"
+red_case 'a review filed by a worktree-capable engine that has since been uninstalled is credited no depth while the round it was dispatched under is unrecorded'
+
+# --- GREEN: the plan that dispatched it, pinned to this attempt and this
+# --- candidate, says slot 1 was `worktree`. Nothing else changes -- same
+# --- envelopes, same engines installed, same manifests.
+mk_pin K01 ghostrev worktree agy inline
+assert_eq approve "$(decision_of K01)" \
+  "the pinned round credits its own slot: an uninstall after the fact is not evidence about the review that was already filed"
+assert_match "1 of them worktree-capable" "$(detail_of K01)" \
+  "and the approval says which axis it rested on"
+green_case 'the pinned plan credits that review its depth, so a plugin uninstalled after filing cannot withdraw a deterministic approval'
+
+# --- The converse, and the fail-closed half: a slot pinned `inline` is NOT
+# --- upgraded by what its engine's manifest happens to say today. Depth is
+# --- what the reviewer we dispatched could see, and only the round knows it.
+mk_task K02 medium high
+mk_review_by K02 "" approve orchid/codex-review
+mk_review_by K02 ".2" approve orchid/agy
+mk_pin K02 codex-review inline agy inline
+assert_eq worktree "$(review_engine_depth codex-review)" \
+  "premise: codex-review is worktree-capable TODAY, so a live read would credit this set"
+assert_eq evidence "$(decision_of K02)" \
+  "but the round it was dispatched under pinned that slot inline, and the pin is what counts"
+assert_match "unproven review depth: 2 of 2" "$(detail_of K02)" \
+  "and the shortfall is reported as evidence, settleable by an arbiter, never as a refusal"
+
+# --- A review from an engine the plan never routed to is credited NO depth --
+# --- for exactly the same reason it satisfies no slot. The two answers come
+# --- out of one matching, so they cannot drift apart; `--adopt-evidence` is
+# --- the recorded verb that re-pins a plan onto the engines that reviewed.
+mk_task K03 medium high
+mk_review_by K03 "" approve orchid/agy
+mk_review_by K03 ".2" approve orchid/codex-review
+mk_pin K03 agy inline hermes inline
+assert_eq evidence "$(decision_of K03)" \
+  "a worktree-capable review nobody asked for does not silently satisfy a slot's depth"
+assert_eq 2 "$(review_plan_unsatisfied "$POLICY" K03 "$(review_plan "$POLICY" K03)" | cut -f1)" \
+  "...and the SAME matching still reports slot 2 unfilled: depth credit and slot credit never disagree about one envelope"
+
+# --- Malformed pin rows are refused, not parsed loosely. `review_plan_pinned`
+# --- can only emit four-column rows, so this is the library's own contract
+# --- rather than a shape a pin file can reach -- and it is the contract that
+# --- keeps a fifth column, or a diagnostic, from ever reading as depth.
+assert_eq 0 "$(review_plan_depth_count "$(printf '1\tagy\tengine-independent\tworktree\tsixth\n')" orchid/agy)" \
+  "a row carrying an unknown fifth column is not a slot, so it is not a worktree slot either"
+assert_eq 0 "$(review_plan_depth_count "$(printf '1\tagy\tengine-independent\n')" orchid/agy)" \
+  "a three-column row claims no depth, and none is defaulted in at the reading end"
+assert_eq 0 "$(review_plan_depth_count 'jq: error: null (null) has no keys' orchid/agy)" \
+  "a diagnostic merged in from stderr credits nothing"

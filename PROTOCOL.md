@@ -103,10 +103,13 @@ part of the architecture; this file never changes to suit one.*
   judges the diff text alone and cannot open a file the diff never showed
   it; a `worktree` one can (manifest capability `workspace_read`). At
   `risk_tier` `medium`/`high` a deterministic approval needs at least one
-  review from a `worktree` slot: without one, `orchid drive` reports
-  unproven review depth and stops at an arbitrable `review-evidence`
-  boundary instead of approving, and you settle it by reading the diff and
-  running `orchid task arbitrate`. If the whole table comes back `inline`,
+  review credited to a `worktree` slot of the PINNED plan — the same table,
+  and the same slot matching, that says which slot a review fills, so
+  re-binding or uninstalling an engine after its review is filed changes
+  neither answer. Without one, `orchid drive` reports unproven review depth
+  and stops at an arbitrable `review-evidence` boundary instead of
+  approving, and you settle it by reading the diff and running `orchid task
+  arbitrate`. If the whole table comes back `inline`,
   journal that before dispatching — same discipline as a
   `session-independent` label — and dispatch every slot anyway: no slot is
   ever dropped for being inline. See docs/specs/kernel.md, "Review depth",

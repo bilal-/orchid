@@ -261,10 +261,12 @@ mk_review P10 "" approve true '[]'
 assert_eq approve "$(decision_of P10)" "a single unanimous scope-complete approval approves at risk_tier low"
 
 # v1.1 (T012): at medium/high the COUNT is no longer the whole bar -- one of
-# the counted reviews has to come from a worktree-capable engine (lesson
-# L010). `mk_review` writes no `.engine` at all, so neither of these two can
-# be attributed to one, and the set is depth-unproven however unanimous it
-# is. The depth-satisfied twin of this case is in tests/test_review.sh.
+# the counted reviews has to be credited to a `worktree` slot of the review
+# plan (lesson L010). `mk_review` writes no `.engine` at all, so neither of
+# these two can be attributed to a slot at all, and the set is depth-unproven
+# however unanimous it is -- an envelope naming no engine supports no claim
+# about what its reviewer could see. The depth-satisfied twin of this case,
+# and the pinned-plan attribution it rests on, are in tests/test_review.sh.
 mk_policy_task P11 medium high
 mk_review P11 "" approve true '[]'
 mk_review P11 ".2" approve true '[]'

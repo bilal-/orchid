@@ -125,25 +125,18 @@ review_engine_depth() {
   fi
 }
 
-# review_qid_worktree_capable <qualified-engine-id> -- exit 0 iff the engine
-# that FILED a review is worktree-capable. Reviewer envelopes name their
-# producer by its manifest `id=` (e.g. "orchid/claude"), never by the plugin
-# DIRECTORY name a routing row carries, so this is the qualified-id-keyed
-# counterpart of review_engine_depth: strip the publisher, resolve the bare
-# name, and only trust the answer when that name qualifies BACK to the same
-# id (resolve_engine_qualified_id's own round trip, fallback included). A
-# publisher whose manifest id does not match its directory name, a forged
-# `orchid/<anything>`, or an engine not installed here therefore reads as
-# not-worktree-capable rather than as a lucky prefix match.
-review_qid_worktree_capable() {
-  local qid="$1" name dir
-  [ -n "$qid" ] || return 1
-  name="${qid##*/}"
-  [ -n "$name" ] || return 1
-  [ "$(resolve_engine_qualified_id "$name")" = "$qid" ] || return 1
-  dir="$(resolve_engine_dir "$name" 2>/dev/null)" || return 1
-  _review_worktree_capable "$dir"
-}
+# There is deliberately NO qualified-id-keyed capability predicate here -- no
+# "was the engine that FILED this review worktree-capable, as its manifest
+# reads right now". One existed for exactly as long as the depth gate asked
+# that question, and asking it was the defect: see `review_plan_depth_count`
+# below for why depth is read off the PINNED PLAN instead, and why the
+# envelope's `.engine` is used only to decide which SLOT a review is credited
+# to. Reintroducing it would also bring back a trap it had to defend against
+# -- an envelope's `orchid/<anything>` is publisher-controlled text, so its
+# bare name cannot be stripped and trusted -- which the plan-keyed direction
+# does not have at all: a plan row names an engine THIS install resolved, and
+# `resolve_engine_qualified_id` turns that name into the id the comparison
+# uses.
 
 # review_routing_has_depth <routing-table> -- exit 0 iff at least one row of
 # a `review_routing`/`orchid jobs review-plan` table is a `worktree` slot.
@@ -439,6 +432,14 @@ review_plan_pinned() {
   # readable, but fail closed while normalizing: depth is a positive claim, so
   # an engine that cannot currently prove workspace_read is `inline`. A later
   # writing `review-plan --pin` migrates the normalized rows into the file.
+  #
+  # This derivation is the ONE depth value in the system that is not frozen by
+  # a write, and it is bounded on purpose: it exists only for a round pinned
+  # before this column existed, and the first writing `--pin` after the upgrade
+  # persists it. Everywhere else -- and for every pin written since -- the
+  # column is recorded once and read back verbatim, which is what lets
+  # `review_plan_depth_count` credit filed evidence against a claim that cannot
+  # move underneath it.
   while IFS=$'\t' read -r slot engine label depth; do
     [ -n "$slot" ] && [ -n "$engine" ] && [ -n "$label" ] || continue
     case "$depth" in
@@ -545,6 +546,62 @@ _review_pool_take() {
   [ "$found" -eq 1 ]
 }
 
+# _review_slot_matching <plan> <pool> -- THE pairing of filed reviews to plan
+# rows. Every slot-keyed reader goes through this one function, so "which slot
+# is this review credited to?" has exactly one answer wherever it is asked:
+# what the driver dispatches (`review_plan_unsatisfied`), what a repin freezes,
+# and what counts as DEPTH evidence (`review_plan_depth_count`) can never
+# disagree about the same envelope.
+#
+# <pool> is one QUALIFIED engine id per line -- `review_filed_engines`' output
+# shape -- with `-` for an envelope that names none. Prints one line per plan
+# row: the row's state, a TAB, then the row VERBATIM. State first so the row
+# stays readable with `cut -f2-` whatever width it is; a state appended after a
+# row of unknown width could not be found by field number at all.
+#
+#   engine      an envelope naming this row's engine was in the pool, taken;
+#   anonymous   none did, and an envelope naming NO engine stood in for it;
+#   unfilled    neither.
+#
+# Two passes, in this order and never one: every EXACT attribution is made
+# before any anonymous envelope is allowed to stand in. A single pass would let
+# an anonymous envelope, read first, consume the slot whose own engine's review
+# was sitting right behind it in the pool.
+#
+# Matching CONSUMES from the pool (`_review_pool_take`), so one envelope
+# satisfies exactly one slot. The pool's ORDER is irrelevant to the result --
+# take-first-equal over identical strings makes the outcome a function of the
+# multiset alone -- which is why a caller may hand over the envelopes in glob
+# order without having to re-derive `_review_filed_order`'s filing order.
+_review_slot_matching() {
+  # `tab` rather than a literal one: every other separator in this file is a
+  # `printf '\t'` the eye can see, and an invisible one inside a `${...%%}`
+  # pattern is the kind of byte an editor silently turns into spaces.
+  local plan="$1" pool="$2" line row st eng qid tab=$'\t' staged="" out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    eng="$(printf '%s' "$line" | cut -f2)"
+    qid="$(resolve_engine_qualified_id "$eng" 2>/dev/null || true)"
+    [ -n "$qid" ] || qid="$eng"
+    st=pending
+    if pool="$(_review_pool_take "$pool" "$qid")"; then st=engine; fi
+    staged="$staged$st$tab$line
+"
+  done <<< "$plan"
+
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    st="${line%%"$tab"*}"; row="${line#*"$tab"}"
+    if [ "$st" = pending ]; then
+      st=unfilled
+      if pool="$(_review_pool_take "$pool" -)"; then st=anonymous; fi
+    fi
+    out="$out$st$tab$row
+"
+  done <<< "$staged"
+  printf '%s' "$out"
+}
+
 # review_plan_unsatisfied <repo> <task> <plan> -- the rows of <plan> that have
 # NO review of their own yet. Empty output means every routed slot is covered.
 #
@@ -563,33 +620,67 @@ _review_pool_take() {
 # attribution has been made, and can stand in for any remaining slot: an
 # adapter that omits `.engine` leaves nothing to attribute by, and refusing to
 # credit its review would relaunch a slot forever.
+#
+# A row is returned WHOLE, so a caller reads its engine and its depth from the
+# same bytes the plan carries. Rows are never dropped for being malformed
+# either: an unparseable row is a slot nobody can prove is covered, and
+# reporting it as unfilled is the fail-closed direction here (the driver
+# re-dispatches it) exactly as NOT crediting it is the fail-closed direction
+# for depth below.
 review_plan_unsatisfied() {
-  local repo="$1" id="$2" plan="$3" pool line eng qid unmatched out
-  pool="$(review_filed_engines "$repo" "$id")"
-
-  unmatched=""
+  local repo="$1" id="$2" plan="$3" line tab=$'\t' out=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    eng="$(printf '%s' "$line" | cut -f2)"
-    qid="$(resolve_engine_qualified_id "$eng" 2>/dev/null || true)"
-    [ -n "$qid" ] || qid="$eng"
-    if pool="$(_review_pool_take "$pool" "$qid")"; then
-      continue
-    fi
-    unmatched="$unmatched$line
+    [ "${line%%"$tab"*}" = unfilled ] || continue
+    out="$out${line#*"$tab"}
 "
-  done <<< "$plan"
-
-  out=""
-  while IFS= read -r line; do
-    [ -n "$line" ] || continue
-    if pool="$(_review_pool_take "$pool" -)"; then
-      continue
-    fi
-    out="$out$line
-"
-  done <<< "$unmatched"
+  done <<< "$(_review_slot_matching "$plan" "$(review_filed_engines "$repo" "$id")")"
   printf '%s' "$out"
+}
+
+# review_plan_depth_count <plan> <pool> -- how many of the reviews in <pool>
+# are credited to a slot <plan> calls `worktree`. The DEPTH axis of the
+# arbitration policy, and the reason it is a plan-keyed question rather than
+# an engine-keyed one:
+#
+# DEPTH IS ATTRIBUTED FROM THE PINNED ROUND, NOT FROM A LIVE MANIFEST READ.
+# A capability read taken here would answer "can this engine open a checkout
+# RIGHT NOW", and right-now is not when the review was produced. An operator
+# who uninstalls a plugin, rebinds a name, or edits a manifest's
+# `capabilities=` line after a review is filed would otherwise silently
+# withdraw that review's depth and re-open the dead end T039 closed for
+# routing: evidence that was complete when it was filed, judged against a
+# table that moved underneath it. The pin is written once per (task, attempt,
+# candidate) and records the depth column alongside the engine, so the answer
+# to "could the reviewer we dispatched see the checkout?" stops moving for
+# exactly as long as the evidence it judges does.
+#
+# Consequences, both deliberate:
+#   - a review filed by an engine the plan never routed to (a relaunch through
+#     a different `--engine`) is not depth evidence, for the same reason it
+#     does not satisfy that slot above. `orchid jobs review-plan <id>
+#     --adopt-evidence` is the recorded verb that re-pins the plan onto the
+#     engines that actually reviewed -- and it recomputes the depth column
+#     while it does, from the live manifests, at a journaled WRITE.
+#   - an ANONYMOUS envelope is never depth evidence, however deep the slot it
+#     stands in for. It is credited a slot (refusing that would relaunch one
+#     forever) but depth is a positive claim about what a reviewer could see,
+#     and an envelope naming no engine supports no such claim.
+#
+# Malformed rows are refused rather than parsed loosely (`review_plan_row_valid`,
+# the same grammar the driver dispatches on): a row that is not exactly one
+# well-formed slot can never be read as a `worktree` one.
+review_plan_depth_count() {
+  local line row tab=$'\t' n=0
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    [ "${line%%"$tab"*}" = engine ] || continue
+    row="${line#*"$tab"}"
+    review_plan_row_valid "$row" || continue
+    [ "$(printf '%s' "$row" | cut -s -f4)" = worktree ] || continue
+    n=$(( n + 1 ))
+  done <<< "$(_review_slot_matching "$1" "$2")"
+  echo "$n"
 }
 
 # review_plan_repin_rows <repo> <task> -- COMPUTE the table `--repin` should
