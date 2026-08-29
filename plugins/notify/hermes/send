@@ -105,10 +105,28 @@ set -euo pipefail
 # labels those two facts apart; this branch's own wording must never imply
 # the second.
 #
-# PENDING-VALIDATION, and stronger here than for the send shape above: unlike
-# `hermes send --help`, `hermes gateway status` has NOT been read from an
-# installed CLI by this task -- this build task could execute nothing at all.
-# Both its EXISTENCE and its OUTPUT are therefore treated as untrusted. A
+# WHAT AN INSTALLED CLI ACTUALLY PRINTS, as far as it has been observed. The
+# operator ran `hermes gateway status` against a real installation during this
+# task's tenth attempt (this build task can execute nothing at all, so the
+# reproduction is theirs, not this file's) and it answered with one row per
+# subject:
+#     Gateway: not running
+#     WhatsApp: not paired
+# Two facts that shape everything below. The subcommand EXISTS and exits 0
+# while reporting a dead gateway -- necessarily so, since the failed-query
+# branch further down already decides a NONZERO exit whose output says `not
+# running` as exit 1, and the verdict actually observed was undetermined. So
+# the success path, not the failed-query path, is where a real outage arrives
+# on this CLI. And a platform's return leg is reported
+# as an ATTACHMENT (`paired`), not only as a process state, which is why the
+# negatives carry the pairing vocabulary and why a channel row that says
+# nothing this probe understands no longer hides the gateway row above it.
+#
+# PENDING-VALIDATION otherwise, and stronger here than for the send shape
+# above: one installation, in one state, is not the shape of every hermes
+# build's output -- no HEALTHY `gateway status` has been read from an installed
+# CLI at all. Both the subcommand's presence on other builds and the rest of
+# its OUTPUT are therefore still treated as untrusted. A
 # build with no such subcommand is caught by the unknown-subcommand branch
 # and answers 2 (undetermined), never 1, so a version difference can never
 # masquerade as an outage; and only tokens this branch can recognize with
@@ -184,14 +202,27 @@ if [ "${1:-}" = --inbound-probe ]; then
     # further down. It is matched with the same two disciplines -- whole
     # words, against the output with the channel's OWN NAME elided -- for the
     # same reasons: a bare `*down*` condemns a channel named
-    # `downtime-alerts`, and a bare `*refused*` would fire on the name
-    # `refused-queue`. Everything here is a phrase about a TRANSPORT that
+    # `downtime-alerts`. Everything here is a phrase about a TRANSPORT that
     # could not be reached, which is what makes it evidence about the gateway
     # rather than about the query:
     #   `connection refused`, `could not connect`, `no such process` -- the
     #   kernel's and the CLI's own words for "the thing you asked for is not
     #   there"; `not running`/`not responding`/`unreachable`/`offline` --
     #   the CLI saying outright what it found.
+    #
+    # AND `refused` IS ONLY EVIDENCE WITH ITS SUBJECT ATTACHED. It used to sit
+    # here as a bare word too, which quietly re-opened the very conflation the
+    # rest of this branch closes: `refused` on its own is what a query failing
+    # for reasons of ITS OWN says -- `permission denied: connection refused by
+    # policy`, `authentication refused`, an API `refused: token lacks scope
+    # 'gateway:read'`. Every one of those is the CLI being turned away, not the
+    # gateway failing to answer, so reading them as `down` prints the outage
+    # message about a return leg that is carrying answers fine. Only
+    # `connection refused` -- the kernel's own words for nothing listening on
+    # the other end -- names the transport, and that phrase stays. A refusal
+    # this branch cannot attribute now falls through to undetermined and is
+    # quoted, which is what the rest of this file already does with output it
+    # cannot read.
     #
     # TWO WORDS ARE DELIBERATELY ABSENT that the per-row negatives DO carry.
     # `expired` and `unauthor*` are a determination about a status ROW hermes
@@ -206,7 +237,7 @@ if [ "${1:-}" = --inbound-probe ]; then
     # unreadable status line is on the success path.
     probe_fail="$(printf '%s' "$probe_out" | tr '[:upper:]' '[:lower:]')"
     probe_fail="${probe_fail//"$probe_channel_lower"/ }"
-    if grep -qE -e '(^|[^a-z0-9_-])((cannot|could[[:space:]]+not|unable[[:space:]]+to)[[:space:]]+(connect|reach|contact)|connection[[:space:]]+(refused|reset|closed|failed)|refused|(not|no[[:space:]]+longer)[[:space:]]+(running|started|listening|responding|reachable|connected|alive)|no[[:space:]]+such[[:space:]]+process|no[[:space:]]+(running[[:space:]]+)?gateway|timed[[:space:]]+out|timeout|unreachable|unresponsive|offline|disconnected|down|dead|stopped|inactive|crashed)([^a-z0-9_-]|$)' \
+    if grep -qE -e '(^|[^a-z0-9_-])((cannot|could[[:space:]]+not|unable[[:space:]]+to)[[:space:]]+(connect|reach|contact)|connection[[:space:]]+(refused|reset|closed|failed)|(not|no[[:space:]]+longer)[[:space:]]+(running|started|listening|responding|reachable|connected|alive)|no[[:space:]]+such[[:space:]]+process|no[[:space:]]+(running[[:space:]]+)?gateway|timed[[:space:]]+out|timeout|unreachable|unresponsive|offline|disconnected|down|dead|stopped|inactive|crashed)([^a-z0-9_-]|$)' \
          <<<"$probe_fail"; then
       echo "'hermes gateway status' failed (exit $probe_rc: $probe_first) -- the gateway your replies are delivered to is not answering"
       exit 1
@@ -221,32 +252,46 @@ if [ "${1:-}" = --inbound-probe ]; then
   # (a multi-platform gateway prints several), which is the same false alarm
   # the word-boundary discipline below exists to prevent.
   #   1. the rows naming the configured channel -- the best evidence there is,
-  #      and when there is any, it is the ONLY evidence considered
+  #      and when there is any, it is the only evidence that may report HEALTH
   #   2. failing that, the rows naming the gateway itself, then the rows whose
   #      LABEL is a status word, then -- only if it names no subject of its
   #      own -- the first line, judged in that order until one of them
   #      determines something
+  #   3. and when step 1 found rows but read no verdict in them, step 2's rows
+  #      are still consulted for a DOWN determination, never for health
   #
-  # STEP 1 IS EXCLUSIVE, NOT MERELY FIRST-RANKED, and that is a choice with a
-  # visible cost: output that names the channel only in an ENUMERATION
+  # STEP 1 IS EXCLUSIVE FOR HEALTH, NOT FOR THE OTHER DIRECTION, and that
+  # one-way ranking is a correction of a real misread rather than a refinement.
+  # Output that names the channel only in an ENUMERATION
   #     gateway: running
   #     platforms: telegram, discord
-  # answers UNDETERMINED, because the enumeration row is the only evidence
-  # considered and it carries no status word -- even though the gateway row
-  # directly above plainly says running. Ranking the tiers instead (channel
-  # rows first, then falling through to the gateway's own state) would answer
-  # REACHABLE there, and it is tempting because that verdict is right in this
-  # example. It is refused anyway, on this file's own priority: a row that
-  # names the channel and says something this probe cannot read is weak
-  # evidence that the CLI reports per-channel state AND that this channel's
-  # state is not one of the healthy words -- so falling through to the
-  # gateway's state would be inventing REACHABLE out of a line that was never
-  # understood, on a CLI whose output nobody here has ever observed. A wrong
+  # answers UNDETERMINED, because the enumeration row is the only evidence that
+  # may say "up" and it carries no status word -- even though the gateway row
+  # directly above plainly says running. Falling through to the gateway's state
+  # would answer REACHABLE there, and it is tempting because that verdict is
+  # right in this example. It is refused anyway, on this file's own priority: a
+  # row that names the channel and says something this probe cannot read is
+  # weak evidence that the CLI reports per-channel state AND that this
+  # channel's state is not one of the healthy words -- so falling through would
+  # be inventing REACHABLE out of a line that was never understood. A wrong
   # "undetermined" costs an operator one manual check; a wrong "reachable"
   # tells them their answers are getting through while every one is dropped.
-  # Absence of a channel row (step 2's own case) is a different situation and
-  # is treated differently on purpose: nothing was misread there, because
-  # there was nothing to read. tests/test_notify_hermes_channel.sh pins both.
+  #
+  # NONE OF WHICH ARGUES FOR IGNORING A GATEWAY ROW THAT SAYS IT IS DOWN, and
+  # for a while this branch did exactly that -- against the first installed CLI
+  # it was ever run on, which printed
+  #     Gateway: not running
+  #     WhatsApp: not paired
+  # and got UNDETERMINED for a return leg named as dead on both of its lines.
+  # So step 3: an unreadable channel row may not be rounded UP by weaker
+  # evidence, but neither may it hide stronger evidence pointing DOWN. The
+  # asymmetry is the same one the whole file is ordered by, applied to the
+  # tiers instead of to the vocabulary.
+  #
+  # Absence of a channel row (step 2's own case) is a different situation again
+  # and is treated differently on purpose: nothing was misread there, because
+  # there was nothing to read, so those rows are judged in both directions.
+  # tests/test_notify_hermes_channel.sh pins all three.
   #
   # The channel name comes from config and is interpolated into an ERE, so a
   # name carrying regex metacharacters falls back to a FIXED-string match
@@ -265,7 +310,14 @@ if [ "${1:-}" = --inbound-probe ]; then
     *)
       probe_rows="$(grep -iE -e "(^|[^[:alnum:]_-])${probe_channel}([^[:alnum:]_-]|$)" <<<"$probe_out" || true)" ;;
   esac
-  if [ -z "$probe_rows" ]; then
+  # The weaker tiers are built WHETHER OR NOT the channel tier found anything,
+  # because they now have two jobs. When there is no channel row they ARE the
+  # evidence, exactly as before; when there is one but it decides nothing, they
+  # are still consulted -- for a DOWN determination only, never for health. See
+  # the two-pass judgement below for why that direction is one-way. Hence a
+  # grouping block rather than the `if [ -z "$probe_rows" ]` that used to guard
+  # it: the tiers are built either way, and only their ROLE differs.
+  {
     # THE SERVICE-MANAGED SHAPE, and why this is a ranked LIST rather than one
     # picked line. A gateway run under launchd/systemd reports through its
     # supervisor, which puts a unit HEADER on the line that names the gateway
@@ -325,16 +377,48 @@ if [ "${1:-}" = --inbound-probe ]; then
     # already declined to recognize -- is not judged at all; it is only quoted
     # back with the undetermined verdict below. A line with no such label
     # names nothing but the thing being asked about, and is judged.
-    probe_rows="$(grep -iE -e '(^|[^[:alnum:]_-]|hermes[-._])gateway([^[:alnum:]_-]|$)' <<<"$probe_out" || true)"
+    probe_gateway_rows="$(grep -iE -e '(^|[^[:alnum:]_-]|hermes[-._])gateway([^[:alnum:]_-]|$)' <<<"$probe_out" || true)"
     probe_labels="$(grep -iE -e '^[^[:alnum:]]*(active|status|state|health|service|gateway)[[:space:]]*[:=]' <<<"$probe_out" || true)"
     probe_bare="$probe_first"
     if grep -qE -e '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*[:=]' <<<"$probe_first"; then
       probe_bare=""
     fi
-    probe_rows="$(printf '%s\n%s\n%s\n' "$probe_rows" "$probe_labels" "$probe_bare" | grep -v '^[[:space:]]*$' || true)"
+    # The second pass gets the NAMED tiers only -- the rows that name the
+    # gateway, and the rows whose label is a status word. The last-resort first
+    # line is deliberately left out of it, and that is the same property step 1
+    # protects rather than an inconsistency: that tier's whole premise is that
+    # a line naming no subject of its own names the thing being asked about,
+    # which holds when the output named nothing else either. Once a channel row
+    # EXISTS, the output has demonstrated that it names subjects per row, and
+    # an unlabelled
+    #     discord disconnected
+    #     whatsapp pending
+    # is then far likelier to be a sibling platform's row than the gateway's
+    # own state -- so admitting it to the second pass would let one platform's
+    # dead row condemn another's return leg through the back door. The named
+    # tiers cannot do that: each one has said which subject it is about.
+    probe_weaker="$(printf '%s\n%s\n' "$probe_gateway_rows" "$probe_labels" | grep -v '^[[:space:]]*$' || true)"
+    probe_unnamed="$(printf '%s\n%s\n%s\n' "$probe_gateway_rows" "$probe_labels" "$probe_bare" | grep -v '^[[:space:]]*$' || true)"
+  }
+  # No channel row at all -> the weaker tiers are promoted to BEING the
+  # evidence, last-resort line included, judged in both directions exactly as
+  # they were before, and there is no second pass left to run over them.
+  if [ -z "$probe_rows" ]; then
+    probe_rows="$probe_unnamed"
+    probe_weaker=""
   fi
 
-  probe_judged=""
+  # THE VERDICT PASS. It is a function because it now runs TWICE over two
+  # different tiers with two different mandates:
+  #   probe_verdict "$probe_rows"   both   -- the most specific tier there is,
+  #                                          judged in both directions
+  #   probe_verdict "$probe_weaker" down   -- the gateway/label/last-resort
+  #                                          rows, and ONLY if the tier above
+  #                                          decided nothing
+  # $1 is the candidate rows, one per line; $2 is `both` or `down`. It exits
+  # the script on a verdict and returns normally when it found none.
+  probe_verdict() {
+  probe_mode="$2"
   while IFS= read -r probe_line; do
     [ -n "$probe_line" ] || continue
     # The line quoted back on an undetermined verdict is the FIRST (most
@@ -372,12 +456,39 @@ if [ "${1:-}" = --inbound-probe ]; then
     # carries. `loaded` is negated but never positive on its own -- a launchd
     # job and a systemd unit are both `loaded` while stopped, so the word says
     # the supervisor knows about the gateway, not that it is running.
+    #
+    # AND THE PAIRING VOCABULARY, which is the half this list was missing and
+    # the reason the probe answered UNDETERMINED against the first installed
+    # CLI it was ever run on. hermes reports a platform's return leg in terms
+    # of whether the channel is ATTACHED to the gateway, not only whether a
+    # process is up:
+    #     Gateway: not running
+    #     WhatsApp: not paired
+    # `not paired` is a determination -- an unpaired channel delivers no reply
+    # to anybody -- but `paired` was in neither list, so the channel row (which
+    # step 1 makes the only evidence when it exists) decided nothing and the
+    # whole probe shrugged at output that names the outage twice over. So
+    # `paired`, `linked`, `authenticated` and `registered` join the negated
+    # forms, and `unpaired`/`unlinked`/`unregistered` the standalone ones.
+    #
+    # They are negations ONLY, never positives, and that asymmetry is
+    # deliberate: `paired` says the operator once attached this channel, which
+    # is a stored fact a gateway reports whether or not it is currently
+    # running -- reading it as health would be exactly the false REACHABLE the
+    # rest of this file refuses. Its NEGATION has no such ambiguity: a channel
+    # that is not paired cannot carry a reply under any gateway state.
     probe_status="${probe_lower//"$probe_channel_lower"/ }"
-    if grep -qE -e '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy|loaded)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unhealthy|expired|down|unreachable|dead|crashed)([^a-z0-9_-]|$)' \
+    if grep -qE -e '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy|loaded|paired|linked|authenticated|registered)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unauthenticated|unpaired|unlinked|unregistered|unhealthy|expired|down|unreachable|dead|crashed)([^a-z0-9_-]|$)' \
          <<<"$probe_status"; then
       echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
       exit 1
     fi
+    # WHERE THE SECOND PASS STOPS. In `down` mode this row belongs to a tier
+    # the channel rows outrank, so it may CONVICT but never acquit: everything
+    # below this line can only produce REACHABLE, which is precisely what a
+    # weaker tier is not allowed to invent. Falling through here leaves the
+    # verdict undetermined, exactly as it was before the second pass existed.
+    [ "$probe_mode" = both ] || continue
     # Deliberately NARROW, in both directions. No bare `*ok*`/`*fail*`/`*error*`
     # substring tests: `*ok*` matches "broken" (and "token expired"), and a
     # healthy row reading "running, 0 errors" would trip `*error*`. Either way a
@@ -436,7 +547,41 @@ if [ "${1:-}" = --inbound-probe ]; then
       echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
       exit 0
     fi
-  done <<<"$probe_rows"
+  done <<<"$1"
+  # Explicit, because a verdict LEAVES by `exit` and never by return: any
+  # status this function actually returns means "nothing decided", and under
+  # `set -e` a nonzero one would kill the probe with a code doctor reads as a
+  # verdict it never reached.
+  return 0
+  }
+
+  probe_judged=""
+  probe_verdict "$probe_rows" both
+  # THE SECOND PASS, AND WHY IT IS ONE-WAY. Step 1 stays exclusive for health:
+  # a channel row this probe could not read is still weak evidence that the CLI
+  # reports per-channel state and that this channel's state is not one of the
+  # healthy words, so borrowing REACHABLE from the gateway row above it would
+  # invent a verdict out of a line that was never understood. Nothing about
+  # that argument applies in the other direction, and treating it as if it did
+  # was a real defect: against the first installed CLI this probe was ever run
+  # on it read
+  #     Gateway: not running
+  #     WhatsApp: not paired
+  # and answered UNDETERMINED, because the channel row was the only evidence
+  # considered and `paired` was not yet a word it knew. The gateway row said
+  # the return leg was dead in plain language, one line up, and the probe
+  # declined to look at it. (The vocabulary fix above now decides that exact
+  # output on the channel row alone; this pass is what makes the class safe,
+  # for every hermes phrasing of "not attached" nobody here has seen yet.)
+  #
+  # So the weaker tiers are consulted after the channel tier comes up empty,
+  # and they may only return exit 1. Undetermined stays undetermined; REACHABLE
+  # remains reachable only from the most specific tier that exists. That keeps
+  # the ordering of the two errors this whole file is built around: a wrong
+  # "undetermined" costs an operator one manual check, a wrong "reachable"
+  # tells them their answers are landing while every one is dropped -- and a
+  # gateway that plainly says it is not running is not a shrug.
+  [ -z "$probe_weaker" ] || probe_verdict "$probe_weaker" down
   # `${probe_judged:-$probe_first}`: when NOTHING was judgeable -- the tiers
   # above admitted no row at all, because the only thing printed named some
   # other subject -- the operator is still owed the line this probe was

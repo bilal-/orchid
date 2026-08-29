@@ -313,8 +313,27 @@ probe telegram "could not bring up the gateway" 0
 assert_eq "2" "$probe_rc" "'bring up' must never be read as a gateway that is up"
 # A gateway failure that merely quotes the word 'usage' mid-line is still a
 # failing return leg, not an unsupported build.
-probe telegram "error: gateway refused the request (see usage: hermes gateway)" 1
+probe telegram "error: gateway is not responding (see usage: hermes gateway)" 1
 assert_eq "1" "$probe_rc" "a gateway failure that merely mentions 'usage:' mid-line is still a failing return leg"
+
+# `refused` IS ONLY EVIDENCE WITH ITS SUBJECT ATTACHED, and a bare one used to
+# sit in the failed-query list -- quietly re-opening the conflation the whole
+# block above closes. On its own the word is what a query failing for reasons of
+# ITS OWN says: a policy turning the CLI away, an authentication rejected, a
+# token missing a scope. None of them is the gateway failing to answer, and
+# reading them as `down` prints "Answers sent on this channel are being lost"
+# about a return leg carrying answers fine.
+probe telegram "hermes: error: request refused: token lacks scope 'gateway:read'" 1
+assert_eq "2" "$probe_rc" "a request refused for the CLI's own lack of scope is a query that was turned away, not a gateway that did not answer"
+assert_match "not evidence about the gateway" "$probe_out" "the probe says the query broke rather than claiming the return leg did"
+probe telegram "hermes: error: authentication refused by ~/.hermes/config.yaml" 1
+assert_eq "2" "$probe_rc" "an authentication refused is the CLI being turned away, and it has determined nothing about the gateway"
+# The GREEN twin, and it is what keeps that removal from being a blanket
+# softening: `connection refused` names the transport -- it is the kernel's own
+# words for nothing listening on the other end -- and still decides.
+probe telegram "hermes: error: connection refused by /Users/op/.hermes/gateway.sock" 1
+assert_eq "1" "$probe_rc" "'connection refused' still names the transport and still determines the return leg is down"
+assert_match "is not answering" "$probe_out" "the probe still names the outage when the refusal names the transport"
 
 # WHICH LINE gets judged. The configured channel's own row is the most
 # specific evidence and wins over the gateway headline; judging the whole
@@ -359,6 +378,73 @@ assert_eq "0" "$probe_rc" "the same gateway line without the enumeration row is 
 # when an enumeration row has already pinned the verdict to the channel tier.
 probe telegram "$(printf 'gateway: running\nplatforms: telegram, discord\ndiscord: disconnected\n')" 0
 assert_eq "2" "$probe_rc" "a sibling platform's dead row is neither a channel row, a gateway row nor a status label -- it cannot condemn a channel it says nothing about"
+
+# WHAT AN INSTALLED CLI ACTUALLY PRINTED, and the two defects it exposed. Every
+# case above this line was written against output nobody had ever seen. The
+# operator finally ran `hermes gateway status` against a real installation and
+# it answered, exiting 0, with one row per subject:
+#     Gateway: not running
+#     WhatsApp: not paired
+# The probe said UNDETERMINED. Both of those lines name the outage, one of them
+# in the plainest words this file already knew, and the verdict was a shrug --
+# on the single piece of real evidence this probe has ever been handed. So this
+# exact output is pinned, byte for byte, as the case that must never regress.
+probe whatsapp "$(printf 'Gateway: not running\nWhatsApp: not paired\n')" 0
+assert_eq "1" "$probe_rc" "the two-line output an installed hermes actually printed reports the return leg as down -- it named the outage on both of its lines and the probe answered undetermined"
+assert_match "NOT up" "$probe_out" "the probe says which way it decided"
+
+# DEFECT ONE: THE VOCABULARY. hermes reports a platform's return leg as an
+# ATTACHMENT, not only as a process state -- and `paired` was in neither list,
+# so the channel row (which step 1 makes the only evidence for health when it
+# exists) decided nothing. An unpaired channel delivers no reply to anybody;
+# that is a determination, not an unreadable line.
+probe whatsapp "WhatsApp: not paired" 0
+assert_eq "1" "$probe_rc" "'not paired' is a determination -- a channel not attached to the gateway carries no reply under any gateway state"
+assert_match "WhatsApp: not paired" "$probe_out" "the probe quotes the row it judged"
+# ...and the pairing words are negations ONLY, never positives, which is the
+# half that keeps this from becoming a false REACHABLE: `paired` is a stored
+# fact about what the operator once attached, and a gateway reports it whether
+# or not the gateway is currently running. Its negation carries no such
+# ambiguity; the bare word does, so it stays unreadable.
+probe whatsapp "WhatsApp: paired" 0
+assert_eq "2" "$probe_rc" "a bare 'paired' is a stored attachment, not a live return leg -- reading it as health is the false REACHABLE this file refuses"
+# ...and it is held to the same whole-word, name-elided discipline as every
+# other negative, so a channel named for the word is not condemned by its name.
+probe paired-alerts "paired-alerts   connected" 0
+assert_eq "0" "$probe_rc" "a channel whose NAME contains 'paired' is still connected -- the name is not a status word"
+
+# DEFECT TWO: THE RANKING, which is the same misread one level up and the one
+# that matters for every hermes phrasing of "not attached" nobody has seen yet.
+# Step 1 stays exclusive FOR HEALTH: a channel row this probe cannot read must
+# not be rounded up by the gateway row above it. Nothing about that argument
+# says an unreadable channel row may HIDE a gateway row that plainly reports the
+# outage -- and treating it as if it did is what turned two lines of unambiguous
+# evidence into a shrug. So the weaker tiers are consulted after the channel tier
+# comes up empty, and they may only convict.
+probe whatsapp "$(printf 'Gateway: not running\nplatforms: whatsapp, telegram\n')" 0
+assert_eq "1" "$probe_rc" "a channel row this probe cannot read must not hide a gateway row that says the return leg is down"
+assert_match "Gateway: not running" "$probe_out" "the probe quotes the gateway row it convicted on"
+# The GREEN twin, and it is the whole point of the asymmetry: the SAME shape
+# with the gateway row reporting health stays UNDETERMINED. The second pass
+# convicts and never acquits, so REACHABLE still comes only from the most
+# specific tier that exists.
+probe whatsapp "$(printf 'Gateway: running\nplatforms: whatsapp, telegram\n')" 0
+assert_eq "2" "$probe_rc" "the second pass may only convict -- a healthy gateway row must not acquit a channel row that was never understood"
+assert_match "platforms: whatsapp, telegram" "$probe_out" "and the quoted line is still the most specific candidate, not the row the pass declined to borrow"
+# ...and a sibling platform's dead row reaches no tier in either pass, so the
+# second pass is not a back door into the property step 1 exists to protect.
+probe whatsapp "$(printf 'Gateway: running\nplatforms: whatsapp, telegram\ndiscord: disconnected\n')" 0
+assert_eq "2" "$probe_rc" "the second pass judges the gateway/label tiers, never an unrelated platform's row"
+# ...including through the LAST-RESORT tier, which the second pass is not given
+# at all. That tier reads a first line naming no subject of its own as the
+# gateway's state, which holds when the output named nothing else either -- but
+# once a channel row exists the output has demonstrated it names a subject per
+# row, and an unlabelled first line is then likelier a sibling platform's than
+# the gateway's own. Admitting it would let one platform's dead row condemn
+# another platform's return leg, which is exactly what step 1 is exclusive for.
+probe whatsapp "$(printf 'discord disconnected\nwhatsapp pending\n')" 0
+assert_eq "2" "$probe_rc" "an unlabelled sibling row must not convict through the second pass -- the last-resort tier is not part of it"
+assert_match "whatsapp pending" "$probe_out" "and the quoted line is the channel row this probe could not read"
 
 # THE SERVICE-MANAGED SHAPE. A gateway supervised by launchd/systemd reports
 # through its supervisor: a unit HEADER on the line that names the gateway and

@@ -317,8 +317,15 @@ hermes gateway status                         # what the probe asks
   named the transport as unreachable* (`connection refused`, `could not
   connect`, `not running`, `not responding`, `no such process`, `timed out`,
   …), or it answered and the judged line carries a negation (`not running`,
-  `stopped`, `disconnected`, `inactive`, `dead`, `crashed`, `not loaded`,
-  `offline`, `expired`, `down`, `unreachable`, `unhealthy`, …).
+  `not paired`, `stopped`, `disconnected`, `inactive`, `dead`, `crashed`,
+  `not loaded`, `offline`, `expired`, `down`, `unreachable`, `unhealthy`, …).
+  The pairing words (`not paired`, `not linked`, `not registered`, `not
+  authenticated`, `unpaired`) are negations **only**: a bare `paired` is a
+  stored fact about what you once attached, which a gateway reports whether or
+  not it is currently running, so it never reads as health. A bare `refused` is
+  likewise not evidence — only `connection refused`, which names the transport,
+  is; a policy or an authentication refusing the CLI is a query that was turned
+  away.
 - **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
   `notify.channel` is unset, this build has no `gateway status` subcommand,
   the command printed nothing, or none of the candidate lines below is one
@@ -357,9 +364,9 @@ is as likely to be a sibling platform's row as the gateway's own state, and a
 row that never mentions your channel must not decide your channel's return
 leg — in either direction.
 
-That first step is *exclusive*, not merely first-ranked, and it has a visible
-consequence worth knowing before you file it as a bug. Output that names your
-channel only in an enumeration —
+That first step is *exclusive for health*, not merely first-ranked, and it
+has a visible consequence worth knowing before you file it as a bug. Output
+that names your channel only in an enumeration —
 
 ```
 gateway: running
@@ -368,18 +375,32 @@ platforms: telegram, discord
 
 — reports **UNDETERMINED**, even though the gateway line directly above says
 `running`: the enumeration row names the channel, so it is the only evidence
-considered, and it carries no status word. Falling through to the gateway's
-state there would be inventing REACHABLE out of a line the probe never
-understood, on a CLI whose output nobody has yet observed — and a row that
-names your channel while saying something unreadable is weak evidence that
-this build *does* report per-channel state and that yours is not in the
-healthy set. A wrong "undetermined" costs you one manual check; a wrong
-"reachable" tells you answers are landing while every one is dropped. A
-channel the output does not name at all is a different case and does fall
-through (nothing was misread there, because there was nothing to read). If
-you hit this, run `hermes gateway status` by hand and read it yourself — and
-report the wording, since that is the shape this probe is still waiting to be
-validated against.
+that may report health, and it carries no status word. Falling through to the
+gateway's state there would be inventing REACHABLE out of a line the probe
+never understood — and a row that names your channel while saying something
+unreadable is weak evidence that this build *does* report per-channel state
+and that yours is not in the healthy set. A wrong "undetermined" costs you one
+manual check; a wrong "reachable" tells you answers are landing while every
+one is dropped. A channel the output does not name at all is a different case
+and is judged in both directions (nothing was misread there, because there was
+nothing to read). If you hit this, run `hermes gateway status` by hand and
+read it yourself — and report the wording, since most of this probe's
+vocabulary is still waiting to be validated against a live gateway.
+
+**The exclusivity is one-way**, and that is the third step of the ranking. An
+unreadable channel row may not be rounded *up* by weaker evidence, but neither
+may it hide weaker evidence pointing *down*: when the channel rows decide
+nothing, the gateway and label rows are consulted for a **NOT REACHABLE**
+determination only. So
+
+```
+Gateway: not running
+platforms: whatsapp, telegram
+```
+
+reports **NOT REACHABLE** on the gateway row, while the same shape with
+`Gateway: running` still reports UNDETERMINED. The second pass convicts and
+never acquits.
 
 That last part is what a **service-managed** gateway needs. A gateway run
 under launchd or systemd reports through its supervisor, which puts a unit
@@ -442,16 +463,35 @@ against this repo — orchid ships no inbound listener and neither starts nor
 supervises that agent, so nothing local can observe it. Doctor's wording
 keeps those two apart; so does the probe's.
 
-**PENDING-VALIDATION, and more so than for `send` above.** Unlike `hermes
-send --help`, `hermes gateway status` has *not* been read from an installed
-CLI — the task that added this probe could execute nothing at all. Both its
-existence and its output are therefore treated as untrusted: a build with no
-such subcommand is caught as an unknown subcommand and answers **2**, never
-1, so a version difference can never masquerade as an outage, and any line
-outside the recognized vocabularies above answers 2 with its own text
-quoted. Confirm the subcommand and its wording during the live hero-demo
-dogfood; if it turns out to be spelled differently, this probe reports
-"undetermined" until it is corrected, which is the safe direction.
+**What an installed CLI actually printed.** `hermes gateway status` has been
+run against exactly one real installation, in one state. It exists, it exits
+**0** while reporting a dead gateway, and it answers with one row per subject:
+
+```
+Gateway: not running
+WhatsApp: not paired
+```
+
+Two things follow, and both shaped the rules above. A real outage arrives on
+the *success* path, not the failed-query one. And a platform's return leg is
+reported as an **attachment** (`paired`), not only as a process state — which
+is why the negations carry the pairing vocabulary, and why a channel row this
+probe cannot read no longer hides the gateway row above it. That output is
+pinned verbatim in `tests/test_notify_hermes_channel.sh`; before those two
+rules it reported UNDETERMINED, on the only real evidence this probe has ever
+been handed.
+
+**PENDING-VALIDATION otherwise, and more so than for `send` above.** One
+installation in one state is not the shape of every build's output: no
+*healthy* `gateway status` has been read from an installed CLI at all. The
+subcommand's presence on other builds and the rest of its output are
+therefore still treated as untrusted — a build with no such subcommand is
+caught as an unknown subcommand and answers **2**, never 1, so a version
+difference can never masquerade as an outage, and any line outside the
+recognized vocabularies above answers 2 with its own text quoted. Confirm the
+healthy wording during the live hero-demo dogfood; if it is spelled
+differently, this probe reports "undetermined" until it is corrected, which is
+the safe direction.
 
 ## See also
 
