@@ -403,12 +403,37 @@ drive_boundary_settling_verb() {
 # which is also why a set here can never become a way to refuse an operator's
 # legitimate prose.
 #
+# ...EXCEPT THAT THE CATCH-ALL IS ABSENT BY KIND, NOT BY STATE, and `blocked` is
+# the one state where the kind stops deciding anything. A page's answers are the
+# kernel's recovery list for the state it was raised in (see the paragraph after
+# next), and out of `blocked` that list is closed -- `unblock`, `retry`,
+# `reverify` -- whatever the page was filed under. `operator-decision` reaches a
+# blocked task by exactly two routes, and both of them want that set:
+# drive_block_boundary files a task blocked by a repo-wide `merge_gate` under
+# this kind, because a capped repository gate is a judgment about the REPOSITORY
+# rather than a candidate defect (T023), and the walk files a task whose
+# archetype fails validation under it too. The first is the one that shipped
+# broken. Its reason is drive_blocked_reason's, word for word -- it names
+# `orchid task unblock`, `orchid task retry` and `orchid task reverify` on the
+# task, since those are the only ways out of `blocked` -- and the page carried
+# no declared set at all, so a stop with four known answers went out with the
+# bare `<choice>` placeholder this table exists to retire. The kind said
+# "composed per site"; the STATE said otherwise, and the state is the half that
+# knows what an answer can be. Being the catch-all is not a reason to be less
+# answerable than the same stop filed under `blocked-task`.
+#
+# What the catch-all keeps is every OTHER status: an advance refused in
+# `implementing`, a routing table in `reviewing`, a merge left in `merging`.
+# Those are the pages whose real answer is a sentence, and they still declare
+# nothing.
+#
 # THOSE TWO LISTS PARTITION `_DRIVE_BOUNDARY_KINDS`, exhaustively, and
 # tests/test_drive.sh walks that variable to hold them to it -- each kind
-# probed in a status it is really raised in, since the review kinds' sets are
-# keyed on that. A kind that is in neither list is not a third policy -- it is a
-# kind nobody decided about, which resolves silently to the `*)` arm and ships
-# the unanswerable page for exactly the boundary whose paragraph was forgotten.
+# probed in a status it is really raised in, since the review kinds' and the
+# catch-all's sets are keyed on that. A kind that is in neither list is not a
+# third policy -- it is a kind nobody decided about, which resolves silently to
+# the `*)` arm and ships the unanswerable page for exactly the boundary whose
+# paragraph was forgotten.
 # So a new kind fails that walk until it is named in one list or the other.
 #
 # THE SET IS THE KERNEL'S WHOLE RECOVERY LIST FOR THE STATE, not the subset
@@ -485,6 +510,17 @@ drive_boundary_choices() {
       esac ;;
     run-complete) printf 'accept\ndefer\n' ;;
     operator-handoff|task-prerequisite) printf 'acknowledged\ndefer\n' ;;
+    # The catch-all, keyed on the one state that closes the answer set for it.
+    # Deliberately the SAME list `blocked-task` prints, from the same state, and
+    # deliberately not shared with that arm by falling through to it: these are
+    # two kinds that agree here rather than one kind spelled twice, and the
+    # agreement is the property (drive_blocked_reason composes one reason for
+    # both, so the two pages must offer one set).
+    operator-decision)
+      case "$status" in
+        blocked) printf 'unblock\nretry\nreverify\ndefer\n' ;;
+        *) return 0 ;;
+      esac ;;
     *) return 0 ;;
   esac
 }
@@ -4089,6 +4125,36 @@ drive_blocked_cause() {
   # this text has to survive as one line of a phone notification.
   _drive_quote_line "${last#* -> blocked: }"
   printf '\n'
+}
+
+# drive_blocked_kind <cause> -- the boundary KIND a blocked task is recorded
+# under, derived from the same durable cause drive_blocked_reason composes its
+# text from. `operator-decision` when the block came from a repo-wide
+# `merge_gate` that stayed red for every rework round the task had, and
+# `blocked-task` for every other block.
+#
+# WHY THE KIND IS DERIVED AND NOT PASSED. A capped repository gate is a judgment
+# about the REPOSITORY rather than a candidate defect (T023), and the pass that
+# blocks the task is not the only pass that reports it: the walk meets the same
+# blocked task again on the next pass, and on every pass after it, until a human
+# acts. Both have to reach the identical kind AND the identical reason or the
+# boundary record changes, and a record that changes is a second qid for one
+# stop (the duplicate-page defect drive_blocked_reason's own header describes).
+# The journal is the only thing both passes can read, so the classification is a
+# function of it -- the same input, the same answer, however the pass arrived.
+#
+# AND IT IS A LIBRARY FUNCTION, beside the reason composer, for the reason that
+# composer gives about itself: it is here that the property is provable without
+# driving a pass. A test that re-derives the kind from a `case` of its own is
+# testing its own copy -- which is exactly how the gate-blocked page came to
+# declare no answers while the coverage for it asserted four. Section 12e of
+# tests/test_notify_hermes_channel.sh composes that page through THIS function
+# now, so the kind it exercises is the kind the driver files.
+drive_blocked_kind() {
+  case "${1:-}" in
+    *gate_failed*|*merge_gate*) printf 'operator-decision\n' ;;
+    *) printf 'blocked-task\n' ;;
+  esac
 }
 
 # drive_blocked_reason <task-id> <cause> -- the ONE boundary reason a blocked

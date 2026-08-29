@@ -249,12 +249,38 @@ defer" "$(drive_boundary_choices task-prerequisite)" \
 # existed. Without this half, "declare a set where there is one" would drift
 # into "declare a set everywhere", and the first page whose real answer is a
 # sentence would be refused.
-for kind in operator-decision hook-failure worktree-conflict planning nosuchkind; do
+for kind in hook-failure worktree-conflict planning nosuchkind; do
   for _pstatus in "" reviewing arbitrating blocked; do
     assert_eq "" "$(drive_boundary_choices "$kind" "$_pstatus")" \
       "a $kind boundary has no enumerable answer set and must declare none, on status '${_pstatus:-<none>}' as on any other"
   done
 done
+# ...and the CATCH-ALL keeps that contract on every status but one. An advance
+# refused in `implementing`, a routing table in `reviewing`, a merge left in
+# `merging`: those are the pages whose real answer is a sentence.
+for _pstatus in "" reviewing arbitrating implementing merging nosuchstatus; do
+  assert_eq "" "$(drive_boundary_choices operator-decision "$_pstatus")" \
+    "an operator-decision boundary on status '${_pstatus:-<none>}' declares no set — its reason text is composed per site, and a set there would refuse the sentence that answers it"
+done
+
+# THE ONE STATE THAT CLOSES THE CATCH-ALL'S SET, and it is the arm the
+# repository-gate page shipped without. `operator-decision` reaches a BLOCKED
+# task by two routes -- a repo-wide `merge_gate` red at the rework cap, which
+# runners/orchid-drive files under this kind because a capped gate is a judgment
+# about the REPOSITORY (T023), and an archetype that fails validation -- and out
+# of `blocked` the kernel's recovery list is closed whatever the page was filed
+# under. The gate-blocked page carries drive_blocked_reason's text word for
+# word, naming `orchid task unblock`, `orchid task retry` and `orchid task
+# reverify` on the task, and declared NO answers at all: a stop with four known
+# answers going out with the bare `<choice>` placeholder, because the kind said
+# "composed per site" while the state said otherwise.
+assert_eq "unblock
+retry
+reverify
+defer" "$(drive_boundary_choices operator-decision blocked)" \
+  "a page raised on a BLOCKED task names the kernel's whole recovery list even under the catch-all kind — the state decides what can be answered, not the kind"
+assert_eq "$(drive_boundary_choices blocked-task blocked)" "$(drive_boundary_choices operator-decision blocked)" \
+  "...and it is the SAME set blocked-task declares, since one composer writes the reason for both — a set declared for only one of them is the self-contradiction reached by the other route"
 
 # ...AND THE TWO LISTS ABOVE PARTITION THE KERNEL'S OWN SET OF KINDS. Walked
 # out of `_DRIVE_BOUNDARY_KINDS` rather than retyped, because a kind spelled
@@ -265,12 +291,12 @@ done
 # and shipped the unanswerable page, silently, for one of the boundaries that
 # most needs a human. A kind in neither list is not a third policy; it is a
 # kind nobody decided about.
-choices_declared=" blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite "
-choices_none=" planning hook-failure worktree-conflict operator-decision "
-# A STATUS THE KIND IS REALLY RAISED IN, per kind, because the review kinds'
-# sets are keyed on it and probing them with the wrong one would read "declares
-# no set" off a state that is simply not theirs. The others ignore the argument
-# entirely, so any status answers for them.
+choices_declared=" blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite operator-decision "
+choices_none=" planning hook-failure worktree-conflict "
+# A STATUS THE KIND IS REALLY RAISED IN, per kind, because the review kinds' and
+# the catch-all's sets are keyed on it and probing them with the wrong one would
+# read "declares no set" off a state that is simply not theirs. The others
+# ignore the argument entirely, so any status answers for them.
 choices_probe_status() {
   case "$1" in
     review-evidence|review-conflict) printf 'reviewing\narbitrating\n' ;;
@@ -312,7 +338,7 @@ done
 # as one entry of the comma-joined set recorded with the question), which is
 # also the shape runners/orchid-orchestrator-command admits — so a woken
 # orchestrator can declare the same sets from the brokered surface.
-for kind in blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite; do
+for kind in blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite operator-decision; do
   while IFS= read -r _pstatus; do
     [ -n "$_pstatus" ] || continue
     while IFS= read -r _choice; do
@@ -8202,6 +8228,32 @@ assert_match "reviews/G010-merge\.log" "$GBOUNDARY_REASON" \
   "and the reason names the validation log the gate wrote, which is where what went red is written (reason: $GBOUNDARY_REASON)"
 [ -f "$GATEREPO/.orchid/reviews/G010-merge.log" ] \
   || fail "non-vacuity: the log that boundary sends an operator to must actually exist on disk"
+
+# T009: ...AND THE PAGE THAT STOP RAISES IS ANSWERABLE, which is the half the
+# T023 kind split silently took away. `operator-decision` is the catch-all, and
+# a catch-all declares no answer set -- so this page, whose reason is
+# drive_blocked_reason's own text naming `orchid task unblock|retry|reverify` on
+# G010, went out with the bare `<choice>` placeholder the whole choice-set
+# feature exists to retire. Nothing failed: the coverage in
+# tests/test_notify_hermes_channel.sh composed its own page from
+# `drive_boundary_choices blocked-task` and asserted four answers on a page the
+# driver was shipping with none. So the set is read here, off a REAL pass,
+# through the question `orchid notify` actually minted -- the `.choices` sidecar
+# `orchid answer` gates on, which exists whether or not a channel is configured.
+GQ_QID=""
+for _gq in "$GATEREPO"/.orchid/runtime/answers/*.question; do
+  [ -f "$_gq" ] || continue
+  grep -qxF "task: G010" "$_gq" || continue
+  grep -qF "judgment boundary [operator-decision]" "$_gq" || continue
+  GQ_QID="${_gq##*/}"; GQ_QID="${GQ_QID%.question}"
+done
+[ -n "$GQ_QID" ] \
+  || fail "the gate-blocked stop must raise a page: a capped repository gate is the boundary an operator hears about, and exit 16 alone tells nobody"
+assert_match "orchid task reverify G010" "$(cat "$GATEREPO/.orchid/runtime/answers/$GQ_QID.question")" \
+  "witness: the page really carries the blocked composer's reason, so the answers below are the answers to THIS text"
+assert_eq "unblock,retry,reverify,defer" \
+  "$(cat "$GATEREPO/.orchid/runtime/answers/$GQ_QID.choices" 2>/dev/null || true)" \
+  "and it declares the kernel's whole recovery list out of blocked — the catch-all kind is where the page was FILED, not a reason for it to name no answers while its own text names three verbs"
 
 # ===========================================================================
 # Part ZP (T023) -- THE OTHER ROUTE TO `merging -> blocked`, WHICH MUST NOT BE

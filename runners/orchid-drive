@@ -2370,9 +2370,16 @@ drive_arbitrating() {
 # The remedy list is the WHOLE list PROTOCOL.md's boundary table names, not the
 # two verbs that predate `reverify` (T026 rework) -- and it is the same list
 # lib/drive.sh's drive_boundary_choices declares as the answers `orchid answer`
-# will accept for this kind, because a verb named here and refused there is a
-# page that contradicts itself. A verb missing from HERE is a verb no operator
-# discovers.
+# will accept for BOTH the kinds this helper files, because a verb named here
+# and refused there is a page that contradicts itself. A verb missing from HERE
+# is a verb no operator discovers.
+#
+# BOTH kinds, and that is the half a repository-gate block shipped without. One
+# reason text serves them, so a set declared for `blocked-task` alone is the same
+# self-contradiction reached by the other route: this very sentence, naming three
+# verbs on the task, went out under `operator-decision` on a page that declared
+# no answers at all -- the bare `<choice>` placeholder, for the one stop whose
+# answers are fully known.
 #
 # BOTH FACTS COME OUT OF lib/drive.sh's drive_blocked_reason, which is also what
 # the arms that BLOCK a task call (drive_testing's exhausted-budget arm and the
@@ -2381,18 +2388,19 @@ drive_arbitrating() {
 # recorded in on the next one, so the boundary de-dup at the foot of this file
 # sees one record persisting instead of two records replacing each other, and
 # the human gets one page instead of one per pass.
+#
+# THE KIND IS DERIVED IN THE LIBRARY, beside the reason, and both from the same
+# durable cause. A capped repo-wide gate is a judgment about the repository, not
+# a task defect (T023), and that distinction has to survive EVERY later walk of
+# the blocked task as well as the merge pass that first blocked it, or the record
+# changes and one stop mints a second qid. Deriving it here rather than in this
+# file is what lets a test compose the page the driver files instead of its own
+# reading of it: a `case` copied into the coverage is how the gate-blocked page
+# came to declare no answer set while the test asserted four.
 drive_block_boundary() {
-  local id="$1" cause kind
+  local id="$1" cause
   cause="$(drive_blocked_cause "$state/journal.md" "$id" || true)"
-  kind=blocked-task
-  # A capped repo-wide gate is a judgment about the repository, not a task
-  # defect. Preserve that T023 distinction on EVERY later walk of the blocked
-  # task as well as on the merge pass that first blocked it; deriving the kind
-  # from the same durable cause keeps T009's one-page de-dup stable.
-  case "$cause" in
-    *gate_failed*|*merge_gate*) kind=operator-decision ;;
-  esac
-  set_boundary "$kind" "$id" "$(drive_blocked_reason "$id" "$cause")"
+  set_boundary "$(drive_blocked_kind "$cause")" "$id" "$(drive_blocked_reason "$id" "$cause")"
 }
 
 drive_blocked() {

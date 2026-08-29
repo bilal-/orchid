@@ -356,7 +356,14 @@ this section false without touching a byte of it.
   text points at (`adopt-evidence | repin | block | defer`) from `reviewing`,
   where that verb exits 3. Declaring one state's verbs on the other state's
   page is the self-contradiction the gate makes worst: the page invites answers
-  that cannot be carried out and refuses the ones that can.
+  that cannot be carried out and refuses the ones that can. The same keying is
+  what closes the `operator-decision` catch-all's set from `blocked` and from
+  nowhere else: a task blocked by a repo-wide `merge_gate` red at the rework cap
+  is filed under that kind rather than `blocked-task` (a judgment about the
+  repository, not a candidate defect), carries `drive_blocked_reason`'s text
+  naming `orchid task unblock|retry|reverify`, and so has the same four answers
+  as any other blocked task. From every other status the catch-all still declares
+  none, because there its reason really is composed per site.
   **One stop raises one page, and every stop raises one.** `runners/orchid-drive`
   sends every page from a single call site, over the list of every boundary the
   pass MET, de-duplicated per stop: a page for that TASK carrying that exact
@@ -382,7 +389,11 @@ this section false without touching a byte of it.
   `answer_expiry_s` turns them into refusals. A task the driver blocks is now
   recorded as a `blocked-task` boundary in the same words every later pass over
   that task recomputes, so the block pages once and the passes after it page
-  not at all.
+  not at all. The kind is derived from the block's own journaled cause rather
+  than from which arm reached it (`lib/drive.sh`'s `drive_blocked_kind`), which
+  is what keeps the one block filed under a different kind — a repo-wide
+  `merge_gate` red at the rework cap, an `operator-decision` — recomputing to
+  that same kind on every later walk instead of changing under the task.
   De-duplicating against the boundary RECORD instead — which is what the first
   repair of those arms did — fails the same sentence in the other direction.
   Only one boundary is recorded per pass, so a stop that loses the ranking has

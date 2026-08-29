@@ -1640,14 +1640,33 @@ assert_eq "the routing table was hand-repaired after a restore" \
 # The driver's own argv assembly again (runners/orchid-drive's drive_notify),
 # generalized over the task the way section 9b's is over its text. Never a
 # hand-copied set, for the reason that helper gives.
+#
+# ...AND NEVER A HAND-DECIDED KIND EITHER, which is the half this helper shipped
+# wrong and the reason 12e below asserted four answers on a page that declared
+# none. `drive_boundary_choices` is keyed on the KIND and the STATUS, so a
+# fixture that passes `blocked-task` for every stop is not composing the driver's
+# page -- it is composing the page the driver would send if every block were
+# alike, and then asserting that. The driver files a task blocked by a repo-wide
+# `merge_gate` under `operator-decision` instead (T023), so 12e's page was the
+# one stop in this section whose real kind differed from the fixture's, and the
+# only stop whose real page came out unanswerable: four answers asserted here,
+# none declared there. So the kind is not an argument at all. It is derived the
+# way the driver derives it -- lib/drive.sh's drive_blocked_kind, over the
+# block's own journaled cause -- and the status is read off the task the page
+# names, so no caller of this helper can decide either one by hand.
 page_block_notify() {
-  local task="$1" text="$2" choice
+  local task="$1" text="$2" kind tstatus choice
   local -a nargs
+  # Exactly runners/orchid-drive's drive_block_boundary, then its set_boundary
+  # and drive_notify: the kind from the block's own journaled cause, the status
+  # read off the task the page names.
+  kind="$(drive_blocked_kind "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" "$task")")"
+  tstatus="$(fm_get "$PAGE_REPO/.orchid/tasks/$task.md" status)"
   nargs=(notify --task "$task")
   while IFS= read -r choice; do
     [ -n "$choice" ] || continue
     nargs+=(--choice "$choice")
-  done <<< "$(drive_boundary_choices blocked-task)"
+  done <<< "$(drive_boundary_choices "$kind" "$tstatus")"
   nargs+=("$text")
   page_orchid "${nargs[@]}"
 }
@@ -1805,9 +1824,39 @@ assert_match "reviews/T906-merge\.log" "$mrg_reason" \
   "...so the gate's evidence is still named after the arm's one-shot notify was deleted, and named on every later pass too (reason: $mrg_reason)"
 assert_match "orchid task reverify T906" "$mrg_reason" \
   "...beside the recovery that costs no attempt, which is the one a gate failure the candidate never caused actually needs"
+
+# THE KIND THIS STOP IS REALLY FILED UNDER, asserted before anything is composed
+# from it, because it is the whole reason this section is not a copy of 12a. A
+# capped repo-wide gate is a judgment about the REPOSITORY rather than a
+# candidate defect, so runners/orchid-drive files it as `operator-decision`
+# (T023) — a kind whose pages are otherwise composed per site and declare no
+# answers at all. This stop's page is not composed per site: it is
+# drive_blocked_reason's, word for word, naming three verbs on the task.
+#
+# THAT MISMATCH WENT OUT. The page declared nothing while this section asserted
+# four answers, and it passed for exactly one reason: the fixture decided the
+# kind itself and decided `blocked-task`. So the derivation is pinned here,
+# separately, before the page is built from it — a fixture whose kind agrees
+# with the driver by accident is the defect, not the coverage.
+mrg_kind="$(drive_blocked_kind "$mrg_cause")"
+assert_eq operator-decision "$mrg_kind" \
+  "non-vacuity: a gate_failed cause files this stop under the CATCH-ALL kind, so everything below is the page the driver really sends, not the blocked-task page a fixture would rather compose"
+assert_eq blocked-task "$(drive_blocked_kind "$blk_cause")" \
+  "...and an ordinary exhaustion block is not — the derivation distinguishes the two causes rather than answering one way"
+# ...and the driver derives it THROUGH that function rather than re-reading the
+# cause with a `case` of its own. Two readings of one journal are two
+# classifications waiting to disagree, and the disagreeing one is the page.
+if grep -qE 'gate_failed' <<<"$(grep -E -A 6 '^drive_block_boundary\(\)' "$drive_src" || true)"; then
+  fail "runners/orchid-drive must classify a blocked task through lib/drive.sh's drive_blocked_kind, not by re-casing the cause — a second reading is what let the page and this file's coverage disagree"
+fi
+assert_match "drive_blocked_kind" "$(grep -E -A 6 '^drive_block_boundary\(\)' "$drive_src" || true)" \
+  "...and it really does call the shared derivation, so deleting the local case did not delete the distinction"
+
 qidM="$(page_block_notify T906 "$mrg_reason")" \
   || fail "fixture: the merge-blocked page must be raisable with its declared set"
 page_m="$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qidM")"
+assert_eq "unblock,retry,reverify,defer" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidM.choices")" \
+  "the set recorded with the gate-blocked question is the kernel's whole recovery list out of blocked — the catch-all kind does not make a blocked task less answerable"
 assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$page_m" \
   "the surviving page declares the answer set the direct notify never did — that one left <choice> to be guessed for a stop with four known answers"
 outM="$(page_orchid answer "$qidM" reverify 2>&1)" \

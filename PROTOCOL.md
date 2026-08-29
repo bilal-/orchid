@@ -298,7 +298,7 @@ The kernel-owned boundary kinds:
 | kind | raised when |
 | --- | --- |
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
-| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none. This is also the kind raised by the pass that DOES the blocking — attempts exhausted, wallclock budget exceeded, or a merge whose repo-wide `merge_gate` stayed red for every rework round the task had — and in the same words, so the record it writes is the record every later pass over that task recomputes rather than a different one that pages again |
+| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none. This is also the kind raised by the pass that DOES the blocking — attempts exhausted, wallclock budget exceeded — and in the same words, so the record it writes is the record every later pass over that task recomputes rather than a different one that pages again. The one block filed under a different kind is a repo-wide `merge_gate` red at the rework cap (`operator-decision` below); it is filed that way by BOTH passes, from the same journaled cause, so that record too is recomputed rather than replaced |
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
@@ -306,7 +306,7 @@ The kernel-owned boundary kinds:
 | `operator-handoff` | work no actor in the loop declares the capability for: a step whose requirements the resolved actor's manifest does not cover, so it was never dispatched (INV-16, `orchid jobs prepare` exit 19) — or this candidate's execution-requiring mechanical steps are not acknowledged for it, because `handoff_before_verify` is on, or because its implementer is installed under neither name it is looked up by — the directory a binding names, or the qualified `id=` a manifest claims. See "The operator hand-off" below |
 | `task-prerequisite` | the task declares an `operator_prerequisite` — a step outside the sandbox its verification depends on — that nobody has acknowledged for this candidate; raised by either stage that runs the suite (see THE TICK's `testing` and `merging` steps) |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
-| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. Not the stops that END IN A BLOCK — those are `blocked-task` above, since the task they describe is blocked and the walk would otherwise describe it a second time under that kind on the next pass. A merge left in `merging` is this kind; a merge that left the task `blocked` is not |
+| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. A merge left in `merging` is this kind. So is the ONE block that is a judgment about the REPOSITORY rather than about a candidate — a repo-wide `merge_gate` still red at the rework cap — and it must be filed this way by the blocking pass AND by every later walk of that blocked task, from the one journaled cause, or the record changes under the task and pages a second time. Every OTHER stop that ends in a block is `blocked-task` above. Being the catch-all does not make a page less answerable: raised on a task in `blocked`, this kind declares that state's whole recovery list, exactly as `blocked-task` does |
 
 **Waking a model for one asks the SAME question.** The precedence above
 decides which of several boundaries goes into the record;
@@ -327,7 +327,15 @@ guessed: `blocked-task` → `unblock | retry | reverify | defer`,
 `review-evidence` and `review-conflict` → `approve | request-changes | defer`
 from `arbitrating` and `adopt-evidence | repin | block | defer` from
 `reviewing`, `run-complete` → `accept | defer`, `operator-handoff` and
-`task-prerequisite` → `acknowledged | defer`. A kind's set is the WHOLE recovery
+`task-prerequisite` → `acknowledged | defer`, and `operator-decision` →
+`unblock | retry | reverify | defer` **from `blocked` only**. That last one is
+the catch-all, whose reason text is otherwise composed per site and declares
+nothing — but `blocked` is a state, not a site, and a task blocked by a repo-wide
+`merge_gate` red at the rework cap is filed under this kind (a judgment about the
+repository rather than a candidate defect) while carrying the very same reason
+text `blocked-task` carries, naming the very same three verbs. A page is no less
+answerable for having been filed under the catch-all.
+A kind's set is the WHOLE recovery
 list the table above names for it **out of the state the page was raised in**,
 never a subset and never another state's: `orchid answer` refuses everything
 outside a declared set, so a verb the reason text points at and the set omits is
