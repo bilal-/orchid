@@ -2347,7 +2347,12 @@ one-pass driver could otherwise stop progressing in silence:
   slot pinned to an engine both gates refuse is handed over rather than waited
   on. It orders two reports and waives neither: an engine that covers the step
   and is still ineligible for the role is refused there, at 14, in that gate's
-  own words.
+  own words. That boundary names its remedy the same way every other
+  reviewer-slot boundary above does: the config key the slot's engine actually
+  resolved from (`role.reviewer`, `review.<tier>`, or neither — the fallback
+  says so in words), **and** `orchid jobs review-plan <id> --repin`, because
+  the attempt's plan is pinned and binding a capable engine does not by itself
+  move a pinned row.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
   Where `handoff_before_verify` is `required`, or where the engine that built
   the candidate cannot be routed its mechanical steps at all — in a running

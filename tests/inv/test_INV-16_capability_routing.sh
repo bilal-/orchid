@@ -52,7 +52,13 @@ source "$(dirname "$0")/../helpers.sh"
 #      runs the real driver: a refusal on the ESCALATION LADDER's relaunch must
 #      raise the named hand-off and be journaled, rather than be swallowed and
 #      left to burn the task's infra_failures down to `blocked` for a reason
-#      nothing recorded.
+#      nothing recorded. A seventh is the rest of that same advice: a refused
+#      REVIEWER SLOT must name `orchid jobs review-plan <task> --repin` as well
+#      as the config key, because the attempt's slot table is PINNED -- an
+#      operator who binds a capable engine and stops there moves live routing
+#      while the walk keeps dispatching the pinned row, which is the "edit a
+#      key, nothing happens" dead end the key half exists to prevent, reached
+#      one step later.
 # GREEN: the SAME step, the SAME call, the SAME role and the SAME task, with
 #      one atom added to the actor's manifest, must be admitted -- silently at
 #      the gate and with a real job manifest through `jobs prepare`; likewise
@@ -73,7 +79,14 @@ source "$(dirname "$0")/../helpers.sh"
 #      name `role.<role>`, so naming the hook point is a correction to the one
 #      step whose role positional means nothing rather than a retreat from
 #      naming a key at all. And the same escalation relaunch must mint
-#      its job once the bound actor declares what the step needs. Without those
+#      its job once the bound actor declares what the step needs. The repin
+#      advice is held to the same standard twice over: no OTHER role's advice
+#      may name a review-plan verb (nothing else has a pinned row for one to
+#      move), and the verb itself is RUN against a repository whose pinned slot
+#      holds an engine `review` refuses -- it must rebind that slot to the
+#      engine the operator bound, durably and journaled, leaving the step
+#      routable. Advice that names a remedy proves nothing until the remedy is
+#      run. Without those
 #      the refusals above would be evidence only that something rejects things,
 #      which is exactly the shape this repository keeps producing.
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
@@ -967,3 +980,118 @@ assert_eq 0 "$rc" \
   "INV-16: the same research step must be routable to an actor that DOES declare citations — otherwise the refusal above is not about capabilities at all"
 assert_eq "" "$why" "INV-16: an admitted routing says nothing (it is not a grant, so it makes no claim)"
 green_case 'the same research step routed to the same actor plus a citations declaration was admitted silently, so the refusal above is a capability decision and research is genuinely priced rather than merely accepted'
+
+# ===========================================================================
+# 10 -- THE REVIEWER SLOT'S ADVICE HAS TO REACH A PINNED ROW. Part 8a fixed
+# WHICH KEY a refused reviewer slot names. Naming the right key is still a dead
+# end on its own, because a reviewer slot is not routed live: once an attempt
+# has a candidate the table is written down (`review_plan_pin_rows`) and every
+# later reader gets THAT table back for the life of the attempt. So an operator
+# who does exactly what the advice says -- bind a capable engine at the key
+# this slot's engine resolved from -- moves LIVE routing and watches the
+# boundary survive, because the walk dispatches the PINNED row. That is the
+# same "edit a key, nothing happens, conclude orchid is broken" failure 8a
+# exists to prevent, reached one step later.
+#
+# The supported way to move a pinned row is `orchid jobs review-plan <task>
+# --repin`, which is already the remedy the neighbouring exit-14 refusal on the
+# same slot prints. So the advice is asserted in two halves, and the second is
+# the one that matters: the words, and then the verb actually run against a
+# real repository to prove it clears the slot.
+# ===========================================================================
+ptext="$(drive_capability_handoff_text reviewer review "" review.low TR1)"
+preason="$(printf '%s' "$ptext" | cut -f1)"
+assert_match "review-plan TR1 --repin" "$preason" \
+  "INV-16: a refused reviewer slot's advice must name the verb that moves a PINNED row, with this task's own id — the config key it also names cannot reach the row on its own"
+assert_match "review.low" "$preason" \
+  "INV-16: and still names the key the slot's engine resolved from, because the repin recomputes from live routing and there is nothing new to bind to until that key changes"
+assert_match "PINNED" "$preason" \
+  "INV-16: and says WHY the key alone is not enough, so an operator who stops after the config edit knows the boundary surviving is expected rather than a bug"
+# The slot most likely to be refused here is the FALLBACK one (8a), whose
+# "binding" review_slot_engine_source hands over is a whole phrase rather than
+# a key. The repin step has to survive being appended to that too, or the one
+# advice that matters most is the one that loses it.
+pfall="$(drive_capability_handoff_text reviewer review "" \
+  "$(review_slot_engine_source "$rrepo" TR 1 buildereng || true)" TR1 | cut -f1)"
+assert_match "review-plan TR1 --repin" "$pfall" \
+  "INV-16: the repin step is named even where the binding is the fallback PHRASE — that is the slot the fallback arm makes most likely to be refused, so losing it there loses it where it counts"
+assert_match "fell back" "$pfall" \
+  "INV-16: without displacing the phrase itself, which is the only thing that explains why no reviewer binding names the engine the operator was shown"
+# The caller hands the id over. Advice that CAN name the task is worth nothing
+# if the one function that writes it never passes one, and a command printed
+# with a blank argument is worse advice than none.
+grep -q 'drive_capability_handoff_text "\$role" "\$op" "\$point" "\$binding" "\$id"' "$REPO_ROOT/runners/orchid-drive" \
+  || fail "INV-16: drive_capability_refusal must pass the task id through to the advice, or the reviewer arm prints a review-plan command with no task in it"
+red_case 'a refused reviewer slot advised the recorded verb that moves a pinned row (orchid jobs review-plan <task> --repin) alongside the config key, instead of naming only a key that a pinned plan ignores'
+
+# GREEN twin: the arms that have no pinned plan must NOT name a review-plan
+# verb. `--repin` moves reviewer slots and nothing else, so advertising it for
+# an implementer or a hook handler would send an operator to run a command that
+# cannot touch what refused them.
+for _plain in implementer:implement arbiter:arbitrate; do
+  _prole="${_plain%%:*}"; _pop="${_plain##*:}"
+  case "$(drive_capability_handoff_text "$_prole" "$_pop" | cut -f1)" in
+    *review-plan*) fail "INV-16: role '$_prole' has no pinned plan, so its advice must not name a review-plan verb that cannot move anything it was refused over" ;;
+  esac
+done
+case "$(drive_capability_handoff_text hook hook before_merge | cut -f1)" in
+  *review-plan*) fail "INV-16: a hook handler has no reviewer slot either — its advice names hook.<point>, and adding a review-plan verb to it would be a command that cannot reach the binding" ;;
+esac
+green_case 'the same advice for an implementer, an arbiter and a hook handler named no review-plan verb, so the repin step is a correction to the one caller whose row is pinned rather than a command pasted onto every refusal'
+
+# ---------------------------------------------------------------------------
+# AND THE VERB CLEARS THE SLOT. Words that name a remedy prove nothing until
+# the remedy is run: this drives the real `orchid jobs review-plan` against a
+# repository whose pinned slot 1 holds an engine `review` refuses.
+#
+# The slot gets there the way a running repository does. `review_routing`'s
+# session-independent fallback hands slot 1 the engine that BUILT the candidate
+# when no chain entry is eligible and available -- and that arm skips the
+# reviewer eligibility check every chain entry passes, so the pinned engine can
+# be an implementer that declares no `structured_text`. That is the slot most
+# likely to be refused here, and it is the one the pin then freezes.
+# ---------------------------------------------------------------------------
+mk_engine revshort "workspace_read,workspace_write,shell,git"
+mk_engine revfull "structured_text,workspace_read,workspace_write,shell,git"
+prepo="$WORK/prepo"; mkdir -p "$prepo/.orchid/tasks" "$prepo/.orchid/reviews"
+cd "$prepo" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+export ORCHID_REPO="$prepo"
+PEPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$PEPOCH"
+phead="$(git -C "$prepo" rev-parse HEAD)"
+# Both reviewer chains name only the engine that built the candidate, so
+# neither yields an entry DIFFERENT from the implementer and slot 1 falls back.
+printf 'role.implementer=revshort\nrole.reviewer=revshort\nreview.low=revshort\n' > "$prepo/orchid.config"
+"$ORCHID_BIN" task create TRP "a pinned slot holding an engine review refuses" >/dev/null
+"$ORCHID_BIN" task set TRP risk_tier low --reason "one reviewer slot" >/dev/null
+"$ORCHID_BIN" task set TRP candidate_sha "$phead" >/dev/null
+
+pinned="$("$ORCHID_BIN" jobs review-plan TRP --pin)"
+assert_eq "$(printf '1\trevshort\tsession-independent')" "$pinned" \
+  "INV-16 fixture: slot 1 must fall back to the engine that built the candidate — that is the arm that skips the reviewer eligibility check, and without it nothing below is the refused case"
+prc=0; capability_routing_refusal review revshort >/dev/null || prc=$?
+assert_eq 1 "$prc" \
+  "INV-16 fixture: and that pinned engine must be one the review step REFUSES, or the repin below clears a slot that was never stuck"
+
+# The operator does exactly what the key half of the advice says, and ONLY that.
+printf 'role.implementer=revshort\nrole.reviewer=revshort\nreview.low=revfull\n' > "$prepo/orchid.config"
+assert_eq "$(printf '1\trevfull\tengine-independent')" "$(review_routing "$prepo" TRP)" \
+  "INV-16 fixture: binding a capable engine at the named key really does move LIVE routing, so what follows is the pin outliving the edit rather than the edit failing"
+assert_eq "$pinned" "$("$ORCHID_BIN" jobs review-plan TRP)" \
+  "INV-16: the config edit ALONE leaves the pinned row exactly as it was — this is the dead end, and advice that stopped at the key would end here with the boundary surviving unexplained"
+
+# ...and then the verb the advice names.
+repinned="$("$ORCHID_BIN" jobs review-plan TRP --repin)"
+assert_eq "$(printf '1\trevfull\tengine-independent')" "$repinned" \
+  "INV-16: 'orchid jobs review-plan <task> --repin' rebinds the unfilled slot to the engine the operator bound — the advice names a step that actually reaches the pinned row"
+assert_eq "$repinned" "$("$ORCHID_BIN" jobs review-plan TRP)" \
+  "INV-16: and the change is DURABLE — the next reader of the plan gets the rebound row, so the walk dispatches it"
+prc=0; capability_routing_refusal review revfull >/dev/null || prc=$?
+assert_eq 0 "$prc" \
+  "INV-16: the slot is CLEARED: the step that refused this slot is routable to the engine now pinned to it, so following the advice ends the hand-off rather than merely rewriting a table"
+assert_match "review plan pinned for attempt 1 \(repin\)" \
+  "$("$ORCHID_BIN" journal show --task TRP 2>/dev/null || true)" \
+  "INV-16: and it is a RECORDED verb, journaled with the table it landed — the remedy for a routing refusal must not be an operator editing durable state by hand"
+green_case 'running the advised orchid jobs review-plan --repin against a pinned slot whose engine review refuses rebound it to the capable engine the operator had bound, journaled the new table, and left the step routable — while the config edit alone had left the pinned row untouched'

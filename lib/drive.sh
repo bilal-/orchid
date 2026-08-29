@@ -121,9 +121,9 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
   esac
 }
 
-# drive_capability_handoff_text <role> <operation> [hook-point] [binding] --
-# the two strings runners/orchid-drive writes when a launch comes back 19
-# (INV-16), TAB-separated: the boundary reason, then the journal line.
+# drive_capability_handoff_text <role> <operation> [hook-point] [binding]
+# [task] -- the two strings runners/orchid-drive writes when a launch comes
+# back 19 (INV-16), TAB-separated: the boundary reason, then the journal line.
 #
 # WHY IT NAMES A CONFIG KEY AT ALL. The boundary is the only thing an operator
 # meets, and "an operator performs this step" alone leaves them with no way to
@@ -156,8 +156,34 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
 # that orchid is broken. So a caller that KNOWS which key resolved its actor
 # passes it (lib/review.sh's review_slot_engine_source computes it), and the
 # `role.<role>` default stands only where the role chain really is the binding.
+#
+# AND FOR THAT SAME CALLER THE KEY ALONE IS STILL A DEAD END, which is why the
+# reviewer arm names a VERB as well. A reviewer slot is not routed live: once
+# an attempt has a candidate, `review_plan_pin_rows` writes the table down and
+# every later reader gets THAT table back for the life of the attempt
+# (lib/review.sh's pinned-plan header -- the whole point is that the table
+# stops moving under the evidence filed against it). So an operator who does
+# exactly what the advice above says -- bind a capable engine at the key that
+# resolved this slot -- changes live routing and watches the boundary survive
+# anyway, because the pinned row is what the walk dispatches from. That is the
+# same "edit a key, nothing happens, conclude orchid is broken" failure the
+# paragraph above exists to prevent, reached one step later.
+#
+# The supported way to move a pinned row is `orchid jobs review-plan <task>
+# --repin`, which rebinds the slots NOBODY HAS REVIEWED to live routing and
+# freezes the rest -- and a refused slot is by construction one of the
+# unreviewed ones, since the reviewing walk only ever launches the slots
+# `review_plan_unsatisfied` reports. It is also already the remedy this file's
+# caller prints for the neighbouring exit-14 refusal, so the two stops an
+# operator can meet on one slot now name the same recorded verb rather than
+# one naming a verb and the other naming a key that cannot reach the plan.
+#
+# The task id is passed for that sentence alone. Empty (no caller does this
+# today; drive_capability_refusal always knows the task) degrades to the
+# literal `<task>` placeholder rather than emitting a command with a blank
+# argument, which is worse advice than none.
 drive_capability_handoff_text() {
-  local role="$1" op="$2" point="${3:-}" binding="${4:-}"
+  local role="$1" op="$2" point="${3:-}" binding="${4:-}" task="${5:-}"
   if [ -n "$point" ]; then
     printf "step '%s' for hook point '%s' needs a capability the resolved handler does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds a handler at hook.%s whose manifest covers it\t" \
       "$op" "$point" "$point"
@@ -166,8 +192,13 @@ drive_capability_handoff_text() {
     return 0
   fi
   [ -n "$binding" ] || binding="role.$role"
-  printf "step '%s' for role '%s' needs a capability the resolved actor does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s\t" \
-    "$op" "$role" "$binding"
+  if [ "$role" = reviewer ]; then
+    printf "step '%s' for role '%s' needs a capability the resolved actor does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s. Binding one is not enough on its own: this attempt's review plan is PINNED, so run 'orchid jobs review-plan %s --repin' afterwards to rebind this attempt's unfilled slot(s) onto live routing\t" \
+      "$op" "$role" "$binding" "${task:-<task>}"
+  else
+    printf "step '%s' for role '%s' needs a capability the resolved actor does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s\t" \
+      "$op" "$role" "$binding"
+  fi
   printf "step '%s' was not routed to role '%s': the resolved actor's manifest does not declare what that work needs (INV-16) — an operator performs it\n" \
     "$op" "$role"
 }

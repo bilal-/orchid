@@ -1798,6 +1798,17 @@ the role gate whenever the step is covered, and an engine ineligible for a role
 over a capability the *step* does not need is still refused there, at 14, in
 that gate's own words.
 
+That same slot is also why the boundary names a VERB and not only a key. The
+advice for a refused step is "perform it, or bind an actor whose manifest
+covers it at <key>", and for a reviewer slot the key alone cannot reach the
+row: the attempt's plan is pinned (see "Independence"), so live routing may be
+rebound all day while the walk keeps dispatching the pinned engine. The
+reviewer boundary therefore names the key the slot's engine actually resolved
+from *and* `orchid jobs review-plan <task> --repin`, which is the recorded verb
+that moves an unreviewed row onto live routing — the same remedy the exit-14
+refusal on the same slot already prints, so one slot's two stops do not send an
+operator two different ways.
+
 An actor is named two ways and resolved by both. Third-party engines carry
 qualified ids (`acme/foo`) while a binding names the directory a plugin is
 installed under, and `implementer_engine_id` records whichever form the

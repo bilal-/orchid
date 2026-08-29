@@ -782,10 +782,16 @@ drive_stranded_launch_job() {
 # can equally have come from `review.<tier>` or from the fallback to the engine
 # that built the candidate, and advice naming the wrong key is advice about
 # somebody else's chain (lib/drive.sh's drive_capability_handoff_text).
+#
+# AND THE TASK ID GOES WITH IT, for the same caller: a reviewer slot's key
+# cannot be acted on without `orchid jobs review-plan <task> --repin`, because
+# the attempt's plan is pinned and a config edit does not move a pinned row.
+# The id is right here at every call site, and advice that named the verb
+# without the task it applies to would be one more thing to look up.
 drive_capability_refusal() {
   local id="$1" role="$2" op="$3" point="${4:-}" binding="${5:-}"
   local text reason line prior
-  text="$(drive_capability_handoff_text "$role" "$op" "$point" "$binding")"
+  text="$(drive_capability_handoff_text "$role" "$op" "$point" "$binding" "$id")"
   reason="$(printf '%s' "$text" | cut -f1)"
   line="$(printf '%s' "$text" | cut -f2-)"
   prior="$("$ORCHID_BIN" journal show --task "$id" 2>/dev/null || true)"
@@ -2112,6 +2118,14 @@ drive_reviewing() {
       # likely to be refused here and the one `role.reviewer` describes worst.
       # The status is discarded on purpose: both answers are advice, and the
       # phrase the fallback prints is the one an operator needs.
+      #
+      # THE KEY IS HALF THE REMEDY. Binding a capable engine at it moves LIVE
+      # routing, and this slot is a PINNED row -- so the walk would keep
+      # dispatching the refused engine and the boundary would survive an edit
+      # that did exactly what it was told. drive_capability_handoff_text's
+      # reviewer arm therefore names `orchid jobs review-plan <id> --repin`
+      # too: the same verb the exit-14 refusal a few lines above already
+      # expects, so one slot's two stops send an operator the same way.
       src="$(review_slot_engine_source "$repo" "$id" "$slot" "$eng" || true)"
       drive_capability_refusal "$id" reviewer review "" "$src"
       break

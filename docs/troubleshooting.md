@@ -388,6 +388,20 @@ check that its `plugin.conf` declares the id the record carries, and that no
 second installed plugin claims the same one (two claimants are refused rather
 than chosen between, INV-10 — the boundary says so in those words).
 
+**If the task is `reviewing`, not `testing`, this is a different stop wearing
+the same boundary kind** — a *reviewer slot* whose engine cannot be routed the
+`review` step, and `orchid task handoff --ack` will not clear it (that verb is
+legal only from `testing`). The boundary names the config key that slot's
+engine actually resolved from — `role.reviewer`, `review.<tier>`, or neither,
+in which case it says the slot fell back to the engine that built the candidate
+— **and** `orchid jobs review-plan <id> --repin`. You need both. This attempt's
+slot table is *pinned* (kernel.md's "Independence" section), so
+binding a capable engine moves live routing while the walk keeps dispatching
+the pinned row; `--repin` is what rebinds the slots nobody has reviewed yet,
+and it freezes the ones that already have a review so no filed evidence is
+orphaned. Bind first, then repin — the repin recomputes from live routing, so
+running it before the config change re-pins the same engine.
+
 ```sh
 orchid run boundary show           # what is being held, and why
 orchid task show <id>              # candidate_sha, and handoff_ack beside it
