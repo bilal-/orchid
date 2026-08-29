@@ -1767,7 +1767,10 @@ ones its archetype never declares.
   for the repository that every task inherits, precisely because a check each
   task has to opt into reaches only the tasks whose author remembered it. It
   blocks: a red gate returns the task to `rework` with the integration ref
-  untouched, exactly as a red task suite does. Nothing here needs invoking or
+  untouched, exactly as a red task suite does. It also *terminates*, which a
+  red task suite at merge does not: unlike every other merge failure it
+  charges the round, so a gate that stays red reaches `blocked` instead of
+  cycling — both outcomes are itemised below. Nothing here needs invoking or
   reconciling; see docs/configuration.md for its cost and its recursion guard.
   `orchid merge <id>`, then branch on the task's **post-merge status**
   (`orchid task show <id>`) — never on the exit code alone: exit `1` is
