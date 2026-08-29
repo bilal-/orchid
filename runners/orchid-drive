@@ -1953,7 +1953,7 @@ drive_testing() {
 # ---------------------------------------------------------------------------
 drive_reviewing() {
   local id="$1" arch="$2" tf tier need have routing unsat line slot eng label lrc arc
-  local pin_rc pin_detail pin_output pin_line pin_slot pin_eng pin_label pin_extra pin_valid src
+  local pin_rc pin_detail pin_output pin_line src
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = reviewing ] || return 0
   tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
