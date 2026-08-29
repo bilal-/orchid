@@ -282,7 +282,7 @@ The kernel-owned boundary kinds:
 | kind | raised when |
 | --- | --- |
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
-| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it |
+| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none |
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
@@ -307,11 +307,16 @@ not waking an orchestrator` and exits 0.
 That blocker **declares its answer set** wherever the kind has one
 (`lib/drive.sh`'s `drive_boundary_choices`), so the page an operator reads
 names what `orchid answer` will accept instead of leaving `<choice>` to be
-guessed: `blocked-task` → `unblock | retry | defer`, `review-evidence` and
-`review-conflict` → `approve | request-changes | defer`, `run-complete` →
-`accept | defer`, `operator-handoff` and `task-prerequisite` →
-`acknowledged | defer`. Each value names the operator verb that carries the
-decision out (`orchid task unblock|retry`, `orchid task arbitrate --result`,
+guessed: `blocked-task` → `unblock | retry | reverify | defer`,
+`review-evidence` and `review-conflict` → `approve | request-changes | defer`,
+`run-complete` → `accept | defer`, `operator-handoff` and `task-prerequisite`
+→ `acknowledged | defer`. A kind's set is the WHOLE recovery list the table
+above names for it, never a subset: `orchid answer` refuses everything outside
+a declared set, so a verb the reason text points at and the set omits is an
+answer the page invites and then rejects — a page contradicting itself, which
+is worse than the bare placeholder this replaced. Each value names the operator
+verb that carries the decision out (`orchid task unblock|retry|reverify`,
+`orchid task arbitrate --result`,
 `orchid run accept --evidence`, `orchid task handoff --ack`, `orchid task
 prereq-ack`); recording the answer is not running the verb. Note that the last
 two declare a set even though no settling verb is named for them above:

@@ -2219,19 +2219,37 @@ drive_arbitrating() {
 # its artifact is on hand for whoever resolves the block.
 # ---------------------------------------------------------------------------
 drive_blocked() {
-  local id="$1" tf attempt cand hg
+  local id="$1" tf attempt cand hg cause
   tf="$state/tasks/$id.md"
   attempt=$(( $(fm_get "$tf" attempts) + 1 ))
   cand="$(fm_get "$tf" candidate_sha)"
   hg=0
   drive_hook_gate "$id" on_blocker "$attempt" "$cand" || hg=$?
   [ "$hg" -ne 2 ] || return 0
+  # THE PAGE STATES THE CAUSE, not just the status. "task is blocked" is the
+  # status restated back at the operator, and this is the boundary they re-read
+  # on every pass over an already-blocked task -- far more often than the
+  # one-shot exhaustion boundary above, which has always named its own cause.
+  # The three remedies below differ by exactly the thing that sentence left out:
+  # `unblock` records guidance, `retry` grants another round, `reverify` re-runs
+  # verification alone. Choosing between them without knowing what went wrong is
+  # a guess, and the answer to a page is not a thing to guess at. The cause was
+  # recorded in the journal the moment the block happened; drive_blocked_cause
+  # reads that back, and says so plainly when the journal holds none rather
+  # than inventing one.
+  #
   # The remedy list is the WHOLE list PROTOCOL.md's boundary table names, not
-  # the two verbs that predate `reverify` (T026 rework). This is the boundary
-  # an operator re-reads on every pass over an already-blocked task -- far
-  # more often than the one-shot exhaustion boundary above -- so a verb
-  # missing from HERE is a verb no operator discovers.
-  set_boundary blocked-task "$id" "task is blocked — only an operator (orchid task unblock|retry|reverify) resolves it"
+  # the two verbs that predate `reverify` (T026 rework) -- and it is the same
+  # list lib/drive.sh's drive_boundary_choices declares as the answers `orchid
+  # answer` will accept for this kind, because a verb named here and refused
+  # there is a page that contradicts itself. A verb missing from HERE is a verb
+  # no operator discovers.
+  cause="$(drive_blocked_cause "$state/journal.md" "$id" || true)"
+  if [ -n "$cause" ]; then
+    set_boundary blocked-task "$id" "task is blocked: $cause — only an operator (orchid task unblock|retry|reverify) resolves it"
+  else
+    set_boundary blocked-task "$id" "task is blocked, and the journal records no cause for it — only an operator (orchid task unblock|retry|reverify) resolves it"
+  fi
   return 0
 }
 

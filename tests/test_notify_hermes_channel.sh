@@ -834,3 +834,168 @@ assert_eq "" "$page_attempt_line" \
   "a garbled attempts counter omits the line -- the page never renders a round number the task file did not state"
 assert_match "^task: T900 — name the round\$" "$page_out" \
   "...and the rest of the body is unaffected, so the omission is the attempt line alone"
+
+# ===========================================================================
+# 9 -- A BLOCKED TASK'S PAGE STATES ITS CAUSE, AND DECLARES EVERY RECOVERY
+#      THE KERNEL OFFERS OUT OF THAT STATE (T009).
+#
+# `blocked` is the one status the driver re-reports on EVERY pass until a human
+# acts, so its page is the message an operator meets over and over -- and it
+# said only "task is blocked", which is the status restated, not a cause. The
+# operator was then asked to choose between `unblock` (record guidance),
+# `retry` (grant a round) and `reverify` (re-run verification alone), three
+# remedies that differ by exactly the thing the page left out. Worse, the
+# declared answer set named only two of the three, and `orchid answer` refuses
+# everything outside a declared set: an operator who read the reason text, took
+# the verb it pointed at and answered `reverify` was told their answer was
+# invalid. A page that contradicts itself is worse than the bare `<choice>`
+# placeholder this whole feature retired.
+#
+# Both halves live here, beside section 8's attempt line, for the same reason
+# that section gives: this task's verification runs THIS file.
+# ===========================================================================
+# The same prerequisite chain tests/test_drive.sh sources before this library;
+# everything but drive.sh itself is already sourced above. Sourced rather than
+# re-derived so the values asserted below are the ones the driver really
+# declares -- a hand-copied set here would pass while the page shipped another.
+source "$REPO_ROOT/lib/drive.sh"
+
+# --- 9a: the cause, read back from the journal that recorded the block ------
+# THE FIXTURE IS BUILT BY THE REAL PRODUCERS. `orchid task advance <id> blocked
+# --reason "..."` is the verb that records a block, and a hand-written journal
+# here would pin this reader to a format nothing else has to keep. So every
+# entry below is written by the kernel, and each fixture step is witnessed
+# before it is read from.
+page_orchid task create T901 "state the cause" >/dev/null \
+  || fail "fixture task for the blocked-cause section must be creatable"
+page_orchid task advance T901 blocked --reason "the hermes gateway was down and the answer was lost" >/dev/null \
+  || fail "fixture: blocking T901 with a reason must succeed, or there is no journal entry to read back"
+
+# RED. The cause the block was recorded with comes back, verbatim. This string
+# appears nowhere else on the page, so a reason text that merely repeated the
+# remedy list -- the defect -- fails here.
+assert_eq "the hermes gateway was down and the answer was lost" \
+  "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T901)" \
+  "a blocked task's cause is the reason its block was journaled with, not the status restated"
+
+# ...and a PAGE for the same task does not become the next page's cause. This
+# is the edge that makes matching on the entry's KIND wrong: `orchid notify`
+# journals its own text under kind `blocker`, the very kind `task advance`
+# uses for a block, so a kind-keyed reader would quote the previous page back
+# as though it were a cause. The `<from> -> blocked: ` prefix is what tells
+# them apart, and the notify below is a real one, minted by the real verb.
+qid_collide="$(page_orchid notify --task T901 "judgment boundary [blocked-task] needs an operator")" \
+  || fail "fixture: raising a page against T901 must succeed, or the collision below is untested"
+# The heading immediately above the page's own body line, so the witness is
+# about THAT entry's kind and not about the block's entry, which carries the
+# same one.
+assert_match "^## .* T901 blocker" \
+  "$(grep -B1 -F "$qid_collide: judgment boundary" "$PAGE_REPO/.orchid/journal.md" || true)" \
+  "fixture witness: orchid notify really does journal its page under kind 'blocker' — the same kind a block uses, which is why this reader cannot key on the kind"
+assert_eq "the hermes gateway was down and the answer was lost" \
+  "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T901)" \
+  "a previous PAGE journaled under kind 'blocker' is not a cause — the reader selects on the transition's shape, not its kind"
+
+# The MOST RECENT block wins: a task can be blocked, worked and blocked again,
+# and the cause an operator is being asked about is the current one.
+page_orchid task advance T901 blocked --reason "verify failed for something the candidate never caused" >/dev/null \
+  || fail "fixture: re-blocking T901 must succeed, or 'most recent wins' is untested"
+assert_eq "verify failed for something the candidate never caused" \
+  "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T901)" \
+  "the cause is the LATEST block on record, not the first one the journal ever saw"
+
+# GREEN, the honest negative: a task that IS blocked while the journal holds no
+# record of why. INV-08 closes the obvious door -- `task advance <id> blocked`
+# demands `--reason`, asserted below rather than assumed, so no block taken
+# through the verb is ever causeless -- but the record is not indestructible:
+# a journal that was rotated, truncated or restored short, or a task file
+# carried in from another run, leaves exactly this state. The reader says
+# nothing there rather than inventing something, which is what lets
+# runners/orchid-drive's blocked arm say "the journal records no cause" instead
+# of printing an empty clause after a colon.
+page_orchid task create T902 "blocked with nothing on record" >/dev/null \
+  || fail "fixture task for the no-cause case must be creatable"
+rc902=0
+page_orchid task advance T902 blocked >/dev/null 2>&1 || rc902=$?
+[ "$rc902" -ne 0 ] \
+  || fail "fixture witness: a block with no --reason must be refused (INV-08) — if it were accepted, the empty-cause branch would have a second and much commoner source than a lost record"
+# So the state is reached the only way it is reachable: the status without the
+# entry. `fm_set` is the same direct write section 8 above uses on `attempts`.
+fm_set "$PAGE_REPO/.orchid/tasks/T902.md" status blocked
+assert_eq blocked "$(fm_get "$PAGE_REPO/.orchid/tasks/T902.md" status)" \
+  "fixture witness: T902 really is blocked, so an empty cause below means 'nothing recorded', not 'never blocked'"
+assert_eq "" "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T902)" \
+  "a blocked task whose journal holds no transition record yields no cause — the page must never invent one"
+# ...and one task's cause is never read off another's entries.
+assert_eq "" "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T900)" \
+  "a task that was never blocked has no cause, even while another task's block sits in the same journal"
+# ...nor is a missing journal an error that kills the pass: this is read
+# through a command substitution inside a `set -e` driver.
+assert_eq "" "$(drive_blocked_cause "$PAGE_REPO/.orchid/no-such-journal.md" T901)" \
+  "a journal that is not there at all answers 'no cause on record', not a non-zero status"
+
+# A cause is CLIPPED to one line's worth. A charged verify failure's reason
+# carries the whole classifier paragraph, and this text has to survive as one
+# line of a phone notification.
+page_orchid task create T903 "a very long cause" >/dev/null \
+  || fail "fixture task for the clipping case must be creatable"
+long_cause=""
+while [ "${#long_cause}" -lt 300 ]; do long_cause="${long_cause}0123456789"; done
+page_orchid task advance T903 blocked --reason "$long_cause" >/dev/null \
+  || fail "fixture: blocking T903 with a 300-character reason must succeed"
+clipped_cause="$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T903)"
+[ "${#clipped_cause}" -lt 300 ] \
+  || fail "a 300-character block reason must be clipped for the page, got ${#clipped_cause} characters"
+assert_match '\.\.\.$' "$clipped_cause" \
+  "and the clip is marked, so nobody reads a truncated cause as the whole of it"
+
+# --- 9b: the declared answers, enforced by `orchid answer` ------------------
+# THE SET IS READ FROM drive_boundary_choices, NEVER RETYPED HERE. The whole
+# property is that the set an operator is OFFERED and the set `orchid answer`
+# ENFORCES are one object, so a hand-copied list in this fixture would pass
+# while the page shipped another. The argv is assembled exactly the way
+# runners/orchid-drive's own drive_notify assembles it, for the same reason.
+page_blocked_notify() {
+  local text="$1" choice
+  local -a nargs
+  nargs=(notify --task T901)
+  while IFS= read -r choice; do
+    [ -n "$choice" ] || continue
+    nargs+=(--choice "$choice")
+  done <<< "$(drive_boundary_choices blocked-task)"
+  nargs+=("$text")
+  page_orchid "${nargs[@]}"
+}
+
+blocked_reason="task is blocked: verify failed for something the candidate never caused — only an operator (orchid task unblock|retry|reverify) resolves it"
+qidB="$(page_blocked_notify "$blocked_reason")" \
+  || fail "fixture: a blocked-task page must be raisable with its declared set"
+assert_eq "unblock,retry,reverify,defer" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidB.choices")" \
+  "the set recorded with the question is the kernel's whole recovery list out of blocked, reverify included"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" \
+  "$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qidB")" \
+  "and the page an operator actually reads names all four"
+
+# RED, and it is the assertion the shipped defect fails: `reverify` is a verb
+# the reason text points the operator at, so `orchid answer` must ACCEPT it.
+# With the set that omitted it, this call is refused -- the page inviting an
+# answer it then rejects.
+outB="$(page_orchid answer "$qidB" reverify 2>&1)" \
+  || fail "orchid answer must ACCEPT 'reverify' for a blocked-task page: it is a remedy the reason text names (got: $outB)"
+assert_eq "reverify" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidB.answer")" \
+  "and records it verbatim, so the operator's decision survives as the verb they intend to run"
+
+# GREEN, the other edge: the gate is still a gate. A value outside the set is
+# refused, and the refusal NAMES the valid ones including reverify (L028: a
+# refusal names the action that clears it).
+qidB2="$(page_blocked_notify "$blocked_reason")" \
+  || fail "fixture: a second blocked-task page must be raisable for the refusal case"
+rcB=0
+errB="$(page_orchid answer "$qidB2" unblokc 2>&1 1>/dev/null)" || rcB=$?
+[ "$rcB" -ne 0 ] || fail "a typoed answer must be refused, never recorded silently as a decision"
+assert_match "'unblokc' is not among $qidB2's declared choices" "$errB" \
+  "the refusal names the rejected value and the question"
+assert_match "unblock \| retry \| reverify \| defer" "$errB" \
+  "and lists every answer that WOULD be accepted, reverify included"
+[ ! -f "$PAGE_REPO/.orchid/runtime/answers/$qidB2.answer" ] \
+  || fail "a refused out-of-set answer must never be recorded as answered"

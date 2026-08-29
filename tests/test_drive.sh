@@ -166,10 +166,17 @@ fi
 # <qid> <choice> --nonce <n>` — with <choice> validated against nothing.
 # Answerable in principle, unanswerable in practice. So a kind with an
 # enumerable answer set declares it, and `orchid answer` gates on it.
+# The set is the kernel's WHOLE recovery list out of `blocked`, not the subset
+# that predates `reverify`. `orchid answer` refuses everything outside the
+# declared set, so a verb the boundary's own reason text points at and the set
+# omits is an answer the page invites and then rejects — a page contradicting
+# itself, which is worse than the bare `<choice>` placeholder this table
+# replaced.
 assert_eq "unblock
 retry
+reverify
 defer" "$(drive_boundary_choices blocked-task)" \
-  "a blocked task's page names the two verbs that clear it, and the option to leave it parked"
+  "a blocked task's page names all three verbs that clear it — unblock, retry AND reverify — and the option to leave it parked"
 assert_eq "approve
 request-changes
 defer" "$(drive_boundary_choices review-evidence)" \
@@ -992,6 +999,25 @@ assert_match "retry" "$SBLOCKED_REASON" \
   "and the one that grants another rework round (reason: $SBLOCKED_REASON)"
 assert_match "reverify" "$SBLOCKED_REASON" \
   "and the one that re-runs verification alone — every remedy PROTOCOL.md's boundary table lists (reason: $SBLOCKED_REASON)"
+# ...and it states the CAUSE, not merely the status (T009). "task is blocked"
+# is the status restated back at an operator who is being asked to choose
+# between three remedies that differ by exactly what went wrong: `unblock`
+# records guidance, `retry` grants a round, `reverify` re-runs verification
+# alone. The reason the block was recorded WITH is on hand in the journal, and
+# this fixture's is a string no other part of the page could have produced —
+# so a page that merely repeated the remedy list would fail here.
+assert_match "fixture: an operator must resolve this" "$SBLOCKED_REASON" \
+  "the blocked-task boundary states WHY the task is blocked, read back from the journal entry that recorded the block (reason: $SBLOCKED_REASON)"
+# ...and all of that reaches the surface an operator actually reads. This is
+# the whole chain in one place: the driver composed the reason, raised the page
+# through drive_notify, and declared the answer set the page names — a set that
+# has to be the same list the reason text points at, since `orchid answer`
+# refuses everything outside it.
+SBLOCKERS="$(cat "$STARVE/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "fixture: an operator must resolve this" "$SBLOCKERS" \
+  "the blocker page carries the cause, not just the boundary record"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$SBLOCKERS" \
+  "and names every answer orchid answer will accept for it, reverify included"
 
 # ...AND SO DOES EVERY OTHER SITE THAT RAISES THIS KIND. The pass above can
 # only reach the one boundary a fixture can walk to; the driver raises the

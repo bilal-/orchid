@@ -366,10 +366,11 @@ drive_boundary_settling_verb() {
 # clears it), and naming the set is the fix.
 #
 # The vocabulary is DECISIONS, and each one names the operator verb that
-# carries it out -- `unblock`/`retry` (`orchid task unblock|retry`),
-# `approve`/`request-changes` (`orchid task arbitrate --result`), `accept`
-# (`orchid run accept --evidence`), `acknowledged` (`orchid task handoff
-# --ack` for a hand-off, `orchid task prereq-ack` for a prerequisite).
+# carries it out -- `unblock`/`retry`/`reverify` (`orchid task
+# unblock|retry|reverify`), `approve`/`request-changes` (`orchid task arbitrate
+# --result`), `accept` (`orchid run accept --evidence`), `acknowledged`
+# (`orchid task handoff --ack` for a hand-off, `orchid task prereq-ack` for a
+# prerequisite).
 # Recording the answer is not running the verb: nothing consumes a
 # `.answer` file automatically, so the page records what the operator decided
 # and the operator still runs it. Every value is one [A-Za-z0-9_-] word, which
@@ -405,9 +406,23 @@ drive_boundary_settling_verb() {
 # resolves silently to the `*)` arm and ships the unanswerable page for exactly
 # the boundary whose paragraph was forgotten. So a new kind fails that walk
 # until it is named in one list or the other.
+#
+# THE SET IS THE KERNEL'S WHOLE RECOVERY LIST FOR THE STATE, not the subset
+# that happened to exist when the table was written. `blocked-task` declared
+# `unblock | retry | defer` while PROTOCOL.md's boundary table, kernel.md's
+# ownership table and the boundary's own reason text all named a THIRD verb --
+# `orchid task reverify`, the one recovery that re-runs verification alone
+# without spending an attempt, and therefore the right answer for every block
+# whose cause was never the candidate. A page that lists two of three does not
+# merely omit one: `orchid answer` refuses everything outside the declared set,
+# so the operator who reads the reason text, names the verb it points at, and
+# answers `reverify` is told their answer is invalid. That is worse than the
+# bare `<choice>` placeholder this table replaced -- it is a page that
+# contradicts itself. A verb the kernel offers out of a state is a verb this
+# set names.
 drive_boundary_choices() {
   case "$1" in
-    blocked-task) printf 'unblock\nretry\ndefer\n' ;;
+    blocked-task) printf 'unblock\nretry\nreverify\ndefer\n' ;;
     review-evidence|review-conflict) printf 'approve\nrequest-changes\ndefer\n' ;;
     run-complete) printf 'accept\ndefer\n' ;;
     operator-handoff|task-prerequisite) printf 'acknowledged\ndefer\n' ;;
@@ -3954,6 +3969,67 @@ drive_waived_rounds() {
     n=$((n + 1))
   done <<< "$lines"
   printf '%s\n' "$n"
+}
+
+# drive_blocked_cause <journal-file> <task-id> -- the reason this task was most
+# recently moved INTO `blocked`, clipped for one line, or empty when the
+# journal records none.
+#
+# WHY THE PAGE NEEDS THIS AT ALL. `blocked` is the one status the driver
+# re-reports on every pass until a human acts, so its boundary reason is the
+# text an operator meets over and over -- and it said only "task is blocked",
+# which is the status restated, not a cause. The operator is then told to
+# choose between `unblock`, `retry` and `reverify` with nothing on the page to
+# choose BY: those three differ precisely in what went wrong (guidance the plan
+# lacked, a round budget spent, a verification that failed for something the
+# candidate never caused). Every one of those causes was already written down
+# at the moment of the block; the page simply did not carry it.
+#
+# READ FROM THE JOURNAL, not from frontmatter, because frontmatter has no field
+# for it: `orchid task advance <id> blocked --reason "..."` and `orchid task
+# infra-fail`'s cap arm both land the reason as a journal entry and nothing
+# else. The journal is append-only and the task is not moving while it sits
+# blocked, so the same pass-after-pass boundary text stays byte-identical --
+# which is what keeps runners/orchid-drive's field-by-field de-dup raising ONE
+# blocker for a persisting condition rather than one per pass.
+#
+# MATCHED ON THE ENTRY'S TEXT, NOT ITS KIND, and that is load bearing in both
+# directions. `advance` journals a block under kind `blocker` while
+# `infra-fail`'s cap arm journals its own under `intervention`, so keying on
+# the kind would silently miss every infra-exhaustion block. And kind `blocker`
+# is not ours alone -- `orchid notify` writes its own page text under exactly
+# that kind, so keying on it would happily quote a PREVIOUS page back onto the
+# next one as though it were a cause. The `<from> -> blocked: ` prefix is the
+# shape only a real transition record has (notify's entries open with the qid),
+# so it selects one and excludes the other with a single anchored pattern.
+_drive_blocked_cause_lines() {
+  # Same split as the waiver reader above, and for the same reason its own
+  # header gives: awk walks the `## <ts> <task> <kind>` headings and prints
+  # candidate lines, nothing more. This library is sourced into a `set -e`
+  # driver and read through a command substitution, so an awk that dies takes
+  # the whole pass down instead of returning "no cause on record".
+  awk -v id="$2" '
+    /^## / { want = ($3 == id); next }
+    want && $0 != "" { if ($0 ~ /^[a-z]+ -> blocked: /) print; want = 0 }
+  ' "$1"
+}
+
+drive_blocked_cause() {
+  local journal="$1" id="$2" line lines last=""
+  [ -f "$journal" ] || { printf '\n'; return 0; }
+  lines="$(_drive_blocked_cause_lines "$journal" "$id" || true)"
+  # The LAST match wins: a task can be blocked, retried and blocked again, and
+  # the cause an operator is being asked about is the current one.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    last="$line"
+  done <<< "$lines"
+  [ -n "$last" ] || { printf '\n'; return 0; }
+  # Clipped through the same helper a charged journal reason quotes evidence
+  # with: a verify-failure reason carries a whole classifier paragraph, and
+  # this text has to survive as one line of a phone notification.
+  _drive_quote_line "${last#* -> blocked: }"
+  printf '\n'
 }
 
 drive_verify_class() {
