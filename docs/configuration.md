@@ -116,6 +116,15 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   `verify`'s: `verify` is a *fallback* a task overrides with its own
   `verification_commands`, while `merge_gate` is read from repo config only
   and no task frontmatter can switch it off.
+  - **The command is resolved against the repository, not against the
+    candidate.** `orchid merge` reads this key from the repository's own
+    `orchid.config` and then *runs* the resulting command inside the temp
+    worktree holding the merged tree. Only the second half sees the candidate.
+    So a candidate that commits an `orchid.config` of its own naming a gentler
+    gate is still judged by the one configured here — its version of the key
+    takes effect from the *next* merge, once it has landed and an operator has
+    it. Frontmatter is not the only way a change could otherwise lower the
+    floor it is being measured against; this is the other one.
   - **It blocks, it does not merely run.** Its exit status joins the task
     suite's, and the integration-ref advance is already conditional on that
     being zero — so a red gate returns the task to `rework` (journaled

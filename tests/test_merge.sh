@@ -639,6 +639,34 @@ assert_match "^== merge_gate: ls >> " "$(cat "$log9")" "the gate's output is cap
 assert_match "^exit: 0$" "$(cat "$log9")" "the log still ends in the single exit: line lib/findings.sh keys on"
 assert_eq "exit: 0" "$(tail -n1 "$log9")" "gate output never displaces the trailing exit: line"
 
+# WHERE THE GATE COMMAND CAME FROM, which is the other half of "no task can
+# switch it off". Task frontmatter cannot, because nothing reads it -- but a
+# candidate is a TREE, and a tree carries an orchid.config of its own. If
+# `orchid merge` resolved the gate against the merged tree in $wt rather than
+# against the repository, a candidate could ship a one-line config naming a
+# gate that trivially passes and be judged by it: the floor lowered by the
+# very change it is there to judge.
+#
+# This scenario already settles it, and only a witness was missing. The
+# fixture's orchid.config is written into the working tree at the top of this
+# file and never `git add`ed, so it is in NO commit -- the merged tree
+# contains no orchid.config at all. A gate resolved from that tree would have
+# found nothing and run nothing, and the assertions above would all have
+# failed. So assert the witness explicitly, because it is a property of the
+# fixture rather than of the code and a later `git add` in an unrelated
+# scenario would retire this proof silently, leaving the assertions still
+# green and no longer about anything. (`orchid start` is the one verb that
+# would do it -- it commits orchid.config onto the integration branch on
+# purpose -- and this file never calls it. In a repository that HAS been
+# started, the merged tree carries an orchid.config and the same property
+# rests instead on config_get being asked for $repo: that is the claim the
+# assertion below pins, and the absence above is only what makes this fixture
+# able to show it.)
+git show "$integ:orchid.config" >/dev/null 2>&1 \
+  && fail "fixture invariant broken: orchid.config is TRACKED, so the merged tree carries one too and scenario (A) no longer shows the gate came from the repository rather than from the candidate"
+assert_eq "gate: $gate_pass" "$(grep '^gate: ' "$log9")" \
+  "the gate that ran is verbatim the REPOSITORY's configured command -- resolved from repo config, not from the tree being merged"
+
 # --- (B) a RED gate blocks: the integration ref does not move -------------
 # The candidate's OWN suite passes here. Anything that stops this merge is
 # therefore the gate and nothing else — and (B2) below closes that argument
