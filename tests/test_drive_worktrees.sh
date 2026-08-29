@@ -531,3 +531,58 @@ assert_match 'WP2' "$l003_note" "the note is raised against the task whose workt
 assert_match 'deps' "$l003_note" "and it names the tree that is missing"
 assert_match 'worktree_prepare' "$l003_note" \
   "and it names the config key that supplies it, not a manual copy the next worktree add would undo"
+
+# ===========================================================================
+# 15 -- an ADOPTED orphan records the base its branch was actually created on.
+#
+# Part 12 fixed the stamp's TIMING: it happens above the prepare step, so a
+# pass that dies there still leaves the base on record. This is the other half
+# of the same claim, and the plan is where it goes wrong rather than the
+# clock. `adopt` is reached only because the branch already exists -- a pass
+# created it, at that pass's integration head, and died before recording
+# anything. Stamping the head THIS pass reads therefore records a sha the
+# task's branch does not descend from, into the one field `orchid merge`
+# compares against the integration head to decide whether the candidate is
+# behind: the two agree, the merge takes the candidate as current, and both
+# the rebase and the re-verify INV-07 requires for a moved base are skipped.
+#
+# RED before this change: base_sha is $ADOPT_MOVED -- the integration head the
+# orphan predates -- and the descent assertion under it fails.
+# ===========================================================================
+"$ORCHID_BIN" task advance WP2 blocked --reason "fixture: excluded from the adopt-base pass" >/dev/null
+"$ORCHID_BIN" task create WX1 "orphan created before integration moved" >/dev/null
+git worktree add -q "$WORKP/repo-WX1" -b task/WX1 "$HEAD_SHA"
+# Integration moves after the orphan exists, exactly as any other task merging
+# between the crashed pass and this one would move it. Without this the two
+# shas are equal and every assertion below passes on either implementation.
+ADOPT_MOVED="$(git -C "$REPO" commit-tree "$HEAD_SHA^{tree}" -p "$HEAD_SHA" \
+  -m 'another task merged before the orphan was adopted')"
+[ "$ADOPT_MOVED" != "$HEAD_SHA" ] \
+  || fail "the fixture must actually move the integration head, or this part is vacuous"
+git -C "$REPO" branch -f orchid/integration "$ADOPT_MOVED"
+
+rc=0
+out8="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_match "WX1: adopted the orphan dispatch worktree" "$out8" \
+  "the pass really did take the adopt arm -- the stamp below is the adopt arm's, not a fresh create's"
+assert_eq "$HEAD_SHA" "$(fm_get "$state_tasks/WX1.md" base_sha)" \
+  "an adopted orphan records the base its branch was created on, not the integration head this pass happens to read"
+if ! git -C "$REPO" merge-base --is-ancestor \
+    "$(fm_get "$state_tasks/WX1.md" base_sha)" task/WX1; then
+  fail "the recorded base_sha must be a base the task's branch actually descends from"
+fi
+if git -C "$REPO" merge-base --is-ancestor "$ADOPT_MOVED" task/WX1; then
+  fail "the fixture's moved integration head must NOT be in the adopted branch's history"
+fi
+
+# And the create arm is unchanged by that rule: a branch this pass makes at
+# the integration head has that head as its fork point, so both arms stamp the
+# same thing for the same reason and `create` needs no special case.
+"$ORCHID_BIN" task advance WX1 blocked --reason "fixture: excluded from the create-base pass" >/dev/null
+"$ORCHID_BIN" task create WX2 "created at the moved head" >/dev/null
+rc=0
+out9="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_match "WX2: created the dispatch worktree" "$out9" \
+  "the second pass took the create arm, so the assertion below is about a branch this pass made"
+assert_eq "$ADOPT_MOVED" "$(fm_get "$state_tasks/WX2.md" base_sha)" \
+  "a freshly created worktree still records the integration head it was branched from"

@@ -858,7 +858,7 @@ drive_hook_gate() {
 # ---------------------------------------------------------------------------
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
-  local tf target outcome blockers plan action path branch integ integ_head arc lrc role_line role op wtmiss prep prep_why
+  local tf target outcome blockers plan action path branch integ integ_head base_stamp arc lrc role_line role op wtmiss prep prep_why
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
@@ -929,8 +929,29 @@ drive_dispatch() {
     # as though it were up to date, skipping the re-verify INV-07 requires.
     # Nothing later can notice -- the two shas agree, which is exactly the
     # state the check reads as "nothing to do".
+    #
+    # AND IT IS THE BRANCH'S OWN BASE, NOT THIS PASS'S INTEGRATION HEAD. Only
+    # the `create` arm above just made the branch at `$integ_head`; `adopt`
+    # and `reuse` are reached precisely BECAUSE the branch already existed,
+    # made at whatever the integration head was on the pass that created it --
+    # and adopt is by definition the pass after a crash, so an unstamped
+    # base_sha there is the ordinary case, not an exotic one. Stamping the
+    # current head for those two writes the same false claim the timing above
+    # exists to prevent, just sourced from the plan instead of from the clock:
+    # a base the candidate does not descend from, recorded as though it were
+    # current, which is the one state `orchid merge` reads as "no rebase, no
+    # re-verify". The fork point of the branch from the integration head IS
+    # the base it was built on -- equal to `$integ_head` in the `create` arm,
+    # so this is one rule and not a special case. If git cannot answer (an
+    # unrelated history), fall back rather than leave the field empty: a base
+    # that is merely stale makes `merge` rebase and re-verify, which is the
+    # safe direction, while no base at all blocks entry to `testing` outright.
     if [ -z "$(fm_get "$tf" base_sha)" ]; then
-      "$ORCHID_BIN" task set "$id" base_sha "$integ_head"
+      base_stamp=""
+      [ "$action" = create ] \
+        || base_stamp="$(git -C "$repo" merge-base "$integ_head" "$branch" 2>/dev/null || true)"
+      [ -n "$base_stamp" ] || base_stamp="$integ_head"
+      "$ORCHID_BIN" task set "$id" base_sha "$base_stamp"
     fi
     # The checkout exists; now make it USABLE. A fresh worktree holds only
     # what is committed, so a project whose verification needs untracked
