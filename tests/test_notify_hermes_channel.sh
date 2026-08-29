@@ -1483,12 +1483,12 @@ assert_eq "defer" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidY.answer")" \
 # The assertion the shipped defect fails. `drive_notify` is the only thing in
 # runners/orchid-drive that raises a page, and it is called from exactly one
 # place: the boundary record at the foot of the file, the one site the
-# field-by-field de-dup covers. Three arms used to call it as well -- two
-# paging a task they were about to block, one paging a boundary it recorded in
-# the same breath -- so those pages were compared against nothing. Counting the
-# call sites is what keeps a fourth from being added: the count is the
-# invariant, and it fails on the addition rather than on the duplicate page an
-# operator would have had to notice in a channel.
+# field-by-field de-dup covers. Four arms used to page beside their record --
+# two paging a task they were about to block, two paging a boundary they
+# recorded in the same breath -- so those pages were compared against nothing.
+# Counting the call sites is what keeps a fifth from being added: the count is
+# the invariant, and it fails on the addition rather than on the duplicate page
+# an operator would have had to notice in a channel.
 drive_src="$REPO_ROOT/runners/orchid-drive"
 [ -f "$drive_src" ] || fail "fixture: runners/orchid-drive must be readable for the producer count below"
 drive_notify_calls="$(grep -cE '^[[:space:]]*drive_notify ' "$drive_src" || true)"
@@ -1505,3 +1505,81 @@ fi
 assert_match "drive_block_boundary" \
   "$(grep -E -A 8 'attempts exhausted \(\$attempts/\$budget\): see' "$drive_src" || true)" \
   "the exhausted-budget arm records the blocked-task boundary its own block produced — that record IS the page"
+
+# --- 12d: RED — the OTHER spelling of a page producer -----------------------
+# Counting `drive_notify` call sites is only half a guard, and the missing half
+# is exactly what let one arm keep its duplicate page while the other three
+# were repaired: the merge-blocked arm never called `drive_notify` at all. It
+# invoked the verb itself --  `"$ORCHID_BIN" notify --task "$merge_id" ...` --
+# which reads as ordinary verb use, leaves the count above sitting at one, and
+# is still a page the field-by-field de-dup never sees. It ran on the same pass
+# as the boundary the foot of the file pages for, so one blocked merge asked an
+# operator twice, and the direct page declared no answer set at all.
+#
+# So the invariant is pinned in BOTH spellings: exactly one drive_notify site,
+# and zero lines that run the verb straight off the binary. Counted over the
+# file with its COMMENTS STRIPPED, because the paragraph in drive_notify that
+# explains this defect has to be free to name the shape it forbids without
+# tripping its own guard — and with a witness that the stripped body is still
+# the driver, since a `grep` that matched nothing would otherwise report zero
+# and pass this section on an empty string.
+drive_code="$(grep -vE '^[[:space:]]*#' "$drive_src" || true)"
+assert_match "^drive_notify\(\)" "$drive_code" \
+  "fixture witness: the comment-stripped body still holds the driver's own code, so the count below is read off the real thing"
+# Bracket expressions rather than backslash escapes for `$`, `{` and `}`: `\{`
+# is an interval opener to some ERE engines and a literal brace to others, and
+# this pattern has to mean the same thing wherever the suite runs.
+raw_notify_calls="$(grep -cE '[$][{]?ORCHID_BIN[}]?"?[[:space:]]+notify([[:space:]]|$)' <<<"$drive_code" || true)"
+assert_eq "0" "$raw_notify_calls" \
+  "runners/orchid-drive must never invoke the notify verb directly — a page raised outside drive_notify is compared against nothing, and mints a second qid for a stop the boundary record pages for by itself (found $raw_notify_calls)"
+# ...and, as in 12c, the arm that lost its direct page still records the stop:
+# a merge that blocks a task must reach a human through the blocked-task
+# boundary, not through the pass log alone.
+merge_blocked_arm="$(grep -E -A 10 'repo-wide merge_gate red with the rework budget spent' "$drive_src" || true)"
+assert_match "drive_block_boundary" "$merge_blocked_arm" \
+  "the merge-blocked arm records the blocked-task boundary its own verb produced — deleting a page must not delete the stop"
+if grep -qE '^[[:space:]]*set_boundary operator-decision "\$merge_id"' <<<"$merge_blocked_arm"; then
+  fail "a merge-blocked task recorded under a second kind is a second page: the next pass walks the same blocked task and records it through drive_blocked_reason, and two unequal records are two qids"
+fi
+
+# --- 12e: what that arm's page carries once it is the record's -------------
+# The behavioural half of 12d, composed exactly as the driver composes it.
+# `orchid merge` blocks a task whose repo-wide gate stayed red for every round
+# it had, journaling `merging -> blocked: gate_failed: ... see
+# reviews/<id>-merge.log` with both recoveries named. That is the cause the
+# page must carry — the arm's own second wording was never a different fact.
+# The evidence pointer used to ride on the direct notify, which meant it
+# existed for exactly one pass; carried by the block's journaled reason it is
+# on the page every later pass recomputes as well.
+page_orchid task create T906 "lose its last round to the repository's own gate" >/dev/null \
+  || fail "fixture task for the merge-blocked page must be creatable"
+page_orchid task advance T906 blocked \
+  --reason "gate_failed: repo-wide merge_gate exited 3 — see reviews/T906-merge.log — the repository's own gate has now been red for every rework round this task had (3/3)" >/dev/null \
+  || fail "fixture: blocking T906 the way orchid merge blocks it must succeed"
+mrg_cause="$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T906)"
+assert_match "^gate_failed: repo-wide merge_gate exited 3" "$mrg_cause" \
+  "the page reads back the merge verb's own journaled reason — the driver invents no second wording of it (cause: $mrg_cause)"
+mrg_reason="$(drive_blocked_reason T906 "$mrg_cause")"
+assert_match "reviews/T906-merge\.log" "$mrg_reason" \
+  "...so the gate's evidence is still named after the arm's one-shot notify was deleted, and named on every later pass too (reason: $mrg_reason)"
+assert_match "orchid task reverify T906" "$mrg_reason" \
+  "...beside the recovery that costs no attempt, which is the one a gate failure the candidate never caused actually needs"
+qidM="$(page_block_notify T906 "$mrg_reason")" \
+  || fail "fixture: the merge-blocked page must be raisable with its declared set"
+page_m="$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qidM")"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$page_m" \
+  "the surviving page declares the answer set the direct notify never did — that one left <choice> to be guessed for a stop with four known answers"
+outM="$(page_orchid answer "$qidM" reverify 2>&1)" \
+  || fail "orchid answer must accept 'reverify' on the merge-blocked page (got: $outM)"
+assert_eq "reverify" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidM.answer")" \
+  "and records it against the one qid this stop raised"
+qidM2="$(page_block_notify T906 "$mrg_reason")" \
+  || fail "fixture: a second merge-blocked page must be raisable for the refusal case"
+rcM=0
+errM="$(page_orchid answer "$qidM2" "re-run the gate by hand" 2>&1 1>/dev/null)" || rcM=$?
+[ "$rcM" -ne 0 ] \
+  || fail "free text must be refused on a page that declared a set, or the declaration is decoration"
+[ ! -f "$PAGE_REPO/.orchid/runtime/answers/$qidM2.answer" ] \
+  || fail "a refused answer must never be recorded as one"
+assert_match "unblock \| retry \| reverify \| defer" "$errM" \
+  "...and the refusal names what would be accepted (L028)"

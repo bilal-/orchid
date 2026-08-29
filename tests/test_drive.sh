@@ -8084,7 +8084,7 @@ assert_match "merge_gate FAILED" "$GDRIVE_OUT" \
   "the pass names the REPO-WIDE GATE as what went red"
 grep -q "merge validation failed" <<<"$GDRIVE_OUT" \
   && fail "a gate failure reported as 'merge validation failed' sends the reader to the candidate's diff for a repository condition"
-grep -q "boundary \[operator-decision\] G010" <<<"$GDRIVE_OUT" \
+grep -qE "boundary \[(operator-decision|blocked-task)\] G010" <<<"$GDRIVE_OUT" \
   && fail "with rounds still left a red gate is an ordinary rework round (rc=$GDRIVE_RC), not a stop for a human"
 
 # --- (Z2) the cap: the same gate, with nothing left to spend ---------------
@@ -8101,10 +8101,19 @@ assert_eq blocked "$(gfield status)" \
   "over the cap, merge stops the task instead of sending it round again (out: $GDRIVE_OUT)"
 assert_eq 2 "$(gfield attempts)" "and the round that blocked is itself charged"
 assert_eq 16 "$GDRIVE_RC" "the pass stops at a judgment boundary"
+# RAISED AS THE REPOSITORY JUDGMENT IT IS (T023), but through the SAME helper
+# every later pass over this blocked task calls (T009). The durable cause
+# contains `gate_failed`, so drive_block_boundary reproduces both this kind and
+# this reason on the next walk instead of changing the record and minting a
+# second qid for one stop.
 assert_match "boundary \[operator-decision\] G010" "$GDRIVE_OUT" \
-  "raised as a boundary a human is expected to clear"
+  "raised as a repository judgment in the words every later pass over this gate-blocked task recomputes"
+grep -q "boundary \[blocked-task\] G010" <<<"$GDRIVE_OUT" \
+  && fail "a capped repository gate must not be reported as an ordinary task block"
 assert_match "merge_gate" "$GDRIVE_OUT" \
   "...naming the gate rather than the candidate -- a blocked merge filed as an 'unexpected status' tells nobody anything"
+assert_match "reviews/G010-merge\.log" "$GDRIVE_OUT" \
+  "...and the evidence pointer survives the arm's own wording being dropped, because the block's journaled reason carries it"
 assert_match "orchid task reverify G010" "$GDRIVE_OUT" \
   "and carrying the recovery that costs no attempt, since the gate is frequently not this task's doing"
 assert_match "orchid task retry G010" "$GDRIVE_OUT" "...beside the one that grants rounds back"

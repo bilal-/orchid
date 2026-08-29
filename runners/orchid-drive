@@ -357,14 +357,22 @@ set_boundary() {
 # disk, field by field, so a condition that persists for a hundred passes raises
 # one page. A notify sent from anywhere else is outside that comparison
 # altogether -- it cannot be de-duplicated against anything, and it mints a
-# second qid for a stop the boundary is about to page for by itself. Three arms
+# second qid for a stop the boundary is about to page for by itself. Four arms
 # did exactly that -- the exhausted-budget arm and the wallclock backstop, each
-# paging a task it was about to block, and the stuck-merge arm, paging a
-# boundary it recorded in the same breath. All three now record and let the
-# record page. A new stop that needs a human takes the same route:
-# set_boundary, never a notify of its own -- and
-# tests/test_notify_hermes_channel.sh counts the call sites in this file so a
-# fourth fails a test rather than a human's evening.
+# paging a task it was about to block, and the stuck-merge and blocked-merge
+# arms, each paging a boundary it recorded in the same breath. All four now
+# record and let the record page. A new stop that needs a human takes the same
+# route: set_boundary (or drive_block_boundary, when the stop is a blocked
+# task), never a notify of its own.
+#
+# THE COUNT IS THE GUARD, in both spellings. tests/test_notify_hermes_channel.sh
+# holds this file to ONE drive_notify call site AND to zero lines that run the
+# `notify` verb straight off the binary, because the second spelling is how the
+# blocked-merge arm kept its duplicate page through the rounds that repaired the
+# first three: writing the verb out by hand reads as ordinary verb use, leaves a
+# count of drive_notify sites sitting at one, and is a page nothing compares all
+# the same. A fifth arm in either spelling fails a test rather than a human's
+# evening.
 drive_notify() {
   local kind="$1" task="$2" tstatus="$3" text="$4" choice
   local -a nargs
@@ -2298,9 +2306,17 @@ drive_arbitrating() {
 # sees one record persisting instead of two records replacing each other, and
 # the human gets one page instead of one per pass.
 drive_block_boundary() {
-  local id="$1" cause
+  local id="$1" cause kind
   cause="$(drive_blocked_cause "$state/journal.md" "$id" || true)"
-  set_boundary blocked-task "$id" "$(drive_blocked_reason "$id" "$cause")"
+  kind=blocked-task
+  # A capped repo-wide gate is a judgment about the repository, not a task
+  # defect. Preserve that T023 distinction on EVERY later walk of the blocked
+  # task as well as on the merge pass that first blocked it; deriving the kind
+  # from the same durable cause keeps T009's one-page de-dup stable.
+  case "$cause" in
+    *gate_failed*|*merge_gate*) kind=operator-decision ;;
+  esac
+  set_boundary "$kind" "$id" "$(drive_blocked_reason "$id" "$cause")"
 }
 
 drive_blocked() {
@@ -2775,31 +2791,19 @@ if [ -n "$merging_ids" ]; then
         # merge that never started cannot have moved the task out of
         # `merging`. Every other route here deletes the old log first, so
         # "there is a log" already means "this run wrote it", and a second
-        # test could only ever turn a correct answer into a wrong one.
+        # test could only ever turn a correct answer into a wrong one. The
+        # durable cause also lets drive_block_boundary reproduce the SAME kind
+        # and reason on later passes, so this distinction does not mint a
+        # second page when the blocked task is walked again (T009).
         if [ "$merge_gate_red" -eq 1 ]; then
-          "$ORCHID_BIN" notify --task "$merge_id" \
-            "repo-wide merge_gate red with the rework budget spent: see .orchid/reviews/$merge_id-merge.log" >/dev/null
-          set_boundary operator-decision "$merge_id" "the repository's own merge_gate has been red for every rework round this task had, so merge charged the last one and stopped: see .orchid/reviews/$merge_id-merge.log — a gate failure is frequently not the task's own doing, and another implementer round cannot clear one. Fix the repository (or this candidate, if the gate names it), then: orchid task reverify $merge_id --reason \"...\" re-runs verification with no attempt consumed, or orchid task retry $merge_id --reason \"...\" --attempts N grants further rounds"
+          drive_note "$merge_id: repo-wide merge_gate red with the rework budget spent (gate_failed, attempt charged) — merging -> blocked; see .orchid/reviews/$merge_id-merge.log"
         else
-          # WORD FOR WORD the message the other blocked-task boundary in this
-          # file raises, and the remedy list is the whole one PROTOCOL.md's
-          # boundary table names -- `reverify` included, which is legal out of
-          # `blocked` (libexec/orchid-task's reverify edge) exactly as the
-          # other two are. T026 is the reason that list is spelled in full: a
-          # boundary an operator re-reads on every pass over a parked task is
-          # the one place they are guaranteed to look, so a remedy missing
-          # from it is a remedy nobody can discover. A second site raising the
-          # same kind with a shorter list would put that defect back for
-          # whichever route happened to park the task -- here, an environment
-          # nobody repaired.
-          #
-          # Also the honest report for a third route nobody has written yet:
-          # the task IS blocked and an operator IS the only thing that clears
-          # it, which stays true however it got there -- where asserting a
-          # gate failure the log does not record would not.
-          set_boundary blocked-task "$merge_id" \
-            "task is blocked — only an operator (orchid task unblock|retry|reverify) resolves it"
-        fi ;;
+          # The other current route is the exhausted infrastructure ladder.
+          # Keep it distinct so the pass never asserts a gate failure whose
+          # evidence does not exist.
+          drive_note "$merge_id: merge left the task blocked (exit $merge_rc) with no failing merge_gate recorded in .orchid/reviews/$merge_id-merge.log"
+        fi
+        drive_block_boundary "$merge_id" ;;
       testing)
         "$ORCHID_BIN" journal add --task "$merge_id" \
           "re-review scope: full — the rebase minted a new candidate, so prior evidence is invalid" >/dev/null
