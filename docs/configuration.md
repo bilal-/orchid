@@ -52,6 +52,8 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `integration_branch` | `orchid/integration` | repo | v0 |
 | `verify` | *(none — required)* | repo | v0 |
 | `merge_gate` | *(unset — no gate)* | repo | v1.1 |
+| `worktree_prepare` | *(unset — no preparation step)* | repo | v1.0 |
+| `worktree_prepare_timeout_s` | `900` | repo | v1.0 |
 | `concurrency` | `2` | repo or user | v0 (1) / v1-m2 (2 + scheduling) |
 | `role.orchestrator` | `claude` (fallback chain default: `claude,codex`) | repo or user | v0 |
 | `role.implementer` | `codex` (fallback chain default: `codex,claude`) | repo or user | v0 |
@@ -227,6 +229,64 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   reaps a manifest out from under a launcher that is between its own `jobs
   prepare` and its spawn line. That margin is the DRIVER's, not the verb's: an
   operator running `orchid jobs gc --older-than-s 0` by hand gets zero.
+- **`worktree_prepare`** is the setup command for the checkouts Orchid makes
+  for itself. Both of them — a task's dispatch worktree, and the temp
+  worktree `orchid merge` runs the suite in before touching the integration
+  ref — are `git worktree add` of a ref, so they hold *only what is
+  committed*. If `verify` needs anything untracked (installed dependencies, a
+  generated file, a `.env`), it will pass in your own checkout and fail in
+  both of orchid's, and the failure lands on the candidate rather than on the
+  environment. Set this to the command that closes the gap; leave it unset
+  (the default) when the committed tree is enough to verify.
+
+  It runs *inside* the fresh checkout with that checkout as its working
+  directory, and is handed three variables:
+
+  | Variable | What it is |
+  |---|---|
+  | `ORCHID_REPO_ROOT` | this repository's own canonical path — a dispatch worktree is a *sibling* of it and a merge worktree is an unrelated directory under `$TMPDIR`, so no relative path reaches it from both (`ln -s "$ORCHID_REPO_ROOT/node_modules" .`) |
+  | `ORCHID_WORKTREE` | the checkout being prepared |
+  | `ORCHID_TASK` | the task id it belongs to — the bare id, with nothing appended, for the merge validation worktree exactly as for the dispatch one; `ORCHID_WORKTREE` is what tells the two apart |
+
+  `ORCHID_REPO_ROOT` is not `ORCHID_REPO`: the latter is a verb's
+  "which repository" input, and setting it here would retarget any nested
+  `orchid` call the command makes.
+
+  `ORCHID_REPO_ROOT` is also exported to **`verify` itself**, in both
+  checkouts that run it. Reaching back to this repository is not always
+  one-time setup — a symlink whose target the suite re-points, a cache
+  directory a test writes into, a fixture path computed per run — and the
+  checkout the suite runs in is a sibling worktree or a `$TMPDIR` one
+  regardless, so `verify` needs the same portable handle rather than an
+  absolute path hardcoded into committed config. `ORCHID_WORKTREE` and
+  `ORCHID_TASK` are not: both describe *the checkout being prepared*, and a
+  verification command is already standing in the checkout it runs against.
+
+  It runs **once per checkout per command text** — a stamp in the worktree's
+  own private git dir, so it dies with the worktree, is never re-run on the
+  next dispatch pass, and *is* re-run after you edit this key. A failure is
+  never stamped (the next pass retries it) and stops the run: dispatch parks
+  on a `worktree-conflict` boundary without advancing the task, and `orchid
+  merge` refuses before it can score the environment against a candidate.
+  Output lands in `.orchid/runtime/worktree-prepare/<task>.log` for the
+  dispatch worktree and `.orchid/runtime/worktree-prepare/<task>-merge.log`
+  for the merge validation one — two checkouts of one task, so two records.
+
+  A failure is also **counted as an infra failure, not as an attempt** (from
+  either checkout). That is the point of this being its own command: folded
+  into `verify` instead, a broken bootstrap is a failed verification, which
+  spends one of the task's attempts and reads as "the candidate is wrong".
+  Because `infra_failures` has a cap (`infra_max`), a setup command nobody
+  repairs ends as a blocked task after a bounded number of passes rather
+  than a boundary raised forever.
+
+  Its **stdin is closed** (`/dev/null`), so a command that prompts sees EOF
+  rather than hanging or, worse, reading the driver's own worklist out from
+  under the pass that called it. Write it to run unattended: `npm ci`, not
+  an installer that asks to continue. The same applies to `verify`.
+- **`worktree_prepare_timeout_s`** bounds that command so a hung setup step
+  cannot hang the driver pass that called it; a timeout is a failure like any
+  other. A non-numeric value falls back to the default.
 - **`cpu_stall_min_s`** (default `0`: the check is OFF until an operator
   opts in) is the CPU floor of the stall check. `stall_minutes` catches a
   job that stops writing to its log; this catches the job that keeps writing

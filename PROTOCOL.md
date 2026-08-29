@@ -1980,6 +1980,20 @@ ones its archetype never declares.
     candidate. The recoveries are `orchid task reverify <id> --reason "..."`
     (re-runs verification, consumes no attempt) once the repository is green,
     or `orchid task retry <id> --reason "..." --attempts N` for more rounds.
+  - status `blocked` (exit was `1`) with NO `.orchid/reviews/<id>-merge.log`
+    recording a red gate: the other route to this status, and it needs the
+    opposite report. A `worktree_prepare` step that keeps failing for the
+    validation worktree charges the infra ladder each pass, and the kernel's
+    own counter blocks the task at `infra_max` — before the suite or the gate
+    ever run, and after the verb deleted any earlier attempt's validation
+    log. So there is no gate to name and no merge log to read: raise it as
+    the blocked task it is (`orchid task unblock|retry|reverify` are the
+    remedies, as for any blocked task), point at the prepare log the verb's
+    own final line names, and fix the environment. Reporting this one as a
+    gate failure sends a human to a file that is not there, for a repository
+    condition that did not happen; distinguish the two by whether a merge log
+    this run wrote records `gate_status: ran` with a nonzero `gate_exit:`,
+    never by the status or the exit code, which are identical for both.
   - status `testing`, with a fresh `base_sha`/`candidate_sha` and invalidated
     evidence (exit was `5`, `rebase_rereview_required`; verb already
     journaled this with kind `rebase_review`): classifying the coming
@@ -1988,12 +2002,20 @@ ones its archetype never declares.
     --task <id> "re-review scope: delta|full — <why>"` — then resume the
     `testing` branch of this walk on the next pass over the task.
   - status still `merging` despite a nonzero exit (e.g. the update-ref
-    compare-and-swap lost to a concurrent merge): a persistent config/CAS
+    compare-and-swap lost to a concurrent merge, or the `worktree_prepare`
+    step for the validation worktree failed): a persistent config/CAS
     problem, not a candidate defect — the verb journaled it but could not
-    advance the task out of `merging` on its own. `orchid notify --task <id>
-    "merge left task in merging: see .orchid/reviews/<id>-merge.log"` and
-    leave the task in `merging` for a retry; never assume `rework` just
-    because the exit code was nonzero.
+    advance the task out of `merging` on its own. Notify with evidence that
+    exists: `.orchid/reviews/<id>-merge.log` is written only once the verb
+    actually ran the suite, and the verb deletes any earlier attempt's copy
+    before it begins, so when that file is absent the run died BEFORE
+    validation and the verb's own final line (which names the prepare log
+    when there is one) is the record to carry instead — `orchid notify
+    --task <id> "merge left task in merging: see
+    .orchid/reviews/<id>-merge.log"`, or the same message with that final
+    line in place of the `see ...` clause. Leave the task in `merging` for a
+    retry either way; never assume `rework` just because the exit code was
+    nonzero.
   - status still `merging` with exit `15` (`merge blocked: required
     before_merge hook '<id>' has no ok envelope for this candidate`): the
     verb never even attempted the merge, so there is nothing to invalidate —
@@ -2119,6 +2141,44 @@ one-pass driver could otherwise stop progressing in silence:
   branch mismatch, a path another task claims, a branch already checked out
   elsewhere) is REFUSED as a `worktree-conflict` boundary. A duplicate
   worktree is never created to work around any of these.
+- **Every checkout this protocol RUNS VERIFICATION IN gets a preparation
+  step.** There are exactly two: the dispatch worktree above, and the temp
+  worktree `orchid merge` validates in. Both hold only what is committed, so
+  a project whose verification needs untracked setup fails there while
+  passing in the operator's own checkout, and the failure is scored against
+  the candidate rather than the environment. (The integration checkout
+  `orchid start` creates is deliberately NOT in that set: no verb of this
+  protocol ever runs a verification suite there, it is the operator's own
+  working checkout to set up as they please, and it is created before this
+  run has committed the config the step would be read from. If a suite is
+  run there it is run by hand, by someone who can prepare it by hand.)
+  `worktree_prepare` (config, default unset) is
+  the command that closes that gap; it runs inside the fresh checkout, with
+  that checkout as its working directory, its **stdin closed**, and the
+  repository's own canonical path in `ORCHID_REPO_ROOT` (nothing relative
+  reaches the repository from both a sibling worktree and a `$TMPDIR` one).
+  Stdin is closed for the prepare step and for every verification command
+  this protocol runs, and it is a correctness rule rather than a courtesy:
+  the driver walks its work through loops whose own stdin is the worklist,
+  so a child that reads stdin would consume the entries not yet walked and
+  end the pass early with no error anywhere. The budget is
+  `worktree_prepare_timeout_s` (config, default 900), so a hung setup step
+  cannot hang the pass. It runs once per checkout per command text — the
+  stamp lives in the worktree's private git dir, so it dies with the worktree
+  and is re-run when the configured command changes. A failure is never
+  stamped and never advances the task: dispatch parks on a
+  `worktree-conflict` boundary, and `orchid merge` refuses outright.
+  **A failure is charged to `infra_failures`, never to `attempts`** — through
+  `orchid task infra-fail`, from both checkouts. That is the whole reason the
+  step is its own command rather than a bootstrap folded into the
+  verification one: an environment that cannot be prepared is not an attempt
+  the candidate got wrong, and the counter's own cap (`infra_max`) is what
+  turns a setup command nobody repairs into a blocked task instead of a
+  boundary re-raised on every pass forever.
+  `ORCHID_REPO_ROOT` is exported to **every verification command this
+  protocol runs, not only to the preparation step**: reaching back to the
+  repository for gitignored state is not always one-time setup, and the
+  suite's own checkout is a sibling worktree or a `$TMPDIR` one either way.
 - **A dispatch launches BEFORE it advances.** The queued task's status is the
   only record that it still needs dispatching, so it is not given up until a
   job has actually been spawned. `no eligible engine` (exit 14) is the case

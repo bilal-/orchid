@@ -39,6 +39,82 @@ fi
 status="$(fm_get "$tf" status)"
 [ "$status" = merging ] || orchid_die "task $id is not in merging (status: $status)"
 
+# Whole verb runs under the run lock (serializes concurrent merges); trap is
+# installed only AFTER a successful acquire, mirroring orchid-run's pattern.
+#
+# Taken HERE, ahead of the frontmatter and hook checks below rather than
+# after them, because the stale-evidence delete underneath it has to be
+# inside the lock: the file it removes is one a CONCURRENT merge of the same
+# task could be in the middle of writing, and the lock is the only thing that
+# makes "no other merge is running" true. Everything between the status gate
+# above and that acquire is a read.
+lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
+wt=""
+out_tmp=""
+# Set to $repo only while this merge is inside its advance-then-refresh
+# window; see the block around the CAS below. Declared HERE, ahead of the
+# trap that reads it, because `set -u` makes an unset name fatal in the one
+# path that must never die.
+kernel_window=""
+merge_cleanup() {
+  # Note: this is an EXIT trap — it does not run on SIGKILL (-9). An
+  # operator (or an OOM-killer) that SIGKILLs the orchestrator process while
+  # this script is mid-merge leaves the temp worktree directory AND its
+  # `git worktree` registration behind: nothing can run to clean either up.
+  # The registration is reclaimed the same way a normal stale worktree would
+  # be — `git worktree prune` (here, and available to an operator directly,
+  # or via `orchid doctor` once it grows a check for this) — and the leaked
+  # directory under $TMPDIR is ordinary temp-file litter.
+  if [ -n "$wt" ]; then
+    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
+    rm -rf "$wt" 2>/dev/null || true
+    git -C "$repo" worktree prune >/dev/null 2>&1 || true
+  fi
+  # Merge-evidence temp file: guard against leaking it on a mid-path failure
+  # between its creation and its normal removal below.
+  if [ -n "$out_tmp" ]; then
+    rm -f "$out_tmp" 2>/dev/null || true
+  fi
+  # The advance-then-refresh window, closed on every exit path. Leaving it
+  # open would not suppress anything -- other verbs from this root refuse
+  # either way -- but until this process died they would be told a repair was
+  # in flight and to retry, which stops being true the instant this merge
+  # gives up. Liveness, not this line, is what keeps that bounded; this line
+  # is what keeps it honest.
+  if [ -n "$kernel_window" ]; then
+    orchid_kernel_refresh_close "$kernel_window"
+  fi
+  lock_release "$repo"
+}
+trap merge_cleanup EXIT
+
+# FIRST ACT OF A COMMITTED RUN: any $id-merge.log a PREVIOUS attempt left
+# behind goes now. From here on this run either writes its own or dies
+# without one, and until it does, that file is not a record but a trap -- the
+# merging->rework arm deliberately keeps merge evidence, so a task can come
+# back round to `merging` with a log still describing a candidate and a
+# merged tree that no longer exist. Deleting it is what lets a caller read
+# the file's PRESENCE as "this run got as far as validating", which
+# runners/orchid-drive does to avoid sending an operator to a log that is
+# absent or stale for the failure they actually hit (lesson L023).
+#
+# Placed at the TOP of the committed path rather than just before the temp
+# worktree is created, which is where it used to live. Every die between the
+# two leaves the task in `merging` with that stale file still on disk and the
+# driver's rule then misdirecting: a missing base_sha or branch, an
+# integration branch that does not exist, a refused before_merge hook, a
+# rebase that cannot get a worktree for the task branch, and -- the one no
+# reordering inside this verb could ever have covered -- a lock this process
+# did not get, whose die is above. That last one is why the driver ALSO
+# fingerprints the file across the call (runners/orchid-drive): a verb that
+# dies before it can clean anything up cannot be the only thing standing
+# between an operator and the wrong log.
+#
+# Safe against the concurrent merge whose log this could otherwise be: the
+# only path here holds the run lock, and a second merge of the same task
+# fails to acquire it and dies above without reaching this line.
+rm -f "$state/reviews/$id-merge.log"
+
 base_sha="$(fm_get "$tf" base_sha)"
 candidate_sha="$(fm_get "$tf" candidate_sha)"
 [ -n "$base_sha" ] && [ -n "$candidate_sha" ] || orchid_die "task $id missing base_sha/candidate_sha"
@@ -107,83 +183,6 @@ if [ -n "$hook_bindings" ]; then
   done <<< "$hook_bindings"
 fi
 
-# Whole verb runs under the run lock (serializes concurrent merges); trap is
-# installed only AFTER a successful acquire, mirroring orchid-run's pattern.
-lock_acquire "$repo" >/dev/null || orchid_die "cannot acquire lock"
-wt=""
-out_tmp=""
-# Set to $repo only while this merge is inside its advance-then-refresh
-# window; see the block around the CAS below. Declared HERE, ahead of the
-# trap that reads it, because `set -u` makes an unset name fatal in the one
-# path that must never die.
-kernel_window=""
-merge_cleanup() {
-  # Note: this is an EXIT trap — it does not run on SIGKILL (-9). An
-  # operator (or an OOM-killer) that SIGKILLs the orchestrator process while
-  # this script is mid-merge leaves the temp worktree directory AND its
-  # `git worktree` registration behind: nothing can run to clean either up.
-  # The registration is reclaimed the same way a normal stale worktree would
-  # be — `git worktree prune` (here, and available to an operator directly,
-  # or via `orchid doctor` once it grows a check for this) — and the leaked
-  # directory under $TMPDIR is ordinary temp-file litter.
-  if [ -n "$wt" ]; then
-    git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
-    rm -rf "$wt" 2>/dev/null || true
-    git -C "$repo" worktree prune >/dev/null 2>&1 || true
-  fi
-  # Merge-evidence temp file: guard against leaking it on a mid-path failure
-  # between its creation and its normal removal below.
-  if [ -n "$out_tmp" ]; then
-    rm -f "$out_tmp" 2>/dev/null || true
-  fi
-  # The advance-then-refresh window, closed on every exit path. Leaving it
-  # open would not suppress anything -- other verbs from this root refuse
-  # either way -- but until this process died they would be told a repair was
-  # in flight and to retry, which stops being true the instant this merge
-  # gives up. Liveness, not this line, is what keeps that bounded; this line
-  # is what keeps it honest.
-  if [ -n "$kernel_window" ]; then
-    orchid_kernel_refresh_close "$kernel_window"
-  fi
-  lock_release "$repo"
-}
-trap merge_cleanup EXIT
-
-# --- THE LAST MERGE'S EVIDENCE IS NOT THIS MERGE'S (T007) ------------------
-# `<id>-merge.log` outlives the merge that wrote it ON PURPOSE: the `merging`
-# arm of `task advance rework` exempts it from its rm so the failure it is
-# about to journal keeps the evidence the next brief quotes. That exemption is
-# right, and it is also what leaves the LAST merge's log sitting here while
-# this one starts.
-#
-# Every failure this verb can take BEFORE it writes the log below -- a merge
-# conflict, a rebase conflict, an unapplied operator prerequisite, a CAS lost
-# to a concurrent merge, a temp worktree it could not create -- then ends with
-# a merge that produced no evidence and a file that reads exactly like
-# evidence it produced. `runners/orchid-drive` classifies a failed merge from
-# that header (`gate_status:`/`gate_exit:`, via findings_log_gate_failed), so
-# a conflict inherits the previous round's red gate and is reported as a
-# repository condition, with an attempt charge attributed to it that nothing
-# ever made. The sha binding does not save it: the re-merge of a conflicted or
-# CAS-raced candidate is the SAME candidate, so the stale header's
-# `candidate:` line still matches.
-#
-# So the log is invalidated HERE, ahead of the first branch that can fail,
-# rather than each failure arm being trusted to remember. This verb writes its
-# own log below on every path that gets that far; a path that does not get
-# that far now leaves NO log, which every reader already treats as "no claim"
-# -- findings_log_gate_failed fails closed on a missing file, and
-# findings_brief simply has nothing to quote.
-#
-# Nothing is lost with it. The brief the round that DID write this log
-# produced was appended to the task body at that round's own `rework` edge and
-# is kept there, by candidate, for as long as that candidate is current -- so
-# the locations survive in the place the implementer actually reads, while the
-# classification stops being answerable by a merge that never ran a gate.
-#
-# AFTER lock_acquire, deliberately: the lock is what makes this file this
-# process's to delete rather than one a concurrent merge is mid-write on.
-rm -f "$state/reviews/$id-merge.log"
 
 integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 
@@ -366,6 +365,11 @@ fi
 # Base current: merge the candidate in a detached temp worktree — never the
 # user's checkout — then run the verification suite there before touching
 # the integration ref.
+#
+# (Any $id-merge.log a previous attempt left behind is already gone: it is
+# deleted at the top of the committed path, above, so that every die between
+# there and here is covered by the same rule rather than only the ones below
+# this line.)
 wt="$(mktemp -d "${TMPDIR:-/tmp}/orchid-merge.XXXXXX")"
 git -C "$repo" worktree add -q --detach "$wt" "$integ_head" >/dev/null 2>&1 \
   || orchid_die "cannot create temp worktree at $integ_head"
@@ -376,6 +380,51 @@ if ! git -C "$wt" merge --no-ff -q -m "orchid: merge $id" "$candidate_sha" >/dev
   exit 1
 fi
 merged_sha="$(git -C "$wt" rev-parse HEAD)"
+
+# This temp checkout runs the task's whole verification suite in a moment,
+# and it holds only what is committed — so it needs the same `worktree_prepare`
+# step a dispatch worktree gets (lib/common.sh), or a project whose suite
+# depends on untracked setup passes in the task's own worktree and fails
+# here, on the merge, every single time. Prepared AFTER the merge, so the
+# command sees the merged tree (a candidate that changed the dependency
+# manifest is exactly the case that matters), and it is handed the same
+# ORCHID_REPO_ROOT — which this checkout, an unrelated mktemp directory
+# under $TMPDIR, has no other way to find. A prepare failure dies here
+# rather than falling through: the run would otherwise be recorded as merge
+# validation failing, which sends a blameless candidate back to rework.
+# Dying leaves the task in `merging`, which the driver already reports as a
+# config problem rather than a candidate defect.
+# `$id` is the task, `$id-merge` is only the log's name: ORCHID_TASK is the
+# task id here exactly as it is on a dispatch worktree, so a prepare command
+# can key off it without having to strip a suffix it was never told about,
+# while this checkout's record stays separate from the dispatch worktree's.
+prep="$(worktree_prepare "$repo" "$wt" "$id" "$id-merge")"
+case "$(printf '%s' "$prep" | cut -f1)" in
+  fail)
+    prep_why="$(printf '%s' "$prep" | cut -f2-)"
+    # Recorded on the INFRA ladder, exactly as the dispatch worktree's own
+    # prepare failure is (runners/orchid-drive). Dying without charging it
+    # leaves the one failure class this feature exists to classify counted
+    # nowhere: the task sits in `merging`, the driver re-raises the same
+    # boundary every pass, and no bound is ever reached. The counter is
+    # kernel-owned (it journals its reason and auto-blocks at `infra_max`),
+    # so an environment nobody repairs ends as a blocked task rather than an
+    # unbounded loop -- and the candidate's `attempts` are untouched, which
+    # is the distinction the whole step is for.
+    #
+    # Output suppressed, not the error. The counter's own receipt ("<id>:
+    # infra_failures n/max") is not this verb's report: runners/orchid-drive
+    # echoes everything merge printed and then quotes it to an operator, so
+    # the line would arrive as part of merge's account of what went wrong
+    # while saying nothing about the environment that did. Nothing is lost by
+    # dropping it -- infra-fail journals its reason before it writes, and the
+    # count is in the task's frontmatter. The die below is what explains this
+    # failure, and it is the last line either way: infra-fail is a child that
+    # has already exited by the time orchid_die runs.
+    "$ORCHID_ROOT/bin/orchid" task infra-fail "$id" \
+      --reason "worktree_prepare failed for the merge validation worktree: $prep_why" >/dev/null || true
+    orchid_die "cannot prepare the merge validation worktree: $prep_why" ;;
+esac
 
 # Command source: task frontmatter first, config fallback second — same
 # resolution order as `orchid verify`.
@@ -537,8 +586,15 @@ out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-merge-verify.XXXXXX")"
 # report each command separately — collapsing them loses which of the two a
 # non-zero merge status came from, which is the whole of the attribution the
 # header records.
+# The validation checkout lives under TMPDIR, so give the suite the canonical
+# dispatching repository path just as prepare did. Close stdin because this
+# verb is called from the driver's stdin-fed task walk; a suite must see EOF,
+# never consume the remaining worklist.
+verify_root="$(orchid_physical_dir "$repo")" || verify_root=""
+[ -n "$verify_root" ] || verify_root="$repo"
 cmd_rc=0
-( cd "$wt" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || cmd_rc=$?
+( cd "$wt" && ORCHID_REPO_ROOT="$verify_root" bash -c "$cmd" ) \
+  >"$out_tmp" 2>&1 </dev/null || cmd_rc=$?
 rc="$cmd_rc"
 
 if [ "$gate_status" = configured ]; then

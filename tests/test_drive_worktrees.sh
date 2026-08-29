@@ -32,6 +32,11 @@ export ORCHID_EPOCH
 WORKP="$(cd_scratch "$WORK" && pwd -P)" \
   || { fail "cd_scratch refused the scratch root"; exit 1; }
 HEAD_SHA="$(git rev-parse HEAD)"
+# The repository's own canonical path, spelled the way `pwd -P` inside a
+# prepared checkout would spell it -- macOS hands out /var/folders symlinks
+# for /private/var/folders, so a logical path would never compare equal.
+REPO_PHYS="$WORKP/repo"
+state_tasks="$REPO/.orchid/tasks"
 
 plan_action() { drive_worktree_plan "$REPO" "$1" | cut -f1; }
 plan_detail() { drive_worktree_plan "$REPO" "$1" | cut -f2-; }
@@ -192,3 +197,392 @@ out2="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
 wt_count2="$(git -C "$REPO" worktree list --porcelain | grep -c '^branch refs/heads/task/W8$' || true)"
 [ -n "$wt_count2" ] || wt_count2=0
 assert_eq 1 "$wt_count2" "a repeated pass never registers a second worktree for the same task"
+
+# ===========================================================================
+# 11 -- worktree_prepare. A checkout Orchid creates holds exactly what is
+# committed and nothing else, so any project whose verify command needs
+# untracked setup (installed dependencies, a generated file, a .env) fails
+# there while passing in the operator's own checkout. `worktree_prepare` is
+# the one chance to close that; the checkout it prepares is a SIBLING of the
+# repository (dispatch) or an unrelated $TMPDIR directory (merge validation),
+# so the command cannot work out where the repository is on its own and is
+# handed ORCHID_REPO_ROOT.
+#
+# RED before this task: worktree_prepare (lib/common.sh) does not exist.
+# ===========================================================================
+# Unconfigured is the default, and it must be a silent no-op -- no log
+# directory, no stamp, nothing run.
+assert_match '^skip' "$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)" \
+  "an unset worktree_prepare skips without running anything"
+if [ -e "$REPO/.orchid/runtime/worktree-prepare" ]; then
+  fail "an unset worktree_prepare must not create a log directory"
+fi
+
+PREP_COUNT="$WORK/prep-count"
+cat > "$WORK/prep.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+# Runs INSIDE the prepared checkout: every relative path below is proof of
+# its own cwd, and the environment it records is the contract under test.
+{
+  printf 'repo_root=%s\n' "$ORCHID_REPO_ROOT"
+  printf 'worktree=%s\n' "$ORCHID_WORKTREE"
+  printf 'task=%s\n' "$ORCHID_TASK"
+  printf 'cwd=%s\n' "$(pwd -P)"
+} > prepared.txt
+printf 'ran\n' >> "$1"
+EOF
+chmod +x "$WORK/prep.sh"
+printf 'worktree_prepare=%s %s\n' "$WORK/prep.sh" "$PREP_COUNT" >> "$REPO/orchid.config"
+
+prep_out="$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)"
+assert_match '^ok' "$prep_out" "a configured worktree_prepare that exits 0 reports ok"
+assert_eq 1 "$(grep -c ran "$PREP_COUNT" 2>/dev/null || echo 0)" "the command ran exactly once"
+assert_eq "$REPO_PHYS" "$(grep '^repo_root=' "$WORKP/repo-W8/prepared.txt" | cut -d= -f2-)" \
+  "ORCHID_REPO_ROOT is the canonical physical path of the repository, not the worktree"
+assert_eq "$WORKP/repo-W8" "$(grep '^cwd=' "$WORKP/repo-W8/prepared.txt" | cut -d= -f2-)" \
+  "the command runs with the prepared checkout as its working directory"
+assert_eq "$WORKP/repo-W8" "$(grep '^worktree=' "$WORKP/repo-W8/prepared.txt" | cut -d= -f2-)" \
+  "ORCHID_WORKTREE names the checkout being prepared"
+assert_eq W8 "$(grep '^task=' "$WORKP/repo-W8/prepared.txt" | cut -d= -f2-)" \
+  "ORCHID_TASK names the task the checkout belongs to"
+prep_log="$(printf '%s' "$prep_out" | cut -f2-)"
+[ -f "$prep_log" ] || fail "the ok result names a log file that exists"
+assert_match 'exit: 0' "$(cat "$prep_log")" "the log records the command's own exit status"
+
+# Stamped: the SAME command is never re-run for the same checkout. Dispatch
+# reaches this on every pass of a task that keeps its worktree, and a real
+# prepare command (a dependency install) is far too expensive to repeat.
+assert_match '^skip' "$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)" \
+  "an already-prepared checkout is skipped on the next call"
+assert_eq 1 "$(grep -c ran "$PREP_COUNT")" "the skipped call ran nothing"
+
+# The stamp records the COMMAND, so editing the config re-prepares.
+printf 'worktree_prepare=%s %s --again\n' "$WORK/prep.sh" "$PREP_COUNT" >> "$REPO/orchid.config"
+assert_match '^ok' "$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)" \
+  "changing the configured command re-prepares the checkout"
+assert_eq 2 "$(grep -c ran "$PREP_COUNT")" "the changed command ran again"
+
+# A failure is reported, is NOT stamped (so the next pass retries once the
+# operator has fixed it), and names the log holding the command's output.
+printf 'worktree_prepare=sh -c "echo boom >&2; exit 3"\n' >> "$REPO/orchid.config"
+fail_out="$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)"
+assert_match '^fail' "$fail_out" "a command that exits non-zero reports fail"
+assert_match 'exit 3|status 3' "$fail_out" "the failure names the command's exit status"
+assert_match '^fail' "$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)" \
+  "a failed prepare is never stamped -- the next call retries it"
+
+# A hung command must not hang the driver pass that called it.
+printf 'worktree_prepare_timeout_s=1\n' >> "$REPO/orchid.config"
+printf 'worktree_prepare=sleep 30\n' >> "$REPO/orchid.config"
+slow_out="$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)"
+assert_match '^fail' "$slow_out" "a command that outlives worktree_prepare_timeout_s fails"
+assert_match 'timed out' "$slow_out" "the failure says it timed out rather than blaming the exit status"
+
+# A budget that is not a number falls back to the default instead of reaching
+# with_timeout's own `sleep` as its argument. That `sleep` fails the instant
+# it starts, so its watcher kills the command's process group immediately and
+# EVERY prepare becomes a zero-second timeout -- reported as the command
+# having timed out, which sends an operator to debug a command that was never
+# given a chance to run. A one-second command is what makes the difference
+# visible: under the fallback it has 900 seconds and finishes, under the bug
+# it is killed before it can.
+#
+# RED before the guard: `sleep abc` returns at once, the command below is
+# killed with it, and this reports fail/timed out rather than ok.
+printf 'worktree_prepare_timeout_s=abc\n' >> "$REPO/orchid.config"
+printf 'worktree_prepare=sleep 1\n' >> "$REPO/orchid.config"
+assert_match '^ok' "$(worktree_prepare "$REPO" "$WORKP/repo-W8" W8)" \
+  "a non-numeric worktree_prepare_timeout_s falls back to the default instead of killing the command at once"
+
+# ===========================================================================
+# 12 -- end to end: a dispatch whose prepare step fails parks the run on a
+# worktree-conflict boundary and leaves the task where it was. Advancing it
+# into an active status would hand an implementer a checkout its own verify
+# command cannot pass, and report the environment's problem as the
+# candidate's.
+# ===========================================================================
+printf 'worktree_prepare_timeout_s=900\n' >> "$REPO/orchid.config"
+printf 'worktree_prepare=sh -c "exit 7"\n' >> "$REPO/orchid.config"
+"$ORCHID_BIN" task create W9 "prepare fails" >/dev/null
+# W8 sits out these passes for the same reason W1..W7 do above: this section
+# is about W9's dispatch, and a task already carrying a finished stub job
+# would otherwise walk on through the pass and add unrelated noise.
+"$ORCHID_BIN" task advance W8 blocked --reason "fixture: excluded from the prepare passes" >/dev/null
+rc=0
+out3="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_match "boundary \[worktree-conflict\] W9" "$out3" \
+  "a failing prepare step raises a worktree-conflict boundary against the task"
+assert_eq pending "$(fm_get "$state_tasks/W9.md" status)" \
+  "the task stays where it was -- never dispatched into an unusable checkout"
+
+# AND IT IS COUNTED, on the infra ladder rather than against the candidate.
+# This is the distinction the whole step exists to draw: folded into `verify`
+# instead -- the workaround this feature replaces -- a broken bootstrap is a
+# failed verification, which spends an ATTEMPT and reads as "the candidate is
+# wrong", which is the misdiagnosis the dogfood findings behind this task are
+# made of. The counter is kernel-owned, journals its reason, and auto-blocks
+# at `infra_max`, so an environment nobody repairs ends bounded instead of
+# re-raising the same boundary every pass forever.
+#
+# RED before this change: infra_failures is still 0 after the pass, and
+# nothing anywhere records the environment failure.
+assert_eq 1 "$(fm_get "$state_tasks/W9.md" infra_failures)" \
+  "a dispatch worktree that cannot be prepared charges the infra ladder"
+assert_eq 0 "$(fm_get "$state_tasks/W9.md" attempts)" \
+  "and never the candidate's attempts -- nothing was attempted"
+assert_match "worktree_prepare failed for the dispatch worktree" \
+  "$("$ORCHID_BIN" journal show --task W9)" \
+  "the counter's reason names the environment's failure, so it is not read as the candidate's"
+
+# AND THE BASE IT WAS BUILT ON IS ALREADY RECORDED. The prepare step runs
+# after `git worktree add`, so by the time it can fail, the task's branch
+# exists and it exists at ONE sha -- the integration head this pass read. A
+# `fail` returns without dispatching, so that pass is the last one in which
+# that sha is still knowable: base_sha has to be stamped above the prepare
+# step, not below it.
+#
+# RED before the fix: the stamp sat under the prepare step, this is empty, and
+# the two assertions after the repaired pass below record the consequence.
+assert_eq "$HEAD_SHA" "$(fm_get "$state_tasks/W9.md" base_sha)" \
+  "a dispatch whose prepare step failed still records the base its branch was created on"
+
+# Now move the integration branch, exactly as any OTHER task merging between
+# the two passes would. This is what makes the stamp's timing observable
+# rather than a matter of taste: a repaired pass re-reads the integration head
+# and there is nothing left in the task to say the branch predates it.
+MOVED_SHA="$(git -C "$REPO" commit-tree "$HEAD_SHA^{tree}" -p "$HEAD_SHA" \
+  -m 'another task merged between the two passes')"
+[ "$MOVED_SHA" != "$HEAD_SHA" ] \
+  || fail "the fixture must actually move the integration head, or the assertion below is vacuous"
+git -C "$REPO" branch -f orchid/integration "$MOVED_SHA"
+
+# With the prepare step fixed, the same dispatch goes through, and the
+# already-created worktree is reused rather than recreated.
+printf 'worktree_prepare=%s %s\n' "$WORK/prep.sh" "$PREP_COUNT" >> "$REPO/orchid.config"
+rc=0
+out4="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_match "prepared the dispatch worktree" "$out4" "the pass reports the prepare step it ran"
+[ -f "$WORKP/repo-W9/prepared.txt" ] \
+  || fail "a repaired prepare step lets the same dispatch through and prepares the checkout"
+assert_eq "$REPO_PHYS" "$(grep '^repo_root=' "$WORKP/repo-W9/prepared.txt" 2>/dev/null | cut -d= -f2-)" \
+  "the dispatch worktree was prepared with the repository's own canonical path"
+wt_count3="$(git -C "$REPO" worktree list --porcelain | grep -c '^branch refs/heads/task/W9$' || true)"
+[ -n "$wt_count3" ] || wt_count3=0
+assert_eq 1 "$wt_count3" "the refused pass left exactly one worktree for the branch, reused by the next"
+
+# The base stays the one the branch was actually built on. Stamped below the
+# prepare step instead, this pass would record $MOVED_SHA -- a sha the
+# candidate does not descend from, written into the field `orchid merge` reads
+# to decide whether the candidate is behind integration. The two would then
+# agree, so the merge would take the candidate as current and skip both the
+# rebase and the re-verify INV-07 requires for a moved base.
+assert_eq "$HEAD_SHA" "$(fm_get "$state_tasks/W9.md" base_sha)" \
+  "the repaired pass does not re-stamp base_sha to an integration head the candidate never saw"
+# Stated as descent rather than as an equal tip, so it keeps meaning the same
+# thing once the task's branch carries commits: what base_sha claims is that
+# the candidate was built ON that base. The moved head is checked in the other
+# direction in the same breath -- it is NOT an ancestor, which is precisely
+# why recording it would have been a false claim rather than a stale one.
+if ! git -C "$REPO" merge-base --is-ancestor "$HEAD_SHA" task/W9; then
+  fail "the recorded base_sha must be a base the task's branch actually descends from"
+fi
+if git -C "$REPO" merge-base --is-ancestor "$MOVED_SHA" task/W9; then
+  fail "the fixture's moved integration head must NOT be in the task branch's history"
+fi
+
+# Put the integration branch back, so the parts below dispatch from the same
+# head the ones above did.
+git -C "$REPO" branch -f orchid/integration "$HEAD_SHA"
+
+# ===========================================================================
+# 13 -- the prepare command MUST NOT INHERIT THE DRIVER'S STDIN.
+#
+# The driver walks its work through loops whose own stdin IS the worklist:
+# the task walk reads `< <("$ORCHID_BIN" task list | sort)`, and dispatch --
+# and therefore worktree_prepare -- is called from inside it, through a
+# command substitution, which redirects stdout and nothing else. So a prepare
+# command that reads stdin for any ordinary reason reads the tasks this pass
+# has not walked yet. The loop then sees EOF, the pass ends early having
+# skipped real work, and NOTHING reports an error: a task the walk never
+# reached is indistinguishable from a task with nothing to do.
+#
+# Two pending tasks is the smallest fixture that can see it -- the first
+# one's prepare step eats the second one.
+#
+# RED before the fix: WS2 is still `pending` after the pass, and the capture
+# file holds the task rows the driver never got to walk.
+# ===========================================================================
+STDIN_CAPTURE="$WORK/prep-stdin-capture"
+STDIN_RAN="$WORK/prep-stdin-ran"
+: > "$STDIN_CAPTURE"
+: > "$STDIN_RAN"
+cat > "$WORK/prep-stdin.sh" <<'EOF'
+#!/usr/bin/env bash
+set -eu
+# Announce the run BEFORE reading stdin, so the witness below is written even
+# on the buggy path where this command blocks on, or is truncated by, the
+# driver's worklist.
+printf '%s\n' "$ORCHID_TASK" >> "$2"
+# Every version of this hazard reduces to the same act: the command reads
+# stdin. An installer asking to continue, a bootstrap with a bare `read`, a
+# pipeline ending in `cat` -- whatever it is for, if the driver's worklist is
+# on the other end then reading it destroys work nobody will report missing.
+# Capturing rather than discarding is what makes the failure legible.
+cat >> "$1"
+EOF
+chmod +x "$WORK/prep-stdin.sh"
+printf 'worktree_prepare=%s %s %s\n' \
+  "$WORK/prep-stdin.sh" "$STDIN_CAPTURE" "$STDIN_RAN" >> "$REPO/orchid.config"
+
+# W9 sits out this pass for the reason W8 sat out the last one.
+"$ORCHID_BIN" task advance W9 blocked --reason "fixture: excluded from the stdin pass" >/dev/null
+"$ORCHID_BIN" task create WS1 "first of two dispatches" >/dev/null
+"$ORCHID_BIN" task create WS2 "second of two dispatches" >/dev/null
+
+rc=0
+out5="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_eq implementing "$(fm_get "$state_tasks/WS1.md" status)" \
+  "the first of the two pending tasks is dispatched"
+assert_eq implementing "$(fm_get "$state_tasks/WS2.md" status)" \
+  "the walk reaches the SECOND task too — a prepare command that reads stdin must not truncate it"
+assert_match "WS2: prepared the dispatch worktree" "$out5" \
+  "the second task's own prepare step ran, so the walk really did continue past the first"
+# The witness that keeps the assertion below from passing vacuously. An empty
+# capture file is equally what a prepare command that NEVER RAN leaves behind,
+# and this file stacks eight `worktree_prepare=` lines in one config -- so the
+# whole case rests on config_get taking the last of them (lib/common.sh's
+# _cfg_file_get, `tail -n1`). Should that precedence ever change, an earlier
+# case's command would run here instead, the capture would still be empty, and
+# the one assertion the operator objection this part exists for turns on would
+# report a redirection nobody exercised. Naming the tasks is what makes it
+# specific: this command, in both dispatches, and no other.
+# `|| true`, never `|| echo 0`: on an empty file `grep -c` PRINTS its 0 and
+# THEN exits 1, so the fallback would append a second line and the failure
+# message would read "got '0<newline>0'" -- noise in the one place a reader is
+# already trying to work out what broke. The file is created above, so a
+# missing-file case cannot arise.
+assert_eq 2 "$(grep -c . "$STDIN_RAN" || true)" \
+  "the stdin-reading prepare command is the one that actually ran, once per dispatched task"
+assert_match 'WS2' "$(cat "$STDIN_RAN")" \
+  "and it ran for the SECOND task too -- the dispatch that a truncated walk would never reach"
+assert_eq "" "$(cat "$STDIN_CAPTURE")" \
+  "the prepare command's stdin is /dev/null — it read nothing, because there was nothing there to read"
+
+# ===========================================================================
+# 14 -- the L003 note reports what is STILL missing, so it is asked AFTER the
+# prepare step.
+#
+# Dispatch already warns that `git worktree add` reproduces only what git
+# TRACKS, naming the gitignored trees the integration checkout has and the new
+# worktree does not (drive_env_missing_state). `worktree_prepare` is the thing
+# that fills exactly that gap -- so asked BEFORE it runs, that note fires on
+# every dispatch of a repository that has already solved the problem, naming a
+# directory that exists by the time anybody reads the line and telling the
+# operator to go and provision by hand what their config just provisioned.
+# A warning that is wrong whenever the feature is in use is a warning people
+# learn to skip, including on the dispatch where it was right.
+#
+# Both directions, because either alone is satisfied by a note that never
+# fires at all: supplied by the prepare step -> silent; nothing configured ->
+# named, with the remedy.
+#
+# RED before this change: the note is emitted inside the `create` arm, above
+# the prepare step, and WP1's dispatch reports `deps` as missing.
+# ===========================================================================
+for other in WS1 WS2; do
+  "$ORCHID_BIN" task advance "$other" blocked --reason "fixture: excluded from the L003 passes" >/dev/null
+done
+# A gitignored tree the repository has and no checkout of any ref can carry.
+# It needs a FILE in it: git collapses an ignored tree to one record but never
+# reports an empty directory at all, so an empty `deps/` would make every
+# assertion below vacuous in the same direction.
+printf 'deps/\n' >> "$REPO/.gitignore"
+mkdir -p "$REPO/deps"
+printf 'installed\n' > "$REPO/deps/lib.txt"
+assert_match 'deps' "$(drive_env_missing_state "$REPO" "$WORKP/repo-W8")" \
+  "the fixture really is a gitignored tree the predicate reports as missing from a worktree"
+
+printf 'worktree_prepare=mkdir -p deps\n' >> "$REPO/orchid.config"
+"$ORCHID_BIN" task create WP1 "prepare supplies the ignored tree" >/dev/null
+rc=0
+out6="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+# The witness: this file stacks nine `worktree_prepare=` lines, so the case
+# rests on config_get taking the last of them. If an earlier case's command ran
+# here instead, `deps` would be absent and the silence below would be the very
+# defect this part exists to catch, reported as a pass.
+[ -d "$WORKP/repo-WP1/deps" ] \
+  || fail "the prepare step configured for THIS case is the one that ran, and it supplied the ignored tree"
+if grep -q 'does not carry gitignored state' <<<"$out6"; then
+  fail "a checkout whose prepare step supplied the missing state must not be reported as missing it: $out6"
+fi
+
+# ...and with nothing configured to supply it, the note is still made, and it
+# names the key that would have.
+"$ORCHID_BIN" task advance WP1 blocked --reason "fixture: excluded from the unprepared pass" >/dev/null
+printf 'worktree_prepare=\n' >> "$REPO/orchid.config"
+"$ORCHID_BIN" task create WP2 "nothing supplies the ignored tree" >/dev/null
+rc=0
+out7="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+l003_note="$(grep 'does not carry gitignored state' <<<"$out7" || true)"
+[ -n "$l003_note" ] \
+  || fail "with no prepare step, the gap is still named at dispatch (L003): $out7"
+assert_match 'WP2' "$l003_note" "the note is raised against the task whose worktree lacks it"
+assert_match 'deps' "$l003_note" "and it names the tree that is missing"
+assert_match 'worktree_prepare' "$l003_note" \
+  "and it names the config key that supplies it, not a manual copy the next worktree add would undo"
+
+# ===========================================================================
+# 15 -- an ADOPTED orphan records the base its branch was actually created on.
+#
+# Part 12 fixed the stamp's TIMING: it happens above the prepare step, so a
+# pass that dies there still leaves the base on record. This is the other half
+# of the same claim, and the plan is where it goes wrong rather than the
+# clock. `adopt` is reached only because the branch already exists -- a pass
+# created it, at that pass's integration head, and died before recording
+# anything. Stamping the head THIS pass reads therefore records a sha the
+# task's branch does not descend from, into the one field `orchid merge`
+# compares against the integration head to decide whether the candidate is
+# behind: the two agree, the merge takes the candidate as current, and both
+# the rebase and the re-verify INV-07 requires for a moved base are skipped.
+#
+# RED before this change: base_sha is $ADOPT_MOVED -- the integration head the
+# orphan predates -- and the descent assertion under it fails.
+# ===========================================================================
+"$ORCHID_BIN" task advance WP2 blocked --reason "fixture: excluded from the adopt-base pass" >/dev/null
+"$ORCHID_BIN" task create WX1 "orphan created before integration moved" >/dev/null
+git worktree add -q "$WORKP/repo-WX1" -b task/WX1 "$HEAD_SHA"
+# Integration moves after the orphan exists, exactly as any other task merging
+# between the crashed pass and this one would move it. Without this the two
+# shas are equal and every assertion below passes on either implementation.
+ADOPT_MOVED="$(git -C "$REPO" commit-tree "$HEAD_SHA^{tree}" -p "$HEAD_SHA" \
+  -m 'another task merged before the orphan was adopted')"
+[ "$ADOPT_MOVED" != "$HEAD_SHA" ] \
+  || fail "the fixture must actually move the integration head, or this part is vacuous"
+git -C "$REPO" branch -f orchid/integration "$ADOPT_MOVED"
+
+rc=0
+out8="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_match "WX1: adopted the orphan dispatch worktree" "$out8" \
+  "the pass really did take the adopt arm -- the stamp below is the adopt arm's, not a fresh create's"
+assert_eq "$HEAD_SHA" "$(fm_get "$state_tasks/WX1.md" base_sha)" \
+  "an adopted orphan records the base its branch was created on, not the integration head this pass happens to read"
+if ! git -C "$REPO" merge-base --is-ancestor \
+    "$(fm_get "$state_tasks/WX1.md" base_sha)" task/WX1; then
+  fail "the recorded base_sha must be a base the task's branch actually descends from"
+fi
+if git -C "$REPO" merge-base --is-ancestor "$ADOPT_MOVED" task/WX1; then
+  fail "the fixture's moved integration head must NOT be in the adopted branch's history"
+fi
+
+# And the create arm is unchanged by that rule: a branch this pass makes at
+# the integration head has that head as its fork point, so both arms stamp the
+# same thing for the same reason and `create` needs no special case.
+"$ORCHID_BIN" task advance WX1 blocked --reason "fixture: excluded from the create-base pass" >/dev/null
+"$ORCHID_BIN" task create WX2 "created at the moved head" >/dev/null
+rc=0
+out9="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+assert_match "WX2: created the dispatch worktree" "$out9" \
+  "the second pass took the create arm, so the assertion below is about a branch this pass made"
+assert_eq "$ADOPT_MOVED" "$(fm_get "$state_tasks/WX2.md" base_sha)" \
+  "a freshly created worktree still records the integration head it was branched from"

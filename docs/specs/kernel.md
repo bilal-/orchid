@@ -943,43 +943,62 @@ implementation and consumed attempts.
 
 *The rejected alternative, and why.* The other candidate was a `migrate=`
 step run against the test database as part of `worktree_prepare`, the
-per-checkout preparation command **proposed by task T023**. Nothing named
-`worktree_prepare` exists in this tree: no config key, no code, no test.
-Rejecting it therefore rejects a design, not a shipped mechanism, and the
-four reasons below argue against that design as T023 specifies it — they are
-not observations of running behaviour. That is also the first reason to
-reject it: choosing it would have made a dogfood finding about attempts being
-spent on environment problems wait on another task's unlanded feature, and
-would have coupled this convention to a design still open to change. What
-ships here depends on no unlanded work — two frontmatter fields, `orchid
+per-checkout preparation command **task T023 has since landed**: the config
+keys `worktree_prepare` and `worktree_prepare_timeout_s`, a runner in
+lib/common.sh, and two call sites — the dispatch worktree in
+runners/orchid-drive and the temp validation checkout in libexec/orchid-merge.
+So the reasons below are no longer an argument about a design on paper. They
+have been re-read against the shipped mechanism, and one of them did not
+survive that reading. The reason that was never about the design at all is
+still the first to state: choosing it would have made a dogfood finding about
+attempts being spent on environment problems wait on another task's feature,
+which at the time had not landed and was still open to change. What ships
+here depends on no other task's work — two frontmatter fields, `orchid
 verify`, `orchid merge` and the driver.
 
-Four reasons the design itself does not answer the finding:
+Three reasons the mechanism still does not answer the finding, and one it
+does:
 
-1. **It would run at the wrong moment — decisive on its own.**
-   `worktree_prepare` is specified to run once, when a checkout is CREATED,
-   stamped per checkout per command text. A task's dispatch worktree is
-   created before the implementer has authored the migration, and the stamp
-   means it would not run again on the pass that verifies the candidate. The
-   exact failure above would survive unchanged.
-2. **It would be the wrong scope.** That command prepares a CHECKOUT; a
-   migration mutates an external, shared store. Above concurrency 1, several
-   tasks' worktrees would prepare against one database, and the first
-   migration to land would silently change what every other task's verify
-   sees. Nothing in a per-checkout stamp can express that.
-3. **It would put schema-write credentials in the sandbox that writes the
-   migration** — the one place the finding itself argues they should not be.
-   The prerequisite convention leaves them with the operator.
-4. **It could not fail honestly.** A failed prepare parks the run on a
-   `worktree-conflict` boundary, which describes a checkout that cannot be
-   proven to belong to the task. That is the same category error — an
-   environment problem wearing the candidate's clothes — this finding exists
-   to remove.
+1. **It runs at the wrong moment — decisive on its own.**
+   `worktree_prepare` runs when a checkout is prepared, and is stamped per
+   checkout per command TEXT in that checkout's private git directory. A
+   task's dispatch worktree is prepared before the implementer has authored
+   the migration, and the stamp means the same command does not run again on
+   the pass that verifies the candidate. The exact failure above survives
+   unchanged.
+2. **It is the wrong scope**, and what shipped sharpens this rather than
+   softening it. That command prepares a CHECKOUT; a migration mutates an
+   external, shared store. Above concurrency 1 several tasks' worktrees
+   prepare against one database, and the first migration to land would
+   silently change what every other task's verify sees. `orchid merge` then
+   prepares a SECOND checkout per task — a fresh mktemp worktree that has
+   never been stamped, so it prepares on every merge attempt — which puts a
+   `migrate=` step back on that shared store at merge time too. Nothing in a
+   per-checkout stamp can express any of it.
+3. **It keeps schema-write credentials nearer the sandbox that writes the
+   migration** than this convention does. This is the reason that narrowed
+   rather than held: the command line may live in the operator's own
+   `$HOME/.orchid/config` instead of the repository's `orchid.config`, so it
+   need not be committed. But the command runs INSIDE the task's dispatch
+   checkout, so whatever it materializes there — a `.env`, a credentialed
+   config file — is sitting in the tree the implementer's engine is handed
+   next. The prerequisite convention leaves both the credentials and the act
+   with the operator.
+4. **It fails honestly — this reason is withdrawn.** It was written against
+   a design in which a failed prepare merely parked the run on a
+   `worktree-conflict` boundary, an environment problem wearing the
+   candidate's clothes, which is the category error this finding exists to
+   remove. What landed charges a prepare failure to the INFRA ladder at both
+   call sites and never to `attempts`, and auto-blocks at `infra_max` rather
+   than re-raising the same boundary forever. On that count the mechanism
+   does what this section asks of one. The bullet is struck rather than
+   deleted: a reason that stops applying once the thing it argued about
+   ships is worth more as a record of that than as a bullet quietly dropped.
 
-Should T023 land, none of this changes: `worktree_prepare` would be a good
-place to build a per-checkout fixture, and a suite that migrates its own
-store needs no acknowledgement at all (below). It would still not be the
-place to migrate a shared external one.
+None of which makes `worktree_prepare` the wrong tool for its own job. It is
+a good place to build a per-checkout fixture, and a suite that migrates its
+own store needs no acknowledgement at all (below). It is still not the place
+to migrate a shared external one.
 
 Neither mechanism is preferred over a suite that migrates its own store (a
 fixture, a temp file, an in-memory database the tests build). Where that is
