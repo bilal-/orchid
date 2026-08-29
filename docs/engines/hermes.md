@@ -322,7 +322,12 @@ hermes gateway status                         # what the probe asks
   The pairing words (`not paired`, `not linked`, `not registered`, `not
   authenticated`, `unpaired`) are negations **only**: a bare `paired` is a
   stored fact about what you once attached, which a gateway reports whether or
-  not it is currently running, so it never reads as health. A bare `refused` is
+  not it is currently running, so it never reads as health. They also count
+  only on the *answered* half of this bullet: out of a query that **failed**,
+  the pairing and credential words (`not paired`, `expired`, `unauthorized`, …)
+  are as likely to be the CLI's own attachment or auth failing as the
+  gateway's, so they determine nothing there — the same `not paired` decides on
+  the success path and does not decide on the failed one. A bare `refused` is
   likewise not evidence — only `connection refused`, which names the transport,
   is; a policy or an authentication refusing the CLI is a query that was turned
   away.

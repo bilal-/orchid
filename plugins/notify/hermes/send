@@ -224,12 +224,19 @@ if [ "${1:-}" = --inbound-probe ]; then
     # quoted, which is what the rest of this file already does with output it
     # cannot read.
     #
-    # TWO WORDS ARE DELIBERATELY ABSENT that the per-row negatives DO carry.
-    # `expired` and `unauthor*` are a determination about a status ROW hermes
-    # printed (that channel's credential is dead, so the return leg really is
-    # broken), but on THIS path they are the CLI's own auth failing -- it
-    # could not ask, which says nothing about whether the gateway answered.
-    # That asymmetry is the whole distinction this branch now draws.
+    # A WHOLE CLASS IS DELIBERATELY ABSENT that the per-row negatives DO
+    # carry: the CREDENTIAL and PAIRING words -- `expired`, `unauthor*`,
+    # `not paired`/`not linked`/`not registered`/`not authenticated` and
+    # their `un-` forms. Every one of them is a determination about a status
+    # ROW hermes printed (that channel's credential is dead, or it was never
+    # attached, so the return leg really is broken), but on THIS path the CLI
+    # did not successfully report anything -- the same words are just as
+    # likely to be ITS OWN auth or attachment failing, which says nothing
+    # about whether the gateway answered. That asymmetry is the whole
+    # distinction this branch draws, so it is stated as the class rather than
+    # as a list that goes stale the next time the per-row negatives grow.
+    # tests/test_notify_hermes_channel.sh pins both halves of it: the same
+    # `not paired` decides on the success path and does not decide here.
     #
     # A nonzero exit with NO recognizable evidence -- a traceback, a missing
     # config file, a permission-denied, or no output at all -- falls through

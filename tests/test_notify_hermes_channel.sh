@@ -412,6 +412,22 @@ assert_eq "2" "$probe_rc" "a bare 'paired' is a stored attachment, not a live re
 # other negative, so a channel named for the word is not condemned by its name.
 probe paired-alerts "paired-alerts   connected" 0
 assert_eq "0" "$probe_rc" "a channel whose NAME contains 'paired' is still connected -- the name is not a status word"
+# ...and the pairing words join `expired`/`unauthor*` on the OTHER side of the
+# success/failed-query line, which is the asymmetry that keeps the vocabulary
+# widening above from leaking into the branch it was never about. On a query
+# that FAILED, the CLI reported nothing successfully, so the very same words
+# are as likely to be its own attachment failing as the gateway's -- and
+# reading that as `down` is the false alarm the failed-query branch exists to
+# refuse. Undetermined, with the line quoted.
+probe whatsapp "hermes: error: WhatsApp is not paired" 1
+assert_eq "2" "$probe_rc" "'not paired' out of a query that FAILED is the CLI's own attachment, not a gateway that did not answer"
+assert_match "not evidence about the gateway" "$probe_out" "the probe says the query broke rather than claiming the return leg did"
+# The GREEN twin, and it is what makes that a distinction rather than a hole:
+# the identical words in a row hermes SUCCESSFULLY printed still decide, exactly
+# as the `WhatsApp: not paired` case at the top of this block does -- so the
+# exclusion is about which path the words arrived on, never about the words.
+probe whatsapp "WhatsApp: is not paired" 0
+assert_eq "1" "$probe_rc" "the same wording on the success path is still the outage -- the failed-query exclusion is about the path, not the vocabulary"
 
 # DEFECT TWO: THE RANKING, which is the same misread one level up and the one
 # that matters for every hermes phrasing of "not attached" nobody has seen yet.
