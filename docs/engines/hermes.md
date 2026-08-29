@@ -320,7 +320,9 @@ hermes gateway status                         # what the probe asks
   is what stops the next phrasing nobody here has seen yet (`hermes-gateway:
   not responding (pid 4242)`) from being answered by the pid beside it. A
   bare `no` is deliberately not a particle, because `no errors` is how a
-  healthy supervised row reports a clean run.
+  healthy supervised row reports a clean run. A **fatality marker** —
+  `fatal`, `panic`, `conflict` — withholds health from *both* of these, the
+  status word as well as the pid: see the competing-poller note under exit 2.
 - **exit 1 — NOT REACHABLE.** `hermes gateway status` failed *and its output
   named the transport as unreachable* (`connection refused`, `could not
   connect`, `not running`, `not responding`, `no such process`, `timed out`,
@@ -346,11 +348,39 @@ hermes gateway status                         # what the probe asks
   likewise not evidence — only `connection refused`, which names the transport,
   is; a policy or an authentication refusing the CLI is a query that was turned
   away.
+  The **displacement** words are the other half of this bullet and the only
+  ones that are not about the gateway's own health: `terminated by`,
+  `superseded by`, `displaced by`, `preempted by`, and `another`/`other`/
+  `second`/`duplicate`/`competing`/`concurrent` in front of a poller noun
+  (`poller`, `instance`, `session`, `consumer`, `listener`, `client`). They
+  count on the *answered* half only, with the pairing and credential class:
+  in a row hermes printed they are the gateway naming what took its update
+  stream, while out of a query that **failed** they are the CLI's own session
+  losing a race, which says nothing about whether the gateway is serving.
 - **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
   `notify.channel` is unset, this build has no `gateway status` subcommand,
   the command printed nothing, or none of the candidate lines below is one
   the probe recognizes. Doctor prints "undetermined" and the most specific of
   those lines — never `ok`.
+
+  **A running process is not a served inbound leg.** Start a second gateway
+  on the same credentials and the update stream goes to one of them; the
+  long-poll transports this plugin delivers on hand the connection to the
+  newest caller and terminate the older one. The displaced gateway keeps
+  running, keeps its pid, answers `gateway status` — and receives nothing,
+  so every reply you send is delivered to the other instance. Its row states
+  both halves at once (`hermes-gateway: running (pid 4242) — fatal:
+  conflict: terminated by other getUpdates request`). The displacement words
+  under exit 1 convict on it; a bare fatality marker (`fatal`, `panic`,
+  `conflict`) with no displacement named is a failure the probe cannot rank,
+  so it withholds health and reports undetermined rather than inventing an
+  outage out of a severity. A marker qualified as history (`running (last
+  fatal 2d ago)`) is a record, not the current state, and still reads as
+  reachable — but a *displacement* is not softened that way, because the past
+  tense is how the transport phrases it in the present (`was terminated by
+  other getUpdates request` is printed on every poll for as long as the
+  competitor is up) and the process it names is not one of this gateway's
+  that has since gone.
 
   **A failed query is not a dead gateway**, and the exit code alone never
   decides which one it was. `hermes gateway status` exiting nonzero says the

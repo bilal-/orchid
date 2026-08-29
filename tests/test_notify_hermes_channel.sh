@@ -667,11 +667,102 @@ assert_eq "2" "$probe_rc" "...and so is 'unable'"
 # undetermined on the commonest healthy shape there is.
 probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, no errors)" 0
 assert_eq "0" "$probe_rc" "a clean-run report is not a negation -- the pid tier still reads a healthy supervised row as up"
-# ...and the guard is NOT extended to the word-positive tier above it, because
+# ...and THAT guard is NOT extended to the word-positive tier above it, because
 # a row that states `running` outright has said the thing, and the negatives
 # now cover `(not|never|no longer) <word>` for every word that tier matches.
+# (The FATALITY guard below is extended to it, and the block there says why the
+# two rulings differ rather than conflict.)
 probe telegram "hermes-gateway: running (launchd, pid 4242, not paused)" 0
 assert_eq "0" "$probe_rc" "a gateway that says it is running stays REACHABLE -- the particle guard belongs to the pid tier, not to a stated state"
+
+# A COMPETING POLLER IS THE OUTAGE NO WORD IN THIS FILE COULD SEE, and it is
+# the one shape where every tier above answers correctly and the verdict is
+# still a lie. An inbound leg is not served by a process being up; it is served
+# by that process holding the update stream. Start a second gateway on the same
+# credentials and the stream goes to one of them -- the long-poll transports
+# this plugin delivers on hand the connection to the newest caller and
+# terminate the older one -- so hermes answers `gateway status` out of a
+# process that is running, supervised, carrying a live pid, and receiving
+# nothing. Every reply an operator sends is delivered to the other instance.
+# That is lesson L011's outage exactly: a real answer swallowed by a gateway
+# nobody could see was not serving.
+#
+# RED -- the row a displaced poller prints. It states the healthy half and the
+# fatal half in one breath, so the word-positive tier read `running`, exited 0,
+# and reported a dead return leg as REACHABLE: the single verdict this whole
+# file is ordered to make impossible.
+probe telegram "hermes-gateway: running (pid 4242) -- fatal: conflict: terminated by other getUpdates request" 0
+assert_eq "1" "$probe_rc" "a gateway whose update stream was terminated by another poller is NOT reachable, whatever its own process is doing"
+assert_match "NOT up" "$probe_out" "the probe says which way it decided"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "a running process that has lost the inbound stream must never read as health -- that is the false REACHABLE this case exists to prevent"
+# ...and the record rule may NOT soften it, which is the one place these words
+# part company with the severity ones. `terminated` is how the transport
+# phrases a stream it is losing right now -- Telegram reports `terminated by
+# other getUpdates request` on every poll for as long as the competitor is up
+# -- so eliding `was terminated` as history would leave a live pid, a
+# `running`, and nothing saying the stream belongs to somebody else.
+probe telegram "hermes-gateway: running (pid 4242, last poll was terminated by other getUpdates request)" 0
+assert_eq "1" "$probe_rc" "a displacement in the past tense is the competitor still being there, not a record of a process that has gone"
+# ...and the same displacement named the other way round: the row names the
+# thing that took the stream rather than the verb that took it.
+probe telegram "hermes-gateway: running (pid 4242, another poller is already running)" 0
+assert_eq "1" "$probe_rc" "'another poller' names the displacement, and the second 'running' in the row must not acquit the first"
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, superseded by a second gateway instance)" 0
+assert_eq "1" "$probe_rc" "a superseded gateway carries a live pid and serves nothing -- the pid tier must not read it as up"
+# ...and it convicts from the channel's OWN row too, which is the tier that
+# outranks every other one when it exists.
+probe telegram "telegram: connected (fatal: terminated by other getUpdates request)" 0
+assert_eq "1" "$probe_rc" "the configured channel's own row reporting a terminated stream is the outage, not the 'connected' beside it"
+
+# THE FATALITY GUARD, for the phrasings the two convicting forms have not
+# learned. `fatal`, `panic` and `conflict` say something went wrong without
+# saying what state it left behind: not evidence the leg is down, but
+# conclusive evidence this probe has not understood the row -- and an unread
+# row may not be acquitted by a state word or a pid sitting elsewhere in it.
+# Undetermined, never REACHABLE, and never an outage invented from a severity.
+probe telegram "hermes-gateway: running (pid 4242, fatal: inbound stream unavailable)" 0
+assert_eq "2" "$probe_rc" "a row declaring a fatal condition is one this probe has not read, and unread is undetermined -- not the 'running' half of it"
+assert_match "not one this probe recognizes" "$probe_out" "the probe admits it could not rank the fatal clause rather than reporting the state word beside it"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "a declared fatality must withhold health from the word-positive tier"
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, conflict on the inbound stream)" 0
+assert_eq "2" "$probe_rc" "...and from the pid tier as well, which is the weakest evidence this probe accepts as health"
+# The GREEN twin, and it is what makes both cases above non-vacuous: strike the
+# fatal clause and the very same row is REACHABLE again. So the 2 is caused by
+# the marker, not by output these tiers could never read.
+probe telegram "hermes-gateway: running (pid 4242, inbound stream attached)" 0
+assert_eq "0" "$probe_rc" "the same row without the fatality is REACHABLE -- the guard withholds health, it does not break the tier"
+# ...and the guard is given the benefit of the record at the word-positive tier,
+# exactly as the negatives are: a supervised row reports its last fatal beside
+# its current state, and withholding health for that history would be the false
+# alarm the record rule was written to stop.
+probe telegram "hermes-gateway: running (pid 4242, last fatal 2d ago)" 0
+assert_eq "0" "$probe_rc" "a past fatal is history -- a row that states 'running' now is reachable now"
+# ...and it is held to the same name-elided discipline as every other word test,
+# so a channel named for the marker is not condemned by its own name.
+probe conflict-alerts "conflict-alerts   connected" 0
+assert_eq "0" "$probe_rc" "a channel whose NAME contains 'conflict' is still connected -- the name is not a severity"
+# A DENIED COMPETITOR IS NOT A COMPETITOR, and a counted zero is not an
+# incident. Both new tests are word tests, so both inherit the failure the
+# whole-word and record rules were written for: a healthy row reports the
+# ABSENCE of the thing it is asked about, in the same words. This is the
+# `no errors` case (pinned above) with a severity and a rival spelled out.
+probe telegram "hermes-gateway: running (pid 4242, no other listener, 0 conflicts)" 0
+assert_eq "0" "$probe_rc" "a row saying it holds the stream alone is the cleanest health report there is, not a displacement"
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, conflicts: 0)" 0
+assert_eq "0" "$probe_rc" "a severity reported as a count of zero is not a fatality, and must not withhold the pid tier's verdict"
+# The RED twin: strike the denial and the very same words convict, so the two
+# cases above are the denial being read, not the vocabulary failing to match.
+probe telegram "hermes-gateway: running (pid 4242, other listener attached)" 0
+assert_eq "1" "$probe_rc" "the same row without the 'no' names a rival holding the stream, and that is the outage"
+# ...and the displacement words stay on the SUCCESS side of the failed-query
+# line, with the pairing and credential class. A client whose own request was
+# terminated by a newer one is describing its own session losing a race, which
+# says nothing about whether the gateway is serving anybody.
+probe telegram "hermes: error: 'gateway status' terminated by another client session" 1
+assert_eq "2" "$probe_rc" "a CLI session displaced by a newer one has determined nothing about the gateway it never got to ask"
+assert_match "not evidence about the gateway" "$probe_out" "the probe says the query broke rather than claiming the return leg did"
 
 # THE LAST-RESORT TIER, and the subject it may not borrow. Output carrying no
 # channel row, no gateway row and no status label still deserves a reading --
