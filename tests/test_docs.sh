@@ -923,39 +923,55 @@ printf '%s' "$protocol_one_line" | grep -qF '`orchid task reverify` re-stamps `c
   || fail "PROTOCOL.md's prerequisite bullet must name task reverify among the candidate moves that expire an acknowledgement — it re-stamps candidate_sha and reaches testing from blocked without entering rework, so no clear on any rework path sees it"
 
 # ===========================================================================
-# T024 -- the rejected alternative in kernel.md must not describe another
-# task's unlanded feature as existing fact.
+# T024/T023 -- the rejected alternative in kernel.md must describe
+# `worktree_prepare` in whichever tense is true of THIS tree.
 #
 # The operator-prerequisite section records why a `migrate=` step run as part
-# of `worktree_prepare` was rejected. That command is PROPOSED BY T023 and is
-# nowhere in this tree: no config key, no code. Argued in the present tense it
-# reads as a description of shipped behaviour, and a reader who greps for it
-# finds nothing -- the spec's own rejection becomes the least trustworthy
-# paragraph on the page.
+# of `worktree_prepare` was rejected. The command was proposed by T023 and,
+# when T024 wrote that section, was nowhere in this tree: no config key, no
+# code. Argued in the present tense then, it read as a description of shipped
+# behaviour a reader could grep for and never find.
 #
-# A tripwire in both directions, which is why it is a test and not a comment:
-#   - while nothing defines it, the paragraph must keep saying so and must
-#     name the task the design belongs to;
-#   - the moment something DOES define it, this fails on purpose. Those four
-#     reasons argue against a design as specified; once that design ships they
-#     have to be re-read against what actually shipped, instead of sitting
-#     there as hedging nobody revisits.
+# T023 has since landed, so this tripwire has fired once and been answered:
+# its arms are now swapped, and it remains a test rather than a comment
+# because it still has to hold in both directions.
+#   - While something DOES define it, the paragraph must speak of a landed
+#     mechanism, and must carry the re-reading that landing forced. The four
+#     reasons were written against a design as specified; the fourth of them
+#     -- that a failed prepare could only park the run on a
+#     `worktree-conflict` boundary -- is answered by what shipped, which
+#     charges the infra ladder instead, and it is marked withdrawn rather
+#     than left standing as an argument that is no longer true.
+#   - Should the mechanism ever be REMOVED, this fails on purpose: the
+#     paragraph would then be arguing in the present tense about something
+#     a reader cannot find, which is the exact defect the original half of
+#     this tripwire existed to prevent.
+#
+# Every assertion runs against the whitespace-folded `kernel_one_line` built
+# above, not the file. Each pins a whole SENTENCE, and a sentence in this spec
+# is hard-wrapped across two lines -- `grep -F` on the raw file matches a line
+# at a time, so it would report the paragraph missing whenever the prose
+# happened to wrap mid-phrase, which is the normal state of it.
 # ===========================================================================
 wp_defined=0
 grep -qxF 'worktree_prepare' "$KEYFILE" && wp_defined=1
 grep -rqF 'worktree_prepare' "$REPO_ROOT/lib" "$REPO_ROOT/libexec" "$REPO_ROOT/runners" 2>/dev/null && wp_defined=1
-if [ "$wp_defined" -eq 0 ]; then
-  # Both assertions run against the whitespace-folded `kernel_one_line` built
-  # above, not the file. Each pins a whole SENTENCE, and a sentence in this
-  # spec is hard-wrapped across two lines -- `grep -F` on the raw file matches
-  # a line at a time, so it would report the paragraph missing whenever the
-  # prose happened to wrap mid-phrase, which is the normal state of it.
-  printf '%s' "$kernel_one_line" | grep -qF 'Nothing named `worktree_prepare` exists in this tree' \
-    || fail 'docs/specs/kernel.md rejects a worktree_prepare design that is not in this tree: it must say so plainly, not describe an unlanded feature in the present tense'
-  printf '%s' "$kernel_one_line" | grep -qF 'proposed by task T023' \
-    || fail 'docs/specs/kernel.md must name T023 as the task that proposes worktree_prepare, so the dependency is stated rather than implied'
+if [ "$wp_defined" -eq 1 ]; then
+  grep -qF 'task T023 has since landed' <<<"$kernel_one_line" \
+    || fail 'worktree_prepare exists in this tree: docs/specs/kernel.md must say T023 landed it, so the rejected alternative reads as an argument about a shipped mechanism rather than about a design on paper'
+  grep -qF 'this reason is withdrawn' <<<"$kernel_one_line" \
+    || fail "docs/specs/kernel.md's rejected alternative must mark the fail-honestly reason withdrawn: what shipped charges a failed prepare to the infra ladder rather than parking the run on a worktree-conflict boundary, so that bullet no longer argues against anything and must not sit there as hedging nobody revisits"
+  # The negative half, and the reason it is spelled as an `if` rather than as
+  # `grep ... && fail`: this suite runs under `set -o pipefail`, and the
+  # herestring keeps the matcher's status its own (helpers.sh's assert_match
+  # carries the full account). A paragraph that says BOTH things -- landed,
+  # and "nothing named this exists" -- is the half-finished edit this arm is
+  # here to catch, and the two positive assertions above cannot see it.
+  if grep -qF 'Nothing named `worktree_prepare` exists in this tree' <<<"$kernel_one_line"; then
+    fail 'docs/specs/kernel.md still claims nothing named worktree_prepare exists in this tree, but the config key and its code are both here — that sentence must go, not merely be argued around'
+  fi
 else
-  fail 'worktree_prepare now exists in this tree: docs/specs/kernel.md still argues against it as an unlanded T023 design, and that paragraph must be re-read against what actually shipped'
+  fail 'worktree_prepare is no longer defined anywhere in lib/, libexec/, runners/ or lib/config-keys.txt, yet docs/specs/kernel.md argues against it as a landed mechanism: that paragraph must be re-read against what is actually in this tree'
 fi
 
 # ===========================================================================
