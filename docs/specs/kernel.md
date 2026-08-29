@@ -2174,7 +2174,15 @@ reason, `<file>:finding>=medium ("…")` quoting the title of the worst finding
 at or above the threshold: that arm fires when every verdict said `approve`,
 so its entry is the only warning the arbiter gets. Both quoted strings are
 engine-written free text folded to one line before they travel (they share a
-TAB-separated record with the decision word). A NON-empty `findings[]`,
+TAB-separated record with the decision word). The APPROVE arm states the same
+fact from the other side, because neither of those two reaches it: "no finding
+at or above `<severity>`" reads identically whether the gate weighed six
+findings that all ranked below the threshold or weighed an empty array, so the
+approval line now carries the count — `N finding(s) filed … and weighed
+against it`, or `NO findings were filed … so the severity gate weighed an
+empty array and this approval rests on verdict + scope_complete alone`, which
+is the routine and correct reading for a verdict-only adapter. It is
+disclosure: the threshold test itself is unchanged. A NON-empty `findings[]`,
 however it got there, is decisive on its own: on a task whose
 `blocking_severity` is `medium` — the fallback when the field is absent, and
 what `templates/task-migrate.md` and `templates/task-refactor.md` ship, though

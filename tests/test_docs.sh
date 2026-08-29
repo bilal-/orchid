@@ -550,6 +550,16 @@ assert_match "synthesized: true" "$drive_help_one_line" \
 # the spec has to be able to tell a kernel-composed finding from their own.
 assert_match "synthesized: true" "$plugins_spec_one_line" \
   "docs/specs/plugins.md must document the synthesized finding's marker as part of the envelope contract"
+# The third arm of the same complaint, and the one the two above cannot reach:
+# an APPROVING review is where an empty findings[] is both routine and
+# invisible, so the approval line itself has to say how much the severity gate
+# had to weigh. The help is where an operator learns to read that clause; if it
+# goes unmentioned here, the sentence in lib/drive.sh reads as an alarm rather
+# than the disclosure it is.
+assert_match "weighed an empty array" "$drive_help_one_line" \
+  "orchid drive --help must explain that a deterministic approval says when the severity gate weighed nothing, so the clause is not read as a failure"
+assert_match "weighed against it" "$drive_help_one_line" \
+  "…and must give the other half of that clause, the count of findings a clean approval did weigh"
 
 # v1-m4 T006, the notify return leg: the two manifest keys doctor's check
 # reads are a plugin CONTRACT, so they belong in the plugin spec — an

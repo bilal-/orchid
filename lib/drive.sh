@@ -891,6 +891,17 @@ drive_blocking_finding_title() {
 # older kernel's file, or a synthesis reconcile refused), and it carries the
 # summary excerpt into the detail that becomes the boundary record.
 #
+# AND THE APPROVE ARM STATES THE SIZE OF ITS OWN EVIDENCE, because neither of
+# those two reaches it. The verdict-only adapters above file `findings: []` on
+# an approving review legitimately, so this arm is reached with an empty array
+# as a matter of routine -- and "no finding at or above <severity>" reads the
+# same whether it weighed six findings that all ranked below the threshold or
+# weighed nothing at all. Those are not the same claim about a candidate, and
+# the operator reading a deterministic approval is the one who needs them told
+# apart. The line now carries the count (see the printf at the foot of this
+# function); the DECISION is untouched, since a count is disclosure and the
+# threshold test above is what actually gates.
+#
 # REVIEW DEPTH (v1.1, T012 -- lesson L010, evidenced on run r-001's T003). At
 # `medium`/`high` the count is not the whole bar: at least one of the counted
 # reviews must come from a WORKTREE-CAPABLE engine, one that could open a
@@ -961,7 +972,7 @@ drive_blocking_finding_title() {
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
-  local plan pin_state entry nfind excerpt ftitle
+  local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -979,7 +990,7 @@ drive_review_decision() {
     return 0
   fi
 
-  n=0; approve_n=0; depth_n=0; conflicts=""; pool=""
+  n=0; approve_n=0; depth_n=0; conflicts=""; pool=""; weighed_n=0
   for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
@@ -1010,6 +1021,20 @@ drive_review_decision() {
 "
     verdict="$(envelope_field "$f" '.verdict // empty' 2>/dev/null || true)"
     scope="$(envelope_field "$f" '.scope_complete // false' 2>/dev/null || true)"
+    # Step 4 -- HOW MUCH THE SEVERITY GATE ACTUALLY HAD TO WEIGH, taken over
+    # every counted envelope rather than only the rejecting ones, because the
+    # arm that needs it is the APPROVE arm (see the printf at the end of this
+    # function). Counted here, in the one walk that already scopes the
+    # evidence set, so the number can never describe a different set of
+    # envelopes from the decision printed beside it.
+    #
+    # Unreadable, absent and non-numeric all count as 0: a count this function
+    # could not take is not evidence that the gate had something to weigh, and
+    # a `length` taken over a `findings` that is not an array must not reach
+    # the arithmetic below as a word.
+    nfind="$(envelope_field "$f" '(.findings // []) | length' 2>/dev/null || true)"
+    case "$nfind" in ''|*[!0-9]*) nfind=0 ;; esac
+    weighed_n=$(( weighed_n + nfind ))
     if [ "$verdict" = approve ]; then
       approve_n=$(( approve_n + 1 ))
     else
@@ -1029,10 +1054,9 @@ drive_review_decision() {
       # Either way the severity gate below is weighing nothing for it, and
       # that has to be said where the decision is read rather than discovered.
       entry="$base:verdict=${verdict:-none}"
-      nfind="$(envelope_field "$f" '(.findings // []) | length' 2>/dev/null || true)"
-      # Unreadable counts as none: a count this function could not take is not
+      # `nfind` is this envelope's own count, taken in step 4 above under the
+      # same fail-to-zero reading: a count this function could not take is not
       # evidence that the gate has something to weigh.
-      [ -n "$nfind" ] || nfind=0
       [ "$nfind" != 0 ] || entry="$entry:findings=0"
       excerpt="$(envelope_summary_excerpt "$f")"
       [ -z "$excerpt" ] || entry="$entry (summary: \"$excerpt\")"
@@ -1091,8 +1115,31 @@ drive_review_decision() {
     return 0
   fi
 
-  printf 'approve\tunanimous scope-complete approval from %s review(s), %s of them worktree-capable, no finding at or above %s\n' \
-    "$approve_n" "$depth_n" "$blocking"
+  # THE APPROVE ARM SAYS HOW MUCH IT WEIGHED, NOT ONLY WHAT IT CONCLUDED
+  # (dogfood F32, and the half of that complaint the conflict arm's
+  # `findings=0` does not reach). "no finding at or above medium" is the one
+  # sentence the criteria quotes, and until now it read identically in two
+  # states an operator has to tell apart: reviewers who filed findings and
+  # none of them cleared the threshold, and reviewers who filed NOTHING, where
+  # the severity gate weighed an empty array and the approval rests entirely
+  # on `verdict` + `scope_complete`. One empty list was answering two
+  # different questions -- the same defect as the prose-only objection, in the
+  # arm that APPROVES rather than the one that blocks, which is the arm where
+  # it is dangerous.
+  #
+  # A COUNT, NOT A JUDGMENT. Nothing here changes the decision: the threshold
+  # test is unchanged and already returned above if anything tripped it. This
+  # is disclosure -- the number is carried into the record and the journal so
+  # an operator reading a deterministic approval can see whether it was
+  # backed by weighed structured evidence, and reconcile's synthesis is what
+  # keeps a withheld verdict from ever reaching this arm with nothing in it.
+  if [ "$weighed_n" -eq 0 ]; then
+    weighed_note="-- and NO findings were filed across those $n review(s), so the severity gate weighed an empty array and this approval rests on verdict + scope_complete alone"
+  else
+    weighed_note="($weighed_n finding(s) filed across those $n review(s) and weighed against it)"
+  fi
+  printf 'approve\tunanimous scope-complete approval from %s review(s), %s of them worktree-capable, no finding at or above %s %s\n' \
+    "$approve_n" "$depth_n" "$blocking" "$weighed_note"
 }
 
 # drive_hook_has_required <repo> <point> -- 0 iff the point's binding carries

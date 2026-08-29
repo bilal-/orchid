@@ -436,6 +436,15 @@ incomplete review set is never also reported as a conflict, and vice versa:
    while keeping the same caveat. The envelope is filed, never quarantined:
    `findings: []` is what those adapters write on every review, so refusing
    it would throw the objection away.
+   **And this arm's own line says how much it weighed.** "No finding at or
+   above `<severity>`" reads identically whether the gate weighed several
+   findings that all ranked below the threshold or weighed an empty array, so
+   the approval detail carries the count: `N finding(s) filed … and weighed
+   against it`, or `NO findings were filed … so the severity gate weighed an
+   empty array and this approval rests on verdict + scope_complete alone`.
+   The second is the routine reading for a verdict-only adapter and is not a
+   failure; it is there so a deterministic approval backed by no structured
+   evidence is legible as one. The gate itself is unchanged by it.
    **And read the live case the other way round, because it is the one that
    will surprise you:** where `findings[]` IS populated, a **non-empty** one
    blocks an otherwise-approving review. Read the TASK's own

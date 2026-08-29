@@ -741,11 +741,53 @@ assert_eq approve "$(printf '%s' "$decisionP2" | cut -f1)" \
   "an approving review with no findings still approves: an empty array is not itself a signal"
 detailP2="$(printf '%s' "$decisionP2" | cut -f2-)"
 assert_match "unanimous scope-complete approval from 1 review" "$detailP2" \
-  "and the approval line is unchanged"
+  "and the approval verdict clause itself is unchanged"
 case "$detailP2" in
   *"nothing to report"*) fail "an approving review's summary must not be spliced into the approval record" ;;
 esac
 green_case "an approving review with an empty findings[] approves, with its summary left where the reviewer put it"
+# ...but the line must not stop at "no finding at or above high", because that
+# reads identically whether the gate weighed findings that all ranked below the
+# threshold or weighed an EMPTY ARRAY, as here. That is the same one-empty-list-
+# two-answers defect as the prose-only objection above, in the arm that
+# APPROVES -- the arm where nobody is woken to go and look.
+assert_match "NO findings were filed across those 1 review" "$detailP2" \
+  "a deterministic approval must say when the severity gate was handed nothing at all, not report a threshold it never weighed anything against"
+assert_match "severity gate weighed an empty array" "$detailP2" \
+  "and say so in those terms, so the operator is not left to infer it from a clean-looking threshold clause"
+assert_match "rests on verdict [+] scope_complete alone" "$detailP2" \
+  "and name what the approval actually rests on when the gate is inert -- the verdict-only adapters' ordinary case"
+red_case "a deterministic approval backed by ZERO structured findings: the record says the severity gate weighed an empty array, instead of reporting 'no finding at or above high' as though it had weighed something"
+
+# The twin of the twin, and the reason the disclosure above is a COUNT rather
+# than an alarm: an approving review that did file findings, none of which
+# reach this task's blocking_severity, is a gate that genuinely weighed
+# something and let it through. It must read differently from the empty one.
+mk_p_task TP4 high
+jq -n --arg cand "$candP" \
+  '{contract:1, job_id:"j-p4", task:"TP4", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"one nit, not blocking",
+    candidate_sha:$cand,
+    findings:[{severity:"low", title:"a nit below the threshold"}]}' \
+  > "$repoP/.orchid/reviews/TP4-a1-reviewer.json"
+
+decisionP4="$(drive_review_decision "$repoP" TP4)"
+assert_eq approve "$(printf '%s' "$decisionP4" | cut -f1)" \
+  "a filed finding BELOW blocking_severity does not block: the threshold is what gates, and the count is only disclosure"
+detailP4="$(printf '%s' "$decisionP4" | cut -f2-)"
+assert_match "no finding at or above high" "$detailP4" \
+  "the threshold clause is unchanged when the gate had something to weigh"
+assert_match "1 finding[(]s[)] filed across those 1 review[(]s[)] and weighed against it" "$detailP4" \
+  "and the record says how much it weighed, so this approval is distinguishable from one backed by an empty array"
+case "$detailP4" in
+  *"weighed an empty array"*)
+    fail "a review that DID file a finding must not be reported as one the gate weighed nothing for -- the disclosure would then be noise on every approval" ;;
+  *"a nit below the threshold"*)
+    fail "a non-blocking finding's title must not be spliced into the approval record: the conflict arm names what BLOCKED, this arm only counts" ;;
+esac
+assert_eq 2 "$(printf '%s\n' "$decisionP4" | awk -F'\t' '{print NF}')" \
+  "and the approval stays a two-field TAB record like every other arm"
+green_case "an approving review with one below-threshold finding approves, and its record reports one finding weighed rather than an empty gate"
 
 # The OTHER half of the same complaint, and the case where the record is the
 # only warning there is. Every verdict said `approve`; a filed finding at or

@@ -109,6 +109,17 @@ reading of a withheld verdict, never the reviewer's own severity call. An
 adapter that files its own findings is never touched, so the way to keep the
 severity yours is to report it.
 
+That leaves one case neither of those reaches, and the deterministic approval
+now DISCLOSES it rather than reading the same whichever way it went: a clean
+`no finding at or above <severity>` says nothing about whether the gate weighed
+six findings that all ranked below the threshold or weighed an empty array. So
+the approval line carries the count -- either `N finding(s) filed ... and
+weighed against it`, or, when nothing was filed at all, `NO findings were
+filed ... so the severity gate weighed an empty array and this approval rests
+on verdict + scope_complete alone`. That second sentence is the routine and
+correct reading for a verdict-only adapter; it is a disclosure, not a warning,
+and it changes no decision.
+
 At risk_tier `medium` or `high` that arbitration also needs DEPTH: at least one
 of the counted reviews has to be credited to a `worktree` slot -- one routed to
 an engine that could open a file the diff never showed it (manifest capability
