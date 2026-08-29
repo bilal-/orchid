@@ -2462,48 +2462,74 @@ if [ -n "$merging_ids" ]; then
           drive_note "$merge_id: merge validation failed — back to rework for the next pass"
         fi ;;
       blocked)
-        # `orchid merge` takes `merging -> blocked` on exactly one condition:
-        # a red `merge_gate` whose charge just spent the task's last rework
-        # round. Every further round would re-run the same gate against the
-        # same repository for the same colour, so the pass stops here for a
-        # human instead of dispatching one. Reported through the same
-        # operator-decision boundary an exhausted verify budget uses, because
-        # it is the same kind of fact and the same two remedies.
+        # TWO ROUTES TAKE `merging -> blocked`, and they need opposite reports.
+        # ONE `blocked)` arm, because `case` runs the FIRST pattern that
+        # matches and a second one further down this same `esac` is dead code
+        # -- the route it was written for would silently get the other one's
+        # message.
+        #
+        #   1. a red repo-wide `merge_gate` whose charge just spent the task's
+        #      last rework round (libexec/orchid-merge's gate arm). Every
+        #      further round would re-run the same gate against the same
+        #      repository for the same colour, so the pass stops for a human
+        #      instead of dispatching one. There IS a validation log, it names
+        #      what went red, and clearing it is a judgment about the
+        #      REPOSITORY -- so: operator-decision, pointing at that log,
+        #      through the same boundary an exhausted verify budget uses.
+        #
+        #   2. a merge validation worktree whose `worktree_prepare` step keeps
+        #      failing: that arm charges the infra ladder and the kernel's own
+        #      counter blocks the task at `infra_max`. It dies BEFORE the
+        #      suite or the gate runs, and after the verb's opening `rm -f` of
+        #      any previous attempt's log -- so there is no merge log at all.
+        #      Naming one would send an operator to a file that is not there,
+        #      about a failure it would not describe if it were (lesson L023),
+        #      and would report an unrepaired environment as a repository
+        #      condition. So: the blocked task it is, through the boundary
+        #      that owns that state, naming no log.
+        #
+        # Split on the EVIDENCE, never on the exit code (1 for both) or the
+        # status (`blocked` for both): `merge_gate_red` above answers "does a
+        # log record that the gate RAN and came back red", and on this edge
+        # every route to `blocked` is downstream of that `rm -f`, so a log
+        # that is here is one this run wrote.
+        #
+        # WITHOUT the `merge_log_before`/`after` fingerprint the `merging` arm
+        # applies, and that is not an oversight. The fingerprint exists for
+        # the one die that precedes the verb's `rm -f` -- a run lock this
+        # process did not get -- and that die cannot reach this arm at all: a
+        # merge that never started cannot have moved the task out of
+        # `merging`. Every other route here deletes the old log first, so
+        # "there is a log" already means "this run wrote it", and a second
+        # test could only ever turn a correct answer into a wrong one.
         if [ "$merge_gate_red" -eq 1 ]; then
           "$ORCHID_BIN" notify --task "$merge_id" \
             "repo-wide merge_gate red with the rework budget spent: see .orchid/reviews/$merge_id-merge.log" >/dev/null
           set_boundary operator-decision "$merge_id" "the repository's own merge_gate has been red for every rework round this task had, so merge charged the last one and stopped: see .orchid/reviews/$merge_id-merge.log — a gate failure is frequently not the task's own doing, and another implementer round cannot clear one. Fix the repository (or this candidate, if the gate names it), then: orchid task reverify $merge_id --reason \"...\" re-runs verification with no attempt consumed, or orchid task retry $merge_id --reason \"...\" --attempts N grants further rounds"
         else
-          # No arm of `orchid merge` blocks for any other reason today. Kept
-          # distinct from the catch-all below so that if one ever does, the
-          # boundary names the state honestly instead of asserting a gate
-          # failure the log does not record.
-          set_boundary operator-decision "$merge_id" "merge left the task blocked (exit $merge_rc) with no failing merge_gate recorded in .orchid/reviews/$merge_id-merge.log — read that log before retrying"
+          # WORD FOR WORD the message the other blocked-task boundary in this
+          # file raises, and the remedy list is the whole one PROTOCOL.md's
+          # boundary table names -- `reverify` included, which is legal out of
+          # `blocked` (libexec/orchid-task's reverify edge) exactly as the
+          # other two are. T026 is the reason that list is spelled in full: a
+          # boundary an operator re-reads on every pass over a parked task is
+          # the one place they are guaranteed to look, so a remedy missing
+          # from it is a remedy nobody can discover. A second site raising the
+          # same kind with a shorter list would put that defect back for
+          # whichever route happened to park the task -- here, an environment
+          # nobody repaired.
+          #
+          # Also the honest report for a third route nobody has written yet:
+          # the task IS blocked and an operator IS the only thing that clears
+          # it, which stays true however it got there -- where asserting a
+          # gate failure the log does not record would not.
+          set_boundary blocked-task "$merge_id" \
+            "task is blocked — only an operator (orchid task unblock|retry|reverify) resolves it"
         fi ;;
       testing)
         "$ORCHID_BIN" journal add --task "$merge_id" \
           "re-review scope: full — the rebase minted a new candidate, so prior evidence is invalid" >/dev/null
         drive_note "$merge_id: base moved — rebased; re-verify and re-review required (INV-07)" ;;
-      blocked)
-        # `merging -> blocked` is not an unexpected status: a merge validation
-        # worktree whose `worktree_prepare` step keeps failing charges the
-        # infra ladder each pass (libexec/orchid-merge), and the kernel's own
-        # counter blocks the task at `infra_max`. Reported as the blocked task
-        # it is, through the boundary that owns that state, rather than as a
-        # merge that went somewhere nobody anticipated.
-        #
-        # WORD FOR WORD the message the other blocked-task boundary in this
-        # file raises, and the remedy list is the whole one PROTOCOL.md's
-        # boundary table names -- `reverify` included, which is legal out of
-        # `blocked` (libexec/orchid-task's reverify edge) exactly as the other
-        # two are. T026 is the reason that list is spelled in full: a boundary
-        # an operator re-reads on every pass over a parked task is the one
-        # place they are guaranteed to look, so a remedy missing from it is a
-        # remedy nobody can discover. A second site raising the same kind with
-        # a shorter list would put that defect back for whichever route
-        # happened to park the task -- here, an environment nobody repaired.
-        set_boundary blocked-task "$merge_id" \
-          "task is blocked — only an operator (orchid task unblock|retry|reverify) resolves it" ;;
       merging)
         if [ "$merge_rc" -eq 15 ]; then
           set_boundary hook-failure "$merge_id" "merge refused: a required before_merge hook has no ok envelope for this candidate"

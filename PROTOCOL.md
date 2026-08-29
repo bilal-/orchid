@@ -1980,6 +1980,20 @@ ones its archetype never declares.
     candidate. The recoveries are `orchid task reverify <id> --reason "..."`
     (re-runs verification, consumes no attempt) once the repository is green,
     or `orchid task retry <id> --reason "..." --attempts N` for more rounds.
+  - status `blocked` (exit was `1`) with NO `.orchid/reviews/<id>-merge.log`
+    recording a red gate: the other route to this status, and it needs the
+    opposite report. A `worktree_prepare` step that keeps failing for the
+    validation worktree charges the infra ladder each pass, and the kernel's
+    own counter blocks the task at `infra_max` — before the suite or the gate
+    ever run, and after the verb deleted any earlier attempt's validation
+    log. So there is no gate to name and no merge log to read: raise it as
+    the blocked task it is (`orchid task unblock|retry|reverify` are the
+    remedies, as for any blocked task), point at the prepare log the verb's
+    own final line names, and fix the environment. Reporting this one as a
+    gate failure sends a human to a file that is not there, for a repository
+    condition that did not happen; distinguish the two by whether a merge log
+    this run wrote records `gate_status: ran` with a nonzero `gate_exit:`,
+    never by the status or the exit code, which are identical for both.
   - status `testing`, with a fresh `base_sha`/`candidate_sha` and invalidated
     evidence (exit was `5`, `rebase_rereview_required`; verb already
     journaled this with kind `rebase_review`): classifying the coming

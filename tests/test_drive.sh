@@ -892,15 +892,24 @@ assert_match "reverify" "$SBLOCKED_REASON" \
 # ...AND SO DOES EVERY OTHER SITE THAT RAISES THIS KIND. The pass above can
 # only reach the one boundary a fixture can walk to; the driver raises the
 # same kind from a second place -- `merging -> blocked`, where an environment
-# nobody repaired has charged the infra ladder to its cap -- which an
-# end-to-end case could reach only by driving a merge through `infra_max`
-# passes. A shorter list at THAT site is the identical T026 defect for
-# whichever route happened to park the task, and it would sail past the
-# assertions above, because they read a different boundary. So the source is
-# counted instead: every site raises one, and every site spells the whole
-# list. The first check is the non-vacuity witness -- rename `set_boundary`
-# or the message and both counts fall to zero, which would otherwise compare
-# equal and prove nothing.
+# nobody repaired has charged the infra ladder to its cap. A shorter list at
+# THAT site is the identical T026 defect for whichever route happened to park
+# the task, and it would sail past the assertions above, because they read a
+# different boundary. So the source is counted too: every site raises one, and
+# every site spells the whole list. The first check is the non-vacuity witness
+# -- rename `set_boundary` or the message and both counts fall to zero, which
+# would otherwise compare equal and prove nothing.
+#
+# T023: THE COUNT IS NO LONGER THE ONLY COVERAGE, and it never should have
+# been the only coverage. Part ZP at the end of this file drives that second
+# site end to end -- a real merge, a real failing `worktree_prepare`, the
+# kernel's own infra counter at `infra_max` -- and asserts the KIND and the
+# REASON that actually come out. The count could not: it reads text, and the
+# defect it slept through was a second `blocked)` arm in one `case`, where
+# both arms spell the same call and only the first can ever execute. So a
+# dead site kept this comparison equal while the route it was written for got
+# the other arm's message. What is kept here is the part a fixture cannot
+# reach: a THIRD site, added later, for a route no fixture yet walks.
 BT_SITES="$(grep -c 'set_boundary blocked-task' "$DRIVE" || true)"
 BT_FULL="$(grep -c 'orchid task unblock|retry|reverify' "$DRIVE" || true)"
 [ "$BT_SITES" -gt 1 ] \
@@ -7795,3 +7804,132 @@ grep -q "unexpected status" <<<"$GDRIVE_OUT" \
   && fail "the merging arm must recognise the blocked outcome its own verb produces"
 assert_eq "$GBASE" "$(git -C "$GATEREPO" rev-parse orchid/integration)" \
   "and after both rounds the integration ref has still never moved"
+
+# T023: THIS is the half of the `blocked` arm that names a validation log, and
+# it may do so only because the log is THERE -- the gate ran, wrote it, and
+# recorded what went red in it. Part ZP below drives the other route to the
+# same status, where no such log exists; the pair is what pins the split.
+# Read off the RECORDED boundary rather than the pass output, because the
+# recorded reason is what an operator re-reads through `run boundary show`
+# long after the pass has scrolled away.
+gboundary() { ORCHID_REPO="$GATEREPO" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+assert_eq operator-decision "$(gboundary | jq -r '.kind // ""')" \
+  "a red gate at the cap is a judgment about the REPOSITORY, recorded as operator-decision"
+GBOUNDARY_REASON="$(gboundary | jq -r '.reason // ""')"
+assert_match "reviews/G010-merge\.log" "$GBOUNDARY_REASON" \
+  "and the reason names the validation log the gate wrote, which is where what went red is written (reason: $GBOUNDARY_REASON)"
+[ -f "$GATEREPO/.orchid/reviews/G010-merge.log" ] \
+  || fail "non-vacuity: the log that boundary sends an operator to must actually exist on disk"
+
+# ===========================================================================
+# Part ZP (T023) -- THE OTHER ROUTE TO `merging -> blocked`, WHICH MUST NOT BE
+# REPORTED AS THE FIRST ONE.
+#
+# Two things end a merge in `blocked`, they arrive with the same status and
+# the same exit 1, and they need opposite reports:
+#
+#   * Part Z's route -- a repo-wide `merge_gate` red at the rework cap. A
+#     judgment about the REPOSITORY, with a validation log that says what went
+#     red. Reported as operator-decision, naming that log.
+#   * THIS route -- a merge validation worktree whose `worktree_prepare` step
+#     failed, charged to the infra ladder until the kernel's own counter hit
+#     `infra_max`. `orchid merge` deletes any previous attempt's validation
+#     log at the top of its run and dies here, long before the suite or the
+#     gate execute, so there is NO validation log -- and the failure is an
+#     unrepaired environment, which is nobody's candidate defect and no
+#     amount of reading a diff resolves.
+#
+# The driver used to carry two `blocked)` arms in one `case`. Only the first
+# can ever run, so this route got the other one's message: an
+# operator-decision telling a human to read `.orchid/reviews/<id>-merge.log`
+# -- a file that is not on disk, for a failure it would not have described if
+# it were (lesson L023). What is asserted below is the boundary KIND and the
+# REASON, in both directions: the right kind is raised, and the wrong
+# evidence is not named.
+#
+# Driven end to end through the real driver and the real verbs. A source-level
+# count cannot see this: both arms spell the same `set_boundary` call, and the
+# dead one reads exactly as correct as the live one.
+# ===========================================================================
+PREPREPO="$WORK/mergeprep"
+mkdir -p "$PREPREPO"
+cd_scratch "$PREPREPO"
+git init -q .
+# `infra_max=1`, so one prepare failure is the whole ladder and the fixture
+# reaches the blocked state in a single pass. `worktree_prepare` fails
+# outright: what this Part is about is the report, and the reason a prepare
+# command fails (a missing dependency, an unreachable registry, a bootstrap
+# nobody has fixed) makes no difference to it.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\ninfra_max=1\nworktree_prepare=exit 7\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$PREPREPO" "$ORCHID_BIN" init >/dev/null || fail "orchid init (worktree_prepare fixture)"
+git checkout -q orchid/integration
+ZPEPOCH="$(ORCHID_REPO="$PREPREPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+zporchid() { ORCHID_REPO="$PREPREPO" ORCHID_EPOCH="$ZPEPOCH" "$ORCHID_BIN" "$@"; }
+zpfield() { fm_get "$PREPREPO/.orchid/tasks/ZP10.md" "$1"; }
+zpboundary() { ORCHID_REPO="$PREPREPO" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+zporchid requirements import "$WORK/requirements.md" >/dev/null
+zporchid task create ZP10 "a task whose merge worktree cannot be prepared" >/dev/null
+# GREEN, and it never runs: the prepare step dies ahead of it. Which is the
+# point -- nothing about this candidate is in question.
+zporchid task set ZP10 verification_commands "true" >/dev/null
+zporchid plan apply --reason "initial plan" >/dev/null
+
+git checkout -q -b task/ZP10
+echo prepared > feature-zp.txt && git add feature-zp.txt && git commit -q -m "candidate"
+ZPCAND="$(git rev-parse HEAD)"
+git checkout -q orchid/integration
+ZPBASE="$(git rev-parse HEAD)"
+zporchid task set ZP10 branch task/ZP10 >/dev/null
+zporchid task set ZP10 base_sha "$ZPBASE" >/dev/null
+zporchid task set ZP10 candidate_sha "$ZPCAND" >/dev/null
+fm_set "$PREPREPO/.orchid/tasks/ZP10.md" status merging
+
+ZPDRIVE_RC=0
+ZPDRIVE_OUT="$(ORCHID_REPO="$PREPREPO" ORCHID_EPOCH="$ZPEPOCH" "$DRIVE" 2>&1)" || ZPDRIVE_RC=$?
+
+# The fixture actually took the route it claims to: the prepare step ran, in
+# the MERGE validation worktree (its own log slug, so a dispatch worktree's
+# record is never what is being read here), and failed.
+ZPPREPLOG="$PREPREPO/.orchid/runtime/worktree-prepare/ZP10-merge.log"
+[ -f "$ZPPREPLOG" ] \
+  || fail "non-vacuity: the merge validation worktree's prepare step must have RUN (no $ZPPREPLOG)"
+assert_match "^exit: 7$" "$(cat "$ZPPREPLOG" 2>/dev/null || true)" \
+  "...and failed, which is what charges the infra ladder"
+assert_eq blocked "$(zpfield status)" \
+  "the kernel's infra counter blocks the task at infra_max (out: $ZPDRIVE_OUT)"
+assert_eq 1 "$(zpfield infra_failures)" "charged to the ENVIRONMENT ladder"
+assert_eq 0 "$(zpfield attempts)" \
+  "and NOT to the candidate's rework rounds — an unprepared checkout is not a defect in the diff"
+assert_eq "$ZPBASE" "$(git -C "$PREPREPO" rev-parse orchid/integration)" \
+  "the integration ref never moved: nothing was validated, so nothing landed"
+
+# --- the report -----------------------------------------------------------
+assert_eq 16 "$ZPDRIVE_RC" "the pass stops at a judgment boundary"
+assert_eq blocked-task "$(zpboundary | jq -r '.kind // ""')" \
+  "a task the infra ladder parked is raised as the blocked task it is, not as a repository judgment"
+assert_eq ZP10 "$(zpboundary | jq -r '.task // ""')" "...against the task that is blocked"
+ZPREASON="$(zpboundary | jq -r '.reason // ""')"
+assert_match "orchid task unblock" "$ZPREASON" \
+  "naming the verb that clears the block (reason: $ZPREASON)"
+assert_match "retry" "$ZPREASON" "...the one that grants another round"
+assert_match "reverify" "$ZPREASON" \
+  "...and the one that re-runs verification alone — the WHOLE remedy list, at this site too (T026)"
+# The negative half, and the reason this Part exists. Asserted against the
+# RECORDED reason rather than the pass output, deliberately: the pass output
+# also carries `orchid merge`'s own die line, which names the PREPARE log
+# under runtime/ -- an environment record, and exactly the right pointer.
+# What must never appear is the validation log, which nothing wrote.
+grep -q "reviews/ZP10-merge.log" <<<"$ZPREASON" \
+  && fail "the boundary sends an operator to a merge validation log that was never written for this failure (reason: $ZPREASON)"
+[ -f "$PREPREPO/.orchid/reviews/ZP10-merge.log" ] \
+  && fail "non-vacuity check inverted: this route must leave NO validation log, or the assertion above proves nothing"
+grep -q "merge_gate" <<<"$ZPREASON" \
+  && fail "no gate ran on this pass, so the boundary must not claim one went red (reason: $ZPREASON)"
+grep -q "unexpected status" <<<"$ZPDRIVE_OUT" \
+  && fail "the merging arm must recognise the blocked outcome its own verb produces by this route too"
+# ...and the pass DOES tell the operator what actually broke, through merge's
+# own last line.
+assert_match "cannot prepare the merge validation worktree" "$ZPDRIVE_OUT" \
+  "the pass still names the environment failure that parked the task"
