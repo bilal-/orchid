@@ -1644,13 +1644,24 @@ They are the verbs you want most in this state, and they are refused anyway.
 `orchid help` and an unknown verb still answer (neither sources anything);
 everything else, diagnostics included, stops.
 
-One arm is genuinely exempt, and it is worth knowing about while you are here:
-`orchid trust show` still answers. It writes no durable record, and the
-unattended-trust contract requires an inspection with no identity-keyed
-candidate to invoke no Git at all — which is exactly what this refusal would
-spend. `orchid trust unattended` and `orchid trust revoke` do refuse, because
-both leave a machine-local record behind that outlives the process that made
-it, and neither may be made by code nobody has looked at.
+No arm of `orchid trust` is exempt either, and one of them used to be.
+`orchid trust unattended` and `orchid trust revoke` refuse because each leaves
+a machine-local record behind that outlives the process that made it, and
+neither may be made by code nobody has looked at. `orchid trust show` refuses
+too, and the reason it stopped being an exception is the reason `doctor` and
+`status` never were one: what it produces is the report you decide on — the
+gate verdict, the record it resolved, the root verification, the provenance —
+and out of a stale checkout that report is produced by the pre-merge code.
+Writing nothing durable is not the same as having nothing to protect.
+
+That leaves the unattended-trust contract untouched, which is what the old
+exemption was written for. What the contract forbids is Git spent on *the
+repository under inspection* before an acknowledgement for it has been found.
+This refusal spends none: it compares orchid's own installation root against
+its own `HEAD`, never the repository you asked about, and it spends even that
+only from a root parked on the integration branch. As everywhere else on this
+page, the way through is `ORCHID_ALLOW_STALE_ROOT=1` in front of the one
+command, so what you are about to read is knowably the stale kernel's answer.
 
 The reason is not consistency for its own sake. **A diagnosis read out of a
 stale checkout is produced by the stale code.** `orchid doctor` here runs the

@@ -1915,7 +1915,10 @@ semantic correctness beyond declared verification commands.
   each section's executable code, never on the prose beside it — every
   `tests/inv/` gate is RUN and observed to reach `tests/helpers.sh`, so its
   recorded RED/GREEN cases are enforced at run time rather than by a source
-  line a grep can see and a shell never executes, every kernel entry point
+  line a grep can see and a shell never executes — and none of those gates
+  records a label the shell executes, since a backtick inside a double-quoted
+  label is a command substitution and the case is then counted with the words
+  that said what it proved deleted from the record — every kernel entry point
   that arms the stale-root guard reaches a site that fires it — and reaches
   it before its own first write, since a gate placed after a side effect
   guards only what follows it — and no gate, kernel or invariant test, pipes
@@ -1926,9 +1929,13 @@ semantic correctness beyond declared verification commands.
   most weight are also made executably rather than by reading source: a pump
   invoked out of a genuinely stale root refuses before it creates the target
   repository's runtime directory, an `orchid trust unattended` out of that
-  same root refuses with the machine-local trust store still empty, and a
-  task whose `verification_commands` names nothing but `true` is still gated
-  by `merge_gate` before its ref can advance
+  same root refuses with the machine-local trust store still empty, the
+  `orchid trust show` beside it — the arm that writes nothing durable, and
+  therefore the arm an exemption is easiest to argue for — refuses before it
+  prints one line of the report an operator decides on, while a usage error
+  out of that same root is still answered as a usage error, and a task whose
+  `verification_commands` names nothing but `true` is still gated by
+  `merge_gate` before its ref can advance
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a
   named, journaled boundary instead
