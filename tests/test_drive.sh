@@ -1131,6 +1131,38 @@ assert_eq 2 "$(squestions)" \
 assert_eq S010 "$(sboundary | jq -r .task)" \
   "and the ranking is unchanged by any of it: the same stop still holds the record slot"
 
+# ...AND AN EXPIRED PAGE IS NOT A PAGE (T009). What silences the ninety-nine
+# passes above is the operator's own outstanding question -- so when
+# `answer_expiry_s` takes that question away, the silence has to end with it.
+# `orchid answer` refuses an aged question outright (libexec/orchid-answer's
+# expiry arm), so from the operator's side the stop is no longer answerable, no
+# longer visible as a decision, and nothing is asking them about it.
+#
+# S010 IS THE ARM THIS PINS, and it is why the de-dup order matters. Its
+# boundary RECORD is durable and unchanged -- only a human clears a block -- so
+# a loop that compares the record first `continue`s before it ever asks the
+# inbox, and S010's stop goes quiet at exactly the moment it became
+# unanswerable. S020 never had a record to be compared against, so it would
+# re-page either way; asserting only S020 here would pass against the defect.
+squestions_for() { grep -lx "task: $1" "$STARVE"/.orchid/runtime/answers/*.question 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq 1 "$(squestions_for S010)" \
+  "fixture witness: the stop holding the record slot has exactly one page, and it is live"
+touch -t 200001010000 "$STARVE"/.orchid/runtime/answers/*.question \
+  || fail "fixture: both questions' mtimes must be settable to age them out"
+run_sdrive
+assert_eq 2 "$(squestions_for S010)" \
+  "a stop whose page expired unanswered is paged again — even though its boundary record never changed, which is the whole reason the record may not be consulted first (out: $SDRIVE_OUT)"
+assert_eq 2 "$(squestions_for S020)" \
+  "...and so is the stop that never held the record slot"
+assert_eq 4 "$(squestions)" \
+  "one fresh page each, and no more than one: an expired inbox re-raises the stop, it does not restart the duplicate (out: $SDRIVE_OUT)"
+# ...and the fresh page silences the passes after it exactly as the first one
+# did. Without this the repair would trade a stop that goes quiet forever for a
+# stop that pages once per pass forever.
+run_sdrive
+assert_eq 4 "$(squestions)" \
+  "the re-raised pages are live again, so the next pass is silent once more (out: $SDRIVE_OUT)"
+
 # Pass 2 -- S020 now sits at `arbitrating` over a request-changes review: an
 # arbitrable boundary, on a HIGHER task id than the blocked one. The reviewer
 # envelope and the frontmatter are written directly, so the pass is decided

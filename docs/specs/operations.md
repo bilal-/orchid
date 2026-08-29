@@ -359,12 +359,20 @@ this section false without touching a byte of it.
   that cannot be carried out and refuses the ones that can.
   **One stop raises one page, and every stop raises one.** `runners/orchid-drive`
   sends every page from a single call site, over the list of every boundary the
-  pass MET, de-duplicated per stop: a page carrying that exact text which is
-  already on record — a question still awaiting an answer, or one already
-  answered — is that stop's page, and only a question that expired unanswered
-  (which `orchid answer` would now refuse) counts as no page at all. So a
-  condition that persists for a hundred passes raises one blocker. A notify
-  raised anywhere else is compared against nothing. Three arms used to
+  pass MET, de-duplicated per stop: a page for that TASK carrying that exact
+  text which is already on record — a question still awaiting an answer, or one
+  already answered — is that stop's page, and only a question that expired
+  unanswered (which `orchid answer` would now refuse) counts as no page at all.
+  So a condition that persists for a hundred passes raises one blocker. A stop
+  is a task and a text, never a text alone: most boundary reasons do not name
+  their own task, so two tasks failing the same hook compose the identical
+  sentence, and matching on the text alone would answer the second one's stop
+  with the first one's page. The boundary RECORD is still compared, but only as
+  the fallback for a stop whose inbox holds no question at all — it is durable
+  and a blocked task's never changes, so consulting it first left an expired
+  page un-raisable: unanswerable to the operator and "already announced" to the
+  driver, forever. A notify raised anywhere else is compared against nothing.
+  Three arms used to
   do exactly that — the exhausted-budget arm and the wallclock backstop, each
   paging a task it was about to block, and the stuck-merge arm, paging a
   boundary it recorded in the same breath — so one decision reached the

@@ -1808,26 +1808,39 @@ page_orchid task advance T907 blocked \
 strv_reason="$(drive_blocked_reason T907 "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T907)")"
 strv_text="judgment boundary [blocked-task] needs an operator: $strv_reason"
 
+# The oracle answers in THREE codes, not two, and each one is asserted by its
+# number rather than by truthiness: 0 paged, 2 paged-but-unanswerable, 1 never
+# paged. The driver de-dups against two sources -- this inbox and the durable
+# boundary RECORD -- and 2 is what tells it the record may not speak for this
+# stop, so a test that only asked `if drive_page_on_record` would pass while
+# STALE and UNPAGED were folded back into one answer and an expired page became
+# unraisable again -- 12f-iv holds the driver to the distinction, and Part C2 of
+# tests/test_drive.sh drives it through real passes.
+page_on_record_rc() {
+  local rc=0
+  drive_page_on_record "$PAGE_REPO" "$1" "$2" || rc=$?
+  printf '%s\n' "$rc"
+}
+
 # RED for the oracle's first answer: a stop nothing has paged for has no page,
 # whatever else is standing in this repo's inbox (sections 12a-12e left several
 # questions there, which is exactly the noise a subject-blind oracle would trip
 # on).
-if drive_page_on_record "$PAGE_REPO" "$strv_text"; then
-  fail "a stop no question carries must read as unpaged, or the pass would stay silent about it forever"
-fi
+assert_eq 1 "$(page_on_record_rc T907 "$strv_text")" \
+  "a stop no question carries must read as unpaged, or the pass would stay silent about it forever"
 strv_qid="$(page_block_notify T907 "$strv_text")" \
   || fail "fixture: the starved stop's page must be raisable"
 # GREEN: an OPEN question is that stop's page, and it is what silences the next
 # hundred passes -- the property section 12's whole preamble is about.
-drive_page_on_record "$PAGE_REPO" "$strv_text" \
-  || fail "a question still waiting for an answer IS that stop's page: raising a second one is the duplicate qid this section exists to prevent"
+assert_eq 0 "$(page_on_record_rc T907 "$strv_text")" \
+  "a question still waiting for an answer IS that stop's page: raising a second one is the duplicate qid this section exists to prevent"
 # ...and an ANSWERED one still is. Without this half a stop that persists after
 # `defer` mints a fresh page on every pass -- one per answer, forever -- which is
 # the duplicate defect wearing the repair's clothes.
 page_orchid answer "$strv_qid" defer >/dev/null \
   || fail "fixture: the starved stop's page must be answerable"
-drive_page_on_record "$PAGE_REPO" "$strv_text" \
-  || fail "an answered question is still that stop's page — a persisting stop must not re-page once per answer"
+assert_eq 0 "$(page_on_record_rc T907 "$strv_text")" \
+  "an answered question is still that stop's page — a persisting stop must not re-page once per answer"
 # ...and the ONE case that pages again: a question that expired unanswered, which
 # `orchid answer` itself refuses (libexec/orchid-answer's expiry arm). For the
 # operator that is not a page at all.
@@ -1837,9 +1850,8 @@ touch -t 200001010000 "$PAGE_REPO/.orchid/runtime/answers/$strv_qid2.question" \
   || fail "fixture: the aged question's mtime must be settable"
 rm -f "$PAGE_REPO/.orchid/runtime/answers/$strv_qid.question" \
       "$PAGE_REPO/.orchid/runtime/answers/$strv_qid.answer"
-if drive_page_on_record "$PAGE_REPO" "$strv_text"; then
-  fail "a question aged past answer_expiry_s can no longer be answered, so it is not a page: the stop must be raisable again"
-fi
+assert_eq 2 "$(page_on_record_rc T907 "$strv_text")" \
+  "a question aged past answer_expiry_s can no longer be answered, so it is not a page: the stop must be raisable again"
 
 # --- 12f-ii: RED — the pass pages what it MET, not what it recorded ---------
 # The structural half, in the same spirit as 12c/12d: the property is about a
@@ -1865,3 +1877,75 @@ assert_match 'done <<< "\$boundaries_met"' "$page_loop" \
   "the one page producer is driven by the boundaries the pass MET — a loop over the record alone can only ever page one stop"
 assert_match "drive_page_on_record" "$drive_code" \
   "...and each of those pages is de-duplicated per stop, which is the only thing that stops a list of stops from becoming a list of pages per pass"
+
+# --- 12f-iii: a stop is a TASK and a text, never a text alone ---------------
+# Most boundary reasons do not name the task they are about -- the hook-failure
+# arm's sentence is composed from the hook point and the unsatisfied bindings,
+# and nothing else -- so two tasks meeting the same condition compose a
+# byte-identical page text. A subject-blind oracle then reads the second task's
+# stop as the first task's page and never asks about it: one page, two
+# decisions, which is 12f's starvation defect with the tasks swapped instead of
+# the ranking. (`blocked-task` cannot show this: drive_blocked_reason spells the
+# task id into every remedy, so its texts differ by construction. The kinds that
+# CAN are exactly the ones nothing else in this file exercises.)
+page_orchid task create T908 "the same sentence, a different decision" >/dev/null \
+  || fail "fixture: the twin-stop task must be creatable"
+twin_text="judgment boundary [hook-failure] needs an operator: required before_verify hook binding(s) without an ok envelope for this candidate: lint"
+assert_eq 1 "$(page_on_record_rc T907 "$twin_text")" \
+  "fixture witness: neither task has been paged with this sentence yet"
+assert_eq 1 "$(page_on_record_rc T908 "$twin_text")" \
+  "...for either subject"
+twin_qid="$(page_orchid notify --task T907 "$twin_text")" \
+  || fail "fixture: the first task's page must be raisable"
+# The header the oracle matches on, read off the file the REAL producer wrote:
+# `task: <id>` first, before the nonce and before the text (libexec/
+# orchid-notify). Asserted rather than assumed, because a subject test that
+# matched a header no question file carries would answer UNPAGED for everything
+# and look exactly like a passing test.
+assert_eq "task: T907" "$(head -1 "$PAGE_REPO/.orchid/runtime/answers/$twin_qid.question")" \
+  "witness: a question states its subject on its first line, which is where the oracle reads it"
+assert_eq 0 "$(page_on_record_rc T907 "$twin_text")" \
+  "the task that was paged has its page"
+assert_eq 1 "$(page_on_record_rc T908 "$twin_text")" \
+  "...and the task that was NOT is still unpaged, though the sentence is byte-identical: answering T907's qid decides nothing about T908"
+
+# The same rule at the other end of the range: a run-level stop carries no task
+# at all, and `none` is the subject libexec/orchid-notify writes for it. Without
+# this arm the oracle could compare against an empty string, match no question
+# ever written, and re-page every run-level boundary on every pass.
+rl_text="judgment boundary [run-complete] needs an operator: every task is done — an operator accepts the run"
+rl_qid="$(page_orchid notify "$rl_text")" \
+  || fail "fixture: a run-level page must be raisable"
+assert_eq "task: none" "$(head -1 "$PAGE_REPO/.orchid/runtime/answers/$rl_qid.question")" \
+  "witness: a page with no task states its subject as 'none' — the spelling the oracle has to compare against"
+assert_eq 0 "$(page_on_record_rc "" "$rl_text")" \
+  "a run-level stop asked about with no task finds its own page"
+assert_eq 1 "$(page_on_record_rc T907 "$rl_text")" \
+  "...and that page is nobody's task page, so a task asking the same sentence is still unpaged"
+
+# --- 12f-iv: RED — the durable record is the FALLBACK, not the first word ---
+# The page loop de-dups against two sources, and their order is the whole
+# property. The boundary RECORD is durable and a blocked task's never changes,
+# so a loop that compares it FIRST and `continue`s on a match can never reach
+# the question oracle -- and the one answer that oracle exists to give (STALE:
+# the page was raised and has aged past `answer_expiry_s`, so `orchid answer`
+# now refuses it) is unreachable for exactly the stops that persist longest.
+# The operator's page goes quiet at the moment it becomes unanswerable, and the
+# record goes on reporting the stop as announced, forever.
+#
+# Structural, in the same spirit as 12f-ii: the behaviour needs a driver pass
+# over an aged inbox (Part C2 of tests/test_drive.sh drives that), while what
+# MAKES it hold is an ordering in this file, and an ordering is checkable here --
+# which is the file this task's verification runs.
+pl_oracle="$(grep -n 'drive_page_on_record "\$repo"' "$drive_src" | cut -d: -f1)"
+pl_record="$(grep -n '\[ "\$prev_kind" = "\$page_kind" \]' "$drive_src" | cut -d: -f1)"
+[ -n "$pl_oracle" ] && [ -n "$pl_record" ] \
+  || fail "fixture: the page loop's two de-dup sources must both be locatable in $drive_src (oracle=$pl_oracle record=$pl_record)"
+[ "$pl_oracle" -lt "$pl_record" ] \
+  || fail "the question inbox must be consulted BEFORE the durable boundary record: a record that matches first short-circuits the page and an expired question can never re-raise its stop (oracle=$pl_oracle record=$pl_record)"
+# ...and consulting it first is not enough on its own: the record comparison has
+# to be SKIPPED for a stale stop, or it suppresses the very page the oracle just
+# said was gone.
+record_guard="$(grep -B 1 '\[ "\$prev_kind" = "\$page_kind" \]' "$drive_src" || true)"
+assert_match '"\$on_record" -ne 2' "$record_guard" \
+  "the record may only speak for a stop whose inbox holds nothing at all — a STALE answer (2) overrides it, which is what re-raises an expired page"

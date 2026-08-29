@@ -4141,11 +4141,29 @@ drive_blocked_reason() {
     "$what" "$id" "$id" "$id"
 }
 
-# drive_page_on_record <repo> <text> -- 0 iff a page carrying EXACTLY this text
-# is already on record and still counts as this stop's page: a question that is
-# still waiting for an answer and still answerable, or one that has been
-# answered. Nonzero when nothing on record carries the text, or when the only
-# questions that do have expired unanswered.
+# drive_page_on_record <repo> <task|""> <text> -- what this stop's inbox says,
+# in three answers rather than two, because the caller has three things to do
+# with it:
+#
+#   0  PAGED     a question for this stop is on record and still counts as its
+#                page: still waiting for an answer and still answerable, or
+#                already answered.
+#   2  STALE     the only questions for this stop are ones `orchid answer` would
+#                now refuse -- expired unanswered, or with an mtime that cannot
+#                be read at all. The stop HAS been paged and that page is gone.
+#   1  UNPAGED   nothing on record carries this stop at all.
+#
+# WHY 2 IS NOT JUST "NOT 0". The caller de-dups against two sources: this
+# question inbox and the durable boundary RECORD it is about to write. The
+# record is the weaker of the two and outlives everything -- a `blocked-task`
+# boundary sits there unchanged until a human clears the block -- so a caller
+# that consults it first suppresses the page whenever it matches, and the
+# question's expiry can never be noticed. That is the stop going silent at
+# exactly the moment it became unanswerable: the operator's page aged out, the
+# record says "already announced", and nobody is asked again. Splitting STALE
+# out is what lets the caller say "the record may only speak for a stop whose
+# inbox is empty", so an expired page is re-raised and a swept-away runtime
+# still de-dups.
 #
 # WHY THE DRIVER NEEDS A PER-STOP ORACLE AND NOT JUST THE BOUNDARY RECORD. The
 # kernel stores ONE boundary record, and a pass that meets several may record
@@ -4185,33 +4203,60 @@ drive_blocked_reason() {
 # different text; a recurrence that does not is one an operator has already
 # answered in those exact words.
 #
+# A STOP IS A TASK AND A TEXT, NOT A TEXT. The reason a boundary carries is the
+# arm's own sentence and most arms do not name the task in it -- a hook-failure
+# reads "required before_verify hook binding(s) without an ok envelope for this
+# candidate: ...", which two tasks failing the same hook compose byte-identically.
+# Matching on the text alone therefore reads the second task's stop as the first
+# task's page and never asks about it, which is section 12f's starvation defect
+# again with the tasks swapped: one page, two decisions. The question file states
+# its subject on its FIRST line (`task: <id>`, or `task: none` for a run-level
+# boundary -- libexec/orchid-notify writes that header before anything else), so
+# the subject is compared there, exactly, and only then is the text.
+#
 # Matched with `grep -qxF -e`: a whole LINE equal to the text, so no header line
 # of the question file can match it (they are `task: `/`nonce: `/`choices: `
 # prefixed and the text is not), and `-e` because a page text is not this
 # reader's business to constrain -- one starting with `-` must not become a
 # grep option.
 drive_page_on_record() {
-  local repo="$1" text="$2" rt qf qid expiry now mt
+  local repo="$1" task="$2" text="$3" rt qf qid expiry now mt subject want stale=0
   # The path is composed rather than taken from lib/common.sh's orchid_runtime,
   # which mkdir -p's what it returns: this file is read-only (see its header),
   # and libexec/orchid-doctor's inbound check reads the same directory the same
   # way for the same reason.
   rt="$repo/.orchid/runtime"
   [ -d "$rt/answers" ] || return 1
+  # `none` is libexec/orchid-notify's own spelling for a page with no task, so a
+  # run-level stop is compared against the header that verb really writes rather
+  # than against an empty string no question file can carry.
+  want="task: ${task:-none}"
   expiry="$(config_get "$repo" answer_expiry_s 86400)"
   case "$expiry" in ''|*[!0-9]*) expiry=86400 ;; esac
   now="$(date -u +%s)"
   for qf in "$rt"/answers/*.question; do
     [ -f "$qf" ] || continue
+    subject=""
+    IFS= read -r subject < "$qf" || true
+    [ "$subject" = "$want" ] || continue
     grep -qxF -e "$text" "$qf" 2>/dev/null || continue
     qid="$(basename "$qf" .question)"
     [ ! -f "$rt/answers/$qid.answer" ] || return 0
     # Unreadable mtime is bucketed with expired for the same reason `orchid
-    # answer` refuses it: unanswerable either way, so it is not a live page.
+    # answer` refuses it: unanswerable either way, so it is not a live page --
+    # but it IS a page that was raised and is now gone, which is STALE and not
+    # UNPAGED. Normalized first so a non-numeric answer is that bucket rather
+    # than an arithmetic error inside a `set -e` driver.
     mt="$(file_mtime "$qf")"
-    [ "$mt" -gt 0 ] || continue
-    [ $(( now - mt )) -gt "$expiry" ] || return 0
+    case "$mt" in ''|*[!0-9]*) mt=0 ;; esac
+    if [ "$mt" -gt 0 ] && [ $(( now - mt )) -le "$expiry" ]; then
+      return 0
+    fi
+    # Keep looking rather than returning here: another question may carry this
+    # same stop and still be live, and a live page outranks a dead one.
+    stale=1
   done
+  [ "$stale" -eq 0 ] || return 2
   return 1
 }
 

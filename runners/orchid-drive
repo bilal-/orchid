@@ -148,10 +148,17 @@ boundary is recorded per pass, so reading the budget off the record left every
 stop that lost the ranking with nothing to be compared against and no page at
 all -- and blocked tasks all rank equal, so one of them held the slot on every
 pass while the rest of a parked run stayed silent. The pass therefore pages every
-operator-only stop it met, and asks per stop whether a page carrying that exact
-text is already on record (lib/drive.sh's drive_page_on_record: a question still
-awaiting an answer, or one already answered, is that stop's page; one that
-expired unanswered is not, because `orchid answer` would now refuse it).
+operator-only stop it met, and asks per stop whether a page for THAT TASK
+carrying that exact text is already on record (lib/drive.sh's
+drive_page_on_record: a question still awaiting an answer, or one already
+answered, is that stop's page; one that expired unanswered is not, because
+`orchid answer` would now refuse it). The subject is compared as well as the
+text because most boundary reasons do not name their task -- two tasks failing
+the same hook compose the identical sentence -- and a subject-blind match reads
+the second one's stop as the first one's page. The boundary RECORD is consulted
+only as a fallback, for a stop whose inbox holds nothing at all: it is durable
+and a blocked task's never changes, so consulting it first meant an expired page
+could never be re-raised.
 
 Between an implementer's envelope reconciling and `orchid verify` running,
 some candidates need execution-requiring mechanical work an engine profile
@@ -2974,12 +2981,20 @@ if [ -n "$boundary_kind" ]; then
   #
   # So the pass pages every operator-only stop it met, and the de-dup moves off
   # the record and onto the stop: lib/drive.sh's drive_page_on_record asks
-  # whether a question carrying exactly this page text is already on record and
-  # still counts as that stop's page. A condition persisting for a hundred passes
-  # still raises one blocker -- its own, standing unanswered, is what silences
-  # the ninety-nine. The previous RECORD is still consulted first, unchanged, so
-  # the recorded boundary's own de-dup is exactly what it was even where the
-  # runtime questions have been swept away.
+  # whether a question for this TASK carrying exactly this page text is already
+  # on record and still counts as that stop's page. A condition persisting for a
+  # hundred passes still raises one blocker -- its own, standing unanswered, is
+  # what silences the ninety-nine.
+  #
+  # THE RECORD IS THE FALLBACK, AND ONLY THAT. It is still consulted, because a
+  # runtime whose questions have been swept away would otherwise re-page every
+  # stop it ever raised -- but it is consulted SECOND, and only for a stop whose
+  # inbox is empty. The record is durable and a blocked task's never changes, so
+  # asking it first suppressed the page whenever it matched and the question's
+  # expiry could never be seen: the operator's page aged past `answer_expiry_s`,
+  # `orchid answer` began refusing it, and the record went on reporting the stop
+  # as announced. That is the one case the oracle exists to re-raise, so a STALE
+  # answer (exit 2) overrides the record outright.
   prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
   prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
   prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
@@ -3001,13 +3016,19 @@ if [ -n "$boundary_kind" ]; then
     if drive_boundary_wakes_orchestrator "$page_kind" "$page_status" "$orchestrator_surface"; then
       continue
     fi
-    if [ "$prev_kind" = "$page_kind" ] && [ "$prev_task" = "$page_task" ] && \
-       [ "$prev_reason" = "$page_reason" ]; then
+    page_text="judgment boundary [$page_kind] needs an operator: $page_reason"
+    # 0 paged / 2 stale (paged, but no longer answerable) / 1 never paged. Read
+    # through `|| on_record=$?` because the two nonzero answers are both normal
+    # returns of a reader this `set -e` pass must not die on.
+    on_record=0
+    drive_page_on_record "$repo" "$page_task" "$page_text" || on_record=$?
+    if [ "$on_record" -eq 0 ]; then
+      drive_note "not notified: [$page_kind]${page_task:+ $page_task} already has a page on record for this stop"
       continue
     fi
-    page_text="judgment boundary [$page_kind] needs an operator: $page_reason"
-    if drive_page_on_record "$repo" "$page_text"; then
-      drive_note "not notified: [$page_kind]${page_task:+ $page_task} already has a page on record for this stop"
+    if [ "$on_record" -ne 2 ] && \
+       [ "$prev_kind" = "$page_kind" ] && [ "$prev_task" = "$page_task" ] && \
+       [ "$prev_reason" = "$page_reason" ]; then
       continue
     fi
     drive_notify "$page_kind" "$page_task" "$page_status" "$page_text"
