@@ -386,6 +386,28 @@ cmd="$(fm_get "$tf" verification_commands)"
 # same trailing `exit:` line that file keys on), and carries the exact
 # `file:line: RULE:` lines into the next brief.
 #
+# WHICH IS WHY THE LOG SAYS WHO FAILED, PER COMMAND. Before this gate existed,
+# a merge log held ONE command's output and its trailing `exit:` line answered
+# "did that command fail" for the whole file — which is exactly the question
+# lib/findings.sh asks before quoting anything, precisely so a PASSING run's
+# location-shaped chatter never reaches a brief as though a gate had reported
+# it. Two commands in one file breaks that: the common failing shape here is a
+# GREEN task suite followed by a red gate, and a whole-file answer of "failed"
+# hands the scraper the green suite's output as evidence. The cost is not only
+# noise. `FINDINGS_MAX_LINES` caps a brief at twenty lines in log order, and
+# the suite's output comes FIRST — so a chatty green suite can spend the cap
+# before the gate's real locations are reached, and the one thing the
+# implementer needed is the one thing the brief drops.
+#
+# So `command_status:` and `gate_exit:` are written into the log HEADER, where
+# lib/findings.sh already stops parsing at the `---` and therefore cannot be
+# lied to by captured output, and the `== merge_gate:` banner below marks
+# where one command's output ends and the other's begins. Together they let
+# the scraper quote the half that actually failed. The classification is made
+# HERE, by the process that ran both commands and is the only one that knows;
+# re-deriving it downstream from "the gate ran, so the suite must have passed"
+# would bake this verb's current skip rule into another file.
+#
 # RECURSION. If the gate is the repository's own suite, and that suite
 # exercises `orchid merge`, the gate re-enters itself. ORCHID_MERGE_GATE_ACTIVE
 # is what stops it: set in the gate command's own environment below, so every
@@ -406,22 +428,38 @@ mkdir -p "$state/reviews"
 log="$state/reviews/$id-merge.log"
 out_tmp="$(mktemp "${TMPDIR:-/tmp}/orchid-merge-verify.XXXXXX")"
 
-rc=0
-( cd "$wt" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || rc=$?
+# `cmd_rc` is the task suite's OWN status and is never overwritten; `rc` is the
+# merge's, which the gate below may raise. Two variables because the log has to
+# report each command separately — collapsing them loses which of the two a
+# non-zero merge status came from, which is the whole of the attribution the
+# header records.
+cmd_rc=0
+( cd "$wt" && bash -c "$cmd" ) >"$out_tmp" 2>&1 || cmd_rc=$?
+rc="$cmd_rc"
 
 if [ "$gate_status" = configured ]; then
   if [ -n "${ORCHID_MERGE_GATE_ACTIVE:-}" ]; then
     gate_status=skipped-nested
     echo "orchid: merge_gate skipped for $id: this merge already runs inside a merge_gate (ORCHID_MERGE_GATE_ACTIVE is set) — the outer gate is the one judging this tree" >&2
-  elif [ "$rc" -ne 0 ]; then
+  elif [ "$cmd_rc" -ne 0 ]; then
     gate_status=skipped-suite-failed
   else
     gate_status=ran
-    # A banner, so the two commands' output is separable in one log. It is
+    # A banner, so the two commands' output is separable in one log — and it
+    # is load-bearing rather than cosmetic: lib/findings.sh splits the body
+    # here to decide which half a failing merge's evidence is. It is
     # deliberately NOT a bare `---`: that line is the header terminator both
     # `orchid verify` and `orchid merge` write, and lib/findings.sh stops
     # parsing the header at the first one — a second bare `---` down in the
     # body would be harmless today only by accident of ordering.
+    #
+    # The gate command is repeated IN the banner, matching the `gate:` header
+    # line verbatim, so the split point is not a bare marker any captured
+    # output could counterfeit: a suite would have to echo this repository's
+    # own configured gate command, character for character, to move it. That
+    # is weaker than the header's guarantee and is why the STATUSES live in
+    # the header rather than here — the banner says only where the boundary
+    # is, never who passed.
     printf '\n== merge_gate: %s\n' "$gate_cmd" >>"$out_tmp"
     # Set for THIS command only, never exported for the whole verb: the
     # marker's job is to describe the subtree beneath the gate, and a
@@ -444,6 +482,15 @@ fi
   echo "candidate: $candidate_sha"
   echo "cwd: $wt"
   echo "command: $cmd"
+  # The task suite's OWN exit status, always, gate or no gate. The trailing
+  # `exit:` line is the MERGE's status and answers a different question as soon
+  # as two commands share the file: with a green suite and a red gate it reads
+  # "failed" over output that is mostly a passing run's. A reader that has to
+  # attribute a location to the command that produced it — lib/findings.sh
+  # does, and quotes the result into the next implementer's brief — needs this
+  # per-command answer, and needs it from the header, which nothing captured
+  # below the `---` can reach.
+  echo "command_status: $cmd_rc"
   # Reported whenever a gate is CONFIGURED, including on the two paths where
   # it did not actually run. "this repository configures no gate" and "a gate
   # was configured and passed over" are different facts about a merge, and a
@@ -452,6 +499,13 @@ fi
   if [ "$gate_status" != none ]; then
     echo "gate: $gate_cmd"
     echo "gate_status: $gate_status"
+    # Only where there is a status to report. `gate_rc` is initialised to 0
+    # and stays there on both skip paths, so printing it unconditionally would
+    # state, in the same field a reader compares against zero, that a gate
+    # which never executed had passed.
+    if [ "$gate_status" = ran ]; then
+      echo "gate_exit: $gate_rc"
+    fi
   fi
   echo "---"
   cat "$out_tmp"

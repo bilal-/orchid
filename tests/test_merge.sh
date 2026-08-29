@@ -829,3 +829,111 @@ journal13="$("$ORCHID_BIN" journal show --task T013)"
 assert_match "validation_failed" "$journal13" "red suite journals validation_failed"
 grep -q "gate_failed" <<<"$journal13" \
   && fail "red suite must NOT journal gate_failed — the gate never ran"
+
+# --- (F) EVIDENCE ATTRIBUTION: one log, two commands, one of them guilty ---
+# `orchid merge` now writes TWO commands' output into a single
+# `<id>-merge.log`, and lib/findings.sh scrapes that log for the locations it
+# puts in front of the next implementer. The characteristic failing shape is
+# the one where the two DISAGREE — a green task suite followed by a red gate —
+# and before the header carried a per-command status there was nothing in the
+# file that could tell them apart: the trailing `exit:` line says the MERGE
+# failed, which was a complete answer only while a log held one command.
+#
+# Two costs, and the second is the one that bites. The brief gets a passing
+# run's chatter under a heading saying a failing gate reported it; and because
+# FINDINGS_MAX_LINES caps the quoted list in LOG ORDER, with the suite's
+# output first, a chatty green suite spends the whole cap and pushes the
+# gate's real locations out of the brief entirely. So the suite below prints
+# MORE than that cap: without the fix the brief contains twenty noise lines, a
+# truncation notice, and not one word from the gate.
+#
+# Asserted in both directions, because a filter that simply dropped everything
+# above the banner would pass the first half and silently lose a red suite's
+# own evidence — which is the failing shape (E) leaves behind, and (F2) is
+# that same log read back.
+noisy="$WORK/noisy-suite.sh"
+cat > "$noisy" <<'NOISY'
+#!/usr/bin/env bash
+# More than FINDINGS_MAX_LINES of perfectly well-formed, location-shaped
+# output. Nothing about these lines is malformed — the shape rules in
+# lib/findings.sh are meant to quote exactly this. Whether they SHOULD is a
+# question about whose output it is, which only the recorded status answers.
+i=1
+while [ "$i" -le 25 ]; do
+  echo "tests/task-suite.sh:$i: SC9999: printed by the task suite itself"
+  i=$((i + 1))
+done
+NOISY
+noise_pat="printed by the task suite itself"
+
+# --- (F1) green suite + red gate: the brief quotes the GATE ----------------
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T014 "green suite, red gate"
+git checkout -q -b task/T014 "$integ"
+echo fourteen > feature14.txt && git add feature14.txt && git commit -q -m "feature 14"
+cand14="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base14="$(git rev-parse "$integ")"
+
+walk_to_merging T014 task/T014 "$base14" "$cand14" "bash $noisy && test -f feature14.txt"
+
+pre_integ14="$(git rev-parse "$integ")"
+rc=0; "$ORCHID_BIN" merge T014 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "green suite + red gate -> merge exits 1"
+assert_eq "$pre_integ14" "$(git rev-parse "$integ")" "green suite + red gate -> integration ref untouched"
+
+log14=".orchid/reviews/T014-merge.log"
+log14_body="$(cat "$log14")"
+assert_match "^command_status: 0$" "$log14_body" "the header records the TASK SUITE's own exit status, separately"
+assert_match "^gate_status: ran$" "$log14_body" "...and that the gate ran"
+assert_match "^gate_exit: 3$" "$log14_body" "...and the gate's own exit status, separately from the merge's"
+assert_eq "exit: 3" "$(tail -n1 "$log14")" "the trailing exit: line still carries the MERGE's status"
+# The log is the record and keeps everything. Attribution happens where the
+# evidence is READ, never by throwing half of it away at the write — an
+# operator opening this file must still see what the suite printed.
+assert_match "$noise_pat" "$log14_body" "the log itself retains the passing suite's output in full"
+
+body14="$(cat .orchid/tasks/T014.md)"
+assert_match "orchid:rework-brief candidate=$cand14" "$body14" "a brief is written for the failed candidate"
+assert_match "$gate_diag" "$body14" \
+  "the brief carries the RED GATE's location — the one actionable line in the log"
+grep -q "$noise_pat" <<<"$body14" \
+  && fail "the brief must NOT quote the output of a command the header records as having PASSED — those locations were reported by nothing"
+grep -q "further diagnostic line(s)" <<<"$body14" \
+  && fail "the passing suite's 25 lines must not have spent the FINDINGS_MAX_LINES cap: the truncation notice means the gate's own locations were pushed out of the brief"
+
+# --- (F2) red suite: its output IS the evidence ----------------------------
+# Same script, same noise, gate still configured red — but now the suite
+# fails, so the gate never runs and every one of those lines is the failing
+# command's own. They must be carried. This is what makes (F1) an assertion
+# about the recorded STATUS rather than about position in the file.
+set_gate "$gate_fail"
+
+suite_red2="$WORK/suite2-goes-red.flag"
+"$ORCHID_BIN" task create T015 "red suite keeps its own evidence"
+git checkout -q -b task/T015 "$integ"
+echo fifteen > feature15.txt && git add feature15.txt && git commit -q -m "feature 15"
+cand15="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base15="$(git rev-parse "$integ")"
+
+walk_to_merging T015 task/T015 "$base15" "$cand15" "bash $noisy; test ! -f $suite_red2"
+: > "$suite_red2"
+
+rc=0; "$ORCHID_BIN" merge T015 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red suite -> merge exits 1"
+
+log15=".orchid/reviews/T015-merge.log"
+log15_body="$(cat "$log15")"
+assert_match "^command_status: 1$" "$log15_body" "the header records the suite's own non-zero status"
+assert_match "^gate_status: skipped-suite-failed$" "$log15_body" "the gate did not run"
+grep -q '^gate_exit: ' <<<"$log15_body" \
+  && fail "a gate that never executed must publish no exit status — gate_rc is 0 by initialisation, and printing it would read as a pass"
+
+body15="$(cat .orchid/tasks/T015.md)"
+assert_match "orchid:rework-brief candidate=$cand15" "$body15" "a brief is written for the failed candidate"
+assert_match "tests/task-suite\.sh:1: SC9999: $noise_pat" "$body15" \
+  "the RED suite's own locations are carried — the filter keys on the recorded status, not on being above the banner"
+assert_match "further diagnostic line\(s\)" "$body15" \
+  "and the cap still applies to them, still announced rather than silently truncated"

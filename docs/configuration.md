@@ -161,6 +161,19 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     for a direct run with no merge above it. A skipped gate is recorded in the
     merge log as `gate_status: skipped-nested` and announced on stderr — never
     passed off as a pass.
+  - **Its evidence is attributed per command.** Both commands write into one
+    `.orchid/reviews/<id>-merge.log`, separated by a `== merge_gate: <cmd>`
+    banner, and the header records each one's own status — `command_status:`
+    for the task suite, `gate_status:` plus `gate_exit:` for the gate. The
+    trailing `exit:` line remains the *merge's* status and is no longer enough
+    on its own to say who failed: the ordinary failing shape here is a green
+    suite followed by a red gate. The rework brief quotes only the half whose
+    recorded status is non-zero, so a passing suite's output never arrives in
+    front of the next implementer as though the gate had reported it — and,
+    since the brief is capped at twenty lines *in log order*, so that a chatty
+    green suite cannot spend that cap before the gate's real locations are
+    reached. The log itself keeps everything either command printed; the
+    filtering happens where the evidence is read, not where it is written.
   - Distinct from **`hook.before_merge`**, which is an engine hook satisfied by
     a reconciled envelope and refuses the verb before any merge is attempted
     (exit 15). `merge_gate` is a shell command scored on its exit status.

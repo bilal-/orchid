@@ -92,6 +92,14 @@ FINDINGS_MAX_LINES=20
 # it), which is also what keeps shellcheck's own indented caret lines from
 # being quoted twice.
 #
+# WHAT IS SCRAPED IS NOT THE WHOLE LOG. `findings_failing_output` strips the
+# output of any command the log's header records as having PASSED before a
+# single shape rule is applied, so a merge log holding a green task suite and
+# a red `merge_gate` yields only the gate's half. The shape rules are the
+# filter on WHAT a diagnostic looks like; that one is the filter on WHOSE
+# output it is, and neither substitutes for the other -- a passing run can
+# print a perfectly well-formed location.
+#
 # SHAPE 3'S HEADER EXPIRES AT THE END OF ITS OWN BLOCK. ShellCheck separates
 # findings with a blank line, and a caret line reached after one belongs to no
 # header -- so `sc_file` is cleared there, and by any shape-1/2 diagnostic
@@ -106,7 +114,7 @@ FINDINGS_MAX_LINES=20
 findings_extract() {
   local log="$1" max="${2:-$FINDINGS_MAX_LINES}"
   [ -f "$log" ] || return 0
-  awk -v max="$max" '
+  findings_failing_output "$log" | awk -v max="$max" '
     function emit(s) {
       if (s in seen) return
       seen[s] = 1
@@ -145,6 +153,81 @@ findings_extract() {
       if (n > max)
         printf "... and %d further diagnostic line(s) in this log, not quoted here\n", n - max
     }
+  '
+}
+
+# findings_failing_output <log> -- the log with the output of any command it
+# records as having PASSED removed. Prints the header unchanged and, below it,
+# only the captured output a failing command produced. A log that classifies
+# nothing is passed through whole.
+#
+# WHY THIS EXISTS, AND WHAT IT IS NOT. `findings_log_failed` above answers
+# "did this log record a failure" for the WHOLE file, and that was a complete
+# answer for exactly as long as a log held one command. `orchid merge` now
+# runs two on the same tree -- the task's own `verification_commands`, then
+# the repository's `merge_gate` (T007) -- into one captured body, and the
+# characteristic failing shape is the one where they DISAGREE: a green task
+# suite followed by a red gate. Handed that file whole, the scraper quotes the
+# green suite's location-shaped output into the brief under a heading that
+# says a failing gate reported it. That is the same mis-attribution
+# `findings_log_failed` refuses at the file level, reappearing inside the file
+# -- and it is not merely cosmetic, because `FINDINGS_MAX_LINES` caps the
+# brief in LOG ORDER and the passing suite's output comes first: a chatty
+# green suite can spend the whole cap and push out the gate locations that
+# were the only actionable thing in the log.
+#
+# THE CLASSIFICATION IS READ, NEVER INFERRED. `command_status:` and
+# `gate_exit:` are header fields written by the process that ran both
+# commands. They are read from the header for the same reason
+# `findings_log_candidate` reads `candidate:` there -- parsing stops at the
+# `---`, so no captured output can impersonate them. What the BODY supplies is
+# only the boundary: the `== merge_gate: <cmd>` banner, whose command must
+# equal the header's `gate:` value, so counterfeiting it means echoing this
+# repository's configured gate command verbatim. A body marker is the weaker
+# of the two and carries the weaker fact deliberately -- where the split is,
+# never who passed.
+#
+# It would be shorter to infer this ("the gate only runs after a green suite,
+# so a failing gated log means the gate"), and wrong to: that is
+# libexec/orchid-merge's current skip rule, and a copy of it here would keep
+# quoting confidently after that file changed its mind.
+#
+# FAILS OPEN, EVERY WAY IT CAN. No `---`, no `command_status:`, no
+# `gate_status: ran`, a `gate:` the banner never matches, a segment whose
+# status line is missing -- each keeps the output it could not classify.
+# `orchid verify`'s log, every merge log written before this field existed,
+# and every hand-built fixture therefore behave exactly as they did: dropping
+# evidence on a parse this function is unsure of would cost the next
+# implementer the locations, which is the failure the whole file exists to
+# stop.
+findings_failing_output() {
+  local log="$1"
+  [ -f "$log" ] || return 0
+  awk '
+    header == 0 {
+      print
+      if ($0 == "---") {
+        header = 1
+        # The body opens with the task suite output. Kept unless the header
+        # states, in so many words, that the command exited 0.
+        keep = (cmd_status == "" || cmd_status + 0 != 0)
+        next
+      }
+      if (index($0, "command_status: ") == 1) cmd_status = substr($0, 17)
+      else if (index($0, "gate: ") == 1) gate_cmd = substr($0, 7)
+      else if (index($0, "gate_status: ") == 1) gate_status = substr($0, 14)
+      else if (index($0, "gate_exit: ") == 1) gate_exit = substr($0, 12)
+      next
+    }
+    # The boundary, taken once: a gate whose own output repeats this line must
+    # not re-open the segment it is already inside.
+    split_done == 0 && gate_status == "ran" && gate_cmd != "" &&
+      $0 == ("== merge_gate: " gate_cmd) {
+      split_done = 1
+      keep = (gate_exit == "" || gate_exit + 0 != 0)
+      next
+    }
+    keep { print }
   ' "$log"
 }
 
@@ -157,6 +240,13 @@ findings_extract() {
 # path and a line number), and quoting that into a rework brief as though a
 # gate had reported it is exactly the noise the shape rules above avoid. A log
 # with no `exit:` line at all was not written by either verb and is not read.
+#
+# WHOLE-FILE, AND ONLY WHOLE-FILE. This says whether the log is worth opening;
+# it deliberately does not say which command inside it failed, because once
+# `orchid merge` runs two (T007) the answer differs per command and a single
+# status cannot carry both. `findings_failing_output` is where that is
+# resolved. Keeping the two apart is what leaves this predicate correct for
+# `orchid verify`'s single-command log as well.
 findings_log_failed() {
   local log="$1" last
   [ -f "$log" ] || return 1

@@ -375,6 +375,12 @@ buying a fresh implementation pass to reach the same tree.
   open a second level when it is already set (`scripts/ci-local.sh` sets it
   too, for a direct run); a skip is written into the merge log as
   `gate_status: skipped-nested` and said on stderr, never reported as a pass.
+  Because the merge log now records TWO commands, it also records who failed:
+  `command_status:` (the task suite) and `gate_exit:` (the gate) in the header,
+  with a `== merge_gate: <cmd>` banner marking the boundary in the body. The
+  rework brief quotes only the failing command's half — a green suite followed
+  by a red gate is the ordinary shape here, and the trailing `exit:` line
+  alone cannot tell the two apart.
   **Consequences of the ref-only advance (m3 ledger, found live):** the
   integration-ref advance above is a bare `git update-ref` — it never touches
   any OTHER checkout of that branch, by design, since it must not write into
