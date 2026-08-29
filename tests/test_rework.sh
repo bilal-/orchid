@@ -186,6 +186,20 @@ assert_eq "$empty_sig" "$(rework_signature "$C/reviews/T001-empty2.log")" \
   "two empty logs DO share one signature -- which is why the guard above has to sit at the capture, not at the compare"
 rm -f "$C/reviews/T001-empty2.log"
 
+# Non-empty is not sufficient. A verifier can die after writing part of its
+# header but before the bare `---` that proves the header is complete and the
+# output begins. rework_signature intentionally discards every pre-delimiter
+# line, so accepting this shape would give every such torn write the same
+# empty-body digest and manufacture a non-convergence streak from no result.
+{
+  printf 'date: 2026-08-03T00:00:00Z\n'
+  printf 'candidate: aaaa\n'
+  printf 'command: /bin/bash tests/run.sh\n'
+  printf 'exit: 1\n'
+} > "$C/reviews/T001-verify.log"
+rc=0; rework_evidence_source "$C" T001 testing aaaa >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a non-empty log without the bare header terminator is a torn write, not failure evidence"
+
 # --- evidence is bound to the candidate that produced it --------------------
 # Both logs the kernel writes carry a `candidate:` header, and a capture that
 # ignores it files some OTHER candidate's output as this round's failure --
@@ -335,11 +349,79 @@ assert_eq "$sig_kept" "$(fm T001 rework_signature)" \
 assert_match "rework evidence NOT captured" "$(cat "$STATE/journal.md")" \
   "the one case where the kernel deliberately captures nothing says so — 'rework arrived with nothing to act on' is the complaint this task exists to answer"
 
+# A log with a complete header but NO candidate claim is unbindable, not
+# superseded. Those diagnoses drive different operator actions: regenerate a
+# malformed/torn producer output versus inspect why the task moved candidates.
+# The durable journal must not turn the former into the latter by rendering an
+# absent claim as the sentinel word "none".
+"$ORCHID_BIN" task advance T001 implementing --reason "sixth attempt" >/dev/null
+"$ORCHID_BIN" task advance T001 testing --reason "sixth attempt" >/dev/null
+{
+  printf 'date: 2026-08-05T11:00:00Z\n'
+  printf 'sha: %s\n' "$(git rev-parse HEAD)"
+  printf 'cwd: %s\n' "$REPO"
+  printf 'command: /bin/bash tests/run.sh\n'
+  printf -- '---\n'
+  printf 'FAIL tests/OrderTest: producer omitted its candidate binding\n'
+  printf 'exit: 1\n'
+} > "$STATE/reviews/T001-verify.log"
+"$ORCHID_BIN" task advance T001 rework --reason "evidence with no candidate header" >/dev/null
+assert_eq "3" "$(fm T001 rework_rounds)" \
+  "an unbindable log mints no captured round and cannot move the convergence counters"
+assert_match "carries no candidate header" "$(tail -n 8 "$STATE/journal.md")" \
+  "the journal distinguishes absent candidate metadata from a superseded candidate claim"
+[ ! -f "$STATE/reviews/T001-r4-rework.log" ] \
+  || fail "an unbindable log must never become the next attempt's rework evidence"
+
 # The record is kernel-owned: no verb but the rework advance may write it.
 for k in rework_rounds rework_signature rework_signature_repeats; do
   rc=0; "$ORCHID_BIN" task set T001 "$k" 99 >/dev/null 2>&1 || rc=$?
   [ "$rc" -ne 0 ] || fail "task set must refuse the kernel-owned '$k'"
 done
+
+# A green candidate breaks the CONSECUTIVE streak. Without this reset, two
+# failures, a successful verification/review round, and one later recurrence
+# read as three identical failures in a row and trigger the non-convergence
+# stop even though the loop demonstrably moved forward between them.
+"$ORCHID_BIN" task create T004 "successful verification resets convergence" >/dev/null
+"$ORCHID_BIN" task set T004 base_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task set T004 candidate_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task advance T004 implementing --reason "first red round" >/dev/null
+"$ORCHID_BIN" task advance T004 testing --reason "first red round" >/dev/null
+mk_log "$STATE/reviews/T004-verify.log" 2026-08-06T11:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: the recurring failure" 1
+"$ORCHID_BIN" task advance T004 rework --reason "first red round" >/dev/null
+"$ORCHID_BIN" task advance T004 implementing --reason "second red round" >/dev/null
+"$ORCHID_BIN" task advance T004 testing --reason "second red round" >/dev/null
+mk_log "$STATE/reviews/T004-verify.log" 2026-08-07T11:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: the recurring failure" 1
+"$ORCHID_BIN" task advance T004 rework --reason "second red round" >/dev/null
+assert_eq "2" "$(fm T004 rework_signature_repeats)" \
+  "fixture: two consecutive identical failures build a two-round streak"
+
+"$ORCHID_BIN" task advance T004 implementing --reason "green round" >/dev/null
+"$ORCHID_BIN" task advance T004 testing --reason "green round" >/dev/null
+mk_log "$STATE/reviews/T004-verify.log" 2026-08-08T11:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "all good" 0
+"$ORCHID_BIN" task advance T004 reviewing --reason "green evidence" >/dev/null
+assert_eq "0" "$(fm T004 rework_signature_repeats)" \
+  "successful verification resets the consecutive-failure streak"
+assert_match "convergence streak reset after successful verification" "$(tail -n 8 "$STATE/journal.md")" \
+  "the reset is journalled before its kernel-owned counter moves"
+
+# Walk the successful candidate through a request-changes round, then make the
+# old failure recur. It is repeat ONE after the green break, never repeat 3.
+printf '{"status":"ok","candidate_sha":"%s"}\n' "$(git rev-parse HEAD)" \
+  > "$STATE/reviews/T004-a3-reviewer.json"
+"$ORCHID_BIN" task advance T004 arbitrating --reason "review fixture" >/dev/null
+"$ORCHID_BIN" task advance T004 rework --reason "review requested changes" >/dev/null
+"$ORCHID_BIN" task advance T004 implementing --reason "post-green red round" >/dev/null
+"$ORCHID_BIN" task advance T004 testing --reason "post-green red round" >/dev/null
+mk_log "$STATE/reviews/T004-verify.log" 2026-08-09T11:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: the recurring failure" 1
+"$ORCHID_BIN" task advance T004 rework --reason "old failure returned after green" >/dev/null
+assert_eq "1" "$(fm T004 rework_signature_repeats)" \
+  "an old signature returning after a successful verification starts a fresh streak at one"
 
 # ===========================================================================
 # Part D -- the pack. This is the whole point: the NEXT attempt's brief has

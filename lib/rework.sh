@@ -221,6 +221,13 @@ rework_evidence_source() {
   # end; this is the write end, and it is the one that keeps the counters
   # honest.
   [ -s "$src" ] || return 1
+  # A non-empty partial write is no more trustworthy than a zero-byte one.
+  # The verifier's bare `---` terminates the volatile header; without it,
+  # rework_signature discards the entire file as header and returns the same
+  # digest for every such truncation. Two torn writes would therefore look
+  # like one byte-identical candidate failure repeating and could reroute or
+  # block the task on evidence that contains no completed header or output.
+  grep -qx -- '---' "$src" || return 1
   [ "$(tail -n1 "$src")" != "exit: 0" ] || return 1
   if [ -n "$cand" ]; then
     rework_evidence_bound "$src" "$cand" || return 1

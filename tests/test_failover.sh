@@ -12,6 +12,7 @@ source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/manifest.sh"
 source "$REPO_ROOT/lib/roles.sh"; source "$REPO_ROOT/lib/resolver.sh"
 source "$REPO_ROOT/lib/envelope.sh"; source "$REPO_ROOT/lib/capsuite.sh"
 source "$REPO_ROOT/lib/ledger.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
+source "$REPO_ROOT/lib/capability.sh"
 export ORCHID_ROOT="$REPO_ROOT"
 
 export HOME="$WORK/home"; mkdir -p "$HOME/.orchid"
@@ -215,10 +216,10 @@ mk_engine faili "workspace_write,shell,git"
 printf 'role.implementer=primi,faili\n' > "$repo/orchid.config"
 capsuite_run faili implementer >/dev/null || fail "sanity: capsuite_run should pass for faili/implementer"
 
-assert_eq primi "$(resolve_role_available "$repo" implementer)" \
-  "sanity: with no exclusion the healthy primary still wins"
-out="$(resolve_role_available "$repo" implementer primi)" \
-  || fail "resolve_role_available should return the next chain entry when the primary is excluded"
+assert_eq primi "$(resolve_role_available "$repo" implementer implement)" \
+  "sanity: with an operation and no exclusion the healthy capable primary still wins"
+out="$(resolve_role_available "$repo" implementer implement primi)" \
+  || fail "resolve_role_available should return the next capable chain entry when the primary is excluded"
 assert_eq faili "$out" "an excluded engine is skipped in favour of the next eligible chain entry"
 
 # The exclusion never overrides the gates that come after it: an excluded
@@ -227,7 +228,7 @@ assert_eq faili "$out" "an excluded engine is skipped in favour of the next elig
 mk_engine primi2 "workspace_write,shell,git"
 mk_engine faili2 "workspace_write,shell,git"
 printf 'role.implementer=primi2,faili2\n' > "$repo/orchid.config"
-rc=0; out="$(resolve_role_available "$repo" implementer primi2 2>"$WORK/err_i")" || rc=$?
+rc=0; out="$(resolve_role_available "$repo" implementer implement primi2 2>"$WORK/err_i")" || rc=$?
 assert_eq 14 "$rc" "excluding the primary never promotes a capsuite-unverified fallback"
 [ -z "$out" ] || fail "no eligible engine must print nothing to stdout (got '$out')"
 assert_match "primi2: excluded by the caller" "$(cat "$WORK/err_i")" \
@@ -236,7 +237,7 @@ assert_match "primi2: excluded by the caller" "$(cat "$WORK/err_i")" \
 # A single-entry chain has nowhere to go: the caller gets exit 14 and is
 # expected to dispatch on the same engine anyway.
 printf 'role.implementer=primi\n' > "$repo/orchid.config"
-rc=0; resolve_role_available "$repo" implementer primi >/dev/null 2>&1 || rc=$?
+rc=0; resolve_role_available "$repo" implementer implement primi >/dev/null 2>&1 || rc=$?
 assert_eq 14 "$rc" "a one-engine chain with that engine excluded has no survivor"
 
 rm -f "$repo/orchid.config"

@@ -32,14 +32,17 @@ resolve_role() {  # repo role -> primary engine name (first entry of the chain)
 # chain-walk (which would otherwise just report an empty chain with no
 # disqualifiers, a confusing dead end for an operator).
 #
-# The optional third argument to resolve_role_available (below) names ONE
-# engine the caller wants skipped regardless of its chain position. Its only
-# user today is the driver's rework failover (T025): two consecutive attempts
-# whose failure output was byte-identical are evidence that THIS engine is not
-# converging on THIS task, so the next attempt is routed to the next entry in
-# the same role's chain. It is a preference, never a requirement -- a caller
-# that gets exit 14 back is expected to fall through to the unexcluded call
-# rather than stall the task over it.
+# The optional FOURTH argument to resolve_role_available (below) names ONE
+# engine the caller wants skipped regardless of its chain position. The third
+# argument is the operation-aware capability-routing step (T018), and the two
+# are deliberately independent: the driver's rework failover (T025) must skip
+# the engine that did not converge without letting an incapable engine take
+# the work. Two consecutive attempts whose failure output was byte-identical
+# are evidence that THIS engine is not converging on THIS task, so the next
+# attempt is routed to the next capable entry in the same role's chain. The
+# exclusion is a preference, never a requirement -- a caller that gets exit
+# 14 back is expected to fall through to the unexcluded call rather than stall
+# the task over it.
 resolve_role_chain() {
   local repo="$1" role="$2" v
   v="$(config_get "$repo" "role.$role")"

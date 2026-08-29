@@ -8261,6 +8261,29 @@ assert_eq "unblock,retry,reverify,defer" \
   "$(cat "$GATEREPO/.orchid/runtime/answers/$GQ_QID.choices" 2>/dev/null || true)" \
   "and it declares the kernel's whole recovery list out of blocked — the catch-all kind is where the page was FILED, not a reason for it to name no answers while its own text names three verbs"
 
+# --- (Z3/T025) merging -> rework takes the SAME convergence stop -----------
+# Z1 captured the first gate failure. Z2 went directly merging -> blocked at
+# the attempt cap, so it correctly captured no second rework round. Give the
+# task budget again and replay the identical merge failure: the edge now lands
+# in rework, captures repeat 2, and the shared convergence guard must stop it
+# before another implementer is dispatched. Before T025's follow-up this guard
+# existed only in drive_testing, so an identical merge-validation loop evaded
+# it forever.
+gorchid run boundary clear --reason "fixture: exercise merging non-convergence" >/dev/null
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=10\nrework_nonconvergence_max=2\nmerge_gate=echo "lib/example.sh:12: SC2086: Double quote"; exit 3\n' > "$GATEREPO/orchid.config"
+fm_set "$GATEREPO/.orchid/tasks/G010.md" status merging
+GDRIVE_RC=0
+GDRIVE_OUT="$(ORCHID_REPO="$GATEREPO" ORCHID_EPOCH="$GEPOCH" "$DRIVE" 2>&1)" || GDRIVE_RC=$?
+assert_eq blocked "$(gfield status)" \
+  "a repeated merging -> rework signature stops at the same non-convergence boundary as testing (out: $GDRIVE_OUT)"
+assert_eq 2 "$(gfield rework_signature_repeats)" \
+  "the repeated merge evidence reached the shared consecutive-signature counter"
+assert_eq 3 "$(gfield attempts)" \
+  "the red repo-wide gate still charges its round before the early convergence stop"
+assert_eq 16 "$GDRIVE_RC" "the merge-side non-convergence stop exits at its judgment boundary"
+assert_match "not converging" "$(gboundary)" \
+  "the recorded merge-side boundary names non-convergence, not an ordinary rework"
+
 # ===========================================================================
 # Part ZP (T023) -- THE OTHER ROUTE TO `merging -> blocked`, WHICH MUST NOT BE
 # REPORTED AS THE FIRST ONE.
@@ -9061,3 +9084,25 @@ done
   || fail "the invalidating delete still happens -- INV-11 stays armed (the capture is a copy, not a reprieve)"
 assert_eq 3 "$(rwfield attempts)" \
   "an identical signature still CONSUMES its attempt (kernel.md: the attempt cap targets repeated identical failures)"
+
+# A reroute record is a claim about a SPAWNED attempt, not an intention. Put a
+# fresh unlaunched manifest in the next slot so T027's prepare guard returns
+# exit 18 before any process starts. The task stays in rework and the durable
+# reroute count must not move; the next gc/retry may choose differently.
+rworchid run boundary clear --reason "fixture: test refused reroute launch" >/dev/null
+rworchid task retry R010 --reason "fixture: one more dispatch" --attempts 1 >/dev/null
+RW_LAST_ENGINE="$(rwfield implementer_engine_id)"
+case "$RW_LAST_ENGINE" in
+  stubrw) RW_NEXT_ENGINE=stubalt ;;
+  *) RW_NEXT_ENGINE=stubrw ;;
+esac
+RW_REROUTES_BEFORE="$(grep -c "rework routed to a different engine" "$RW/.orchid/journal.md" 2>/dev/null || true)"
+rworchid jobs prepare R010 implementer implement --engine "$RW_NEXT_ENGINE" >/dev/null
+run_rwdrive
+assert_eq rework "$(rwfield status)" \
+  "an exit-18 reroute launch leaves the task dispatchable because nothing was spawned"
+assert_eq "$RW_REROUTES_BEFORE" \
+  "$(grep -c "rework routed to a different engine" "$RW/.orchid/journal.md" 2>/dev/null || true)" \
+  "a refused launch writes no journal line claiming that the rerouted attempt ran"
+assert_match "nothing was spawned" "$RWDRIVE_OUT" \
+  "the refused reroute reports the launch fact it actually established"

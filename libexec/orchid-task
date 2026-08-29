@@ -1002,6 +1002,20 @@ case "$sub" in
       fcand="$(fm_get "$f" candidate_sha)"; [ -n "$fcand" ] || fcand=none
       [ -f "$vlog" ] && [ "$(tail -n1 "$vlog")" = "exit: 0" ] && [ "$fcand" != none ] && [ "$vcand" = "$fcand" ] || \
         orchid_die "reviewing requires passing verify evidence bound to the current candidate_sha (run: orchid verify $id)"
+      # A passing verification is demonstrated forward progress. End the
+      # consecutive-failure streak HERE, on the kernel edge that has just
+      # validated current PASS evidence, rather than letting a later failure
+      # inherit repeats from before the successful candidate. Keep the last
+      # signature for comparison, but restart its consecutive count at zero;
+      # if that old failure returns it is a first post-success sighting, not
+      # evidence that every round in between was identical.
+      rw_reps="$(fm_get "$f" rework_signature_repeats)"
+      case "$rw_reps" in ''|*[!0-9]*) rw_reps=0 ;; esac
+      if [ "$rw_reps" -gt 0 ]; then
+        journal --task "$id" --kind intervention \
+          "rework convergence streak reset after successful verification (was $rw_reps consecutive failure round(s))"
+        fm_set "$f" rework_signature_repeats 0
+      fi
     fi
     if [ "$from" = reviewing ] && [ "$to" = arbitrating ]; then
       # Kernel envelope-count gate (v1-m2): arbitrating may only be reached
@@ -1184,8 +1198,13 @@ case "$sub" in
         # with a candidate to bind to: an empty one skips the check entirely
         # above, so this arm is a genuine mismatch every time.
         rw_claim="$(findings_log_candidate "$rw_unbound")"
-        journal --task "$id" --kind intervention \
-          "rework evidence NOT captured: ${rw_unbound##*/} names candidate '${rw_claim:-none}', not this task's '$rw_cand' — it documents a superseded candidate, so it is neither fed forward nor counted toward the convergence streak"
+        if [ -z "$rw_claim" ]; then
+          journal --task "$id" --kind intervention \
+            "rework evidence NOT captured: ${rw_unbound##*/} carries no candidate header — it cannot be bound to this task's '$rw_cand', so it is neither fed forward nor counted toward the convergence streak"
+        else
+          journal --task "$id" --kind intervention \
+            "rework evidence NOT captured: ${rw_unbound##*/} names candidate '$rw_claim', not this task's '$rw_cand' — it documents a superseded candidate, so it is neither fed forward nor counted toward the convergence streak"
+        fi
       fi
       if [ "$from" != merging ]; then
         if [ "$waive" -eq 1 ]; then

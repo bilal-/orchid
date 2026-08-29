@@ -1195,7 +1195,7 @@ drive_hook_gate() {
 drive_dispatch() {
   local id="$1" arch="$2" from="$3"
   local tf target outcome blockers plan action path branch integ integ_head base_stamp arc lrc role_line role op wtmiss prep prep_why
-  local rework_engine reps last_engine
+  local rework_engine reps last_engine rjrc
   tf="$state/tasks/$id.md"
   target="$(drive_dispatch_target "$arch" "$from")"
   if [ -z "$target" ]; then
@@ -1452,10 +1452,8 @@ drive_dispatch() {
           last_engine="$(resolve_role_available "$repo" "$role" 2>/dev/null || true)"
         fi
         if [ "$reps" -ge 2 ] && [ -n "$last_engine" ]; then
-          if rework_engine="$(resolve_role_available "$repo" "$role" "$last_engine" 2>/dev/null)"; then
-            "$ORCHID_BIN" journal add --task "$id" \
-              "rework routed to a different engine: $reps consecutive attempts produced an identical failure signature under '$last_engine' — this attempt runs on '$rework_engine'" >/dev/null
-            drive_note "$id: rework signature unchanged $reps times under '$last_engine' — routing this attempt to '$rework_engine'"
+          if rework_engine="$(resolve_role_available "$repo" "$role" "$op" "$last_engine" 2>/dev/null)"; then
+            : # Journal only after drive_launch proves this reroute spawned.
           else
             rework_engine=""
             drive_note "$id: rework signature unchanged $reps times under '$last_engine', but role '$role' has no other eligible engine — dispatching on the same chain"
@@ -1487,6 +1485,22 @@ drive_dispatch() {
         set_boundary operator-decision "$id" \
           "dispatch launch for role '$role' failed (exit $lrc); $id stays in $from and nothing was spawned"
         return 0
+      fi
+      if [ -n "$rework_engine" ]; then
+        # The record says THIS ATTEMPT RUNS on the alternate, so spawning is
+        # its precondition. A refused/failed launch must leave no durable line
+        # claiming a reroute occurred. Record it before the state advance so
+        # a crash after this point still explains the outstanding job the
+        # next pass adopts.
+        rjrc=0
+        "$ORCHID_BIN" journal add --task "$id" \
+          "rework routed to a different engine: $reps consecutive attempts produced an identical failure signature under '$last_engine' — this attempt runs on '$rework_engine'" >/dev/null || rjrc=$?
+        if [ "$rjrc" -ne 0 ]; then
+          set_boundary operator-decision "$id" \
+            "rework reroute spawned on '$rework_engine', but its journal record failed (exit $rjrc); the task stays in $from and the next pass will adopt the outstanding job"
+          return 0
+        fi
+        drive_note "$id: rework signature unchanged $reps times under '$last_engine' — routed this attempt to '$rework_engine'"
       fi
     fi
   fi
@@ -1804,10 +1818,38 @@ drive_verify_fail_pending_consume() {
   return 0
 }
 
+# drive_rework_nonconvergence_stop <task> <failure-context> -- after ANY edge
+# has landed in rework and captured its evidence, stop a byte-identical loop at
+# the configured threshold. Both testing and merging can produce that edge;
+# keeping the judgment here prevents the merge-validation family from evading
+# the stop simply because its failure was discovered one phase later.
+#
+# Returns 0 when it blocked the task and raised a boundary, 1 when the streak
+# is still below the threshold. Call only as an `if` condition under set -e.
+drive_rework_nonconvergence_stop() {
+  local id="$1" context="$2" tf reps nc_max rwlog
+  tf="$state/tasks/$id.md"
+  [ "$(fm_get "$tf" status)" = rework ] || return 1
+  reps="$(fm_get "$tf" rework_signature_repeats)"
+  case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
+  nc_max="$(config_get "$repo" rework_nonconvergence_max 3)"
+  case "$nc_max" in ''|*[!0-9]*) nc_max=3 ;; esac
+  [ "$nc_max" -gt 0 ] && [ "$reps" -ge "$nc_max" ] || return 1
+
+  rwlog="$(rework_latest_log "$state" "$id" 0 2>/dev/null || true)"
+  "$ORCHID_BIN" notify --task "$id" \
+    "rework loop is not converging: $reps consecutive attempts produced an identical failure signature — see ${rwlog:-.orchid/reviews/}" >/dev/null
+  "$ORCHID_BIN" task advance "$id" blocked \
+    --reason "rework not converging: $reps consecutive attempts produced an identical failure signature" >/dev/null
+  drive_note "$id: $context, signature unchanged $reps times — rework -> blocked (not converging)"
+  set_boundary operator-decision "$id" \
+    "rework is not converging: $reps consecutive attempts produced a byte-identical failure signature — the loop is re-asking a question it has already been answered; see ${rwlog:-the captured rework logs under .orchid/reviews/}"
+  return 0
+}
+
 drive_testing() {
   local id="$1" arch="$2" tf vrc attempt cand hg guidance attempts budget arc
   local hstate hdetail
-  local reps nc_max rwlog
   local cls_line cls cls_reason prior_waived wmark waiver_reason
   local clsrc ifrc fsrc floor_mark jrc barc after_attempts after_status
   local pending pending_prefix pending_digest evidence_digest resume_failure
@@ -2284,19 +2326,7 @@ drive_testing() {
   # would be the one shape that never spends it, and a task could loop
   # forever on a wall it is not moving. The convergence stop below is what
   # ends the loop EARLY; the attempt budget stays the outer backstop.
-  reps="$(fm_get "$tf" rework_signature_repeats)"
-  case "$reps" in ''|*[!0-9]*) reps=0 ;; esac
-  nc_max="$(config_get "$repo" rework_nonconvergence_max 3)"
-  case "$nc_max" in ''|*[!0-9]*) nc_max=3 ;; esac
-  if [ "$nc_max" -gt 0 ] && [ "$reps" -ge "$nc_max" ]; then
-    rwlog="$(rework_latest_log "$state" "$id" 0 2>/dev/null || true)"
-    "$ORCHID_BIN" notify --task "$id" \
-      "rework loop is not converging: $reps consecutive attempts produced an identical failure signature — see ${rwlog:-.orchid/reviews/}" >/dev/null
-    "$ORCHID_BIN" task advance "$id" blocked \
-      --reason "rework not converging: $reps consecutive attempts produced an identical failure signature" >/dev/null
-    drive_note "$id: verify FAIL, signature unchanged $reps times — rework -> blocked (not converging)"
-    set_boundary operator-decision "$id" \
-      "rework is not converging: $reps consecutive attempts produced a byte-identical failure signature — the loop is re-asking a question it has already been answered; see ${rwlog:-the captured rework logs under .orchid/reviews/}"
+  if drive_rework_nonconvergence_stop "$id" "verify FAIL"; then
     return 0
   fi
 
@@ -3076,7 +3106,9 @@ if [ -n "$merging_ids" ]; then
       done)
         drive_note "$merge_id: merged" ;;
       rework)
-        if [ "$merge_gate_red" -eq 1 ]; then
+        if drive_rework_nonconvergence_stop "$merge_id" "merge validation failed"; then
+          :
+        elif [ "$merge_gate_red" -eq 1 ]; then
           drive_note "$merge_id: repo-wide merge_gate FAILED (gate_failed, attempt charged) — back to rework for the next pass; the candidate's own suite is not what went red"
         else
           drive_note "$merge_id: merge validation failed — back to rework for the next pass"
