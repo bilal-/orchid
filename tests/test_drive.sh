@@ -6634,11 +6634,15 @@ assert_eq candidate "$(ev_cls | cut -f1)" \
   "but trusted pre-verification evidence says node_modules was present, so a candidate cannot delete ignored dependencies during its test and manufacture an environment waiver"
 
 # --- and DISPATCH reports it, instead of leaving each project to discover it
-# by losing a round. The same predicate runs right after `git worktree add`, so
-# the gap is named at the moment somebody can still act on it. A source-level
-# tripwire rather than another end-to-end pass: the predicate's behaviour is
-# asserted directly above, and what this protects is that the driver still asks
-# it at dispatch, which is the part that would go quietly missing.
+# by losing a round. The same predicate runs in the dispatch that created the
+# worktree -- after the `worktree_prepare` step, whose whole job is to put this
+# state there, so the note describes what is still missing rather than what is
+# about to be supplied -- and the gap is named at the moment somebody can still
+# act on it. A source-level tripwire rather than another end-to-end pass: the
+# predicate's behaviour is asserted directly above, the ordering against the
+# prepare step is asserted end to end in tests/test_drive_worktrees.sh, and what
+# this protects is that the driver still asks it at dispatch, which is the part
+# that would go quietly missing.
 grep -q 'drive_env_missing_state' "$DRIVE" \
   || fail "runners/orchid-drive must ASK what the new worktree could not carry when it creates one (L003) — classifying the resulting failure afterwards is the backstop for a note that went unread, not a substitute for making the note"
 grep -q 'git worktree add cannot reproduce' "$DRIVE" \

@@ -422,3 +422,66 @@ assert_match 'WS2' "$(cat "$STDIN_RAN")" \
   "and it ran for the SECOND task too -- the dispatch that a truncated walk would never reach"
 assert_eq "" "$(cat "$STDIN_CAPTURE")" \
   "the prepare command's stdin is /dev/null — it read nothing, because there was nothing there to read"
+
+# ===========================================================================
+# 14 -- the L003 note reports what is STILL missing, so it is asked AFTER the
+# prepare step.
+#
+# Dispatch already warns that `git worktree add` reproduces only what git
+# TRACKS, naming the gitignored trees the integration checkout has and the new
+# worktree does not (drive_env_missing_state). `worktree_prepare` is the thing
+# that fills exactly that gap -- so asked BEFORE it runs, that note fires on
+# every dispatch of a repository that has already solved the problem, naming a
+# directory that exists by the time anybody reads the line and telling the
+# operator to go and provision by hand what their config just provisioned.
+# A warning that is wrong whenever the feature is in use is a warning people
+# learn to skip, including on the dispatch where it was right.
+#
+# Both directions, because either alone is satisfied by a note that never
+# fires at all: supplied by the prepare step -> silent; nothing configured ->
+# named, with the remedy.
+#
+# RED before this change: the note is emitted inside the `create` arm, above
+# the prepare step, and WP1's dispatch reports `deps` as missing.
+# ===========================================================================
+for other in WS1 WS2; do
+  "$ORCHID_BIN" task advance "$other" blocked --reason "fixture: excluded from the L003 passes" >/dev/null
+done
+# A gitignored tree the repository has and no checkout of any ref can carry.
+# It needs a FILE in it: git collapses an ignored tree to one record but never
+# reports an empty directory at all, so an empty `deps/` would make every
+# assertion below vacuous in the same direction.
+printf 'deps/\n' >> "$REPO/.gitignore"
+mkdir -p "$REPO/deps"
+printf 'installed\n' > "$REPO/deps/lib.txt"
+assert_match 'deps' "$(drive_env_missing_state "$REPO" "$WORKP/repo-W8")" \
+  "the fixture really is a gitignored tree the predicate reports as missing from a worktree"
+
+printf 'worktree_prepare=mkdir -p deps\n' >> "$REPO/orchid.config"
+"$ORCHID_BIN" task create WP1 "prepare supplies the ignored tree" >/dev/null
+rc=0
+out6="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+# The witness: this file stacks nine `worktree_prepare=` lines, so the case
+# rests on config_get taking the last of them. If an earlier case's command ran
+# here instead, `deps` would be absent and the silence below would be the very
+# defect this part exists to catch, reported as a pass.
+[ -d "$WORKP/repo-WP1/deps" ] \
+  || fail "the prepare step configured for THIS case is the one that ran, and it supplied the ignored tree"
+if grep -q 'does not carry gitignored state' <<<"$out6"; then
+  fail "a checkout whose prepare step supplied the missing state must not be reported as missing it: $out6"
+fi
+
+# ...and with nothing configured to supply it, the note is still made, and it
+# names the key that would have.
+"$ORCHID_BIN" task advance WP1 blocked --reason "fixture: excluded from the unprepared pass" >/dev/null
+printf 'worktree_prepare=\n' >> "$REPO/orchid.config"
+"$ORCHID_BIN" task create WP2 "nothing supplies the ignored tree" >/dev/null
+rc=0
+out7="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
+l003_note="$(grep 'does not carry gitignored state' <<<"$out7" || true)"
+[ -n "$l003_note" ] \
+  || fail "with no prepare step, the gap is still named at dispatch (L003): $out7"
+assert_match 'WP2' "$l003_note" "the note is raised against the task whose worktree lacks it"
+assert_match 'deps' "$l003_note" "and it names the tree that is missing"
+assert_match 'worktree_prepare' "$l003_note" \
+  "and it names the config key that supplies it, not a manual copy the next worktree add would undo"

@@ -1715,6 +1715,7 @@ The log's mtime is what the kernel reads, and it separates the two reports:
 There is one thing the kernel cannot do for `unstamped` and you may still want
 to: kill the process, if it turns out to be alive but silent. `pgrep -f
 <job_id>` finds it; nothing else on this machine knows its pid.
+
 ## Verification fails only in orchid's own checkouts
 
 **Symptom:** the suite passes when you run it by hand, but every task fails

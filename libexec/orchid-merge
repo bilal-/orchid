@@ -489,10 +489,15 @@ case "$(printf '%s' "$prep" | cut -f1)" in
     # unbounded loop -- and the candidate's `attempts` are untouched, which
     # is the distinction the whole step is for.
     #
-    # Output suppressed, not the error: the counter line would otherwise
-    # become the last line of this verb's output, which the driver reads as
-    # the failure's explanation when there is no validation log. The die
-    # below must stay that last line.
+    # Output suppressed, not the error. The counter's own receipt ("<id>:
+    # infra_failures n/max") is not this verb's report: runners/orchid-drive
+    # echoes everything merge printed and then quotes it to an operator, so
+    # the line would arrive as part of merge's account of what went wrong
+    # while saying nothing about the environment that did. Nothing is lost by
+    # dropping it -- infra-fail journals its reason before it writes, and the
+    # count is in the task's frontmatter. The die below is what explains this
+    # failure, and it is the last line either way: infra-fail is a child that
+    # has already exited by the time orchid_die runs.
     "$ORCHID_ROOT/bin/orchid" task infra-fail "$id" \
       --reason "worktree_prepare failed for the merge validation worktree: $prep_why" >/dev/null || true
     orchid_die "cannot prepare the merge validation worktree: $prep_why" ;;
