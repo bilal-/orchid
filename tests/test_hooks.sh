@@ -231,9 +231,16 @@ printf 'manifest_version=1\nid=acme/foo\nversion=0.1.0\nkind=engine\napi_version
 printf '#!/usr/bin/env bash\ntrue\n' > "$WORK/eng/foo/run"; chmod +x "$WORK/eng/foo/run"
 
 mkdir -p "$WORK/.orchid/runtime/jobs" "$WORK/.orchid/runtime/spool" "$WORK/.orchid/runtime/quarantine"
+# The log path must NOT EXIST (T031). These two manifests carry pid 0, and
+# reconcile reads pid 0 with a log that exists as the launcher's post-spawn/
+# pre-stamp window -- a job that has not resolved, whose envelope is deferred
+# rather than filed. `/dev/null` used to stand here and always exists, with an
+# mtime that is the machine's boot time: whether these fixtures deferred would
+# have depended on how recently the host booted. `/nonexistent...` is the same
+# "no log" this fixture always meant, said in a way that cannot drift.
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
   '{job_id:"j-thirdparty", task:"T001", attempt:9, role:"reviewer", operation:"review",
-    engine:"foo", pid:0, pgid:0, started_at:0, log:"/dev/null", output:"/dev/null",
+    engine:"foo", pid:0, pgid:0, started_at:0, log:"/nonexistent/j-thirdparty.log", output:"/dev/null",
     base_sha:$base, candidate_sha:$cand, hook_point:""}' \
   > "$WORK/.orchid/runtime/jobs/j-thirdparty.json"
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
@@ -254,7 +261,7 @@ list_dir_files "$WORK/.orchid/runtime/quarantine" \
 # "orchid/<name>" fallback shape, unchanged from before this fix.
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \
   '{job_id:"j-firstparty", task:"T001", attempt:9, role:"reviewer", operation:"review",
-    engine:"nosuchengine", pid:0, pgid:0, started_at:0, log:"/dev/null", output:"/dev/null",
+    engine:"nosuchengine", pid:0, pgid:0, started_at:0, log:"/nonexistent/j-firstparty.log", output:"/dev/null",
     base_sha:$base, candidate_sha:$cand, hook_point:""}' \
   > "$WORK/.orchid/runtime/jobs/j-firstparty.json"
 jq -n --arg base "$base_sha" --arg cand "$cand_sha" \

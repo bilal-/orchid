@@ -1631,7 +1631,10 @@ semantic correctness beyond declared verification commands.
   it may only ever describe the recorded candidate: verification refuses a
   tree that is not `candidate_sha` (before OR during the run), and an
   envelope from a job that has not exited is not a completion signal, so the
-  candidate captured from a worktree's HEAD is always final
+  candidate captured from a worktree's HEAD is always final — where "has not
+  exited" includes a manifest still carrying `pid: 0` inside the launcher's
+  post-spawn/pre-stamp window, since that pid is the absence of a record, not
+  an exit
 - INV-12 non-truncatable inputs over budget fail with `input_overflow`,
   never silently truncate
 - INV-13 the deterministic driver mutates durable/cross-process state only

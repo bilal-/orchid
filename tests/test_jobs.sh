@@ -1643,3 +1643,78 @@ assert_match "TDEFER	ok" "$live_line2" "T031: the deferred envelope reconciles o
 [ -f ".orchid/reviews/TDEFER-a1-implementer.json" ] || fail "T031: the envelope is filed once its job has exited"
 [ ! -f "$mlive" ] || fail "T031: the manifest is deleted once its envelope is genuinely reconciled"
 green_case "the same envelope reconciles normally on the pass after its job exits — deferral delays, never discards"
+
+# ---------------------------------------------------------------------------
+# T031 (attempt-4 rework): THE LAUNCH/RECONCILE RACE. The deferral above asks
+# whether the job has exited. A pid of 0 is not an answer to that question:
+# `jobs prepare` mints every manifest with pid 0 and runners/orchid-launch
+# stamps the real pid only AFTER the spawn, so pid 0 means "nobody has
+# recorded whether this began" -- an UNRESOLVED STARTUP STATE. Reading it as
+# an exit re-opens T013's race one launcher-window narrower: an engine running
+# with its pid recorded nowhere still commits, and its envelope would still be
+# filed as final.
+#
+# Deterministic, and no live process is involved: the whole class is pid 0, so
+# what decides it is the LOG -- exactly the handle `prepare`, `gc`, `check`
+# and the driver's drive_job_outstanding already use for this manifest shape,
+# and exactly the one TDUPLOG above turns on. Fresh log = the post-spawn/
+# pre-stamp window, something is writing right now.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create TSTART "envelope filed inside the launcher window" >/dev/null
+mstart="$("$ORCHID_BIN" jobs prepare TSTART implementer implement)"
+start_jid="$(jq -r .job_id "$mstart")"
+start_out="$(jq -r .output "$mstart")"
+start_log="$(jq -r .log "$mstart")"
+assert_eq 0 "$(jq -r '.pid // 0' "$mstart")" \
+  "sanity: prepare mints a manifest with no pid — the launcher stamps it later"
+mkdir -p "$(dirname "$start_log")"; printf 'engine is running\n' > "$start_log"
+printf '{"contract":1,"job_id":"%s","task":"TSTART","operation":"implement","status":"ok","summary":"filed early"}' \
+  "$start_jid" > "$start_out"
+
+start_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "^deferred: " "$start_line" \
+  "T031: pid 0 with a fresh log is a job that has not resolved, so its envelope is deferred, not filed"
+assert_match "still starting" "$start_line" \
+  "T031: and the line names the startup window rather than claiming a live pid it does not have"
+[ -f "$start_out" ] || fail "T031: the deferred envelope must stay in the spool"
+[ -f "$mstart" ] \
+  || fail "T031: the manifest must survive — inside the launcher window it is the ONLY handle on an engine whose pid is recorded nowhere"
+[ ! -f ".orchid/reviews/TSTART-a1-implementer.json" ] \
+  || fail "T031: an envelope from the launcher window must not be filed as a completion report"
+for _q in "$rt/quarantine/$start_jid.json".*; do
+  [ -e "$_q" ] || continue
+  fail "T031: deferring is not quarantining — the envelope is good, just early (found $_q)"
+done
+red_case "reconcile defers an envelope whose manifest is still inside the launcher's post-spawn/pre-stamp window"
+
+# The wait is BOUNDED BY THE SAME CLOCK gc and prepare use, and it ends
+# WITHOUT needing a reap first: gc_reap_unlaunched deliberately spares a
+# manifest whose envelope is still spooled, so a deferral that could only be
+# ended by gc would have the two holding the envelope for each other forever.
+# Backdating the log past `stall_minutes` is what the passage of time would
+# do (the TDUPLOG refusal above turns on this same instant).
+"$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
+[ -f "$mstart" ] || fail "T031: gc must spare the manifest while its envelope is still spooled"
+touch -t 202001010000 "$start_log"
+start_line2="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TSTART	ok" "$start_line2" \
+  "T031: once the log has been silent past stall_minutes the startup state is resolved and the envelope reconciles"
+[ -f ".orchid/reviews/TSTART-a1-implementer.json" ] || fail "T031: the envelope is filed once nothing can still be starting"
+[ ! -f "$mstart" ] || fail "T031: the manifest is deleted once its envelope is genuinely reconciled"
+green_case "a launcher-window deferral ends on stall_minutes alone — no reap required, so the envelope is never stranded"
+
+# The other pid-0 shape: NO log at all. The spawn line was provably never
+# reached, so nothing is starting and nothing ever will. It must reconcile on
+# the FIRST pass — this is the arm that proves the new "pid 0 is unresolved"
+# reading did not turn every unstamped manifest into a permanent hold.
+"$ORCHID_BIN" task create TNOLOG "envelope whose manifest never reached the spawn line" >/dev/null
+mnolog="$("$ORCHID_BIN" jobs prepare TNOLOG implementer implement)"
+nolog_jid="$(jq -r .job_id "$mnolog")"
+[ ! -e "$(jq -r .log "$mnolog")" ] || fail "sanity: prepare must not create the job log — the launcher does, by redirecting the spawn into it"
+printf '{"contract":1,"job_id":"%s","task":"TNOLOG","operation":"implement","status":"ok","summary":"no log ever appeared"}' \
+  "$nolog_jid" > "$(jq -r .output "$mnolog")"
+nolog_line="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TNOLOG	ok" "$nolog_line" \
+  "T031: pid 0 with no log is resolved — no engine ran and none will — so its envelope reconciles immediately"
+[ ! -f "$mnolog" ] || fail "T031: and its manifest is deleted, exactly as before"
+green_case "pid 0 with no log still reconciles on the first pass — the startup hold covers the launcher window only"
