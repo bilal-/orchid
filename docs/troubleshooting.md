@@ -402,6 +402,21 @@ and it freezes the ones that already have a review so no filed evidence is
 orphaned. Bind first, then repin — the repin recomputes from live routing, so
 running it before the config change re-pins the same engine.
 
+**And if it is not a boundary at all but a blocker about the ORCHESTRATOR**, the
+scheduled pump raised it. `BLOCKERS.md` says no actor can be routed the
+`orchestrate` step for role `orchestrator`, names each chain entry's missing
+atom, and points at `role.orchestrator`. This is not a task's hand-off and no
+`--ack` clears it: it means every engine in that chain is short `shell` or `git`
+(`roles/orchestrator.role` requires both, and so does the step), so the pump has
+nobody to wake for the judgment boundary the driver recorded on the same pass.
+Bind an engine that declares both at `role.orchestrator` — or settle the
+recorded boundary yourself, which `orchid run boundary show` names. The blocker
+is raised once, not once per pass, and it does *not* replace the boundary
+record; both are meant to be read. `pump: no capable orchestrator available` is
+the *other* message and means the opposite: an engine that could do the work is
+merely rate-limited, unproven or not installed yet, and the next pass may well
+find it available.
+
 ```sh
 orchid run boundary show           # what is being held, and why
 orchid task show <id>              # candidate_sha, and handoff_ack beside it

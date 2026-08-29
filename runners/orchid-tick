@@ -46,6 +46,11 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/spawn.sh"; source "$ORCHID_ROOT/lib/trust.sh"
+# capability.sh for the ONE question this runner cannot answer from a 14
+# (INV-16): is the orchestrator chain merely unavailable right now, or is every
+# engine in it short an atom the `orchestrate` step needs? See the resolution
+# block below.
+source "$ORCHID_ROOT/lib/capability.sh"
 
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
@@ -79,11 +84,37 @@ resume_out="$("$ORCHID_ROOT/bin/orchid" run resume)"
 epoch="${resume_out#epoch: }"
 export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 
+# ...UNLESS NO LATER PASS COULD CHANGE THE ANSWER (INV-16). "The pump's next
+# pass retries once ledger/capsuite state has moved on" is the whole
+# justification for treating 14 as a wait, and it is simply untrue when every
+# engine in the orchestrator chain is short an atom `orchestrate` needs: no
+# window reopens on a manifest. Reported as 14 that is a scheduled runner
+# printing a disqualifier list once per staleness window forever, which is the
+# silent dead end this invariant exists to end -- so the chain is classified
+# first and the permanent case exits 19, the code the rest of the kernel
+# already reads as "a capability refusal an operator owns".
+#
+# THE MESSAGE IS THE WHOLE OF THIS RUNNER'S REPORT, deliberately: nothing is
+# journaled here. A direct tick is one shot with a caller watching its exit
+# status, and the durable hand-off for the SCHEDULED loop belongs to the pump,
+# which reaches this same classification before it ever execs this file and
+# records it exactly once (runners/orchid-pump's pre-wake probe). Journaling in
+# both places would file the same fact twice for every pass that ran the pump.
+tick_cap_rc=0
+tick_cap_why="$(capability_role_chain_refusal "$repo" orchestrator orchestrate)" || tick_cap_rc=$?
+if [ "$tick_cap_rc" -eq 1 ]; then
+  capability_chain_handoff_line orchestrator orchestrate role.orchestrator "$tick_cap_why" >&2
+  exit 19
+fi
+
 # Exit 14 (no eligible engine) propagates verbatim: `resolve_role_available`
 # prints its own per-entry disqualifier to stderr; under `set -e` this bare
 # assignment aborts the script with that same code, not a rewritten 1
-# (the pump's next pass retries once ledger/capsuite state has moved on).
-engine="$(resolve_role_available "$repo" orchestrator)"
+# (the pump's next pass retries once ledger/capsuite state has moved on). The
+# step is passed so an entry that cannot perform the work is failed over rather
+# than settled on -- the same operation-aware selection `orchid jobs prepare`
+# uses for every other role.
+engine="$(resolve_role_available "$repo" orchestrator orchestrate)"
 
 # Command-surface label (v1.1, Track 1). `brokered` means this adapter runs
 # its orchestrator against the argument-validating broker

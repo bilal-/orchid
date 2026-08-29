@@ -830,8 +830,7 @@ prepare_capability_gate() {
 }
 
 # prepare_chain_capability_gate <repo> <operation> <role> -- the same invariant
-# one gate EARLIER, for the arm where no actor was ever named and resolution
-# then failed.
+# one gate EARLIER, for the arm where no actor was ever named.
 #
 # prepare_capability_gate above is asked ABOUT AN ACTOR. On the role-chain arm
 # there is no actor until resolve_role_available succeeds, and when it fails its
@@ -842,25 +841,26 @@ prepare_capability_gate() {
 # nothing, raises no boundary, and the walk meets the same task next pass
 # forever. That is the same silent dead end the comment above describes for the
 # `--engine` arm, reached through the chain instead -- and it is the one this
-# invariant exists to end, so the chain is asked before the 14 is propagated.
+# invariant exists to end, so the chain is asked before the 14 can be raised.
 #
-# ONLY AFTER RESOLUTION FAILS, never before it. A chain whose first capable
-# entry is available resolves normally and is gated below on the engine that
-# actually won; asking here first would refuse a dispatch over entries no
-# dispatch would have used.
+# BEFORE RESOLUTION, NOT AFTER IT, and the reversal is the point of this
+# revision rather than a tidy-up. It refuses only when EVERY entry is short, so
+# a chain resolution could still pick somebody out of is a chain this gate says
+# nothing about -- asking first cannot therefore refuse a dispatch that would
+# have happened. What asking first fixes is the REPORT: run afterwards, this
+# gate can only speak once resolve_role_available has already put its own "no
+# eligible engine available for role X" on stderr, so an operator meets a wait
+# and a permanent refusal about one call and has to work out which describes
+# their repository. Asked first, the 19 is the only thing emitted, and the wait
+# line is printed exactly when the wait is real.
 #
 # AND ONLY FOR A MISSING ATOM AT EVERY ENTRY. A rate limit, a missing capsuite
 # record, an uninstalled plugin and a ROLE requirement no step prices all stay
 # the wait they have always been, reported by resolve_role_available in its own
 # words -- see capability_chain_refusal, which draws that line and says why.
 prepare_chain_capability_gate() {
-  local rp="$1" op="$2" rl="$3" chain why rc=0
-  # Its own stderr is dropped: this is a SECOND read of the same config, for a
-  # different question, and whatever resolve_role_chain has to say about a role
-  # it cannot bind it has already said on the way here. An unreadable chain is
-  # simply an empty one, which this gate answers by declining to speak.
-  chain="$(resolve_role_chain "$rp" "$rl" 2>/dev/null)" || chain=""
-  why="$(capability_chain_refusal "$op" "$chain")" || rc=$?
+  local rp="$1" op="$2" rl="$3" why rc=0
+  why="$(capability_role_chain_refusal "$rp" "$rl" "$op")" || rc=$?
   # Same attribution as the named-actor gate, for the same reason: a step name
   # outside the kernel's closed set is the REQUEST's fault, and reporting it as
   # whatever wait resolution happened to produce hides the one thing the caller
@@ -1061,14 +1061,21 @@ case "$sub" in
       # rather than re-wrapping it (prepare is tier-1: mint-manifest-only, so
       # there is nothing else to clean up here before exiting).
       #
-      # UNLESS THAT 14 IS PERMANENT. A chain in which every entry is short an
-      # atom this step needs reopens for nobody, and propagated as a wait it
-      # stops the task in silence -- so the chain is asked first, and answers
-      # 19 for that one case only. See prepare_chain_capability_gate.
-      engine="$(resolve_role_available "$repo" "$role")" || {
-        prepare_chain_capability_gate "$repo" "$operation" "$role"
-        exit 14
-      }
+      # UNLESS THAT 14 WOULD BE PERMANENT. A chain in which every entry is
+      # short an atom this step needs reopens for nobody, and propagated as a
+      # wait it stops the task in silence -- so the chain is asked BEFORE
+      # resolution, exits 19 for that one case, and lets resolution's own wait
+      # line be printed only when the wait is real. See
+      # prepare_chain_capability_gate.
+      prepare_chain_capability_gate "$repo" "$operation" "$role"
+      # ...and the walk itself is told which STEP it is picking an actor for,
+      # so an entry that cannot perform it is FAILED OVER instead of settled
+      # on. Without this a role-eligible but incapable primary shadows a
+      # capable, capsuite-proven fallback standing right behind it in the same
+      # chain: resolution stops at the primary, the step gate below refuses it
+      # permanently, and the entry that could have done the work is never
+      # reached (lib/resolver.sh's resolve_role_available).
+      engine="$(resolve_role_available "$repo" "$role" "$operation")" || exit 14
     fi
     # INV-16: role eligibility and step coverage are different questions. A
     # custom role may ask for nothing; it cannot thereby make its actor capable

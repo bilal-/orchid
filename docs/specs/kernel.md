@@ -1799,26 +1799,70 @@ over a capability the *step* does not need is still refused there, at 14, in
 that gate's own words.
 
 Where NO actor was named — the ordinary dispatch, which resolves the role's
-failover chain — the same question is asked of EVERY ENTRY IN THAT CHAIN, and
-only once resolution has already failed. `resolve_role_available` exits 14 when
-no entry is discovered, role-eligible, ledger-available and capsuite-passed,
-and 14 is a wait; that is the right reading for the reasons a chain usually
-comes up empty, all of which clear on their own or with one command. It is
-exactly wrong when every entry is short an atom the step's work needs: no
-window reopens, so the driver waits, journals nothing, raises no boundary and
-meets the same task every pass forever. That arm therefore answers 19 as well,
-for that one case. The overlap is not exotic — for the two roles the driver
-dispatches, the role's `requires=` and the step's price are the same atoms
-(`roles/reviewer.role` wants `structured_text` and `review` prices it;
+failover chain — the same question is asked TWICE, of two different
+populations, and neither asking replaces the other.
+
+*Of the whole chain, ahead of resolution.* `resolve_role_available` exits 14
+when no entry is discovered, role-eligible, ledger-available and
+capsuite-passed, and 14 is a wait; that is the right reading for the reasons a
+chain usually comes up empty, all of which clear on their own or with one
+command. It is exactly wrong when every entry is short an atom the step's work
+needs: no window reopens, so the driver waits, journals nothing, raises no
+boundary and meets the same task every pass forever. So the chain is classified
+first and that case answers 19 — and only that case. Asking first cannot refuse
+a dispatch that would have happened, because the classification refuses only
+when EVERY entry is short and a chain with one entry it does not refuse is one
+resolution may still pick from. What asking first buys is a single report:
+behind the resolution, the wait line was already on stderr by the time the
+refusal could be printed, and an operator met a wait and a permanent refusal
+about one call with no way to tell which described their repository. The wait
+line is now printed exactly when the wait is real.
+
+*And of each entry, during resolution.* The walk is told which STEP it is
+picking an actor for, so an entry the table refuses is FAILED OVER — skipped,
+with its shortfall named among the disqualifiers — rather than settled on.
+Without that, a role-eligible but incapable primary shadows a capable,
+capsuite-proven fallback standing right behind it in the same chain: resolution
+stops at the primary, the step gate refuses it permanently, and the entry that
+could have done the work is never reached. A capability shortfall is as
+permanent a reason to move down a failover chain as a rate limit is a temporary
+one. Only the table's REFUSAL (its exit 1) skips an entry; an entry it cannot
+answer for, and a step name it never priced, leave the entry exactly where it
+was for the gates that own those answers.
+
+The overlap between the two questions is not exotic — for the two roles the
+driver dispatches, the role's `requires=` and the step's price are the same
+atoms (`roles/reviewer.role` wants `structured_text` and `review` prices it;
 `roles/implementer.role` wants `workspace_write,shell,git` and `implement`
 prices exactly those), so the role gate refuses first and EVERY shipped-tree
 shortfall reaches the caller this way rather than as the post-resolution 19.
+They come apart exactly where this invariant is load bearing: a custom role
+whose descriptor asks for less than the work costs.
 Only a missing atom counts, and only at every entry: a rate limit, an unproven
 fallback, an uninstalled plugin, an id two plugins claim, and a ROLE
 requirement no step prices all stay the wait they were, reported by
 `resolve_role_available` in its own words — each has a different remedy, and
 one entry the table does not refuse means a later pass can route the step
 somewhere.
+
+**The orchestrate step reaches none of that, and needed its own site.** A wake
+is not a job: `runners/orchid-tick` builds its own request document and never
+calls `orchid jobs prepare`, and `runners/orchid-pump` decides whether to exec
+it from a dry `resolve_role_available` probe whose failure it reports as
+"no capable orchestrator available" and exits 0 on — cron-friendly, and correct
+for every reason that probe usually fails. Where every engine in
+`role.orchestrator`'s chain is short `shell` or `git`, it was the same silent
+poll this invariant exists to end: one line per staleness window, forever,
+nothing journaled, no human told, and the judgment boundary the driver raised on
+that very pass left for an orchestrator that is never coming. Both runners now
+classify that chain before the wake. The tick reports it as exit 19 in place of
+14. The pump records ONE operator hand-off through `orchid notify` — journalled
+first, then BLOCKERS.md, deduped against that blocker so a condition lasting a
+hundred passes raises one — and prints only the refusal, never the poll line
+beside it. It deliberately does not touch the boundary RECORD: `orchid drive` is
+that record's single routine writer, and a pump overwriting it would destroy the
+record naming the task actually waiting while the two writers alternated one
+journal line per pass.
 
 That same slot is also why the boundary names a VERB and not only a key. The
 advice for a refused step is "perform it, or bind an actor whose manifest
@@ -1982,7 +2026,12 @@ manifest (T027). Every code means ONE condition: 18 is its own entry rather
 than a second meaning for 17 precisely because a caller that has to
 distinguish "the broker refused this command" from "wait, this slot has an
 orphan" cannot do it from a number two conditions share; 19 step not routable
-to the resolved actor (INV-16). A step name the kernel does not know is NOT 19 — that is a
+— to the resolved actor, or to any engine in the role chain a dispatch would
+have drawn one from (INV-16). `orchid jobs prepare` answers it for a task step,
+and `runners/orchid-tick` for the `orchestrate` wake, where it replaces the 14
+a scheduler would otherwise retry forever. Those are one condition, not two:
+the work needs a capability nobody who could be asked declares, and no later
+pass changes that. A step name the kernel does not know is NOT 19 — that is a
 malformed request rather than an actor unable to do the work, so it is an
 ordinary usage error and says so instead of sending an operator to audit a
 plugin that is behaving perfectly.

@@ -47,7 +47,8 @@
 # or reaches for a verb.
 #
 # Source AFTER lib/common.sh, lib/manifest.sh and lib/resolver.sh -- it calls
-# manifest_capabilities and resolve_engine_dir_any and nothing else.
+# manifest_capabilities, resolve_engine_dir_any and resolve_role_chain, and
+# nothing else.
 
 # The closed set of STEP names. Kernel-owned, exactly like lib/hooks.sh's
 # `_HOOK_POINTS` and lib/drive.sh's `_DRIVE_BOUNDARY_KINDS`: a step outside
@@ -127,9 +128,6 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # the moment a CUSTOM role is bound, which is the case whose descriptor its own
 # publisher writes. `research` is only ever the second of those: no built-in
 # role carries it, so its row has no role gate standing behind it at all.
-# Note that `orchestrate` reaches prepare only that way --
-# runners/orchid-tick builds its own request document and never mints a job --
-# so the tick's own orchestrator is gated by roles/orchestrator.role, not here.
 # Where the caller NAMED the actor (`prepare --engine`), that row is asked
 # BEFORE the role gate rather than after it -- not to let anything past the
 # role gate, which still runs and still refuses on its own terms, but because
@@ -137,11 +135,29 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # ("no eligible engine") is the one it reads as a WAIT. See
 # libexec/orchid-jobs' prepare_capability_gate for why that ordering is a
 # report about which fact is permanent, never a permission. Where NO actor was
-# named and the role chain yields none, those same rows are asked of EVERY
-# ENTRY in the chain instead (capability_chain_refusal below, called from that
-# file's prepare_chain_capability_gate) -- resolution failing before any actor
-# exists is the other way a permanent shortfall reached the driver as that same
-# wait.
+# named, those same rows are asked TWICE over, of two different populations,
+# and both are needed: once of every entry in the role chain, ahead of
+# resolution, so a chain in which nobody can do the work answers 19 instead of
+# the 14 a driver waits on forever (capability_chain_refusal below, through
+# capability_role_chain_refusal); and once DURING resolution, per entry, so an
+# incapable entry is FAILED OVER rather than settled on -- see
+# lib/resolver.sh's resolve_role_available, whose optional <step> argument is
+# this table asked at selection time.
+#
+# `orchestrate` HAS A SECOND ENFORCEMENT SITE, and it is not `jobs prepare`.
+# runners/orchid-tick builds its own request document and never mints a job, so
+# the wake that spawns an orchestrator reaches no prepare arm at all; for as
+# long as this table was consulted only there, an orchestrator chain that could
+# never be woken produced exactly the silent poll this file exists to end --
+# the scheduled pump printing "no capable orchestrator available" once per
+# staleness window, forever, with nothing journaled and no human told. So the
+# same row is asked at the PRE-WAKE probe in runners/orchid-pump and again in
+# runners/orchid-tick, through capability_role_chain_refusal below, and the
+# pump turns the permanent answer into one journaled operator hand-off.
+# roles/orchestrator.role still gates the wake on its own terms and is not
+# replaced by this: it happens to require the same two atoms, so on the shipped
+# tree the two refuse together and this one is merely the one that says the
+# fact is permanent.
 # `mechanical` is enforced at lib/handoff.sh, because it is a step no adapter
 # is dispatched for at all. `hook` is the one row with no enforcement site
 # anywhere, because it is priced at nothing and the gate returns before it so
@@ -435,6 +451,19 @@ capability_routing_refusal() {
 # defect libexec/orchid-jobs' prepare_capability_gate fixed for the arm where
 # the caller NAMED the actor, reached through the role chain instead.
 #
+# AND IT IS ASKED AHEAD OF THAT RESOLUTION, not behind it. It used to sit
+# behind, on the reasoning that a chain whose first capable entry is available
+# resolves normally and should be gated on the engine that actually won -- true,
+# and still true, because this function refuses ONLY when EVERY entry is short.
+# A chain holding one entry it does not refuse is one resolution may still pick,
+# so asking first can refuse nothing a dispatch would have used. What asking
+# first buys is the report: behind the resolution, the caller has already let
+# resolve_role_available print its own "no eligible engine available for role X"
+# to stderr, and the operator then meets a WAIT and a PERMANENT REFUSAL about
+# the same call, in that order, and has to work out which of the two describes
+# their repository. Only one of them does. Asked first, only the refusal is
+# emitted, and the wait line is printed exactly when the wait is real.
+#
 # ONLY A MISSING ATOM COUNTS, which is what stops this annexing every other
 # reason a chain comes up empty. A rate limit reopens on its own; a missing
 # capsuite record is one `orchid plugins test` away; an uninstalled plugin is an
@@ -497,4 +526,55 @@ capability_chain_refusal() {
   [ "$entries" -gt 0 ] || return 0
   printf '%s\n' "$detail"
   return 1
+}
+
+# capability_role_chain_refusal <repo> <role> <step> -- capability_chain_refusal
+# asked about a role BY NAME, resolving the chain itself. Same three outcomes,
+# same words, same statuses.
+#
+# ONE FUNCTION BECAUSE THREE CALLERS ASK THE SAME QUESTION, and they must never
+# drift into three different answers: `orchid jobs prepare`'s chain arm
+# (libexec/orchid-jobs), the scheduled pump's pre-wake probe and the headless
+# tick's own resolution (runners/orchid-pump, runners/orchid-tick). Each of
+# them stands in front of a `resolve_role_available` call whose exit 14 the
+# caller would otherwise read as a wait; each therefore needs the SAME
+# classification of that 14 into "a window that reopens" and "a shortfall no
+# pass changes", and a second inline copy of the resolve-then-classify pair is
+# a second place for that line to be drawn differently.
+#
+# The chain's own stderr is dropped: this is a read of config for a question
+# resolution has already reported on in its own words, and an unreadable chain
+# is simply an empty one -- which capability_chain_refusal answers by declining
+# to speak.
+capability_role_chain_refusal() {
+  local repo="$1" role="$2" step="$3"
+  local chain
+  local rc=0
+  chain="$(resolve_role_chain "$repo" "$role" 2>/dev/null)" || chain=""
+  capability_chain_refusal "$step" "$chain" || rc=$?
+  return "$rc"
+}
+
+# capability_chain_handoff_line <role> <step> <binding> <detail> -- the ONE
+# operator-facing sentence a RUN-LEVEL capability refusal is recorded as: what
+# was refused, that no later pass changes it, and the config key that binds the
+# chain it was refused against.
+#
+# DISTINCT FROM lib/drive.sh's drive_capability_handoff_text, and the split is
+# deliberate rather than duplication. That function produces the pair the
+# DRIVER writes for a refused TASK step -- a boundary reason and a task-scoped
+# journal line, with a reviewer arm that names the repin verb because a
+# reviewer slot's row is pinned. This one is for the refusal that belongs to no
+# task at all: the wake the pump and the tick are about to perform on behalf of
+# the whole run. A task-scoped hand-off recorded against no task would be
+# filed where nobody looks for it, and the repin advice would name a plan that
+# does not exist here.
+#
+# ONE LINE, because both emitters put it somewhere that reads a multi-line
+# value the way it reads no value at all: BLOCKERS.md's entry body, and a
+# runner's own stderr.
+capability_chain_handoff_line() {
+  local role="$1" step="$2" binding="$3" detail="$4"
+  printf "no actor can be routed the '%s' step for role '%s': %s. Every engine in that chain is short an atom the work needs, so no ledger window, capsuite run or later pass changes it (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s\n" \
+    "$step" "$role" "$detail" "$binding"
 }

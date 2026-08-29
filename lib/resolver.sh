@@ -342,10 +342,12 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
   echo "$engine"
 }
 
-# resolve_role_available <repo> <role> -- walks resolve_role_chain and prints
-# the first entry that is (a) discovered (resolve_engine_dir), (b)
-# role-eligible (role_eligibility_reason), (c) ledger_available, and (d) --
-# for every entry AFTER the first -- capsuite_passed for this exact (engine,
+# resolve_role_available <repo> <role> [step] -- walks resolve_role_chain and
+# prints the first entry that is (a) discovered (resolve_engine_dir), (b)
+# role-eligible (role_eligibility_reason), (c) -- when a <step> is given --
+# not refused that step by the kernel's own capability table, (d)
+# ledger_available, and (e) -- for every entry AFTER the first --
+# capsuite_passed for this exact (engine,
 # role) pair: a fallback may activate ONLY once it has actually been proven
 # to work for this role (v1-m1's capability suite gate); the primary is the
 # tested default and needs no capsuite record. `plan_critic` additionally
@@ -353,13 +355,47 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
 # engine -- the engine that drafted a plan never critiques its own draft --
 # regardless of that entry's chain position.
 #
+# WHY SELECTION IS OPERATION-AWARE AT ALL (T018/INV-16). Without <step> this
+# walk answers "who may hold this ROLE", and the caller then discovers -- one
+# gate later, at `orchid jobs prepare`'s step gate -- that the winner cannot
+# perform the WORK. Those are different questions wherever a role descriptor
+# asks for less than the step's price does, which is exactly the CUSTOM role
+# whose descriptor its own publisher writes. An incapable primary then SHADOWS
+# a capable, capsuite-proven fallback sitting right behind it in the same
+# chain: the walk stops at the primary because it is role-eligible, the step
+# gate refuses it permanently, and the fallback that could have done the work
+# is never reached. Failing over is what a chain is for, and a capability
+# shortfall is as permanent a reason to fail over as a rate limit is a
+# temporary one.
+#
+# ONLY A REFUSAL (the table's exit 1) SKIPS AN ENTRY. An entry the table
+# cannot answer for (its 2) and a step name it never priced (its 3) are not
+# capability facts about this engine, and skipping on them would let a
+# momentary discovery failure -- or one caller's typo -- silently fail a
+# dispatch over to somebody else. Both leave the entry exactly where it was,
+# for the gates that own those answers to report in their own words.
+#
+# THE STEP IS THE CALLER'S TO PASS, and a caller that passes one without
+# lib/capability.sh sourced is refused rather than quietly answered. Skipping
+# the check because its implementation is absent would turn "route only to an
+# actor that declares the work" into "route to whoever loaded first", which is
+# the fail-open INV-16 exists to close, arriving through a missing `source`.
+#
 # No survivor -> nothing on stdout, exit 14, and one line on stderr naming
 # the role, the full chain, and EACH entry's specific disqualifier (so an
 # operator never has to go spelunking in the ledger/capsuite dirs to see
 # why). Callers must source, in order: lib/common.sh, lib/manifest.sh,
-# lib/roles.sh, lib/resolver.sh (this file), lib/capsuite.sh, lib/ledger.sh.
+# lib/roles.sh, lib/resolver.sh (this file), lib/capsuite.sh, lib/ledger.sh --
+# plus lib/capability.sh when (and only when) they pass a <step>.
 resolve_role_available() {
-  local repo="$1" role="$2" chain engine dir reason skip_engine="" idx=0 disq=""
+  local repo="$1" role="$2" step="${3:-}"
+  local chain engine dir reason skip_engine="" idx=0 disq=""
+  local why crc
+
+  if [ -n "$step" ] && ! declare -F capability_routing_refusal >/dev/null 2>&1; then
+    echo "orchid: internal: resolve_role_available was asked about step '$step' without lib/capability.sh sourced" >&2
+    return 3
+  fi
 
   [ "$role" = plan_critic ] && skip_engine="$(resolve_role "$repo" orchestrator)"
   # An unbound custom role's exit 14 (its own specific "no binding for
@@ -385,6 +421,20 @@ resolve_role_available() {
     if ! reason="$(role_eligibility_reason "$role" "$dir")"; then
       disq="$disq$engine: $reason; "
       continue
+    fi
+
+    # Asked immediately after the role gate and before the ledger/capsuite
+    # ones, because both read the same manifest and neither changes: an entry
+    # disqualified here is disqualified for good, and reporting it as
+    # "rate-limited" (the answer that would have come out first had the order
+    # been the other way) is the mis-attribution INV-16 exists to end.
+    if [ -n "$step" ]; then
+      crc=0
+      why="$(capability_routing_refusal "$step" "$engine")" || crc=$?
+      if [ "$crc" -eq 1 ]; then
+        disq="$disq$engine: $why; "
+        continue
+      fi
     fi
 
     if ! ledger_available "$repo" "$engine"; then

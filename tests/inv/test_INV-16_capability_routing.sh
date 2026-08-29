@@ -1336,3 +1336,298 @@ assert_eq implementing "$(ndstatus NCH1)" \
 assert_eq 1 "$(ndrefusals NCH1)" \
   "INV-16: and no SECOND refusal was journaled — the one line above is the record of a hand-off that has since been acted on, not a refusal still firing"
 green_case 'the same driver pass, with only role.implementer rebound to an engine declaring workspace_write, shell and git, dispatched the task and journaled no refusal — so the hand-off above is about the chain and not about the walk'
+
+# ===========================================================================
+# 11c -- AN INCAPABLE PRIMARY MUST NOT SHADOW A CAPABLE PROVEN FALLBACK.
+#
+# Parts 4 and 11 both refuse a chain in which NOBODY can do the work. This is
+# the case in between, and until now it was refused too -- wrongly.
+# `resolve_role_available` answered "who may hold this ROLE": it walked the
+# chain, stopped at the first entry that was discovered, role-eligible,
+# ledger-available and (past the primary) capsuite-passed, and handed that
+# entry to the step gate. Where a role descriptor asks for LESS than the step's
+# work costs -- which is the custom role this whole file exists for, the one
+# whose descriptor its own publisher writes -- the walk stops at an entry that
+# cannot perform the work while an entry that CAN stands right behind it in the
+# same chain. The step gate then refuses permanently, and the fallback is never
+# reached by anything.
+#
+# That is a failover chain declining to fail over. A capability shortfall is as
+# permanent a reason to move to the next entry as a rate limit is a temporary
+# one, so selection is told which STEP it is picking for (lib/resolver.sh's
+# resolve_role_available takes the step; `orchid jobs prepare` passes the
+# operation) and an entry the table refuses is SKIPPED with its shortfall named
+# among the disqualifiers, exactly like every other one.
+#
+# The GREEN twin comes FIRST here, and it is the guard that keeps the skip from
+# meaning "pick anybody": the fallback is capable but has no capsuite record
+# yet, so the chain must still come up empty and still be the WAIT it always
+# was -- not a refusal, because one entry the table does not refuse means a
+# later pass can route the step, and not a dispatch, because a fallback
+# activates only once `orchid plugins test` has proved it for this role.
+# ===========================================================================
+mk_engine chainprimary "workspace_read,workspace_write,shell,git"
+mk_engine chainfallback "structured_text"
+ochain="$WORK/ochain"; mkdir -p "$ochain/.orchid/tasks" "$ochain/.orchid/reviews"
+cd "$ochain" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+export ORCHID_REPO="$ochain"
+OEPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$OEPOCH"
+"$ORCHID_BIN" task create TO "a chain whose primary cannot do the work" >/dev/null
+printf 'verify=true\nrole.runner=chainprimary,chainfallback\n' > "$ochain/orchid.config"
+
+# The premise, asserted rather than assumed, in both directions: the ROLE gate
+# admits the primary (so nothing but the step table can move past it), and the
+# step table REFUSES it (so there is something to fail over from).
+role_eligible runner "$WORK/eng/chainprimary" \
+  || fail "INV-16 fixture: the custom role must ADMIT the primary, or the skip below is the role gate doing its old job"
+orc=0; capability_routing_refusal review chainprimary >/dev/null 2>&1 || orc=$?
+assert_eq 1 "$orc" \
+  "INV-16 fixture: the step table must REFUSE the primary a review step, or there is nothing for selection to fail over from"
+
+if capsuite_passed chainfallback runner; then
+  fail "INV-16 fixture: the fallback must have NO capsuite record yet, or the wait this twin is about never happens"
+fi
+jobs_before="$(list_dir_files "$ochain/.orchid/runtime/jobs" | wc -l | tr -d ' ')"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TO runner review 2>&1 1>/dev/null)" || rc=$?
+assert_eq 14 "$rc" \
+  "INV-16: skipping an incapable primary does not promote an unproven fallback — the chain is still the wait one orchid plugins test clears"
+case "$err" in
+  *"refusing to route"*) fail "INV-16: one entry the table does not refuse must not be reported as a permanent capability refusal — the remedy here is a capsuite run, not a manifest audit" ;;
+esac
+assert_match "capsuite not passed" "$err" \
+  "INV-16: and the wait says which entry is unproven, so the operator is sent to the command that clears it"
+assert_eq "$jobs_before" "$(list_dir_files "$ochain/.orchid/runtime/jobs" | wc -l | tr -d ' ')" \
+  "INV-16: and mints nothing while it waits"
+green_case 'an incapable primary skipped in favour of a capable but UNPROVEN fallback left the chain at exit 14 with the capsuite remedy named, so operation-aware selection does not promote an entry the failover rules have not cleared'
+
+# ...and now the fallback is proved for this role, which is the only thing that
+# changes between the two halves.
+capsuite_run chainfallback runner >/dev/null \
+  || fail "INV-16 fixture: capsuite_run must pass the fallback for the custom role (static checks only — no dryrun operation maps to it)"
+rc=0; omf="$("$ORCHID_BIN" jobs prepare TO runner review)" || rc=$?
+assert_eq 0 "$rc" \
+  "INV-16: a chain holding a capable, capsuite-proven fallback must DISPATCH — the primary being unable to do the work is a reason to fail over, not a reason to refuse the chain"
+[ -f "$omf" ] || fail "INV-16: an admitted chain routing mints the job manifest it always did"
+assert_eq chainfallback "$(jq -r .engine "$omf")" \
+  "INV-16: and the job is bound to the FALLBACK — settling on the primary is what made the step gate refuse a chain that had somebody in it who could do the work"
+red_case 'a role chain whose primary is role-eligible but cannot perform the step failed over to the capable capsuite-proven entry behind it and minted the job there, instead of settling on the primary and refusing the whole chain at 19'
+
+# ===========================================================================
+# 11d -- ONE ANSWER, NOT TWO. The chain gate used to run only AFTER
+# `resolve_role_available` had already failed -- which meant that by the time
+# it could speak, resolution's own "no eligible engine available for role X"
+# was already on stderr. An operator then met a WAIT and a PERMANENT REFUSAL
+# about a single call and had to work out which of the two described their
+# repository. Only one ever does, and reading the wrong one costs exactly the
+# staleness windows this invariant exists to stop spending.
+#
+# It refuses only when EVERY entry is short, so a chain resolution could still
+# pick somebody out of is one it says nothing about -- which is why asking it
+# FIRST cannot refuse a dispatch that would have happened, and why the wait
+# line can be left to print exactly when the wait is real. The GREEN twin below
+# is that second half: the transient chain still gets its wait line, in full.
+# ===========================================================================
+printf 'verify=true\nrole.runner=chainprimary\n' > "$ochain/orchid.config"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TO runner review 2>&1 1>/dev/null)" || rc=$?
+assert_eq 19 "$rc" \
+  "INV-16 fixture: a chain whose only entry is short the atom must still be the permanent refusal, or this part has nothing to count the messages of"
+assert_match "refusing to route" "$err" "INV-16: the permanent refusal is emitted"
+case "$err" in
+  *"no eligible engine available for role"*)
+    fail "INV-16: a converted 14 must not ALSO carry the wait line it was converted from — an operator handed both has to guess which of two contradictory reports describes their repository" ;;
+esac
+red_case 'converting a permanent chain shortfall from the exit-14 wait to the exit-19 refusal emitted the refusal ALONE, instead of printing the wait line the caller must not act on beside it'
+
+# GREEN twin: the wait line is not suppressed generally -- it is printed
+# whenever the wait is what actually happened. Same verb, same repository, same
+# role, and an entry the table has no objection to.
+printf 'verify=true\nrole.runner=chainfallback\n' > "$ochain/orchid.config"
+ledger_mark "$ochain" chainfallback rate_limited 999999
+rc=0; err="$("$ORCHID_BIN" jobs prepare TO runner review 2>&1 1>/dev/null)" || rc=$?
+assert_eq 14 "$rc" "INV-16: a rate-limited but capable chain is still the wait it always was"
+assert_match "no eligible engine available for role runner" "$err" \
+  "INV-16: and the wait line is still printed in full — suppressing it generally would trade one silent dead end for another"
+case "$err" in
+  *"refusing to route"*) fail "INV-16: a ledger window must never be phrased as a capability refusal" ;;
+esac
+green_case 'the identical verb against a capable but rate-limited chain still printed the wait line from resolve_role_available and no refusal, so emitting only the refusal is a choice about which report is true rather than the wait line being suppressed'
+
+# ===========================================================================
+# 12 -- THE WAKE, END TO END, THROUGH THE SCHEDULED PUMP.
+#
+# Every part above reaches this invariant through `orchid jobs prepare`. The
+# ORCHESTRATE step does not: runners/orchid-tick builds its own request
+# document and never mints a job, and runners/orchid-pump decides whether to
+# exec it from a dry `resolve_role_available` probe. So for as long as the
+# table was consulted only at prepare, an orchestrator chain that could never
+# be woken produced precisely the failure INV-16 exists to end -- one line of
+# terminal output per staleness window ("no capable orchestrator available"),
+# forever, with nothing journaled, no human told, and the judgment boundary the
+# driver raised on that very pass left for an orchestrator that is never
+# coming.
+#
+# The fixture is a real pass of the real pump over a real repository: a task
+# parked at `arbitrating` over a request-changes review raises `review-conflict`,
+# which IS a boundary a woken orchestrator settles (`orchid task arbitrate`,
+# which the broker admits), so the pump genuinely reaches its pre-wake probe.
+# ===========================================================================
+# A runnable orchestrate stub, unlike mk_engine's `exit 1` -- the GREEN twin
+# below has to actually be woken, and "the pump got past its probe" is only
+# credible if an adapter really ran.
+mk_wake_engine() {
+  local name="$1" caps="$2" dir
+  dir="$WORK/eng/$name"
+  mkdir -p "$dir"
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=%s\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$name" "$caps" > "$dir/plugin.conf"
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'set -eu'
+    echo "MARKER=$(printf '%q' "$WORK/wake-marker-$name")"
+  } > "$dir/run"
+  cat >> "$dir/run" <<'WAKEEOF'
+touch "$MARKER"
+req="$1"; out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
+printf '{"contract":1,"job_id":"%s","task":"%s","operation":"orchestrate","status":"ok","actions":[],"summary":"inv16 wake stub"}' \
+  "$jid" "$task" > "$out"
+WAKEEOF
+  chmod +x "$dir/run"
+}
+mk_wake_engine wakeshort "structured_text"
+mk_wake_engine wakeshort2 "structured_text,workspace_write"
+mk_wake_engine wakefull "shell,git"
+
+prepo="$WORK/pumpwake"; mkdir -p "$prepo/.orchid/tasks" "$prepo/.orchid/reviews"
+cd "$prepo" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+printf -- '---\nrun_status: running\nrun_id: r-inv16-wake\n---\n# Roadmap\n' > "$prepo/.orchid/roadmap.md"
+printf 'role.implementer=withshell\nrole.reviewer=textonly\nrole.orchestrator=wakeshort,wakeshort2\n' \
+  > "$prepo/orchid.config"
+export ORCHID_REPO="$prepo"
+PEPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$PEPOCH"
+"$ORCHID_BIN" task create TPW "a contested review nobody can be woken for" >/dev/null
+PWCAND=7777777777777777777777777777777777777777
+fm_set "$prepo/.orchid/tasks/TPW.md" status arbitrating
+fm_set "$prepo/.orchid/tasks/TPW.md" candidate_sha "$PWCAND"
+jq -n --arg cand "$PWCAND" \
+  '{contract:1, job_id:"j-inv16-TPW", task:"TPW", operation:"review", status:"ok",
+    verdict:"request-changes", scope_complete:true, summary:"fixture review",
+    candidate_sha:$cand, findings:[]}' > "$prepo/.orchid/reviews/TPW-a1-reviewer.json"
+unset ORCHID_EPOCH
+"$ORCHID_BIN" trust unattended "$prepo" --reason "INV-16 pump fixture" >/dev/null \
+  || fail "INV-16 fixture: the pump refuses an unacknowledged repository, so the wake probe would never be reached"
+
+# stale_lease -- the pump reads lease age BEFORE it hands the pass to the
+# driver, and the driver refreshes the lease while it runs, so every pump pass
+# below has to be re-staled first.
+stale_lease() {
+  mkdir -p "$prepo/.orchid/runtime"
+  jq -n '{epoch:1, refreshed_at:"2000-01-01T00:00:00Z"}' > "$prepo/.orchid/runtime/lease.json"
+}
+pw_handoffs() {
+  grep -c "routed the 'orchestrate' step for role 'orchestrator'" \
+    "$prepo/.orchid/BLOCKERS.md" 2>/dev/null || true
+}
+
+stale_lease
+PRC=0; POUT="$("$REPO_ROOT/runners/orchid-pump" 2>&1)" || PRC=$?
+
+# The premise: the pump really did reach its pre-wake probe. Without a boundary
+# a woken orchestrator could settle, it exits earlier and this part would be
+# asserting about a code path it never entered.
+assert_eq review-conflict "$("$ORCHID_BIN" run boundary show 2>/dev/null | jq -r .kind)" \
+  "INV-16 fixture: the pass must end at a boundary an orchestrator WOULD be woken for, or the probe below is never reached (out: $POUT)"
+assert_eq 0 "$PRC" \
+  "INV-16: a hand-off recorded for a human is a normal poll outcome — the scheduled pump must not start failing over it (out: $POUT)"
+assert_match "INV-16" "$POUT" \
+  "INV-16: the pump names the routing refusal rather than reporting a chain nobody can be woken from as an ordinary poll result"
+assert_match "role.orchestrator" "$POUT" \
+  "INV-16: and names the key that binds that chain, which is the one thing an operator can act on"
+case "$POUT" in
+  *"no capable orchestrator available"*)
+    fail "INV-16: a chain short an atom the orchestrate step needs must not be reported as the come-back-later poll result — nothing reopens, so the next pass says the same thing and the boundary is never settled" ;;
+esac
+assert_eq 1 "$(pw_handoffs)" \
+  "INV-16: the refusal is recorded once, durably, where an operator reads it — a wake nobody can perform that leaves no record is the silent dead end this invariant is about"
+assert_match "routed the 'orchestrate' step for role 'orchestrator'" \
+  "$(cat "$prepo/.orchid/journal.md")" \
+  "INV-16: and journaled, so the run's own history says the wake was refused rather than showing a boundary that simply stopped being acted on"
+assert_eq review-conflict "$("$ORCHID_BIN" run boundary show 2>/dev/null | jq -r .kind)" \
+  "INV-16: and the driver's own boundary record is left exactly as it was — the pump raises the blocker without overwriting a record another writer owns"
+[ -e "$WORK/wake-marker-wakeshort" ] \
+  && fail "INV-16: no adapter may be spawned for a step its manifest does not cover"
+[ -e "$WORK/wake-marker-wakeshort2" ] \
+  && fail "INV-16: nor may the fallback be, for the same reason"
+red_case 'the real scheduled pump, meeting an orchestrator chain in which every entry is short an atom the orchestrate step needs, recorded one journaled operator hand-off naming role.orchestrator instead of printing its come-back-later poll line once per staleness window forever'
+
+# GREEN twin 1 -- ONCE PER DISTINCT FACT, NOT ONCE PER PASS. The condition
+# persists until a human acts and the walk re-reaches it every cycle, so a
+# blocker per pass would bury the run's history under one unchanging fact.
+stale_lease
+PRC=0; POUT="$("$REPO_ROOT/runners/orchid-pump" 2>&1)" || PRC=$?
+assert_eq 0 "$PRC" "INV-16: a repeated pass over the same refusal is still a no-op (out: $POUT)"
+assert_eq 1 "$(pw_handoffs)" \
+  "INV-16: and raises no SECOND blocker for a fact that has not changed"
+green_case 'a second pump pass over the same permanently-refused chain raised no second blocker, so the hand-off is recorded once per distinct fact rather than once per staleness window'
+
+# ...AND THE OTHER ENTRY POINT SAYS THE SAME THING. runners/orchid-tick is an
+# unattended entry in its own right (its own trust gate says so), so a
+# scheduler pointed straight at it must not get the wait either. It reports
+# through its EXIT CODE and its message and journals nothing: a direct tick is
+# one shot with a caller watching it, and the durable record for the scheduled
+# loop is the pump's, raised exactly once above. Two writers of one fact is how
+# a run's history ends up with the same line on every pass.
+handoffs_before_tick="$(pw_handoffs)"
+TRC=0; TOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TRC=$?
+assert_eq 19 "$TRC" \
+  "INV-16: the headless tick reports a chain nobody in it can orchestrate as the permanent refusal, not as the exit-14 wait a scheduler retries forever (out: $TOUT)"
+assert_match "routed the 'orchestrate' step for role 'orchestrator'" "$TOUT" \
+  "INV-16: and says so in the same words the pump records, so the two entry points cannot describe one fact differently"
+assert_eq "$handoffs_before_tick" "$(pw_handoffs)" \
+  "INV-16: and files no blocker of its own — the pump already recorded this fact, and a second writer would re-raise it on every pass"
+[ -e "$WORK/wake-marker-wakeshort" ] \
+  && fail "INV-16: the tick must refuse before it spawns, not after"
+green_case 'the headless tick, run directly against the same refused chain, exited 19 with the same sentence and filed no second record, so the classification belongs to both pre-wake entry points rather than to the pump alone'
+
+# GREEN twin 2 -- AND THE TRANSIENT CASE IS STILL TRANSIENT, which is the whole
+# distinction this part turns on. `wakefull` declares exactly what the
+# orchestrate step needs and is merely rate-limited; nothing about that is
+# permanent, the poll line is the correct report, and a hand-off here would
+# send an operator to audit a manifest that covers the work.
+printf 'role.implementer=withshell\nrole.reviewer=textonly\nrole.orchestrator=wakefull\n' \
+  > "$prepo/orchid.config"
+ledger_mark "$prepo" wakefull rate_limited 999999
+stale_lease
+PRC=0; POUT="$("$REPO_ROOT/runners/orchid-pump" 2>&1)" || PRC=$?
+assert_eq 0 "$PRC" "INV-16: an unavailable-but-capable orchestrator is still an ordinary poll outcome (out: $POUT)"
+assert_match "no capable orchestrator available" "$POUT" \
+  "INV-16: and it still gets the come-back-later line, because coming back later is exactly what clears a ledger window"
+case "$POUT" in
+  *"INV-16"*) fail "INV-16: a rate-limited engine that declares everything the step needs must never be handed to an operator as a capability refusal" ;;
+esac
+assert_eq 1 "$(pw_handoffs)" \
+  "INV-16: and raises no hand-off blocker at all — the count is the one the permanent case left behind"
+[ -e "$WORK/wake-marker-wakefull" ] \
+  && fail "INV-16: a rate-limited engine must not be spawned either"
+green_case 'the same pump against a chain whose only entry declares everything orchestrate needs and is merely rate-limited printed the ordinary poll line and raised no hand-off, so the refusal above is a capability decision rather than the pump reporting every unavailability as permanent'
+
+# GREEN twin 3 -- and the wake itself still happens. Only the ledger mark is
+# cleared: same repository, same boundary, same chain, an engine declaring
+# `shell` and `git`. If the probe above were refusing on anything but the
+# capability fact, this is the pass that would show it.
+ledger_mark "$prepo" wakefull ok
+ledger_available "$prepo" wakefull \
+  || fail "INV-16 fixture: the ledger window must be open again, or this twin proves only that a rate limit still holds"
+stale_lease
+PRC=0; POUT="$("$REPO_ROOT/runners/orchid-pump" 2>&1)" || PRC=$?
+[ -f "$WORK/wake-marker-wakefull" ] \
+  || fail "INV-16: the pump must exec the tick and wake a capable orchestrator — the probe gates the wake, it does not replace it (rc $PRC, out: $POUT)"
+assert_eq 1 "$(pw_handoffs)" \
+  "INV-16: and a successful wake raises no hand-off of its own"
+green_case 'the identical pump pass, with only the ledger mark cleared, woke the orchestrator adapter that declares shell and git — so the two refusals above are decisions about the chain rather than a pump that had stopped waking anything'

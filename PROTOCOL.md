@@ -2355,15 +2355,38 @@ one-pass driver could otherwise stop progressing in silence:
   move a pinned row.
   Where NO actor was named — the ordinary dispatch, which resolves the role's
   failover chain — the same question is asked of every entry in that chain,
-  and only after resolution has already failed. A chain that yields nobody
+  *before* resolution runs. A chain that yields nobody
   normally exits 14, and waiting is right when it emptied over a rate limit,
   an unproven fallback or a plugin not installed yet; it is wrong when every
   entry is short an atom the step needs, because no window reopens and the
   walk would meet that task every pass forever. So that case answers 19 too,
   and only that case: one entry the table does not refuse leaves the chain the
-  wait it was. This is the arm most shortfalls actually take — a built-in
+  wait it was — which is also why asking first can refuse no dispatch that
+  would have happened, and why the exit-19 refusal is emitted *alone* rather
+  than beside the exit-14 wait line the caller must not act on. This is the arm
+  most shortfalls actually take — a built-in
   role's `requires=` and its step's price are the same atoms, so the role gate
   refuses before any actor resolves.
+  Resolution itself is told which step it is picking for, so an entry that
+  cannot perform the work is failed over rather than settled on: a role-eligible
+  but incapable primary must not shadow a capable, capsuite-proven fallback
+  standing behind it in the same chain. A fallback still activates only once
+  `orchid plugins test` has proved it for the role — skipping an entry is not
+  promoting the next one past the failover rules.
+- **A wake nobody can perform is handed over, not polled.** The `orchestrate`
+  step reaches no `jobs prepare` at all: the tick builds its own request
+  document, and the pump decides whether to run it from a dry availability
+  probe that prints `no capable orchestrator available` and exits 0. That is
+  the right report for a rate limit or an unproven fallback and the wrong one
+  when every engine in `role.orchestrator`'s chain is short `shell` or `git` —
+  then it is one line per staleness window forever, with the judgment boundary
+  the driver just raised left for an orchestrator that is never coming. Both
+  runners classify the chain before the wake: the tick exits 19 instead of 14,
+  and the pump records ONE operator hand-off (`orchid notify` — journalled,
+  then `BLOCKERS.md`, deduped against that blocker so a hundred passes raise
+  one) and prints the refusal without the poll line. It does not overwrite the
+  boundary record; `orchid drive` owns that, and the record names the task
+  actually waiting.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
   Where `handoff_before_verify` is `required`, or where the engine that built
   the candidate cannot be routed its mechanical steps at all — in a running
