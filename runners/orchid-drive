@@ -911,6 +911,27 @@ drive_dispatch() {
         set_boundary worktree-conflict "$id" "unrecognized worktree plan '$action'"
         return 0 ;;
     esac
+    # base_sha is only ever STAMPED, never re-stamped: a rework re-dispatch
+    # keeps the base its candidate was actually built on, so `orchid merge`'s
+    # stale-base detection (and INV-07's forced re-verify) stays truthful.
+    #
+    # STAMPED HERE, IMMEDIATELY BELOW THE CHECKOUT AND ABOVE THE PREPARE STEP.
+    # `$integ_head` was read at the top of this dispatch and is the sha the
+    # `create` arm just made the task's branch at, so the stamp is only
+    # truthful while it is still the same pass -- and the prepare step below
+    # can end the pass. A `fail` there returns without dispatching, and until
+    # the operator repairs whatever broke, every later pass re-reads
+    # $integ_head; any other task that merges in the meantime moves it. Stamp
+    # afterwards and the repaired pass records THAT sha against a branch built
+    # on the older one, and it records it as current: `orchid merge` compares
+    # base_sha with the integration head to decide whether the candidate needs
+    # rebasing and re-verifying, so a candidate that really is behind is merged
+    # as though it were up to date, skipping the re-verify INV-07 requires.
+    # Nothing later can notice -- the two shas agree, which is exactly the
+    # state the check reads as "nothing to do".
+    if [ -z "$(fm_get "$tf" base_sha)" ]; then
+      "$ORCHID_BIN" task set "$id" base_sha "$integ_head"
+    fi
     # The checkout exists; now make it USABLE. A fresh worktree holds only
     # what is committed, so a project whose verification needs untracked
     # setup would hand this task's implementer a checkout its own verify
@@ -985,12 +1006,6 @@ drive_dispatch() {
       if [ -n "$wtmiss" ]; then
         drive_note "$id: NOTE — the new worktree does not carry gitignored state the integration checkout has, which git worktree add cannot reproduce (L003); set worktree_prepare to the command that provides it if the suite needs it: $(printf '%s' "$wtmiss" | tr '\n' ' ')"
       fi
-    fi
-    # base_sha is only ever STAMPED, never re-stamped: a rework re-dispatch
-    # keeps the base its candidate was actually built on, so `orchid merge`'s
-    # stale-base detection (and INV-07's forced re-verify) stays truthful.
-    if [ -z "$(fm_get "$tf" base_sha)" ]; then
-      "$ORCHID_BIN" task set "$id" base_sha "$integ_head"
     fi
   else
     # An outcome=report archetype produces no commits, so it needs no worktree

@@ -335,6 +335,28 @@ assert_match "worktree_prepare failed for the dispatch worktree" \
   "$("$ORCHID_BIN" journal show --task W9)" \
   "the counter's reason names the environment's failure, so it is not read as the candidate's"
 
+# AND THE BASE IT WAS BUILT ON IS ALREADY RECORDED. The prepare step runs
+# after `git worktree add`, so by the time it can fail, the task's branch
+# exists and it exists at ONE sha -- the integration head this pass read. A
+# `fail` returns without dispatching, so that pass is the last one in which
+# that sha is still knowable: base_sha has to be stamped above the prepare
+# step, not below it.
+#
+# RED before the fix: the stamp sat under the prepare step, this is empty, and
+# the two assertions after the repaired pass below record the consequence.
+assert_eq "$HEAD_SHA" "$(fm_get "$state_tasks/W9.md" base_sha)" \
+  "a dispatch whose prepare step failed still records the base its branch was created on"
+
+# Now move the integration branch, exactly as any OTHER task merging between
+# the two passes would. This is what makes the stamp's timing observable
+# rather than a matter of taste: a repaired pass re-reads the integration head
+# and there is nothing left in the task to say the branch predates it.
+MOVED_SHA="$(git -C "$REPO" commit-tree "$HEAD_SHA^{tree}" -p "$HEAD_SHA" \
+  -m 'another task merged between the two passes')"
+[ "$MOVED_SHA" != "$HEAD_SHA" ] \
+  || fail "the fixture must actually move the integration head, or the assertion below is vacuous"
+git -C "$REPO" branch -f orchid/integration "$MOVED_SHA"
+
 # With the prepare step fixed, the same dispatch goes through, and the
 # already-created worktree is reused rather than recreated.
 printf 'worktree_prepare=%s %s\n' "$WORK/prep.sh" "$PREP_COUNT" >> "$REPO/orchid.config"
@@ -348,6 +370,30 @@ assert_eq "$REPO_PHYS" "$(grep '^repo_root=' "$WORKP/repo-W9/prepared.txt" 2>/de
 wt_count3="$(git -C "$REPO" worktree list --porcelain | grep -c '^branch refs/heads/task/W9$' || true)"
 [ -n "$wt_count3" ] || wt_count3=0
 assert_eq 1 "$wt_count3" "the refused pass left exactly one worktree for the branch, reused by the next"
+
+# The base stays the one the branch was actually built on. Stamped below the
+# prepare step instead, this pass would record $MOVED_SHA -- a sha the
+# candidate does not descend from, written into the field `orchid merge` reads
+# to decide whether the candidate is behind integration. The two would then
+# agree, so the merge would take the candidate as current and skip both the
+# rebase and the re-verify INV-07 requires for a moved base.
+assert_eq "$HEAD_SHA" "$(fm_get "$state_tasks/W9.md" base_sha)" \
+  "the repaired pass does not re-stamp base_sha to an integration head the candidate never saw"
+# Stated as descent rather than as an equal tip, so it keeps meaning the same
+# thing once the task's branch carries commits: what base_sha claims is that
+# the candidate was built ON that base. The moved head is checked in the other
+# direction in the same breath -- it is NOT an ancestor, which is precisely
+# why recording it would have been a false claim rather than a stale one.
+if ! git -C "$REPO" merge-base --is-ancestor "$HEAD_SHA" task/W9; then
+  fail "the recorded base_sha must be a base the task's branch actually descends from"
+fi
+if git -C "$REPO" merge-base --is-ancestor "$MOVED_SHA" task/W9; then
+  fail "the fixture's moved integration head must NOT be in the task branch's history"
+fi
+
+# Put the integration branch back, so the parts below dispatch from the same
+# head the ones above did.
+git -C "$REPO" branch -f orchid/integration "$HEAD_SHA"
 
 # ===========================================================================
 # 13 -- the prepare command MUST NOT INHERIT THE DRIVER'S STDIN.
