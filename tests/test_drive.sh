@@ -8536,13 +8536,13 @@ assert_eq "$late_sha" "$(live_field candidate_sha)" \
 green_case "once the job has genuinely exited the same envelope advances the task, on its LAST commit"
 
 # ===========================================================================
-# Part AB (T031) -- A DEFERRED ENVELOPE IS NOT A DEAD JOB.
+# Part AC (T031) -- A DEFERRED ENVELOPE IS NOT A DEAD JOB.
 #
 # Step 2 of the tick collects "escalation candidates" off the manifests that
 # SURVIVED reconcile: a manifest whose pid was really launched and is no
 # longer alive used to mean exactly one thing -- "a job that died without
 # leaving an acceptable envelope" -- because reconcile deleted the manifest
-# of every job that did leave one. Part AA's deferral breaks that premise.
+# of every job that did leave one. Part AB's deferral breaks that premise.
 # Reconcile now leaves a live job's envelope in the spool AND its manifest in
 # jobs/, so a job that files its report and is then killed by `jobs check`
 # for stalling reaches the sweep looking exactly like a job that died with
@@ -8582,7 +8582,7 @@ git add stalled.txt
 git -c user.email=stub@example.invalid -c user.name="stub" commit -q -m "the candidate this job really produced"
 
 # Filed through a rename within the spool directory itself (same filesystem,
-# so the rename is atomic), exactly as Part AA's stub does: a reconcile racing
+# so the rename is atomic), exactly as Part AB's stub does: a reconcile racing
 # this write must never see a half-written envelope.
 jq -n --arg jid "$jid" --arg task "$task" \
   '{contract:1, job_id:$jid, task:$task, operation:"implement", status:"ok",
