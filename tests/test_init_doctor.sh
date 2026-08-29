@@ -47,7 +47,7 @@ trusted_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
   || fail "doctor remains healthy after unattended acknowledgement"
 assert_match "^ok: unattended trust: allowed" "$trusted_doctor" \
   "doctor reports the allowed gate with machine-local provenance"
-echo "$trusted_doctor" | grep -q "scheduled/service invocation" \
+grep -q "scheduled/service invocation" <<<"$trusted_doctor" \
   && fail "doctor must not report scheduled refusals when none were recorded"
 
 # A scheduled pump/tick has nowhere to print: the cron line and the launchd
@@ -178,7 +178,7 @@ fi
 out_gf="$(ORCHID_ENGINES_DIR="$WORK/eng" ORCHID_ROLE_IMPLEMENTER=fake "$ORCHID_BIN" doctor --greenfield)" || fail "doctor --greenfield passes on an already-initialized repo"
 assert_match "greenfield: verify command deferred to scaffold task" "$out_gf" \
   "doctor --greenfield: verify check skipped with the greenfield note"
-echo "$out_gf" | grep -q "FAIL: verify command" && fail "doctor --greenfield must never FAIL the verify command check"
+grep -q "FAIL: verify command" <<<"$out_gf" && fail "doctor --greenfield must never FAIL the verify command check"
 
 # doctor --greenfield rejects an unknown flag.
 rc=0; ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor --bogus >/dev/null 2>&1 || rc=$?
@@ -266,7 +266,7 @@ assert_match "FAIL: split-brain checkout: work from the integration branch or a 
 
 # healthy fixture (the main $WORK repo, already initialized with a roadmap on
 # orchid/integration) must be unaffected by the new check.
-echo "$out1" | grep -q "FAIL: split-brain" && fail "doctor must not flag split-brain on a healthy post-init repo"
+grep -q "FAIL: split-brain" <<<"$out1" && fail "doctor must not flag split-brain on a healthy post-init repo"
 assert_match "ok: no split-brain checkout state" "$out1" "doctor's split-brain check passes on a healthy post-init repo"
 
 # ---------------------------------------------------------------------------
@@ -291,7 +291,15 @@ healthy_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || tru
 assert_match "ok: no stale integration checkout state" "$healthy_doctor_out" \
   "doctor: a healthy integration-branch worktree is unaffected"
 healthy_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
-echo "$healthy_status_out" | grep -q "integration checkout is stale" \
+# T029: a HERESTRING, never `echo | grep -q` (the trap helpers.sh documents for
+# assert_match, and this file already spells out at its own line 36). It is
+# load-bearing HERE in a way it was not before: this is the only arm proving
+# the stale warning is CONDITIONAL, and the text it looks for just grew from
+# one line to four (orchid_stale_checkout_remedy). A piped `grep -q` exits at
+# its first match and SIGPIPEs the `echo`, which pipefail promotes to a nonzero
+# pipeline status -- so the `fail` is skipped exactly when the pattern IS
+# present, i.e. exactly when a regression made `status` warn unconditionally.
+grep -q "integration checkout is stale" <<<"$healthy_status_out" \
   && fail "status must not warn stale on a healthy integration-branch worktree"
 
 # Advance the ref from OUTSIDE $stale_wt: a second, DETACHED worktree of the
