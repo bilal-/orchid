@@ -1103,7 +1103,7 @@ BT_SITES="$(grep -Ec '^[[:space:]]*drive_block_boundary \"\$' "$DRIVE" || true)"
 assert_eq 0 "$(grep -c 'set_boundary blocked-task' "$DRIVE" || true)" \
   "no site may bypass the shared cause-and-remedy composer with a shorter blocked-task reason"
 assert_match 'orchid task unblock %s, orchid task retry %s \[--attempts N\], or orchid task reverify %s' \
-  "$(sed -n '/^drive_blocked_reason()/,/^}/p' "$ROOT/lib/drive.sh")" \
+  "$(sed -n '/^drive_blocked_reason()/,/^}/p' "$ORCHID_ROOT/lib/drive.sh")" \
   "the shared blocked boundary composer names the WHOLE remedy list"
 
 # ...AND THE STOP THAT LOST THE RANKING STILL REACHES A HUMAN (T009). Both
