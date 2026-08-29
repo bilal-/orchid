@@ -51,9 +51,11 @@
 #     a decision about ONE plan and must not become a permanent silencing --
 #     an item deferred last run comes back this run, still needing a task or
 #     a fresh reason; and -- because r-001 predates the `ledger` kind and
-#     wrote its ledger candidates as prose inside `intervention`/
-#     `arbitration` entries -- an entry whose text contains "ledger
-#     candidate" or "ledger item". That prose fallback is not decoration: it
+#     wrote its ledger candidates as prose inside `intervention` and
+#     `arbitration` entries -- an entry that names ITSELF a carried finding
+#     in prose, in any of the spellings r-001 actually used (see
+#     ledgerprose, which measures that list against r-001's own journal
+#     rather than guessing it). That prose fallback is not decoration: it
 #     is the only reason this check catches the exact miss that motivated
 #     it. Ids are `<run-id>#<n>`, where n is the entry's ordinal in that
 #     archived journal (immutable, so the id is stable, and an operator can
@@ -374,6 +376,65 @@ plancheck_ledger_items() {
       }
       return best
     }
+    # ledgerprose(low) -- does this entry name ITSELF a carried finding, in an
+    # archived journal written before the `ledger` entry kind existed? A
+    # closed list of spellings; never the bare word `ledger`; and the list is
+    # measured against the real journal of r-001 rather than imagined, because
+    # both halves of that -- what it must catch and what it must not -- are
+    # things that journal already decided.
+    #
+    # NO APOSTROPHE MAY APPEAR ANYWHERE BELOW, in a comment or in a string.
+    # This whole awk program is one single-quoted shell word, so one
+    # possessive closes it and bash parses the remaining awk source as shell.
+    # That is not a hypothetical: it happened here, in this function block,
+    # and produced 113 failures whose every message pointed somewhere else.
+    #
+    # WHY NOT THE BARE WORD. r-001 uses "ledger" in two unrelated senses. One
+    # is this one. The other is the ENGINE HEALTH ledger: "remains
+    # ledger-disqualified after three exhausted-credit failures", "one-hour
+    # ledger backoff has elapsed", "--explain still reports a populated ledger
+    # when jq is reachable", "the ledger conflates them". A dozen operational
+    # entries carry that sense and record no finding at all, so matching the
+    # word alone would open every `plan apply` with a dozen items no task can
+    # cover and no operator can act on -- and a gate that must be cleared by
+    # rote is a gate that stops being read, which is the L016 shape this file
+    # exists to close, not to reproduce.
+    #
+    # WHY NOT THE TWO SPELLINGS THIS SHIPPED WITH EITHER. "ledger item" and
+    # "ledger candidate" are the two tidy noun compounds, and against the
+    # journal of r-001 they miss six entries -- carrying nine findings between
+    # them -- in which the word is instead the REGISTER something is put into:
+    #
+    #   "DELIVERY FINDING, worth the ledger: notify.plugin=openclaw FAILED
+    #     closed ... Both surfaces deserve a doctor check that the configured
+    #     notify plugin can actually reach its transport"
+    #   "GENERAL NOTE, worth the ledger: a lint gate whose findings the
+    #     implementer cannot see is a gate the implementer cannot satisfy"
+    #   "OPERATOR-EXPERIENCE NOTE for the ledger: the refusal message ... does
+    #     not say whether that owner is alive or dead"
+    #   "Note the perverse dynamic for the ledger: each rework round grows the
+    #     diff, so ... independence decays exactly when scrutiny is needed most"
+    #   "ADDITIONS to the deferred ledger beyond round 4: (5) ... (6) ...
+    #     (7) ... (8) ..."   <- four findings in the one entry
+    #   "the remaining medium is a design question carried to the ledger"
+    #
+    # Those are not marginal entries, and the fifth is the whole failure in
+    # miniature: four separately-reviewed defects, deliberately written down
+    # as carried, invisible to the check built to carry them. So the SENSE is
+    # matched rather than the compound -- a preposition, then "the ledger" --
+    # plus the "deferred ledger" the fifth uses. Six of the ten spellings
+    # below are attested in that journal; the rest are near neighbours of the
+    # same construction, admitted because this check is built to fail toward
+    # UNCOVERED, and because an over-broad spelling costs one `orchid plan
+    # defer` while a missing one costs what r-002 already paid.
+    function ledgerprose(low,   i, n, phr) {
+      # `;` as the separator: the third argument to split is an ERE, and `;`
+      # is not a metacharacter in one (the same portability reason statedcount
+      # above gives for using the string form at all).
+      n = split("ledger item;ledger candidate;deferred ledger;to the ledger;for the ledger;worth the ledger;in the ledger;into the ledger;on the ledger;onto the ledger", phr, ";")
+      for (i = 1; i <= n; i++) if (index(low, phr[i]) > 0) return 1
+      return 0
+    }
     # markers(text, k) -- how many times the literal marker `(k) ` occurs
     # anywhere in text. `text` is a scalar parameter, so consuming it here is
     # a copy and the string belonging to the caller is untouched.
@@ -446,9 +507,7 @@ plancheck_ledger_items() {
       split(hdr, ha, " ")
       kind = ha[4]
       low = tolower(hdr " " body)
-      if (kind != "ledger" && kind != "plan_deferral" &&
-          index(low, "ledger candidate") == 0 &&
-          index(low, "ledger item") == 0) return
+      if (kind != "ledger" && kind != "plan_deferral" && !ledgerprose(low)) return
       blow = tolower(body)
       ns = decompose(body)
       sc = statedcount(blow)
@@ -466,7 +525,12 @@ plancheck_ledger_items() {
       # marker has to be a PLURAL spelling: "ledger item" (singular) is the
       # ordinary way to record ONE carried finding and must stay
       # anchor-matchable, since the `started_at` miss that motivated this
-      # whole file is written exactly that way.
+      # whole file is written exactly that way. The prepositional spellings
+      # ledgerprose also admits are number-neutral -- "for the ledger" says
+      # nothing about how many findings follow it -- so they add no plural
+      # marker here on purpose, and an entry admitted by one is split, held
+      # whole, or held undecomposable by the enumeration and the stated count
+      # alone, exactly as an entry of the `ledger` KIND is.
       if (ns < 0 || sc >= 2 || index(blow, "ledger items") > 0 ||
           index(blow, "ledger candidates") > 0) {
         printf "%s#%d\tledger\t%s\tundecomposed\t%s\n", rid, idx, trunc(first), t

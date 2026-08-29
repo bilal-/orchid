@@ -553,16 +553,30 @@ sequence in
    carried-forward items no task in the current draft appears to consider,
    and exits 3 while any remains unconsidered. Two kinds count: **ledger
    items** — entries in that archived journal recorded with the `ledger`
-   kind, or naming themselves a "ledger candidate"/"ledger item" in prose,
-   which is how every pre-`ledger`-kind run wrote them — and **active
-   lessons** carried across the rollover. A lesson written during THIS
-   run's own planning is neither: nothing is carried forward out of the run
-   you are still scoping, so it is skipped. One dated at the rollover
-   boundary itself is included, because both timestamps are
-   second-resolution and a tie resolves toward asking the question. Run it
-   here, inside the critique loop, where the plan is still cheap to change;
-   step 3 runs it again and REFUSES on the same condition, so it is not a
-   report anyone can skip.
+   kind, or naming themselves a carried finding in prose, which is how every
+   pre-`ledger`-kind run wrote them — and **active lessons** carried across
+   the rollover. A lesson written during THIS run's own planning is neither:
+   nothing is carried forward out of the run you are still scoping, so it is
+   skipped. One dated at the rollover boundary itself is included, because
+   both timestamps are second-resolution and a tie resolves toward asking
+   the question. Run it here, inside the critique loop, where the plan is
+   still cheap to change; step 3 runs it again and REFUSES on the same
+   condition, so it is not a report anyone can skip.
+
+   *Which prose spellings count, and why it is a list rather than the word.*
+   The pre-`ledger`-kind spellings recognized are the noun compounds
+   `ledger item` and `ledger candidate`, the phrase `deferred ledger`, and
+   `the ledger` after a preposition — `for the ledger`, `worth the ledger`,
+   `to the ledger`, `in`/`into`/`on`/`onto the ledger`. The bare word is
+   deliberately NOT one of them, because a journal uses "ledger" for the
+   ENGINE HEALTH ledger too ("remains ledger-disqualified after three
+   exhausted-credit failures", "the one-hour ledger backoff has elapsed"),
+   and those entries record no finding at all: matching the word would open
+   every `plan apply` with a dozen items nobody can cover or act on, and a
+   refusal cleared by rote is a refusal that has stopped being read. If you
+   are recording a finding you knowingly are not closing, the reliable thing
+   to write is `orchid journal add --kind ledger` — the prose list exists for
+   journals written before that kind did, not as the supported way to say it.
 
    **The unit is the FINDING, not the journal entry.** A single arbitration
    entry routinely records several unrelated defects — "carried as ledger

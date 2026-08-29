@@ -44,6 +44,11 @@
 #            findings is closed by nothing but an explicit decision (5c, 5d),
 #            and neither the shared preamble (5a2) nor the undivided entry id
 #            (5e) can absolve the findings underneath.
+#   7b       a false pass through VOCABULARY, in both directions at once: the
+#            prose fallback has to recognize every spelling r-001 wrote its
+#            carried findings in (7a), and must NOT recognize the same word in
+#            its unrelated engine-health sense (7b), because a list a dozen
+#            unactionable items long is a refusal cleared without reading.
 #
 # RED (before libexec/orchid-plan grew the check): every crosscheck
 # invocation exits 2 on an unknown subverb, and every `plan apply` here
@@ -1094,3 +1099,174 @@ assert_eq 0 "$rc" "and the pass comes back with the record, unchanged by having 
 apply_out="$("$ORCHID_BIN" plan apply --reason "r-002 plan over a readable record" 2>&1)"
 assert_match "^applied: " "$apply_out" "plan apply commits once the record can be read and every item is considered"
 assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and takes the run to running"
+
+# ===========================================================================
+# 7 -- THE PROSE VOCABULARY IS A SENSE, NOT A COMPOUND, and getting that
+# wrong is silent in both directions.
+#
+# Every section above rests on the prose fallback: a run that predates the
+# `ledger` entry kind wrote its carried findings as ordinary prose, and if
+# the fallback does not recognize the spelling the entry was written in, the
+# finding leaves planning unconsidered with nothing printed about it. That is
+# r-002's original miss exactly, and the shipped fallback had it. It matched
+# two tidy noun compounds, "ledger item" and "ledger candidate", against a
+# journal in which the word is far more often the REGISTER something is put
+# INTO -- and it missed six entries of r-001's own journal, carrying nine
+# findings between them:
+#
+#   "DELIVERY FINDING, worth the ledger: ... Both surfaces deserve a doctor
+#     check that the configured notify plugin can reach its transport"
+#   "GENERAL NOTE, worth the ledger: a lint gate whose findings the
+#     implementer cannot see is a gate the implementer cannot satisfy"
+#   "OPERATOR-EXPERIENCE NOTE for the ledger: the refusal message ... does
+#     not say whether that owner is alive or dead"
+#   "Note the perverse dynamic for the ledger: each rework round grows the
+#     diff ... independence decays exactly when scrutiny is needed most"
+#   "ADDITIONS to the deferred ledger beyond round 4: (5) ... (8) ..."
+#   "the remaining medium is a design question carried to the ledger"
+#
+# The fifth is the whole failure in miniature: four separately-reviewed
+# defects, deliberately written down as carried, invisible to the check built
+# to carry them.
+#
+# 7b is the other direction and carries equal weight, because the obvious fix
+# -- match the bare word -- is worse than the bug. r-001 uses "ledger" for
+# the ENGINE HEALTH ledger in about a dozen operational entries that record
+# no finding at all ("remains ledger-disqualified after three exhausted-credit
+# failures"). Matching the word would open every `plan apply` with a dozen
+# items no task can cover and no operator can act on, and a refusal cleared
+# by rote is a refusal that has stopped being read -- the L016 shape this
+# whole feature exists to close.
+#
+# RED (with the two compounds alone) is as bad as this gets: not one of the
+# four entries below uses either compound, so the check finds NO items, exits
+# 0, and prints "previous run r-001 recorded no ledger items ... nothing to
+# cross-check (stated, not skipped)" over four findings that are sitting in
+# the archived journal it just read. A green line asserting the question was
+# asked, printed across the answer. RED (with the bare word instead): 7a
+# reports 6 items and both 7b anti-assertions fire.
+# ===========================================================================
+new_repo e
+echo "# Requirements" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+"$ORCHID_BIN" task create T001 "r-001 task" >/dev/null
+"$ORCHID_BIN" plan apply --reason "r-001 plan" >/dev/null
+
+# The three single-finding spellings, each in the ordinary entry kind r-001
+# actually used for them, and each with its anchor early enough in the entry
+# to survive the report's 120-character summary.
+"$ORCHID_BIN" journal add --kind intervention \
+  "OPERATOR-EXPERIENCE NOTE for the ledger: lock_break_wait_report names neither the age of the lock nor the verb that recovers it, so a merge outrunning a supervising timeout reads as an unexplained refusal" >/dev/null
+"$ORCHID_BIN" journal add --kind intervention \
+  "GENERAL NOTE, worth the ledger: shellcheck_finding_relay must carry file, line and rule into every rework brief, because a gate whose findings the implementer cannot see cannot be satisfied except by luck" >/dev/null
+"$ORCHID_BIN" journal add --kind arbitration \
+  "merge note: the remaining medium is a design question carried to the ledger, and qualify_trust_ack is where the decision will land" >/dev/null
+# The four-finding continuation entry, transcribed in shape from r-001's own
+# delta re-review. Two things about it are load-bearing: it is admitted ONLY
+# by "deferred ledger", and its enumeration starts at (5), so `decompose`
+# finds no `(1) ` and reports no enumeration at all. What holds it together
+# is the count it states -- five findings -- which makes it UNDECOMPOSED
+# rather than one coverable blob whose four defects any single anchor closes.
+"$ORCHID_BIN" journal add --kind intervention \
+  "delta re-review: both slots request-changes, five findings each. ADDITIONS to the deferred ledger beyond round 4: (5) surface_admits_unknown normalizes an unknown label to soft and then treats soft as admitting every verb; (6) boundary_priority_rank traded arbitrable starvation for blocked-task starvation; (7) hook_binding_relaunch never got the carve-out its reviewer sibling did; (8) worktree_create_existing does not handle the branch-already-exists case" >/dev/null
+# THE ANTI-FIXTURE: two entries using the ENGINE HEALTH sense of the same
+# word. Neither records a carried finding, and each carries a distinctive
+# snake_case anchor so that admitting it would be visible in the report
+# rather than merely raising a count.
+"$ORCHID_BIN" journal add --kind intervention \
+  "operational fallback: preferred arbiter claude remains ledger-disqualified after three exhausted-credit failures; invoking the configured fallback with engine_ledger_backoff unchanged for this tick only" >/dev/null
+"$ORCHID_BIN" journal add --kind intervention \
+  "status --explain still reports a populated ledger when jq is reachable, so explain_ledger_probe cannot tell an empty engine ledger from an unreadable one" >/dev/null
+
+roll_over "open the second run"
+assert_eq "r-002" "$(fm_get .orchid/roadmap.md run_id)" "sanity: the vocabulary fixture rolled over"
+echo "# Requirements v2" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+
+# The witness for 7b. An anti-assertion on text the fixture never wrote would
+# pass for the wrong reason forever, so prove the engine-sense entries really
+# are in the record the check reads before proving they are not carried.
+grep -qF "engine_ledger_backoff" .orchid/runs/r-001/journal.md \
+  || fail "fixture assumption broken: the engine-ledger entry is not in the archived journal, so 7b would prove nothing"
+grep -qF "explain_ledger_probe" .orchid/runs/r-001/journal.md \
+  || fail "fixture assumption broken: the second engine-ledger entry is not in the archived journal either"
+
+# ---------------------------------------------------------------------------
+# 7a -- EVERY SPELLING r-001 USED IS CARRIED. Four entries, four items.
+# ---------------------------------------------------------------------------
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "crosscheck exits 3 while the prose-spelled findings are unconsidered"
+assert_match "left 4 carried-forward item" "$out" \
+  "four entries name themselves carried findings in prose, and all four are items"
+assert_match "UNCOVERED \[ledger\] r-001#[0-9]+ .*lock_break_wait_report" "$out" \
+  "'for the ledger' is a carried finding — the shipped fallback lost this entry entirely"
+assert_match "UNCOVERED \[ledger\] r-001#[0-9]+ .*shellcheck_finding_relay" "$out" \
+  "...and so is 'worth the ledger'"
+assert_match "UNCOVERED \[ledger\] r-001#[0-9]+ .*qualify_trust_ack" "$out" \
+  "...and so is 'carried to the ledger'"
+assert_match "UNCOVERED \[ledger\] r-001#[0-9]+ .*ADDITIONS to the deferred ledger" "$out" \
+  "...and so is 'the deferred ledger', which is the entry carrying four separate defects"
+
+# ---------------------------------------------------------------------------
+# 7b -- THE BARE WORD IS NOT THE SENSE. Neither engine-health entry records a
+# finding, and neither may become an item. This is the assertion that stops
+# the fix for 7a from being "grep for ledger" -- which would carry a dozen of
+# r-001's operational entries into every plan and teach operators to clear
+# the refusal without reading it.
+# ---------------------------------------------------------------------------
+grep -q "engine_ledger_backoff" <<<"$out" \
+  && fail "an engine-health ledger entry records no carried finding and must never become a carried-forward item"
+grep -q "explain_ledger_probe" <<<"$out" \
+  && fail "...nor the second one: matching the bare word would put a dozen of r-001's operational entries on the list"
+
+# ---------------------------------------------------------------------------
+# 7c -- THE CONTINUATION ENUMERATION. Its markers run (5) to (8), so the
+# ascending scan from (1) finds no enumeration at all and would otherwise
+# hold the entry whole and matchable -- one item whose text is the union of
+# four defects, closed by whichever of them a task happened to name. The
+# count it states is what makes it UNDECOMPOSED instead, and undecomposed is
+# the answer that cannot be given by accident.
+# ---------------------------------------------------------------------------
+add_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep "  UNCOVERED \[ledger\] .*ADDITIONS to the deferred ledger" <<<"$out")")"
+[ -n "$add_id" ] || fail "could not read the continuation entry's id back out of the report"
+grep -q "$add_id\.[0-9]" <<<"$out" \
+  && fail "an enumeration that starts at (5) is not an enumeration this scan can trust, and must not be split"
+
+"$ORCHID_BIN" task create T040 "make the orchestrate surface refuse an unknown label" >/dev/null
+"$ORCHID_BIN" task set T040 acceptance_criteria \
+  "surface_admits_unknown must not treat an unknown surface label as admitting every verb" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "a task naming one of the four defects does not clear the plan"
+grep -q "covered   \[ledger\] $add_id" <<<"$out" \
+  && fail "THE POINT: naming one defect of an unsplittable entry must not close the other three under a green line"
+assert_match "UNCOVERED \[ledger\] $add_id" "$out" \
+  "...the entry stays open, and only an explicit decision closes it"
+assert_match "records SEVERAL findings" "$out" "...with the report saying why no task text can"
+
+# ---------------------------------------------------------------------------
+# 7d -- AND THE NEW SPELLINGS BEHAVE LIKE ANY OTHER ITEM once they are on the
+# list: coverable by an anchor, closable by a deferral, and the plan commits
+# only when nothing is left unconsidered.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T041 "say what a held lock costs before it is asked for" >/dev/null
+"$ORCHID_BIN" task set T041 acceptance_criteria \
+  "lock_break_wait_report must name whether the owner is alive, how old the lock is, and the verb that recovers it" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "covering one prose item leaves the rest refusing the plan"
+assert_match "covered   \[ledger\] r-001#[0-9]+ .*\(task T041 via lock_break_wait_report\)" "$out" \
+  "a 'for the ledger' item is covered by a task naming its anchor, and the anchor is named back"
+
+for term in shellcheck_finding_relay qualify_trust_ack; do
+  id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep "  UNCOVERED \[ledger\] .*$term" <<<"$out")")"
+  [ -n "$id" ] || fail "could not read back the id of the item anchored on $term"
+  "$ORCHID_BIN" plan defer "$id" --reason "read and postponed to the next run, deliberately not this plan" >/dev/null \
+    || fail "a prose-spelled item must be deferrable by its own id like any other"
+done
+"$ORCHID_BIN" plan defer "$add_id" --reason "T040 takes the surface label; the other three were read and postponed" >/dev/null \
+  || fail "the continuation entry is closed by an explicit decision"
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 0 "$rc" "crosscheck passes once every prose-spelled item is covered or deferred"
+assert_match "all 4 carried-forward item\(s\) considered" "$out" "...counting the entries the old vocabulary could not see"
+apply_out="$("$ORCHID_BIN" plan apply --reason "r-002 plan over the prose ledger" 2>&1)"
+assert_match "^applied: " "$apply_out" "plan apply commits once the prose-spelled findings are considered"
