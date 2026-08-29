@@ -355,8 +355,13 @@ drive_boundary_wakes_orchestrator review-evidence arbitrating brokered \
 #
 # So the rule now lives in lib/review.sh next to the printf that decides the
 # shape, and the first assertions below are anchored on `review_routing`'s
-# ACTUAL output rather than on a literal row. A fifth column fails here, on
+# ACTUAL output rather than on a literal row. An unknown column fails here, on
 # the emitter's own bytes, instead of silently in production.
+#
+# The grammar admits TWO widths, and both are asserted: four columns for a live
+# routing table, five for a PINNED row, whose last column is the qualified
+# engine id frozen at the write (Part L). That is the whole of the widening --
+# a sixth column is still refused.
 # ===========================================================================
 while IFS= read -r row; do
   [ -n "$row" ] || continue
@@ -370,11 +375,13 @@ while IFS= read -r row; do
 done <<< "$outE"
 
 review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline')" \
-  || fail "the canonical four-column row is a dispatchable slot"
+  || fail "the canonical four-column row -- a LIVE routing table, which has no key to freeze -- is a dispatchable slot"
+review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline\torchid/agy')" \
+  || fail "and so is a PINNED five-column row: the driver dispatches off exactly what --pin prints"
 review_plan_row_valid "$(printf '1\tagy\tengine-independent')" \
   && fail "a three-column row is NOT dispatchable -- depth is never defaulted in at the reading end"
-review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline\tsixth')" \
-  && fail "a fifth column is refused rather than ignored: a reader must not dispatch a grammar it does not know"
+review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline\torchid/agy\tseventh')" \
+  && fail "a sixth column is refused rather than ignored: a reader must not dispatch a grammar it does not know"
 review_plan_row_valid "$(printf '1\tagy\tengine-independent\tdeep')" \
   && fail "an unrecognized depth label is refused"
 review_plan_row_valid "$(printf 'slot-one\tagy\tengine-independent\tinline')" \
@@ -482,6 +489,10 @@ grep -Fq 'accept labeled session independence rather than withhold a slot' <<< "
 # which slot a review COVERS. Both directions are asserted below, because only
 # the pair distinguishes "reads the pin" from "reads nothing".
 # ===========================================================================
+# Deliberately the LEGACY pin shape: slots with a depth but no frozen
+# attribution key, so every case in this Part exercises the live-resolution
+# fallback a plan pinned before that column reads through. Part L is the
+# current shape, and the difference between them is the whole of its RED case.
 mk_pin() {  # <id> <slot1-engine> <slot1-depth> <slot2-engine> <slot2-depth>
   jq -n --arg cand "$PCAND" --arg e1 "$2" --arg d1 "$3" --arg e2 "$4" --arg d2 "$5" \
     '{contract:1, attempt:1, candidate_sha:$cand, pinned_at:"2026-02-01T00:00:00Z",
@@ -540,12 +551,105 @@ assert_eq 2 "$(review_plan_unsatisfied "$POLICY" K03 "$(review_plan "$POLICY" K0
   "...and the SAME matching still reports slot 2 unfilled: depth credit and slot credit never disagree about one envelope"
 
 # --- Malformed pin rows are refused, not parsed loosely. `review_plan_pinned`
-# --- can only emit four-column rows, so this is the library's own contract
+# --- can only emit five-column rows, so this is the library's own contract
 # --- rather than a shape a pin file can reach -- and it is the contract that
-# --- keeps a fifth column, or a diagnostic, from ever reading as depth.
-assert_eq 0 "$(review_plan_depth_count "$(printf '1\tagy\tengine-independent\tworktree\tsixth\n')" orchid/agy)" \
-  "a row carrying an unknown fifth column is not a slot, so it is not a worktree slot either"
+# --- keeps a sixth column, or a diagnostic, from ever reading as depth.
+assert_eq 0 "$(review_plan_depth_count "$(printf '1\tagy\tengine-independent\tworktree\torchid/agy\tseventh\n')" orchid/agy)" \
+  "a row carrying an unknown sixth column is not a slot, so it is not a worktree slot either"
 assert_eq 0 "$(review_plan_depth_count "$(printf '1\tagy\tengine-independent\n')" orchid/agy)" \
   "a three-column row claims no depth, and none is defaulted in at the reading end"
 assert_eq 0 "$(review_plan_depth_count 'jq: error: null (null) has no keys' orchid/agy)" \
   "a diagnostic merged in from stderr credits nothing"
+
+# ===========================================================================
+# L -- AND SO IS THE KEY THE EVIDENCE IS MATCHED BY.
+#
+# Part K froze the DEPTH claim. A plan that froze only that, beside a bare
+# route NAME, still had to ask the live plugin registry what the name meant
+# before it could recognize its own envelope -- because a routing row names an
+# engine the way config does (`oddname`) while an envelope names it the way its
+# manifest does (`acme/other`), and only the registry ties the two together.
+# So uninstalling that plugin, or rebinding the name to another publisher's
+# engine, made a filed review stop matching the slot it was dispatched to: it
+# lost its COVERAGE and, with it, its depth. Same defect as T039's and Part
+# K's, one join to the left.
+#
+# The pin therefore records the name and the qualified id together, at the
+# write, and the matching compares against what the row carries. Every
+# assertion below is the same round of evidence, unchanged, judged across a
+# registry that moves underneath it.
+# ===========================================================================
+export ORCHID_ENGINES_DIR="$WORK/engL"; mkdir -p "$ORCHID_ENGINES_DIR"
+# A publisher whose plugin DIRECTORY name and manifest id disagree -- the case
+# no name-shape convention can paper over (Part C).
+mk_engine oddname acme/other structured_text,workspace_read
+LPIN="$POLICY/.orchid/reviews/L01-a1.review-plan.json"
+mk_task L01 medium high
+mk_review_by L01 "" approve acme/other
+mk_review_by L01 ".2" approve orchid/agy
+
+# The WRITE is where the key is frozen, because the write is when the round is
+# dispatched. `review_plan_store` is the only writer, so a pin can never be
+# landed without one.
+review_plan_store "$POLICY" L01 \
+  "$(printf '1\toddname\tengine-independent\tworktree\n2\tagy\tengine-independent\tinline\n')" \
+  || fail "review_plan_store must land a plan for a task with a candidate"
+assert_eq acme/other "$(jq -r '.slots[0].qid' "$LPIN")" \
+  "the pin records the qualified id the slot's engine resolved to, not just the name it was routed by"
+assert_eq orchid/agy "$(jq -r '.slots[1].qid' "$LPIN")" \
+  "...for every slot, first-party ones included"
+assert_eq approve "$(decision_of L01)" \
+  "premise: with both engines installed this round is a complete, depth-proven set"
+
+# A pin written before the key existed is still readable, is reported as not
+# current, and one writing pass migrates it -- the same bounded, one-time
+# derivation the depth column gets. It can only derive from what is installed
+# NOW, which is why it is a migration and not a repair: an engine already gone
+# by the time this runs is what `--repin`/`--adopt-evidence` are for.
+cp "$LPIN" "$WORK/L01-keyed.json"
+jq 'del(.slots[].qid)' "$WORK/L01-keyed.json" > "$LPIN"
+review_plan_columns_persisted "$POLICY" L01 \
+  && fail "a pin carrying no attribution key must not read as current, or the migrating write never happens"
+assert_match $'^1\toddname\tengine-independent\tworktree\tacme/other$' "$(review_plan_pinned "$POLICY" L01)" \
+  "a legacy pin still reads, with the key derived once from the engine it named"
+review_plan_store "$POLICY" L01 "$(review_plan_pinned "$POLICY" L01)" \
+  || fail "the migrating write must land"
+review_plan_columns_persisted "$POLICY" L01 \
+  || fail "...and after it the pin is current"
+assert_eq acme/other "$(jq -r '.slots[0].qid' "$LPIN")" \
+  "the migration persists the derived key rather than re-deriving it on every later read"
+
+# --- RED: the plugin is UNINSTALLED between filing and judging, and the plan
+# --- froze only its name. Nothing about the review changed.
+unset ORCHID_ENGINES_DIR
+assert_eq orchid/oddname "$(review_engine_qid oddname)" \
+  "premise: with the plugin gone the row's name resolves to the fallback id, which is not the acme/other its own envelope reports"
+jq 'del(.slots[].qid)' "$WORK/L01-keyed.json" > "$LPIN"
+assert_eq evidence "$(decision_of L01)" \
+  "a name-only plan cannot recognize its own filed review once the name stops resolving"
+assert_eq 1 "$(review_plan_unsatisfied "$POLICY" L01 "$(review_plan "$POLICY" L01)" | cut -f1)" \
+  "...and it is the whole slot that is lost, not just its depth: the driver would re-dispatch a slot that was already reviewed"
+red_case 'a review plan freezing only the bare route name withdraws a completed review when its plugin is uninstalled'
+
+# --- GREEN: the same round, the same envelopes, the same uninstalled plugin --
+# --- with the key the pin froze at the write.
+cp "$WORK/L01-keyed.json" "$LPIN"
+assert_eq approve "$(decision_of L01)" \
+  "the frozen key recognizes the envelope the slot was dispatched to, so an uninstall withdraws nothing"
+assert_match "1 of them worktree-capable" "$(detail_of L01)" \
+  "and the approval still rests on the depth that round really had"
+assert_eq "" "$(review_plan_unsatisfied "$POLICY" L01 "$(review_plan "$POLICY" L01)")" \
+  "...off the same matching, so coverage and depth agree about the envelope as they must"
+green_case 'the pinned qualified id keeps crediting that review after the engine is uninstalled'
+
+# --- A REBIND is the sharper half, and it cuts both ways. The name resolves
+# --- again, to someone else entirely.
+export ORCHID_ENGINES_DIR="$WORK/engL2"; mkdir -p "$ORCHID_ENGINES_DIR"
+mk_engine oddname someone-else/other structured_text,workspace_read
+assert_eq someone-else/other "$(review_engine_qid oddname)" \
+  "premise: the row's name now resolves to a different publisher's engine"
+assert_eq approve "$(decision_of L01)" \
+  "the review that was actually dispatched and filed keeps its slot: a later rebind is not evidence about it"
+assert_eq 0 "$(review_plan_depth_count "$(printf '1\toddname\tengine-independent\tworktree\tacme/other')" someone-else/other)" \
+  "and the fail-closed converse: whoever holds the name today cannot inherit the slot -- the key names the engine that was asked"
+unset ORCHID_ENGINES_DIR

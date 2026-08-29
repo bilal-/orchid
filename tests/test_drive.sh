@@ -340,11 +340,13 @@ mk_review_eng() {
 # qualifies to `orchid/<name>` (resolve_engine_qualified_id's documented
 # fallback), which is what these fixtures write into `.engine`.
 #
-# FOUR columns, and the two slots carry DIFFERENT depths on purpose (T012).
-# Attribution reads the engine column and nothing else, so every case below
-# runs against the row shape `orchid jobs review-plan` actually emits, and a
-# walk that ever keyed on the row's width or on its depth label would fail
-# here rather than in production. P34 is the sharp end of it: with only the
+# FOUR columns -- the width a LIVE routing table has, a pinned one carrying a
+# fifth (the frozen qualified engine id, T012) that these hand-built tables
+# deliberately omit so the live-resolution path stays covered. The two slots
+# carry DIFFERENT depths on purpose. Attribution reads the engine and nothing
+# else, so every case below runs against a row shape `orchid jobs review-plan`
+# actually emits, and a walk that ever keyed on the row's width or on its depth
+# label would fail here rather than in production. P34 is the sharp end of it: with only the
 # `inline` slot's review filed, the `worktree` slot must come back unfilled.
 TWO_SLOTS="$(printf '1\talpha\tengine-independent\tworktree\n2\tbeta\tengine-independent\tinline\n')"
 

@@ -246,8 +246,11 @@ countermeasure.
 **And the slot table is pinned for the life of an attempt.** Routing reads
 engine health, so it is a moving table; a review is judged against the one
 its attempt was dispatched under (`orchid jobs review-plan <id> --pin`,
-stored beside the envelopes it credits). Recomputing it instead cost r-002 a
-task outright: an engine filed a valid review, went unavailable on unrelated
+stored beside the envelopes it credits). Each pinned row records the engine's
+NAME and the qualified id it resolved to, because a name still has to be
+resolved through the live plugin registry before a filed review can be matched
+to it — so an uninstall or a rebind would orphan that review just as surely as
+a re-route. Recomputing it instead cost r-002 a task outright: an engine filed a valid review, went unavailable on unrelated
 work minutes later, and the slot it had been dispatched for was reassigned —
 leaving evidence nothing could credit, on the only edge out of `reviewing`,
 in a status from which no arbitration verb is legal. Independence you can
@@ -265,9 +268,10 @@ reviewer wherever the install has one, and an approval with no review
 credited to a `worktree` slot behind it is handed to an arbiter rather than
 made deterministically ([specs/kernel.md](./specs/kernel.md), "Review
 depth"). That credit is read from the attempt's pinned plan — the same
-table, and the same slot matching, that decides which slot a review fills —
-so a review's depth is fixed when it is dispatched, not re-judged from
-whatever manifests happen to be installed when the arbitration runs.
+table, the same frozen engine identity, and the same slot matching that
+decides which slot a review fills — so a review's depth is fixed when it is
+dispatched, not re-judged from whatever manifests happen to be installed when
+the arbitration runs.
 The inline reviewer is never dropped: on a diff it can genuinely inspect it
 is often the only cross-vendor independence an install has, and independence
 guards a failure mode depth cannot.

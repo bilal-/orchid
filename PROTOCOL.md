@@ -71,8 +71,12 @@ part of the architecture; this file never changes to suit one.*
   <engine>	<engine-independent|session-independent>	<worktree|inline>`
   — computed from `role.reviewer`'s chain, the `review.<tier>` chain,
   engine discovery, role eligibility, and the ledger, all at once, plus
-  each slot's manifest capabilities for that last column. Never re-derive
-  this by hand. Launch each printed slot with `runners/orchid-launch <id>
+  each slot's manifest capabilities for that last column. A PINNED table
+  carries one further field per row — the qualified engine id (`orchid/agy`)
+  that slot's name resolved to when the round was dispatched, which is how a
+  filed review is matched back to its slot. You never need it to dispatch
+  one; read the engine from column 2 as before. Never re-derive this by
+  hand. Launch each printed slot with `runners/orchid-launch <id>
   reviewer review --engine <slot-engine>` — `--engine` is exactly how a
   second (or third) slot's engine differs from whatever `role.reviewer`
   would resolve to on its own.
@@ -1967,9 +1971,11 @@ one-pass driver could otherwise stop progressing in silence:
 - **A reviewer relaunch is keyed on the SLOT, never on a count.** `orchid
   jobs review-plan`'s table is the slot ledger: which slots exist and which
   engine each was routed to. A filed review is credited to a slot only when
-  its own `.engine` is that slot's engine (an envelope naming no engine is
-  credited last, to whatever slot is still open), and each review is credited
-  exactly once. Counting instead would let a relaunch that landed a SECOND
+  its own `.engine` is that slot's engine — compared against the qualified id
+  the pin recorded for that slot, so uninstalling or rebinding an engine
+  afterwards cannot orphan a review it already filed (an envelope naming no
+  engine is credited last, to whatever slot is still open), and each review is
+  credited exactly once. Counting instead would let a relaunch that landed a SECOND
   review from slot 1's engine both satisfy the tier's count and stop slot 2
   from ever being dispatched — handing the truth table two reviews from one
   engine to approve unanimously, which is precisely the independence the

@@ -558,17 +558,21 @@ drive_envelope_has_blocking_finding() {
 # the two can never disagree about the same envelope. Each counted envelope
 # is credited to the slot its own `.engine` was routed to (that field is
 # cross-checked against the job manifest by `orchid jobs reconcile` before
-# filing, so it cannot be forged past reconcile), and the DEPTH claim is read
-# from the plan's fourth column rather than from the engine's manifest as it
-# stands right now.
+# filing, so it cannot be forged past reconcile) and matched against the
+# QUALIFIED ID the plan row itself froze, and the DEPTH claim is read from the
+# plan's fourth column rather than from the engine's manifest as it stands
+# right now.
 #
 # Asking the manifest at arbitration time was the earlier shape of this gate
 # and it was wrong for the reason T039 pinned the plan in the first place: a
 # manifest edit, a rebind or an uninstall between filing and judging would
 # silently withdraw a filed review's depth, and the task would lose its
-# deterministic approval over a change to something that is not evidence. The
-# pin is bound to (task, attempt, candidate) and moves only when the evidence
-# it judges does. An envelope that names no engine, and one whose engine the
+# deterministic approval over a change to something that is not evidence.
+# Resolving the row's bare engine NAME here would have left the same hole one
+# join to the left -- an uninstalled or rebound name stops resolving to the id
+# its own filed envelope reports -- which is why the pin records the name and
+# the id together. The pin is bound to (task, attempt, candidate) and moves
+# only when the evidence it judges does. An envelope that names no engine, and one whose engine the
 # plan never routed to, are both credited no depth -- depth is a positive
 # claim about what a reviewer could see, and neither supports one. `orchid
 # jobs review-plan <id> --adopt-evidence` is the recorded verb for the second
@@ -1194,17 +1198,18 @@ drive_reviewer_envelope_engines() {
 }
 
 # drive_review_slots_unsatisfied <repo> <task> <routing> -- the rows of
-# <routing> (`orchid jobs review-plan`'s
-# "<slot><TAB><engine><TAB><independence-label><TAB><worktree|inline>" table)
-# that have NO review of their own yet. Empty output means every routed slot
-# is covered.
+# <routing> (`orchid jobs review-plan`'s "<slot><TAB><engine><TAB>
+# <independence-label><TAB><worktree|inline>[<TAB><qualified-engine-id>]"
+# table) that have NO review of their own yet. Empty output means every routed
+# slot is covered.
 #
-# Slot identity is the ENGINE column and nothing else: no slot is ever
-# dispatched or withheld for what its depth column says, so this answer is the
-# same on an all-inline table as on any other. The depth column is read
-# elsewhere and only elsewhere -- by `review_plan_depth_count`, which asks what
-# an ALREADY FILED review is credited, off the SAME matching this delegates to
-# so the two can never disagree about one envelope.
+# Slot identity is the ENGINE, matched by the qualified id a pinned row froze
+# beside it: no slot is ever dispatched or withheld for what its DEPTH column
+# says, so this answer is the same on an all-inline table as on any other. The
+# depth column is read elsewhere and only elsewhere -- by
+# `review_plan_depth_count`, which asks what an ALREADY FILED review is
+# credited, off the SAME matching this delegates to so the two can never
+# disagree about one envelope.
 #
 # Like the engine scan above, the rule itself lives in lib/review.sh
 # (`review_plan_unsatisfied`), where the plan's own verbs need it: `--repin`

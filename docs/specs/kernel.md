@@ -946,7 +946,13 @@ That is a dead end, not a degradation: the only forward edge out of
 from that status (r-002, lesson L027). So `orchid jobs review-plan <task>
 --pin` writes the table to `reviews/<task>-a<n>.review-plan.json`, bound to
 the attempt and the `candidate_sha`, and every reader gets that table back
-until one of the two moves. `--repin` (rebind the unfilled slots to live
+until one of the two moves. Each row records the slot, the engine NAME it was
+dispatched to, the independence label, the depth, and the QUALIFIED ENGINE ID
+that name resolved to at the write — the key a filed envelope is recognized
+by. Freezing the name alone would leave the join to the live plugin registry:
+uninstall the plugin or rebind the name to another publisher's engine and a
+completed review matches no slot, which is the same moving table one column
+earlier. `--repin` (rebind the unfilled slots to live
 routing, freezing the covered ones) and `--adopt-evidence` (re-pin onto the
 engines that actually reviewed, refused when it would name fewer distinct
 engines than the plan it replaces) are the recorded exits, and the
@@ -995,8 +1001,10 @@ rejected. The inline slot did this four times in one run.
 4. **Depth is attributed through the pin, never re-derived at judging
    time.** A review is credited to a slot by its own `.engine` — the field
    `orchid jobs reconcile` cross-checks against the job manifest before
-   filing — using the same matching that decides which slot a review COVERS,
-   so the two answers cannot drift apart. The DEPTH claim itself is then
+   filing — matched against the qualified engine id the pin froze for that
+   slot, using the same matching that decides which slot a review COVERS, so
+   the two answers cannot drift apart and neither depends on what is
+   installed at judging time. The DEPTH claim itself is then
    read off that slot's fourth column. Asking the engine's manifest instead
    ("can it open a checkout right now") re-opens, one column to the right,
    the dead end pinning the plan closed: an uninstall, a rebind, or an edit
@@ -1008,6 +1016,13 @@ rejected. The inline slot did this four times in one run.
    from an engine the plan never routed to (`--adopt-evidence` is the
    recorded verb that re-pins a plan onto the engines that actually
    reviewed, recomputing the depth column at that journaled write).
+   Resolving the row's bare NAME at judging time was the same mistake one
+   join earlier: a rebound or uninstalled name stops resolving to the id its
+   own filed envelope reports, so the review loses its slot and its depth
+   together. A pin written before either column existed is readable, derives
+   the missing one once from the installed manifests, and is migrated by the
+   next writing `--pin`; it is never left as a value that re-derives on
+   every read.
 
 **agy is not dropped, and no slot is ever refused for being inline.** On a
 diff it can genuinely inspect, an inline engine is the only real engine

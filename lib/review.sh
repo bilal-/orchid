@@ -125,6 +125,21 @@ review_engine_depth() {
   fi
 }
 
+# review_engine_qid <engine-name> -- the ATTRIBUTION KEY a plan row carries:
+# the qualified manifest id (`orchid/agy`, a third party's `acme/other`) that
+# this install resolves <engine-name> to, which is the form an envelope
+# reports itself by. Thin wrapper over resolve_engine_qualified_id that can
+# never print nothing -- an unresolvable name falls back to that resolver's
+# own `orchid/<name>`, and an empty answer to the name itself -- because a pin
+# that froze an EMPTY key would silently credit every anonymous envelope to
+# that slot.
+review_engine_qid() {
+  local qid
+  qid="$(resolve_engine_qualified_id "$1" 2>/dev/null || true)"
+  [ -n "$qid" ] || qid="$1"
+  printf '%s\n' "$qid"
+}
+
 # There is deliberately NO qualified-id-keyed capability predicate here -- no
 # "was the engine that FILED this review worktree-capable, as its manifest
 # reads right now". One existed for exactly as long as the depth gate asked
@@ -135,8 +150,8 @@ review_engine_depth() {
 # -- an envelope's `orchid/<anything>` is publisher-controlled text, so its
 # bare name cannot be stripped and trusted -- which the plan-keyed direction
 # does not have at all: a plan row names an engine THIS install resolved, and
-# `resolve_engine_qualified_id` turns that name into the id the comparison
-# uses.
+# `review_engine_qid` freezes that resolution INTO the row at the pin, so the
+# comparison a filed review is judged by is not re-derived later either.
 
 # review_routing_has_depth <routing-table> -- exit 0 iff at least one row of
 # a `review_routing`/`orchid jobs review-plan` table is a `worktree` slot.
@@ -262,9 +277,16 @@ review_routing() {
 # review_plan_row_valid <row> -- exit 0 iff <row> is one well-formed row of the
 # grammar `review_routing` prints and `orchid jobs review-plan` re-emits:
 # <slot>\t<engine>\t<engine-independent|session-independent>\t
-# <worktree|inline>, and NOTHING after it. Readers that dispatch off the table
-# fail closed on anything else, so a jq diagnostic or a stray stderr line can
-# never be mistaken for a reviewer slot.
+# <worktree|inline>[\t<qualified-engine-id>], and NOTHING after it. Readers
+# that dispatch off the table fail closed on anything else, so a jq diagnostic
+# or a stray stderr line can never be mistaken for a reviewer slot.
+#
+# The fifth column is OPTIONAL because only a PIN carries it. It is the
+# attribution key frozen at the write (`_review_rows_qualify`), and a LIVE
+# routing table has nothing to freeze: it was computed from the same registry
+# a reader would consult a moment later, so `_review_slot_matching` resolves
+# its rows on the spot. Both widths are therefore dispatchable, and a SIXTH
+# column is still refused rather than ignored.
 #
 # It lives HERE, beside the function that emits the grammar, rather than at
 # the reading end where it started. A validator kept next to its consumer
@@ -276,13 +298,57 @@ review_routing() {
 # definition, next to the printf that decides the shape, is what keeps the
 # next column from doing it again.
 review_plan_row_valid() {
-  local slot eng label depth extra
-  IFS=$'\t' read -r slot eng label depth extra <<< "$1"
+  local slot eng label depth rest tab=$'\t'
+  IFS=$'\t' read -r slot eng label depth rest <<< "$1"
   case "$slot" in ''|*[!0-9]*) return 1 ;; esac
   [ -n "$eng" ] || return 1
   case "$label" in engine-independent|session-independent) ;; *) return 1 ;; esac
   case "$depth" in worktree|inline) ;; *) return 1 ;; esac
-  [ -z "$extra" ] || return 1
+  # `rest` is everything past the depth column, and `read`'s last variable
+  # keeps the delimiters inside it -- so an empty `rest` is a four-column live
+  # row, a `rest` with no tab in it is a pinned row's attribution key, and a
+  # `rest` that still holds a tab is a sixth column nobody here knows. The key
+  # itself is unconstrained: it is compared WHOLE against an envelope's
+  # self-reported id, so a value this install does not recognize matches
+  # nothing rather than matching loosely.
+  case "$rest" in *"$tab"*) return 1 ;; esac
+}
+
+# _review_rows_qualify <rows> -- <rows> with the ATTRIBUTION KEY frozen into
+# every slot row: a row that already carries a fifth column is passed through
+# byte for byte, and one that does not is given the id its engine name
+# resolves to RIGHT NOW (`review_engine_qid`).
+#
+# This is the write-time half of "depth is attributed through the pin". The
+# depth column alone was not enough: a pin that froze only a bare route name
+# still had to ask the live plugin registry what that name meant in order to
+# recognize the envelope that filled it, so an uninstall or a rebind between
+# filing and judging could still leave a filed review matching no slot -- and a
+# slot it no longer matches is credited neither its coverage nor its depth. The
+# name and the id it resolved to are one fact, recorded together, at the moment
+# the round is dispatched.
+#
+# Passing an existing key through UNCHANGED is what makes `--repin` safe: its
+# frozen rows keep the key they were pinned with, rather than being re-derived
+# against whatever is installed at repin time.
+#
+# Only rows that are already well-formed slots are touched. Anything else --
+# a diagnostic that reached a caller's stdin, a truncated line -- is emitted
+# exactly as it arrived, so the reader that fails closed on it still sees the
+# bytes it needs to report.
+_review_rows_qualify() {
+  local line slot eng label depth qid out=""
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    if review_plan_row_valid "$line"; then
+      IFS=$'\t' read -r slot eng label depth qid <<< "$line"
+      [ -n "$qid" ] || qid="$(review_engine_qid "$eng")"
+      line="$(printf '%s\t%s\t%s\t%s\t%s' "$slot" "$eng" "$label" "$depth" "$qid")"
+    fi
+    out="$out$line
+"
+  done <<< "$1"
+  printf '%s' "$out"
 }
 
 # ===========================================================================
@@ -312,6 +378,15 @@ review_plan_row_valid() {
 # or the candidate changes -- whichever engines are healthy at the moment of
 # reading. Evidence keeps counting against the slots it was dispatched for,
 # because those slots stop moving.
+#
+# A row therefore records everything the judging end needs, and records it at
+# the write: the slot, the engine NAME it was dispatched to, its independence
+# label, its DEPTH, and the QUALIFIED ENGINE ID that name resolved to -- the
+# key a filed envelope is recognized by. The last one is not decoration. A pin
+# holding only the bare name still has to ask the live plugin registry what
+# that name means before it can match an envelope, so uninstalling the plugin
+# or rebinding the name to another publisher's engine leaves a completed review
+# matching no slot: the same moving table, joined one column earlier.
 #
 # The pin is per (task, attempt) by filename and per candidate by content:
 # a new attempt files under a new name, and a candidate that moves within one
@@ -420,44 +495,61 @@ review_filed_engines() {
 # this attempt AND is bound to the task's CURRENT candidate_sha. Exit 1
 # (printing nothing) otherwise, so callers fall through to live routing.
 review_plan_pinned() {
-  local repo="$1" id="$2" f cand rows normalized="" slot engine label depth
+  local repo="$1" id="$2" f cand rows normalized="" slot engine label depth qid
   cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
   [ -n "$cand" ] || return 1
   f="$(review_plan_file "$repo" "$id")"
   [ -f "$f" ] || return 1
   [ "$(jq -r '.candidate_sha // empty' "$f" 2>/dev/null || true)" = "$cand" ] || return 1
-  rows="$(jq -r '.slots[]? | [(.slot|tostring), .engine, .label, (.depth // "")] | @tsv' "$f" 2>/dev/null || true)"
+  # `-` rather than `""` for a field an older pin does not carry, and it is not
+  # cosmetic: `read` with IFS=<tab> treats tabs as IFS WHITESPACE, so a run of
+  # them collapses into one delimiter and an empty interior field silently
+  # shifts every column after it left. A legacy pin missing `depth` but
+  # carrying `qid` would then be read with the key sitting in the depth slot.
+  # Neither placeholder is a legal value of its own column, so the loop below
+  # can tell "absent" from "recorded" without depending on field arithmetic.
+  rows="$(jq -r '.slots[]? | [(.slot|tostring), .engine, .label, (.depth // "-"), (.qid // "-")] | @tsv' "$f" 2>/dev/null || true)"
   [ -n "$rows" ] || return 1
-  # Pins written before T012 have no depth field. Keep those durable plans
-  # readable, but fail closed while normalizing: depth is a positive claim, so
-  # an engine that cannot currently prove workspace_read is `inline`. A later
-  # writing `review-plan --pin` migrates the normalized rows into the file.
+  # Pins written before T012 have no depth field, and pins written before the
+  # attribution key was frozen have no `qid`. Keep those durable plans
+  # readable, but fail closed while normalizing depth: it is a positive claim,
+  # so an engine that cannot currently prove workspace_read is `inline`. A
+  # later writing `review-plan --pin` migrates both normalized columns into the
+  # file (`review_plan_columns_persisted` is what makes that migration happen
+  # even when the table is otherwise unchanged).
   #
-  # This derivation is the ONE depth value in the system that is not frozen by
-  # a write, and it is bounded on purpose: it exists only for a round pinned
-  # before this column existed, and the first writing `--pin` after the upgrade
-  # persists it. Everywhere else -- and for every pin written since -- the
-  # column is recorded once and read back verbatim, which is what lets
-  # `review_plan_depth_count` credit filed evidence against a claim that cannot
-  # move underneath it.
-  while IFS=$'\t' read -r slot engine label depth; do
+  # These two derivations are the ONLY ones in the system not frozen by a
+  # write, and they are bounded on purpose: they exist for a round pinned
+  # before their column did, and the first writing `--pin` after the upgrade
+  # persists them. Everywhere else -- and for every pin written since -- both
+  # columns are recorded once and read back verbatim, which is what lets
+  # `review_plan_depth_count` credit filed evidence against a claim, and
+  # against an identity, that cannot move underneath it.
+  while IFS=$'\t' read -r slot engine label depth qid; do
     [ -n "$slot" ] && [ -n "$engine" ] && [ -n "$label" ] || continue
     case "$depth" in
       worktree|inline) ;;
       *) depth="$(review_engine_depth "$engine")" ;;
     esac
-    normalized="$normalized$(printf '%s\t%s\t%s\t%s' "$slot" "$engine" "$label" "$depth")
+    case "$qid" in ''|-) qid="$(review_engine_qid "$engine")" ;; esac
+    normalized="$normalized$(printf '%s\t%s\t%s\t%s\t%s' "$slot" "$engine" "$label" "$depth" "$qid")
 "
   done <<< "$rows"
   [ -n "$normalized" ] || return 1
   printf '%s' "$normalized"
 }
 
-# review_plan_depth_persisted <repo> <task> -- true only when every row in the
-# current candidate-bound pin carries T012's fourth (depth) field. Used by the
-# writing verb to migrate a pre-T012 three-column pin even when its normalized
-# table is otherwise identical, while the bare read remains read-only.
-review_plan_depth_persisted() {
+# review_plan_columns_persisted <repo> <task> -- true only when every row in
+# the current candidate-bound pin carries BOTH frozen columns: T012's depth
+# field and the qualified engine id its slot is matched by. Used by the writing
+# verb to migrate an older pin even when its normalized table is otherwise
+# identical, while the bare read stays read-only.
+#
+# Both columns, one predicate: a pin that has been migrated for depth but not
+# for the attribution key is exactly as exposed to a rebind as one that was
+# never migrated at all, and a per-column flag would let the verb call that
+# half-migrated file current.
+review_plan_columns_persisted() {
   local repo="$1" id="$2" f cand
   cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
   [ -n "$cand" ] || return 1
@@ -466,7 +558,8 @@ review_plan_depth_persisted() {
   jq -e --arg cand "$cand" '
     (.candidate_sha // "") == $cand
     and ((.slots // []) | length > 0)
-    and all(.slots[]; (.depth == "worktree" or .depth == "inline"))
+    and all(.slots[]; (.depth == "worktree" or .depth == "inline")
+                      and ((.qid // "") | length > 0))
   ' "$f" >/dev/null 2>&1
 }
 
@@ -490,6 +583,11 @@ review_plan_store() {
   cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
   [ -n "$cand" ] || return 1
   [ -n "$rows" ] || return 1
+  # The attribution key is frozen HERE if a caller has not frozen it already --
+  # jq cannot resolve an engine name, and this is the write the pin exists to
+  # be. Callers that build their own rows pass through unchanged.
+  rows="$(_review_rows_qualify "$rows")"
+  [ -n "$rows" ] || return 1
   attempt="$(review_plan_attempt "$repo" "$id")"
   f="$(review_plan_file "$repo" "$id")"
   mkdir -p "$(dirname "$f")"
@@ -502,7 +600,8 @@ review_plan_store() {
       {contract:1, attempt:($attempt|tonumber), candidate_sha:$cand, pinned_at:$at,
        slots:[inputs | select(length > 0) | split("\t")
               | {slot:(.[0]|tonumber), engine:.[1], label:.[2],
-                 depth:(if .[3] == "worktree" then "worktree" else "inline" end)}]}')" || return 1
+                 depth:(if .[3] == "worktree" then "worktree" else "inline" end),
+                 qid:(.[4] // "")}]}')" || return 1
   [ -n "$json" ] || return 1
   printf '%s\n' "$json" | atomic_write "$f"
 }
@@ -525,9 +624,12 @@ review_plan_pin_rows() {
     printf '%s\n' "$rows"
     return 0
   fi
-  rows="$(review_routing "$repo" "$id")"
+  # Live routing prints four columns; the fifth -- the attribution key this
+  # round is to be judged by -- is frozen on the way into the pin, because THIS
+  # is the moment the round is dispatched under it.
+  rows="$(_review_rows_qualify "$(review_routing "$repo" "$id")")"
   [ -n "$rows" ] || return 1
-  printf '%s\n' "$rows"
+  printf '%s' "$rows"
 }
 
 # _review_pool_take <pool> <want> -- prints <pool> minus the FIRST line equal
@@ -559,6 +661,16 @@ _review_pool_take() {
 # stays readable with `cut -f2-` whatever width it is; a state appended after a
 # row of unknown width could not be found by field number at all.
 #
+# A row is matched by the key it CARRIES (its fifth column), which a pin froze
+# at the write. Resolving the row's bare name here instead would have left the
+# pin depending on the live plugin registry after all: uninstall the plugin, or
+# rebind the name to another publisher's engine, and the id a filed envelope
+# reports stops equaling the id this install now computes -- so the review
+# matches no slot, and loses both its coverage and its depth, over a change
+# that is not evidence. A row with NO key is resolved live, which is right for
+# the one table that carries none: live routing, computed from the very
+# registry the comparison would consult.
+#
 #   engine      an envelope naming this row's engine was in the pool, taken;
 #   anonymous   none did, and an envelope naming NO engine stood in for it;
 #   unfilled    neither.
@@ -580,9 +692,11 @@ _review_slot_matching() {
   local plan="$1" pool="$2" line row st eng qid tab=$'\t' staged="" out=""
   while IFS= read -r line; do
     [ -n "$line" ] || continue
-    eng="$(printf '%s' "$line" | cut -f2)"
-    qid="$(resolve_engine_qualified_id "$eng" 2>/dev/null || true)"
-    [ -n "$qid" ] || qid="$eng"
+    qid="$(printf '%s' "$line" | cut -s -f5)"
+    if [ -z "$qid" ]; then
+      eng="$(printf '%s' "$line" | cut -f2)"
+      qid="$(review_engine_qid "$eng")"
+    fi
     st=pending
     if pool="$(_review_pool_take "$pool" "$qid")"; then st=engine; fi
     staged="$staged$st$tab$line
@@ -654,6 +768,15 @@ review_plan_unsatisfied() {
 # candidate) and records the depth column alongside the engine, so the answer
 # to "could the reviewer we dispatched see the checkout?" stops moving for
 # exactly as long as the evidence it judges does.
+#
+# BOTH halves of that answer are frozen, and the second one is easy to miss.
+# The depth column says what the slot's engine could see; the fifth column says
+# WHICH FILED ENVELOPE is that slot's. A pin that froze only the bare route
+# name would still have had to ask the live registry what that name resolves to
+# in order to recognize its own envelope, so a rebind or an uninstall could
+# withdraw a completed review's depth by making the two ids stop matching --
+# the same defect, one join to the left. `_review_rows_qualify` freezes the id
+# at the write; `_review_slot_matching` compares against what the row carries.
 #
 # Consequences, both deliberate:
 #   - a review filed by an engine the plan never routed to (a relaunch through
@@ -772,9 +895,13 @@ review_plan_repin_rows() {
     [ "$eng" != "$impl" ] || label="session-independent"
     used="$used$eng "
     depth="$(review_engine_depth "$eng")"
-    rows="$rows$(printf '%s\t%s\t%s\t%s' "$i" "$eng" "$label" "$depth")
+    rows="$rows$(printf '%s\t%s\t%s\t%s\t%s' "$i" "$eng" "$label" "$depth" "$(review_engine_qid "$eng")")
 "
   done
+  # Only the rows this pass BUILT were given a key above; a frozen row keeps
+  # the key it was pinned with (that is the whole point of freezing it), and a
+  # kept row copied out of a not-yet-pinned live table gets one here.
+  rows="$(_review_rows_qualify "$rows")"
   [ -n "$rows" ] || return 1
   printf '%s' "$rows"
 }
@@ -905,7 +1032,7 @@ review_plan_adopt_evidence_rows() {
   done <<< "$pool"
 
   impl="$(review_implementer_engine "$repo" "$id")"
-  local eng label used=" "
+  local eng label used=" " qid
   rows=""; i=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -918,12 +1045,20 @@ review_plan_adopt_evidence_rows() {
     # so -- the same two rules `review_routing` labels by.
     eng="$(printf '%s\n' "$selected" | sed -n "${i}p")"
     [ -n "$eng" ] || eng="$(printf '%s' "$line" | cut -f2)"
+    # A slot that ADOPTS a new engine takes that engine's key, resolved here
+    # from the evidence being adopted. A slot that keeps the engine it was
+    # already pinned to keeps its pinned KEY too, rather than having it
+    # re-derived: nothing about that row moved, and re-resolving it is exactly
+    # the live read this column exists to stop.
+    qid=""
+    [ "$eng" != "$(printf '%s' "$line" | cut -f2)" ] || qid="$(printf '%s' "$line" | cut -s -f5)"
+    [ -n "$qid" ] || qid="$(review_engine_qid "$eng")"
     label="engine-independent"
     case "$used" in *" $eng "*) label="session-independent" ;; esac
     [ "$eng" != "$impl" ] || label="session-independent"
     used="$used$eng "
     depth="$(review_engine_depth "$eng")"
-    rows="$rows$(printf '%s\t%s\t%s\t%s' "$i" "$eng" "$label" "$depth")
+    rows="$rows$(printf '%s\t%s\t%s\t%s\t%s' "$i" "$eng" "$label" "$depth" "$qid")
 "
   done <<< "$plan"
 

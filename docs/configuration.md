@@ -164,9 +164,10 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   not make a DETERMINISTIC approval at those tiers unless one of the counted
   reviews is credited to a slot the attempt's PINNED plan calls `worktree`
   — it stops at an arbitrable `review-evidence` boundary instead, which
-  `orchid task arbitrate` settles. Credit follows the pin, so re-binding or
-  uninstalling an engine after its review is filed neither withdraws that
-  review's depth nor grants it any.
+  `orchid task arbitrate` settles. Credit follows the pin — which records the
+  qualified engine id each slot was dispatched to, not just its configured
+  name — so re-binding or uninstalling an engine after its review is filed
+  neither withdraws that review's depth nor grants it any.
   Nothing here is refused over depth: an install whose reviewers are all
   inline still gets every slot and still reviews every task; what it does
   not get is an approval no human read. See
