@@ -15,7 +15,8 @@
 #             medium/high when no counted review is credited to a `worktree`
 #             slot -- credited off the attempt's PINNED plan and the same
 #             slot matching that decides which slot a review fills, never off
-#             a manifest read taken at judging time (Part K).
+#             a manifest read taken at judging time (Part K), and never off
+#             live routing when that plan cannot be read at all (Part N).
 #
 #   UNCHANGED an inline-only install still gets its full complement of
 #             slots -- no slot is ever refused, dropped or left unfilled for
@@ -257,9 +258,31 @@ mk_review_by() {  # <id> <suffix> <verdict> <engine-qualified-id>
 decision_of() { drive_review_decision "$POLICY" "$1" | cut -f1; }
 detail_of()   { drive_review_decision "$POLICY" "$1" | cut -f2- ; }
 
-# --- RED: a complete, unanimous, finding-free medium-tier set, every review
-# --- from an inline engine. This is r-001's T003 exactly.
+# mk_pin <id> <slot1-engine> <slot1-depth> <slot2-engine> <slot2-depth> -- the
+# plan this attempt was dispatched under, written straight to the file rather
+# than through `review_plan_store`, deliberately in the LEGACY shape: slots
+# with a depth but no frozen attribution key, so every case that uses it
+# exercises the live-resolution fallback a plan pinned before that column
+# reads through. Part L is the current shape, and the difference between them
+# is the whole of its RED case.
+#
+# Defined HERE, in the first Part that needs one, because depth is credited
+# from the pinned round: a medium/high case with no pin is judged on the
+# missing plan (Part N) rather than on the reviews it filed, so a fixture that
+# means to test the depth arm has to say which round it was dispatched under.
+mk_pin() {
+  jq -n --arg cand "$PCAND" --arg e1 "$2" --arg d1 "$3" --arg e2 "$4" --arg d2 "$5" \
+    '{contract:1, attempt:1, candidate_sha:$cand, pinned_at:"2026-02-01T00:00:00Z",
+      slots:[{slot:1, engine:$e1, label:"engine-independent", depth:$d1},
+             {slot:2, engine:$e2, label:"engine-independent", depth:$d2}]}' \
+    > "$POLICY/.orchid/reviews/$1-a1.review-plan.json"
+}
+
+# --- RED: a complete, unanimous, finding-free medium-tier set, dispatched
+# --- under a plan whose every slot is inline, and filled by exactly those
+# --- engines. This is r-001's T003 exactly.
 mk_task D01 medium high
+mk_pin D01 agy inline hermes inline
 mk_review_by D01 "" approve orchid/agy
 mk_review_by D01 ".2" approve orchid/hermes
 assert_eq evidence "$(decision_of D01)" \
@@ -270,8 +293,12 @@ assert_match "cannot open the files" "$(detail_of D01)" \
   "...and says what an inline reviewer could not do, so the operator knows what to check"
 red_case 'a complete unanimous medium-tier review set with no worktree-capable reviewer is refused deterministic approval'
 
-# --- GREEN: the same set, one review re-attributed to a worktree-capable
-# --- engine. Nothing else changes.
+# --- GREEN: the same round with its second slot dispatched to a
+# --- worktree-capable engine, and that slot's review filed by it. The
+# --- evidence set is otherwise identical -- same count, same verdicts, same
+# --- complete scope, same empty findings -- and the plan says so, because
+# --- depth is a claim about the round, not about the envelope.
+mk_pin D01 agy inline codex-review worktree
 mk_review_by D01 ".2" approve orchid/codex-review
 assert_eq approve "$(decision_of D01)" \
   "one worktree-capable approval alongside the inline one satisfies the depth axis"
@@ -284,16 +311,21 @@ green_case 'the same set approves once one review comes from a worktree-capable 
 assert_match "unanimous scope-complete approval from 2 review" "$(detail_of D01)" \
   "both reviews still count toward the approval -- an inline review is a real review"
 
-# --- low tier is untouched. A single inline approval still approves.
+# --- low tier is untouched, pin or no pin. It asks for no depth, so there is
+# --- no claim for a plan to support and nothing for a missing one to withdraw
+# --- -- and the detail says plainly that the approval rested on none.
 mk_task D02 low high
 mk_review_by D02 "" approve orchid/agy
 assert_eq approve "$(decision_of D02)" \
   "risk_tier low requires no depth: one inline approval still approves, exactly as before"
+assert_match "0 of them worktree-capable" "$(detail_of D02)" \
+  "...and with no pinned round to credit, the approval claims no depth rather than inventing one from live routing"
 
 # --- an envelope naming NO engine cannot support a depth claim, and the
 # --- shortfall is reported the same way (tests/test_drive.sh's P11 covers
 # --- the two-unattributable-reviews case end to end).
 mk_task D03 medium high
+mk_pin D03 codex-review worktree agy inline
 mk_review_by D03 "" approve orchid/codex-review
 jq -n --arg cand "$PCAND" \
   '{contract:1, job_id:"j-depth-D03-anon", task:"D03", operation:"review", status:"ok",
@@ -388,18 +420,26 @@ review_plan_row_valid "$(printf 'slot-one\tagy\tengine-independent\tinline')" \
   && fail "a non-numeric slot is refused"
 review_plan_row_valid "$(printf '1\t\tengine-independent\tinline')" \
   && fail "a row naming no engine is refused"
-# ...and the EMPTY-ENGINE GUARD is reached on its own, which the row above
-# does not do. `read` with IFS=<tab> treats tabs as IFS WHITESPACE, so the
-# empty column there collapses into a single delimiter and every field shifts
-# one place left: `engine-independent` lands in the engine slot, `inline` in
-# the label slot, and it is the DEPTH check that fires. The row above is
-# therefore a true assertion about that INPUT and no assertion at all about
-# the guard -- which is the shape this suite exists to keep out of itself.
-# A row truncated before its engine is what actually arrives with nothing in
-# that column, and it must be refused too, or the driver would dispatch a
-# reviewer slot it cannot name.
+# ...and it is the EMPTY-ENGINE GUARD that refuses it, which for a long time
+# nothing reached. The validator used to split with `IFS=$'\t' read`, and tab
+# is IFS WHITESPACE: a run of tabs collapses into ONE delimiter, so the empty
+# column above vanished and every field shifted one place left --
+# `engine-independent` landed in the engine column, `inline` in the label
+# column, and the DEPTH check fired. The assertion above was therefore true
+# about its INPUT and no assertion at all about the guard it names, which is
+# exactly the shape this suite exists to keep out of itself. Splitting on
+# every tab is what makes the field count exact.
+#
+# The same collapse hid a worse one, in the direction that ADMITS a row: an
+# empty fifth column followed by a sixth read as a five-column pinned row
+# whose attribution key was the SIXTH field. A dispatcher that fails closed on
+# an unknown grammar cannot be handed one wearing a known grammar's clothes.
+review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline\t\tsixth')" \
+  && fail "an EMPTY fifth column must not let a sixth field masquerade as the frozen attribution key"
+review_plan_row_valid "$(printf '1\tagy\tengine-independent\tinline\t')" \
+  && fail "...and an empty key on its own is refused too: no envelope reports an empty engine id, so such a row could only ever match through the live resolution the pin exists to stop"
 review_plan_row_valid '1' \
-  && fail "a row that is nothing but a slot number names no engine, and the engine guard itself must refuse it"
+  && fail "a row that is nothing but a slot number carries no column past it -- no engine, no label, no depth -- and is refused"
 review_plan_row_valid "$(printf '1\tagy')" \
   && fail "...and a row truncated after its engine claims no independence label, so it is refused too"
 review_plan_row_valid "$(printf '1\tagy\tprobably-independent\tinline')" \
@@ -503,17 +543,10 @@ grep -Fq 'accept labeled session independence rather than withhold a slot' <<< "
 # which slot a review COVERS. Both directions are asserted below, because only
 # the pair distinguishes "reads the pin" from "reads nothing".
 # ===========================================================================
-# Deliberately the LEGACY pin shape: slots with a depth but no frozen
-# attribution key, so every case in this Part exercises the live-resolution
+# `mk_pin` (Part F) writes the LEGACY pin shape -- a depth column but no frozen
+# attribution key -- so every case in this Part exercises the live-resolution
 # fallback a plan pinned before that column reads through. Part L is the
 # current shape, and the difference between them is the whole of its RED case.
-mk_pin() {  # <id> <slot1-engine> <slot1-depth> <slot2-engine> <slot2-depth>
-  jq -n --arg cand "$PCAND" --arg e1 "$2" --arg d1 "$3" --arg e2 "$4" --arg d2 "$5" \
-    '{contract:1, attempt:1, candidate_sha:$cand, pinned_at:"2026-02-01T00:00:00Z",
-      slots:[{slot:1, engine:$e1, label:"engine-independent", depth:$d1},
-             {slot:2, engine:$e2, label:"engine-independent", depth:$d2}]}' \
-    > "$POLICY/.orchid/reviews/$1-a1.review-plan.json"
-}
 
 # --- RED: the round was dispatched to a worktree-capable engine, and that
 # --- engine is GONE by the time the reviews are judged. Nothing here can
@@ -525,6 +558,8 @@ assert_eq inline "$(review_engine_depth ghostrev)" \
   "premise: ghostrev resolves to no installed engine, so a live capability read can prove nothing about it"
 assert_eq evidence "$(decision_of K01)" \
   "with no pin, the depth claim has nowhere to come from and the set is unproven"
+assert_match 'no usable pinned review plan \(missing\)' "$(detail_of K01)" \
+  "...and the detail says the round itself is unrecorded, rather than blaming reviews that did exactly what they were asked (Part N)"
 red_case 'a review filed by a worktree-capable engine that has since been uninstalled is credited no depth while the round it was dispatched under is unrecorded'
 
 # --- GREEN: the plan that dispatched it, pinned to this attempt and this
@@ -777,4 +812,172 @@ assert_eq "$(printf '1\tplainrev\tengine-independent\tinline\ttest/plainrev\n2\t
 review_plan_store "$repoM" M02 "$adoptM2" || fail "the adopted table must land"
 assert_eq 1 "$(review_plan_depth_count "$(review_plan "$repoM" M02)" test/deeprev)" \
   "...so a review filed by the engine that slot was dispatched to is still credited its depth: repairing the slots that moved must not shallow the ones that did not"
+unset ORCHID_ENGINES_DIR
+
+# ===========================================================================
+# N -- THE PIN IS THE ONLY PLACE DEPTH MAY COME FROM, AND ITS ABSENCE IS A
+# BOUNDARY, NOT A FALLBACK.
+#
+# Parts K, L and M froze the two columns a round is judged by. All three rest
+# on there BEING a pinned round to read them from, and `review_plan` -- the
+# table every other caller uses -- answers a missing pin with LIVE ROUTING.
+# That fallback is correct for the callers it was written for: `--pin`'s own
+# computation, `--repin`, `--adopt-evidence`, and the driver's dispatch walk
+# are all choosing where to SEND a review or about to write a plan down.
+#
+# It is not correct for the one caller judging reviews already filed. A table
+# computed at arbitration time says where a review would be sent today; the
+# question is what the reviewer who filed THIS one could see, and those are
+# the same string only by coincidence. So a plan deleted, truncated, emptied
+# or re-pointed at another candidate between filing and judging would have
+# been silently replaced by a fresh table -- and a deterministic approval
+# handed out on a depth claim nothing recorded, which is the whole of what
+# Parts K and L exist to prevent, arrived at through the back door.
+#
+# Every case below is the SAME round of evidence, unchanged and complete,
+# judged with its plan interfered with in one of the four ways a pin can stop
+# being usable. The fixture is built so LIVE ROUTING WOULD ANSWER YES to each
+# of them, because only that makes "reads the pin" distinguishable from "reads
+# nothing".
+# ===========================================================================
+export ORCHID_ENGINES_DIR="$WORK/engN"; mkdir -p "$ORCHID_ENGINES_DIR"
+mk_engine nimpl test/nimpl workspace_write,shell,git
+mk_engine ndeep test/ndeep structured_text,workspace_read
+mk_engine nflat test/nflat structured_text
+repoN="$WORK/repoN"; mkdir -p "$repoN/.orchid/tasks" "$repoN/.orchid/reviews"
+NCAND=8888888888888888888888888888888888888888
+printf 'role.implementer=nimpl
+role.reviewer=ndeep
+review.medium=ndeep,nflat
+' > "$repoN/orchid.config"
+
+mk_n_task() {  # <id> [candidate] -- a medium-tier task on attempt 1
+  local cand="${2-$NCAND}"
+  printf -- '---\nschema: 1\nid: %s\nstatus: arbitrating\narchetype: feature\nattempts: 0\nrisk_tier: medium\nblocking_severity: high\ncandidate_sha: %s\n---\nbody\n' \
+    "$1" "$cand" > "$repoN/.orchid/tasks/$1.md"
+}
+mk_n_review() {  # <id> <suffix> <qualified-engine-id>
+  jq -n --arg jid "j-pin-$1$2" --arg task "$1" --arg cand "$NCAND" --arg e "$3" \
+    '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
+      verdict:"approve", scope_complete:true, summary:"pin fixture",
+      candidate_sha:$cand, findings:[], engine:$e}' \
+    > "$repoN/.orchid/reviews/$1-a1-reviewer$2.json"
+}
+ndecision() { drive_review_decision "$repoN" "$1" | cut -f1; }
+ndetail()   { drive_review_decision "$repoN" "$1" | cut -f2- ; }
+
+mk_n_task N01
+mk_n_review N01 ""   test/ndeep
+mk_n_review N01 ".2" test/nflat
+review_plan_store "$repoN" N01 \
+  "$(printf '1\tndeep\tengine-independent\tworktree\n2\tnflat\tengine-independent\tinline\n')" \
+  || fail "fixture: N01's plan must pin"
+NPIN="$(review_plan_file "$repoN" N01)"
+cp "$NPIN" "$WORK/N01-pin.json"
+assert_eq approve "$(ndecision N01)" \
+  "premise: a complete unanimous set, dispatched under a plan whose slot 1 was worktree-capable and filled by that very engine"
+
+# THE PREMISE THAT MAKES THIS PART FALSIFIABLE. Live routing here produces the
+# same two rows the pin holds, so no case below can be passed by a policy that
+# simply recomputed the table -- each one is decided by WHICH table was
+# consulted, not by which engines happen to be installed.
+assert_eq "$(printf '1\tndeep\tengine-independent\tworktree\n2\tnflat\tengine-independent\tinline')" \
+  "$(review_routing "$repoN" N01)" \
+  "premise: live routing would credit this same round the same depth, so falling back to it would look exactly like reading the pin"
+
+# --- N1, RED: the plan is DELETED after the reviews are filed. A wiped
+# --- `reviews/` restored from a partial backup, an operator tidying a
+# --- directory, a runtime tree rebuilt without it.
+rm -f "$NPIN"
+assert_eq evidence "$(ndecision N01)" \
+  "with the pinned round gone, the depth claim has nothing behind it and no deterministic approval is made"
+assert_match 'no usable pinned review plan \(missing\)' "$(ndetail N01)" \
+  "the detail names WHICH way the pin stopped being usable, or the boundary cannot say what to repair"
+assert_match 'orchid task arbitrate' "$(ndetail N01)" \
+  "...and names the verb that settles it where it is raised: this boundary is arbitrable, never a park"
+assert_match 'adopt-evidence' "$(ndetail N01)" \
+  "...and the recorded verb that re-pins the slots onto the engines that actually reviewed"
+grep -Eq -- '--pin' <<< "$(ndetail N01)" \
+  && fail "the remedy must NOT be '--pin': run here, after the evidence is on disk, it would freeze whatever live routing says today and hand the round a depth claim computed after the fact -- the defect wearing the remedy's clothes"
+red_case 'a review plan deleted between filing and judging is answered from live routing, so a deterministic approval rests on a depth claim nothing recorded'
+
+# ...and the FALLBACK ITSELF IS KEPT, which is the other half of this change.
+# The callers that dispatch a slot, and the three verbs that write a plan
+# down, must still get a table out of a task whose pin was lost -- otherwise a
+# lost plan would leave a task that could never be reviewed again, which is a
+# worse dead end than the one being closed. What moved is only who may use
+# that table to JUDGE.
+assert_eq "$(review_routing "$repoN" N01)" "$(review_plan "$repoN" N01)" \
+  "review_plan still falls back to live routing for the pre-dispatch callers, even while the gate above refuses to judge from it"
+
+# --- N1, GREEN: the same envelopes, the same installed engines, the same
+# --- everything -- with the plan the round was dispatched under back on disk.
+cp "$WORK/N01-pin.json" "$NPIN"
+assert_eq approve "$(ndecision N01)" \
+  "the pinned round is what credits the depth, and it credits it again the moment it is readable"
+assert_match "1 of them worktree-capable" "$(ndetail N01)" \
+  "and the approval says which axis it rested on"
+green_case 'depth is credited only from the pinned round, so a plan that is not there is a boundary rather than a recomputation'
+
+# --- N2: the pin is RE-POINTED at another candidate. The reviews on disk are
+# --- still bound to the task's own, so the count and the verdicts are
+# --- untouched -- it is only the plan that no longer describes this round.
+jq --arg c 9999999999999999999999999999999999999999 '.candidate_sha = $c' \
+  "$WORK/N01-pin.json" > "$NPIN"
+assert_eq evidence "$(ndecision N01)" \
+  "a plan bound to a candidate this task has moved off is not this round's plan"
+assert_match 'no usable pinned review plan \(candidate-stale\)' "$(ndetail N01)" \
+  "and it is reported as the stale binding it is, not as a missing file"
+
+# --- N3: the pin is UNREADABLE -- a write torn off mid-flight, the shape
+# --- `atomic_write` exists to prevent and a restored backup can still produce.
+printf '{"contract":1, "slots":[\n' > "$NPIN"
+assert_eq evidence "$(ndecision N01)" \
+  "an unparseable plan proves nothing, and fails closed rather than reading as absent"
+assert_match 'no usable pinned review plan \(unreadable\)' "$(ndetail N01)" \
+  "...and says so specifically: 'missing' would send an operator looking for a file that is right there"
+
+# --- N4: the pin PARSES and BINDS but carries no slot at all.
+jq '.slots = []' "$WORK/N01-pin.json" > "$NPIN"
+assert_eq evidence "$(ndecision N01)" \
+  "a plan with no slots credits no slot, so it can support no depth claim"
+assert_match 'no usable pinned review plan \(empty\)' "$(ndetail N01)" \
+  "...reported as empty rather than as unreadable, because the file itself is fine"
+
+cp "$WORK/N01-pin.json" "$NPIN"
+assert_eq approve "$(ndecision N01)" \
+  "and each of the three repairs above is undone by putting the round's own plan back -- nothing else about the evidence ever changed"
+
+# --- N5: the classifier itself, every state it can report. The gate prints
+# --- one of these words into a boundary an operator acts on, so a state that
+# --- answered the wrong one would misdirect the repair.
+assert_eq ok "$(review_plan_pin_state "$repoN" N01)" \
+  "a plan that parses, binds to this candidate and holds slots is usable"
+mk_n_task N02 ""
+assert_eq no-candidate "$(review_plan_pin_state "$repoN" N02)" \
+  "a task with no candidate_sha could never have had a plan bound to one"
+assert_eq evidence "$(ndecision N02)" \
+  "...and the gate answers that one on the candidate itself, before it ever asks about a plan"
+assert_match "no candidate_sha" "$(ndetail N02)" \
+  "so the operator is told the round has no candidate, not that its plan is missing"
+mk_n_task N03
+assert_eq missing "$(review_plan_pin_state "$repoN" N03)" \
+  "a task whose attempt was never pinned reports the file, not the binding"
+
+# --- N6: and the two shortfalls stay TOLD APART. A plan REPLACED after the
+# --- fact -- one that parses, binds to this candidate, and holds slots, but
+# --- routes engines that filed nothing -- is a usable pin crediting no depth,
+# --- which is a different problem with a different repair from having no plan
+# --- at all. Collapsing the two would send an operator looking for a file that
+# --- is sitting right there, or hand them --adopt-evidence for a round whose
+# --- own plan already says what it was.
+jq '.slots = [{slot:1, engine:"nflat", label:"engine-independent", depth:"inline", qid:"test/nflat"},
+              {slot:2, engine:"nother", label:"engine-independent", depth:"inline", qid:"test/nother"}]' \
+  "$WORK/N01-pin.json" > "$NPIN"
+assert_eq evidence "$(ndecision N01)" \
+  "a pinned round whose slots are all inline credits no depth, exactly as Part F's D01 does"
+assert_match "unproven review depth: 2 of 2" "$(ndetail N01)" \
+  "and it is the DEPTH shortfall that is reported: the plan is right there, and it is what says the round was shallow"
+grep -Fq 'no usable pinned review plan' <<< "$(ndetail N01)" \
+  && fail "a readable, candidate-bound plan must never be reported as a missing one -- the two shortfalls have different repairs"
 unset ORCHID_ENGINES_DIR

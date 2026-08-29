@@ -113,7 +113,16 @@ part of the architecture; this file never changes to suit one.*
   neither answer. Without one, `orchid drive` reports unproven review depth
   and stops at an arbitrable `review-evidence` boundary instead of
   approving, and you settle it by reading the diff and running `orchid task
-  arbitrate`. If the whole table comes back `inline`,
+  arbitrate`. That credit comes from the PIN or from nowhere: at those tiers
+  a plan that is missing, unreadable, empty, or bound to a candidate the task
+  has moved off is itself reported as unprovable review depth, naming which
+  of the four it was, rather than answered out of a table computed after the
+  reviews were filed. Settle it with `orchid task arbitrate`, or — when the
+  engines that actually reviewed are the ones to record — with `orchid jobs
+  review-plan <id> --adopt-evidence` and another `orchid drive`. Not with
+  `--pin`: run after the evidence is on disk it freezes whatever routing says
+  at that moment, which is the very thing pinning exists to prevent. If the
+  whole table comes back `inline`,
   journal that before dispatching — same discipline as a
   `session-independent` label — and dispatch every slot anyway: no slot is
   ever dropped for being inline. See docs/specs/kernel.md, "Review depth",

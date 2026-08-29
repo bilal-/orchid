@@ -297,21 +297,51 @@ review_routing() {
 # table, and stopped the driver from dispatching a reviewer at ANY tier. One
 # definition, next to the printf that decides the shape, is what keeps the
 # next column from doing it again.
+#
+# The columns are split ONE AT A TIME, by parameter expansion, and not by
+# `IFS=$'\t' read -r slot eng label depth rest`. Tab is IFS WHITESPACE, so
+# `read` collapses a RUN of tabs into a single delimiter and discards a
+# trailing one -- which makes an EMPTY column invisible and shifts every field
+# after it one place left. Two rows arrived here wearing another row's clothes
+# because of it:
+#
+#   `1<TAB>agy<TAB>engine-independent<TAB>inline<TAB><TAB>sixth` -- an empty
+#   fifth column followed by a sixth -- read as a five-column pinned row whose
+#   attribution key is `sixth`. The sixth-column refusal below is precisely
+#   what that row was supposed to hit, and it was the one shape it could not
+#   see: an extra field masqueraded as the qid.
+#
+#   `1<TAB><TAB>engine-independent<TAB>inline` -- a row naming NO engine --
+#   collapsed into `engine-independent` sitting in the engine column, so it was
+#   refused by the DEPTH check while the empty-engine guard was never reached
+#   by any input at all.
+#
+# Splitting on every tab makes the field count exact, which is the whole point
+# of a grammar a dispatcher fails closed on.
 review_plan_row_valid() {
-  local slot eng label depth rest tab=$'\t'
-  IFS=$'\t' read -r slot eng label depth rest <<< "$1"
+  local row="$1" tab=$'\t' slot eng label depth qid rest
+  slot="${row%%"$tab"*}";   rest="${row#*"$tab"}"
+  eng="${rest%%"$tab"*}";   rest="${rest#*"$tab"}"
+  label="${rest%%"$tab"*}"; rest="${rest#*"$tab"}"
+  depth="${rest%%"$tab"*}"
   case "$slot" in ''|*[!0-9]*) return 1 ;; esac
   [ -n "$eng" ] || return 1
   case "$label" in engine-independent|session-independent) ;; *) return 1 ;; esac
   case "$depth" in worktree|inline) ;; *) return 1 ;; esac
-  # `rest` is everything past the depth column, and `read`'s last variable
-  # keeps the delimiters inside it -- so an empty `rest` is a four-column live
-  # row, a `rest` with no tab in it is a pinned row's attribution key, and a
-  # `rest` that still holds a tab is a sixth column nobody here knows. The key
-  # itself is unconstrained: it is compared WHOLE against an envelope's
-  # self-reported id, so a value this install does not recognize matches
-  # nothing rather than matching loosely.
-  case "$rest" in *"$tab"*) return 1 ;; esac
+  # A row with nothing past the depth column is the four-column LIVE table.
+  # `rest` is unchanged by the strip above exactly when there was no tab left
+  # to strip, which is that case and only that case.
+  [ "$rest" != "$depth" ] || return 0
+  qid="${rest#*"$tab"}"
+  # A tab still inside the key is a sixth column nobody here knows, and an
+  # EMPTY key is not a key: it would be compared whole against an envelope's
+  # self-reported id, and no envelope reports an empty one, so the row could
+  # only ever match through the live-resolution fallback the pin exists to
+  # stop. Both are refused rather than parsed loosely. A key this install does
+  # not RECOGNIZE is fine and deliberately unconstrained -- it matches nothing
+  # rather than matching loosely.
+  case "$qid" in *"$tab"*) return 1 ;; esac
+  [ -n "$qid" ] || return 1
 }
 
 # _review_rows_qualify <rows> -- <rows> with the ATTRIBUTION KEY frozen into
@@ -563,9 +593,50 @@ review_plan_columns_persisted() {
   ' "$f" >/dev/null 2>&1
 }
 
-# review_plan <repo> <task> -- the EFFECTIVE table every reader should use:
-# the pin when there is one, live routing when there is not (a task with no
-# candidate yet has no evidence to protect, and nothing to pin against).
+# review_plan_pin_state <repo> <task> -- WHY this attempt has no usable pin,
+# in one word, for the caller that must REFUSE rather than fall back to live
+# routing (lib/drive.sh's `drive_review_decision`). `review_plan_pinned`
+# answers yes or no, and a boundary that cannot say which of these it hit
+# cannot name the step that repairs it:
+#
+#   ok               a pin exists, parses, binds to this candidate and holds
+#                    at least one readable slot row
+#   no-candidate     the task records no candidate_sha, so no plan could ever
+#                    have been bound to one
+#   missing          no plan file for this attempt
+#   unreadable       the file is not readable JSON
+#   candidate-stale  a plan for a candidate this task has since moved off
+#   empty            it parses and binds, but carries no usable slot row
+#
+# Read-only, and deliberately a SECOND pass rather than an out-parameter of
+# `review_plan_pinned`: the predicate stays a predicate, every existing caller
+# keeps failing over to live routing exactly as before, and only the one
+# reader that must not fall over pays for the diagnosis.
+review_plan_pin_state() {
+  local repo="$1" id="$2" f cand pcand
+  cand="$(fm_get "$(orchid_state "$repo")/tasks/$id.md" candidate_sha 2>/dev/null || true)"
+  [ -n "$cand" ] || { printf 'no-candidate\n'; return 0; }
+  f="$(review_plan_file "$repo" "$id")"
+  [ -f "$f" ] || { printf 'missing\n'; return 0; }
+  jq -e . "$f" >/dev/null 2>&1 || { printf 'unreadable\n'; return 0; }
+  pcand="$(jq -r '.candidate_sha // empty' "$f" 2>/dev/null || true)"
+  [ "$pcand" = "$cand" ] || { printf 'candidate-stale\n'; return 0; }
+  review_plan_pinned "$repo" "$id" >/dev/null 2>&1 || { printf 'empty\n'; return 0; }
+  printf 'ok\n'
+}
+
+# review_plan <repo> <task> -- the EFFECTIVE table every reader should use
+# BEFORE the round is judged: the pin when there is one, live routing when
+# there is not (a task with no candidate yet has no evidence to protect, and
+# nothing to pin against).
+#
+# The fallback is for PRE-DISPATCH planning callers -- `--pin`'s own
+# computation, `--repin`, `--adopt-evidence`, and the driver's dispatch walk --
+# each of which is either about to write a plan down or is choosing where to
+# send a review. It is NOT for judging one that has already been filed:
+# `drive_review_decision` reads `review_plan_pinned` directly and boundaries
+# when there is no pin, because a table computed after the evidence was filed
+# is not evidence about it.
 review_plan() {
   local rows
   if rows="$(review_plan_pinned "$1" "$2")"; then

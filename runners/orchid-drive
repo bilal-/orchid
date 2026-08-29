@@ -95,11 +95,15 @@ an engine that could open a file the diff never showed it (manifest capability
 from the plan PINNED for the attempt rather than from the manifests as they
 stand when this pass runs: a review's depth is settled when it is dispatched,
 so uninstalling or rebinding an engine afterwards can neither withdraw nor
-grant it. Without one this pass reports unproven review depth and stops at a
-`review-evidence` boundary rather than approving; `orchid task arbitrate`
-settles it, so an install whose only reviewers are inline is slowed to a human
-decision per medium-tier task, never blocked. `low` asks for no depth at all,
-and no reviewer slot is ever withheld for being inline.
+grant it. That plan is where the claim comes from or it comes from nowhere: a
+pin that is missing, unreadable, empty or bound to a candidate the task has
+moved off is reported the same way, naming which of the four it was, rather
+than answered from a table computed after the reviews were filed. Without one
+this pass reports unproven review depth and stops at a `review-evidence`
+boundary rather than approving; `orchid task arbitrate` settles it, so an
+install whose only reviewers are inline is slowed to a human decision per
+medium-tier task, never blocked. `low` asks for no depth at all, and no
+reviewer slot is ever withheld for being inline.
 
 At most one judgment boundary is recorded per pass. A boundary a woken
 orchestrator could actually settle outranks one only an operator can, and

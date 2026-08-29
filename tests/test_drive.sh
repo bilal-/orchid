@@ -261,19 +261,42 @@ mk_review P10 "" approve true '[]'
 assert_eq approve "$(decision_of P10)" "a single unanimous scope-complete approval approves at risk_tier low"
 
 # v1.1 (T012): at medium/high the COUNT is no longer the whole bar -- one of
-# the counted reviews has to be credited to a `worktree` slot of the review
-# plan (lesson L010). `mk_review` writes no `.engine` at all, so neither of
-# these two can be attributed to a slot at all, and the set is depth-unproven
+# the counted reviews has to be credited to a `worktree` slot of the PINNED
+# review plan (lesson L010). `mk_review` writes no `.engine` at all, so neither
+# of these two can be attributed to a slot at all, and the set is depth-unproven
 # however unanimous it is -- an envelope naming no engine supports no claim
 # about what its reviewer could see. The depth-satisfied twin of this case,
 # and the pinned-plan attribution it rests on, are in tests/test_review.sh.
+#
+# The plan is PINNED here, and has to be: depth is credited from the round the
+# reviews were dispatched under, so a medium-tier task with no pin at all is
+# reported on the missing plan instead (P11b) -- which would be a true
+# assertion about the plan and no assertion at all about the anonymous
+# envelopes this case exists for.
 mk_policy_task P11 medium high
+review_plan_store "$POLICY" P11 \
+  "$(printf '1\talpha\tengine-independent\tworktree\n2\tbeta\tengine-independent\tinline\n')" \
+  || fail "fixture: P11's plan must pin"
 mk_review P11 "" approve true '[]'
 mk_review P11 ".2" approve true '[]'
 assert_eq evidence "$(decision_of P11)" \
   "two unanimous approvals from unattributable reviewers do NOT deterministically approve at risk_tier medium"
 assert_match "unproven review depth: 2 of 2" "$(detail_of P11)" \
   "the detail says the count was met and names the axis that was not"
+
+# ...and with NO pinned plan, the same complete set is reported on the round
+# that was never recorded rather than answered out of live routing -- a table
+# computed now says where a review would be SENT today, not what the reviewer
+# who filed this one could see. tests/test_review.sh Part N walks all four
+# ways a pin stops being usable, each against a fixture whose live routing
+# would have approved.
+mk_policy_task P11b medium high
+mk_review P11b "" approve true '[]'
+mk_review P11b ".2" approve true '[]'
+assert_eq evidence "$(decision_of P11b)" \
+  "a medium-tier set with no pinned round is not deterministically approved"
+assert_match 'no usable pinned review plan \(missing\)' "$(detail_of P11b)" \
+  "and the detail names the missing plan, so the boundary says what to repair"
 
 mk_policy_task P12 low high
 mk_review P12 "" approve true '[{"severity":"medium","title":"a nit below the bar"}]'

@@ -272,7 +272,11 @@ depth"). That credit is read from the attempt's pinned plan — the same
 table, the same frozen engine identity, and the same slot matching that
 decides which slot a review fills — so a review's depth is fixed when it is
 dispatched, not re-judged from whatever manifests happen to be installed when
-the arbitration runs. The inline reviewer is never dropped: on a diff it can
+the arbitration runs. It is read from that plan or from nowhere: a plan
+missing, unreadable, empty or bound to a candidate the task has moved off is
+itself an arbitrable boundary at those tiers, rather than being answered from
+a routing table computed after the reviews were filed. The inline reviewer is
+never dropped: on a diff it can
 genuinely inspect it is often the only cross-vendor independence an install
 has, and independence guards a failure mode depth cannot.
 

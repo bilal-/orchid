@@ -578,9 +578,30 @@ drive_envelope_has_blocking_finding() {
 # supports one. `orchid jobs review-plan <id> --adopt-evidence` is the recorded
 # verb for the second case: it re-pins the plan onto the engines that actually
 # reviewed.
+#
+# AND THE PIN IS THE ONLY PLACE DEPTH MAY COME FROM. `review_plan` falls back
+# to live routing when no pin can be read, which is right for every caller
+# that is about to DISPATCH a review or write a plan down, and wrong for the
+# one caller judging reviews already filed: a table computed now says where a
+# review would be sent today, not what the reviewer who filed this one could
+# see. So this function reads `review_plan_pinned` directly. When the tier
+# requires depth and there is no usable pin -- missing, unreadable, empty, or
+# bound to a candidate the task has moved off -- the shortfall is reported as
+# `evidence`, naming which of those it was, rather than answered out of live
+# routing. At `low`, where no depth is required, there is no claim to prove:
+# the count stays 0 and the approval says so, and live routing is still not
+# consulted.
+#
+# The remedies it names are the two that derive from EVIDENCE. `--pin` is
+# deliberately not one of them: run here, after the reviews are on disk, it
+# would freeze whatever live routing says today and hand the round a depth
+# claim computed after the fact -- the defect, wearing the remedy's clothes.
+# `--adopt-evidence` re-pins onto the engines that actually reviewed, at a
+# journaled write, and `orchid task arbitrate` settles the boundary directly.
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
+  local plan pin_state
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -656,10 +677,24 @@ drive_review_decision() {
   # Depth is judged AFTER the conflict arm on purpose: when a review already
   # says something is wrong, that finding is the actionable thing to report,
   # and a depth shortfall behind it would only rename a decision the operator
-  # is being handed anyway. It is also only COMPUTED here, past both earlier
-  # arms, because reading the plan costs a routing walk on a task whose
-  # decision those arms have already made.
-  depth_n="$(review_plan_depth_count "$(review_plan "$repo" "$id")" "$pool")"
+  # is being handed anyway. It is also only READ here, past both earlier arms,
+  # because a task whose decision those arms have already made needs no plan
+  # read at all.
+  #
+  # `review_plan_pinned`, never `review_plan`: the latter falls back to live
+  # routing, and a table computed at judging time is not evidence about a
+  # review already filed (see this function's header). At a tier that requires
+  # depth, no usable pin is itself the boundary; at `low` there is no depth
+  # claim to support, so the count stays 0 and the approval says so.
+  depth_n=0
+  if plan="$(review_plan_pinned "$repo" "$id")" && [ -n "$plan" ]; then
+    depth_n="$(review_plan_depth_count "$plan" "$pool")"
+  elif review_depth_required "$tier"; then
+    pin_state="$(review_plan_pin_state "$repo" "$id")"
+    printf 'evidence\tunprovable review depth: %s of %s review(s) for risk_tier %s bound to candidate %s, but this attempt has no usable pinned review plan (%s) — depth is credited from the plan the round was dispatched under, and a table computed now describes where a review would be sent today, not what the reviewer who filed this one could see. Expected: read the diff and settle it with orchid task arbitrate; or, if the engines that reviewed are the ones to record, orchid jobs review-plan %s --adopt-evidence re-pins the slots onto them at a journaled write, then rerun orchid drive\n' \
+      "$n" "$need" "$tier" "$cand" "$pin_state" "$id"
+    return 0
+  fi
   if [ "$depth_n" -eq 0 ] && review_depth_required "$tier"; then
     printf 'evidence\tunproven review depth: %s of %s review(s) for risk_tier %s bound to candidate %s, none of them credited to a worktree slot of the pinned review plan — an inline reviewer judges the diff text alone and cannot open the files this change must stay consistent with. Expected: read the diff and settle it with orchid task arbitrate; if a worktree-capable engine did review off-plan, orchid jobs review-plan --adopt-evidence re-pins the slots onto the engines that actually reviewed first\n' \
       "$n" "$need" "$tier" "$cand"

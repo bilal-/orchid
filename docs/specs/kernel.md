@@ -1025,6 +1025,26 @@ rejected. The inline slot did this four times in one run.
    the missing one once from the installed manifests, and is migrated by the
    next writing `--pin`; it is never left as a value that re-derives on
    every read.
+5. **A missing pin is a boundary, not a fallback.** The table every other
+   caller reads answers "no pin" with LIVE ROUTING, which is right for the
+   callers it exists for — `--pin`'s own computation, `--repin`,
+   `--adopt-evidence`, and the driver's dispatch walk are all choosing where
+   to SEND a review or about to write a plan down. It is wrong for the one
+   caller judging reviews already filed, so the arbitration policy reads the
+   PIN and only the pin. At `medium`/`high`, a plan that is missing,
+   unreadable, empty, or bound to a candidate the task has moved off is
+   reported as `evidence` — naming which of the four it was — rather than
+   answered from a table computed after the evidence was filed. Without that
+   rule every guarantee above has a back door: delete the plan and the same
+   round is re-credited from whatever routing says at arbitration time, which
+   is precisely the moving table pinning closed. The named remedies are
+   `orchid task arbitrate` (the boundary is raised on an `arbitrating` task,
+   so the verb that settles it can always run) and `--adopt-evidence` (re-pin
+   onto the engines that actually reviewed, at a journaled write). `--pin` is
+   deliberately NOT named: run at that point it would freeze whatever live
+   routing says today, which is the defect wearing the remedy's clothes. At
+   `low`, where no depth is required, there is no claim to support: the
+   approval reports no depth and live routing is still never consulted.
 
 **agy is not dropped, and no slot is ever refused for being inline.** On a
 diff it can genuinely inspect, an inline engine is the only real engine
