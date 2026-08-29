@@ -667,8 +667,19 @@ PAGE_REPO="$WORK/page-repo"; mkdir -p "$PAGE_REPO/.orchid/tasks"
 # roles resolve to section 7's `fake` engine for the same reason doc_doctor
 # above uses it: `task create` seeds `engine:` from resolve_role, and this
 # section is about the attempt line, not about role routing.
+#
+# ORCHID_EPOCH is read here rather than captured once because BOTH verbs this
+# helper runs are epoch-fenced (`task create` via libexec/orchid-task's create
+# arm, `notify` at the top of libexec/orchid-notify) and this file never mints
+# an epoch of its own -- it has no `run start`, so ORCHID_EPOCH is unset and
+# epoch_require compares '' against the fixture's current 0 and refuses every
+# verb. Re-reading through epoch_current() on each call, instead of hard-wiring
+# the 0 this fixture happens to sit at, means a verb that later rolls the epoch
+# cannot strand the calls after it -- the same reason the runners export it
+# from the repo rather than from their own environment.
 page_orchid() {
-  ORCHID_REPO="$PAGE_REPO" HOME="$HOME" ORCHID_ENGINES_DIR="$WORK/eng" \
+  ORCHID_REPO="$PAGE_REPO" ORCHID_EPOCH="$(epoch_current "$PAGE_REPO")" \
+    HOME="$HOME" ORCHID_ENGINES_DIR="$WORK/eng" \
     "$ORCHID_BIN" "$@"
 }
 # page_attempt <task-id> -> the page's `attempt:` line in $page_attempt_line
