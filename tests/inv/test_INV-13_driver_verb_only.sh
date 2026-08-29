@@ -20,15 +20,40 @@ POLICY="$REPO_ROOT/lib/drive.sh"
 # another input, and hiding a mutation behind one of them is exactly what
 # check 1 exists to prevent.
 #
+# T007: a THIRD, on the same rule and for the same reason. The merging arm of
+# the driver now decides between "merge validation failed" and a repo-wide
+# `gate_failed` -- and, at the budget cap, between an ordinary rework round and
+# an operator boundary -- by calling findings_log_gate_failed. That is a
+# verdict read from lib/findings.sh, so lib/findings.sh is a policy library the
+# driver reads verdicts from, whatever else that file is also used for. Left
+# out, the one library in the set whose whole job is reading LOGS would be the
+# one nothing checks for a mutation.
+#
 # An ARRAY, not a space-separated string: `$REPO_ROOT` is wherever the checkout
 # happens to live, and a path containing a space would split one library into
 # two nonexistent ones -- turning check 1 into a `fail` on a correct tree, or
 # (had the existence guard below not been there) into a loop that scans nothing
 # and passes vacuously.
-POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh")
+POLICIES=("$POLICY" "$REPO_ROOT/lib/handoff.sh" "$REPO_ROOT/lib/findings.sh")
 [ -f "$DRIVER" ] || fail "INV-13: runners/orchid-drive is missing"
 for p in "${POLICIES[@]}"; do
   [ -f "$p" ] || fail "INV-13: $p is missing"
+done
+
+# ...and the list has to stay TIED to the driver, in the one direction a file
+# can check itself. Membership here is a claim that the driver reads this
+# library; the driver's own `source` lines are where that claim is settled, so
+# an entry the driver no longer sources is a stale audit target and says so,
+# rather than quietly padding the set. The other direction -- a new driver
+# input that nobody adds here -- is the omission this comment block exists to
+# stop and cannot be automated: only a reader knows whether a newly sourced
+# library is consulted for a VERDICT or merely for a formatter.
+#
+# The existence loop above already catches a typo'd path, so this is not that:
+# it catches a path that exists and is no longer an input.
+for p in "${POLICIES[@]}"; do
+  grep -qF "lib/${p##*/}\"" "$DRIVER" \
+    || fail "INV-13: $p is audited here as a driver policy library, but runners/orchid-drive no longer sources it — either the driver stopped reading it (drop the entry) or the source line moved (this scan is now blind)"
 done
 
 # Comment lines are excluded everywhere below: this file's whole subject is
