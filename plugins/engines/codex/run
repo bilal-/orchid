@@ -40,8 +40,12 @@ write_envelope() {  # status extra-json
     | atomic_write "$output"
 }
 classify() {  # combined stdout+stderr text -> rate_limited|auth|failed
-  if printf '%s' "$1" | grep -qiE 'rate limit|usage limit|429'; then echo rate_limited
-  elif printf '%s' "$1" | grep -qiE 'login|auth|unauthorized'; then echo auth
+  # Herestrings, for the reason plugins/engines/claude/run's classify carries
+  # in full (T016's sweep of the class T010 named): a `printf | grep -q` on a
+  # whole vendor transcript can be decided by which process the scheduler ran
+  # last, and misclassifies a rate limit as a plain failure.
+  if grep -qiE 'rate limit|usage limit|429' <<<"$1"; then echo rate_limited
+  elif grep -qiE 'login|auth|unauthorized' <<<"$1"; then echo auth
   else echo failed
   fi
 }
@@ -364,8 +368,10 @@ fi
 # fall through to malformed rather than being read as an approval.
 verdict_line="$(printf '%s\n' "$stdout" | grep -iE '^VERDICT:[[:space:]]*(approve|request-changes)[[:space:]]*$' | tail -n1 || true)"
 verdict=""
-if printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$'; then verdict=approve
-elif printf '%s' "$verdict_line" | grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$'; then verdict=request-changes
+# Herestrings, same rule as classify above (T016's sweep of the class T010
+# named); plugins/engines/claude/run carries the argument in full.
+if grep -qiE '^VERDICT:[[:space:]]*approve[[:space:]]*$' <<<"$verdict_line"; then verdict=approve
+elif grep -qiE '^VERDICT:[[:space:]]*request-changes[[:space:]]*$' <<<"$verdict_line"; then verdict=request-changes
 fi
 if [ -z "$verdict" ]; then
   write_envelope malformed '{}'

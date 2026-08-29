@@ -1609,10 +1609,17 @@ unattended_trust_inspect() {
   ORCHID_UNATTENDED_RECORDED_POLICY_VERSION="$rec_policy"
   ORCHID_UNATTENDED_RECORD_LOADED=1
 
+  # A HERESTRING, never `printf ... | grep -q` (T016's sweep of the class T010
+  # named): `grep -q` exits at its FIRST match -- here the reason's first
+  # non-blank character, so almost immediately -- which SIGPIPEs `printf`
+  # mid-write, and under `set -o pipefail` that kill-by-signal status becomes
+  # the pipeline's. A reason long enough that `printf` is still writing then
+  # reads as blank, and the operator's own recorded acknowledgement loses its
+  # provenance for the length of what they typed.
   if [ -n "$ORCHID_UNATTENDED_ACKNOWLEDGED_AT" ] \
      && [ -n "$ORCHID_UNATTENDED_RECORDED_REPO" ] \
      && [ -n "$ORCHID_UNATTENDED_RECORDED_COMMON_DIR" ] \
-     && printf '%s' "$ORCHID_UNATTENDED_REASON" | LC_ALL=C grep -q '[^[:space:]]'; then
+     && LC_ALL=C grep -q '[^[:space:]]' <<<"$ORCHID_UNATTENDED_REASON"; then
     provenance_valid=1
   fi
 
@@ -1816,7 +1823,11 @@ _unattended_trust_acknowledgement_verify() {
 
 unattended_trust_acknowledge() {
   local repo="$1" reason="$2" acknowledged_at dir trust_dir_after
-  printf '%s' "$reason" | LC_ALL=C grep -q '[^[:space:]]' \
+  # A herestring, for the reason the provenance check above carries in full:
+  # a `--reason` long enough to still be writing when `grep -q` exits on its
+  # first non-blank character is refused as empty, and the operator is told
+  # their non-empty reason is missing.
+  LC_ALL=C grep -q '[^[:space:]]' <<<"$reason" \
     || orchid_die "unattended trust requires a non-empty --reason"
   _unattended_jq_available \
     || orchid_die "unattended trust requires jq to author the machine-local acknowledgement record; install jq (Orchid's kernel is bash + git + jq) and retry"

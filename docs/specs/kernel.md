@@ -1893,8 +1893,12 @@ semantic correctness beyond declared verification commands.
   is blind in the environment it is deployed in: every static check in
   `scripts/ci-local.sh` sits inside the `--no-tests` merge floor, every
   `tests/inv/` gate loads `tests/helpers.sh` so its recorded RED/GREEN cases
-  are enforced at run time rather than in text, and every kernel entry point
-  that arms the stale-root guard reaches a site that fires it
+  are enforced at run time rather than in text, every kernel entry point
+  that arms the stale-root guard reaches a site that fires it, and no gate
+  pipes a producer into an early-exiting `grep -q` — under `set -o pipefail`
+  the SIGPIPE that grep's first match sends the producer becomes the
+  pipeline's status, so a match reads as no-match and the gate is decided by
+  process scheduling rather than by its input
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a
   named, journaled boundary instead

@@ -185,7 +185,13 @@ manifest_validate() {  # plugin-dir
     case "$id" in
       *..*) echo "FAIL: $dir: id '$id' contains '..'"; ok=0 ;;
     esac
-    if ! printf '%s' "$id" | grep -Eq '^[a-z0-9_-]+/[a-z0-9_-]+$'; then
+    # HERESTRINGS throughout this validator, never `printf ... | grep -Eq`
+    # (T016's sweep of the class T010 named): `grep -q` exits at its first
+    # match and SIGPIPEs `printf`, and every caller of this function runs
+    # under `set -o pipefail`, so that kill-by-signal status becomes the
+    # pipeline's -- a WELL-FORMED field reads as malformed and a valid plugin
+    # is rejected by a race rather than by its manifest.
+    if ! grep -Eq '^[a-z0-9_-]+/[a-z0-9_-]+$' <<<"$id"; then
       echo "FAIL: $dir: id '$id' is not qualified as publisher/name"; ok=0
     fi
   fi
@@ -199,7 +205,7 @@ manifest_validate() {  # plugin-dir
   local av; av="$(manifest_get "$dir" api_version)"
   if [ -z "$av" ]; then
     echo "FAIL: $dir: api_version missing"; ok=0
-  elif ! printf '%s' "$av" | grep -Eq '^[0-9]+$'; then
+  elif ! grep -Eq '^[0-9]+$' <<<"$av"; then
     echo "FAIL: $dir: api_version '$av' is not an integer"; ok=0
   elif [ "$av" != 1 ]; then
     _manifest_warn_unknown_keys "$dir" "$conf"
@@ -210,7 +216,7 @@ manifest_validate() {  # plugin-dir
   local ver; ver="$(manifest_get "$dir" version)"
   if [ -z "$ver" ]; then
     echo "FAIL: $dir: version missing"; ok=0
-  elif ! printf '%s' "$ver" | grep -Eq '^[0-9]+\.[0-9]+'; then
+  elif ! grep -Eq '^[0-9]+\.[0-9]+' <<<"$ver"; then
     echo "FAIL: $dir: version '$ver' is not semver-ish (expected N.N...)"; ok=0
   fi
 

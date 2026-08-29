@@ -30,27 +30,35 @@ source "$(dirname "$0")/../helpers.sh"
 # the dimension under test converts a real failure into a silent pass, so
 # section 3 CONSTRUCTS that dimension instead of inheriting it.
 #
-# The two halves are one subject: omission is a gate nothing calls, vacuity is
-# a gate that runs and cannot see, and in a log they are indistinguishable
-# from each other and from a gate that passed.
+# The THIRD, in section 5, which needs nobody to omit or misjudge anything: a
+# gate written as `producer | grep -q`, whose answer is decided by whether the
+# producer finished writing before grep's first match killed it. That one had
+# already shipped a fail-OPEN instance (scripts/release.sh's placeholder scan).
 #
-# RED: four, one per section, each fed to the SAME derivation the section runs
+# The three are one subject: omission is a gate nothing calls, vacuity is a
+# gate that runs and cannot see, a race is a gate that runs, sees, and is
+# overruled by a signal -- and in a log all three are indistinguishable from
+# each other and from a gate that passed.
+#
+# RED: five, one per section, each fed to the SAME derivation the section runs
 #      over the shipped tree. A ci-local-shaped file whose static section sits
 #      BELOW the `--no-tests` cut (so it is outside the merge floor and only
 #      reaches tasks that opted into the full suite). An inv-shaped gate file
 #      that never loads tests/helpers.sh, so its `red_case`/`green_case` calls
 #      satisfy a text linter and are enforced by nothing at run time. A
 #      trust-boundary entry point that arms the stale-root gate and reaches no
-#      site that fires it. And an $ORCHID_ROOT genuinely parked on its
-#      configured integration branch with a staged kernel edit, which must
-#      still be REFUSED -- the case that must be caught.
+#      site that fires it. An $ORCHID_ROOT genuinely parked on its configured
+#      integration branch with a staged kernel edit, which must still be
+#      REFUSED -- the case that must be caught. And a gate written as a
+#      producer piped into `grep -q`.
 # GREEN: the twins, in this file: the shipped scripts/ci-local.sh, whose
 #      static sections are all above the cut; the shipped tests/inv/ gates,
 #      which all load helpers.sh; a real deferring entry point that does reach
-#      a firing site; and the case that must NOT fire -- an ordinary checkout
-#      on a development branch, where the same construction spends no `git`
-#      and refuses nothing, so section 3 is detection rather than a check that
-#      fails on every checkout.
+#      a firing site; the case that must NOT fire -- an ordinary checkout on a
+#      development branch, where the same construction spends no `git` and
+#      refuses nothing, so section 3 is detection rather than a check that
+#      fails on every checkout; and the shipped kernel's many pipes into a
+#      grep that reads to EOF, which must all be left alone.
 
 CI_LOCAL="$REPO_ROOT/scripts/ci-local.sh"
 [ -f "$CI_LOCAL" ] || fail "INV-15: scripts/ci-local.sh is missing — the repository's static gate is gone, or it moved"
@@ -589,9 +597,152 @@ done
 green_case 'a deferring entry point that does reach its restore, and an ordinary verb that defers nothing at all, were both left alone, so the report above is omission detection rather than a scan that flags every entry point'
 
 # ===========================================================================
-# 5 -- the boundaries of what any of this proves.
+# 5 -- NO GATE MAY BE SKIPPED BY AN ACCIDENT OF PROCESS SCHEDULING.
+#
+# A third way to skip a gate, and it needs nobody to omit anything: write it
+# as `producer | grep -q pattern`. `grep -q` exits at its FIRST match, which
+# SIGPIPEs the producer mid-write; every kernel entry point runs under `set -o
+# pipefail`, so that kill-by-signal status becomes the pipeline's, and a MATCH
+# is read as a failure to match. Which way that costs depends only on how the
+# caller branches, and BOTH directions were spelled in this tree when this
+# section was written -- twenty-four sites across seven files in lib/,
+# scripts/ and every bundled engine adapter, all converted in the same commit
+# that added this section. lib/trust.sh could refuse
+# a valid --reason for being long enough to still be writing (closed, a
+# spurious refusal). scripts/release.sh's placeholder scan -- six whole files
+# piped in, `die` on a MATCH -- could skip its own `die` and build the archive
+# with the placeholder it exists to catch (OPEN). That second one is the whole
+# class in one line: a gate that ran, that nobody skipped, and that passed
+# because its producer was killed.
+#
+# T010's arbitration named the class and asked for a sweep. A sweep is a
+# one-off, and a one-off is a gate nothing invokes the second time -- this
+# file's own subject. So the sweep is DERIVED here instead, by glob over the
+# shipped kernel, and a source file written tomorrow is covered without
+# anyone remembering to re-run anything.
+#
+# What is flagged is narrow and mechanical: a pipe into `grep`, with a `q` in
+# that grep's flags. A pipe into a grep that reads its input to EOF (-v, -c,
+# -o, a bare -E) has no early exit and no race, and the shipped kernel is full
+# of them -- which is what makes the GREEN half below a real discrimination
+# rather than a scan that flags every pipe.
 # ===========================================================================
-not_tested "gate-omission-beyond-the-three-families" \
-  "enforcement gates outside the three this file derives — the static sections of scripts/ci-local.sh, the tests/inv/ gate files, and the stale-root guard's entry-point reach. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the three checkable is that each has a DISCOVERABLE membership: a banner, a glob, a source line. A new gate family belongs here the moment its membership becomes derivable"
+
+# The two halves of the shape, spelled once. The first is the DENOMINATOR --
+# every pipe into grep, safe or not -- so the second can be shown to be
+# selecting rather than matching nothing.
+PQ_PIPE_TO_GREP='\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*grep[[:space:]]'
+# `[^|]*` so the `q` has to belong to THIS grep rather than to something
+# further down the pipeline, and `([[:space:]]|$)` so a line that ends on the
+# flag -- with its pattern on a continuation -- is caught like any other.
+PQ_EARLY_EXIT='grep[^|]*[[:space:]]-[A-Za-z]*q[A-Za-z]*([[:space:]]|$)'
+
+# piped_grep_lines <file> -- every NON-COMMENT line of <file> that pipes into
+# grep, carrying its real line number. The numbers are taken off the unstripped
+# file and the comment lines dropped afterwards, rather than stripping first
+# the way entry_code does above: a violation here is something an author has
+# to go and open, so the number has to be the one in their editor.
+piped_grep_lines() {
+  grep -nE "$PQ_PIPE_TO_GREP" "$1" 2>/dev/null \
+    | grep -vE '^[0-9]+:[[:space:]]*#' || true
+}
+
+# piped_early_exit_grep <file> -- the subset whose grep carries a `q`. Note
+# that neither pipeline in this pair uses `grep -q` itself: both read their
+# input to EOF, so this scan is not an instance of the thing it looks for.
+piped_early_exit_grep() {
+  piped_grep_lines "$1" | grep -E "$PQ_EARLY_EXIT" || true
+}
+
+pq_examined=0
+pq_violations=""
+# Every shipped executable root, INCLUDING the bundled plugins: an engine
+# adapter's `classify` is fed the whole of a vendor CLI's combined output,
+# which is the largest producer any matcher in this tree gets, and all four
+# adapters carried the shape until this section was written. `plugins/*/*/*`
+# rather than `plugins/*/*/run`, so a helper script placed beside `run`
+# tomorrow is covered too; a plugin.conf simply matches nothing.
+for pq_file in "$REPO_ROOT"/bin/* "$REPO_ROOT"/lib/*.sh "$REPO_ROOT"/libexec/* \
+               "$REPO_ROOT"/runners/* "$REPO_ROOT"/scripts/*.sh \
+               "$REPO_ROOT"/plugins/*/*/* "$REPO_ROOT"/templates/*.sh; do
+  [ -f "$pq_file" ] || continue
+  pq_rel="${pq_file#"$REPO_ROOT"/}"
+  while IFS= read -r pq_line; do
+    [ -n "$pq_line" ] || continue
+    pq_examined=$((pq_examined + 1))
+  done < <(piped_grep_lines "$pq_file")
+  while IFS= read -r pq_line; do
+    [ -n "$pq_line" ] || continue
+    pq_violations="$pq_violations
+  $pq_rel:$pq_line"
+  done < <(piped_early_exit_grep "$pq_file")
+done
+
+# The denominator, asserted before the verdict: a scan that had stopped
+# matching pipes at all would report a clean kernel, and that is the reading
+# this whole file exists to make impossible.
+[ "$pq_examined" -ge 10 ] \
+  || fail "INV-15: only $pq_examined piped-grep line(s) discovered across bin/, lib/, libexec/, runners/, scripts/, plugins/ and templates/ — the shipped tree has many more, so the early-exit scan below is judging an almost empty set and its silence means nothing"
+
+[ -z "$pq_violations" ] \
+  || fail "INV-15: a kernel gate pipes a producer into an early-exiting grep. Under set -o pipefail the SIGPIPE that grep's first match sends the producer becomes the pipeline's status, so a MATCH can be read as no-match — the gate is not skipped, it is decided by process scheduling (the class T010's arbitration named). Feed the matcher a herestring instead:$pq_violations"
+
+green_case "every one of the $pq_examined pipes into grep across the shipped tree, kernel and bundled plugins alike, reads its input to EOF — none carries a -q whose early exit could SIGPIPE the producer and hand pipefail a kill-by-signal status where a verdict belongs"
+
+# The RED twin, on the same two functions. The fixture also carries the shape
+# INSIDE A COMMENT, because this repository documents this exact hazard in
+# comments all over the kernel -- including in the very files section 5 just
+# scanned -- and a scan that counted those would be unsatisfiable.
+PQ_FIXTURES="$WORK/piped-grep-fixtures"
+mkdir -p "$PQ_FIXTURES"
+{ printf '#!/usr/bin/env bash\n'
+  printf 'set -euo pipefail\n'
+  printf '  # a herestring, never printf "%%s" "$x" | grep -q y -- this line is prose\n'
+  printf 'if printf "%%s" "$reason" | LC_ALL=C grep -q "[^[:space:]]"; then :; fi\n'
+} > "$PQ_FIXTURES/gate-with-a-race"
+
+pq_red_out="$(piped_early_exit_grep "$PQ_FIXTURES/gate-with-a-race")"
+assert_match 'grep -q' "$pq_red_out" \
+  "INV-15: a producer piped into an early-exiting grep must be reported — that is a gate whose answer depends on whether the producer finished writing before grep exited"
+pq_red_count=0
+while IFS= read -r pq_line; do
+  [ -n "$pq_line" ] || continue
+  pq_red_count=$((pq_red_count + 1))
+done <<<"$pq_red_out"
+assert_eq 1 "$pq_red_count" \
+  "INV-15: exactly one line of the fixture is executable; the other spelling of the shape sits in a comment, and counting that one would make this scan unsatisfiable against a kernel that documents the hazard everywhere (got: $pq_red_out)"
+red_case "INV-15's early-exit derivation reported a gate written as a producer piped into grep -q, and left the identical shape in a comment beside it alone, so a gate decided by process scheduling is detected rather than assumed absent"
+
+# ...and the accepting twin, which is the load-bearing half here: the safe
+# pipes must be EXAMINED and then left alone. Without the denominator check
+# below, "no violations" would also be the answer for a scan that had stopped
+# seeing pipes altogether.
+{ printf '#!/usr/bin/env bash\n'
+  printf 'set -euo pipefail\n'
+  printf 'active="$(list_them | grep -vxF "$id" || true)"\n'
+  printf 'n="$(printf "%%s\\n" "$body" | grep -c "[^[:space:]]" || true)"\n'
+  printf 'warns="$(echo "$out" | grep -E "^warn:" || true)"\n'
+  printf 'grep -q "[^[:space:]]" <<<"$reason" || die "empty"\n'
+} > "$PQ_FIXTURES/gate-without-a-race"
+
+pq_ok_out="$(piped_early_exit_grep "$PQ_FIXTURES/gate-without-a-race")"
+[ -z "$pq_ok_out" ] \
+  || fail "INV-15: a read-to-EOF pipe (-v, -c, a bare -E) or a grep -q fed from a herestring was reported anyway ($pq_ok_out) — neither can SIGPIPE a producer, and a scan that flagged them would flag the shipped kernel and could never be satisfied"
+pq_ok_seen=0
+while IFS= read -r pq_line; do
+  [ -n "$pq_line" ] || continue
+  pq_ok_seen=$((pq_ok_seen + 1))
+done < <(piped_grep_lines "$PQ_FIXTURES/gate-without-a-race")
+[ "$pq_ok_seen" -ge 3 ] \
+  || fail "INV-15: only $pq_ok_seen of the accepting fixture's three piped greps were EXAMINED at all, so leaving them unflagged demonstrates nothing about the flag test — it demonstrates the pipe matcher missing them"
+green_case "the accepting fixture's three read-to-EOF pipes were all examined and none was flagged, and the herestring-fed grep -q beside them was not either, so the report above discriminates by early exit rather than by the presence of a pipe"
+
+# ===========================================================================
+# 6 -- the boundaries of what any of this proves.
+# ===========================================================================
+not_tested "gate-omission-beyond-the-four-families" \
+  "enforcement gates outside the four this file derives — the static sections of scripts/ci-local.sh, the tests/inv/ gate files, the stale-root guard's entry-point reach, and the early-exit matcher shape across the shipped kernel and bundled plugins. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the four checkable is that each has a DISCOVERABLE membership: a banner, a glob, a source line, a syntactic shape. A new gate family belongs here the moment its membership becomes derivable"
+not_tested "early-exit-matchers-other-than-grep-q" \
+  "producers killed by an early-exiting consumer that is not grep -q. A head -n1, a sed -n 1q, and a bare read in a pipeline all stop reading before their input ends and all SIGPIPE upstream the same way; section 5 derives exactly one consumer because that is the one the shipped tree used, and the sites that pipe into head today discard the status with an explicit fallback rather than branching on it. The tell is the same wherever it appears: a pipeline under set -o pipefail whose right-hand side can stop reading first, so its exit status may be the producer's death rather than the matcher's verdict"
 not_tested "gate-vacuity-beyond-the-integration-branch-dimension" \
   "environment dimensions other than 'is \$ORCHID_ROOT parked on the configured integration branch'. That is the one lesson L036 was paid for, and it is the one section 3 constructs. Other dimensions in which a revalidation environment differs from a deployed one — a machine with no vendor CLI (tests/test_hermetic_suite.sh constructs that one), a HOME with no acknowledgement, a repository with no remote — are each somebody's own proof to construct, and none of them is covered here. The question to ask of any new gate is the one this file's header asks: in which environment is the condition you branch on false, and is that the environment you test in"
