@@ -128,7 +128,22 @@ assert_match "^requirements: imported from $INTRUDER$" "$out" \
 assert_eq "1" "$(cat "$wt/.orchid/runtime/epoch")" "a successful start still never resets the epoch"
 assert_eq "$(cat "$INTRUDER")" "$(cat "$wt/.orchid/requirements.md")" \
   "the requirements snapshot is the file that was actually imported"
-assert_match "^  export ORCHID_EPOCH=1$" "$out" "the handoff names the epoch that is actually current"
+# T029 (dogfood finding F31): the handoff no longer hands over an epoch
+# LITERAL -- it hands over the read of `.orchid/runtime/epoch`, because a
+# literal is the one form guaranteed to expire in the shell the operator keeps
+# (see libexec/orchid-start and tests/test_start.sh's Part on the same line).
+# This case still pins what it always pinned, and pins it harder than
+# test_start.sh can: that fixture's run is fenced at epoch 0, so a `# 0 right
+# now` annotation would survive a hardcoded zero, whereas this one REUSES an
+# existing epoch of 1. Both the annotation and the refusal the prose quotes
+# must therefore read 1 here, which is what makes them a report of the current
+# epoch rather than a constant.
+grep -qF 'export ORCHID_EPOCH="$(cat .orchid/runtime/epoch)"' <<<"$out" \
+  || fail "the handoff must export the epoch by READING .orchid/runtime/epoch, not as a literal"
+assert_match "^  export ORCHID_EPOCH.*# 1 right now$" "$out" \
+  "the handoff names the epoch that is actually current — the reused 1, not the 0 a fresh setup mints"
+assert_match "stale epoch '1' \(current N\)" "$out" \
+  "...and the refusal it forewarns quotes that same current epoch"
 # The whole mutating half runs under the per-verb transactional lock (the same
 # one `orchid config commit` holds across this exact durable commit), and
 # releases it on the way out.

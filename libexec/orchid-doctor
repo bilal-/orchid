@@ -524,8 +524,16 @@ fi
 # ':(exclude).orchid' scopes the refresh to everything EXCEPT `.orchid/`,
 # so it never touches durable run state; the config half of this same
 # incident now has its own safe path anyway (`orchid config commit`).
+#
+# T029 (dogfood finding F31): that scoped refresh is HALF the remedy, and on
+# its own it does not clear this check -- the excluded `.orchid/` paths keep
+# their staged deletions, which is the very signature read above. The text is
+# no longer written here at all: `orchid status` prints the same recovery, the
+# two drifted from correct together, and lib/common.sh's
+# orchid_stale_checkout_remedy now holds the single copy (and the argument for
+# why it is two commands, in that order).
 if orchid_stale_checkout "$repo"; then
-  bad "integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid'\" before committing anything here"
+  bad "$(orchid_stale_checkout_remedy)"
 else
   ok "no stale integration checkout state"
 fi

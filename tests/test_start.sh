@@ -70,7 +70,25 @@ assert_match "^run: r-001 \(planning\)$" "$out1" "start prints run id and run_st
 assert_match "^requirements: imported from $REQ$" "$out1" "start reports the requirements import"
 assert_match "^unattended trust: untrusted" "$out1" "trust stays off unless explicitly acknowledged"
 assert_match "^  cd $wt1$" "$out1" "the handoff names the worktree to work from"
-assert_match "^  export ORCHID_EPOCH=0$" "$out1" "the handoff names the epoch to export"
+# T029 (dogfood finding F31): the handoff used to print `export ORCHID_EPOCH=0`
+# -- a literal, into a shell the operator keeps for the rest of the run, naming
+# the one value certain to expire (every `orchid run start|resume` and every
+# headless tick fences a fresh epoch, so the first drive pass makes it stale
+# and the next mutating verb typed in that shell is refused). It now hands over
+# the READ of `.orchid/runtime/epoch`, which is the same line after every drive
+# pass instead of a different number to hunt for, and it says so rather than
+# leaving the operator to meet the refusal first. `grep -F`, not `assert_match`:
+# the line is nothing but shell metacharacters.
+grep -qF 'export ORCHID_EPOCH="$(cat .orchid/runtime/epoch)"' <<<"$out1" \
+  || fail "the handoff must export the epoch by READING .orchid/runtime/epoch, not as a literal"
+assert_match "^  export ORCHID_EPOCH.*# 0 right now$" "$out1" \
+  "the handoff still shows the epoch it just fenced this run at"
+grep -qF 'export ORCHID_EPOCH=0' <<<"$out1" \
+  && fail "the handoff must not hand an operator a bare epoch literal to carry (dogfood F31)"
+assert_match "snapshot, not a constant" "$out1" \
+  "the handoff says the exported epoch expires"
+assert_match "stale epoch '0' \(current N\)" "$out1" \
+  "the handoff names the refusal an expired epoch produces, so it is recognized when it arrives"
 assert_match "orchid plan apply --reason" "$out1" "the handoff points at the planning procedure"
 
 git -C "$r1" rev-parse --verify -q orchid/integration >/dev/null \

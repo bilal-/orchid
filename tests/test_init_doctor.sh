@@ -47,7 +47,7 @@ trusted_doctor="$(ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor)" \
   || fail "doctor remains healthy after unattended acknowledgement"
 assert_match "^ok: unattended trust: allowed" "$trusted_doctor" \
   "doctor reports the allowed gate with machine-local provenance"
-echo "$trusted_doctor" | grep -q "scheduled/service invocation" \
+grep -q "scheduled/service invocation" <<<"$trusted_doctor" \
   && fail "doctor must not report scheduled refusals when none were recorded"
 
 # A scheduled pump/tick has nowhere to print: the cron line and the launchd
@@ -178,7 +178,7 @@ fi
 out_gf="$(ORCHID_ENGINES_DIR="$WORK/eng" ORCHID_ROLE_IMPLEMENTER=fake "$ORCHID_BIN" doctor --greenfield)" || fail "doctor --greenfield passes on an already-initialized repo"
 assert_match "greenfield: verify command deferred to scaffold task" "$out_gf" \
   "doctor --greenfield: verify check skipped with the greenfield note"
-echo "$out_gf" | grep -q "FAIL: verify command" && fail "doctor --greenfield must never FAIL the verify command check"
+grep -q "FAIL: verify command" <<<"$out_gf" && fail "doctor --greenfield must never FAIL the verify command check"
 
 # doctor --greenfield rejects an unknown flag.
 rc=0; ORCHID_ENGINES_DIR="$WORK/eng" "$ORCHID_BIN" doctor --bogus >/dev/null 2>&1 || rc=$?
@@ -266,7 +266,7 @@ assert_match "FAIL: split-brain checkout: work from the integration branch or a 
 
 # healthy fixture (the main $WORK repo, already initialized with a roadmap on
 # orchid/integration) must be unaffected by the new check.
-echo "$out1" | grep -q "FAIL: split-brain" && fail "doctor must not flag split-brain on a healthy post-init repo"
+grep -q "FAIL: split-brain" <<<"$out1" && fail "doctor must not flag split-brain on a healthy post-init repo"
 assert_match "ok: no split-brain checkout state" "$out1" "doctor's split-brain check passes on a healthy post-init repo"
 
 # ---------------------------------------------------------------------------
@@ -291,7 +291,15 @@ healthy_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || tru
 assert_match "ok: no stale integration checkout state" "$healthy_doctor_out" \
   "doctor: a healthy integration-branch worktree is unaffected"
 healthy_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status)"
-echo "$healthy_status_out" | grep -q "integration checkout is stale" \
+# T029: a HERESTRING, never `echo | grep -q` (the trap helpers.sh documents for
+# assert_match, and this file already spells out at its own line 36). It is
+# load-bearing HERE in a way it was not before: this is the only arm proving
+# the stale warning is CONDITIONAL, and the text it looks for just grew from
+# one line to four (orchid_stale_checkout_remedy). A piped `grep -q` exits at
+# its first match and SIGPIPEs the `echo`, which pipefail promotes to a nonzero
+# pipeline status -- so the `fail` is skipped exactly when the pattern IS
+# present, i.e. exactly when a regression made `status` warn unconditionally.
+grep -q "integration checkout is stale" <<<"$healthy_status_out" \
   && fail "status must not warn stale on a healthy integration-branch worktree"
 
 # Advance the ref from OUTSIDE $stale_wt: a second, DETACHED worktree of the
@@ -312,17 +320,114 @@ stale_doctor_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "doctor must FAIL on a stale integration checkout"
 # v1-m4 Task 1: the remedy text is now SCOPED to exclude .orchid/ (a bare
 # `git checkout HEAD -- .` would clobber uncommitted run state -- the r-001
-# incident's other half); ':(exclude)' contains ERE metacharacters, escaped
-# here since assert_match's first arg is an extended regex.
-assert_match "FAIL: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
-  "$stale_doctor_out" "doctor names the scoped stale-checkout fix"
+# incident's other half).
+#
+# T029 (dogfood finding F31): that scoped checkout is only HALF the remedy --
+# it cannot clear this check by itself, because the index entries it clears
+# are the ones its own pathspec excludes. Both verbs now print the two-command
+# recovery from lib/common.sh's orchid_stale_checkout_remedy, and the Part
+# below RUNS each half against a real stale checkout rather than trusting the
+# text. `grep -F` here, not assert_match: the line is quotes, parentheses,
+# dots and `&&` almost end to end, and an ERE that escapes all of that is a
+# defect waiting to pass on a pattern nobody can read.
+stale_remedy_line="integration checkout is stale — refresh with \"git checkout HEAD -- . ':(exclude).orchid' && git reset\" before committing anything here"
+grep -qF "FAIL: $stale_remedy_line" <<<"$stale_doctor_out" \
+  || fail "doctor names the two-command stale-checkout fix (no match '$stale_remedy_line')"
+grep -qF 'the bare "git reset" is what CLEARS this warning' <<<"$stale_doctor_out" \
+  || fail "doctor says which half of the remedy actually clears the warning"
+grep -qF 'requirements.md being revised at the repository root' <<<"$stale_doctor_out" \
+  || fail "doctor warns that the checkout half overwrites uncommitted work outside .orchid/"
 
 # v1-m4 Task 5 review: `status`'s split-brain/stale-checkout warnings now go
 # to STDERR only (never stdout, in any mode -- see libexec/orchid-status),
 # so this capture needs `2>&1` to still see it; unchanged otherwise.
 stale_status_out="$(ORCHID_REPO="$stale_wt" "$ORCHID_BIN" status 2>&1)"
-assert_match "WARNING: integration checkout is stale — refresh with \"git checkout HEAD -- \. ':\(exclude\)\.orchid'\" before committing anything here" \
-  "$stale_status_out" "status warns about the scoped stale-checkout fix"
+grep -qF "WARNING: $stale_remedy_line" <<<"$stale_status_out" \
+  || fail "status warns with the two-command stale-checkout fix (no match '$stale_remedy_line')"
+# The two verbs print ONE text: they drifted from correct together once (F31),
+# and a copy each is how that happened.
+grep -qF 'requirements.md being revised at the repository root' <<<"$stale_status_out" \
+  || fail "status carries the same recovery text doctor does, from the same source"
+
+# ---------------------------------------------------------------------------
+# T029 (dogfood finding F31): THE PRINTED REMEDY IS RUN, not read. An operator
+# followed the old one-command recovery character for character and watched
+# this warning survive it -- so the claim under test here is not "the text
+# mentions the right commands" but "each half does what the text says it does,
+# against a checkout that is actually stale".
+#
+# The fixture above is not enough for that, and the difference is the whole
+# finding: its advancing commit adds `elsewhere.txt` and nothing else, so the
+# scoped checkout clears it and the defect never appears. A REAL merge commit
+# carries new durable run state under `.orchid/` as well as code -- that is
+# what `orchid merge` commits -- and those are exactly the index entries the
+# `:(exclude).orchid` pathspec is not allowed to touch. So this fixture's
+# advance carries both.
+# ---------------------------------------------------------------------------
+rem_bare="$WORK/remedy-bare"; mkdir -p "$rem_bare"
+(cd "$rem_bare" && git init -q . && git commit -q --allow-empty -m root)
+ORCHID_REPO="$rem_bare" "$ORCHID_BIN" init >/dev/null
+rem_wt="$WORK/remedy-wt"
+git -C "$rem_bare" worktree add -q "$rem_wt" orchid/integration
+# An operator document at the repository root, committed FROM this checkout,
+# so nothing is stale yet. requirements.md is the specific file F31's operator
+# lost: it is edited uncommitted for long stretches while a run is driven.
+printf 'v1: the committed requirements\n' > "$rem_wt/requirements.md"
+git -C "$rem_wt" add requirements.md
+git -C "$rem_wt" commit -q -m "fixture: requirements.md at the repository root"
+
+# Advance the branch from OUTSIDE $rem_wt (same update-ref technique as above),
+# with a commit shaped like a merge: one code path, one new `.orchid/` path.
+rem_wt2="$WORK/remedy-wt2"
+git -C "$rem_bare" worktree add -q --detach "$rem_wt2" orchid/integration
+mkdir -p "$rem_wt2/.orchid/runs/r-001"
+echo "the merged code" > "$rem_wt2/kernel.sh"
+echo "merged run state" > "$rem_wt2/.orchid/runs/r-001/from-elsewhere.md"
+git -C "$rem_wt2" add -A
+git -C "$rem_wt2" commit -q -m "advance integration from elsewhere (code + run state)"
+git -C "$rem_bare" update-ref refs/heads/orchid/integration "$(git -C "$rem_wt2" rev-parse HEAD)"
+
+# The operator's own state in the stale checkout: an uncommitted edit at the
+# repository root (outside .orchid/, so NOT protected by the pathspec) and
+# live uncommitted run state (inside .orchid/, so protected).
+printf 'v2: the edit in progress\n' > "$rem_wt/requirements.md"
+printf 'live run state\n' > "$rem_wt/.orchid/live-state.md"
+[ -n "$(git -C "$rem_wt" diff --cached --name-status | grep '^D')" ] \
+  || fail "remedy fixture setup: $rem_wt must show the stale-checkout D-row signature"
+git -C "$rem_wt" diff --cached --name-status | grep -qE '^D[[:space:]]+\.orchid/' \
+  || fail "remedy fixture setup: the advance must leave a staged deletion UNDER .orchid/, or this Part tests nothing"
+
+# RED -- the half the old text printed, alone. It restores the code, and it
+# leaves the warning exactly where it was, because the staged deletions it did
+# not clear are under the one prefix its pathspec excludes.
+git -C "$rem_wt" checkout HEAD -- . ':(exclude).orchid'
+rc=0; rem_half_out="$(ORCHID_REPO="$rem_wt" "$ORCHID_BIN" doctor 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "doctor must still FAIL after the scoped checkout alone (F31)"
+assert_match "FAIL: integration checkout is stale" "$rem_half_out" \
+  "the scoped checkout ALONE does not clear the stale-checkout warning — this is dogfood finding F31"
+assert_eq "the merged code" "$(cat "$rem_wt/kernel.sh")" \
+  "the scoped checkout does refresh the code half (that is why it is still the first command)"
+# ...and it overwrote the operator's uncommitted root file. The remedy text
+# warns about exactly this; the warning is true, and it is pinned here so it
+# cannot be quietly dropped as scaremongering.
+assert_eq "v1: the committed requirements" "$(cat "$rem_wt/requirements.md")" \
+  "the scoped checkout overwrites an uncommitted edit outside .orchid/ (the second half of F31)"
+assert_eq "live run state" "$(cat "$rem_wt/.orchid/live-state.md")" \
+  "...while uncommitted run state under .orchid/ is protected by the pathspec, as documented"
+
+# GREEN -- the second command the remedy now names. It clears the warning, and
+# it writes nothing: the live run state on disk is byte-identical afterwards.
+git -C "$rem_wt" reset -q
+rem_full_out="$(ORCHID_REPO="$rem_wt" "$ORCHID_BIN" doctor 2>&1)" || true
+assert_match "ok: no stale integration checkout state" "$rem_full_out" \
+  "the bare 'git reset' clears the stale-checkout warning the scoped checkout could not"
+assert_eq "live run state" "$(cat "$rem_wt/.orchid/live-state.md")" \
+  "a mixed 'git reset' writes no file — uncommitted run state survives it untouched"
+assert_eq "the merged code" "$(cat "$rem_wt/kernel.sh")" \
+  "...and it does not undo the refresh the checkout just made"
+rem_status_out="$(ORCHID_REPO="$rem_wt" "$ORCHID_BIN" status 2>&1)"
+grep -q "integration checkout is stale" <<<"$rem_status_out" \
+  && fail "status must not go on warning stale once the printed remedy has been run in full"
 
 # ---------------------------------------------------------------------------
 # v1-m4 Task 1 (the r-001 journal-loss incident, closed): `orchid config

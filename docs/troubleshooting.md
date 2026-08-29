@@ -961,17 +961,52 @@ orchid config commit --reason "..."
 This stages exactly `orchid.config`'s current on-disk content into a
 separate temp worktree of the integration branch and commits it there —
 never touching your checkout's own git index. For any other reason you need
-to refresh a stale checkout by hand:
+to refresh a stale checkout by hand, it takes **two** commands, in this
+order:
 
 ```sh
 git checkout HEAD -- . ':(exclude).orchid'
+git reset
 ```
 
-**Not** a bare `git checkout HEAD -- .` — that would also clobber any
-uncommitted `.orchid/` run state sitting in that checkout.
+**Both, and the reset second.** The checkout refreshes the working tree —
+the code this checkout fell behind on, which is the part that matters, since
+a stale checkout goes on *executing* pre-merge code. The bare `git reset` is
+what clears the warning: `git checkout` never touches an index entry its own
+pathspec excluded, so every `.orchid/` path the new `HEAD` carries and the
+stale index does not is left staged for deletion — and that staged deletion
+is the signature `doctor`/`status` read. Run the checkout alone and the
+warning survives it — which is exactly what a dogfood operator hit (finding
+F31) after following the old one-command version of this page character for
+character.
+
+The reset costs nothing: a mixed `git reset` writes no file and deletes no
+file, it only brings the index to `HEAD`, so the live `.orchid/` run state on
+disk is untouched. Do it *second* all the same — an operator who runs the
+reset and then gets interrupted is left with pre-merge code under a checkout
+that now looks healthy to every check there is, which is the L018 failure
+with its one alarm switched off. That is the same hazard
+[*Unstaging is not free*](#unstaging-is-not-free-it-can-hide-a-genuinely-stale-kernel)
+spells out for the kernel refusal below, and the order is what disarms it
+here: by the time the reset lands, the checkout has already brought the
+working tree to `HEAD` for everything the launcher executes, so the index it
+resyncs is no longer the only record of anything. What the reset covers is
+`.orchid/` alone, where the live on-disk copy is the authority and no
+refresh may run at all.
+
+The checkout is the half that can cost you something. **Not** a bare `git
+checkout HEAD -- .` — that clobbers uncommitted `.orchid/` run state (the
+r-001 incident). And `':(exclude).orchid'` protects run state and *nothing
+else*: every other tracked path is restored from `HEAD`, so an uncommitted
+edit of your own outside `.orchid/` is overwritten with no reflog to recover
+it from. A `requirements.md` being revised at the repository root is the file
+this has actually cost an operator. Commit or stash first — `git status
+--short` names what is at risk.
+
 `orchid doctor`/`orchid status` detect and name this condition
 automatically (staged-deletion signature against the checkout's own
-branch), before you ever act on stale state by accident.
+branch), before you ever act on stale state by accident, and both print the
+two-command recovery above.
 
 ## Stale orchid itself (`refusing to run`)
 

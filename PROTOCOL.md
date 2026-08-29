@@ -521,9 +521,18 @@ index/working tree ever refreshing (`orchid doctor`/`orchid status` detect
 this and call it out by name). A naive `git add -A && git commit` in that
 state silently re-commits whatever stray staged deletions the stale index
 still carries, reverting real history. If you do need to refresh such a
-checkout by hand for some other reason, use `git checkout HEAD -- .
-':(exclude).orchid'` — NOT a bare `git checkout HEAD -- .`, which would
-also clobber any uncommitted `.orchid/` run state sitting there.
+checkout by hand for some other reason, it takes **both** commands, in this
+order: `git checkout HEAD -- . ':(exclude).orchid'` and then a bare `git
+reset`. The checkout refreshes the working tree without touching run state;
+the reset brings the INDEX to `HEAD` for the `.orchid/` paths that pathspec
+excludes, and that is what actually clears the warning — the checkout alone
+leaves their staged deletions behind, so `doctor`/`status` go on reporting
+stale (dogfood finding F31). The reset writes no file, so nothing on disk is
+lost to it. Never a bare `git checkout HEAD -- .`, which clobbers
+uncommitted `.orchid/` run state — and note that the exclude protects run
+state *only*: the checkout still overwrites any uncommitted edit of your own
+outside `.orchid/` (a `requirements.md` at the repository root is the one
+that has actually been lost this way), so commit or stash those first.
 
 ## THE TICK
 
