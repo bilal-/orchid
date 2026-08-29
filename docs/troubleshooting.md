@@ -770,80 +770,6 @@ candidate from the worktree and journals why
 Use `reverify`. The raw edge exists because the transition table is data, not
 because it is a second, laxer procedure.
 
-## `plan apply` refuses: carried-forward items are unconsidered
-
-**Symptom:** `orchid plan apply` exits 3 without committing anything, listing
-items like `r-001#57` or `L016` as neither covered by a task nor deferred.
-`orchid run advance` out of `planning` exits 3 with the same list — the gate
-is on the run leaving `planning`, so taking that edge first does not open the
-door for the `plan apply` behind it.
-
-This is the planning cross-check. The previous run left findings behind —
-ledger entries in `.orchid/runs/<prev>/journal.md` and the active lessons
-`orchid run new` carried across — and no task in the new plan appears to
-consider the ones it names. It exists because a run once omitted a defect the
-previous run had already found and journaled, and paid for it hours in.
-
-```sh
-orchid plan crosscheck             # the same report, without committing
-```
-
-Two ways forward, per item. Cover it — add or extend a task whose text names
-the thing (a snake_case identifier, a source path, an `INV-nn`, the lesson
-id); matching is on those anchor terms only, and only in the task's body and
-its intent-bearing frontmatter (`title`, `acceptance_criteria`,
-`stop_condition`, `hook_guidance`, `resources`). A bare frontmatter key does
-not count, and neither does `verification_commands` — every task's chain
-names the same suite scripts, so a path in there would mark items covered
-across the whole plan at once. The task has to actually say it. Where an
-item does come back `covered`, the line names the anchor that earned it
-(`… (task T010 via started_at)`); if that term reads as incidental, treat
-the item as uncovered and cover or defer it properly. Or decide against it:
-
-```sh
-orchid plan defer r-001#57 --reason "owned by the follow-up PR, not this run"
-```
-
-Items are FINDINGS, not journal entries. One arbitration entry often records
-several defects at once, so an entry written as `(1) … (2) … (3) …` is split
-into `r-001#57.1`, `r-001#57.2`, `r-001#57.3` — cover or defer each on its
-own; the undivided `r-001#57` is refused, since deferring it would absolve
-all three in one command.
-
-An item that reports as
-
-```
-UNCOVERED [ledger] r-001#57 — CARRIED AS LEDGER ITEMS, not fixed here: …
-          ^ this entry records SEVERAL findings and cannot be split …
-```
-
-announces several findings that cannot be separated unambiguously — prose
-with no enumeration, an enumeration shorter than the count the entry claims,
-or one whose markers are scrambled (`1, 3, 2`), gapped (`1, 2, 4`) or
-repeated. No task text closes that one, by design: a wrong guess at where one
-finding ends would silently absolve the others. Read the entry, schedule what
-it needs, then defer it naming what you scheduled.
-
-A deferral journals the decision and satisfies the check for that item alone
-— there is no bulk override, and it only works while `run_status` is
-`planning`. Use the verb: what the check reads is the `plan_deferral` entry
-KIND, so a hand-written journal note whose text happens to read
-`deferred r-001#57: …` records nothing and the item stays uncovered. A
-deferral postpones rather than erases: the item reappears in the NEXT run's
-cross-check, still wanting a task or a fresh reason. Read the full item with
-`grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry at that
-ordinal.
-
-The refusal closes at the same boundary `plan defer` does, and that boundary
-is exactly why `run advance` is gated too: while a run is still in
-`planning`, both remedies above are open, so the refusal always has a way
-out. Once `run_status` has legitimately left `planning`, a `plan apply` still
-PRINTS the cross-check and still names anything unconsidered, but it commits
-rather than refusing — neither remedy is open at that point, and a gate whose
-only way out has already closed would just strand you. Pick the item up with
-a task instead, or leave it for the next run's cross-check, which will raise
-it again.
-
 If the pass stops again with `awaiting-operator-prerequisite` instead, that is
 the OTHER operator-owned stop at this point — a step outside the repository,
 not inside the candidate — and the next section is the one you want. Do the
@@ -918,6 +844,81 @@ If the suite can migrate its own store instead — a fixture database, a temp
 file, an in-memory DB the tests build — do that and leave
 `operator_prerequisite` empty. It is the better answer wherever it is
 available; this is for where it is not.
+
+## `plan apply` refuses: carried-forward items are unconsidered
+
+**Symptom:** `orchid plan apply` exits 3 without committing anything, listing
+items like `r-001#57` or `L016` as neither covered by a task nor deferred.
+`orchid run advance` out of `planning` exits 3 with the same list — the gate
+is on the run leaving `planning`, so taking that edge first does not open the
+door for the `plan apply` behind it.
+
+This is the planning cross-check. The previous run left findings behind —
+ledger entries in `.orchid/runs/<prev>/journal.md` and the active lessons
+`orchid run new` carried across — and no task in the new plan appears to
+consider the ones it names. It exists because a run once omitted a defect the
+previous run had already found and journaled, and paid for it hours in.
+
+```sh
+orchid plan crosscheck             # the same report, without committing
+```
+
+Two ways forward, per item. Cover it — add or extend a task whose text names
+the thing (a snake_case identifier, a source path, an `INV-nn`, the lesson
+id); matching is on those anchor terms only, and only in the task's body and
+its intent-bearing frontmatter (`title`, `acceptance_criteria`,
+`stop_condition`, `hook_guidance`, `resources`). A bare frontmatter key does
+not count, and neither does `verification_commands` — every task's chain
+names the same suite scripts, so a path in there would mark items covered
+across the whole plan at once. The task has to actually say it. Where an
+item does come back `covered`, the line names the anchor that earned it
+(`… (task T010 via started_at)`); if that term reads as incidental, treat
+the item as uncovered and cover or defer it properly. Or decide against it:
+
+```sh
+orchid plan defer r-001#57 --reason "owned by the follow-up PR, not this run"
+```
+
+Items are FINDINGS, not journal entries. One arbitration entry often records
+several defects at once, so an entry written as `(1) … (2) … (3) …` is split
+into `r-001#57.1`, `r-001#57.2`, `r-001#57.3` — cover or defer each on its
+own; the undivided `r-001#57` is refused, since deferring it would absolve
+all three in one command.
+
+An item that reports as
+
+```
+UNCOVERED [ledger] r-001#57 — CARRIED AS LEDGER ITEMS, not fixed here: …
+          ^ this entry records SEVERAL findings and cannot be split …
+```
+
+announces several findings that cannot be separated unambiguously — prose
+with no enumeration, an enumeration shorter than the count the entry claims,
+or one whose markers are scrambled (`1, 3, 2`), gapped (`1, 2, 4`) or
+repeated. No task text closes that one, by design: a wrong guess at where one
+finding ends would silently absolve the others. Read the entry, schedule what
+it needs, then defer it naming what you scheduled.
+
+A deferral journals the decision and satisfies the check for that item alone
+— there is no bulk override, and it only works while `run_status` is
+`planning`. Use the verb: what the check reads is the `plan_deferral` entry
+KIND, so a hand-written journal note whose text happens to read
+`deferred r-001#57: …` records nothing and the item stays uncovered. A
+deferral postpones rather than erases: the item reappears in the NEXT run's
+cross-check, still wanting a task or a fresh reason. Read the full item with
+`grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry at that
+ordinal.
+
+The refusal closes at the same boundary `plan defer` does, and that boundary
+is exactly why `run advance` is gated too: while a run is still in
+`planning`, both remedies above are open, so the refusal always has a way
+out. Once `run_status` has legitimately left `planning`, a `plan apply` still
+PRINTS the cross-check and still names anything unconsidered, but it commits
+rather than refusing — neither remedy is open at that point, and a gate whose
+only way out has already closed would just strand you. Pick the item up with
+a task instead, or leave it for the next run's cross-check, which will raise
+it again.
+
 ## One task needs a decision and the whole run stopped
 
 **Symptom:** `orchid drive` exited 16 (or the pump printed `judgment boundary
