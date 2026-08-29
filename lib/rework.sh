@@ -28,6 +28,22 @@
 # It is evidence for a HUMAN and for the next attempt's input pack, and for
 # nothing else.
 
+# lib/findings.sh, sourced relative to THIS file's own directory -- the same
+# deliberate exception, for the same reason, that lib/pack.sh already makes to
+# source this file (tests/test_rework.sh and tests/test_pack.sh source these
+# libraries directly, with no ORCHID_ROOT set at all). findings.sh sources
+# nothing itself, so there is no cycle, and it declares no readonly state, so
+# re-sourcing it inside a verb that already has it (libexec/orchid-task,
+# runners/orchid-drive) only redefines identical functions.
+#
+# SOURCED RATHER THAN RE-IMPLEMENTED, because exactly one function may own the
+# rule for reading a log's `candidate:` claim. findings_log_candidate stops at
+# the bare `---`, so a test that PRINTS a `candidate: ` line of its own can
+# never impersonate the header field the binding below trusts -- and a second
+# copy of that parse living here would be one edit away from disagreeing with
+# the brief mechanism it has to agree with.
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/findings.sh"
+
 # rework_log_path <state> <id> <round> -- the round-scoped capture path.
 rework_log_path() { printf '%s/reviews/%s-r%s-rework.log\n' "$1" "$2" "$3"; }
 
@@ -108,9 +124,56 @@ rework_signature() {
     { print }' "$1" | _orchid_stream_sha256
 }
 
-# rework_evidence_source <state> <id> <from-status> -- which log documents the
-# failure that is causing THIS rework, or nothing when no failing evidence
-# exists.
+# rework_evidence_bound <log> <candidate> -- 0 iff <log>'s own header claims it
+# was produced against <candidate>.
+#
+# THE SAME RULE lib/findings.sh already applies to the locations it quotes into
+# a task body (T010), applied to the bytes this file carries into the next
+# attempt's pack. Evidence handed to an attempt must belong to the candidate
+# that failed: a log describing a candidate that no longer exists is not a
+# weaker version of the previous attempt's failure, it is a different task's
+# answer wearing this one's heading -- and the brief around it says "you
+# already tried this and got exactly this", which about the wrong candidate is
+# simply false.
+#
+# Three ways a log fails to bind, all of them a refusal:
+#   * it names a DIFFERENT candidate (superseded);
+#   * it carries no `candidate:` header at all (an older kernel wrote it:
+#     unbindable, and an absence of a claim is not a claim);
+#   * <candidate> is empty or `none` -- there is nothing to bind TO, and two
+#     vacuous sentinels agreeing is not proof (the same trap the
+#     `testing -> reviewing` sha compare avoids by excluding `none`).
+rework_evidence_bound() {
+  local log="$1" cand="${2:-}"
+  [ -n "$cand" ] && [ "$cand" != none ] || return 1
+  [ -f "$log" ] || return 1
+  [ "$(findings_log_candidate "$log")" = "$cand" ]
+}
+
+# rework_evidence_current <state> <id> <candidate> -- 0 iff the newest CAPTURED
+# round is usable as <candidate>'s previous failure: it exists, it is not a
+# torn zero-byte write, and its header binds it to <candidate>.
+#
+# The read end of the binding, and it closes a window the write end cannot see.
+# A round is captured against the candidate that failed, and the candidate then
+# MOVES: the reworking implementer commits, `orchid merge`'s rebase arm mints a
+# new candidate_sha, or an operator re-derives the branch. Every one of those
+# leaves the last captured round describing a tree that is no longer under
+# work. Feeding it forward would tell the next attempt that its CURRENT code
+# produced that output, which is exactly the "you already tried this" claim
+# inverted into a false one -- so a brief that cannot bind is not shipped at
+# all, and the pack records the omission rather than quietly narrowing what it
+# says.
+rework_evidence_current() {
+  local state="$1" id="$2" cand="${3:-}" latest
+  latest="$(rework_latest_log "$state" "$id" 0)" || return 1
+  [ -s "$latest" ] || return 1
+  rework_evidence_bound "$latest" "$cand"
+}
+
+# rework_evidence_source <state> <id> <from-status> [candidate] -- which log
+# documents the failure that is causing THIS rework, or nothing when no failing
+# evidence exists.
 #
 # `merging -> rework` is the validation-failure path: `orchid merge` re-ran
 # the suite in its own temp worktree and wrote <id>-merge.log, and the task's
@@ -123,8 +186,22 @@ rework_signature() {
 # which writes no merge log at all and leaves a passing verify log behind.
 # Capturing that would hand the next attempt a green suite as its "previous
 # failure" -- worse than handing it nothing.
+#
+# THE `candidate` ARGUMENT IS WHAT KEEPS THE MERGING ARM HONEST, and it is not
+# hypothetical: `orchid merge`'s rebase arm mints a NEW candidate_sha under a
+# tree whose <id>-merge.log is still on disk, and the `merging` arm of `task
+# advance rework` deliberately exempts that log from its invalidating delete
+# (so the failure it is about to journal keeps its evidence). A superseded
+# merge log therefore sits in exactly the place this function looks, reads
+# exactly like a current one, and would be captured as this round's failure,
+# digested into this round's signature, and counted toward the streak that
+# reroutes the role and blocks the task for not converging. So the log must
+# CLAIM the candidate the caller is reworking. Absent (the caller has no
+# candidate to bind to, e.g. a direct unit call), the check is skipped rather
+# than failed -- there is nothing to compare against, and refusing every
+# capture on that basis would make the feature inert instead of careful.
 rework_evidence_source() {
-  local state="$1" id="$2" from="$3" src=""
+  local state="$1" id="$2" from="$3" cand="${4:-}" src=""
   if [ "$from" = merging ] && [ -f "$state/reviews/$id-merge.log" ]; then
     src="$state/reviews/$id-merge.log"
   elif [ -f "$state/reviews/$id-verify.log" ]; then
@@ -145,5 +222,8 @@ rework_evidence_source() {
   # honest.
   [ -s "$src" ] || return 1
   [ "$(tail -n1 "$src")" != "exit: 0" ] || return 1
+  if [ -n "$cand" ]; then
+    rework_evidence_bound "$src" "$cand" || return 1
+  fi
   printf '%s\n' "$src"
 }

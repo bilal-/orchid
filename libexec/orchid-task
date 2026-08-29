@@ -1135,7 +1135,23 @@ case "$sub" in
       # untouched rather than resetting them -- an uncapturable round is an
       # absence of evidence about convergence, and clearing the streak on it
       # would hide a genuine repeat behind an unrelated interruption.
-      if rw_src="$(rework_evidence_source "$state" "$id" "$from")"; then
+      #
+      # AND IT IS BOUND TO THE CANDIDATE IT DOCUMENTS. The evidence logs both
+      # carry a `candidate:` header, and the capture refuses one that names a
+      # different candidate than the task is reworking (lib/rework.sh's
+      # rework_evidence_bound, the same rule lib/findings.sh applies to the
+      # locations it quotes). The `merging` arm is why: `orchid merge`'s rebase
+      # path mints a new candidate_sha while the previous candidate's
+      # <id>-merge.log is still on disk and deliberately exempt from the delete
+      # below, so an unbound capture would file a superseded candidate's output
+      # as this round's failure -- and then digest it, count it toward the
+      # streak, reroute the role on it and block the task for not converging.
+      # The refusal is journalled rather than silent: "rework arrived with
+      # nothing to act on" is the exact complaint this task exists to answer,
+      # so the one case where the kernel deliberately captures nothing has to
+      # say so.
+      rw_cand="$(fm_get "$f" candidate_sha)"
+      if rw_src="$(rework_evidence_source "$state" "$id" "$from" "$rw_cand")"; then
         rw_round="$(fm_get "$f" rework_rounds)"
         case "$rw_round" in ''|*[!0-9]*) rw_round=0 ;; esac
         rw_round=$((rw_round + 1))
@@ -1160,6 +1176,16 @@ case "$sub" in
         fm_set "$f" rework_rounds "$rw_round"
         fm_set "$f" rework_signature "$rw_sig"
         fm_set "$f" rework_signature_repeats "$rw_reps"
+      elif rw_unbound="$(rework_evidence_source "$state" "$id" "$from")"; then
+        # Failing evidence IS on disk and was refused, which is a different
+        # fact from "there was nothing to capture" and the only one of the two
+        # an operator can act on. Named with the candidate it actually
+        # describes, so the entry answers the next question too. Only reachable
+        # with a candidate to bind to: an empty one skips the check entirely
+        # above, so this arm is a genuine mismatch every time.
+        rw_claim="$(findings_log_candidate "$rw_unbound")"
+        journal --task "$id" --kind intervention \
+          "rework evidence NOT captured: ${rw_unbound##*/} names candidate '${rw_claim:-none}', not this task's '$rw_cand' — it documents a superseded candidate, so it is neither fed forward nor counted toward the convergence streak"
       fi
       if [ "$from" != merging ]; then
         if [ "$waive" -eq 1 ]; then

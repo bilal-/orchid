@@ -186,6 +186,44 @@ assert_eq "$empty_sig" "$(rework_signature "$C/reviews/T001-empty2.log")" \
   "two empty logs DO share one signature -- which is why the guard above has to sit at the capture, not at the compare"
 rm -f "$C/reviews/T001-empty2.log"
 
+# --- evidence is bound to the candidate that produced it --------------------
+# Both logs the kernel writes carry a `candidate:` header, and a capture that
+# ignores it files some OTHER candidate's output as this round's failure --
+# then digests it, counts it toward the convergence streak, reroutes the role
+# on it and blocks the task for not converging.
+#
+# The `merging` arm is why this is not hypothetical: `orchid merge`'s rebase
+# path mints a NEW candidate_sha while the previous candidate's <id>-merge.log
+# is still on disk and deliberately exempt from the invalidating delete, so a
+# superseded log sits in exactly the place rework_evidence_source looks and
+# reads exactly like a current one.
+mk_log "$C/reviews/T001-verify.log" 2026-08-04T00:00:00Z candaaaa /tmp/w "FAIL: still red" 1
+assert_eq "$C/reviews/T001-verify.log" "$(rework_evidence_source "$C" T001 testing candaaaa)" \
+  "a log whose header names the candidate being reworked IS this round's evidence"
+rc=0; rework_evidence_source "$C" T001 testing candbbbb >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a log naming a DIFFERENT candidate documents a superseded candidate's failure, never this round's"
+assert_eq "$C/reviews/T001-verify.log" "$(rework_evidence_source "$C" T001 testing)" \
+  "a caller with no candidate to bind to skips the check rather than failing it — refusing every capture on that basis makes the feature inert, not careful"
+
+# The same rule at the READ end, over the newest CAPTURED round. It closes a
+# window the capture cannot see: the candidate moves after the round is filed
+# (the reworking implementer commits, a rebase mints a new sha, an operator
+# re-derives the branch), and feeding that round forward would tell the next
+# attempt that the code IT is holding produced that output.
+D="$WORK/bound/.orchid"
+mkdir -p "$D/reviews"
+mk_log "$D/reviews/T001-r1-rework.log" 2026-08-05T00:00:00Z candaaaa /tmp/w "FAIL: still red" 1
+rework_evidence_current "$D" T001 candaaaa \
+  || fail "the newest captured round is current for the candidate its own header names"
+rc=0; rework_evidence_current "$D" T001 candbbbb >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a captured round is NOT current for a candidate it never described"
+rc=0; rework_evidence_current "$D" T001 "" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a task with no candidate has nothing to bind to — two empty sentinels agreeing is not a match"
+rc=0; rework_evidence_current "$D" T001 none >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "'none' is the no-candidate sentinel and must not match a log either"
+rc=0; rework_evidence_current "$D" T999 candaaaa >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a task with no captured round has nothing current"
+
 # ===========================================================================
 # Part B -- the kernel verb. The capture happens BEFORE the invalidating
 # delete, and the delete still happens.
@@ -273,6 +311,29 @@ sig_kept="$(fm T001 rework_signature)"
 "$ORCHID_BIN" task advance T001 rework --reason "no evidence to capture" >/dev/null
 assert_eq "3" "$(fm T001 rework_rounds)" "rework_rounds counts CAPTURED rounds, so it never outruns the files on disk"
 assert_eq "$sig_kept" "$(fm T001 rework_signature)" "an uncapturable round leaves the signature record untouched"
+
+# And neither is a failing log that documents SOME OTHER CANDIDATE. It reads
+# exactly like a current one, so without the binding it would be filed as this
+# round's failure, digested into this round's signature and counted toward the
+# streak that reroutes the role and blocks the task for not converging -- a
+# fully-journalled non-convergence judgment about a tree nobody is working on.
+# `orchid merge`'s rebase arm is where this really happens (it mints a new
+# candidate_sha while the previous candidate's merge log is still on disk and
+# exempt from the delete); the binding lives on the one path both arms share,
+# so the verify log proves it here.
+"$ORCHID_BIN" task advance T001 implementing --reason "fifth attempt" >/dev/null
+"$ORCHID_BIN" task advance T001 testing --reason "fifth attempt" >/dev/null
+mk_log "$STATE/reviews/T001-verify.log" 2026-08-04T11:00:00Z 0000000000000000000000000000000000000000 "$REPO" \
+  "FAIL tests/OrderTest: a failure of a candidate nobody is reworking" 1
+"$ORCHID_BIN" task advance T001 rework --reason "evidence from a superseded candidate" >/dev/null
+assert_eq "3" "$(fm T001 rework_rounds)" \
+  "a log bound to another candidate is not this round's evidence and mints no round"
+[ ! -f "$STATE/reviews/T001-r4-rework.log" ] \
+  || fail "nothing was captured, so there is no round-4 file to feed forward"
+assert_eq "$sig_kept" "$(fm T001 rework_signature)" \
+  "and the convergence record is untouched — a superseded candidate's failure can neither repeat nor reset this task's streak"
+assert_match "rework evidence NOT captured" "$(cat "$STATE/journal.md")" \
+  "the one case where the kernel deliberately captures nothing says so — 'rework arrived with nothing to act on' is the complaint this task exists to answer"
 
 # The record is kernel-owned: no verb but the rework advance may write it.
 for k in rework_rounds rework_signature rework_signature_repeats; do

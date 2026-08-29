@@ -2126,7 +2126,11 @@ ones its archetype never declares.
 
     - the next dispatch's implementer pack carries `rework.md` (the previous
       round's output, verbatim), so the brief can say "you already tried this
-      and got exactly this";
+      and got exactly this". Both ends of that are bound to the candidate the
+      evidence names: a log describing a superseded candidate is neither
+      captured nor fed forward, because "you already tried this" said about
+      code the recipient is not holding is a confident false claim rather
+      than a weaker true one;
     - at `rework_signature_repeats` ≥ 2, dispatch that rework to a DIFFERENT
       engine in `role.implementer`'s chain — `runners/orchid-launch <id>
       implementer implement --engine <next-eligible>`, excluding the task's

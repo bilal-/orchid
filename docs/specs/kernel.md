@@ -674,6 +674,14 @@ buying a fresh implementation pass to reach the same tree.
   identical signatures. A rework with no failing evidence to capture (a
   rebase conflict, an operator advance) mints no file and leaves the streak
   alone — an absence of evidence about convergence, never a reset of it.
+  Evidence must also BIND to the candidate being reworked: both logs carry a
+  `candidate:` header, and one naming a different candidate is neither
+  captured nor counted (the refusal is journalled). `orchid merge`'s rebase
+  arm is why — it mints a new `candidate_sha` while the previous candidate's
+  `<id>-merge.log` is still on disk and deliberately exempt from the
+  invalidating delete, so an unbound capture would file a superseded
+  candidate's output as this round's failure and then block the task for not
+  converging on it.
   Three consequences, all deterministic:
   - the next attempt's input pack carries `rework.md` — the previous round's
     output VERBATIM, plus whether it repeated unchanged (docs/specs/plugins.md);
