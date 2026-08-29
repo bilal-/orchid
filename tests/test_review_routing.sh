@@ -120,7 +120,7 @@ export ORCHID_EPOCH
 "$ORCHID_BIN" task create TR1 demo >/dev/null
 outF="$(ORCHID_EPOCH='' "$ORCHID_BIN" jobs review-plan TR1)"
 assert_eq 1 "$(echo "$outF" | wc -l | tr -d ' ')" "low tier: review-plan prints exactly one slot"
-assert_match $'^1\tagy\tengine-independent$' "$outF" "low tier: slot 1 is agy, engine-independent (differs from codex implementer)"
+assert_match $'^1\tagy\tengine-independent\tinline$' "$outF" "low tier: slot 1 is agy, engine-independent (differs from codex implementer), inline (no workspace_read)"
 
 # G -- medium-tier task -> two distinct slots; slot 2 prefers the worktree-
 # capable engine (codex-review declares workspace_read; agy does not).
@@ -128,8 +128,8 @@ assert_match $'^1\tagy\tengine-independent$' "$outF" "low tier: slot 1 is agy, e
 "$ORCHID_BIN" task set TR2 risk_tier medium --reason "touches shared code" >/dev/null
 outG="$("$ORCHID_BIN" jobs review-plan TR2)"
 assert_eq 2 "$(echo "$outG" | wc -l | tr -d ' ')" "medium tier: review-plan prints exactly two slots"
-assert_match $'^1\tagy\tengine-independent$' "$outG" "medium tier: slot 1 is agy, engine-independent"
-assert_match $'^2\tcodex-review\tengine-independent$' "$outG" "medium tier: slot 2 is codex-review (worktree-capable, distinct from slot 1), engine-independent"
+assert_match $'^1\tagy\tengine-independent\tinline$' "$outG" "medium tier: slot 1 is agy, engine-independent, inline"
+assert_match $'^2\tcodex-review\tengine-independent\tworktree$' "$outG" "medium tier: slot 2 is codex-review (worktree-capable, distinct from slot 1), engine-independent"
 
 # H -- when every candidate OTHER than the implementer's own engine is
 # unavailable, the slot falls back to the implementer's engine, labeled
@@ -138,7 +138,7 @@ ledger_mark "$repoR" agy rate_limited 999999
 ledger_mark "$repoR" codex-review rate_limited 999999
 "$ORCHID_BIN" task create TR3 demo >/dev/null
 outH="$("$ORCHID_BIN" jobs review-plan TR3)"
-assert_match $'^1\tcodex\tsession-independent$' "$outH" "only the implementer's engine available -> session-independent fallback (never silent)"
+assert_match $'^1\tcodex\tsession-independent\tworktree$' "$outH" "only the implementer's engine available -> session-independent fallback (never silent)"
 
 # ===========================================================================
 # I/J/K -- one task's real lifecycle walk: implementer_engine_id capture,
@@ -419,7 +419,12 @@ mk_p_review() {
 p_journal() { "$ORCHID_BIN" journal show --task "$1" 2>/dev/null || true; }
 p_pin_lines() { grep -c 'review plan pinned' <<< "$(p_journal "$1")" || true; }
 
-TWO_ENGINE_PLAN="$(printf '1\tagy\tengine-independent\n2\tcodex-review\tengine-independent')"
+# A PINNED row carries a fifth column the live table does not: the qualified
+# engine id its slot's name resolved to at the write. That is the key a filed
+# review is matched by, and freezing it is what stops an uninstall or a rebind
+# from making an already-filed review match no slot (lib/review.sh's
+# `_review_rows_qualify`; tests/test_review.sh Part L walks it end to end).
+TWO_ENGINE_PLAN="$(printf '1\tagy\tengine-independent\tinline\torchid/agy\n2\tcodex-review\tengine-independent\tworktree\torchid/codex-review')"
 
 # A writing plan command must reject an unbound round BEFORE its journal
 # entry. `review_plan_store` has always refused the eventual file write; the
@@ -450,6 +455,11 @@ pinP="$repoP/.orchid/reviews/TP1-a1.review-plan.json"
 [ -f "$pinP" ] || fail "--pin writes the plan down for the attempt"
 assert_eq "$head_p" "$(jq -r .candidate_sha "$pinP")" "the pin records the candidate it was taken for"
 assert_eq 1 "$(jq -r .attempt "$pinP")" "...and the attempt"
+assert_eq inline "$(jq -r '.slots[0].depth' "$pinP")" "the pin persists slot 1's inline depth"
+assert_eq worktree "$(jq -r '.slots[1].depth' "$pinP")" "the pin persists slot 2's worktree depth"
+assert_eq orchid/agy "$(jq -r '.slots[0].qid' "$pinP")" \
+  "...and the qualified id each slot's engine NAME resolved to, which is the key its filed review is matched by"
+assert_eq orchid/codex-review "$(jq -r '.slots[1].qid' "$pinP")" "...for every slot"
 assert_eq 1 "$(p_pin_lines TP1)" "pinning a plan is journaled"
 assert_eq "$planP" "$("$ORCHID_BIN" jobs review-plan TP1 --pin)" "a second --pin returns the same table"
 assert_eq 1 "$(p_pin_lines TP1)" \
@@ -459,6 +469,26 @@ assert_eq 1 "$(p_pin_lines TP1)" \
 # the plan is from anywhere, exactly as before.
 assert_eq "$planP" "$(ORCHID_EPOCH='' "$ORCHID_BIN" jobs review-plan TP1)" \
   "the bare read needs no epoch and returns the pinned table"
+
+# A plan pinned before a column existed -- by T039 before the depth column, or
+# before the attribution key was frozen beside it -- has the same leading
+# fields and nothing else. Its bare read remains read-only and normalizes the
+# missing columns from the installed engine manifests; the next writing --pin
+# migrates the durable record once, with a journal entry, so neither becomes a
+# live value that can move under already-filed evidence.
+jq 'del(.slots[].depth) | del(.slots[].qid)' "$pinP" > "$pinP.legacy" && mv "$pinP.legacy" "$pinP"
+assert_eq "$planP" "$(ORCHID_EPOCH='' "$ORCHID_BIN" jobs review-plan TP1)" \
+  "a legacy three-column pin remains readable as the same five-column table"
+assert_eq 0 "$(jq '[.slots[] | has("depth"), has("qid")] | map(select(.)) | length' "$pinP")" \
+  "and the bare read did not mutate that legacy durable record"
+assert_eq "$planP" "$("$ORCHID_BIN" jobs review-plan TP1 --pin)" \
+  "a writing --pin migrates the legacy record without changing its effective routing"
+assert_eq worktree "$(jq -r '.slots[1].depth' "$pinP")" \
+  "and persists the derived worktree depth instead of re-deriving it on every read"
+assert_eq orchid/codex-review "$(jq -r '.slots[1].qid' "$pinP")" \
+  "...and the derived attribution key with it, in the same one write"
+assert_eq 2 "$(p_pin_lines TP1)" \
+  "the one schema migration is journaled exactly once"
 
 # ---------------------------------------------------------------------------
 # Q -- THE RED CASE. The engine that filed slot 1's review reaches its
@@ -533,8 +563,8 @@ assert_eq "$(printf 'orchid/codex-review\norchid/claude')" "$(review_filed_engin
   "filed reviews are read in the order reconcile filed them (TP3-a1-reviewer.json, then TP3-a1-reviewer.2.json), never in the order the shell globs them"
 
 adoptS="$("$ORCHID_BIN" jobs review-plan TP3 --adopt-evidence)"
-assert_eq "$(printf '1\tcodex-review\tengine-independent\n2\tclaude\tengine-independent')" "$adoptS" \
-  "--adopt-evidence re-pins the slots onto the engines that actually filed the reviews, in the order they were filed"
+assert_eq "$(printf '1\tcodex-review\tengine-independent\tworktree\torchid/codex-review\n2\tclaude\tengine-independent\tworktree\torchid/claude')" "$adoptS" \
+  "--adopt-evidence re-pins the slots onto the engines that actually filed the reviews, in the order they were filed, and freezes the key each one is credited by"
 assert_eq "" "$(review_plan_unsatisfied "$repoP" TP3 "$(review_plan "$repoP" TP3)")" \
   "and the wedge is gone: every slot now has a review of its own"
 assert_match "review plan pinned for attempt 1 \(adopt\)" "$(p_journal TP3)" \
@@ -554,10 +584,10 @@ ledger_mark "$repoP" codex-review failed
 ledger_mark "$repoP" codex-review failed
 ledger_available "$repoP" codex-review && fail "fixture: codex-review must be ledger-unavailable for the repin to have anything to move"
 repinT="$("$ORCHID_BIN" jobs review-plan TP4 --repin)"
-assert_match $'^1\tagy\tengine-independent$' "$repinT" \
-  "--repin FREEZES the slot that already has a review of its own, whatever live routing now prefers"
-assert_match $'^2\tagy\tsession-independent$' "$repinT" \
-  "and rebinds only the unfilled slot — labeled session-independent, because one engine covering two slots is degraded independence however it was arrived at"
+assert_match $'^1\tagy\tengine-independent\tinline\torchid/agy$' "$repinT" \
+  "--repin FREEZES the slot that already has a review of its own, key included, whatever live routing now prefers"
+assert_match $'^2\tcodex\tsession-independent\tworktree\torchid/codex$' "$repinT" \
+  "and rebinds only the unfilled slot onto the live worktree-capable fallback — labeled session-independent because it is the implementer's engine (got: $repinT)"
 ledger_mark "$repoP" codex-review ok
 
 # ---------------------------------------------------------------------------
@@ -572,7 +602,7 @@ mk_p_review TP7 "" orchid/codex-review
 mk_p_review TP7 ".2" orchid/codex-review
 mk_p_review TP7 ".3" orchid/claude
 adoptU="$("$ORCHID_BIN" jobs review-plan TP7 --adopt-evidence)"
-assert_eq "$(printf '1\tcodex-review\tengine-independent\n2\tclaude\tengine-independent')" "$adoptU" \
+assert_eq "$(printf '1\tcodex-review\tengine-independent\tworktree\torchid/codex-review\n2\tclaude\tengine-independent\tworktree\torchid/claude')" "$adoptU" \
   "A,A,B evidence adopts the first two DISTINCT engines A,B, not the first two envelopes A,A"
 assert_eq "" "$(review_plan_unsatisfied "$repoP" TP7 "$(review_plan "$repoP" TP7)")" \
   "and both independently adopted slots are credited by evidence already on disk"

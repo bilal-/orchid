@@ -88,6 +88,23 @@ before reading a clean gate as a second opinion you are already getting. An
 empty findings[] blocks nothing either way -- a reviewer that found nothing is
 a valid review, not a missing one.
 
+At risk_tier `medium` or `high` that arbitration also needs DEPTH: at least one
+of the counted reviews has to be credited to a `worktree` slot -- one routed to
+an engine that could open a file the diff never showed it (manifest capability
+`workspace_read`). Drawn by capability again, never by engine name, and read
+from the plan PINNED for the attempt rather than from the manifests as they
+stand when this pass runs: a review's depth is settled when it is dispatched,
+so uninstalling or rebinding an engine afterwards can neither withdraw nor
+grant it. That plan is where the claim comes from or it comes from nowhere: a
+pin that is missing, unreadable, empty or bound to a candidate the task has
+moved off is reported the same way, naming which of the four it was, rather
+than answered from a table computed after the reviews were filed. Without one
+this pass reports unproven review depth and stops at a `review-evidence`
+boundary rather than approving; `orchid task arbitrate` settles it, so an
+install whose only reviewers are inline is slowed to a human decision per
+medium-tier task, never blocked. `low` asks for no depth at all, and no
+reviewer slot is ever withheld for being inline.
+
 At most one judgment boundary is recorded per pass. A boundary a woken
 orchestrator could actually settle outranks one only an operator can, and
 task-id order decides among equals. "Could settle" is computed per boundary,
@@ -1701,7 +1718,7 @@ drive_testing() {
 # ---------------------------------------------------------------------------
 drive_reviewing() {
   local id="$1" arch="$2" tf tier need have routing unsat line slot eng label lrc arc
-  local pin_rc pin_detail pin_output pin_line pin_slot pin_eng pin_label pin_extra pin_valid
+  local pin_rc pin_detail pin_output pin_line
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = reviewing ] || return 0
   tier="$(fm_get "$tf" risk_tier)"; [ -n "$tier" ] || tier=low
@@ -1731,21 +1748,19 @@ drive_reviewing() {
   routing=""; pin_detail=""
   while IFS= read -r pin_line; do
     [ -n "$pin_line" ] || continue
-    pin_slot=""; pin_eng=""; pin_label=""; pin_extra=""; pin_valid=true
-    IFS=$'\t' read -r pin_slot pin_eng pin_label pin_extra <<< "$pin_line"
-    case "$pin_slot" in ''|*[!0-9]*) pin_valid=false ;; esac
-    [ -n "$pin_eng" ] || pin_valid=false
-    case "$pin_label" in engine-independent|session-independent) ;; *) pin_valid=false ;; esac
-    [ -z "$pin_extra" ] || pin_valid=false
-    if [ "$pin_valid" = true ]; then
+    if review_plan_row_valid "$pin_line"; then
       routing="${routing}${routing:+$'\n'}${pin_line}"
     else
       pin_detail="${pin_detail}${pin_detail:+$' '}${pin_line}"
     fi
   done <<< "$pin_output"
-  # A successful pin has one stdout grammar: three-column slot rows. Keep a
-  # diagnostic written to stderr out of that table, and fail closed on it --
-  # degraded ledger reads must not turn a jq diagnostic into a reviewer slot.
+  # A successful pin has one stdout grammar, and lib/review.sh's
+  # `review_plan_row_valid` is its single definition -- deliberately NOT a copy
+  # kept here beside the reader. The copy that used to live here fixed the row
+  # at three fields, so T012's depth column turned every row of a correct pin
+  # into a "diagnostic" and the driver stopped dispatching reviewers entirely.
+  # Keep a diagnostic written to stderr out of the table, and fail closed on it
+  # -- degraded ledger reads must not turn a jq diagnostic into a reviewer slot.
   if [ "$pin_rc" -eq 0 ] && [ -n "$pin_detail" ]; then pin_rc=1; fi
   if [ "$pin_rc" -ne 0 ]; then
     [ -n "$pin_detail" ] || pin_detail="$(printf '%s\n' "$pin_output" | tail -n 2 | tr '\n' ' ')"
@@ -1818,6 +1833,19 @@ drive_reviewing() {
       "$have of $need review envelope(s) bound to the current candidate, but the routing table has no unfilled slot to dispatch. Expected: 'orchid jobs review-plan $id --repin' to rebind the attempt to the current routing table, otherwise 'orchid task advance $id blocked --reason ...' to hand it to a human"
     return 0
   fi
+  # An all-inline table on a tier that requires depth is journaled ONCE per
+  # dispatching pass, before any slot goes out and by the same rule the
+  # session-independent label follows: a degraded review never passes
+  # silently. This is not a refusal -- every routed slot is still dispatched,
+  # and an inline reviewer on a diff it can actually inspect is often the
+  # only genuine engine independence an install has. It is the record that
+  # says why `drive_review_decision` will decline to call the result a
+  # DETERMINISTIC approval and hand the arbiter the decision instead.
+  if review_depth_required "$tier" && ! review_routing_has_depth "$routing"; then
+    "$ORCHID_BIN" journal add --task "$id" \
+      "no worktree-capable reviewer slot for risk_tier $tier: every routed reviewer is inline (diff-only), so approval needs an arbiter" >/dev/null
+  fi
+
   # Dispatch exactly the slots that have no review of their own -- never
   # "every slot numbered above the count", which re-dispatches the wrong slot
   # the moment a relaunched one lands out of order.

@@ -68,13 +68,18 @@ part of the architecture; this file never changes to suit one.*
   slots this attempt needs and which engines fill them. Consult `orchid jobs
   review-plan <id> --pin` FIRST, every attempt: it prints the routing table
   for the task's CURRENT `risk_tier`, one line per required slot — `<slot>
-  <engine>	<engine-independent|session-independent>` — computed from
-  `role.reviewer`'s chain, the `review.<tier>` chain, engine discovery,
-  role eligibility, and the ledger, all at once. Never re-derive this by
-  hand. Launch each printed slot with `runners/orchid-launch <id> reviewer
-  review --engine <slot-engine>` — `--engine` is exactly how a second (or
-  third) slot's engine differs from whatever `role.reviewer` would resolve
-  to on its own.
+  <engine>	<engine-independent|session-independent>	<worktree|inline>`
+  — computed from `role.reviewer`'s chain, the `review.<tier>` chain,
+  engine discovery, role eligibility, and the ledger, all at once, plus
+  each slot's manifest capabilities for that last column. A PINNED table
+  carries one further field per row — the qualified engine id (`orchid/agy`)
+  that slot's name resolved to when the round was dispatched, which is how a
+  filed review is matched back to its slot. You never need it to dispatch
+  one; read the engine from column 2 as before. Never re-derive this by
+  hand. Launch each printed slot with `runners/orchid-launch <id>
+  reviewer review --engine <slot-engine>` — `--engine` is exactly how a
+  second (or third) slot's engine differs from whatever `role.reviewer`
+  would resolve to on its own.
   **The table is PINNED for the life of an attempt, by WHOEVER dispatches
   it.** `orchid jobs review-plan <id> --pin` writes it down, bound to the
   task's `attempts`+1 and its current `candidate_sha`; every later read —
@@ -97,6 +102,31 @@ part of the architecture; this file never changes to suit one.*
   now applied per-slot: `orchid journal add --task <id> "reviewer slot <n> is
   session-independent only: <engine>, same as the implementer's"`. Never let
   a degraded independence pass silently, on any slot.
+- **Review depth is a SECOND axis, not the same one.** Column 3 says who the
+  reviewer is not; column 4 says what it can see. An `inline` reviewer
+  judges the diff text alone and cannot open a file the diff never showed
+  it; a `worktree` one can (manifest capability `workspace_read`). At
+  `risk_tier` `medium`/`high` a deterministic approval needs at least one
+  review credited to a `worktree` slot of the PINNED plan — the same table,
+  and the same slot matching, that says which slot a review fills, so
+  re-binding or uninstalling an engine after its review is filed changes
+  neither answer. Without one, `orchid drive` reports unproven review depth
+  and stops at an arbitrable `review-evidence` boundary instead of
+  approving, and you settle it by reading the diff and running `orchid task
+  arbitrate`. That credit comes from the PIN or from nowhere: at those tiers
+  a plan that is missing, unreadable, empty, or bound to a candidate the task
+  has moved off is itself reported as unprovable review depth, naming which
+  of the four it was, rather than answered out of a table computed after the
+  reviews were filed. Settle it with `orchid task arbitrate`, or — when the
+  engines that actually reviewed are the ones to record — with `orchid jobs
+  review-plan <id> --adopt-evidence` and another `orchid drive`. Not with
+  `--pin`: run after the evidence is on disk it freezes whatever routing says
+  at that moment, which is the very thing pinning exists to prevent. If the
+  whole table comes back `inline`,
+  journal that before dispatching — same discipline as a
+  `session-independent` label — and dispatch every slot anyway: no slot is
+  ever dropped for being inline. See docs/specs/kernel.md, "Review depth",
+  for why this keys on `risk_tier` rather than on a task's prose.
 - **Inline-review blind-spot guard.** The reviewer's input pack includes
   `symbols.txt` — every changed file and hunk header
   (`+++`/`@@` lines) from `base_sha..candidate_sha`'s diff. When the diff
@@ -1950,9 +1980,11 @@ one-pass driver could otherwise stop progressing in silence:
 - **A reviewer relaunch is keyed on the SLOT, never on a count.** `orchid
   jobs review-plan`'s table is the slot ledger: which slots exist and which
   engine each was routed to. A filed review is credited to a slot only when
-  its own `.engine` is that slot's engine (an envelope naming no engine is
-  credited last, to whatever slot is still open), and each review is credited
-  exactly once. Counting instead would let a relaunch that landed a SECOND
+  its own `.engine` is that slot's engine — compared against the qualified id
+  the pin recorded for that slot, so uninstalling or rebinding an engine
+  afterwards cannot orphan a review it already filed (an envelope naming no
+  engine is credited last, to whatever slot is still open), and each review is
+  credited exactly once. Counting instead would let a relaunch that landed a SECOND
   review from slot 1's engine both satisfy the tier's count and stop slot 2
   from ever being dispatched — handing the truth table two reviews from one
   engine to approve unanimously, which is precisely the independence the
@@ -1978,7 +2010,13 @@ one-pass driver could otherwise stop progressing in silence:
     dispatched, not adopted) and when the filed reviews name fewer distinct
     engines than the plan they replace (adoption may record independence,
     never lower it), so it can settle the dead end without ever settling the
-    independence requirement.
+    independence requirement. Each slot it MOVES is pinned to the qualified
+    engine id that slot's own envelope reported — so a name rebound to another
+    publisher since the round was dispatched cannot leave the re-pinned slot
+    matching nothing — and each slot it does NOT move (one covered by an
+    envelope naming no engine) keeps its pinned key and depth untouched: this
+    verb repairs the slots whose evidence moved, and re-derives nothing about
+    the ones that did not.
   - `orchid jobs review-plan <id> --repin` — rebind the attempt to the live
     routing table, for a pinned slot whose engine can no longer be dispatched
     at all. Slots that already have a review of their own are frozen exactly

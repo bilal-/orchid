@@ -260,12 +260,43 @@ mk_policy_task P10 low high
 mk_review P10 "" approve true '[]'
 assert_eq approve "$(decision_of P10)" "a single unanimous scope-complete approval approves at risk_tier low"
 
+# v1.1 (T012): at medium/high the COUNT is no longer the whole bar -- one of
+# the counted reviews has to be credited to a `worktree` slot of the PINNED
+# review plan (lesson L010). `mk_review` writes no `.engine` at all, so neither
+# of these two can be attributed to a slot at all, and the set is depth-unproven
+# however unanimous it is -- an envelope naming no engine supports no claim
+# about what its reviewer could see. The depth-satisfied twin of this case,
+# and the pinned-plan attribution it rests on, are in tests/test_review.sh.
+#
+# The plan is PINNED here, and has to be: depth is credited from the round the
+# reviews were dispatched under, so a medium-tier task with no pin at all is
+# reported on the missing plan instead (P11b) -- which would be a true
+# assertion about the plan and no assertion at all about the anonymous
+# envelopes this case exists for.
 mk_policy_task P11 medium high
+review_plan_store "$POLICY" P11 \
+  "$(printf '1\talpha\tengine-independent\tworktree\n2\tbeta\tengine-independent\tinline\n')" \
+  || fail "fixture: P11's plan must pin"
 mk_review P11 "" approve true '[]'
 mk_review P11 ".2" approve true '[]'
-assert_eq approve "$(decision_of P11)" "two unanimous scope-complete approvals approve at risk_tier medium"
-assert_match "unanimous scope-complete approval from 2 review" "$(detail_of P11)" \
-  "the approval detail records how many reviews backed it"
+assert_eq evidence "$(decision_of P11)" \
+  "two unanimous approvals from unattributable reviewers do NOT deterministically approve at risk_tier medium"
+assert_match "unproven review depth: 2 of 2" "$(detail_of P11)" \
+  "the detail says the count was met and names the axis that was not"
+
+# ...and with NO pinned plan, the same complete set is reported on the round
+# that was never recorded rather than answered out of live routing -- a table
+# computed now says where a review would be SENT today, not what the reviewer
+# who filed this one could see. tests/test_review.sh Part N walks all four
+# ways a pin stops being usable, each against a fixture whose live routing
+# would have approved.
+mk_policy_task P11b medium high
+mk_review P11b "" approve true '[]'
+mk_review P11b ".2" approve true '[]'
+assert_eq evidence "$(decision_of P11b)" \
+  "a medium-tier set with no pinned round is not deterministically approved"
+assert_match 'no usable pinned review plan \(missing\)' "$(detail_of P11b)" \
+  "and the detail names the missing plan, so the boundary says what to repair"
 
 mk_policy_task P12 low high
 mk_review P12 "" approve true '[{"severity":"medium","title":"a nit below the bar"}]'
@@ -331,7 +362,17 @@ mk_review_eng() {
 # Engine names in a routing row are plugin NAMES; an unresolvable one
 # qualifies to `orchid/<name>` (resolve_engine_qualified_id's documented
 # fallback), which is what these fixtures write into `.engine`.
-TWO_SLOTS="$(printf '1\talpha\tengine-independent\n2\tbeta\tengine-independent\n')"
+#
+# FOUR columns -- the width a LIVE routing table has, a pinned one carrying a
+# fifth (the frozen qualified engine id, T012) that these hand-built tables
+# deliberately omit so the live-resolution path stays covered. The two slots
+# carry DIFFERENT depths on purpose. Attribution reads the engine and nothing
+# else, so every case below runs against a row shape `orchid jobs review-plan`
+# actually emits, and a walk that ever keyed on the row's width or on its depth
+# label would fail here rather than in production. P34 is the sharp end of it:
+# with only the `inline` slot's review filed, the `worktree` slot must come
+# back unfilled.
+TWO_SLOTS="$(printf '1\talpha\tengine-independent\tworktree\n2\tbeta\tengine-independent\tinline\n')"
 
 mk_policy_task P30 medium high
 mk_review_eng P30 "" approve orchid/alpha
@@ -354,7 +395,7 @@ mk_policy_task P32 medium high
 mk_review_eng P32 "" approve orchid/alpha
 mk_review_eng P32 ".2" approve orchid/alpha
 assert_eq "" "$(drive_review_slots_unsatisfied "$POLICY" P32 \
-  "$(printf '1\talpha\tengine-independent\n2\talpha\tsession-independent\n')")" \
+  "$(printf '1\talpha\tengine-independent\tworktree\n2\talpha\tsession-independent\tworktree\n')")" \
   "a routing table that asks ONE engine for both slots is satisfied by two of its reviews"
 
 # An adapter that names no engine cannot be attributed, so it is credited
@@ -370,6 +411,8 @@ mk_policy_task P34 medium high
 mk_review_eng P34 "" approve orchid/beta
 assert_eq 1 "$(drive_review_slots_unsatisfied "$POLICY" P34 "$TWO_SLOTS" | cut -f1)" \
   "attribution is by engine, not by slot order: beta's review covers SLOT 2"
+assert_eq worktree "$(drive_review_slots_unsatisfied "$POLICY" P34 "$TWO_SLOTS" | cut -f4)" \
+  "...and the unfilled row is returned WHOLE, depth column included, for the driver to read"
 
 # --- hook evidence is scoped to the current candidate, same as review ------
 mk_hook_env() {  # <id> <suffix> <candidate|-> -- a filed hook envelope

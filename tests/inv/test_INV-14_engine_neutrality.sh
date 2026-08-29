@@ -210,5 +210,14 @@ assert_match "$NEUTRAL" "$routing" "review routing selects an unknown engine on 
 # name alone would also be satisfied by a session-independent fallback, i.e. by
 # routing settling on $NEUTRAL because nothing else was left rather than
 # because an unknown engine is a first-class candidate.
-assert_match "^1[[:space:]]+${NEUTRAL}[[:space:]]+engine-independent\$" "$routing" \
-  "an unknown engine fills the engine-independent slot, not a degraded fallback"
+#
+# The trailing `worktree` is the routing table's fourth column (T012's review
+# DEPTH axis), and it belongs in a NEUTRALITY assertion rather than merely
+# being tolerated by a looser anchor: this fixture's manifest declares
+# `workspace_read`, and the column must read that claim off the manifest of an
+# engine whose name appears nowhere in kernel source. A name table that fed
+# the depth column would fail here exactly as one feeding column 3 does.
+# Keep the end anchor -- it is what distinguishes `engine-independent` from a
+# degraded `session-independent` label, and `worktree` from `inline`.
+assert_match "^1[[:space:]]+${NEUTRAL}[[:space:]]+engine-independent[[:space:]]+worktree\$" "$routing" \
+  "an unknown engine fills the engine-independent slot, not a degraded fallback, and its depth column is read from its own manifest"

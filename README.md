@@ -349,11 +349,28 @@ Concretely, today's built-in engines sort like this:
 worktree-capable engine for depth, one engine-independent for diversity.
 With only two engines actually installed, the second reviewer often can't
 be BOTH worktree-capable and a third distinct vendor — that's "degraded
-independence": `medium` accepts a labeled session-independent fallback
-(same vendor, fresh session); `high` instead queues, waiting for a genuinely
-engine-independent reviewer to become available, rather than silently
-accepting the weaker guarantee. Never silent either way — always labeled
-and journaled.
+independence", and `medium` and `high` handle it the same way: both accept
+a labeled session-independent fallback (same vendor, fresh session) rather
+than withhold a slot. Routing never queues waiting for a better reviewer to
+appear — a slot that cannot be filled independently is filled and labeled.
+Never silent either way: the label is printed in the routing table and
+journaled before that slot is dispatched.
+
+**Depth is a second axis.** Independence asks who the reviewer is *not*;
+depth asks what it can *see*. An inline reviewer (`agy`, `hermes`) judges
+the diff text alone and cannot open a file the diff never showed it; a
+worktree-capable one (`codex-review`, `codex`, `claude`) can. So at
+`medium`/`high` a deterministic approval needs at least one review from a
+`worktree` slot as well as the tier's count: without one, `orchid drive`
+reports unproven review depth and hands the decision to an arbiter instead
+of approving on its own authority. The slot is read from the attempt's
+pinned plan, which records both the depth and the engine identity it was
+dispatched to, so what a review is credited never changes after it is filed —
+not when an engine is uninstalled, and not when a name is rebound to another
+publisher's engine. No slot is ever refused for being inline — an install
+whose only reviewers are inline still reviews every task; what it does not
+get is an approval no human read. (The decision, and the alternatives
+rejected with it, are recorded in `docs/specs/kernel.md`, "Review depth".)
 
 **Worked example — swapping the implementer:**
 

@@ -475,7 +475,9 @@ drive_envelope_has_blocking_finding() {
 #                           blocking_severity -- the ONLY deterministic
 #                           approval this policy will ever make.
 #   evidence<TAB><detail>   fewer valid, `ok`, current-candidate reviews on
-#                           hand than the task's risk_tier requires.
+#                           hand than the task's risk_tier requires; or (a
+#                           medium/high tier only) enough of them, but not
+#                           one credited to a `worktree` slot of the plan.
 #   conflict<TAB><detail>   a request-changes verdict, a finding at or above
 #                           blocking_severity, mixed verdicts, or a review
 #                           that reports scope_complete false.
@@ -528,9 +530,78 @@ drive_envelope_has_blocking_finding() {
 # and deterministic approval rests on `verdict` + `scope_complete` alone.
 # Either way an EMPTY findings[] blocks nothing: an engine that reports no
 # findings is a valid review, and this gate has always read `[]` that way.
+#
+# REVIEW DEPTH (v1.1, T012 -- lesson L010, evidenced on run r-001's T003). At
+# `medium`/`high` the count is not the whole bar: at least one of the counted
+# reviews must come from a WORKTREE-CAPABLE engine, one that could open a
+# file the diff never showed it. An inline reviewer's approve is a real
+# review and still counts toward the tier's number; what it cannot do on its
+# own is make an approval DETERMINISTIC on a task whose criteria turn on
+# interaction with existing behaviour -- which is what `risk_tier medium` and
+# above already assert about a task. r-001 shipped exactly that failure: an
+# inline slot's contentless approve, a worktree-capable slot's file-and-line
+# rejection, four times in one run.
+#
+# The shortfall is reported as `evidence`, not as a refusal or a conflict.
+# There is nothing wrong with the reviews on hand -- there is a question
+# nobody able to answer it was asked -- so this lands on a `review-evidence`
+# boundary while the task is `arbitrating`, which `drive_boundary_priority`
+# already ranks arbitrable: `orchid task arbitrate` settles it, and on a
+# brokered surface the orchestrator is woken to read the diff and decide.
+# That is precisely the path that caught the defect on r-001, so the policy
+# routes to it deliberately rather than approving on its own authority. It is
+# never a permanent park: the verb that settles it can always run.
+#
+# DEPTH IS ATTRIBUTED THROUGH THE PINNED PLAN, and it is `lib/review.sh`'s
+# `review_plan_depth_count` that does it -- the same slot matching that
+# decides which slot a review COVERS (`drive_review_slots_unsatisfied`), so
+# the two can never disagree about the same envelope. Each counted envelope
+# is credited to the slot its own `.engine` was routed to (that field is
+# cross-checked against the job manifest by `orchid jobs reconcile` before
+# filing, so it cannot be forged past reconcile) and matched against the
+# QUALIFIED ID the plan row itself froze, and the DEPTH claim is read from the
+# plan's fourth column rather than from the engine's manifest as it stands
+# right now.
+#
+# Asking the manifest at arbitration time was the earlier shape of this gate
+# and it was wrong for the reason T039 pinned the plan in the first place: a
+# manifest edit, a rebind or an uninstall between filing and judging would
+# silently withdraw a filed review's depth, and the task would lose its
+# deterministic approval over a change to something that is not evidence.
+# Resolving the row's bare engine NAME here would have left the same hole one
+# join to the left -- an uninstalled or rebound name stops resolving to the id
+# its own filed envelope reports -- which is why the pin records the name and
+# the id together. The pin is bound to (task, attempt, candidate) and moves
+# only when the evidence it judges does. An envelope that names no engine, and
+# one whose engine the plan never routed to, are both credited no depth --
+# depth is a positive claim about what a reviewer could see, and neither
+# supports one. `orchid jobs review-plan <id> --adopt-evidence` is the recorded
+# verb for the second case: it re-pins the plan onto the engines that actually
+# reviewed.
+#
+# AND THE PIN IS THE ONLY PLACE DEPTH MAY COME FROM. `review_plan` falls back
+# to live routing when no pin can be read, which is right for every caller
+# that is about to DISPATCH a review or write a plan down, and wrong for the
+# one caller judging reviews already filed: a table computed now says where a
+# review would be sent today, not what the reviewer who filed this one could
+# see. So this function reads `review_plan_pinned` directly. When the tier
+# requires depth and there is no usable pin -- missing, unreadable, empty, or
+# bound to a candidate the task has moved off -- the shortfall is reported as
+# `evidence`, naming which of those it was, rather than answered out of live
+# routing. At `low`, where no depth is required, there is no claim to prove:
+# the count stays 0 and the approval says so, and live routing is still not
+# consulted.
+#
+# The remedies it names are the two that derive from EVIDENCE. `--pin` is
+# deliberately not one of them: run here, after the reviews are on disk, it
+# would freeze whatever live routing says today and hand the round a depth
+# claim computed after the fact -- the defect, wearing the remedy's clothes.
+# `--adopt-evidence` re-pins onto the engines that actually reviewed, at a
+# journaled write, and `orchid task arbitrate` settles the boundary directly.
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
-  local f n approve_n conflicts base verdict scope status ecand
+  local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
+  local plan pin_state
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -548,7 +619,7 @@ drive_review_decision() {
     return 0
   fi
 
-  n=0; approve_n=0; conflicts=""
+  n=0; approve_n=0; depth_n=0; conflicts=""; pool=""
   for f in "$state/reviews/$id-a$attempt-reviewer"*.json; do
     [ -e "$f" ] || continue
     base="$(basename "$f")"
@@ -567,6 +638,16 @@ drive_review_decision() {
     status="$(envelope_field "$f" '.status // empty' 2>/dev/null || true)"
     [ "$status" = ok ] || continue
     n=$(( n + 1 ))
+    # Step 3 -- collect this envelope's self-reported engine for the DEPTH
+    # attribution below, over exactly the same counted set, and in the same
+    # walk as the verdict so a review can never be counted for the tier's
+    # number and skipped for its depth. `-` for an envelope naming none, which
+    # is `review_filed_engines`' own shape for that case; the matching consumes
+    # this pool as a multiset, so the glob order this loop reads in does not
+    # change the answer (lib/review.sh, `_review_slot_matching`).
+    eengine="$(envelope_field "$f" '.engine // empty' 2>/dev/null || true)"
+    pool="$pool${eengine:--}
+"
     verdict="$(envelope_field "$f" '.verdict // empty' 2>/dev/null || true)"
     scope="$(envelope_field "$f" '.scope_complete // false' 2>/dev/null || true)"
     if [ "$verdict" = approve ]; then
@@ -593,8 +674,35 @@ drive_review_decision() {
     return 0
   fi
 
-  printf 'approve\tunanimous scope-complete approval from %s review(s), no finding at or above %s\n' \
-    "$approve_n" "$blocking"
+  # Depth is judged AFTER the conflict arm on purpose: when a review already
+  # says something is wrong, that finding is the actionable thing to report,
+  # and a depth shortfall behind it would only rename a decision the operator
+  # is being handed anyway. It is also only READ here, past both earlier arms,
+  # because a task whose decision those arms have already made needs no plan
+  # read at all.
+  #
+  # `review_plan_pinned`, never `review_plan`: the latter falls back to live
+  # routing, and a table computed at judging time is not evidence about a
+  # review already filed (see this function's header). At a tier that requires
+  # depth, no usable pin is itself the boundary; at `low` there is no depth
+  # claim to support, so the count stays 0 and the approval says so.
+  depth_n=0
+  if plan="$(review_plan_pinned "$repo" "$id")" && [ -n "$plan" ]; then
+    depth_n="$(review_plan_depth_count "$plan" "$pool")"
+  elif review_depth_required "$tier"; then
+    pin_state="$(review_plan_pin_state "$repo" "$id")"
+    printf 'evidence\tunprovable review depth: %s of %s review(s) for risk_tier %s bound to candidate %s, but this attempt has no usable pinned review plan (%s) — depth is credited from the plan the round was dispatched under, and a table computed now describes where a review would be sent today, not what the reviewer who filed this one could see. Expected: read the diff and settle it with orchid task arbitrate; or, if the engines that reviewed are the ones to record, orchid jobs review-plan %s --adopt-evidence re-pins the slots onto them at a journaled write, then rerun orchid drive\n' \
+      "$n" "$need" "$tier" "$cand" "$pin_state" "$id"
+    return 0
+  fi
+  if [ "$depth_n" -eq 0 ] && review_depth_required "$tier"; then
+    printf 'evidence\tunproven review depth: %s of %s review(s) for risk_tier %s bound to candidate %s, none of them credited to a worktree slot of the pinned review plan — an inline reviewer judges the diff text alone and cannot open the files this change must stay consistent with. Expected: read the diff and settle it with orchid task arbitrate; if a worktree-capable engine did review off-plan, orchid jobs review-plan --adopt-evidence re-pins the slots onto the engines that actually reviewed first\n' \
+      "$n" "$need" "$tier" "$cand"
+    return 0
+  fi
+
+  printf 'approve\tunanimous scope-complete approval from %s review(s), %s of them worktree-capable, no finding at or above %s\n' \
+    "$approve_n" "$depth_n" "$blocking"
 }
 
 # drive_hook_has_required <repo> <point> -- 0 iff the point's binding carries
@@ -1126,9 +1234,18 @@ drive_reviewer_envelope_engines() {
 }
 
 # drive_review_slots_unsatisfied <repo> <task> <routing> -- the rows of
-# <routing> (`orchid jobs review-plan`'s "<slot><TAB><engine><TAB><label>"
+# <routing> (`orchid jobs review-plan`'s "<slot><TAB><engine><TAB>
+# <independence-label><TAB><worktree|inline>[<TAB><qualified-engine-id>]"
 # table) that have NO review of their own yet. Empty output means every routed
 # slot is covered.
+#
+# Slot identity is the ENGINE, matched by the qualified id a pinned row froze
+# beside it: no slot is ever dispatched or withheld for what its DEPTH column
+# says, so this answer is the same on an all-inline table as on any other. The
+# depth column is read elsewhere and only elsewhere -- by
+# `review_plan_depth_count`, which asks what an ALREADY FILED review is
+# credited, off the SAME matching this delegates to so the two can never
+# disagree about one envelope.
 #
 # Like the engine scan above, the rule itself lives in lib/review.sh
 # (`review_plan_unsatisfied`), where the plan's own verbs need it: `--repin`

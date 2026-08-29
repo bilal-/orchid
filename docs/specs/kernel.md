@@ -931,8 +931,13 @@ engine-independent reviewer (default agy inline); if NO engine-independent
 reviewer is available, the resolver falls back to session independence
 LABELED AND JOURNALED as such — never silently. `medium`/`high` → dual
 review (worktree-capable for depth + engine-independent for diversity).
-Two-engine installs are "degraded independence": medium accepts labeled
-session independence; high queues for engine independence.
+Two-engine installs are "degraded independence": `medium` and `high` alike
+accept labeled session independence rather than withhold a slot. Routing
+never waits for a better reviewer to become available — no such branch
+exists, and refusing at the routing end is the alternative "Review depth"
+below records as REJECTED. A slot that cannot be filled independently, or
+cannot be filled deeply, is filled and labeled; the shortfall is judged over
+the EVIDENCE, at arbitration.
 **The routing table is pinned per attempt.** Routing is computed from engine
 health, so reading it twice can give two different tables — and a review
 already filed against the first one then belongs to no slot in the second.
@@ -941,15 +946,150 @@ That is a dead end, not a degradation: the only forward edge out of
 from that status (r-002, lesson L027). So `orchid jobs review-plan <task>
 --pin` writes the table to `reviews/<task>-a<n>.review-plan.json`, bound to
 the attempt and the `candidate_sha`, and every reader gets that table back
-until one of the two moves. `--repin` (rebind the unfilled slots to live
-routing, freezing the covered ones) and `--adopt-evidence` (re-pin onto the
-engines that actually reviewed, refused when it would name fewer distinct
-engines than the plan it replaces) are the recorded exits, and the
+until one of the two moves. Each row records the slot, the engine NAME it was
+dispatched to, the independence label, the depth, and the QUALIFIED ENGINE ID
+that name resolved to at the write — the key a filed envelope is recognized
+by. Freezing the name alone would leave the join to the live plugin registry:
+uninstall the plugin or rebind the name to another publisher's engine and a
+completed review matches no slot, which is the same moving table one column
+earlier. `--repin` (rebind the unfilled slots to live routing, freezing the
+covered ones) and `--adopt-evidence` (re-pin onto the engines that actually
+reviewed, refused when it would name fewer distinct engines than the plan it
+replaces) are the recorded exits, and the
 `review-evidence` boundary names whichever one it expects.
 **Inline-review blind-spot guard:** inline prompts include the pack
 manifest AND the changed-symbol list; routing upgrades to a
 worktree-capable reviewer when changed symbols are referenced in un-diffed
 files.
+
+### Review depth (v1.1 — decision, T012)
+
+**Engine independence and review depth are different axes, and `medium`/
+`high` require both.** Independence asks who the reviewer is NOT (the
+implementer); depth asks what the reviewer can SEE. An *inline* reviewer
+(manifest capability `structured_text` without `workspace_read` — agy and
+hermes) judges from the diff text alone: it cannot open the file a change
+must stay consistent with, so it cannot check a claim against existing
+behaviour. A *worktree-capable* reviewer (`workspace_read` — codex-review,
+codex, claude) can.
+
+Evidence, from run r-001 (lesson L010): on T003 the engine-independent
+inline slot APPROVED a candidate whose central acceptance criterion was
+unmet, with a one-sentence unsupported rationale and a null `findings`
+array, while the session-independent worktree-capable slot found the defect
+and cited the file and line; the arbiter confirmed it in the code and
+rejected. The inline slot did this four times in one run.
+
+**What is required.** For `risk_tier` `medium`/`high`:
+
+1. `review_routing`'s table carries a fourth column, `worktree|inline`, per
+   slot — the two labels are printed separately because neither implies the
+   other.
+2. When slot 1 is inline, the depth pass that fills slot 2 searches past
+   `review.<tier>` into `role.reviewer`'s chain and finally the implementer's
+   own engine, so a worktree-capable slot is routed whenever the install has
+   an eligible one at all — rather than settling for a second inline engine
+   because of the order of names in one config key. A slot filled that way is
+   labeled `session-independent`, which is exactly what caught the r-001
+   defect. **The widening stops where its reason stops.** If slot 1 is
+   ALREADY worktree-capable the round has its depth, and reaching past the
+   tier chain would buy a second copy of that property by spending the other
+   axis — an engine-independent reviewer sitting available in `review.<tier>`,
+   passed over for a slot that can only be labeled `session-independent`.
+   Both axes are required and neither implies the other, so with depth in
+   hand slot 2 is filled the ordinary way: from `review.<tier>`,
+   worktree-capable entries first. The widened list is demoted below the
+   whole tier chain rather than dropped — when the tier chain has nobody
+   left to offer, a distinct engine reached that way still costs no
+   independence, because the alternative is slot 1 reviewing the same
+   candidate twice.
+3. A DETERMINISTIC approval additionally requires depth evidence: at least
+   one of the counted reviews must be credited to a slot the PINNED plan
+   calls `worktree`. Without it the driver reports `evidence` and stops at a
+   `review-evidence` boundary on an `arbitrating` task — arbitrable, so
+   `orchid task arbitrate` (and, on a brokered surface, a woken orchestrator
+   reading the diff) settles it. An all-inline routing table is journaled
+   before dispatch, never silent.
+4. **Depth is attributed through the pin, never re-derived at judging
+   time.** A review is credited to a slot by its own `.engine` — the field
+   `orchid jobs reconcile` cross-checks against the job manifest before
+   filing — matched against the qualified engine id the pin froze for that
+   slot, using the same matching that decides which slot a review COVERS, so
+   the two answers cannot drift apart and neither depends on what is
+   installed at judging time. The DEPTH claim itself is then read off that
+   slot's fourth column. Asking the engine's manifest instead ("can it open a
+   checkout right now") re-opens, one column to the right, the dead end
+   pinning the plan closed: an uninstall, a rebind, or an edit
+   to one `capabilities=` line between filing and judging would silently
+   withdraw a filed review's depth, and a task would lose its deterministic
+   approval over a change that is not evidence. Two cases are credited no
+   depth, both deliberately: an envelope naming no engine (depth is a
+   positive claim, and there is nothing to attribute it to) and a review
+   from an engine the plan never routed to (`--adopt-evidence` is the
+   recorded verb that re-pins a plan onto the engines that actually
+   reviewed; it pins each moved slot to the qualified id that slot's own
+   envelope reported and derives that slot's depth at the journaled write,
+   while a slot it does not move keeps its pinned key and depth unchanged).
+   Resolving the row's bare NAME at judging time was the same mistake one
+   join earlier: a rebound or uninstalled name stops resolving to the id its
+   own filed envelope reports, so the review loses its slot and its depth
+   together. A pin written before either column existed is readable, derives
+   the missing one once from the installed manifests, and is migrated by the
+   next writing `--pin`; it is never left as a value that re-derives on
+   every read.
+5. **A missing pin is a boundary, not a fallback.** The table every other
+   caller reads answers "no pin" with LIVE ROUTING, which is right for the
+   callers it exists for — `--pin`'s own computation, `--repin`,
+   `--adopt-evidence`, and the driver's dispatch walk are all choosing where
+   to SEND a review or about to write a plan down. It is wrong for the one
+   caller judging reviews already filed, so the arbitration policy reads the
+   PIN and only the pin. At `medium`/`high`, a plan that is missing,
+   unreadable, empty, or bound to a candidate the task has moved off is
+   reported as `evidence` — naming which of the four it was — rather than
+   answered from a table computed after the evidence was filed. Without that
+   rule every guarantee above has a back door: delete the plan and the same
+   round is re-credited from whatever routing says at arbitration time, which
+   is precisely the moving table pinning closed. The named remedies are
+   `orchid task arbitrate` (the boundary is raised on an `arbitrating` task,
+   so the verb that settles it can always run) and `--adopt-evidence` (re-pin
+   onto the engines that actually reviewed, at a journaled write). `--pin` is
+   deliberately NOT named: run at that point it would freeze whatever live
+   routing says today, which is the defect wearing the remedy's clothes. At
+   `low`, where no depth is required, there is no claim to support: the
+   approval reports no depth and live routing is still never consulted.
+
+**agy is not dropped, and no slot is ever refused for being inline.** On a
+diff it can genuinely inspect, an inline engine is the only real engine
+independence available when codex is out, and independence guards a failure
+mode depth cannot. Depth changes who may declare an approval FINAL without a
+human; it never changes who is allowed to review.
+
+**Rejected: make `review.<tier>` itself refuse to resolve, or refuse to
+dispatch, without a worktree-capable engine.** This converts a depth
+shortfall into an availability failure. An install holding only inline
+engines (agy + hermes, or codex rate-limited on a two-engine install) could
+then review no medium/high task at all, and would sit at a boundary no
+evidence could settle. Worse, the cheapest operator workaround would be to
+downgrade `risk_tier` — a monotonic, `--reason`-carrying field — so the
+policy would push operators toward misdescribing risk to make the run move.
+Depth is a property of the EVIDENCE, so it is judged where evidence is
+judged (arbitration), not where slots are allocated.
+
+**Rejected: a per-task flag deciding whether the criteria "involve
+interaction with existing kernel behaviour".** Whether as a new frontmatter
+field or as a keyword scan of `acceptance_criteria`, this asks the kernel to
+judge prose — which it does nowhere else, by design (the arbitration truth
+table reads structured envelope fields only). A scan would be unauditable
+and defeated by phrasing; a second hand-set field would duplicate a
+judgement `risk_tier` already carries, with no rule keeping the two
+consistent. `risk_tier` medium/high is ALREADY the operator's assertion that
+a task touches shared/kernel surface, it is monotonic, it requires a
+`--reason`, and it is journaled. The depth requirement reuses it.
+
+**Rejected: a `review.require_depth` config key.** The boundary is already
+the escape hatch — an operator or arbiter settles it per task, on the
+record. A key would let an install disable that record permanently and
+globally, which is the one outcome the r-001 evidence argues against.
 
 **Arbitration:** findings below the task's risk threshold never block;
 reviewer agreement is strong signal; on disagreement the orchestrator reads

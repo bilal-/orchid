@@ -155,7 +155,26 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 - **`review.<tier>`** chains drive risk-tiered review routing (see
   `docs/specs/kernel.md`, Task lifecycle → Independence): `low` wants one
   engine-independent reviewer; `medium`/`high` want two (worktree-capable
-  for depth + engine-independent for diversity).
+  for depth + engine-independent for diversity). At `medium`/`high` the
+  depth half of that pair is a requirement on the EVIDENCE, not only a
+  preference in this chain: `orchid jobs review-plan` labels every slot
+  `worktree` or `inline`, its depth pass searches past this chain (into
+  `role.reviewer`'s chain, then the implementer's own engine) to find a
+  worktree-capable slot wherever the install has one — but only while the
+  round still lacks one, since a second slot is worth more spent on engine
+  independence once slot 1 is already worktree-capable — and a drive pass will
+  not make a DETERMINISTIC approval at those tiers unless one of the counted
+  reviews is credited to a slot the attempt's PINNED plan calls `worktree`
+  — it stops at an arbitrable `review-evidence` boundary instead, which
+  `orchid task arbitrate` settles. Credit follows the pin — which records the
+  qualified engine id each slot was dispatched to, not just its configured
+  name — so re-binding or uninstalling an engine after its review is filed
+  neither withdraws that review's depth nor grants it any.
+  Nothing here is refused over depth: an install whose reviewers are all
+  inline still gets every slot and still reviews every task; what it does
+  not get is an approval no human read. See
+  [specs/kernel.md](./specs/kernel.md), "Review depth", for the decision and
+  the rejected alternatives.
 - **`hook.<point>`** — an ordered, comma-separated list of plugin **names**
   (not qualified ids); append `:required` to a handler to make its failure
   block the edge (exit 15). No built-in defaults — an unbound point runs no

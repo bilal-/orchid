@@ -212,7 +212,7 @@ flowchart LR
         R1["reviewer slot 1<br/>agy - engine-independent"]
     end
     subgraph SC["Session C - medium/high risk only"]
-        R2["reviewer slot 2 - worktree-capable<br/>engine-independent, or session-independent<br/>labeled and journaled as degraded"]
+        R2["reviewer slot 2 - worktree-capable wherever the install has one<br/>engine-independent, or session-independent<br/>depth and independence both labeled and journaled"]
     end
     ARB["arbiter - claude by default<br/>inline judgment on disagreement, journaled"]
     IMP -->|"adapter commits the edits"| CAND
@@ -232,20 +232,55 @@ which died with its session by design ([specs/kernel.md](./specs/kernel.md),
 "Memory & resumption"). Independence is enforced by the resolver against
 the task's recorded `implementer_engine_id`, in two grades: *engine
 independence* (different vendor) preferred, *session independence* (same
-vendor, fresh session) accepted at `medium` risk only when labeled and
-journaled — and `high` risk queues rather than accept the weaker guarantee.
-LLM evaluators measurably favor their own generations
-([research.md](./research.md)); this topology is the countermeasure.
+vendor, fresh session) accepted at `medium` and `high` alike, but only when
+labeled in the routing table and journaled before the slot is dispatched.
+Routing never withholds a slot to hold out for a better reviewer: a tier
+that cannot be filled independently is filled and labeled, and a shortfall
+is judged where the evidence is judged rather than where the slots are
+allocated — see the depth paragraph below, and
+[specs/kernel.md](./specs/kernel.md), "Review depth", for why refusing at
+the routing end was rejected. LLM evaluators measurably favor their own
+generations ([research.md](./research.md)); this topology is the
+countermeasure.
 
 **And the slot table is pinned for the life of an attempt.** Routing reads
 engine health, so it is a moving table; a review is judged against the one
 its attempt was dispatched under (`orchid jobs review-plan <id> --pin`,
-stored beside the envelopes it credits). Recomputing it instead cost r-002 a
-task outright: an engine filed a valid review, went unavailable on unrelated
-work minutes later, and the slot it had been dispatched for was reassigned —
-leaving evidence nothing could credit, on the only edge out of `reviewing`,
-in a status from which no arbitration verb is legal. Independence you can
+stored beside the envelopes it credits). Each pinned row records the engine's
+NAME and the qualified id it resolved to, because a name still has to be
+resolved through the live plugin registry before a filed review can be matched
+to it — so an uninstall or a rebind would orphan that review just as surely as
+a re-route. Recomputing it instead cost r-002 a task outright: an engine
+filed a valid review, went unavailable on unrelated work minutes later, and
+the slot it had been dispatched for was reassigned — leaving evidence nothing
+could credit, on the only edge out of `reviewing`, in a status from which no
+arbitration verb is legal. Independence you can
 recompute is not independence you can prove.
+
+**Independence is not depth, and `medium`/`high` need both.** Slot 1's
+engine-independent reviewer is typically *inline*: it judges the diff text
+alone and cannot open a file the diff never showed it. Run r-001 shipped the
+consequence four times — an inline slot approving a candidate whose central
+acceptance criterion was unmet, with an empty findings array, while the
+worktree-capable slot cited the file and line and the arbiter rejected. So
+at those tiers the routing table labels each slot `worktree` or `inline`,
+slot 2's depth pass searches past `review.<tier>` to find a worktree-capable
+reviewer wherever the install has one — and stops widening once slot 1 has
+already brought depth, so the second slot is not spent buying it twice at the
+cost of an available engine-independent reviewer — and an approval with no review
+credited to a `worktree` slot behind it is handed to an arbiter rather than
+made deterministically ([specs/kernel.md](./specs/kernel.md), "Review
+depth"). That credit is read from the attempt's pinned plan — the same
+table, the same frozen engine identity, and the same slot matching that
+decides which slot a review fills — so a review's depth is fixed when it is
+dispatched, not re-judged from whatever manifests happen to be installed when
+the arbitration runs. It is read from that plan or from nowhere: a plan
+missing, unreadable, empty or bound to a candidate the task has moved off is
+itself an arbitrable boundary at those tiers, rather than being answered from
+a routing table computed after the reviews were filed. The inline reviewer is
+never dropped: on a diff it can
+genuinely inspect it is often the only cross-vendor independence an install
+has, and independence guards a failure mode depth cannot.
 
 ## 5. Epoch fencing: two writers, one survivor
 
