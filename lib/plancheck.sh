@@ -110,6 +110,19 @@
 # look" is back to reading a green line that means nothing, which is the
 # whole failure this file exists for.
 #
+# AND THE CHECK'S OWN WORKSPACE IS PART OF THAT STATE. The item lists are
+# built in a scratch directory, and a scratch directory that could not be
+# created is the same fail-open one level further down: `plancheck_report`
+# runs under `... || rc=$?` in both its callers, which suppresses `set -e`
+# for the whole call, so an unchecked `mktemp` failure left the path EMPTY
+# and every later redirection wrote to `/items` and `/tasks/...`, failed
+# silently, and produced -- once again -- the empty list. The report then
+# said "all carried-forward item(s) considered" and exited 0 over a record it
+# had never opened, this time because it had nowhere to open it. So the
+# workspace is established the same way answerability is: checked at the
+# point it is obtained, refused with an exit code of its own (5) and a repair
+# of its own (TMPDIR), never inferred later from a list that came back short.
+#
 # Sourced after lib/common.sh (orchid_die is not used here, but callers'
 # error paths are), after lib/frontmatter.sh, whose fm_get reads the
 # roadmap's `run_id` -- the one fact answerability rests on, so this is a
@@ -751,6 +764,10 @@ plancheck_deferral() {
 #      -- neither a task nor a deferral repairs a missing archive, and a
 #      caller that told the operator to cover or defer "the item(s) above"
 #      would be naming two impossible answers under an empty list.
+#   5  the check could not build its own workspace: no scratch directory
+#      under TMPDIR. Again a code of its own for the same reason -- the
+#      repair is a writable temporary directory, and neither covering an
+#      item, nor deferring one, nor restoring an archive touches it.
 #
 # The per-item lines go to stdout (they are the report); the refusal and the
 # recovery commands go to stderr, so a caller redirecting the report away
@@ -787,7 +804,13 @@ plancheck_report() {
   prev="$detail"
 
   cutoff="$(_lessons_journal_start_date "$state/journal.md")"
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/orchid-plancheck.XXXXXX")"
+  # REFUSED, not carried on with an empty path. See _plancheck_scratch: an
+  # unusable TMPDIR used to reach exit 0 through a report that listed nothing.
+  if ! tmp="$(_plancheck_scratch)"; then
+    echo "crosscheck: REFUSED — the carry-forward question cannot be answered: no scratch directory could be created under ${TMPDIR:-/tmp} (the error above is mktemp's own)" >&2
+    echo "crosscheck: this check builds its carried-forward list in that directory, so with no directory the list is empty for a reason that has nothing to do with $prev — and an empty list is exactly what a run that left nothing produces. Point TMPDIR at a writable directory (or free space in this one), then re-run." >&2
+    return 5
+  fi
 
   # The scratch directory is removed on the way out of EVERY path, including
   # the ones this function does not choose: `plan apply` is a long
@@ -814,8 +837,9 @@ plancheck_report() {
   fi
 
   # The report proper runs in a helper purely so this arming/disarming pair
-  # is written once: the body has three exit points, and a cleanup repeated
-  # at each is a cleanup that will be forgotten at the fourth.
+  # is written once: the body returns from half a dozen places, and a cleanup
+  # repeated at each is a cleanup that will be forgotten at the next one
+  # added -- as the scratch-failure returns below would have been.
   _plancheck_body "$state" "$prev" "$cutoff" "$tmp" || rc=$?
 
   _plancheck_cleanup "$tmp"
@@ -827,6 +851,37 @@ plancheck_report() {
     trap - EXIT
   fi
   return "$rc"
+}
+
+# _plancheck_scratch -- one report's private scratch directory on stdout, or
+# exit 1 when none can be had.
+#
+# THE STATUS OF `mktemp` IS A GATE HERE, not hygiene. plancheck_report is
+# reached as `plancheck_report "$state" || crosscheck_rc=$?` from both of its
+# callers, and testing a command's status suppresses `set -e` for the whole of
+# it -- so the plain `tmp="$(mktemp -d ...)"` this replaces did not abort when
+# mktemp failed. It left `tmp` empty, and an empty `tmp` makes every path the
+# report writes ABSOLUTE: `> "$tmp/items"` became `> /items`, `mkdir -p
+# "$tmp/tasks"` became `mkdir -p /tasks`, and each failed on its own without
+# stopping anything. The item list was then unreadable, the loop over it never
+# ran, no item was ever reported, and the report ended on "all carried-forward
+# item(s) considered" with exit 0 -- `plan apply` committing over every
+# finding of the previous run because it had nowhere to write a list, which is
+# this file's own fail-open reproduced in its workspace instead of its input.
+#
+# An unusable TMPDIR is not exotic: a sandbox that exports one it does not
+# create, a full or read-only /tmp, a cron environment that inherits a
+# directory belonging to another user. Each of those must refuse.
+#
+# The result is checked as well as the status, because "" and a path that is
+# not a directory are the same hazard in different spellings, and one of them
+# is precisely what an exit-0-but-empty mktemp would hand back.
+_plancheck_scratch() {
+  local d
+  d="$(mktemp -d "${TMPDIR:-/tmp}/orchid-plancheck.XXXXXX")" || return 1
+  [ -n "$d" ] || return 1
+  [ -d "$d" ] || return 1
+  printf '%s\n' "$d"
 }
 
 # _plancheck_cleanup <dir> -- removes the report's scratch directory. A
@@ -847,12 +902,36 @@ _plancheck_cleanup() {
 _plancheck_body() {
   local state="$1" prev="$2" cutoff="$3" tmp="$4"
   local f id kind summary mode text hits hitfile hit via reason nitems nopen=0
-  {
-    plancheck_ledger_items "$state/runs/$prev/journal.md" "$prev"
-    plancheck_lesson_items "$state/lessons.md" "$cutoff"
-  } > "$tmp/items"
+  # The write is CHECKED, and so is the count read back off it. The scratch
+  # directory was proved usable at the moment it was created
+  # (_plancheck_scratch), but "usable then" is not "usable now" -- a tmp
+  # reaper can remove it under a long interactive `plan apply`, and a
+  # filesystem can fill between one line and the next. Both land here as a
+  # short or absent list, which is the one shape this whole file may never
+  # read as an answer: it is byte-for-byte what a previous run that left
+  # nothing produces, and the report below would state exactly that.
+  if ! {
+        plancheck_ledger_items "$state/runs/$prev/journal.md" "$prev"
+        plancheck_lesson_items "$state/lessons.md" "$cutoff"
+      } > "$tmp/items"; then
+    echo "crosscheck: REFUSED — the carry-forward question cannot be answered: the carried-forward list could not be written to $tmp (the scratch directory was created for this report; something has since removed it, or filled the filesystem it is on)" >&2
+    echo "crosscheck: a list that could not be written is not a list of nothing. Free space under ${TMPDIR:-/tmp} (or point TMPDIR elsewhere), then re-run." >&2
+    return 5
+  fi
 
   nitems="$(wc -l < "$tmp/items" | tr -d ' ')"
+  # Not `[ "$nitems" -eq 0 ]` straight off: an unreadable file yields an EMPTY
+  # count, `[ "" -eq 0 ]` is a bash usage error rather than a false test, and
+  # under the errexit-suppressing call this function runs in that error simply
+  # falls through to the report -- which then prints "$prev left  carried-
+  # forward item(s)" and, having read no item, "all considered". A count that
+  # is not a number is the unreadable state again, so it refuses like one.
+  case "$nitems" in
+    ''|*[!0-9]*)
+      echo "crosscheck: REFUSED — the carry-forward question cannot be answered: the carried-forward list at $tmp/items could not be counted" >&2
+      echo "crosscheck: an uncountable list is not an empty one, and the two produce the same report. Check ${TMPDIR:-/tmp}, then re-run." >&2
+      return 5 ;;
+  esac
   if [ "$nitems" -eq 0 ]; then
     echo "crosscheck: previous run $prev recorded no ledger items and carried no active lessons forward — nothing to cross-check (stated, not skipped)"
     return 0
@@ -863,7 +942,17 @@ _plancheck_body() {
   # `grep -l` over the set rather than a grep per (item, task) pair.
   # Archived tasks under runs/<prev>/tasks/ are deliberately not searched:
   # the question is what THIS plan covers.
-  mkdir -p "$tmp/tasks"
+  #
+  # Checked for the same reason as the list above, and with more at stake: an
+  # unwritable `tasks/` directory makes every task copy empty, every anchor
+  # miss, and every carried item report UNCOVERED. That direction is safe --
+  # it refuses rather than passes -- but it is a refusal naming the wrong
+  # cause, and an operator answering it would defer items the plan does cover.
+  if ! mkdir -p "$tmp/tasks"; then
+    echo "crosscheck: REFUSED — the carry-forward question cannot be answered: the plan's tasks could not be staged under $tmp (the scratch directory was created for this report; something has since removed it, or filled the filesystem it is on)" >&2
+    echo "crosscheck: with no staged tasks every item reads as uncovered, which is a refusal about the wrong thing. Free space under ${TMPDIR:-/tmp} (or point TMPDIR elsewhere), then re-run." >&2
+    return 5
+  fi
   for f in "$state"/tasks/*.md; do
     [ -f "$f" ] || continue
     plancheck_task_text "$f" > "$tmp/tasks/${f##*/}"

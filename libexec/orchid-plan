@@ -103,7 +103,16 @@ case "$sub" in
       # and none to defer, and telling an operator to do either -- under a
       # report that listed nothing -- is the same misdirection as passing the
       # plan would have been.
-      if [ "$crosscheck_rc" -eq 4 ]; then
+      #
+      # Exit 5 is the same shape one level further down: the cross-check
+      # could not build its own workspace (no scratch directory under
+      # TMPDIR), so it listed nothing for a reason that has nothing to do
+      # with this plan or with the previous run. Its own sentence for its own
+      # repair -- naming the previous run's record here would send an
+      # operator to restore an archive that is sitting there intact.
+      if [ "$crosscheck_rc" -eq 5 ]; then
+        echo "orchid: plan apply refused — the carry-forward cross-check could not run (above); give it a writable TMPDIR, then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      elif [ "$crosscheck_rc" -eq 4 ]; then
         echo "orchid: plan apply refused — the carry-forward cross-check could not be answered (above); repair the previous run's record, then re-run (orchid plan crosscheck re-reports without committing)" >&2
       else
         echo "orchid: plan apply refused — cover the item(s) above with a task in this plan, or record the decision (orchid plan defer <id> --reason \"...\"), then re-run (orchid plan crosscheck re-reports without committing)" >&2

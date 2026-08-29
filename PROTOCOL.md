@@ -664,6 +664,18 @@ sequence in
    integration branch: `git log --oneline -- .orchid/runs`), not to cover or
    defer anything — neither remedy applies to an item the check was never
    able to list.
+
+   A fourth outcome is the same distinction drawn about the check's own
+   workspace: it builds its lists in a scratch directory under `TMPDIR`, and
+   when it cannot create one it exits **5** and refuses. Nothing is wrong
+   with `.orchid/` in that state — the archive is intact and the items are
+   all still in it — which is exactly why an empty report there was the
+   worst version of this: an unusable `TMPDIR` (one that does not exist, a
+   full or read-only `/tmp`, a sandbox exporting a directory it never
+   created) produced no list, and a report with no list said the plan had
+   been considered. The repair is a writable temporary directory, so it gets
+   a code of its own too: restoring an archive that was never missing would
+   teach an operator nothing.
 3. `orchid plan apply --reason "..."` — commits every current `.orchid/`
    change (roadmap, tasks, requirements) onto the integration branch in one
    transaction, from whatever checkout you're in, without ever switching the

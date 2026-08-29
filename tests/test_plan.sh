@@ -49,6 +49,12 @@
 #            carried findings in (7a), and must NOT recognize the same word in
 #            its unrelated engine-health sense (7b), because a list a dozen
 #            unactionable items long is a refusal cleared without reading.
+#   8        a false pass through the check's OWN WORKSPACE: with no scratch
+#            directory to build its lists in, the report listed nothing and
+#            said the plan had been considered -- over an archive that was
+#            intact the whole time. Proven against both verdicts, uncovered
+#            (8a) and green (8b), because a refusal that only fires when there
+#            is nothing left to lose proves nothing.
 #
 # RED (before libexec/orchid-plan grew the check): every crosscheck
 # invocation exits 2 on an unknown subverb, and every `plan apply` here
@@ -1270,3 +1276,145 @@ assert_eq 0 "$rc" "crosscheck passes once every prose-spelled item is covered or
 assert_match "all 4 carried-forward item\(s\) considered" "$out" "...counting the entries the old vocabulary could not see"
 apply_out="$("$ORCHID_BIN" plan apply --reason "r-002 plan over the prose ledger" 2>&1)"
 assert_match "^applied: " "$apply_out" "plan apply commits once the prose-spelled findings are considered"
+
+# ===========================================================================
+# 8 -- THE CHECK'S OWN WORKSPACE IS PART OF THE STATE IT REASONS FROM.
+#
+# Section 6 proved that an unreadable RECORD may not be reported as an empty
+# one. This section proves the same thing one level further down, about the
+# scratch directory the check builds its lists IN -- because that was the same
+# fail-open, reached without touching .orchid/ at all.
+#
+# plancheck_report is called as `plancheck_report "$state" || rc=$?` by both
+# of its callers, and testing a command's status suppresses `set -e` for the
+# whole of it. So the unchecked `tmp="$(mktemp -d "${TMPDIR:-/tmp}/...")"`
+# did not stop the report when mktemp failed: `tmp` was left EMPTY, which
+# turned every path the report writes into an absolute one -- `> "$tmp/items"`
+# became `> /items`, `mkdir -p "$tmp/tasks"` became `mkdir -p /tasks` -- and
+# each failed quietly on its own. The item list was then unreadable, the loop
+# over it never ran, no item was ever reported, and the report ended on "all
+# carried-forward item(s) considered" at exit 0. `plan apply` committed.
+#
+# That is not a hypothetical environment: a TMPDIR that does not exist, a
+# read-only or full /tmp, and a sandbox exporting a directory it never created
+# are all ordinary. And it is the WORST spelling of this file's failure, worse
+# even than 6's, because nothing about the repository is wrong -- the archive
+# is intact, the journal is readable, the items are all still there -- and the
+# green line is printed over them anyway.
+#
+# So the fixture below carries one real ledger item and is driven twice: once
+# uncovered (exit 3) and once covered (exit 0). Under an unusable TMPDIR
+# NEITHER verdict may be printed. The check refuses with a code of its own (5,
+# distinct from 3's uncovered item and 4's unreadable record, because the
+# repair is neither a task nor a deferral nor a restore) and both callers name
+# the temporary directory rather than sending the operator to repair an
+# archive that is sitting there intact.
+#
+# RED (before the mktemp status was checked): the first `assert_eq 5` sees 0,
+# and with it every anti-assertion below -- the report says "all  carried-
+# forward item(s) considered" (two spaces: the count is the empty string it
+# read off a file it could not open), `plan apply` moves the integration
+# branch, and `run advance` takes the run out of planning.
+# ===========================================================================
+new_repo f
+f_bare="$WORK/f-bare"
+echo "# Requirements" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+"$ORCHID_BIN" task create T001 "r-001 task" >/dev/null
+"$ORCHID_BIN" plan apply --reason "r-001 plan" >/dev/null
+"$ORCHID_BIN" journal add --kind ledger \
+  "carried as a ledger item: plancheck_scratch_probe builds the carried-forward list in a temporary directory and never checks that it got one" >/dev/null
+roll_over "open the second run of the scratch fixture"
+assert_eq "r-002" "$(fm_get .orchid/roadmap.md run_id)" "sanity: the scratch fixture rolled over"
+echo "# Requirements v2" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+
+# The unusable TMPDIR: a path that does not exist, which is what a sandbox
+# exporting a directory it never created leaves behind. Bound per COMMAND,
+# never exported -- this suite's own assert_match feeds grep from a here-string,
+# which bash materializes under TMPDIR, so exporting it would break the
+# assertions rather than the subject.
+no_tmp="$WORK/f-tmpdir-that-does-not-exist"
+[ -e "$no_tmp" ] && fail "fixture assumption broken: the unusable TMPDIR must not exist"
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "sanity: the carried item is unconsidered while the check can run at all"
+scratch_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep "  UNCOVERED \[ledger\] .*plancheck_scratch_probe" <<<"$out")")"
+[ -n "$scratch_id" ] || fail "sanity: the fixture's ledger item must be reported before TMPDIR is taken away"
+head_before="$(git -C "$f_bare" rev-parse orchid/integration)"
+
+# ---------------------------------------------------------------------------
+# 8a -- NO SCRATCH DIRECTORY, AN UNCOVERED ITEM. The item is sitting in a
+# perfectly readable archive; the check simply has nowhere to write the list
+# it would report. Reporting anything at all here is the fail-open.
+# ---------------------------------------------------------------------------
+rc=0; out="$(TMPDIR="$no_tmp" "$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 5 "$rc" "a cross-check with no scratch directory refuses, on a code of its own"
+assert_match "no scratch directory could be created" "$out" \
+  "...naming what it could not get, and where"
+# grep -F, not assert_match: the path is a mktemp result, so it is data rather
+# than a pattern this suite authored, and feeding it to grep -E would make the
+# assertion depend on which characters mktemp happened to pick.
+grep -qF "$no_tmp" <<<"$out" \
+  || fail "...and the directory it was pointed at, so the repair is obvious"
+grep -qF "item(s) considered" <<<"$out" \
+  && fail "THE FAIL-OPEN: a check that could not build its own list must never report the plan as considered — the archive is intact and the item is still in it"
+grep -qF "recorded no ledger items" <<<"$out" \
+  && fail "...nor as a previous run that left nothing: the run left this item, and nothing about .orchid/ is wrong"
+grep -qF "UNCOVERED" <<<"$out" \
+  && fail "...and it must not list items either: no list was built, so any list printed here is a fiction"
+
+rc=0; out="$(TMPDIR="$no_tmp" "$ORCHID_BIN" plan apply --reason "apply with no scratch directory" 2>&1)" || rc=$?
+assert_eq 5 "$rc" "plan apply refuses when the cross-check could not run"
+assert_match "could not run" "$out" "...saying that the check did not run, not that its answer was no"
+assert_match "TMPDIR" "$out" "...and naming the repair, which is neither a task nor a deferral nor a restore"
+grep -qF "orchid plan defer <id>" <<<"$out" \
+  && fail "a refusal that listed no item must not tell the operator to defer one"
+grep -qF "repair the previous run's record" <<<"$out" \
+  && fail "...nor to restore an archive that is sitting there intact: that is exit 4's repair, and this is not exit 4"
+assert_eq "$head_before" "$(git -C "$f_bare" rev-parse orchid/integration)" \
+  "...and the integration branch does not move: nothing is committed over a check that never ran"
+grep -q "apply with no scratch directory" .orchid/journal.md \
+  && fail "a refused plan apply must not journal its reason — nothing happened"
+
+rc=0; out="$(TMPDIR="$no_tmp" "$ORCHID_BIN" run advance running --reason "leave planning with no scratch directory" 2>&1)" || rc=$?
+assert_eq 5 "$rc" "the edge out of planning is gated on the same condition, so it cannot be stepped around by ordering"
+assert_match "could not run" "$out" "...with the same distinction drawn for the same reason"
+assert_eq planning "$(fm_get .orchid/roadmap.md run_status)" "...and the run stays in planning"
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "the refusal lifts as soon as a scratch directory can be had — it gates the environment, not the plan"
+assert_match "UNCOVERED \[ledger\] $scratch_id" "$out" "...and the item it could not list comes back"
+
+# ---------------------------------------------------------------------------
+# 8b -- NO SCRATCH DIRECTORY, A GREEN PLAN. The contrast that makes 8a mean
+# something: this plan really does consider its one carried item, and says so
+# at exit 0. Take the scratch directory away and that verdict must CHANGE —
+# the whole defect was that the two printed the same line.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T010 "check that the crosscheck got the scratch directory it asked for" >/dev/null
+"$ORCHID_BIN" task set T010 acceptance_criteria \
+  "plancheck_scratch_probe must refuse when no scratch directory can be created, rather than reporting an empty carried-forward list" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the carried item is covered once a task names its anchor"
+assert_match "all 1 carried-forward item\(s\) considered" "$out" "...and the plan is green"
+
+rc=0; out="$(TMPDIR="$no_tmp" "$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 5 "$rc" \
+  "THE POINT OF SECTION 8: the same plan, one environment variable away, cannot still be a pass — a check that did not run has no verdict to give"
+grep -qF "all 1 carried-forward item" <<<"$out" \
+  && fail "the green line was printed by a report that never opened the record it claims to have considered"
+
+apply_out="$("$ORCHID_BIN" plan apply --reason "r-002 plan over a check that could run" 2>&1)"
+assert_match "^applied: " "$apply_out" "plan apply commits once the check can run and every item is considered"
+assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and takes the run to running"
+
+# The other half of the same guard, and it is NOT proven here rather than
+# quietly assumed: a scratch directory that was created and then went away or
+# filled up. _plancheck_body refuses those on the same code, but no portable
+# fixture produces them -- a directory this process can create is a directory
+# it can write into, and removing it mid-report would mean racing a running
+# verb. What section 8 does prove is the shape they share: an empty or
+# uncountable list is refused rather than reported as a plan considered.
+not_tested "a scratch directory that disappears or fills AFTER it was created" \
+  "the allocation half is fixtured above (an unusable TMPDIR); the post-allocation half -- _plancheck_body's refusals when the items file cannot be written, cannot be counted, or the tasks directory cannot be staged -- has no portable fixture, since a directory this test can create is one it can write into"

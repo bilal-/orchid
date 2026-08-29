@@ -257,7 +257,12 @@ case "$sub" in
         # at all -- names the repair instead of the two remedies, which have
         # nothing to act on when no item could be listed (libexec/orchid-plan's
         # apply arm says why at length).
-        if [ "$crosscheck_rc" -eq 4 ]; then
+        # Exit 5 -- no scratch directory, so the check could not run at all --
+        # names the temporary directory instead, for the same reason: an
+        # operator sent to restore an archive that is intact learns nothing.
+        if [ "$crosscheck_rc" -eq 5 ]; then
+          echo "orchid: run advance $from -> $to refused — the carry-forward cross-check could not run (above); give it a writable TMPDIR, then re-run" >&2
+        elif [ "$crosscheck_rc" -eq 4 ]; then
           echo "orchid: run advance $from -> $to refused — the carry-forward cross-check could not be answered (above); repair the previous run's record, then re-run" >&2
         else
           echo "orchid: run advance $from -> $to refused — a carried-forward item may not leave planning unconsidered; cover it with a task or record the decision (orchid plan defer <id> --reason \"...\"), then re-run" >&2

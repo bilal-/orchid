@@ -959,6 +959,34 @@ Then re-run `orchid plan crosscheck`, which will report the items in that
 record — usually as `UNCOVERED`, since nothing in the plan has answered for
 them yet.
 
+## `plan apply` refuses: the cross-check could not run at all
+
+**Symptom:** `orchid plan apply`, `orchid plan crosscheck` or `orchid run
+advance` out of `planning` exits **5**, saying no scratch directory could be
+created under whatever `TMPDIR` names, and listing no items.
+
+Nothing is wrong with `.orchid/` here. The archive is intact, the journal is
+readable, every carried item is still in it — the check simply has nowhere to
+write the list it would report, because it builds that list in a temporary
+directory. So the repair is neither a task, nor a deferral, nor a restore:
+
+```sh
+echo "$TMPDIR"                     # unset means /tmp
+mkdir -p "$TMPDIR" && df -h "${TMPDIR:-/tmp}"
+```
+
+An unusable `TMPDIR` is ordinary — a shell profile or a sandbox that exports
+a directory it never creates, a full disk, a read-only `/tmp`, a directory
+belonging to another user. Point it at a writable directory (or free space in
+the one it names) and re-run.
+
+It refuses rather than reporting for the same reason exit 4 does, and this is
+the sharper version of it: with no directory to write into, the item list came
+back empty, and an empty list is what a previous run that left nothing
+produces. The report printed `all carried-forward item(s) considered` and
+`plan apply` committed the plan — over findings that were sitting in a record
+it never had anywhere to read into.
+
 ## One task needs a decision and the whole run stopped
 
 **Symptom:** `orchid drive` exited 16 (or the pump printed `judgment boundary
