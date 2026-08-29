@@ -217,6 +217,24 @@ assert_eq "tick complete" "$(jq -r .summary "$d/out/envelope.json")" "orchestrat
 stdin_content="$(cat "$WORK/orchone.stdin")"
 assert_match "ORCHID-ACTION: <command>" "$stdin_content" "orchestrate one-action stub: the fixed instruction block arrives on stdin"
 
+# T009: the notify form these instructions hand the model DECLARES ITS ANSWER
+# SET. runners/orchid-drive already does this for every boundary kind that has
+# one (lib/drive.sh's drive_boundary_choices, pinned in tests/test_drive.sh),
+# but a boundary the driver routes to a woken model and the model then judges
+# to be a human's after all is paged from HERE, not from the driver. Left out
+# of this block, exactly the pages a model escalates keep the shape r-001
+# shipped twenty-seven of: `orchid answer <qid> <choice> --nonce <n>` with
+# nothing saying what `<choice>` may be. Asserted on the prompt the engine
+# actually received rather than on the adapter's source line, because a source
+# line is only an instruction once it reaches the engine.
+assert_match "notify --task <id> \\[--choice <value>\\]" "$stdin_content" \
+  "orchestrate one-action stub: the notify form the instructions hand the model carries the declared-choice flag"
+# THE OTHER EDGE, in the same block, because a set that is always demanded is
+# its own defect: a boundary whose honest answer is a sentence must not be
+# gated on a menu, so the instructions have to say when NOT to declare one.
+assert_match "omit --choice entirely when the honest answer is prose" "$stdin_content" \
+  "orchestrate one-action stub: ...and say plainly when to declare no set at all"
+
 # --- 7d. orchestrate stub prints NO ORCHID-ACTION lines, exits 0 ->
 # actions == [] and status is STILL ok (never a crash). Regression test for a
 # real bug: under `set -euo pipefail`, `grep '^ORCHID-ACTION: '` on zero

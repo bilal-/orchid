@@ -1110,7 +1110,8 @@ discovered as five silent retries and a quarantined message.
 
 **Inbound** is genuinely probed when the configured plugin ships a probe
 (`inbound_probe=` in its manifest — openclaw does, via `openclaw channels
-status`): doctor runs it with a 10s deadline and reports REACHABLE, NOT
+status`, and hermes does, via `hermes gateway status`): doctor runs it with a
+10s deadline and reports REACHABLE, NOT
 REACHABLE, or UNDETERMINED as the plugin itself determined. A gateway that is
 down shows up here as NOT REACHABLE — that is the line that would have caught
 the outage above on day one. Note what a REACHABLE result does *not* claim:

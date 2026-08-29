@@ -324,6 +324,83 @@ this section false without touching a byte of it.
 - **v0/v1 seam:** `orchid notify` (question-id minted by the kernel,
   multiple-choice preferred) → `BLOCKERS.md` + terminal; `orchid answer
   <qid> <choice>` — idempotent, expiring, consumed by the next tick.
+- **Multiple choice is DECLARED, and enforced (v1-m4 T009) — SHIPPED:**
+  `orchid notify [--choice <value>]...` records the permitted answers with the
+  question (a `runtime/answers/<qid>.choices` sidecar) and names them on every
+  surface the question reaches — `BLOCKERS.md`, the channel page, and
+  `orchid status --html`. `orchid answer` then refuses a value outside the
+  set and lists the valid ones in the refusal, so a typo can no longer be
+  recorded silently as a decision. The gate keys on the sidecar's EXISTENCE,
+  never on the question's prose: a question minted with no `--choice` has no
+  sidecar and keeps the free-text contract in full, which is the contract
+  every question raised before this shipped still has. A sidecar that exists
+  but yields no readable choice is refused rather than waved through — "the
+  record of a declared set is gone" is not "no set was declared".
+  A declared value is one `[A-Za-z0-9_-]` word, alphanumeric first, at most
+  64 characters; `orchid notify` refuses anything else at mint time, which is
+  the same grammar `runners/orchid-orchestrator-command` admits for the same
+  flag on the brokered surface. That narrowness is representability, not
+  taste: `orchid answer` takes `<choice>` as a positional and routes any
+  argument beginning with `-` to its usage arm, with no `--` terminator, so a
+  value outside the word grammar could be named on a page and then be
+  answerable by nobody — and because the declared set also refuses every
+  value it did not name, such a question would be answerable by nothing at
+  all.
+  `runners/orchid-drive` declares the set for every boundary kind that has
+  one (`lib/drive.sh`'s `drive_boundary_choices`; PROTOCOL.md's boundary
+  table), and the kinds whose answer is genuinely prose declare none. The set
+  is a property of the kind AND the task's status, not of the kind alone: a
+  `review-evidence`/`review-conflict` page names the arbitration results
+  (`approve | request-changes | defer`) only from `arbitrating`, where `orchid
+  task arbitrate` is legal, and names the review-plan remedies its own reason
+  text points at (`adopt-evidence | repin | block | defer`) from `reviewing`,
+  where that verb exits 3. Declaring one state's verbs on the other state's
+  page is the self-contradiction the gate makes worst: the page invites answers
+  that cannot be carried out and refuses the ones that can. The same keying is
+  what closes the `operator-decision` catch-all's set from `blocked` and from
+  nowhere else: a task blocked by a repo-wide `merge_gate` red at the rework cap
+  is filed under that kind rather than `blocked-task` (a judgment about the
+  repository, not a candidate defect), carries `drive_blocked_reason`'s text
+  naming `orchid task unblock|retry|reverify`, and so has the same four answers
+  as any other blocked task. From every other status the catch-all still declares
+  none, because there its reason really is composed per site.
+  **One stop raises one page, and every stop raises one.** `runners/orchid-drive`
+  sends every page from a single call site, over the list of every boundary the
+  pass MET, de-duplicated per stop: a page for that TASK carrying that exact
+  text which is already on record — a question still awaiting an answer, or one
+  already answered — is that stop's page, and only a question that expired
+  unanswered (which `orchid answer` would now refuse) counts as no page at all.
+  So a condition that persists for a hundred passes raises one blocker. A stop
+  is a task and a text, never a text alone: most boundary reasons do not name
+  their own task, so two tasks failing the same hook compose the identical
+  sentence, and matching on the text alone would answer the second one's stop
+  with the first one's page. The boundary RECORD is still compared, but only as
+  the fallback for a stop whose inbox holds no question at all — it is durable
+  and a blocked task's never changes, so consulting it first left an expired
+  page un-raisable: unanswerable to the operator and "already announced" to the
+  driver, forever. A notify raised anywhere else is compared against nothing.
+  Three arms used to
+  do exactly that — the exhausted-budget arm and the wallclock backstop, each
+  paging a task it was about to block, and the stuck-merge arm, paging a
+  boundary it recorded in the same breath — so one decision reached the
+  operator as two or three `qid`s, each with its own nonce and its own
+  `.answer` file, only one of them carrying the kind's declared set. Answering
+  one says nothing about the others: they stand in `BLOCKERS.md` until
+  `answer_expiry_s` turns them into refusals. A task the driver blocks is now
+  recorded as a `blocked-task` boundary in the same words every later pass over
+  that task recomputes, so the block pages once and the passes after it page
+  not at all. The kind is derived from the block's own journaled cause rather
+  than from which arm reached it (`lib/drive.sh`'s `drive_blocked_kind`), which
+  is what keeps the one block filed under a different kind — a repo-wide
+  `merge_gate` red at the rework cap, an `operator-decision` — recomputing to
+  that same kind on every later walk instead of changing under the task.
+  De-duplicating against the boundary RECORD instead — which is what the first
+  repair of those arms did — fails the same sentence in the other direction.
+  Only one boundary is recorded per pass, so a stop that loses the ranking has
+  no record to be compared against and raises no page at all; blocked tasks all
+  rank equal, so the lowest-id one held the slot on every pass and every other
+  blocked task in the run was silent. The ranking decides which stop is
+  RECORDED, never which stops are paged.
 - **v1-m4 channels — three explicit actors (round-4 topology fix) — SHIPPED:**
   (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
   access) — `orchid notify` (tier-1) never spawns it directly; it only

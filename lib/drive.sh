@@ -350,6 +350,181 @@ drive_boundary_settling_verb() {
   esac
 }
 
+# drive_boundary_choices <kind> [<task-status>] -- the answers `orchid answer`
+# accepts for the page THIS kind raises ON A TASK IN THAT STATUS, one per line,
+# or nothing when there is no enumerable set. Declared with the question
+# (`orchid notify --choice ...`), printed on the page, and enforced by `orchid
+# answer`, which refuses anything outside the set and names the valid ones in
+# the refusal.
+#
+# WHY THIS TABLE EXISTS AT ALL. A boundary that reaches a human reaches them as
+# one channel message, and r-001 shipped twenty-seven of those whose only
+# instruction was `orchid answer <qid> <choice> --nonce <n>` -- with <choice>
+# a free-text value validated against nothing. Answerable in principle,
+# unanswerable in practice: nothing on the page said what would be accepted,
+# and a typo was recorded silently as if it were a decision. That is lesson
+# L028 in the answer medium (a refusal that does not name the action which
+# clears it), and naming the set is the fix.
+#
+# The vocabulary is DECISIONS, and each one names the operator verb that
+# carries it out -- `unblock`/`retry`/`reverify` (`orchid task
+# unblock|retry|reverify`), `approve`/`request-changes` (`orchid task arbitrate
+# --result`), `adopt-evidence`/`repin` (`orchid jobs review-plan <id>
+# --adopt-evidence|--repin`), `block` (`orchid task advance <id> blocked
+# --reason "..."`), `accept` (`orchid run accept --evidence`), `acknowledged`
+# (`orchid task handoff --ack` for a hand-off, `orchid task prereq-ack` for a
+# prerequisite).
+# Recording the answer is not running the verb: nothing consumes a
+# `.answer` file automatically, so the page records what the operator decided
+# and the operator still runs it. Every value is one [A-Za-z0-9_-] word, which
+# is both what `orchid notify` requires (it has to survive as a single argv
+# word of `orchid answer`) and the narrower shape
+# runners/orchid-orchestrator-command admits, so a woken orchestrator can
+# declare the same sets from the brokered surface.
+#
+# THE TWO ACKNOWLEDGEMENT KINDS ANSWER ALIKE, and that is why
+# `task-prerequisite` sits beside `operator-handoff` here rather than in the
+# absent list below. Both are boundaries drive_boundary_settling_verb names no
+# verb for -- deliberately, because no MODEL may assert either was done -- and
+# both nevertheless have exactly one operator verb that settles them, named in
+# every reason text either one raises (`orchid task handoff --ack`, `orchid
+# task prereq-ack`). Those are different axes: "can a woken orchestrator record
+# this" and "can the page tell a human what they may answer". Reading the first
+# as the second is what leaves the hardest boundaries -- the ones that reached
+# a human precisely because no automation could take them -- as the bare
+# `<choice>` placeholder this table exists to retire.
+#
+# KINDS DELIBERATELY ABSENT, and the absence is the point: `operator-decision`
+# is a CATCH-ALL whose reason text is composed per site (a refused advance, an
+# archetype with no edge, a status nobody recognized), `hook-failure` and
+# `worktree-conflict` are broken infrastructure, and `planning` is roadmap
+# drafting. None of those has an answer set anybody could enumerate honestly,
+# so they declare none and keep the free-text contract they have always had --
+# which is also why a set here can never become a way to refuse an operator's
+# legitimate prose.
+#
+# ...EXCEPT THAT THE CATCH-ALL IS ABSENT BY KIND, NOT BY STATE, and `blocked` is
+# the one state where the kind stops deciding anything. A page's answers are the
+# kernel's recovery list for the state it was raised in (see the paragraph after
+# next), and out of `blocked` that list is closed -- `unblock`, `retry`,
+# `reverify` -- whatever the page was filed under. `operator-decision` reaches a
+# blocked task by exactly two routes, and both of them want that set:
+# drive_block_boundary files a task blocked by a repo-wide `merge_gate` under
+# this kind, because a capped repository gate is a judgment about the REPOSITORY
+# rather than a candidate defect (T023), and the walk files a task whose
+# archetype fails validation under it too. The first is the one that shipped
+# broken. Its reason is drive_blocked_reason's, word for word -- it names
+# `orchid task unblock`, `orchid task retry` and `orchid task reverify` on the
+# task, since those are the only ways out of `blocked` -- and the page carried
+# no declared set at all, so a stop with four known answers went out with the
+# bare `<choice>` placeholder this table exists to retire. The kind said
+# "composed per site"; the STATE said otherwise, and the state is the half that
+# knows what an answer can be. Being the catch-all is not a reason to be less
+# answerable than the same stop filed under `blocked-task`.
+#
+# What the catch-all keeps is every OTHER status: an advance refused in
+# `implementing`, a routing table in `reviewing`, a merge left in `merging`.
+# Those are the pages whose real answer is a sentence, and they still declare
+# nothing.
+#
+# THOSE TWO LISTS PARTITION `_DRIVE_BOUNDARY_KINDS`, exhaustively, and
+# tests/test_drive.sh walks that variable to hold them to it -- each kind
+# probed in a status it is really raised in, since the review kinds' and the
+# catch-all's sets are keyed on that. A kind that is in neither list is not a
+# third policy -- it is a kind nobody decided about, which resolves silently to
+# the `*)` arm and ships the unanswerable page for exactly the boundary whose
+# paragraph was forgotten.
+# So a new kind fails that walk until it is named in one list or the other.
+#
+# THE SET IS THE KERNEL'S WHOLE RECOVERY LIST FOR THE STATE, not the subset
+# that happened to exist when the table was written. `blocked-task` declared
+# `unblock | retry | defer` while PROTOCOL.md's boundary table, kernel.md's
+# ownership table and the boundary's own reason text all named a THIRD verb --
+# `orchid task reverify`, the one recovery that re-runs verification alone
+# without spending an attempt, and therefore the right answer for every block
+# whose cause was never the candidate. A page that lists two of three does not
+# merely omit one: `orchid answer` refuses everything outside the declared set,
+# so the operator who reads the reason text, names the verb it points at, and
+# answers `reverify` is told their answer is invalid. That is worse than the
+# bare `<choice>` placeholder this table replaced -- it is a page that
+# contradicts itself. A verb the kernel offers out of a state is a verb this
+# set names.
+#
+# ...AND IT IS THE RECOVERY LIST FOR THE STATE THE PAGE WAS RAISED IN, which is
+# why the two REVIEW kinds take the task's status and the others do not. That is
+# the same three-fact rule the resolvability block above states, applied to the
+# page instead of to the wakeup: `orchid task arbitrate` refuses any status but
+# `arbitrating` (libexec/orchid-task, exit 3), so `approve | request-changes` is
+# the honest set from `arbitrating` and NAMES NOTHING AN OPERATOR CAN DO from
+# `reviewing` -- yet every review-evidence boundary the reviewing walk raises
+# (a review-plan pin that failed, a routing table with no unfilled slot, a
+# tier-complete set whose routed slot has no review of its own, a slot pinned to
+# an engine that cannot be dispatched) is raised from exactly there, while the
+# task is still `reviewing`. Those pages offered three answers, all of which
+# would have exited 3, and refused the two verbs their own reason texts point
+# the operator at. The declared set is a promise with two ends, so that is not
+# merely an unhelpful menu: `orchid answer` refuses everything the set did not
+# name, so the operator who runs `orchid jobs review-plan <id> --repin` -- the
+# remedy the page told them to run -- cannot record that they did.
+#
+# So from `reviewing` the set is that walk's own remedies: `adopt-evidence` and
+# `repin` (the two `orchid jobs review-plan` modes those reason texts name),
+# `block` (`orchid task advance <id> blocked --reason "..."`, the hand-it-to-a-
+# human ending every one of them offers) and `defer`. From `arbitrating` it is
+# the arbitration truth table's own results, unchanged.
+#
+# THE TWO ARMS HAVE DIFFERENT PRODUCERS, which is why neither is dead code even
+# though runners/orchid-drive only ever reaches the `reviewing` one. A review
+# boundary on an `arbitrating` task is resolvable on every surface shipped
+# today, so the driver wakes an orchestrator for it instead of paging -- and the
+# page then comes from that model's own `orchid notify --task <id> --choice ...`
+# through the brokered surface, when it reads the evidence and judges the
+# decision a human's after all. This table is what PROTOCOL.md tells that model
+# to declare; the day a review boundary from `arbitrating` reaches the notify
+# path directly, it is already saying the same thing.
+#
+# That set covers every VERB the reviewing walk's reason texts point at, which is
+# the property the rule above actually demands. Two of those stops (a review-plan
+# pin whose durable write failed, a pin that returned no slots at all) name no
+# orchid verb to begin with -- their remedy is repairing the write path and
+# letting the next pass run -- and the answer to those is `defer` or `block`,
+# both of them in the set. What must never happen again is the reverse: a page
+# whose reason text names a verb the set refuses.
+#
+# ANY OTHER STATUS DECLARES NOTHING, deliberately, and this is the one arm that
+# fails toward free text rather than toward a set. A review page on a status
+# neither verb-set belongs to is a state nobody has decided the recovery list
+# for; naming either list there would refuse an answer that may well be the only
+# correct one, and the pre-choice free-text contract is exactly the behaviour
+# that can never do that. Declaring no set is how this table says "I do not know
+# what may be answered here", which is different from "anything may be".
+drive_boundary_choices() {
+  local kind="$1" status="${2:-}"
+  case "$kind" in
+    blocked-task) printf 'unblock\nretry\nreverify\ndefer\n' ;;
+    review-evidence|review-conflict)
+      case "$status" in
+        arbitrating) printf 'approve\nrequest-changes\ndefer\n' ;;
+        reviewing) printf 'adopt-evidence\nrepin\nblock\ndefer\n' ;;
+        *) return 0 ;;
+      esac ;;
+    run-complete) printf 'accept\ndefer\n' ;;
+    operator-handoff|task-prerequisite) printf 'acknowledged\ndefer\n' ;;
+    # The catch-all, keyed on the one state that closes the answer set for it.
+    # Deliberately the SAME list `blocked-task` prints, from the same state, and
+    # deliberately not shared with that arm by falling through to it: these are
+    # two kinds that agree here rather than one kind spelled twice, and the
+    # agreement is the property (drive_blocked_reason composes one reason for
+    # both, so the two pages must offer one set).
+    operator-decision)
+      case "$status" in
+        blocked) printf 'unblock\nretry\nreverify\ndefer\n' ;;
+        *) return 0 ;;
+      esac ;;
+    *) return 0 ;;
+  esac
+}
+
 # drive_boundary_resolvable <kind> <task-status> <command_surface> -- 0 iff a
 # woken orchestrator could settle this exact boundary, right now, with a verb
 # its adapter admits and the task's current status allows. Fail-closed on
@@ -3889,6 +4064,266 @@ drive_waived_rounds() {
     n=$((n + 1))
   done <<< "$lines"
   printf '%s\n' "$n"
+}
+
+# drive_blocked_cause <journal-file> <task-id> -- the reason this task was most
+# recently moved INTO `blocked`, clipped for one line, or empty when the
+# journal records none.
+#
+# WHY THE PAGE NEEDS THIS AT ALL. `blocked` is the one status the driver
+# re-reports on every pass until a human acts, so its boundary reason is the
+# text an operator meets over and over -- and it said only "task is blocked",
+# which is the status restated, not a cause. The operator is then told to
+# choose between `unblock`, `retry` and `reverify` with nothing on the page to
+# choose BY: those three differ precisely in what went wrong (guidance the plan
+# lacked, a round budget spent, a verification that failed for something the
+# candidate never caused). Every one of those causes was already written down
+# at the moment of the block; the page simply did not carry it.
+#
+# READ FROM THE JOURNAL, not from frontmatter, because frontmatter has no field
+# for it: `orchid task advance <id> blocked --reason "..."` and `orchid task
+# infra-fail`'s cap arm both land the reason as a journal entry and nothing
+# else. The journal is append-only and the task is not moving while it sits
+# blocked, so the same pass-after-pass boundary text stays byte-identical --
+# which is what keeps runners/orchid-drive's field-by-field de-dup raising ONE
+# blocker for a persisting condition rather than one per pass.
+#
+# MATCHED ON THE ENTRY'S TEXT, NOT ITS KIND, and that is load bearing in both
+# directions. `advance` journals a block under kind `blocker` while
+# `infra-fail`'s cap arm journals its own under `intervention`, so keying on
+# the kind would silently miss every infra-exhaustion block. And kind `blocker`
+# is not ours alone -- `orchid notify` writes its own page text under exactly
+# that kind, so keying on it would happily quote a PREVIOUS page back onto the
+# next one as though it were a cause. The `<from> -> blocked: ` prefix is the
+# shape only a real transition record has (notify's entries open with the qid),
+# so it selects one and excludes the other with a single anchored pattern.
+_drive_blocked_cause_lines() {
+  # Same split as the waiver reader above, and for the same reason its own
+  # header gives: awk walks the `## <ts> <task> <kind>` headings and prints
+  # candidate lines, nothing more. This library is sourced into a `set -e`
+  # driver and read through a command substitution, so an awk that dies takes
+  # the whole pass down instead of returning "no cause on record".
+  awk -v id="$2" '
+    /^## / { want = ($3 == id); next }
+    want && $0 != "" { if ($0 ~ /^[a-z]+ -> blocked: /) print; want = 0 }
+  ' "$1"
+}
+
+drive_blocked_cause() {
+  local journal="$1" id="$2" line lines last=""
+  [ -f "$journal" ] || { printf '\n'; return 0; }
+  lines="$(_drive_blocked_cause_lines "$journal" "$id" || true)"
+  # The LAST match wins: a task can be blocked, retried and blocked again, and
+  # the cause an operator is being asked about is the current one.
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    last="$line"
+  done <<< "$lines"
+  [ -n "$last" ] || { printf '\n'; return 0; }
+  # Clipped through the same helper a charged journal reason quotes evidence
+  # with: a verify-failure reason carries a whole classifier paragraph, and
+  # this text has to survive as one line of a phone notification.
+  _drive_quote_line "${last#* -> blocked: }"
+  printf '\n'
+}
+
+# drive_blocked_kind <cause> -- the boundary KIND a blocked task is recorded
+# under, derived from the same durable cause drive_blocked_reason composes its
+# text from. `operator-decision` when the block came from a repo-wide
+# `merge_gate` that stayed red for every rework round the task had, and
+# `blocked-task` for every other block.
+#
+# WHY THE KIND IS DERIVED AND NOT PASSED. A capped repository gate is a judgment
+# about the REPOSITORY rather than a candidate defect (T023), and the pass that
+# blocks the task is not the only pass that reports it: the walk meets the same
+# blocked task again on the next pass, and on every pass after it, until a human
+# acts. Both have to reach the identical kind AND the identical reason or the
+# boundary record changes, and a record that changes is a second qid for one
+# stop (the duplicate-page defect drive_blocked_reason's own header describes).
+# The journal is the only thing both passes can read, so the classification is a
+# function of it -- the same input, the same answer, however the pass arrived.
+#
+# AND IT IS A LIBRARY FUNCTION, beside the reason composer, for the reason that
+# composer gives about itself: it is here that the property is provable without
+# driving a pass. A test that re-derives the kind from a `case` of its own is
+# testing its own copy -- which is exactly how the gate-blocked page came to
+# declare no answers while the coverage for it asserted four. Section 12e of
+# tests/test_notify_hermes_channel.sh composes that page through THIS function
+# now, so the kind it exercises is the kind the driver files.
+drive_blocked_kind() {
+  case "${1:-}" in
+    *gate_failed*|*merge_gate*) printf 'operator-decision\n' ;;
+    *) printf 'blocked-task\n' ;;
+  esac
+}
+
+# drive_blocked_reason <task-id> <cause> -- the ONE boundary reason a blocked
+# task is recorded and paged with, composed from the cause drive_blocked_cause
+# read back above (empty when the journal holds none).
+#
+# WHY THIS IS A FUNCTION AND NOT TWO STRING LITERALS. runners/orchid-drive
+# reaches `blocked` from two directions -- it BLOCKS a task itself (attempts
+# exhausted, wallclock budget exceeded) and it WALKS one that is already
+# blocked, on that same pass and on every pass after it -- and both directions
+# describe the same stop to the same human. The driver used to answer them with
+# different text: the blocking arm raised its own `orchid notify` page and then
+# recorded an `operator-decision` boundary in its own words, while the walk
+# recorded a `blocked-task` one in the words below.
+#
+# That is a DUPLICATE-QID defect, not a wording inconsistency. PROTOCOL.md's
+# contract is one blocker per DISTINCT boundary record, and the de-dup that
+# enforces it compares the previous record field by field -- so text that
+# differs is a record that differs, and a record that differs is another qid.
+# One exhausted task therefore paged an operator twice on the pass it blocked
+# (once from the blocking arm directly, once from the boundary the same pass
+# recorded) and once more on the next pass, when the walk restated the stop in
+# this third wording. Three questions, three nonces, one decision: answering any
+# one of them leaves the others standing in BLOCKERS.md until `answer_expiry_s`
+# turns them into refusals, with nothing on the page saying which was live --
+# and only the first of the three carried a declared answer set at all.
+#
+# Composed HERE, in the library, because that is where the property is provable
+# without a driver pass: the blocking arm and the walk are two producers of one
+# page, and identical text out of one function is what makes the second and
+# third pages de-dup instead of mint.
+#
+# THE VERBS ARE SPELLED OUT WITH THE TASK ID for the same reason the cause is
+# quoted at all: this is the page an operator meets on their phone, and the
+# recovery it names has to be runnable from there without translating an
+# `a|b|c` shorthand back into three commands. `--attempts N` rides along
+# because the exhaustion case is precisely the one where plain `retry` may not
+# be enough. The three verbs are the whole recovery list the kernel offers out
+# of `blocked` -- the same list drive_boundary_choices declares as this kind's
+# answers, since a verb named here and refused there is a page that
+# contradicts itself.
+drive_blocked_reason() {
+  local id="$1" cause="${2:-}" what
+  if [ -n "$cause" ]; then
+    what="task is blocked: $cause"
+  else
+    what="task is blocked, and the journal records no cause for it"
+  fi
+  printf '%s — only an operator resolves it: orchid task unblock %s, orchid task retry %s [--attempts N], or orchid task reverify %s\n' \
+    "$what" "$id" "$id" "$id"
+}
+
+# drive_page_on_record <repo> <task|""> <text> -- what this stop's inbox says,
+# in three answers rather than two, because the caller has three things to do
+# with it:
+#
+#   0  PAGED     a question for this stop is on record and still counts as its
+#                page: still waiting for an answer and still answerable, or
+#                already answered.
+#   2  STALE     the only questions for this stop are ones `orchid answer` would
+#                now refuse -- expired unanswered, or with an mtime that cannot
+#                be read at all. The stop HAS been paged and that page is gone.
+#   1  UNPAGED   nothing on record carries this stop at all.
+#
+# WHY 2 IS NOT JUST "NOT 0". The caller de-dups against two sources: this
+# question inbox and the durable boundary RECORD it is about to write. The
+# record is the weaker of the two and outlives everything -- a `blocked-task`
+# boundary sits there unchanged until a human clears the block -- so a caller
+# that consults it first suppresses the page whenever it matches, and the
+# question's expiry can never be noticed. That is the stop going silent at
+# exactly the moment it became unanswerable: the operator's page aged out, the
+# record says "already announced", and nobody is asked again. Splitting STALE
+# out is what lets the caller say "the record may only speak for a stop whose
+# inbox is empty", so an expired page is re-raised and a swept-away runtime
+# still de-dups.
+#
+# WHY THE DRIVER NEEDS A PER-STOP ORACLE AND NOT JUST THE BOUNDARY RECORD. The
+# kernel stores ONE boundary record, and a pass that meets several may record
+# only the highest-ranked one. The de-dup at the foot of runners/orchid-drive
+# compares the record it is about to write against the one on disk, so it can
+# only ever speak for the stop that WON that slot -- and every other stop the
+# pass met is compared against nothing at all, because it leaves no record to
+# compare. That was survivable while four arms paged the task they blocked
+# directly; it stopped being survivable when those arms were repaired to record
+# instead of page. Blocked tasks are all operator-only, so they all rank equal,
+# so task-id order decides: the lowest-id blocked task took the slot on every
+# pass and the twenty-six stops behind it were never announced to anybody. One
+# page for twenty-seven decisions is the same defect as twenty-seven pages for
+# one, in the direction that is harder to notice.
+#
+# So the budget is per distinct STOP rather than per recorded record, and this
+# is what makes that countable without inventing durable state: a page IS a
+# question, and a question is a file. `runtime/answers/<qid>.question` carries
+# the page text as its own line, `<qid>.answer` beside it says an operator has
+# decided, and mtime past `answer_expiry_s` says `orchid answer` would now
+# refuse it (libexec/orchid-answer's own refusal, mirrored by libexec/
+# orchid-doctor's inbound check -- three readers, one rule).
+#
+# THE THREE ANSWERS, AND WHY EXPIRY IS THE ONLY ONE THAT RE-PAGES. An OPEN
+# question is the operator's outstanding page: raising a second one for the same
+# stop is the duplicate-qid defect section 12 of
+# tests/test_notify_hermes_channel.sh exists for. An ANSWERED one suppresses
+# too, and must: a stop that persists after `defer` would otherwise mint a fresh
+# page on every pass, one per answer, forever. An EXPIRED unanswered one is the
+# case that pages again, and that is the point -- the operator cannot answer it
+# any more, so for them it is not a page at all.
+#
+# The residual gap is stated rather than hidden: a stop that recurs with a
+# BYTE-IDENTICAL page text after its first page was answered is read as the same
+# stop and not re-paged. In practice the texts carry the counters that move
+# (`attempts exhausted (3/3)`, `(4/6)`), so a genuine recurrence composes
+# different text; a recurrence that does not is one an operator has already
+# answered in those exact words.
+#
+# A STOP IS A TASK AND A TEXT, NOT A TEXT. The reason a boundary carries is the
+# arm's own sentence and most arms do not name the task in it -- a hook-failure
+# reads "required before_verify hook binding(s) without an ok envelope for this
+# candidate: ...", which two tasks failing the same hook compose byte-identically.
+# Matching on the text alone therefore reads the second task's stop as the first
+# task's page and never asks about it, which is section 12f's starvation defect
+# again with the tasks swapped: one page, two decisions. The question file states
+# its subject on its FIRST line (`task: <id>`, or `task: none` for a run-level
+# boundary -- libexec/orchid-notify writes that header before anything else), so
+# the subject is compared there, exactly, and only then is the text.
+#
+# Matched with `grep -qxF -e`: a whole LINE equal to the text, so no header line
+# of the question file can match it (they are `task: `/`nonce: `/`choices: `
+# prefixed and the text is not), and `-e` because a page text is not this
+# reader's business to constrain -- one starting with `-` must not become a
+# grep option.
+drive_page_on_record() {
+  local repo="$1" task="$2" text="$3" rt qf qid expiry now mt subject want stale=0
+  # The path is composed rather than taken from lib/common.sh's orchid_runtime,
+  # which mkdir -p's what it returns: this file is read-only (see its header),
+  # and libexec/orchid-doctor's inbound check reads the same directory the same
+  # way for the same reason.
+  rt="$repo/.orchid/runtime"
+  [ -d "$rt/answers" ] || return 1
+  # `none` is libexec/orchid-notify's own spelling for a page with no task, so a
+  # run-level stop is compared against the header that verb really writes rather
+  # than against an empty string no question file can carry.
+  want="task: ${task:-none}"
+  expiry="$(config_get "$repo" answer_expiry_s 86400)"
+  case "$expiry" in ''|*[!0-9]*) expiry=86400 ;; esac
+  now="$(date -u +%s)"
+  for qf in "$rt"/answers/*.question; do
+    [ -f "$qf" ] || continue
+    subject=""
+    IFS= read -r subject < "$qf" || true
+    [ "$subject" = "$want" ] || continue
+    grep -qxF -e "$text" "$qf" 2>/dev/null || continue
+    qid="$(basename "$qf" .question)"
+    [ ! -f "$rt/answers/$qid.answer" ] || return 0
+    # Unreadable mtime is bucketed with expired for the same reason `orchid
+    # answer` refuses it: unanswerable either way, so it is not a live page --
+    # but it IS a page that was raised and is now gone, which is STALE and not
+    # UNPAGED. Normalized first so a non-numeric answer is that bucket rather
+    # than an arithmetic error inside a `set -e` driver.
+    mt="$(file_mtime "$qf")"
+    case "$mt" in ''|*[!0-9]*) mt=0 ;; esac
+    if [ "$mt" -gt 0 ] && [ $(( now - mt )) -le "$expiry" ]; then
+      return 0
+    fi
+    # Keep looking rather than returning here: another question may carry this
+    # same stop and still be live, and a live page outranks a dead one.
+    stale=1
+  done
+  [ "$stale" -eq 0 ] || return 2
+  return 1
 }
 
 drive_verify_class() {

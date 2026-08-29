@@ -7,7 +7,7 @@ source "$ORCHID_ROOT/lib/common.sh"
 # ...) -- answer_allowlist below reuses it rather than inventing a second
 # split idiom.
 source "$ORCHID_ROOT/lib/manifest.sh"
-repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"
 verb_lock_guard "$repo"
 
 qid=""; choice=""; nonce_arg=""
@@ -31,7 +31,8 @@ qf="$rt/answers/$qid.question"
 [ -f "$qf" ] || orchid_die "unknown question $qid (no .question file — orchid notify never minted it, or runtime was wiped)"
 
 # Recover task/nonce from the .question file (libexec/orchid-notify's own
-# format: "task: <id|none>" then "nonce: <value>" then the free-text body).
+# format: "task: <id|none>" then "nonce: <value>", an optional
+# "choices: <csv>" line kept there for display, then the free-text body).
 # Read individually rather than assuming a fixed line count so a
 # pre-v1-m4-Task-7 .question file (no nonce line at all -- shouldn't exist
 # in practice since notify always mints one now, but a stale runtime dir
@@ -40,6 +41,27 @@ qf="$rt/answers/$qid.question"
 task_line="$(head -n1 "$qf")"; task_id="${task_line#task: }"
 [ "$task_id" = "none" ] && task_id=""
 qnonce="$(grep -m1 '^nonce: ' "$qf" 2>/dev/null | sed 's/^nonce: //')"
+# Declared choice set: read from the question's OWN record (a sibling
+# `<qid>.choices` file, CSV, written by `orchid notify --choice ...`), NEVER
+# scraped back out of the .question above. The .question's optional
+# `choices:` header line sits at exactly the position the free-text body
+# would otherwise occupy, and that body is arbitrary text an orchestrator
+# chose: a blocker reading "choices: rollback,retry" is indistinguishable
+# from a declared set by any line-matching rule, and this gate decides
+# whether free text is accepted at all. Prose must not be able to switch it
+# on. So the sidecar's mere EXISTENCE is the declaration — a question minted
+# without --choice has no such file, the guard below never fires, and free
+# text stays accepted exactly as it did before choice sets existed.
+#
+# READING it is a second and independent step, which is why the read is
+# allowed to come back empty here rather than dying: an unreadable or
+# truncated sidecar is a file that EXISTS, so a set was declared, and the
+# gate below refuses on that fact alone. `2>/dev/null || true` so the
+# unreadable case reaches that named refusal instead of `set -e` killing
+# this verb with no message at all.
+qchoices=""
+qcf="$rt/answers/$qid.choices"
+[ ! -f "$qcf" ] || qchoices="$(cat "$qcf" 2>/dev/null || true)"
 
 # -- Expiry (answer_expiry_s, default 86400) --------------------------------
 # Applies UNCONDITIONALLY (local terminal and remote sender alike) — the
@@ -115,6 +137,45 @@ if [ -n "$allowlist" ]; then
       [ "$entry" = "$ORCHID_ANSWER_SENDER" ] && allowed=1
     done < <(_manifest_split_csv "$allowlist")
     [ "$allowed" -eq 1 ] || orchid_die "sender '$ORCHID_ANSWER_SENDER' is not in answer_allowlist — refusing (set answer_allowlist to permit it)"
+  fi
+fi
+
+# -- Declared choice set -----------------------------------------------------
+# Lesson L028 in the answer medium: a refusal names what WOULD be accepted.
+# When the question declared a set, a value outside it is refused — and the
+# refusal lists the valid choices, so a typo ("aprove") is caught here
+# instead of being recorded silently as if it were a decision. Questions
+# with no declared set keep today's free-text contract in full.
+#
+# GATED ON THE SIDECAR'S EXISTENCE, not on its contents being non-empty --
+# the same predicate the comment above calls the declaration, stated once so
+# the two cannot disagree. Keying the gate on `[ -n "$qchoices" ]` instead
+# reads "this question declared a set I could not read" and "this question
+# declared nothing" as the same answer, and resolves it the wrong way: every
+# value would be accepted for a question that DID declare a set, and the
+# refusal that names the valid ones would never fire. That is a gate failing
+# OPEN in exactly the case it is least able to justify -- and an empty file is
+# a reachable state, not a hypothetical one, since a producer that dies still
+# lands its zero bytes through `atomic_write` and exits 0.
+if [ -f "$qcf" ]; then
+  # One pass answers both questions the sidecar has to answer, using the one
+  # reader the gate itself uses: does the record yield ANY choice (is it
+  # answerable), and is this the operator's (what is the answer).
+  choice_ok=0; choice_n=0
+  while IFS= read -r valid_choice; do
+    [ -n "$valid_choice" ] || continue
+    choice_n=$((choice_n + 1))
+    if [ "$valid_choice" = "$choice" ]; then choice_ok=1; fi
+  done < <(_manifest_split_csv "$qchoices")
+  if [ "$choice_n" -eq 0 ]; then
+    # Refused, never waved through: this question's page told the operator
+    # their answer would be checked against a set, and the record of that set
+    # is gone. Naming the file because the remedy is an operator's (restore
+    # or re-raise the question), and nothing here can reconstruct it.
+    orchid_die "$qid declared a choice set, but no choice can be read from $qcf (empty or unreadable) — refusing rather than accepting an answer the declaration would have gated"
+  fi
+  if [ "$choice_ok" -ne 1 ]; then
+    orchid_die "'$choice' is not among $qid's declared choices — valid: ${qchoices//,/ | }"
   fi
 fi
 

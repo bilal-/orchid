@@ -101,9 +101,22 @@ the adapter and this doc can never drift on which flags are real.
 `orchid notify` is a tier-1 verb; INV-01 forbids tier-1 verbs from
 spawning/detaching a process. So when `notify.channel` is configured,
 `orchid notify` only ever **writes** `runtime/outbox/<qid>` — the fully
-composed message text, nonce included and the repo binding inline so the
-command runs verbatim from any cwd (F18): `"<qid>: <text> — reply:
-ORCHID_REPO="<repo>" orchid answer <qid> <choice> --nonce <nonce>"`.
+composed page, one fact per line, the repo binding inline so the reply
+command runs verbatim from any cwd (F18):
+
+```
+<qid>: <text>
+task: <id> — <title>            # only with --task; title/attempt read
+attempt: <n>                    #   from the task file's own frontmatter
+choices: <a> | <b> | <c>        # only when --choice values were declared
+reply: ORCHID_REPO="<repo>" orchid answer <qid> <choice> --nonce <nonce>
+```
+
+The context lines exist because a page an operator cannot decide from is a
+page that does not get answered: the first line says what is being decided,
+the middle names the task/attempt and what `orchid answer` will accept, and
+the reply command closes the page. The qid and nonce ride verbatim — they
+are the security model; the body is what surrounds them.
 
 `runners/orchid-pump` (tier-2) is what actually launches
 `plugins/notify/openclaw/send <qid> <text>` for each queued outbox file —
@@ -212,6 +225,33 @@ opt-in per call.** The gate is `answer_allowlist` being configured at all
   question older than `answer_expiry_s` (by `.question` file mtime) is
   refused — die, plus a journal note (`blocker_expired`) so the run's
   history shows it, not just a silent stderr refusal.
+- **Declared choice sets.** A question minted with `orchid notify
+  --choice <value>...` records its permitted answers — as prose on the
+  `.question` file's `choices:` line, in `BLOCKERS.md` and on the outbound
+  page, and as the machine record `orchid answer` actually gates on, a
+  sibling `runtime/answers/<qid>.choices` file. That file's *existence* is
+  the declaration, which is why it is separate: a blocker whose own text
+  opens `choices: ...` sits at exactly the position the `.question`
+  header's own line does, and prose must not be able to switch the gate
+  on. `orchid answer` refuses any value outside a declared set, and the
+  refusal names the valid ones — so a typo is caught, never silently
+  recorded as a decision. A question that declares no set has no such file
+  and keeps the free-text contract unchanged. Each declared value is one
+  `[A-Za-z0-9_-]` word, alphanumeric first, at most 64 characters, and
+  `orchid notify` refuses anything else when the question is minted: the
+  value has to come back as `orchid answer`'s positional `<choice>`, which
+  reads a leading `-` as a flag and offers no `--` terminator, so a page must
+  never be able to name an answer the reply command below it cannot carry. Existence being the
+  declaration cuts both ways: a `.choices` file that exists but yields no
+  readable choice (a truncated runtime, a restored backup) means *the set
+  was declared and its record is gone*, which is not the same as *no set was
+  declared* — `orchid answer` refuses that question rather than accepting a
+  value the declaration would have gated, and names the file, because
+  restoring or re-raising the question is an operator's move. `orchid status
+  --html` resolves the same state the other way, as a display surface
+  should: it renders no answer set at all rather than a bare `answers:`
+  naming nothing, and leaves the `choices:` header in the question text as
+  the last surviving trace of what was declared.
 
 **Nonce entropy.** Minting the nonce itself refuses to degrade silently:
 if `notify.channel` OR `answer_allowlist` is configured (i.e. a real

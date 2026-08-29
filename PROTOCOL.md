@@ -204,8 +204,19 @@ stuck.** A pass that meets a boundary still walks every other task and takes
 every edge policy allows; the record is written and 16 returned at the END of
 that pass, not the moment the boundary was met. What it asks of a caller is
 that the decision reach a human, which the pass has already done by raising
-one `orchid notify` blocker per distinct record whenever no admitted verb can
-settle it — and then that the caller KEEP DRIVING. `orchid drive` is
+one `orchid notify` blocker per distinct stop whenever no admitted verb can
+settle it — and then that the caller KEEP DRIVING. **One page per stop, and
+the stop is what counts them — not the record.** A page raised outside that
+counting — a pass that notifies about a task and then records a boundary for
+the same task, or records the stop in words its own later passes will not
+recompute — is a second `qid` for one decision. The
+operator answers one of them; the rest sit in `BLOCKERS.md` unanswered until
+`answer_expiry_s` turns them into refusals, and nothing on the page says which
+of the duplicates was the live one. Counting off the RECORD instead fails the
+same sentence in the other direction: only one boundary is recorded per pass, so
+every other stop that pass met has no record to be compared against and is
+announced to nobody — which is how a run with many blocked tasks pages about
+exactly one of them, forever. `orchid drive` is
 idempotent, so a boundaried task re-reports the identical record on the next
 pass at no cost while every unrelated task keeps advancing. Reading 16 as
 "stop and fetch a human" is how one task's arbitration parks a whole roadmap:
@@ -220,6 +231,11 @@ operator-only boundary on every pass until a human runs `task
 unblock`/`task retry`, would permanently mask a later task's arbitrable one
 and spend an LLM wakeup per pump cycle on a decision the woken model has no
 verb to make.
+
+**That precedence chooses the record and nothing else.** Every operator-only
+boundary the pass met is still paged, so a stop that loses the slot loses no
+page: masking a stop for the purpose of the RECORD is a ranking, while masking it
+for the purpose of the PAGE is silence.
 
 **"Could settle" is never a property of the kind alone.** It is the
 conjunction of three facts, and each of them is read from structured data:
@@ -282,7 +298,7 @@ The kernel-owned boundary kinds:
 | kind | raised when |
 | --- | --- |
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
-| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it |
+| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none. This is also the kind raised by the pass that DOES the blocking — attempts exhausted, wallclock budget exceeded — and in the same words, so the record it writes is the record every later pass over that task recomputes rather than a different one that pages again. The one block filed under a different kind is a repo-wide `merge_gate` red at the rework cap (`operator-decision` below); it is filed that way by BOTH passes, from the same journaled cause, so that record too is recomputed rather than replaced |
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
@@ -290,7 +306,7 @@ The kernel-owned boundary kinds:
 | `operator-handoff` | work no actor in the loop declares the capability for: a step whose requirements the resolved actor's manifest does not cover, so it was never dispatched (INV-16, `orchid jobs prepare` exit 19) — or this candidate's execution-requiring mechanical steps are not acknowledged for it, because `handoff_before_verify` is on, or because its implementer is installed under neither name it is looked up by — the directory a binding names, or the qualified `id=` a manifest claims. See "The operator hand-off" below |
 | `task-prerequisite` | the task declares an `operator_prerequisite` — a step outside the sandbox its verification depends on — that nobody has acknowledged for this candidate; raised by either stage that runs the suite (see THE TICK's `testing` and `merging` steps) |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
-| `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree |
+| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. A merge left in `merging` is this kind. So is the ONE block that is a judgment about the REPOSITORY rather than about a candidate — a repo-wide `merge_gate` still red at the rework cap — and it must be filed this way by the blocking pass AND by every later walk of that blocked task, from the one journaled cause, or the record changes under the task and pages a second time. Every OTHER stop that ends in a block is `blocked-task` above. Being the catch-all does not make a page less answerable: raised on a task in `blocked`, this kind declares that state's whole recovery list, exactly as `blocked-task` does |
 
 **Waking a model for one asks the SAME question.** The precedence above
 decides which of several boundaries goes into the record;
@@ -300,9 +316,58 @@ recorded `kind`, the named task's current status, and the resolved adapter's
 `command_surface`. A boundary no admitted verb can settle wakes nobody: it
 would recur identically until a HUMAN acts, so the pump refuses to spend a
 wakeup per cycle re-reading it, and the driver instead raises one `orchid
-notify` blocker per distinct record — the surface that condition actually
+notify` blocker per distinct stop — the surface that condition actually
 needs. The pump prints `pump: judgment boundary [<kind>] is operator-only —
 not waking an orchestrator` and exits 0.
+
+That blocker **declares its answer set** wherever the kind has one
+(`lib/drive.sh`'s `drive_boundary_choices`), so the page an operator reads
+names what `orchid answer` will accept instead of leaving `<choice>` to be
+guessed: `blocked-task` → `unblock | retry | reverify | defer`,
+`review-evidence` and `review-conflict` → `approve | request-changes | defer`
+from `arbitrating` and `adopt-evidence | repin | block | defer` from
+`reviewing`, `run-complete` → `accept | defer`, `operator-handoff` and
+`task-prerequisite` → `acknowledged | defer`, and `operator-decision` →
+`unblock | retry | reverify | defer` **from `blocked` only**. That last one is
+the catch-all, whose reason text is otherwise composed per site and declares
+nothing — but `blocked` is a state, not a site, and a task blocked by a repo-wide
+`merge_gate` red at the rework cap is filed under this kind (a judgment about the
+repository rather than a candidate defect) while carrying the very same reason
+text `blocked-task` carries, naming the very same three verbs. A page is no less
+answerable for having been filed under the catch-all.
+A kind's set is the WHOLE recovery
+list the table above names for it **out of the state the page was raised in**,
+never a subset and never another state's: `orchid answer` refuses everything
+outside a declared set, so a verb the reason text points at and the set omits is
+an answer the page invites and then rejects — a page contradicting itself, which
+is worse than the bare placeholder this replaced. The two review kinds are keyed
+on that state for exactly the reason the three-fact rule above gives: `orchid
+task arbitrate` exits 3 anywhere but `arbitrating`, so a review page raised
+while the task is still `reviewing` — which is every boundary the reviewing walk
+raises — would otherwise offer three answers whose verb cannot run and refuse
+the two `orchid jobs review-plan` modes its own reason text tells the operator
+to take. Each value names the operator verb that carries the decision out
+(`orchid task unblock|retry|reverify`, `orchid task arbitrate --result`, `orchid
+jobs review-plan <id> --adopt-evidence|--repin`, `orchid task advance <id>
+blocked --reason "..."`, `orchid run accept --evidence`, `orchid task handoff
+--ack`, `orchid task prereq-ack`); recording the answer is not running the
+verb. Note that the last
+two declare a set even though no settling verb is named for them above:
+those are different questions. No MODEL may assert a hand-off or an
+out-of-sandbox prerequisite was performed, but the human the page reaches can,
+and every reason text either kind raises already ends in the verb that records
+it — so the boundaries that reached a human precisely because no automation
+could take them are the last ones that should ship a bare `<choice>`. The
+kinds whose reason text is composed per site — the `operator-decision`
+catch-all, `hook-failure`, `worktree-conflict`, `planning` — have no set
+anybody could enumerate honestly, so they declare none and their pages keep
+the free-text contract in full. Those two lists together cover the boundary-kind
+table exhaustively: a kind in neither would fall through to no set at all and
+ship the unanswerable page by default, so a new kind must join one of them. A
+review page raised on any status other than the two above falls back to free
+text in the same way and for a different reason: that is a state nobody has
+decided a recovery list for, and declaring one of the other two states' lists
+there could refuse the very answer that was correct.
 
 These two questions used to differ, and the gap was a defect rather than a
 nuance: `run-complete` was classed as orchestrator-resolvable even though the
@@ -941,9 +1006,11 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, `timeout`,
   past its budget is precisely the runaway attempt this backstop exists to
   catch, and a version that fired only for already-dead jobs would be no
   backstop at all. `jobs check` only reports this, it never kills on its
-  own. `orchid notify --task <task-id> "task wallclock budget exceeded"`
-  then `orchid task advance <task-id> blocked --reason "wallclock budget
-  exceeded"`.
+  own. `orchid task advance <task-id> blocked --reason "wallclock budget
+  exceeded"`, and then let the `blocked-task` boundary that block produces
+  carry the page: raising an `orchid notify` here as well would mint a second
+  `qid` for the one stop, moments before the boundary's own (see "One page per
+  stop" above).
 - *A launch that FAILS is a job failure too.* `runners/orchid-launch` does
   real work before it spawns: it prepares the job, then builds the input
   pack. A non-zero exit from it — anything but `14` (`no eligible engine`,
@@ -1465,7 +1532,7 @@ ones its archetype never declares.
     16. It never verifies-and-fails, so no attempt is spent. The boundary is
     operator-only by design (see the settling-verb list above), so the pump
     wakes no model for it and the driver raises one `orchid notify` blocker per
-    distinct record — the surface a human actually reads. Left `off` — the
+    distinct stop — the surface a human actually reads. Left `off` — the
     default, and the right setting wherever the implementer can run the
     repository's own gates itself — nothing gates and no boundary is ever
     raised. Any value other than `off` reads as `required`, so a typo can only
@@ -1909,10 +1976,13 @@ ones its archetype never declares.
     an unreliable gate must announce that it is unreliable rather than fall
     silent.
     Once the task's non-waived `attempts` count (`orchid task show <id>`)
-    reaches its budget, stop retrying automatically: `orchid notify --task
-    <id> "attempts exhausted (<attempts>/<budget>): see
-    .orchid/reviews/<id>-verify.log"` then `orchid task advance <id> blocked
-    --reason "attempts exhausted (<attempts>/<budget>)"`. The budget is
+    reaches its budget, stop retrying automatically: `orchid task advance <id>
+    blocked --reason "attempts exhausted (<attempts>/<budget>): see
+    .orchid/reviews/<id>-verify.log"`. The evidence pointer goes in the
+    BLOCK's reason rather than into a page of its own, because that is the
+    text the `blocked-task` boundary quotes back — on this pass and on every
+    later pass over the same task — and one page per stop is the whole page
+    budget ("One page per stop" above). The budget is
     `rework_max` (config, default 3), or the task's own `attempt_budget` when
     an operator has granted it one (`orchid task retry <id> --reason "..."
     --attempts N`). It is orchestrator-enforced HERE, not a kernel-verb gate; a
@@ -2046,17 +2116,17 @@ ones its archetype never declares.
     compare-and-swap lost to a concurrent merge, or the `worktree_prepare`
     step for the validation worktree failed): a persistent config/CAS
     problem, not a candidate defect — the verb journaled it but could not
-    advance the task out of `merging` on its own. Notify with evidence that
+    advance the task out of `merging` on its own. Record an
+    `operator-decision` boundary naming the exit code and evidence that
     exists: `.orchid/reviews/<id>-merge.log` is written only once the verb
     actually ran the suite, and the verb deletes any earlier attempt's copy
     before it begins, so when that file is absent the run died BEFORE
     validation and the verb's own final line (which names the prepare log
-    when there is one) is the record to carry instead — `orchid notify
-    --task <id> "merge left task in merging: see
-    .orchid/reviews/<id>-merge.log"`, or the same message with that final
-    line in place of the `see ...` clause. Leave the task in `merging` for a
-    retry either way; never assume `rework` just because the exit code was
-    nonzero.
+    when there is one) is the evidence to carry instead. Leave the task in
+    `merging` for a retry either way; never assume `rework` just because the
+    exit code was nonzero. The
+    boundary is the page here too — a notify raised beside it is a second
+    `qid` for the one stuck merge ("One page per stop" above).
   - status still `merging` with exit `15` (`merge blocked: required
     before_merge hook '<id>' has no ok envelope for this candidate`): the
     verb never even attempted the merge, so there is nothing to invalidate —
@@ -2086,7 +2156,13 @@ to it is best-effort only (queued in `runtime/outbox/`, drained by the pump,
 retried up to `send_retry_max` times before quarantine) — `BLOCKERS.md` plus
 the terminal is always a complete interaction surface on its own, with or
 without a channel ever delivering anything (docs/specs/operations.md).
-Raise one with `orchid notify [--task <id>] "<text>"` (prints a `qid`). If
+Raise one with `orchid notify [--task <id>] [--choice <value>]... "<text>"`
+(prints a `qid`). Declare `--choice` values whenever the question has an
+enumerable answer set — the permitted answers are recorded with the
+question, named on the page and in `BLOCKERS.md`, and `orchid answer`
+refuses anything outside them (naming the valid ones), so a typo can never
+be recorded as a decision; a question with no declared set accepts free
+text as before. If
 `hook.on_blocker` is bound, invoke it now (Preamble shape:
 `runners/orchid-launch <id> hook hook --hook on_blocker`, then `orchid jobs
 reconcile`) — its artifact is read the same way `on_verify_fail`'s is,
@@ -2433,7 +2509,7 @@ one-pass driver could otherwise stop progressing in silence:
   acknowledgement proceeds (so the stop is not a loop), and a second pass
   without one stops again (so it is not a walk-past). The boundary is
   operator-only, so the pump wakes no model and one `orchid notify` blocker
-  per distinct record reaches a human instead. The operator prerequisite is
+  per distinct stop reaches a human instead. The operator prerequisite is
   checked immediately after it, on the same pass and by the same rule; the
   hand-off is raised first because its ack moves `candidate_sha` and would
   otherwise expire a prerequisite ack taken before it.

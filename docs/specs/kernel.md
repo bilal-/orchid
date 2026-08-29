@@ -1198,7 +1198,8 @@ evidence record to `reviews/acceptance.log` before `run_status: complete`.
 `orchid status --html` (v1-m4 — SHIPPED) is a separate output MODE, not an
 addition to that text report: it writes a self-contained static page (run
 header, task table with the same why-predicate text, engines ledger, open
-blockers, last-10 journal entries) to `status_page` (config, default
+blockers — each with its declared answer set, when the question was raised
+with one — last-10 journal entries) to `status_page` (config, default
 `runtime/status.html`) and prints ONLY the path it wrote on stdout — safety
 warnings (split-brain, stale checkout) still go to stderr in either mode.
 
@@ -2016,9 +2017,17 @@ for that same set by its orchestrate prompt and enforced on none of it; an
 unrecognized label reads as `brokered`), and the named task's CURRENT status
 (`task arbitrate` refuses anything but `arbitrating`, exit 3). The pump asks
 the identical question before waking a model; anything that fails it wakes
-nobody and the driver raises one `orchid notify` blocker per distinct record
+nobody and the driver raises one `orchid notify` blocker per distinct stop
 instead. On both shipped surfaces that makes `planning` and `run-complete`
 operator-only: nothing admits `plan apply` or `run accept`.
+
+That record is the only page budget a stop gets, including the stops the
+driver creates itself. A pass that blocks a task (attempts exhausted, the
+wallclock backstop) records the `blocked-task` boundary the block produced, in
+the same words the walk recomputes for that task on every later pass, and
+notifies nothing separately — a page raised outside the record is compared
+against nothing, so one decision would reach the operator as two or three
+`qid`s, only one of them carrying the kind's declared answer set.
 
 Exit 16 reports that a decision is outstanding somewhere; it never reports
 that the run cannot proceed. The pass that returns it has already walked

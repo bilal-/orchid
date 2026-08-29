@@ -235,15 +235,12 @@ declared, not assumed: this plugin's manifest carries
 actually configured against its own declaration before reporting outbound
 `ok`.
 
-**This plugin ships no inbound probe, deliberately.** A `kind=notify` plugin
-MAY declare an `inbound_probe=` mode that tells `orchid doctor` whether its
-channel is reachable (openclaw does, via `openclaw channels status`). The
-`hermes` CLI has no equivalent inbound-liveness query — `hermes send --list`
-enumerates *configured platform credentials*, which is an outbound-config
-fact and would prove nothing about whether a reply can get back. Rather than
-dress that up as a liveness check, the key is omitted, and doctor then says
-plainly that this plugin cannot determine the return leg. Omission is the
-honest answer; a probe that always answers "fine" would be worse than none.
+**This plugin ships an inbound probe** (`inbound_probe=--inbound-probe` in
+its manifest, see docs/specs/plugins.md) — see "The inbound probe" below for
+what it asks and what its answer is worth. Note that `hermes send --list` is
+*not* what it asks: that enumerates configured platform credentials, an
+outbound-config fact that would prove nothing about whether a reply can get
+back.
 
 ```
 notify.plugin=hermes    # selects THIS plugin (default is openclaw -- see below)
@@ -288,6 +285,324 @@ must actually be set to `hermes` for the pump to launch this plugin at all
 — leaving it unset (or setting `notify.channel`/`notify.to` alone, the way
 the openclaw section above documents) still drives the openclaw plugin,
 since `openclaw` remains `notify.plugin`'s default.
+
+## The inbound probe (`orchid doctor` checks the return leg)
+
+Sending and receiving are different facts with different requirements, and
+for *this* plugin they are unusually far apart. `hermes send` talks to the
+platform's bot-token API directly with the gateway's stored credentials and
+needs no running gateway at all; a reply coming back is delivered to the
+gateway process, which is what would hand it to a channel-side agent. So
+hermes can send perfectly while the return leg is dead — which is exactly
+what happened on r-001: the gateway was down for a day, blockers kept
+arriving on the operator's phone, and the answer typed back was lost with
+**no local trace at all** (lesson L011). Hermes was the channel that run
+actually delivered on, and the channel that swallowed that answer.
+
+`hermes gateway status` is the CLI's own report of that fact, so this plugin
+declares a probe rather than asserting "no way to tell" on behalf of a CLI
+that can tell:
+
+```sh
+plugins/notify/hermes/send --inbound-probe    # what doctor invokes; sends nothing
+hermes gateway status                         # what the probe asks
+```
+
+- **exit 0 — REACHABLE.** The judged status line reports the gateway
+  running/connected/online/ready/active/healthy — or it names a **live
+  process id** (`pid 4242`, `"PID" = 4242`), which is how a supervisor
+  answers the question and is published only for a job that is actually
+  running. A process id is the weakest evidence this probe accepts as health
+  (it carries no status word at all), so it is refused on any row that also
+  carries a **negation particle** — `not`, `never`, `cannot`, `unable`, `no
+  longer`, `no such`. A row negating *anything* is a row the probe has not
+  understood, and an unread row is undetermined rather than reachable: that
+  is what stops the next phrasing nobody here has seen yet (`hermes-gateway:
+  not responding (pid 4242)`) from being answered by the pid beside it. A
+  bare `no` is deliberately not a particle, because `no errors` is how a
+  healthy supervised row reports a clean run. A **fatality marker** —
+  `fatal`, `panic`, `conflict` — withholds health from *both* of these, the
+  status word as well as the pid: see the competing-poller note under exit 2.
+- **exit 1 — NOT REACHABLE.** `hermes gateway status` failed *and its output
+  named the transport as unreachable* (`connection refused`, `could not
+  connect`, `not running`, `not responding`, `no such process`, `timed out`,
+  …), or it answered and the judged line carries a negation (`not running`,
+  `not responding`, `not listening`, `not alive`, `unresponsive`, `no longer
+  running`, `not paired`, `stopped`, `disconnected`, `inactive`, `dead`,
+  `crashed`, `not loaded`, `offline`, `expired`, `down`, `not up`,
+  `unreachable`, `unhealthy`, …). The responsiveness words count on **both**
+  halves: a phrase that names a dead transport out of a query that failed is
+  no weaker when the query succeeded and hermes printed it itself. `timed
+  out`/`timeout` is the one that does not cross the other way — in an
+  answered status *row* it is as likely to be a configured knob
+  (`connected (timeout 30s)`) as an outage.
+  The pairing words (`not paired`, `not linked`, `not registered`, `not
+  authenticated`, `unpaired`) are negations **only**: a bare `paired` is a
+  stored fact about what you once attached, which a gateway reports whether or
+  not it is currently running, so it never reads as health. They also count
+  only on the *answered* half of this bullet: out of a query that **failed**,
+  the pairing and credential words (`not paired`, `expired`, `unauthorized`, …)
+  are as likely to be the CLI's own attachment or auth failing as the
+  gateway's, so they determine nothing there — the same `not paired` decides on
+  the success path and does not decide on the failed one. A bare `refused` is
+  likewise not evidence — only `connection refused`, which names the transport,
+  is; a policy or an authentication refusing the CLI is a query that was turned
+  away.
+  The **displacement** words are the other half of this bullet and the only
+  ones that are not about the gateway's own health: `terminated by`,
+  `superseded by`, `displaced by`, `preempted by`, and `another`/`other`/
+  `second`/`duplicate`/`competing`/`concurrent` in front of a poller noun
+  (`poller`, `instance`, `session`, `consumer`, `listener`, `client`). They
+  count on the *answered* half only, with the pairing and credential class:
+  in a row hermes printed they are the gateway naming what took its update
+  stream, while out of a query that **failed** they are the CLI's own session
+  losing a race, which says nothing about whether the gateway is serving.
+  A **denied** competitor is not a competitor, and a counted zero is not an
+  incident: `no other listener`, `without competing pollers`, `conflicts: 0`,
+  `not superseded by another instance`, `never terminated by other getUpdates
+  request` and `not fatal` are all a healthy row reporting the *absence* of the
+  thing in the same words it would report its presence, so the denial is
+  stripped before either the displacement words or the fatality marker is read
+  — `no`/`zero`/`0`/`without` and the particles `not`/`never`/`no longer`
+  alike. The particles deny only a displacement or a severity, never a state
+  word, so `not running` remains the outage it has always been.
+- **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
+  `notify.channel` is unset, this build has no `gateway status` subcommand,
+  the command printed nothing, or none of the candidate lines below is one
+  the probe recognizes. Doctor prints "undetermined" and the most specific of
+  those lines — never `ok`.
+
+  **A running process is not a served inbound leg.** Start a second gateway
+  on the same credentials and the update stream goes to one of them; the
+  long-poll transports this plugin delivers on hand the connection to the
+  newest caller and terminate the older one. The displaced gateway keeps
+  running, keeps its pid, answers `gateway status` — and receives nothing,
+  so every reply you send is delivered to the other instance. Its row states
+  both halves at once (`hermes-gateway: running (pid 4242) — fatal:
+  conflict: terminated by other getUpdates request`). The displacement words
+  under exit 1 convict on it; a bare fatality marker (`fatal`, `panic`,
+  `conflict`) with no displacement named is a failure the probe cannot rank,
+  so it withholds health and reports undetermined rather than inventing an
+  outage out of a severity. A marker qualified as history (`running (last
+  fatal 2d ago)`) is a record, not the current state, and still reads as
+  reachable — but a *displacement* is not softened that way, because the past
+  tense is how the transport phrases it in the present (`was terminated by
+  other getUpdates request` is printed on every poll for as long as the
+  competitor is up) and the process it names is not one of this gateway's
+  that has since gone.
+
+  **A failed query is not a dead gateway**, and the exit code alone never
+  decides which one it was. `hermes gateway status` exiting nonzero says the
+  *question* failed; only its output can say whether the *subject* is down,
+  and the two come apart constantly — a broken install, an interpreter
+  traceback, an unreadable `~/.hermes/config.yaml`, a permission-denied on
+  the socket path, or the CLI's own credentials expiring so it cannot ask a
+  gateway that is answering everyone else perfectly well. All of those are
+  undetermined. Note where that puts `expired`: in a status line hermes
+  successfully *printed*, it is hermes reporting that channel's credential
+  and the return leg really is broken (exit 1); as the reason the CLI could
+  not run at all, it is a question that was never asked (exit 2). Calling
+  any of them "down" would print *"Answers sent on this channel are being
+  lost"* about a return leg carrying answers fine — the false alarm that
+  teaches an operator to ignore the one check whose whole job is to be
+  believed, and a broken CLI is a likelier cause of a nonzero exit than a
+  stopped gateway is.
+
+**Which lines get judged**, most specific evidence first. When the output
+names the configured `notify.channel` at all, those rows are the *only*
+evidence that may report **health** — judging the whole output instead would
+let one unrelated platform's row condemn a healthy return leg. When it does
+not, the
+rows naming the gateway itself are judged, then the rows whose **label** is a
+status word (`Active:`, `Status:`, `State:`, `Health:`, `Service:`,
+`Gateway:`), then — only when it names no subject of its own — the first
+line, each in turn until one of them actually determines something. "Names no
+subject of its own" means it is not a `<word>:` or `<word>=` row whose label
+the tier above already declined to recognize: a bare `running` is read, a
+`discord: disconnected` is not, because on this CLI whatever is printed first
+is as likely to be a sibling platform's row as the gateway's own state, and a
+row that never mentions your channel must not decide your channel's return
+leg — in either direction.
+
+That first step is *exclusive for health*, not merely first-ranked, and it
+has a visible consequence worth knowing before you file it as a bug. Output
+that names your channel only in an enumeration —
+
+```
+gateway: running
+platforms: telegram, discord
+```
+
+— reports **UNDETERMINED**, even though the gateway line directly above says
+`running`: the enumeration row names the channel, so it is the only evidence
+that may report health, and it carries no status word. Falling through to the
+gateway's state there would be inventing REACHABLE out of a line the probe
+never understood — and a row that names your channel while saying something
+unreadable is weak evidence that this build *does* report per-channel state
+and that yours is not in the healthy set. A wrong "undetermined" costs you one
+manual check; a wrong "reachable" tells you answers are landing while every
+one is dropped. A channel the output does not name at all is a different case
+and is judged in both directions (nothing was misread there, because there was
+nothing to read). If you hit this, run `hermes gateway status` by hand and
+read it yourself — and report the wording, since most of this probe's
+vocabulary is still waiting to be validated against a live gateway.
+
+**The exclusivity is one-way**, and that is the third step of the ranking. An
+unreadable channel row may not be rounded *up* by weaker evidence, but neither
+may it hide weaker evidence pointing *down*: when no channel row reports the
+outage, the gateway and label rows are consulted for a **NOT REACHABLE**
+determination only. So
+
+```
+Gateway: not running
+platforms: whatsapp, telegram
+```
+
+reports **NOT REACHABLE** on the gateway row, while the same shape with
+`Gateway: running` still reports UNDETERMINED. The weaker tiers convict and
+never acquit.
+
+**And the outage is looked for first — in every row, and in every tier —
+before anything is read as health.** Inside one line the word tests already
+run negatives-first, because `not running` contains `running`. The same
+sentence can arrive spread over two *rows*:
+
+```
+Gateway: not running
+telegram: connected
+```
+
+Your channel's row says the one word that reads as health, so an ordering
+that asked "is anything up?" before "is anything down?" answered
+**REACHABLE** here and never looked at the line above it. A per-platform
+`connected` is a fact about that platform's own attachment — the same kind of
+stored fact as `paired`, which this probe already refuses to read as health —
+and it says nothing about the process your reply is actually delivered to.
+The gateway row says exactly that, and it says no. The same thing happens
+inside a single tier when a build prints more than one row about your channel
+(`telegram: connected` above `telegram inbound: not listening`): the row
+printed first is not the highest-ranked row.
+
+So every admitted row is scanned for the outage — your channel's rows, then
+the gateway and label rows — and only if none of them convicts is your
+channel's tier read again for health. Nothing else moves: REACHABLE still
+comes only from the most specific tier that exists, the weaker tiers still
+may only convict, and an undetermined verdict still quotes the most specific
+line the probe was looking at.
+
+That last part is what a **service-managed** gateway needs. A gateway run
+under launchd or systemd reports through its supervisor, which puts a unit
+header on the line naming the gateway and the verdict on an indented label
+line below it:
+
+```
+* hermes-gateway.service - Hermes Gateway
+     Active: active (running) since Mon 2026-08-24 09:14:02 UTC
+```
+
+Picking the gateway row and taking its silence for the whole answer reported
+UNDETERMINED for a return leg that is plainly up — on the deployment shape a
+long-running gateway most commonly has. The label tier is a fixed set of
+status words and contains no platform name, so a per-platform row
+(`discord: disconnected`) cannot reach it and condemn a channel it says
+nothing about — and the first-line tier above is restricted to unlabelled
+lines so that same row cannot get there either, by being printed first.
+`inactive` is in the negative vocabulary for the same reason:
+it is the whole word a service manager reports a stopped unit with.
+
+**Under launchd the same problem arrives one step further in**, because a
+launchd job is named by its *label* and a label is a compound —
+`hermes-gateway`, `com.hermes.gateway`:
+
+```
+hermes-gateway: running (launchd, pid 4242)
+```
+
+"Names the gateway" therefore also admits **this CLI's own name** in front of
+the noun — `hermes-`, `hermes.`, `hermes_` — on top of the dot-joined form
+(`com.orchid.gateway`) that always worked. Any qualifier at all would be too
+much: `discord-gateway` is a row about a *sibling platform's* gateway, and it
+must no more decide your channel's return leg than `discord:` may. The
+**right** side stays strict for the same reason, so a token *ending* in
+`gateway` is this gateway while `gateway-alerts` — a name headed by *alerts* —
+is not. And a row naming a **live pid** is read as up even when it
+carries none of the status words, since that is what a supervisor's answer
+looks like. Three things keep that from inventing REACHABLE: it is only
+reached on a row an earlier tier already admitted (a sibling platform's
+`discord: connected (pid 4242)` never gets there), the negatives are judged
+first (`stopped, pid 4242` is the outage), and the pid must be the current one
+— `last pid 4242` is a record of a process that is gone, and `pid 0`/`pid -`
+is a placeholder, not a process. `dead`, `crashed` and `not loaded` are
+negations for the same reason: they are the words a supervisor spells
+deadness with on a row that may still quote a process id. A bare `loaded` is
+not a positive — launchd and systemd both call a *stopped* job loaded.
+
+**A record is not a state**, and that rule now governs the words as well as
+the pid. Negatives are judged before positives (`not running` contains
+`running`), but a supervised row reports the *last* outage beside the
+*current* state, so applying that order to every word in the row read
+
+```
+telegram: connected (last disconnected 2026-08-27, 4 reconnects)
+hermes-gateway: running (pid 4242, last down 2d ago)
+```
+
+as NOT REACHABLE — the outage message about a channel carrying answers fine.
+Whole-word matching does not reach it: `last shutdown` is a substring, while
+`last disconnected` genuinely is the word. So a state word introduced by
+`last`, `previous`, `prior`, `former`, `old`, `stale`, `exited` or `was` —
+the same qualifiers that already disqualify `last pid` — is elided before
+either direction is judged. It cuts both ways: an *unqualified* negative
+still decides (`disconnected (last connected …)` is the outage), a
+qualified *positive* is not health (`was running` is undetermined, never
+REACHABLE), and a row carrying nothing but history has not said what is true
+now and decides neither way. The live-pid tier deliberately keeps reading the
+unelided row, so `was not responding (pid 4242)` still stops short of health
+on its negation particle.
+
+One deliberate difference from openclaw's probe: `openclaw channels status`
+is documented to *enumerate* channels, so a channel missing from it is a
+determination there (exit 1). Nothing establishes that `hermes gateway
+status` lists platforms at all, so a channel it does not name is absence of
+evidence here — the probe falls through to the gateway's own state rather
+than declaring the return leg dead.
+
+**What a REACHABLE result does and does not prove.** It proves the gateway
+your reply is delivered to is up. It does **not** prove anything on the
+channel side will turn that reply into an actual `orchid answer` invocation
+against this repo — orchid ships no inbound listener and neither starts nor
+supervises that agent, so nothing local can observe it. Doctor's wording
+keeps those two apart; so does the probe's.
+
+**What an installed CLI actually printed.** `hermes gateway status` has been
+run against exactly one real installation, in one state. It exists, it exits
+**0** while reporting a dead gateway, and it answers with one row per subject:
+
+```
+Gateway: not running
+WhatsApp: not paired
+```
+
+Two things follow, and both shaped the rules above. A real outage arrives on
+the *success* path, not the failed-query one. And a platform's return leg is
+reported as an **attachment** (`paired`), not only as a process state — which
+is why the negations carry the pairing vocabulary, and why a channel row this
+probe cannot read no longer hides the gateway row above it. That output is
+pinned verbatim in `tests/test_notify_hermes_channel.sh`; before those two
+rules it reported UNDETERMINED, on the only real evidence this probe has ever
+been handed.
+
+**PENDING-VALIDATION otherwise, and more so than for `send` above.** One
+installation in one state is not the shape of every build's output: no
+*healthy* `gateway status` has been read from an installed CLI at all. The
+subcommand's presence on other builds and the rest of its output are
+therefore still treated as untrusted — a build with no such subcommand is
+caught as an unknown subcommand and answers **2**, never 1, so a version
+difference can never masquerade as an outage, and any line outside the
+recognized vocabularies above answers 2 with its own text quoted. Confirm the
+healthy wording during the live hero-demo dogfood; if it is spelled
+differently, this probe reports "undetermined" until it is corrected, which is
+the safe direction.
 
 ## See also
 

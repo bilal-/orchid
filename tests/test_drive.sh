@@ -160,6 +160,196 @@ if drive_boundary_wakes_orchestrator run-complete "" nonsense; then
   fail "an unrecognized command_surface must fall back to brokered, never to soft"
 fi
 
+# --- the answers a boundary's page declares (T009) --------------------------
+# A boundary routed to a human arrives as ONE channel message, and r-001
+# shipped twenty-seven of those whose only instruction was `orchid answer
+# <qid> <choice> --nonce <n>` — with <choice> validated against nothing.
+# Answerable in principle, unanswerable in practice. So a kind with an
+# enumerable answer set declares it, and `orchid answer` gates on it.
+# The set is the kernel's WHOLE recovery list out of `blocked`, not the subset
+# that predates `reverify`. `orchid answer` refuses everything outside the
+# declared set, so a verb the boundary's own reason text points at and the set
+# omits is an answer the page invites and then rejects — a page contradicting
+# itself, which is worse than the bare `<choice>` placeholder this table
+# replaced.
+assert_eq "unblock
+retry
+reverify
+defer" "$(drive_boundary_choices blocked-task)" \
+  "a blocked task's page names all three verbs that clear it — unblock, retry AND reverify — and the option to leave it parked"
+
+# THE REVIEW KINDS ARE KEYED ON THE TASK'S STATUS, and that is the same
+# three-fact rule the resolvability block at the top of this file pins, applied
+# to the page instead of to the wakeup. `orchid task arbitrate` exits 3 anywhere
+# but `arbitrating`, so the arbitration results are the honest set THERE...
+assert_eq "approve
+request-changes
+defer" "$(drive_boundary_choices review-evidence arbitrating)" \
+  "a review boundary raised on an ARBITRATING task names the arbitration results"
+assert_eq "approve
+request-changes
+defer" "$(drive_boundary_choices review-conflict arbitrating)" \
+  "...and a review CONFLICT names the same set, since the same verb records both"
+
+# ...and they are exactly the wrong answers one transition earlier. Every
+# review-evidence boundary the reviewing walk raises fires while the task is
+# still `reviewing`, and those pages offered `approve | request-changes | defer`
+# -- three answers whose verb would have exited 3 -- while `orchid answer`
+# refused the two verbs the same pages' reason texts told the operator to run.
+# A page that invites only illegal answers and rejects the legal ones is the
+# self-contradiction this whole table exists to retire, one state over.
+assert_eq "adopt-evidence
+repin
+block
+defer" "$(drive_boundary_choices review-evidence reviewing)" \
+  "the SAME kind on a REVIEWING task names the review-plan remedies its reason texts point at, never the arbitration results"
+assert_eq "adopt-evidence
+repin
+block
+defer" "$(drive_boundary_choices review-conflict reviewing)" \
+  "and a review conflict is keyed on the state the same way — the set follows the verb that is legal, not the kind"
+case "$(drive_boundary_choices review-evidence reviewing)" in
+  *approve*) fail "a reviewing page must not name an arbitration result: 'orchid task arbitrate' exits 3 from reviewing" ;;
+esac
+
+# THE THIRD ARM, and the only one in this table that falls back to free text:
+# a review page on a status neither verb-set belongs to is a state nobody has
+# decided a recovery list for. Naming either list there would refuse an answer
+# that may be the only correct one, so it declares none and keeps the contract
+# that can never do that.
+for _pstatus in testing implementing merging "" nosuchstatus; do
+  assert_eq "" "$(drive_boundary_choices review-evidence "$_pstatus")" \
+    "a review boundary on status '${_pstatus:-<none>}' declares no set — an undecided state falls back to free text, never to the other state's verbs"
+done
+assert_eq "accept
+defer" "$(drive_boundary_choices run-complete)" \
+  "a finished run's page names the acceptance step"
+assert_eq "acknowledged
+defer" "$(drive_boundary_choices operator-handoff)" \
+  "a hand-off's page names the acknowledgement"
+# ...and so does a PREREQUISITE, for the same reason and with the same words.
+# These two are the entries whose omission would be invisible, and in exactly
+# the opposite direction from the loop at the top of this file: there, naming a
+# settling verb for either would wrongly route the boundary to a woken model,
+# so both must name none. Here, that same "no verb" is NOT a reason to declare
+# no answer set — every reason text `task-prerequisite` raises already ends in
+# `orchid task prereq-ack <id> --reason "..."`, so the page can say what will
+# be accepted even though no model may say it. Confusing the two axes leaves
+# the boundaries that reached a human precisely BECAUSE no automation could
+# take them as the bare `<choice>` placeholder this whole feature retires.
+assert_eq "acknowledged
+defer" "$(drive_boundary_choices task-prerequisite)" \
+  "an unacknowledged operator prerequisite's page names the acknowledgement too — 'no orchestrator verb' is not 'no answer a human may give'"
+
+# THE OTHER EDGE, and it is the one that keeps a declared set from becoming a
+# way to refuse an operator's legitimate prose: kinds whose reason text is
+# composed per site, or that are simply broken infrastructure, have no set
+# anybody could enumerate honestly. They must declare NONE, so `orchid answer`
+# keeps accepting free text for them exactly as it did before choice sets
+# existed. Without this half, "declare a set where there is one" would drift
+# into "declare a set everywhere", and the first page whose real answer is a
+# sentence would be refused.
+for kind in hook-failure worktree-conflict planning nosuchkind; do
+  for _pstatus in "" reviewing arbitrating blocked; do
+    assert_eq "" "$(drive_boundary_choices "$kind" "$_pstatus")" \
+      "a $kind boundary has no enumerable answer set and must declare none, on status '${_pstatus:-<none>}' as on any other"
+  done
+done
+# ...and the CATCH-ALL keeps that contract on every status but one. An advance
+# refused in `implementing`, a routing table in `reviewing`, a merge left in
+# `merging`: those are the pages whose real answer is a sentence.
+for _pstatus in "" reviewing arbitrating implementing merging nosuchstatus; do
+  assert_eq "" "$(drive_boundary_choices operator-decision "$_pstatus")" \
+    "an operator-decision boundary on status '${_pstatus:-<none>}' declares no set — its reason text is composed per site, and a set there would refuse the sentence that answers it"
+done
+
+# THE ONE STATE THAT CLOSES THE CATCH-ALL'S SET, and it is the arm the
+# repository-gate page shipped without. `operator-decision` reaches a BLOCKED
+# task by two routes -- a repo-wide `merge_gate` red at the rework cap, which
+# runners/orchid-drive files under this kind because a capped gate is a judgment
+# about the REPOSITORY (T023), and an archetype that fails validation -- and out
+# of `blocked` the kernel's recovery list is closed whatever the page was filed
+# under. The gate-blocked page carries drive_blocked_reason's text word for
+# word, naming `orchid task unblock`, `orchid task retry` and `orchid task
+# reverify` on the task, and declared NO answers at all: a stop with four known
+# answers going out with the bare `<choice>` placeholder, because the kind said
+# "composed per site" while the state said otherwise.
+assert_eq "unblock
+retry
+reverify
+defer" "$(drive_boundary_choices operator-decision blocked)" \
+  "a page raised on a BLOCKED task names the kernel's whole recovery list even under the catch-all kind — the state decides what can be answered, not the kind"
+assert_eq "$(drive_boundary_choices blocked-task blocked)" "$(drive_boundary_choices operator-decision blocked)" \
+  "...and it is the SAME set blocked-task declares, since one composer writes the reason for both — a set declared for only one of them is the self-contradiction reached by the other route"
+
+# ...AND THE TWO LISTS ABOVE PARTITION THE KERNEL'S OWN SET OF KINDS. Walked
+# out of `_DRIVE_BOUNDARY_KINDS` rather than retyped, because a kind spelled
+# only here would be checked against nothing. This is the assertion that would
+# have caught `task-prerequisite`: it was in `_DRIVE_BOUNDARY_KINDS`, named in
+# lib/drive.sh's own settling-verb prose and in the loop at the top of this
+# file, yet appeared in neither T009 list — so it fell through to the `*)` arm
+# and shipped the unanswerable page, silently, for one of the boundaries that
+# most needs a human. A kind in neither list is not a third policy; it is a
+# kind nobody decided about.
+choices_declared=" blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite operator-decision "
+choices_none=" planning hook-failure worktree-conflict "
+# A STATUS THE KIND IS REALLY RAISED IN, per kind, because the review kinds' and
+# the catch-all's sets are keyed on it and probing them with the wrong one would
+# read "declares no set" off a state that is simply not theirs. The others
+# ignore the argument entirely, so any status answers for them.
+choices_probe_status() {
+  case "$1" in
+    review-evidence|review-conflict) printf 'reviewing\narbitrating\n' ;;
+    *) printf 'blocked\n' ;;
+  esac
+}
+# `read -ra` rather than an unquoted expansion: same split on the same IFS,
+# without asking shellcheck to accept a bare `$var` in a `for` list.
+read -ra kinds_all <<< "$_DRIVE_BOUNDARY_KINDS"
+# Counted BEFORE the walk, not after: an empty list would walk zero kinds and
+# satisfy the loop below without checking anything at all, and `"${arr[@]}"` on
+# an empty array is itself an unbound-variable error under `set -u` on bash
+# 3.2. Either way the count has to be the first thing asserted.
+[ "${#kinds_all[@]}" -eq 10 ] \
+  || fail "expected all 10 kernel boundary kinds, read ${#kinds_all[@]} — _DRIVE_BOUNDARY_KINDS changed, so the partition below needs re-deciding rather than re-counting"
+for kind in "${kinds_all[@]}"; do
+  case "$choices_declared" in
+    *" $kind "*)
+      while IFS= read -r _pstatus; do
+        [ -n "$_pstatus" ] || continue
+        [ -n "$(drive_boundary_choices "$kind" "$_pstatus")" ] \
+          || fail "$kind is listed as declaring an answer set but drive_boundary_choices returns none for it on status $_pstatus"
+      done <<< "$(choices_probe_status "$kind")"
+      continue ;;
+  esac
+  case "$choices_none" in
+    *" $kind "*)
+      while IFS= read -r _pstatus; do
+        [ -n "$_pstatus" ] || continue
+        assert_eq "" "$(drive_boundary_choices "$kind" "$_pstatus")" \
+          "$kind is listed as declaring no answer set, and must declare none"
+      done <<< "$(choices_probe_status "$kind")"
+      continue ;;
+  esac
+  fail "boundary kind '$kind' is in _DRIVE_BOUNDARY_KINDS but in neither T009 list — decide whether its page can name the answers 'orchid answer' will accept, add it to the right list in lib/drive.sh's drive_boundary_choices, and say so here"
+done
+
+# Every declared value has to survive as ONE argv word of `orchid answer` (and
+# as one entry of the comma-joined set recorded with the question), which is
+# also the shape runners/orchid-orchestrator-command admits — so a woken
+# orchestrator can declare the same sets from the brokered surface.
+for kind in blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite operator-decision; do
+  while IFS= read -r _pstatus; do
+    [ -n "$_pstatus" ] || continue
+    while IFS= read -r _choice; do
+      [ -n "$_choice" ] || continue
+      case "$_choice" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9_-]*) fail "$kind ($_pstatus) declares '$_choice', which is not a single [A-Za-z0-9_-] word starting alphanumeric — it could not survive as one argument to \`orchid answer\`" ;;
+      esac
+    done <<< "$(drive_boundary_choices "$kind" "$_pstatus")"
+  done <<< "$(choices_probe_status "$kind")"
+done
+
 # --- evidence arm ----------------------------------------------------------
 mk_policy_task P01 low high ""
 assert_eq evidence "$(decision_of P01)" "no candidate_sha at all is an evidence boundary"
@@ -892,6 +1082,25 @@ assert_match "retry" "$SBLOCKED_REASON" \
   "and the one that grants another rework round (reason: $SBLOCKED_REASON)"
 assert_match "reverify" "$SBLOCKED_REASON" \
   "and the one that re-runs verification alone — every remedy PROTOCOL.md's boundary table lists (reason: $SBLOCKED_REASON)"
+# ...and it states the CAUSE, not merely the status (T009). "task is blocked"
+# is the status restated back at an operator who is being asked to choose
+# between three remedies that differ by exactly what went wrong: `unblock`
+# records guidance, `retry` grants a round, `reverify` re-runs verification
+# alone. The reason the block was recorded WITH is on hand in the journal, and
+# this fixture's is a string no other part of the page could have produced —
+# so a page that merely repeated the remedy list would fail here.
+assert_match "fixture: an operator must resolve this" "$SBLOCKED_REASON" \
+  "the blocked-task boundary states WHY the task is blocked, read back from the journal entry that recorded the block (reason: $SBLOCKED_REASON)"
+# ...and all of that reaches the surface an operator actually reads. This is
+# the whole chain in one place: the driver composed the reason, raised the page
+# through drive_notify, and declared the answer set the page names — a set that
+# has to be the same list the reason text points at, since `orchid answer`
+# refuses everything outside it.
+SBLOCKERS="$(cat "$STARVE/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "fixture: an operator must resolve this" "$SBLOCKERS" \
+  "the blocker page carries the cause, not just the boundary record"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$SBLOCKERS" \
+  "and names every answer orchid answer will accept for it, reverify included"
 
 # ...AND SO DOES EVERY OTHER SITE THAT RAISES THIS KIND. The pass above can
 # only reach the one boundary a fixture can walk to; the driver raises the
@@ -914,12 +1123,71 @@ assert_match "reverify" "$SBLOCKED_REASON" \
 # dead site kept this comparison equal while the route it was written for got
 # the other arm's message. What is kept here is the part a fixture cannot
 # reach: a THIRD site, added later, for a route no fixture yet walks.
-BT_SITES="$(grep -c 'set_boundary blocked-task' "$DRIVE" || true)"
-BT_FULL="$(grep -c 'orchid task unblock|retry|reverify' "$DRIVE" || true)"
-[ "$BT_SITES" -gt 1 ] \
-  || fail "runners/orchid-drive should raise blocked-task from more than one site (found $BT_SITES) — this count is what keeps the remedy list honest at all of them"
-assert_eq "$BT_SITES" "$BT_FULL" \
-  "every blocked-task boundary the driver raises names the WHOLE remedy list PROTOCOL.md's table gives (unblock|retry|reverify), not a shorter one at a second site"
+BT_SITES="$(grep -Ec '^[[:space:]]*drive_block_boundary \"\$' "$DRIVE" || true)"
+[ "$BT_SITES" -gt 2 ] \
+  || fail "runners/orchid-drive should route each blocking arm and the blocked-task walk through drive_block_boundary (found $BT_SITES call sites)"
+assert_eq 0 "$(grep -c 'set_boundary blocked-task' "$DRIVE" || true)" \
+  "no site may bypass the shared cause-and-remedy composer with a shorter blocked-task reason"
+assert_match 'orchid task unblock %s, orchid task retry %s \[--attempts N\], or orchid task reverify %s' \
+  "$(sed -n '/^drive_blocked_reason()/,/^}/p' "$REPO_ROOT/lib/drive.sh")" \
+  "the shared blocked boundary composer names the WHOLE remedy list"
+
+# ...AND THE STOP THAT LOST THE RANKING STILL REACHES A HUMAN (T009). Both
+# S010 and S020 are blocked on this pass, both operator-only, so they rank
+# equal and task-id order gives S010 the one record slot. Counting the page
+# budget off that RECORD leaves S020 compared against nothing and paged not at
+# all -- and since only a human clears a block, S010 holds the slot on every
+# later pass too, so S020's stop is never announced. One page for two decisions
+# here; one page for twenty-seven in a run the size of r-001. The RECORD is
+# still one (asserted above); the PAGES are per stop.
+squestions() { find "$STARVE/.orchid/runtime/answers" -name '*.question' 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq 2 "$(squestions)" \
+  "both blocked tasks raised a page — losing the record slot is a ranking, not silence (out: $SDRIVE_OUT)"
+assert_match "\(task: S020\)" "$SBLOCKERS" \
+  "...and the page for the stop that lost the ranking names its own task"
+assert_match "fixture: parked for now" "$SBLOCKERS" \
+  "...and states ITS cause, not the recorded boundary's — two stops, two decisions, two pages"
+# ...and a repeated pass adds neither, which is the other direction of the same
+# budget: both questions are still standing unanswered, and an outstanding page
+# IS that stop's page. Without this half the fix above would trade a starved
+# stop for a page per pass, which is the duplicate defect T009 started from.
+run_sdrive
+assert_eq 2 "$(squestions)" \
+  "a repeated pass raises no second page for either stop — one page per distinct stop, in both directions (out: $SDRIVE_OUT)"
+assert_eq S010 "$(sboundary | jq -r .task)" \
+  "and the ranking is unchanged by any of it: the same stop still holds the record slot"
+
+# ...AND AN EXPIRED PAGE IS NOT A PAGE (T009). What silences the ninety-nine
+# passes above is the operator's own outstanding question -- so when
+# `answer_expiry_s` takes that question away, the silence has to end with it.
+# `orchid answer` refuses an aged question outright (libexec/orchid-answer's
+# expiry arm), so from the operator's side the stop is no longer answerable, no
+# longer visible as a decision, and nothing is asking them about it.
+#
+# S010 IS THE ARM THIS PINS, and it is why the de-dup order matters. Its
+# boundary RECORD is durable and unchanged -- only a human clears a block -- so
+# a loop that compares the record first `continue`s before it ever asks the
+# inbox, and S010's stop goes quiet at exactly the moment it became
+# unanswerable. S020 never had a record to be compared against, so it would
+# re-page either way; asserting only S020 here would pass against the defect.
+squestions_for() { grep -lx "task: $1" "$STARVE"/.orchid/runtime/answers/*.question 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq 1 "$(squestions_for S010)" \
+  "fixture witness: the stop holding the record slot has exactly one page, and it is live"
+touch -t 200001010000 "$STARVE"/.orchid/runtime/answers/*.question \
+  || fail "fixture: both questions' mtimes must be settable to age them out"
+run_sdrive
+assert_eq 2 "$(squestions_for S010)" \
+  "a stop whose page expired unanswered is paged again — even though its boundary record never changed, which is the whole reason the record may not be consulted first (out: $SDRIVE_OUT)"
+assert_eq 2 "$(squestions_for S020)" \
+  "...and so is the stop that never held the record slot"
+assert_eq 4 "$(squestions)" \
+  "one fresh page each, and no more than one: an expired inbox re-raises the stop, it does not restart the duplicate (out: $SDRIVE_OUT)"
+# ...and the fresh page silences the passes after it exactly as the first one
+# did. Without this the repair would trade a stop that goes quiet forever for a
+# stop that pages once per pass forever.
+run_sdrive
+assert_eq 4 "$(squestions)" \
+  "the re-raised pages are live again, so the next pass is silent once more (out: $SDRIVE_OUT)"
 
 # Pass 2 -- S020 now sits at `arbitrating` over a request-changes review: an
 # arbitrable boundary, on a HIGHER task id than the blocked one. The reviewer
@@ -1218,6 +1486,22 @@ assert_match "notified: \[review-evidence\] is operator-only" "$LDRIVE_OUT" \
 assert_match "judgment boundary \[review-evidence\] needs an operator" \
   "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
   "and the blocker really is recorded where an operator reads it"
+# ...and the answers it declares are the ones LEGAL FROM `reviewing`. This page
+# used to carry `approve | request-changes | defer` -- the arbitration results,
+# every one of which would have exited 3 out of this status -- while `orchid
+# answer` refused everything outside that set, including the two `orchid jobs
+# review-plan` modes this very boundary's reason text tells the operator to run.
+# The page and its own remedy sentence contradicted each other.
+assert_match "^choices: adopt-evidence \| repin \| block \| defer\$" "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
+  "the page declares the remedies legal from reviewing, not a bare <choice> placeholder and not the arbitration results"
+if grep -q '^choices: approve' "$SLOTS/.orchid/BLOCKERS.md"; then
+  fail "a page raised from reviewing must not offer an arbitration result: 'orchid task arbitrate' exits 3 there"
+fi
+# The set is the one this boundary's own reason text points at -- read from the
+# recorded reason rather than retyped, so a remedy sentence that stops naming
+# `--adopt-evidence` fails here instead of drifting away from the menu.
+assert_match "review-plan L010 [-][-]adopt-evidence" "$(lboundary | jq -r .reason)" \
+  "the boundary's reason names the verb its declared 'adopt-evidence' answer stands for"
 
 # One review per routed engine, and the same evidence set advances. (Both are
 # request-changes here so the walk stops at `arbitrating` instead of running
@@ -1491,12 +1775,25 @@ assert_match "notified: \[run-complete\] is operator-only" "$BDRIVE_OUT" \
 assert_match "judgment boundary \[run-complete\] needs an operator" \
   "$(cat "$BROK/.orchid/BLOCKERS.md")" \
   "and the blocker that tells the operator to run the acceptance step is really raised"
+
+# ...AND THAT PAGE SAYS WHAT MAY BE ANSWERED. This is the half r-001 shipped
+# without: twenty-seven boundaries whose only instruction was `orchid answer
+# <qid> <choice> --nonce <n>`, with <choice> validated against nothing — so
+# nothing on the page said what would be accepted and a typo was recorded
+# silently as a decision. Asserted on a REAL driver-raised page, not on the
+# verb in isolation: `orchid notify --choice` existing changes nothing at all
+# until the code that raises actual judgment boundaries passes it.
+assert_match "^choices: accept \| defer\$" "$(cat "$BROK/.orchid/BLOCKERS.md")" \
+  "the run-complete page names the answers 'orchid answer' will accept"
+assert_eq "accept,defer" "$(cat "$BROK/.orchid/runtime/answers/"*.choices)" \
+  "and records them as the machine set 'orchid answer' actually gates on, not as prose alone"
+
 if drive_boundary_wakes_orchestrator run-complete "" "$(drive_orchestrator_surface "$BROK")"; then
   fail "no model may be woken for a boundary whose only settling verb its adapter refuses"
 fi
 
 # Repeating the pass raises no SECOND blocker: the record is unchanged, and
-# the notify is sent once per distinct record, not once per pass.
+# the notify is sent once per distinct stop, not once per pass.
 b_blockers_before="$(wc -l < "$BROK/.orchid/BLOCKERS.md")"
 BDRIVE_RC=0
 BDRIVE_OUT="$(ORCHID_REPO="$BROK" ORCHID_EPOCH="$BEPOCH" "$DRIVE" 2>&1)" || BDRIVE_RC=$?
@@ -3215,6 +3512,25 @@ assert_match "uncommitted work" "$UDRIVE_OUT" \
 assert_match "half-done.txt" "$UDRIVE_OUT" \
   "and names the paths, so the operator can see what they are being asked to decide about without going looking"
 
+# THE FREE-TEXT EDGE of the declared-choice work (T009), pinned on a REAL
+# driver-raised page rather than on the verb in isolation. `operator-decision`
+# is the catch-all: its reason text is composed per site, so no set anybody
+# could enumerate honestly exists — "commit the work or throw it away" is a
+# call about somebody's real output, not a menu. Its page must therefore
+# declare NOTHING and keep the free-text contract `orchid answer` has always
+# had. Without this half, the fix for the unanswerable pages would drift into
+# refusing the operator's legitimate prose on the pages that need it.
+assert_match "judgment boundary \[operator-decision\] needs an operator" \
+  "$(cat "$UNCM/.orchid/BLOCKERS.md")" \
+  "precondition: a real page for this boundary was raised, so the two checks below are about its content and not about an absent file"
+if grep -q '^choices: ' "$UNCM/.orchid/BLOCKERS.md"; then
+  fail "an operator-decision page must declare no choice set — its answer is prose, and gating it on a menu would refuse the real reply"
+fi
+for _cf in "$UNCM/.orchid/runtime/answers/"*.choices; do
+  [ -e "$_cf" ] || continue
+  fail "and no machine choice-set record may exist for it either — the sidecar's existence IS the gate"
+done
+
 # ...and NOTHING IS CHARGED. Part O's rung belongs to a failure with a
 # deterministic recovery; this one is a stop, and a stop that also spent a rung
 # would walk this task toward `blocked` on passes an operator has not answered
@@ -3646,6 +3962,42 @@ assert_eq blocked "$(cfield status)" \
   "the rework budget comes from config: rework_max=1 with 1 attempt spent blocks instead of reworking (rc=$CDRIVE_RC, out: $CDRIVE_OUT)"
 assert_match "attempts exhausted \(1/1\)" "$CDRIVE_OUT" \
   "and the pass reports the budget it enforced, not a bare 'exhausted' (out: $CDRIVE_OUT)"
+
+# ONE STOP, ONE PAGE (T009). A page is a question with its own qid, nonce and
+# `.answer` file, so the count matters: two pages for one decision are two
+# questions, and answering either says nothing about the other. PROTOCOL.md's
+# budget is one blocker per DISTINCT STOP, enforced by the
+# per-stop de-dup at the foot of the driver -- and this arm defeated it
+# twice. It raised its own `orchid notify` and THEN recorded an
+# `operator-decision` boundary the foot of the file notified for as well (two
+# qids on this pass), after which the blocked walk restated the same stop in a
+# third wording on the next pass, which the comparison could only read as a new
+# record (a third qid). Only the first of the three declared an answer set.
+cquestions() { find "$CAPD/.orchid/runtime/answers" -name '*.question' 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq 1 "$(cquestions)" \
+  "the pass that blocked C010 raised exactly ONE page for it (out: $CDRIVE_OUT)"
+CBLOCKERS="$(cat "$CAPD/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "attempts exhausted \(1/1\)" "$CBLOCKERS" \
+  "...and that one page states the cause the task was blocked with (page: $CBLOCKERS)"
+assert_match "\.orchid/reviews/C010-verify\.log" "$CBLOCKERS" \
+  "...names the evidence the retired exhaustion page pointed at, which now rides in the block's own journaled reason so every later pass reads it back too"
+assert_match "orchid task retry C010 \[--attempts N\]" "$CBLOCKERS" \
+  "...and spells the recovery verbs out on the task they are about, the flag the exhaustion case needs included"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$CBLOCKERS" \
+  "...with the declared answer set two of the three retired pages never carried"
+
+# ...and the NEXT pass over the same blocked task raises nothing new. The walk
+# recomputes the record from the same journal through the same composer
+# (lib/drive.sh's drive_blocked_reason), so the de-dup sees one record
+# persisting rather than a second one replacing it.
+CDRIVE_RC=0
+CDRIVE_OUT="$(ORCHID_REPO="$CAPD" ORCHID_EPOCH="$CEPOCH" "$DRIVE" 2>&1)" || CDRIVE_RC=$?
+assert_eq blocked "$(cfield status)" \
+  "fixture: C010 is still blocked on the following pass, so the boundary below is the same stop (rc=$CDRIVE_RC, out: $CDRIVE_OUT)"
+assert_eq blocked-task "$(ORCHID_REPO="$CAPD" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
+  "the stop is recorded under the kind the task's own status names — the kind the walk will keep recomputing"
+assert_eq 1 "$(cquestions)" \
+  "and no second question is minted for it: one blocker per distinct stop, and the stop did not change (out: $CDRIVE_OUT)"
 
 # 2. The operator grants two more rounds through the verb -- and the driver
 #    honors the grant on its very next pass.
@@ -7484,6 +7836,19 @@ assert_match "notified" "$QDRIVE_OUT" \
 grep -q "task-prerequisite" "$PRQ/.orchid/BLOCKERS.md" \
   || fail "the blocker an operator actually reads must name the boundary"
 
+# ...AND IT SAYS WHAT MAY BE ANSWERED (T009). Pinned here, on a page a real
+# driver pass raised, because this kind is the one where the two axes are
+# easiest to confuse: no orchestrator verb settles it — no model may assert a
+# migration was applied — yet the human it reaches has exactly one verb to run,
+# and the reason line three assertions above already names it. "No verb a model
+# may run" is not "no answer a human may give", and reading it as such is how
+# this kind alone kept the bare `<choice>` placeholder while every other
+# operator-only boundary declared its set.
+assert_match "^choices: acknowledged \| defer\$" "$(cat "$PRQ/.orchid/BLOCKERS.md")" \
+  "the prerequisite blocker names the answers 'orchid answer' will accept, beside the reply command"
+assert_eq "acknowledged,defer" "$(cat "$PRQ/.orchid/runtime/answers/"*.choices)" \
+  "and records them as the machine set 'orchid answer' actually gates on, not as prose alone"
+
 # -- acknowledged: the suite runs, and its real failure is counted -----------
 qorchid task prereq-ack Q010 --reason "applied 0007 to the fixture database" >/dev/null
 assert_eq "$QCAND" "$(qfield prerequisite_ack)" "the ack is bound to this candidate"
@@ -7778,6 +8143,12 @@ gorchid task create G010 "a task whose own suite is green" >/dev/null
 gorchid task set G010 verification_commands "true" >/dev/null
 gorchid plan apply --reason "initial plan" >/dev/null
 
+# The state verbs advance the integration ref without rewriting this fixture's
+# checkout. Refresh the temporary fixture before forking its candidate, or the
+# old index/worktree is dirty against the advanced ref and the return checkout
+# below is refused before the merge path under test can run.
+git reset -q --hard orchid/integration \
+  || fail "fixture: could not refresh the merge_gate checkout from integration"
 git checkout -q -b task/G010
 echo gated > feature-g.txt && git add feature-g.txt && git commit -q -m "candidate"
 GCAND="$(git rev-parse HEAD)"
@@ -7804,7 +8175,7 @@ assert_match "merge_gate FAILED" "$GDRIVE_OUT" \
   "the pass names the REPO-WIDE GATE as what went red"
 grep -q "merge validation failed" <<<"$GDRIVE_OUT" \
   && fail "a gate failure reported as 'merge validation failed' sends the reader to the candidate's diff for a repository condition"
-grep -q "boundary \[operator-decision\] G010" <<<"$GDRIVE_OUT" \
+grep -qE "boundary \[(operator-decision|blocked-task)\] G010" <<<"$GDRIVE_OUT" \
   && fail "with rounds still left a red gate is an ordinary rework round (rc=$GDRIVE_RC), not a stop for a human"
 
 # --- (Z2) the cap: the same gate, with nothing left to spend ---------------
@@ -7821,10 +8192,19 @@ assert_eq blocked "$(gfield status)" \
   "over the cap, merge stops the task instead of sending it round again (out: $GDRIVE_OUT)"
 assert_eq 2 "$(gfield attempts)" "and the round that blocked is itself charged"
 assert_eq 16 "$GDRIVE_RC" "the pass stops at a judgment boundary"
+# RAISED AS THE REPOSITORY JUDGMENT IT IS (T023), but through the SAME helper
+# every later pass over this blocked task calls (T009). The durable cause
+# contains `gate_failed`, so drive_block_boundary reproduces both this kind and
+# this reason on the next walk instead of changing the record and minting a
+# second qid for one stop.
 assert_match "boundary \[operator-decision\] G010" "$GDRIVE_OUT" \
-  "raised as a boundary a human is expected to clear"
+  "raised as a repository judgment in the words every later pass over this gate-blocked task recomputes"
+grep -q "boundary \[blocked-task\] G010" <<<"$GDRIVE_OUT" \
+  && fail "a capped repository gate must not be reported as an ordinary task block"
 assert_match "merge_gate" "$GDRIVE_OUT" \
   "...naming the gate rather than the candidate -- a blocked merge filed as an 'unexpected status' tells nobody anything"
+assert_match "reviews/G010-merge\.log" "$GDRIVE_OUT" \
+  "...and the evidence pointer survives the arm's own wording being dropped, because the block's journaled reason carries it"
 assert_match "orchid task reverify G010" "$GDRIVE_OUT" \
   "and carrying the recovery that costs no attempt, since the gate is frequently not this task's doing"
 assert_match "orchid task retry G010" "$GDRIVE_OUT" "...beside the one that grants rounds back"
@@ -7848,6 +8228,32 @@ assert_match "reviews/G010-merge\.log" "$GBOUNDARY_REASON" \
   "and the reason names the validation log the gate wrote, which is where what went red is written (reason: $GBOUNDARY_REASON)"
 [ -f "$GATEREPO/.orchid/reviews/G010-merge.log" ] \
   || fail "non-vacuity: the log that boundary sends an operator to must actually exist on disk"
+
+# T009: ...AND THE PAGE THAT STOP RAISES IS ANSWERABLE, which is the half the
+# T023 kind split silently took away. `operator-decision` is the catch-all, and
+# a catch-all declares no answer set -- so this page, whose reason is
+# drive_blocked_reason's own text naming `orchid task unblock|retry|reverify` on
+# G010, went out with the bare `<choice>` placeholder the whole choice-set
+# feature exists to retire. Nothing failed: the coverage in
+# tests/test_notify_hermes_channel.sh composed its own page from
+# `drive_boundary_choices blocked-task` and asserted four answers on a page the
+# driver was shipping with none. So the set is read here, off a REAL pass,
+# through the question `orchid notify` actually minted -- the `.choices` sidecar
+# `orchid answer` gates on, which exists whether or not a channel is configured.
+GQ_QID=""
+for _gq in "$GATEREPO"/.orchid/runtime/answers/*.question; do
+  [ -f "$_gq" ] || continue
+  grep -qxF "task: G010" "$_gq" || continue
+  grep -qF "judgment boundary [operator-decision]" "$_gq" || continue
+  GQ_QID="${_gq##*/}"; GQ_QID="${GQ_QID%.question}"
+done
+[ -n "$GQ_QID" ] \
+  || fail "the gate-blocked stop must raise a page: a capped repository gate is the boundary an operator hears about, and exit 16 alone tells nobody"
+assert_match "orchid task reverify G010" "$(cat "$GATEREPO/.orchid/runtime/answers/$GQ_QID.question")" \
+  "witness: the page really carries the blocked composer's reason, so the answers below are the answers to THIS text"
+assert_eq "unblock,retry,reverify,defer" \
+  "$(cat "$GATEREPO/.orchid/runtime/answers/$GQ_QID.choices" 2>/dev/null || true)" \
+  "and it declares the kernel's whole recovery list out of blocked — the catch-all kind is where the page was FILED, not a reason for it to name no answers while its own text names three verbs"
 
 # ===========================================================================
 # Part ZP (T023) -- THE OTHER ROUTE TO `merging -> blocked`, WHICH MUST NOT BE
@@ -7904,6 +8310,11 @@ zporchid task create ZP10 "a task whose merge worktree cannot be prepared" >/dev
 zporchid task set ZP10 verification_commands "true" >/dev/null
 zporchid plan apply --reason "initial plan" >/dev/null
 
+# As in Part Z, the durable state verbs moved the ref but intentionally did
+# not rewrite this checkout. Align this disposable fixture before branching so
+# the candidate can return to integration cleanly and reach merge preparation.
+git reset -q --hard orchid/integration \
+  || fail "fixture: could not refresh the worktree_prepare checkout from integration"
 git checkout -q -b task/ZP10
 echo prepared > feature-zp.txt && git add feature-zp.txt && git commit -q -m "candidate"
 ZPCAND="$(git rev-parse HEAD)"

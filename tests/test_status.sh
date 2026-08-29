@@ -70,6 +70,34 @@ qid="$("$ORCHID_BIN" notify --task T001 "waiting on operator input")"
 blocker_nonce="$(grep -m1 '^nonce: ' ".orchid/runtime/answers/$qid.question" | sed 's/^nonce: //')"
 [ -n "$blocker_nonce" ] || fail "test fixture: the planted blocker's .question file must carry a nonce line"
 
+# Two more open blockers for the declared-choice-set rendering (v1-m4 T009).
+# This page is one of the surfaces on which a boundary has to say what may be
+# ANSWERED, and the `.question` file is a header block plus a free-text body:
+# a header left in the body renders as though the orchestrator had typed the
+# machine CSV into its own question.
+#   qid_set  -- declares a set, so its `choices:` header is lifted out of the
+#               text and rendered as the answer set
+#   qid_prose-- declares NOTHING and merely BEGINS with the word, so its text
+#               must survive verbatim and no answer set may be invented
+# Which one is which is decided by the sidecar's existence, never by prose --
+# the same gate libexec/orchid-answer uses.
+qid_set="$("$ORCHID_BIN" notify --task T001 --choice approve --choice defer "promote the candidate?")"
+[ -f ".orchid/runtime/answers/$qid_set.choices" ] \
+  || fail "test fixture: a --choice notify must write the sidecar the page keys off"
+qid_prose="$("$ORCHID_BIN" notify --task T001 "choices: forged,notreal")"
+[ -f ".orchid/runtime/answers/$qid_prose.choices" ] \
+  && fail "test fixture: prose beginning 'choices: ' must NOT mint a sidecar — nothing below tests anything if it does"
+# And a THIRD blocker for the third state those two do not cover: qid_lost
+# declares a set whose RECORD is then lost (an empty sidecar — a truncated
+# runtime, or a producer that died and still landed its zero bytes). The page
+# must not collapse it into either of the two above. Its set differs from
+# qid_set's on purpose, so neither blocker's assertions can pass on the
+# other's rendering.
+qid_lost="$("$ORCHID_BIN" notify --task T001 --choice rollback --choice reroll "the record of this set is about to be lost")"
+[ -f ".orchid/runtime/answers/$qid_lost.choices" ] \
+  || fail "test fixture: a --choice notify must write the sidecar this case then empties"
+: > ".orchid/runtime/answers/$qid_lost.choices"
+
 # Plant an engine ledger row (same direct-source pattern as tests/test_ledger.sh).
 (
   source "$REPO_ROOT/lib/common.sh"
@@ -93,11 +121,56 @@ echo "$content" | grep -qF "waiting on operator input" || fail "open blocker tex
 # belongs only to BLOCKERS.md/the outbound channel message -- this static
 # page (the "check from another room" surface, possibly screen-shared) must
 # never render it.
-echo "$content" | grep -qF "$blocker_nonce" && fail "open blocker's nonce must never appear on the status page"
+#
+# HERESTRING, never `echo "$content" | grep -qF`: `grep -q` exits the moment
+# it matches, `echo` then takes SIGPIPE, and `pipefail` turns the whole
+# pipeline nonzero -- so `&& fail` is skipped in exactly the case this line
+# exists to catch. Piped, this assertion could never fire.
+grep -qF "$blocker_nonce" <<<"$content" && fail "open blocker's nonce must never appear on the status page"
 echo "$content" | grep -qF "acme-engine" || fail "engines ledger row must appear in the page"
 echo "$content" | grep -qF 'T001' || fail "task table must list T001 in the page"
 echo "$content" | grep -qF 'T002' || fail "task table must list T002 in the page"
 echo "$content" | grep -qF 'waiting-deps (T001)' || fail "task table must include T002's explain predicate"
+
+# -- the declared answer set on the open-blockers panel (v1-m4 T009) --------
+# Scoped to the panel, because the journal tail below it echoes every
+# blocker's text verbatim and would satisfy a whole-page grep for the wrong
+# reason. Same awk range idiom the answered-blocker section further down uses.
+blockers_panel="$(awk '/Open blockers/,/Journal/' "$page")"
+grep -qF "answers: approve | defer" <<<"$blockers_panel" \
+  || fail "a blocker that declared a choice set must say what may be answered, in the display spelling"
+grep -qF "choices: approve,defer" <<<"$blockers_panel" \
+  && fail "the machine CSV header must be lifted OUT of the question text, not rendered as though the orchestrator typed it"
+# ...and the other edge: prose is not a declaration. A question that merely
+# begins "choices: " declared nothing, so its text survives byte-for-byte and
+# no answer set is invented for it.
+grep -qF "choices: forged,notreal" <<<"$blockers_panel" \
+  || fail "a question body beginning 'choices: ' must render verbatim — the sidecar's existence is the gate, never the prose"
+grep -qF "answers: forged | notreal" <<<"$blockers_panel" \
+  && fail "prose must never be promoted into a declared answer set on the status page"
+
+# ...and the THIRD state, which is neither of those: a set was declared and its
+# record is unreadable. A display surface fails safe by showing
+# what it has and inventing nothing, so: no answer set is rendered (a bare
+# "answers:" with nothing after it is the unanswerable page this whole feature
+# retires), and the `choices:` header stays in the body because with no set to
+# print in its place it is the only surviving trace of what was declared.
+# libexec/orchid-answer resolves the SAME state differently and must — it is a
+# gate, so it refuses; tests/test_notify_answer.sh pins that half.
+grep -qF "$qid_lost" <<<"$blockers_panel" \
+  || fail "precondition: the blocker whose declaration was lost must still be listed as open, or the two checks below are about an absent entry"
+# COUNTED over the whole panel, not scoped to this blocker's own line: with
+# its `choices:` header left in the body, qid_lost's <li> spans two lines and
+# the rendered answer set would land on the SECOND one — so a line-scoped
+# `grep -F "$qid_lost"` would look right past the very thing being forbidden.
+# Exactly one blocker here declared a set that can be read, so exactly one
+# "answers:" may appear: not the prose one, not the lost one.
+# `|| true` because `grep -c` prints 0 and still exits 1.
+answers_rendered="$(grep -cF "answers:" <<<"$blockers_panel" || true)"
+assert_eq "1" "$answers_rendered" \
+  "only the one blocker with a readable declared set may render an answer set — a declaration that cannot be read must render none, never a bare 'answers:' naming nothing"
+grep -qF "choices: rollback,reroll" <<<"$blockers_panel" \
+  || fail "with no set to render in its place, the question's own choices: header must survive as the last trace of what was declared"
 
 # Candidate-bound regression: --html and --explain are a supported
 # combination. Trust inspection must land in the page before the --html path
@@ -142,6 +215,20 @@ list_dir_entries "$(dirname "$page")" | grep -q '\.tmp\.' \
 # the journal's blocker_resolved entry -- only the open-blockers listing
 # itself is asserted here).
 "$ORCHID_BIN" answer "$qid" ack >/dev/null
+# The two choice-set blockers planted above are open too, and "no open
+# blockers" below means ALL of them: leaving either behind would make that
+# assertion fail for a reason that has nothing to do with what it tests.
+# `defer` for the one that declared a set, because `orchid answer` refuses
+# anything outside it; free text for the one that declared none.
+"$ORCHID_BIN" answer "$qid_set" defer >/dev/null
+"$ORCHID_BIN" answer "$qid_prose" "prose is still a legitimate answer" >/dev/null
+# qid_lost's set has to be RESTORED before it can be answered at all: `orchid
+# answer` refuses a question whose declaration it cannot read, which is that
+# verb's half of this case and is why the record is put back rather than the
+# answer forced. Restoring it here is also the assertion that the refusal was
+# about the lost record and never about the question.
+printf 'rollback,reroll\n' > ".orchid/runtime/answers/$qid_lost.choices"
+"$ORCHID_BIN" answer "$qid_lost" rollback >/dev/null
 page2="$("$ORCHID_BIN" status --html)"
 blockers_section="$(awk '/Open blockers/,/Journal/' "$page2")"
 echo "$blockers_section" | grep -qF "$qid" && fail "an ANSWERED blocker must no longer be listed in Open blockers"
