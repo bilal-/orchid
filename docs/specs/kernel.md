@@ -474,7 +474,16 @@ buying a fresh implementation pass to reach the same tree.
     way before an acknowledgement is found — the "parked on the integration
     branch" half is answered by READING Git's on-disk `HEAD`, never by
     spawning `git`. Only a root that really is parked there goes on to the
-    content comparison, and that root is orchid's own installation.
+    content comparison — and that comparison is NOT excused by "such a root is
+    orchid's own installation, never a repository a run was pointed at". It
+    was, and the excuse was false in the one checkout it had to hold for:
+    orchid is SELF-HOSTED, so its own root is routinely parked on exactly that
+    branch, and there the comparison ran at source time and spent its `git`
+    ahead of the acknowledgement lookup. Every gate passed it, because a task
+    worktree and `orchid merge`'s temp worktree are by construction never on
+    that branch — the one dimension the guard branches on (lesson L036). So
+    the comparison is deferred to the firing sites described above instead;
+    what it compares is unchanged, only when it may be asked.
     Deliberately narrow: a development checkout on any other branch is never
     asked, however dirty, and `.orchid/` is neither inspected nor touched, so
     uncommitted durable run state is never a refusal and never at risk.
