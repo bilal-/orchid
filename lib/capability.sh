@@ -136,7 +136,12 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # when both refuse the same call only one answer reaches the driver, and 14
 # ("no eligible engine") is the one it reads as a WAIT. See
 # libexec/orchid-jobs' prepare_capability_gate for why that ordering is a
-# report about which fact is permanent, never a permission.
+# report about which fact is permanent, never a permission. Where NO actor was
+# named and the role chain yields none, those same rows are asked of EVERY
+# ENTRY in the chain instead (capability_chain_refusal below, called from that
+# file's prepare_chain_capability_gate) -- resolution failing before any actor
+# exists is the other way a permanent shortfall reached the driver as that same
+# wait.
 # `mechanical` is enforced at lib/handoff.sh, because it is a step no adapter
 # is dispatched for at all. `hook` is the one row with no enforcement site
 # anywhere, because it is priced at nothing and the gate returns before it so
@@ -399,5 +404,97 @@ capability_routing_refusal() {
   [ -n "$missing" ] || return 0
   printf 'step %s needs %s, which the actor %s does not declare (missing: %s)\n' \
     "$step" "$need" "$engine" "$missing"
+  return 1
+}
+
+# capability_chain_refusal <step> <chain> -- the same question asked of a whole
+# ROLE CHAIN at once, <chain> being its engine names one per line (lib/
+# resolver.sh's resolve_role_chain). Three outcomes, and the caller must again
+# read the STATUS as well as the output:
+#
+#   0, no output   nothing here is a permanent capability fact. The chain is
+#                  empty, or it holds an entry this table does not refuse --
+#                  so an entry a later pass could route this step to exists.
+#   1, one line    REFUSED, and permanently: EVERY entry in the chain is short
+#                  an atom the step's work needs. Names each entry's shortfall,
+#                  since the operator's remedy has to reach the whole chain.
+#   3, one line    THE CALLER IS WRONG -- the step name is outside
+#                  `_CAPABILITY_STEPS`, reported exactly as the single-actor
+#                  gate reports it, once rather than once per entry.
+#
+# WHY A CHAIN GATE EXISTS, when capability_routing_refusal already runs at every
+# dispatch. It runs on the actor RESOLUTION SETTLED ON, and resolution can fail
+# first: `resolve_role_available` walks the chain and exits 14 -- "no eligible
+# engine available for role X" -- when no entry is discovered, role-eligible,
+# ledger-available and capsuite-passed. runners/orchid-drive reads 14 as a WAIT,
+# which is right when the chain came up empty over a ledger window. It is
+# exactly wrong when every entry lacks a capability the work needs: no window
+# reopens, so the driver waits, journals nothing, raises no boundary and meets
+# the same task again every pass. That is the silent dead end INV-16 exists to
+# end, arriving one gate EARLIER than the gate built to end it -- the same
+# defect libexec/orchid-jobs' prepare_capability_gate fixed for the arm where
+# the caller NAMED the actor, reached through the role chain instead.
+#
+# ONLY A MISSING ATOM COUNTS, which is what stops this annexing every other
+# reason a chain comes up empty. A rate limit reopens on its own; a missing
+# capsuite record is one `orchid plugins test` away; an uninstalled plugin is an
+# install. Each is a different report with a different remedy, each already has
+# its own words in resolve_role_available's message, and re-reporting one of
+# them here would send an operator to audit a manifest over a ledger window. A
+# ROLE requirement that no step prices is left alone for the same reason:
+# `requires=` may ask for more than the work does (a role wanting `network`,
+# say), and that refusal belongs to the role gate, in its own words, at 14 --
+# the same division the named-actor arm's GREEN twin holds to. A missing atom
+# is the one fact this file owns and the one no later pass changes, so it is the
+# only one that turns the wait into a hand-off.
+#
+# EVERY ENTRY, NEVER ANY. One entry this table does not refuse means a later
+# pass can route the step somewhere, so the wait is a real wait; the loop
+# therefore stops at the first such entry and says nothing at all. An entry it
+# cannot answer for (2 -- not installed under either name, or an id two plugins
+# claim) counts as such an entry HERE, which is the opposite of what the
+# single-actor gate does with 2, and deliberately: there, 2 is a reason not to
+# proceed with a routing that was about to happen, and reading it as permission
+# would waive the gate. Here nothing is about to happen -- resolution has
+# already refused -- and the only question is whether to RE-REPORT that refusal
+# as a permanent capability fact. An unreadable manifest is not one.
+capability_chain_refusal() {
+  local step="$1"
+  local chain="${2:-}"
+  local entry
+  local why
+  local rc
+  local detail=""
+  local entries=0
+
+  # Validated up front and BY THE SINGLE-ACTOR GATE ITSELF, so the two can
+  # never disagree about who is at fault or say it in different words: for a
+  # step outside the closed set that function answers 3 with its caller-error
+  # line whatever actor it is handed, so it is handed none. Doing it here rather
+  # than inside the loop also answers it for an EMPTY chain, which has no first
+  # entry to ask -- a mistyped operation is the caller's error whether or not
+  # the role happened to be bound.
+  if ! capability_step_valid "$step"; then
+    rc=0
+    capability_routing_refusal "$step" "" || rc=$?
+    return "$rc"
+  fi
+
+  while IFS= read -r entry; do
+    [ -n "$entry" ] || continue
+    entries=$((entries + 1))
+    rc=0
+    why="$(capability_routing_refusal "$step" "$entry")" || rc=$?
+    if [ "$rc" -ne 1 ]; then
+      return 0
+    fi
+    if [ -z "$detail" ]; then detail="$why"; else detail="$detail; $why"; fi
+  done <<< "$chain"
+
+  # An empty chain says nothing about capabilities: whatever emptied it --
+  # an unbound custom role, a config key set to nothing -- is a fault
+  # resolve_role_chain reports itself, in a message that names the key to set.
+  [ "$entries" -gt 0 ] || return 0
+  printf '%s\n' "$detail"
   return 1
 }
