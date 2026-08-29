@@ -999,3 +999,76 @@ assert_match "unblock \| retry \| reverify \| defer" "$errB" \
   "and lists every answer that WOULD be accepted, reverify included"
 [ ! -f "$PAGE_REPO/.orchid/runtime/answers/$qidB2.answer" ] \
   || fail "a refused out-of-set answer must never be recorded as answered"
+
+# ===========================================================================
+# 10 -- EVERY DECLARED CHOICE IS PASSABLE BACK AS `orchid answer`'s <choice>
+#      (T009).
+#
+# A declared set is a promise with two ends: the page NAMES the answers, and
+# `orchid answer` refuses everything outside the set (section 9b). That makes
+# an unrepresentable member worse than no set at all -- the named answer
+# cannot be given, and every other answer is refused because it was not named,
+# so the question is answerable by nothing. `-foo` is exactly that value:
+# libexec/orchid-answer routes any `-*` argument to its usage arm and offers
+# no `--` terminator, so a leading dash can never reach the <choice> slot.
+# `orchid notify` used to admit it anyway -- it banned only whitespace and
+# commas -- and would print it on the `choices:` line directly above a reply
+# command that cannot carry it.
+#
+# The mint now enforces the same word grammar
+# runners/orchid-orchestrator-command's `is_id` has always enforced for this
+# same flag, so the brokered door and the direct one agree about what a choice
+# is. This section pins both edges of that grammar.
+# ===========================================================================
+# The other end of the promise, witnessed rather than assumed: a leading-dash
+# value really is unusable as an answer even for a question with NO declared
+# set, where free text is otherwise accepted verbatim. If this ever stopped
+# being true the RED below would be guarding nothing.
+qidF="$(page_orchid notify --task T900 "free text, no declared set")" \
+  || fail "fixture: a question with no declared set must be raisable, or the witness below tests nothing"
+rcF=0
+errF="$(page_orchid answer "$qidF" -foo 2>&1 1>/dev/null)" || rcF=$?
+[ "$rcF" -ne 0 ] \
+  || fail "witness: 'orchid answer <qid> -foo' must be refused — the whole reason a leading-dash choice may not be minted"
+assert_match "usage: orchid answer <qid> <choice>" "$errF" \
+  "...and it is refused by the ARGV parser, on usage: the dash is read as a flag, so no such value can reach the choice slot"
+
+# RED. So the mint refuses it, and refuses it BEFORE any durable write: no
+# question, no page, nothing for an operator to read and fail to answer.
+outbox_before="$(find "$PAGE_REPO/.orchid/runtime/outbox" -type f | wc -l | tr -d ' ')"
+rcX=0
+errX="$(page_orchid notify --task T900 --choice -foo "declare an answer nobody can give" 2>&1 1>/dev/null)" || rcX=$?
+[ "$rcX" -ne 0 ] \
+  || fail "orchid notify must refuse --choice -foo: it names an answer 'orchid answer' can never be given"
+assert_match "not a valid choice value" "$errX" \
+  "the refusal says the value is the problem, not the flag"
+assert_match "orchid answer <qid> <choice>" "$errX" \
+  "...and names the parser the value has to survive, so the fix is obvious from the message alone (L028)"
+assert_eq "$outbox_before" "$(find "$PAGE_REPO/.orchid/runtime/outbox" -type f | wc -l | tr -d ' ')" \
+  "a refused choice mints no question at all — the page is never written, so nothing unanswerable ships"
+
+# ...and the same refusal covers a value that would FORGE a line rather than
+# merely fail to parse. This is why the guard reads the whole argument instead
+# of matching it line-by-line: a value whose first line is a legal word would
+# pass a line-oriented check and then split the `choices:` header and the CSV
+# sidecar into rows nobody declared.
+rcN=0
+page_orchid notify --task T900 --choice "$(printf 'approve\nrogue')" "forge a line" >/dev/null 2>&1 || rcN=$?
+[ "$rcN" -ne 0 ] \
+  || fail "a --choice value carrying a newline must be refused — its first line is a legal word, and the rest would forge a row in the recorded set"
+
+# GREEN, and it is what keeps the RED from being a ban on hyphens: the
+# vocabulary the kernel actually declares is hyphenated (`request-changes`,
+# `plan-apply`, `run-accept` in lib/drive.sh's table), so an interior hyphen
+# must still mint, still print, and still answer.
+qidG="$(page_orchid notify --task T900 --choice request-changes --choice defer "hyphenated answers still work")" \
+  || fail "orchid notify must accept a hyphenated alphanumeric choice — it is the shape the kernel's own boundary table declares"
+assert_eq "request-changes,defer" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidG.choices")" \
+  "the hyphenated value is recorded verbatim in the declared set"
+assert_match "^choices: request-changes \| defer\$" \
+  "$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qidG")" \
+  "...and reaches the page unaltered"
+outG="$(page_orchid answer "$qidG" request-changes 2>&1)" \
+  || fail "orchid answer must ACCEPT the hyphenated choice the page declared (got: $outG)"
+assert_eq "request-changes" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidG.answer")" \
+  "a declared choice is answerable end to end: minted, printed, given back and recorded"

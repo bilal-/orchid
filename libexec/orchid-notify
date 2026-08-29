@@ -25,11 +25,47 @@ while [ $# -gt 0 ]; do
       # set). A value has to survive both as a single argv word of
       # `orchid answer <qid> <choice>` and as one entry of the
       # comma-joined `choices:` line recorded with the question, so
-      # whitespace and commas are refused outright, never escaped.
+      # whitespace and commas are refused outright, never escaped -- and so
+      # is everything else outside the word grammar below.
+      #
+      # REPRESENTABILITY, and it is why the guard below is a grammar rather
+      # than the comma/whitespace ban it started as: a declared answer that
+      # `orchid answer` cannot be GIVEN is worse than no declared set at all,
+      # because the set also refuses everything outside itself -- the question
+      # becomes unanswerable by any value. `-foo` is exactly that shape.
+      # libexec/orchid-answer parses its positional <choice> with a `-*)` arm
+      # that dies on usage, and offers no `--` terminator, so a leading dash
+      # can never reach the choice slot; minting one ships a page whose
+      # `choices:` line names something the reply command on the very next
+      # line cannot carry.
+      #
+      # The shape admitted here is therefore the identical one
+      # runners/orchid-orchestrator-command's `is_id` already enforces for
+      # this same flag (one [A-Za-z0-9_-] word, alphanumeric first, at most
+      # 64 characters). Same grammar at both doors on purpose: a woken
+      # orchestrator declaring a set through the broker and an operator
+      # declaring one straight at the verb must not disagree about what a
+      # choice is, or the brokered surface would be the only one that keeps
+      # the page honest. It is also the shape lib/drive.sh's boundary table
+      # already documents every kernel-declared answer as having, so nothing
+      # this repo declares is narrowed by it.
+      #
+      # Spelled as a `case` rather than as the broker's `grep -qE`, and the
+      # difference is not style: grep is LINE-oriented, so a value whose
+      # first line happens to be a word ("approve" followed by a newline and
+      # anything at all) matches `^...$` and would be admitted here, then
+      # forge extra lines in the `choices:` header and the CSV sidecar. The
+      # globs below see the whole argument, so a newline is just another
+      # character outside the class -- which is also how the whitespace ban
+      # this replaces caught it.
       [ -n "${2:-}" ] || orchid_die "--choice requires a value"
+      choice_bad=""
       case "$2" in
-        *[[:space:],]*) orchid_die "--choice '$2' must be a single comma-free word — it becomes one argument to \`orchid answer\`" ;;
+        [!A-Za-z0-9]*|*[!A-Za-z0-9_-]*) choice_bad=1 ;;
       esac
+      [ "${#2}" -le 64 ] || choice_bad=1
+      [ -z "$choice_bad" ] \
+        || orchid_die "--choice '$2' is not a valid choice value (one [A-Za-z0-9_-] word, alphanumeric first, at most 64 characters) — it has to survive as a single argument to \`orchid answer <qid> <choice>\`, which accepts no leading-dash value and has no \`--\` terminator"
       choices="${choices:+$choices,}$2"; shift 2 ;;
     -*) orchid_die "$usage" ;;
     *) break ;;

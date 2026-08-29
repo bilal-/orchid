@@ -236,7 +236,12 @@ opt-in per call.** The gate is `answer_allowlist` being configured at all
   on. `orchid answer` refuses any value outside a declared set, and the
   refusal names the valid ones — so a typo is caught, never silently
   recorded as a decision. A question that declares no set has no such file
-  and keeps the free-text contract unchanged. Existence being the
+  and keeps the free-text contract unchanged. Each declared value is one
+  `[A-Za-z0-9_-]` word, alphanumeric first, at most 64 characters, and
+  `orchid notify` refuses anything else when the question is minted: the
+  value has to come back as `orchid answer`'s positional `<choice>`, which
+  reads a leading `-` as a flag and offers no `--` terminator, so a page must
+  never be able to name an answer the reply command below it cannot carry. Existence being the
   declaration cuts both ways: a `.choices` file that exists but yields no
   readable choice (a truncated runtime, a restored backup) means *the set
   was declared and its record is gone*, which is not the same as *no set was

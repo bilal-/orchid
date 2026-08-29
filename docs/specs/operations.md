@@ -336,6 +336,16 @@ this section false without touching a byte of it.
   every question raised before this shipped still has. A sidecar that exists
   but yields no readable choice is refused rather than waved through — "the
   record of a declared set is gone" is not "no set was declared".
+  A declared value is one `[A-Za-z0-9_-]` word, alphanumeric first, at most
+  64 characters; `orchid notify` refuses anything else at mint time, which is
+  the same grammar `runners/orchid-orchestrator-command` admits for the same
+  flag on the brokered surface. That narrowness is representability, not
+  taste: `orchid answer` takes `<choice>` as a positional and routes any
+  argument beginning with `-` to its usage arm, with no `--` terminator, so a
+  value outside the word grammar could be named on a page and then be
+  answerable by nobody — and because the declared set also refuses every
+  value it did not name, such a question would be answerable by nothing at
+  all.
   `runners/orchid-drive` declares the set for every boundary kind that has
   one (`lib/drive.sh`'s `drive_boundary_choices`; PROTOCOL.md's boundary
   table), and the kinds whose answer is genuinely prose declare none.
