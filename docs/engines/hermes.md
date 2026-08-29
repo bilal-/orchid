@@ -312,13 +312,28 @@ hermes gateway status                         # what the probe asks
   running/connected/online/ready/active/healthy — or it names a **live
   process id** (`pid 4242`, `"PID" = 4242`), which is how a supervisor
   answers the question and is published only for a job that is actually
-  running.
+  running. A process id is the weakest evidence this probe accepts as health
+  (it carries no status word at all), so it is refused on any row that also
+  carries a **negation particle** — `not`, `never`, `cannot`, `unable`, `no
+  longer`, `no such`. A row negating *anything* is a row the probe has not
+  understood, and an unread row is undetermined rather than reachable: that
+  is what stops the next phrasing nobody here has seen yet (`hermes-gateway:
+  not responding (pid 4242)`) from being answered by the pid beside it. A
+  bare `no` is deliberately not a particle, because `no errors` is how a
+  healthy supervised row reports a clean run.
 - **exit 1 — NOT REACHABLE.** `hermes gateway status` failed *and its output
   named the transport as unreachable* (`connection refused`, `could not
   connect`, `not running`, `not responding`, `no such process`, `timed out`,
   …), or it answered and the judged line carries a negation (`not running`,
-  `not paired`, `stopped`, `disconnected`, `inactive`, `dead`, `crashed`,
-  `not loaded`, `offline`, `expired`, `down`, `unreachable`, `unhealthy`, …).
+  `not responding`, `not listening`, `not alive`, `unresponsive`, `no longer
+  running`, `not paired`, `stopped`, `disconnected`, `inactive`, `dead`,
+  `crashed`, `not loaded`, `offline`, `expired`, `down`, `not up`,
+  `unreachable`, `unhealthy`, …). The responsiveness words count on **both**
+  halves: a phrase that names a dead transport out of a query that failed is
+  no weaker when the query succeeded and hermes printed it itself. `timed
+  out`/`timeout` is the one that does not cross the other way — in an
+  answered status *row* it is as likely to be a configured knob
+  (`connected (timeout 30s)`) as an outage.
   The pairing words (`not paired`, `not linked`, `not registered`, `not
   authenticated`, `unpaired`) are negations **only**: a bare `paired` is a
   stored fact about what you once attached, which a gateway reports whether or

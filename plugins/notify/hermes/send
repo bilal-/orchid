@@ -484,8 +484,43 @@ if [ "${1:-}" = --inbound-probe ]; then
     # running -- reading it as health would be exactly the false REACHABLE the
     # rest of this file refuses. Its NEGATION has no such ambiguity: a channel
     # that is not paired cannot carry a reply under any gateway state.
+    #
+    # AND THE RESPONSIVENESS VOCABULARY, which is the half that was still
+    # missing after the pairing words landed -- and the one whose absence
+    # produced a false REACHABLE rather than a shrug. The failed-query list
+    # further up has read `not responding`, `not listening`, `not alive` and
+    # `unresponsive` as evidence about the transport since it was written;
+    # this list never learned any of them. So an installed CLI answering
+    #     hermes-gateway: not responding (pid 4242)
+    # exited 0, matched no negative here, matched no positive below -- and was
+    # then read as HEALTH by the live-pid tier at the bottom of this loop,
+    # which is the single verdict this whole file is ordered to make
+    # impossible. The two lists disagreeing about the same words WAS the
+    # defect: a phrase that is evidence of a dead transport on a query that
+    # FAILED is no weaker when the query SUCCEEDED and hermes printed it
+    # itself -- it is stronger, because there it is hermes reporting the
+    # gateway rather than the CLI reporting its own trouble.
+    #
+    # `no longer` joins `not` and `never` as a negation prefix for the same
+    # reason -- it is the failed-query list's own third form, and `no longer
+    # running` puts a state word this list already knows behind a prefix it
+    # did not.
+    #
+    # `timed out`/`timeout` is deliberately NOT borrowed back the other way,
+    # and that asymmetry is why these are aligned word by word instead of by
+    # sharing one pattern between the two branches: on a query that FAILED a
+    # timeout is the gateway not answering, but in a status ROW it is just as
+    # likely to be a configured knob (`telegram: connected (timeout 30s)`),
+    # and reading that as an outage is the false alarm this list is spelled
+    # out longhand to avoid.
+    #
+    # `up` is negated here while it stays refused as a POSITIVE below, and the
+    # two rulings agree rather than conflict: `not up` says one thing only,
+    # whereas a bare `up` also occurs in `could not bring up the gateway`. A
+    # word can be unambiguous in one direction and not in the other, which is
+    # the shape of this entire list.
     probe_status="${probe_lower//"$probe_channel_lower"/ }"
-    if grep -qE -e '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy|loaded|paired|linked|authenticated|registered)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unauthenticated|unpaired|unlinked|unregistered|unhealthy|expired|down|unreachable|dead|crashed)([^a-z0-9_-]|$)' \
+    if grep -qE -e '(^|[^a-z0-9_-])((not|never|no[[:space:]]+longer)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy|loaded|paired|linked|authenticated|registered|responding|listening|alive|up)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unauthenticated|unpaired|unlinked|unregistered|unhealthy|unresponsive|expired|down|unreachable|dead|crashed)([^a-z0-9_-]|$)' \
          <<<"$probe_status"; then
       echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
       exit 1
@@ -534,7 +569,7 @@ if [ "${1:-}" = --inbound-probe ]; then
     # answers UNDETERMINED about a return leg whose process is right there in
     # the line, because none of the words above appears in it.
     #
-    # THREE THINGS KEEP IT FROM INVENTING REACHABLE, which is the error this
+    # FOUR THINGS KEEP IT FROM INVENTING REACHABLE, which is the error this
     # file weighs as the worse one throughout:
     #   * it is only ever reached on a row a tier above ADMITTED -- the
     #     configured channel's row, or one naming the gateway -- so a sibling
@@ -546,10 +581,37 @@ if [ "${1:-}" = --inbound-probe ]; then
     #     precisely the false REACHABLE the paragraph above refuses. `[1-9]`
     #     and no more, so a `pid 0` or a `pid -` placeholder is not a running
     #     process either.
+    #   * and the row must carry NO NEGATION PARTICLE, which is the guard the
+    #     `not responding (pid 4242)` misread bought and the only one of the
+    #     four that does not depend on a word list being complete. The three
+    #     above all lean on the negatives above having ALREADY convicted the
+    #     row, so every phrasing that list has not learned yet arrives here
+    #     with a live pid and nothing standing between it and exit 0. That is
+    #     backwards: a pid is the WEAKEST evidence this probe accepts as
+    #     health -- circumstantial, with no state word in it at all -- so it
+    #     is exactly the tier that must not be trusted over a line that is
+    #     visibly saying "no" about something. A row that negates ANYTHING is
+    #     a row this probe has not understood, and unread is undetermined.
+    #     The particles are the ones that can only negate: `not`, `never`,
+    #     `cannot`, `unable`, `no longer`, `no such`. A bare `no` is left out
+    #     on purpose, because `no errors` and `no warnings` are how a healthy
+    #     supervised row reports a clean run and blocking those would trade
+    #     this false REACHABLE for a false undetermined on the commonest
+    #     healthy shape there is.
+    # NOTE this guard is deliberately NOT applied to the word-positive test
+    # above it, and the difference is the strength of the evidence rather
+    # than an inconsistency: a row saying `running` has stated the state
+    # outright, and the negatives now cover `(not|never|no longer) <word>`
+    # for every word that test can match, so the two directions of the same
+    # sentence are already decided before it. Extending the particle check
+    # there would answer undetermined for `running (not paused)` -- reading a
+    # gateway that says it is up as unknown, which is the misread the
+    # service-managed tiers above exist to have fixed.
     # The value is matched with an optional quote and separator so the plist
     # spelling a supervisor query prints (`"PID" = 4242;`) reads the same as
     # `pid 4242`, `pid=4242` and `pid: 4242`.
     if ! grep -qE -e '(last|previous|prior|former|old|stale|exit(ed)?|was)[[:space:]]+"?pid' <<<"$probe_status" \
+       && ! grep -qE -e '(^|[^a-z0-9_-])(not|never|cannot|unable|no[[:space:]]+(longer|such))([^a-z0-9_-]|$)' <<<"$probe_status" \
        && grep -qE -e '(^|[^a-z0-9_-])"?pid"?[[:space:]]*[:=]?[[:space:]]*"?[1-9][0-9]*' <<<"$probe_status"; then
       echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
       exit 0

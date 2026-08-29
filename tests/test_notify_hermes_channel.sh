@@ -566,6 +566,66 @@ assert_eq "0" "$probe_rc" "an unrelated platform's dead row still cannot condemn
 probe telegram "$(printf 'hermes-gateway: running (pid 4242)\ntelegram: disconnected\n')" 0
 assert_eq "1" "$probe_rc" "and the configured channel's own row still outranks the job label above it"
 
+# THE RESPONSIVENESS WORDS, AND THE LIVE-PID FALSE REACHABLE THEIR ABSENCE
+# PRODUCED. The failed-query list has read `not responding`, `not listening`,
+# `not alive` and `unresponsive` as evidence about the transport since it was
+# written; the per-row list had never learned them. So this exact row --
+# hermes exiting 0 and saying outright that the gateway it supervises is not
+# answering -- matched no negative, matched no positive, and was then read as
+# HEALTH by the pid tier above, which is the one verdict this whole file is
+# ordered to make impossible. Every assertion here is the CONFIRMED shape,
+# with the pid attached, because the pid is what turned a shrug into a lie.
+probe telegram "hermes-gateway: not responding (pid 4242)" 0
+assert_eq "1" "$probe_rc" "a gateway that says it is not responding is NOT reachable, and its live pid must not overturn its own words"
+assert_match "NOT up" "$probe_out" "the probe says which way it decided"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "the live-pid tier must never report a not-responding row as up -- that is the false REACHABLE this case exists to prevent"
+# ...and the same words without a pid, so the vocabulary is pinned on its own
+# rather than only through the tier it was rescuing.
+probe telegram "hermes-gateway: not responding" 0
+assert_eq "1" "$probe_rc" "'not responding' is a determination whether or not the row carries a process id"
+probe telegram "hermes-gateway: unresponsive (pid 4242)" 0
+assert_eq "1" "$probe_rc" "'unresponsive' is the standalone form of the same fact"
+probe telegram "hermes-gateway: not listening (pid 4242)" 0
+assert_eq "1" "$probe_rc" "a gateway process that is not listening carries no reply back, pid or no pid"
+probe telegram "hermes-gateway: not alive (pid 4242)" 0
+assert_eq "1" "$probe_rc" "'not alive' is the third phrasing the failed-query list already knew and this one did not"
+# `no longer` is the failed-query list's own third negation prefix, and it puts
+# a state word this list already knew behind one it did not.
+probe telegram "hermes-gateway: no longer running (pid 4242)" 0
+assert_eq "1" "$probe_rc" "'no longer running' is the outage, not a live process id"
+# `up` is negated even though it is refused as a positive: `not up` says one
+# thing only, while a bare `up` also occurs in `could not bring up the gateway`
+# (pinned above). The two rulings agree rather than conflict.
+probe telegram "gateway: not up" 0
+assert_eq "1" "$probe_rc" "'not up' is unambiguous in the direction a bare 'up' is not"
+
+# THE GUARD THAT DOES NOT DEPEND ON A WORD LIST BEING COMPLETE. Closing the
+# vocabulary gap above fixes the phrasings hermes was actually observed using;
+# it does nothing for the next one nobody here has seen. So the pid tier --
+# the weakest evidence this probe accepts as health, circumstantial with no
+# state word in it at all -- now declines any row carrying a negation
+# particle. An unknown negation is a row this probe has not understood, and
+# unread is UNDETERMINED, never REACHABLE.
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, never finished bootstrapping)" 0
+assert_eq "2" "$probe_rc" "a negation this probe cannot read must not be overruled by the pid beside it -- undetermined, never up"
+assert_match "not one this probe recognizes" "$probe_out" "the probe admits it could not read the row rather than reading the pid as health"
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242) -- cannot serve inbound replies" 0
+assert_eq "2" "$probe_rc" "'cannot' is a particle that can only negate, so the row stops short of health"
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, unable to bind the inbound socket)" 0
+assert_eq "2" "$probe_rc" "...and so is 'unable'"
+# A BARE `no` IS DELIBERATELY NOT A PARTICLE, and this is the GREEN half that
+# says why: `no errors` is how a healthy supervised row reports a clean run,
+# and blocking it would trade the false REACHABLE above for a false
+# undetermined on the commonest healthy shape there is.
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, no errors)" 0
+assert_eq "0" "$probe_rc" "a clean-run report is not a negation -- the pid tier still reads a healthy supervised row as up"
+# ...and the guard is NOT extended to the word-positive tier above it, because
+# a row that states `running` outright has said the thing, and the negatives
+# now cover `(not|never|no longer) <word>` for every word that tier matches.
+probe telegram "hermes-gateway: running (launchd, pid 4242, not paused)" 0
+assert_eq "0" "$probe_rc" "a gateway that says it is running stays REACHABLE -- the particle guard belongs to the pid tier, not to a stated state"
+
 # THE LAST-RESORT TIER, and the subject it may not borrow. Output carrying no
 # channel row, no gateway row and no status label still deserves a reading --
 # a `gateway status` answering with the bare word `running` has said
@@ -699,6 +759,23 @@ assert_match "Answers sent on this channel are being lost" "$doc_out" \
   "doctor names the consequence an operator has to act on"
 grep -q "^ok: notify inbound" <<<"$doc_out" \
   && fail "a NOT REACHABLE probe must never produce an inbound ok"
+
+# ...and the SAME outage in the wording a supervised gateway reports it with,
+# driven the whole way to the line an operator reads. The probe-level assertion
+# above pins the exit code; this pins the consequence, which is the half that
+# was wrong: a gateway saying `not responding` while its supervisor still names
+# a pid used to reach doctor as `ok: notify inbound ... REACHABLE`, telling an
+# operator their answers were landing on the exact return leg that was dropping
+# every one of them.
+printf 'hermes-gateway: not responding (pid 4242)\n' > "$HG_OUT"; printf '0' > "$HG_RC"
+doc_doctor hermes
+assert_doc_advisory "a gateway that is not responding is a warning, never a doctor failure"
+assert_match "WARN: notify inbound \\(the return leg\\): 'hermes' probed its channel and reports it NOT REACHABLE" "$doc_out" \
+  "doctor reports the outage for a supervised gateway that says it is not responding"
+assert_match "Answers sent on this channel are being lost" "$doc_out" \
+  "doctor names the consequence for this phrasing too, not only for 'not running'"
+grep -q "^ok: notify inbound" <<<"$doc_out" \
+  && fail "a live pid beside 'not responding' must never reach the operator as an inbound ok"
 
 # Cannot determine -> reported as unknown. Never as health.
 printf 'gateway: bewildered\n' > "$HG_OUT"; printf '0' > "$HG_RC"
