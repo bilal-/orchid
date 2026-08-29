@@ -19,9 +19,15 @@ walk_to_merging() {
   "$ORCHID_BIN" task set "$id" base_sha "$base"
   "$ORCHID_BIN" task set "$id" candidate_sha "$cand"
   "$ORCHID_BIN" task set "$id" verification_commands "$vcmd"
-  # This is the one edge in this walk the scheduler can refuse. Name that
-  # refusal here so a parked fixture reports its held slot directly instead
-  # of making a later feature case fail with an unrelated end-state message.
+  # The ONE edge in this walk that the scheduler can refuse: `pending ->
+  # implementing` is an idle -> active dispatch, and `task advance` runs
+  # `schedule_dispatch_blockers` fail-closed on it. Named here with `|| fail`
+  # so a refusal (`concurrency-cap (n/cap)`, an exclusive/resource hold) is
+  # reported where it happens, against the task that was actually refused.
+  # Left silent, the task simply stays `pending` and the FIRST symptom is this
+  # case's own end-state assertion reading `expected merging, got pending` --
+  # which names the feature under test rather than the scheduling slot some
+  # earlier case never gave back.
   "$ORCHID_BIN" task advance "$id" implementing \
     || fail "$id: dispatch into implementing refused -- the rest of this case is meaningless"
   "$ORCHID_BIN" task advance "$id" testing
@@ -169,9 +175,17 @@ grep -qi "update-ref\|CAS" .orchid/journal.md || fail "CAS failure journal entry
 assert_match "\\(orchestrator e${ORCHID_EPOCH}\\)" "$(cat .orchid/journal.md)" \
   "CAS failure journal entry's actor is 'orchestrator e<epoch>', not epoch-less 'orchestrator'"
 
-# This fixture intentionally remains in the active `merging` state after the
-# CAS refusal. Release its scheduling slot after the assertions that require
-# that state, so later prepare cases are not refused at the concurrency cap.
+# Fixture teardown, not part of the contract above -- and it is load-bearing
+# for every case BELOW this one. The contract this case proves is that the
+# losing CAS leaves the task in `merging`, and `merging` is an ACTIVE status
+# (lib/schedule.sh's `_SCHEDULE_ACTIVE_STATUSES`). A fixture task parked there
+# never retires, so it holds one of the run's two concurrency slots for the
+# remainder of the file; the second such task takes the other, and then every
+# later case's `pending -> implementing` dispatch is refused at
+# `concurrency-cap (2/2)`. The task stays `pending` and the failures surface as
+# that case's own end-state assertions, naming the feature under test instead
+# of the slot it never got. Released through `*:blocked`, the one edge `legal`
+# accepts from any status, AFTER the assertions that needed `merging` have run.
 "$ORCHID_BIN" task advance T004 blocked \
   --reason "fixture teardown: release the scheduling slot this parked task holds" >/dev/null
 
