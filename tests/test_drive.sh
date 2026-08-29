@@ -8117,6 +8117,12 @@ gorchid task create G010 "a task whose own suite is green" >/dev/null
 gorchid task set G010 verification_commands "true" >/dev/null
 gorchid plan apply --reason "initial plan" >/dev/null
 
+# The state verbs advance the integration ref without rewriting this fixture's
+# checkout. Refresh the temporary fixture before forking its candidate, or the
+# old index/worktree is dirty against the advanced ref and the return checkout
+# below is refused before the merge path under test can run.
+git reset -q --hard orchid/integration \
+  || fail "fixture: could not refresh the merge_gate checkout from integration"
 git checkout -q -b task/G010
 echo gated > feature-g.txt && git add feature-g.txt && git commit -q -m "candidate"
 GCAND="$(git rev-parse HEAD)"
@@ -8252,6 +8258,11 @@ zporchid task create ZP10 "a task whose merge worktree cannot be prepared" >/dev
 zporchid task set ZP10 verification_commands "true" >/dev/null
 zporchid plan apply --reason "initial plan" >/dev/null
 
+# As in Part Z, the durable state verbs moved the ref but intentionally did
+# not rewrite this checkout. Align this disposable fixture before branching so
+# the candidate can return to integration cleanly and reach merge preparation.
+git reset -q --hard orchid/integration \
+  || fail "fixture: could not refresh the worktree_prepare checkout from integration"
 git checkout -q -b task/ZP10
 echo prepared > feature-zp.txt && git add feature-zp.txt && git commit -q -m "candidate"
 ZPCAND="$(git rev-parse HEAD)"
