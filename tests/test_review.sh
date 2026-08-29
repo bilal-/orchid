@@ -10,7 +10,9 @@
 #   CHANGED   `review_depth_required` (medium/high, fail-safe on unknown);
 #             the routing table's fourth DEPTH column; the depth pass that
 #             fills slot 2 searching past `review.<tier>` into
-#             `role.reviewer`'s chain and the implementer's own engine; and
+#             `role.reviewer`'s chain and the implementer's own engine WHILE
+#             THE ROUND STILL NEEDS DEPTH, and no further once slot 1 has
+#             already brought it (Part D); and
 #             `drive_review_decision` refusing a DETERMINISTIC approval at
 #             medium/high when no counted review is credited to a `worktree`
 #             slot -- credited off the attempt's PINNED plan and the same
@@ -187,6 +189,46 @@ review.medium=inlinerev1,deeprev
 ' TD2 medium
 assert_match $'^2\tdeeprev\tengine-independent\tworktree$' "$(review_routing "$repoD2" TD2)" \
   "a worktree-capable engine IN the tier chain still fills slot 2 -- the operator's ordering is not overridden"
+
+# --- ...AND THE WIDENING STOPS WHERE ITS REASON STOPS. Slot 1 here is the
+# --- worktree-capable one, so the round ALREADY has depth before slot 2 is
+# --- chosen. A widened pass would still reach past the tier chain to the
+# --- implementer's own engine and take it -- buying a second copy of a
+# --- property the table already carries, and paying for it with the OTHER
+# --- axis, since that slot can only be labeled session-independent while an
+# --- engine-independent reviewer sat available in `review.<tier>` all along.
+# --- Independence and depth are different axes (lesson L010) and medium/high
+# --- wants both, so with depth in hand slot 2 is filled the ordinary way.
+repoD3="$WORK/repoD3"
+mk_routing_repo "$repoD3" \
+  'role.implementer=deepimpl
+role.reviewer=deeprev
+review.medium=deeprev,inlinerev1
+' TD3 medium
+outD3="$(review_routing "$repoD3" TD3)"
+assert_match $'^1\tdeeprev\tengine-independent\tworktree$' "$outD3" \
+  "slot 1 brings the depth this time: engine-independent AND worktree-capable"
+assert_match $'^2\tinlinerev1\tengine-independent\tinline$' "$outD3" \
+  "a round that already has depth keeps its second slot ENGINE-INDEPENDENT rather than spending it on a second worktree-capable reviewer"
+grep -q deepimpl <<< "$outD3" \
+  && fail "the depth pass must not reach the implementer's own engine once slot 1 is already worktree-capable (got: $outD3)"
+review_routing_has_depth "$outD3" \
+  || fail "...and the round still HAS depth -- that is the whole reason slot 2 no longer has to buy it"
+
+# --- The widened list is DEMOTED, not deleted. Same shape, except the tier
+# --- chain has nobody left to offer: reaching past it then costs no
+# --- independence at all, because the alternative is slot 1 reviewing its own
+# --- candidate twice.
+repoD4="$WORK/repoD4"
+mk_routing_repo "$repoD4" \
+  'role.implementer=deepimpl
+role.reviewer=deeprev
+review.medium=deeprev
+' TD4 medium
+outD4="$(review_routing "$repoD4" TD4)"
+assert_match $'^1\tdeeprev\tengine-independent\tworktree$' "$outD4" "slot 1 is the same deep, independent reviewer"
+assert_match $'^2\tdeepimpl\tsession-independent\tworktree$' "$outD4" \
+  "with the tier chain exhausted the widened list is still walked -- a DISTINCT engine, honestly labeled, beats repeating slot 1"
 
 # ===========================================================================
 # E -- THE TRIPWIRE. An install with no worktree-capable reviewer anywhere

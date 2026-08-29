@@ -160,7 +160,9 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   preference in this chain: `orchid jobs review-plan` labels every slot
   `worktree` or `inline`, its depth pass searches past this chain (into
   `role.reviewer`'s chain, then the implementer's own engine) to find a
-  worktree-capable slot wherever the install has one, and a drive pass will
+  worktree-capable slot wherever the install has one — but only while the
+  round still lacks one, since a second slot is worth more spent on engine
+  independence once slot 1 is already worktree-capable — and a drive pass will
   not make a DETERMINISTIC approval at those tiers unless one of the counted
   reviews is credited to a slot the attempt's PINNED plan calls `worktree`
   — it stops at an arbitrable `review-evidence` boundary instead, which

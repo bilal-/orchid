@@ -178,6 +178,35 @@ _review_candidate_ok() {
   return 0
 }
 
+# _review_slot2_scan <repo> <slot1-engine> <want> <newline-separated-names> --
+# print the first name in the list that is distinct from slot 1's engine and
+# passes `_review_candidate_ok`, filtered by DEPTH: `worktree` takes only
+# worktree-capable engines, `inline` only engines that are not, `any` takes
+# either. Exit 1 (printing nothing) when the list holds no such engine.
+#
+# One scan, called several times over different lists, because slot 2's choice
+# below is a preference ORDER over candidate lists and not a special case per
+# list: every pass admits exactly what the others do.
+_review_slot2_scan() {
+  local repo="$1" slot1="$2" want="$3" list="$4" e dir
+  while IFS= read -r e; do
+    [ -n "$e" ] || continue
+    [ "$e" != "$slot1" ] || continue
+    dir="$(resolve_engine_dir "$e" 2>/dev/null)" || continue
+    # `any` matches no arm on purpose: it filters on nothing. The `inline` arm
+    # is spelled as an `if` rather than `capable && continue` so the case
+    # statement cannot end on a false status under the callers' `set -e`.
+    case "$want" in
+      worktree) _review_worktree_capable "$dir" || continue ;;
+      inline)   if _review_worktree_capable "$dir"; then continue; fi ;;
+    esac
+    _review_candidate_ok "$repo" "$e" || continue
+    printf '%s\n' "$e"
+    return 0
+  done <<< "$list"
+  return 1
+}
+
 # review_routing <repo> <task> -- prints the routing table for this task's
 # current risk_tier, one line per required slot: <slot>\t<engine>\t
 # <engine-independent|session-independent>\t<worktree|inline>.
@@ -204,7 +233,7 @@ review_routing() {
   # discovered + eligible + available -> engine-independent. No such entry
   # -> the implementer's own engine, labeled session-independent (never
   # silently -- the label itself is the record).
-  local e slot1_engine="" slot1_label=""
+  local e slot1_engine="" slot1_label="" slot1_depth
   while IFS= read -r e; do
     [ -n "$e" ] || continue
     [ "$e" != "$impl_engine" ] || continue
@@ -215,7 +244,8 @@ review_routing() {
   if [ -z "$slot1_engine" ]; then
     slot1_engine="$impl_engine"; slot1_label="session-independent"
   fi
-  printf '1\t%s\t%s\t%s\n' "$slot1_engine" "$slot1_label" "$(review_engine_depth "$slot1_engine")"
+  slot1_depth="$(review_engine_depth "$slot1_engine")"
+  printf '1\t%s\t%s\t%s\n' "$slot1_engine" "$slot1_label" "$slot1_depth"
 
   [ "$count" -ge 2 ] || return 0
 
@@ -226,44 +256,49 @@ review_routing() {
   # degraded independence regardless of its relation to the implementer) --
   # never zero slots.
   #
-  # THE DEPTH PASS SEARCHES WIDER THAN THE TIER CHAIN (v1.1, T012). These
-  # tiers exist to pair an inline reviewer with one that can open the file
-  # the change must stay consistent with, so settling for a second INLINE
-  # engine merely because it is the next name in `review.<tier>` gives up the
-  # pairing over a config-ordering accident. Pass 1 therefore continues past
-  # the tier chain into `role.reviewer`'s own chain and finally the
-  # implementer's engine -- which is worktree-capable on any install whose
-  # implementer can also review, and whose slot is honestly labeled
-  # `session-independent` below. On r-001 that was exactly the slot that
-  # caught the defect the inline slot approved (lesson L010). Everything
-  # reached this way still passes the same discovery + reviewer-eligibility +
-  # ledger test as a tier-chain entry; nothing is admitted that
-  # `_review_candidate_ok` would refuse.
+  # THE DEPTH PASS SEARCHES WIDER THAN THE TIER CHAIN (v1.1, T012), BUT ONLY
+  # WHILE THE ROUND STILL NEEDS DEPTH. These tiers exist to pair an inline
+  # reviewer with one that can open the file the change must stay consistent
+  # with, so when slot 1 is inline, settling for a second INLINE engine merely
+  # because it is the next name in `review.<tier>` gives up the pairing over a
+  # config-ordering accident. The widened pass therefore continues past the
+  # tier chain into `role.reviewer`'s own chain and finally the implementer's
+  # engine -- which is worktree-capable on any install whose implementer can
+  # also review, and whose slot is honestly labeled `session-independent`
+  # below. On r-001 that was exactly the slot that caught the defect the inline
+  # slot approved (lesson L010). Everything reached this way still passes the
+  # same discovery + reviewer-eligibility + ledger test as a tier-chain entry;
+  # nothing is admitted that `_review_candidate_ok` would refuse.
   #
-  # Pass 2 (the INLINE fallback, below) is deliberately NOT widened: once no
-  # depth is available anywhere, which inline engine fills the slot is a
-  # plain preference question, and `review.<tier>` is the operator's answer
-  # to it.
-  local dir slot2_engine=""
-  while IFS= read -r e; do
-    [ -n "$e" ] || continue
-    [ "$e" != "$slot1_engine" ] || continue
-    dir="$(resolve_engine_dir "$e" 2>/dev/null)" || continue
-    _review_worktree_capable "$dir" || continue
-    _review_candidate_ok "$repo" "$e" || continue
-    slot2_engine="$e"; break
-  done < <(printf '%s\n' "$tier_chain" | tr ',' '\n'
-           resolve_role_chain "$repo" reviewer 2>/dev/null || true
-           printf '%s\n' "$impl_engine")
-  if [ -z "$slot2_engine" ]; then
-    while IFS= read -r e; do
-      [ -n "$e" ] || continue
-      [ "$e" != "$slot1_engine" ] || continue
-      dir="$(resolve_engine_dir "$e" 2>/dev/null)" || continue
-      _review_worktree_capable "$dir" && continue   # already tried above
-      _review_candidate_ok "$repo" "$e" || continue
-      slot2_engine="$e"; break
-    done < <(printf '%s\n' "$tier_chain" | tr ',' '\n')
+  # WHEN SLOT 1 IS ALREADY WORKTREE-CAPABLE, the widening has nothing left to
+  # buy: the round HAS depth, and reaching past the tier chain to the
+  # implementer's engine would then spend the other axis -- an available
+  # engine-independent reviewer, demoted to `session-independent` -- for a
+  # second copy of a property the table already carries. Both axes are
+  # required (lesson L010) and neither implies the other, so depth in hand,
+  # slot 2 is filled the ordinary way: from `review.<tier>`, worktree-capable
+  # entries first. The widened list is not dropped, only demoted below the
+  # whole tier chain -- a distinct engine still beats slot 1 reviewing twice,
+  # which is what the fallback at the bottom would otherwise leave.
+  #
+  # The INLINE pass is deliberately NOT widened in either case: once no depth
+  # is (or is still) wanted from this slot, which inline engine fills it is a
+  # plain preference question, and `review.<tier>` is the operator's answer.
+  local slot2_engine="" tier_list wide_list
+  tier_list="$(printf '%s\n' "$tier_chain" | tr ',' '\n')"
+  wide_list="$(resolve_role_chain "$repo" reviewer 2>/dev/null || true
+               printf '%s\n' "$impl_engine")"
+  if [ "$slot1_depth" = worktree ]; then
+    slot2_engine="$(_review_slot2_scan "$repo" "$slot1_engine" worktree "$tier_list" || true)"
+    [ -n "$slot2_engine" ] \
+      || slot2_engine="$(_review_slot2_scan "$repo" "$slot1_engine" inline "$tier_list" || true)"
+    [ -n "$slot2_engine" ] \
+      || slot2_engine="$(_review_slot2_scan "$repo" "$slot1_engine" any "$wide_list" || true)"
+  else
+    slot2_engine="$(_review_slot2_scan "$repo" "$slot1_engine" worktree "$tier_list
+$wide_list" || true)"
+    [ -n "$slot2_engine" ] \
+      || slot2_engine="$(_review_slot2_scan "$repo" "$slot1_engine" inline "$tier_list" || true)"
   fi
   local slot2_label
   if [ -n "$slot2_engine" ]; then

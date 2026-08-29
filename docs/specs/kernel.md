@@ -985,12 +985,24 @@ rejected. The inline slot did this four times in one run.
 1. `review_routing`'s table carries a fourth column, `worktree|inline`, per
    slot — the two labels are printed separately because neither implies the
    other.
-2. The depth pass that fills slot 2 searches past `review.<tier>` into
-   `role.reviewer`'s chain and finally the implementer's own engine, so a
-   worktree-capable slot is routed whenever the install has an eligible one
-   at all — rather than settling for a second inline engine because of the
-   order of names in one config key. A slot filled that way is labeled
-   `session-independent`, which is exactly what caught the r-001 defect.
+2. When slot 1 is inline, the depth pass that fills slot 2 searches past
+   `review.<tier>` into `role.reviewer`'s chain and finally the implementer's
+   own engine, so a worktree-capable slot is routed whenever the install has
+   an eligible one at all — rather than settling for a second inline engine
+   because of the order of names in one config key. A slot filled that way is
+   labeled `session-independent`, which is exactly what caught the r-001
+   defect. **The widening stops where its reason stops.** If slot 1 is
+   ALREADY worktree-capable the round has its depth, and reaching past the
+   tier chain would buy a second copy of that property by spending the other
+   axis — an engine-independent reviewer sitting available in `review.<tier>`,
+   passed over for a slot that can only be labeled `session-independent`.
+   Both axes are required and neither implies the other, so with depth in
+   hand slot 2 is filled the ordinary way: from `review.<tier>`,
+   worktree-capable entries first. The widened list is demoted below the
+   whole tier chain rather than dropped — when the tier chain has nobody
+   left to offer, a distinct engine reached that way still costs no
+   independence, because the alternative is slot 1 reviewing the same
+   candidate twice.
 3. A DETERMINISTIC approval additionally requires depth evidence: at least
    one of the counted reviews must be credited to a slot the PINNED plan
    calls `worktree`. Without it the driver reports `evidence` and stops at a

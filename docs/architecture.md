@@ -265,7 +265,9 @@ acceptance criterion was unmet, with an empty findings array, while the
 worktree-capable slot cited the file and line and the arbiter rejected. So
 at those tiers the routing table labels each slot `worktree` or `inline`,
 slot 2's depth pass searches past `review.<tier>` to find a worktree-capable
-reviewer wherever the install has one, and an approval with no review
+reviewer wherever the install has one — and stops widening once slot 1 has
+already brought depth, so the second slot is not spent buying it twice at the
+cost of an available engine-independent reviewer — and an approval with no review
 credited to a `worktree` slot behind it is handed to an arbiter rather than
 made deterministically ([specs/kernel.md](./specs/kernel.md), "Review
 depth"). That credit is read from the attempt's pinned plan — the same
