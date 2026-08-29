@@ -3565,6 +3565,18 @@ if [ -n "$boundary_kind" ]; then
   # orchestrator engine resolves at all -- rate-limited, ledger-disabled, none
   # configured -- and the pump exits one step later at its step 6. Neither asks
   # a model anything, so neither is evidence that asking one does not work.
+  #
+  # ONE CASE IS DELIBERATELY CHARGED WITHOUT A WAKEUP, and it is the pass after
+  # the budget has already run out: from there on the pump declines the wake
+  # itself, so no model is asked, yet the two tests above still both hold and
+  # this pass is counted. That is not a hole in the rule -- it is what keeps
+  # the blocker below a once-only fact. The counter has to keep climbing past
+  # `pump_wake_max` for `-eq wake_max + 1` to name exactly the pass the budget
+  # ran out on; frozen at that value it would re-page a human every pass
+  # forever, since the record is unchanged by content from here on and the
+  # dedup above therefore never fires for it. The rule the `--no-count` arms
+  # protect is "a boundary must not be parked by passes that never asked a
+  # model", and a budget already spent cannot be parked twice.
   bset_args=(--kind "$boundary_kind")
   [ -z "$boundary_task" ] || bset_args+=(--task "$boundary_task")
   bset_args+=(--reason "$boundary_reason")
