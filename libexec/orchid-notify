@@ -189,7 +189,37 @@ if [ -n "$channel" ]; then
   task_title=""; task_attempt=""
   if [ -n "$task" ] && [ -f "$state/tasks/$task.md" ]; then
     task_title="$(fm_get "$state/tasks/$task.md" title)" || task_title=""
+    # THE ROUND BEING DECIDED IS `attempts` + 1, NEVER `attempts`. That
+    # frontmatter counter is the number of attempts already CHARGED, so a
+    # task raising its first boundary carries `attempts: 0` and this page
+    # said `attempt: 0` -- a round that does not exist. On the one line an
+    # operator uses to line the page on their phone up against the evidence
+    # in the repo, it was off by one against every artifact of the round it
+    # names: `jobs prepare` mints this round's job ids from `attempts + 1`,
+    # the reviewer envelopes are filed at `<task>-a<attempts+1>-<role>.json`,
+    # and the kernel's reviewing->arbitrating gate counts with the same
+    # formula. lib/review.sh's review_plan_attempt() is that formula written
+    # down, and it is deliberately NOT sourced here: it sits behind the whole
+    # manifest/roles/resolver/envelope/capsuite/ledger chain, and `orchid
+    # notify` is a tier-1 verb that sources two libraries.
+    #
+    # An ABSENT or garbled counter omits the line rather than rendering
+    # `attempt: 1` from nothing -- and this is where the page and
+    # review_plan_attempt() legitimately part company. That function must
+    # return a number because it NAMES A FILE, so it reads a garbled counter
+    # as 0 and answers 1. A page has a third option the filename does not:
+    # saying nothing. Inventing a round number for a task file that never
+    # stated one is precisely the unproven claim the rest of this page
+    # refuses to make.
     task_attempt="$(fm_get "$state/tasks/$task.md" attempts)" || task_attempt=""
+    # `10#` because the guard above admits a leading zero: a counter written
+    # `08` is decimal eight everywhere else in the kernel, and bare arithmetic
+    # would read it as octal (and `09` as a fatal parse error inside the one
+    # verb whose job is to raise a blocker).
+    case "$task_attempt" in
+      ''|*[!0-9]*) task_attempt="" ;;
+      *) task_attempt=$(( 10#$task_attempt + 1 )) ;;
+    esac
   fi
   {
     printf '%s: %s\n' "$qid" "$text"

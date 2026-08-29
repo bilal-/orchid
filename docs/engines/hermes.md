@@ -313,16 +313,34 @@ hermes gateway status                         # what the probe asks
   process id** (`pid 4242`, `"PID" = 4242`), which is how a supervisor
   answers the question and is published only for a job that is actually
   running.
-- **exit 1 — NOT REACHABLE.** `hermes gateway status` failed (gateway not
-  running, socket refused, auth expired), or it answered and the judged line
-  carries a negation (`not running`, `stopped`, `disconnected`, `inactive`,
-  `dead`, `crashed`, `not loaded`, `offline`, `expired`, `down`,
-  `unreachable`, `unhealthy`, …).
+- **exit 1 — NOT REACHABLE.** `hermes gateway status` failed *and its output
+  named the transport as unreachable* (`connection refused`, `could not
+  connect`, `not running`, `not responding`, `no such process`, `timed out`,
+  …), or it answered and the judged line carries a negation (`not running`,
+  `stopped`, `disconnected`, `inactive`, `dead`, `crashed`, `not loaded`,
+  `offline`, `expired`, `down`, `unreachable`, `unhealthy`, …).
 - **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
   `notify.channel` is unset, this build has no `gateway status` subcommand,
   the command printed nothing, or none of the candidate lines below is one
   the probe recognizes. Doctor prints "undetermined" and the most specific of
   those lines — never `ok`.
+
+  **A failed query is not a dead gateway**, and the exit code alone never
+  decides which one it was. `hermes gateway status` exiting nonzero says the
+  *question* failed; only its output can say whether the *subject* is down,
+  and the two come apart constantly — a broken install, an interpreter
+  traceback, an unreadable `~/.hermes/config.yaml`, a permission-denied on
+  the socket path, or the CLI's own credentials expiring so it cannot ask a
+  gateway that is answering everyone else perfectly well. All of those are
+  undetermined. Note where that puts `expired`: in a status line hermes
+  successfully *printed*, it is hermes reporting that channel's credential
+  and the return leg really is broken (exit 1); as the reason the CLI could
+  not run at all, it is a question that was never asked (exit 2). Calling
+  any of them "down" would print *"Answers sent on this channel are being
+  lost"* about a return leg carrying answers fine — the false alarm that
+  teaches an operator to ignore the one check whose whole job is to be
+  believed, and a broken CLI is a likelier cause of a nonzero exit than a
+  stopped gateway is.
 
 **Which lines get judged**, most specific evidence first. When the output
 names the configured `notify.channel` at all, those rows are the *only*

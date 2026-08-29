@@ -123,6 +123,13 @@ if [ "${1:-}" = --inbound-probe ]; then
   command -v hermes >/dev/null 2>&1 \
     || { echo "the hermes CLI is not on PATH, so nothing here can query gateway state"; exit 2; }
 
+  # Lowercased channel name, needed by BOTH judging paths below (the failed-
+  # invocation branch and the per-row loop), so it is computed once here
+  # rather than beside either one. Every status/error string this file
+  # matches against is first lowercased and then has this name ELIDED --
+  # see the per-row loop for why the elision is not optional.
+  probe_channel_lower="$(printf '%s' "$probe_channel" | tr '[:upper:]' '[:lower:]')"
+
   # Never `exec`, never let `set -e` fire: a nonzero exit here is DATA.
   probe_rc=0
   probe_out="$(hermes gateway status 2>&1)" || probe_rc=$?
@@ -133,13 +140,33 @@ if [ "${1:-}" = --inbound-probe ]; then
   probe_first="${probe_out%%$'\n'*}"
 
   if [ "$probe_rc" -ne 0 ]; then
+    # A FAILED QUERY IS NOT A DEAD GATEWAY, and conflating the two was this
+    # branch's own defect. `hermes gateway status` exiting nonzero says the
+    # QUESTION failed; only its output can say whether the SUBJECT is down.
+    # Those come apart constantly, and in both directions:
+    #   * the CLI cannot even start -- a broken install, an interpreter
+    #     traceback, an unreadable ~/.hermes/config.yaml, a permission-denied
+    #     on the socket path -- while the gateway process runs on untouched;
+    #   * credentials the CLI needs have expired, so it cannot ASK a gateway
+    #     that is answering everyone else perfectly well.
+    # Reading any of those as exit 1 prints "Answers sent on this channel are
+    # being lost" about a return leg that is carrying answers fine. That is
+    # the false alarm the rest of this file spends its whole length refusing,
+    # arrived at through the one branch that was not applying the rule -- and
+    # it is worse here than elsewhere, because a broken CLI install is a far
+    # likelier cause of a nonzero exit than a stopped gateway.
+    #
+    # So this branch is now ranked like the success path is: the verdict is
+    # UNDETERMINED unless something in the output positively names the
+    # transport as down. The exit code alone determines nothing.
+    #
     # An unrecognized subcommand is a CLI-VERSION difference, not evidence
     # about the gateway -- reporting "down" for it would be a false alarm on
     # a perfectly healthy system, and it is the likelier of the two misreads
     # here because nobody has run this subcommand against a real hermes yet.
-    # Everything else that makes `gateway status` itself fail (gateway not
-    # running, socket refused, auth expired) IS a determination: the process
-    # a reply must be delivered to cannot currently be queried at all.
+    # It reaches the same undetermined verdict as the fallback below; it is
+    # kept as its own case for its MESSAGE, which names the one cause an
+    # operator can actually fix (upgrade the CLI).
     # `usage:` only where a CLI actually prints it -- at the start of a line.
     # As a bare substring it would also swallow a gateway error that merely
     # quotes the word, and answer "this build has no gateway status" for a
@@ -152,8 +179,40 @@ if [ "${1:-}" = --inbound-probe ]; then
         echo "this hermes build does not support 'gateway status' (exit $probe_rc: $probe_first)"
         exit 2 ;;
     esac
-    echo "'hermes gateway status' failed (exit $probe_rc: $probe_first) -- the gateway your replies are delivered to is not answering"
-    exit 1
+
+    # THE DOWN-EVIDENCE LIST, and how it differs from the per-row negatives
+    # further down. It is matched with the same two disciplines -- whole
+    # words, against the output with the channel's OWN NAME elided -- for the
+    # same reasons: a bare `*down*` condemns a channel named
+    # `downtime-alerts`, and a bare `*refused*` would fire on the name
+    # `refused-queue`. Everything here is a phrase about a TRANSPORT that
+    # could not be reached, which is what makes it evidence about the gateway
+    # rather than about the query:
+    #   `connection refused`, `could not connect`, `no such process` -- the
+    #   kernel's and the CLI's own words for "the thing you asked for is not
+    #   there"; `not running`/`not responding`/`unreachable`/`offline` --
+    #   the CLI saying outright what it found.
+    #
+    # TWO WORDS ARE DELIBERATELY ABSENT that the per-row negatives DO carry.
+    # `expired` and `unauthor*` are a determination about a status ROW hermes
+    # printed (that channel's credential is dead, so the return leg really is
+    # broken), but on THIS path they are the CLI's own auth failing -- it
+    # could not ask, which says nothing about whether the gateway answered.
+    # That asymmetry is the whole distinction this branch now draws.
+    #
+    # A nonzero exit with NO recognizable evidence -- a traceback, a missing
+    # config file, a permission-denied, or no output at all -- falls through
+    # to undetermined and is quoted rather than judged, exactly as an
+    # unreadable status line is on the success path.
+    probe_fail="$(printf '%s' "$probe_out" | tr '[:upper:]' '[:lower:]')"
+    probe_fail="${probe_fail//"$probe_channel_lower"/ }"
+    if grep -qE -e '(^|[^a-z0-9_-])((cannot|could[[:space:]]+not|unable[[:space:]]+to)[[:space:]]+(connect|reach|contact)|connection[[:space:]]+(refused|reset|closed|failed)|refused|(not|no[[:space:]]+longer)[[:space:]]+(running|started|listening|responding|reachable|connected|alive)|no[[:space:]]+such[[:space:]]+process|no[[:space:]]+(running[[:space:]]+)?gateway|timed[[:space:]]+out|timeout|unreachable|unresponsive|offline|disconnected|down|dead|stopped|inactive|crashed)([^a-z0-9_-]|$)' \
+         <<<"$probe_fail"; then
+      echo "'hermes gateway status' failed (exit $probe_rc: $probe_first) -- the gateway your replies are delivered to is not answering"
+      exit 1
+    fi
+    echo "'hermes gateway status' itself failed (exit $probe_rc: ${probe_first:-no output}) -- that is a broken query, not evidence about the gateway your replies are delivered to"
+    exit 2
   fi
   [ -n "$probe_out" ] || { echo "'hermes gateway status' exited 0 and printed nothing, so there is no state here to read"; exit 2; }
 
@@ -275,7 +334,6 @@ if [ "${1:-}" = --inbound-probe ]; then
     probe_rows="$(printf '%s\n%s\n%s\n' "$probe_rows" "$probe_labels" "$probe_bare" | grep -v '^[[:space:]]*$' || true)"
   fi
 
-  probe_channel_lower="$(printf '%s' "$probe_channel" | tr '[:upper:]' '[:lower:]')"
   probe_judged=""
   while IFS= read -r probe_line; do
     [ -n "$probe_line" ] || continue

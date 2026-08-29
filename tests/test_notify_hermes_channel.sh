@@ -197,11 +197,60 @@ assert_eq "1" "$probe_rc" "a stopped gateway must probe as NOT reachable, not as
 assert_match "NOT up" "$probe_out" "the probe says which way it decided"
 
 # ...and the same fact reported the other way a CLI can report it: the query
-# itself fails. That is still a determination -- the process a reply is
-# delivered to cannot be reached at all.
+# itself fails AND SAYS the transport could not be reached. That is a
+# determination -- the process a reply is delivered to cannot be reached at
+# all.
 probe telegram "error: could not connect to the hermes gateway socket" 1
 assert_eq "1" "$probe_rc" "a gateway that cannot even answer 'gateway status' is a down return leg"
 assert_match "is not answering" "$probe_out" "the probe names what failed, in the operator's terms"
+
+# A FAILED QUERY IS NOT A DEAD GATEWAY, and the exit code alone must never
+# decide which one it was. `hermes gateway status` exiting nonzero says the
+# QUESTION failed; only its output can say whether the SUBJECT is down, and
+# the two come apart constantly -- a broken install, an unreadable config, a
+# permission-denied on the socket path, expired credentials the CLI needs to
+# ask at all. Reading any of those as `down` prints "Answers sent on this
+# channel are being lost" about a return leg that is carrying answers fine:
+# the false alarm every other branch of this probe is built to refuse, and
+# the likelier cause of a nonzero exit than a stopped gateway is.
+#
+# RED half -- the shapes a broken CLI fails with, none of which name the
+# transport. Each must be UNDETERMINED, and each must say so rather than
+# borrowing the outage's wording.
+probe telegram "$(printf 'Traceback (most recent call last):\n  File "/usr/lib/hermes/cli.py", line 3\nModuleNotFoundError: No module named %s\n' "'hermes.gateway'")" 1
+assert_eq "2" "$probe_rc" "an interpreter traceback is a broken CLI install, never evidence the gateway is down"
+assert_match "not evidence about the gateway" "$probe_out" "the probe says the query broke rather than claiming the return leg did"
+grep -q "is not answering" <<<"$probe_out" \
+  && fail "a broken query must not borrow the outage message -- that is the false alarm this case exists to prevent"
+probe telegram "hermes: error: no configuration found at ~/.hermes/config.yaml -- run 'hermes init'" 1
+assert_eq "2" "$probe_rc" "an unconfigured CLI cannot ask the gateway anything, so it has determined nothing about it"
+probe telegram "hermes: error: permission denied: /Users/op/.hermes/gateway.sock" 1
+assert_eq "2" "$probe_rc" "a permission-denied on the socket path means this CLI may not ask -- the socket is right there, and the gateway may well be serving"
+probe telegram "hermes: error: credentials expired, run 'hermes auth login'" 1
+assert_eq "2" "$probe_rc" "the CLI's OWN auth expiring is a query it could not make, not a gateway that did not answer"
+probe telegram "" 127
+assert_eq "2" "$probe_rc" "a nonzero exit with no output at all has said nothing, and nothing is not 'down'"
+assert_match "no output" "$probe_out" "the probe says the failing query printed nothing rather than inventing a line for it"
+# ...and `expired` is exactly where the two paths part company, which is what
+# makes the case above a distinction rather than a blanket softening: the same
+# word in a status row hermes SUCCESSFULLY printed is still the outage,
+# because there it is hermes reporting the channel's credential, not the CLI
+# reporting its own. (The rc=0 twin is asserted further down.)
+#
+# GREEN half -- a failing query that DOES name the transport still decides,
+# so this branch has not been softened into never determining anything.
+probe telegram "error: connection refused (gateway socket /run/hermes.sock)" 1
+assert_eq "1" "$probe_rc" "a connection refused by the gateway socket is a determination, not a shrug"
+assert_match "is not answering" "$probe_out" "the probe still names the outage when the output actually names the transport"
+probe telegram "hermes: error: the gateway is not running (start it with 'hermes gateway up')" 1
+assert_eq "1" "$probe_rc" "a CLI that says outright the gateway is not running has determined the return leg is down"
+probe telegram "error: gateway process is not responding after 30s" 1
+assert_eq "1" "$probe_rc" "a gateway that stopped responding is a down return leg"
+# ...and that list is held to the same whole-word, name-elided discipline as
+# the per-row negatives, for the same reason: without it a channel named
+# `downtime-alerts` is condemned by its own name on any CLI hiccup.
+probe downtime-alerts "hermes: error: could not read ~/.hermes/config.yaml for downtime-alerts" 1
+assert_eq "2" "$probe_rc" "a channel whose NAME contains 'down' must not turn a broken config read into an outage"
 
 # A build without the subcommand is a CLI-VERSION difference, NOT an outage.
 # This branch matters more here than it does for openclaw: nothing in this
@@ -583,3 +632,92 @@ assert_match "^ok: notify outbound: 'noprobe' resolves" "$doc_out" \
   "outbound remains its own fact for a plugin that cannot prove the return leg"
 assert_match "SEND capability only" "$doc_out" \
   "doctor labels the outbound fact as send capability alone"
+
+# ===========================================================================
+# 8 -- THE PAGE'S ATTEMPT LINE NAMES THE ROUND BEING DECIDED (T009).
+#
+# The page body's whole purpose is to let an operator line the message on
+# their phone up against the evidence in the repo, and `attempt:` is the line
+# that does it. `attempts` in the task's frontmatter counts attempts already
+# CHARGED, so rendering it verbatim named the round BEFORE the one being
+# decided -- and named `attempt: 0`, a round that does not exist, for every
+# task raising its first boundary. Meanwhile the artifacts of that round are
+# all filed under `attempts + 1`: `jobs prepare`'s job ids, the reviewer
+# envelopes at `<task>-a<n>-<role>.json`, and lib/review.sh's
+# review_plan_attempt(). An operator following the page to the evidence
+# looked one round short every time.
+#
+# This lives here rather than beside the rest of the page-body assertions in
+# tests/test_notify_channel.sh because this task's verification runs THIS
+# file; that file's section 10 owns the page's full shape and asserts the
+# same values from the other end.
+# ===========================================================================
+# The full chain lib/review.sh's own header requires, so review_plan_attempt()
+# below is the REAL function rather than a re-derivation of the formula this
+# section exists to hold the page to (the top of this file already sourced
+# common/manifest/roles/resolver/capsuite/ledger).
+source "$REPO_ROOT/lib/frontmatter.sh"; source "$REPO_ROOT/lib/envelope.sh"
+source "$REPO_ROOT/lib/review.sh"
+PAGE_REPO="$WORK/page-repo"; mkdir -p "$PAGE_REPO/.orchid/tasks"
+(cd "$PAGE_REPO" && git init -q . && git commit -q --allow-empty -m root)
+
+# page_orchid <verb...> -- the fixture's invocation shape, shared so the
+# `task create` that seeds the counter and the `notify` that renders it can
+# never disagree about which repo or engine set they are talking about. The
+# roles resolve to section 7's `fake` engine for the same reason doc_doctor
+# above uses it: `task create` seeds `engine:` from resolve_role, and this
+# section is about the attempt line, not about role routing.
+page_orchid() {
+  ORCHID_REPO="$PAGE_REPO" HOME="$HOME" ORCHID_ENGINES_DIR="$WORK/eng" \
+    "$ORCHID_BIN" "$@"
+}
+# page_attempt <task-id> -> the page's `attempt:` line in $page_attempt_line
+# ("" when the page carries none), with the whole page in $page_out. Both are
+# pre-seeded because this file runs under `set -u`: if `notify` ever failed,
+# the early return below would leave them unset and the READ would abort the
+# whole file, hiding every assertion after it behind a bare unbound-variable
+# error instead of the FAIL that was already recorded.
+page_out=""; page_attempt_line=""
+page_attempt() {
+  local qid
+  qid="$(page_orchid notify --task "$1" "decide it")" \
+    || { fail "orchid notify must raise a blocker for $1"; return 0; }
+  page_out="$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qid")"
+  page_attempt_line="$(grep -E '^attempt: ' <<<"$page_out" || true)"
+}
+
+printf 'notify.channel=telegram\nrole.orchestrator=fake\nrole.implementer=fake\nrole.reviewer=fake\nrole.arbiter=fake\nrole.plan_critic=fake\n' \
+  > "$PAGE_REPO/orchid.config"
+page_orchid task create T900 "name the round" >/dev/null \
+  || fail "fixture task for the attempt-line section must be creatable"
+assert_eq "0" "$(fm_get "$PAGE_REPO/.orchid/tasks/T900.md" attempts)" \
+  "the fixture starts where every task starts: no attempt charged yet"
+
+# RED. A task with nothing charged is on its FIRST attempt, and the page must
+# say so. `attempt: 0` is the defect: a round number no artifact in the repo
+# is filed under, printed on the line whose only job is to point at them.
+page_attempt T900
+assert_eq "attempt: 1" "$page_attempt_line" \
+  "a task with attempts=0 is paging its FIRST attempt -- the page must never say 'attempt: 0'"
+
+# GREEN, and it is what makes the RED half non-vacuous: the same page against
+# a charged counter tracks it, rather than being hard-wired to 1.
+fm_set "$PAGE_REPO/.orchid/tasks/T900.md" attempts 4
+page_attempt T900
+assert_eq "attempt: 5" "$page_attempt_line" \
+  "with four attempts charged the page names the fifth -- the round being decided, not the last one finished"
+# ...and that is exactly the number this round's reviewer envelopes are filed
+# under, which is the whole reason the line exists.
+assert_eq "5" "$(review_plan_attempt "$PAGE_REPO" T900)" \
+  "the page's round number IS the one review_plan_attempt() files this round's envelopes under"
+
+# A counter that cannot be read omits the line rather than inventing a round
+# for it. review_plan_attempt() must answer 1 there because it NAMES A FILE;
+# a page has a third option a filename does not, and saying nothing is the
+# honest one.
+fm_set "$PAGE_REPO/.orchid/tasks/T900.md" attempts "many"
+page_attempt T900
+assert_eq "" "$page_attempt_line" \
+  "a garbled attempts counter omits the line -- the page never renders a round number the task file did not state"
+assert_match "^task: T900 — name the round\$" "$page_out" \
+  "...and the rest of the body is unaffected, so the omission is the attempt line alone"

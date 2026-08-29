@@ -524,8 +524,14 @@ assert_match "^$qidP: promote the build\?\$" "$obP" \
   "page line 1 is still qid + the one line saying what is being decided"
 assert_match "^task: T900 — give the page a body\$" "$obP" \
   "the page names the task id AND its title"
-assert_match "^attempt: [0-9]+\$" "$obP" \
-  "the page carries the attempt number"
+# The EXACT number, never `[0-9]+`. T900 was just created, so nothing has
+# been charged against it and it is on its first attempt -- the page must say
+# `attempt: 1`. A loose digit pattern accepted `attempt: 0` here for as long
+# as the page rendered the raw `attempts` counter: a round number no artifact
+# in the repo is filed under (envelopes land at `<task>-a<attempts+1>-<role>`),
+# printed on the one line whose job is to point an operator at them.
+assert_match "^attempt: 1\$" "$obP" \
+  "the page names the round being DECIDED (attempts + 1), so a freshly created task pages as attempt 1, never 0"
 assert_match "^choices: approve \| defer\$" "$obP" \
   "the page lists the permitted answers"
 assert_match "reply: ORCHID_REPO=\"[^\"]+\" orchid answer $qidP <choice> --nonce [0-9a-f]+" "$obP" \
