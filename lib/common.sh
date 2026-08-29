@@ -1391,15 +1391,50 @@ orchid_journal_once() {
   ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" journal add --task "$task" "$line" >/dev/null
 }
 
+# _orchid_blocker_open <blockers-file> <answers-dir> <line> -- 0 iff some
+# BLOCKERS.md entry carries <line> AND that entry's question is still open.
+#
+# PARSED RATHER THAN GREPPED, because the answer needs the entry's QID and a
+# match alone does not carry one. libexec/orchid-notify writes each entry as a
+# `## <qid>` header (or `## <qid> (task: <id>)`) followed by the text, so the
+# header last seen above a matching body line is the qid that text was recorded
+# under. Pure bash, like every other reader here: no subprocess per pass, and
+# nothing to quote a sentence full of apostrophes and em dashes through.
+#
+# THE WALK DOES NOT STOP AT THE FIRST COPY. A line recorded, answered and
+# recorded again has two entries, and it is the LATER one that decides -- so an
+# answered entry only clears the qid and the loop keeps looking for a copy
+# nobody has settled.
+_orchid_blocker_open() {
+  local file="$1" answers="$2" line="$3"
+  local qid="" body
+  while IFS= read -r body || [ -n "$body" ]; do
+    case "$body" in
+      '## '*)
+        qid="${body:3}"
+        qid="${qid%% *}"
+        ;;
+      *"$line"*)
+        [ -n "$qid" ] || continue
+        [ -f "$answers/$qid.answer" ] || return 0
+        qid=""
+        ;;
+    esac
+  done < "$file"
+  return 1
+}
+
 # orchid_blocker_once <repo> <epoch> <line> -- raise <line> for an operator
-# unless BLOCKERS.md already carries it. Three outcomes, and a caller must read
-# the status: 0 recorded now, 1 already on record, 2 the write failed.
+# unless an UNRESOLVED blocker already carries it. Three outcomes, and a caller
+# must read the status: 0 recorded now, 1 already on record, 2 the write failed.
 #
 # ONE VERB, WHICH IS BOTH HALVES. `orchid notify` journals the text (kind
 # `blocker`) BEFORE it appends to BLOCKERS.md (libexec/orchid-notify's INV-08
 # ordering note), so a single call produces the durable journal record AND the
 # operator surface, in that order, epoch-fenced and verb-locked like every other
-# durable write.
+# durable write. One dedup therefore governs both halves: a caller that skips
+# the call adds neither, and a dedup that let the call through twice would file
+# a duplicate journal line as well as a duplicate blocker.
 #
 # DEDUPED ON BLOCKERS.md, which is the RECEIPT that call leaves: if the entry is
 # there the notify happened, and if the notify died before it the entry is absent
@@ -1407,15 +1442,53 @@ orchid_journal_once() {
 # tail -- this condition persists across arbitrarily many passes, and a window
 # that scrolled past would start one blocker per pass.
 #
+# BUT THE RECEIPT IS SCOPED TO AN INCIDENT, NOT TO ALL TIME, and that is what
+# reading it alone got wrong. BLOCKERS.md is append-only -- notify only ever
+# concatenates -- so a line recorded once is in that file for the rest of the
+# repository's life, and a dedup that asked the file and nothing else answered
+# "already on record" forever. That is exactly right while nobody has dealt with
+# the condition, which is the case it was written for: the same shortfall met on
+# a hundred passes is ONE fact and must be raised once. It is wrong the moment
+# somebody HAS dealt with it. An operator who answers the question, binds a
+# capable engine and moves on has settled that incident; if the same shortfall
+# comes back -- a manifest edited, a role rebound to an engine short the atom,
+# a chain restored from an older config -- it is a NEW fact about a repository
+# somebody already believes they fixed, and the one surface that would tell them
+# stayed silent because a resolved entry was still sitting in the file. The
+# permanence of the condition is the reason to raise it again, not a reason to
+# stay quiet.
+#
+# SO THE RECEIPT IS READ TOGETHER WITH ITS RESOLUTION, in the terms this kernel
+# already has for one. `orchid notify` mints `runtime/answers/<qid>.question`
+# beside the BLOCKERS.md entry and `orchid answer` mints `<qid>.answer` beside
+# that, and a question with no answer is precisely what libexec/orchid-status
+# already lists as an OPEN blocker -- so this asks that same pair rather than
+# inventing a second notion of settled. An entry carrying this line whose qid
+# has no answer is the incident still standing, and there is nothing to add;
+# once every recorded copy has been answered, the next occurrence raises a fresh
+# blocker and a fresh journal line, mints a fresh qid, and every pass after it
+# dedups against THAT one. One entry per incident: never one per pass, and never
+# one for all time.
+#
+# RESOLUTION IS SHOWN, NEVER ASSUMED, which is the direction this must fail in.
+# Only a recorded `.answer` re-arms the raise. An entry whose runtime record is
+# gone entirely -- runtime/ is gitignored and rebuildable, and a state copy drops
+# it (libexec/orchid-run) -- proves nothing about a human having acted on
+# anything, so it reads as STILL OPEN and stays quiet. The failure this dedup
+# exists to prevent is one unchanging fact restated once per pass forever, and
+# "I cannot tell whether it was settled" must never be the thing that starts
+# that up again.
+#
 # <epoch> is passed rather than read here because `orchid notify` is epoch-fenced
 # (INV-02) and the fence must carry the epoch the CALLER's pass is inside.
 # Sampled at the moment of the write, it would be vacuous: whatever epoch is
 # current always satisfies `epoch_require`, so a session that fenced a fresh one
 # while this pass ran would have its epoch silently borrowed.
 orchid_blocker_once() {
-  local repo="$1" epoch="$2" line="$3" blockers
+  local repo="$1" epoch="$2" line="$3" blockers answers
   blockers="$(orchid_state "$repo")/BLOCKERS.md"
-  if [ -f "$blockers" ] && grep -qF "$line" "$blockers"; then
+  answers="$(orchid_runtime "$repo")/answers"
+  if [ -f "$blockers" ] && _orchid_blocker_open "$blockers" "$answers" "$line"; then
     return 1
   fi
   ORCHID_REPO="$repo" ORCHID_EPOCH="$epoch" \

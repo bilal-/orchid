@@ -76,7 +76,15 @@ source "$(dirname "$0")/../helpers.sh"
 #      journals and raises the boundary, the pump raises the blocker -- and on
 #      these two a 19 printed to stderr and died with the process, leaving the
 #      loop stopped with nothing in the run's history saying why. Both must
-#      record the hand-off themselves.
+#      record the hand-off themselves. A tenth is the SECOND OCCURRENCE of one
+#      of those hand-offs. The dedup that keeps a standing refusal to one entry
+#      asked an APPEND-ONLY file whether it held the sentence, so it answered
+#      "already recorded" for the rest of the repository's life -- and an
+#      operator who read the hand-off, answered its question and bound a capable
+#      engine was then never told when the same shortfall came back, their own
+#      settled entry answering on every pass after it. A shortfall that returns
+#      once its hand-off has been ANSWERED must raise a fresh blocker, a fresh
+#      journal line and a fresh qid.
 # GREEN: the SAME step, the SAME call, the SAME role and the SAME task, with
 #      one atom added to the actor's manifest, must be admitted -- silently at
 #      the gate and with a real job manifest through `jobs prepare`; likewise
@@ -118,7 +126,12 @@ source "$(dirname "$0")/../helpers.sh"
 #      history under one unchanging fact), the same planning-critique launch
 #      must mint and spawn once its plan_critic declares `structured_text`, and
 #      a direct tick against a capable but merely RATE-LIMITED chain must stay
-#      the exit-14 wait it has always been and record nothing at all. Without those
+#      the exit-14 wait it has always been and record nothing at all. The
+#      re-raise the tenth case demands is held to that same standard in its own
+#      turn: the blocker raised for a RETURNING shortfall must be deduped from
+#      the pass after it onward, or the re-arm is nothing but the dedup deleted
+#      and the flood those repeats exist to stop arrives through its fix.
+#      Without those
 #      the refusals above would be evidence only that something rejects things,
 #      which is exactly the shape this repository keeps producing.
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
@@ -2189,3 +2202,147 @@ assert_eq "$tw_journal_before" "$(tw_journaled)" \
 # resolve_role_available's own status, raised before this runner reaches its
 # request document at all.
 green_case 'the same direct tick against a chain whose only entry declares everything orchestrate needs and is merely rate-limited exited 14 and recorded nothing, so the tick records a capability decision rather than every unavailability'
+
+# ---------------------------------------------------------------------------
+# 14c -- ONCE PER INCIDENT, NEVER ONCE FOR ALL TIME.
+#
+# Parts 12 and 14b pin the half that stops a flood: the same refused chain met
+# on pass after pass raises ONE blocker and ONE journal line, because it is one
+# fact and a line per pass buries the run's history under it. Both of them got
+# that from a dedup which asked only whether BLOCKERS.md CONTAINED the
+# sentence -- and that file is append-only (libexec/orchid-notify only ever
+# concatenates), so once the answer was yes it was yes for the rest of the
+# repository's life.
+#
+# THAT IS THE OTHER FAILURE, AND IT IS THE ONE NOBODY SEES. An operator reads
+# the hand-off, answers the question, binds an engine that declares `shell` and
+# `git`, and the run moves again. Later the chain is short once more -- a
+# manifest edited, `role.orchestrator` rebound, a config restored from a
+# backup -- and every pass from then on finds that operator's own SETTLED entry
+# still sitting in the file and says nothing. The surface whose entire purpose
+# is to say "no actor can be routed the orchestrate step" reports nothing at
+# all, the wake stops happening, and the only record of why is an entry
+# somebody already closed. That the condition is permanent-until-a-human-acts
+# is the reason to raise it again once a human HAS acted, not a reason to stay
+# quiet about its return.
+#
+# So the dedup is scoped to the INCIDENT, in the terms this kernel already has
+# for one: an open blocker is a `runtime/answers/<qid>.question` with no
+# `<qid>.answer` beside it, which is exactly what libexec/orchid-status lists.
+# Both phases are pinned below in ONE repository against the direct tick -- the
+# entry point where the record under test is the only record there is -- and
+# each phase is held to the dedup in turn, because a change that merely deleted
+# the dedup would satisfy the re-raise on its own.
+# ---------------------------------------------------------------------------
+irepo="$WORK/tickincident"; mkdir -p "$irepo/.orchid/tasks"
+cd "$irepo" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+printf 'role.orchestrator=wakeshort,wakeshort2\n' > "$irepo/orchid.config"
+printf -- '---\nrun_status: running\nrun_id: r-inv16-incident\n---\n# Roadmap\n' > "$irepo/.orchid/roadmap.md"
+export ORCHID_REPO="$irepo"
+"$ORCHID_BIN" run start >/dev/null
+# The tick fences its own epoch through `orchid run resume`; a stale one left
+# exported from the fixture above would be a fence this repository never issued.
+unset ORCHID_EPOCH
+"$ORCHID_BIN" trust unattended "$irepo" --reason "INV-16 blocker incident fixture" >/dev/null \
+  || fail "INV-16 fixture: the tick refuses an unacknowledged repository, so its capability classification would never be reached"
+
+# Counted by the refusal's own SENTENCE rather than the bare token `INV-16`,
+# for 14b's reason: this fixture's acknowledgement reason carries that token and
+# `orchid status --explain` quotes it back verbatim. The missing-file arm is
+# explicit because `grep -c` on a file that does not exist prints NOTHING at all
+# (exit 2), where on an existing file with no match it prints `0`.
+ti_handoffs() {
+  [ -f "$irepo/.orchid/BLOCKERS.md" ] || { echo 0; return 0; }
+  grep -c "routed the 'orchestrate' step for role 'orchestrator'" \
+    "$irepo/.orchid/BLOCKERS.md" || true
+}
+ti_journaled() {
+  [ -f "$irepo/.orchid/journal.md" ] || { echo 0; return 0; }
+  grep -c "routed the 'orchestrate' step for role 'orchestrator'" \
+    "$irepo/.orchid/journal.md" || true
+}
+# Every `## <qid>` header, hand-off or not. Compared against ti_handoffs before
+# the qid is read below: this repository is driven by nothing but the tick, so
+# the two counts must agree, and if they ever stop agreeing then "the last
+# header" is no longer this refusal's own entry and the qid taken from it would
+# answer somebody else's question.
+ti_entries() {
+  [ -f "$irepo/.orchid/BLOCKERS.md" ] || { echo 0; return 0; }
+  grep -c '^## ' "$irepo/.orchid/BLOCKERS.md" || true
+}
+# The qid of the LAST entry, read the way an operator reads it -- off the
+# `## <qid>` header libexec/orchid-notify writes above the text. A read loop
+# rather than a pipeline: this file runs under `set -o pipefail`, and a matcher
+# that exits early on a producer still writing is the SIGPIPE trap assert_match's
+# own header records. The `%% *` handles the `## <qid> (task: <id>)` spelling
+# that verb writes when a blocker names a task.
+ti_qid() {
+  local line last=""
+  while IFS= read -r line; do
+    case "$line" in '## '*) last="${line:3}" ;; esac
+  done < "$irepo/.orchid/BLOCKERS.md"
+  printf '%s' "${last%% *}"
+}
+
+assert_eq 0 "$(ti_handoffs)" \
+  "INV-16 fixture: no blocker may exist before the first tick, or every count below cannot tell a record this part wrote from one that was already there"
+
+# -- PHASE 1: one unresolved incident, however many passes meet it -----------
+TIRC=0; TIOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TIRC=$?
+assert_eq 19 "$TIRC" \
+  "INV-16 fixture: the first tick must really be refused, or the counts below describe a pass that never reached the classifier (out: $TIOUT)"
+assert_eq 1 "$(ti_handoffs)" \
+  "INV-16 fixture: and must record the hand-off, or phase 2's re-raise is being measured against a surface that never carried the first one"
+assert_eq 1 "$(ti_journaled)" \
+  "INV-16 fixture: on the journal too — orchid notify writes that half first, so a blocker with no journal line means the write did not complete"
+TIRC=0; TIOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TIRC=$?
+assert_eq 19 "$TIRC" \
+  "INV-16 fixture: the second tick must still be refused, or the unchanged counts below prove only that nothing ran (out: $TIOUT)"
+assert_eq 1 "$(ti_handoffs)" \
+  "INV-16: an incident nobody has answered is raised once however many passes meet it — the fact has not changed, and a blocker per pass buries the run's history under one unchanging line"
+assert_eq 1 "$(ti_journaled)" \
+  "INV-16: nor a second journal line, which is the other half one orchid notify call writes"
+green_case 'a second direct tick over an unanswered capability hand-off added no second blocker and no second journal line, so an incident still standing is recorded once across repeated passes'
+
+# -- PHASE 2: the incident is answered, and the shortfall comes back ---------
+# `orchid answer` is the operator's own settling verb and the one this kernel
+# already reads as closing a question (libexec/orchid-status' open-blocker
+# list). The chain is deliberately left EXACTLY as it was: what must be true is
+# that a shortfall which returns after a human dealt with the last one is told,
+# and re-binding the role first would prove that a DIFFERENT fact gets its own
+# entry, which nothing ever doubted.
+assert_eq "$(ti_handoffs)" "$(ti_entries)" \
+  "INV-16 fixture: every entry in this repository's BLOCKERS.md must be one of these hand-offs, or the qid read off the last header belongs to some other question and the answer below settles the wrong one"
+ti_first="$(ti_qid)"
+assert_match '^q-' "$ti_first" \
+  "INV-16 fixture: the hand-off's own qid must be readable off its header, since that is the identity an operator answers and the dedup tracks (got '$ti_first')"
+"$ORCHID_BIN" answer "$ti_first" resolved >/dev/null \
+  || fail "INV-16 fixture: the operator's settling verb must succeed against $ti_first, or phase 2 is testing an incident nobody closed"
+
+TIRC=0; TIOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TIRC=$?
+assert_eq 19 "$TIRC" \
+  "INV-16 fixture: the chain is untouched, so the tick must still refuse it — an answered question settles the INCIDENT, never the capability fact (out: $TIOUT)"
+assert_eq 2 "$(ti_handoffs)" \
+  "INV-16: once the hand-off has been answered, the same shortfall meeting a later pass raises a FRESH blocker — an operator who settled it and moved on is otherwise never told it came back, because the entry they closed is still in an append-only file and was answering for every pass after it"
+assert_eq 2 "$(ti_journaled)" \
+  "INV-16: and a fresh journal line with it, or the run's history shows one refusal for two distinct incidents"
+ti_second="$(ti_qid)"
+if [ "$ti_second" = "$ti_first" ]; then
+  fail "INV-16: the re-raise must mint its own qid — an entry pointing back at an already-answered question is a hand-off no operator can act on, and the next pass would read it as settled the moment it was written"
+fi
+red_case 'a capability shortfall that returned after its hand-off had been answered raised a fresh blocker, a fresh journal line and a fresh qid, instead of being silenced forever by the resolved entry an append-only BLOCKERS.md still carries'
+
+# ...AND THE NEW INCIDENT IS ITSELF DEDUPED. Without this the whole part is
+# satisfied by deleting the dedup outright: the re-raise above would pass, and
+# so would every pass after it, one blocker per tick forever -- which is the
+# failure parts 12 and 14b exist to stop, reached through the fix for this one.
+TIRC=0; TIOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TIRC=$?
+assert_eq 19 "$TIRC" \
+  "INV-16 fixture: the fourth tick must still be refused, or the unchanged counts below prove only that nothing ran (out: $TIOUT)"
+assert_eq 2 "$(ti_handoffs)" \
+  "INV-16: and the re-raised hand-off is deduped in its turn — the scope is one entry per incident, not one per pass and not one for all time"
+assert_eq 2 "$(ti_journaled)" \
+  "INV-16: nor a second journal line — one notify call writes both halves, so a dedup that held the blocker back and let the journal through would still restate one fact once per pass"
+green_case 'a further direct tick over the re-raised hand-off, unanswered, added nothing — so the re-arm is scoped to the answered incident rather than being the dedup removed'

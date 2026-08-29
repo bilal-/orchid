@@ -412,7 +412,12 @@ nobody to wake for the judgment boundary the driver recorded on the same pass.
 Bind an engine that declares both at `role.orchestrator` — or settle the
 recorded boundary yourself, which `orchid run boundary show` names. The blocker
 is raised once, not once per pass, and it does *not* replace the boundary
-record; both are meant to be read. `pump: no capable orchestrator available` is
+record; both are meant to be read. Once per *incident*, to be exact: answer it
+(`orchid answer <qid> <choice>` — the `reply:` line under the entry spells the
+whole command out) and the entry you closed stops silencing later passes, so if
+the same chain is ever short again — a rebound role, an edited manifest — you
+get a NEW blocker rather than the silence an append-only file would otherwise
+leave you with. `pump: no capable orchestrator available` is
 the *other* message and means the opposite: an engine that could do the work is
 merely rate-limited, unproven or not installed yet, and the next pass may well
 find it available.

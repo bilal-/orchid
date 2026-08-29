@@ -114,7 +114,11 @@ export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 # tick behind it find that entry and add nothing, and a tick run with no pump
 # anywhere records it once and every later tick finds its own. The line itself
 # comes from the same composer the pump uses, so the two cannot describe one
-# fact in words the other's dedup fails to recognise.
+# fact in words the other's dedup fails to recognise. A receipt an operator has
+# ANSWERED no longer counts as one: the dedup is scoped to the unresolved
+# incident, so a chain that is short again after the last hand-off was settled
+# is raised afresh rather than silenced by the closed entry an append-only file
+# still carries.
 #
 # AFTER `run resume`, which is where the epoch this write must carry comes from:
 # `orchid notify` is epoch-fenced (INV-02), and this pass is inside the epoch

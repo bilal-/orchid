@@ -2396,7 +2396,13 @@ one-pass driver could otherwise stop progressing in silence:
   one) and print the refusal without the poll line. The tick records it too
   because a scheduler may be pointed straight at it, and a 19 into a crontab is
   a silence; the two share the sentence and the receipt, so whichever runs
-  first records the fact and the other finds it rather than restating it.
+  first records the fact and the other finds it rather than restating it. That
+  dedup is scoped to the incident, not to the file: `BLOCKERS.md` is
+  append-only, so an entry the operator has ANSWERED (`orchid answer`) stops
+  suppressing, and a shortfall that returns after somebody settled the last one
+  raises a fresh blocker, a fresh journal line and a fresh qid rather than
+  meeting a closed entry's silence. An entry with no runtime record left counts
+  as still open — a resolution is shown, never assumed.
   Neither overwrites the boundary record; `orchid drive` owns that, and the
   record names the task actually waiting.
 - **A refused launch is journaled by the launcher, wrapped or not.**

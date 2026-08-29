@@ -1874,7 +1874,23 @@ in its own right, not merely a pump implementation detail: a scheduler pointed
 straight at it gets a 19 and nothing else, and a 19 into a crontab is a silence.
 Two writers of one fact is closed by that dedup rather than by leaving one of
 them mute — they share the sentence and the receipt, so whichever runs first
-records it and the other finds it. Neither touches the boundary RECORD:
+records it and the other finds it.
+
+That dedup is scoped to the INCIDENT, never to the file. `BLOCKERS.md` is
+append-only, so a receipt read on its own answers "already recorded" for the
+rest of the repository's life — right while the condition still stands, and
+wrong once an operator has dealt with it. An entry whose question has been
+ANSWERED (`orchid answer`, which mints `runtime/answers/<qid>.answer` beside the
+question `orchid notify` left — the same open/settled pair `orchid status` reads
+for its open-blocker list) stops suppressing anything, so a shortfall that
+returns after somebody settled the last one raises a fresh blocker, a fresh
+journal line and a fresh qid, and every pass after that one dedups against it in
+turn. One entry per incident: not one per pass, and not one for all time. An
+entry with no runtime record at all — runtime/ is rebuildable — counts as still
+open and stays quiet: a resolution has to be shown, never assumed, because "I
+cannot tell" must not be what restarts a line per pass.
+
+Neither writer touches the boundary RECORD:
 `orchid drive` is
 that record's single routine writer, and a pump overwriting it would destroy the
 record naming the task actually waiting while the two writers alternated one

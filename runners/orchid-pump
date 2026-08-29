@@ -406,6 +406,14 @@ _pump_drain_outbox() {
 # the dedup asks BLOCKERS.md because that entry is the RECEIPT the call leaves
 # rather than a mark made ahead of it. Nothing here writes state directly.
 #
+# ONE INCIDENT, THOUGH -- NOT ONE FOR ALL TIME. That receipt is read together
+# with its resolution, because BLOCKERS.md is append-only and an entry read on
+# its own goes on answering "already recorded" long after an operator settled
+# it. So a hand-off whose question has been ANSWERED stops suppressing, and a
+# chain that is short again on some later pass raises a fresh blocker and a
+# fresh journal line rather than meeting the silence of a closed entry. That
+# rule lives in orchid_blocker_once too, for the same reason the raise does.
+#
 # THE JUDGMENT BOUNDARY RECORD IS LEFT ALONE. `runners/orchid-drive` is its
 # single routine writer and this pass has just READ it; overwriting it with an
 # `operator-handoff` of the pump's own would destroy the record naming the task
