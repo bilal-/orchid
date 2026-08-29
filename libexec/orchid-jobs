@@ -173,69 +173,86 @@ job_unlaunched_reapable() {  # manifest now stall_s
   job_never_started "$1" || job_unstamped_stale "$1" "$2" "$3"
 }
 
-# THE has-not-exited predicate: 0 iff a job may still be RUNNING, so its
-# envelope is a report filed mid-flight rather than a completion signal.
-# `reconcile` defers over exactly this (T031); it is the mirror image of the
-# question `check`/`gc` ask, asked for the opposite purpose, so it is spelled
-# in terms of the SAME predicates rather than restating their thresholds.
+# THE POSITIVE terminal evidence a manifest can carry: 0 iff something on disk
+# RECORDS THAT THIS JOB ENDED, as opposed to merely failing to show that it is
+# still going. Two writers, both in runners/orchid-launch, and neither record
+# can exist before the event it reports:
 #
-#   pid != 0            the launcher stamped it. Live or dead is the pid's own
-#                       question, and `kill -0` is how the rest of this file
-#                       asks it.
-#   pid == 0            AN UNRESOLVED STARTUP STATE, NOT AN EXIT (attempt-4
-#                       rework). `jobs prepare` mints every manifest with pid
-#                       0 and runners/orchid-launch stamps the real pid only
-#                       AFTER the spawn -- so pid 0 does not mean "this job
-#                       ended", it means "nobody has recorded whether it
-#                       began". Reading it as an exit re-opens the very race
-#                       this deferral closes, one launcher-window narrower:
-#                       an engine running with its pid recorded nowhere still
-#                       commits, and its envelope would still be filed as
-#                       final. So the answer is NOT the pid, it is whether
-#                       launch ownership can still be live -- i.e. whether
-#                       this manifest has converged to the class where
-#                       nothing can be waiting on it any more
-#                       (job_unlaunched_reapable, above):
-#                         no log at all     the spawn line was provably never
-#                                           reached; no engine ran and none
-#                                           will. Resolved: not running.
-#                         log, gone quiet past `stall_minutes`
-#                                           the kernel's existing standard for
-#                                           "this is not working", and what
-#                                           `check` kills a stamped job over.
-#                                           Resolved: not running.
-#                         log written within `stall_minutes`
-#                                           the post-spawn/pre-stamp window,
-#                                           with something writing to that log
-#                                           RIGHT NOW. Unresolved: running.
+#   $rt/exits/<job_id>   the ENGINE's own exit status. The launcher wraps the
+#                        engine in a subshell that outlives it by exactly one
+#                        write (T040), so this file exists BECAUSE the process
+#                        ended -- including when `jobs check` killed it, since
+#                        that subshell traps the group TERM in order to finish
+#                        its wait and record the status.
+#   .launch_exit         the LAUNCHER's own non-zero exit from before the spawn
+#                        line (T027): a record that no engine was ever started.
 #
-# That last line is deliberately, exactly `runners/orchid-drive`'s
-# drive_job_outstanding, which already counts such a manifest as a live job
-# and makes the driver wait -- the two must agree about one manifest or the
-# driver waits on a job whose envelope reconcile has already filed as done.
+# SILENCE IS NOT ON THAT LIST, and that is the whole point (T031 attempt-5
+# rework). "Nothing has been written to the log for `stall_minutes`" is an
+# INFERENCE FROM AN ABSENCE; these two are facts written by a process about
+# itself. For a job that stamped a pid the distinction rarely matters, because
+# `kill -0` can ask the operating system directly. For one that never stamped a
+# pid there is nothing to ask and nothing to signal, so the inference is the
+# only other thing on offer -- and taking it as an exit is exactly how a
+# live-but-silent engine (a long model call writes nothing for many minutes)
+# has its mid-flight report filed as final while it goes on committing.
+job_exit_recorded() {  # manifest
+  local f="$1" jid
+  jid="$(jq -r '.job_id // empty' "$f" 2>/dev/null || echo)"
+  if [ -n "$jid" ] && [ -e "$rt/exits/$jid" ]; then return 0; fi
+  [ -n "$(jq -r '.launch_exit // empty' "$f" 2>/dev/null || echo)" ]
+}
+
+# THE LIVENESS QUESTION `reconcile` ASKS, in FOUR answers rather than two
+# (T031). An envelope is a COMPLETION report, so filing one is a claim about a
+# process that has finished -- and for a manifest that never stamped a pid,
+# "has it finished" has a third answer which is neither yes nor not-yet.
 #
-# BOUNDED, so deferral is never a forever: every pid-0 shape above converges to
-# "not running" on its own clock, with no reap required first. That matters
-# because gc_reap_unlaunched deliberately SPARES a manifest whose envelope is
-# still spooled -- if this predicate needed a reap to end, the two would hold
-# the envelope for each other and it would never reconcile at all.
+#   running     a stamped pid `kill -0` still answers for.
+#   exited      it is over, and something SAYS SO: a stamped pid that is gone
+#               (the kernel itself is the witness), or -- with pid 0 -- the
+#               positive record job_exit_recorded reads, or NO LOG AT ALL. The
+#               last of those is a fact about the launcher rather than a
+#               timeout: it creates the log by redirecting the spawn into it, so
+#               an absent log means the spawn line was never reached, no engine
+#               ran and none ever will (job_never_started -- the same reading
+#               `gc`, `prepare` and the driver already give that manifest, and
+#               an absence that no amount of waiting can turn into anything
+#               else).
+#   starting    pid 0 with a log written to inside `stall_minutes`: the
+#               launcher's post-spawn/pre-stamp window. An engine is producing
+#               output with its pid recorded nowhere, so it can still commit.
+#               Deliberately, exactly `runners/orchid-drive`'s
+#               drive_job_outstanding, which counts the same manifest as a live
+#               job -- the two must agree about one manifest, or the driver
+#               waits on a job whose envelope reconcile has already filed as
+#               done.
+#   unresolved  pid 0, a log, and silence past `stall_minutes`, with no exit
+#               recorded anywhere. NOT AN EXIT (see job_exit_recorded): there is
+#               no pid to probe and none to signal, so nothing on this machine
+#               can decide whether an engine is still running in that worktree.
+#               reconcile answers a question it cannot decide by declining to
+#               answer it, never by guessing the admissible way round; the
+#               driver's escalation sweep is what bounds that refusal.
 #
-# An unreadable manifest answers "running", the same fail-closed direction
-# job_never_started documents: it is never reaped, never refused over, and
-# never reconciled out from under a process that might be behind it. In
-# practice reconcile cannot reach this arm with one, having just parsed
-# `.job_id` out of the very same file to match it to the envelope.
-job_still_running() {  # manifest now stall_s
+# An unreadable manifest answers `starting`, the fail-closed direction every
+# other predicate in this file takes: never reaped, never refused over, never
+# reconciled out from under a process that might be behind it. In practice
+# reconcile cannot reach this arm with one, having just parsed `.job_id` out of
+# the very same file to match it to the envelope.
+job_liveness() {  # manifest now stall_s -> running|exited|starting|unresolved
   local f="$1" now="$2" stall_s="$3" pid
   pid="$(jq -r '.pid // 0' "$f" 2>/dev/null || echo 0)"
   case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
   if [ "$pid" -gt 0 ]; then
-    kill -0 "$pid" 2>/dev/null
-    return
+    # `kill -0 0` would signal our OWN process group, so pid 0 never reaches
+    # this probe.
+    if kill -0 "$pid" 2>/dev/null; then echo running; else echo exited; fi
+    return 0
   fi
-  # `kill -0 0` would signal our OWN process group, so pid 0 must never reach
-  # the probe above.
-  ! job_unlaunched_reapable "$f" "$now" "$stall_s"
+  if job_exit_recorded "$f" || job_never_started "$f"; then echo exited; return 0; fi
+  if job_unstamped_stale "$f" "$now" "$stall_s"; then echo unresolved; return 0; fi
+  echo starting
 }
 
 # Reaps ONE reapable-unlaunched manifest (job_unlaunched_reapable above), if it
@@ -1375,7 +1392,7 @@ case "$sub" in
     # before any JSON parsing — a cheap, early defense against a runaway or
     # forged tier-3 adapter dumping an oversized payload into the spool dir.
     spool_max="$(config_get "$repo" spool_max_bytes 262144)"
-    # The bound on job_still_running's pid-0 (launcher-window) arm, read from
+    # The bound on job_liveness's pid-0 (launcher-window) arm, read from
     # the same `stall_minutes` key `check`, `gc`, `prepare` and the driver all
     # read, so one manifest can never be live to one of them and finished to
     # another.
@@ -1436,30 +1453,52 @@ case "$sub" in
       # is no job left to ask about, and `drive_job_outstanding` reports the
       # task as having nothing running.
       #
-      # "Has not exited" is job_still_running's question, not a pid comparison
+      # "Has it exited" is job_liveness's question, not a pid comparison
       # inlined here (attempt-4 rework). A pid of 0 is NOT an exit: `jobs
       # prepare` mints every manifest that way and runners/orchid-launch
       # stamps the real pid only after the spawn, so pid 0 means "nobody has
       # recorded whether this began" -- and a manifest still inside that
       # launcher window has an engine behind it that is committing with its
       # pid recorded nowhere. Filing its envelope as final is the same defect
-      # as T013's, just one window narrower. See job_still_running for how
-      # each pid-0 shape resolves, and why it agrees exactly with
-      # drive_job_outstanding.
+      # as T013's, just one window narrower.
       #
-      # Deferral is bounded: a stamped pid is bounded by `jobs check`, which
-      # kills a job that stalls or times out, and an unstamped one by
-      # `stall_minutes` on its own log. The envelope reconciles on the pass
-      # after that, either way.
+      # THREE WAYS NOT TO FILE, and the third is not a wait (attempt-5 rework):
+      #
+      #   running     a stamped, live pid. DEFER: bounded by `jobs check`,
+      #               which kills a job that stalls or times out, after which
+      #               the envelope reconciles on the very next pass.
+      #   starting    the launcher's post-spawn/pre-stamp window. DEFER:
+      #               bounded by `stall_minutes` on the job's own log, and by
+      #               nothing else -- gc_reap_unlaunched deliberately SPARES a
+      #               manifest whose envelope is still spooled, so a hold that
+      #               could only be ended by a reap would have the two holding
+      #               the envelope for each other forever.
+      #   unresolved  no pid was ever stamped and the log has gone quiet, so
+      #               NOTHING HERE CAN DECIDE whether an engine is still
+      #               running (job_exit_recorded's note). Not a wait, because
+      #               waiting is a bet that the answer arrives: it may, if that
+      #               engine exits and the launcher's wrapper records it, and
+      #               then this envelope files itself on the next pass with no
+      #               operator involved. What is refused is the OTHER bet --
+      #               reading silence as an exit and admitting a report from a
+      #               process that could still be committing. Bounded from the
+      #               outside instead: the envelope stays spooled and the
+      #               manifest stays standing, which is precisely the state
+      #               runners/orchid-drive's escalation sweep escalates as
+      #               `untracked` -- one rung, no relaunch over a possibly-live
+      #               engine, and a named operator boundary.
       m_pid="$(jq -r '.pid // 0' "$manifest" 2>/dev/null || echo 0)"
-      if job_still_running "$manifest" "$(date +%s)" "$reconcile_stall_s"; then
-        if [ "$m_pid" != 0 ]; then
+      case "$(job_liveness "$manifest" "$(date +%s)" "$reconcile_stall_s")" in
+        running)
           echo "deferred: $base (job $jid still running, pid $m_pid)"
-        else
+          continue ;;
+        starting)
           echo "deferred: $base (job $jid still starting, no pid stamped yet)"
-        fi
-        continue
-      fi
+          continue ;;
+        unresolved)
+          echo "unresolved: $base (job $jid never stamped a pid and its log has been silent past stall_minutes, with no exit recorded — silence is not an exit, so this is not a completion signal)"
+          continue ;;
+      esac
       m_task="$(jq -r .task "$manifest")"; e_task="$(envelope_field "$f" .task)"
       m_base="$(jq -r .base_sha "$manifest")"; m_cand="$(jq -r .candidate_sha "$manifest")"
       m_op="$(jq -r .operation "$manifest")"

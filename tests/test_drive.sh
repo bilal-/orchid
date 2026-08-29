@@ -8703,3 +8703,168 @@ assert_eq "$stall_cand" "$(stall_field candidate_sha)" \
 assert_eq 0 "$(stall_field infra_failures)" \
   "T031: the whole sequence spent no infra_failure — nothing about this job was an infrastructure failure"
 green_case "the deferred envelope still reconciles and supplies the candidate the killed job really produced"
+
+# ===========================================================================
+# Part AD (T031 attempt-5 rework) -- THE LIVE, SILENT, UNTRACKED PROCESS, AND
+# WHO ANSWERS FOR IT.
+#
+# Part AC's job stamped a pid, so when it went quiet the kernel could ASK the
+# operating system whether it was still there. This one never stamped one:
+# `jobs prepare` mints every manifest with pid 0 and runners/orchid-launch
+# stamps the real pid only after the spawn, so a launcher felled inside that
+# window leaves an engine running with its pid recorded NOWHERE. There is
+# nothing to `kill -0` and nothing to signal.
+#
+# A previous attempt read that job's silence -- no write to its log for
+# `stall_minutes` -- as an exit, and reconciled its envelope. But silence is an
+# inference from an absence, and an engine that is alive and merely quiet (a
+# long model call writes nothing for many minutes) leaves exactly the same
+# bytes on disk as one that died. Filing its report as a completion signal
+# captures a candidate from a worktree that process is still committing to,
+# which is r-002/T013 again with a stale log standing in for a live pid.
+#
+# So reconcile HOLDS it, and this Part is about the other half of that: a hold
+# nobody bounds is a task parked in an active status forever. The escalation
+# sweep meets exactly this state, spends ONE rung, and stops the pass at a
+# named boundary -- and it is the one class the ladder never relaunches for,
+# because a second engine in that worktree is the very thing being avoided.
+# ===========================================================================
+UTR="$WORK/untracked"
+mkdir -p "$UTR"
+cd "$UTR" || exit 1
+git init -q .
+# stall_minutes=1, exactly as Part V: a 60s silence bound a `touch` can straddle.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nstall_minutes=1\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$UTR" "$ORCHID_BIN" init >/dev/null || fail "orchid init (untracked fixture)"
+git checkout -q orchid/integration
+UTEPOCH="$(ORCHID_REPO="$UTR" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+utorchid() { ORCHID_REPO="$UTR" ORCHID_EPOCH="$UTEPOCH" "$ORCHID_BIN" "$@"; }
+utorchid requirements import "$WORK/requirements.md" >/dev/null
+utorchid task create V011 "its launcher was felled before the pid stamp, and it reported anyway" >/dev/null
+utorchid task set V011 verification_commands "true" >/dev/null
+utorchid plan apply --reason "initial plan" >/dev/null
+
+UTRC=0; UTOUT=""
+run_utdrive() {
+  UTRC=0
+  UTOUT="$(ORCHID_REPO="$UTR" ORCHID_EPOCH="$UTEPOCH" "$DRIVE" 2>&1)" || UTRC=$?
+}
+utfield() { ORCHID_REPO="$UTR" "$ORCHID_BIN" task show V011 | grep "^$1: " | cut -d' ' -f2-; }
+utmanifests() { list_dir_files "$UTR/.orchid/runtime/jobs" | wc -l | tr -d ' '; }
+
+UTJID="j-e1-V011-a1-abcd0002"
+UTMF="$UTR/.orchid/runtime/jobs/$UTJID.json"
+UTLOG="$UTR/.orchid/runtime/logs/$UTJID.log"
+UTSPOOL="$UTR/.orchid/runtime/spool/$UTJID.json"
+mkdir -p "$UTR/.orchid/runtime/jobs" "$UTR/.orchid/runtime/logs" "$UTR/.orchid/runtime/spool"
+jq -n '{job_id:"'"$UTJID"'", task:"V011", attempt:1, role:"implementer",
+        operation:"implement", engine:"stubimpl", pid:0, pgid:0, started_at:0,
+        log:"'"$UTLOG"'", output:"'"$UTSPOOL"'",
+        base_sha:"", candidate_sha:"", hook_point:""}' > "$UTMF"
+printf 'engine is talking\n' > "$UTLOG"
+
+# ---- pass 1: the launcher window. The log was written a moment ago, so an
+# engine is producing output and the pass adopts the spawn rather than racing
+# it -- Part V's first half, with an envelope now also on the way.
+run_utdrive
+assert_eq implementing "$(utfield status)" \
+  "V011 is adopted behind the job that IS running (rc=$UTRC, out: $UTOUT)"
+printf '{"contract":1,"job_id":"%s","task":"V011","operation":"implement","status":"ok","summary":"filed by a job nobody can see"}' \
+  "$UTJID" > "$UTSPOOL"
+run_utdrive
+assert_match "still starting" "$UTOUT" \
+  "sanity: while its log is fresh the envelope is DEFERRED, and the line says which window (out: $UTOUT)"
+assert_eq 0 "$(utfield infra_failures)" "waiting on a job that may be starting spends no rung (out: $UTOUT)"
+
+# ---- pass 2: THE RED CASE. Nothing has written to that log for longer than
+# `stall_minutes`. No exit was recorded for this job -- and none can be, since
+# nothing ever waited on it -- so whether an engine is still committing in that
+# worktree is a question this machine cannot answer.
+touch -t 202001010000 "$UTMF" "$UTLOG"
+run_utdrive
+assert_match "^unresolved: " "$UTOUT" \
+  "T031: reconcile refuses to read silence as an exit for a job that never stamped a pid (rc=$UTRC, out: $UTOUT)"
+[ -e "$UTSPOOL" ] \
+  || fail "T031: the envelope is HELD, not discarded — it is admissible the moment that job's exit is recorded (out: $UTOUT)"
+[ -z "$(list_dir_files "$UTR/.orchid/reviews" | grep 'V011-a1-implementer')" ] \
+  || fail "T031: a report from a process nobody can show has stopped must not be filed (out: $UTOUT)"
+assert_eq "" "$(utfield candidate_sha)" \
+  "T031: and no candidate is captured from a worktree that engine may still be committing to (out: $UTOUT)"
+# ...AND THE HOLD IS BOUNDED, by the ladder rather than by a clock.
+assert_eq 1 "$(utfield infra_failures)" \
+  "T031: the pass spends exactly one rung on a round that ended this way (out: $UTOUT)"
+assert_match "nothing can show it has stopped" "$(cat "$UTR/.orchid/journal.md")" \
+  "T031: and journals WHY, rather than calling it a job that died with nothing to show"
+assert_match "boundary \[operator-decision\] V011" "$UTOUT" \
+  "T031: the pass stops for a human instead of parking the task in an active status (out: $UTOUT)"
+# ...WITHOUT A SECOND ENGINE. This is the whole reason the class is separated
+# from `unstamped`: the ladder's ordinary recovery is to dispatch the work
+# again, and dispatching it here puts two engines in one worktree.
+assert_eq 1 "$(utmanifests)" \
+  "T031: no second implementer is launched over a job that cannot be shown to have stopped (out: $UTOUT)"
+[ -f "$UTMF" ] \
+  || fail "T031: the manifest survives — it is the only handle on that job, and gc holds it while its envelope is unfiled (out: $UTOUT)"
+red_case "a pid-0 job that filed an envelope and went silent is neither believed nor relaunched over: one rung, one boundary, one engine"
+
+# ---- pass 3: THE GREEN. runners/orchid-launch wraps every engine in a
+# subshell that outlives it by exactly one write, so `runtime/exits/<job-id>`
+# appears the moment that process really does end. That is the positive record
+# the hold was waiting for, and it needs no operator: the very next pass admits
+# the report the job had already written.
+mkdir -p "$UTR/.orchid/runtime/exits"
+printf '0\n' > "$UTR/.orchid/runtime/exits/$UTJID"
+run_utdrive
+[ -n "$(list_dir_files "$UTR/.orchid/reviews" | grep 'V011-a1-implementer')" ] \
+  || fail "T031: with the engine's exit recorded, the held envelope is filed (rc=$UTRC, out: $UTOUT)"
+[ ! -f "$UTMF" ] || fail "T031: and its manifest is deleted, exactly as any reconciled job's is (out: $UTOUT)"
+grep -q "cannot be shown to have stopped" <<<"$UTOUT" \
+  && fail "T031: the boundary must clear once the job's exit is on record (out: $UTOUT)"
+green_case "the held envelope files itself as soon as the job's own exit is recorded — the refusal is about evidence, not about waiting"
+
+# ===========================================================================
+# Part AE (T031 attempt-5 rework) -- EVERY VERIFY REFUSAL ARM RETURNS.
+#
+# `drive_testing` runs `orchid verify` and then routes on its exit status. Two
+# of those statuses are REFUSALS rather than verdicts: 16 (an unacknowledged
+# operator prerequisite) and 20 (the worktree is not the recorded candidate).
+# Neither says anything about the candidate, so neither may reach the failure
+# accounting below them -- which classifies the verify log, spends a rework
+# round and hands the implementer a failure to act on. Both are non-zero, so
+# the `[ "$vrc" -eq 0 ]` gate cannot tell a refusal from a verdict: the RETURN
+# is the only thing that separates them, and an attempt of this task lost the
+# 16 arm's return while regrouping the two into one if/elif chain. The symptom
+# was silent -- an operator stop reported AND the candidate charged for a suite
+# that never judged it.
+#
+# ASSERTED ON THE SOURCE, and deliberately so. The 16 arm is unreachable from
+# any fixture: `orchid verify` and `drive_testing` ask the identical predicate
+# (lib/handoff.sh's handoff_prereq_unmet) and the driver asks it first, so the
+# verb's own gate can only fire when the task file changes between the two --
+# a race no test can stage without reaching inside the pass. A guard that can
+# only be written as a shape is still worth writing when the alternative is no
+# guard at all on a regression that has already happened once.
+# ===========================================================================
+# The pattern deliberately carries NO `$`: `\$` is a literal dollar in GNU BRE
+# but is not portable across every grep this suite runs under, and the quoting
+# to get one there through a double-quoted shell string is three backslashes
+# deep. `vrc" -eq <n>` is enough to be unique — `[ "$merge_rc" -eq 16 ]` also
+# exists in this file, which is exactly why the variable name has to be in it.
+verify_refusal_arm() {  # <exit-code> -- the 8 lines of drive_testing's arm for it
+  grep -A 8 -e "vrc\" -eq $1 \]; then" "$DRIVE"
+}
+for _vrc in 16 20; do
+  # `|| true`: a grep that matches nothing exits 1, and under `set -e` that
+  # would abort this file at the assignment instead of reaching the named
+  # failure below — which is the one message that says the tripwire itself has
+  # gone blind.
+  _arm="$(verify_refusal_arm "$_vrc" || true)"
+  [ -n "$_arm" ] \
+    || fail "T031: could not find drive_testing's verify exit-$_vrc arm in $DRIVE — this tripwire can no longer read the driver and must be revisited"
+  grep -q 'set_boundary' <<<"$_arm" \
+    || fail "T031: the verify exit-$_vrc arm must raise a boundary (arm: $_arm)"
+  grep -q 'return 0' <<<"$_arm" \
+    || fail "T031: the verify exit-$_vrc arm must RETURN — a refusal that falls through is charged to the candidate as a failed round (arm: $_arm)"
+done
+red_case "both of drive_testing's verify-refusal arms return instead of falling into the rework accounting"

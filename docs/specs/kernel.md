@@ -1404,6 +1404,7 @@ derived cache, rebuildable from it.
 | Dead | pgid + start-time liveness per `orchid jobs check` |
 | Never started | a launcher that exits before its spawn line (bad pack, missing binary): its non-zero exit is itself a job failure — journaled and escalated by the driver, EXACTLY ONCE, since both the synchronous charge and the ageing sweep deduplicate on the stranded manifest's `job_id` against the journal receipt the charge itself writes (`[ladder job <job_id>]`), so a pass that crashes before charging loses nothing and one that charged is never charged again — and the manifest it stranded is reported `never-started` by `orchid jobs check` |
 | Spawned but never stamped | a launcher killed between the spawn and the pid stamp: an engine may be running with its pid recorded nowhere. Waited on while its log is still being written (never relaunched over — that is two engines in one worktree); reported `unstamped` and escalated once its log has been silent for `stall_minutes`, with the log kept when the manifest is reaped |
+| Spawned, never stamped, and it REPORTED | the same manifest with an envelope in the spool. Silence past `stall_minutes` is not an exit — there is no pid to `kill -0` and none to signal — so `orchid jobs reconcile` refuses to file that report (`unresolved:`) and holds both it and the manifest, since filing it would capture a candidate from a worktree that engine may still be committing to (T031). Bounded by the driver, not by a clock: one rung of the escalation ladder and an `operator-decision` boundary, and it is the one class the ladder never relaunches for. It resolves with no operator the moment the job's exit is recorded in `runtime/exits/<job-id>`, at which point the held envelope files normally |
 | Dead having produced nothing reachable | `orchid jobs reconcile` files a DEGRADED `no_envelope` envelope from whatever the log holds, journals the exit code + log tail, and prints a report line — never silence (T040) |
 | Hung | stall: log mtime/size frozen ~10 min → kill, retry |
 | Alive but not working | Opt-in CPU delta across the job's own heartbeat lines: with `cpu_stall_min_s` above zero (default 0: off — F35 retracted CPU as a sole progress signal, a healthy API-bound engine burns almost none), less than the floor across the last `stall_minutes` of heartbeats → `stalled` → kill, retry; a counter that goes backwards (pid reuse) is unknown and never kills. Liveness alone cannot see this; heartbeats keep a hung engine looking healthy (T040) |
@@ -1631,10 +1632,12 @@ semantic correctness beyond declared verification commands.
   it may only ever describe the recorded candidate: verification refuses a
   tree that is not `candidate_sha` (before OR during the run), and an
   envelope from a job that has not exited is not a completion signal, so the
-  candidate captured from a worktree's HEAD is always final — where "has not
-  exited" includes a manifest still carrying `pid: 0` inside the launcher's
-  post-spawn/pre-stamp window, since that pid is the absence of a record, not
-  an exit
+  candidate captured from a worktree's HEAD is always final — where "has
+  exited" is decided for a `pid: 0` manifest only by POSITIVE evidence that it
+  ended (the launcher's recorded exit status, its own pre-spawn failure, or an
+  absent log proving the spawn line was never reached), never by a log that has
+  merely gone quiet, since that pid is the absence of a record rather than an
+  exit and silence over it cannot tell a dead engine from a live, quiet one
 - INV-12 non-truncatable inputs over budget fail with `input_overflow`,
   never silently truncate
 - INV-13 the deterministic driver mutates durable/cross-process state only

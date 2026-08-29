@@ -1306,7 +1306,7 @@ ones its archetype never declares.
      candidate.
 
   An envelope only reaches step 2's reconcile once its job has genuinely
-  EXITED — `orchid jobs reconcile` defers any spool envelope whose manifest
+  EXITED — `orchid jobs reconcile` never files a spool envelope whose manifest
   has not resolved, leaving both the envelope and the manifest in place for a
   later pass. That is what makes the `git -C <worktree> rev-parse HEAD` above
   a FINAL answer: an implementer that files its report and keeps working can
@@ -1317,7 +1317,8 @@ ones its archetype never declares.
   exit. `orchid jobs prepare` mints every manifest with pid 0 and
   `runners/orchid-launch` stamps the real pid only AFTER the spawn, so pid 0
   means *nobody has recorded whether this job began* — an unresolved startup
-  state. Two shapes, two lines:
+  state. Two of the shapes below are a WAIT, and each prints its own line; the
+  third, further down, is not a wait at all:
 
   - a stamped pid that `kill -0` still answers for → `deferred: <file> (job
     <id> still running, pid <n>)`;
@@ -1330,16 +1331,43 @@ ones its archetype never declares.
     driver and reconcile agree about one manifest rather than one waiting on
     a job the other has already filed as done.
 
-  The other two `pid: 0` shapes ARE resolved and reconcile immediately: no log
-  at all (the spawn line was provably never reached, so no engine ran and none
-  will), and a log that has been silent past `stall_minutes`. Deferral is
-  therefore bounded on both roads — `jobs check` kills a stamped job that
-  stalls or times out, and an unstamped one ages out on its own log — and
-  neither road needs `jobs gc` to run first, which matters because gc
-  deliberately spares a manifest whose envelope is still spooled. The
-  envelope reconciles on the pass after the bound, and the exclusion above —
-  a manifest whose envelope is still spooled is never escalated — is what
-  keeps that kill from being read as a death.
+  A `pid: 0` manifest may be reconciled only on POSITIVE evidence that its job
+  ended, never on silence. Two records qualify, and both are written by
+  `runners/orchid-launch`: `runtime/exits/<job-id>`, the engine's own exit
+  status, recorded by a wrapper that outlives it by exactly one write; and
+  `launch_exit` on the manifest, the launcher's own failure from before the
+  spawn line. A third shape needs no record because nothing ever ran — no log
+  at all, which means the spawn line was never reached, since the launcher
+  creates that log by redirecting the spawn into it.
+
+  A LOG THAT HAS SIMPLY GONE QUIET IS NOT ONE OF THEM. Silence past
+  `stall_minutes` is an inference from an absence, and with no pid stamped
+  there is nothing to `kill -0` and nothing to signal — so an engine that is
+  alive and merely quiet (a long model call writes nothing for many minutes) is
+  indistinguishable from one that died. Reading that as an exit files a
+  mid-flight report as final over a process that is still committing, which is
+  the r-002/T013 defect again. reconcile therefore refuses to decide:
+  `unresolved: <file> (job <id> never stamped a pid and its log has been silent
+  past stall_minutes, with no exit recorded …)`, holding both the envelope and
+  the manifest.
+
+  That refusal is bounded from OUTSIDE reconcile, because it must not become
+  the new forever. It resolves by itself if that engine exits — the wrapper
+  records the status and the very next pass files the envelope, with no
+  operator involved. If it does not, `orchid drive`'s escalation sweep meets
+  exactly this state (`pid: 0`, silent log, envelope still spooled, no exit
+  record), spends ONE rung of the `infra_failures` ladder on it and stops the
+  pass at an `operator-decision` boundary. It is the one class the ladder never
+  RELAUNCHES for: a second engine in a worktree the first may still be
+  committing to is the very defect being avoided. The other roads are bounded
+  as before — `jobs check` kills a stamped job that stalls or times out — and
+  none of them needs `jobs gc` to run first, which matters because gc
+  deliberately spares a manifest whose envelope is still spooled. For a job that
+  DID stamp a pid the exclusion stands unchanged — a manifest whose envelope is
+  still spooled is never escalated, which is what keeps that kill from being
+  read as a death. It is only the `pid: 0` half where a spooled envelope stops
+  being proof that the job resolved, because there it is precisely the envelope
+  reconcile is refusing to file.
 
   A quarantined envelope, or a `dead`/`stalled`/`timeout` job, follow the
   escalation ladder in step 2 (there is no legal `implementing→rework`, so a

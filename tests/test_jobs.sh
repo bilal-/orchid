@@ -1687,21 +1687,59 @@ for _q in "$rt/quarantine/$start_jid.json".*; do
 done
 red_case "reconcile defers an envelope whose manifest is still inside the launcher's post-spawn/pre-stamp window"
 
-# The wait is BOUNDED BY THE SAME CLOCK gc and prepare use, and it ends
-# WITHOUT needing a reap first: gc_reap_unlaunched deliberately spares a
-# manifest whose envelope is still spooled, so a deferral that could only be
-# ended by gc would have the two holding the envelope for each other forever.
-# Backdating the log past `stall_minutes` is what the passage of time would
-# do (the TDUPLOG refusal above turns on this same instant).
-"$ORCHID_BIN" jobs gc --older-than-s 0 >/dev/null
+# ---------------------------------------------------------------------------
+# THE TWIN (T031 attempt-5 rework): THE LIVE, SILENT, UNTRACKED PROCESS. Same
+# manifest, one thing changed -- the log has gone quiet past `stall_minutes`.
+#
+# That silence used to end the hold: the envelope reconciled and the manifest
+# was deleted. But NOTHING HERE MEASURED AN EXIT. No pid was ever stamped, so
+# there is nothing to `kill -0` and nothing to signal, and an engine that is
+# alive and merely quiet -- a long model call writes nothing for many minutes
+# -- leaves exactly these bytes on disk. Reading them as "it finished" files a
+# mid-flight report as a completion signal over a process that is still
+# committing, which is T013's defect with a stale log in place of a live pid.
+#
+# The state below is therefore deliberately AMBIGUOUS, and that is the whole
+# assertion: reconcile is not being asked to notice a dead job, it is being
+# asked NOT TO GUESS about one it cannot see. (Spawning a real silent process
+# would add nothing — with its pid recorded nowhere, no reader could tell the
+# difference, which is precisely why the guess is unsafe.)
+#
+# gc runs first, over a manifest that is now genuinely reapable (pid 0, log
+# silent past stall_minutes, and the file itself backdated past the threshold),
+# and must SPARE it anyway because its envelope is still spooled. A hold that
+# could only be ended by a reap, and a reap that waits for the hold, would keep
+# the envelope for each other forever.
+touch -t 202001010000 "$start_log" "$mstart"
+start_gc="$("$ORCHID_BIN" jobs gc --older-than-s 0)"
+assert_match "gc-pending $start_jid" "$start_gc" \
+  "T031: gc names the hold-back rather than reaping a manifest whose envelope has not been filed"
 [ -f "$mstart" ] || fail "T031: gc must spare the manifest while its envelope is still spooled"
-touch -t 202001010000 "$start_log"
 start_line2="$("$ORCHID_BIN" jobs reconcile)"
-assert_match "TSTART	ok" "$start_line2" \
-  "T031: once the log has been silent past stall_minutes the startup state is resolved and the envelope reconciles"
-[ -f ".orchid/reviews/TSTART-a1-implementer.json" ] || fail "T031: the envelope is filed once nothing can still be starting"
+assert_match "^unresolved: " "$start_line2" \
+  "T031: a pid-0 job whose log went quiet has not been shown to EXIT, so its envelope is not a completion signal"
+assert_match "silence is not an exit" "$start_line2" \
+  "T031: and the line says why it is refusing rather than reporting a job it watched finish"
+[ ! -f ".orchid/reviews/TSTART-a1-implementer.json" ] \
+  || fail "T031: an envelope from a process nobody can show has stopped must not be filed"
+[ -f "$start_out" ] || fail "T031: HELD, not discarded — the envelope stays spooled for the pass that can admit it"
+[ -f "$mstart" ] \
+  || fail "T031: and the manifest stays standing — it is the only handle on that job, and what the driver escalates over"
+red_case "log staleness is not an exit: a pid-0 job that has gone silent has its envelope held, never filed"
+
+# ...AND THE HOLD ENDS ON THE POSITIVE RECORD, which is what keeps it from
+# being the new forever. runners/orchid-launch wraps the engine in a subshell
+# that outlives it by exactly one write, so `runtime/exits/<job-id>` exists
+# BECAUSE the process ended (T040) -- the one fact about this job that says so.
+# Its arrival needs no operator: if that engine really was alive and quiet, the
+# very next pass after it exits files the report it already wrote.
+mkdir -p "$rt/exits"; printf '0\n' > "$rt/exits/$start_jid"
+start_line3="$("$ORCHID_BIN" jobs reconcile)"
+assert_match "TSTART	ok" "$start_line3" \
+  "T031: with the engine's own exit recorded, the job HAS exited and its envelope reconciles"
+[ -f ".orchid/reviews/TSTART-a1-implementer.json" ] || fail "T031: the held envelope is filed, not lost"
 [ ! -f "$mstart" ] || fail "T031: the manifest is deleted once its envelope is genuinely reconciled"
-green_case "a launcher-window deferral ends on stall_minutes alone — no reap required, so the envelope is never stranded"
+green_case "a positive exit record ends the hold — the refusal is about evidence, not about waiting forever"
 
 # The other pid-0 shape: NO log at all. The spawn line was provably never
 # reached, so nothing is starting and nothing ever will. It must reconcile on
