@@ -1990,9 +1990,38 @@ assert_match 'usage: orchid trust show' "$trust_out" \
 # overwrites PATH with the fixed machine-local prefixes as its first act, and
 # holds it across exactly the window under test here, which is the property
 # that entry point exists for. Git reporting its own subprocesses is not
-# subject to that, and the trace lands on the same stream as doctor's own
-# output, so "before" and "after" are read off one ordering rather than
-# correlated across two files.
+# subject to that.
+#
+# BUT THE TRACE MUST GO TO A FILE, NOT TO GIT'S STDERR, and this is the whole
+# of what an earlier version of this section got wrong -- in the direction
+# this file exists to refuse. GIT_TRACE=1 means "write the trace to Git's own
+# standard error", and EVERY Git the kernel spends inside this window discards
+# exactly that stream on purpose: the gate's index comparison is written
+# `git -C "$root" diff --cached --name-only HEAD ... 2>/dev/null` in
+# lib/common.sh, and lib/trust.sh's probes are written the same way, so a root
+# that cannot answer stays silent instead of printing Git's complaint into an
+# operator's report. Reading the trace off Git's stderr therefore observes
+# NOTHING of precisely the calls this section is about. "No Git ran" and "the
+# Git that ran was silenced by the production redirection" arrive as the same
+# empty measurement -- a proof blind in exactly the dimension it is measuring,
+# which is section 3's lesson turned on this file's own instrumentation. The
+# production silence is correct and is left alone; what changes is where the
+# trace is sent. GIT_TRACE set to an absolute PATH is written by Git to that
+# file directly, and no redirection of Git's stderr can suppress it.
+#
+# Ordering survives the move, and is not traded for visibility: the run's own
+# stdout and stderr are APPENDED TO THAT SAME FILE. Bash's `>>` opens with
+# O_APPEND and Git opens its trace target with O_APPEND, so every write from
+# either lands at the current end of the file and the result is still ONE
+# stream in the order things actually happened. "Before" and "after" are read
+# off a single pass, rather than correlated across two files by timestamp.
+#
+# And the instrumentation itself is witnessed before anything is measured with
+# it, because a proof whose observer is broken reports the same empty result
+# as a run that spent nothing: see DOCTOR_TRACE_PROBE below, which spends one
+# Git under the production redirection and requires the trace file to have
+# caught it -- next to its own twin showing that the stderr spelling catches
+# nothing there.
 # ===========================================================================
 DOCTOR_PROOF="$WORK/doctor-selfhost"
 mkdir -p "$DOCTOR_PROOF"
@@ -2047,6 +2076,40 @@ git -C "$DOCTOR_ROOT" add libexec/orchid-version
 # a record.
 make_scratch DOCTOR_HOME
 
+# -- THE OBSERVER IS WITNESSED FIRST, before anything is measured with it.
+#
+# Both runs below conclude things from Git the trace did NOT report, so an
+# observer that reports nothing whatever it is pointed at would pass them in
+# silence. The command here is the gate's own comparison, against the fixture
+# root, redirected EXACTLY the way lib/common.sh redirects it -- stdout to
+# /dev/null and stderr to /dev/null -- so what is witnessed is the production
+# shape and not a friendlier one. (That this holds for the Git doctor itself
+# resolves, on the fixed entry PATH rather than this file's, is witnessed
+# separately by run two, which must trace the Git its readiness report spends.)
+DOCTOR_TRACE_PROBE="$DOCTOR_PROOF/trace-witness"
+: > "$DOCTOR_TRACE_PROBE"
+GIT_TRACE="$DOCTOR_TRACE_PROBE" git -C "$DOCTOR_ROOT" \
+  diff --cached --name-only HEAD -- libexec >/dev/null 2>/dev/null || true
+assert_match 'trace: built-in: git' "$(cat "$DOCTOR_TRACE_PROBE")" \
+  "INV-15: this Git does not honour GIT_TRACE pointed at a file, so every 'the run spent no Git here' conclusion in this section would be a statement about an unobserved run rather than about the run. Both measurements below rest on this line"
+# The twin, and the reason the plumbing is what it is: the stderr spelling of
+# the very same trace, on the very same command, sees nothing at all -- because
+# the production redirection this section must not weaken discards the stream
+# it writes to. Asserted rather than left as a comment, so the day somebody
+# 'simplifies' this back to GIT_TRACE=1 the file says why not, in the failure
+# output rather than in prose nobody reads.
+doctor_stderr_trace="$(GIT_TRACE=1 git -C "$DOCTOR_ROOT" \
+  diff --cached --name-only HEAD -- libexec 2>/dev/null || true)"
+if grep -qF 'trace: built-in: git' <<<"$doctor_stderr_trace"; then
+  fail "INV-15: GIT_TRACE=1 was expected to be invisible under the production 2>/dev/null redirection, and something reported it anyway — the two measurements below are plumbed for the opposite assumption and would have to be re-argued"
+fi
+# Deliberately NOT recorded as a red_case/green_case pair. Neither line feeds
+# this section's check an input it must reject or accept; they establish that
+# the observer works before the check uses it. The pairs this section records
+# are the ones further down, where the shipped doctor and the two fixtures are
+# actually judged -- calling these a detection would be the mislabelling this
+# file was reworked to remove.
+
 # first_traced_git <combined-output> -- the argv of the FIRST Git subprocess
 # the run spent, or empty when it spent none. Older Git quotes each argument
 # in its trace and newer Git does not, so the quotes are stripped by the
@@ -2085,13 +2148,39 @@ doctor_git_before_denial() {
   ' <<<"$1"
 }
 
+# doctor_traced_run <stream-file> <env-assignment>... <command>... -- run a
+# command with Git tracing into <stream-file>, and with the command's OWN
+# stdout and stderr appended to that same file.
+#
+# The single file is the whole point, and it is what replaces the `2>&1`
+# capture this section used to do. Git writes its trace to the file itself, so
+# the production `2>/dev/null` on the kernel's own probes no longer erases the
+# observation; and because both `>>` and Git's trace target are opened
+# O_APPEND, the run's printed lines and Git's dispatch lines still interleave
+# in the order they happened, which is what the ordering matcher above reads.
+#
+# The exit status is published in DOCTOR_RUN_RC rather than returned, and the
+# stream is left in the file rather than printed, because a caller that read
+# it through `$(...)` would lose the status to the subshell -- and a run whose
+# refusal went unnoticed is the one thing this section may not do.
+DOCTOR_RUN_RC=0
+doctor_traced_run() {
+  local stream="$1"; shift
+  DOCTOR_RUN_RC=0
+  : > "$stream"
+  env -u ORCHID_EPOCH GIT_TRACE="$stream" "$@" \
+    >>"$stream" 2>>"$stream" || DOCTOR_RUN_RC=$?
+}
+
 # -- RUN ONE: the gate armed. ORCHID_ALLOW_STALE_ROOT is spelled empty rather
 # than inherited, for the reason sections 6 and 8 spell it: an operator with it
 # exported would switch off the gate this section measures.
-doctor_rc=0
-doctor_out="$(env -u ORCHID_EPOCH \
+DOCTOR_STREAM1="$DOCTOR_PROOF/run1.stream"
+doctor_traced_run "$DOCTOR_STREAM1" \
   HOME="$DOCTOR_HOME" ORCHID_REPO="$DOCTOR_ROOT" ORCHID_ALLOW_STALE_ROOT='' \
-  GIT_TRACE=1 "$DOCTOR_ROOT/libexec/orchid-doctor" 2>&1)" || doctor_rc=$?
+  "$DOCTOR_ROOT/libexec/orchid-doctor"
+doctor_rc="$DOCTOR_RUN_RC"
+doctor_out="$(cat "$DOCTOR_STREAM1")"
 assert_eq 1 "$doctor_rc" \
   "INV-15: 'orchid doctor' run out of a stale self-hosted checkout, with that same checkout as its target, must refuse (got rc=$doctor_rc: $doctor_out)"
 assert_match 'refusing to run: the checkout orchid itself runs from' "$doctor_out" \
@@ -2109,7 +2198,7 @@ fi
 doctor_first_git="$(first_traced_git "$doctor_out")"
 doctor_first_git="${doctor_first_git//\'/}"
 [ -n "$doctor_first_git" ] \
-  || fail "INV-15: the refused self-hosted doctor spent no observable Git at all. It cannot have refused without comparing this root's index against HEAD, so GIT_TRACE recorded nothing and every claim below about WHICH Git ran would be a claim about an unobserved run"
+  || fail "INV-15: the refused self-hosted doctor spent no observable Git at all. It cannot have refused without comparing this root's index against HEAD, and the witness above already established that this Git records a traced-to-file command even under the production 2>/dev/null — so this is a run that spent nothing where it must have spent something, and every claim below about WHICH Git ran would be a claim about an unobserved run"
 # Matched on a substring rather than an anchor: Git strips its own `-C <dir>`
 # before it traces the dispatch, but that is Git's business and not something
 # this file should depend on, so a spelling that carried the -C through would
@@ -2119,19 +2208,61 @@ case "$doctor_first_git" in
   *"diff --cached"*) ;;
   *) fail "INV-15: the FIRST Git subprocess the self-hosted doctor spent was 'git $doctor_first_git', not the stale-root gate's own index comparison. ORCHID_REPO and ORCHID_ROOT are the same unacknowledged checkout here, so anything ahead of the gate is a query against the target repository made before the machine-local trust decision had denied this run — the query the unattended-trust contract forbids before an acknowledgement is found" ;;
 esac
-red_case "the shipped 'orchid doctor', run where ORCHID_REPO and ORCHID_ROOT are one stale integration checkout with no acknowledgement, refused with its staged kernel path named, not one line of diagnosis produced, and the stale-root gate's own index comparison as the first Git subprocess of the entire run"
+# The other end of the same ordering, stated as an absence rather than left to
+# "the first Git was the gate's". Doctor's own repository inspection is two
+# named probes further down that file -- `rev-parse --git-dir` and `worktree
+# list`, both against $repo -- and BOTH are written with their stderr
+# discarded, so until the trace was moved to a file neither could be seen to
+# have run or not run. Neither may appear anywhere in this stream: the refusal
+# is supposed to have ended the run before doctor inspected the repository at
+# all, and that is now an observation instead of an inference from the line
+# numbers in section 4.
+#
+# Matched on the subcommand and its flag, not on a leading `git`: Git decides
+# for itself whether its own `-C <dir>` survives into the traced argv, and an
+# absence assertion that a spelling change could quietly satisfy is worse than
+# none. The other edge -- that these strings are ones this matcher CAN find --
+# is pinned on run two below, which reaches both probes and must show them.
+DOCTOR_REPO_PROBES=('rev-parse --git-dir' 'worktree list')
+doctor_stream1_bare="${doctor_out//\'/}"
+for doctor_probe in "${DOCTOR_REPO_PROBES[@]}"; do
+  if grep -Eq -- "$doctor_probe" <<<"$doctor_stream1_bare"; then
+    fail "INV-15: the refused self-hosted doctor reached its own '$doctor_probe' inspection of the target anyway. The stale-root refusal is supposed to end the run before doctor inspects the repository at all, and this is inside the window where ORCHID_REPO is an unacknowledged checkout"
+  fi
+done
+red_case "the shipped 'orchid doctor', run where ORCHID_REPO and ORCHID_ROOT are one stale integration checkout with no acknowledgement, refused with its staged kernel path named, not one line of diagnosis produced, neither of its own repository-inspection probes traced, and the stale-root gate's own index comparison as the first Git subprocess of the entire run"
 
 # -- RUN TWO: the same checkout, the same empty store, the same target, with
 # the gate stood down by the one documented override. The refusal is what
 # hides the ordering, so standing it down is what makes the ordering visible;
 # nothing else about the environment changes, which is what keeps this a twin
 # of the run above rather than a different experiment.
-doctor_rc2=0
-doctor_out2="$(env -u ORCHID_EPOCH \
+DOCTOR_STREAM2="$DOCTOR_PROOF/run2.stream"
+doctor_traced_run "$DOCTOR_STREAM2" \
   HOME="$DOCTOR_HOME" ORCHID_REPO="$DOCTOR_ROOT" ORCHID_ALLOW_STALE_ROOT=1 \
-  GIT_TRACE=1 "$DOCTOR_ROOT/libexec/orchid-doctor" 2>&1)" || doctor_rc2=$?
+  "$DOCTOR_ROOT/libexec/orchid-doctor"
+doctor_rc2="$DOCTOR_RUN_RC"
+doctor_out2="$(cat "$DOCTOR_STREAM2")"
+# This run does NOT stop at the denial -- it goes on to the whole readiness
+# report -- so it is the one that proves the observer is pointed at a run that
+# really does spend Git. If nothing at all were traced here, the emptiness the
+# assertion below reads as "no Git before the denial" would be the emptiness of
+# a blind measurement instead.
+assert_match 'trace: built-in: git' "$doctor_out2" \
+  "INV-15: the stood-down doctor run traced no Git whatsoever, though it ran its full readiness report past the denial — so this stream is not showing what this run spent and the ordering read off it below would mean nothing"
 assert_match '^WARN: unattended trust \(headless execution gated\): denied' "$doctor_out2" \
   "INV-15: with the stale-root gate stood down, the self-hosted doctor must reach and render its unattended-trust denial (rc=$doctor_rc2) — without that line there is no denial for the ordering below to be measured against"
+# The other edge of run one's absence assertion (lesson L034: pin the case that
+# must be caught AND the case that must not fire). Run one concluded something
+# from two strings NOT being in its stream; that conclusion is worth nothing
+# unless those strings are ones this matcher finds when the probes really do
+# run. Here they do -- same doctor, same fixture, the gate simply stood down --
+# so the absence above is doctor stopping, not the matcher missing.
+doctor_stream2_bare="${doctor_out2//\'/}"
+for doctor_probe in "${DOCTOR_REPO_PROBES[@]}"; do
+  assert_match "$doctor_probe" "$doctor_stream2_bare" \
+    "INV-15: the stood-down doctor ran its whole readiness report and this stream shows no '$doctor_probe' — so run one's finding that the refusal preceded that inspection is a string this instrumentation cannot see either way, and proves nothing"
+done
 doctor_before_out="$(doctor_git_before_denial "$doctor_out2")"
 [ -z "$doctor_before_out" ] \
   || fail "INV-15: the self-hosted doctor spent Git before its unattended-trust denial was rendered ($doctor_before_out). ORCHID_REPO and ORCHID_ROOT are the same checkout here, so that is a target-repository query made before any acknowledgement for it had been looked for — and it is invisible in every other environment, because everywhere else those two are different directories"
@@ -2140,13 +2271,19 @@ green_case "the same shipped doctor, out of the same stale self-hosted checkout 
 # The RED and GREEN twins for that matcher, run rather than scanned. Two
 # doctor-shaped fixtures differing in ONE line's position: a target-repository
 # query before the verdict, and the identical query after it.
+#
+# Both fixtures discard their query's stderr, `2>/dev/null`, the way the kernel
+# discards its own. That is not decoration: a query written that way is exactly
+# the one an observer reading Git's stderr cannot see, so the RED case below is
+# a demonstration that the shape which used to be invisible is now detected,
+# rather than a demonstration against a friendlier spelling nobody ships.
 DOCTOR_FIXTURES="$DOCTOR_ROOT/libexec"
 { printf '#!/usr/bin/env bash\n'
   printf 'set -uo pipefail\n'
   printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
   printf 'source "$ORCHID_ROOT/lib/trust.sh"\n'
   printf 'repo="${ORCHID_REPO:-$PWD}"\n'
-  printf 'git -C "$repo" rev-list --max-count=1 HEAD >/dev/null\n'
+  printf 'git -C "$repo" rev-list --max-count=1 HEAD >/dev/null 2>/dev/null\n'
   printf 'unattended_trust_inspect "$repo"\n'
   printf 'echo "WARN: unattended trust (headless execution gated): $ORCHID_UNATTENDED_STATE"\n'
 } > "$DOCTOR_FIXTURES/orchid-inv15-early-git"
@@ -2157,24 +2294,32 @@ DOCTOR_FIXTURES="$DOCTOR_ROOT/libexec"
   printf 'repo="${ORCHID_REPO:-$PWD}"\n'
   printf 'unattended_trust_inspect "$repo"\n'
   printf 'echo "WARN: unattended trust (headless execution gated): $ORCHID_UNATTENDED_STATE"\n'
-  printf 'git -C "$repo" rev-list --max-count=1 HEAD >/dev/null\n'
+  printf 'git -C "$repo" rev-list --max-count=1 HEAD >/dev/null 2>/dev/null\n'
 } > "$DOCTOR_FIXTURES/orchid-inv15-late-git"
 
-doctor_fixture_out() {
-  env -u ORCHID_EPOCH \
+# Through the SAME plumbing as the two shipped runs, deliberately: a matcher
+# demonstrated on one instrumentation and applied on another has been
+# demonstrated on nothing. It publishes the stream's path rather than printing
+# the stream, for the reason doctor_traced_run publishes its status rather than
+# returning it: a `$(...)` around either would put the run in a subshell.
+doctor_fixture_run() {
+  DOCTOR_FIXTURE_STREAM="$DOCTOR_PROOF/$1.stream"
+  doctor_traced_run "$DOCTOR_FIXTURE_STREAM" \
     HOME="$DOCTOR_HOME" ORCHID_REPO="$DOCTOR_ROOT" ORCHID_ROOT="$DOCTOR_ROOT" \
-    ORCHID_ALLOW_STALE_ROOT=1 GIT_TRACE=1 \
-    /bin/bash "$DOCTOR_FIXTURES/$1" 2>&1
+    ORCHID_ALLOW_STALE_ROOT=1 \
+    /bin/bash "$DOCTOR_FIXTURES/$1"
 }
 
-doctor_early_out="$(doctor_fixture_out orchid-inv15-early-git)"
+doctor_fixture_run orchid-inv15-early-git
+doctor_early_out="$(cat "$DOCTOR_FIXTURE_STREAM")"
 assert_match '^WARN: unattended trust' "$doctor_early_out" \
   "INV-15: the early-Git fixture must still reach its verdict line (got: $doctor_early_out) — a fixture that died before rendering anything would be reported for the wrong reason"
 assert_match 'git-before-denial: .*rev-list' "$(doctor_git_before_denial "$doctor_early_out")" \
   "INV-15: a doctor-shaped entry point that queries its target repository before rendering its unattended-trust denial must be reported, and reported with the query it made"
 red_case "a doctor-shaped fixture that really did run 'git rev-list' against its target before rendering its denial was RUN, and the same matcher the shipped doctor is judged by named that query — so the shipped run's silence is detection rather than a matcher that finds nothing"
 
-doctor_late_out="$(doctor_fixture_out orchid-inv15-late-git)"
+doctor_fixture_run orchid-inv15-late-git
+doctor_late_out="$(cat "$DOCTOR_FIXTURE_STREAM")"
 assert_match '^WARN: unattended trust' "$doctor_late_out" \
   "INV-15: the late-Git fixture must reach its verdict line too, or the two fixtures differ in more than the one line whose position is the point"
 assert_match 'trace: built-in: git' "$doctor_late_out" \
@@ -2207,5 +2352,7 @@ not_tested "recorded-label-integrity-outside-the-invariant-gates" \
   "labels recorded anywhere but tests/inv/test_*.sh, and executing punctuation that is not a backtick. Section 2's label scan reads the gate files, because a gate whose own record says something its author did not write is this file's subject at the smallest scale; the rest of tests/ records labels through the same helpers and is not covered. Two shapes inside the scanned files are outside it as well. A recorder call written inside a heredoc body is read as ordinary code, since the scanner tracks quoting and not here-documents — no shipped gate has one, and a fixture that grows one would be reported rather than missed, which is the safe direction. And '\$( )' is deliberately accepted: labels interpolate the counts that make them non-vacuous, and unlike a backtick in a sentence that spelling is visible as code to whoever types it. What is derived here is the punctuation that has actually shipped three times, not every way a shell can be made to run a word"
 not_tested "gate-vacuity-beyond-the-constructed-dimensions" \
   "environment dimensions other than the three this file constructs: '\$ORCHID_ROOT is parked on the configured integration branch' (section 3, the one lesson L036 was paid for), 'ORCHID_REPO and ORCHID_ROOT are the SAME checkout' and 'the machine-local store holds no acknowledgement for it' (section 9, the self-hosted doctor). Other dimensions in which a revalidation environment differs from a deployed one — a machine with no vendor CLI (tests/test_hermetic_suite.sh constructs that one), a repository with no remote, a HOME that is unset rather than empty — are each somebody's own proof to construct, and none of them is covered here. The question to ask of any new gate is the one this file's header asks: in which environment is the condition you branch on false, and is that the environment you test in"
+not_tested "trace-and-output-interleaving-at-sub-line-granularity" \
+  "whether a traced Git dispatch could land INSIDE a partial line the run had already begun. Section 9 reads its ordering off one file that both the run and Git append to, which is sound at write granularity — both open it O_APPEND, so no write is ever placed behind an earlier one — and doctor renders its verdict as a prefix printf followed by the summary, two writes with a gap between them. Nothing in that gap spends Git today (unattended_trust_summary_loaded runs no subprocess at all), so the verdict line arrives whole; if something there ever did, the trace would appear on the verdict's own line and the ordering matcher, which settles at the verdict, would step over it. What is not tested is that property of the gap — only that it holds for the code as it stands"
 not_tested "git-spent-other-than-by-the-git-binary" \
   "repository work section 9 cannot see because it did not go through a git subprocess. GIT_TRACE is Git reporting its own dispatch, which is what makes the observation survive the fixed bootstrap PATH that a shim on PATH cannot reach — and its blind spot is the mirror of that strength: code that reads .git/ files directly, or that shells to some other tool, spends no Git and is reported by nothing here. lib/common.sh's own branch half is deliberately written that way (_orchid_head_branch_ondisk reads Git's on-disk files rather than spawning a symbolic-ref subprocess), so the shape is not hypothetical in this tree. What the unattended-trust contract forbids before an acknowledgement is a Git command targeting the repository, which is what is measured; a direct on-disk read of the target's admin directory would be a different argument, and it is not made here"
