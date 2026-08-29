@@ -2144,13 +2144,24 @@ ones its archetype never declares.
       the task acts, so it is not this engine's to converge on and no
       alternate can change it.
     - at `rework_signature_repeats` ≥ `rework_nonconvergence_max` (config,
-      default 3), stop: `orchid notify --task <id> "rework loop is not
-      converging: ..."` then `orchid task advance <id> blocked --reason
-      "rework not converging: ..."`. An unchanged signature is evidence the
-      loop is not converging, not a fresh failure, and spending the rest of
-      the attempt budget re-asking an identically-answered question is the
-      exact behavior F27 recorded. It still consumed its attempt on the way
-      here — the waiver is for a signature that actually CHANGED.
+      default 3), stop: `orchid task advance <id> blocked --reason "rework
+      not converging: ..."`, and then record the blocked task's own boundary
+      — do NOT raise a notify of its own beside it. This is a stop the block
+      itself pages for, through the same route an exhausted attempt budget
+      takes: one blocker per DISTINCT stop is a budget in both directions, and
+      a page raised outside the boundary record is compared against nothing,
+      so it mints a second qid for the same decision on this pass and the walk
+      mints a third on the next one when it recomposes the stop in its own
+      wording. Keep the `--reason` short enough to reach the page whole (it is
+      quoted onto one line) and put the round's captured log in it: that
+      reason IS what every later pass reads back. An unchanged signature is
+      evidence the loop is not converging, not a fresh failure, and spending
+      the rest of the attempt budget re-asking an identically-answered
+      question is the exact behavior F27 recorded. It still consumed its
+      attempt on the way here — the waiver is for a signature that actually
+      CHANGED. If the advance REFUSES, the task is still in `rework`: report
+      the refusal and stop at a boundary that says so, never one that asserts
+      a block that did not happen.
 
     When the rework was caused by something `context.md` failed to state —
     not an actual defect in the candidate — this is a lesson-birth moment

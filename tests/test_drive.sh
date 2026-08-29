@@ -9134,3 +9134,229 @@ assert_eq "$RW_REROUTES_BEFORE" \
   "a refused launch writes no journal line claiming that the rerouted attempt ran"
 assert_match "nothing was spawned" "$RWDRIVE_OUT" \
   "the refused reroute reports the launch fact it actually established"
+
+# ===========================================================================
+# Part AB (T025) -- THE NON-CONVERGENCE STOP IS ONE STOP, SO IT IS ONE PAGE --
+# and a stop that could not be taken says so instead of claiming it was.
+#
+# Lettered AB, APPENDED: `AA` above is this task's own earlier Part and `Z`,
+# `ZP`, `S`..`Y7` are claimed by T007/T023/T026. Renaming any of them to make
+# room would re-point every prose cross-reference in this file.
+#
+# TWO DEFECTS, both in `drive_rework_nonconvergence_stop`, both RED before this
+# round:
+#
+#   1. THREE QUESTIONS FOR ONE DECISION. The arm raised its own `orchid notify`
+#      AND recorded an `operator-decision` boundary in its own second wording --
+#      so the pass that stopped the loop minted two qids (the foot of the driver
+#      pages for the boundary it records), and the NEXT pass minted a third,
+#      when the blocked walk recomposed the same stop through
+#      drive_blocked_reason in a third wording that the field-by-field de-dup
+#      could only read as a new record. Only the direct notify declared an
+#      answer set; the other two invited free text for a stop with four known
+#      answers, and `answer_expiry_s` turned every unanswered one into a
+#      refusal. This is the identical defect PROTOCOL.md's one-blocker-per-stop
+#      budget already caught in four other arms (tests/test_notify_hermes_
+#      channel.sh sections 12c/12d) -- this arm was the fifth, in both
+#      spellings at once.
+#
+#   2. AN UNCHECKED ADVANCE. `task advance <id> blocked` ran with its exit
+#      status discarded, and the two lines after it stated as fact that the
+#      task had been blocked: a pass log saying `rework -> blocked (not
+#      converging)` and a boundary telling an operator to go and look at a
+#      blocked task. Every neighbouring arm in this file captures `|| rc=$?`
+#      and branches. When the verb refuses -- and it can, at the archetype
+#      gate, the epoch fence or the verb lock -- the task is still in `rework`,
+#      the next pass still dispatches it, and the operator is sent looking for
+#      a stop that never happened.
+#
+# The suite is the SAME every round and the candidate never moves, so the
+# signature repeats by construction; `rework_nonconvergence_max=1` makes the
+# very first captured round trip the stop, which keeps this Part to one verify
+# per pass with no engine ever started (the task is parked in `testing` before
+# each pass, and `orchid verify` runs in the pass's own foreground).
+# ===========================================================================
+NCD="$WORK/nonconverge"
+mkdir -p "$NCD"
+cd "$NCD" || exit 1
+git init -q .
+# rework_max well above anything this Part spends: the exhausted-budget arm is
+# checked BEFORE the rework edge, so a tight budget would block the task there
+# and the convergence stop under test would never be reached at all.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_nonconvergence_max=1\nrework_max=9\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$NCD" "$ORCHID_BIN" init >/dev/null || fail "orchid init (non-convergence fixture)"
+git checkout -q orchid/integration
+NEPOCH="$(ORCHID_REPO="$NCD" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+ncorchid() { ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$ORCHID_BIN" "$@"; }
+ncorchid requirements import "$WORK/requirements.md" >/dev/null
+ncorchid task create N010 "fails the same way every round" >/dev/null
+ncorchid task set N010 verification_commands \
+  'echo "tests/test_widget.sh: FAIL: widget mismatch"; exit 1' >/dev/null
+ncorchid plan apply --reason "initial plan" >/dev/null
+
+NTASK="$NCD/.orchid/tasks/N010.md"
+NCAND="$(git -C "$NCD" rev-parse HEAD)"
+fm_set "$NTASK" base_sha "$NCAND"
+fm_set "$NTASK" candidate_sha "$NCAND"
+nfield() { fm_get "$NTASK" "$1"; }
+ncboundary() { ORCHID_REPO="$NCD" "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+ncquestions() { find "$NCD/.orchid/runtime/answers" -name '*.question' 2>/dev/null | wc -l | tr -d ' '; }
+NDRIVE_RC=0; NDRIVE_OUT=""
+run_ndrive() {
+  fm_set "$NTASK" status testing
+  NDRIVE_RC=0
+  NDRIVE_OUT="$(ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$DRIVE" 2>&1)" || NDRIVE_RC=$?
+}
+
+# --- AB1: the stop fires, and it is ONE stop -------------------------------
+run_ndrive
+assert_eq blocked "$(nfield status)" \
+  "one identical signature at rework_nonconvergence_max=1 stops the loop (rc=$NDRIVE_RC, out: $NDRIVE_OUT)"
+assert_eq 1 "$(nfield rework_signature_repeats)" \
+  "fixture witness: the streak really is at the configured threshold, so the stop below is the convergence one and not the attempt cap"
+assert_eq 16 "$NDRIVE_RC" "the pass stops at its judgment boundary"
+assert_match "rework -> blocked \(not converging\)" "$NDRIVE_OUT" \
+  "the pass reports the edge it really took (out: $NDRIVE_OUT)"
+[ -f "$NCD/.orchid/reviews/N010-r1-rework.log" ] \
+  || fail "non-vacuity: the round the stop is about must have captured its evidence"
+
+# ONE PAGE. Before this round the pass raised two questions for this one
+# decision -- the arm's own `orchid notify` and the boundary the foot of the
+# driver pages for -- and answering either said nothing about the other.
+assert_eq 1 "$(ncquestions)" \
+  "the pass that stopped the loop raised exactly ONE page for it (out: $NDRIVE_OUT)"
+
+# ...and it is the blocked task's OWN page, composed by the shared library
+# composer rather than by this arm, which is what makes the record on the next
+# pass byte-identical instead of merely similar. docs/specs/kernel.md's
+# rework-feedback rule names `operator-decision` for this stop; lib/drive.sh's
+# drive_blocked_kind derives that from the journaled cause, so the arm cannot
+# agree with the walk on the kind and disagree with it on the text.
+assert_eq operator-decision "$(ncboundary | jq -r '.kind // ""')" \
+  "a loop that will not converge is a judgment call, recorded under the kind the spec names"
+NCBOUNDARY_REASON="$(ncboundary | jq -r '.reason // ""')"
+assert_match "not converging" "$NCBOUNDARY_REASON" \
+  "the recorded reason says WHY, not a generic attempts-exhausted (reason: $NCBOUNDARY_REASON)"
+assert_match "candidate-suite" "$NCBOUNDARY_REASON" \
+  "...and whose wall it is: nothing here is a red repo-wide gate, so the repeating failure is the candidate's own suite"
+# The evidence pointer is the LAST thing in the block's journaled cause, so
+# asserting it also proves the reason reached the page WHOLE -- a cause longer
+# than lib/drive.sh's _DRIVE_QUOTE_MAX is clipped with a trailing `...`, and a
+# page that names half a path is a page that names no path.
+assert_match "\.orchid/reviews/N010-r1-rework\.log" "$NCBOUNDARY_REASON" \
+  "...and names the captured round to read, unclipped (reason: $NCBOUNDARY_REASON)"
+assert_match "orchid task retry N010" "$NCBOUNDARY_REASON" \
+  "...beside the recovery verbs, which only the shared composer puts there"
+NCBLOCKERS="$(cat "$NCD/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "not converging" "$NCBLOCKERS" \
+  "and the operator is told on the surface they actually watch (page: $NCBLOCKERS)"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$NCBLOCKERS" \
+  "...with the declared answer set, which the arm's own hand-written boundary never carried"
+
+# --- AB2: the next pass over the same blocked task adds no second question --
+NDRIVE_RC=0
+NDRIVE_OUT="$(ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$DRIVE" 2>&1)" || NDRIVE_RC=$?
+assert_eq blocked "$(nfield status)" \
+  "fixture: N010 is still blocked on the following pass, so the record below is the same stop (rc=$NDRIVE_RC)"
+assert_eq operator-decision "$(ncboundary | jq -r '.kind // ""')" \
+  "the walk recomputes the same KIND from the same journaled cause"
+assert_eq "$NCBOUNDARY_REASON" "$(ncboundary | jq -r '.reason // ""')" \
+  "...and the same REASON, byte for byte — a record that changed would be a second qid for one decision"
+assert_eq 1 "$(ncquestions)" \
+  "so no second question is minted: one blocker per distinct stop (out: $NDRIVE_OUT)"
+
+# --- AB3: RED -- the advance REFUSES, and the pass must not claim otherwise -
+# The refusal is produced at the archetype gate (libexec/orchid-task's
+# `archetype_validate`, exit 13), which is the one precondition of `task
+# advance` that ONLY the task verbs read: the boundary record and the page the
+# foot of this pass writes are unaffected by it, so what this case measures is
+# the arm's own handling and nothing else.
+#
+# Armed on the task file's own `status: rework` -- the LAST write the rework
+# transition makes, and after every epoch-fenced subprocess that transition
+# runs (its journal entry), so breaking the archetype here can never turn the
+# refusal under test into a refusal of the edge before it. The short settle is
+# the same ordering rule one step finer: `task advance` writes `updated`
+# immediately after `status`, and a fixture write that landed between the two
+# would be the one the verb clobbered. Repaired again the moment the refusal is
+# on the pass's stdout, so the rest of the walk meets a valid archetype and this
+# fixture contributes no stop of its own to the boundaries the pass reports.
+fm_set "$NTASK" archetype feature
+NC_ARCH_OUT="$WORK/nonconverge-refused.out"
+: > "$NC_ARCH_OUT"
+fm_set "$NTASK" status testing
+# nc_has <file> <exact-line> -- a fork-free "does this file contain this line".
+# The detection below is a poll, and a `grep` per poll would cost a fork each
+# time: this keeps the latency between the transition landing and the fixture
+# acting at well under a millisecond, against the tens of milliseconds
+# `bin/orchid` needs to reach `archetype_validate` (a bash start, fifteen
+# sources and the stale-root `git`).
+nc_has() {
+  local line
+  while IFS= read -r line; do
+    [ "$line" = "$2" ] || continue
+    return 0
+  done < "$1"
+  return 1
+}
+(
+  ncn=0
+  while ! nc_has "$NTASK" "status: rework"; do
+    ncn=$((ncn + 1))
+    [ "$ncn" -lt 200000 ] || exit 1
+  done
+  sleep 0.01
+  # Written, then CHECKED, then written again if it did not stick: the verb's
+  # own `updated` write follows its `status` write by microseconds, and a
+  # fixture write the verb clobbered would leave a valid archetype and a test
+  # that silently measured the success path instead.
+  ncn=0
+  while [ "$ncn" -lt 200 ]; do
+    fm_set "$NTASK" archetype nosucharchetype
+    nc_has "$NTASK" "archetype: nosucharchetype" && break
+    ncn=$((ncn + 1))
+  done
+  ncn=0
+  while ! grep -q "REFUSED" "$NC_ARCH_OUT" 2>/dev/null; do
+    ncn=$((ncn + 1))
+    [ "$ncn" -lt 4000 ] || break
+    sleep 0.005
+  done
+  fm_set "$NTASK" archetype feature
+) &
+NC_BREAKER=$!
+NDRIVE_RC=0
+ORCHID_REPO="$NCD" ORCHID_EPOCH="$NEPOCH" "$DRIVE" >"$NC_ARCH_OUT" 2>&1 || NDRIVE_RC=$?
+wait "$NC_BREAKER" 2>/dev/null || true
+NDRIVE_OUT="$(cat "$NC_ARCH_OUT")"
+# Exit 13 IS the fixture witness: it is `archetype_validate`'s own refusal code
+# and nothing else in this verb returns it, so the arm really did meet a refused
+# advance rather than a merely unusual one.
+assert_match "rework -> blocked REFUSED \(exit 13\)" "$NDRIVE_OUT" \
+  "a refused stop reports the refusal, with the verb's own exit code (out: $NDRIVE_OUT)"
+assert_eq rework "$(nfield status)" \
+  "...and the task is where the refusal left it, not where the stop wanted it"
+if grep -q "rework -> blocked (not converging)" <<<"$NDRIVE_OUT"; then
+  fail "a pass whose block was refused must never log the edge it did not take — an operator reading it goes looking for a blocked task that is not there (out: $NDRIVE_OUT)"
+fi
+NCREFUSED_REASON="$(ncboundary | jq -r '.reason // ""')"
+assert_match "REFUSED" "$NCREFUSED_REASON" \
+  "the boundary an operator re-reads states the refusal it actually met (reason: $NCREFUSED_REASON)"
+assert_match "still in rework" "$NCREFUSED_REASON" \
+  "...and where the task really is, since the next pass will dispatch it again"
+if grep -qF "task is blocked:" <<<"$NCREFUSED_REASON"; then
+  fail "a refused stop must not record the BLOCKED-task boundary: that record asserts a state the verb refused to enter, and the walk that would recompute it never runs"
+fi
+
+# --- AB4: GREEN -- and the refusal is not a dead end -----------------------
+# The stop is idempotent: with the archetype repaired the very next pass takes
+# the same edge and completes it, so a refusal costs a pass rather than the
+# whole convergence guard.
+fm_set "$NTASK" archetype feature
+run_ndrive
+assert_eq blocked "$(nfield status)" \
+  "with the refusing precondition repaired, the next pass takes the stop it could not take before (rc=$NDRIVE_RC, out: $NDRIVE_OUT)"
+assert_match "rework -> blocked \(not converging\)" "$NDRIVE_OUT" \
+  "...and reports it this time, because this time it happened (out: $NDRIVE_OUT)"

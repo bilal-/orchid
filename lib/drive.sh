@@ -4301,8 +4301,8 @@ drive_blocked_cause() {
 # drive_blocked_kind <cause> -- the boundary KIND a blocked task is recorded
 # under, derived from the same durable cause drive_blocked_reason composes its
 # text from. `operator-decision` when the block came from a repo-wide
-# `merge_gate` that stayed red for every rework round the task had, and
-# `blocked-task` for every other block.
+# `merge_gate` that stayed red for every rework round the task had, or from a
+# rework loop that stopped converging, and `blocked-task` for every other block.
 #
 # WHY THE KIND IS DERIVED AND NOT PASSED. A capped repository gate is a judgment
 # about the REPOSITORY rather than a candidate defect (T023), and the pass that
@@ -4321,9 +4321,24 @@ drive_blocked_cause() {
 # declare no answers while the coverage for it asserted four. Section 12e of
 # tests/test_notify_hermes_channel.sh composes that page through THIS function
 # now, so the kind it exercises is the kind the driver files.
+#
+# THE NON-CONVERGENCE STOP IS THE SECOND CAUSE THAT LANDS HERE (T025), and it is
+# named in this `case` rather than composed at its own arm for exactly the reason
+# the paragraph above gives. docs/specs/kernel.md's rework-feedback rule promises
+# `blocked` "plus an `operator-decision` boundary", and the arm that files it is
+# again not the only pass that reports the stop: the walk meets the same blocked
+# task on every later pass and re-derives kind and reason from this journal
+# entry. An arm that hard-coded `set_boundary operator-decision "<its own
+# words>"` would therefore agree with the walk on the KIND and disagree on the
+# TEXT, which is a record that changes and a second qid for one stop -- the same
+# defect the gate-blocked page shipped, arriving by the other half of the pair.
+# A cause naming a red repo-wide gate matches the first pattern and never reaches
+# the second; both answers are `operator-decision`, so which one matched is only
+# ever a question of which sentence the operator reads.
 drive_blocked_kind() {
   case "${1:-}" in
     *gate_failed*|*merge_gate*) printf 'operator-decision\n' ;;
+    *"not converging"*) printf 'operator-decision\n' ;;
     *) printf 'blocked-task\n' ;;
   esac
 }

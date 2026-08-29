@@ -1841,10 +1841,44 @@ drive_verify_fail_pending_consume() {
 # keeping the judgment here prevents the merge-validation family from evading
 # the stop simply because its failure was discovered one phase later.
 #
-# Returns 0 when it blocked the task and raised a boundary, 1 when the streak
-# is still below the threshold. Call only as an `if` condition under set -e.
+# ONE STOP, ONE PAGE, THROUGH THE ROUTE EVERY OTHER BLOCK TAKES. This arm used
+# to do what the four arms drive_notify's header names did: raise its own
+# `orchid notify` AND record a boundary in its own third wording. That is three
+# questions for one decision -- the direct page (compared against nothing, so it
+# de-duplicates against nothing), the boundary the foot of this file pages for on
+# this pass, and the DIFFERENT boundary the blocked walk recomposes on the next
+# pass through drive_block_boundary. The operator answers one qid and the others
+# stand in BLOCKERS.md until `answer_expiry_s` turns them into refusals.
+#
+# So the stop blocks the task and then records the boundary its own block
+# produced, exactly as drive_testing's exhausted-budget arm and the merging arm
+# do. drive_block_boundary derives BOTH the kind and the reason from the journal
+# entry `task advance` just wrote, so this pass and every later walk of the same
+# blocked task compose byte-identical records -- which is what the de-dup at the
+# foot of this file needs to raise one blocker for a condition that persists, and
+# what gives the page a declared answer set (`unblock | retry | reverify |
+# defer`) instead of a bare `<choice>` placeholder. lib/drive.sh's
+# drive_blocked_kind files a non-convergence cause under `operator-decision`,
+# which is the kind docs/specs/kernel.md's rework-feedback rule names.
+#
+# THE REASON IS THEREFORE THE DURABLE ONE, and it is composed to fit
+# lib/drive.sh's `_DRIVE_QUOTE_MAX` so the page carries it whole. The long prose
+# this arm used to put on a one-shot notify now lives where prose belongs: in
+# `drive_note`, read by whoever is watching the pass. What has to survive onto
+# the page an operator meets over and over is shorter and fixed -- that the loop
+# is not converging, how many rounds said so, WHOSE wall it is, and the file to
+# read -- because a reason clipped mid-word is a page that names half a path.
+#
+# Returns 0 only when the task really is blocked. Returns 1 both when the streak
+# is below the threshold AND when the block was REFUSED: in the second case a
+# boundary is already recorded, and the caller's ordinary reporting is still the
+# truth, because the task really is still in `rework` and the next pass really
+# will dispatch it again. Claiming `rework -> blocked` on a refused advance --
+# or recording a boundary that asserts the stop succeeded -- would leave an
+# operator looking for a blocked task that is not there. Call only as an `if`
+# condition under set -e.
 drive_rework_nonconvergence_stop() {
-  local id="$1" context="$2" tf reps nc_max rwlog culprit
+  local id="$1" context="$2" tf reps nc_max rwlog rel whose remedy culprit reason barc
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = rework ] || return 1
   reps="$(fm_get "$tf" rework_signature_repeats)"
@@ -1854,27 +1888,44 @@ drive_rework_nonconvergence_stop() {
   [ "$nc_max" -gt 0 ] && [ "$reps" -ge "$nc_max" ] || return 1
 
   rwlog="$(rework_latest_log "$state" "$id" 0 2>/dev/null || true)"
-  # WHOSE WALL IT IS, appended rather than substituted. The stop itself is
-  # correct either way -- a loop this stuck needs a person, whatever put it
-  # there -- so the sentence that reports it stands unchanged and only the
-  # attribution is added. A red repo-wide `merge_gate` repeats identically by
-  # construction and is frequently not this task's doing at all: without this
-  # clause the one boundary an operator re-reads on every pass tells them to
-  # look at a loop and an engine, when what is red is the repository. Read
-  # from the captured evidence's own header, never inferred (the same rule
-  # findings_log_gate_failed applies for the merging arm above), and the
-  # dispatch side withholds the engine reroute on the same answer.
-  culprit=""
-  if [ -n "$rwlog" ] && findings_log_gate_failed "$rwlog"; then
-    culprit=" — and what repeats is the repository's own merge_gate, which this candidate was never asked about: no further implementer round can turn it green, so fix the repository (or this candidate, if the gate names it) rather than re-dispatching"
+  # Named the way every other evidence pointer in this file is named --
+  # repo-relative, not as the absolute path `rework_latest_log` returns. The
+  # page is one line on a phone; a machine-local prefix spends thirty of its
+  # characters saying nothing the operator did not already know.
+  rel=".orchid/reviews/"
+  [ -z "$rwlog" ] || rel=".orchid/reviews/${rwlog##*/}"
+  # WHOSE WALL IT IS. The stop itself is correct either way -- a loop this stuck
+  # needs a person, whatever put it there -- so only the attribution moves. A red
+  # repo-wide `merge_gate` repeats identically by construction and is frequently
+  # not this task's doing at all: without this clause the one boundary an
+  # operator re-reads on every pass tells them to look at a loop and an engine,
+  # when what is red is the repository. Read from the captured evidence's own
+  # header, never inferred (the same rule findings_log_gate_failed applies for
+  # the merging arm above), and the dispatch side withholds the engine reroute on
+  # the same answer. With NO captured log there is nothing to read it from, so
+  # the sentence claims neither party rather than guessing one.
+  whose=""; remedy=""; culprit=""
+  if [ -n "$rwlog" ]; then
+    if findings_log_gate_failed "$rwlog"; then
+      whose="repo merge_gate "
+      remedy="fix the repository; "
+      culprit=" — and what repeats is the repository's own merge_gate, which this candidate was never asked about: no further implementer round can turn it green, so fix the repository (or this candidate, if the gate names it) rather than re-dispatching"
+    else
+      whose="candidate-suite "
+    fi
   fi
-  "$ORCHID_BIN" notify --task "$id" \
-    "rework loop is not converging: $reps consecutive attempts produced an identical failure signature — see ${rwlog:-.orchid/reviews/}$culprit" >/dev/null
-  "$ORCHID_BIN" task advance "$id" blocked \
-    --reason "rework not converging: $reps consecutive attempts produced an identical failure signature$culprit" >/dev/null
-  drive_note "$id: $context, signature unchanged $reps times — rework -> blocked (not converging)"
-  set_boundary operator-decision "$id" \
-    "rework is not converging: $reps consecutive attempts produced a byte-identical failure signature — the loop is re-asking a question it has already been answered; see ${rwlog:-the captured rework logs under .orchid/reviews/}$culprit"
+  reason="rework not converging: $reps identical ${whose}rounds; ${remedy}see $rel"
+
+  barc=0
+  "$ORCHID_BIN" task advance "$id" blocked --reason "$reason" >/dev/null || barc=$?
+  if [ "$barc" -ne 0 ]; then
+    drive_note "$id: $context, signature unchanged $reps times — rework -> blocked REFUSED (exit $barc); the task is still in rework$culprit"
+    set_boundary operator-decision "$id" \
+      "rework is not converging ($reps consecutive attempts produced a byte-identical failure signature; see $rel) but rework -> blocked was REFUSED (exit $barc) — the task is still in rework and the next pass will dispatch it again; stop it by hand with: orchid task advance $id blocked --reason \"...\"$culprit"
+    return 1
+  fi
+  drive_note "$id: $context, signature unchanged $reps times — rework -> blocked (not converging)$culprit"
+  drive_block_boundary "$id"
   return 0
 }
 

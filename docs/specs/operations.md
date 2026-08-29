@@ -394,6 +394,11 @@ this section false without touching a byte of it.
   is what keeps the one block filed under a different kind — a repo-wide
   `merge_gate` red at the rework cap, an `operator-decision` — recomputing to
   that same kind on every later walk instead of changing under the task.
+  A rework loop stopped for non-convergence (T025) is the second cause that
+  derivation files under `operator-decision`, and it reached the same route
+  the same way: the arm shipped raising its own notify AND recording a
+  boundary in its own second wording, so one stuck loop asked the operator
+  twice on the pass that blocked it and a third time on the next.
   De-duplicating against the boundary RECORD instead — which is what the first
   repair of those arms did — fails the same sentence in the other direction.
   Only one boundary is recorded per pass, so a stop that loses the ranking has

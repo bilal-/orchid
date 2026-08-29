@@ -196,7 +196,8 @@ stateDiagram-v2
     merging --> rework: validation failed
     merging --> testing: base moved - rebase, then re-verify and re-review (INV-07)
     rework --> implementing: rework spec written (3 attempts max)
-    testing --> blocked: attempts exhausted, or the same failure repeating unchanged - a human is pinged
+    testing --> blocked: attempts exhausted - a human is pinged
+    rework --> blocked: the same failure signature repeating unchanged - the loop is not converging, so a human is pinged
     blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
     done --> [*]
     note right of blocked
