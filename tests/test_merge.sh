@@ -1883,13 +1883,18 @@ assert_eq "" "$(cat "$stdin_probe")" \
 # RED (before this fix): no warning at all -- merge is silent while run state
 # is already on its way into the product's history.
 # ---------------------------------------------------------------------------
+# T007's preceding scenarios deliberately finish with a red repository gate
+# configured. Containment is the only variable in the two cases below, so
+# restore the no-gate baseline before creating either candidate.
+set_gate ""
+
 "$ORCHID_BIN" task create T042 "containment green twin"
 git checkout -q -b task/T042 "$integ"
-echo seven > feature7.txt && git add feature7.txt && git commit -q -m "feature 7"
+echo green > containment-green.txt && git add containment-green.txt && git commit -q -m "containment green candidate"
 cand7="$(git rev-parse HEAD)"
 git checkout -q "$integ"
 base7="$(git rev-parse "$integ")"
-walk_to_merging T042 task/T042 "$base7" "$cand7" "test -f feature7.txt"
+walk_to_merging T042 task/T042 "$base7" "$cand7" "test -f containment-green.txt"
 
 out7="$WORK/merge7.out"; rc=0
 "$ORCHID_BIN" merge T042 >"$out7" 2>&1 || rc=$?
@@ -1916,11 +1921,11 @@ git worktree remove --force "$leak_wt"
 
 "$ORCHID_BIN" task create T043 "containment red case"
 git checkout -q -b task/T043 "$integ"
-echo eight > feature8.txt && git add feature8.txt && git commit -q -m "feature 8"
+echo red > containment-red.txt && git add containment-red.txt && git commit -q -m "containment red candidate"
 cand8="$(git rev-parse HEAD)"
 git checkout -q "$integ"
 base8="$(git rev-parse "$integ")"
-walk_to_merging T043 task/T043 "$base8" "$cand8" "test -f feature8.txt"
+walk_to_merging T043 task/T043 "$base8" "$cand8" "test -f containment-red.txt"
 
 # stdout and stderr captured SEPARATELY, in the one run this task has: the
 # warning belongs on stderr, so a caller parsing merge's result line never has
