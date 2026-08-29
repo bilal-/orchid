@@ -296,6 +296,100 @@ assert_eq "shell" "$uncovered" \
   "INV-16: and names the atom the actor did not claim"
 
 # ===========================================================================
+# 3b -- THE UNKNOWN STEP THAT VALIDATED ANYWAY: a COMPOUND name.
+#
+# The closed set is a space-padded string and membership is asked as
+# `case " a b c " in *" $step "*)`. That is a membership test only while $step
+# is ONE WORD. Two ADJACENT row names joined by the single space that already
+# separates them -- `review critique` -- is a substring of the set, so the step
+# validated as kernel-owned, and everything downstream trusts that answer:
+# capability_step_requires has no arm for it and prints nothing, and
+# capability_routing_refusal reads a step priced at nothing as one it must not
+# refuse, returning 0 without resolving an actor at all.
+#
+# It is not a curiosity, because this function is the ONLY thing that validates
+# the operation name a caller hands `orchid jobs prepare` (its exit 3 is what
+# libexec/orchid-jobs turns into "unknown operation"). Part 4 below proves the
+# same verb refuses `reviewww`; with a space instead of a misspelling it minted
+# a job for an operation no adapter has ever heard of, against ANY actor -- the
+# typo-prices-itself-at-nothing fail-open this file exists to close, arriving
+# through the membership test rather than through the table.
+#
+# Asserted over EVERY adjacent pair rather than one of them, so the guard cannot
+# be satisfied by special-casing the pair that was reported.
+_prev=""
+while IFS= read -r _step; do
+  [ -n "$_step" ] || continue
+  if [ -n "$_prev" ] && capability_step_valid "$_prev $_step"; then
+    fail "INV-16: the compound step name '$_prev $_step' must NOT validate as kernel-owned — two adjacent rows joined by the separator are a substring of the padded set, and a step that validates without being priced admits every actor it is asked about"
+  fi
+  _prev="$_step"
+done <<< "$(printf '%s' "$_CAPABILITY_STEPS" | tr ' ' '\n')"
+
+# ...and it is reported as the CALLER's error, exactly as any other name outside
+# the set is: the actor named beside it is not implicated, and `withshell`
+# declares every atom both halves of this compound are priced at, so under the
+# defect this call was answered 0 and the routing went ahead.
+rc=0; why="$(capability_routing_refusal "review critique" withshell)" || rc=$?
+assert_eq 3 "$rc" \
+  "INV-16: a compound step name is a malformed request (3), never a step priced at nothing (0) and never the actor's shortfall (1)"
+assert_match "no step named" "$why" \
+  "INV-16: and the refusal says the step name is unknown"
+case "$why" in
+  *withshell*) fail "INV-16: a compound step name must not name the actor — it declares everything both halves need and is not at fault" ;;
+esac
+# The helper the gate is built out of answers the same way, for the same reason
+# the unknown-step assertions above give: a caller reading its OUTPUT alone must
+# not be handed a clean "nothing uncovered" for a step nothing ever priced.
+rc=0; uncovered="$(capability_step_uncovered "review critique" "$WORK/eng/withshell")" || rc=$?
+assert_eq 3 "$rc" \
+  "INV-16: capability_step_uncovered refuses a compound step as a caller error too, so the two never disagree about who is at fault"
+assert_eq "" "$uncovered" \
+  "INV-16: and prints nothing with it"
+red_case 'a compound step name built from two adjacent rows of the padded set (review critique) was refused as a caller error instead of validating as kernel-owned, being priced at nothing and admitting an actor'
+
+# GREEN twin: EACH HALF ALONE is untouched. Without this the guard above would
+# be evidence only that something rejects strings with spaces in them, and a
+# guard that had also stopped `review` validating would take every refusal in
+# this file with it.
+capability_step_valid review \
+  || fail "INV-16: 'review' must still validate on its own — the compound guard rejects a name that is not one token, not the tokens"
+capability_step_valid critique \
+  || fail "INV-16: and so must 'critique'"
+rc=0; why="$(capability_routing_refusal review withshell)" || rc=$?
+assert_eq 0 "$rc" \
+  "INV-16: and the same actor is still admitted the review step it covers, so the caller error above is about the compounding"
+rc=0; why="$(capability_routing_refusal critique withshell)" || rc=$?
+assert_eq 0 "$rc" "INV-16: and the critique step likewise"
+green_case 'each half of that compound still validated and was still routable to the same actor, so the refusal is about a step name that is not one token rather than about those two steps'
+
+# THE SAME IDIOM, THE OTHER SIDE, AND THE DIRECTION THAT MATTERS MOST: the
+# actor's own claim. `capabilities=` is split on COMMAS ONLY, so a manifest
+# declaring `deploy shell` yields ONE entry containing a space; appended
+# verbatim to the space-bounded string the coverage test reads, it made " shell "
+# a substring and the plugin satisfied a `shell` requirement it never claimed.
+# That is an actor declaring its way past a kernel-owned gate, which is the one
+# thing this file's header says a claim may never buy.
+mk_engine compoundcaps "workspace_write,deploy shell,git"
+assert_eq "$(printf 'workspace_write\ndeploy shell\ngit')" "$(manifest_capabilities "$WORK/eng/compoundcaps")" \
+  "INV-16 fixture: the manifest must really carry a whitespace-bearing entry, or the assertion below tests nothing"
+rc=0; why="$(capability_routing_refusal mechanical compoundcaps)" || rc=$?
+assert_eq 1 "$rc" \
+  "INV-16: an atom that only appears INSIDE a whitespace-bearing manifest entry is not a claim — no capability atom this kernel knows contains whitespace, and manifest_validate already fails such a manifest as an unknown atom"
+assert_match "missing: shell" "$why" \
+  "INV-16: and the refusal names shell as missing rather than reading it out of the middle of another string"
+red_case 'a manifest declaring the whitespace-bearing entry "deploy shell" was still refused the shell-requiring mechanical step, instead of satisfying it from a substring of an atom the kernel has never heard of'
+
+# GREEN twin: the same manifest with the same atom declared PROPERLY, as its own
+# comma-separated token, covers the step — so the refusal above is about the
+# entry not being an atom rather than about the word appearing at all.
+mk_engine splitcaps "workspace_write,deploy,shell,git"
+rc=0; why="$(capability_routing_refusal mechanical splitcaps)" || rc=$?
+assert_eq 0 "$rc" \
+  "INV-16: declared as its own token, shell covers the step exactly as it always did"
+green_case 'the same declaration split into its own comma-separated token covered the step, so dropping the whitespace-bearing entry refuses a non-atom rather than the atom hidden inside it'
+
+# ===========================================================================
 # 4 -- END TO END, and the hole a role gate cannot close. `orchid jobs prepare`
 # is where a (task, role, operation) triple is BOUND to an engine.
 #
@@ -471,6 +565,50 @@ case "$err" in
   *"refusing to route"*) fail "INV-16: a role-eligibility refusal must not be phrased as a routing refusal — the step table admitted this actor, and an operator sent to look for a missing step capability finds none" ;;
 esac
 green_case 'the same prepare with an actor covering the step but not the role was still refused at 14 by the role gate, naming the ROLE capability — so asking the step table first is an ordering of reports rather than a way past the role gate'
+
+# ===========================================================================
+# 4d -- THE COMPOUND STEP AT THE VERB, where the cost of part 3b's defect was
+# actually paid.
+#
+# Part 4 proves `orchid jobs prepare TC runner reviewww` is refused and mints
+# nothing. That refusal is not the verb's own: prepare validates no operation
+# NAME of its own -- the closed set behind capability_step_valid is the whole of
+# it, reached through prepare_capability_gate's exit-3 arm. So a name that got
+# past that set got past the verb, and `review critique` did: priced at nothing,
+# admitted by the chain gate, carried through resolution and MINTED, binding a
+# real engine to an operation no adapter has ever heard of and no envelope union
+# names. The job then fails at the adapter, having spent the launch.
+#
+# The actor bound here declares everything BOTH halves are priced at, so nothing
+# else in the walk had any objection to raise -- the only thing standing between
+# this call and a minted manifest is the step name being one token.
+# ===========================================================================
+printf 'verify=true\nrole.runner=withshell\n' > "$crepo/orchid.config"
+jobs_before="$(list_dir_files "$crepo/.orchid/runtime/jobs" | wc -l | tr -d ' ')"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TC runner "review critique" 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "INV-16: a compound operation name must not be accepted by orchid jobs prepare — it is priced by nothing, so admitting it binds an engine to work the kernel has never defined"
+assert_match "unknown operation" "$err" \
+  "INV-16: and is reported as an unknown operation, the same words a mistyped one gets"
+[ "$rc" -ne 19 ] \
+  || fail "INV-16: and NOT as a capability refusal — 19 is a journaled operator hand-off about the actor, and this actor declares everything both halves of the name are priced at"
+assert_eq "$jobs_before" "$(list_dir_files "$crepo/.orchid/runtime/jobs" | wc -l | tr -d ' ')" \
+  "INV-16: and mints no job manifest — a prepared job is a step already assigned"
+red_case 'orchid jobs prepare refused the compound operation "review critique" as an unknown operation and minted nothing, instead of validating it against the padded step set, pricing it at nothing and binding a capable engine to an operation no adapter serves'
+
+# GREEN twin: the same verb, the same role, the same actor, ONE of those two
+# names. Without it the refusal above would be evidence only that prepare
+# dislikes an argument with a space in it.
+#
+# `critique` rather than `review` because part 4b already minted this task's
+# `runner`/`review` slot at this same attempt, and an unlaunched manifest there
+# is one prepare deliberately refuses to duplicate (T027) -- an exit this part
+# would have read as its own.
+rc=0; mf4d="$("$ORCHID_BIN" jobs prepare TC runner critique)" || rc=$?
+assert_eq 0 "$rc" \
+  "INV-16: the same actor is still routable a single-token step through the same role, so the refusal above is about the compound name"
+[ -f "$mf4d" ] || fail "INV-16: and mints the job manifest it always did"
+green_case 'the identical prepare with a single-token operation (critique, the other half of that compound) minted its job, so refusing the compound one is a decision about the step name rather than the verb having stopped working'
 
 # ===========================================================================
 # 5 -- THE DIRECTION THE RULE MAY NEVER RUN IN. A declaration is a claim, not

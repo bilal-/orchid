@@ -59,7 +59,34 @@
 # Space-padded for the substring membership idiom this codebase already uses.
 _CAPABILITY_STEPS=" implement review critique research hook orchestrate mechanical "
 
+# A SINGLE-TOKEN ARGUMENT IS WHAT MAKES THE PADDED IDIOM A MEMBERSHIP TEST, and
+# this is the one place in this file where the argument comes from a CALLER.
+# `case " a b c " in *" $1 "*)` asks whether the padded list CONTAINS the padded
+# argument, which is the same question as membership only while the argument is
+# one word: the rows are separated by single spaces, so " review " can sit
+# nowhere but where the `review` row is. A COMPOUND argument breaks that
+# equivalence -- `review critique` names two ADJACENT rows, so
+# " review critique " is a substring of the list and the step validated as
+# kernel-owned. Nothing downstream caught it afterwards, because everything
+# downstream trusts this answer: capability_step_requires has no arm for it and
+# prints nothing, capability_routing_refusal reads that as a step priced at
+# nothing and returns 0 without resolving an actor at all, and `orchid jobs
+# prepare <task> <role> 'review critique'` -- whose ONLY validation of the
+# operation name is this function's exit 3 (libexec/orchid-jobs'
+# prepare_capability_gate) -- minted a job for an operation no adapter has ever
+# heard of, against any actor whatsoever. That is exactly the fail-open the
+# comment above says this closed set exists to close, a typo pricing itself at
+# nothing and thereby routing anything anywhere, reached with a space instead of
+# a misspelling.
+#
+# So the argument must be ONE non-empty token before it is looked up at all, and
+# a step name that is not is refused here rather than being read as a row this
+# table happens not to price. `_capability_have`'s identical idiom needs its own
+# version of this guard for the opposite side -- see its header.
 capability_step_valid() {  # step -> 0 iff kernel-owned
+  case "$1" in
+    ''|*[[:space:]]*) return 1 ;;
+  esac
   case "$_CAPABILITY_STEPS" in
     *" $1 "*) return 0 ;;
     *) return 1 ;;
@@ -274,11 +301,29 @@ _capability_oneline() {
 # string leaves the array genuinely UNSET rather than empty, which every caller
 # of this file aborts on under `set -u`. Same idiom lib/roles.sh's
 # role_eligibility_reason and lib/capsuite.sh already use for the same reason.
+#
+# AN ENTRY THAT IS NOT ONE TOKEN IS NOT AN ATOM, and dropping it is the same
+# guard capability_step_valid applies to the other side of the same idiom -- in
+# the direction that matters here, because this string is the HAYSTACK and its
+# contents are written by the plugin. `capabilities=` is split on COMMAS ONLY
+# (lib/manifest.sh's _manifest_split_csv trims each token's outer whitespace and
+# keeps its inner), so a manifest declaring `capabilities=deploy shell` yields
+# one entry `deploy shell`, and appending it verbatim would make " shell " a
+# substring of this string: the plugin would satisfy the `shell` requirement of
+# every step priced on it while claiming no such atom. That is an actor
+# declaring its way past a kernel-owned gate -- the one direction this file's
+# header says a claim may never buy anything -- and it costs nothing to close,
+# because no capability atom this kernel knows contains whitespace
+# (lib/capabilities.txt) and manifest_validate already fails such a manifest
+# outright as an unknown atom. Skipping it here simply makes the routing gate
+# agree with that verdict on a manifest nothing re-validated at read time.
 _capability_have() {
   local have=" "
   local atom
   while IFS= read -r atom; do
-    [ -n "$atom" ] && have="$have$atom "
+    [ -n "$atom" ] || continue
+    case "$atom" in *[[:space:]]*) continue ;; esac
+    have="$have$atom "
   done < <(manifest_capabilities "$1" 2>/dev/null)
   printf '%s' "$have"
 }
