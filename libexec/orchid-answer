@@ -7,7 +7,7 @@ source "$ORCHID_ROOT/lib/common.sh"
 # ...) -- answer_allowlist below reuses it rather than inventing a second
 # split idiom.
 source "$ORCHID_ROOT/lib/manifest.sh"
-repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runtime "$repo")"
+repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"
 verb_lock_guard "$repo"
 
 qid=""; choice=""; nonce_arg=""
