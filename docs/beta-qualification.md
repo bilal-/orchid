@@ -143,7 +143,23 @@ rather than in any candidate — see [contributing.md](./contributing.md).)
 
 That asymmetry is why `implementer-shell` is only a floor: a *missing* `shell`
 declaration is decisive, because the profile certainly cannot run commands, while
-a *present* one settles nothing. Proving the grant needs a live vendor round trip
+a *present* one settles nothing.
+
+The kernel now acts on the decisive half rather than only reporting it
+(INV-16, `lib/capability.sh`): a step whose declared requirements the resolved
+actor does not cover is refused at `orchid jobs prepare` (exit 19) instead of
+being dispatched. Note what that does *not* buy an operator here. A missing
+`shell` on an implementer was already decisive at the ROLE gate —
+`roles/implementer.role` requires it, so such an engine is refused the role
+(exit 14) before it can build a candidate — and the profile this probe is about
+is the opposite case: `claude` *declares* `shell`. Nothing in INV-16 sees that,
+so `handoff_before_verify` stays the operator's to set for it. It acts on the
+decisive half ONLY. Nothing derives a
+runtime permission from a *present* atom, and no gate anywhere reads one as
+grounds to skip another — which is why this probe's verdict on a declaring
+profile is still `pass` with the caveat attached rather than a clean bill, and
+why `implementer-command-execution` below remains the fact neither this harness
+nor that rule can settle. Proving the grant needs a live vendor round trip
 with real quota, which this harness will neither spend nor contact, so
 `implementer-command-execution` is recorded as `not-tested` with the manual
 procedure attached. **Do that manual step once per implementer profile** (see the

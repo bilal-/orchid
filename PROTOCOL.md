@@ -287,7 +287,7 @@ The kernel-owned boundary kinds:
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
 | `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository — or its state cannot be read at all, which is refused in the same direction rather than taken for a clean tree |
-| `operator-handoff` | `handoff_before_verify` is on and this candidate's execution-requiring mechanical steps are not acknowledged for it — see "The operator hand-off" below |
+| `operator-handoff` | work no actor in the loop declares the capability for: a step whose requirements the resolved actor's manifest does not cover, so it was never dispatched (INV-16, `orchid jobs prepare` exit 19) — or this candidate's execution-requiring mechanical steps are not acknowledged for it, because `handoff_before_verify` is on, or because its implementer is installed under neither name it is looked up by — the directory a binding names, or the qualified `id=` a manifest claims. See "The operator hand-off" below |
 | `task-prerequisite` | the task declares an `operator_prerequisite` — a step outside the sandbox its verification depends on — that nobody has acknowledged for this candidate; raised by either stage that runs the suite (see THE TICK's `testing` and `merging` steps) |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
 | `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree |
@@ -533,6 +533,15 @@ sequence in
    the refusal clears without intervention; `orchid jobs gc --reap-prepared
    --older-than-s 0` clears it immediately. Fix the launch failure first — the
    launcher's stderr names it.
+
+   *Exit 19 is the one that no reap and no re-run clears.* It means the engine
+   bound to `role.plan_critic` does not declare what a `critique` step needs
+   (INV-16), and nothing about a later attempt changes that: relaunching it
+   loops this step forever. The launcher journals it against the reserved `plan`
+   id as it goes, so `orchid journal show --task plan` carries the record, but
+   the remedy is an operator's — bind an engine whose manifest covers the step
+   at `role.plan_critic`, or perform the critique by hand. Do not fold it into
+   the relaunch ladder above.
 
    *That reap is preceded by an account, and the ordering is the point.* You
    are the one running these launchers — there is no `orchid drive` wrapping
@@ -938,8 +947,9 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, `timeout`,
 - *A launch that FAILS is a job failure too.* `runners/orchid-launch` does
   real work before it spawns: it prepares the job, then builds the input
   pack. A non-zero exit from it — anything but `14` (`no eligible engine`,
-  the WAIT above) and `18` (`this slot already has an unlaunched manifest`,
-  below) — means no engine started, so there is nothing for `jobs check` to
+  the WAIT above), `18` (`this slot already has an unlaunched manifest`,
+  below), and `19` (`step not routable`, handed to an operator below) — means
+  no engine started, so there is nothing for `jobs check` to
   call `dead`, no envelope for `reconcile` to mark the engine with, and no
   reason to expect one later. Treat it exactly like a dead job: journal it and
   walk this ladder (`orchid task infra-fail <task-id> --reason "the launcher
@@ -1460,6 +1470,37 @@ ones its archetype never declares.
     repository's own gates itself — nothing gates and no boundary is ever
     raised. Any value other than `off` reads as `required`, so a typo can only
     route more work to a human, never less.
+  - *And the arm that asks for the same pause without being configured* (v1.1,
+    INV-16). Where the `mechanical` step cannot be ROUTED to the engine that
+    built this candidate, the pause is asked for whatever the config key says —
+    the same rule that makes `orchid jobs prepare` refuse any step whose
+    declared requirements the resolved actor does not cover (exit 19, nothing
+    minted, no attempt spent; `lib/capability.sh`). The two arms compose and
+    never override — either turns the pause on, neither turns the other off —
+    because a capability atom is a claim by the plugin, not a grant, so an
+    engine's own declaration must never clear a gate an operator set.
+    **What this arm closes on its own** is the actor that cannot be RESOLVED to
+    a manifest at all: it asks for the pause and the boundary NAMES it, because
+    a capability gate that cannot identify an engine refuses rather than
+    permits. A third-party plugin is not that case — the actor is looked up
+    both by the directory a binding names and by the qualified `id=` an
+    installed manifest claims (`acme/foo`), so it is priced from its own
+    manifest like any other. Refusing the qualified form instead would exempt
+    no one but hold every candidate a third-party engine builds at a hand-off
+    no operator act can clear, since nothing a human does makes an unresolvable
+    name resolve.
+    **What it does NOT do is spare an operator the config key.** Its other
+    outcome — the engine that built the candidate declares no `shell` — cannot
+    arise for a candidate this kernel dispatched: `roles/implementer.role`
+    declares `requires=workspace_write,shell,git`, and the role gate refuses an
+    engine that declares no `shell` at exit 14 long before it could build a
+    candidate for this pause to hold. That half is defense in depth against the
+    role descriptor changing, and the answer for a task where no dispatch ever
+    recorded which engine built the candidate — never a pause a healthy running
+    repository meets.
+    The config key remains the ONLY cover for the case the kernel cannot see: a
+    profile that DECLARES `shell` and is still not granted it, which the
+    shipped `claude` adapter is on its implement path.
 
   **This is not the operator prerequisite, and a task can be held by both.**
   The hand-off is repository CONFIG about mechanical work INSIDE the
@@ -2301,8 +2342,85 @@ one-pass driver could otherwise stop progressing in silence:
     admits it.
   Either way the task keeps a legal, recorded exit; `orchid task advance <id>
   blocked --reason "..."` remains the universal one when neither fits.
+- **A step no actor can be shown to cover is never dispatched.** Before a pass
+  spawns anything, `orchid jobs prepare` refuses (exit 19) to bind a step to an
+  engine whose manifest does not declare what that step's work needs — nothing
+  minted, nothing spawned, no attempt spent. The driver journals the refusal
+  against the task and records an `operator-handoff` boundary. Unlike exit 14
+  this is never retried: no later pass makes the same actor able to do the same
+  work. The requirements are kernel data, never a role descriptor a plugin
+  ships (INV-16, `lib/capability.sh`), so an actor cannot declare a role that
+  asks for nothing and route itself past the gate that way. Where the caller
+  named the actor — `prepare --engine`, which is how a reviewer slot is
+  dispatched — that question is asked *before* the role-eligibility walk, so a
+  slot pinned to an engine both gates refuse is handed over rather than waited
+  on. It orders two reports and waives neither: an engine that covers the step
+  and is still ineligible for the role is refused there, at 14, in that gate's
+  own words. That boundary names its remedy the same way every other
+  reviewer-slot boundary above does: the config key the slot's engine actually
+  resolved from (`role.reviewer`, `review.<tier>`, or neither — the fallback
+  says so in words), **and** `orchid jobs review-plan <id> --repin`, because
+  the attempt's plan is pinned and binding a capable engine does not by itself
+  move a pinned row.
+  Where NO actor was named — the ordinary dispatch, which resolves the role's
+  failover chain — the same question is asked of every entry in that chain,
+  *before* resolution runs. A chain that yields nobody
+  normally exits 14, and waiting is right when it emptied over a rate limit,
+  an unproven fallback or a plugin not installed yet; it is wrong when every
+  entry is short an atom the step needs, because no window reopens and the
+  walk would meet that task every pass forever. So that case answers 19 too,
+  and only that case: one entry the table does not refuse leaves the chain the
+  wait it was — which is also why asking first can refuse no dispatch that
+  would have happened, and why the exit-19 refusal is emitted *alone* rather
+  than beside the exit-14 wait line the caller must not act on. This is the arm
+  most shortfalls actually take — a built-in
+  role's `requires=` and its step's price are the same atoms, so the role gate
+  refuses before any actor resolves.
+  Resolution itself is told which step it is picking for, so an entry that
+  cannot perform the work is failed over rather than settled on: a role-eligible
+  but incapable primary must not shadow a capable, capsuite-proven fallback
+  standing behind it in the same chain. A fallback still activates only once
+  `orchid plugins test` has proved it for the role — skipping an entry is not
+  promoting the next one past the failover rules.
+- **A wake nobody can perform is handed over, not polled.** The `orchestrate`
+  step reaches no `jobs prepare` at all: the tick builds its own request
+  document, and the pump decides whether to run it from a dry availability
+  probe that prints `no capable orchestrator available` and exits 0. That is
+  the right report for a rate limit or an unproven fallback and the wrong one
+  when every engine in `role.orchestrator`'s chain is short `shell` or `git` —
+  then it is one line per staleness window forever, with the judgment boundary
+  the driver just raised left for an orchestrator that is never coming. Both
+  runners classify the chain before the wake: the tick exits 19 instead of 14,
+  and both record ONE operator hand-off (`orchid notify` — journalled,
+  then `BLOCKERS.md`, deduped against that blocker so a hundred passes raise
+  one) and print the refusal without the poll line. The tick records it too
+  because a scheduler may be pointed straight at it, and a 19 into a crontab is
+  a silence; the two share the sentence and the receipt, so whichever runs
+  first records the fact and the other finds it rather than restating it. That
+  dedup is scoped to the incident, not to the file: `BLOCKERS.md` is
+  append-only, so an entry the operator has ANSWERED (`orchid answer`) stops
+  suppressing, and a shortfall that returns after somebody settled the last one
+  raises a fresh blocker, a fresh journal line and a fresh qid rather than
+  meeting a closed entry's silence. An entry with no runtime record left counts
+  as still open — a resolution is shown, never assumed.
+  Neither overwrites the boundary record; `orchid drive` owns that, and the
+  record names the task actually waiting.
+- **A refused launch is journaled by the launcher, wrapped or not.**
+  `runners/orchid-launch` writes the hand-off sentence against the task the
+  moment `orchid jobs prepare` answers 19, because not every launch has a
+  driver behind it: `PLANNING` runs `runners/orchid-launch plan plan_critic
+  critique` and its hook points from the orchestrator itself, and you may drive
+  THE TICK's launcher calls by hand. `orchid drive` still records the
+  `operator-handoff` boundary on the passes it ran the launcher, and finds that
+  same line already journaled rather than writing a second one. The reserved
+  `plan` id has no task file and so no counter and no boundary — its record is
+  the journal, read with `orchid journal show --task plan`.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
-  Where `handoff_before_verify` is `required`, a pass reaching a `testing`
+  Where `handoff_before_verify` is `required`, or where the engine that built
+  the candidate cannot be routed its mechanical steps at all — in a running
+  repository that means an implementer that resolves to no installed manifest,
+  since the role gate already refuses one declaring no `shell` — a pass
+  reaching a `testing`
   task compares `handoff_ack` against the task's current `candidate_sha` and
   against `HEAD` of the tree it would verify, before it runs anything. All
   three equal: it verifies, exactly as it always did.

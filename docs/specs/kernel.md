@@ -1618,6 +1618,9 @@ semantic correctness beyond declared verification commands.
 - INV-13 the deterministic driver mutates durable/cross-process state only
   through named verbs, and decides only on structured fields
 - INV-14 no kernel source branches on any discovered engine identifier
+- INV-16 a step is never dispatched to an actor whose manifest does not
+  declare what that step's work needs; it becomes an operator hand-off with a
+  named, journaled boundary instead
 
 ## Proof discipline: every gate ships a RED case (v1.1)
 
@@ -1732,8 +1735,213 @@ boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 PROTOCOL.md's "Judgment boundaries" section for the non-overlapping
 arbitration truth table.
 
-`operator-handoff` (v1.1) is the one raised BETWEEN an implementer's envelope
-reconciling and verification, where `handoff_before_verify` asks for it: some
+`operator-handoff` (v1.1) is raised where work belongs to an operator because
+no actor in the loop declares what performing it needs. There are two ways in
+and one meaning.
+
+The first is a step that could not be ROUTED at all (v1.1, INV-16). `orchid
+jobs prepare` is where a (task, role, operation) triple is bound to an engine,
+and it refuses with exit 19 — minting nothing, spawning nothing, spending no
+attempt — when the resolved actor's manifest does not declare what that step's
+work needs. The requirements are kernel data (`lib/capability.sh`), not a role
+descriptor: `implement` needs `workspace_write`, `shell` and `git` (it does not
+end when a file changes — it DELIVERS A COMMIT, and entry to `testing` is
+refused without a `candidate_sha` that is the task worktree's HEAD, so an actor
+that edits and commits nothing spends the attempt and produces nothing to
+judge; `roles/implementer.role` has required exactly those three since it
+shipped, and a kernel-owned row weaker than the role carrying the same work
+would admit that actor through any custom role asking for nothing),
+`orchestrate` needs `shell`
+and `git` (the same implication `lib/conform.sh` already uses to decide which
+operations to probe a plugin for — for `implement` that file asks only whether
+a plugin may be PROBED for the envelope, which one atom answers, so the two
+tables differ there by asking different questions), `review` and `critique` need
+`structured_text` (both produce an envelope the kernel parses a verdict and
+`findings[]` out of; the built-in judging roles require the same atom, so the
+rows are defense in depth there and load bearing under a custom role),
+`research` needs `structured_text` and `citations` (its envelope union is
+`citations[]` + `summary`, and `acme/researcher`'s own descriptor asks for the
+same two — the same defense-in-depth relationship `review` has to
+`roles/reviewer.role`), and the
+`mechanical` step — the candidate's execution-requiring work — needs `shell`.
+Every operation the request union names is priced, including one no shipped
+adapter serves yet: an unpriced step is not answered "needs nothing" but with
+the caller-error arm, which reports a documented operation as a malformed
+request and reaches the driver as an ordinary launch failure charged to the
+task's `infra_failures` ladder.
+`hook` is the one step priced at nothing, deliberately: a handler is bound by
+name from config rather than by role at all, and no hook contract has ever
+asked one for a capability. A row priced at nothing is a statement, never an
+omission — an unpriced step is one this gate cannot refuse. The table is
+deliberately not derived from `requires=`/`forbids=`: a `kind=role` plugin
+ships its own `descriptor.role`, so a publisher can declare a role that asks
+for nothing and bind its own engine
+to it — a capability is a **claim by the plugin, never a grant**, and a claim
+must not be able to vote itself past a gate. The rule therefore only ever
+REFUSES: a *missing* atom is decisive (the profile certainly cannot do the
+work) while a *present* one settles nothing, so nothing built on it may read a
+clean answer as permission. The refusal is journaled against the task by
+`runners/orchid-launch`, the moment prepare answers 19, and `orchid drive`
+records this boundary; neither retries it, because unlike exit 14 no later pass
+makes the same actor able to do the same work. **The journal half belongs to the
+launcher because not every launch has a driver behind it.** `PLANNING` runs
+`runners/orchid-launch plan plan_critic critique` and its hook points from the
+orchestrator itself, and a session may drive THE TICK's launcher calls by hand;
+on those paths a 19 that only printed to stderr left the loop stopped with
+nothing in the run's history saying why. Both writers use one sentence and one
+once-per-distinct-line rule, so a driver pass finds the launcher's line already
+there and adds only the boundary. The reserved `plan` id has no task file and so
+no boundary of its own: like every other planning launch failure, its record is
+the journal, read with `orchid journal show --task plan`.
+
+Where the CALLER NAMED the actor (`prepare --engine`), the step question is
+asked *before* the role-eligibility walk, because both gates can refuse one
+call while only one answer reaches the driver — and the driver reads 14 as a
+wait. The case that decides it is a reviewer slot: `review_routing`'s
+session-independent fallback hands slot 1 the engine that BUILT the candidate,
+skipping the reviewer eligibility check every chain entry passes, so the slot
+can be pinned to an implementer engine that declares no `structured_text`.
+Asked in the other order that comes back 14, the routing refusal never fires
+and no hand-off is journaled — the task simply stops moving. The ordering
+reports which fact is permanent; it grants nothing. Control falls through to
+the role gate whenever the step is covered, and an engine ineligible for a role
+over a capability the *step* does not need is still refused there, at 14, in
+that gate's own words.
+
+Where NO actor was named — the ordinary dispatch, which resolves the role's
+failover chain — the same question is asked TWICE, of two different
+populations, and neither asking replaces the other.
+
+*Of the whole chain, ahead of resolution.* `resolve_role_available` exits 14
+when no entry is discovered, role-eligible, ledger-available and
+capsuite-passed, and 14 is a wait; that is the right reading for the reasons a
+chain usually comes up empty, all of which clear on their own or with one
+command. It is exactly wrong when every entry is short an atom the step's work
+needs: no window reopens, so the driver waits, journals nothing, raises no
+boundary and meets the same task every pass forever. So the chain is classified
+first and that case answers 19 — and only that case. Asking first cannot refuse
+a dispatch that would have happened, because the classification refuses only
+when EVERY entry is short and a chain with one entry it does not refuse is one
+resolution may still pick from. What asking first buys is a single report:
+behind the resolution, the wait line was already on stderr by the time the
+refusal could be printed, and an operator met a wait and a permanent refusal
+about one call with no way to tell which described their repository. The wait
+line is now printed exactly when the wait is real.
+
+*And of each entry, during resolution.* The walk is told which STEP it is
+picking an actor for, so an entry the table refuses is FAILED OVER — skipped,
+with its shortfall named among the disqualifiers — rather than settled on.
+Without that, a role-eligible but incapable primary shadows a capable,
+capsuite-proven fallback standing right behind it in the same chain: resolution
+stops at the primary, the step gate refuses it permanently, and the entry that
+could have done the work is never reached. A capability shortfall is as
+permanent a reason to move down a failover chain as a rate limit is a temporary
+one. Only the table's REFUSAL (its exit 1) skips an entry; an entry it cannot
+answer for, and a step name it never priced, leave the entry exactly where it
+was for the gates that own those answers.
+
+The overlap between the two questions is not exotic — for the two roles the
+driver dispatches, the role's `requires=` and the step's price are the same
+atoms (`roles/reviewer.role` wants `structured_text` and `review` prices it;
+`roles/implementer.role` wants `workspace_write,shell,git` and `implement`
+prices exactly those), so the role gate refuses first and EVERY shipped-tree
+shortfall reaches the caller this way rather than as the post-resolution 19.
+They come apart exactly where this invariant is load bearing: a custom role
+whose descriptor asks for less than the work costs.
+Only a missing atom counts, and only at every entry: a rate limit, an unproven
+fallback, an uninstalled plugin, an id two plugins claim, and a ROLE
+requirement no step prices all stay the wait they were, reported by
+`resolve_role_available` in its own words — each has a different remedy, and
+one entry the table does not refuse means a later pass can route the step
+somewhere.
+
+**The orchestrate step reaches none of that, and needed its own site.** A wake
+is not a job: `runners/orchid-tick` builds its own request document and never
+calls `orchid jobs prepare`, and `runners/orchid-pump` decides whether to exec
+it from a dry `resolve_role_available` probe whose failure it reports as
+"no capable orchestrator available" and exits 0 on — cron-friendly, and correct
+for every reason that probe usually fails. Where every engine in
+`role.orchestrator`'s chain is short `shell` or `git`, it was the same silent
+poll this invariant exists to end: one line per staleness window, forever,
+nothing journaled, no human told, and the judgment boundary the driver raised on
+that very pass left for an orchestrator that is never coming. Both runners now
+classify that chain before the wake. The tick reports it as exit 19 in place of
+14. BOTH runners then record ONE operator hand-off through `orchid notify` —
+journalled first, then BLOCKERS.md, deduped against that blocker so a condition
+lasting a hundred passes raises one — and print only the refusal, never the poll
+line beside it. The tick records it too because it is an unattended entry point
+in its own right, not merely a pump implementation detail: a scheduler pointed
+straight at it gets a 19 and nothing else, and a 19 into a crontab is a silence.
+Two writers of one fact is closed by that dedup rather than by leaving one of
+them mute — they share the sentence and the receipt, so whichever runs first
+records it and the other finds it.
+
+That dedup is scoped to the INCIDENT, never to the file. `BLOCKERS.md` is
+append-only, so a receipt read on its own answers "already recorded" for the
+rest of the repository's life — right while the condition still stands, and
+wrong once an operator has dealt with it. An entry whose question has been
+ANSWERED (`orchid answer`, which mints `runtime/answers/<qid>.answer` beside the
+question `orchid notify` left — the same open/settled pair `orchid status` reads
+for its open-blocker list) stops suppressing anything, so a shortfall that
+returns after somebody settled the last one raises a fresh blocker, a fresh
+journal line and a fresh qid, and every pass after that one dedups against it in
+turn. One entry per incident: not one per pass, and not one for all time. An
+entry with no runtime record at all — runtime/ is rebuildable — counts as still
+open and stays quiet: a resolution has to be shown, never assumed, because "I
+cannot tell" must not be what restarts a line per pass.
+
+Neither writer touches the boundary RECORD:
+`orchid drive` is
+that record's single routine writer, and a pump overwriting it would destroy the
+record naming the task actually waiting while the two writers alternated one
+journal line per pass.
+
+The same chain is read once more, and it asks the same operation-aware
+question for the same reason. `drive_orchestrator_surface` predicts the
+`command_surface` of the adapter that wake would spawn, and
+`drive_boundary_wakes_orchestrator` decides from that prediction whether a
+judgment boundary is offered to a model at all or routed to a human. A
+prediction that stopped at a role-eligible but incapable primary, while both
+runners failed over to the capable entry behind it, would decide that from the
+manifest of an adapter nobody is going to spawn — so it walks the chain with the
+`orchestrate` step too, and names the entry the wake will actually use.
+
+That same slot is also why the boundary names a VERB and not only a key. The
+advice for a refused step is "perform it, or bind an actor whose manifest
+covers it at <key>", and for a reviewer slot the key alone cannot reach the
+row: the attempt's plan is pinned (see "Independence"), so live routing may be
+rebound all day while the walk keeps dispatching the pinned engine. The
+reviewer boundary therefore names the key the slot's engine actually resolved
+from *and* `orchid jobs review-plan <task> --repin`, which is the recorded verb
+that moves an unreviewed row onto live routing — the same remedy the exit-14
+refusal on the same slot already prints, so one slot's two stops do not send an
+operator two different ways.
+
+An actor is named two ways and resolved by both. Third-party engines carry
+qualified ids (`acme/foo`) while a binding names the directory a plugin is
+installed under, and `implementer_engine_id` records whichever form the
+implement envelope reported (minus the `orchid/` vendor prefix). Both are
+looked up through the one registry that installed the plugin
+(`resolve_engine_dir_any`): first as a directory name, then against the `id=`
+every installed manifest claims. The id is matched *whole* — the basename is
+never retried, since `acme/foo` and `zzz/foo` both fall to a directory called
+`foo` and answering out of another publisher's manifest is the shadowing INV-10
+refuses; an id claimed by two installed plugins is likewise refused rather than
+chosen between.
+
+An actor that resolves under *neither* name is refused too, by both callers,
+and told apart from a declared shortfall only so the refusal can say which
+happened and name what it looked for. There is no "could not tell, so allow"
+answer — and equally no "could not tell, so refuse forever": that id is in the
+record because orchid dispatched to that plugin, so refusing the qualified form
+outright would hold every candidate a third-party engine builds at a hand-off
+no operator act can clear. Both mistakes are the engine-dependent behaviour
+INV-14 forbids, approached from opposite sides.
+
+The second is the one raised BETWEEN an implementer's envelope
+reconciling and verification, where `handoff_before_verify` asks for it, or
+where the `mechanical` step cannot be routed to the actor that built the
+candidate at all: some
 mechanical work in a candidate requires EXECUTION — applying a linter's own
 fix, setting the mode bit on a newly added executable, running a generator
 whose output is checked in — and an engine profile that denies on the command
@@ -1778,6 +1986,19 @@ mechanical work inside the candidate whose acknowledgement moves
 outside the repository whose acknowledgement moves nothing. A task can be held
 by both, and the driver raises the hand-off first — its advance would
 otherwise expire a prerequisite acknowledgement taken before it.
+**Which half of the capability arm a running repository actually meets.** The
+arm has two outcomes and they are not equally reachable. The one that fires is
+the actor that resolves to no installed manifest: no role gate covers it,
+because the role gate ran while the plugin was still installed. The other — the
+actor's manifest does not declare `shell` — cannot arise for a candidate this
+kernel dispatched, since `roles/implementer.role` declares
+`requires=workspace_write,shell,git` and an engine declaring no `shell` is
+refused the role at exit 14 before any candidate of its exists. That row is
+kept as defense in depth against the role descriptor changing, and as the
+answer where nothing recorded which engine built the candidate; it is not a
+pause an operator will be spared setting `handoff_before_verify` by. That key
+remains the only cover for the case no manifest shows — a profile that
+*declares* `shell` and is still not granted it.
 
 One boundary is recorded per pass, chosen by whether a woken orchestrator
 could actually SETTLE it ahead of the ones only an operator can, then by
@@ -1846,4 +2067,13 @@ boundary, 17 brokered command refused, 18 slot already holds an unlaunched
 manifest (T027). Every code means ONE condition: 18 is its own entry rather
 than a second meaning for 17 precisely because a caller that has to
 distinguish "the broker refused this command" from "wait, this slot has an
-orphan" cannot do it from a number two conditions share.
+orphan" cannot do it from a number two conditions share; 19 step not routable
+— to the resolved actor, or to any engine in the role chain a dispatch would
+have drawn one from (INV-16). `orchid jobs prepare` answers it for a task step,
+and `runners/orchid-tick` for the `orchestrate` wake, where it replaces the 14
+a scheduler would otherwise retry forever. Those are one condition, not two:
+the work needs a capability nobody who could be asked declares, and no later
+pass changes that. A step name the kernel does not know is NOT 19 — that is a
+malformed request rather than an actor unable to do the work, so it is an
+ordinary usage error and says so instead of sending an operator to audit a
+plugin that is behaving perfectly.

@@ -1330,9 +1330,31 @@ git() {
 orchid_refresh_kernel "$root"
 CRASH
 
+# RUN THROUGH AN INTERMEDIATE SHELL WHOSE STDERR IS DISCARDED, because the
+# SIGKILL above is this fixture WORKING and bash insists on announcing it. A
+# foreground child that dies by a signal is reported by the shell that WAITED
+# for it, not by the child, so the `>/dev/null 2>&1` on the child cannot
+# suppress it and `disown` (a jobspec verb, for background jobs) does not
+# apply. Run directly, this passing fixture prints `tests/test_stale_root.sh:
+# line N: <pid> Killed: 9 HOME=...` onto the suite's stderr -- the exact
+# `file: line N:` shape lib/findings.sh scrapes into a rework brief, which is
+# how T018 was handed this line as though it were a defect to fix.
+#
+# The inner shell does the waiting and therefore does the announcing, into
+# /dev/null. It is NOT exec-optimized away, because `exit $?` follows the
+# command, so a real grandchild is forked and there is something to announce.
+# `exit $?` then propagates the signal-encoded 137 as an ORDINARY exit, so the
+# shell running this file sees a child that exited normally and says nothing --
+# while the assertion below still reads the same >=128 it always did. The
+# single-quoted -c body takes the paths as positionals rather than
+# interpolating them, so no value here can reach the inner parser. It is kept
+# on ONE line: a `\`-continuation inside single quotes is a literal backslash
+# to the outer shell (SC1004, a warning this repository's linter gate treats as
+# a failure) even though the inner shell would go on to read it as one.
 rc=0
-HOME="$MACHINE_HOME" ORCHID_ALLOW_STALE_ROOT=1 \
-  /bin/bash "$WORK/refresh-crash.sh" "$crashroot" "$REPO_ROOT" >/dev/null 2>&1 || rc=$?
+crash_body='HOME="$1" ORCHID_ALLOW_STALE_ROOT=1 /bin/bash "$2" "$3" "$4" >/dev/null 2>&1; exit $?'
+/bin/bash -c "$crash_body" \
+  _ "$MACHINE_HOME" "$WORK/refresh-crash.sh" "$crashroot" "$REPO_ROOT" 2>/dev/null || rc=$?
 [ "$rc" -ge 128 ] \
   || fail "test fixture: the refresh was never interrupted (exit $rc) -- nothing below is being tested"
 

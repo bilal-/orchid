@@ -349,7 +349,7 @@ command *string*), so this candidate's mechanical work — applying a linter's
 own fix, setting the mode bit on a newly added executable, running a generator
 whose output is checked in — has to be done by you. The pass stops rather than
 verifying a candidate that was never going to pass and spending one of the
-task's three rework rounds on it.
+task's configured `rework_max` rounds on it.
 
 One thing is deliberately *not* on that list: an artifact derived from the
 whole tree, such as the release-archive checksum pinned into
@@ -358,6 +358,69 @@ rewrite the same line to a different value, and the second to merge then
 conflicts on it with nobody in the loop able to resolve it. Those are
 regenerated on the integration branch instead — see
 [contributing.md](./contributing.md#release-rehearsal).
+
+The boundary can instead say the `mechanical` step could not be routed to the
+engine that built this candidate (INV-16). `orchid run boundary show` says
+which arm held it; either way, nothing was dispatched and no attempt was spent.
+
+By far the likeliest reading is the first: you set the key. The routing arm
+does **not** normally fire for a shortfall in an implementer's declared
+capabilities, because `roles/implementer.role` requires
+`workspace_write,shell,git` — an engine short of those is refused the role at
+dispatch (`no eligible engine`, exit 14) and never builds a candidate for this
+pause to hold. What that arm does catch is the wording below.
+
+**The other wording of the same stop:** the boundary says the actor *is not
+installed* rather than naming a capability, and names it. Then the engine
+recorded against this candidate answers to neither name orchid looks it up by:
+no directory beneath a plugin root's `engines/` is called that, and no installed
+manifest declares that `id=`. A capability gate that cannot identify an actor
+refuses rather than permits — it will not report "no objection" about a manifest
+it never read. Install the plugin, or bind the role to the name it *is*
+installed under, and the arm goes quiet on its own.
+
+A qualified third-party id (`acme/foo`) does **not** read this way on its own.
+Both forms resolve: the directory a binding names, and the `id=` an installed
+manifest claims. So a healthy third-party implementer is priced from its own
+manifest like any other, and this wording means the plugin is genuinely absent
+— not that it is third-party. If it *is* installed and you still see this,
+check that its `plugin.conf` declares the id the record carries, and that no
+second installed plugin claims the same one (two claimants are refused rather
+than chosen between, INV-10 — the boundary says so in those words).
+
+**If the task is `reviewing`, not `testing`, this is a different stop wearing
+the same boundary kind** — a *reviewer slot* whose engine cannot be routed the
+`review` step, and `orchid task handoff --ack` will not clear it (that verb is
+legal only from `testing`). The boundary names the config key that slot's
+engine actually resolved from — `role.reviewer`, `review.<tier>`, or neither,
+in which case it says the slot fell back to the engine that built the candidate
+— **and** `orchid jobs review-plan <id> --repin`. You need both. This attempt's
+slot table is *pinned* (kernel.md's "Independence" section), so
+binding a capable engine moves live routing while the walk keeps dispatching
+the pinned row; `--repin` is what rebinds the slots nobody has reviewed yet,
+and it freezes the ones that already have a review so no filed evidence is
+orphaned. Bind first, then repin — the repin recomputes from live routing, so
+running it before the config change re-pins the same engine.
+
+**And if it is not a boundary at all but a blocker about the ORCHESTRATOR**, the
+scheduled pump raised it. `BLOCKERS.md` says no actor can be routed the
+`orchestrate` step for role `orchestrator`, names each chain entry's missing
+atom, and points at `role.orchestrator`. This is not a task's hand-off and no
+`--ack` clears it: it means every engine in that chain is short `shell` or `git`
+(`roles/orchestrator.role` requires both, and so does the step), so the pump has
+nobody to wake for the judgment boundary the driver recorded on the same pass.
+Bind an engine that declares both at `role.orchestrator` — or settle the
+recorded boundary yourself, which `orchid run boundary show` names. The blocker
+is raised once, not once per pass, and it does *not* replace the boundary
+record; both are meant to be read. Once per *incident*, to be exact: answer it
+(`orchid answer <qid> <choice>` — the `reply:` line under the entry spells the
+whole command out) and the entry you closed stops silencing later passes, so if
+the same chain is ever short again — a rebound role, an edited manifest — you
+get a NEW blocker rather than the silence an append-only file would otherwise
+leave you with. `pump: no capable orchestrator available` is
+the *other* message and means the opposite: an engine that could do the work is
+merely rate-limited, unproven or not installed yet, and the next pass may well
+find it available.
 
 ```sh
 orchid run boundary show           # what is being held, and why

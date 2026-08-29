@@ -46,6 +46,11 @@ source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/roles.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/capsuite.sh"
 source "$ORCHID_ROOT/lib/ledger.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/spawn.sh"; source "$ORCHID_ROOT/lib/trust.sh"
+# capability.sh for the ONE question this runner cannot answer from a 14
+# (INV-16): is the orchestrator chain merely unavailable right now, or is every
+# engine in it short an atom the `orchestrate` step needs? See the resolution
+# block below.
+source "$ORCHID_ROOT/lib/capability.sh"
 
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 
@@ -79,11 +84,67 @@ resume_out="$("$ORCHID_ROOT/bin/orchid" run resume)"
 epoch="${resume_out#epoch: }"
 export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 
+# ...UNLESS NO LATER PASS COULD CHANGE THE ANSWER (INV-16). "The pump's next
+# pass retries once ledger/capsuite state has moved on" is the whole
+# justification for treating 14 as a wait, and it is simply untrue when every
+# engine in the orchestrator chain is short an atom `orchestrate` needs: no
+# window reopens on a manifest. Reported as 14 that is a scheduled runner
+# printing a disqualifier list once per staleness window forever, which is the
+# silent dead end this invariant exists to end -- so the chain is classified
+# first and the permanent case exits 19, the code the rest of the kernel
+# already reads as "a capability refusal an operator owns".
+#
+# AND IT IS RECORDED HERE TOO, not only reported. This used to print the line
+# and exit, on the reasoning that a direct tick is one shot with a caller
+# watching its exit status while the durable hand-off belonged to the pump,
+# which reaches the same classification before it ever execs this file. The
+# second half of that is true and the first half is not: the header of this file
+# says plainly that the direct tick is an unattended entry point in its own
+# right and not merely a pump implementation detail, and the caller a scheduler
+# points straight at this script is a crontab. A 19 into a crontab is a silence,
+# so on the entry point the pump never touches the refusal produced no journal
+# line, no blocker and no boundary -- exactly the dead end this classification
+# was added to end, surviving on the path that skipped the classifier's only
+# recorder.
+#
+# TWO WRITERS OF ONE FACT IS STILL THE HAZARD, and it is closed by the dedup
+# rather than by leaving one of them mute. Both go through lib/common.sh's
+# orchid_blocker_once, which asks BLOCKERS.md for the receipt the previous
+# `orchid notify` left: a pump pass that already recorded this line makes the
+# tick behind it find that entry and add nothing, and a tick run with no pump
+# anywhere records it once and every later tick finds its own. The line itself
+# comes from the same composer the pump uses, so the two cannot describe one
+# fact in words the other's dedup fails to recognise. A receipt an operator has
+# ANSWERED no longer counts as one: the dedup is scoped to the unresolved
+# incident, so a chain that is short again after the last hand-off was settled
+# is raised afresh rather than silenced by the closed entry an append-only file
+# still carries.
+#
+# AFTER `run resume`, which is where the epoch this write must carry comes from:
+# `orchid notify` is epoch-fenced (INV-02), and this pass is inside the epoch
+# fenced above.
+tick_cap_rc=0
+tick_cap_why="$(capability_role_chain_refusal "$repo" orchestrator orchestrate)" || tick_cap_rc=$?
+if [ "$tick_cap_rc" -eq 1 ]; then
+  tick_cap_line="$(capability_chain_handoff_line orchestrator orchestrate role.orchestrator "$tick_cap_why")"
+  echo "tick: $tick_cap_line" >&2
+  tick_rec_rc=0
+  orchid_blocker_once "$repo" "$epoch" "$tick_cap_line" || tick_rec_rc=$?
+  case "$tick_rec_rc" in
+    1) echo "tick: already recorded for an operator — not raising a second blocker for a fact that has not changed" >&2 ;;
+    2) echo "tick: could not record the capability hand-off as a blocker (epoch $epoch) — the line above is the only report of it" >&2 ;;
+  esac
+  exit 19
+fi
+
 # Exit 14 (no eligible engine) propagates verbatim: `resolve_role_available`
 # prints its own per-entry disqualifier to stderr; under `set -e` this bare
 # assignment aborts the script with that same code, not a rewritten 1
-# (the pump's next pass retries once ledger/capsuite state has moved on).
-engine="$(resolve_role_available "$repo" orchestrator)"
+# (the pump's next pass retries once ledger/capsuite state has moved on). The
+# step is passed so an entry that cannot perform the work is failed over rather
+# than settled on -- the same operation-aware selection `orchid jobs prepare`
+# uses for every other role.
+engine="$(resolve_role_available "$repo" orchestrator orchestrate)"
 
 # Command-surface label (v1.1, Track 1). `brokered` means this adapter runs
 # its orchestrator against the argument-validating broker

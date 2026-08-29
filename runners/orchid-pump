@@ -60,6 +60,10 @@ source "$ORCHID_ROOT/lib/trust.sh"
 # pure policy (it reads and prints; it never mutates), so sourcing it costs
 # the pump nothing and keeps that classification in ONE place.
 source "$ORCHID_ROOT/lib/drive.sh"
+# ...and lib/capability.sh for the same reason, one question later: whether the
+# orchestrator chain's unavailability is a window that reopens or a shortfall
+# no pass changes (INV-16). Also pure policy. See the pre-wake probe below.
+source "$ORCHID_ROOT/lib/capability.sh"
 
 # `orchid service install` invokes the pump with this internal flag while the
 # scheduler itself sends stdout/stderr to /dev/null. The pump does not open the
@@ -373,6 +377,74 @@ _pump_drain_outbox() {
   done
 }
 
+# _pump_capability_handoff <repo> <detail> <epoch> -- what the pre-wake probe
+# does with a chain NO PASS CAN FIX. Prints the operator-facing line, and
+# records it exactly once, durably, as a blocker. <epoch> is this pass's own,
+# sampled where the drive returned it rather than read here -- see THE EPOCH IS
+# THE ONE THE DRIVE JUST FENCED below.
+#
+# WHY THIS EXISTS AT ALL. Step 6's probe has always exited 0 on an unavailable
+# orchestrator, and that is right: a rate limit, an unproven fallback, a plugin
+# not installed yet are all things a later pass finds resolved, and a scheduled
+# poller saying so on its terminal costs nothing. It is exactly wrong when
+# every engine in the chain is short an atom `orchestrate` needs. Then the
+# same line prints once per staleness window forever, no human is told, nothing
+# is journaled, and the judgment boundary the driver raised -- the one this
+# pass came here to wake somebody for -- is never settled by anybody. That is
+# the silent dead end INV-16 exists to end, reached through the one dispatch
+# path that never goes near `orchid jobs prepare`.
+#
+# ONE VERB, WHICH IS BOTH HALVES, RAISED ONCE PER DISTINCT FACT. Both of those
+# are lib/common.sh's orchid_blocker_once, and they are shared rather than
+# open-coded here because runners/orchid-tick is a SECOND writer of this exact
+# line: it is an unattended entry point in its own right, so a scheduler pointed
+# straight at it must record the same hand-off, and two copies of a dedup rule
+# is two places for it to drift into a writer that cannot see the other's
+# record. That helper's header carries the reasoning; the short version is that
+# `orchid notify` journals the text before it appends to BLOCKERS.md, so one
+# call produces both the durable journal record and the operator surface, and
+# the dedup asks BLOCKERS.md because that entry is the RECEIPT the call leaves
+# rather than a mark made ahead of it. Nothing here writes state directly.
+#
+# ONE INCIDENT, THOUGH -- NOT ONE FOR ALL TIME. That receipt is read together
+# with its resolution, because BLOCKERS.md is append-only and an entry read on
+# its own goes on answering "already recorded" long after an operator settled
+# it. So a hand-off whose question has been ANSWERED stops suppressing, and a
+# chain that is short again on some later pass raises a fresh blocker and a
+# fresh journal line rather than meeting the silence of a closed entry. That
+# rule lives in orchid_blocker_once too, for the same reason the raise does.
+#
+# THE JUDGMENT BOUNDARY RECORD IS LEFT ALONE. `runners/orchid-drive` is its
+# single routine writer and this pass has just READ it; overwriting it with an
+# `operator-handoff` of the pump's own would destroy the record naming the task
+# actually waiting, and the driver would re-derive its own next pass -- two
+# writers alternating, one journal line each, once per pass, forever. The
+# blocker is the surface a human reads (docs/specs/operations.md: BLOCKERS.md
+# plus the terminal is complete), and it is raised without touching a record
+# somebody else owns.
+#
+# THE EPOCH IS THE ONE THE DRIVE JUST FENCED, and it is READ AT THAT MOMENT
+# rather than here. `orchid notify` is epoch-fenced (INV-02) and the pump owns
+# no epoch of its own: this pass is inside the one runners/orchid-drive fenced
+# for it, through its own `run resume`, so that value is what the write must
+# carry. Sampled here instead, the fence would be vacuous -- whatever epoch is
+# current at the instant of the write always satisfies `epoch_require`, so a
+# session that fenced a fresh epoch while this pass ran would have its epoch
+# silently borrowed. Captured immediately after the drive returns, that case is
+# exactly what the refusal below reports.
+_pump_capability_handoff() {
+  local repo="$1" detail="$2" epoch="$3"
+  local line rc=0
+  line="$(capability_chain_handoff_line orchestrator orchestrate role.orchestrator "$detail")"
+  echo "pump: $line"
+  orchid_blocker_once "$repo" "$epoch" "$line" || rc=$?
+  case "$rc" in
+    1) echo "pump: already recorded for an operator — not raising a second blocker for a fact that has not changed" ;;
+    2) echo "pump: could not record the capability hand-off as a blocker (epoch $epoch) — the line above is the only report of it" >&2 ;;
+  esac
+  return 0
+}
+
 lease_file="$rt/lease.json"
 now="$(date -u +%s)"
 
@@ -439,6 +511,11 @@ fi
 export ORCHID_REPO="$repo"
 drive_rc=0
 "$ORCHID_ROOT/runners/orchid-drive" || drive_rc=$?
+# The epoch this pass is running under, read the instant the drive that fenced
+# it returns. Nothing below writes durable state except the capability hand-off
+# at step 6b, and that write has to carry THIS pass's epoch rather than
+# whatever is current when it happens -- see _pump_capability_handoff.
+pass_epoch="$(epoch_current "$repo")"
 
 # SECOND DRAIN, and the one that matters for a boundary. `orchid notify` is
 # tier-1 and only ever QUEUES (runtime/outbox/<qid>); this runner is what
@@ -536,9 +613,35 @@ fi
 # it captures ONLY resolve_role_available's stderr into `reason` (its own
 # stdout -- the engine name on success -- is discarded to /dev/null), with
 # no temp file needed.
-if reason="$(resolve_role_available "$repo" orchestrator 2>&1 1>/dev/null)"; then
+#
+# The STEP is passed for the same reason the tick passes it: an entry that
+# cannot perform `orchestrate` must be failed over, not settled on, so this
+# probe and the tick agree about which engine would actually be woken.
+if reason="$(resolve_role_available "$repo" orchestrator orchestrate 2>&1 1>/dev/null)"; then
   : # an engine is available; fall through to the tick below.
 else
+  # 6b. NOT EVERY UNAVAILABILITY IS A WAIT. The message above is a poll result
+  # -- "come back later" -- and printing it is the whole response only while
+  # coming back later can help. Classify before printing it: when every entry
+  # in the chain is short an atom the `orchestrate` step needs, no ledger
+  # window, no `orchid plugins test` and no install changes the answer, and the
+  # judgment boundary this pass came here to wake somebody for would otherwise
+  # sit unread forever. That case is handed to an operator instead.
+  #
+  # ONLY THE FINAL ANSWER IS EMITTED. `reason` (resolve_role_available's own
+  # disqualifier list, captured above rather than allowed onto the terminal) is
+  # printed on the wait arm and deliberately NOT on the hand-off arm: an
+  # operator meeting both a wait and a permanent refusal about one call has to
+  # work out which of the two describes their repository, and only one does.
+  cap_rc=0
+  cap_why="$(capability_role_chain_refusal "$repo" orchestrator orchestrate)" || cap_rc=$?
+  if [ "$cap_rc" -eq 1 ]; then
+    _pump_capability_handoff "$repo" "$cap_why" "$pass_epoch"
+    # Still 0: a hand-off recorded for a human is a normal poll outcome, not a
+    # pump failure, and every other no-op arm in this file exits 0 for the same
+    # cron-friendly reason.
+    exit 0
+  fi
   echo "pump: no capable orchestrator available ($reason)"
   exit 0
 fi

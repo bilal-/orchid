@@ -10,6 +10,10 @@
 # Source AFTER lib/common.sh, lib/frontmatter.sh, lib/manifest.sh,
 # lib/archetype.sh, lib/schedule.sh, lib/envelope.sh, lib/resolver.sh,
 # lib/review.sh and lib/hooks.sh -- this file calls into all of them.
+# lib/capability.sh is needed too, but by CALL time rather than by source time:
+# drive_orchestrator_surface asks resolve_role_available to consult its table,
+# and a caller that never sources it gets the narrowest surface instead of an
+# answer read off the wrong manifest (see that function's own note).
 #
 # INV-05/INV-14 discipline: no decision below reads a plugin's NAME. Task
 # routing is driven by the archetype's declared `transitions=`/`outcome=`
@@ -38,7 +42,11 @@ drive_finding_rank() {
 # every task and took every edge it could, so this reports a decision waiting
 # somewhere, never a run that cannot proceed; `orchid run boundary show` when
 # one is recorded), 17 BROKERED COMMAND REFUSED
-# (runners/orchid-orchestrator-command).
+# (runners/orchid-orchestrator-command), 18 SLOT ALREADY HOLDS AN UNLAUNCHED
+# MANIFEST (`orchid jobs prepare`, T027), 19 STEP NOT COVERED BY THE RESOLVED
+# ACTOR'S CAPABILITIES (`orchid jobs prepare`, INV-16 -- distinct from 14
+# because nothing is waiting: no later pass makes the same actor able to do
+# the same work, so the driver hands it to an operator instead of retrying).
 
 # drive_threshold_rank <blocking_severity> -- ordinal for the TASK's
 # configured blocking threshold. Deliberately the mirror image of
@@ -73,15 +81,19 @@ drive_threshold_rank() {
 #                        all: an inspection that answers "clean" when it could
 #                        not look is fail-open, so it is refused in the same
 #                        direction as a tree that is genuinely in the way
-#   operator-handoff  -- the candidate's execution-requiring mechanical steps
-#                        (a lint fix, a mode bit on a new executable, a
-#                        generator whose output is checked in -- never an
-#                        artifact derived from the whole tree, lesson L022)
-#                        are not acknowledged for THIS candidate.
-#                        Deliberately settled by no verb below: none performs
-#                        the work, and a model able to acknowledge its own
-#                        hand-off would defeat the point of naming one at all
-#                        (lesson L017; lib/handoff.sh)
+#   operator-handoff  -- work that belongs to an operator because no actor in
+#                        the loop declares what performing it needs. Two ways
+#                        in, one meaning: the candidate's execution-requiring
+#                        mechanical steps (a lint fix, a mode bit, a generator
+#                        whose output is checked in -- never a whole-tree
+#                        derived artifact, lesson L022) are not acknowledged
+#                        for THIS candidate; or a step could not be ROUTED
+#                        because the resolved actor's manifest does not cover
+#                        it (INV-16, lib/capability.sh -- `orchid jobs prepare`
+#                        exit 19). Deliberately settled by no verb below: none
+#                        performs the work, and a model able to acknowledge its
+#                        own hand-off would defeat the point of naming one at
+#                        all (lesson L017; lib/handoff.sh)
 #   task-prerequisite -- the task declares an `operator_prerequisite` (a step
 #                        outside the sandbox its verification depends on --
 #                        canonically applying, to the database the suite runs
@@ -111,6 +123,101 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
     *" $1 "*) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+# drive_capability_handoff_text <role> <operation> [hook-point] [binding]
+# [task] -- the two strings runners/orchid-drive writes when a launch comes
+# back 19 (INV-16), TAB-separated: the boundary reason, then the journal line.
+#
+# WHY IT NAMES A CONFIG KEY AT ALL. The boundary is the only thing an operator
+# meets, and "an operator performs this step" alone leaves them with no way to
+# stop meeting it. The advice is therefore the other half of the rule: perform
+# it, or bind an actor whose manifest covers it.
+#
+# WHICH MEANS THE KEY HAS TO BE ONE ORCHID ACTUALLY READS, and the hook step is
+# why this is a function rather than one interpolated string. A hook job's
+# `role` positional is the literal word `hook` -- it carries no meaning, since
+# handlers are bound by NAME from `hook.<point>` config and reach no role chain
+# at all (libexec/orchid-jobs' hook arm). Pouring that positional into
+# `role.<role>` produces `role.hook`: a key this kernel has never had, never
+# reads, and `orchid config` does not know (lib/config-keys.txt). An operator
+# following that advice edits a file orchid ignores, watches the boundary
+# survive it, and has been sent to debug their own config instead of the
+# routing. The same string also dropped the POINT, so the one fact that
+# identifies which of the five bindings was refused went unsaid.
+#
+# So the hook arm names the point and points at `hook.<point>`, and the role
+# arm defaults to `role.<role>`, which for every step bound straight off a role
+# chain IS the key that binds the actor that was refused.
+#
+# AND THE DEFAULT IS OVERRIDABLE, because for one caller it is the wrong key. A
+# REVIEWER SLOT's engine is not necessarily `role.reviewer`'s: review_routing
+# walks that chain and then the `review.<tier>` chain, and falls back to the
+# engine that built the candidate when neither yields an eligible, available
+# one. Advising `role.reviewer` for an engine that came from `review.high`
+# sends an operator to edit a key the refused engine never came through -- they
+# change it, the boundary survives unchanged, and the reasonable conclusion is
+# that orchid is broken. So a caller that KNOWS which key resolved its actor
+# passes it (lib/review.sh's review_slot_engine_source computes it), and the
+# `role.<role>` default stands only where the role chain really is the binding.
+#
+# AND FOR THAT SAME CALLER THE KEY ALONE IS STILL A DEAD END, which is why the
+# reviewer arm names a VERB as well. A reviewer slot is not routed live: once
+# an attempt has a candidate, `review_plan_pin_rows` writes the table down and
+# every later reader gets THAT table back for the life of the attempt
+# (lib/review.sh's pinned-plan header -- the whole point is that the table
+# stops moving under the evidence filed against it). So an operator who does
+# exactly what the advice above says -- bind a capable engine at the key that
+# resolved this slot -- changes live routing and watches the boundary survive
+# anyway, because the pinned row is what the walk dispatches from. That is the
+# same "edit a key, nothing happens, conclude orchid is broken" failure the
+# paragraph above exists to prevent, reached one step later.
+#
+# The supported way to move a pinned row is `orchid jobs review-plan <task>
+# --repin`, which rebinds the slots NOBODY HAS REVIEWED to live routing and
+# freezes the rest -- and a refused slot is by construction one of the
+# unreviewed ones, since the reviewing walk only ever launches the slots
+# `review_plan_unsatisfied` reports. It is also already the remedy this file's
+# caller prints for the neighbouring exit-14 refusal, so the two stops an
+# operator can meet on one slot now name the same recorded verb rather than
+# one naming a verb and the other naming a key that cannot reach the plan.
+#
+# The task id is passed for that sentence alone. Empty (no caller does this
+# today; drive_capability_refusal always knows the task) degrades to the
+# literal `<task>` placeholder rather than emitting a command with a blank
+# argument, which is worse advice than none.
+#
+# THE JOURNAL HALF IS NOT WRITTEN HERE, and that is load bearing rather than
+# delegation for its own sake. `runners/orchid-launch` records the same refusal
+# the moment `orchid jobs prepare` answers 19 -- it has to, because on the paths
+# nobody wraps (PROTOCOL.md's PLANNING critique loop, any session driving the
+# launcher by hand) it is the only writer there will ever be -- and both writers
+# dedup by comparing the sentence against the task's own journal. A second copy
+# of it here would drift by a word and the two would stop recognising each
+# other's record, appending one duplicate line per pass. So the sentence has one
+# author, lib/capability.sh's capability_step_handoff_line, and this function
+# supplies only the BOUNDARY half, which is the half that names a config key and
+# so is the half only a caller that knows the binding can write.
+# Callers must have lib/capability.sh sourced -- the same call-time requirement
+# drive_orchestrator_surface already carries, and every caller of this function
+# is a caller of that one.
+drive_capability_handoff_text() {
+  local role="$1" op="$2" point="${3:-}" binding="${4:-}" task="${5:-}"
+  if [ -n "$point" ]; then
+    printf "step '%s' for hook point '%s' needs a capability the resolved handler does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds a handler at hook.%s whose manifest covers it\t" \
+      "$op" "$point" "$point"
+    capability_step_handoff_line "$role" "$op" "$point"
+    return 0
+  fi
+  [ -n "$binding" ] || binding="role.$role"
+  if [ "$role" = reviewer ]; then
+    printf "step '%s' for role '%s' needs a capability the resolved actor does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s. Binding one is not enough on its own: this attempt's review plan is PINNED, so run 'orchid jobs review-plan %s --repin' afterwards to rebind this attempt's unfilled slot(s) onto live routing\t" \
+      "$op" "$role" "$binding" "${task:-<task>}"
+  else
+    printf "step '%s' for role '%s' needs a capability the resolved actor does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s\t" \
+      "$op" "$role" "$binding"
+  fi
+  capability_step_handoff_line "$role" "$op" ""
 }
 
 # -- boundary resolvability -------------------------------------------------
@@ -297,9 +404,25 @@ drive_boundary_wakes_orchestrator() {
 #
 # Read-only, like everything else in this file: resolve_role_available walks
 # the chain, the ledger and the capsuite and mutates none of them.
+#
+# THE `orchestrate` STEP IS PASSED because this function's whole claim is that
+# it names the adapter the pump WOULD wake, and the pump's own probe asks the
+# step-aware question (runners/orchid-pump step 6, runners/orchid-tick's
+# resolution). Asked without it, this walk stops at a role-eligible but
+# incapable primary while both runners fail over to the capable entry behind it
+# -- and this function then reads the wrong manifest's `command_surface`,
+# deciding drive_boundary_wakes_orchestrator from a label belonging to an
+# adapter nobody will spawn. On the shipped tree the two questions coincide
+# (roles/orchestrator.role requires `shell,git` and the step prices exactly
+# those), so this matters precisely where an operator has supplied a descriptor
+# asking for less -- the same place INV-16 is load bearing everywhere else.
+# Callers must therefore have lib/capability.sh sourced; one that has not gets
+# resolve_role_available's exit 3, which lands on the `brokered` arm below --
+# the narrowest surface, so a missing `source` cannot widen what a boundary is
+# allowed to be handed to.
 drive_orchestrator_surface() {
   local repo="$1" engine dir surface
-  engine="$(resolve_role_available "$repo" orchestrator 2>/dev/null)" || {
+  engine="$(resolve_role_available "$repo" orchestrator orchestrate 2>/dev/null)" || {
     printf 'brokered\n'; return 0
   }
   [ -n "$engine" ] || { printf 'brokered\n'; return 0; }

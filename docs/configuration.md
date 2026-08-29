@@ -361,7 +361,33 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   engine profile that denies on the command *string* and so can perform none
   of those: a drive pass then stops at an `operator-handoff` boundary instead
   of verifying a candidate that was never going to pass and spending one of
-  its rework rounds (`rework_max`, above) on the failure. It ships `off`, and turning it on is
+  its rework rounds (`rework_max`, above) on the failure.
+  **A second arm asks for the same pause, and it does not replace this key.**
+  Where the `mechanical` step cannot be *routed* to the engine that built the
+  candidate, the pause is asked for without anyone configuring it (INV-16).
+  What that arm closes on its own is the actor orchid **cannot identify**: an
+  implementer that resolves to no installed manifest is held rather than waved
+  through, and the boundary says so in those words — a gate that cannot
+  identify an engine must never report that it has no objection.
+  What it does *not* do is set this key for you. Its other outcome — the engine
+  declares no `shell` — cannot arise for a candidate orchid dispatched, because
+  `roles/implementer.role` requires `workspace_write,shell,git`: an engine that
+  declares no `shell` is refused the implementer role (exit 14) before it can
+  build a candidate at all, so nothing reaches the hand-off to hold. That half
+  is defense in depth against the role descriptor changing, not a pause you
+  will meet. **The case this key exists for is the one no declaration shows** —
+  a profile that *declares* `shell` and is still not granted it, which the
+  shipped `claude` adapter is on its implement path. Nothing but you can tell
+  orchid about that one.
+  The two arms compose and never override: either can turn the pause on,
+  neither can turn the other off, so an engine that declares `shell` can never
+  clear a pause you asked for. A capability is a claim by the plugin, not a
+  grant. The unresolvable-actor arm is not the third-party case, though — an
+  engine is looked up both by the directory it is installed under and by the
+  qualified `id=` its manifest claims (`acme/foo`), so a third-party
+  implementer is priced from its own manifest like any other, and that refusal
+  means the plugin is genuinely not installed.
+  It ships `off`, and turning it on is
   an operator decision landed through `orchid config commit --reason "..."`
   like any other config change — never a line a task's candidate adds to the
   live `orchid.config` of the run it is executing inside, which would switch a

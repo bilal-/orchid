@@ -54,6 +54,23 @@ assert_match "T001	ok" "$line" "reconciled"
 # to reach the assertions below.
 sleep 100 &
 spid=$!
+# DISOWNED, so the shell stops REPORTING this job. `jobs check` is about to
+# kill it -- that is the whole point of the case -- and bash then announces the
+# reap on stderr as `tests/test_jobs.sh: line N: <pid> Terminated: 15 sleep
+# 100`. That line has the exact `file: line N:` shape lib/findings.sh carries
+# into a rework brief, so a suite that is passing hands the next implementer
+# three fabricated locations to "fix" and displaces the real ones (it did
+# exactly that to T018). Disowning changes nothing this fixture asserts: the
+# pid stays in `$spid`, and `kill`/`kill -0` address a pid, never a job spec.
+#
+# Guarded, and the guard is the portable part rather than a shrug. `disown`
+# takes a JOBSPEC on bash 3.2 (the floor this suite runs on), not a pid, so the
+# bare form is the only spelling available -- and a bare `disown` that finds no
+# current job both exits non-zero and prints `disown: current: no such job`,
+# which would be a NEW stderr line of exactly the shape this is removing.
+# Nothing is made fail-open by it: the entire effect of this line is what
+# stderr says.
+disown 2>/dev/null || true
 jq -n --argjson pid "$spid" \
   '{job_id:"j-guard", task:"TGUARD", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:0, log:"/nonexistent.log", output:"/dev/null",
@@ -108,6 +125,7 @@ jq -n --argjson pid "$young_dead_pid" --argjson started "$now" --arg log "$rt/lo
 # Live + old: age must never override a live pid.
 sleep 100 &
 live_pid=$!
+disown 2>/dev/null || true  # as at the pgid guard above: a reaped job's notice is not a finding
 jq -n --argjson pid "$live_pid" --argjson started "$old_started" --arg log "$rt/logs/j-live.log" \
   '{job_id:"j-live", task:"TLIVE", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:$log, output:"/dev/null",
@@ -687,6 +705,7 @@ ORCHID_CONCURRENCY=8 "$ORCHID_BIN" task advance TRUNAWAY implementing
 "$ORCHID_BIN" task set TRUNAWAY wallclock_budget_s 1
 sleep 100 &
 runaway_pid=$!
+disown 2>/dev/null || true  # as at the pgid guard above: a reaped job's notice is not a finding
 jq -n --argjson pid "$runaway_pid" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TRUNAWAY-a1-run00001", task:"TRUNAWAY", attempt:1, role:"implementer", operation:"implement",
     engine:"fake", pid:$pid, pgid:0, started_at:$started, log:"/nonexistent.log", output:"/dev/null",
@@ -1297,6 +1316,16 @@ FLATLOG
 # kill_stuck falls back to signalling the pid directly when pgid is 0.
 sleep 100 &
 cpu_stall_pid=$!
+# DISOWNED, as at the pgid guard far above and at every `sleep 100 &` in this
+# CPU block. Each of these six fixtures ends with its job reaped -- by `jobs
+# check` where the arm is meant to fire, by an explicit `kill` where it is
+# meant not to -- and bash announces every one of those reaps on stderr as
+# `tests/test_jobs.sh: line N: <pid> Terminated: 15 sleep 100`. That is the
+# `file: line N:` shape lib/findings.sh carries into a rework brief, so six
+# PASSING fixtures hand the next implementer six fabricated locations and
+# displace the real ones. They did exactly that to T018, whose own brief
+# arrived carrying these six lines and nothing else.
+disown 2>/dev/null || true
 jq -n --argjson pid "$cpu_stall_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUFLAT-a1-c0f00001", task:"TCPUFLAT", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1331,6 +1360,7 @@ cat > "$cpu_busy_log" <<'BUSYLOG'
 BUSYLOG
 sleep 100 &
 cpu_busy_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_busy_pid" --arg log "$cpu_busy_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUBUSY-a1-c0b00001", task:"TCPUBUSY", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1356,6 +1386,7 @@ cat > "$cpu_young_log" <<'YOUNGLOG'
 YOUNGLOG
 sleep 100 &
 cpu_young_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_young_pid" --arg log "$cpu_young_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUYOUNG-a1-c0900001", task:"TCPUYOUNG", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1379,6 +1410,7 @@ cat > "$cpu_stall_log" <<'FLATLOG2'
 FLATLOG2
 sleep 100 &
 cpu_off_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_off_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUOFF-a1-c0000001", task:"TCPUOFF", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1409,6 +1441,7 @@ cat > "$cpu_stall_log" <<'FLATLOG3'
 FLATLOG3
 sleep 100 &
 cpu_dflt_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_dflt_pid" --arg log "$cpu_stall_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUDFLT-a1-c0d00001", task:"TCPUDFLT", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,
@@ -1439,6 +1472,7 @@ cat > "$cpu_back_log" <<'BACKLOG'
 BACKLOG
 sleep 100 &
 cpu_back_pid=$!
+disown 2>/dev/null || true  # as at the flat-CPU fixture above: a reaped job's notice is not a finding
 jq -n --argjson pid "$cpu_back_pid" --arg log "$cpu_back_log" --argjson started "$(date +%s)" \
   '{job_id:"j-e1-TCPUBACK-a1-c0e00001", task:"TCPUBACK", attempt:1, role:"implementer",
     operation:"implement", engine:"fake", pid:$pid, pgid:0, started_at:$started,

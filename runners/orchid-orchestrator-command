@@ -48,7 +48,8 @@ set -euo pipefail
 # caller's own argv vector, so there is no quoting seam to escape through.
 #
 # Refusals exit 17 (kernel exit-code registry: ... 15 hook handler failure,
-# 16 judgment boundary, 17 brokered command refused).
+# 16 judgment boundary, 17 brokered command refused, 18 slot already holds an
+# unlaunched manifest, 19 step not routable to the resolved actor).
 
 self="$0"
 while [ -L "$self" ]; do

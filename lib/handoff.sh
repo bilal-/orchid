@@ -88,7 +88,67 @@
 # and the pause below reopens against the new candidate, exactly as it does
 # for any other HEAD that has moved past it.
 #
-# Source AFTER lib/common.sh and lib/frontmatter.sh; it needs nothing else.
+# WHO ASKS FOR THE PAUSE. Two independent arms, and it is asked for when EITHER
+# says so:
+#
+#   the config arm       `handoff_before_verify` -- an operator states that this
+#                        repository's candidates need the pause.
+#   the capability arm   the `mechanical` step cannot be routed to the actor
+#                        that built THIS candidate: it could not be resolved to
+#                        a manifest at all, so nothing says it can -- or (see
+#                        the next paragraph for why this half does not fire for
+#                        a dispatched implementer) its manifest does not declare
+#                        `shell` (INV-16, lib/capability.sh's `mechanical` step;
+#                        both refuse, see the arm itself).
+#
+# WHAT THE CAPABILITY ARM ACTUALLY CATCHES, AND WHAT IT DOES NOT. It does NOT
+# generalize the config arm, and nothing that reads this file may say it does.
+# `roles/implementer.role` declares `requires=workspace_write,shell,git`, and
+# that is enforced before anything is dispatched -- by resolve_role_available
+# walking the chain, and by `orchid jobs prepare`'s own eligibility check when
+# an engine is named explicitly. An engine declaring no `shell` is therefore
+# refused the implementer role at exit 14, BEFORE any candidate of its exists
+# for this arm to hold, so the "declares no `shell`" outcome cannot arise for a
+# candidate orchid's own dispatch produced. Writing this arm as though it were
+# the routine protection would be advertising a pause that cannot fire -- an
+# operator would read it and believe orchid guards a case it never reaches.
+#
+# It is kept, as what it actually is: defense in depth against that role
+# descriptor changing, plus the answer for the two situations the role gate
+# never saw -- a task with no `implementer_engine_id` recorded, where
+# review_implementer_engine falls back to the raw `role.implementer` binding
+# that nothing has eligibility-checked, and a manifest edited underneath a
+# candidate after its job was minted.
+#
+# WHAT IT DOES CLOSE ON ITS OWN is the actor this gate CANNOT IDENTIFY. An
+# implementer that resolves to no installed manifest is held rather than waved
+# through, and no role gate covers that: the role gate ran while the plugin was
+# still installed.
+#
+# AND THE CONFIG ARM IS NOT MADE REDUNDANT BY EITHER. It is the only cover for
+# the case no declaration shows: a profile that DECLARES `shell` and is still
+# not granted it -- the shipped claude adapter, on its implement path, which is
+# the exact loss this pause was introduced for. An operator who needs that
+# still sets `handoff_before_verify`; nothing below sets it for them.
+#
+# THE TWO ARMS COMPOSE, THEY DO NOT OVERRIDE. Either can turn the pause ON;
+# neither can turn the other OFF. In particular an actor that declares `shell`
+# does NOT clear a pause the operator asked for: a manifest capability is a
+# CLAIM BY THE PLUGIN, NOT A GRANT (docs/beta-qualification.md; the shipped
+# claude adapter declares `shell` and still cannot run one command on its
+# implement path), so reading a declaration as permission to skip an operator's
+# own gate is precisely how an actor would self-declare its way past it. The
+# composition below makes that structurally impossible rather than merely
+# unintended.
+#
+# Pure policy, like lib/drive.sh: every function below READS (task
+# frontmatter, config, plugin manifests) and prints. The acknowledgement itself
+# has exactly one writer, the `orchid task handoff` verb (libexec/orchid-task).
+#
+# Source AFTER lib/common.sh, lib/frontmatter.sh, lib/manifest.sh,
+# lib/resolver.sh, lib/review.sh and lib/capability.sh -- the capability arm
+# asks review_implementer_engine which actor built this candidate, and
+# lib/capability.sh whether the `mechanical` step may be routed to it.
 
 # handoff_gate_mode <repo> -- `required` when this repository asks the driver
 # to stop at the hand-off, `off` when it does not.
@@ -105,6 +165,77 @@ handoff_gate_mode() {
   case "$v" in
     ''|off) printf 'off\n' ;;
     *) printf 'required\n' ;;
+  esac
+}
+
+# handoff_capability_gate <repo> <task-id> -- the OTHER arm: exactly one line,
+# "<required|off><TAB><why>", derived from what the actor that built this
+# candidate declares rather than from what an operator remembered to configure.
+#
+# WHICH ACTOR. review_implementer_engine: the task's recorded
+# `implementer_engine_id` when it has one (kernel-derived, written only by
+# `task advance implementing->testing` from the accepted implement envelope, so
+# it names the engine that ACTUALLY produced this candidate even when a
+# failover moved off the chain's first entry), else the role's binding. Asking
+# the binding alone would answer for the wrong engine on precisely the runs
+# where failover happened.
+#
+# AN ACTOR THIS GATE CANNOT IDENTIFY IS REFUSED, NEVER PERMITTED. The step table
+# separates "declared short" (its exit 1) from "no manifest could be read at
+# all" (its exit 2) so that each caller may answer them differently; this arm
+# turns the pause ON for both -- and for any other nonzero answer it does not
+# recognise, since only a clean 0 is evidence of anything. A gate that reports
+# no objection about an engine it could not even name is not a gate, it is a
+# hole.
+#
+# BUT "CANNOT IDENTIFY" IS A LAST RESORT, NOT A CATEGORY FOR THIRD-PARTY
+# PLUGINS. Their manifests carry QUALIFIED ids (`acme/foo`), and the field this
+# arm reads records the implement envelope's id verbatim apart from the
+# `orchid/` vendor prefix libexec/orchid-task strips -- so `acme/foo` is what a
+# healthy third-party implementer looks like here. It is not an unknown: the
+# field holds that id BECAUSE orchid minted, launched and reconciled a job for
+# that plugin. Refusing on the qualified form would hold every candidate a
+# third-party engine builds at a hand-off with no exit -- no act an operator can
+# perform makes an unresolvable name resolve -- which is the same INV-14
+# violation as waiving the pause for them, reached from the other side and
+# costing every attempt instead of one. So the actor is RESOLVED by either name
+# it answers to (lib/resolver.sh's resolve_engine_dir_any: the install directory
+# a binding uses, or the qualified id an installed manifest claims), and the
+# refusal is kept for the actor that is genuinely not installed under either.
+#
+# AND THE NAME IS NEVER GUESSED AT. Resolution by id matches a manifest's `id=`
+# WHOLE; no arm here strips a vendor prefix and retries the basename, because
+# `acme/foo` and `zzz/foo` both fall to a directory called `foo` and a lookup
+# that succeeded there would be reporting on some other publisher's manifest --
+# the same shadowing INV-10 refuses elsewhere, arrived at by being helpful. When
+# resolution does fail the refusal SAYS the plugin is not installed under either
+# name, which is a thing an operator can act on (install it, or bind the role to
+# the name it is installed under) rather than a verdict about capabilities
+# nothing ever read.
+#
+# The cost of being wrong in this direction is one operator command (`orchid
+# task handoff <id> --ack`, which every hand-off already needs); the cost of the
+# other is a candidate verified after a mechanical step nobody could perform --
+# the whole class of loss this file exists to end. A repository whose engines
+# are merely not installed yet dispatched nothing in the first place, so it has
+# no candidate here to hold.
+handoff_capability_gate() {
+  local repo="$1" id="$2" engine why rc
+  engine="$(review_implementer_engine "$repo" "$id" 2>/dev/null || true)"
+  rc=0
+  why="$(capability_routing_refusal mechanical "$engine")" || rc=$?
+  # ONLY 0 TURNS THE PAUSE OFF. `mechanical` is a literal here, so the table's
+  # caller-error answer (3) cannot happen today -- and a catch-all `*)` that
+  # printed `off` would mean the day it could, this arm would report no
+  # objection about a step it never managed to price. That is the fail-open
+  # shape three paragraphs above refuse in every other direction; an outcome
+  # this arm does not understand is one more reason to stop, never a reason to
+  # proceed.
+  case "$rc" in
+    0) printf 'off\tthe actor that built this candidate (%s) declares what the mechanical step needs\n' "${engine:-none}" ;;
+    1) printf 'required\t%s\n' "$why" ;;
+    2) printf 'required\t%s — a capability gate that cannot identify the actor refuses rather than permits, so an operator performs the mechanical steps for this candidate (or installs that plugin, or binds the role to the name it is installed under)\n' "$why" ;;
+    *) printf 'required\tthe mechanical step could not be priced at all (%s) — an unpriced step is held for an operator rather than waived\n' "$why" ;;
   esac
 }
 
@@ -222,10 +353,23 @@ handoff_worktree_dirty() {
 # nobody finished.
 handoff_state() {
   local repo="$1" id="$2" tf ack cand wt cwd head dirty drc
-  if [ "$(handoff_gate_mode "$repo")" = off ]; then
-    printf 'off\tthe handoff_before_verify gate is off for this repository\n'
+  local capline capmode capwhy asked
+  # Both arms are consulted before anything else, and the pause is off only
+  # when BOTH are (see this file's header: they compose, they do not override).
+  capline="$(handoff_capability_gate "$repo" "$id")"
+  capmode="$(printf '%s' "$capline" | cut -f1)"
+  capwhy="$(printf '%s' "$capline" | cut -f2-)"
+  if [ "$(handoff_gate_mode "$repo")" = off ] && [ "$capmode" = off ]; then
+    printf 'off\tthe handoff_before_verify gate is off for this repository, and %s\n' "$capwhy"
     return 0
   fi
+  # WHICH ARM ASKED, carried into the first line an operator actually meets. A
+  # pause nobody configured, arriving with no explanation, reads as a bug in
+  # the driver rather than as the routing refusal it is -- and the fix
+  # (perform the step, or bind an implementer whose manifest covers it) is not
+  # guessable from the stop alone.
+  asked="the handoff_before_verify gate asks for it"
+  [ "$capmode" != required ] || asked="$capwhy"
   tf="$(orchid_state "$repo")/tasks/$id.md"
   if [ ! -f "$tf" ]; then
     printf 'outstanding\tno task %s\n' "$id"
@@ -238,7 +382,7 @@ handoff_state() {
   fi
   ack="$(fm_get "$tf" handoff_ack)"
   if [ -z "$ack" ]; then
-    printf 'outstanding\tno operator hand-off is recorded for candidate %s\n' "$cand"
+    printf 'outstanding\tno operator hand-off is recorded for candidate %s (%s)\n' "$cand" "$asked"
     return 0
   fi
   if [ "$ack" != "$cand" ]; then

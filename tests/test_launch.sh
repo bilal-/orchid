@@ -65,8 +65,19 @@ assert_eq "workspace-write" "$(jq -r .policy "$req")" "implement policy"
 # HOME, USER, LANG, LC_*, TERM, TMPDIR, ORCHID_*) plus exactly the env var
 # names a plugin's manifest opts into via `permissions=`. SECRET_LEAK is set
 # in the PARENT but neither base-allowlisted nor opted into by the first
-# stub's manifest (it has no plugin.conf at all) -- it must not reach the
-# child. ORCHID_MARKER (ORCHID_*) and PATH must always reach the child.
+# stub's manifest (it declares capabilities and NO `permissions=` key at all)
+# -- it must not reach the child. ORCHID_MARKER (ORCHID_*) and PATH must
+# always reach the child.
+#
+# T018: this stub used to ship no plugin.conf whatsoever, and the launch below
+# is an `implement` step -- which INV-16 now refuses to route to an actor whose
+# manifest does not declare `workspace_write` (lib/capability.sh). A plugin
+# that declares NOTHING covers nothing, so a manifest-less dir is refused for
+# the same reason one declaring the wrong atoms is; exempting it would be
+# exactly the fail-open direction that rule exists to close. What this fixture
+# actually tests is unchanged, because both shapes take the identical env path:
+# `spawn_child_env` reads `manifest_permissions`, and an absent `permissions=`
+# key and an absent manifest both yield no opted-in names at all.
 export SECRET_LEAK="topsecret-value"
 export ORCHID_MARKER="marker-should-pass"
 mkdir -p "$WORK/eng/leaky"
@@ -80,6 +91,9 @@ printf '{"contract":1,"job_id":"%s","task":"%s","operation":"implement","status"
   "$jid" "$task" "${SECRET_LEAK:-}" "${ORCHID_MARKER:-}" "${PATH:+yes}" > "$out"
 EOF
 chmod +x "$WORK/eng/leaky/run"
+# No `permissions=` key -- that absence is the point of this half.
+printf 'manifest_version=1\nid=test/leaky\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nentrypoint=run\n' \
+  > "$WORK/eng/leaky/plugin.conf"
 printf 'role.leaktest=leaky\n' >> "$WORK/orchid.config"
 
 "$ORCHID_BIN" task create T002 demo2 >/dev/null
@@ -95,7 +109,12 @@ assert_match "PATH_SET=<yes>" "$summary" "child sees PATH (always allowed)"
 # child (the ONLY way a non-base name may cross the boundary).
 mkdir -p "$WORK/eng/leaky2"
 cp "$WORK/eng/leaky/run" "$WORK/eng/leaky2/run"; chmod +x "$WORK/eng/leaky2/run"
-printf 'manifest_version=1\nid=orchid/leaky2\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nentrypoint=run\npermissions=SECRET_LEAK\n' \
+# `workspace_write,shell,git` are here for INV-16, not for this assertion: the
+# launch below is an `implement` step, and lib/capability.sh refuses to route one
+# to an actor that does not declare all three (edit the tree, deliver the commit,
+# run the repository's own gates first). `permissions=SECRET_LEAK` remains the
+# only thing this half is about.
+printf 'manifest_version=1\nid=orchid/leaky2\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text,workspace_write,shell,git\nentrypoint=run\npermissions=SECRET_LEAK\n' \
   > "$WORK/eng/leaky2/plugin.conf"
 printf 'role.leaktest2=leaky2\n' >> "$WORK/orchid.config"
 

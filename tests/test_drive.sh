@@ -23,6 +23,10 @@ source "$REPO_ROOT/lib/review.sh"
 # same way the pump would, and resolve_role_available consults both.
 source "$REPO_ROOT/lib/capsuite.sh"
 source "$REPO_ROOT/lib/ledger.sh"
+# capability: Part F asserts, as a FIXTURE precondition, that the engine it
+# rate-limits is one the implement step has no objection to -- so the wait it
+# then measures is the ledger window and not INV-16's exit-19 refusal.
+source "$REPO_ROOT/lib/capability.sh"
 source "$REPO_ROOT/lib/drive.sh"
 
 DRIVE="$REPO_ROOT/runners/orchid-drive"
@@ -1008,12 +1012,17 @@ git commit -q -m "fixture: config"
 ORCHID_REPO="$WAITREPO" "$ORCHID_BIN" init >/dev/null || fail "orchid init (dispatch-wait fixture)"
 git checkout -q orchid/integration
 
-# The implementer engine starts INELIGIBLE for its role (it declares none of
-# implementer.role's required capabilities), which is exactly what an empty
-# failover chain looks like from `jobs prepare`: exit 14, no manifest minted,
-# nothing spawned.
+# The implementer engine DECLARES EVERY ATOM the implement step needs, from
+# the first pass onward, and that is load bearing rather than incidental. A
+# chain whose every entry is short one of them is not a wait at all: it is
+# INV-16's permanent routing refusal (exit 19), which the driver journals and
+# raises an `operator-handoff` boundary for, because no later pass makes the
+# same manifest declare more. This Part is about the OTHER shape -- the
+# disqualifier that really does clear itself -- so it is produced the way
+# drive_launch's own header describes it: a closed LEDGER window (below), with
+# the manifest left entirely alone.
 mkdir -p "$WORK/eng/stubwait"
-printf 'manifest_version=1\nid=test/stubwait\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+printf 'manifest_version=1\nid=test/stubwait\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
   > "$WORK/eng/stubwait/plugin.conf"
 cat > "$WORK/eng/stubwait/run" <<'EOF'
 #!/usr/bin/env bash
@@ -1035,6 +1044,18 @@ chmod +x "$WORK/eng/stubwait/run"
 
 WEPOCH="$(ORCHID_REPO="$WAITREPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
 worchid() { ORCHID_REPO="$WAITREPO" ORCHID_EPOCH="$WEPOCH" "$ORCHID_BIN" "$@"; }
+# THE DISQUALIFIER, and it is the one that reopens on its own. The engine is
+# capable of the work and merely rate-limited, so resolve_role_available finds
+# no survivor and `jobs prepare` exits 14 -- a wait, with nothing for an
+# operator to do -- rather than the capability refusal a short manifest would
+# now (correctly) produce.
+ledger_mark "$WAITREPO" stubwait rate_limited 999999
+if ledger_available "$WAITREPO" stubwait; then
+  fail "fixture: stubwait must be ledger-UNavailable, or the first pass below dispatches and this Part never sees a wait at all"
+fi
+wcap_rc=0; capability_routing_refusal implement stubwait >/dev/null || wcap_rc=$?
+assert_eq 0 "$wcap_rc" \
+  "fixture: the step table must have NO objection to stubwait — a chain refused for a MISSING CAPABILITY is INV-16's exit-19 hand-off, and this Part is about the wait that clears itself"
 worchid requirements import "$WORK/requirements.md" >/dev/null
 worchid task create W010 "dispatch must wait for an engine" >/dev/null
 worchid task set W010 verification_commands "test -f stub_feature.txt" >/dev/null
@@ -1058,10 +1079,13 @@ assert_match "staying in pending" "$WDRIVE_OUT" \
 [ -z "$(list_dir_files "$WAITREPO/.orchid/runtime/jobs")" ] \
   || fail "an exit-14 dispatch must leave no job manifest behind"
 
-# The window reopens (here: the engine becomes role-eligible). The IDENTICAL
-# dispatch, with no operator action of any kind, now succeeds.
-printf 'manifest_version=1\nid=test/stubwait\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=workspace_write,shell,git\nrequires_binaries=jq\nentrypoint=run\n' \
-  > "$WORK/eng/stubwait/plugin.conf"
+# The window reopens, which is the half that makes the pass above a WAIT
+# rather than a refusal: nothing about the engine's DECLARATION changed, and
+# no operator touched a manifest -- only the rate-limit expired. The IDENTICAL
+# dispatch now succeeds.
+ledger_mark "$WAITREPO" stubwait ok
+ledger_available "$WAITREPO" stubwait \
+  || fail "fixture: clearing the rate limit must make stubwait ledger-available again, or the pass below is waiting on something else"
 run_wdrive
 assert_eq implementing "$(wstatus_of W010)" \
   "the next pass dispatches the very same task — the wait cost nothing but a pass (rc=$WDRIVE_RC, out: $WDRIVE_OUT)"
@@ -1913,6 +1937,10 @@ assert_eq 3 "$(dstarts)" \
 # a log, and not a paraphrase.
 # ===========================================================================
 source "$REPO_ROOT/lib/findings.sh"
+# capability.sh before handoff.sh: the hand-off gate's capability arm (INV-16)
+# asks it whether the `mechanical` step may be routed to the actor that built
+# a candidate.
+source "$REPO_ROOT/lib/capability.sh"
 source "$REPO_ROOT/lib/handoff.sh"
 source "$REPO_ROOT/lib/pack.sh"
 

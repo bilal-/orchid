@@ -41,38 +41,67 @@ resolve_role_chain() {
   fi
   echo "$v" | tr ',' '\n'
 }
-resolve_engine_exe() {  # name -> executable path (search path; dup = error)
-  local name="$1" d found="" repo_dir abs trust_stat p
-  local -a search_dirs=()
-  # ORCHID_ROOT is guarded with :- (brief had it bare): resolve_engine_exe is
-  # unit-tested by sourcing this file directly, without going through
-  # bin/orchid, so ORCHID_ROOT is unset in that context; under the tests'
-  # `set -u` a bare "$ORCHID_ROOT" would abort with "unbound variable"
-  # before the loop body ever runs.
-  #
-  # ORCHID_ENGINES_DIR is a resolver-only test hook (see lib/capsuite.sh's
-  # header comment on "external" origin) that real discovery
-  # (_plugins_roots/_plugins_discover, libexec/orchid-plugins) never walks --
-  # kept first/highest here purely so tests can inject a private engines dir
-  # without disturbing the real search roots below.
-  #
-  # $ORCHID_PLUGIN_PATH (colon-delimited; each entry laid out like
-  # _plugins_roots' path roots, i.e. <entry>/engines/<name>/run) is highest
-  # REAL precedence per docs/specs/plugins.md's search order -- ahead of
-  # ~/.orchid and $ORCHID_ROOT -- and, like ~/.orchid, is a user-controlled
-  # location (Trust model) so a path-root engine needs no trust record, same
-  # as `plugins list` already treats it (origin=path, trust=user). Without
-  # this, a path-root plugin discovers/lists healthy but could never
-  # actually execute.
-  search_dirs+=("${ORCHID_ENGINES_DIR:-}")
+# _resolve_engine_roots -- the `engines` directories a plugin is searched for
+# by DIRECTORY NAME, highest precedence first, one per line.
+#
+# ORCHID_ROOT is guarded with :- (brief had it bare): resolve_engine_exe is
+# unit-tested by sourcing this file directly, without going through
+# bin/orchid, so ORCHID_ROOT is unset in that context; under the tests'
+# `set -u` a bare "$ORCHID_ROOT" would abort with "unbound variable"
+# before the loop body ever runs.
+#
+# ORCHID_ENGINES_DIR is a resolver-only test hook (see lib/capsuite.sh's
+# header comment on "external" origin) that real discovery
+# (_plugins_roots/_plugins_discover, libexec/orchid-plugins) never walks --
+# kept first/highest here purely so tests can inject a private engines dir
+# without disturbing the real search roots below.
+#
+# $ORCHID_PLUGIN_PATH (colon-delimited; each entry laid out like
+# _plugins_roots' path roots, i.e. <entry>/engines/<name>/run) is highest
+# REAL precedence per docs/specs/plugins.md's search order -- ahead of
+# ~/.orchid and $ORCHID_ROOT -- and, like ~/.orchid, is a user-controlled
+# location (Trust model) so a path-root engine needs no trust record, same
+# as `plugins list` already treats it (origin=path, trust=user). Without
+# this, a path-root plugin discovers/lists healthy but could never
+# actually execute.
+#
+# REPO-LOCAL IS DELIBERATELY ABSENT. <repo>/.orchid/plugins/engines is
+# attacker-controlled by anything that can land a commit and is reachable only
+# through the digest-pinned trust check resolve_engine_exe applies to it
+# separately (INV-09); a caller that picked it up off this list would walk
+# straight past that gate.
+#
+# Factored out of resolve_engine_exe so the lookup BY QUALIFIED ID
+# (resolve_engine_dir_any) enumerates the SAME registry the name lookup does.
+# Two lists would drift, and the drift would surface as an installed
+# third-party plugin the routing gate cannot see -- the exact failure that
+# lookup exists to end.
+_resolve_engine_roots() {
+  local p
+  [ -z "${ORCHID_ENGINES_DIR:-}" ] || printf '%s\n' "$ORCHID_ENGINES_DIR"
   if [ -n "${ORCHID_PLUGIN_PATH:-}" ]; then
-    local IFS=':' parts=()
+    local parts=()
+    local IFS=':'
     read -ra parts <<< "$ORCHID_PLUGIN_PATH"
     for p in "${parts[@]}"; do
-      [ -n "$p" ] && search_dirs+=("$p/engines")
+      [ -n "$p" ] && printf '%s/engines\n' "$p"
     done
   fi
-  search_dirs+=("$HOME/.orchid/plugins/engines" "${ORCHID_ROOT:-}/plugins/engines")
+  printf '%s\n' "$HOME/.orchid/plugins/engines"
+  printf '%s\n' "${ORCHID_ROOT:-}/plugins/engines"
+}
+
+resolve_engine_exe() {  # name -> executable path (search path; dup = error)
+  local name="$1" d found="" repo_dir abs trust_stat
+  local -a search_dirs=()
+  # `|| continue` rather than `&& search_dirs+=(...)`: under `set -e` a while
+  # loop whose LAST body command is a failed test returns that status, and this
+  # loop sits at the top of a function whose callers read its exit status as
+  # "engine not found".
+  while IFS= read -r d; do
+    [ -n "$d" ] || continue
+    search_dirs+=("$d")
+  done < <(_resolve_engine_roots)
   for d in "${search_dirs[@]}"; do
     [ -n "$d" ] || continue
     if [ -x "$d/$name/run" ]; then
@@ -192,6 +221,104 @@ resolve_engine_qualified_id() {
   echo "$qid"
 }
 
+# _resolve_engine_names -- every engine directory NAME visible under any root,
+# one per line, duplicates included. The repo-local root IS walked here, unlike
+# in _resolve_engine_roots: this only produces NAMES, and each one is handed
+# back to resolve_engine_exe, which is what applies precedence, the duplicate
+# refusal (INV-10) and the repo-local digest/trust gate (INV-09). Nothing is
+# resolved by being listed.
+_resolve_engine_names() {
+  local root d
+  while IFS= read -r root; do
+    [ -n "$root" ] || continue
+    [ -d "$root" ] || continue
+    for d in "$root"/*/; do
+      [ -d "$d" ] || continue
+      d="${d%/}"
+      printf '%s\n' "${d##*/}"
+    done
+  done < <(
+    _resolve_engine_roots
+    [ -z "${ORCHID_REPO:-}" ] || printf '%s\n' "$ORCHID_REPO/.orchid/plugins/engines"
+  )
+}
+
+# resolve_engine_dir_any <name-or-qualified-id> -- the plugin dir for an actor
+# named EITHER way: the install-DIRECTORY name a binding uses
+# (resolve_engine_dir), or the QUALIFIED manifest id a plugin claims for itself
+# (`acme/foo`). The exact inverse of resolve_engine_qualified_id above, and it
+# must stay that way -- one function turns a binding into the id an envelope
+# reports, this one turns that id back into the plugin it came from.
+#
+# WHY BOTH FORMS ARE ONE QUESTION. `implementer_engine_id` records the id the
+# implement envelope reported, minus the `orchid/` vendor prefix
+# libexec/orchid-task strips -- so a first-party actor lands in that field as a
+# bare `claude` (which IS its directory) and a third-party one as `acme/foo`
+# (which is not). BOTH name an actor orchid itself dispatched to: the field
+# exists because a job was minted, launched and reconciled for that plugin, so
+# neither form is an unknown the kernel is entitled to give up on. A resolver
+# that reached only the first would report every healthy third-party plugin as
+# unidentifiable, and a gate built on it would then answer differently
+# depending on whose engine it is -- the one thing INV-14 promises the kernel
+# never does.
+#
+# THE ID IS MATCHED WHOLE, NEVER GUESSED AT. The basename is never retried:
+# `acme/foo` and `zzz/foo` both fall to a directory called `foo`, so a lookup
+# that "helpfully" succeeded there would be answering out of another
+# publisher's manifest -- the shadowing INV-10 refuses elsewhere, arrived at by
+# being accommodating. A qualified id resolves because some installed manifest
+# CLAIMS it, or it does not resolve.
+#
+# NOR IS A VENDOR PREFIX RECONSTRUCTED in the other direction. A BARE name is
+# looked up as a directory and matched against `id=` verbatim; it is not also
+# tried as `orchid/<name>`, because that would assume the very shape
+# resolve_engine_qualified_id's own header says must never be assumed. In the
+# shipped layout the question does not arise: `orchid plugins install` places a
+# plugin at `<root>/<kind>s/<basename of its id>` (libexec/orchid-plugins), so
+# a first-party `orchid/claude` is installed in a directory called `claude` and
+# the bare form the vendor-prefix strip leaves behind IS its directory name.
+# A hand-placed directory whose name matches neither is reported as not
+# installed, which is true, and names both forms so the fix is visible.
+#
+# Three outcomes, and a caller must read the STATUS:
+#
+#   0, one line  resolved; this is the plugin dir.
+#   1, nothing   nothing installed is named that, and no installed manifest
+#                claims that id.
+#   2, nothing   AMBIGUOUS: two installed plugins claim the id, and picking one
+#                is precedence-by-shadow, which INV-10 refuses. Kept apart from
+#                1 because "install it" and "uninstall one of them" are
+#                opposite operator actions.
+#
+# Callers must additionally source lib/manifest.sh (manifest_get).
+resolve_engine_dir_any() {
+  local name="$1"
+  local dir n cand hit=""
+  local seen=" "
+  if dir="$(resolve_engine_dir "$name" 2>/dev/null)"; then
+    printf '%s\n' "$dir"
+    return 0
+  fi
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    case "$seen" in *" $n "*) continue ;; esac
+    seen="$seen$n "
+    # Resolved back through resolve_engine_dir rather than read off disk:
+    # precedence, the duplicate-NAME refusal and the repo-local trust gate are
+    # applied by the one function that owns them, so an id lookup can never
+    # reach a plugin a name lookup would have refused.
+    cand="$(resolve_engine_dir "$n" 2>/dev/null)" || continue
+    [ "$(manifest_get "$cand" id 2>/dev/null)" = "$name" ] || continue
+    if [ -n "$hit" ] && [ "$hit" != "$cand" ]; then
+      echo "orchid: engine id '$name' is claimed by two installed plugins ($hit vs $cand) (INV-10)" >&2
+      return 2
+    fi
+    hit="$cand"
+  done < <(_resolve_engine_names)
+  [ -n "$hit" ] || return 1
+  printf '%s\n' "$hit"
+}
+
 # resolve_role_checked <repo> <role> -- resolves the role's engine (same
 # lookup as resolve_role) then gates it on capability eligibility (lib/
 # roles.sh's role_eligible against the engine's manifest capabilities).
@@ -215,10 +342,12 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
   echo "$engine"
 }
 
-# resolve_role_available <repo> <role> -- walks resolve_role_chain and prints
-# the first entry that is (a) discovered (resolve_engine_dir), (b)
-# role-eligible (role_eligibility_reason), (c) ledger_available, and (d) --
-# for every entry AFTER the first -- capsuite_passed for this exact (engine,
+# resolve_role_available <repo> <role> [step] -- walks resolve_role_chain and
+# prints the first entry that is (a) discovered (resolve_engine_dir), (b)
+# role-eligible (role_eligibility_reason), (c) -- when a <step> is given --
+# not refused that step by the kernel's own capability table, (d)
+# ledger_available, and (e) -- for every entry AFTER the first --
+# capsuite_passed for this exact (engine,
 # role) pair: a fallback may activate ONLY once it has actually been proven
 # to work for this role (v1-m1's capability suite gate); the primary is the
 # tested default and needs no capsuite record. `plan_critic` additionally
@@ -226,13 +355,47 @@ resolve_role_checked() {  # repo role -> engine name, or exit 1 with a reason
 # engine -- the engine that drafted a plan never critiques its own draft --
 # regardless of that entry's chain position.
 #
+# WHY SELECTION IS OPERATION-AWARE AT ALL (T018/INV-16). Without <step> this
+# walk answers "who may hold this ROLE", and the caller then discovers -- one
+# gate later, at `orchid jobs prepare`'s step gate -- that the winner cannot
+# perform the WORK. Those are different questions wherever a role descriptor
+# asks for less than the step's price does, which is exactly the CUSTOM role
+# whose descriptor its own publisher writes. An incapable primary then SHADOWS
+# a capable, capsuite-proven fallback sitting right behind it in the same
+# chain: the walk stops at the primary because it is role-eligible, the step
+# gate refuses it permanently, and the fallback that could have done the work
+# is never reached. Failing over is what a chain is for, and a capability
+# shortfall is as permanent a reason to fail over as a rate limit is a
+# temporary one.
+#
+# ONLY A REFUSAL (the table's exit 1) SKIPS AN ENTRY. An entry the table
+# cannot answer for (its 2) and a step name it never priced (its 3) are not
+# capability facts about this engine, and skipping on them would let a
+# momentary discovery failure -- or one caller's typo -- silently fail a
+# dispatch over to somebody else. Both leave the entry exactly where it was,
+# for the gates that own those answers to report in their own words.
+#
+# THE STEP IS THE CALLER'S TO PASS, and a caller that passes one without
+# lib/capability.sh sourced is refused rather than quietly answered. Skipping
+# the check because its implementation is absent would turn "route only to an
+# actor that declares the work" into "route to whoever loaded first", which is
+# the fail-open INV-16 exists to close, arriving through a missing `source`.
+#
 # No survivor -> nothing on stdout, exit 14, and one line on stderr naming
 # the role, the full chain, and EACH entry's specific disqualifier (so an
 # operator never has to go spelunking in the ledger/capsuite dirs to see
 # why). Callers must source, in order: lib/common.sh, lib/manifest.sh,
-# lib/roles.sh, lib/resolver.sh (this file), lib/capsuite.sh, lib/ledger.sh.
+# lib/roles.sh, lib/resolver.sh (this file), lib/capsuite.sh, lib/ledger.sh --
+# plus lib/capability.sh when (and only when) they pass a <step>.
 resolve_role_available() {
-  local repo="$1" role="$2" chain engine dir reason skip_engine="" idx=0 disq=""
+  local repo="$1" role="$2" step="${3:-}"
+  local chain engine dir reason skip_engine="" idx=0 disq=""
+  local why crc
+
+  if [ -n "$step" ] && ! declare -F capability_routing_refusal >/dev/null 2>&1; then
+    echo "orchid: internal: resolve_role_available was asked about step '$step' without lib/capability.sh sourced" >&2
+    return 3
+  fi
 
   [ "$role" = plan_critic ] && skip_engine="$(resolve_role "$repo" orchestrator)"
   # An unbound custom role's exit 14 (its own specific "no binding for
@@ -258,6 +421,20 @@ resolve_role_available() {
     if ! reason="$(role_eligibility_reason "$role" "$dir")"; then
       disq="$disq$engine: $reason; "
       continue
+    fi
+
+    # Asked immediately after the role gate and before the ledger/capsuite
+    # ones, because both read the same manifest and neither changes: an entry
+    # disqualified here is disqualified for good, and reporting it as
+    # "rate-limited" (the answer that would have come out first had the order
+    # been the other way) is the mis-attribution INV-16 exists to end.
+    if [ -n "$step" ]; then
+      crc=0
+      why="$(capability_routing_refusal "$step" "$engine")" || crc=$?
+      if [ "$crc" -eq 1 ]; then
+        disq="$disq$engine: $why; "
+        continue
+      fi
     fi
 
     if ! ledger_available "$repo" "$engine"; then
