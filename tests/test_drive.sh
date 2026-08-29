@@ -3492,9 +3492,10 @@ for _run in "$REPO_ROOT"/plugins/engines/*/run; do
   # ...and the asymmetry, which is the whole point of admitting one kind and
   # refusing the other: a ledger entry only ADDS to what the next plan must
   # consider, a deferral REMOVES something from it. Only `orchid plan defer`,
-  # during PLANNING, may do the removing. Pinned as the exact clause both
-  # prompts carry so a rewrite that drops the prohibition fails here rather
-  # than at the next planning boundary.
+  # an operator verb this surface refuses in every run_status, may do the
+  # removing. Pinned as the exact clause both prompts carry so a rewrite that
+  # drops the prohibition fails here rather than at the next planning
+  # boundary.
   case "$_instr" in
     *"never journal add --kind plan_deferral"*) ;;
     *) fail "$_name's orchestrate prompt must forbid 'journal add --kind plan_deferral' outright — a free-standing deferral talks the next plan out of a defect the previous run recorded" ;;

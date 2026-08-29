@@ -32,6 +32,11 @@
 #   3d2      a bypass by ordering: `run advance` out of planning is gated on
 #            the same condition `plan apply` is, so the refusal cannot be
 #            stepped around by taking the two verbs in the other order.
+#   3f, 3g   a bypass by waiting: `plan apply` refuses in every run_status, so
+#            a mid-run revision that drops the one task covering an item is
+#            refused too and moves the integration branch not at all -- and
+#            3g pins the remedy that makes that refusal survivable, `plan
+#            defer`, open in the same statuses the refusal fires in.
 #   5        a false `covered` for a whole ENTRY: r-001's journal records up
 #            to six separate findings in a single entry, so section 5 proves
 #            coverage is tracked per FINDING -- covering one of three leaves
@@ -476,9 +481,10 @@ assert_match "already deferred" "$out" "...saying so"
 # it. Both legal exits are proven here: `->running` directly, and `->blocked`,
 # which would otherwise reach `running` in two legal hops.
 #
-# This is not the dead end 3g rules out: the run is still IN planning at a
-# refusal here, so both remedies -- cover it with a task, or `orchid plan
-# defer` -- are open, exactly as at the refused `plan apply` in 3e.
+# This strands nothing: the run is still IN planning at a refusal here, so
+# both remedies -- cover it with a task, or `orchid plan defer` -- are open,
+# exactly as at the refused `plan apply` in 3e (and, per 3g, exactly as they
+# remain on the far side of this edge).
 # ---------------------------------------------------------------------------
 rc=0; adv_out="$("$ORCHID_BIN" run advance running --reason "start the run without considering the carried items" 2>&1)" || rc=$?
 assert_eq 3 "$rc" "run advance must refuse to leave planning while a carried item is unconsidered"
@@ -533,36 +539,76 @@ grep -q "^deferred L001: " <<<"$committed_journal" \
   || fail "the deferral decisions ride onto the integration branch in the plan apply commit"
 
 # ---------------------------------------------------------------------------
-# 3f -- deferral is a PLANNING decision. Once the plan is applied, the way to
-# pick a carried item up is a task, not a retroactive note.
-# ---------------------------------------------------------------------------
-rc=0; out="$("$ORCHID_BIN" plan defer L001 --reason "too late" 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] || fail "plan defer must refuse once planning is over"
-assert_match "requires run_status planning" "$out" "...naming the gate it failed"
-
-# ---------------------------------------------------------------------------
-# 3g -- and BECAUSE deferral closes at that boundary, the REFUSAL has to close
-# with it. `plan apply` is still a legal verb once run_status is `running` (it
-# commits whatever durable .orchid state is current), so a cross-check that
-# went on refusing there would strand an operator between two closed doors:
-# they cannot cover the item -- the plan is committed -- and they cannot defer
-# it, per the assertion directly above. A gate whose only remedy has already
-# closed is a dead end, and the brief rules exactly that out.
+# 3f -- THE POST-PLANNING BYPASS, and the last one this gate carried.
 #
-# Removing T010 is the cheapest way to put a carried item back into UNCOVERED
-# at a moment when neither remedy is open: it was the one task naming
-# started_at, and 3b proved that naming is what covered the item.
+# `plan apply` is a legal verb once run_status is `running` too: it commits
+# whatever durable .orchid state is current and journals a `plan_revision`.
+# The refusal used to be scoped to `run_status: planning`, which meant the
+# very edit that UNCOVERS an item -- a mid-run revision dropping the one task
+# that named it -- committed with a printed warning and exit 0, and the item
+# left the plan considered by nobody. A gate that merely reports on the edit
+# that breaks coverage is not enforcing anything about that edit; it is
+# enforcing something about when the operator happens to make it.
+#
+# Removing T010 is that edit exactly: it was the one task naming started_at,
+# and 3b proved that naming is what covered the item.
+#
+# What is demanded here is more than the exit code. AN UNCOVERED REVISION MUST
+# NOT MOVE INTEGRATION: the branch tip is pinned across the refusal, and the
+# deletion is still absent from it afterwards -- T010 still readable at the
+# tip -- so the revision landed nothing at all rather than landing quietly and
+# printing a warning about it.
 # ---------------------------------------------------------------------------
 rm .orchid/tasks/T010.md
 rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
 assert_eq 3 "$rc" "sanity: dropping the covering task puts the item back to UNCOVERED"
 
+pre_integ="$(git -C "$b_bare" rev-parse orchid/integration)"
 rc=0; apply_out="$("$ORCHID_BIN" plan apply --reason "mid-run revision" 2>&1)" || rc=$?
-assert_eq 0 "$rc" "plan apply must NOT refuse once planning is over — the remedy it would demand is closed"
-assert_match "^applied: " "$apply_out" "...it commits, as plan apply outside planning always has"
+assert_eq 3 "$rc" "plan apply refuses AFTER planning too — the scoping WAS the bypass"
+assert_match "plan apply refused" "$apply_out" "the refusal names itself in this status as well"
 assert_match "UNCOVERED \[ledger\] $started_id" "$apply_out" \
-  "...and the report still NAMES the item: only the refusal is scoped, never the reporting"
-assert_match "reported, not refused" "$apply_out" "...saying plainly which of the two happened"
+  "...naming the item this revision uncovered"
+assert_match "orchid plan defer" "$apply_out" "...and the remedy, which is open here too (3g)"
+assert_eq "$pre_integ" "$(git -C "$b_bare" rev-parse orchid/integration)" \
+  "AN UNCOVERED REVISION MOVES NOTHING: the integration branch is exactly where it was"
+git -C "$b_bare" cat-file -e "orchid/integration:.orchid/tasks/T010.md" 2>/dev/null \
+  || fail "...and the deletion that uncovered the item is nowhere on the branch"
+assert_eq running "$(fm_get .orchid/roadmap.md run_status)" \
+  "a refused mid-run plan apply leaves run_status untouched"
+grep -q "mid-run revision" .orchid/journal.md \
+  && fail "a refused mid-run plan apply must not journal its reason — nothing happened"
+
+# ---------------------------------------------------------------------------
+# 3g -- WHY THAT REFUSAL IS NOT A DEAD END: the remedy is legal from the status
+# the refusal fires in. `orchid plan defer` used to require `planning`, on the
+# reasoning that a deferral is a decision about a plan -- and that restriction
+# is precisely what forced the refusal above to be scoped away, since an
+# operator meeting it could neither cover the item (the plan is committed) nor
+# record the decision (the verb was closed). Only one of the two could keep
+# its restriction. So the deferral opened and the gate closed, and this is the
+# assertion that keeps them paired: if `plan defer` ever re-acquires a
+# run_status precondition, this fails rather than 3f quietly becoming a trap.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" plan defer "$started_id" \
+  --reason "the started_at anchor goes back to the next run's plan now that T010 is dropped" >/dev/null \
+  || fail "plan defer must stay open after planning — it is the refused revision's only remedy"
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the recorded decision closes the item in running, exactly as it does in planning"
+
+apply_out="$("$ORCHID_BIN" plan apply --reason "mid-run revision" 2>&1)"
+assert_match "^applied: " "$apply_out" "...and the same revision commits once nothing is left unconsidered"
+assert_eq running "$(fm_get .orchid/roadmap.md run_status)" \
+  "a mid-run apply does not re-take the planning -> running edge"
+# The contrast that makes 3f's pinned sha non-vacuous: this apply DOES move
+# the branch and DOES carry the deletion, so the unchanged tip up there is the
+# refusal's doing and not some way in which this fixture cannot commit at all.
+[ "$pre_integ" != "$(git -C "$b_bare" rev-parse orchid/integration)" ] \
+  || fail "the considered revision must move the integration branch"
+if git -C "$b_bare" cat-file -e "orchid/integration:.orchid/tasks/T010.md" 2>/dev/null; then
+  fail "...carrying with it the very deletion 3f refused to land"
+fi
 
 rc=0; out="$("$ORCHID_BIN" plan bogus 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "an unknown plan subverb is refused"
@@ -571,8 +617,9 @@ assert_match "defer" "$out" "usage names the defer subverb"
 
 # ===========================================================================
 # 4 -- a deferral postpones an item; it does not erase it. `plan_deferral`
-# is itself a ledger kind, so r-002's three deferrals come back as r-003's
-# carried-forward items and need either a task or a fresh reason.
+# is itself a ledger kind, so all four of r-002's deferrals -- the three
+# recorded during planning and the one 3g recorded after it -- come back as
+# r-003's carried-forward items and need either a task or a fresh reason.
 #
 # Without this, the check would launder a defect out of existence in exactly
 # two rollovers -- one more run than the failure it was built to prevent,
@@ -590,6 +637,8 @@ assert_match "UNCOVERED \[ledger\] r-002#[0-9]+ .*deferred L001" "$out" \
   "the deferral of the lesson resurfaces too, carrying its recorded reason"
 assert_match "UNCOVERED \[ledger\] r-002#[0-9]+ .*deferred $cilocal_id" "$out" \
   "and so does the deferral of the verification-chain item"
+assert_match "UNCOVERED \[ledger\] r-002#[0-9]+ .*deferred $started_id" "$out" \
+  "and so does the one recorded AFTER planning — a mid-run deferral is a full ledger entry, not a lesser one that lapses with the run"
 assert_match "UNCOVERED \[lesson\] L001" "$out" \
   "and the lesson itself is still active, so it is still carried forward"
 

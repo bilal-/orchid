@@ -611,9 +611,12 @@ sequence in
    Where the honest answer is "not this run", record it:
    `orchid plan defer <item-id> --reason "..."` journals the decision (kind
    `plan_deferral`) and satisfies the check for that one item. It refuses an
-   id that is not on the carried-forward list, refuses to re-defer, and
-   refuses once `run_status` has left `planning` — after that, the way to
-   pick an item up is a task. There is no bulk override: a deferral names
+   id that is not on the carried-forward list and refuses to re-defer, but it
+   carries no `run_status` precondition: a plan can be revised after
+   `planning` (step 3), so an item can be uncovered after `planning`, so the
+   decision that answers for one has to be recordable then too. Once the run
+   is moving, a task is still the better answer than a deferral — that is
+   advice, not a refusal. There is no bulk override: a deferral names
    one item and says why. What satisfies the check is an entry of that
    KIND, not a line of that shape: `plan_deferral` is writable only by this
    verb and is refused on the brokered orchestrator surface, so a `note`
@@ -637,16 +640,23 @@ sequence in
    transaction, from whatever checkout you're in, without ever switching the
    operator's branch; journals `plan_revision`; advances `run_status:
    planning → running` once a plan actually exists. It re-runs the
-   carry-forward cross-check above first and, while `run_status` is still
-   `planning`, refuses (exit 3, nothing committed, nothing journaled, the
-   verb lock released) as long as any carried item is neither covered by a
-   task nor explicitly deferred. The cross-check REPORT prints on every
-   `plan apply`; only the refusal is scoped to `planning`, because `orchid
-   plan defer` closes at the same boundary and a refusal whose only remedy
-   has already closed is a dead end, not a gate.
+   carry-forward cross-check above first and refuses (exit 3, nothing
+   committed, nothing journaled, the integration branch unmoved, the verb
+   lock released) as long as any carried item is neither covered by a task
+   nor explicitly deferred.
 
-   **The gate is on leaving `planning`, not on this verb.** `orchid run
-   advance` can take a run out of `planning` too, so it applies the same
+   That refusal is on the VERB, in every `run_status` — not only while the
+   run is still `planning`. `plan apply` revises a committed plan too, so
+   scoping the refusal to `planning` meant the one edit that can UNCOVER an
+   item mid-run — a revision deleting the task that named it — committed
+   with a printed warning and exit 0. The remedy is what makes that
+   enforceable rather than a trap: `orchid plan defer` carries no
+   `run_status` precondition, so at every refusal both ways out are open —
+   cover the item with a task in the plan being applied, or record the
+   decision not to.
+
+   **The gate is on leaving `planning` as well as on this verb.** `orchid
+   run advance` can take a run out of `planning` too, so it applies the same
    cross-check on every edge out of that status (`→ running` and `→ blocked`
    alike, since `blocked → running` is legal after it) and refuses on the
    same condition, before journaling or writing anything. Otherwise `run

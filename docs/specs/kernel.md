@@ -148,7 +148,7 @@ has exactly one writing verb; anything not listed is read-only for everyone:
 | File | Sole writer (verb) |
 |---|---|
 | `tasks/*.md` | `orchid task create/set/advance/unblock/retry/reverify/handoff/prereq-ack/infra-fail` |
-| `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) — both writers of the `planning` EXIT edge also run the carry-forward cross-check first and refuse while an item is unconsidered (PROTOCOL.md PLANNING) |
+| `roadmap.md` | `orchid plan apply` (atomic roadmap+tasks transaction), `orchid run advance/accept` (run_status) — `plan apply` runs the carry-forward cross-check first and refuses in EVERY `run_status` while an item is unconsidered, and `run advance` does the same on every edge out of `planning`, so neither a mid-run revision nor a reordering carries an item past it (PROTOCOL.md PLANNING) |
 | `requirements.md` | `orchid requirements import <file>` — the operator-owned EXCEPTION: authored by hand anywhere, imported by verb, immutable after plan |
 | `orchid.config` (as committed on the integration branch) | `orchid config commit --reason "..."` (v1-m4 — SHIPPED) — operator-owned like `requirements.md`: authored by hand anywhere, but landed onto the integration branch only through this verb, never a direct hand-commit into a (possibly stale) checkout |
 | `context.md` | `orchid plan apply` / `orchid plan refresh-context` |

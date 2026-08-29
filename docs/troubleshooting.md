@@ -849,9 +849,9 @@ available; this is for where it is not.
 
 **Symptom:** `orchid plan apply` exits 3 without committing anything, listing
 items like `r-001#57` or `L016` as neither covered by a task nor deferred.
-`orchid run advance` out of `planning` exits 3 with the same list — the gate
-is on the run leaving `planning`, so taking that edge first does not open the
-door for the `plan apply` behind it.
+`orchid run advance` out of `planning` exits 3 with the same list — the run
+leaving `planning` is gated as well as the verb, so taking that edge first
+does not open the door for the `plan apply` behind it.
 
 This is the planning cross-check. The previous run left findings behind —
 ledger entries in `.orchid/runs/<prev>/journal.md` and the active lessons
@@ -900,24 +900,24 @@ finding ends would silently absolve the others. Read the entry, schedule what
 it needs, then defer it naming what you scheduled.
 
 A deferral journals the decision and satisfies the check for that item alone
-— there is no bulk override, and it only works while `run_status` is
-`planning`. Use the verb: what the check reads is the `plan_deferral` entry
-KIND, so a hand-written journal note whose text happens to read
+— there is no bulk override. Use the verb: what the check reads is the
+`plan_deferral` entry KIND, so a hand-written journal note whose text reads
 `deferred r-001#57: …` records nothing and the item stays uncovered. A
 deferral postpones rather than erases: the item reappears in the NEXT run's
 cross-check, still wanting a task or a fresh reason. Read the full item with
 `grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry at that
 ordinal.
 
-The refusal closes at the same boundary `plan defer` does, and that boundary
-is exactly why `run advance` is gated too: while a run is still in
-`planning`, both remedies above are open, so the refusal always has a way
-out. Once `run_status` has legitimately left `planning`, a `plan apply` still
-PRINTS the cross-check and still names anything unconsidered, but it commits
-rather than refusing — neither remedy is open at that point, and a gate whose
-only way out has already closed would just strand you. Pick the item up with
-a task instead, or leave it for the next run's cross-check, which will raise
-it again.
+**The refusal does not lapse when the run leaves `planning`.** `plan apply`
+revises a committed plan too, and a revision that deletes the one task naming
+an item is exactly how an item becomes uncovered mid-run — so that revision is
+refused as well, and the integration branch does not move at all: nothing is
+committed, nothing journaled, and the edit stays sitting in your checkout
+until you answer for the item. Both remedies are open there, which is why the
+refusal can be a gate rather than a trap: `orchid plan defer` has no
+`run_status` precondition, so record the decision, or put the coverage back
+and re-run. A task is still the better answer once the run is moving — but
+that is advice, not the door being closed.
 
 ## One task needs a decision and the whole run stopped
 

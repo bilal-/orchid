@@ -66,22 +66,37 @@ case "$sub" in
     crosscheck_rc=0
     plancheck_report "$state" || crosscheck_rc=$?
     if [ "$crosscheck_rc" -ne 0 ]; then
-      # The REFUSAL is scoped to `run_status: planning` -- the phase it
-      # actually gates, and the only phase in which its release valve is
-      # open. `orchid plan defer` itself refuses once planning is over (a
-      # deferral is a decision about a plan, and after apply the way to pick
-      # an item up is a task), so enforcing the refusal on a later,
-      # out-of-procedure `plan apply` would leave an operator unable to
-      # either cover the item (the plan is committed) or defer it (the verb
-      # is closed) -- a dead end with no recorded way out, which is exactly
-      # what this check was told not to become. The REPORT is unconditional
-      # either way: the items are named on every apply, so nothing carried
-      # forward ever goes quiet, which is the property being bought here.
-      if [ "$(fm_get "$roadmap" run_status)" = planning ]; then
-        echo "orchid: plan apply refused — cover or defer the items above, then re-run (orchid plan crosscheck re-reports without committing)" >&2
-        exit "$crosscheck_rc"
-      fi
-      echo "orchid: the carried-forward item(s) above are still unconsidered, but run_status has left planning — reported, not refused; pick one up with a task (orchid plan crosscheck re-reports at any time)" >&2
+      # The refusal is on the VERB, in every run_status -- not scoped to
+      # `planning`. It was scoped once, and that scoping was the last bypass
+      # left in this gate: `plan apply` is a legal verb after planning too
+      # (it commits whatever durable `.orchid/` state is current, journaling
+      # `plan_revision`), so a revision that DELETES the one task covering a
+      # carried item -- or that lands the moment the run leaves planning by
+      # any route -- committed the item out of consideration with a printed
+      # warning and exit 0. A gate that reports rather than refuses on the
+      # very edit that uncovers an item is enforcing nothing about that
+      # edit; it is enforcing something about when the operator happens to
+      # make it.
+      #
+      # It is not the dead end the brief rules out, because the remedy moved
+      # with it: `orchid plan defer` is legal in the same set of statuses
+      # this verb is (see the defer arm -- the run_status precondition it
+      # used to carry was removed in the same change, for exactly this
+      # reason). At every refusal here, both ways out are open -- cover the
+      # item with a task in the plan being applied, or record the decision
+      # not to -- so the operator is never between two closed doors. Pairing
+      # the two is the whole point: a refusal is only a gate if the state it
+      # fires in still admits its own remedy.
+      #
+      # `orchid run accept` also commits durable `.orchid/` state and is
+      # deliberately NOT gated: it refuses unless run_status is `accepting`,
+      # so it can neither apply a plan nor take a run out of `planning`, and
+      # a carried item still standing at acceptance is carried into the NEXT
+      # run's cross-check by `run new` rather than lost. Gating the run's own
+      # closing commit would stop a finished run from being recorded, which
+      # buys nothing here.
+      echo "orchid: plan apply refused — cover the item(s) above with a task in this plan, or record the decision (orchid plan defer <id> --reason \"...\"), then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      exit "$crosscheck_rc"
     fi
 
     # v1-m4 Task 1: the temp-worktree + CAS + sync-back mechanics below (once
@@ -188,9 +203,21 @@ case "$sub" in
 
     roadmap="$state/roadmap.md"
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
-    run_status="$(fm_get "$roadmap" run_status)"
-    [ "$run_status" = planning ] || \
-      orchid_die "plan defer requires run_status planning (current: $run_status) — deferring a carried-forward item is a PLANNING decision, and after plan apply the way to pick one up is a task"
+    # NO run_status precondition, deliberately. This verb once required
+    # `planning`, on the reasoning that a deferral is a decision about a plan
+    # and that after `plan apply` the way to pick an item up is a task. That
+    # reasoning is still the ADVICE -- a task is the better answer once the
+    # run is moving -- but as a REFUSAL it was what forced `plan apply` to
+    # stop gating after planning: the one remedy for a mid-run revision that
+    # uncovers an item was closed, so refusing that revision would have
+    # stranded the operator, and the gate was scoped away instead. Only one
+    # of the two could keep its restriction, and the gate is worth more than
+    # the advice. `plan apply` is legal in every status; a carried item can
+    # therefore be uncovered in every status; so the decision that answers
+    # for one has to be recordable in every status too. Everything that made
+    # a deferral trustworthy is untouched: it names one id, that id must be
+    # genuinely carried forward, it carries a reason, it is journaled under a
+    # kind the brokered surface refuses, and it comes back next run.
 
     # An id that is not on the carried-forward list is refused, never
     # recorded: a typo'd deferral would otherwise read as a decision while

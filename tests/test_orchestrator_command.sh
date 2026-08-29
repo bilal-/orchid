@@ -125,9 +125,12 @@ refuse "one-command setup"              start "$WORK/requirements.md"
 refuse "running doctor"                 doctor
 refuse "applying a plan"                plan apply --reason x
 # T021: the verb that SATISFIES the planning cross-check. Refused here for the
-# same reason the `plan_deferral` journal kind is below -- planning is operator
-# work, and an orchestrator that could defer a carried-forward item could
-# retire the previous run's findings without anyone deciding to.
+# same reason the `plan_deferral` journal kind is below -- deciding what a plan
+# will not carry is operator work, and an orchestrator that could defer a
+# carried-forward item could retire the previous run's findings without anyone
+# deciding to. Refused in every run_status, which is the whole set the verb is
+# now legal in for an operator: this arm runs against a fixture that has left
+# planning, so widening the verb's own precondition must never widen this.
 refuse "deferring a carried item"       plan defer L001 --reason x
 refuse "importing requirements"         requirements import "$WORK/requirements.md"
 refuse "answering a blocker"            answer q-1 "yes"

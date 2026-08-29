@@ -236,12 +236,13 @@ case "$sub" in
     #
     # `from = planning`, not `to = running`, because `planning -> blocked` is
     # legal too and `blocked -> running` after it would reach the same place
-    # in two hops -- and once out of planning, `orchid plan defer` is closed,
-    # so the item could never be recorded at all. Gating the EXIT edge closes
-    # both hops at the one point where both remedies are still open: the run
-    # is still in planning here, so the operator can cover the item with a
-    # task or `orchid plan defer` it, exactly as at a refused `plan apply`.
-    # That is why this is not the dead end the brief rules out.
+    # in two hops. Gating the EXIT edge closes both hops at the one point
+    # where the plan is still free: the run is still in planning here, so the
+    # operator can cover the item with a task or `orchid plan defer` it,
+    # exactly as at a refused `plan apply`. That is why this is not the dead
+    # end the brief rules out -- and both remedies stay open on the far side
+    # of the edge too, since `plan defer` carries no run_status precondition
+    # (libexec/orchid-plan's defer arm says why it was dropped).
     #
     # Read-only and placed before the journal write, so a refusal mutates
     # nothing. Every mid-run edge (running->accepting, blocked->running,
