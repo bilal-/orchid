@@ -29,8 +29,11 @@
 #     in which case the runtime half below is never installed and the file is
 #     enrolled on paper and enforced nowhere. That is not checked here, it is
 #     checked in tests/inv/test_INV-15_no_optional_gate.sh section 2, which
-#     requires every tests/inv/ gate to LOAD helpers.sh and ships the fixture
-#     that proves such a file is refused. Said here because this is the file a
+#     RUNS every tests/inv/ gate against a stub helpers.sh and requires it to
+#     be observed reaching that load -- so a source line guarded by a variable
+#     nothing sets, or written below an `exit`, fails there too -- and ships
+#     the fixtures that prove each of those is refused. Said here because this
+#     is the file a
 #     reader comes to for the rule, and a rule with a known hole and no
 #     pointer to where it is closed is the hole.
 #   * RUNTIME (tests/helpers.sh's EXIT trap): an ENROLLED file that RECORDS no

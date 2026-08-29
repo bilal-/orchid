@@ -456,7 +456,16 @@ buying a fresh implementation pass to reach the same tree.
     restore would sit past the entry point's first write, which is where
     `runners/orchid-pump` and `runners/orchid-service` call it. An entry
     point that refuses before that line executed nothing but its own gate,
-    so there was nothing for this one to stop.
+    so there was nothing for this one to stop. `libexec/orchid-trust` never
+    restores the operator PATH at all, so it calls `orchid_root_stale_gate`
+    itself, per subcommand: after the operator's command has been validated
+    and before the durable write to the machine-local trust store, since a
+    record authored — or an acknowledgement removed — by pre-merge code
+    outlives the process that made it. Its `show` arm fires nothing, as the
+    one declared exception: it writes no durable record, and the
+    unattended-trust contract requires inspection with no identity-keyed
+    candidate to invoke no Git whatever, which is exactly what firing would
+    spend.
     The INDEX, not the working tree: `git update-ref` moves the branch
     without touching either, so the index left describing the commit the
     branch moved off IS the record of the fall behind — while an operator
@@ -1902,9 +1911,11 @@ semantic correctness beyond declared verification commands.
 - INV-14 no kernel source branches on any discovered engine identifier
 - INV-15 no enforcement gate is reachable only by a per-task opt-in, and none
   is blind in the environment it is deployed in: every static check in
-  `scripts/ci-local.sh` sits inside the `--no-tests` merge floor, every
-  `tests/inv/` gate loads `tests/helpers.sh` so its recorded RED/GREEN cases
-  are enforced at run time rather than in text, every kernel entry point
+  `scripts/ci-local.sh` sits inside the `--no-tests` merge floor — judged on
+  each section's executable code, never on the prose beside it — every
+  `tests/inv/` gate is RUN and observed to reach `tests/helpers.sh`, so its
+  recorded RED/GREEN cases are enforced at run time rather than by a source
+  line a grep can see and a shell never executes, every kernel entry point
   that arms the stale-root guard reaches a site that fires it — and reaches
   it before its own first write, since a gate placed after a side effect
   guards only what follows it — and no gate, kernel or invariant test, pipes
@@ -1914,9 +1925,10 @@ semantic correctness beyond declared verification commands.
   process scheduling rather than by its input. The two claims that carry the
   most weight are also made executably rather than by reading source: a pump
   invoked out of a genuinely stale root refuses before it creates the target
-  repository's runtime directory, and a task whose `verification_commands`
-  names nothing but `true` is still gated by `merge_gate` before its ref can
-  advance
+  repository's runtime directory, an `orchid trust unattended` out of that
+  same root refuses with the machine-local trust store still empty, and a
+  task whose `verification_commands` names nothing but `true` is still gated
+  by `merge_gate` before its ref can advance
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a
   named, journaled boundary instead

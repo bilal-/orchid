@@ -71,6 +71,35 @@ closed and says which tool is missing.
 EOF
 }
 
+# WHERE THE STALE-ROOT GATE FIRES IN THIS VERB, AND WHY IT IS NOT AT THE TOP.
+#
+# This file sets __orchid_entry_defer_restore=1 above, so lib/common.sh ARMS
+# the stale-root guard and leaves the firing to this file (lib/common.sh's
+# "WHAT MAY HAPPEN AT SOURCE TIME" block has the whole argument). Unlike every
+# other trust-boundary entry point, this one never calls
+# _orchid_entry_restore_operator_path -- trust acknowledgement, inspection and
+# revocation hold the fixed bootstrap PATH for their whole run -- so without an
+# explicit call here the gate would be armed and never fired: a gate skipped by
+# omission, in the guard whose own class that is (INV-15).
+#
+# It fires per SUBCOMMAND rather than once above this dispatch, because the
+# two things it must sit between are per-subcommand:
+#
+#   * AFTER the authorization decision. `orchid trust` is the verb an operator
+#     reaches for to author, read or remove a machine-local acknowledgement;
+#     the decision is the command they typed, so the gate goes after this
+#     file's own argument validation and never in front of a usage error.
+#   * BEFORE any durable write to the machine-local store. That is the side
+#     effect a stale kernel must not be allowed to make -- a record authored,
+#     or an acknowledgement removed, by code nobody has looked at -- and a
+#     gate reached after the write guards only what follows it (lesson L036,
+#     and runners/orchid-pump's own correction).
+#
+# `show` fires nothing, deliberately and as the one declared exception: it
+# writes no durable record at all, and the unattended-trust contract requires
+# that inspection with no identity-keyed candidate invoke no Git whatever --
+# which is precisely what firing this gate would spend. There is no write for
+# it to sit in front of, so there is nothing for it to protect.
 sub="${1:-}"; [ "$#" -gt 0 ] && shift
 case "$sub" in
   -h|--help|help|"")
@@ -91,6 +120,8 @@ case "$sub" in
       esac
     done
     [ -n "$reason" ] || orchid_die "usage: orchid trust unattended <repo> --reason <reason>"
+    # The decision is made and nothing durable has been written yet.
+    orchid_root_stale_gate
     unattended_trust_acknowledge "$repo" "$reason"
     echo "unattended trust acknowledged:"
     unattended_trust_show "$repo" | sed 's/^/  /'
@@ -106,6 +137,16 @@ case "$sub" in
     # Do not inspect first: revocation must stay available when inspection
     # cannot complete. The revoke call itself resolves the repository identity
     # it acted on.
+    #
+    # The gate fires here anyway. Removal is still a durable mutation of the
+    # machine-local store, and "the safe direction" is not a reason to make it
+    # out of a kernel nobody has looked at: which record a pre-merge revoke
+    # resolves, and therefore which acknowledgement it removes, is decided by
+    # the same identity derivation the stale tree carries. Availability is
+    # preserved the documented way, per-invocation and visible in the
+    # transcript, rather than by an exemption: ORCHID_ALLOW_STALE_ROOT=1
+    # orchid trust revoke <repo>.
+    orchid_root_stale_gate
     if unattended_trust_revoke "$repo"; then
       echo "unattended trust revoked: ${ORCHID_UNATTENDED_REPO:-$repo}"
     else
