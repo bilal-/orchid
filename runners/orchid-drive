@@ -3619,10 +3619,11 @@ if [ -n "$boundary_kind" ]; then
   # `orchid answer` began refusing it, and the record went on reporting the stop
   # as announced. That is the one case the oracle exists to re-raise, so a STALE
   # answer (exit 2) overrides the record outright.
-  prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
-  prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
-  prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
-  prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
+  # Use that PRE-WRITE snapshot here. Re-reading after boundary set would make
+  # a first-seen operator stop equal its own newly written record and suppress
+  # the page that announces it. T009's per-stop de-dup and T036's wake counter
+  # therefore share one ordering: old record, new record, notification
+  # decisions.
   # Flattened by the SAME three expansions set_boundary applies to the reason it
   # puts in a row -- see there for why this may not go through `tr`. Comparing a
   # recorded multi-line reason against its flattened row would never match, and
