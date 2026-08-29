@@ -179,11 +179,13 @@ fi
 # which half moved. A `review-conflict` boundary now CARRIES an excerpt of the
 # rejecting review's summary in its reason, because a record that named only
 # `verdict=request-changes` sent two dogfood operators off to `jq` the raw
-# envelope to find out what was wrong. Carrying prose to a human is not
-# deciding on it: the excerpt is composed by lib/envelope.sh's
-# envelope_summary_excerpt (a reader, not a policy file, which is why it is
-# not in POLICIES and why the scan below keeps its teeth on the files that
-# DECIDE), and the decision itself is still taken from `.verdict`,
+# envelope to find out what was wrong. The same record now also names the
+# `title` of the finding that tripped the severity gate, for the same reason
+# and in the arm where it is the only thing the arbiter is told. Carrying prose
+# to a human is not deciding on it: both strings are folded by
+# lib/envelope.sh's envelope_fold_line (a reader, not a policy file, which is
+# why it is not in POLICIES and why the scan below keeps its teeth on the files
+# that DECIDE), and the decision itself is still taken from `.verdict`,
 # `.scope_complete` and `.findings` alone.
 #
 # So the scan stays exactly as it was -- neither the driver nor a policy file
@@ -217,11 +219,18 @@ for arm in approve evidence conflict; do
     || fail "INV-13: the arbitration policy's '$arm' decision is no longer a literal in its own printf format — a computed decision word can be reached by prose"
 done
 
-# And the carried excerpt stays a DISPLAY string: nothing in the policy may
-# branch on what it says.
-if code_of "$POLICY" | grep -nE 'case[[:space:]]+"?\$excerpt|\$excerpt[[:space:]]*=~|grep[^|]*\$excerpt'; then
-  fail "INV-13: the arbitration policy branches on a review's summary text — it may quote prose into a record, never decide on it"
-fi
+# And every carried string stays a DISPLAY string: nothing in the policy may
+# branch on what it says. Both of them, not just the first one added -- the
+# rejecting review's summary excerpt AND the title of the finding that tripped
+# the severity gate are engine-written free text that reaches the record, and a
+# rule policing only one of them is a rule the other walks past.
+for carried in excerpt ftitle; do
+  # Braced expansions throughout: a bare `$carried[` reads as an array index to
+  # ShellCheck (SC1087) and this suite is linted at warning severity.
+  if code_of "$POLICY" | grep -nE "case[[:space:]]+\"?\\\$${carried}|\\\$${carried}[[:space:]]*=~|grep[^|]*\\\$${carried}"; then
+    fail "INV-13: the arbitration policy branches on engine-written text carried in \$${carried} — it may quote prose into a record, never decide on it"
+  fi
+done
 
 # The policy function's own inputs are all validated envelope fields.
 for field in '.status' '.verdict' '.scope_complete' '.candidate_sha' '.findings'; do

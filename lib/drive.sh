@@ -765,6 +765,48 @@ drive_envelope_has_blocking_finding() {
   ' "$f" >/dev/null 2>&1
 }
 
+# drive_blocking_finding_title <envelope> <blocking_severity> -- the `title` of
+# the finding that made drive_envelope_has_blocking_finding true, folded to one
+# line for the record it travels in. Empty when nothing blocks, when the
+# blocking entry carries no title, or when the file cannot be read.
+#
+# WHY THE RECORD NAMES THE FINDING AND NOT JUST THE THRESHOLD (dogfood F32,
+# same complaint as the summary excerpt beside it). `<file>:finding>=medium`
+# states that the gate weighed something and withholds what it weighed, so the
+# arbiter that boundary wakes has to `jq` the envelope to learn what is
+# actually wrong -- which is exactly the trip two dogfood operators made. The
+# verdict arm of drive_review_decision stopped sending them on it; this is the
+# same fix for the arm that fires when every verdict said `approve` and a
+# finding blocked anyway, which is the case where the record is the ONLY
+# indication that anything is wrong at all.
+#
+# HIGHEST-RANKED FIRST, ties in filed order: `sort_by` is stable, so the entry
+# named is the worst one the reviewer filed and, among equals, the one it filed
+# first. An unrecognized severity ranks 99 here exactly as it does in the gate
+# above -- the two must agree, or the record could name a finding that is not
+# the one that blocked.
+#
+# The title is FOLDED and truncated like any other engine-written text in this
+# record (envelope_fold_line's own note): an adapter's finding title is free
+# text, and a tab in it would shift the decision line's fields just as a tab in
+# a summary would. Nothing branches on the result -- it is carried to a human,
+# never read back.
+drive_blocking_finding_title() {
+  local f="$1" rank raw
+  rank="$(drive_threshold_rank "$2")"
+  raw="$(jq -r --argjson t "$rank" '
+    def frank: if . == "low" then 0
+               elif . == "medium" then 1
+               elif . == "high" then 2
+               else 99 end;
+    [ (.findings // [])[]
+      | select(((.severity // "") | ascii_downcase | frank) >= $t) ]
+    | sort_by(0 - ((.severity // "") | ascii_downcase | frank))
+    | (.[0].title // "")
+  ' "$f" 2>/dev/null || true)"
+  envelope_fold_line "$raw"
+}
+
 # drive_review_decision <repo> <task> -- THE non-overlapping arbitration
 # truth table, evaluated over the reconciled reviewer envelopes bound to the
 # task's CURRENT attempt. Prints exactly one line:
@@ -786,9 +828,11 @@ drive_envelope_has_blocking_finding() {
 # incomplete review set is never also reported as a conflict (and vice
 # versa). No prose is parsed anywhere: every input to the DECISION is a
 # structured envelope field the kernel already validates. The conflict arm
-# QUOTES a rejecting review's summary into its detail (F32, below), which is
-# the prose firewall observed rather than bent -- the text is carried for the
-# human the boundary wakes, and nothing here branches on a byte of it.
+# QUOTES engine-written text into its detail (F32, below) -- a rejecting
+# review's `summary`, and the `title` of the finding that tripped the severity
+# gate -- which is the prose firewall observed rather than bent: the text is
+# carried for the human the boundary wakes, and nothing here branches on a
+# byte of it.
 #
 # THE EVIDENCE SET IS EXACTLY THE ONE THE KERNEL GATE COUNTS, and this
 # function's job is to mirror libexec/orchid-task's reviewing->arbitrating
@@ -917,7 +961,7 @@ drive_envelope_has_blocking_finding() {
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
-  local plan pin_state entry nfind excerpt
+  local plan pin_state entry nfind excerpt ftitle
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -998,7 +1042,14 @@ drive_review_decision() {
       conflicts="$conflicts $base:scope_complete=false"
     fi
     if drive_envelope_has_blocking_finding "$f" "$blocking"; then
-      conflicts="$conflicts $base:finding>=$blocking"
+      # The finding that blocked is NAMED, not merely counted
+      # (drive_blocking_finding_title's own note). This arm is the one that
+      # fires when every verdict said `approve` and a finding stopped the pass
+      # anyway, so its entry is the whole of what the arbiter is told.
+      entry="$base:finding>=$blocking"
+      ftitle="$(drive_blocking_finding_title "$f" "$blocking")"
+      [ -z "$ftitle" ] || entry="$entry (\"$ftitle\")"
+      conflicts="$conflicts $entry"
     fi
   done
 

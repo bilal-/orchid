@@ -2169,11 +2169,16 @@ and park the task at a `review-evidence` boundary with nothing to read. The
 `review-conflict` boundary record names the gap and the substance too —
 `<file>:verdict=request-changes:findings=0 (summary: "…")` — because the
 arbiter that record wakes should not have to `jq` the raw envelope to learn
-what the objection was. A NON-empty `findings[]`, however it got there, is
-decisive on its own: on a task whose `blocking_severity` is `medium` — the
-fallback when the field is absent, and what `templates/task-migrate.md` and
-`templates/task-refactor.md` ship, though `templates/task.md` and
-`templates/task-test.md` ship `high` — one `medium`
+what the objection was. The blocking-finding entry names itself for the same
+reason, `<file>:finding>=medium ("…")` quoting the title of the worst finding
+at or above the threshold: that arm fires when every verdict said `approve`,
+so its entry is the only warning the arbiter gets. Both quoted strings are
+engine-written free text folded to one line before they travel (they share a
+TAB-separated record with the decision word). A NON-empty `findings[]`,
+however it got there, is decisive on its own: on a task whose
+`blocking_severity` is `medium` — the fallback when the field is absent, and
+what `templates/task-migrate.md` and `templates/task-refactor.md` ship, though
+`templates/task.md` and `templates/task-test.md` ship `high` — one `medium`
 finding turns an all-`approve`, all-`scope_complete` review set into a
 `review-conflict` boundary. Approve-with-a-nit is not a state this gate has;
 that is what arbitration is for.

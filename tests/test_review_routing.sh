@@ -746,3 +746,43 @@ case "$detailP2" in
   *"nothing to report"*) fail "an approving review's summary must not be spliced into the approval record" ;;
 esac
 green_case "an approving review with an empty findings[] approves, with its summary left where the reviewer put it"
+
+# The OTHER half of the same complaint, and the case where the record is the
+# only warning there is. Every verdict said `approve`; a filed finding at or
+# above blocking_severity stopped the pass anyway. The record used to say
+# `<file>:finding>=medium` -- that the gate weighed something, never what --
+# so the arbiter it wakes had the same trip to `jq` ahead of it that the bare
+# `verdict=request-changes` record sent two dogfood operators on.
+#
+# Two findings, deliberately: the WORST one is named, and it is filed SECOND,
+# so a record that simply took findings[0] would name the wrong one. And the
+# title carries the same newline-and-tab payload as the summary above, because
+# a finding title is engine-written free text travelling in the same
+# TAB-separated line -- a fold that covered only `summary` would leave the
+# record corruptible through `title`.
+mk_p_task TP3 medium
+titleP="$(printf 'run_id 0 is flushed as\tstarted before the row\nis committed')"
+jq -n --arg cand "$candP" --arg t "$titleP" \
+  '{contract:1, job_id:"j-p3", task:"TP3", operation:"review", status:"ok",
+    verdict:"approve", scope_complete:true, summary:"looks fine to me",
+    candidate_sha:$cand,
+    findings:[{severity:"medium", title:"a lesser one, filed first"},
+              {severity:"high", title:$t}]}' \
+  > "$repoP/.orchid/reviews/TP3-a1-reviewer.json"
+
+decisionP3="$(drive_review_decision "$repoP" TP3)"
+assert_eq conflict "$(printf '%s' "$decisionP3" | cut -f1)" \
+  "a finding at or above blocking_severity is a conflict even when every verdict approved"
+detailP3="$(printf '%s' "$decisionP3" | cut -f2-)"
+assert_match "finding>=medium" "$detailP3" "the record still names the threshold the gate applied"
+assert_match "run_id 0 is flushed as started before the row is committed" "$detailP3" \
+  "and names the finding that tripped it, folded to one line -- the arbiter is not sent to the raw envelope"
+case "$detailP3" in
+  *"a lesser one, filed first"*)
+    fail "the record must name the WORST blocking finding, not whichever one the reviewer filed first" ;;
+esac
+assert_eq 1 "$(printf '%s\n' "$decisionP3" | wc -l | tr -d ' ')" \
+  "the decision stays ONE line: a finding title's newline must never split the record its caller reads with cut"
+assert_eq 2 "$(printf '%s\n' "$decisionP3" | awk -F'\t' '{print NF}')" \
+  "and exactly two TAB fields: a finding title's tab must never shift the fields after it"
+red_case "an approving review whose filed finding blocks: the decision record names the worst blocking finding, instead of reporting a bare threshold the arbiter has to jq the envelope to understand"

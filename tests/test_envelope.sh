@@ -108,6 +108,17 @@ assert_eq "$x160..." "$(envelope_summary_excerpt "$WORK/long.json")" \
   "a summary over the 160-char default is cut there and marked with an ellipsis"
 assert_eq "$x170..." "$(envelope_summary_excerpt "$WORK/long.json" 170)" \
   "a caller's own max wins over the default"
+# The fold itself, on the shared helper both record fields go through. The
+# two characters below are the ones that corrupt a TAB-separated, one-line
+# decision record; every other whitespace run is squeezed for legibility.
+assert_eq "a b c" "$(envelope_fold_line "$(printf 'a\tb\nc')")" \
+  "a tab and a newline are folded to single spaces -- either one raw would corrupt the decision record this text travels in"
+assert_eq "a b" "$(envelope_fold_line "$(printf '  a   \r\n  b  ')")" \
+  "runs of whitespace squeeze to one space, and the leading and trailing ones go entirely"
+assert_eq "" "$(envelope_fold_line "$(printf ' \t\n ')")" \
+  "text that is nothing but whitespace folds to empty, not to a space"
+assert_eq "" "$(envelope_fold_line "")" "empty in, empty out"
+
 jq -n '{summary: "short"}' > "$WORK/short.json"
 assert_eq "short" "$(envelope_summary_excerpt "$WORK/short.json")" \
   "a summary under the max passes through whole, no marker"

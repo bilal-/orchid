@@ -185,32 +185,38 @@ envelope_salvage_empty() {
 ENVELOPE_SYNTHESIZED_FINDING_SEVERITY="high"
 ENVELOPE_SYNTHESIZED_FINDING_SOURCE="orchid:synthesized-from-summary"
 
-# envelope_summary_excerpt <envelope> [max] -- the envelope's `summary` folded
-# to ONE line, with runs of whitespace squeezed to single spaces and the
-# result truncated to [max] characters (default 160). Empty when the envelope
-# carries no summary.
+ENVELOPE_EXCERPT_MAX=160
+
+# envelope_fold_line <text> [max] -- <text> folded to ONE line, with runs of
+# whitespace squeezed to single spaces and the result truncated to [max]
+# characters (default ENVELOPE_EXCERPT_MAX). Empty in, empty out.
 #
-# THE FOLD IS NOT COSMETIC. Both callers put this text into a TAB-separated,
+# THE FOLD IS NOT COSMETIC. Every caller puts the result into a TAB-separated,
 # one-line record: lib/drive.sh's decision line is read with `cut -f1`/`cut
-# -f2-`, and runners/orchid-drive turns field 2 into a boundary reason. A raw
-# summary carrying a newline would truncate that record at the first line and
-# a raw TAB would shift every field after it -- so an envelope could corrupt
-# the very boundary record meant to surface it.
+# -f2-`, and runners/orchid-drive turns field 2 into a boundary reason. Text
+# carrying a newline would truncate that record at the first line and a raw
+# TAB would shift every field after it -- so an envelope could corrupt the
+# very boundary record meant to surface it.
+#
+# ONE FOLD FOR EVERY FIELD THAT TRAVELS IN THAT RECORD, which is why this is a
+# function and not two copies. Both an engine-written `summary` and an
+# engine-written finding `title` reach the record, both are free text an
+# adapter controls, and a fold that protected only the field someone happened
+# to add first would leave the record corruptible through the other.
 #
 # THE FOLD IS DONE IN THE SHELL, NOT IN jq, and that is deliberate. Collapsing
 # whitespace runs wants `gsub`, and jq's regex functions need an
 # Oniguruma-enabled build -- nothing else in this kernel asks jq for one, and
-# a jq built without it does not fail loudly here: `gsub` would error, the
-# `2>/dev/null || true` guarding the jq call below would swallow that error,
-# and the excerpt would come back EMPTY on every envelope. That is the one failure this function must not have, since
-# an empty excerpt is indistinguishable from "the reviewer wrote no summary"
-# and silently drops the objection it exists to carry. `tr` is already a hard
-# dependency of every verb in the repo.
-envelope_summary_excerpt() {
-  local f="$1"
-  local max="${2:-160}"
-  local raw
-  raw="$(jq -r '.summary // ""' "$f" 2>/dev/null || true)"
+# a jq built without it does not fail loudly at the call sites below: `gsub`
+# would error, the `2>/dev/null || true` guarding their jq calls would swallow
+# that error, and the excerpt would come back EMPTY on every envelope. That is
+# the one failure this must not have, since an empty excerpt is
+# indistinguishable from "the reviewer wrote nothing there" and silently drops
+# the objection it exists to carry. `tr` is already a hard dependency of every
+# verb in the repo.
+envelope_fold_line() {
+  local raw="$1"
+  local max="${2:-$ENVELOPE_EXCERPT_MAX}"
   raw="$(printf '%s' "$raw" | tr '\n\r\t\v\f' '     ' | tr -s ' ')"
   # `tr -s` leaves at most a single leading/trailing space behind.
   raw="${raw# }"; raw="${raw% }"
@@ -219,6 +225,15 @@ envelope_summary_excerpt() {
   else
     printf '%s\n' "$raw"
   fi
+}
+
+# envelope_summary_excerpt <envelope> [max] -- the envelope's `summary`, folded
+# by envelope_fold_line. Empty when the envelope carries no summary.
+envelope_summary_excerpt() {
+  local f="$1"
+  local raw
+  raw="$(jq -r '.summary // ""' "$f" 2>/dev/null || true)"
+  envelope_fold_line "$raw" "${2:-$ENVELOPE_EXCERPT_MAX}"
 }
 
 # envelope_prose_only_objection <envelope> -- 0 iff this envelope is an `ok`

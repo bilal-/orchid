@@ -460,8 +460,12 @@ incomplete review set is never also reported as a conflict, and vice versa:
    carries the objection, not just its existence:
    `<file>:verdict=request-changes:findings=0 (summary: "…")` — the verdict,
    whether the severity gate had anything to weigh, and a one-line excerpt of
-   what the reviewer actually said. Read it before opening the envelope; two
-   dogfood runs lost the substance because the record named only the verdict.
+   what the reviewer actually said. A blocking finding names itself the same
+   way — `<file>:finding>=medium ("…")`, the title of the worst finding at or
+   above the threshold — which matters most in the case where every verdict
+   said `approve` and that entry is the whole of what you are told. Read the
+   reason before opening the envelope; two dogfood runs lost the substance
+   because the record named only the verdict.
 
 **`orchid task arbitrate` is the sole explicit judgment-result verb.**
 `orchid task arbitrate <id> --result approve|request-changes --reason "..."
