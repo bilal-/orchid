@@ -122,6 +122,11 @@
 # workspace is established the same way answerability is: checked at the
 # point it is obtained, refused with an exit code of its own (5) and a repair
 # of its own (TMPDIR), never inferred later from a list that came back short.
+# The same rule reaches the two generators that FILL that workspace: each is
+# run and checked on its own, because collapsing them into one group made the
+# group's status the last one's, and a ledger generator that died behind a
+# lesson generator that did not was discarded into the very empty list this
+# paragraph is about.
 #
 # Sourced after lib/common.sh (orchid_die is not used here, but callers'
 # error paths are), after lib/frontmatter.sh, whose fm_get reads the
@@ -764,10 +769,14 @@ plancheck_deferral() {
 #      -- neither a task nor a deferral repairs a missing archive, and a
 #      caller that told the operator to cover or defer "the item(s) above"
 #      would be naming two impossible answers under an empty list.
-#   5  the check could not build its own workspace: no scratch directory
-#      under TMPDIR. Again a code of its own for the same reason -- the
-#      repair is a writable temporary directory, and neither covering an
-#      item, nor deferring one, nor restoring an archive touches it.
+#   5  the check could not build its carried-forward list at all: no scratch
+#      directory under TMPDIR to build it in, or a generator that failed
+#      part-way through filling it. Again a code of its own for the same
+#      reason -- the repair is a writable temporary directory, and neither
+#      covering an item, nor deferring one, nor restoring an archive touches
+#      it. Distinct from 4, which is answerability decided UP FRONT on the
+#      record's own evidence; 5 is the check failing to finish a question it
+#      had already established it could ask.
 #
 # The per-item lines go to stdout (they are the report); the refusal and the
 # recovery commands go to stderr, so a caller redirecting the report away
@@ -910,12 +919,28 @@ _plancheck_body() {
   # short or absent list, which is the one shape this whole file may never
   # read as an answer: it is byte-for-byte what a previous run that left
   # nothing produces, and the report below would state exactly that.
-  if ! {
-        plancheck_ledger_items "$state/runs/$prev/journal.md" "$prev"
-        plancheck_lesson_items "$state/lessons.md" "$cutoff"
-      } > "$tmp/items"; then
-    echo "crosscheck: REFUSED — the carry-forward question cannot be answered: the carried-forward list could not be written to $tmp (the scratch directory was created for this report; something has since removed it, or filled the filesystem it is on)" >&2
-    echo "crosscheck: a list that could not be written is not a list of nothing. Free space under ${TMPDIR:-/tmp} (or point TMPDIR elsewhere), then re-run." >&2
+  #
+  # AND EACH GENERATOR IS CHECKED ON ITS OWN, which is not tidiness. Written
+  # as the one group `{ ledger_items; lesson_items; } > "$tmp/items"` this
+  # replaces, the status of the group is the status of the LAST command in
+  # it -- so a `plancheck_ledger_items` that DIED was discarded outright
+  # whenever the lesson generator behind it succeeded, and the ledger is the
+  # source this whole file exists to read. The result is a list missing every
+  # ledger finding, or missing nothing but them; against a repository with no
+  # active lessons it is the EMPTY list, and the empty list is byte-for-byte
+  # what a previous run that left nothing produces. So the report said the
+  # previous run recorded nothing, and `plan apply` committed -- the same
+  # fail-open as an unreadable archive and as an unusable TMPDIR, reached
+  # this time through a generator's exit status rather than through the state
+  # it reads. `awk` exhausting memory or an implementation limit on a very
+  # long journal line is the reachable spelling; the reason it must refuse is
+  # that its output is INDISTINGUISHABLE from a clean pass either way.
+  local erc=0 lrc=0
+  plancheck_ledger_items "$state/runs/$prev/journal.md" "$prev" > "$tmp/items" || erc=$?
+  plancheck_lesson_items "$state/lessons.md" "$cutoff" >> "$tmp/items" || lrc=$?
+  if [ "$erc" -ne 0 ] || [ "$lrc" -ne 0 ]; then
+    echo "crosscheck: REFUSED — the carry-forward question cannot be answered: the carried-forward list could not be built (ledger generator exit $erc, lesson generator exit $lrc; it is written to $tmp, created for this report — something has since removed it or filled the filesystem it is on, or a generator failed on the record itself)" >&2
+    echo "crosscheck: a list that could not be built is not a list of nothing. Free space under ${TMPDIR:-/tmp} (or point TMPDIR elsewhere), check that $state/runs/$prev/journal.md is readable, then re-run." >&2
     return 5
   fi
 

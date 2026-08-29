@@ -1411,10 +1411,13 @@ assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and takes the ru
 
 # The other half of the same guard, and it is NOT proven here rather than
 # quietly assumed: a scratch directory that was created and then went away or
-# filled up. _plancheck_body refuses those on the same code, but no portable
+# filled up, and a list generator that dies part-way through filling it.
+# _plancheck_body refuses all of those on the same code, but no portable
 # fixture produces them -- a directory this process can create is a directory
-# it can write into, and removing it mid-report would mean racing a running
-# verb. What section 8 does prove is the shape they share: an empty or
-# uncountable list is refused rather than reported as a plan considered.
-not_tested "a scratch directory that disappears or fills AFTER it was created" \
-  "the allocation half is fixtured above (an unusable TMPDIR); the post-allocation half -- _plancheck_body's refusals when the items file cannot be written, cannot be counted, or the tasks directory cannot be staged -- has no portable fixture, since a directory this test can create is one it can write into"
+# it can write into, removing it mid-report would mean racing a running verb,
+# and making `awk` fail on a readable journal means exhausting a limit this
+# suite must not depend on. What section 8 does prove is the shape they
+# share: a list that could not be BUILT is refused rather than reported as a
+# plan considered, on the one spelling of it a fixture can reach.
+not_tested "a scratch directory that disappears or fills AFTER it was created, and a list generator that fails on a readable record" \
+  "the allocation half is fixtured above (an unusable TMPDIR); the post-allocation half -- _plancheck_body's refusals when either item generator exits nonzero, when the items file cannot be written or counted, or when the tasks directory cannot be staged -- has no portable fixture, since a directory this test can create is one it can write into and a journal it can read is one awk can parse"
