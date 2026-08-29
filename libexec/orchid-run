@@ -253,7 +253,15 @@ case "$sub" in
       crosscheck_rc=0
       plancheck_report "$state" || crosscheck_rc=$?
       if [ "$crosscheck_rc" -ne 0 ]; then
-        echo "orchid: run advance $from -> $to refused — a carried-forward item may not leave planning unconsidered; cover it with a task or record the decision (orchid plan defer <id> --reason \"...\"), then re-run" >&2
+        # Exit 4 -- the cross-check could not read the previous run's record
+        # at all -- names the repair instead of the two remedies, which have
+        # nothing to act on when no item could be listed (libexec/orchid-plan's
+        # apply arm says why at length).
+        if [ "$crosscheck_rc" -eq 4 ]; then
+          echo "orchid: run advance $from -> $to refused — the carry-forward cross-check could not be answered (above); repair the previous run's record, then re-run" >&2
+        else
+          echo "orchid: run advance $from -> $to refused — a carried-forward item may not leave planning unconsidered; cover it with a task or record the decision (orchid plan defer <id> --reason \"...\"), then re-run" >&2
+        fi
         exit "$crosscheck_rc"
       fi
     fi

@@ -902,3 +902,195 @@ assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and takes the ru
 committed_journal="$(git -C "$c_bare" show "orchid/integration:.orchid/journal.md")"
 grep -q "^deferred $f3: the stdin drain" <<<"$committed_journal" \
   || fail "the per-finding deferrals ride onto the integration branch with the plan"
+
+# ===========================================================================
+# 6 -- AN UNREADABLE RECORD IS NOT AN EMPTY ONE, which is the assumption
+# every section above rests on and this one attacks directly.
+#
+# Sections 1 and 2 pinned the two states in which the right answer is "there
+# is nothing to carry forward", and both are STATED rather than passed over
+# in silence. What neither of them could see is that a THIRD state produced
+# the identical output: when the previous run's record could not be read at
+# all -- its archive deleted, its archived journal gone, a roadmap that could
+# not say which run this is -- both item generators returned the empty list,
+# which is byte-for-byte the list a run that left nothing produces. The check
+# printed "recorded no ledger items ... (stated, not skipped)" and exited 0,
+# and `plan apply` committed the plan over every finding in that record.
+#
+# That is this file's own failure mode wearing its own green line: the report
+# does not say "I looked and there was nothing" when it means "I could not
+# look", because from the report's side those two are one string. And it is
+# WORSE than the miss the whole feature exists to prevent, because r-002's
+# operator at least had no line of output claiming the question had been
+# asked.
+#
+# So each shape below is broken deliberately, one at a time, and each must
+# refuse with exit 4 -- its own code, because neither remedy for an uncovered
+# item repairs a missing archive -- name what could not be read, and then
+# LIFT the moment the record is restored. The last case is the one that
+# matters most: the same plan, genuinely green at exit 0, must not print that
+# same verdict once its record is taken away.
+#
+# RED (before answerability was split from the answer): every `assert_eq 4`
+# below sees 0 or 3 -- 0 where the empty list was read as an empty ledger,
+# 3 where a stale archive was read as the previous run -- and the two
+# fail-open anti-assertions fire on the "recorded no ledger items" and "no
+# previous run is archived" lines the check printed over a record it never
+# read.
+# ===========================================================================
+new_repo d
+d_bare="$WORK/d-bare"
+echo "# Requirements" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+"$ORCHID_BIN" task create T001 "r-001 task" >/dev/null
+"$ORCHID_BIN" plan apply --reason "r-001 plan" >/dev/null
+"$ORCHID_BIN" journal add --kind ledger \
+  "carried as a ledger item: prevrun_archive_probe reads the previous run's archived journal and cannot tell a missing one from an empty one" >/dev/null
+roll_over "open the second run of the archive fixture"
+assert_eq "r-002" "$(fm_get .orchid/roadmap.md run_id)" "sanity: the archive fixture rolled over"
+echo "# Requirements v2" > .orchid/requirements.md
+"$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
+
+# set_run_id <value> -- rewrite roadmap.md's run_id in place. Pure bash: this
+# suite does not source lib/common.sh, so fm_set's atomic_write is not
+# defined here and calling it would fail silently mid-pipeline (the roadmap
+# would keep its old value and every assertion below would pass for the wrong
+# reason).
+set_run_id() {
+  local v="$1" line tmp="$WORK/roadmap-rewrite"
+  : > "$tmp"
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      "run_id: "*) printf 'run_id: %s\n' "$v" >> "$tmp" ;;
+      *) printf '%s\n' "$line" >> "$tmp" ;;
+    esac
+  done < .orchid/roadmap.md
+  mv "$tmp" .orchid/roadmap.md
+}
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "sanity: the carried item is unconsidered while its record is readable"
+probe_id="$(grep -oE 'r-001#[0-9]+' <<<"$(grep "  UNCOVERED \[ledger\] .*prevrun_archive_probe" <<<"$out")")"
+[ -n "$probe_id" ] || fail "sanity: the fixture's ledger item must be reported before anything is broken"
+head_before="$(git -C "$d_bare" rev-parse orchid/integration)"
+
+# ---------------------------------------------------------------------------
+# 6a -- THE ARCHIVED JOURNAL IS GONE. The archive directory is still there,
+# so nothing about the shape of the state says anything is wrong; the ledger
+# this check reads simply is not in it.
+# ---------------------------------------------------------------------------
+mv .orchid/runs/r-001/journal.md "$WORK/d-archived-journal"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 4 "$rc" "an archived journal that cannot be read is refused, not reported as an empty ledger"
+assert_match "cannot be answered" "$out" "...saying that the question could not be answered at all"
+assert_match "journal.md is missing or unreadable" "$out" "...and naming exactly what it could not read"
+grep -qF "recorded no ledger items" <<<"$out" \
+  && fail "THE FAIL-OPEN: a deleted archive must never print that the previous run left nothing — that verdict and this state produce the same empty list, which is why the empty list may not decide it"
+grep -qF "item(s) considered" <<<"$out" \
+  && fail "...and must never report the plan as considered against a record it never read"
+
+rc=0; out="$("$ORCHID_BIN" plan apply --reason "apply over an unreadable archive" 2>&1)" || rc=$?
+assert_eq 4 "$rc" "plan apply refuses over a record it could not read"
+assert_match "could not be answered" "$out" \
+  "...naming the repair, not the two remedies that have nothing to act on when no item was listed"
+grep -qF "orchid plan defer <id>" <<<"$out" \
+  && fail "a refusal that listed no item must not tell the operator to defer one"
+assert_eq "$head_before" "$(git -C "$d_bare" rev-parse orchid/integration)" \
+  "...and the integration branch does not move: nothing is committed over an unread record"
+grep -q "apply over an unreadable archive" .orchid/journal.md \
+  && fail "a refused plan apply must not journal its reason — nothing happened"
+
+rc=0; out="$("$ORCHID_BIN" run advance running --reason "leave planning over an unreadable archive" 2>&1)" || rc=$?
+assert_eq 4 "$rc" "the same refusal gates the edge out of planning, so it cannot be stepped around by ordering"
+assert_eq planning "$(fm_get .orchid/roadmap.md run_status)" "...and the run stays in planning"
+
+rc=0; out="$("$ORCHID_BIN" plan defer "$probe_id" --reason "considered elsewhere" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "a deferral cannot be recorded against a carried-forward list that could not be built"
+grep -qF "nothing is carried forward" <<<"$out" \
+  && fail "THE SAME FAIL-OPEN IN THE REMEDY: the command did not find an empty ledger, it failed to find the ledger"
+assert_match "could not be built" "$out" "...and it says which of the two it is"
+
+mv "$WORK/d-archived-journal" .orchid/runs/r-001/journal.md
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "the refusal lifts the moment the record is readable again — it gates the state, not the plan"
+assert_match "UNCOVERED \[ledger\] $probe_id" "$out" "...and the item it could not read comes back"
+
+# ---------------------------------------------------------------------------
+# 6b -- NO ARCHIVE AT ALL for the run this one carries from. This is the
+# shape that read as a pristine first run: the previous-run question was
+# answered by listing `runs/`, so an empty (or absent) `runs/` reported "this
+# is the first run of this repository" no matter what run_id said.
+# ---------------------------------------------------------------------------
+mv .orchid/runs/r-001 "$WORK/d-archive"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 4 "$rc" "a previous run with no archive is refused too"
+assert_match "no archive for that run exists" "$out" \
+  "...and is distinguished from an archive whose journal is missing: they are different repairs"
+grep -qF "no previous run is archived" <<<"$out" \
+  && fail "THE FAIL-OPEN AT ITS WORST: run r-002 HAS a previous run whatever .orchid/runs happens to hold, so it must never read as a first run"
+
+rmdir .orchid/runs
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 4 "$rc" "...and so is a repository with no runs/ directory at all, which is the same missing archive one level up"
+grep -qF "first run of this repository" <<<"$out" \
+  && fail "a run at r-002 is not a first run however little of .orchid/runs survives"
+mkdir .orchid/runs
+mv "$WORK/d-archive" .orchid/runs/r-001
+
+# ---------------------------------------------------------------------------
+# 6c -- THE ROADMAP CANNOT SAY WHICH RUN THIS IS. run_id is what makes the
+# previous run nameable; without it there is no question to answer, and
+# answering from the archive listing instead is what let 6b pass.
+# ---------------------------------------------------------------------------
+set_run_id "not-a-run"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 4 "$rc" "a run_id that names no run cannot be silently replaced by whatever is archived"
+assert_match "not the r-NNN shape" "$out" "...and the report names the field to repair"
+set_run_id "r-002"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 3 "$rc" "...and repairing run_id restores the report"
+
+# ---------------------------------------------------------------------------
+# 6d -- THE ARCHIVE AND THE ROADMAP DISAGREE. A rollover archives the OLD run
+# id and then increments, so an archive at or above the current run id cannot
+# have come from one. Answered by the listing, a roadmap reset to r-001 over
+# a repository with archived runs reads as a first run and every finding of
+# every previous run leaves planning unconsidered under one green line.
+# ---------------------------------------------------------------------------
+set_run_id "r-001"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 4 "$rc" "a roadmap that claims to precede its own archive is refused"
+assert_match "disagree about how many runs" "$out" "...saying which two records contradict each other"
+grep -qF "first run of this repository" <<<"$out" \
+  && fail "a repository with an archived run is not on its first run, whatever run_id was reset to"
+set_run_id "r-002"
+
+# ---------------------------------------------------------------------------
+# 6e -- THE CONTRAST THAT MAKES ALL OF THIS MEAN ANYTHING. The plan below is
+# genuinely green: the carried item is covered by a task that names its
+# anchor, and the check says so at exit 0. Take the record away and the
+# verdict must CHANGE. The whole defect was that these two states printed the
+# same thing, so a check that refuses only when it has nothing to lose proves
+# nothing at all.
+# ---------------------------------------------------------------------------
+"$ORCHID_BIN" task create T010 "teach the crosscheck to tell a missing record from an empty one" >/dev/null
+"$ORCHID_BIN" task set T010 acceptance_criteria \
+  "prevrun_archive_probe must refuse rather than report an empty ledger when the archived journal is unreadable" >/dev/null
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the carried item is covered once a task names its anchor"
+assert_match "covered   \[ledger\] $probe_id .*via prevrun_archive_probe" "$out" \
+  "...and the covering anchor is named back, as every covered line does"
+
+mv .orchid/runs/r-001/journal.md "$WORK/d-archived-journal"
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 4 "$rc" \
+  "THE POINT OF SECTION 6: a green pass and an unreadable record must not print the same verdict — the same plan, one file away, cannot still be a pass"
+grep -qF "item(s) considered" <<<"$out" \
+  && fail "the plan was considered against a journal that is no longer there to have been read"
+mv "$WORK/d-archived-journal" .orchid/runs/r-001/journal.md
+
+rc=0; out="$("$ORCHID_BIN" plan crosscheck 2>&1)" || rc=$?
+assert_eq 0 "$rc" "and the pass comes back with the record, unchanged by having been refused"
+apply_out="$("$ORCHID_BIN" plan apply --reason "r-002 plan over a readable record" 2>&1)"
+assert_match "^applied: " "$apply_out" "plan apply commits once the record can be read and every item is considered"
+assert_eq running "$(fm_get .orchid/roadmap.md run_status)" "...and takes the run to running"

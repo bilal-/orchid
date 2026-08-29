@@ -95,7 +95,19 @@ case "$sub" in
       # run's cross-check by `run new` rather than lost. Gating the run's own
       # closing commit would stop a finished run from being recorded, which
       # buys nothing here.
-      echo "orchid: plan apply refused — cover the item(s) above with a task in this plan, or record the decision (orchid plan defer <id> --reason \"...\"), then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      #
+      # Exit 4 is the cross-check saying it could not READ the previous run's
+      # record at all (a missing archive, a missing archived journal, a
+      # roadmap that cannot say which run this is). It gets its own sentence
+      # because neither remedy below applies to it: there is no item to cover
+      # and none to defer, and telling an operator to do either -- under a
+      # report that listed nothing -- is the same misdirection as passing the
+      # plan would have been.
+      if [ "$crosscheck_rc" -eq 4 ]; then
+        echo "orchid: plan apply refused — the carry-forward cross-check could not be answered (above); repair the previous run's record, then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      else
+        echo "orchid: plan apply refused — cover the item(s) above with a task in this plan, or record the decision (orchid plan defer <id> --reason \"...\"), then re-run (orchid plan crosscheck re-reports without committing)" >&2
+      fi
       exit "$crosscheck_rc"
     fi
 
@@ -224,7 +236,20 @@ case "$sub" in
     # leaving the real item unconsidered -- the silent pass this whole check
     # exists to close. The known ids are printed so the next attempt is a
     # copy-paste.
-    known="$(plancheck_item_ids "$state")"
+    #
+    # An UNANSWERABLE carry-forward question (exit 4 -- no archive for the
+    # run this one carries from, no journal inside it, no readable run_id) is
+    # refused here on its own terms rather than read as an empty list. The
+    # empty list's message is "nothing is carried forward into this plan, so
+    # there is nothing to defer", which in that state is a statement the
+    # command cannot support: it did not find an empty ledger, it failed to
+    # find the ledger. plancheck_item_ids has already printed WHICH record it
+    # could not read.
+    known=""; ids_rc=0
+    known="$(plancheck_item_ids "$state")" || ids_rc=$?
+    if [ "$ids_rc" -ne 0 ]; then
+      orchid_die "the carried-forward list could not be built (see above), so '$id' cannot be checked against it — a deferral names one item of that list; repair the previous run's record, then re-run (orchid plan crosscheck)"
+    fi
     if ! grep -qxF "$id" <<<"$known"; then
       if [ -z "$known" ]; then
         orchid_die "nothing is carried forward into this plan, so there is nothing to defer (orchid plan crosscheck)"

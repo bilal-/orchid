@@ -84,33 +84,190 @@
 # whole feature exists because a plausible-looking pass went unexamined, so
 # the one verdict that closes an item states its own evidence.
 #
+# AN UNREADABLE STATE IS NOT AN EMPTY ONE, and confusing the two was this
+# file's own fail-open. Everything above assumes the previous run's record
+# can actually be read. When it cannot -- nothing archived where `run new`
+# left it, an archive with no journal inside it, a roadmap that cannot say
+# which run this even is -- the two item generators return the empty list,
+# which is byte-for-byte the list a run that genuinely left nothing
+# produces. So the check printed "recorded no ledger items ... nothing to
+# cross-check (stated, not skipped)" and exited 0: the one state in which it
+# knew the LEAST was the state it was most confident about, and a deleted
+# archive committed a plan with a green line saying the question had been
+# asked. The defect is not that it answered wrongly; it is that it answered
+# at all.
+#
+# So answerability is decided FIRST, separately, and by its own evidence
+# (plancheck_prev_run): the roadmap's `run_id` says which run this is and
+# therefore which run it must carry from, and that run's archive and journal
+# have to be there to be read. Only once the question is answerable does
+# anything below report an ANSWER. An unanswerable state refuses with an
+# exit code of its own (4, distinct from an uncovered item's 3) and a repair
+# of its own, rather than borrowing the vocabulary of a clean pass -- an
+# operator who cannot tell "there was nothing to carry" from "I could not
+# look" is back to reading a green line that means nothing, which is the
+# whole failure this file exists for.
+#
 # Sourced after lib/common.sh (orchid_die is not used here, but callers'
-# error paths are) and after lib/lessons.sh, whose
+# error paths are), after lib/frontmatter.sh, whose fm_get reads the
+# roadmap's `run_id` -- the one fact answerability rests on, so this is a
+# hard dependency, not a convenience -- and after lib/lessons.sh, whose
 # _lessons_journal_start_date defines "this run started here" for both this
-# file and `lessons consolidate`.
+# file and `lessons consolidate`. Both callers (libexec/orchid-plan,
+# libexec/orchid-run) already source all three, in that order.
+
+# _plancheck_run_num <run-id> -- that run id's number in base 10, or exit 1
+# when it is not the `r-NNN` shape every producer of a run id writes (`orchid
+# init`'s literal `r-001`, `run new`'s `printf 'r-%03d'`). Base 10 is FORCED:
+# `r-008` fed to bash arithmetic without `10#` is an octal parse error, not
+# an 8, and the run that trips it is the eighth one -- long after anybody is
+# still watching this code.
+_plancheck_run_num() {
+  local num
+  case "$1" in
+    r-[0-9]*) num="${1#r-}" ;;
+    *) return 1 ;;
+  esac
+  case "$num" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$((10#$num))"
+}
 
 # plancheck_prev_run_id <state> -- the newest run id archived under
-# <state>/runs, or nothing at all when no run has ever rolled over (the
-# first run of a repository, which is a legitimate and reported state, not
-# an error). Numeric comparison on the suffix rather than a string sort, so
-# r-1000 ranks above r-999 the day that matters.
+# <state>/runs, or nothing at all when no run has ever rolled over. Numeric
+# comparison on the suffix rather than a string sort, so r-1000 ranks above
+# r-999 the day that matters.
+#
+# This is a report of what is ON DISK and nothing more. It is NOT the answer
+# to "which run does this plan carry from" -- plancheck_prev_run is, and it
+# derives that from the roadmap's own `run_id` -- because an archive
+# directory is evidence that some run was archived, never evidence that it
+# was the previous one. Reading the newest archive AS the previous run is
+# what let a missing `runs/r-002/` be answered with r-001's (long since
+# considered) findings, or with silence.
 plancheck_prev_run_id() {
   local state="$1" entry name num best="" best_num=-1
   [ -d "$state/runs" ] || return 0
   for entry in "$state"/runs/*; do
     [ -d "$entry" ] || continue
     name="${entry##*/}"
-    case "$name" in
-      r-[0-9]*) num="${name#r-}" ;;
-      *) continue ;;
-    esac
-    case "$num" in ''|*[!0-9]*) continue ;; esac
-    if [ "$((10#$num))" -gt "$best_num" ]; then
-      best_num="$((10#$num))"; best="$name"
+    num="$(_plancheck_run_num "$name")" || continue
+    if [ "$num" -gt "$best_num" ]; then
+      best_num="$num"; best="$name"
     fi
   done
   [ -n "$best" ] && printf '%s\n' "$best"
   return 0
+}
+
+# _plancheck_archive_of <state> <num> -- the NAME of the archived directory
+# whose run number is <num>, or nothing. Matched numerically rather than by
+# building the string, so `r-2` and `r-002` are recognized as the same run:
+# every producer writes the zero-padded spelling today, and a check that
+# refused a hand-restored `r-2` would be refusing over punctuation.
+_plancheck_archive_of() {
+  local state="$1" want="$2" entry name num
+  [ -d "$state/runs" ] || return 0
+  for entry in "$state"/runs/*; do
+    [ -d "$entry" ] || continue
+    name="${entry##*/}"
+    num="$(_plancheck_run_num "$name")" || continue
+    if [ "$num" -eq "$want" ]; then printf '%s\n' "$name"; return 0; fi
+  done
+  return 0
+}
+
+# plancheck_prev_run <state> -- WHICH previous run this plan carries from,
+# and whether that can be established at all, as one tab-separated
+# "<verdict><TAB><detail>" line:
+#
+#   none     this run's id     this IS the first run; nothing has rolled over
+#   run      the previous id   its archive is present, with a readable journal
+#   unknown  why, and the fix  the question cannot be answered
+#
+# THE THIRD VERDICT IS THE POINT (see the header). Every unanswerable state
+# below used to produce an EMPTY item list, and an empty list is exactly what
+# a previous run that genuinely left nothing produces -- so the report said
+# so and `plan apply` committed. Answerability is therefore established here,
+# on its own evidence, before any item is looked for.
+#
+# The previous run is derived from the roadmap's `run_id` (`r-NNN` minus
+# one), never from whatever happens to sit under `runs/`. That direction is
+# the load-bearing choice: a directory listing can only say what IS archived,
+# so a missing `runs/r-002/` silently answers with r-001's archive -- last
+# run but one, whose findings were already considered a run ago -- and a
+# repository with no `runs/` at all reads as a pristine first run no matter
+# how many runs it has actually had. `run_id` is durable state on the
+# integration branch, written by exactly two producers, and it is the only
+# thing here that knows how many runs there have been.
+#
+# The archive of a run BEFORE the previous one is deliberately not required:
+# only the run this plan carries from is ever read, and demanding a complete
+# chain would refuse a repository whose ancient archives were pruned for
+# space -- a refusal over history nothing consults.
+#
+# `.orchid/lessons.md` is the other carry-forward source and is deliberately
+# NOT required here, because its absence is a state the system PRODUCES and
+# means exactly what it says: `orchid init` never creates the file, and `run
+# new` deletes it at the rollover when no ACTIVE lesson survives
+# (libexec/orchid-run's step 3). Missing there is "no active lessons", not
+# "the record is gone" -- the opposite of an archived journal, which every
+# rollover writes and nothing removes.
+plancheck_prev_run() {
+  # Two statements, not `local state="$1" roadmap="$state/roadmap.md"`: a
+  # variable assigned in a `local` declaration is not reliably visible to a
+  # later assignment in that SAME declaration (ShellCheck SC2318), and the
+  # value it would silently pick up instead is whatever an outer scope holds.
+  local state="$1"
+  local roadmap="$state/roadmap.md"
+  local cur curnum prevnum dir newest newestnum jf
+  if [ ! -f "$roadmap" ] || [ ! -r "$roadmap" ]; then
+    printf 'unknown\tno readable roadmap at %s, so which run this is — and therefore which run it carries from — cannot be established (run this from the integration branch, or a worktree of it)\n' "$roadmap"
+    return 0
+  fi
+  cur="$(fm_get "$roadmap" run_id)"
+  if ! curnum="$(_plancheck_run_num "$cur")"; then
+    printf 'unknown\troadmap.md carries run_id "%s", which is not the r-NNN shape orchid init and orchid run new write, so the previous run cannot be named (repair the run_id in %s)\n' "$cur" "$roadmap"
+    return 0
+  fi
+  # An archive at or above the CURRENT run id cannot have been produced by a
+  # rollover -- `run new` archives under the OLD id and then increments -- so
+  # either the roadmap moved backwards or that directory is not the run it
+  # claims to be. Both make "which run does this plan carry from" a guess,
+  # and the r-001 case is the one that matters most: without this, a roadmap
+  # reset to run_id r-001 over a repository with archived runs reports "the
+  # first run of this repository, nothing is carried forward" and every
+  # finding of every previous run leaves planning unconsidered.
+  newest="$(plancheck_prev_run_id "$state")"
+  if [ -n "$newest" ]; then
+    newestnum="$(_plancheck_run_num "$newest")" || newestnum=-1
+    if [ "$newestnum" -ge "$curnum" ]; then
+      printf 'unknown\troadmap.md says this is run %s, but %s/runs/%s is archived — a rollover archives the OLD run id and increments, so an archive at or above the current run id means the roadmap and the archive disagree about how many runs there have been\n' \
+        "$cur" "$state" "$newest"
+      return 0
+    fi
+  fi
+  if [ "$curnum" -le 1 ]; then
+    # The run id rides along as the detail so the report can NAME the
+    # evidence for "first run" rather than asserting it: this verdict is now
+    # a claim about run_id, not about what a directory listing happened to
+    # hold, and a report that states the wrong evidence is unauditable.
+    printf 'none\t%s\n' "$cur"
+    return 0
+  fi
+  prevnum=$((curnum - 1))
+  dir="$(_plancheck_archive_of "$state" "$prevnum")"
+  if [ -z "$dir" ]; then
+    printf 'unknown\tthis is run %s, so it carries from r-%03d — but no archive for that run exists under %s/runs/ (orchid run new writes it at every rollover and nothing removes it; restore it from the integration branch: git log --oneline -- .orchid/runs)\n' \
+      "$cur" "$prevnum" "$state"
+    return 0
+  fi
+  jf="$state/runs/$dir/journal.md"
+  if [ ! -f "$jf" ] || [ ! -r "$jf" ]; then
+    printf 'unknown\t%s/runs/%s is archived but its journal.md is missing or unreadable, and that journal IS the ledger this check reads (restore it from the integration branch: git log --oneline -- .orchid/runs/%s/journal.md)\n' \
+      "$state" "$dir" "$dir"
+    return 0
+  fi
+  printf 'run\t%s\n' "$dir"
 }
 
 # plancheck_ledger_items <archived-journal> <run-id> -- one tab-separated
@@ -383,10 +540,24 @@ plancheck_lesson_items() {
 # actually on the list (a typo'd deferral would otherwise look recorded
 # while leaving the real item unconsidered -- the exact silent-pass shape
 # this whole check exists to close).
+#
+# Exit 4, with the reason on stderr, when the carried-forward question is
+# unanswerable at all (plancheck_prev_run's `unknown`). Printing the empty
+# list there would tell `plan defer` that nothing is carried forward, which
+# is the same false statement the report itself used to make -- and it would
+# make it while the operator was trying to answer for an item.
 plancheck_item_ids() {
-  local state="$1" prev cutoff
-  prev="$(plancheck_prev_run_id "$state")"
-  [ -n "$prev" ] || return 0
+  local state="$1" info verdict detail prev cutoff
+  info="$(plancheck_prev_run "$state")"
+  verdict="${info%%$'\t'*}"
+  detail="${info#*$'\t'}"
+  case "$verdict" in
+    none) return 0 ;;
+    unknown)
+      printf 'crosscheck: %s\n' "$detail" >&2
+      return 4 ;;
+  esac
+  prev="$detail"
   cutoff="$(_lessons_journal_start_date "$state/journal.md")"
   {
     plancheck_ledger_items "$state/runs/$prev/journal.md" "$prev"
@@ -510,6 +681,12 @@ plancheck_deferral() {
 #      passed over in silence -- an empty check and an unrun one look
 #      identical otherwise, which is the L016 shape again)
 #   3  at least one carried-forward item is neither covered nor deferred
+#   4  the question could not be answered at all: no archive for the run this
+#      one carries from, no journal inside it, or a roadmap that cannot say
+#      which run this is. A code of its own because the REMEDY is of its own
+#      -- neither a task nor a deferral repairs a missing archive, and a
+#      caller that told the operator to cover or defer "the item(s) above"
+#      would be naming two impossible answers under an empty list.
 #
 # The per-item lines go to stdout (they are the report); the refusal and the
 # recovery commands go to stderr, so a caller redirecting the report away
@@ -525,12 +702,25 @@ plancheck_deferral() {
 # the scratch directory would survive after all.
 plancheck_report() {
   local state="$1"
-  local prev cutoff tmp rc=0
-  prev="$(plancheck_prev_run_id "$state")"
-  if [ -z "$prev" ]; then
-    echo "crosscheck: no previous run is archived under .orchid/runs/ — this is the first run of this repository, so nothing is carried forward"
-    return 0
-  fi
+  local info verdict detail prev cutoff tmp rc=0
+  info="$(plancheck_prev_run "$state")"
+  verdict="${info%%$'\t'*}"
+  detail="${info#*$'\t'}"
+  case "$verdict" in
+    none)
+      echo "crosscheck: no previous run is archived under .orchid/runs/ — roadmap.md is at run_id $detail, the first run of this repository, so nothing is carried forward"
+      return 0 ;;
+    unknown)
+      # Stderr, and never a per-item line: there IS no item list here, and
+      # printing one of the report's ordinary verdicts would be the fail-open
+      # again in a new spelling. The two sentences say the two things an
+      # operator needs -- what could not be read, and why that is refused
+      # rather than passed.
+      echo "crosscheck: REFUSED — the carry-forward question cannot be answered: $detail" >&2
+      echo "crosscheck: a record this check cannot read is not a record that says nothing; both produce the same empty list, and passing on it is how a run once committed a plan over a finding the previous run had already made. Repair the state named above, then re-run." >&2
+      return 4 ;;
+  esac
+  prev="$detail"
 
   cutoff="$(_lessons_journal_start_date "$state/journal.md")"
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/orchid-plancheck.XXXXXX")"

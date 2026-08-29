@@ -919,6 +919,46 @@ refusal can be a gate rather than a trap: `orchid plan defer` has no
 and re-run. A task is still the better answer once the run is moving — but
 that is advice, not the door being closed.
 
+## `plan apply` refuses: the cross-check cannot read the previous run
+
+**Symptom:** `orchid plan apply`, `orchid plan crosscheck` or `orchid run
+advance` out of `planning` exits **4** — not 3 — listing no items at all, and
+saying the carry-forward question cannot be answered.
+
+Exit 3 means *there are items and nobody considered them*. Exit 4 means *the
+previous run's record could not be read*, which is a different problem with a
+different repair: there is nothing to cover and nothing to defer, because
+nothing could be listed. The check is derived from the roadmap's own
+`run_id` — this is run `r-NNN`, so it carries from `r-(NNN-1)` — and one of
+four things is wrong with the state under `.orchid/`:
+
+- no archive for that run under `.orchid/runs/` (or no `runs/` at all);
+- the archive is there but its `journal.md`, which IS the ledger this check
+  reads, is missing or unreadable;
+- `run_id` in `.orchid/roadmap.md` is not the `r-NNN` shape, so the previous
+  run cannot be named;
+- an archive at or above the current `run_id` exists — a rollover archives
+  the OLD id and then increments, so the roadmap and the archive disagree
+  about how many runs there have been.
+
+It refuses rather than reporting because every one of those states produces
+an EMPTY item list, and an empty list is exactly what a previous run that
+genuinely left nothing produces. Reported, it printed `previous run r-001
+recorded no ledger items … (stated, not skipped)` and committed the plan over
+every finding in a record it never opened.
+
+All of `.orchid/` is durable state on the integration branch, so the repair
+is a restore:
+
+```sh
+git log --oneline -- .orchid/runs
+git checkout <sha> -- .orchid/runs/r-001
+```
+
+Then re-run `orchid plan crosscheck`, which will report the items in that
+record — usually as `UNCOVERED`, since nothing in the plan has answered for
+them yet.
+
 ## One task needs a decision and the whole run stopped
 
 **Symptom:** `orchid drive` exited 16 (or the pump printed `judgment boundary

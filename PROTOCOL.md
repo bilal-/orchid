@@ -635,6 +635,21 @@ sequence in
    `started_at` anchor), with eighteen active lessons and the entire
    previous journal available while scoping. The information existed and
    nothing forced its use.
+
+   And a third outcome is neither of those: **the question could not be
+   answered at all**, which exits 4 and refuses. Which run this plan carries
+   from is read from the roadmap's own `run_id` — the previous run is
+   `r-NNN` minus one — and that run's archive must be present under
+   `.orchid/runs/` with its `journal.md` inside it. When it is not, or when
+   `run_id` names no run, or when an archive at or above the current run id
+   contradicts it, the two item generators return the empty list — which is
+   byte-for-byte the list a run that left nothing produces. Reported as
+   "nothing to cross-check" it committed a plan over every finding in an
+   unread record, so it is refused instead, naming what could not be read.
+   The repair is to restore that record (it is durable state on the
+   integration branch: `git log --oneline -- .orchid/runs`), not to cover or
+   defer anything — neither remedy applies to an item the check was never
+   able to list.
 3. `orchid plan apply --reason "..."` — commits every current `.orchid/`
    change (roadmap, tasks, requirements) onto the integration branch in one
    transaction, from whatever checkout you're in, without ever switching the
