@@ -40,28 +40,29 @@ repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
 
-# THE STALE-ROOT GATE, FIRED ABOVE DOCTOR'S FIRST REPORTED LINE.
+# THE TRUST DECISION PRECEDES THE STALE-ROOT GATE'S GIT QUERY; BOTH PRECEDE
+# DOCTOR'S FIRST REPORTED LINE.
 #
 # This file defers the operator-PATH restore, so lib/common.sh ARMS the
-# stale-root guard and leaves the firing to the restore call below -- and that
-# call sits underneath the unattended-trust verdict and the provenance printed
-# with it. Doctor was therefore the one verb that REPORTED out of a stale
-# checkout before refusing over it, which inverts the reason lib/common.sh
-# stops `doctor` at all: a diagnosis read out of a pre-merge tree is produced BY
-# the code nobody has looked at, and it is the answer the operator then acts on.
-# Nothing above this line has printed anything or touched the target repository,
-# so this is the first moment at which there is a side effect to sit in front of.
+# stale-root guard and leaves its Git-spending half to this file. But doctor is
+# itself a trust-boundary entry point: when its target is the self-hosted Orchid
+# checkout, firing first would query that unacknowledged target before the
+# machine-local trust lookup had even decided whether a candidate record
+# exists. unattended_trust_inspect makes the constant-size, no-Git denial first;
+# only a present, eligible acknowledgement candidate permits its own target Git
+# work. It prints and writes nothing, so the stale-root gate still sits ahead of
+# doctor's first observable report below.
 #
-# The gate is idempotent and a no-op when nothing is armed, so the restore below
-# keeps its own meaning for every root this call leaves alone, and the
-# fixed-PATH boundary drawn underneath it is unchanged.
+# The gate then prevents a diagnosis from being produced BY pre-merge code
+# nobody has looked at. It is idempotent and a no-op when nothing is armed, so
+# the restore below keeps its meaning for every root this call leaves alone.
+unattended_trust_inspect "$repo"
 orchid_root_stale_gate
 
-# Inspect and render the gate before making the operator PATH executable
-# again. Later readiness checks intentionally use that PATH (for example,
-# capsuite required-binary discovery), but cannot retroactively alter this
-# already-emitted decision or its trusted identity provenance.
-unattended_trust_inspect "$repo"
+# Render the already-inspected trust decision before making the operator PATH
+# executable again. Later readiness checks intentionally use that PATH (for
+# example, capsuite required-binary discovery), but cannot retroactively alter
+# this already-decided verdict or its trusted identity provenance.
 if [ "$ORCHID_UNATTENDED_STATE" = trusted ]; then
   printf 'ok: unattended trust: '
 else

@@ -459,13 +459,13 @@ buying a fresh implementation pass to reach the same tree.
     so there was nothing for this one to stop. `libexec/orchid-trust` never
     restores the operator PATH at all, so it calls `orchid_root_stale_gate`
     itself, per subcommand: after the operator's command has been validated
-    and before the durable write to the machine-local trust store, since a
-    record authored — or an acknowledgement removed — by pre-merge code
-    outlives the process that made it. Its `show` arm fires nothing, as the
-    one declared exception: it writes no durable record, and the
-    unattended-trust contract requires inspection with no identity-keyed
-    candidate to invoke no Git whatever, which is exactly what firing would
-    spend.
+    and before either a durable write to the machine-local trust store or a
+    report an operator acts on. A record authored — or an acknowledgement
+    removed — by pre-merge code outlives the process that made it, while a
+    `show` report produced by pre-merge code can authorize the operator's next
+    action just as surely. No arm is exempt: the trust lookup first performs
+    its constant-size, no-Git missing-record decision, then the stale-root gate
+    fires before the arm prints its report.
     The INDEX, not the working tree: `git update-ref` moves the branch
     without touching either, so the index left describing the commit the
     branch moved off IS the record of the fall behind — while an operator

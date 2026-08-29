@@ -78,7 +78,7 @@ source "$(dirname "$0")/../helpers.sh"
 #     proved deleted from the record -- and the fixture that demonstrates it
 #     is RUN, so the deletion is observed rather than asserted about a shell.
 #
-# RED: twelve, each fed to the SAME derivation or the same shipped verb the
+# RED: thirteen, each fed to the SAME derivation or the same shipped verb the
 #      section runs over the real tree. A ci-local-shaped file whose static
 #      section sits BELOW the `--no-tests` cut (so it is outside the merge
 #      floor and only reaches tasks that opted into the full suite), and a
@@ -88,6 +88,8 @@ source "$(dirname "$0")/../helpers.sh"
 #      enforced by nothing at run time -- and two more whose source line a
 #      text scan accepts and a shell never executes. A trust-boundary entry
 #      point that arms the stale-root gate and reaches no site that fires it.
+#      A doctor-shaped trust boundary that fires the Git-spending stale-root
+#      gate before it performs its machine-local trust decision.
 #      An $ORCHID_ROOT genuinely parked on its configured integration branch
 #      with a staged kernel edit, which must still be REFUSED -- the case that
 #      must be caught. A gate written as a producer piped into `grep -q`. A
@@ -111,6 +113,7 @@ source "$(dirname "$0")/../helpers.sh"
 #      spends no `git` and refuses nothing, so section 3 is detection rather
 #      than a check that fails on every checkout; the shipped kernel's many
 #      pipes into a grep that reads to EOF, which must all be left alone; the
+#      shipped doctor, whose trust decision precedes its stale-root gate;
 #      same pump against the same repo out of a root that is NOT stale, which
 #      must run and must create the very directory the refusal above proved
 #      absent; the same task, the same tree and the same absent opt-in with a
@@ -995,6 +998,45 @@ assert_eq "$GATE_EXEMPT" "$entry_unfired" \
   "INV-15: the set of trust-boundary entry points that arm the stale-root gate and never fire it must be exactly the declared one — a new member means a verb that runs pre-merge kernel with nothing left to say so, and a departed member means this exemption is stale"
 
 green_case "every shipped trust-boundary entry point reaches a site that fires the gate it arms, with no exemption left standing, and the declared exemption set matched the derived one exactly"
+
+# Doctor is the one deferring diagnostic that has TWO pre-report gates. The
+# unattended-trust decision must run first: when Orchid is operating on itself,
+# the stale-root gate's Git query targets the very repository whose
+# machine-local acknowledgement has not yet been looked up. Both calls are
+# straight-line and uniquely named, so their executable-code order is derived
+# here rather than left as prose beside the implementation.
+doctor_gate_order_violations() {
+  local f="$1" code inspect_line stale_line
+  code="$(entry_code "$f")"
+  inspect_line="$(awk '/^[[:space:]]*unattended_trust_inspect[[:space:]]/ { print NR; exit }' <<<"$code")"
+  stale_line="$(awk '/^[[:space:]]*orchid_root_stale_gate[[:space:]]*$/ { print NR; exit }' <<<"$code")"
+  case "$inspect_line:$stale_line" in
+    *[!0-9:]*|:*|*:) printf 'doctor-gate-order-unprovable: %s\n' "$f"; return 0 ;;
+  esac
+  if [ "$stale_line" -le "$inspect_line" ]; then
+    printf 'doctor-stale-before-trust: %s (stale line %s, trust line %s)\n' \
+      "$f" "$stale_line" "$inspect_line"
+  fi
+}
+
+doctor_order_out="$(doctor_gate_order_violations "$REPO_ROOT/libexec/orchid-doctor")"
+[ -z "$doctor_order_out" ] \
+  || fail "INV-15: orchid-doctor queries stale-root Git before its trust decision ($doctor_order_out)"
+green_case 'orchid-doctor performs its machine-local unattended-trust decision before the stale-root gate can spend a Git query, with both still ahead of its first report'
+
+DOCTOR_ORDER_BAD="$WORK/orchid-doctor-stale-first"
+{
+  printf '#!/bin/bash -p\n'
+  printf 'source "$ORCHID_ROOT/lib/common.sh"\n'
+  printf 'source "$ORCHID_ROOT/lib/trust.sh"\n'
+  printf 'repo="$PWD"\n'
+  printf 'orchid_root_stale_gate\n'
+  printf 'unattended_trust_inspect "$repo"\n'
+  printf 'unattended_trust_summary_loaded\n'
+} > "$DOCTOR_ORDER_BAD"
+assert_match 'doctor-stale-before-trust' "$(doctor_gate_order_violations "$DOCTOR_ORDER_BAD")" \
+  "INV-15: a doctor-shaped entry point that queries stale-root Git before its trust decision must be reported"
+red_case 'the doctor gate-order derivation rejected a fixture whose stale-root Git query precedes its machine-local trust decision, so the shipped ordering is proved rather than merely described'
 
 # The RED twin, on the same function. Three fixtures: the violation, and the
 # two shapes that must NOT be flagged, so a scan that says yes to everything
