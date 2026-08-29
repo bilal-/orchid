@@ -2130,13 +2130,19 @@ ones its archetype never declares.
       evidence names: a log describing a superseded candidate is neither
       captured nor fed forward, because "you already tried this" said about
       code the recipient is not holding is a confident false claim rather
-      than a weaker true one;
+      than a weaker true one. Nor is a log that is byte-for-byte the round
+      already captured: on an unchanged candidate the binding cannot tell a
+      surviving log from a fresh one, and counting one run twice would reach
+      every judgment below on a single verification;
     - at `rework_signature_repeats` ≥ 2, dispatch that rework to a DIFFERENT
       engine in `role.implementer`'s chain — `runners/orchid-launch <id>
       implementer implement --engine <next-eligible>`, excluding the task's
       recorded `implementer_engine_id`, and journal the reroute. A chain with
       no other eligible entry dispatches normally; this is a preference, not
-      a gate.
+      a gate. Nor is it applied when the newest captured round records a red
+      repo-wide `merge_gate`: that repeats identically until somebody outside
+      the task acts, so it is not this engine's to converge on and no
+      alternate can change it.
     - at `rework_signature_repeats` ≥ `rework_nonconvergence_max` (config,
       default 3), stop: `orchid notify --task <id> "rework loop is not
       converging: ..."` then `orchid task advance <id> blocked --reason

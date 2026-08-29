@@ -8284,6 +8284,34 @@ assert_eq 16 "$GDRIVE_RC" "the merge-side non-convergence stop exits at its judg
 assert_match "not converging" "$(gboundary)" \
   "the recorded merge-side boundary names non-convergence, not an ordinary rework"
 
+# --- (Z4/T025) ...but WHOSE wall it is, on the one surface an operator rereads
+# The stop is right whoever is at fault -- a loop this stuck needs a person. The
+# ATTRIBUTION is not: what repeats here is the repository's own `merge_gate`, a
+# check applied to everything that this candidate was never asked about and that
+# libexec/orchid-task calls the one merge failure repeating identically until
+# somebody OUTSIDE the task acts. It therefore satisfies the identical-signature
+# test by construction. A boundary that says only "the loop is re-asking a
+# question it has already been answered" sends the operator to an engine and a
+# diff for a red repository, and the dispatch side would spend a second engine's
+# round on a wall no engine can move.
+GZ_BOUNDARY_REASON="$(gboundary | jq -r '.reason // ""')"
+assert_match "merge_gate" "$GZ_BOUNDARY_REASON" \
+  "the non-convergence boundary names the REPOSITORY's gate as what repeats, not just the loop (reason: $GZ_BOUNDARY_REASON)"
+assert_match "fix the repository" "$GZ_BOUNDARY_REASON" \
+  "...and carries the remedy that actually clears it, since no further implementer round can turn a repo-wide gate green"
+
+# The same answer, read from the evidence the pass really captured. This is what
+# the dispatch-side reroute consults before it excludes an engine, so proving it
+# here proves both consumers agree on a file a real driver pass filed -- and the
+# boundary clause above is the witness that the driver itself reached it.
+GZ_RWLOG="$(rework_latest_log "$GATEREPO/.orchid" G010 0 2>/dev/null || true)"
+[ -f "$GZ_RWLOG" ] \
+  || fail "non-vacuity: the merging rework round must have captured its evidence for the attribution to be read from (got '$GZ_RWLOG')"
+assert_match "^gate_status: ran$" "$(cat "$GZ_RWLOG")" \
+  "non-vacuity: the captured round really is the gate's own log, header intact through the copy"
+rework_streak_attributable "$GATEREPO/.orchid" G010 \
+  && fail "a streak whose newest round is a red repo-wide merge_gate must not be attributed to the engine that ran — no alternate engine can converge on the repository"
+
 # ===========================================================================
 # Part ZP (T023) -- THE OTHER ROUTE TO `merging -> blocked`, WHICH MUST NOT BE
 # REPORTED AS THE FIRST ONE.

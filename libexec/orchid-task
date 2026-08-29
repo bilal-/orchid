@@ -1164,8 +1164,34 @@ case "$sub" in
       # nothing to act on" is the exact complaint this task exists to answer,
       # so the one case where the kernel deliberately captures nothing has to
       # say so.
+      #
+      # AND BOUND IS NOT THE SAME AS FRESH. The binding above refuses a log
+      # naming a candidate this task has MOVED OFF; it cannot refuse one naming
+      # the candidate still under work, which is every stale log on the one
+      # path where the candidate does not move. `orchid merge` dying before its
+      # own opening `rm -f` (a run lock it did not get) leaves the previous
+      # round's <id>-merge.log -- already exempt from the delete below -- sitting
+      # in exactly the place the merging arm looks, bound to exactly the right
+      # candidate. Captured a second time it is a digest identical to the round
+      # already on disk BY CONSTRUCTION: repeat 2 reroutes the role, repeat 3
+      # blocks the task for not converging, both derived from a single run read
+      # twice. So the source is compared with the newest captured round BYTE FOR
+      # BYTE (rework_evidence_recaptured -- the volatile header the signature
+      # drops is what distinguishes a re-run from a re-read), and a duplicate
+      # mints no round and moves no counter.
       rw_cand="$(fm_get "$f" candidate_sha)"
+      rw_src=""; rw_dup=""
       if rw_src="$(rework_evidence_source "$state" "$id" "$from" "$rw_cand")"; then
+        rw_dup="$(rework_evidence_recaptured "$state" "$id" "$rw_src")" || rw_dup=""
+      fi
+      if [ -n "$rw_src" ] && [ -n "$rw_dup" ]; then
+        # Journalled, like every other deliberate non-capture on this edge: an
+        # operator asking why the streak did not move needs the difference
+        # between "no evidence" and "the same evidence again" spelled out, and
+        # the entry names both files so the claim can be checked by hand.
+        journal --task "$id" --kind intervention \
+          "rework evidence NOT captured: ${rw_src##*/} is byte-identical to the already-captured ${rw_dup##*/}, so it is one run read a second time rather than a second failure — no round is filed and the convergence streak is untouched"
+      elif [ -n "$rw_src" ]; then
         rw_round="$(fm_get "$f" rework_rounds)"
         case "$rw_round" in ''|*[!0-9]*) rw_round=0 ;; esac
         rw_round=$((rw_round + 1))

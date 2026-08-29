@@ -682,12 +682,38 @@ buying a fresh implementation pass to reach the same tree.
   invalidating delete, so an unbound capture would file a superseded
   candidate's output as this round's failure and then block the task for not
   converging on it.
+  Bound is not the same as FRESH, and the second guard only matters when the
+  candidate does NOT move — which is exactly when the binding cannot help. A
+  source that is byte-for-byte the log already filed as the newest round is
+  one run read twice, not a second failure: it mints no round and moves no
+  counter (the refusal is journalled, naming both files). The comparison is
+  over RAW BYTES precisely because the signature drops the volatile header —
+  a re-run and a re-read digest the same, and the header is the only place
+  they differ. Without it, `orchid merge` dying before its own opening
+  `rm -f` of a previous attempt's log (a run lock it did not get) leaves that
+  log for the next `merging → rework`, where its digest matches the filed
+  round by construction and reroutes the role and blocks the task on a single
+  verification counted twice.
+  A repeated signature is also not always an ENGINE's to answer. A red
+  repo-wide `merge_gate` is a check the repository applies to everything,
+  which the candidate was never asked about and which repeats identically
+  until somebody outside the task acts, so it satisfies the identical-signature
+  test by construction. Such a round is still captured and still fed forward —
+  it is what went red — but it does NOT reroute the role, because no alternate
+  engine can turn the repository green. The non-convergence stop still applies
+  (the loop is stuck whoever is at fault) and its boundary names the gate and
+  the remedy that clears it. The classification is read from the log's own
+  `gate_status:`/`gate_exit:` header, never inferred from the trailing
+  `exit:` line, which is equally non-zero when the candidate's own suite is
+  what went red.
   Three consequences, all deterministic:
   - the next attempt's input pack carries `rework.md` — the previous round's
     output VERBATIM, plus whether it repeated unchanged (docs/specs/plugins.md);
   - a second identical signature routes the next dispatch to a different
     engine in the role's failover chain (a preference: a chain with no other
-    eligible entry dispatches as usual and says so);
+    eligible entry dispatches as usual and says so, and a streak whose newest
+    round is a red repo-wide `merge_gate` is not attributed to an engine at
+    all);
   - `rework_nonconvergence_max` (config, default 3) consecutive identical
     signatures stop the loop — `blocked`, plus an `operator-decision`
     boundary. An unchanged signature is evidence the loop is not converging,

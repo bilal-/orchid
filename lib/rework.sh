@@ -150,6 +150,87 @@ rework_evidence_bound() {
   [ "$(findings_log_candidate "$log")" = "$cand" ]
 }
 
+# rework_evidence_recaptured <state> <id> <src> -- prints the captured round
+# <src> duplicates, and exits 0, when <src> is byte-for-byte the log already
+# filed as the newest round. Exit 1 (silently) otherwise.
+#
+# THE ONE STALENESS THE CANDIDATE BINDING CANNOT SEE, and it exists only while
+# the candidate does NOT move. rework_evidence_bound refuses a log naming a
+# SUPERSEDED candidate; a log naming the candidate still under work satisfies
+# it every time, however old that log is. So on an unchanged candidate the same
+# physical file can be read into two consecutive rounds. The route is not
+# hypothetical: the `merging` arm of `task advance rework` deliberately exempts
+# <id>-merge.log from its invalidating delete, and `orchid merge` can die
+# BEFORE its own opening `rm -f` of a previous attempt's copy -- a run lock it
+# did not get, which is the exact window runners/orchid-drive fingerprints the
+# file across -- leaving that log on disk for the next `merging -> rework`.
+#
+# What it would cost is the whole convergence record. A re-read has, by
+# construction, the digest of the round already filed: it would be counted as a
+# repeat, reroute the role at two and block the task for not converging at
+# three. An engine indicted and a loop declared stuck on the strength of ONE
+# run counted twice -- the same false confidence the zero-byte guard above
+# refuses, arriving by the one door a non-empty, well-formed, correctly-bound
+# log walks straight through.
+#
+# RAW BYTES, NOT THE SIGNATURE, and that difference is the entire test.
+# rework_signature deliberately drops the header, so "the same failure from a
+# fresh run" and "the same file read twice" have the same digest -- which is
+# right for the streak and useless here. The header is precisely what tells
+# them apart: both producers stamp a per-run `date:` (and `sha:`/`cwd:`), so a
+# genuine re-run differs there while a re-read cannot. Same discriminator, and
+# the same content-not-mtime reasoning, as the merge-log fingerprint in
+# runners/orchid-drive.
+#
+# Two real runs colliding on every one of those fields (identical output, same
+# candidate, same working directory, inside one clock second) would be read as
+# a re-read and skipped. That is the safe direction and the same one every
+# other refusal here takes: the round is not filed and the streak is untouched,
+# which is the pre-T025 behaviour, rather than a counter advanced on evidence
+# that may not be a second run at all.
+rework_evidence_recaptured() {
+  local state="$1" id="$2" src="$3" latest
+  [ -f "$src" ] || return 1
+  latest="$(rework_latest_log "$state" "$id" 0)" || return 1
+  cmp -s "$src" "$latest" || return 1
+  printf '%s\n' "$latest"
+}
+
+# rework_streak_attributable <state> <id> -- 0 unless the newest CAPTURED round
+# records a red repo-wide `merge_gate`.
+#
+# WHAT A REPEATED SIGNATURE IS EVIDENCE *ABOUT*. The streak's consumer that
+# names a culprit is the driver's failover: two identical rounds mean "THIS
+# ENGINE is not converging on THIS task", so the next attempt goes to another
+# entry in the role's chain. A red `merge_gate` breaks that inference at the
+# root. It is a check the REPOSITORY applies to everything, which this task was
+# never asked about and no engine can turn green -- libexec/orchid-task says so
+# in as many words beside the merging exemption ("the one merge failure that
+# repeats identically until somebody outside this task acts"). It therefore
+# satisfies the identical-signature test BY CONSTRUCTION, on the first repeat,
+# for reasons that have nothing to do with whoever implemented the candidate.
+#
+# Rerouting on it spends a second engine's round on a condition it cannot fix
+# and writes a durable journal line indicting the engine that ran, for an
+# answer that was never its to give.
+#
+# THE CONVERGENCE STOP IS NOT SUPPRESSED BY THIS, and the asymmetry is the
+# point: the loop really is stuck, and stopping it for a human is right whoever
+# is at fault. Only the attribution to an engine is wrong, so only the
+# attribution is withheld -- and the boundary the stop raises says which of the
+# two it found. `orchid merge` keeps its own backstop for the gate either way
+# (it charges the round and blocks the task once the budget is spent, with a
+# repository-worded reason).
+#
+# Answers YES for a task with no captured round at all: an absence of evidence
+# is not evidence of a gate failure, and a caller that has no streak to act on
+# is not reading this anyway.
+rework_streak_attributable() {
+  local state="$1" id="$2" latest
+  latest="$(rework_latest_log "$state" "$id" 0)" || return 0
+  ! findings_log_gate_failed "$latest"
+}
+
 # rework_evidence_current <state> <id> <candidate> -- 0 iff the newest CAPTURED
 # round is usable as <candidate>'s previous failure: it exists, it is not a
 # torn zero-byte write, and its header binds it to <candidate>.

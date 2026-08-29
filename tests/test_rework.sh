@@ -238,6 +238,73 @@ rc=0; rework_evidence_current "$D" T001 none >/dev/null 2>&1 || rc=$?
 rc=0; rework_evidence_current "$D" T999 candaaaa >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a task with no captured round has nothing current"
 
+# --- bound is not the same as FRESH -----------------------------------------
+# The binding above refuses a log naming a candidate the task has MOVED OFF. It
+# cannot refuse one naming the candidate still under work -- which is every
+# stale log on the one path where the candidate does not move. `orchid merge`
+# exempts <id>-merge.log from the invalidating delete and can die before its own
+# opening `rm -f` (a run lock it did not get), leaving the previous round's log
+# in exactly the place the merging arm looks, bound to exactly the right
+# candidate. Read a second time it has, BY CONSTRUCTION, the digest of the round
+# already filed: repeat 2 reroutes the role, repeat 3 blocks the task for not
+# converging, both from a single run counted twice.
+#
+# Byte-identity is the discriminator precisely BECAUSE the signature is not:
+# rework_signature drops the volatile header, so a re-run and a re-read digest
+# the same. The header is the only place they differ.
+rework_evidence_recaptured "$D" T001 "$D/reviews/T001-r1-rework.log" >/dev/null \
+  || fail "a source byte-identical to the newest captured round is that round read again"
+assert_eq "$D/reviews/T001-r1-rework.log" \
+  "$(rework_evidence_recaptured "$D" T001 "$D/reviews/T001-r1-rework.log")" \
+  "and it names the round it duplicates, so the journal entry can be checked by hand"
+# A genuine RE-RUN of the same failure: same output, same exit, same candidate,
+# only the volatile header moved. It must NOT be swallowed -- this is the exact
+# case the whole convergence record exists to count.
+mk_log "$D/reviews/rerun.log" 2026-08-06T00:00:00Z candaaaa /tmp/w "FAIL: still red" 1
+assert_eq "$(rework_signature "$D/reviews/T001-r1-rework.log")" \
+  "$(rework_signature "$D/reviews/rerun.log")" \
+  "witness: the re-run and the captured round DO share a signature — without that this pair proves nothing"
+rc=0; rework_evidence_recaptured "$D" T001 "$D/reviews/rerun.log" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a fresh run of the same failure is a second round, not the first one read twice"
+rm -f "$D/reviews/rerun.log"
+rc=0; rework_evidence_recaptured "$D" T999 "$D/reviews/T001-r1-rework.log" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] || fail "a task with no captured round has nothing to duplicate"
+
+# --- a repeated signature is not always an ENGINE's to answer ---------------
+# The streak's one consumer that names a culprit is the driver's failover: two
+# identical rounds mean "this engine is not converging on this task". A red
+# repo-wide `merge_gate` breaks that inference at the root -- it is a check the
+# REPOSITORY applies to everything, which the task was never asked about, and
+# libexec/orchid-task calls it the one merge failure that repeats identically
+# until somebody OUTSIDE this task acts. It clears the identical-signature test
+# by construction, so rerouting on it spends a second engine's round on a wall
+# it cannot move and durably blames the engine that ran.
+E="$WORK/gatesig/.orchid"
+mkdir -p "$E/reviews"
+mk_log "$E/reviews/T001-r1-rework.log" 2026-08-01T00:00:00Z candaaaa /tmp/w "FAIL: the candidate's own suite" 1
+rework_streak_attributable "$E" T001 \
+  || fail "a candidate's own failing suite IS attributable to whoever implemented it"
+rework_streak_attributable "$E" T999 \
+  || fail "no captured round is not evidence of a gate failure — an absence of evidence answers yes"
+# The header shape `orchid merge` really writes for a red gate. Read, never
+# inferred: the trailing `exit:` line is the MERGE's status and is equally
+# non-zero when the candidate's own suite is what went red.
+{ printf 'date: 2026-08-02T00:00:00Z\n'
+  printf 'sha: candaaaa\n'
+  printf 'candidate: candaaaa\n'
+  printf 'cwd: /tmp/w\n'
+  printf 'command: true\n'
+  printf 'gate: shellcheck lib\n'
+  printf 'gate_status: ran\n'
+  printf 'gate_exit: 3\n'
+  printf -- '---\n'
+  printf 'lib/example.sh:12: SC2086: Double quote to prevent globbing\n'
+  printf 'exit: 1\n'; } > "$E/reviews/T001-r2-rework.log"
+rework_streak_attributable "$E" T001 \
+  && fail "a red repo-wide merge_gate repeats identically by construction — it must never indict the engine that ran"
+grep -q 'gate_status' "$REPO_ROOT/libexec/orchid-merge" \
+  || fail "witness: orchid-merge no longer records gate_status in the log header — the fixture above pins a shape nobody produces"
+
 # ===========================================================================
 # Part B -- the kernel verb. The capture happens BEFORE the invalidating
 # delete, and the delete still happens.
@@ -422,6 +489,64 @@ mk_log "$STATE/reviews/T004-verify.log" 2026-08-09T11:00:00Z "$(git rev-parse HE
 "$ORCHID_BIN" task advance T004 rework --reason "old failure returned after green" >/dev/null
 assert_eq "1" "$(fm T004 rework_signature_repeats)" \
   "an old signature returning after a successful verification starts a fresh streak at one"
+
+# THE UNCHANGED-CANDIDATE CASE, at the verb. Every refusal above is about a log
+# that describes the wrong thing (a pass, a torn write, another candidate). This
+# one is about a log that describes exactly the right thing and has simply
+# already been counted -- and it is only reachable while the candidate does NOT
+# move, which is precisely when the candidate binding cannot see it. Two rework
+# entries, one run: without the guard the second is filed as its own round with a
+# digest identical to the first BY CONSTRUCTION, so the streak reaches two, the
+# role is rerouted to another engine and the task is blocked for not converging,
+# every one of those judgments derived from a single verification.
+#
+# A separate task, deliberately: T001's captured rounds are what Part D builds a
+# pack from, and adding rounds to it would move the evidence that part asserts on.
+"$ORCHID_BIN" task create T005 "the same log read twice" >/dev/null
+"$ORCHID_BIN" task set T005 base_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task set T005 candidate_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task advance T005 implementing --reason "first round" >/dev/null
+"$ORCHID_BIN" task advance T005 testing --reason "first round" >/dev/null
+mk_log "$STATE/reviews/T005-verify.log" 2026-08-10T11:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: the failure this round actually had" 1
+"$ORCHID_BIN" task advance T005 rework --reason "first round" >/dev/null
+assert_eq "1" "$(fm T005 rework_rounds)" "fixture: the first round is captured"
+assert_eq "1" "$(fm T005 rework_signature_repeats)" "fixture: a first sighting is repeat 1"
+sig_t005="$(fm T005 rework_signature)"
+
+# The previous round's log, still on disk -- byte for byte, volatile header
+# included, which is what a log that outlived its run IS and what a genuine
+# re-run can never be. (`orchid merge` leaves exactly this behind when it dies
+# before its own opening `rm -f`; the copy the verb already filed is the same
+# bytes, so it stands in for that survivor without needing a merge to fail.)
+"$ORCHID_BIN" task advance T005 implementing --reason "second round" >/dev/null
+"$ORCHID_BIN" task advance T005 testing --reason "second round" >/dev/null
+cp "$STATE/reviews/T005-r1-rework.log" "$STATE/reviews/T005-verify.log"
+"$ORCHID_BIN" task advance T005 rework --reason "the previous round's log, still on disk" >/dev/null
+assert_eq "1" "$(fm T005 rework_rounds)" \
+  "a source byte-identical to the round already captured is one run read twice, so it mints no second round"
+[ ! -f "$STATE/reviews/T005-r2-rework.log" ] \
+  || fail "the duplicate must not be filed as its own round — both halves of a did-anything-change comparison would then be the same run"
+assert_eq "1" "$(fm T005 rework_signature_repeats)" \
+  "and it must not advance the streak that reroutes the role and blocks the task for not converging"
+assert_eq "$sig_t005" "$(fm T005 rework_signature)" "the recorded signature is untouched"
+assert_match "read a second time" "$(tail -n 20 "$STATE/journal.md")" \
+  "the refusal is journalled and names both files — 'why did the streak not move' must be answerable without a diff"
+
+# ...and the pair that makes this a discrimination rather than a blanket
+# suppression: a real second run of the SAME failure still counts. Identical
+# output, identical exit, identical candidate; only the volatile header moved,
+# which is exactly the case the convergence record exists to catch.
+"$ORCHID_BIN" task advance T005 implementing --reason "third round" >/dev/null
+"$ORCHID_BIN" task advance T005 testing --reason "third round" >/dev/null
+mk_log "$STATE/reviews/T005-verify.log" 2026-08-11T11:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: the failure this round actually had" 1
+"$ORCHID_BIN" task advance T005 rework --reason "a real second run, same failure" >/dev/null
+assert_eq "2" "$(fm T005 rework_rounds)" "a fresh run of the same failure IS a second round"
+assert_eq "2" "$(fm T005 rework_signature_repeats)" \
+  "and it is the repeat the convergence record exists to count"
+assert_eq "$sig_t005" "$(fm T005 rework_signature)" \
+  "the signature is the same one — the guard above suppressed a duplicate READ, never a duplicate FAILURE"
 
 # ===========================================================================
 # Part D -- the pack. This is the whole point: the NEXT attempt's brief has

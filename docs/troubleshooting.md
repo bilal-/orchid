@@ -847,9 +847,19 @@ ls .orchid/reviews/<id>-r*-rework.log   # one per captured round, oldest first
 orchid task show <id>                   # rework_signature, rework_signature_repeats
 ```
 
-Nothing in the candidate is moving that failure, so the useful question is
-usually about the assertion rather than the code under test: what is actually
-being asserted, and what is the failing value actually? Fold the answer into
+**First check whose wall it is.** If the boundary goes on to say the repeated
+failure is the repository's own `merge_gate`, the candidate is not what is
+red: a gate is a check the repository applies to everything, the task was
+never asked about it, and it will repeat identically until somebody clears it.
+No implementer round can, so `retry` and `unblock` both buy rounds that end
+the same way — fix the repository (or this candidate, if the gate names it),
+then `orchid task reverify <id> --reason "..."`, which costs no attempt. For
+the same reason the run does not reroute the role to another engine on that
+kind of streak: there is nothing for a second engine to converge on.
+
+Otherwise nothing in the candidate is moving that failure, so the useful
+question is usually about the assertion rather than the code under test: what
+is actually being asserted, and what is the failing value actually? Fold the answer into
 `orchid task unblock <id> --reason "..."` (it is recorded into the task body,
 and the next attempt's brief carries the failing output alongside it) rather
 than `orchid task retry`, which buys the loop more rounds without changing

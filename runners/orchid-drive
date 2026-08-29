@@ -1442,6 +1442,23 @@ drive_dispatch() {
         # nothing.
         last_engine="$(fm_get "$tf" implementer_engine_id)"
         last_engine="${last_engine##*/}"
+        # ...but a repeated signature only indicts an ENGINE when the failure
+        # was an engine's to answer. A red repo-wide `merge_gate` is not: it is
+        # a check the repository applies to everything, which this task was
+        # never asked about, and libexec/orchid-task calls it "the one merge
+        # failure that repeats identically until somebody outside this task
+        # acts". It clears the identical-signature test by construction, on the
+        # first repeat, for reasons no implementer chose and no alternate
+        # engine can change -- so rerouting on it spends a second engine's
+        # round on a wall it cannot move and leaves a durable line blaming the
+        # engine that ran for an answer that was never its to give. The
+        # non-convergence STOP below still applies (the loop is genuinely
+        # stuck, whoever is at fault, and the boundary it raises says which);
+        # only this attribution is withheld.
+        if [ "$reps" -ge 2 ] && ! rework_streak_attributable "$state" "$id"; then
+          drive_note "$id: rework signature unchanged $reps times, but the repeated failure is the repository's own merge_gate — no engine can converge on that, so the role is not rerouted"
+          reps=0
+        fi
         # An adapter is not REQUIRED to report `.engine` (reconcile only
         # cross-checks it when present), so an empty field is not proof that
         # no engine ran. Fall back to whichever engine this role would resolve
@@ -1827,7 +1844,7 @@ drive_verify_fail_pending_consume() {
 # Returns 0 when it blocked the task and raised a boundary, 1 when the streak
 # is still below the threshold. Call only as an `if` condition under set -e.
 drive_rework_nonconvergence_stop() {
-  local id="$1" context="$2" tf reps nc_max rwlog
+  local id="$1" context="$2" tf reps nc_max rwlog culprit
   tf="$state/tasks/$id.md"
   [ "$(fm_get "$tf" status)" = rework ] || return 1
   reps="$(fm_get "$tf" rework_signature_repeats)"
@@ -1837,13 +1854,27 @@ drive_rework_nonconvergence_stop() {
   [ "$nc_max" -gt 0 ] && [ "$reps" -ge "$nc_max" ] || return 1
 
   rwlog="$(rework_latest_log "$state" "$id" 0 2>/dev/null || true)"
+  # WHOSE WALL IT IS, appended rather than substituted. The stop itself is
+  # correct either way -- a loop this stuck needs a person, whatever put it
+  # there -- so the sentence that reports it stands unchanged and only the
+  # attribution is added. A red repo-wide `merge_gate` repeats identically by
+  # construction and is frequently not this task's doing at all: without this
+  # clause the one boundary an operator re-reads on every pass tells them to
+  # look at a loop and an engine, when what is red is the repository. Read
+  # from the captured evidence's own header, never inferred (the same rule
+  # findings_log_gate_failed applies for the merging arm above), and the
+  # dispatch side withholds the engine reroute on the same answer.
+  culprit=""
+  if [ -n "$rwlog" ] && findings_log_gate_failed "$rwlog"; then
+    culprit=" — and what repeats is the repository's own merge_gate, which this candidate was never asked about: no further implementer round can turn it green, so fix the repository (or this candidate, if the gate names it) rather than re-dispatching"
+  fi
   "$ORCHID_BIN" notify --task "$id" \
-    "rework loop is not converging: $reps consecutive attempts produced an identical failure signature — see ${rwlog:-.orchid/reviews/}" >/dev/null
+    "rework loop is not converging: $reps consecutive attempts produced an identical failure signature — see ${rwlog:-.orchid/reviews/}$culprit" >/dev/null
   "$ORCHID_BIN" task advance "$id" blocked \
-    --reason "rework not converging: $reps consecutive attempts produced an identical failure signature" >/dev/null
+    --reason "rework not converging: $reps consecutive attempts produced an identical failure signature$culprit" >/dev/null
   drive_note "$id: $context, signature unchanged $reps times — rework -> blocked (not converging)"
   set_boundary operator-decision "$id" \
-    "rework is not converging: $reps consecutive attempts produced a byte-identical failure signature — the loop is re-asking a question it has already been answered; see ${rwlog:-the captured rework logs under .orchid/reviews/}"
+    "rework is not converging: $reps consecutive attempts produced a byte-identical failure signature — the loop is re-asking a question it has already been answered; see ${rwlog:-the captured rework logs under .orchid/reviews/}$culprit"
   return 0
 }
 
