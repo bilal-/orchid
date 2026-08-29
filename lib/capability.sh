@@ -158,6 +158,7 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # replaced by this: it happens to require the same two atoms, so on the shipped
 # tree the two refuse together and this one is merely the one that says the
 # fact is permanent.
+#
 # `mechanical` is enforced at lib/handoff.sh, because it is a step no adapter
 # is dispatched for at all. `hook` is the one row with no enforcement site
 # anywhere, because it is priced at nothing and the gate returns before it so
@@ -165,6 +166,18 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # paragraph forgot. All seven rows are accounted for above, and that is the
 # point of saying EACH: a step added to `_CAPABILITY_STEPS` without a home in
 # this paragraph is a step whose gate nobody has chosen.
+#
+# END OF WHERE EACH ROW IS ENFORCED. tests/inv/test_INV-16_capability_routing.sh
+# extracts from the opening line to THIS one and requires every priced step to
+# be named backticked inside it, so this marker is the enumeration's boundary
+# rather than the first blank comment line under its heading. It has to be,
+# because the enumeration outgrew one paragraph: the `orchestrate` subsection
+# above put a separator between the heading and the `mechanical` and `hook`
+# sentences, and an end inferred from that separator left two of the seven rows
+# outside a paragraph still claiming all seven -- with the check reporting the
+# reorganisation as an unplaced row, and, the direction that actually costs
+# something, ready to admit a row added below the separator without ever
+# looking at it. A new subsection goes ABOVE this line.
 #
 # `review` and `critique` need `structured_text`, and pricing them at nothing
 # was this table's own fail-open. What both steps produce is a STRUCTURED reply

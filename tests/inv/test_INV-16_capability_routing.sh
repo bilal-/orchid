@@ -174,12 +174,24 @@ done <<< "$(printf '%s' "$_CAPABILITY_STEPS" | tr ' ' '\n')"
 
 # AND EXHAUSTIVE OVER WHERE EACH ROW IS ENFORCED, which is the half the gate
 # above cannot see. `lib/capability.sh` prices the work in one place and names
-# the GATE that acts on each price in another — a paragraph that opens "WHERE
-# EACH ROW IS ENFORCED" and then enumerates the rows. Pricing a step without
-# adding it there leaves a row whose gate nobody has chosen, and the file reads
-# as though somebody did: that is exactly what happened when `research` was
-# added to `_CAPABILITY_STEPS` and the enumeration was not, so the one row with
-# no role gate behind it was the one row the paragraph never placed.
+# the GATE that acts on each price in another — an enumeration that opens "WHERE
+# EACH ROW IS ENFORCED" and closes at an explicit "END OF WHERE EACH ROW IS
+# ENFORCED" marker. Pricing a step without adding it there leaves a row whose
+# gate nobody has chosen, and the file reads as though somebody did: that is
+# exactly what happened when `research` was added to `_CAPABILITY_STEPS` and the
+# enumeration was not, so the one row with no role gate behind it was the one
+# row the paragraph never placed.
+#
+# The block ends at that CLOSING MARKER rather than at the first bare comment
+# line after the heading, because the enumeration is several paragraphs long.
+# Inferred from the layout, its end moved the moment the prose was reorganised:
+# an `orchestrate` subsection introduced a separator above the `mechanical` and
+# `hook` sentences, which put two of the seven rows outside a paragraph that
+# still said it accounted for all seven. That direction is only noisy — the
+# expensive one is a row ADDED below the separator, named in the enumeration,
+# and never seen by this gate. The marker's presence is asserted below for the
+# same reason: absent it, `sed` runs to end of file and this would search the
+# whole module for a name instead of the paragraph.
 #
 # Matched on the BACKTICKED name, the form the paragraph uses for every row,
 # because a bare substring passes on a word that merely contains it (`review`
@@ -188,9 +200,13 @@ done <<< "$(printf '%s' "$_CAPABILITY_STEPS" | tr ' ' '\n')"
 # variable: written inline inside the double quotes this comparison needs, it
 # would be command substitution rather than a character.
 _bt='`'
-_enforced="$(sed -n '/WHERE EACH ROW IS ENFORCED/,/^#$/p' "$REPO_ROOT/lib/capability.sh")"
+_enforced="$(sed -n '/WHERE EACH ROW IS ENFORCED/,/END OF WHERE EACH ROW IS ENFORCED/p' "$REPO_ROOT/lib/capability.sh")"
 [ -n "$_enforced" ] \
   || fail "INV-16: lib/capability.sh has no 'WHERE EACH ROW IS ENFORCED' paragraph — without it this gate passes vacuously and the enumeration it guards is unguarded"
+case "$(printf '%s\n' "$_enforced" | tail -n 1)" in
+  *"END OF WHERE EACH ROW IS ENFORCED"*) ;;
+  *) fail "INV-16: lib/capability.sh's 'WHERE EACH ROW IS ENFORCED' enumeration has no closing 'END OF WHERE EACH ROW IS ENFORCED' marker — the extraction ran to end of file, so the check below would accept a step named anywhere in the module rather than inside the enumeration" ;;
+esac
 while IFS= read -r _step; do
   [ -n "$_step" ] || continue
   case "$_enforced" in
