@@ -1044,7 +1044,11 @@ page_blocked_notify() {
   page_orchid "${nargs[@]}"
 }
 
-blocked_reason="task is blocked: verify failed for something the candidate never caused — only an operator (orchid task unblock|retry|reverify) resolves it"
+# Composed by the driver's own composer rather than typed out here, for the
+# reason the helper above gives about the set: a hand-copied page would pass
+# while the driver shipped another. Section 12 below is what holds that
+# composer to naming every remedy and the cause.
+blocked_reason="$(drive_blocked_reason T901 "verify failed for something the candidate never caused")"
 qidB="$(page_blocked_notify "$blocked_reason")" \
   || fail "fixture: a blocked-task page must be raisable with its declared set"
 assert_eq "unblock,retry,reverify,defer" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidB.choices")" \
@@ -1309,3 +1313,148 @@ outFT="$(page_orchid answer "$qidFT" "the routing table was hand-repaired after 
 assert_eq "the routing table was hand-repaired after a restore" \
   "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidFT.answer")" \
   "...and is recorded verbatim, so the fallback is a real contract rather than a silent drop"
+
+# ===========================================================================
+# 12 -- ONE STOP, ONE PAGE: THE TASK THE DRIVER BLOCKS ITSELF (T009).
+#
+# A page is a QUESTION -- its own qid, its own nonce, its own `.answer` file --
+# so the number of pages a stop raises is not cosmetic. Two pages for one
+# decision are two questions an operator has to answer, and answering either
+# leaves the other standing in BLOCKERS.md until `answer_expiry_s` turns it
+# into a refusal, with nothing on either page saying which one was live.
+#
+# PROTOCOL.md's budget is ONE blocker per DISTINCT boundary record, and the
+# only thing that can enforce it is the de-dup at the foot of
+# runners/orchid-drive: it reads the previous record back and compares it field
+# by field, so a page raised anywhere else is compared against nothing, and a
+# record whose wording changes is a record that changed. An exhausted task
+# defeated that twice over. The exhausted-budget arm raised its own `orchid
+# notify` and THEN recorded an `operator-decision` boundary which the foot of
+# the file notified for as well -- two qids on the pass that blocked the task --
+# and the blocked walk restated the same stop on the very next pass in a third
+# wording, which the comparison could only read as a new record: a third qid,
+# for one decision, out of one `attempts exhausted (3/3)`. Only the first of
+# the three declared an answer set at all; the other two invited free text for
+# a question with exactly four known answers. Two more arms had the identical
+# shape -- the wallclock backstop, which paged the task it was about to block,
+# and the stuck-merge arm, which paged and then recorded the very boundary the
+# foot of the file pages for.
+#
+# The repair is that a task the driver blocks is recorded through the ONE
+# composition every later pass over that task recomputes (lib/drive.sh's
+# drive_blocked_reason), and nothing pages beside the record. Pinned here in
+# three parts: what that single page has to carry, what two wordings of one
+# stop actually cost an operator, and the producer count itself.
+# tests/test_drive.sh's attempt-budget fixture drives the same property end to
+# end through real passes; this file is the one this task's verification runs.
+# ===========================================================================
+
+# The driver's own argv assembly again (runners/orchid-drive's drive_notify),
+# generalized over the task the way section 9b's is over its text. Never a
+# hand-copied set, for the reason that helper gives.
+page_block_notify() {
+  local task="$1" text="$2" choice
+  local -a nargs
+  nargs=(notify --task "$task")
+  while IFS= read -r choice; do
+    [ -n "$choice" ] || continue
+    nargs+=(--choice "$choice")
+  done <<< "$(drive_boundary_choices blocked-task)"
+  nargs+=("$text")
+  page_orchid "${nargs[@]}"
+}
+
+# --- 12a: the one page carries what all three texts carried -----------------
+# The page that survives is the blocked-task one, so everything the retired
+# `operator-decision` text told the operator has to be on it: the cause WITH
+# its evidence pointer, and each recovery verb spelled out runnably. The
+# pointer rides in the BLOCK's own `--reason` now, which is why it survives
+# every later pass instead of only the one-shot page that used to carry it.
+page_orchid task create T905 "spend its last round" >/dev/null \
+  || fail "fixture task for the one-page section must be creatable"
+page_orchid task advance T905 blocked \
+  --reason "attempts exhausted (3/3): see .orchid/reviews/T905-verify.log" >/dev/null \
+  || fail "fixture: blocking T905 the way the exhausted-budget arm blocks it must succeed"
+blk_cause="$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T905)"
+assert_eq "attempts exhausted (3/3): see .orchid/reviews/T905-verify.log" "$blk_cause" \
+  "fixture witness: the evidence pointer is IN the block's journaled reason, so the page reads it back on this pass and on every pass after it"
+
+blk_reason="$(drive_blocked_reason T905 "$blk_cause")"
+assert_match "attempts exhausted \(3/3\)" "$blk_reason" \
+  "the blocked-task page states the cause it was blocked with (reason: $blk_reason)"
+assert_match "\.orchid/reviews/T905-verify\.log" "$blk_reason" \
+  "...including the evidence the retired exhaustion page pointed at, which is the file the operator has to read before choosing (reason: $blk_reason)"
+assert_match "orchid task unblock T905" "$blk_reason" \
+  "...and names the verb that clears the block, on the task it is about"
+assert_match "orchid task retry T905 \[--attempts N\]" "$blk_reason" \
+  "...the verb that grants rounds, with the flag the exhaustion case specifically needs — a page read on a phone must be runnable from it, not decoded from an a|b|c shorthand"
+assert_match "orchid task reverify T905" "$blk_reason" \
+  "...and the verb that re-runs verification alone: the whole recovery list, which is also the set orchid answer accepts"
+
+# The composition is a pure function of (task, cause), which is what makes the
+# two producers agree: the arm that BLOCKS and the walk that finds it BLOCKED
+# read the same journal and print the same string.
+assert_eq "$blk_reason" "$(drive_blocked_reason T905 "$(drive_blocked_cause "$PAGE_REPO/.orchid/journal.md" T905)")" \
+  "the same task and the same journal compose the same page — which is why the next pass's record equals this one's and de-dups instead of minting"
+# ...and the honest arm survives: a blocked task whose journal lost its record
+# says so rather than printing an empty clause after a colon.
+assert_match "^task is blocked, and the journal records no cause for it —" \
+  "$(drive_blocked_reason T905 "")" \
+  "a page composed with no cause on record says that plainly, and still names the remedies"
+
+qidX="$(page_block_notify T905 "$blk_reason")" \
+  || fail "fixture: the blocked-task page must be raisable with its declared set"
+page_x="$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qidX")"
+assert_match "attempts exhausted \(3/3\)" "$page_x" \
+  "all of that reaches the page an operator actually reads, not just the boundary record"
+assert_match "\.orchid/reviews/T905-verify\.log" "$page_x" \
+  "...evidence pointer included"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$page_x" \
+  "...and the one surviving page is the one that declares the answer set, which two of the three retired pages never did"
+
+# --- 12b: what a second wording of one stop costs ---------------------------
+# The witness the whole section rests on: pages are not de-duplicated by
+# subject. Two texts about ONE stop are two independent questions, and
+# answering either says nothing about the other. This is why the driver's two
+# arms may not describe a block in their own words.
+qidY="$(page_block_notify T905 "attempts exhausted after 3 of 3 rework round(s): see .orchid/reviews/T905-verify.log")" \
+  || fail "fixture: a second wording of the same stop must be raisable, or the cost below is untested"
+[ "$qidX" != "$qidY" ] \
+  || fail "witness: two notifies must mint two qids — if they collided there would be no duplicate-page defect to fix"
+outX="$(page_orchid answer "$qidX" retry 2>&1)" \
+  || fail "orchid answer must accept 'retry' for the blocked-task page (got: $outX)"
+assert_eq "retry" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidX.answer")" \
+  "the operator's decision is recorded against the qid they answered"
+[ ! -f "$PAGE_REPO/.orchid/runtime/answers/$qidY.answer" ] \
+  || fail "answering one qid must never answer another — the second page for the same stop is still outstanding"
+outY="$(page_orchid answer "$qidY" defer 2>&1)" \
+  || fail "...and it is still LIVE: the operator is asked a second time about a decision they already made (got: $outY)"
+assert_eq "defer" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidY.answer")" \
+  "which is the whole cost of a duplicate page — two answers recorded for one stop, and nothing on either page saying which one the run reads"
+
+# --- 12c: RED — the driver has exactly one page producer --------------------
+# The assertion the shipped defect fails. `drive_notify` is the only thing in
+# runners/orchid-drive that raises a page, and it is called from exactly one
+# place: the boundary record at the foot of the file, the one site the
+# field-by-field de-dup covers. Three arms used to call it as well -- two
+# paging a task they were about to block, one paging a boundary it recorded in
+# the same breath -- so those pages were compared against nothing. Counting the
+# call sites is what keeps a fourth from being added: the count is the
+# invariant, and it fails on the addition rather than on the duplicate page an
+# operator would have had to notice in a channel.
+drive_src="$REPO_ROOT/runners/orchid-drive"
+[ -f "$drive_src" ] || fail "fixture: runners/orchid-drive must be readable for the producer count below"
+drive_notify_calls="$(grep -cE '^[[:space:]]*drive_notify ' "$drive_src" || true)"
+assert_eq "1" "$drive_notify_calls" \
+  "runners/orchid-drive must raise its pages from exactly ONE call site — every other one is a page nothing de-duplicates (found $drive_notify_calls)"
+assert_match "boundary_kind" "$(grep -E '^[[:space:]]*drive_notify ' "$drive_src" || true)" \
+  "...and that site is the boundary record's own, so the page and the record are the same fact"
+if grep -qE '^[[:space:]]*drive_notify blocked-task' "$drive_src"; then
+  fail "no arm may page a task it is blocking: the page for that stop belongs to the blocked-task boundary the block produces, which is the only thing that de-dups it against the next pass"
+fi
+# ...and the arm really does record that boundary, rather than having simply
+# dropped the page. Without this half, deleting the notify would pass 12c while
+# leaving the exhausted task silent.
+assert_match "drive_block_boundary" \
+  "$(grep -E -A 8 'attempts exhausted \(\$attempts/\$budget\): see' "$drive_src" || true)" \
+  "the exhausted-budget arm records the blocked-task boundary its own block produced — that record IS the page"

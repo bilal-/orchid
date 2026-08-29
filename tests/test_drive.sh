@@ -3878,6 +3878,42 @@ assert_eq blocked "$(cfield status)" \
 assert_match "attempts exhausted \(1/1\)" "$CDRIVE_OUT" \
   "and the pass reports the budget it enforced, not a bare 'exhausted' (out: $CDRIVE_OUT)"
 
+# ONE STOP, ONE PAGE (T009). A page is a question with its own qid, nonce and
+# `.answer` file, so the count matters: two pages for one decision are two
+# questions, and answering either says nothing about the other. PROTOCOL.md's
+# budget is one blocker per DISTINCT boundary record, enforced by the
+# field-by-field de-dup at the foot of the driver -- and this arm defeated it
+# twice. It raised its own `orchid notify` and THEN recorded an
+# `operator-decision` boundary the foot of the file notified for as well (two
+# qids on this pass), after which the blocked walk restated the same stop in a
+# third wording on the next pass, which the comparison could only read as a new
+# record (a third qid). Only the first of the three declared an answer set.
+cquestions() { find "$CAPD/.orchid/runtime/answers" -name '*.question' 2>/dev/null | wc -l | tr -d ' '; }
+assert_eq 1 "$(cquestions)" \
+  "the pass that blocked C010 raised exactly ONE page for it (out: $CDRIVE_OUT)"
+CBLOCKERS="$(cat "$CAPD/.orchid/BLOCKERS.md" 2>/dev/null || true)"
+assert_match "attempts exhausted \(1/1\)" "$CBLOCKERS" \
+  "...and that one page states the cause the task was blocked with (page: $CBLOCKERS)"
+assert_match "\.orchid/reviews/C010-verify\.log" "$CBLOCKERS" \
+  "...names the evidence the retired exhaustion page pointed at, which now rides in the block's own journaled reason so every later pass reads it back too"
+assert_match "orchid task retry C010 \[--attempts N\]" "$CBLOCKERS" \
+  "...and spells the recovery verbs out on the task they are about, the flag the exhaustion case needs included"
+assert_match "^choices: unblock \| retry \| reverify \| defer\$" "$CBLOCKERS" \
+  "...with the declared answer set two of the three retired pages never carried"
+
+# ...and the NEXT pass over the same blocked task raises nothing new. The walk
+# recomputes the record from the same journal through the same composer
+# (lib/drive.sh's drive_blocked_reason), so the de-dup sees one record
+# persisting rather than a second one replacing it.
+CDRIVE_RC=0
+CDRIVE_OUT="$(ORCHID_REPO="$CAPD" ORCHID_EPOCH="$CEPOCH" "$DRIVE" 2>&1)" || CDRIVE_RC=$?
+assert_eq blocked "$(cfield status)" \
+  "fixture: C010 is still blocked on the following pass, so the boundary below is the same stop (rc=$CDRIVE_RC, out: $CDRIVE_OUT)"
+assert_eq blocked-task "$(ORCHID_REPO="$CAPD" "$ORCHID_BIN" run boundary show 2>/dev/null | jq -r '.kind // ""')" \
+  "the stop is recorded under the kind the task's own status names — the kind the walk will keep recomputing"
+assert_eq 1 "$(cquestions)" \
+  "and no second question is minted for it: one blocker per distinct record, and the record did not change (out: $CDRIVE_OUT)"
+
 # 2. The operator grants two more rounds through the verb -- and the driver
 #    honors the grant on its very next pass.
 CGRANT_OUT="$(corchid task retry C010 --reason "both spent attempts were the environment, not the candidate" --attempts 2)"

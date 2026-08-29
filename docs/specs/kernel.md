@@ -2021,6 +2021,14 @@ nobody and the driver raises one `orchid notify` blocker per distinct record
 instead. On both shipped surfaces that makes `planning` and `run-complete`
 operator-only: nothing admits `plan apply` or `run accept`.
 
+That record is the only page budget a stop gets, including the stops the
+driver creates itself. A pass that blocks a task (attempts exhausted, the
+wallclock backstop) records the `blocked-task` boundary the block produced, in
+the same words the walk recomputes for that task on every later pass, and
+notifies nothing separately — a page raised outside the record is compared
+against nothing, so one decision would reach the operator as two or three
+`qid`s, only one of them carrying the kind's declared answer set.
+
 Exit 16 reports that a decision is outstanding somewhere; it never reports
 that the run cannot proceed. The pass that returns it has already walked
 every task and taken every edge policy allowed, and `orchid drive` is

@@ -4091,6 +4091,56 @@ drive_blocked_cause() {
   printf '\n'
 }
 
+# drive_blocked_reason <task-id> <cause> -- the ONE boundary reason a blocked
+# task is recorded and paged with, composed from the cause drive_blocked_cause
+# read back above (empty when the journal holds none).
+#
+# WHY THIS IS A FUNCTION AND NOT TWO STRING LITERALS. runners/orchid-drive
+# reaches `blocked` from two directions -- it BLOCKS a task itself (attempts
+# exhausted, wallclock budget exceeded) and it WALKS one that is already
+# blocked, on that same pass and on every pass after it -- and both directions
+# describe the same stop to the same human. The driver used to answer them with
+# different text: the blocking arm raised its own `orchid notify` page and then
+# recorded an `operator-decision` boundary in its own words, while the walk
+# recorded a `blocked-task` one in the words below.
+#
+# That is a DUPLICATE-QID defect, not a wording inconsistency. PROTOCOL.md's
+# contract is one blocker per DISTINCT boundary record, and the de-dup that
+# enforces it compares the previous record field by field -- so text that
+# differs is a record that differs, and a record that differs is another qid.
+# One exhausted task therefore paged an operator twice on the pass it blocked
+# (once from the blocking arm directly, once from the boundary the same pass
+# recorded) and once more on the next pass, when the walk restated the stop in
+# this third wording. Three questions, three nonces, one decision: answering any
+# one of them leaves the others standing in BLOCKERS.md until `answer_expiry_s`
+# turns them into refusals, with nothing on the page saying which was live --
+# and only the first of the three carried a declared answer set at all.
+#
+# Composed HERE, in the library, because that is where the property is provable
+# without a driver pass: the blocking arm and the walk are two producers of one
+# page, and identical text out of one function is what makes the second and
+# third pages de-dup instead of mint.
+#
+# THE VERBS ARE SPELLED OUT WITH THE TASK ID for the same reason the cause is
+# quoted at all: this is the page an operator meets on their phone, and the
+# recovery it names has to be runnable from there without translating an
+# `a|b|c` shorthand back into three commands. `--attempts N` rides along
+# because the exhaustion case is precisely the one where plain `retry` may not
+# be enough. The three verbs are the whole recovery list the kernel offers out
+# of `blocked` -- the same list drive_boundary_choices declares as this kind's
+# answers, since a verb named here and refused there is a page that
+# contradicts itself.
+drive_blocked_reason() {
+  local id="$1" cause="${2:-}" what
+  if [ -n "$cause" ]; then
+    what="task is blocked: $cause"
+  else
+    what="task is blocked, and the journal records no cause for it"
+  fi
+  printf '%s — only an operator resolves it: orchid task unblock %s, orchid task retry %s [--attempts N], or orchid task reverify %s\n' \
+    "$what" "$id" "$id" "$id"
+}
+
 drive_verify_class() {
   local repo="$1" tf="$2" log="$3" body hand hcls hnote suffix
 

@@ -205,7 +205,15 @@ every edge policy allows; the record is written and 16 returned at the END of
 that pass, not the moment the boundary was met. What it asks of a caller is
 that the decision reach a human, which the pass has already done by raising
 one `orchid notify` blocker per distinct record whenever no admitted verb can
-settle it — and then that the caller KEEP DRIVING. `orchid drive` is
+settle it — and then that the caller KEEP DRIVING. **One page per stop, and
+the record is the only thing that counts them.** The de-dup compares the
+record about to be written against the one on disk, field by field, so a page
+raised outside that comparison — a pass that notifies about a task and then
+records a boundary for the same task, or records the stop in words its own
+later passes will not recompute — is a second `qid` for one decision. The
+operator answers one of them; the rest sit in `BLOCKERS.md` unanswered until
+`answer_expiry_s` turns them into refusals, and nothing on the page says which
+of the duplicates was the live one. `orchid drive` is
 idempotent, so a boundaried task re-reports the identical record on the next
 pass at no cost while every unrelated task keeps advancing. Reading 16 as
 "stop and fetch a human" is how one task's arbitration parks a whole roadmap:
@@ -282,7 +290,7 @@ The kernel-owned boundary kinds:
 | kind | raised when |
 | --- | --- |
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
-| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none |
+| `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none. This is also the kind raised by the pass that DOES the blocking — attempts exhausted, wallclock budget exceeded — and in the same words, so the record it writes is the record every later pass over that task recomputes rather than a different one that pages again |
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
 | `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
@@ -290,7 +298,7 @@ The kernel-owned boundary kinds:
 | `operator-handoff` | work no actor in the loop declares the capability for: a step whose requirements the resolved actor's manifest does not cover, so it was never dispatched (INV-16, `orchid jobs prepare` exit 19) — or this candidate's execution-requiring mechanical steps are not acknowledged for it, because `handoff_before_verify` is on, or because its implementer is installed under neither name it is looked up by — the directory a binding names, or the qualified `id=` a manifest claims. See "The operator hand-off" below |
 | `task-prerequisite` | the task declares an `operator_prerequisite` — a step outside the sandbox its verification depends on — that nobody has acknowledged for this candidate; raised by either stage that runs the suite (see THE TICK's `testing` and `merging` steps) |
 | `run-complete` | every task is `done`; the acceptance checks and `orchid run accept --evidence` behind COMPLETION below are judgment work no verb decides |
-| `operator-decision` | everything else policy deliberately refuses to decide: attempts exhausted, wallclock budget exceeded, a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree |
+| `operator-decision` | everything else policy deliberately refuses to decide: a status/archetype combination with no declared edge, a merge left stuck by a CAS/config problem, an implement dispatch that left real work uncommitted in the task worktree. Not the two stops that END IN A BLOCK — those are `blocked-task` above, since the task they describe is blocked and the walk would otherwise describe it a second time under that kind on the next pass |
 
 **Waking a model for one asks the SAME question.** The precedence above
 decides which of several boundaries goes into the record;
@@ -982,9 +990,11 @@ Escalation ladder for a job `jobs check` reports `dead`, `stalled`, `timeout`,
   past its budget is precisely the runaway attempt this backstop exists to
   catch, and a version that fired only for already-dead jobs would be no
   backstop at all. `jobs check` only reports this, it never kills on its
-  own. `orchid notify --task <task-id> "task wallclock budget exceeded"`
-  then `orchid task advance <task-id> blocked --reason "wallclock budget
-  exceeded"`.
+  own. `orchid task advance <task-id> blocked --reason "wallclock budget
+  exceeded"`, and then let the `blocked-task` boundary that block produces
+  carry the page: raising an `orchid notify` here as well would mint a second
+  `qid` for the one stop, moments before the boundary's own (see "One page per
+  stop" above).
 - *A launch that FAILS is a job failure too.* `runners/orchid-launch` does
   real work before it spawns: it prepares the job, then builds the input
   pack. A non-zero exit from it — anything but `14` (`no eligible engine`,
@@ -1950,10 +1960,13 @@ ones its archetype never declares.
     an unreliable gate must announce that it is unreliable rather than fall
     silent.
     Once the task's non-waived `attempts` count (`orchid task show <id>`)
-    reaches its budget, stop retrying automatically: `orchid notify --task
-    <id> "attempts exhausted (<attempts>/<budget>): see
-    .orchid/reviews/<id>-verify.log"` then `orchid task advance <id> blocked
-    --reason "attempts exhausted (<attempts>/<budget>)"`. The budget is
+    reaches its budget, stop retrying automatically: `orchid task advance <id>
+    blocked --reason "attempts exhausted (<attempts>/<budget>): see
+    .orchid/reviews/<id>-verify.log"`. The evidence pointer goes in the
+    BLOCK's reason rather than into a page of its own, because that is the
+    text the `blocked-task` boundary quotes back — on this pass and on every
+    later pass over the same task — and one page per stop is the whole page
+    budget ("One page per stop" above). The budget is
     `rework_max` (config, default 3), or the task's own `attempt_budget` when
     an operator has granted it one (`orchid task retry <id> --reason "..."
     --attempts N`). It is orchestrator-enforced HERE, not a kernel-verb gate; a
@@ -2087,17 +2100,17 @@ ones its archetype never declares.
     compare-and-swap lost to a concurrent merge, or the `worktree_prepare`
     step for the validation worktree failed): a persistent config/CAS
     problem, not a candidate defect — the verb journaled it but could not
-    advance the task out of `merging` on its own. Notify with evidence that
+    advance the task out of `merging` on its own. Record an
+    `operator-decision` boundary naming the exit code and evidence that
     exists: `.orchid/reviews/<id>-merge.log` is written only once the verb
     actually ran the suite, and the verb deletes any earlier attempt's copy
     before it begins, so when that file is absent the run died BEFORE
     validation and the verb's own final line (which names the prepare log
-    when there is one) is the record to carry instead — `orchid notify
-    --task <id> "merge left task in merging: see
-    .orchid/reviews/<id>-merge.log"`, or the same message with that final
-    line in place of the `see ...` clause. Leave the task in `merging` for a
-    retry either way; never assume `rework` just because the exit code was
-    nonzero.
+    when there is one) is the evidence to carry instead. Leave the task in
+    `merging` for a retry either way; never assume `rework` just because the
+    exit code was nonzero. The
+    boundary is the page here too — a notify raised beside it is a second
+    `qid` for the one stuck merge ("One page per stop" above).
   - status still `merging` with exit `15` (`merge blocked: required
     before_merge hook '<id>' has no ok envelope for this candidate`): the
     verb never even attempted the merge, so there is nothing to invalidate —

@@ -357,6 +357,21 @@ this section false without touching a byte of it.
   where that verb exits 3. Declaring one state's verbs on the other state's
   page is the self-contradiction the gate makes worst: the page invites answers
   that cannot be carried out and refuses the ones that can.
+  **One stop raises one page.** `runners/orchid-drive` sends every page from
+  the single call site behind the boundary record, because the record is the
+  only thing that de-duplicates them: it is read back and compared field by
+  field, so a condition that persists for a hundred passes raises one blocker.
+  A notify raised anywhere else is compared against nothing. Three arms used to
+  do exactly that — the exhausted-budget arm and the wallclock backstop, each
+  paging a task it was about to block, and the stuck-merge arm, paging a
+  boundary it recorded in the same breath — so one decision reached the
+  operator as two or three `qid`s, each with its own nonce and its own
+  `.answer` file, only one of them carrying the kind's declared set. Answering
+  one says nothing about the others: they stand in `BLOCKERS.md` until
+  `answer_expiry_s` turns them into refusals. A task the driver blocks is now
+  recorded as a `blocked-task` boundary in the same words every later pass over
+  that task recomputes, so the block pages once and the passes after it page
+  not at all.
 - **v1-m4 channels — three explicit actors (round-4 topology fix) — SHIPPED:**
   (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
   access) — `orchid notify` (tier-1) never spawns it directly; it only
