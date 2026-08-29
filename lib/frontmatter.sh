@@ -77,7 +77,14 @@ fm_write_task() {
     echo "orchid: refusing to rewrite $f: the replacement document is unusable ($why) — nothing was written to $f, which is left exactly as it was" >&2
     return 1
   fi
-  mv "$t" "$f"
+  # Checked for the same reason fm_set's is, plus one of its own: an unchecked
+  # `mv` that loses leaves the staged temp file next to the task, and these are
+  # named `<task>.md.fmwrite.XXXXXX` in `.orchid/tasks/` itself.
+  if ! mv "$t" "$f"; then
+    rm -f "$t"
+    echo "orchid: rewriting $f FAILED at the final rename — $f is unchanged, and nothing was written." >&2
+    return 1
+  fi
 }
 
 # fm_set (v1-m3, m2 ledger F9): the second n==1 rule below catches a key
@@ -128,11 +135,18 @@ fm_write_task() {
 # what the operator typed is what the file gets. The key travels the same way:
 # it is caller-supplied too, and there is no reason to leave one operand in a
 # quoting regime the other one needed to escape.
+#
+# BOTH OPERANDS, not just the value. Moving off `-v` removed awk's own refusal
+# of a newline, which is the only thing that ever objected to one in the KEY --
+# `print k ": " v` would now emit it happily, splitting one frontmatter entry
+# across two lines and landing the remainder as a key of its own. That is the
+# same rule broken by the same accident (`task set` takes the key from the
+# command line too), so the guard is written over the pair.
 fm_set() {
   local f="$1" k="$2" v="$3" t=""
-  case "$v" in
+  case "$k$v" in
     *$'\n'*)
-      echo "orchid: refusing to write '$k': task frontmatter is one 'key: value' per line and this value contains a newline. Nothing was written and $f is unchanged. Flatten the value to a single line, or put multi-paragraph text in the task BODY (below the closing '---')." >&2
+      echo "orchid: refusing to write '$k': task frontmatter is one 'key: value' per line and this key or value contains a newline. Nothing was written and $f is unchanged. Flatten the value to a single line, or put multi-paragraph text in the task BODY (below the closing '---')." >&2
       return 1 ;;
   esac
   t="$(mktemp "$f.fmset.XXXXXX")" || return 1
@@ -142,7 +156,18 @@ fm_set() {
     n==1 && index($0,k": ")==1 { print k ": " v; done=1; next }
     n==1 && $0==k":" { print k ": " v; done=1; next }
     { print }' "$f" > "$t" && [ -s "$t" ]; then
-    mv "$t" "$f"
+    # The rename is CHECKED, and its failure is a failure of fm_set. `mv` can
+    # lose (a read-only directory, a full filesystem) and the bare form left
+    # `return 0` to run behind it -- reporting a successful write of a value
+    # that is not in the file, which is the fail-open half of the very defect
+    # this function was rewritten to close. Callers under `set -e` were covered
+    # by errexit; every caller that spells `fm_set ... || rc=$?`, and every test
+    # that sources this library without errexit, was not.
+    if ! mv "$t" "$f"; then
+      rm -f "$t"
+      echo "orchid: setting '$k' in $f FAILED at the final rename — $f is unchanged (it still holds the previous value), and nothing was written." >&2
+      return 1
+    fi
     return 0
   fi
   rm -f "$t"

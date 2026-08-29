@@ -1373,15 +1373,24 @@ rm -f .orchid/reviews/T010-verify.log
 # afterwards.
 # ============================================================================
 make_scratch T034_KEEP
-"$ORCHID_BIN" task create T010 "newline refusal"
-nl_file=".orchid/tasks/T010.md"
-cp "$nl_file" "$T034_KEEP/T010.before"
+# A FRESH id, and a CHECKED create. `task create` refuses an id that already
+# has a file ("task <id> exists"), and this file runs under `set -uo pipefail`
+# with no `-e`: an unchecked create against a taken id neither aborts nor
+# reports, it just leaves the block silently reading whatever the earlier case
+# left behind. T010 is exactly that trap -- the operator_prerequisite fixture
+# above walks it to `testing` -- so the green twin at the end of this block
+# would assert `status: pending` against a task that is not pending, and the
+# byte-identical check would be measuring a file this block never created.
+"$ORCHID_BIN" task create T013 "newline refusal" \
+  || fail "fixture: task create T013 must succeed (a taken id would make every assertion below read another case's task)"
+nl_file=".orchid/tasks/T013.md"
+cp "$nl_file" "$T034_KEEP/T013.before"
 
 # The value an operator actually types: multi-paragraph prose pasted into a
 # long field. `acceptance_criteria` and `hook_guidance` are where this happens,
 # and where losing the content hurts most.
 nl_value="$(printf 'first paragraph of the criteria\n\nsecond paragraph of the criteria')"
-rc=0; nl_out="$("$ORCHID_BIN" task set T010 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
+rc=0; nl_out="$("$ORCHID_BIN" task set T013 acceptance_criteria "$nl_value" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task set with a newline-bearing value must exit NON-ZERO (it used to exit 0 and leave the task file at zero bytes)"
 red_case 'task set with a value containing a newline: refused, non-zero exit'
 assert_match "newline" "$nl_out" "the refusal names the constraint it is enforcing (a newline in a single-line field), rather than reporting a tool error"
@@ -1393,18 +1402,18 @@ assert_match "newline" "$nl_out" "the refusal names the constraint it is enforci
 # line exists to catch would go unreported precisely when it is present.
 grep -qi "awk" <<<"$nl_out" && fail "the refusal must not leak a raw awk error -- that message was the symptom of the file already being gone"
 [ -s "$nl_file" ] || fail "THE FILE IS EMPTY: a refused write destroyed the task, which is the whole defect"
-cmp -s "$T034_KEEP/T010.before" "$nl_file" \
+cmp -s "$T034_KEEP/T013.before" "$nl_file" \
   || fail "a refused newline write must leave the task file BYTE-IDENTICAL"
-assert_eq T010 "$("$ORCHID_BIN" task show T010 | grep '^id: ' | cut -d' ' -f2)" \
+assert_eq T013 "$("$ORCHID_BIN" task show T013 | grep '^id: ' | cut -d' ' -f2)" \
   "and the task is still fully readable after the refusal"
 
 # The GREEN twin, on the same key and the same check: a single-line value is
 # accepted and stored verbatim, so the refusal above is evidence of detection
 # rather than of a guard that rejects every value.
-"$ORCHID_BIN" task set T010 acceptance_criteria "one line of criteria is fine" \
+"$ORCHID_BIN" task set T013 acceptance_criteria "one line of criteria is fine" \
   || fail "a single-line value must still be accepted"
 assert_eq "one line of criteria is fine" \
-  "$("$ORCHID_BIN" task show T010 | grep '^acceptance_criteria: ' | cut -d' ' -f2-)" \
+  "$("$ORCHID_BIN" task show T013 | grep '^acceptance_criteria: ' | cut -d' ' -f2-)" \
   "an accepted single-line value is stored verbatim"
 green_case 'task set with a single-line value: accepted and stored verbatim'
 
@@ -1424,7 +1433,8 @@ assert_match "newline" "$create_nl_out" "the create refusal names the constraint
 # prints nothing and exits 0, which is indistinguishable from a healthy verb
 # answering about a task with nothing in it.
 # ---------------------------------------------------------------------------
-"$ORCHID_BIN" task create T011 "the shape a destroyed task file leaves behind"
+"$ORCHID_BIN" task create T011 "the shape a destroyed task file leaves behind" \
+  || fail "fixture: task create T011 must succeed (see the checked create above for why an unchecked one is silent here)"
 cp ".orchid/tasks/T011.md" "$T034_KEEP/T011.before"
 : > ".orchid/tasks/T011.md"
 [ ! -s ".orchid/tasks/T011.md" ] || fail "fixture: T011.md must be zero bytes for this case to mean anything"
@@ -1451,9 +1461,11 @@ assert_match "no frontmatter" "$show_nofm_out" "task show names the missing fron
 
 # GREEN twin for the read end, in this same file: an intact task file is still
 # printed in full, exit 0.
-show_ok_out="$("$ORCHID_BIN" task show T010)" || fail "task show on a healthy task must still exit 0"
-assert_match "^id: T010$" "$show_ok_out" "task show on a healthy task still prints its frontmatter"
+show_ok_out="$("$ORCHID_BIN" task show T013)" || fail "task show on a healthy task must still exit 0"
+assert_match "^id: T013$" "$show_ok_out" "task show on a healthy task still prints its frontmatter"
 assert_match "^status: pending$" "$show_ok_out" "task show on a healthy task prints the whole document, not just a probe"
+assert_match "^title: newline refusal$" "$show_ok_out" \
+  '...and prints a field the fm_check probe never reads, so show still cats the whole document rather than echoing its probe'
 green_case 'task show against an intact task file: printed in full, exit 0'
 
 # T011 is restored before this file ends. A deliberately damaged task file left

@@ -74,6 +74,18 @@ assert_eq "$lit_before" "$(grep -c '' "$WORK/T004.md")" \
 assert_eq 1 "$(grep -c '^hook_guidance: ' "$WORK/T004.md")" \
   "exactly one hook_guidance line, so the value did not leave a stray remainder behind"
 
+# The KEY is guarded on the same terms, and only this library can guard it:
+# moving off `-v` removed awk's own refusal of a newline, which was the only
+# thing that ever objected to one there. `print k ": " v` would otherwise split
+# a single frontmatter entry across two lines and land the remainder as a key
+# of its own -- the same rule broken by the same accident, since `task set`
+# takes its key off the command line too.
+cp "$WORK/T004.md" "$WORK/T004.keyguard"
+rc=0; key_err="$(fm_set "$WORK/T004.md" "$(printf 'hook_guidance\nsmuggled')" x 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_set must refuse a KEY containing a newline, not write it as two frontmatter lines"
+assert_match "newline" "$key_err" "the key refusal names the same single-line constraint"
+cmp -s "$WORK/T004.keyguard" "$WORK/T004.md" || fail "a refused newline KEY must leave the file byte-identical too"
+
 # An ALREADY-empty target: awk has nothing to print, so the old pipeline
 # "succeeded" over and over against a file with nothing in it. That is why the
 # destruction stayed silent -- every later write reported success too.
