@@ -2001,7 +2001,13 @@ one-pass driver could otherwise stop progressing in silence:
     dispatched, not adopted) and when the filed reviews name fewer distinct
     engines than the plan they replace (adoption may record independence,
     never lower it), so it can settle the dead end without ever settling the
-    independence requirement.
+    independence requirement. Each slot it MOVES is pinned to the qualified
+    engine id that slot's own envelope reported — so a name rebound to another
+    publisher since the round was dispatched cannot leave the re-pinned slot
+    matching nothing — and each slot it does NOT move (one covered by an
+    envelope naming no engine) keeps its pinned key and depth untouched: this
+    verb repairs the slots whose evidence moved, and re-derives nothing about
+    the ones that did not.
   - `orchid jobs review-plan <id> --repin` — rebind the attempt to the live
     routing table, for a pinned slot whose engine can no longer be dispatched
     at all. Slots that already have a review of their own are frozen exactly

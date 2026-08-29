@@ -783,8 +783,9 @@ review_plan_unsatisfied() {
 #     a different `--engine`) is not depth evidence, for the same reason it
 #     does not satisfy that slot above. `orchid jobs review-plan <id>
 #     --adopt-evidence` is the recorded verb that re-pins the plan onto the
-#     engines that actually reviewed -- and it recomputes the depth column
-#     while it does, from the live manifests, at a journaled WRITE.
+#     engines that actually reviewed -- and it derives the depth column from
+#     the live manifests for the slots it MOVES, at a journaled WRITE, while
+#     the frozen columns of any slot it retains are carried across untouched.
 #   - an ANONYMOUS envelope is never depth evidence, however deep the slot it
 #     stands in for. It is credited a slot (refusing that would relaunch one
 #     forever) but depth is a positive claim about what a reviewer could see,
@@ -977,6 +978,16 @@ _review_distinct_count() {
 #     a plan that asked for two different ones -- that is precisely the
 #     same-engine pair the independence policy exists to refuse, and it stays
 #     refused.
+#
+# Two rules govern what the landed rows carry, and both are about not writing
+# down an answer nobody asked for:
+#   - a slot that ADOPTS an envelope is pinned to the qualified id THAT
+#     ENVELOPE reported, whatever the engine's short name happens to be, so
+#     the plan this verb lands can always recognize the evidence it was landed
+#     for; and
+#   - a slot that adopts NOTHING is retained whole -- engine, key and pinned
+#     depth alike. This verb re-pins the slots whose evidence moved; it is not
+#     an occasion to re-derive the frozen columns of the ones that did not.
 review_plan_adopt_evidence_rows() {
   local repo="$1" id="$2" plan filed need n_filed line qid name impl rows i depth
   plan="$(review_plan "$repo" "$id")"
@@ -998,8 +1009,19 @@ review_plan_adopt_evidence_rows() {
   fi
 
   # The named engines, in the order `jobs reconcile` filed them, mapped back
-  # to the plugin names a routing row carries.
-  local named=""
+  # to the plugin names a routing row carries -- and kept as the PAIR
+  # `<qualified-id><TAB><name>`, never as the name alone.
+  #
+  # The id half is the envelope's OWN, and carrying it this far is what makes
+  # the adopted plan able to recognize the evidence it was just re-pinned
+  # onto. Deciding the key by comparing the adopted NAME against the row it
+  # replaces cannot see a REBIND: rebind `oddname` from `acme/other` to
+  # `someone-else/other` and the engine that filed the review has the same
+  # short name as the row being replaced, so a name comparison calls the slot
+  # unchanged, keeps the stale `acme/other` key, and lands a plan whose slot
+  # still matches no filed envelope -- the wedge this verb exists to clear,
+  # left exactly as it was and now recorded as deliberate.
+  local named="" tab=$'\t'
   while IFS= read -r qid; do
     [ -n "$qid" ] || continue
     [ "$qid" != "-" ] || continue
@@ -1007,7 +1029,7 @@ review_plan_adopt_evidence_rows() {
       echo "orchid: $id has a review filed by '$qid', which resolves to no installed engine — its slot cannot be pinned (install or bind that engine, or use --repin)" >&2
       return 1
     }
-    named="$named$name
+    named="$named$qid$tab$name
 "
   done <<< "$filed"
 
@@ -1019,20 +1041,26 @@ review_plan_adopt_evidence_rows() {
   # over ALL evidence and then taking the first two would land A,A -- silently
   # lowering the independence the precheck just claimed to preserve while B
   # sat unused in the third envelope.
-  local selected="" pool="$named" seen=" " selected_n=0
-  while IFS= read -r name; do
-    [ -n "$name" ] || continue
+  #
+  # Distinctness is asked of the NAME half, because that is what the
+  # independence rule counts: two envelopes are the same reviewer when they
+  # name the same engine. The pool is consumed by the WHOLE pair, so one
+  # envelope still satisfies exactly one slot.
+  local selected="" pool="$named" seen=" " selected_n=0 sel
+  while IFS= read -r sel; do
+    [ -n "$sel" ] || continue
+    name="${sel#*"$tab"}"
     case "$seen" in *" $name "*) continue ;; esac
     seen="$seen$name "
-    selected="$selected$name
+    selected="$selected$sel
 "
     selected_n=$(( selected_n + 1 ))
-    pool="$(_review_pool_take "$pool" "$name")" || return 1
+    pool="$(_review_pool_take "$pool" "$sel")" || return 1
     [ "$selected_n" -ge "$want_distinct" ] && break
   done <<< "$named"
-  while [ "$selected_n" -lt "$need" ] && IFS= read -r name; do
-    [ -n "$name" ] || continue
-    selected="$selected$name
+  while [ "$selected_n" -lt "$need" ] && IFS= read -r sel; do
+    [ -n "$sel" ] || continue
+    selected="$selected$sel
 "
     selected_n=$(( selected_n + 1 ))
   done <<< "$pool"
@@ -1043,27 +1071,55 @@ review_plan_adopt_evidence_rows() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     i=$(( i + 1 ))
-    # Slot i takes the i-th selected evidence engine when there is one; slots
-    # left over (covered by an anonymous envelope, which is creditable to any
-    # of them) keep the engine the plan already named. The label is re-derived,
-    # never carried over: an adopted engine that is the implementer's own, or
-    # one a slot above already holds, is degraded independence and has to say
-    # so -- the same two rules `review_routing` labels by.
-    eng="$(printf '%s\n' "$selected" | sed -n "${i}p")"
-    [ -n "$eng" ] || eng="$(printf '%s' "$line" | cut -f2)"
-    # A slot that ADOPTS a new engine takes that engine's key, resolved here
-    # from the evidence being adopted. A slot that keeps the engine it was
-    # already pinned to keeps its pinned KEY too, rather than having it
-    # re-derived: nothing about that row moved, and re-resolving it is exactly
-    # the live read this column exists to stop.
-    qid=""
-    [ "$eng" != "$(printf '%s' "$line" | cut -f2)" ] || qid="$(printf '%s' "$line" | cut -s -f5)"
-    [ -n "$qid" ] || qid="$(review_engine_qid "$eng")"
+    # Slot i ADOPTS the i-th selected envelope when there is one: its engine,
+    # and the qualified id THAT ENVELOPE reported, which is the key the
+    # matching will credit it by. The two travel together out of `named`
+    # above, so the row can never be pinned to an id the evidence does not
+    # carry -- not even when the adopted engine's short name is spelled
+    # exactly like the one the row already held.
+    #
+    # A slot with no evidence of its own to adopt -- one covered by an
+    # anonymous envelope, which is creditable to any remaining slot -- is
+    # RETAINED: it keeps the engine the plan named, the key it was pinned
+    # with, and its pinned DEPTH. Nothing about such a row moved, so
+    # re-deriving either frozen column from the live manifests here is the
+    # very read the pin exists to stop; an operator who uninstalls a plugin or
+    # edits one `capabilities=` line between filing and adopting would
+    # otherwise have this verb write the withdrawal down durably, and the
+    # remedy for a wedged plan would quietly shallow a round it did not touch.
+    # A column a LEGACY row does not carry at all is the one exception, derived
+    # here exactly as `review_plan_pinned` derives it: there is no frozen claim
+    # to keep, and it is bounded to plans pinned before that column existed.
+    #
+    # An ADOPTED row's depth is derived live, and that is right for exactly
+    # this row: the slot is taking on an engine the plan never routed to, so
+    # there is no frozen claim about it to preserve, and this is a journaled
+    # write recording what the slot is being re-pinned to.
+    sel="$(printf '%s\n' "$selected" | sed -n "${i}p")"
+    if [ -n "$sel" ]; then
+      qid="${sel%%"$tab"*}"
+      eng="${sel#*"$tab"}"
+      depth="$(review_engine_depth "$eng")"
+    else
+      eng="$(printf '%s' "$line" | cut -f2)"
+      qid="$(printf '%s' "$line" | cut -s -f5)"
+      [ -n "$qid" ] || qid="$(review_engine_qid "$eng")"
+      depth="$(printf '%s' "$line" | cut -s -f4)"
+      case "$depth" in
+        worktree|inline) ;;
+        *) depth="$(review_engine_depth "$eng")" ;;
+      esac
+    fi
+    # The label is re-derived for every row, never carried over: an adopted
+    # engine that is the implementer's own, or one a slot above already holds,
+    # is degraded independence and has to say so -- the same two rules
+    # `review_routing` labels by. It is a statement about the table being
+    # written, not a frozen claim about a round already dispatched, so it is
+    # the one column a retained row does not keep.
     label="engine-independent"
     case "$used" in *" $eng "*) label="session-independent" ;; esac
     [ "$eng" != "$impl" ] || label="session-independent"
     used="$used$eng "
-    depth="$(review_engine_depth "$eng")"
     rows="$rows$(printf '%s\t%s\t%s\t%s\t%s' "$i" "$eng" "$label" "$depth" "$qid")
 "
   done <<< "$plan"

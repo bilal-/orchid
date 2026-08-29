@@ -388,6 +388,20 @@ review_plan_row_valid "$(printf 'slot-one\tagy\tengine-independent\tinline')" \
   && fail "a non-numeric slot is refused"
 review_plan_row_valid "$(printf '1\t\tengine-independent\tinline')" \
   && fail "a row naming no engine is refused"
+# ...and the EMPTY-ENGINE GUARD is reached on its own, which the row above
+# does not do. `read` with IFS=<tab> treats tabs as IFS WHITESPACE, so the
+# empty column there collapses into a single delimiter and every field shifts
+# one place left: `engine-independent` lands in the engine slot, `inline` in
+# the label slot, and it is the DEPTH check that fires. The row above is
+# therefore a true assertion about that INPUT and no assertion at all about
+# the guard -- which is the shape this suite exists to keep out of itself.
+# A row truncated before its engine is what actually arrives with nothing in
+# that column, and it must be refused too, or the driver would dispatch a
+# reviewer slot it cannot name.
+review_plan_row_valid '1' \
+  && fail "a row that is nothing but a slot number names no engine, and the engine guard itself must refuse it"
+review_plan_row_valid "$(printf '1\tagy')" \
+  && fail "...and a row truncated after its engine claims no independence label, so it is refused too"
 review_plan_row_valid "$(printf '1\tagy\tprobably-independent\tinline')" \
   && fail "an unrecognized independence label is refused"
 review_plan_row_valid 'jq: error: null (null) has no keys' \
@@ -652,4 +666,115 @@ assert_eq approve "$(decision_of L01)" \
   "the review that was actually dispatched and filed keeps its slot: a later rebind is not evidence about it"
 assert_eq 0 "$(review_plan_depth_count "$(printf '1\toddname\tengine-independent\tworktree\tacme/other')" someone-else/other)" \
   "and the fail-closed converse: whoever holds the name today cannot inherit the slot -- the key names the engine that was asked"
+unset ORCHID_ENGINES_DIR
+
+# ===========================================================================
+# M -- `--adopt-evidence` PINS WHAT IT ADOPTED, AND LEAVES ALONE WHAT IT DID
+# NOT.
+#
+# Parts K and L froze both columns at the `--pin` write. This Part is the
+# OTHER writer. `--adopt-evidence` is the recorded exit for a plan that no
+# longer fits its evidence, so a live read taken here lands at the one moment
+# an operator is trying to leave that dead end -- and writes its answer down
+# durably rather than merely computing it. Two rules, one per direction:
+#
+#   THE SLOTS IT MOVES take the qualified id the ADOPTED ENVELOPE reported.
+#   Deciding that by comparing the adopted engine's short NAME against the row
+#   it replaces cannot see a REBIND, because the name is identical on both
+#   sides: the row keeps the id of the publisher who used to hold that name,
+#   matches no envelope at all, and the task stays wedged in exactly the state
+#   the verb was run to clear -- now with a fresh journal entry saying it was
+#   repaired.
+#
+#   THE SLOTS IT DOES NOT MOVE keep their frozen columns. A slot covered by an
+#   anonymous envelope has nothing of its own to adopt and is retained as it
+#   stands, so re-deriving its depth from the installed manifests here would
+#   let an edit to one `capabilities=` line, made long after that round was
+#   dispatched, be written into the pin by the very verb repairing it.
+# ===========================================================================
+export ORCHID_ENGINES_DIR="$WORK/engM"; mkdir -p "$ORCHID_ENGINES_DIR"
+repoM="$WORK/repoM"; mkdir -p "$repoM/.orchid/tasks" "$repoM/.orchid/reviews"
+MCAND=5555555555555555555555555555555555555555
+# `review.medium` names oddname explicitly: a qualified id whose publisher
+# prefix cannot be stripped and round-tripped back to a bound name is mapped
+# by walking the chains this task could have been routed to, and that walk is
+# the path the rebind case below exercises.
+printf 'role.implementer=deepimpl2
+role.reviewer=plainrev
+review.medium=oddname,plainrev,deeprev
+' > "$repoM/orchid.config"
+
+mk_m_task() {  # <id> -- a medium-tier task on attempt 1 with a candidate
+  printf -- '---\nschema: 1\nid: %s\nstatus: arbitrating\narchetype: feature\nattempts: 0\nrisk_tier: medium\nblocking_severity: high\ncandidate_sha: %s\n---\nbody\n' \
+    "$1" "$MCAND" > "$repoM/.orchid/tasks/$1.md"
+}
+mk_m_review() {  # <id> <suffix> <qualified-engine-id|->
+  jq -n --arg jid "j-adopt-$1$2" --arg task "$1" --arg cand "$MCAND" --arg e "$3" \
+    '{contract:1, job_id:$jid, task:$task, operation:"review", status:"ok",
+      verdict:"approve", scope_complete:true, summary:"adoption fixture",
+      candidate_sha:$cand, findings:[]}
+     + (if $e == "-" then {} else {engine:$e} end)' \
+    > "$repoM/.orchid/reviews/$1-a1-reviewer$2.json"
+}
+mk_engine deepimpl2 test/deepimpl2 structured_text,workspace_read,workspace_write,shell,git
+mk_engine plainrev  test/plainrev  structured_text
+
+# --- M1, THE REBIND. The plan was pinned while `oddname` was acme/other's.
+# --- By the time the operator reaches for the remedy the name belongs to a
+# --- different publisher, and the review on disk was filed by the new holder.
+mk_engine oddname acme/other structured_text,workspace_read
+mk_m_task M01
+review_plan_store "$repoM" M01 \
+  "$(printf '1\toddname\tengine-independent\tworktree\n2\tplainrev\tengine-independent\tinline\n')" \
+  || fail "fixture: M01's plan must pin"
+assert_eq acme/other "$(jq -r '.slots[0].qid' "$repoM/.orchid/reviews/M01-a1.review-plan.json")" \
+  "fixture: the round was pinned while oddname resolved to acme/other"
+
+mk_engine oddname someone-else/other structured_text,workspace_read
+assert_eq someone-else/other "$(review_engine_qid oddname)" \
+  "premise: the SHORT NAME did not move -- only the publisher behind it did, which is precisely what a name comparison cannot see"
+mk_m_review M01 "" someone-else/other
+mk_m_review M01 ".2" test/plainrev
+assert_eq 1 "$(review_plan_unsatisfied "$repoM" M01 "$(review_plan "$repoM" M01)" | cut -f1)" \
+  "premise: slot 1's pinned key matches no filed envelope, so the task is wedged and --adopt-evidence is its recorded exit"
+red_case 'a rebind of the engine name a slot was pinned to leaves the review that slot dispatched matching no slot at all'
+
+adoptM="$(review_plan_adopt_evidence_rows "$repoM" M01)" \
+  || fail "--adopt-evidence must accept a round whose envelopes name as many distinct installed engines as the plan routes"
+assert_eq "$(printf '1\toddname\tengine-independent\tworktree\tsomeone-else/other\n2\tplainrev\tengine-independent\tinline\ttest/plainrev')" \
+  "$adoptM" \
+  "the adopted slot is pinned to the id its OWN envelope reported, never to the id the row carried before the rebind"
+review_plan_store "$repoM" M01 "$adoptM" || fail "the adopted table must land"
+assert_eq "" "$(review_plan_unsatisfied "$repoM" M01 "$(review_plan "$repoM" M01)")" \
+  "and the wedge is gone: both slots are now credited by evidence already on disk"
+green_case 'adopting that evidence re-pins the slot onto the qualified id the filed envelope reported, which clears the wedge'
+
+# --- M2, THE SLOT IT DOES NOT MOVE. A degraded plan -- one engine, two slots,
+# --- which is what an install with too few engines is routed -- covered by one
+# --- attributable review and one envelope that names no engine. The anonymous
+# --- one is creditable to any slot, so slot 2 has nothing of its own to adopt.
+mk_engine deeprev test/deeprev structured_text,workspace_read
+assert_eq worktree "$(review_engine_depth deeprev)" \
+  "fixture: deeprev really is worktree-capable at the moment its round is pinned, so the pinned claim is honest"
+mk_m_task M02
+review_plan_store "$repoM" M02 \
+  "$(printf '1\tdeeprev\tengine-independent\tworktree\n2\tdeeprev\tsession-independent\tworktree\n')" \
+  || fail "fixture: M02's degraded two-slot plan must pin"
+mk_m_review M02 "" test/plainrev
+mk_m_review M02 ".2" "-"
+
+# The manifest is edited AFTER that round was dispatched and its reviews were
+# filed. Nothing about either review changed.
+mk_engine deeprev test/deeprev structured_text
+assert_eq inline "$(review_engine_depth deeprev)" \
+  "premise: a live capability read now answers inline, so a verb that re-derived depth here would write that answer into the pin"
+
+adoptM2="$(review_plan_adopt_evidence_rows "$repoM" M02)" \
+  || fail "--adopt-evidence must accept a degraded plan covered by one named and one anonymous review"
+assert_eq "$(printf '1\tplainrev\tengine-independent\tinline\ttest/plainrev\n2\tdeeprev\tengine-independent\tworktree\ttest/deeprev')" \
+  "$adoptM2" \
+  "the RETAINED slot keeps the depth AND the key it was pinned with; only the slot that actually adopted an envelope is derived afresh"
+review_plan_store "$repoM" M02 "$adoptM2" || fail "the adopted table must land"
+assert_eq 1 "$(review_plan_depth_count "$(review_plan "$repoM" M02)" test/deeprev)" \
+  "...so a review filed by the engine that slot was dispatched to is still credited its depth: repairing the slots that moved must not shallow the ones that did not"
 unset ORCHID_ENGINES_DIR

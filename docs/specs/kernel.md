@@ -1015,7 +1015,9 @@ rejected. The inline slot did this four times in one run.
    positive claim, and there is nothing to attribute it to) and a review
    from an engine the plan never routed to (`--adopt-evidence` is the
    recorded verb that re-pins a plan onto the engines that actually
-   reviewed, recomputing the depth column at that journaled write).
+   reviewed; it pins each moved slot to the qualified id that slot's own
+   envelope reported and derives that slot's depth at the journaled write,
+   while a slot it does not move keeps its pinned key and depth unchanged).
    Resolving the row's bare NAME at judging time was the same mistake one
    join earlier: a rebound or uninstalled name stops resolving to the id its
    own filed envelope reports, so the review loses its slot and its depth
