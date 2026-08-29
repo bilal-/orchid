@@ -164,8 +164,9 @@ if [ "${1:-}" = --inbound-probe ]; then
   #   1. the rows naming the configured channel -- the best evidence there is,
   #      and when there is any, it is the ONLY evidence considered
   #   2. failing that, the rows naming the gateway itself, then the rows whose
-  #      LABEL is a status word, then the first line -- judged in that order
-  #      until one of them determines something
+  #      LABEL is a status word, then -- only if it names no subject of its
+  #      own -- the first line, judged in that order until one of them
+  #      determines something
   #
   # STEP 1 IS EXCLUSIVE, NOT MERELY FIRST-RANKED, and that is a choice with a
   # visible cost: output that names the channel only in an ENUMERATION
@@ -219,14 +220,34 @@ if [ "${1:-}" = --inbound-probe ]; then
     # them determines anything, the status-LABEL rows are judged next.
     #
     # The label set is fixed and contains no platform name, so a per-platform
-    # row (`discord: disconnected`) still cannot reach this tier and condemn a
+    # row (`discord: disconnected`) cannot reach the label tier and condemn a
     # channel it says nothing about -- which is the property step 1 above
     # exists to protect.
+    #
+    # AND THE LAST-RESORT TIER IS HELD TO THAT SAME PROPERTY, which is why the
+    # first line is admitted CONDITIONALLY rather than always. Output with no
+    # channel row, no gateway row and no status label still deserves a reading
+    # -- a `gateway status` that answers with the bare word `running` has said
+    # something -- but appending the first line unconditionally hands the
+    # verdict to whatever happens to be printed first, and on this CLI nobody
+    # here has ever observed that is as likely to be a sibling platform's row
+    # as the gateway's own state. `discord: disconnected` would then read as
+    # "the channel carrying telegram is NOT up" (a false alarm about a row that
+    # never mentions telegram), and `discord: connected` as REACHABLE -- the
+    # worse of the two errors, and the exact invention step 1 is exclusive to
+    # prevent, arrived at through the back door. So a first line that NAMES
+    # something -- a `<word>:` or `<word>=` row whose label the tier above
+    # already declined to recognize -- is not judged at all; it is only quoted
+    # back with the undetermined verdict below. A line with no such label
+    # names nothing but the thing being asked about, and is judged.
     probe_rows="$(grep -iE -e '(^|[^[:alnum:]_-])gateway([^[:alnum:]_-]|$)' <<<"$probe_out" || true)"
     probe_labels="$(grep -iE -e '^[^[:alnum:]]*(active|status|state|health|service|gateway)[[:space:]]*[:=]' <<<"$probe_out" || true)"
-    probe_rows="$(printf '%s\n%s\n%s\n' "$probe_rows" "$probe_labels" "$probe_first" | grep -v '^[[:space:]]*$' || true)"
+    probe_bare="$probe_first"
+    if grep -qE -e '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*[:=]' <<<"$probe_first"; then
+      probe_bare=""
+    fi
+    probe_rows="$(printf '%s\n%s\n%s\n' "$probe_rows" "$probe_labels" "$probe_bare" | grep -v '^[[:space:]]*$' || true)"
   fi
-  [ -n "$probe_rows" ] || probe_rows="$probe_first"
 
   probe_channel_lower="$(printf '%s' "$probe_channel" | tr '[:upper:]' '[:lower:]')"
   probe_judged=""
@@ -293,7 +314,12 @@ if [ "${1:-}" = --inbound-probe ]; then
       exit 0
     fi
   done <<<"$probe_rows"
-  echo "hermes's gateway status line for channel '$probe_channel' is not one this probe recognizes: $probe_judged"
+  # `${probe_judged:-$probe_first}`: when NOTHING was judgeable -- the tiers
+  # above admitted no row at all, because the only thing printed named some
+  # other subject -- the operator is still owed the line this probe was
+  # looking at. Quoting it is not the same as judging it, and it is the whole
+  # difference between "I could not read this" and a verdict invented from it.
+  echo "hermes's gateway status line for channel '$probe_channel' is not one this probe recognizes: ${probe_judged:-$probe_first}"
   exit 2
 fi
 

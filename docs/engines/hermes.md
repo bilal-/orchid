@@ -326,8 +326,14 @@ evidence considered — judging the whole output instead would let one
 unrelated platform's row condemn a healthy return leg. When it does not, the
 rows naming the gateway itself are judged, then the rows whose **label** is a
 status word (`Active:`, `Status:`, `State:`, `Health:`, `Service:`,
-`Gateway:`), then the first line — each in turn until one of them actually
-determines something.
+`Gateway:`), then — only when it names no subject of its own — the first
+line, each in turn until one of them actually determines something. "Names no
+subject of its own" means it is not a `<word>:` or `<word>=` row whose label
+the tier above already declined to recognize: a bare `running` is read, a
+`discord: disconnected` is not, because on this CLI whatever is printed first
+is as likely to be a sibling platform's row as the gateway's own state, and a
+row that never mentions your channel must not decide your channel's return
+leg — in either direction.
 
 That first step is *exclusive*, not merely first-ranked, and it has a visible
 consequence worth knowing before you file it as a bug. Output that names your
@@ -367,8 +373,10 @@ Picking the gateway row and taking its silence for the whole answer reported
 UNDETERMINED for a return leg that is plainly up — on the deployment shape a
 long-running gateway most commonly has. The label tier is a fixed set of
 status words and contains no platform name, so a per-platform row
-(`discord: disconnected`) still cannot reach it and condemn a channel it says
-nothing about. `inactive` is in the negative vocabulary for the same reason:
+(`discord: disconnected`) cannot reach it and condemn a channel it says
+nothing about — and the first-line tier above is restricted to unlabelled
+lines so that same row cannot get there either, by being printed first.
+`inactive` is in the negative vocabulary for the same reason:
 it is the whole word a service manager reports a stopped unit with.
 
 One deliberate difference from openclaw's probe: `openclaw channels status`

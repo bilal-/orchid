@@ -337,6 +337,31 @@ assert_eq "0" "$probe_rc" "an unrelated platform's row is not a status label and
 probe telegram "$(printf '* hermes-gateway.service - Hermes Gateway\n   Active: active (running) since Mon 2026-08-24 09:14:02 UTC\n   telegram: disconnected\n')" 0
 assert_eq "1" "$probe_rc" "the configured channel's own row still decides, even under a healthy service-managed header"
 
+# THE LAST-RESORT TIER, and the subject it may not borrow. Output carrying no
+# channel row, no gateway row and no status label still deserves a reading --
+# a `gateway status` answering with the bare word `running` has said
+# something, and refusing to read it would report UNDETERMINED for output that
+# could not be plainer.
+probe telegram "running" 0
+assert_eq "0" "$probe_rc" "output that is nothing but a state word is that state -- the first line is the last-resort tier and it does determine"
+probe telegram "not running" 0
+assert_eq "1" "$probe_rc" "...and the same tier reads the negation as the outage, not as the word inside it"
+# ...but that tier is held to the SAME property step 1 is exclusive for. The
+# first line is only admitted when it names no subject of its own: a
+# `<word>:` row whose label the status-label tier above already declined to
+# recognize names something else, and on a CLI nobody here has ever observed
+# it is as likely to be a sibling platform's row as the gateway's own state.
+# Admitting it unconditionally hands the verdict to whatever happens to be
+# printed first -- which is how a row that never mentions the configured
+# channel ends up deciding that channel's return leg. Both directions, because
+# the two errors are not equal and the worse one is the second:
+probe telegram "discord: disconnected" 0
+assert_eq "2" "$probe_rc" "a sibling platform's row must not condemn a channel it says nothing about, even when it is the only line printed"
+assert_match "not one this probe recognizes" "$probe_out" "the probe says it could not read the output rather than borrowing another channel's verdict"
+assert_match "discord: disconnected" "$probe_out" "and still quotes the line it was looking at -- quoting is not judging"
+probe telegram "discord: connected" 0
+assert_eq "2" "$probe_rc" "and the worse error is refused the same way: a sibling platform being up is not this channel's return leg being up"
+
 # No channel configured, and no CLI at all: both undetermined, both saying so.
 probe_rc=0
 probe_out="$(PATH="$PROBEBIN:$PATH" ORCHID_NOTIFY_CHANNEL="" "$SEND" --inbound-probe 2>&1)" || probe_rc=$?
