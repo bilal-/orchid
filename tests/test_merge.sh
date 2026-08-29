@@ -1303,3 +1303,35 @@ printf 'integration_branch=orchid/integration\n' > "$cfgnew/orchid.config"
 if cfg_clean "$cfgnew"; then
   fail "an untracked orchid.config read as clean -- git diff is silent about a path HEAD does not carry, and the merge that adds one would overwrite the only copy of it"
 fi
+
+# --- (I6) an IGNORED orchid.config, and the report that has to name it -----
+# The precondition asks `ls-files --others` WITHOUT `--exclude-standard` on
+# purpose, so an ignored orchid.config counts as somebody's file and is
+# refused like any other. That widening binds the REPORT as well, and this is
+# where the two can silently come apart: a plain `git status --porcelain` says
+# nothing at all about an ignored path, so the one case the precondition was
+# widened to catch would be the one `orchid merge` warns about with an empty
+# `Pending:` list -- telling the operator their file was preserved and leaving
+# them no name to look for it under.
+#
+# What is pinned here is that coupling, at the level it lives at: the refusal,
+# the blindness that makes the naive report wrong, and the shorthand the merge
+# actually passes. The warning's own wording is driven end to end by
+# tests/test_stale_root.sh check 10d, over a tracked edit -- the shape a real
+# orchid root has, since `orchid.config` is meant to be committed (`orchid
+# config commit`). This arm is the ignored twin of that check's premise.
+printf 'orchid.config\n' > "$cfgnew/.gitignore"
+git -C "$cfgnew" add .gitignore
+git -C "$cfgnew" commit -q -m "cfg probe: this repository ignores its config"
+
+if cfg_clean "$cfgnew"; then
+  fail "an IGNORED orchid.config read as clean -- ignoring a file is not consenting to have it overwritten, and this is the merge's only chance to decline"
+fi
+# The blindness itself, asserted rather than assumed: without this the check
+# below is just two git invocations agreeing, and there would be nothing to
+# show that the flag `orchid merge` passes is load-bearing.
+assert_eq "" "$(git -C "$cfgnew" status --porcelain -- orchid.config)" \
+  "test premise: a plain porcelain status is silent about an ignored path -- if it ever stops being, the flag below is no longer what makes the warning able to name this file"
+assert_match "orchid\.config" \
+  "$(git -C "$cfgnew" status --porcelain --ignored -- orchid.config)" \
+  "the shorthand 'orchid merge' reports a preserved config in must name the file in exactly the case the precondition was widened to refuse -- a warning that says a file was kept and does not say which is not a warning"

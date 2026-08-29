@@ -715,11 +715,34 @@ if [ "$rc" -eq 0 ]; then
       # Their edit, in `git status` shorthand so an UNTRACKED orchid.config
       # (`??`) is reported as plainly as a modified one; both are edits this
       # merge must not touch, and only one of them appears in a `git diff`.
+      #
+      # `--ignored`, because the precondition above and this report have to be
+      # able to see the SAME file. orchid_config_committed_clean asks
+      # `ls-files --others` WITHOUT `--exclude-standard` on purpose -- an
+      # ignored orchid.config is still somebody's only copy -- and a plain
+      # `git status --porcelain` is silent about exactly that file. Without
+      # this flag the one case the precondition was widened to catch is the
+      # one the warning names nothing for: "Pending: " with an empty list,
+      # about a file the operator cannot then find. Nothing else moves; an
+      # ignored path is the only status shorthand this adds.
+      #
       # Fails CLOSED to a literal `?` rather than to an empty string: a git
       # that cannot answer must still leave the operator a warning that names
       # something.
-      config_dirty_before="$(git -C "$repo" status --porcelain -- orchid.config 2>/dev/null | tr '\n' ' ')" \
+      config_dirty_before="$(git -C "$repo" status --porcelain --ignored -- orchid.config 2>/dev/null | tr '\n' ' ')" \
         || config_dirty_before="? "
+      # ...and belt-and-braces on the same rule, because the two commands are
+      # not the same command: the precondition refused on evidence THIS one may
+      # still not carry (a future shape neither anticipates, a git that answered
+      # one and not the other). Whatever happened, the warning never goes out
+      # naming nothing.
+      #
+      # A single `?`, deliberately not the porcelain `??`: this arm is reached
+      # only when the file could not be characterised, and inventing "untracked"
+      # for it would state a fact about the operator's checkout that nothing
+      # here established. It names the path and says the status is unknown,
+      # which is exactly what is true.
+      [ -n "$config_dirty_before" ] || config_dirty_before="? orchid.config "
     fi
     # Open the advance-then-refresh window BEFORE the CAS, so no instant
     # exists in which this checkout's index is behind its HEAD and nothing

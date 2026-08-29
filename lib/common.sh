@@ -940,6 +940,14 @@ _orchid_refresh_one_path() {
 # `--others` WITHOUT `--exclude-standard`, on purpose. An ignored orchid.config
 # is still somebody's file; the cost of treating it as one is a warning nobody
 # needed, and the cost of the other reading is their only copy.
+#
+# THAT CHOICE BINDS THE CALLER'S REPORT TOO. A caller that refuses here and
+# then describes what it refused over must be able to see the same file: a
+# plain `git status --porcelain` is silent about an ignored path, so the one
+# case this line was widened to catch would be the one the operator is told
+# nothing about. `orchid merge` passes `--ignored` for that reason. Widening
+# what counts as an edit and leaving the report where it was is how a
+# preserved file becomes an unfindable one.
 orchid_config_committed_clean() {
   local root="$1"
   [ -z "$(git -C "$root" diff --name-only HEAD -- orchid.config 2>/dev/null || echo '?')" ] || return 1

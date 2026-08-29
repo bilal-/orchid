@@ -1274,10 +1274,17 @@ and tells you which:
   is knowable: no verb downstream compares a working config against its
   branch, so nothing else will ever mention it.
 
+"Pending" is wider than "modified": an `orchid.config` that is *untracked*
+here — including one your `.gitignore` covers — is somebody's only copy of it
+too, so it is preserved and reported on the same terms. The warning names it
+in `git status` shorthand for that reason, since the `diff` below is silent
+about a path `HEAD` does not carry.
+
 In the second case, look at both sides before you do anything:
 
 ```sh
-git -C <root> diff HEAD -- orchid.config          # yours
+git -C <root> diff HEAD -- orchid.config          # yours, if it is tracked
+git -C <root> status --porcelain --ignored -- orchid.config   # ...and if it is not
 git -C <root> show orchid/integration:orchid.config   # the branch's
 ```
 
