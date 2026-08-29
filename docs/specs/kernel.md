@@ -931,8 +931,13 @@ engine-independent reviewer (default agy inline); if NO engine-independent
 reviewer is available, the resolver falls back to session independence
 LABELED AND JOURNALED as such — never silently. `medium`/`high` → dual
 review (worktree-capable for depth + engine-independent for diversity).
-Two-engine installs are "degraded independence": medium accepts labeled
-session independence; high queues for engine independence.
+Two-engine installs are "degraded independence": `medium` and `high` alike
+accept labeled session independence rather than withhold a slot. Routing
+never waits for a better reviewer to become available — no such branch
+exists, and refusing at the routing end is the alternative "Review depth"
+below records as REJECTED. A slot that cannot be filled independently, or
+cannot be filled deeply, is filled and labeled; the shortfall is judged over
+the EVIDENCE, at arbitration.
 **The routing table is pinned per attempt.** Routing is computed from engine
 health, so reading it twice can give two different tables — and a review
 already filed against the first one then belongs to no slot in the second.

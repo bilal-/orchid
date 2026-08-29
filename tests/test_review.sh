@@ -412,17 +412,30 @@ unset ORCHID_ENGINES_DIR
 # whole paragraph, which would take the labeled-fallback guarantee (which is
 # real, and load-bearing) down with the queueing claim (which never was). So
 # each file is also held to stating what the kernel actually does.
+#
+# docs/specs/kernel.md is held to the SAME rule, and it is the one that
+# matters most: it is the NORMATIVE file, and it is where this task records
+# the routing-end refusal as a rejected alternative. A spec asserting the
+# queueing branch in its Independence paragraph and rejecting it sixteen
+# lines later in "Review depth" contradicts itself, and a reader has no way
+# to tell which half is current. Scanning only the two narrative files would
+# have left exactly that.
 # ===========================================================================
 readme_folded="$(tr '\n' ' ' < "$REPO_ROOT/README.md" | tr -s '[:space:]' ' ')"
 arch_folded="$(tr '\n' ' ' < "$REPO_ROOT/docs/architecture.md" | tr -s '[:space:]' ' ')"
+kernel_folded="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/kernel.md" | tr -s '[:space:]' ' ')"
 queue_claim='`?high`?( risk)? (instead )?queues'
 
 grep -Eq "$queue_claim" <<< "$readme_folded" \
   && fail "README.md says high-risk review QUEUES for a better reviewer; no such branch exists (Part I), and refusing at the routing end is the alternative docs/specs/kernel.md records as rejected"
 grep -Eq "$queue_claim" <<< "$arch_folded" \
   && fail "docs/architecture.md says high-risk review QUEUES for a better reviewer; no such branch exists (Part I), and refusing at the routing end is the alternative docs/specs/kernel.md records as rejected"
+grep -Eq "$queue_claim" <<< "$kernel_folded" \
+  && fail "docs/specs/kernel.md's Independence paragraph still says high queues for engine independence -- the normative spec cannot assert the branch its own 'Review depth' section records as REJECTED"
 
 grep -Fq 'both accept a labeled session-independent fallback' <<< "$readme_folded" \
   || fail "README.md must still describe the labeled session-independent fallback both tiers really take -- the queueing claim is to be CORRECTED, not deleted along with the guarantee that replaces it"
 grep -Fq 'Routing never withholds a slot' <<< "$arch_folded" \
   || fail "docs/architecture.md must state that routing fills and labels a slot rather than withholding it, or the diagram's degraded-independence branch has nothing behind it"
+grep -Fq 'accept labeled session independence rather than withhold a slot' <<< "$kernel_folded" \
+  || fail "docs/specs/kernel.md must state what BOTH tiers really do with degraded independence -- deleting the sentence would drop the labeled-fallback guarantee along with the queueing claim"
