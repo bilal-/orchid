@@ -220,9 +220,12 @@ schedule_dispatch_blockers() {
 # THIS task right now: the number of `attempts` at which the driver stops
 # retrying and hands the task to a human. The SINGLE home for that number,
 # for the same reason schedule_dispatch_blockers is the single home for the
-# dispatch predicates: `runners/orchid-drive` enforces it and `orchid task
-# retry`/`orchid task unblock` report against it, and two copies of a cap
-# drift the moment one of them is made configurable.
+# dispatch predicates: `runners/orchid-drive` enforces it on a verify failure,
+# `libexec/orchid-merge` enforces it on a `gate_failed` merge (T007 -- that one
+# verb owns the charge and the edge that follows it in a single transaction, so
+# it cannot hand the comparison back to the driver mid-way), and `orchid task
+# retry`/`orchid task unblock` report against it. Four callers, one number:
+# two copies of a cap drift the moment one of them is made configurable.
 #
 # Two layers, most specific first:
 #

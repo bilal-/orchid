@@ -20,6 +20,37 @@ The command runs Bash syntax, ShellCheck at warning severity, the full test
 suite, and then calls out invariant and documentation suites explicitly. It
 needs only Bash 3.2+, Git, jq, and ShellCheck; it reads no repository secrets.
 
+This repository also names that command as its `merge_gate` in `orchid.config`,
+so `orchid merge` runs it on the merged tree before advancing the integration
+branch — every task, whether or not its own `verification_commands` mentions
+it. That is the whole point of the key: a repo-wide check each task has to opt
+into only reaches the tasks whose author remembered it (docs/configuration.md,
+`merge_gate`). Three consequences for a contributor here:
+
+- **The gate is `--no-tests`, and that is not a weakening.** `orchid merge`
+  has already run the task's own suite on that same merged tree by the time
+  the gate fires, so the gate adds the half no task's suite ever contained —
+  Bash syntax, the ShellCheck exception policy, the portability gates, and
+  ShellCheck itself. Repeating the test suite there would cost a second full
+  run per merge and tell nobody anything new. `--no-tests` stops right after
+  ShellCheck and prints `CI PASS (static checks only; --no-tests)`. Hosted CI
+  and your own pre-push run still take the flagless form: the whole thing.
+  Note what that leaves standing, though: "the task's own suite" is whatever
+  that task's `verification_commands` named, which is often two or three files
+  rather than `tests/run.sh`. The gate raises the *static* floor for every
+  task; how much *testing* a given merge got is still up to whoever wrote the
+  task. Run the flagless form before you push, because a merge will not run it
+  for you.
+- **ShellCheck is now load-bearing for merging, not just for CI.** Without it
+  installed, this script exits 1, and so does every merge.
+- **The nesting is guarded, and the guard is why this script exports
+  `ORCHID_MERGE_GATE_ACTIVE`.** This suite exercises `orchid merge`, and
+  `orchid merge` runs this script, so without a marker the two would call each
+  other forever. `orchid merge` sets it around the gate command; this script
+  sets it for a direct run. Don't clear it — `tests/test_ci_release.sh` asserts
+  both that it reaches the processes this script spawns and that nothing here
+  unsets it.
+
 ## ShellCheck exceptions
 
 The baseline is zero warnings. Fix a finding unless ShellCheck cannot see a

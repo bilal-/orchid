@@ -1250,6 +1250,49 @@ out of it, or to recover — prefix it:
 ORCHID_ALLOW_STALE_ROOT=1 orchid status
 ```
 
+### `orchid.config` after a merge, when orchid runs from this checkout
+
+The refusal above never fires over `orchid.config`, and the kernel refresh
+never restores one you are part-way through editing. But that file is *read*
+by every verb — `merge_gate`, `verify`, `concurrency`, the role bindings — so
+a merge that lands a change to it would otherwise leave this checkout
+resolving pre-merge values indefinitely, with nothing anywhere saying so. A
+repository that adopts a `merge_gate` and then never runs it is the sharpest
+version of that.
+
+So a merge that changed the committed `orchid.config` does one of two things,
+and tells you which:
+
+* **Nothing here to lose** — your copy was byte-identical to `HEAD` in the
+  working tree and the index, and no untracked file sat at that path. The
+  merged configuration is made live, and the merge prints
+  `refreshed <root>/orchid.config to <branch>`. From that moment the branch's
+  values are the ones every verb resolves.
+* **You had a pending edit** — it is left exactly as you wrote it, nothing is
+  overwritten, and the merge warns on stderr that the merged configuration is
+  *not* live here, naming what is pending. This is the only moment that fact
+  is knowable: no verb downstream compares a working config against its
+  branch, so nothing else will ever mention it.
+
+"Pending" is wider than "modified": an `orchid.config` that is *untracked*
+here — including one your `.gitignore` covers — is somebody's only copy of it
+too, so it is preserved and reported on the same terms. The warning names it
+in `git status` shorthand for that reason, since the `diff` below is silent
+about a path `HEAD` does not carry.
+
+In the second case, look at both sides before you do anything:
+
+```sh
+git -C <root> diff HEAD -- orchid.config          # yours, if it is tracked
+git -C <root> status --porcelain --ignored -- orchid.config   # ...and if it is not
+git -C <root> show orchid/integration:orchid.config   # the branch's
+```
+
+Then keep whatever you want kept, in one file. **Do not run `orchid config
+commit` first**: that verb commits the bytes on disk here, so committing an
+unreconciled file lands a configuration that drops the change the merge just
+made. Merge the branch's change into your copy, *then* commit it.
+
 ### Unstaging is not free: it can hide a genuinely stale kernel
 
 That `git reset` is safe for your *bytes* and unsafe for your *detection*, and

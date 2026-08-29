@@ -506,13 +506,37 @@ case "$sub" in
     # charge the failed round while taking the universal escape hatch to
     # `blocked`; it is not a general counter-writing option.
     #
+    # THE `merging` PAIR (T007) IS THE SAME OPTION FOR THE OTHER EXEMPTION.
+    # `merging -> rework` charges nothing by default -- see the `to = rework`
+    # arm below, where the exemption and its reason live -- and that exemption
+    # has exactly one caller for which it is wrong: a repo-wide `merge_gate`
+    # that is red. A red gate on an unchanged repository is red on the next
+    # round too, so an uncharged edge makes that loop unbounded: dispatch,
+    # implement, verify, review, merge, red gate, rework, forever, with the
+    # counter that is supposed to stop it never moving. `orchid merge` opts
+    # THAT one failure into the charge (and into `blocked` once the charge
+    # exhausts the budget), which is why both `merging` destinations are
+    # admitted here. Every other `merging -> rework` -- a merge conflict, a
+    # rebase conflict, `validation_failed` -- passes no flag and keeps the
+    # exemption exactly as it was.
+    #
+    # An OPT-IN rather than a rule about reasons, deliberately: the kernel
+    # would otherwise have to decide which merge failures cost a round by
+    # reading the prose in `--reason`, and a counter driven by string matching
+    # is one rewording away from charging a merge conflict.
+    #
     # Validate the complete shape before any write. In particular it cannot be
     # combined with the semantic opposite (`--waive-attempt`) and cannot turn
-    # an arbitrary operator block into an attempt charge.
+    # an arbitrary operator block into an attempt charge. Written as a `case`
+    # on the whole edge rather than as an `&&`/`||` chain: under `set -e` the
+    # chained form is a bare failing command on the refusing path, which dies
+    # with no message where this one dies with the legal pairs named.
     if [ "$charge" -eq 1 ]; then
       [ "$waive" -eq 0 ] || orchid_die "--charge-attempt cannot be combined with --waive-attempt"
-      [ "$from" = testing ] && [ "$to" = blocked ] || \
-        orchid_die "--charge-attempt is only valid for testing -> blocked"
+      case "$from:$to" in
+        testing:blocked|merging:rework|merging:blocked) ;;
+        *) orchid_die "--charge-attempt is only valid for testing -> blocked, merging -> rework or merging -> blocked (got $from -> $to)" ;;
+      esac
     fi
     # v1-m2 Task 5 (keyed on active-status, not literally on `to=implementing`,
     # per final-review Finding 1): the kernel-side dispatch gate. Applies on
@@ -784,6 +808,15 @@ case "$sub" in
     if ! schedule_is_active_status "$from" && schedule_is_active_status "$to"; then
       fm_set "$f" started_at "$(now)"
     fi
+    # `merging -> rework` is exempt from the charge BY DEFAULT and not by
+    # rule: this candidate was independently verified once already, so a merge
+    # conflict, a rebase conflict or a revalidation failure is not a fresh
+    # round of the implementer's work. `--charge-attempt` is the one way past
+    # that exemption, validated above, and `orchid merge` passes it on exactly
+    # one arm -- a red repo-wide `merge_gate`, the one merge failure that
+    # repeats identically until somebody outside this task acts. The charge
+    # itself is made by the shared block further down, never here, so the
+    # exemption and the opt-in cannot end up charging the same round twice.
     if [ "$to" = rework ]; then
       if [ "$from" != merging ]; then
         if [ "$waive" -eq 1 ]; then
@@ -892,7 +925,18 @@ case "$sub" in
     # cannot claim a different charge in prose than the one frontmatter gets.
     if [ "$charge" -eq 1 ]; then
       charge_n=$(( $(fm_get "$f" attempts) + 1 ))
-      reason="candidate attempt #$charge_n charged while blocking: $reason"
+      # The prefix says what the charge DID, and the two admitted destinations
+      # did different things: `blocked` stops the run for a human, `rework`
+      # sends the task round again with one fewer round left. A single
+      # "charged while blocking" over both would put the word "blocking" on
+      # every journal line of a task that was not blocked -- and this line is
+      # the operator's whole record of why the counter moved, since the number
+      # itself is kernel-derived and the caller cannot state it.
+      if [ "$to" = blocked ]; then
+        reason="candidate attempt #$charge_n charged while blocking: $reason"
+      else
+        reason="candidate attempt #$charge_n charged on $from -> $to: $reason"
+      fi
     fi
     if [ -n "$reason" ]; then
       kind=intervention

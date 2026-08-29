@@ -560,3 +560,1013 @@ assert_eq 0 "$rc" "re-run after the acknowledgement, merge proceeds normally"
 [ -f "$sentinel8" ] || fail "...and NOW the suite actually runs"
 assert_eq "done" "$("$ORCHID_BIN" task show T041 | grep '^status: ' | cut -d' ' -f2)" \
   "the task reaches done -- the gate delayed the merge, it did not derail it"
+# ---------------------------------------------------------------------------
+# T007: the repo-wide `merge_gate`.
+#
+# The defect this covers is r-001's, not a hypothetical: `scripts/ci-local.sh`
+# existed for the whole run and only two of eight tasks named it in their own
+# `verification_commands`, because that field is authored per task. So the
+# things asserted below are, in order, the things that were missing — the gate
+# reaches a task that never opted in; a RED gate stops the integration ref
+# rather than merely printing; and the nesting the first two create
+# terminates.
+#
+# Every scenario here deliberately uses a CHEAP gate command (`ls`), never the
+# repository's real suite. The gate's content is not what is under test — its
+# reach, its authority over the ref, and its recursion behaviour are.
+#
+# The fixture task ids continue from T008 above rather than restarting: T007
+# and T008 are already spent on the T030 re-derivation scenarios, and reusing
+# either would inherit that task's status and branch instead of walking a
+# fresh one.
+#
+# `unset`, not `export ...=`: this file runs inside `scripts/ci-local.sh` in
+# CI, which sets the recursion marker for exactly the reason section (C)
+# below exercises. With it inherited, every gate here would correctly skip
+# and (A) and (B) would assert nothing at all — a green suite proving the
+# opposite of what it claims, which is the shape of the original defect.
+# ---------------------------------------------------------------------------
+unset ORCHID_MERGE_GATE_ACTIVE
+
+gate_marker="$WORK/gate-ran.txt"
+: > "$gate_marker"
+
+# `ls` is the gate body throughout: it exits 0, and it writes the merged
+# tree's own file list into the marker, so "the gate ran" and "the gate ran
+# against the merged tree rather than the candidate branch or the repo root"
+# are the same assertion.
+gate_pass="ls >> $gate_marker"
+# The red body also prints ONE gcc-shaped diagnostic, which is not decoration:
+# the routing half of this feature (see "(B, continued)") is that a gate
+# failure has to arrive in the next brief as a LOCATION, and a gate that
+# failed silently could not tell a working carry from a broken one.
+gate_diag='lib/example.sh:12: SC2086: Double quote to prevent globbing.'
+gate_fail="ls >> $gate_marker; echo '$gate_diag'; exit 3"
+
+set_gate() {  # rewrite orchid.config; an EMPTY argument means "no merge_gate key"
+  {
+    echo "integration_branch=$integ"
+    [ -z "$1" ] || echo "merge_gate=$1"
+  } > orchid.config
+}
+
+# --- (A) a task that never opted in is gated anyway, and a green gate lets
+# the merge through -------------------------------------------------------
+set_gate "$gate_pass"
+
+"$ORCHID_BIN" task create T009 "gated without opting in"
+git checkout -q -b task/T009 "$integ"
+echo nine > feature9.txt && git add feature9.txt && git commit -q -m "feature 9"
+cand9="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base9="$(git rev-parse "$integ")"
+
+# The whole point of the scenario: this task's own verification_commands says
+# nothing whatsoever about the gate.
+walk_to_merging T009 task/T009 "$base9" "$cand9" "test -f feature9.txt"
+vc9="$("$ORCHID_BIN" task show T009 | grep '^verification_commands: ' | cut -d' ' -f2-)"
+assert_eq "test -f feature9.txt" "$vc9" "task's own verification_commands never names the gate"
+
+rc=0; "$ORCHID_BIN" merge T009 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "green gate -> merge still exits 0"
+assert_eq "done" "$("$ORCHID_BIN" task show T009 | grep '^status: ' | cut -d' ' -f2)" "green gate -> task reaches done"
+assert_match "feature9\.txt" "$(cat "$gate_marker")" "gate RAN, and ran against the merged tree (its listing carries the candidate's file)"
+
+log9=".orchid/reviews/T009-merge.log"
+assert_match "^gate: ls >> " "$(cat "$log9")" "merge evidence records the gate command"
+assert_match "^gate_status: ran$" "$(cat "$log9")" "merge evidence records that the gate ran"
+assert_match "^== merge_gate: ls >> " "$(cat "$log9")" "the gate's output is captured into the log body under its own banner"
+assert_match "^exit: 0$" "$(cat "$log9")" "the log still ends in the single exit: line lib/findings.sh keys on"
+assert_eq "exit: 0" "$(tail -n1 "$log9")" "gate output never displaces the trailing exit: line"
+
+# WHERE THE GATE COMMAND CAME FROM, which is the other half of "no task can
+# switch it off". Task frontmatter cannot, because nothing reads it -- but a
+# candidate is a TREE, and a tree carries an orchid.config of its own. If
+# `orchid merge` resolved the gate against the merged tree in $wt rather than
+# against the repository, a candidate could ship a one-line config naming a
+# gate that trivially passes and be judged by it: the floor lowered by the
+# very change it is there to judge.
+#
+# This scenario already settles it, and only a witness was missing. The
+# fixture's orchid.config is written into the working tree at the top of this
+# file and never `git add`ed, so it is in NO commit -- the merged tree
+# contains no orchid.config at all. A gate resolved from that tree would have
+# found nothing and run nothing, and the assertions above would all have
+# failed. So assert the witness explicitly, because it is a property of the
+# fixture rather than of the code and a later `git add` in an unrelated
+# scenario would retire this proof silently, leaving the assertions still
+# green and no longer about anything. (`orchid start` is the one verb that
+# would do it -- it commits orchid.config onto the integration branch on
+# purpose -- and this file never calls it. In a repository that HAS been
+# started, the merged tree carries an orchid.config and the same property
+# rests instead on config_get being asked for $repo: that is the claim the
+# assertion below pins, and the absence above is only what makes this fixture
+# able to show it.)
+git show "$integ:orchid.config" >/dev/null 2>&1 \
+  && fail "fixture invariant broken: orchid.config is TRACKED, so the merged tree carries one too and scenario (A) no longer shows the gate came from the repository rather than from the candidate"
+assert_eq "gate: $gate_pass" "$(grep '^gate: ' "$log9")" \
+  "the gate that ran is verbatim the REPOSITORY's configured command -- resolved from repo config, not from the tree being merged"
+
+# --- (B) a RED gate blocks: the integration ref does not move -------------
+# The candidate's OWN suite passes here. Anything that stops this merge is
+# therefore the gate and nothing else — and (B2) below closes that argument
+# by re-merging the very same candidate with the gate removed.
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T010 "red gate must block"
+git checkout -q -b task/T010 "$integ"
+echo ten > feature10.txt && git add feature10.txt && git commit -q -m "feature 10"
+cand10="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base10="$(git rev-parse "$integ")"
+
+walk_to_merging T010 task/T010 "$base10" "$cand10" "test -f feature10.txt"
+
+pre_integ10="$(git rev-parse "$integ")"
+rc=0; "$ORCHID_BIN" merge T010 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red gate -> merge exits 1"
+assert_eq rework "$("$ORCHID_BIN" task show T010 | grep '^status: ' | cut -d' ' -f2)" "red gate -> task returns to rework"
+post_integ10="$(git rev-parse "$integ")"
+assert_eq "$pre_integ10" "$post_integ10" "red gate -> integration ref is EXACTLY where it was"
+git show "$integ:feature10.txt" >/dev/null 2>&1 \
+  && fail "red gate -> the candidate's file must NOT be on the integration branch"
+assert_match "gate_failed" "$(cat .orchid/journal.md)" "gate failure journals its own reason, distinct from validation_failed"
+
+log10=".orchid/reviews/T010-merge.log"
+assert_match "^gate_status: ran$" "$(cat "$log10")" "merge evidence records that the gate ran"
+assert_match "^exit: 3$" "$(cat "$log10")" "the gate's own exit status is what the log carries"
+
+# (B, continued) THE ROUTING HALF, asserted here rather than after (B2)
+# because it is a statement about the state the FAILED merge just left behind.
+# It is also the reason this task lands after T010 rather than before it. Once
+# the gate fires for every task its failures become the rework
+# path for every task — and a `file:line: RULE:` location is not actionable by
+# an implementer that cannot run the linter that produced it (lesson L017). So
+# it is not enough that the gate blocks: its own diagnostics have to reach the
+# body the next implementer is handed. lib/findings.sh scrapes the SAME
+# `<id>-merge.log` this verb just wrote, and the gate's output is appended to
+# that log's captured body ahead of the same trailing `exit:` line findings.sh
+# keys on — asserted here end to end rather than argued in a comment, because
+# every part of that sentence is a thing a later edit could quietly break: the
+# banner could be written after the `exit:` line, the gate could get a log of
+# its own, or the sha binding could stop matching.
+body10="$(cat .orchid/tasks/T010.md)"
+assert_match "$gate_diag" "$body10" \
+  "the RED GATE's own location reaches the next implementer's brief — not just the log it cannot open"
+assert_match "orchid:rework-brief candidate=$cand10" "$body10" \
+  "and it arrives bound to the candidate that failed, in a real brief block"
+
+# (B2) same candidate, gate removed -> it merges. This is what makes (B) a
+# statement about the GATE rather than about some incidental property of
+# T010: with nothing else changed, dropping the gate is sufficient to let the
+# identical tree through.
+set_gate ""
+walk_to_merging T010 task/T010 "$base10" "$cand10" "test -f feature10.txt"
+rc=0; "$ORCHID_BIN" merge T010 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "same candidate merges once the gate is removed -> the gate was the only blocker"
+assert_eq "done" "$("$ORCHID_BIN" task show T010 | grep '^status: ' | cut -d' ' -f2)" "ungated re-merge reaches done"
+log10b=".orchid/reviews/T010-merge.log"
+grep -q '^gate' "$log10b" && fail "no gate configured -> the log carries no gate lines at all"
+
+# --- (C) the recursion guard --------------------------------------------
+# The loop this closes: merge -> gate -> the repository's suite -> a test that
+# runs `orchid merge` -> that merge's gate -> the suite again. The marker is
+# set by `orchid merge` in the gate's own environment (and by
+# scripts/ci-local.sh for a direct run), so the INNER merge declines to open a
+# second level. Exercised here by standing in for that inner merge directly:
+# same red gate as (B), which blocked; with the marker set it must not.
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T011 "recursion guard"
+git checkout -q -b task/T011 "$integ"
+echo eleven > feature11.txt && git add feature11.txt && git commit -q -m "feature 11"
+cand11="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base11="$(git rev-parse "$integ")"
+
+walk_to_merging T011 task/T011 "$base11" "$cand11" "test -f feature11.txt"
+
+marker_before11="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0
+ORCHID_MERGE_GATE_ACTIVE=1 "$ORCHID_BIN" merge T011 >"$WORK/merge11.out" 2>&1 || rc=$?
+assert_eq 0 "$rc" "nested merge -> the gate is skipped, so the red gate cannot block it"
+assert_eq "done" "$("$ORCHID_BIN" task show T011 | grep '^status: ' | cut -d' ' -f2)" "nested merge still reaches done"
+marker_after11="$(wc -l < "$gate_marker" | tr -d ' ')"
+assert_eq "$marker_before11" "$marker_after11" "nested merge did not EXECUTE the gate (marker unchanged)"
+
+# A skip must never be silent — a marker left set in some ambient environment
+# would otherwise disable the gate everywhere while every merge reported a
+# pass, which is the original defect with the fix's name on it.
+log11=".orchid/reviews/T011-merge.log"
+assert_match "^gate: ls >> " "$(cat "$log11")" "a skipped gate is still named in the evidence"
+assert_match "^gate_status: skipped-nested$" "$(cat "$log11")" "the evidence says the gate was skipped, not that it passed"
+assert_match "merge_gate skipped" "$(cat "$WORK/merge11.out")" "the skip is announced, not silent"
+
+# --- (D) no gate configured is a total no-op ------------------------------
+# T001-T008 above all ran with no `merge_gate` key and behaved exactly as they
+# always did; this makes that an assertion of its own rather than an
+# incidental property of the other coverage, in the same spirit as the
+# hook.before_merge regression further up.
+set_gate ""
+"$ORCHID_BIN" task create T012 "no gate configured"
+git checkout -q -b task/T012 "$integ"
+echo twelve > feature12.txt && git add feature12.txt && git commit -q -m "feature 12"
+cand12="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base12="$(git rev-parse "$integ")"
+
+walk_to_merging T012 task/T012 "$base12" "$cand12" "test -f feature12.txt"
+marker_before12="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T012 >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" "unconfigured gate -> merge proceeds unchanged (exit 0)"
+assert_eq "done" "$("$ORCHID_BIN" task show T012 | grep '^status: ' | cut -d' ' -f2)" "unconfigured gate -> task still reaches done"
+assert_eq "$marker_before12" "$(wc -l < "$gate_marker" | tr -d ' ')" "unconfigured gate -> nothing was executed"
+
+# --- (E) the one dedup made in code: a red task suite skips the gate ------
+# libexec/orchid-merge makes exactly one deduplication, and it is not
+# textual: when the task's own suite has ALREADY failed, the gate is not run,
+# because the merge is going to `rework` either way and running it buys
+# nothing the next round would not produce. The gate configured here is the
+# RED one, which is what lets this scenario tell "skipped" apart from "ran,
+# and the suite merely won the race for the exit code": had the gate run, the
+# marker would have grown and the journal would say gate_failed. Neither may
+# happen — the failure is the suite's own, and it must be reported as such,
+# because a `gate_failed` here would send the next rework brief chasing a
+# gate that never executed.
+set_gate "$gate_fail"
+
+suite_red="$WORK/suite-goes-red.flag"
+"$ORCHID_BIN" task create T013 "red suite pre-empts the gate"
+git checkout -q -b task/T013 "$integ"
+echo thirteen > feature13.txt && git add feature13.txt && git commit -q -m "feature 13"
+cand13="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base13="$(git rev-parse "$integ")"
+
+# Green at walk time (INV-11's real `orchid verify` must pass to reach
+# `merging`), red at merge time: the flag appears in between, so the merge's
+# own run of the suite is the first one to fail.
+walk_to_merging T013 task/T013 "$base13" "$cand13" "test ! -f $suite_red"
+: > "$suite_red"
+
+pre_integ13="$(git rev-parse "$integ")"
+marker_before13="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T013 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red suite -> merge exits 1"
+assert_eq rework "$("$ORCHID_BIN" task show T013 | grep '^status: ' | cut -d' ' -f2)" "red suite -> task returns to rework"
+assert_eq "$pre_integ13" "$(git rev-parse "$integ")" "red suite -> integration ref untouched"
+assert_eq "$marker_before13" "$(wc -l < "$gate_marker" | tr -d ' ')" "red suite -> the gate was not EXECUTED (marker unchanged)"
+
+log13=".orchid/reviews/T013-merge.log"
+assert_match "^gate: ls >> " "$(cat "$log13")" "a suite-skipped gate is still named in the evidence"
+assert_match "^gate_status: skipped-suite-failed$" "$(cat "$log13")" "the evidence says the suite's failure pre-empted the gate"
+assert_eq "exit: 1" "$(tail -n1 "$log13")" "the log carries the SUITE's exit status, never the skipped gate's 3"
+
+# The routing half, scoped to THIS task's journal entries — the run-wide
+# journal already carries validation_failed from the earlier plain red-suite
+# scenario, so matching the whole file would prove nothing.
+journal13="$("$ORCHID_BIN" journal show --task T013)"
+assert_match "validation_failed" "$journal13" "red suite journals validation_failed"
+grep -q "gate_failed" <<<"$journal13" \
+  && fail "red suite must NOT journal gate_failed — the gate never ran"
+
+# --- (F) EVIDENCE ATTRIBUTION: one log, two commands, one of them guilty ---
+# `orchid merge` now writes TWO commands' output into a single
+# `<id>-merge.log`, and lib/findings.sh scrapes that log for the locations it
+# puts in front of the next implementer. The characteristic failing shape is
+# the one where the two DISAGREE — a green task suite followed by a red gate —
+# and before the header carried a per-command status there was nothing in the
+# file that could tell them apart: the trailing `exit:` line says the MERGE
+# failed, which was a complete answer only while a log held one command.
+#
+# Two costs, and the second is the one that bites. The brief gets a passing
+# run's chatter under a heading saying a failing gate reported it; and because
+# FINDINGS_MAX_LINES caps the quoted list in LOG ORDER, with the suite's
+# output first, a chatty green suite spends the whole cap and pushes the
+# gate's real locations out of the brief entirely. So the suite below prints
+# MORE than that cap: without the fix the brief contains twenty noise lines, a
+# truncation notice, and not one word from the gate.
+#
+# Asserted in both directions, because a filter that simply dropped everything
+# above the banner would pass the first half and silently lose a red suite's
+# own evidence — which is the failing shape (E) leaves behind, and (F2) is
+# that same log read back.
+noisy="$WORK/noisy-suite.sh"
+cat > "$noisy" <<'NOISY'
+#!/usr/bin/env bash
+# More than FINDINGS_MAX_LINES of perfectly well-formed, location-shaped
+# output. Nothing about these lines is malformed — the shape rules in
+# lib/findings.sh are meant to quote exactly this. Whether they SHOULD is a
+# question about whose output it is, which only the recorded status answers.
+i=1
+while [ "$i" -le 25 ]; do
+  echo "tests/task-suite.sh:$i: SC9999: printed by the task suite itself"
+  i=$((i + 1))
+done
+NOISY
+noise_pat="printed by the task suite itself"
+
+# --- (F1) green suite + red gate: the brief quotes the GATE ----------------
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T014 "green suite, red gate"
+git checkout -q -b task/T014 "$integ"
+echo fourteen > feature14.txt && git add feature14.txt && git commit -q -m "feature 14"
+cand14="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base14="$(git rev-parse "$integ")"
+
+walk_to_merging T014 task/T014 "$base14" "$cand14" "bash $noisy && test -f feature14.txt"
+
+pre_integ14="$(git rev-parse "$integ")"
+rc=0; "$ORCHID_BIN" merge T014 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "green suite + red gate -> merge exits 1"
+assert_eq "$pre_integ14" "$(git rev-parse "$integ")" "green suite + red gate -> integration ref untouched"
+
+log14=".orchid/reviews/T014-merge.log"
+log14_body="$(cat "$log14")"
+assert_match "^command_status: 0$" "$log14_body" "the header records the TASK SUITE's own exit status, separately"
+assert_match "^gate_status: ran$" "$log14_body" "...and that the gate ran"
+assert_match "^gate_exit: 3$" "$log14_body" "...and the gate's own exit status, separately from the merge's"
+assert_eq "exit: 3" "$(tail -n1 "$log14")" "the trailing exit: line still carries the MERGE's status"
+# The log is the record and keeps everything. Attribution happens where the
+# evidence is READ, never by throwing half of it away at the write — an
+# operator opening this file must still see what the suite printed.
+assert_match "$noise_pat" "$log14_body" "the log itself retains the passing suite's output in full"
+
+body14="$(cat .orchid/tasks/T014.md)"
+assert_match "orchid:rework-brief candidate=$cand14" "$body14" "a brief is written for the failed candidate"
+assert_match "$gate_diag" "$body14" \
+  "the brief carries the RED GATE's location — the one actionable line in the log"
+grep -q "$noise_pat" <<<"$body14" \
+  && fail "the brief must NOT quote the output of a command the header records as having PASSED — those locations were reported by nothing"
+grep -q "further diagnostic line(s)" <<<"$body14" \
+  && fail "the passing suite's 25 lines must not have spent the FINDINGS_MAX_LINES cap: the truncation notice means the gate's own locations were pushed out of the brief"
+
+# --- (F2) red suite: its output IS the evidence ----------------------------
+# Same script, same noise, gate still configured red — but now the suite
+# fails, so the gate never runs and every one of those lines is the failing
+# command's own. They must be carried. This is what makes (F1) an assertion
+# about the recorded STATUS rather than about position in the file.
+set_gate "$gate_fail"
+
+suite_red2="$WORK/suite2-goes-red.flag"
+"$ORCHID_BIN" task create T015 "red suite keeps its own evidence"
+git checkout -q -b task/T015 "$integ"
+echo fifteen > feature15.txt && git add feature15.txt && git commit -q -m "feature 15"
+cand15="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base15="$(git rev-parse "$integ")"
+
+walk_to_merging T015 task/T015 "$base15" "$cand15" "bash $noisy; test ! -f $suite_red2"
+: > "$suite_red2"
+
+rc=0; "$ORCHID_BIN" merge T015 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red suite -> merge exits 1"
+
+log15=".orchid/reviews/T015-merge.log"
+log15_body="$(cat "$log15")"
+assert_match "^command_status: 1$" "$log15_body" "the header records the suite's own non-zero status"
+assert_match "^gate_status: skipped-suite-failed$" "$log15_body" "the gate did not run"
+grep -q '^gate_exit: ' <<<"$log15_body" \
+  && fail "a gate that never executed must publish no exit status — gate_rc is 0 by initialisation, and printing it would read as a pass"
+
+body15="$(cat .orchid/tasks/T015.md)"
+assert_match "orchid:rework-brief candidate=$cand15" "$body15" "a brief is written for the failed candidate"
+assert_match "tests/task-suite\.sh:1: SC9999: $noise_pat" "$body15" \
+  "the RED suite's own locations are carried — the filter keys on the recorded status, not on being above the banner"
+assert_match "further diagnostic line\(s\)" "$body15" \
+  "and the cap still applies to them, still announced rather than silently truncated"
+
+# --- (F3) the classifier's OWN arms, over hand-built logs ------------------
+# (F1) and (F2) drive the two shapes a real `orchid merge` can produce. They
+# cannot reach the rest of what lib/findings.sh promises, because the only
+# writer of these headers is the verb that also decides which command runs:
+# `orchid merge` skips the gate when the suite failed, always writes the
+# banner it named in `gate:`, and always writes both statuses as shell
+# integers. So every arm that is about a log which does NOT hold together --
+# and every arm that is about the day that skip rule changes -- is reachable
+# from here and nowhere else.
+#
+# Worth reaching, because the cost is asymmetric and silent. This function
+# decides what the next implementer is SHOWN. A wrong "keep" is noise in a
+# brief; a wrong "drop" is the failing gate's only actionable locations
+# deleted on the way to the one actor asked to fix them, under a heading that
+# still says a gate reported something. Nothing downstream can tell that
+# happened -- the log on disk is complete either way.
+#
+# Hand-built logs, deliberately: the arms below are precisely the ones the
+# real writer cannot emit, so a fixture built by running a merge could not
+# express them. The two contrast arms -- (F3a), and the first arm of (F3f) --
+# are what keep the rest from being vacuous: a function that answered "keep
+# everything" to every log, or a predicate that answered "not a gate failure"
+# to every log, would satisfy every negative arm below.
+attrib_out() { ( source "$REPO_ROOT/lib/findings.sh"; findings_failing_output "$1" ); }
+attrib_gate() { ( source "$REPO_ROOT/lib/findings.sh"; findings_log_gate_failed "$1" ); }
+
+# --- (F3a) the canonical split, asked of the function directly -------------
+# The (F1) shape: green suite, red gate, banner present and matching. The
+# whole output is compared rather than grepped, so the header passing through
+# unchanged and the BANNER being consumed are pinned alongside the split
+# itself -- a banner left in the body would reach a brief as a finding.
+cat > "$WORK/log-split.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+sha: 1111111111111111111111111111111111111111
+candidate: 2222222222222222222222222222222222222222
+cwd: /tmp/wt
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: 3
+---
+suite/one.sh:1: printed by the passing suite
+
+== merge_gate: run-the-gate
+gate/two.sh:2: printed by the failing gate
+exit: 3
+LOG
+assert_eq "date: 2026-01-01T00:00:00Z
+sha: 1111111111111111111111111111111111111111
+candidate: 2222222222222222222222222222222222222222
+cwd: /tmp/wt
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: 3
+---
+gate/two.sh:2: printed by the failing gate
+exit: 3" "$(attrib_out "$WORK/log-split.txt")" \
+  "the header passes through whole, the passing suite's half goes, the failing gate's half stays, and the banner is consumed rather than quoted as a finding"
+
+# --- (F3b) the header promises a boundary the body does not carry ----------
+# THE ARM WITH THE WORST FAILURE. The header says a gate ran and went red; the
+# body holds no banner naming the command `gate:` recorded (here because the
+# two disagree -- equally: a `gate:` line lost to a truncated write, or a
+# writer that stopped emitting the banner). Nothing in the file says where one
+# command's output ends, so NEITHER half can be attributed -- and a `keep`
+# decision made from the suite's green status would then delete the gate's
+# locations along with it, leaving a brief that quotes nothing at all from the
+# log that most needed quoting.
+cat > "$WORK/log-noboundary.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+sha: 1111111111111111111111111111111111111111
+candidate: 2222222222222222222222222222222222222222
+cwd: /tmp/wt
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: 3
+---
+suite/one.sh:1: printed by the passing suite
+== merge_gate: some-other-command
+gate/two.sh:2: printed by the failing gate
+exit: 3
+LOG
+noboundary_out="$(attrib_out "$WORK/log-noboundary.txt")"
+assert_match "gate/two\.sh:2: printed by the failing gate" "$noboundary_out" \
+  "an unlocatable boundary keeps the gate's output -- what cannot be attributed must not be deleted, and this is the half a green suite's status would otherwise take with it"
+assert_match "suite/one\.sh:1: printed by the passing suite" "$noboundary_out" \
+  "...and keeps the suite's half beside it, because 'I cannot tell which of these is which' is the answer, not 'therefore the green one'"
+
+# --- (F3c) a status field that says nothing readable ----------------------
+# `x + 0` is 0 in awk, so a bare compare-against-zero reads every unparseable
+# status as a PASS and throws that command's output away. A field this shape
+# is not a claim that anything passed.
+cat > "$WORK/log-badstatus.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+command_status: x
+---
+suite/one.sh:1: printed by a suite whose status is unreadable
+exit: 1
+LOG
+assert_match "suite/one\.sh:1: printed by a suite whose status is unreadable" \
+  "$(attrib_out "$WORK/log-badstatus.txt")" \
+  "an unreadable command_status keeps the output -- 'this says it passed' and 'this says nothing I can read' must not be the same answer"
+
+# ...and the same rule on the gate's own field. `command_status: 0` IS
+# readable here, so the suite's half still goes: this pins that the guard is
+# per-field rather than a blanket give-up on the whole log.
+cat > "$WORK/log-badgateexit.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: not-a-number
+---
+suite/one.sh:1: printed by the passing suite
+== merge_gate: run-the-gate
+gate/two.sh:2: printed by a gate whose status is unreadable
+exit: 1
+LOG
+badgate_out="$(attrib_out "$WORK/log-badgateexit.txt")"
+assert_match "gate/two\.sh:2: printed by a gate whose status is unreadable" "$badgate_out" \
+  "an unreadable gate_exit keeps the gate's output too"
+grep -q "printed by the passing suite" <<<"$badgate_out" \
+  && fail "the suite's status was perfectly readable and said 0 -- one unreadable field must not turn the whole log into 'keep everything', or the attribution stops meaning anything"
+
+# --- (F3d) a red suite and a GREEN gate -----------------------------------
+# `orchid merge` cannot produce this today: it skips the gate when the suite
+# has already failed. It is pinned because it is the shape that proves the
+# split is driven by the two RECORDED statuses rather than by position -- a
+# filter that kept everything above the banner, or everything below it, passes
+# (F3a) and fails here. The day that skip rule changes, this arm is what
+# already holds.
+cat > "$WORK/log-inverse.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+command_status: 1
+gate: run-the-gate
+gate_status: ran
+gate_exit: 0
+---
+suite/one.sh:1: printed by the failing suite
+== merge_gate: run-the-gate
+gate/two.sh:2: printed by the passing gate
+exit: 1
+LOG
+inverse_out="$(attrib_out "$WORK/log-inverse.txt")"
+assert_match "suite/one\.sh:1: printed by the failing suite" "$inverse_out" \
+  "the RED suite's half is kept even though it is the half above the banner"
+grep -q "printed by the passing gate" <<<"$inverse_out" \
+  && fail "a gate the header records as having exited 0 reported nothing, so its output must not be quoted to an implementer as though it had"
+
+# --- (F3e) a single-command log is untouched ------------------------------
+# `orchid verify`'s log, and every merge log written before these fields
+# existed. It classifies nothing, so nothing may be removed from it.
+cat > "$WORK/log-verify.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+---
+suite/one.sh:1: printed by a verify run
+exit: 1
+LOG
+assert_eq "date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+---
+suite/one.sh:1: printed by a verify run
+exit: 1" "$(attrib_out "$WORK/log-verify.txt")" \
+  "a log with no per-command classification in it is passed through byte for byte -- the T007 fields are additive, and an older log must read exactly as it did"
+
+# --- (F3f) findings_log_gate_failed: what it will and will not claim ------
+# The predicate `runners/orchid-drive` calls to decide whether to tell a human
+# the REPOSITORY is red -- and, at the cap, whether to raise an operator
+# boundary. It is the mirror image of the function above: that one keeps what
+# it cannot classify, this one claims nothing it cannot read.
+attrib_gate "$WORK/log-split.txt" \
+  || fail "test bug: a log that plainly records a gate that RAN and exited 3 must read as a gate failure, or every negative arm below is vacuous"
+
+cat > "$WORK/log-gate-green.txt" <<'LOG'
+gate: run-the-gate
+gate_status: ran
+gate_exit: 0
+---
+exit: 0
+LOG
+attrib_gate "$WORK/log-gate-green.txt" \
+  && fail "a gate that ran and exited 0 is not a gate failure"
+
+cat > "$WORK/log-gate-nan.txt" <<'LOG'
+gate: run-the-gate
+gate_status: ran
+gate_exit: boom
+---
+exit: 1
+LOG
+attrib_gate "$WORK/log-gate-nan.txt" \
+  && fail "an unreadable gate_exit must not become the claim 'this repository's gate is red' -- and a numeric compare against it is a shell ERROR, which in a set -e driver is a dead pass rather than a no"
+
+cat > "$WORK/log-gate-skipped.txt" <<'LOG'
+gate: run-the-gate
+gate_status: skipped-nested
+gate_exit: 3
+---
+exit: 3
+LOG
+attrib_gate "$WORK/log-gate-skipped.txt" \
+  && fail "a gate recorded as SKIPPED did not fail, whatever else the header carries: the status is asked first, and a skip that read as a failure would charge an attempt for a gate that never executed"
+
+# The impersonation arm, and the reason both statuses live in the header. This
+# log's header states NO gate status at all; the only `gate_status: ran` and
+# `gate_exit: 3` in the file are in captured OUTPUT -- a test echoing them, a
+# suite printing a merge log of its own. Parsing stops at the `---`, so they
+# are text and not a classification. Written with the header silent rather
+# than merely disagreeing, because a header that disagreed would answer this
+# correctly by accident: the predicate exits at the FIRST `gate_status:` it
+# sees, so only an absent one makes the `---` stop the thing being tested.
+cat > "$WORK/log-gate-impostor.txt" <<'LOG'
+gate: run-the-gate
+---
+gate_status: ran
+gate_exit: 3
+exit: 0
+LOG
+attrib_gate "$WORK/log-gate-impostor.txt" \
+  && fail "captured output below the --- must not be able to state this log's classification: a suite that prints a gate header would otherwise charge its own task an attempt for a repository condition that never happened"
+
+# ---------------------------------------------------------------------------
+# (G) A PERSISTENTLY RED GATE IS BOUNDED.
+#
+# Everything above proves the gate BLOCKS. This proves it TERMINATES, which is
+# a different property and was missing: `merging -> rework` charges no
+# attempt, deliberately, because the candidate was independently verified once
+# already and a conflict or a revalidation failure is not a fresh round of the
+# implementer's work. That reasoning holds for every merge failure except this
+# one. A red repo-wide gate is a statement about the REPOSITORY, and a
+# repository nobody has touched is red again next round -- so the uncharged
+# edge gives dispatch -> implement -> verify -> review -> merge -> red gate ->
+# rework -> dispatch, forever, with the counter that exists to stop it never
+# moving. Uncharged it does not terminate; it spends engine budget until an
+# operator happens to look.
+#
+# So the assertion is arithmetic, and it is made round by round rather than
+# only at the end: the SAME red gate, on an unchanged repository, must cost
+# one attempt each time and stop at the cap. `rework_max` is unset in this
+# fixture's config, so the budget is the documented default of 3.
+# ---------------------------------------------------------------------------
+attempts_of() { "$ORCHID_BIN" task show "$1" | grep '^attempts: ' | cut -d' ' -f2; }
+
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T016 "a red gate must not loop forever"
+git checkout -q -b task/T016 "$integ"
+echo sixteen > feature16.txt && git add feature16.txt && git commit -q -m "feature 16"
+cand16="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base16="$(git rev-parse "$integ")"
+pre_integ16="$(git rev-parse "$integ")"
+
+assert_eq 0 "$(attempts_of T016)" "the task starts the scenario having spent nothing"
+
+# --- round 1 and round 2: charged, and still sent back for another go ------
+for round in 1 2; do
+  walk_to_merging T016 task/T016 "$base16" "$cand16" "test -f feature16.txt"
+  rc=0; "$ORCHID_BIN" merge T016 >/dev/null 2>&1 || rc=$?
+  assert_eq 1 "$rc" "round $round: red gate -> merge exits 1"
+  assert_eq rework "$("$ORCHID_BIN" task show T016 | grep '^status: ' | cut -d' ' -f2)" \
+    "round $round: with rounds still left, a red gate routes to rework exactly as before"
+  assert_eq "$round" "$(attempts_of T016)" \
+    "round $round: ...and it COSTS one -- an uncharged edge is what makes a red gate loop forever"
+done
+
+# --- round 3: the charge reaches the cap, so the edge changes --------------
+walk_to_merging T016 task/T016 "$base16" "$cand16" "test -f feature16.txt"
+rc=0; "$ORCHID_BIN" merge T016 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "round 3: merge still exits 1 -- the exit code is not what carries this"
+assert_eq blocked "$("$ORCHID_BIN" task show T016 | grep '^status: ' | cut -d' ' -f2)" \
+  "round 3: the charge spends the last round, so merge stops the task instead of sending it round again"
+assert_eq 3 "$(attempts_of T016)" "round 3: the round that blocked is itself charged, not skipped"
+assert_eq "$pre_integ16" "$(git rev-parse "$integ")" \
+  "three red rounds moved the integration ref not one commit"
+git show "$integ:feature16.txt" >/dev/null 2>&1 \
+  && fail "and the candidate never reached the integration branch"
+
+journal16="$("$ORCHID_BIN" journal show --task T016)"
+assert_match "gate_failed" "$journal16" "every round journals the gate as the cause"
+assert_match "candidate attempt #3 charged while blocking" "$journal16" \
+  "the blocking round records the kernel-derived attempt number it charged"
+assert_match "orchid task reverify T016" "$journal16" \
+  "and names the recovery that costs no attempt -- the gate is frequently not this task's doing"
+assert_match "orchid task retry T016" "$journal16" \
+  "...alongside the one that grants rounds back"
+
+# The evidence has to survive the block, because the block is not the end of
+# the story: the operator's route back out of `blocked` is what lifts the
+# rework brief, and the gate's locations exist in this log and nowhere the
+# implementer can reach. This is the load-bearing half of the pair below —
+# `merging -> blocked` runs none of the `to = rework` invalidation, so the
+# question is whether the block introduced a rm of its own.
+[ -f .orchid/reviews/T016-merge.log ] \
+  || fail "blocking must not discard the merge evidence -- it is the only copy of the gate's own output"
+
+"$ORCHID_BIN" task unblock T016 --reason "gate fixed in the repository" >/dev/null
+[ -f .orchid/reviews/T016-merge.log ] \
+  && fail "unblock must consume that log the way every other entry to rework does -- a log left behind outlives the candidate it describes"
+body16="$(cat .orchid/tasks/T016.md)"
+# NOT a proof on its own that the unblock carried it: the charged rounds above
+# each appended their own brief for this same candidate, so the location is
+# already in the body. It is here as the end-to-end guard that the route out
+# of `blocked` leaves the next implementer holding the gate's locations rather
+# than a pointer to a log that has just been deleted.
+assert_match "$gate_diag" "$body16" \
+  "the RED GATE's location is in the body the next implementer is handed, after the log carrying it is gone"
+
+# ---------------------------------------------------------------------------
+# (G2) THE EXEMPTION IS INTACT FOR EVERY OTHER MERGE FAILURE.
+#
+# (G) is only half the claim. The charge is scoped to `gate_failed` because
+# that is the failure that repeats identically; a merge conflict is resolved
+# by the next rebase and a red suite is the candidate's own defect, already
+# counted where it was found. Charging those would quietly halve every task's
+# rework budget, and nothing above would notice -- the counter is not read
+# again until the driver blocks on it, several rounds later and somewhere
+# else.
+# ---------------------------------------------------------------------------
+# --- (G2a) a red task suite: `validation_failed`, and no charge ------------
+set_gate "$gate_fail"
+
+suite_red3="$WORK/suite3-goes-red.flag"
+"$ORCHID_BIN" task create T017 "validation_failed charges nothing"
+git checkout -q -b task/T017 "$integ"
+echo seventeen > feature17.txt && git add feature17.txt && git commit -q -m "feature 17"
+cand17="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base17="$(git rev-parse "$integ")"
+
+walk_to_merging T017 task/T017 "$base17" "$cand17" "test ! -f $suite_red3"
+: > "$suite_red3"
+assert_eq 0 "$(attempts_of T017)" "T017 has spent nothing going in"
+rc=0; "$ORCHID_BIN" merge T017 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red suite -> merge exits 1"
+assert_eq rework "$("$ORCHID_BIN" task show T017 | grep '^status: ' | cut -d' ' -f2)" "red suite -> rework"
+assert_eq 0 "$(attempts_of T017)" \
+  "a red SUITE still charges nothing at merge -- the exemption survives; only gate_failed opts out of it"
+journal17="$("$ORCHID_BIN" journal show --task T017)"
+assert_match "validation_failed" "$journal17" "and it is journaled as the validation failure it is"
+grep -q "gate_failed" <<<"$journal17" \
+  && fail "the gate never ran here, so nothing may attribute this round to it"
+grep -q "candidate attempt #" <<<"$journal17" \
+  && fail "and no attempt-charge line may appear for an edge that charged no attempt"
+
+# --- (G2b) a merge conflict: no charge either -----------------------------
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T018 "a merge conflict charges nothing"
+git checkout -q -b task/T018 "$integ"
+echo "task version" > clash18.txt && git add clash18.txt && git commit -q -m "clash 18 from task"
+cand18="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base18="$(git rev-parse "$integ")"
+echo "integ version" > clash18.txt && git add clash18.txt && git commit -q -m "clash 18 from integ"
+
+walk_to_merging T018 task/T018 "$base18" "$cand18" "true"
+# Same device the T003 conflict scenario uses: force base_sha current so this
+# takes the conflict arm rather than the rebase-reset arm.
+"$ORCHID_BIN" task set T018 base_sha "$(git rev-parse "$integ")"
+assert_eq 0 "$(attempts_of T018)" "T018 has spent nothing going in"
+marker_before18="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T018 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "merge conflict -> exit 1"
+assert_eq rework "$("$ORCHID_BIN" task show T018 | grep '^status: ' | cut -d' ' -f2)" "merge conflict -> rework"
+assert_eq 0 "$(attempts_of T018)" \
+  "a merge conflict charges nothing -- it is resolved by the next rebase, not by spending the implementer's rounds"
+assert_eq "$marker_before18" "$(wc -l < "$gate_marker" | tr -d ' ')" \
+  "and the gate never even executed: a conflict aborts before any command runs"
+
+# ---------------------------------------------------------------------------
+# (G3) THE OPT-IN IS A WHITELIST, NOT A GENERAL COUNTER-WRITING OPTION.
+#
+# `--charge-attempt` is how `orchid merge` gets past the `merging -> rework`
+# exemption, and the danger in widening it is that it becomes a way for any
+# caller to write the kernel-owned counter from any edge. It stays validated
+# against a closed set of edges, and `testing -> rework` in particular is NOT
+# in it: that edge already charges through its own accounting, so admitting
+# the flag there would charge the same round twice.
+# ---------------------------------------------------------------------------
+# T018 is idle in `rework` after the conflict above; walk it into `testing` so
+# the probe is made on the edge that actually matters, rather than on some
+# arbitrary illegal one.
+"$ORCHID_BIN" task advance T018 implementing >/dev/null
+"$ORCHID_BIN" task advance T018 testing >/dev/null
+
+rc=0
+charge_err="$("$ORCHID_BIN" task advance T018 rework --charge-attempt 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt must be refused on testing -> rework, which already charges through its own accounting"
+assert_match "only valid for" "$charge_err" "and refused by naming the edges it IS valid for"
+assert_eq testing "$("$ORCHID_BIN" task show T018 | grep '^status: ' | cut -d' ' -f2)" \
+  "the refusal is made before any write -- the task did not move"
+assert_eq 0 "$(attempts_of T018)" "...and the counter it was trying to write did not move either"
+
+# The reason the flag is refused there, made concrete: this edge charges on
+# its own. Admitting `--charge-attempt` would have charged the round twice,
+# and nothing downstream would have shown it -- `attempts` is not read again
+# until the driver blocks on it, rounds later and somewhere else. Also leaves
+# the fixture idle, so a scenario appended after this one is not starved of a
+# concurrency slot.
+"$ORCHID_BIN" task advance T018 rework --reason "probe complete" >/dev/null
+assert_eq 1 "$(attempts_of T018)" \
+  "the plain testing -> rework edge charges exactly one on its own -- which is why the flag has no business there"
+
+# ---------------------------------------------------------------------------
+# (H) A MERGE THAT FAILS BEFORE IT WRITES EVIDENCE IS NOT JUDGED BY THE LAST
+# MERGE'S LOG.
+#
+# `<id>-merge.log` outlives the merge that wrote it deliberately: the
+# `merging` arm of `task advance rework` exempts it from its rm so the failure
+# it is journaling keeps the evidence the next brief quotes. Every merge
+# failure that happens BEFORE that log is written -- the conflict used here,
+# and equally a rebase conflict, an unapplied operator prerequisite or a CAS
+# lost to a concurrent merge -- then ends with a merge that produced no
+# evidence at all and a file on disk that reads exactly like evidence it
+# produced.
+#
+# That file is what `runners/orchid-drive` classifies a failed merge from
+# (findings_log_gate_failed, over the `gate_status:`/`gate_exit:` header it
+# reads and never infers). Left alone, the previous round's red gate is
+# inherited by a conflict and announced as a repository condition -- with an
+# attempt charge attributed to it that nothing ever made, and, once the count
+# gets there, an operator boundary raised over a gate that did not run. The
+# sha binding cannot catch it, which is why this scenario is one candidate
+# twice: a conflicted candidate is re-merged UNCHANGED, so the stale header
+# names the very candidate under work.
+# ---------------------------------------------------------------------------
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T019 "a conflict must not inherit the last round's gate failure"
+git checkout -q -b task/T019 "$integ"
+echo "task version" > clash19.txt && git add clash19.txt && git commit -q -m "clash 19 from task"
+cand19="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base19="$(git rev-parse "$integ")"
+
+# --- round 1: a red gate, which writes the log the next round must not use --
+walk_to_merging T019 task/T019 "$base19" "$cand19" "true"
+rc=0; "$ORCHID_BIN" merge T019 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "round 1: the red gate fails the merge"
+log19=".orchid/reviews/T019-merge.log"
+assert_match "^gate_status: ran$" "$(cat "$log19")" "round 1 leaves a log that records a gate that RAN"
+assert_match "^gate_exit: 3$" "$(cat "$log19")" "...and the non-zero status it ran to"
+# Kept, so the classification below can be shown to be capable of saying yes.
+# A negative assertion whose predicate answers no to everything proves nothing.
+stale19="$WORK/T019-round1-merge.log"
+cp "$log19" "$stale19"
+
+# --- round 2: a conflict on the SAME candidate, which writes nothing -------
+# The conflicting side lands on the integration branch, and `base_sha` is
+# forced current afterwards for the reason the T003 and T018 scenarios force
+# it: otherwise this takes the rebase-reset arm instead of the conflict arm.
+echo "integ version" > clash19.txt && git add clash19.txt && git commit -q -m "clash 19 from integ"
+walk_to_merging T019 task/T019 "$base19" "$cand19" "true"
+"$ORCHID_BIN" task set T019 base_sha "$(git rev-parse "$integ")"
+
+# The fixture's own premise, asserted rather than assumed: the round-1 log has
+# to still be here when round 2 begins, or this scenario reproduces nothing.
+[ -f "$log19" ] \
+  || fail "fixture invariant broken: the round-1 merge log is already gone before round 2 starts, so nothing below is testing what it says it tests"
+
+pre_integ19="$(git rev-parse "$integ")"
+attempts_before19="$(attempts_of T019)"
+marker_before19="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T019 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "round 2: a merge conflict exits 1, like every other merge failure"
+assert_eq rework "$("$ORCHID_BIN" task show T019 | grep '^status: ' | cut -d' ' -f2)" \
+  "round 2: a conflict routes to rework"
+assert_eq "$pre_integ19" "$(git rev-parse "$integ")" "round 2: the integration ref did not move"
+assert_eq "$attempts_before19" "$(attempts_of T019)" \
+  "round 2: a conflict charges nothing -- the exemption is intact for the failure that actually happened"
+assert_eq "$marker_before19" "$(wc -l < "$gate_marker" | tr -d ' ')" \
+  "round 2: the gate never executed, so there is nothing for a gate_failed reading to be about"
+
+# THE DEFECT, asked through the very predicate `runners/orchid-drive` calls
+# rather than through a re-implementation of it here.
+if ( source "$REPO_ROOT/lib/findings.sh"; findings_log_gate_failed "$log19" ); then
+  fail "a merge that ran no gate is still classified as a gate failure -- the previous round's evidence outlived the merge that wrote it, and every reader downstream reads it as this round's"
+fi
+# ...and the same predicate, over the same bytes, saying yes. Without this the
+# check above passes just as well against a predicate that is broken outright.
+if ! ( source "$REPO_ROOT/lib/findings.sh"; findings_log_gate_failed "$stale19" ); then
+  fail "test bug, not a merge failure: round 1's log does not read as a gate failure even when handed to the predicate directly, so the negative check above is vacuous"
+fi
+[ -f "$log19" ] \
+  && fail "this merge wrote no evidence, so no evidence may be on disk under its name: a log that survives a merge which produced none is a claim about a round that never made one"
+
+journal19="$("$ORCHID_BIN" journal show --task T019)"
+assert_match "merge conflict" "$journal19" "the round is journaled as the conflict it was"
+
+# ---------------------------------------------------------------------------
+# (I) THE CONFIG PRECONDITION, BOTH ANSWERS.
+#
+# `merge_gate` is read from `$repo/orchid.config`, so a self-hosted merge that
+# LANDS a gate and leaves its own checkout resolving the pre-merge file makes
+# the floor inert in the repository that just adopted it — L016 wearing the
+# clothes of its own fix. So `orchid merge` brings that file to the branch
+# when it moved it. What decides whether it may is `orchid.config`'s own
+# bytes, since an edit awaiting `orchid config commit` is legitimate and
+# uncommitted by definition and may not be restored out from under whoever
+# made it (the r-001 journal-loss hazard, one file over).
+#
+# tests/test_stale_root.sh drives the whole of that through a real
+# self-hosted `orchid merge` (checks 10c and 10d), where the fixture is an
+# entire orchid root. What is pinned HERE is the decision itself, in every
+# shape that answers it — because a precondition that quietly answers "clean"
+# to everything is a silent overwrite, and one that answers "dirty" to
+# everything is a gate that never activates and never says why.
+# ---------------------------------------------------------------------------
+cfg_clean() {  # the precondition, asked exactly as `orchid merge` asks it
+  ( export HOME="$WORK/home" ORCHID_ALLOW_STALE_ROOT=1
+    source "$REPO_ROOT/lib/common.sh"
+    orchid_config_committed_clean "$1" )
+}
+cfg_refresh() {
+  ( export HOME="$WORK/home" ORCHID_ALLOW_STALE_ROOT=1
+    source "$REPO_ROOT/lib/common.sh"
+    orchid_refresh_config "$1" "$2" )
+}
+
+cfgroot="$WORK/cfg-probe"
+mkdir -p "$cfgroot"
+printf 'integration_branch=orchid/integration\n' > "$cfgroot/orchid.config"
+git init -q "$cfgroot"
+git -C "$cfgroot" symbolic-ref HEAD refs/heads/orchid/integration
+git -C "$cfgroot" add orchid.config
+git -C "$cfgroot" commit -q -m "cfg probe: v1"
+cfg_base="$(git -C "$cfgroot" rev-parse HEAD)"
+
+# The landing this stands in for: a commit that changes the committed config,
+# made somewhere else and published by a ref advance that never touches this
+# checkout's tree or index — which is exactly what merge's CAS does, and is
+# why this checkout goes on resolving the old values until something acts.
+cfg_side="$WORK/cfg-probe-side"
+git -C "$cfgroot" worktree add -q --detach "$cfg_side" orchid/integration
+printf 'integration_branch=orchid/integration\nmerge_gate=true\n' > "$cfg_side/orchid.config"
+git -C "$cfg_side" add orchid.config
+git -C "$cfg_side" commit -q -m "cfg probe: the repository adopts a merge_gate"
+cfg_head="$(git -C "$cfg_side" rev-parse HEAD)"
+
+# --- (I1) nothing to lose: the answer is yes, and the write lands ----------
+cfg_clean "$cfgroot" \
+  || fail "a checkout with no config edit at all must read as clean -- a precondition that answers no to everything is a gate that never activates and never says why"
+git -C "$cfgroot" update-ref refs/heads/orchid/integration "$cfg_head" "$cfg_base"
+rc=0; cfg_refresh "$cfgroot" "$cfg_base" || rc=$?
+assert_eq 0 "$rc" "the refresh reports success"
+grep -q '^merge_gate=true$' "$cfgroot/orchid.config" \
+  || fail "the committed gate is still not the live one here, so the repository that just adopted it would go on not running it"
+assert_eq "" "$(git -C "$cfgroot" diff --name-only HEAD -- orchid.config)" \
+  "the working tree carries the branch's bytes"
+assert_eq "" "$(git -C "$cfgroot" diff --cached --name-only HEAD -- orchid.config)" \
+  "and the index does too -- written last, after the tree, the same order the kernel refresh holds to"
+
+# --- (I2) an unstaged edit: the answer is no ------------------------------
+printf '# operator edit awaiting orchid config commit\n' >> "$cfgroot/orchid.config"
+if cfg_clean "$cfgroot"; then
+  fail "an uncommitted config edit read as clean -- the next self-hosted merge would restore over the operator's only copy"
+fi
+
+# --- (I3) ...and no when it is STAGED, which a working-tree diff cannot see -
+git -C "$cfgroot" add orchid.config
+if cfg_clean "$cfgroot"; then
+  fail "a STAGED config edit read as clean: staging moves the file and its index entry together, so a check that asks only one of them is blind to exactly the edit an operator has been most careful with"
+fi
+
+# --- (I4) the green twin: with the edit gone the same check says yes again -
+git -C "$cfgroot" reset -q HEAD -- orchid.config
+git -C "$cfgroot" checkout -q HEAD -- orchid.config
+cfg_clean "$cfgroot" \
+  || fail "once the edit is dealt with the same checkout must read clean again -- a check that never recovers is a permanent refusal, not a precondition"
+
+# --- (I5) an UNTRACKED orchid.config is somebody's file too ----------------
+# The one shape `git diff` says nothing about: HEAD carries no orchid.config,
+# so both diffs are empty and a check built on them alone would call this
+# clean and let a merge that ADDS the file write straight over it.
+cfgnew="$WORK/cfg-untracked"
+mkdir -p "$cfgnew"
+git init -q "$cfgnew"
+git -C "$cfgnew" symbolic-ref HEAD refs/heads/orchid/integration
+git -C "$cfgnew" commit -q --allow-empty -m "cfg probe: a repository with no committed config"
+cfg_clean "$cfgnew" \
+  || fail "test fixture: a repository with no orchid.config at all, tracked or on disk, must read clean -- otherwise I5 below proves nothing about the untracked file"
+printf 'integration_branch=orchid/integration\n' > "$cfgnew/orchid.config"
+if cfg_clean "$cfgnew"; then
+  fail "an untracked orchid.config read as clean -- git diff is silent about a path HEAD does not carry, and the merge that adds one would overwrite the only copy of it"
+fi
+
+# --- (I6) an IGNORED orchid.config, and the report that has to name it -----
+# The precondition asks `ls-files --others` WITHOUT `--exclude-standard` on
+# purpose, so an ignored orchid.config counts as somebody's file and is
+# refused like any other. That widening binds the REPORT as well, and this is
+# where the two can silently come apart: a plain `git status --porcelain` says
+# nothing at all about an ignored path, so the one case the precondition was
+# widened to catch would be the one `orchid merge` warns about with an empty
+# `Pending:` list -- telling the operator their file was preserved and leaving
+# them no name to look for it under.
+#
+# What is pinned here is that coupling, at the level it lives at: the refusal,
+# the blindness that makes the naive report wrong, and the shorthand the merge
+# actually passes. The warning's own wording is driven end to end by
+# tests/test_stale_root.sh check 10d, over a tracked edit -- the shape a real
+# orchid root has, since `orchid.config` is meant to be committed (`orchid
+# config commit`). This arm is the ignored twin of that check's premise.
+printf 'orchid.config\n' > "$cfgnew/.gitignore"
+git -C "$cfgnew" add .gitignore
+git -C "$cfgnew" commit -q -m "cfg probe: this repository ignores its config"
+
+if cfg_clean "$cfgnew"; then
+  fail "an IGNORED orchid.config read as clean -- ignoring a file is not consenting to have it overwritten, and this is the merge's only chance to decline"
+fi
+# The blindness itself, asserted rather than assumed: without this the check
+# below is just two git invocations agreeing, and there would be nothing to
+# show that the flag `orchid merge` passes is load-bearing.
+assert_eq "" "$(git -C "$cfgnew" status --porcelain -- orchid.config)" \
+  "test premise: a plain porcelain status is silent about an ignored path -- if it ever stops being, the flag below is no longer what makes the warning able to name this file"
+assert_match "orchid\.config" \
+  "$(git -C "$cfgnew" status --porcelain --ignored -- orchid.config)" \
+  "the shorthand 'orchid merge' reports a preserved config in must name the file in exactly the case the precondition was widened to refuse -- a warning that says a file was kept and does not say which is not a warning"

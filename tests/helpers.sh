@@ -18,6 +18,17 @@ FAILS=0
 # Keep dry-run available because adapter tests intentionally exercise that
 # public seam, but never inherit durable-run identity into a disposable repo.
 unset ORCHID_ACTOR ORCHID_REPO ORCHID_EPOCH
+# `merge_gate` (T007) is repo configuration, and a fixture's gate must come
+# from the fixture's own orchid.config — an operator with ORCHID_MERGE_GATE
+# exported would otherwise have their command run inside every scratch merge
+# in this suite. Note what is deliberately NOT unset beside it:
+# ORCHID_MERGE_GATE_ACTIVE, the recursion marker. That one is not
+# configuration, it is a statement about where this process is running, and it
+# has to survive INTO fixtures — clearing it here would let a fixture that
+# configures a gate open a second level of the very nesting it exists to stop.
+# The asymmetry is the point, and the two names differ only by a suffix: only
+# ORCHID_MERGE_GATE belongs on this line.
+unset ORCHID_MERGE_GATE
 
 # Fixtures deliberately replace HOME to isolate machine-local Orchid state.
 # Disposable fixture commits must not depend on an operator's global Git

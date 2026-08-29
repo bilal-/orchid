@@ -996,3 +996,53 @@ printf '%s' "$planning_step2" | grep -qF 'Include `operator_prerequisite` for an
   || fail "PROTOCOL.md's PLANNING step 2 must tell the planner to set operator_prerequisite — it is the only moment in a run when that field can be written, so a planner who is not told there is never told at all"
 printf '%s' "$planning_step2" | grep -qF 'this applies to every archetype, not only the `migrate` one' \
   || fail "PROTOCOL.md's PLANNING step 2 must say the field applies to every archetype — left to templates/task-migrate.md alone, a feature or test task that happens to alter a schema never carries the instruction"
+
+# ===========================================================================
+# T007 -- `--charge-attempt`'s admitted edges are a CLOSED SET, and both
+# normative docs must describe the set the KERNEL actually enforces.
+#
+# The flag shipped as `testing -> blocked` only, and both docs said so in the
+# absolute ("legal only on/for `testing -> blocked`"). T007 widened the set to
+# admit `merging -> rework` and `merging -> blocked` for `orchid merge`'s
+# `gate_failed` arm, which turned two normative sentences into false ones --
+# the failure mode docs/specs/kernel.md's own transition table exists to
+# prevent, since the table is this project's declared test oracle and a reader
+# who trusts the prose over it removes the widening as unsupported.
+#
+# Two-way, keyed on libexec/orchid-task's `case` label rather than on the
+# prose alone: the day that set changes in either direction, the docs are the
+# thing this sends the next reader to. A narrowing back to the single edge
+# fails on the second arm, so this cannot rot into a check that only ever
+# demands the wider wording.
+# ===========================================================================
+charge_case_src="$REPO_ROOT/libexec/orchid-task"
+[ -f "$charge_case_src" ] \
+  || fail "libexec/orchid-task must exist — the check below reads its --charge-attempt case list as the source of truth about which edges admit the flag"
+charge_merging_admitted=0
+if grep -qF 'testing:blocked|merging:rework|merging:blocked' "$charge_case_src"; then
+  charge_merging_admitted=1
+fi
+# Folded, like every other pinned sentence in this file: both claims are
+# hard-wrapped mid-phrase in the source and `grep -F` matches a line at a time.
+charge_protocol_one_line="$(tr '\n' ' ' < "$REPO_ROOT/PROTOCOL.md" | tr -s '[:space:]' ' ')"
+charge_kernel_one_line="$(tr '\n' ' ' < "$REPO_ROOT/docs/specs/kernel.md" | tr -s '[:space:]' ' ')"
+for charge_doc in PROTOCOL.md docs/specs/kernel.md; do
+  if [ "$charge_doc" = PROTOCOL.md ]; then
+    charge_folded="$charge_protocol_one_line"
+  else
+    charge_folded="$charge_kernel_one_line"
+  fi
+  [ -n "$charge_folded" ] \
+    || fail "test bug, not a docs failure: the folded text of $charge_doc came back empty — nothing below is reading the document it names"
+  if [ "$charge_merging_admitted" -eq 1 ]; then
+    grep -qF 'flag is legal only' <<<"$charge_folded" \
+      && fail "$charge_doc still calls --charge-attempt legal on one edge alone, but libexec/orchid-task admits merging -> rework and merging -> blocked as well — the sentence that was true of the narrow flag has become a false account of the kernel's own case list"
+    grep -qF '`merging -> rework`' <<<"$charge_folded" \
+      || fail "$charge_doc must name \`merging -> rework\` among the edges --charge-attempt is admitted on: it is the edge orchid merge charges a red merge_gate through, and a doc listing only testing -> blocked describes a kernel that no longer exists"
+    grep -qF '`merging -> blocked`' <<<"$charge_folded" \
+      || fail "$charge_doc must name \`merging -> blocked\` beside it — that is where the charge lands once the gate has spent the task's last rework round, and a set described as two-thirds of itself is the reading a later reader tidies up"
+  else
+    grep -qF '`merging -> rework`' <<<"$charge_folded" \
+      && fail "libexec/orchid-task no longer admits --charge-attempt on the merging pair, yet $charge_doc still describes it as legal there — describing a withdrawn edge in the present tense reads as shipped behaviour to every later reader"
+  fi
+done

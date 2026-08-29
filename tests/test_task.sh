@@ -161,18 +161,34 @@ assert_eq "$started2" "$("$ORCHID_BIN" task show T004 | grep '^started_at: ' | c
 # valid custom code archetype may omit that edge, though, and the advance can
 # also refuse before it writes. The driver needs one narrow kernel-owned way
 # to preserve the charge while taking the universal blocked escape hatch.
-# `--charge-attempt` is that way: testing -> blocked only, journal-first,
-# exactly one increment, and consumption of the deferred-failure receipt whose
-# evidence it just accounted for.
+# `--charge-attempt` is that way: journal-first, exactly one increment, and
+# consumption of the deferred-failure receipt whose evidence it just accounted
+# for.
+#
+# THE ADMITTED EDGES ARE A CLOSED SET, AND IT IS NO LONGER A SET OF ONE (T007).
+# The flag shipped as `testing -> blocked` alone; T007 added `merging -> rework`
+# and `merging -> blocked` for `orchid merge`'s `gate_failed` arm, which is the
+# one merge failure that repeats identically until somebody outside the task
+# acts on the repository. What the probes below are about is unchanged -- every
+# edge OUTSIDE that set is still refused before any write -- but they must not
+# go on describing the set as a single edge: an assertion whose message says
+# "the only legal edge" is the thing a later reader trusts over the code, and
+# `tests/test_merge.sh` (G3) plus `tests/test_docs.sh` would then be the only
+# places the widening is written down. So each refusal below also pins that the
+# message ENUMERATES the whole set and names the edge that was attempted.
 "$ORCHID_BIN" task create T005 "charge a candidate failure while blocking"
 "$ORCHID_BIN" task advance T005 implementing
 
 rc=0
 charge_source_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
   --reason "candidate failure with no rework edge" 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse any source other than testing"
+[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse a source the closed set does not admit"
 assert_match "only valid for testing -> blocked" "$charge_source_out" \
-  "the source-shape refusal names the only legal edge"
+  "the source-shape refusal names the edge this arm exists for"
+assert_match "merging -> rework or merging -> blocked" "$charge_source_out" \
+  "...and the REST of the admitted set beside it — a refusal that lists one of three edges reads as a narrower flag than the kernel actually has (T007)"
+assert_match "got implementing -> blocked" "$charge_source_out" \
+  "...and the edge that was actually attempted, so the caller is not left diffing the list against its own request"
 assert_eq implementing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
   "a refused charge leaves status untouched"
 assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
@@ -187,9 +203,11 @@ pending_receipt="a1:$head_sha:11111111111111111111111111111111111111111111111111
 rc=0
 charge_dest_out="$("$ORCHID_BIN" task advance T005 rework --charge-attempt \
   --reason "wrong destination" 2>&1)" || rc=$?
-[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse any destination other than blocked"
+[ "$rc" -ne 0 ] || fail "--charge-attempt must refuse testing -> rework, which already charges through its own accounting"
 assert_match "only valid for testing -> blocked" "$charge_dest_out" \
-  "the destination-shape refusal names the only legal edge"
+  "the destination-shape refusal names the edges the flag IS admitted on"
+assert_match "got testing -> rework" "$charge_dest_out" \
+  "...and the edge that was refused: rework is a legal DESTINATION for the flag out of merging, so the refusal is about the whole edge and has to say which one"
 assert_eq testing "$("$ORCHID_BIN" task show T005 | grep '^status: ' | cut -d' ' -f2)" \
   "a wrong-destination charge leaves status testing"
 assert_eq 0 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
@@ -226,6 +244,8 @@ charge_twice_out="$("$ORCHID_BIN" task advance T005 blocked --charge-attempt \
 [ "$rc" -ne 0 ] || fail "a blocked task cannot be charged again with --charge-attempt"
 assert_match "only valid for testing -> blocked" "$charge_twice_out" \
   "the repeat charge is rejected on its source state"
+assert_match "got blocked -> blocked" "$charge_twice_out" \
+  "...named as the edge it is, so a second charge is refused for being blocked -> blocked and never for being a second one"
 assert_eq 1 "$("$ORCHID_BIN" task show T005 | grep '^attempts: ' | cut -d' ' -f2)" \
   "a repeated fallback cannot double-charge the round"
 

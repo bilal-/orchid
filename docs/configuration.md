@@ -51,6 +51,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 |---|---|---|---|
 | `integration_branch` | `orchid/integration` | repo | v0 |
 | `verify` | *(none — required)* | repo | v0 |
+| `merge_gate` | *(unset — no gate)* | repo | v1.1 |
 | `concurrency` | `2` | repo or user | v0 (1) / v1-m2 (2 + scheduling) |
 | `role.orchestrator` | `claude` (fallback chain default: `claude,codex`) | repo or user | v0 |
 | `role.implementer` | `codex` (fallback chain default: `codex,claude`) | repo or user | v0 |
@@ -105,6 +106,114 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 - **`verify`** has no default on purpose: `orchid doctor` FAILs preflight
   until it's set (`orchid.config`), except `--greenfield` mode, which skips
   this check pre-scaffold (nothing to verify yet).
+- **`merge_gate`** is the repository's own floor: one command, run by `orchid
+  merge` on the MERGED tree in its temp worktree, in addition to whatever the
+  task named in `verification_commands`. It is the answer to a specific
+  failure — a repo-wide check that each task has to opt into reaches only the
+  tasks whose author remembered it, which in r-001 meant `scripts/ci-local.sh`
+  ran for two tasks out of eight while seventeen ShellCheck findings piled up
+  behind a green suite. So the resolution order is deliberately the reverse of
+  `verify`'s: `verify` is a *fallback* a task overrides with its own
+  `verification_commands`, while `merge_gate` is read from repo config only
+  and no task frontmatter can switch it off.
+  - **The command is resolved against the repository, not against the
+    candidate.** `orchid merge` reads this key from the repository's own
+    `orchid.config` and then *runs* the resulting command inside the temp
+    worktree holding the merged tree. Only the second half sees the candidate.
+    So a candidate that commits an `orchid.config` of its own naming a gentler
+    gate is still judged by the one configured here — its version of the key
+    takes effect from the *next* merge, once it has landed and the checkout
+    orchid runs from carries it. Frontmatter is not the only way a change
+    could otherwise lower the floor it is being measured against; this is the
+    other one.
+    - **When orchid runs from the checkout being merged into**, the merge
+      brings that last step with it: a merge that moved the committed
+      `orchid.config` refreshes this checkout's copy so the key it just landed
+      is live for the next merge — but *only* where that copy had no
+      uncommitted edit of its own in either the working tree or the index. If
+      it had one, nothing is overwritten, the merge says so on stderr, and the
+      values this checkout resolves stay yours until you reconcile the two.
+      `docs/troubleshooting.md`, "`orchid.config` after a merge", has both
+      sides and the order to do them in. Otherwise this is the one adoption
+      step a merge cannot take for you: the branch carries the key and each
+      checkout picks it up when it next pulls.
+  - **It blocks, it does not merely run.** Its exit status joins the task
+    suite's, and the integration-ref advance is already conditional on that
+    being zero — so a red gate returns the task to `rework` (journaled
+    `gate_failed`, distinct from `validation_failed`) with the integration ref
+    untouched.
+  - **A red gate is bounded, and it is the only merge failure that is.**
+    `merging → rework` normally charges no attempt: the candidate was
+    independently verified once already, so a merge conflict, a rebase
+    conflict or a `validation_failed` is not a fresh round of the
+    implementer's work. That reasoning does not survive contact with this key.
+    A gate failure is a statement about the *repository*, and a repository
+    nobody has touched is red again on the next round — so an uncharged edge
+    turns a persistently red gate into an endless loop: dispatch, implement,
+    verify, review, merge, red gate, rework, dispatch, with the counter that
+    exists to stop it never moving. So `gate_failed` charges the round, and
+    when the charge reaches the task's cap (`attempt_budget`, else
+    `rework_max`, default 3) the task goes to **`blocked`** instead of
+    `rework`. Nothing else about merge changed: conflicts and
+    `validation_failed` are still exempt.
+
+    Yes, this charges a task for a fault that is often not its own — that is
+    precisely why the cap exists rather than an argument against the charge.
+    The alternative is not that the task is treated fairly; it is that
+    implementers are re-dispatched forever against something no implementer
+    round can clear. When the gate really was naming the repository rather
+    than the candidate, `orchid task reverify <id> --reason "..."` re-runs
+    verification with **no attempt consumed** once the repository is green
+    again, and `orchid task retry <id> --reason "..." --attempts N` grants the
+    rounds back. Both are named in the reason the block records and in the
+    boundary the driver raises.
+  - **What it costs, and how to keep that small.** `orchid merge` runs the
+    task's `verification_commands` on the merged tree *first*, so a gate that
+    repeats the test suite pays for that suite twice per merge and learns
+    nothing the second time. Name the checks a task's own suite does **not**
+    already run. Orchid's own gate is
+    `scripts/ci-local.sh --bash /bin/bash --no-tests`: every static check and
+    ShellCheck, no second suite — which is exactly the half of the r-001
+    failure no task ever opted into, at seconds rather than minutes. What
+    remains is once per *merge* in any case:
+    `orchid verify`, which runs on every attempt, is untouched, so the inner
+    loop stays fast. Orchid will not deduplicate the overlap for you: the only
+    way to detect it is to ask whether the task's command *looks like* it
+    contains the gate, and satisfaction decided by string compare is how a
+    gate ships bypassable. The one skip it does make is not textual — the gate
+    is skipped when the task's own suite already failed, since that merge is
+    going to `rework` regardless.
+  - **What a narrow gate does not cover, said plainly.** "The task's own
+    suite" is whatever that task's author wrote in `verification_commands`,
+    which for a tightly-scoped task is a couple of files rather than the whole
+    suite. So a `--no-tests`-style gate raises the *static* floor for every
+    task and leaves the *test* coverage of a merge exactly as wide as each
+    author made it — the r-001 defect narrowed, not abolished. Choose
+    knowingly: put in this key what must hold for every merge regardless of
+    who wrote the task, and accept the second run if that includes tests.
+  - **Recursion.** A gate that runs the repository's own suite will re-enter
+    `orchid merge` through that suite's tests. `orchid merge` sets
+    `ORCHID_MERGE_GATE_ACTIVE` in the gate command's environment and refuses
+    to open a second level when it sees it; `scripts/ci-local.sh` sets it too,
+    for a direct run with no merge above it. A skipped gate is recorded in the
+    merge log as `gate_status: skipped-nested` and announced on stderr — never
+    passed off as a pass.
+  - **Its evidence is attributed per command.** Both commands write into one
+    `.orchid/reviews/<id>-merge.log`, separated by a `== merge_gate: <cmd>`
+    banner, and the header records each one's own status — `command_status:`
+    for the task suite, `gate_status:` plus `gate_exit:` for the gate. The
+    trailing `exit:` line remains the *merge's* status and is no longer enough
+    on its own to say who failed: the ordinary failing shape here is a green
+    suite followed by a red gate. The rework brief quotes only the half whose
+    recorded status is non-zero, so a passing suite's output never arrives in
+    front of the next implementer as though the gate had reported it — and,
+    since the brief is capped at twenty lines *in log order*, so that a chatty
+    green suite cannot spend that cap before the gate's real locations are
+    reached. The log itself keeps everything either command printed; the
+    filtering happens where the evidence is read, not where it is written.
+  - Distinct from **`hook.before_merge`**, which is an engine hook satisfied by
+    a reconciled envelope and refuses the verb before any merge is attempted
+    (exit 15). `merge_gate` is a shell command scored on its exit status.
 - **`stall_minutes`** is the kernel's one "no sign of life for long enough to
   call it stuck" bound, and it is read in three places. For a job that stamped
   a pid, `orchid jobs check` kills it and reports `stalled` after that long

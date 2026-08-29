@@ -281,8 +281,10 @@ across prose sections is normative HERE):**
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
 | arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
 | arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
-| merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite green | integration ref, evidence, frontmatter | done |
+| merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite AND `merge_gate` green | integration ref, evidence, frontmatter | done |
 | merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
+| merging | `merge` exit 1 (`gate_failed`) → `task advance --charge-attempt` | repo-wide `merge_gate` red; integration ref untouched; attempts++ (the ONE merge failure that charges — a red repo-wide gate repeats identically, so an uncharged edge never terminates) | evidence, frontmatter, journal | rework |
+| merging | `merge` exit 1 (`gate_failed`, budget spent) → `task advance --charge-attempt` | as above, and the charge reaches `attempt_budget` — further rounds would re-run the same gate against the same repository | evidence, frontmatter, journal | blocked |
 | merging | `merge` exit 5 (`rebase_rereview_required`) | rebase done, SHAs updated; reviews invalidated | frontmatter, journal(`rebase_review`) | testing |
 | rework | `task advance` | rework spec written into task body | frontmatter | implementing |
 | any | `task advance --reason` | attempts exhausted (`rework_max`, default 3) / budget / operator | frontmatter, journal | blocked |
@@ -354,6 +356,51 @@ buying a fresh implementation pass to reach the same tree.
   exact candidate to rework with logs. **v0 baseline semantics:** the suite
   must pass, full stop; `baseline.md` records pre-existing failures for
   humans. Baseline-aware comparison is post-v1.
+  **The repo-wide gate (`merge_gate`, T007, lesson L016).** "The suite" above
+  is TWO commands, not one: the task's `verification_commands`, and the
+  repository's `merge_gate` if one is configured — both run in that temp
+  worktree, against the merged tree. The second exists because the first is
+  authored PER TASK, so a repo-wide check added mid-run reaches only the tasks
+  written after it and told about it: in r-001 `scripts/ci-local.sh` was named
+  by two of eight tasks, and the run-level "the configured ShellCheck gate
+  passes" criterion was failing on the integration branch throughout while
+  every task's own suite was green. `merge_gate` is read from repo config
+  ONLY — deliberately not overridable from task frontmatter the way `verify`
+  is, since a floor a task can lower is not a floor. Its status folds into the
+  same one the ref advance is already conditional on, so it blocks rather than
+  merely reports (`gate_failed` → `rework`, ref untouched); it is skipped when
+  the task's own suite has already failed, and NEVER skipped by matching the
+  task's command text against the gate's. A gate that runs the repository's
+  own suite re-enters this verb through it, so `merge` sets
+  `ORCHID_MERGE_GATE_ACTIVE` in the gate command's environment and declines to
+  open a second level when it is already set (`scripts/ci-local.sh` sets it
+  too, for a direct run); a skip is written into the merge log as
+  `gate_status: skipped-nested` and said on stderr, never reported as a pass.
+  Because the merge log now records TWO commands, it also records who failed:
+  `command_status:` (the task suite) and `gate_exit:` (the gate) in the header,
+  with a `== merge_gate: <cmd>` banner marking the boundary in the body. The
+  rework brief quotes only the failing command's half — a green suite followed
+  by a red gate is the ordinary shape here, and the trailing `exit:` line
+  alone cannot tell the two apart.
+  **And a red gate is bounded.** `merging → rework` charges no attempt — the
+  candidate was independently verified once already, so a conflict or a
+  revalidation failure is not a fresh round of the implementer's work. That
+  reasoning fails for exactly one merge failure: a red repo-wide gate is a
+  statement about the repository, and a repository nobody has touched is red
+  again next round, so the uncharged edge gives dispatch → implement → verify
+  → review → merge → red gate → rework with no counter moving. So
+  `gate_failed`, and only `gate_failed`, takes `task advance --charge-attempt`
+  (a kernel-validated opt-in admitted on `merging → rework` and `merging →
+  blocked`, never a rule inferred from the reason text — a counter driven by
+  string matching is one rewording away from charging a merge conflict), and
+  when that charge reaches `schedule_attempt_budget`'s cap the edge is
+  `merging → blocked` instead. Merge conflicts, rebase conflicts and
+  `validation_failed` keep the exemption untouched. That the candidate is
+  often innocent of a gate failure is the reason for the *cap*, not an
+  argument against the charge: the alternative is not fairness but an
+  unbounded loop re-dispatching implementers against a fault no implementer
+  round can clear. `orchid task reverify` (no attempt consumed) and `orchid
+  task retry --attempts N` are the recoveries, and the block names both.
   **Consequences of the ref-only advance (m3 ledger, found live):** the
   integration-ref advance above is a bare `git update-ref` — it never touches
   any OTHER checkout of that branch, by design, since it must not write into
@@ -461,6 +508,25 @@ buying a fresh implementation pass to reach the same tree.
   for `.` : that would restore a pending `orchid.config` along with the
   kernel, and without `':(exclude).orchid'` it clobbers uncommitted
   `.orchid/` run state too.
+  **`orchid.config` is a separate step with a separate precondition, not a
+  member of that list** (T007). It is not executed but it is READ by every
+  verb — `merge_gate` lives in it — so a self-hosted merge that lands a config
+  change and leaves this checkout resolving pre-merge values makes the
+  repository's own floor inert in the repository that just adopted it, which
+  is lesson L016 wearing the clothes of its own fix. So a merge that MOVED
+  `orchid.config` between `$integ_head` and the merged commit brings this
+  checkout's copy to it — by the same write-tree-then-index order, through the
+  same per-write check against the pre-advance base — but **only when that
+  copy was byte-equal to HEAD in the working tree and the index both, with no
+  untracked file at that path**, established before the advance. Where it was
+  not, the operator's edit is left exactly as it is and the merge says so on
+  stderr, naming what is pending and that the merged configuration is not the
+  live one here; it prescribes no restoring command, and it warns that
+  `orchid config commit` lands the bytes on disk, so running it over an
+  unreconciled file would drop what the merge just landed. Membership in
+  `ORCHID_KERNEL_PATHS` would mean something else entirely and must not be
+  confused with this: that a pending config edit makes the checkout stale and
+  refuses every verb.
   **The refresh writes the working tree first and the index last**, one path
   at a time, and that order is a safety property rather than an internal
   detail. The guard reads the INDEX, so the index is what makes this checkout
@@ -529,12 +595,15 @@ buying a fresh implementation pass to reach the same tree.
   per-task wall-clock budget is the unconditional backstop.
   A candidate failure for which `testing -> rework` is unavailable or is
   refused before it charges takes the single narrow fallback `task advance
-  <id> blocked --charge-attempt --reason "..."`. The flag is legal only on
-  `testing -> blocked`, is mutually exclusive with `--waive-attempt`, derives
-  the next attempt number itself, journals before mutation, clears any
-  deferred-failure receipt, and increments exactly once. This keeps the
-  canonical candidate-FAIL rule true without making `attempts` generally
-  writable.
+  <id> blocked --charge-attempt --reason "..."`. The flag is admitted on a
+  closed set of three edges and no others: `testing -> blocked` here, plus
+  `merging -> rework` and `merging -> blocked`, which serve `orchid merge`'s
+  `gate_failed` arm alone (the merge-gate paragraph above says why that one
+  merge failure opts out of the `merging` exemption). It is mutually exclusive
+  with `--waive-attempt`, derives the next attempt number itself, journals
+  before mutation, clears any deferred-failure receipt, and increments exactly
+  once. This keeps the canonical candidate-FAIL rule true without making
+  `attempts` generally writable.
   `infra_failures` NEVER consume attempts, and neither does `task reverify`.
 - **The cap is `rework_max` (config, default 3), and an operator can raise
   it for ONE task:** `orchid task retry <id> --reason "..." [--attempts N]`
@@ -847,9 +916,14 @@ the two stages disagree about one condition: the same unapplied migration
 would be forgiven at verify and charged at merge, where the nonzero-suite arm
 advances the task to `rework` with `validation_failed` — the environment
 problem wearing the candidate's clothes, now costing a full rework round on a
-candidate that is not defective. The `merging`→`rework` edge charges no
-attempt (that exemption is deliberate: the candidate was independently
-verified once already), so the round is not even recorded as one.
+candidate that is not defective. On that arm the `merging`→`rework` edge
+charges no attempt (that exemption is deliberate: the candidate was
+independently verified once already), so the round is not even recorded as
+one. "On that arm", not "on the edge": `gate_failed` takes the same edge and
+does charge, by passing `--charge-attempt` — see the merge-gate paragraph
+above for why a red repo-wide gate is the one merge failure the exemption
+fails for. `validation_failed`, which is what this paragraph is about, keeps
+it.
 The gate sits AFTER the rebase-reset in that verb, not before it: the rebase
 path runs no suite and is itself the route that expires a stale ack (back to
 `testing` on a new candidate), so refusing ahead of it would park the run on

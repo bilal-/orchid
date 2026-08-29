@@ -31,6 +31,67 @@ done
 printf '%s\n' "$shell_list" | grep -q '^\.orchid/' \
   && fail "shell discovery must never inspect run state under .orchid"
 
+# --- the outer half of the merge-gate recursion guard (T007) ---------------
+# This file can be a repository's `merge_gate` (orchid.config's `merge_gate`
+# key; libexec/orchid-merge). When it is, the loop is: merge -> this script ->
+# tests/run.sh -> tests/test_merge.sh -> `orchid merge` -> that merge's gate ->
+# this script again. `orchid merge` sets ORCHID_MERGE_GATE_ACTIVE in the gate
+# command's own environment, which closes the loop from the INSIDE and does
+# not depend on this file cooperating. This assertion is about the OTHER
+# direction: an operator or the hosted CI job running the suite directly, with
+# no merge above it, where the first nested `orchid merge` would otherwise be
+# free to open level one.
+#
+# THIS repository's own gate is the `--no-tests` form (asserted below), which
+# cannot reach tests/run.sh at all, so the loop above is not reachable here
+# today. The guard is not therefore decoration: `merge_gate` takes any command,
+# the flagless form of this script is the obvious thing to reach for, and a
+# recursion that only bites the repository that configures it that way is one
+# nobody discovers until it is running.
+#
+# Behavioural, not a grep for the export line: ci-local.sh spawns `$BASH_BIN`
+# for its own interpreter probe, so a `--bash` that records its inherited
+# environment before exec'ing the real interpreter reports what a spawned
+# child actually sees. `--list-shell` is used to stop right after that probe —
+# the marker is process-wide once exported, so proving it reaches the FIRST
+# child proves it reaches `tests/run.sh` too, and the static check below is
+# what would catch someone unsetting it in between.
+marker_probe="$WORK/ci-marker-probe.txt"
+marker_wrapper="$WORK/bash-marker-wrapper"
+cat > "$marker_wrapper" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\${ORCHID_MERGE_GATE_ACTIVE:-unset}" >> "$marker_probe"
+exec "$BASH" "\$@"
+EOF
+chmod +x "$marker_wrapper"
+: > "$marker_probe"
+# CLEARED FIRST, and the probe is worth nothing without this. Hosted CI, and
+# the pre-push command docs/contributing.md prescribes, both run this suite
+# THROUGH scripts/ci-local.sh — which exports the marker before tests/run.sh
+# starts, so by the time this file runs there it is already 1 in this shell's
+# own environment and the child below would inherit it whether or not the
+# export under test still existed. That is the one context where this
+# assertion runs most often, and it is precisely the context where it would
+# have passed a ci-local.sh with its export line deleted: a check reporting
+# success without having tested anything. Cleared in a SUBSHELL, never here:
+# the value is genuine information about where this run is happening, and
+# tests/test_merge.sh's own scenarios depend on knowing it, so it must survive
+# this probe rather than be spent by it.
+( unset ORCHID_MERGE_GATE_ACTIVE
+  "$BASH" "$CI" --bash "$marker_wrapper" --list-shell >/dev/null ) \
+  || fail "ci-local --list-shell failed through the marker-probe interpreter"
+assert_match "^1$" "$(cat "$marker_probe")" \
+  "ci-local.sh exports ORCHID_MERGE_GATE_ACTIVE into the processes it spawns, ON ITS OWN — the probe was launched with the marker cleared from its parent (merge-gate recursion guard)"
+
+# The probe above proves the marker is set where it is first observable; this
+# proves nothing later takes it away again. One `export`, no `unset` — the
+# guard is worthless if the suite is reached with it cleared, and that removal
+# would be invisible to any check that only looks at the top of the file.
+marker_writes="$(grep -cE '^[[:space:]]*(export[[:space:]]+)?ORCHID_MERGE_GATE_ACTIVE=|^[[:space:]]*unset[[:space:]].*ORCHID_MERGE_GATE_ACTIVE' "$CI")"
+assert_eq 1 "$marker_writes" "ci-local.sh writes ORCHID_MERGE_GATE_ACTIVE exactly once, and never unsets it"
+grep -q '^export ORCHID_MERGE_GATE_ACTIVE=1$' "$CI" \
+  || fail "ci-local.sh's single write of ORCHID_MERGE_GATE_ACTIVE must be that export"
+
 # Exercise discovery against layouts and shebang forms rather than proving
 # only that today's known files happen to be present. The copied gate has no
 # Git metadata, so this also covers the extracted-archive find fallback.
@@ -212,6 +273,84 @@ grep -q 'ubuntu-latest' "$WORKFLOW" || fail "CI workflow has no Linux runner"
 grep -q 'macos-latest' "$WORKFLOW" || fail "CI workflow has no macOS runner"
 grep -q 'scripts/ci-local.sh --bash /bin/bash' "$WORKFLOW" \
   || fail "hosted CI does not use the canonical local gate"
+
+# ...and so does this repository's own merge path. The mechanism landing
+# without anything turning it on is precisely the r-001 failure repeated one
+# level up: `scripts/ci-local.sh` existed for that entire run and was simply
+# never wired to the tasks it was supposed to judge. libexec/orchid-merge
+# reads `merge_gate` from repo config, so this line in orchid.config is what
+# makes the gate fire for every task here rather than only for the ones whose
+# author remembered to name it. Assert the wiring, not just the wire.
+grep -q '^merge_gate=.*scripts/ci-local\.sh' "$REPO_ROOT/orchid.config" \
+  || fail "orchid.config does not set merge_gate to the canonical local gate — merges here would not be gated by it"
+
+# The gate is the STATIC half, and it has to stay that way. `orchid merge` runs
+# the task's own `verification_commands` on the merged tree before the gate
+# fires, so a gate that ran the suite again would pay for a second full run per
+# merge and learn nothing from it — and this repository's suite is long enough
+# that the doubling is not a rounding error. Pinned here rather than left to
+# whoever next edits orchid.config, because the flag disappearing is silent:
+# every merge would still pass, just twice as slowly.
+grep -q '^merge_gate=.*[-]-no-tests' "$REPO_ROOT/orchid.config" \
+  || fail "orchid.config's merge_gate must pass --no-tests — the merged tree already gets a full suite from verification_commands"
+
+# And the flag has to mean what the config assumes: every static check, no
+# test script. Run it rather than read it — the failure worth catching is a
+# static section added BELOW the cut by a later author and silently skipped at
+# every merge thereafter, and only the real command can see that.
+#
+# Against a fixture with no tests/ directory at all, deliberately, so the two
+# halves prove each other and neither costs a second pass over this repository:
+# `--no-tests` exits 0 here only if it stopped before reaching a test runner
+# that does not exist, and the flagless run below fails for exactly that
+# reason. Two files to lint, not seventy.
+no_tests_fixture="$WORK/no-tests-fixture"
+mkdir -p "$no_tests_fixture/scripts"
+cp "$CI" "$no_tests_fixture/scripts/ci-local.sh"
+printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$no_tests_fixture/clean.sh"
+no_tests_ci="$no_tests_fixture/scripts/ci-local.sh"
+
+# ShellCheck is a MACHINE FACT here, and this is the one place in the suite
+# that needs it: every check above reads a file or stops at `--list-shell`,
+# which never reaches ci-local's `command -v shellcheck` requirement. Running
+# the pair below on a machine without it would not merely fail — the flagless
+# contrast would ALSO exit non-zero, for the missing linter rather than for
+# the missing suite, and would go on "passing" while proving nothing. So the
+# absence is recorded in the same vocabulary tests/helpers.sh's not_tested
+# uses, never as a pass and never as a defect in this repository's code.
+if ! command -v shellcheck >/dev/null 2>&1; then
+  not_tested "ci-local-no-tests-cut" "shellcheck is not installed, and scripts/ci-local.sh exits 1 without it, so the --no-tests cut cannot be exercised here (both this run and its flagless contrast would be measuring the missing linter). Qualify by installing ShellCheck — see docs/contributing.md — and re-running this file; hosted CI installs it on both runners"
+else
+  rc=0
+  no_tests_out="$("$BASH" "$no_tests_ci" --bash "$BASH" --no-tests 2>&1)" || rc=$?
+  assert_eq 0 "$rc" "ci-local --no-tests passes a clean tree that has no test suite to run"
+  assert_match '^== ShellCheck \(zero warnings\)$' "$no_tests_out" \
+    "--no-tests still runs the ShellCheck gate — the half of L016 no task's own suite ever contained"
+  assert_match '^== Portability policy' "$no_tests_out" \
+    "--no-tests still runs the portability gates"
+  # A here-string, not `printf | grep`: under this suite's `pipefail` the piped
+  # form is the negative assertion that fails open — grep's early exit can
+  # SIGPIPE the producer, turning "pattern present" into a nonzero pipeline that
+  # skips the `&& fail` exactly when it should fire.
+  grep -q '^== Full test suite' <<<"$no_tests_out" \
+    && fail "--no-tests reached the test suite"
+  assert_eq "CI PASS (static checks only; --no-tests)" \
+    "$(printf '%s\n' "$no_tests_out" | tail -n1)" \
+    "--no-tests says plainly that it skipped the suite, so a passing gate is never read as a full run"
+
+  # The contrast that makes the assertion above mean something: same tree, same
+  # static checks, flag dropped -> it goes looking for the suite and fails. And
+  # it must fail for THAT reason: the banner is printed only once the static
+  # half has finished, so requiring it in the output tells this failure apart
+  # from one that never got past ShellCheck or the portability gates and would
+  # otherwise satisfy a bare "exited non-zero" check while proving nothing.
+  rc=0
+  flagless_out="$("$BASH" "$no_tests_ci" --bash "$BASH" 2>&1)" || rc=$?
+  [ "$rc" -ne 0 ] || fail "ci-local without --no-tests must still try to run the test suite"
+  assert_match '^== Full test suite$' "$flagless_out" \
+    "the flagless run failed AT the test suite, not before it — otherwise the contrast measures a broken static check rather than the cut"
+fi
+
 grep -q 'scripts/release.sh --tag' "$WORKFLOW" || fail "tag workflow has no pinned release gate"
 grep -q 'contents: read' "$WORKFLOW" || fail "CI workflow does not use read-only repository permissions"
 grep -Eq 'secrets\.' "$WORKFLOW" && fail "deterministic CI must not require repository secrets"

@@ -563,6 +563,14 @@ uncommitted `.orchid/` run state — and note that the exclude protects run
 state *only*: the checkout still overwrites any uncommitted edit of your own
 outside `.orchid/` (a `requirements.md` at the repository root is the one
 that has actually been lost this way), so commit or stash those first.
+One thing to check before running that verb, when orchid runs from the
+checkout you are editing in: a merge that landed a change to `orchid.config`
+will have brought this copy to it — but only if you had no pending edit here,
+and it warns on stderr when you did and it therefore left yours alone. In that
+second case your file does not yet carry what the branch just landed, and
+`orchid config commit` commits the bytes on disk, so committing before you
+reconcile the two drops the merge's change. `docs/troubleshooting.md`,
+"`orchid.config` after a merge", has the comparison to run.
 
 ## THE TICK
 
@@ -1607,11 +1615,13 @@ ones its archetype never declares.
       When the archetype declares no `testing -> rework` edge, or that advance
       is refused before it charges, the driver takes the universal blocked edge
       through `orchid task advance <id> blocked --charge-attempt --reason
-      "..."`. That flag is legal only for `testing -> blocked`, cannot be
-      combined with `--waive-attempt`, and journals and consumes exactly the
-      candidate attempt it blocks. The boundary names `task retry` and `task
-      reverify`; an absent or refused rework edge is never a free candidate
-      failure.
+      "..."`. That flag is admitted on a closed set of three edges and no
+      others: `testing -> blocked` here, plus `merging -> rework` and `merging
+      -> blocked`, which exist for `orchid merge`'s `gate_failed` arm alone
+      (see the merging bullet). It cannot be combined with `--waive-attempt`,
+      and journals and consumes exactly the candidate attempt it charges. The
+      boundary names `task retry` and `task reverify`; an absent or refused
+      rework edge is never a free candidate failure.
 
     **Either advance carries the failing gate's exact locations into the brief,
     automatically.** Before it deletes the verify log, `orchid task advance
@@ -1691,9 +1701,14 @@ ones its archetype never declares.
     --reason "attempts exhausted (<attempts>/<budget>)"`. The budget is
     `rework_max` (config, default 3), or the task's own `attempt_budget` when
     an operator has granted it one (`orchid task retry <id> --reason "..."
-    --attempts N`). It is orchestrator-enforced, not a kernel-verb gate; a
+    --attempts N`). It is orchestrator-enforced HERE, not a kernel-verb gate; a
     classified non-candidate failure uses a waived rework edge and never
-    reaches this budget check, which is the point of classifying first.
+    reaches this budget check, which is the point of classifying first. One
+    exception, and only one: `orchid merge` applies the same budget itself on
+    a `gate_failed` merge (T007), because it owns both the charge and the edge
+    that follows it and cannot hand the decision back mid-transaction. It
+    reads the number from the same place — the task's `attempt_budget`, else
+    `rework_max` — so there is still one cap, not two.
 
 - **reviewing** (`awaiting-review-envelopes`): apply the risk-tiered review
   policy from the Preamble — `orchid jobs review-plan <id> --pin`, then
@@ -1754,16 +1769,44 @@ ones its archetype never declares.
   below refuse outright (exit 15, `merge blocked: required before_merge hook
   '<id>' has no ok envelope for this candidate`) rather than running the
   merge at all; an `optional` entry never gates it either way, invoked or
-  not. `orchid merge <id>`, then branch on the task's **post-merge status**
+  not. Separately, and needing nothing from the orchestrator at all, the verb
+  runs the repository's own `merge_gate` (config, default *unset*) on the
+  merged tree alongside the task's `verification_commands` — a floor set once
+  for the repository that every task inherits, precisely because a check each
+  task has to opt into reaches only the tasks whose author remembered it. It
+  blocks: a red gate returns the task to `rework` with the integration ref
+  untouched, exactly as a red task suite does. It also *terminates*, which a
+  red task suite at merge does not: unlike every other merge failure it
+  charges the round, so a gate that stays red reaches `blocked` instead of
+  cycling — both outcomes are itemised below. Nothing here needs invoking or
+  reconciling; see docs/configuration.md for its cost and its recursion guard.
+  `orchid merge <id>`, then branch on the task's **post-merge status**
   (`orchid task show <id>`) — never on the exit code alone: exit `1` is
   ambiguous between two different outcomes below, so the status is the only
   reliable signal. The verb already performs the resulting `task advance`
   internally in every case that actually changes status, so there is no
   separate advance call to make here:
   - status `done` (exit was `0`): merged.
-  - status `rework` (exit was `1`, `validation_failed` / merge or rebase
-    conflict; verb already journaled and advanced it): continue the walk's
-    rework handling on the next pass.
+  - status `rework` (exit was `1`, `validation_failed` / `gate_failed` /
+    merge or rebase conflict; verb already journaled and advanced it):
+    continue the walk's rework handling on the next pass. `gate_failed` means
+    the repo-wide `merge_gate` failed rather than the candidate's own suite —
+    same routing, but a failure the task was never asked about and frequently
+    not its author's doing, so say which one when you brief the rework.
+    `gate_failed` is also the ONE merge failure that consumes an attempt:
+    `merging → rework` is otherwise exempt (the candidate was independently
+    verified once already), but a red repo-wide gate is red again next round,
+    so leaving it uncharged makes the loop unbounded. Merge conflicts, rebase
+    conflicts and `validation_failed` stay exempt — read the reason, not the
+    edge.
+  - status `blocked` (exit was `1`, `gate_failed` with the attempt budget
+    spent; verb already charged the round, journaled and advanced it): the
+    repo-wide `merge_gate` was red for every rework round the task had, and
+    another round would re-run the same gate against the same repository. Do
+    not dispatch one — raise it for a human, naming the gate rather than the
+    candidate. The recoveries are `orchid task reverify <id> --reason "..."`
+    (re-runs verification, consumes no attempt) once the repository is green,
+    or `orchid task retry <id> --reason "..." --attempts N` for more rounds.
   - status `testing`, with a fresh `base_sha`/`candidate_sha` and invalidated
     evidence (exit was `5`, `rebase_rereview_required`; verb already
     journaled this with kind `rebase_review`): classifying the coming

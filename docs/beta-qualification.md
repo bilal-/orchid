@@ -107,6 +107,15 @@ and worked the whole time. So qualify a gate the way you qualify a repository â€
 confirm it rejects a change you know it must reject, *and* confirm the command
 that runs it sits in the path every change travels.
 
+Orchid's own answer to the second half is the `merge_gate` key
+(docs/configuration.md): one command, named once for the repository, that
+`orchid merge` runs on every merged tree before it advances the integration
+branch, with no task asked to opt in and no task frontmatter able to switch it
+off. Treat it as a qualification step about a candidate repository's
+*configuration* rather than about orchid itself: an unset `merge_gate` means
+that repository has no floor, and a repository with no floor reads, in every
+report, exactly like one whose floor is simply never failing.
+
 ### Why two probes for one implementer question
 
 `implementer-shell` reads the manifest, and a manifest `capabilities=` entry is
