@@ -40,25 +40,50 @@ source "$(dirname "$0")/../helpers.sh"
 # overruled by a signal -- and in a log all three are indistinguishable from
 # each other and from a gate that passed.
 #
-# RED: five, one per section, each fed to the SAME derivation the section runs
-#      over the shipped tree. A ci-local-shaped file whose static section sits
-#      BELOW the `--no-tests` cut (so it is outside the merge floor and only
-#      reaches tasks that opted into the full suite). An inv-shaped gate file
-#      that never loads tests/helpers.sh, so its `red_case`/`green_case` calls
-#      satisfy a text linter and are enforced by nothing at run time. A
-#      trust-boundary entry point that arms the stale-root gate and reaches no
-#      site that fires it. An $ORCHID_ROOT genuinely parked on its configured
-#      integration branch with a staged kernel edit, which must still be
-#      REFUSED -- the case that must be caught. And a gate written as a
-#      producer piped into `grep -q`.
+# AND SECTIONS 1-5 ARE ALL DERIVATIONS OVER TEXT, which is the fourth way the
+# same defect gets in and the reason sections 6 and 7 exist. A scan that reads
+# the shipped source can say a gate is WIRED and cannot say it FIRES: the
+# whole subject of this file is that satisfying a check by text nothing
+# executes reads, in a log, exactly like satisfying it for real. So the two
+# claims that carry the invariant's weight are also made EXECUTABLY, against
+# this candidate's own kernel:
+#
+#   * section 6 runs the pump out of a root that really is stale and requires
+#     the refusal to land BEFORE the pump's first write, with the write itself
+#     as the witness -- a gate an entry point reaches only after it has
+#     already written is reached too late.
+#   * section 7 walks a real task, whose `verification_commands` names nothing
+#     but `true`, to `merging` and merges it against a red repo-wide gate, and
+#     requires the integration ref not to move. That is L016's sentence --
+#     "still gated before its ref can advance" -- executed rather than read
+#     out of orchid.config.
+#
+# RED: seven, one per section, each fed to the SAME derivation or the same
+#      shipped verb the section runs over the real tree. A ci-local-shaped
+#      file whose static section sits BELOW the `--no-tests` cut (so it is
+#      outside the merge floor and only reaches tasks that opted into the full
+#      suite). An inv-shaped gate file that never loads tests/helpers.sh, so
+#      its `red_case`/`green_case` calls satisfy a text linter and are
+#      enforced by nothing at run time. A trust-boundary entry point that arms
+#      the stale-root gate and reaches no site that fires it. An $ORCHID_ROOT
+#      genuinely parked on its configured integration branch with a staged
+#      kernel edit, which must still be REFUSED -- the case that must be
+#      caught. A gate written as a producer piped into `grep -q`. A pump
+#      invoked out of that same stale root, which must refuse with no runtime
+#      directory created. And a merge whose repo-wide gate exits non-zero,
+#      which must leave the integration ref exactly where it was.
 # GREEN: the twins, in this file: the shipped scripts/ci-local.sh, whose
 #      static sections are all above the cut; the shipped tests/inv/ gates,
 #      which all load helpers.sh; a real deferring entry point that does reach
 #      a firing site; the case that must NOT fire -- an ordinary checkout on a
 #      development branch, where the same construction spends no `git` and
 #      refuses nothing, so section 3 is detection rather than a check that
-#      fails on every checkout; and the shipped kernel's many pipes into a
-#      grep that reads to EOF, which must all be left alone.
+#      fails on every checkout; the shipped kernel's many pipes into a grep
+#      that reads to EOF, which must all be left alone; the same pump against
+#      the same repo out of a root that is NOT stale, which must run and must
+#      create the very directory the refusal above proved absent; and the same
+#      task, the same tree and the same absent opt-in with a GREEN gate, which
+#      must merge and advance the ref.
 
 CI_LOCAL="$REPO_ROOT/scripts/ci-local.sh"
 [ -f "$CI_LOCAL" ] || fail "INV-15: scripts/ci-local.sh is missing — the repository's static gate is gone, or it moved"
@@ -189,6 +214,13 @@ assert_match 'ci-local\.sh' "$merge_gate_line" \
   "INV-15: this repository's merge_gate must invoke scripts/ci-local.sh, or its static checks reach only the tasks that opted in"
 assert_match '[-][-]no-tests' "$merge_gate_line" \
   "INV-15: the merge_gate must pass --no-tests, which is the cut section 1 measures every static check against"
+
+# ...and being NAMED in orchid.config is still only text. Whether `orchid
+# merge` actually reads that key, runs the command it names against a task
+# that asked for nothing, and refuses the ref advance when it comes back
+# non-zero is section 7, which walks a real task through a real merge to find
+# out. Everything above this line would be equally green against a kernel
+# that had stopped reading `merge_gate` altogether.
 
 # RED/GREEN on the SAME derivation. The fixtures differ from each other in one
 # line's position and in nothing else, so the outcomes below are attributable
@@ -493,6 +525,16 @@ green_case 'the identical staged kernel edit on a development branch neither ref
 # runners/ that sources lib/common.sh) and partitioned by what each file
 # declares about itself, rather than being listed here. A trust-boundary entry
 # point written tomorrow is covered the moment it defers.
+#
+# WHAT THIS SECTION CANNOT SEE, said here rather than only in the not-tested
+# claim at the end: "the file calls a firing site" is not "the file calls it
+# before it does anything". runners/orchid-pump satisfied every line below
+# while reaching its firing site only after `orchid_runtime` had created
+# `.orchid/runtime` in the target repository. That ordering is not derivable
+# from text -- a `orchid_runtime` line inside a function body precedes a call
+# site that runs long after it, and no line-number comparison can tell the two
+# apart -- so it is proven by execution instead, for the entry point it was
+# wrong in, in section 6.
 # ===========================================================================
 
 # The one entry point that provably cannot fire the gate before its own work,
@@ -621,6 +663,19 @@ green_case 'a deferring entry point that does reach its restore, and an ordinary
 # shipped kernel, and a source file written tomorrow is covered without
 # anyone remembering to re-run anything.
 #
+# THE INVARIANT GATES ARE IN THAT GLOB TOO, and they were the omission this
+# section shipped with. `tests/inv/` is where the checks that gate the
+# invariants live -- section 2 above exists solely to make their enrolment
+# real -- and twenty-five of their assertions were written as `echo "$out" |
+# grep -q`. The direction that costs is the one those files use most: a
+# NEGATIVE assertion, `... | grep -q pat && fail`, is skipped by pipefail
+# EXACTLY when `pat` is present, because that is when grep exits first and
+# kills the producer. So the arm that must catch the regression is the one the
+# race switches off, and it switches off silently, in the files whose whole
+# job is to notice. A gate scanning the kernel for a hazard it carries itself
+# is the same defect one level up, which is why the glob below is the kernel
+# AND these files.
+#
 # What is flagged is narrow and mechanical: a pipe into `grep`, with a `q` in
 # that grep's flags. A pipe into a grep that reads its input to EOF (-v, -c,
 # -o, a bare -E) has no early exit and no race, and the shipped kernel is full
@@ -631,7 +686,15 @@ green_case 'a deferring entry point that does reach its restore, and an ordinary
 # The two halves of the shape, spelled once. The first is the DENOMINATOR --
 # every pipe into grep, safe or not -- so the second can be shown to be
 # selecting rather than matching nothing.
-PQ_PIPE_TO_GREP='\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*grep[[:space:]]'
+#
+# `(^|[^|])` in front of the pipe, and it is not decoration: `cmd || grep -q x
+# file` carries a `|` immediately followed by another, and without this the
+# scan reads that `||` as a pipe and reports a `grep` that has no producer to
+# kill at all (tests/inv/test_INV-08_reasons.sh line 44 is exactly that shape
+# and is correct as written). A matcher that cannot tell a pipeline from a
+# logical OR would make this section unsatisfiable against honest code, and an
+# unsatisfiable gate gets weakened rather than obeyed.
+PQ_PIPE_TO_GREP='(^|[^|])\|[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]+[[:space:]]+)*grep[[:space:]]'
 # `[^|]*` so the `q` has to belong to THIS grep rather than to something
 # further down the pipeline, and `([[:space:]]|$)` so a line that ends on the
 # flag -- with its pattern on a continuation -- is caught like any other.
@@ -662,9 +725,17 @@ pq_violations=""
 # adapters carried the shape until this section was written. `plugins/*/*/*`
 # rather than `plugins/*/*/run`, so a helper script placed beside `run`
 # tomorrow is covered too; a plugin.conf simply matches nothing.
+#
+# ...and `tests/inv/test_*.sh`, by the SAME glob section 2 enrols, so a gate
+# file written tomorrow is covered by both at once: section 2 requires it to
+# be enforced at run time, this requires the assertions it enforces with to
+# mean what they say. The rest of tests/ is deliberately not here -- see the
+# not-tested claim at the end of this file for what that leaves open and why
+# the invariant gates were taken first.
 for pq_file in "$REPO_ROOT"/bin/* "$REPO_ROOT"/lib/*.sh "$REPO_ROOT"/libexec/* \
                "$REPO_ROOT"/runners/* "$REPO_ROOT"/scripts/*.sh \
-               "$REPO_ROOT"/plugins/*/*/* "$REPO_ROOT"/templates/*.sh; do
+               "$REPO_ROOT"/plugins/*/*/* "$REPO_ROOT"/templates/*.sh \
+               "$INV_GLOB_DIR"/test_*.sh; do
   [ -f "$pq_file" ] || continue
   pq_rel="${pq_file#"$REPO_ROOT"/}"
   while IFS= read -r pq_line; do
@@ -682,12 +753,12 @@ done
 # matching pipes at all would report a clean kernel, and that is the reading
 # this whole file exists to make impossible.
 [ "$pq_examined" -ge 10 ] \
-  || fail "INV-15: only $pq_examined piped-grep line(s) discovered across bin/, lib/, libexec/, runners/, scripts/, plugins/ and templates/ — the shipped tree has many more, so the early-exit scan below is judging an almost empty set and its silence means nothing"
+  || fail "INV-15: only $pq_examined piped-grep line(s) discovered across bin/, lib/, libexec/, runners/, scripts/, plugins/, templates/ and tests/inv/ — the shipped tree has many more, so the early-exit scan below is judging an almost empty set and its silence means nothing"
 
 [ -z "$pq_violations" ] \
-  || fail "INV-15: a kernel gate pipes a producer into an early-exiting grep. Under set -o pipefail the SIGPIPE that grep's first match sends the producer becomes the pipeline's status, so a MATCH can be read as no-match — the gate is not skipped, it is decided by process scheduling (the class T010's arbitration named). Feed the matcher a herestring instead:$pq_violations"
+  || fail "INV-15: a gate pipes a producer into an early-exiting grep. Under set -o pipefail the SIGPIPE that grep's first match sends the producer becomes the pipeline's status, so a MATCH can be read as no-match — the gate is not skipped, it is decided by process scheduling (the class T010's arbitration named). In an invariant file the usual shape is a NEGATIVE assertion — a producer piped into an early-exiting grep, then '&& fail' — and it is skipped exactly when the pattern IS present. Feed the matcher a herestring instead:$pq_violations"
 
-green_case "every one of the $pq_examined pipes into grep across the shipped tree, kernel and bundled plugins alike, reads its input to EOF — none carries a -q whose early exit could SIGPIPE the producer and hand pipefail a kill-by-signal status where a verdict belongs"
+green_case "every one of the $pq_examined pipes into grep across the shipped tree — kernel, bundled plugins and the tests/inv/ gate files alike — reads its input to EOF, and none carries a -q whose early exit could SIGPIPE the producer and hand pipefail a kill-by-signal status where a verdict belongs"
 
 # The RED twin, on the same two functions. The fixture also carries the shape
 # INSIDE A COMMENT, because this repository documents this exact hazard in
@@ -695,10 +766,16 @@ green_case "every one of the $pq_examined pipes into grep across the shipped tre
 # scanned -- and a scan that counted those would be unsatisfiable.
 PQ_FIXTURES="$WORK/piped-grep-fixtures"
 mkdir -p "$PQ_FIXTURES"
+# The matcher's own spelling, passed IN rather than written out: `tests/inv/`
+# is now inside the glob above, so a literal `| grep -q` on any line of this
+# file would be a violation reported against this file -- and a gate that has
+# to exempt itself from its own scan is one exemption away from being useless.
+# The fixture bytes are identical either way; only this file's source differs.
+pq_q='grep -q'
 { printf '#!/usr/bin/env bash\n'
   printf 'set -euo pipefail\n'
-  printf '  # a herestring, never printf "%%s" "$x" | grep -q y -- this line is prose\n'
-  printf 'if printf "%%s" "$reason" | LC_ALL=C grep -q "[^[:space:]]"; then :; fi\n'
+  printf '  # a herestring, never printf "%%s" "$x" | %s y -- this line is prose\n' "$pq_q"
+  printf 'if printf "%%s" "$reason" | LC_ALL=C %s "[^[:space:]]"; then :; fi\n' "$pq_q"
 } > "$PQ_FIXTURES/gate-with-a-race"
 
 pq_red_out="$(piped_early_exit_grep "$PQ_FIXTURES/gate-with-a-race")"
@@ -723,11 +800,16 @@ red_case "INV-15's early-exit derivation reported a gate written as a producer p
   printf 'n="$(printf "%%s\\n" "$body" | grep -c "[^[:space:]]" || true)"\n'
   printf 'warns="$(echo "$out" | grep -E "^warn:" || true)"\n'
   printf 'grep -q "[^[:space:]]" <<<"$reason" || die "empty"\n'
+  # A logical OR, not a pipeline: two `|` characters in a row, and the grep to
+  # their right reads a FILE. There is no producer here for a first match to
+  # kill, and a matcher that could not tell this from a pipe would report a
+  # shipped invariant gate that is correct as written.
+  printf 'is_recorded "$id" || %s "^recorded$" "$ledger"\n' "$pq_q"
 } > "$PQ_FIXTURES/gate-without-a-race"
 
 pq_ok_out="$(piped_early_exit_grep "$PQ_FIXTURES/gate-without-a-race")"
 [ -z "$pq_ok_out" ] \
-  || fail "INV-15: a read-to-EOF pipe (-v, -c, a bare -E) or a grep -q fed from a herestring was reported anyway ($pq_ok_out) — neither can SIGPIPE a producer, and a scan that flagged them would flag the shipped kernel and could never be satisfied"
+  || fail "INV-15: a read-to-EOF pipe (-v, -c, a bare -E), a grep -q fed from a herestring, or a grep -q on the right of a logical OR was reported anyway ($pq_ok_out) — none of the three can SIGPIPE a producer, and a scan that flagged them would flag the shipped tree and could never be satisfied"
 pq_ok_seen=0
 while IFS= read -r pq_line; do
   [ -n "$pq_line" ] || continue
@@ -735,15 +817,281 @@ while IFS= read -r pq_line; do
 done < <(piped_grep_lines "$PQ_FIXTURES/gate-without-a-race")
 [ "$pq_ok_seen" -ge 3 ] \
   || fail "INV-15: only $pq_ok_seen of the accepting fixture's three piped greps were EXAMINED at all, so leaving them unflagged demonstrates nothing about the flag test — it demonstrates the pipe matcher missing them"
-green_case "the accepting fixture's three read-to-EOF pipes were all examined and none was flagged, and the herestring-fed grep -q beside them was not either, so the report above discriminates by early exit rather than by the presence of a pipe"
+green_case "the accepting fixture's three read-to-EOF pipes were all examined and none was flagged, and neither the herestring-fed grep -q beside them nor the grep -q on the right of a logical OR was, so the report above discriminates by early exit rather than by the presence of a pipe or of two adjacent pipe characters"
 
 # ===========================================================================
-# 6 -- the boundaries of what any of this proves.
+# 6 -- A GATE REACHED ONLY AFTER THE FIRST WRITE IS REACHED TOO LATE.
+#
+# Section 4 asks whether a trust-boundary entry point CONTAINS a firing site.
+# That is a text question and it has a text answer, and both halves of this
+# file's subject say why that is not enough: `runners/orchid-pump` contained
+# one (`_orchid_entry_restore_operator_path`, five lines below its outbox
+# machinery) and reached it only after `orchid_runtime` had already created
+# `.orchid/runtime` in the target repository and, under `--service-log`, after
+# it had created and opened `pump.log` there. Every scan in this file passed
+# that, because every scan in this file reads source. A stale kernel does not
+# become safe by writing only a directory before it is stopped -- the point of
+# the guard is that NOTHING pre-merge runs, and a gate placed after the first
+# side effect has already lost the argument for the side effects it did not
+# happen to reach.
+#
+# So this section EXECUTES the pump, twice, against the same repository, with
+# one difference between the runs: the installation root it is invoked from.
+# The witness is the runtime directory -- absent after the refusal, present
+# after the run that is allowed to proceed -- which is what makes the absence
+# evidence of the gate rather than evidence of a pump that writes nothing
+# there anyway.
+#
+# The fixture repository is left at `run_status: planning` deliberately: the
+# pump's lease step exits 0 on it with a diagnostic, which is far enough past
+# the gate to have created the runtime directory and short of anything that
+# spends an engine.
+# ===========================================================================
+PUMP_PROOF="$WORK/pump-gate"
+mkdir -p "$PUMP_PROOF"
+
+# The stale root, built out of THIS candidate's own kernel rather than a
+# stand-in: bin/, lib/ and runners/ are copied because that is what the pump
+# actually loads, and the remaining kernel directories are created empty so
+# the guard's pathspec (ORCHID_KERNEL_PATHS) names something real in each.
+# `templates/.keep` is what gets staged, so the refusal has a path to report
+# that no other part of this fixture could have produced.
+PUMP_ROOT="$PUMP_PROOF/stale-root"
+mkdir -p "$PUMP_ROOT"
+for pump_dir in bin lib runners; do
+  cp -R "$REPO_ROOT/$pump_dir" "$PUMP_ROOT/$pump_dir"
+done
+for pump_dir in libexec plugins roles skills templates; do
+  mkdir -p "$PUMP_ROOT/$pump_dir"
+  printf 'probe\n' > "$PUMP_ROOT/$pump_dir/.keep"
+done
+printf 'PROTOCOL probe\n' > "$PUMP_ROOT/PROTOCOL.md"
+printf 'integration_branch=%s\n' "$PROBE_INTEG" > "$PUMP_ROOT/orchid.config"
+chmod +x "$PUMP_ROOT/bin/orchid" "$PUMP_ROOT/runners/orchid-pump"
+git init -q "$PUMP_ROOT"
+git -C "$PUMP_ROOT" symbolic-ref HEAD "refs/heads/$PROBE_INTEG"
+git -C "$PUMP_ROOT" add -A
+git -C "$PUMP_ROOT" commit -q -m "pump probe root"
+printf 'staged kernel edit\n' >> "$PUMP_ROOT/templates/.keep"
+git -C "$PUMP_ROOT" add templates/.keep
+[ -n "$(git -C "$PUMP_ROOT" diff --cached --name-only HEAD -- templates)" ] \
+  || fail "INV-15: the pump fixture's root has no staged kernel edit, so it is not stale and the refusal below would prove nothing"
+
+# The target repository, and it is a DIFFERENT directory from the root above:
+# what is under test is a scheduled pump reaching a repo out of a stale
+# installation, which is the shape a `service install` leaves behind.
+PUMP_REPO="$PUMP_PROOF/repo"
+mkdir -p "$PUMP_REPO"
+git init -q "$PUMP_REPO"
+git -C "$PUMP_REPO" commit -q --allow-empty -m root
+mkdir -p "$PUMP_REPO/.orchid/tasks"
+printf -- '---\nrun_status: planning\nrun_id: inv15-pump\n---\n# Roadmap\n' \
+  > "$PUMP_REPO/.orchid/roadmap.md"
+
+# ACKNOWLEDGED, and this is load-bearing rather than setup: without it the
+# pump refuses at the unattended-trust gate, which sits AHEAD of the stale-root
+# gate and writes nothing either -- so the runtime directory would be absent
+# for the wrong reason and this section would prove nothing at all.
+HOME="$MACHINE_HOME" "$ORCHID_BIN" trust unattended "$PUMP_REPO" \
+  --reason "INV-15 pre-write pump gate fixture" >/dev/null \
+  || fail "INV-15: could not acknowledge the pump fixture repository, so the runs below would be stopped by the unattended-trust gate rather than by the gate this section is about"
+
+# pump_probe <root> -- one pump invocation against $PUMP_REPO out of <root>.
+# ORCHID_ALLOW_STALE_ROOT is spelled empty rather than left inherited: an
+# operator with it exported would otherwise switch off the very gate this
+# section measures.
+pump_rc=0
+pump_out=""
+pump_probe() {
+  pump_rc=0
+  pump_out="$(HOME="$MACHINE_HOME" ORCHID_REPO="$PUMP_REPO" ORCHID_ALLOW_STALE_ROOT='' \
+    "$1/runners/orchid-pump" 2>&1)" || pump_rc=$?
+}
+
+[ ! -e "$PUMP_REPO/.orchid/runtime" ] \
+  || fail "INV-15: the pump fixture already has a runtime directory before any pump has run, so its absence below would be inherited rather than caused"
+
+pump_probe "$PUMP_ROOT"
+assert_eq 1 "$pump_rc" \
+  "INV-15: a pump invoked out of a stale installation root must refuse (got rc=$pump_rc: $pump_out)"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$pump_out" \
+  "INV-15: ...and it must be the stale-root refusal, not some other failure of the fixture"
+assert_match 'templates/\.keep' "$pump_out" \
+  "INV-15: the refusal must name the staged kernel path, which only the index comparison can have produced"
+[ ! -e "$PUMP_REPO/.orchid/runtime" ] \
+  || fail "INV-15: the refused pump created $PUMP_REPO/.orchid/runtime before the stale-root gate fired. The gate is reachable and it is reached too late: a stale kernel wrote into the target repository, and everything after that write is guarded only by where the next author happens to put the call"
+red_case "a pump invoked out of a genuinely stale installation root refused before its first write -- the refusal named the staged kernel path, and the target repository has no runtime directory, so the gate this entry point arms fires ahead of its side effects rather than merely somewhere inside it"
+
+# The case that must NOT fire, on the SAME repository: this checkout's own
+# pump, which is not stale, must run and must create the very directory the
+# refusal above proved absent. Without it, an entry point that refused
+# everything -- or a pump that never wrote there at all -- would satisfy the
+# assertions above.
+pump_probe "$REPO_ROOT"
+assert_eq 0 "$pump_rc" \
+  "INV-15: this checkout's own pump must run against an acknowledged repository (got rc=$pump_rc: $pump_out). If this is the stale-root refusal, the checkout the suite is running from is itself parked on its integration branch with a staged kernel edit, and every verb is refusing for the same reason"
+assert_match 'run not running \(planning\), no lease yet' "$pump_out" \
+  "INV-15: ...and it must get as far as the lease step, which is past the gate"
+[ -d "$PUMP_REPO/.orchid/runtime" ] \
+  || fail "INV-15: the pump that was allowed to proceed created no runtime directory, so the absence asserted in the RED case above is not evidence of anything the gate did"
+green_case 'the same pump, against the same acknowledged repository, ran to its lease step out of a root that is not stale and created the runtime directory there -- so the refusal above is the gate stopping a write that really does happen, rather than a pump that writes nothing or an entry point that refuses everything'
+
+# ===========================================================================
+# 7 -- THE MERGE FLOOR, EXECUTED.
+#
+# Section 1 reads `scripts/ci-local.sh` and `orchid.config` and concludes that
+# this repository's static checks are inside a floor every task inherits. Both
+# of those are text. The sentence L016 actually costs -- "a task whose
+# verification_commands omits the gate is still gated before its ref can
+# advance" -- is about a verb's behaviour, and it is asked here of the shipped
+# `orchid merge`, on a real task, in a real repository.
+#
+# The task's `verification_commands` is `true`: it names no gate, no linter
+# and no suite, exactly like the six r-001 tasks that never opted in. The
+# repository's `merge_gate` exits non-zero. The integration ref must not move.
+# Then the identical scenario with a green gate must merge, so the refusal is
+# attributable to the gate's exit status and to nothing else about this
+# fixture.
+# ===========================================================================
+#
+# `unset`, not `export ...=`: this file runs inside `scripts/ci-local.sh` in
+# CI, which sets the recursion marker so a gate that is the repository's own
+# suite cannot open a second level of itself. Inherited here, the fixture's
+# gate would correctly skip and BOTH arms below would assert nothing -- a
+# green section proving the opposite of what it claims, which is this file's
+# whole subject. The fixture's own gate is `ls`, so nothing recurses.
+unset ORCHID_MERGE_GATE_ACTIVE
+
+MERGE_PROOF="$WORK/merge-floor"
+mkdir -p "$MERGE_PROOF"
+cd_scratch "$MERGE_PROOF" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+mkdir -p .orchid/tasks .orchid/reviews
+export ORCHID_REPO="$MERGE_PROOF"
+HOME="$WORK/merge-home"; mkdir -p "$HOME"; export HOME
+mg_integ=orchid/integration
+git branch "$mg_integ"
+
+# `ls` is the gate body in both arms: it exits 0 and it writes the tree it ran
+# against into the marker, so "the gate ran" and "the gate ran against the
+# MERGED tree" are one assertion. The red body differs from the green one in
+# its exit status and in nothing else.
+MERGE_GATE_MARKER="$WORK/inv15-merge-gate-ran.txt"
+mg_gate_pass="ls >> $MERGE_GATE_MARKER"
+mg_gate_fail="ls >> $MERGE_GATE_MARKER; exit 7"
+mg_set_gate() {
+  {
+    printf 'integration_branch=%s\n' "$mg_integ"
+    printf 'merge_gate=%s\n' "$1"
+  } > orchid.config
+}
+mg_set_gate "$mg_gate_fail"
+
+ORCHID_EPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH
+
+# The only path the kernel allows into `merging`, walked verbatim: a real
+# passing `orchid verify` (INV-11's gate) and a reconciled reviewer envelope.
+# A hand-set status would prove nothing about a verb that reads the status it
+# was handed.
+mg_walk_to_merging() {  # <id> <branch> <base> <cand> <verification_commands>
+  "$ORCHID_BIN" task set "$1" base_sha "$3"
+  "$ORCHID_BIN" task set "$1" candidate_sha "$4"
+  "$ORCHID_BIN" task set "$1" verification_commands "$5"
+  "$ORCHID_BIN" task advance "$1" implementing >/dev/null
+  "$ORCHID_BIN" task advance "$1" testing >/dev/null
+  git checkout -q "$2"
+  "$ORCHID_BIN" verify "$1" >/dev/null
+  git checkout -q "$mg_integ"
+  "$ORCHID_BIN" task advance "$1" reviewing >/dev/null
+  plant_reviewer_envelope "$1"
+  "$ORCHID_BIN" task advance "$1" arbitrating --reason "single reviewer approved" >/dev/null
+  "$ORCHID_BIN" task advance "$1" merging --reason "approved for merge" >/dev/null
+}
+
+"$ORCHID_BIN" task create T101 "gated without opting in" >/dev/null
+git checkout -q -b task/T101 "$mg_integ"
+printf 'red\n' > inv15-red.txt
+git add inv15-red.txt
+git commit -q -m "INV-15 red candidate"
+mg_cand="$(git rev-parse HEAD)"
+git checkout -q "$mg_integ"
+mg_base="$(git rev-parse "$mg_integ")"
+mg_walk_to_merging T101 task/T101 "$mg_base" "$mg_cand" true
+
+# The premise of the whole section, asserted rather than assumed: this task
+# asked for nothing.
+mg_vc="$("$ORCHID_BIN" task show T101 | grep '^verification_commands: ' | cut -d' ' -f2-)"
+assert_eq "true" "$mg_vc" \
+  "INV-15: the fixture task's own verification_commands must name nothing but 'true', or it opted in and the gating below is not the property under test"
+
+: > "$MERGE_GATE_MARKER"
+mg_pre="$(git rev-parse "$mg_integ")"
+mg_rc=0
+mg_out="$("$ORCHID_BIN" merge T101 2>&1)" || mg_rc=$?
+[ "$mg_rc" -ne 0 ] \
+  || fail "INV-15: a merge whose repo-wide gate exited non-zero reported success (out: $mg_out)"
+assert_eq "$mg_pre" "$(git rev-parse "$mg_integ")" \
+  "INV-15: the integration ref MOVED past a red repo-wide gate — that is lesson L016 restored: the gate ran, the task never opted into it, and its work landed anyway"
+mg_log=".orchid/reviews/T101-merge.log"
+assert_match 'inv15-red\.txt' "$(cat "$MERGE_GATE_MARKER")" \
+  "INV-15: the gate must have RUN, and against the merged tree — its own listing carries the candidate's file"
+assert_match '^gate_status: ran$' "$(cat "$mg_log")" \
+  "INV-15: the merge evidence must record that the repo-wide gate ran"
+assert_match '^gate_exit: 7$' "$(cat "$mg_log")" \
+  "INV-15: ...and the status it came back with"
+assert_match '^command_status: 0$' "$(cat "$mg_log")" \
+  "INV-15: the task's OWN suite passed, so the refusal is the repo-wide gate's and nothing else about this candidate"
+assert_match "^candidate: $mg_cand\$" "$(cat "$mg_log")" \
+  "INV-15: the evidence must be bound to the candidate that was actually gated — a merge log that names no candidate, or names a superseded one, is a record of a gate run on something else"
+# WHERE THE GATE CAME FROM, which is the other half of "no task can switch it
+# off": a candidate is a TREE, and a tree can carry an orchid.config of its
+# own. Resolved from the merged tree instead of from the repository, a
+# candidate could ship a one-line config naming a gate that trivially passes
+# and be judged by it -- the floor lowered by the very change it is there to
+# judge. This fixture's orchid.config is never committed, so the merged tree
+# has none at all: had the gate been resolved from there, nothing would have
+# run and every assertion above would have failed.
+assert_eq "gate: $mg_gate_fail" "$(grep '^gate: ' "$mg_log")" \
+  "INV-15: the gate that ran must be verbatim the REPOSITORY's configured command, resolved from repo config rather than from the tree being merged"
+red_case "a task whose verification_commands names nothing but 'true' was gated anyway by the repository's merge_gate, the gate ran against the merged tree, it exited 7, and the integration ref did not move — L016's sentence executed against the shipped orchid merge rather than read out of orchid.config"
+
+# The GREEN twin: same repository, same absent opt-in, one difference -- the
+# gate's exit status. Without it the RED case would be satisfied by a merge
+# that refuses everything.
+mg_set_gate "$mg_gate_pass"
+"$ORCHID_BIN" task create T102 "green gate, still no opt-in" >/dev/null
+git checkout -q -b task/T102 "$mg_integ"
+printf 'green\n' > inv15-green.txt
+git add inv15-green.txt
+git commit -q -m "INV-15 green candidate"
+mg_cand2="$(git rev-parse HEAD)"
+git checkout -q "$mg_integ"
+mg_base2="$(git rev-parse "$mg_integ")"
+mg_walk_to_merging T102 task/T102 "$mg_base2" "$mg_cand2" true
+
+: > "$MERGE_GATE_MARKER"
+mg_rc=0
+mg_out="$("$ORCHID_BIN" merge T102 2>&1)" || mg_rc=$?
+assert_eq 0 "$mg_rc" "INV-15: the identical scenario with a GREEN gate must merge (out: $mg_out)"
+[ "$(git rev-parse "$mg_integ")" != "$mg_base2" ] \
+  || fail "INV-15: the integration ref did not advance past a green gate, so the RED case above is not evidence that the red gate is what stopped it"
+assert_eq "done" "$("$ORCHID_BIN" task show T102 | grep '^status: ' | cut -d' ' -f2)" \
+  "INV-15: ...and the task reaches done — the floor delays a merge, it does not derail one"
+assert_match 'inv15-green\.txt' "$(cat "$MERGE_GATE_MARKER")" \
+  "INV-15: the green gate ran too, against its own merged tree — the floor is not skipped for a task that would have passed anyway"
+green_case 'the same repository, the same task-level opt-in (none), and a gate that exits 0 merged and advanced the integration ref, so the refusal above is the gate exit status being obeyed rather than a verb that refuses every merge'
+
+# ===========================================================================
+# 8 -- the boundaries of what any of this proves.
 # ===========================================================================
 not_tested "gate-omission-beyond-the-four-families" \
-  "enforcement gates outside the four this file derives — the static sections of scripts/ci-local.sh, the tests/inv/ gate files, the stale-root guard's entry-point reach, and the early-exit matcher shape across the shipped kernel and bundled plugins. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the four checkable is that each has a DISCOVERABLE membership: a banner, a glob, a source line, a syntactic shape. A new gate family belongs here the moment its membership becomes derivable"
+  "enforcement gates outside the four this file derives — the static sections of scripts/ci-local.sh, the tests/inv/ gate files, the stale-root guard's entry-point reach, and the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the four checkable is that each has a DISCOVERABLE membership: a banner, a glob, a source line, a syntactic shape. A new gate family belongs here the moment its membership becomes derivable"
 not_tested "firing-site-reachability-within-an-entry-point" \
-  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file. Section 4 is textual by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call, which it cannot. So a file whose only call sits inside one arm of a dispatch satisfies this scan while the arms beside it go ungated -- the same omission, one level down from the one this section derives. That is answered structurally rather than by a check: every shipped deferring entry point calls its firing site unconditionally, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no arm that could forget. An entry point that guards its call belongs to review, and the question to put to it is the one this file's header puts to an environment: on which route is your gate not reached"
+  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the one section 6 executes. Section 4 is textual by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. Section 6 answers both questions for runners/orchid-pump by running it and weighing the refusal against a write, and that is one entry point out of the deferring set. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no arm that could forget. An entry point that guards its call, or that writes before it, belongs to review, and the two questions to put to it are the ones sections 4 and 6 put to the pump: on which route is your gate not reached, and what have you already done by the time it is"
+not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
+  "the rest of tests/. Section 5's glob is the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \
   "producers killed by an early-exiting consumer that is not grep -q. A head -n1, a sed -n 1q, and a bare read in a pipeline all stop reading before their input ends and all SIGPIPE upstream the same way; section 5 derives exactly one consumer because that is the one the shipped tree used, and the sites that pipe into head today discard the status with an explicit fallback rather than branching on it. The tell is the same wherever it appears: a pipeline under set -o pipefail whose right-hand side can stop reading first, so its exit status may be the producer's death rather than the matcher's verdict"
 not_tested "gate-vacuity-beyond-the-integration-branch-dimension" \

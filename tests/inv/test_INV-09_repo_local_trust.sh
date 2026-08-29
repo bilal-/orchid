@@ -56,7 +56,11 @@ HOME="$home" ORCHID_REPO="$repo" "$ORCHID_BIN" plugins trust "$plugin_dir" >/dev
 [ ! -e "$repo/.orchid/trust" ] || fail "INV-09: trust record must never appear under the repo, even after trusting"
 exe="$(resolve "$home" "$repo" inveng)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09: a genuinely trusted, digest-matching repo-local engine must resolve"
-echo "$exe" | grep -q "inveng/run$" || fail "INV-09: resolved path must point at the trusted repo-local run script"
+# Herestrings here and at the user-plugin check below, never `echo "$exe" |
+# grep -q` (T016/INV-15 section 5): `grep -q` exits at its first match and
+# SIGPIPEs `echo`, and helpers.sh's `set -o pipefail` makes that kill the
+# pipeline's status -- so the correct path can be read as the wrong one.
+grep -q "inveng/run$" <<<"$exe" || fail "INV-09: resolved path must point at the trusted repo-local run script"
 
 # 5) A digest mismatch (e.g. a repo pull mutating a tracked file) instantly
 # de-trusts it -- it must go back to never executing, with no operator
@@ -78,7 +82,7 @@ userhome="$WORK/userhome"; mkdir -p "$userhome/.orchid/plugins/engines/usereng"
 mk_engine "$userhome/.orchid/plugins/engines/usereng" acme/usereng 0.1.0
 exe="$(resolve "$userhome" "$repo" usereng)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09 must not spill over: a ~/.orchid user plugin needs no trust record"
-echo "$exe" | grep -q "usereng/run$" || fail "user-plugin resolution returned the wrong path"
+grep -q "usereng/run$" <<<"$exe" || fail "user-plugin resolution returned the wrong path"
 exe="$(resolve "$userhome" "$repo" claude)"; rc=$?
 [ "$rc" -eq 0 ] || fail "INV-09 must not spill over: a built-in engine needs no trust record"
 

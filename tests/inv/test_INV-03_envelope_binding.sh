@@ -29,7 +29,13 @@ jid="$(jq -r .job_id "$m")"; sp="$WORK/.orchid/runtime/spool"
 # forged job_id -> quarantine
 printf '{"contract":1,"job_id":"j-forged","task":"T001","operation":"implement","status":"ok","summary":"evil"}' > "$sp/j-forged.json"
 assert_match "quarantined" "$("$ORCHID_BIN" jobs reconcile)" "INV-03: unknown job_id quarantined"
-list_dir_files "$WORK/.orchid/runtime/quarantine" | grep -q . \
+# Captured, then matched with a herestring -- never `list_dir_files ... |
+# grep -q` (T016/INV-15 section 5): `grep -q` exits at its first match and
+# SIGPIPEs the producer, and under helpers.sh's `set -o pipefail` that
+# kill-by-signal status becomes the pipeline's, so a quarantine dir that DOES
+# hold the forgery can read as empty.
+quarantined_names="$(list_dir_files "$WORK/.orchid/runtime/quarantine")"
+grep -q . <<<"$quarantined_names" \
   || fail "INV-03: quarantine dir holds it"
 [ -f "$m" ] || fail "INV-03: manifest untouched by forgery"
 
@@ -141,7 +147,12 @@ m6_cand="$(jq -r .candidate_sha "$m6")"
 [ -z "$m6_cand" ] || fail "sanity: fresh task has empty candidate_sha in manifest"
 printf '{"contract":1,"job_id":"%s","task":"T001","operation":"implement","status":"ok","summary":"impl","candidate_sha":"deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"}' "$jid6" > "$sp/$jid6.json"
 out6="$("$ORCHID_BIN" jobs reconcile)"
-echo "$out6" | grep -q quarantined && fail "INV-03/F4: implement envelope with an output candidate_sha must NOT be quarantined ($out6)"
+# A herestring, and this NEGATIVE assertion is the direction that costs most
+# (T016/INV-15 section 5): `echo ... | grep -q` is skipped by pipefail exactly
+# when the pattern IS present -- grep exits at the match, SIGPIPEs `echo`, and
+# the pipeline reports the kill -- so `&& fail` would never fire on the one
+# output it exists to catch.
+grep -q quarantined <<<"$out6" && fail "INV-03/F4: implement envelope with an output candidate_sha must NOT be quarantined ($out6)"
 assert_match "T001	ok" "$out6" "INV-03/F4: implement envelope with differing candidate_sha accepted"
 [ -f "$m6" ] && fail "INV-03/F4: manifest must be gone after an accepted implement envelope"
 

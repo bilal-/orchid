@@ -76,8 +76,15 @@ green_case "a non-kernel-owned key was accepted by the same task set that refuse
 # cleanly, not crash with an unbound-variable error (set -u).
 out="$("$ORCHID_BIN" task set T001 risk_tier high --reason 2>&1 1>/dev/null)"; rc=$?
 [ "$rc" -ne 0 ] || fail "risk_tier --reason with no value must fail"
-echo "$out" | grep -q "unbound variable" && fail "--reason with no value must not crash with an unbound-variable error"
-echo "$out" | grep -q "reason requires a value" || fail "--reason with no value must die with a clear message (got: $out)"
+# HERESTRINGS throughout the four verbs below, never `echo "$out" | grep -q`
+# (T016/INV-15 section 5). `grep -q` exits at its first match and SIGPIPEs
+# `echo`, and under helpers.sh's `set -o pipefail` that kill-by-signal status
+# becomes the pipeline's. Both directions are wrong here and the first is the
+# expensive one: the `&& fail` line is SKIPPED exactly when the crash it looks
+# for really is in the output, so the assertion that must catch an unbound-
+# variable regression is the one the race switches off.
+grep -q "unbound variable" <<<"$out" && fail "--reason with no value must not crash with an unbound-variable error"
+grep -q "reason requires a value" <<<"$out" || fail "--reason with no value must die with a clear message (got: $out)"
 
 # v0b1 fix: the same valueless-`--reason` guard must apply on every
 # reason-bearing verb (advance/unblock/retry), not just `set risk_tier`.
@@ -88,22 +95,22 @@ echo "$out" | grep -q "reason requires a value" || fail "--reason with no value 
 "$ORCHID_BIN" task create T010 reason-guard-advance >/dev/null
 out="$("$ORCHID_BIN" task advance T010 blocked --reason 2>&1 1>/dev/null)"; rc=$?
 [ "$rc" -ne 0 ] || fail "advance --reason with no value must fail"
-echo "$out" | grep -q "unbound variable" && fail "advance --reason with no value must not crash with an unbound-variable error"
-echo "$out" | grep -q "requires a value" || fail "advance --reason with no value must die with a clear message (got: $out)"
+grep -q "unbound variable" <<<"$out" && fail "advance --reason with no value must not crash with an unbound-variable error"
+grep -q "requires a value" <<<"$out" || fail "advance --reason with no value must die with a clear message (got: $out)"
 
 # unblock: needs a task actually in `blocked` status first.
 "$ORCHID_BIN" task create T011 reason-guard-unblock >/dev/null
 "$ORCHID_BIN" task advance T011 blocked --reason "fixture blocker" >/dev/null
 out="$("$ORCHID_BIN" task unblock T011 --reason 2>&1 1>/dev/null)"; rc=$?
 [ "$rc" -ne 0 ] || fail "unblock --reason with no value must fail"
-echo "$out" | grep -q "unbound variable" && fail "unblock --reason with no value must not crash with an unbound-variable error"
-echo "$out" | grep -q "requires a value" || fail "unblock --reason with no value must die with a clear message (got: $out)"
+grep -q "unbound variable" <<<"$out" && fail "unblock --reason with no value must not crash with an unbound-variable error"
+grep -q "requires a value" <<<"$out" || fail "unblock --reason with no value must die with a clear message (got: $out)"
 
 # retry: legal from blocked or rework; use a blocked fixture.
 "$ORCHID_BIN" task create T012 reason-guard-retry >/dev/null
 "$ORCHID_BIN" task advance T012 blocked --reason "fixture blocker" >/dev/null
 out="$("$ORCHID_BIN" task retry T012 --reason 2>&1 1>/dev/null)"; rc=$?
 [ "$rc" -ne 0 ] || fail "retry --reason with no value must fail"
-echo "$out" | grep -q "unbound variable" && fail "retry --reason with no value must not crash with an unbound-variable error"
-echo "$out" | grep -q "requires a value" || fail "retry --reason with no value must die with a clear message (got: $out)"
+grep -q "unbound variable" <<<"$out" && fail "retry --reason with no value must not crash with an unbound-variable error"
+grep -q "requires a value" <<<"$out" || fail "retry --reason with no value must die with a clear message (got: $out)"
 red_case "every reason-bearing verb refused a missing or valueless --reason, and every kernel-owned key refused a direct set with its value unchanged"

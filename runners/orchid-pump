@@ -145,6 +145,24 @@ else
   unattended_trust_require "$repo" "unattended pump" || exit 1
 fi
 
+# The stale-root gate, HERE, at the first line its own contract allows and
+# before the first line that writes anything (T016). lib/common.sh armed it
+# when this file sourced it and left the firing to this file, because a
+# trust-boundary entry point may not spend a `git` while it might still be
+# looking for an acknowledgement -- and the line above is where that lookup
+# ends. `_orchid_entry_restore_operator_path` below would also fire it, but it
+# sits past `orchid_runtime` and past the service log's creation, so a stale
+# kernel would have written into the target repository before being stopped.
+# A gate reached after the first side effect is reached too late: what stops
+# the writes it does not precede is only where the next author happens to put
+# the call. Idempotent and self-disarming, so the restore below stays exactly
+# where the operator PATH is actually needed.
+#
+# tests/inv/test_INV-15_no_optional_gate.sh section 6 pins both edges of this
+# by running the pump out of a genuinely stale root and weighing the refusal
+# against `.orchid/runtime`.
+orchid_root_stale_gate
+
 rt="$(orchid_runtime "$repo")"
 if [ "$pump_service_log" -eq 1 ]; then
   # Keep a service log strictly inside the acknowledged checkout. The
