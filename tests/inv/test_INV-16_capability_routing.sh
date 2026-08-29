@@ -1649,6 +1649,15 @@ pw_blockers_before="$(pw_handoffs)"
 pw_journal_before="$(pw_journaled)"
 assert_eq 1 "$pw_blockers_before" \
   "INV-16 fixture: the permanent case's single hand-off must be the state carried in, or 'unchanged' below is both sides reading zero and would hold with the recording removed"
+# The journal half needs its OWN witness, and 1 is not a guess: `orchid notify`
+# runs under `set -euo pipefail` and journals the blocker BEFORE it appends to
+# BLOCKERS.md (libexec/orchid-notify's INV-08 ordering note), so the receipt
+# asserted above is only reachable through a journal line carrying the same
+# text. Without this, `pw_journaled` could be answering 0 on both sides -- a
+# misspelt pattern, a journal that never carried the sentence -- and the
+# comparison after the pass would hold with the journalling removed entirely.
+assert_eq 1 "$pw_journal_before" \
+  "INV-16 fixture: and the same hand-off must be on the journal too, or the 'no second journal line' check below is 0 == 0 and proves nothing about a record it cannot see"
 PRC=0; POUT="$("$REPO_ROOT/runners/orchid-pump" 2>&1)" || PRC=$?
 assert_eq 0 "$PRC" "INV-16: an unavailable-but-capable orchestrator is still an ordinary poll outcome (out: $POUT)"
 assert_match "no capable orchestrator available" "$POUT" \
