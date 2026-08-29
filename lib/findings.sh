@@ -194,41 +194,91 @@ findings_extract() {
 #
 # FAILS OPEN, EVERY WAY IT CAN. No `---`, no `command_status:`, no
 # `gate_status: ran`, a `gate:` the banner never matches, a segment whose
-# status line is missing -- each keeps the output it could not classify.
+# status line is missing or unreadable -- each keeps the output it could not
+# classify.
 # `orchid verify`'s log, every merge log written before this field existed,
 # and every hand-built fixture therefore behave exactly as they did: dropping
 # evidence on a parse this function is unsure of would cost the next
 # implementer the locations, which is the failure the whole file exists to
 # stop.
+#
+# WHICH IS WHY THE FILE IS READ TWICE. One of those arms cannot be answered
+# while streaming, and it is the arm with the worst outcome: "the header says
+# a gate ran, but the banner that says WHERE its output begins is not in this
+# body." A single pass meets that state having already committed to the suite
+# half's decision, and with a green suite recorded that decision is DROP -- so
+# it discards the entire body, the unattributable gate locations with it, and
+# the log that most needed quoting quotes as nothing. So pass one reads the
+# header and answers that one yes/no question about the body; pass two streams
+# and prints. Read twice rather than buffered: this runs on every rework edge
+# over a log that can carry a whole suite's output, and holding that in memory
+# to answer one boolean is the wrong trade. Nothing writes a log after a
+# reader can reach it -- `orchid merge` and `orchid verify` both land theirs
+# through atomic_write before the edge that scrapes them -- so the two passes
+# see one file.
+#
+# AND WHY A STATUS IS DROPPED ON ONLY WHEN IT IS A WELL-FORMED ZERO. `s + 0`
+# is 0 for `x`, for an empty field and for a line truncated mid-write, so a
+# bare `!= 0` test reads every unparseable status as a pass and throws that
+# command's output away -- the same fail-closed shape as the missing banner,
+# one field over. The pattern match is what keeps "this says it passed" apart
+# from "this says nothing I can read". findings_log_gate_failed below guards
+# the same way and reaches the opposite answer, which is not an inconsistency:
+# it decides whether to TELL a human the repository is red, so an unreadable
+# field must not become a claim; this decides what evidence to KEEP, where an
+# unreadable field must not become a deletion.
 findings_failing_output() {
   local log="$1"
   [ -f "$log" ] || return 0
   awk '
+    # PASS 1 -- the header fields, plus the single body fact pass 2 cannot
+    # discover in time: whether the boundary the header promises is really
+    # here. Nothing is printed and nothing is kept.
+    FNR == NR {
+      if (scan_header == 0) {
+        if ($0 == "---") { scan_header = 1; next }
+        if (index($0, "command_status: ") == 1) cmd_status = substr($0, 17)
+        else if (index($0, "gate: ") == 1) gate_cmd = substr($0, 7)
+        else if (index($0, "gate_status: ") == 1) gate_status = substr($0, 14)
+        else if (index($0, "gate_exit: ") == 1) gate_exit = substr($0, 12)
+        next
+      }
+      # Same equality the split below uses, so the two cannot disagree about
+      # what counts as the boundary: a `gate:` the header never carried leaves
+      # gate_cmd empty and matches nothing, which is itself an unlocatable
+      # boundary and is handled as one.
+      if (gate_cmd != "" && $0 == ("== merge_gate: " gate_cmd)) boundary = 1
+      next
+    }
+    # PASS 2 -- the header, verbatim, then the body under that attribution.
     header == 0 {
       print
       if ($0 == "---") {
         header = 1
+        # THE UNLOCATABLE CASE, decided here because here is where the body
+        # starts. The header claims a gate ran and pass 1 found no banner, so
+        # neither half of what follows can be attributed to a command -- and
+        # what may not be attributed is kept, whole, rather than half of it
+        # thrown away on the strength of a status that describes the other
+        # half.
+        if (gate_status == "ran" && boundary == 0) keepall = 1
         # The body opens with the task suite output. Kept unless the header
         # states, in so many words, that the command exited 0.
-        keep = (cmd_status == "" || cmd_status + 0 != 0)
-        next
+        keep = !(cmd_status ~ /^[0-9]+$/ && cmd_status + 0 == 0)
       }
-      if (index($0, "command_status: ") == 1) cmd_status = substr($0, 17)
-      else if (index($0, "gate: ") == 1) gate_cmd = substr($0, 7)
-      else if (index($0, "gate_status: ") == 1) gate_status = substr($0, 14)
-      else if (index($0, "gate_exit: ") == 1) gate_exit = substr($0, 12)
       next
     }
+    keepall { print; next }
     # The boundary, taken once: a gate whose own output repeats this line must
     # not re-open the segment it is already inside.
     split_done == 0 && gate_status == "ran" && gate_cmd != "" &&
       $0 == ("== merge_gate: " gate_cmd) {
       split_done = 1
-      keep = (gate_exit == "" || gate_exit + 0 != 0)
+      keep = !(gate_exit ~ /^[0-9]+$/ && gate_exit + 0 == 0)
       next
     }
     keep { print }
-  ' "$log"
+  ' "$log" "$log"
 }
 
 # findings_log_failed <log> -- 0 iff this log RECORDED A FAILURE.

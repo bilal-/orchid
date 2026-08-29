@@ -938,6 +938,241 @@ assert_match "tests/task-suite\.sh:1: SC9999: $noise_pat" "$body15" \
 assert_match "further diagnostic line\(s\)" "$body15" \
   "and the cap still applies to them, still announced rather than silently truncated"
 
+# --- (F3) the classifier's OWN arms, over hand-built logs ------------------
+# (F1) and (F2) drive the two shapes a real `orchid merge` can produce. They
+# cannot reach the rest of what lib/findings.sh promises, because the only
+# writer of these headers is the verb that also decides which command runs:
+# `orchid merge` skips the gate when the suite failed, always writes the
+# banner it named in `gate:`, and always writes both statuses as shell
+# integers. So every arm that is about a log which does NOT hold together --
+# and every arm that is about the day that skip rule changes -- is reachable
+# from here and nowhere else.
+#
+# Worth reaching, because the cost is asymmetric and silent. This function
+# decides what the next implementer is SHOWN. A wrong "keep" is noise in a
+# brief; a wrong "drop" is the failing gate's only actionable locations
+# deleted on the way to the one actor asked to fix them, under a heading that
+# still says a gate reported something. Nothing downstream can tell that
+# happened -- the log on disk is complete either way.
+#
+# Hand-built logs, deliberately: the arms below are precisely the ones the
+# real writer cannot emit, so a fixture built by running a merge could not
+# express them. The two contrast arms -- (F3a), and the first arm of (F3f) --
+# are what keep the rest from being vacuous: a function that answered "keep
+# everything" to every log, or a predicate that answered "not a gate failure"
+# to every log, would satisfy every negative arm below.
+attrib_out() { ( source "$REPO_ROOT/lib/findings.sh"; findings_failing_output "$1" ); }
+attrib_gate() { ( source "$REPO_ROOT/lib/findings.sh"; findings_log_gate_failed "$1" ); }
+
+# --- (F3a) the canonical split, asked of the function directly -------------
+# The (F1) shape: green suite, red gate, banner present and matching. The
+# whole output is compared rather than grepped, so the header passing through
+# unchanged and the BANNER being consumed are pinned alongside the split
+# itself -- a banner left in the body would reach a brief as a finding.
+cat > "$WORK/log-split.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+sha: 1111111111111111111111111111111111111111
+candidate: 2222222222222222222222222222222222222222
+cwd: /tmp/wt
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: 3
+---
+suite/one.sh:1: printed by the passing suite
+
+== merge_gate: run-the-gate
+gate/two.sh:2: printed by the failing gate
+exit: 3
+LOG
+assert_eq "date: 2026-01-01T00:00:00Z
+sha: 1111111111111111111111111111111111111111
+candidate: 2222222222222222222222222222222222222222
+cwd: /tmp/wt
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: 3
+---
+gate/two.sh:2: printed by the failing gate
+exit: 3" "$(attrib_out "$WORK/log-split.txt")" \
+  "the header passes through whole, the passing suite's half goes, the failing gate's half stays, and the banner is consumed rather than quoted as a finding"
+
+# --- (F3b) the header promises a boundary the body does not carry ----------
+# THE ARM WITH THE WORST FAILURE. The header says a gate ran and went red; the
+# body holds no banner naming the command `gate:` recorded (here because the
+# two disagree -- equally: a `gate:` line lost to a truncated write, or a
+# writer that stopped emitting the banner). Nothing in the file says where one
+# command's output ends, so NEITHER half can be attributed -- and a `keep`
+# decision made from the suite's green status would then delete the gate's
+# locations along with it, leaving a brief that quotes nothing at all from the
+# log that most needed quoting.
+cat > "$WORK/log-noboundary.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+sha: 1111111111111111111111111111111111111111
+candidate: 2222222222222222222222222222222222222222
+cwd: /tmp/wt
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: 3
+---
+suite/one.sh:1: printed by the passing suite
+== merge_gate: some-other-command
+gate/two.sh:2: printed by the failing gate
+exit: 3
+LOG
+noboundary_out="$(attrib_out "$WORK/log-noboundary.txt")"
+assert_match "gate/two\.sh:2: printed by the failing gate" "$noboundary_out" \
+  "an unlocatable boundary keeps the gate's output -- what cannot be attributed must not be deleted, and this is the half a green suite's status would otherwise take with it"
+assert_match "suite/one\.sh:1: printed by the passing suite" "$noboundary_out" \
+  "...and keeps the suite's half beside it, because 'I cannot tell which of these is which' is the answer, not 'therefore the green one'"
+
+# --- (F3c) a status field that says nothing readable ----------------------
+# `x + 0` is 0 in awk, so a bare compare-against-zero reads every unparseable
+# status as a PASS and throws that command's output away. A field this shape
+# is not a claim that anything passed.
+cat > "$WORK/log-badstatus.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+command_status: x
+---
+suite/one.sh:1: printed by a suite whose status is unreadable
+exit: 1
+LOG
+assert_match "suite/one\.sh:1: printed by a suite whose status is unreadable" \
+  "$(attrib_out "$WORK/log-badstatus.txt")" \
+  "an unreadable command_status keeps the output -- 'this says it passed' and 'this says nothing I can read' must not be the same answer"
+
+# ...and the same rule on the gate's own field. `command_status: 0` IS
+# readable here, so the suite's half still goes: this pins that the guard is
+# per-field rather than a blanket give-up on the whole log.
+cat > "$WORK/log-badgateexit.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+command_status: 0
+gate: run-the-gate
+gate_status: ran
+gate_exit: not-a-number
+---
+suite/one.sh:1: printed by the passing suite
+== merge_gate: run-the-gate
+gate/two.sh:2: printed by a gate whose status is unreadable
+exit: 1
+LOG
+badgate_out="$(attrib_out "$WORK/log-badgateexit.txt")"
+assert_match "gate/two\.sh:2: printed by a gate whose status is unreadable" "$badgate_out" \
+  "an unreadable gate_exit keeps the gate's output too"
+grep -q "printed by the passing suite" <<<"$badgate_out" \
+  && fail "the suite's status was perfectly readable and said 0 -- one unreadable field must not turn the whole log into 'keep everything', or the attribution stops meaning anything"
+
+# --- (F3d) a red suite and a GREEN gate -----------------------------------
+# `orchid merge` cannot produce this today: it skips the gate when the suite
+# has already failed. It is pinned because it is the shape that proves the
+# split is driven by the two RECORDED statuses rather than by position -- a
+# filter that kept everything above the banner, or everything below it, passes
+# (F3a) and fails here. The day that skip rule changes, this arm is what
+# already holds.
+cat > "$WORK/log-inverse.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+command_status: 1
+gate: run-the-gate
+gate_status: ran
+gate_exit: 0
+---
+suite/one.sh:1: printed by the failing suite
+== merge_gate: run-the-gate
+gate/two.sh:2: printed by the passing gate
+exit: 1
+LOG
+inverse_out="$(attrib_out "$WORK/log-inverse.txt")"
+assert_match "suite/one\.sh:1: printed by the failing suite" "$inverse_out" \
+  "the RED suite's half is kept even though it is the half above the banner"
+grep -q "printed by the passing gate" <<<"$inverse_out" \
+  && fail "a gate the header records as having exited 0 reported nothing, so its output must not be quoted to an implementer as though it had"
+
+# --- (F3e) a single-command log is untouched ------------------------------
+# `orchid verify`'s log, and every merge log written before these fields
+# existed. It classifies nothing, so nothing may be removed from it.
+cat > "$WORK/log-verify.txt" <<'LOG'
+date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+---
+suite/one.sh:1: printed by a verify run
+exit: 1
+LOG
+assert_eq "date: 2026-01-01T00:00:00Z
+candidate: 2222222222222222222222222222222222222222
+command: run-the-suite
+---
+suite/one.sh:1: printed by a verify run
+exit: 1" "$(attrib_out "$WORK/log-verify.txt")" \
+  "a log with no per-command classification in it is passed through byte for byte -- the T007 fields are additive, and an older log must read exactly as it did"
+
+# --- (F3f) findings_log_gate_failed: what it will and will not claim ------
+# The predicate `runners/orchid-drive` calls to decide whether to tell a human
+# the REPOSITORY is red -- and, at the cap, whether to raise an operator
+# boundary. It is the mirror image of the function above: that one keeps what
+# it cannot classify, this one claims nothing it cannot read.
+attrib_gate "$WORK/log-split.txt" \
+  || fail "test bug: a log that plainly records a gate that RAN and exited 3 must read as a gate failure, or every negative arm below is vacuous"
+
+cat > "$WORK/log-gate-green.txt" <<'LOG'
+gate: run-the-gate
+gate_status: ran
+gate_exit: 0
+---
+exit: 0
+LOG
+attrib_gate "$WORK/log-gate-green.txt" \
+  && fail "a gate that ran and exited 0 is not a gate failure"
+
+cat > "$WORK/log-gate-nan.txt" <<'LOG'
+gate: run-the-gate
+gate_status: ran
+gate_exit: boom
+---
+exit: 1
+LOG
+attrib_gate "$WORK/log-gate-nan.txt" \
+  && fail "an unreadable gate_exit must not become the claim 'this repository's gate is red' -- and a numeric compare against it is a shell ERROR, which in a set -e driver is a dead pass rather than a no"
+
+cat > "$WORK/log-gate-skipped.txt" <<'LOG'
+gate: run-the-gate
+gate_status: skipped-nested
+gate_exit: 3
+---
+exit: 3
+LOG
+attrib_gate "$WORK/log-gate-skipped.txt" \
+  && fail "a gate recorded as SKIPPED did not fail, whatever else the header carries: the status is asked first, and a skip that read as a failure would charge an attempt for a gate that never executed"
+
+# The impersonation arm, and the reason both statuses live in the header. This
+# log's header states NO gate status at all; the only `gate_status: ran` and
+# `gate_exit: 3` in the file are in captured OUTPUT -- a test echoing them, a
+# suite printing a merge log of its own. Parsing stops at the `---`, so they
+# are text and not a classification. Written with the header silent rather
+# than merely disagreeing, because a header that disagreed would answer this
+# correctly by accident: the predicate exits at the FIRST `gate_status:` it
+# sees, so only an absent one makes the `---` stop the thing being tested.
+cat > "$WORK/log-gate-impostor.txt" <<'LOG'
+gate: run-the-gate
+---
+gate_status: ran
+gate_exit: 3
+exit: 0
+LOG
+attrib_gate "$WORK/log-gate-impostor.txt" \
+  && fail "captured output below the --- must not be able to state this log's classification: a suite that prints a gate header would otherwise charge its own task an attempt for a repository condition that never happened"
+
 # ---------------------------------------------------------------------------
 # (G) A PERSISTENTLY RED GATE IS BOUNDED.
 #
