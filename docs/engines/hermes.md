@@ -309,11 +309,15 @@ hermes gateway status                         # what the probe asks
 ```
 
 - **exit 0 — REACHABLE.** The judged status line reports the gateway
-  running/connected/online/ready/active/healthy.
+  running/connected/online/ready/active/healthy — or it names a **live
+  process id** (`pid 4242`, `"PID" = 4242`), which is how a supervisor
+  answers the question and is published only for a job that is actually
+  running.
 - **exit 1 — NOT REACHABLE.** `hermes gateway status` failed (gateway not
   running, socket refused, auth expired), or it answered and the judged line
   carries a negation (`not running`, `stopped`, `disconnected`, `inactive`,
-  `offline`, `expired`, `down`, `unreachable`, `unhealthy`, …).
+  `dead`, `crashed`, `not loaded`, `offline`, `expired`, `down`,
+  `unreachable`, `unhealthy`, …).
 - **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
   `notify.channel` is unset, this build has no `gateway status` subcommand,
   the command printed nothing, or none of the candidate lines below is one
@@ -379,6 +383,33 @@ lines so that same row cannot get there either, by being printed first.
 `inactive` is in the negative vocabulary for the same reason:
 it is the whole word a service manager reports a stopped unit with.
 
+**Under launchd the same problem arrives one step further in**, because a
+launchd job is named by its *label* and a label is a compound —
+`hermes-gateway`, `com.hermes.gateway`:
+
+```
+hermes-gateway: running (launchd, pid 4242)
+```
+
+"Names the gateway" therefore also admits **this CLI's own name** in front of
+the noun — `hermes-`, `hermes.`, `hermes_` — on top of the dot-joined form
+(`com.orchid.gateway`) that always worked. Any qualifier at all would be too
+much: `discord-gateway` is a row about a *sibling platform's* gateway, and it
+must no more decide your channel's return leg than `discord:` may. The
+**right** side stays strict for the same reason, so a token *ending* in
+`gateway` is this gateway while `gateway-alerts` — a name headed by *alerts* —
+is not. And a row naming a **live pid** is read as up even when it
+carries none of the status words, since that is what a supervisor's answer
+looks like. Three things keep that from inventing REACHABLE: it is only
+reached on a row an earlier tier already admitted (a sibling platform's
+`discord: connected (pid 4242)` never gets there), the negatives are judged
+first (`stopped, pid 4242` is the outage), and the pid must be the current one
+— `last pid 4242` is a record of a process that is gone, and `pid 0`/`pid -`
+is a placeholder, not a process. `dead`, `crashed` and `not loaded` are
+negations for the same reason: they are the words a supervisor spells
+deadness with on a row that may still quote a process id. A bare `loaded` is
+not a positive — launchd and systemd both call a *stopped* job loaded.
+
 One deliberate difference from openclaw's probe: `openclaw channels status`
 is documented to *enumerate* channels, so a channel missing from it is a
 determination there (exit 1). Nothing establishes that `hermes gateway
@@ -399,7 +430,7 @@ CLI — the task that added this probe could execute nothing at all. Both its
 existence and its output are therefore treated as untrusted: a build with no
 such subcommand is caught as an unknown subcommand and answers **2**, never
 1, so a version difference can never masquerade as an outage, and any line
-outside the two recognized vocabularies above answers 2 with its own text
+outside the recognized vocabularies above answers 2 with its own text
 quoted. Confirm the subcommand and its wording during the live hero-demo
 dogfood; if it turns out to be spelled differently, this probe reports
 "undetermined" until it is corrected, which is the safe direction.

@@ -224,6 +224,32 @@ if [ "${1:-}" = --inbound-probe ]; then
     # channel it says nothing about -- which is the property step 1 above
     # exists to protect.
     #
+    # AND "NAMES THE GATEWAY" INCLUDES THE JOB LABEL, which is the form a
+    # launchd-managed gateway is named in and the reason this boundary is
+    # ASYMMETRIC. A supervisor names its job with a hyphen-, underscore- or
+    # dot-joined compound -- `hermes-gateway`, `com.hermes.gateway` -- so a
+    # perfectly healthy
+    #     hermes-gateway: running (launchd, pid 4242)
+    # matched no tier at all under a boundary that refused `-` on the left:
+    # not a gateway row (the `-` before the word), not a status label (the
+    # label is `hermes-gateway`, not `gateway`), and not the last-resort first
+    # line (it is a `<word>:` row, so that tier declines it). UNDETERMINED for
+    # the plainest healthy output there is.
+    #
+    # So the left side additionally admits `hermes[-._]` -- THIS CLI's own
+    # name in front of the noun -- and nothing else new. A dot-joined
+    # reverse-dns label (`com.orchid.gateway`) was already admitted, since a
+    # dot is not alphanumeric; what was missing is exactly the hyphen and
+    # underscore a supervisor label joins with. Widening the left side to any
+    # non-alphanumeric instead would also admit `discord-gateway`, a row about
+    # a SIBLING platform's gateway, which must no more decide this channel's
+    # return leg than `discord:` may -- the property step 1 above exists to
+    # protect, and the worse of the two errors when it is a healthy row.
+    #
+    # The RIGHT side stays strict, and that asymmetry is the rest of the rule:
+    # `gateway-alerts` is a name headed by `alerts`, a different subject
+    # again. A token ENDING in `gateway` is this gateway; a token merely
+    # STARTING with it is not.
     # AND THE LAST-RESORT TIER IS HELD TO THAT SAME PROPERTY, which is why the
     # first line is admitted CONDITIONALLY rather than always. Output with no
     # channel row, no gateway row and no status label still deserves a reading
@@ -240,7 +266,7 @@ if [ "${1:-}" = --inbound-probe ]; then
     # already declined to recognize -- is not judged at all; it is only quoted
     # back with the undetermined verdict below. A line with no such label
     # names nothing but the thing being asked about, and is judged.
-    probe_rows="$(grep -iE -e '(^|[^[:alnum:]_-])gateway([^[:alnum:]_-]|$)' <<<"$probe_out" || true)"
+    probe_rows="$(grep -iE -e '(^|[^[:alnum:]_-]|hermes[-._])gateway([^[:alnum:]_-]|$)' <<<"$probe_out" || true)"
     probe_labels="$(grep -iE -e '^[^[:alnum:]]*(active|status|state|health|service|gateway)[[:space:]]*[:=]' <<<"$probe_out" || true)"
     probe_bare="$probe_first"
     if grep -qE -e '^[[:space:]]*[A-Za-z0-9_-]+[[:space:]]*[:=]' <<<"$probe_first"; then
@@ -278,8 +304,18 @@ if [ "${1:-}" = --inbound-probe ]; then
     # `inactive`, which is the whole word a service manager reports a stopped
     # unit with (`Active: inactive (dead)`) -- without it the label row above
     # would answer undetermined in exactly the case the tier was added for.
+    #
+    # `dead`, `crashed` and `not loaded` are the supervisor's own vocabulary,
+    # and they are here to GUARD THE LIVE-PID POSITIVE below rather than
+    # because a bare `dead` was ever ambiguous: a supervisor row can name a
+    # process id and a dead process in the same breath (`hermes-gateway: dead
+    # (pid 4242 reaped)`), and since negatives are judged first, spelling them
+    # out is what stops that row from being read as health by the pid it
+    # carries. `loaded` is negated but never positive on its own -- a launchd
+    # job and a systemd unit are both `loaded` while stopped, so the word says
+    # the supervisor knows about the gateway, not that it is running.
     probe_status="${probe_lower//"$probe_channel_lower"/ }"
-    if grep -qE -e '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unhealthy|expired|down|unreachable)([^a-z0-9_-]|$)' \
+    if grep -qE -e '(^|[^a-z0-9_-])((not|never)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy|loaded)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unhealthy|expired|down|unreachable|dead|crashed)([^a-z0-9_-]|$)' \
          <<<"$probe_status"; then
       echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
       exit 1
@@ -310,6 +346,35 @@ if [ "${1:-}" = --inbound-probe ]; then
     # of them.
     if grep -qE -e '(^|[^a-z0-9_-])(running|connected|online|ready|active|healthy)([^a-z0-9_-]|$)' \
          <<<"$probe_status"; then
+      echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
+      exit 0
+    fi
+    # A LIVE PROCESS ID IS THE OTHER POSITIVE, and it is the one a
+    # launchd-managed gateway most often reports health in: a supervisor's
+    # answer to "is it up" is the process it is supervising, and launchd
+    # publishes a pid ONLY for a job that is actually running -- a stopped job
+    # carries `-` in that column, or no pid field at all. Without this tier a
+    #     hermes-gateway: com.hermes.gateway (pid 4242)
+    # answers UNDETERMINED about a return leg whose process is right there in
+    # the line, because none of the words above appears in it.
+    #
+    # THREE THINGS KEEP IT FROM INVENTING REACHABLE, which is the error this
+    # file weighs as the worse one throughout:
+    #   * it is only ever reached on a row a tier above ADMITTED -- the
+    #     configured channel's row, or one naming the gateway -- so a sibling
+    #     platform's `discord: connected (pid 4242)` cannot reach it;
+    #   * the negatives are judged first, so a row that reports both a state
+    #     and a pid (`gateway: stopped, pid 4242`) is already decided as down;
+    #   * the pid must be the CURRENT one. `last pid`, `exited pid`, `was pid`
+    #     is a record of a process that is GONE, and reading it as health is
+    #     precisely the false REACHABLE the paragraph above refuses. `[1-9]`
+    #     and no more, so a `pid 0` or a `pid -` placeholder is not a running
+    #     process either.
+    # The value is matched with an optional quote and separator so the plist
+    # spelling a supervisor query prints (`"PID" = 4242;`) reads the same as
+    # `pid 4242`, `pid=4242` and `pid: 4242`.
+    if ! grep -qE -e '(last|previous|prior|former|old|stale|exit(ed)?|was)[[:space:]]+"?pid' <<<"$probe_status" \
+       && grep -qE -e '(^|[^a-z0-9_-])"?pid"?[[:space:]]*[:=]?[[:space:]]*"?[1-9][0-9]*' <<<"$probe_status"; then
       echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
       exit 0
     fi

@@ -337,6 +337,84 @@ assert_eq "0" "$probe_rc" "an unrelated platform's row is not a status label and
 probe telegram "$(printf '* hermes-gateway.service - Hermes Gateway\n   Active: active (running) since Mon 2026-08-24 09:14:02 UTC\n   telegram: disconnected\n')" 0
 assert_eq "1" "$probe_rc" "the configured channel's own row still decides, even under a healthy service-managed header"
 
+# THE LAUNCHD SHAPE, which is the same problem one step further in. A gateway
+# run under launchd is named by its JOB LABEL, and a job label is a hyphen- or
+# dot-joined compound: 'hermes-gateway', 'com.hermes.gateway'. A boundary that
+# refused a hyphen on the left matched no tier at all for the plainest healthy
+# output there is -- not a gateway row (the hyphen sits before the word), not a
+# status label (the label is the whole compound), and not the last-resort first
+# line (it is a labelled row, so that tier declines it) -- and answered
+# UNDETERMINED about a gateway that says it is running.
+probe telegram "hermes-gateway: running (launchd, pid 4242)" 0
+assert_eq "0" "$probe_rc" "a hyphen-joined job label still names the gateway -- 'hermes-gateway' is not a different subject from 'gateway'"
+assert_match "up: hermes-gateway: running" "$probe_out" "the probe quotes the label row it decided on"
+# ...and the RED half of that same widening: the identical label reporting the
+# outage is read as the outage, not left as unknown.
+probe telegram "hermes-gateway: not running" 0
+assert_eq "1" "$probe_rc" "the same job label reporting the outage is NOT reachable, not undetermined"
+assert_match "NOT up" "$probe_out" "the probe says which way it decided"
+# The boundary is ASYMMETRIC on purpose and this is the case that pays for it:
+# a token merely STARTING with 'gateway' is a name headed by something else,
+# and must not decide this channel's return leg any more than a sibling
+# platform's row may. Both directions, because the second is the worse error.
+probe telegram "gateway-alerts: disconnected" 0
+assert_eq "2" "$probe_rc" "a name that merely starts with 'gateway' is a different subject and cannot condemn the return leg"
+assert_match "not one this probe recognizes" "$probe_out" "the probe says it could not read the line rather than borrowing another subject's verdict"
+probe telegram "gateway-alerts: connected" 0
+assert_eq "2" "$probe_rc" "and that subject being up is not this gateway being up"
+# ...and the left side is widened to THIS CLI's own name, not to any qualifier
+# at all: a sibling platform's own gateway row is still a row about another
+# subject, and the healthy direction is the worse one to get wrong.
+probe telegram "discord-gateway: connected" 0
+assert_eq "2" "$probe_rc" "a sibling platform's gateway is not the gateway carrying this channel"
+probe telegram "discord-gateway: disconnected" 0
+assert_eq "2" "$probe_rc" "...in the other direction too -- it cannot condemn a channel it says nothing about"
+
+# A LIVE PROCESS ID IS THE OTHER HEALTHY LAUNCHD SHAPE. A supervisor answers
+# "is it up" with the process it is supervising, and launchd publishes a pid
+# only for a job that is actually running -- so a row naming the gateway and a
+# live pid has reported health even though it contains none of the status
+# words above.
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242)" 0
+assert_eq "0" "$probe_rc" "a gateway row carrying a live process id is REACHABLE -- the pid is the supervisor's answer"
+probe telegram '"Label" = "com.hermes.gateway"; "PID" = 4242;' 0
+assert_eq "0" "$probe_rc" "the plist spelling a supervisor query prints reads the same as a bare 'pid 4242'"
+# ...and the three things that keep that tier from inventing REACHABLE, each
+# pinned, because every one of them is the difference between reading health
+# and asserting it. (1) A pid that is a PLACEHOLDER is not a running process.
+probe telegram "hermes-gateway: com.hermes.gateway (pid -)" 0
+assert_eq "2" "$probe_rc" "a placeholder where the pid would be is not a running process"
+probe telegram "hermes-gateway: com.hermes.gateway (pid 0)" 0
+assert_eq "2" "$probe_rc" "a zero pid is not a running process either"
+# (2) A HISTORICAL pid is a record of a process that is gone.
+probe telegram "hermes-gateway: com.hermes.gateway (last pid 4242)" 0
+assert_eq "2" "$probe_rc" "a last-pid record is a process that has gone, never evidence the gateway is up"
+# ...including when the row spells the deadness with the supervisor's own
+# vocabulary, which is why those words are negations: negatives are judged
+# first, so the pid in the same line cannot be read as health.
+probe telegram "hermes-gateway: dead (pid 4242 reaped)" 0
+assert_eq "1" "$probe_rc" "a dead gateway is NOT reachable, whatever process id its row still carries"
+probe telegram "hermes-gateway: crashed (pid 4242)" 0
+assert_eq "1" "$probe_rc" "a crashed gateway is NOT reachable, whatever process id its row still carries"
+probe telegram "hermes-gateway: stopped (pid 4242)" 0
+assert_eq "1" "$probe_rc" "the negatives are judged before the pid, so a stopped row stays the outage"
+# 'loaded' is negated but never positive on its own: launchd and systemd both
+# call a STOPPED job loaded, so the word says the supervisor knows about the
+# gateway, not that it is running.
+probe telegram "hermes-gateway: not loaded" 0
+assert_eq "1" "$probe_rc" "'not loaded' is a negation the positives must not read as up"
+probe telegram "hermes-gateway: loaded" 0
+assert_eq "2" "$probe_rc" "...and a bare 'loaded' is a supervisor knowing about the job, not the job running"
+# (3) The tier is only reachable on a row an earlier tier ADMITTED, so a
+# sibling platform carrying a pid still cannot decide this channel's return
+# leg -- the property step 1 is exclusive for, held across the new tier.
+probe telegram "discord: connected (pid 4242)" 0
+assert_eq "2" "$probe_rc" "a sibling platform's live pid is not this channel's return leg being up"
+probe telegram "$(printf 'hermes-gateway: running (pid 4242)\ndiscord: disconnected\n')" 0
+assert_eq "0" "$probe_rc" "an unrelated platform's dead row still cannot condemn a job label that reports running"
+probe telegram "$(printf 'hermes-gateway: running (pid 4242)\ntelegram: disconnected\n')" 0
+assert_eq "1" "$probe_rc" "and the configured channel's own row still outranks the job label above it"
+
 # THE LAST-RESORT TIER, and the subject it may not borrow. Output carrying no
 # channel row, no gateway row and no status label still deserves a reading --
 # a `gateway status` answering with the bare word `running` has said
