@@ -357,6 +357,15 @@ hermes gateway status                         # what the probe asks
   in a row hermes printed they are the gateway naming what took its update
   stream, while out of a query that **failed** they are the CLI's own session
   losing a race, which says nothing about whether the gateway is serving.
+  A **denied** competitor is not a competitor, and a counted zero is not an
+  incident: `no other listener`, `without competing pollers`, `conflicts: 0`,
+  `not superseded by another instance`, `never terminated by other getUpdates
+  request` and `not fatal` are all a healthy row reporting the *absence* of the
+  thing in the same words it would report its presence, so the denial is
+  stripped before either the displacement words or the fatality marker is read
+  — `no`/`zero`/`0`/`without` and the particles `not`/`never`/`no longer`
+  alike. The particles deny only a displacement or a severity, never a state
+  word, so `not running` remains the outage it has always been.
 - **exit 2 — UNDETERMINED.** The `hermes` CLI isn't on `PATH`,
   `notify.channel` is unset, this build has no `gateway status` subcommand,
   the command printed nothing, or none of the candidate lines below is one

@@ -651,7 +651,35 @@ if [ "${1:-}" = --inbound-probe ]; then
     # (`conflicts: 0`, `fatal=0`). Elision can only remove evidence, never
     # invent it, and what is removed here is text that asserts nothing --
     # strip the `no` and a real `other listener` still convicts.
-    probe_denied_re='(^|[^a-z0-9_-])((no|zero|0|without)[[:space:]]+((another|other|second|duplicate|competing|concurrent)[[:space:]]+)?(gateway[[:space:]]+)?(poller|instance|session|consumer|listener|client|fatal|panic|conflict)s?|(fatal|panic|conflict)s?[[:space:]]*[:=][[:space:]]*0)([^a-z0-9_-]|$)'
+    #
+    # AND `not`/`never`/`no longer` DENY IN EXACTLY THE SAME WAY, which is the
+    # half `no`/`zero`/`without` left out and the one this CLI is already known
+    # to write. `hermes-gateway: running (launchd, pid 4242, not paused)` is
+    # pinned in tests/test_notify_hermes_channel.sh as REAL healthy output, so a
+    # negated bad state beside a good one is this gateway's own house style --
+    # and every other test in this file already reads those three particles as
+    # the negation they are. Only the denial rule had not learned them, so
+    #     hermes-gateway: running (pid 4242, not superseded by another instance)
+    # convicted on the `another instance` it exists to deny and doctor printed
+    # "Answers sent on this channel are being lost" about a gateway reporting
+    # that it holds the stream alone. That is the false alarm the paragraph
+    # above was written for, arrived at through the same words with a different
+    # denial in front of them.
+    #
+    # A negated NEGATIVE is a denial; a negated POSITIVE is the outage, and the
+    # two lists do not overlap by construction: the particles here are followed
+    # only by a displacement or a severity, while the negatives below spell out
+    # `(not|never|no longer) <state word>` for the healthy vocabulary and are
+    # left untouched. `not running` is still the outage it always was.
+    #
+    # The displacement branch swallows what follows `by` -- the competitor's
+    # article and adjective, then one noun -- because eliding only `not
+    # terminated by` would leave the `another poller` behind to convict on its
+    # own, which is the whole phrase this arm is denying. Stopping at a word
+    # boundary keeps that bounded: `not terminated by us, another poller took
+    # over` gives up its first clause and the real displacement in the second
+    # still convicts.
+    probe_denied_re='(^|[^a-z0-9_-])((no|zero|0|without)[[:space:]]+((another|other|second|duplicate|competing|concurrent)[[:space:]]+)?(gateway[[:space:]]+)?(poller|instance|session|consumer|listener|client|fatal|panic|conflict)s?|(not|never|no[[:space:]]+longer)[[:space:]]+((terminated|superseded|displaced|preempted)[[:space:]]+by([[:space:]]+(a|an|any|the|its|another|other|second|duplicate|competing|concurrent))*([[:space:]]+[a-z0-9_-]+)?|(another|other|second|duplicate|competing|concurrent)[[:space:]]+(gateway[[:space:]]+)?(poller|instance|session|consumer|listener|client)s?|(fatal|panic|conflict)(s|ed|ing)?)|(fatal|panic|conflict)s?[[:space:]]*[:=][[:space:]]*0)([^a-z0-9_-]|$)'
     probe_asserted="$probe_status"
     while [[ "$probe_asserted" =~ $probe_denied_re ]]; do
       probe_asserted="${probe_asserted/"${BASH_REMATCH[0]}"/ }"

@@ -756,6 +756,31 @@ assert_eq "0" "$probe_rc" "a severity reported as a count of zero is not a fatal
 # cases above are the denial being read, not the vocabulary failing to match.
 probe telegram "hermes-gateway: running (pid 4242, other listener attached)" 0
 assert_eq "1" "$probe_rc" "the same row without the 'no' names a rival holding the stream, and that is the outage"
+# ...and `not`/`never`/`no longer` deny in exactly the same way, which is the
+# half `no`/`zero`/`without` left out and the one this CLI is already known to
+# write: `running (launchd, pid 4242, not paused)` is pinned above as REAL
+# healthy output, so a negated bad state beside a good one is this gateway's
+# house style. Denying a competitor was the one place those three particles
+# were not read as the negation every other test here reads them as.
+probe telegram "hermes-gateway: running (pid 4242, not superseded by another instance)" 0
+assert_eq "0" "$probe_rc" "a gateway saying it was NOT displaced is reporting it holds the stream alone -- the denial is not the displacement"
+probe telegram "hermes-gateway: running (pid 4242, never terminated by other getUpdates request)" 0
+assert_eq "0" "$probe_rc" "...and the denial covers the competitor's own noun too, so nothing is left behind to convict on"
+probe telegram "hermes-gateway: running (pid 4242, not fatal)" 0
+assert_eq "0" "$probe_rc" "a denied severity is not a fatality, and must not withhold health any more than 'conflicts: 0' does"
+# The RED twin, which is what makes the three above non-vacuous: strike the
+# particle and the very same words convict.
+probe telegram "hermes-gateway: running (pid 4242, superseded by another instance)" 0
+assert_eq "1" "$probe_rc" "the same row without the 'not' is a displaced gateway, and that is still the outage"
+# ...and the denial is bounded to its own clause, so a real displacement
+# reported after one cannot ride out on it.
+probe telegram "hermes-gateway: running (pid 4242, not terminated by us, another poller took over)" 0
+assert_eq "1" "$probe_rc" "denying one displacement does not deny the next clause naming a rival that took the stream"
+# ...and a negated POSITIVE is untouched by any of it: the denial reads a
+# particle in front of a displacement or a severity, never in front of a state
+# word, so `not running` is the outage it has always been.
+probe telegram "hermes-gateway: not running (pid 4242, no other listener)" 0
+assert_eq "1" "$probe_rc" "a denied competitor must not acquit a gateway that says outright it is not running"
 # ...and the displacement words stay on the SUCCESS side of the failed-query
 # line, with the pairing and credential class. A client whose own request was
 # terminated by a newer one is describing its own session losing a race, which
