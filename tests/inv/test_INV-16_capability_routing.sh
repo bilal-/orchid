@@ -389,6 +389,41 @@ assert_eq 0 "$rc" \
   "INV-16: declared as its own token, shell covers the step exactly as it always did"
 green_case 'the same declaration split into its own comma-separated token covered the step, so dropping the whitespace-bearing entry refuses a non-atom rather than the atom hidden inside it'
 
+# AND THE DIRECTION THAT GUARD MAY NOT BE COPIED IN, pinned here so a later
+# sweep for the shape cannot open a refusal while closing this one.
+#
+# Dropping a whitespace-bearing entry is safe in lib/capability.sh because that
+# file reads the claim in ONE direction: `capability_step_uncovered` reports the
+# atoms a step needs and the manifest does not have, so an entry it declines to
+# count can only ever ADD to `missing`. Every outcome of the drop is another
+# refusal.
+#
+# lib/roles.sh's role_eligibility_reason builds the same space-bounded string
+# from the same field and reads it BOTH ways: `requires=` refuses on an atom
+# that is ABSENT, `forbids=` refuses on one that is PRESENT. The identical drop
+# there would leave the requires half stricter and the forbids half OPEN -- a
+# plugin whose only mention of `shell` is inside a whitespace-bearing entry
+# would stop being caught by a role that forbids it, which is an existing
+# refusal weakened. So the role gate keeps counting that entry, and the
+# assertions below fail the moment somebody makes it stop.
+#
+# It follows that role eligibility can still be talked past by that entry in the
+# requires direction, and that is precisely the case this file exists for: the
+# step table is asked about the WORK, is kernel-owned, and refuses the same
+# manifest anyway (the `mechanical` assertion above), however the actor reached
+# the step. A role gate a publisher can satisfy is the premise of INV-16, not a
+# counter-example to it.
+printf 'id=noshellrole\nforbids=shell\ndescription=a custom role that refuses an actor claiming shell\n' \
+  > "$WORK/roles/noshellrole.role"
+if role_eligible noshellrole "$WORK/eng/compoundcaps"; then
+  fail "INV-16: the role gate's forbids walk must still count the whitespace-bearing entry 'deploy shell' — it refuses on an atom being PRESENT, so declining to count that entry there would waive a refusal an operator configured, which is the opposite of what the same drop does in lib/capability.sh"
+fi
+if role_eligible noshellrole "$WORK/eng/splitcaps"; then
+  fail "INV-16 fixture: the same role must refuse the properly-split manifest too, or the assertion above is not about the whitespace-bearing entry"
+fi
+role_eligible noshellrole "$WORK/eng/noshell" \
+  || fail "INV-16 fixture: and must ADMIT an actor that mentions shell nowhere at all, or it is a role that refuses everything and neither refusal above means anything"
+
 # ===========================================================================
 # 4 -- END TO END, and the hole a role gate cannot close. `orchid jobs prepare`
 # is where a (task, role, operation) triple is BOUND to an engine.

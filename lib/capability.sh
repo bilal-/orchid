@@ -317,6 +317,19 @@ _capability_oneline() {
 # (lib/capabilities.txt) and manifest_validate already fails such a manifest
 # outright as an unknown atom. Skipping it here simply makes the routing gate
 # agree with that verdict on a manifest nothing re-validated at read time.
+#
+# THE DROP IS SAFE HERE BECAUSE THIS FILE READS THE CLAIM IN ONE DIRECTION, and
+# it must not be copied into a walk that reads it in both. The only consumer of
+# this string is capability_step_uncovered, which refuses on an atom being
+# ABSENT -- so an entry declined here can only ever ADD to what is uncovered,
+# and every outcome of the drop is one more refusal. lib/roles.sh's
+# role_eligibility_reason builds the same string from the same field and reads
+# it BOTH ways: `requires=` refuses on absence, `forbids=` refuses on PRESENCE.
+# The identical skip there would stop a role that forbids `shell` from catching
+# a manifest whose only mention of it is inside such an entry -- an existing
+# refusal weakened, in the file whose gate a publisher already writes half of.
+# So the role gate keeps counting it, this one does not, and
+# tests/inv/test_INV-16_capability_routing.sh pins both directions.
 _capability_have() {
   local have=" "
   local atom
