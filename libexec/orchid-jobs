@@ -771,6 +771,64 @@ jobs_ls_emit() {
   return 0
 }
 
+# prepare_capability_gate <operation> <engine> <role> -- INV-16 at the one
+# place a (task, role, operation) triple is bound to an engine. Returns 0 when
+# the step may be routed to that actor (which is NOT a grant -- see
+# lib/capability.sh's header); otherwise it reports and EXITS, so no manifest
+# is minted, nothing is spawned and no attempt is spent.
+#
+# ONE FUNCTION BECAUSE IT IS ASKED AT TWO POINTS, which must never drift into
+# two different refusals: once on the `--engine` arm for the engine the CALLER
+# named, before that arm's role gate, and once below for whatever engine
+# resolution finally settled on, on every arm alike.
+#
+# WHY THE NAMED-ACTOR CALL COMES BEFORE THE ROLE GATE. Both gates can refuse
+# the same call, and only one answer reaches the caller. They are not
+# interchangeable there:
+#
+#   exit 14  no eligible engine. runners/orchid-drive reads this as a WAIT --
+#            drive_launch's header says so in as many words -- because the
+#            usual way it happens is a closed ledger window that reopens by
+#            itself. Nothing is journaled, no boundary is raised, and the walk
+#            comes back next pass.
+#   exit 19  the resolved actor's manifest does not declare what this step's
+#            work needs. No later pass changes that, so the driver journals it
+#            and raises the `operator-handoff` boundary instead of waiting.
+#
+# The case that forced the ordering is a reviewer slot: review_routing's
+# session-independent fallback hands slot 1 the engine that BUILT the
+# candidate, and that arm skips the reviewer-eligibility check every chain
+# entry passes -- so the slot can be pinned to an implementer engine gated only
+# on `workspace_write,shell,git`, declaring no `structured_text`. Asked in the
+# other order, `role_eligibility_reason` refused it first and the driver was
+# handed a 14: the routing refusal INV-16 exists to name never fired, and the
+# hand-off it exists to produce was never journaled. The task simply stopped
+# moving, which is the silent dead end this whole invariant is about.
+#
+# IT IS AN ORDERING OF REPORTS, NEVER A WAIVER. A clean answer here permits
+# nothing: control falls straight through to the role gate, which still runs
+# and still refuses on its own terms, and lib/capability.sh's rule that a
+# missing atom is decisive while a present one settles nothing is untouched. An
+# engine role-ineligible for a capability the STEP does not need is still
+# refused at 14, by that gate, in its own words.
+prepare_capability_gate() {
+  local op="$1" eng="$2" rl="$3" why rc=0
+  why="$(capability_routing_refusal "$op" "$eng")" || rc=$?
+  # The caller-error arm blames the REQUEST, not the actor: a step name outside
+  # the kernel's closed set was never priced and no manifest was read, so it
+  # must not be dressed up as a capability the plugin lacks.
+  [ "$rc" -ne 3 ] || orchid_die "unknown operation '$op': $why"
+  # An `if`, never `[ "$rc" -eq 0 ] && return 0`: that form is a complete
+  # AND-list whose status is the failed test's, so under `set -e` the refusal
+  # path would exit 1 -- an ordinary launch failure charged to the task's
+  # infra_failures ladder -- instead of ever reaching the 19 below.
+  if [ "$rc" -eq 0 ]; then
+    return 0
+  fi
+  echo "orchid: refusing to route role '$rl' to engine '$eng': $why" >&2
+  exit 19
+}
+
 case "$sub" in
   ls)
     # See the block comment above. Read-only: no verb lock, no epoch fence,
@@ -938,6 +996,15 @@ case "$sub" in
       # an engine-name branch (INV-05), and never silently accepted.
       dir="$(resolve_engine_dir "$override_engine")" \
         || { echo "orchid: engine '$override_engine' for role '$role' not found on search path" >&2; exit 14; }
+      # INV-16 BEFORE the eligibility walk, and ONLY on this arm, because this
+      # is the arm where the caller already named the actor: the step's
+      # kernel-owned requirements can be asked about a manifest that exists.
+      # (The chain arm below has no actor to ask about until resolution
+      # succeeds, and a chain that yields none is exactly the wait 14 means.)
+      # Both gates can refuse this call and only one answer reaches the driver,
+      # which reads 14 as a wait and 19 as a hand-off -- see
+      # prepare_capability_gate for why the permanent fact is the one reported.
+      prepare_capability_gate "$operation" "$override_engine" "$role"
       reason="$(role_eligibility_reason "$role" "$dir")" \
         || { echo "orchid: engine $override_engine $reason for role $role" >&2; exit 14; }
       engine="$override_engine"
@@ -953,15 +1020,14 @@ case "$sub" in
     # custom role may ask for nothing; it cannot thereby make its actor capable
     # of work the kernel knows this operation requires. Refuse before minting a
     # manifest, spawning a process, or spending an attempt.
-    cap_rc=0
-    cap_why="$(capability_routing_refusal "$operation" "$engine")" || cap_rc=$?
-    if [ "$cap_rc" -eq 3 ]; then
-      orchid_die "unknown operation '$operation': $cap_why"
-    fi
-    if [ "$cap_rc" -ne 0 ]; then
-      echo "orchid: refusing to route role '$role' to engine '$engine': $cap_why" >&2
-      exit 19
-    fi
+    #
+    # Asked here for EVERY arm, including the one that already asked: whichever
+    # way `$engine` was arrived at -- a caller's `--engine`, a hook binding, a
+    # role chain -- this is the single line the resolved actor passes through,
+    # and a gate that trusted an earlier arm to have asked would be one arm
+    # away from not being asked at all. For `--engine` this repeats an answer
+    # that arm already acted on, at the cost of one manifest read.
+    prepare_capability_gate "$operation" "$engine" "$role"
     # T027 (dogfood F29): refuse to mint a SECOND manifest for a job that
     # already has an UNLAUNCHED one -- same task, same attempt, same role,
     # same operation and (for hooks) the same point.

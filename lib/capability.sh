@@ -76,14 +76,37 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # through the code. The rows below are therefore exhaustive over
 # `_CAPABILITY_STEPS`, and the one priced at nothing says why.
 #
-# The implement/orchestrate rows are lib/conform.sh's `_conform_ops_for_dir`
-# table read in the other direction. That file already decides which OPERATIONS
-# a plugin's declared capabilities imply it can be probed for --
-# `workspace_write` means it may be asked to implement, `shell` AND `git`
+# The orchestrate row is lib/conform.sh's `_conform_ops_for_dir` table read in
+# the other direction. That file already decides which OPERATIONS a plugin's
+# declared capabilities imply it can be probed for -- `shell` AND `git`
 # together mean it may be asked to orchestrate -- so the same shipped fact is
 # used here to refuse a routing rather than to choose a probe. Two files
 # reading one implication in opposite directions is deliberate; two files
 # inventing two implications would not be.
+#
+# `implement` IS PRICED ABOVE WHAT THAT TABLE PROBES FOR, and the difference is
+# not a disagreement between the two files. conform asks "may this plugin be
+# probed for an implement envelope at all", and one atom answers it:
+# `workspace_write`. This table asks what the WORK needs, and an implement step
+# is not done when a file changes -- IT DELIVERS A COMMIT. Entry to `testing`
+# is refused unless `candidate_sha` is set, is the task worktree's HEAD, and
+# has a walkable `base..candidate` range (libexec/orchid-task's
+# testing_entry_blocker and its lineage gate), so an actor that edits the tree
+# and commits nothing produces no candidate for anything downstream to judge:
+# the round ends, the attempt is spent, and the task cannot leave
+# `implementing`. So the row is `workspace_write` to edit the tree, `git` to
+# deliver it, and `shell` to run the repository's own gates before doing so --
+# which is what every implementer is asked for in the same breath, and which a
+# profile denying on the command STRING cannot do (lesson L017).
+#
+# roles/implementer.role has said exactly that since it shipped
+# (`requires=workspace_write,shell,git`), and that is the reason to state it
+# HERE as well rather than lean on it: a kernel-owned row WEAKER than the role
+# descriptor that carries the same work is this table's own fail-open. A custom
+# role asking for nothing already routes `implement` past the role gate, and a
+# row priced at `workspace_write` alone would then admit an actor that can edit
+# files and never deliver them -- the gate asked about the WORK having nothing
+# to say about the half of the work that produces the candidate.
 #
 # `mechanical` is the row with no counterpart there, because no adapter is ever
 # ASKED to do it: it is the candidate's execution-requiring mechanical work --
@@ -107,6 +130,13 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # Note that `orchestrate` reaches prepare only that way --
 # runners/orchid-tick builds its own request document and never mints a job --
 # so the tick's own orchestrator is gated by roles/orchestrator.role, not here.
+# Where the caller NAMED the actor (`prepare --engine`), that row is asked
+# BEFORE the role gate rather than after it -- not to let anything past the
+# role gate, which still runs and still refuses on its own terms, but because
+# when both refuse the same call only one answer reaches the driver, and 14
+# ("no eligible engine") is the one it reads as a WAIT. See
+# libexec/orchid-jobs' prepare_capability_gate for why that ordering is a
+# report about which fact is permanent, never a permission.
 # `mechanical` is enforced at lib/handoff.sh, because it is a step no adapter
 # is dispatched for at all. `hook` is the one row with no enforcement site
 # anywhere, because it is priced at nothing and the gate returns before it so
@@ -177,7 +207,7 @@ capability_step_valid() {  # step -> 0 iff kernel-owned
 # inline test.
 capability_step_requires() {
   case "$1" in
-    implement) printf 'workspace_write\n' ;;
+    implement) printf 'workspace_write\nshell\ngit\n' ;;
     review|critique) printf 'structured_text\n' ;;
     research) printf 'structured_text\ncitations\n' ;;
     orchestrate) printf 'shell\ngit\n' ;;

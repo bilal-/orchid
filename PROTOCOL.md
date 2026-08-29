@@ -2341,7 +2341,13 @@ one-pass driver could otherwise stop progressing in silence:
   this is never retried: no later pass makes the same actor able to do the same
   work. The requirements are kernel data, never a role descriptor a plugin
   ships (INV-16, `lib/capability.sh`), so an actor cannot declare a role that
-  asks for nothing and route itself past the gate that way.
+  asks for nothing and route itself past the gate that way. Where the caller
+  named the actor — `prepare --engine`, which is how a reviewer slot is
+  dispatched — that question is asked *before* the role-eligibility walk, so a
+  slot pinned to an engine both gates refuse is handed over rather than waited
+  on. It orders two reports and waives neither: an engine that covers the step
+  and is still ineligible for the role is refused there, at 14, in that gate's
+  own words.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
   Where `handoff_before_verify` is `required`, or where the engine that built
   the candidate cannot be routed its mechanical steps at all — in a running

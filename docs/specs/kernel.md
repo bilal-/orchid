@@ -1744,9 +1744,18 @@ jobs prepare` is where a (task, role, operation) triple is bound to an engine,
 and it refuses with exit 19 — minting nothing, spawning nothing, spending no
 attempt — when the resolved actor's manifest does not declare what that step's
 work needs. The requirements are kernel data (`lib/capability.sh`), not a role
-descriptor: `implement` needs `workspace_write`, `orchestrate` needs `shell`
+descriptor: `implement` needs `workspace_write`, `shell` and `git` (it does not
+end when a file changes — it DELIVERS A COMMIT, and entry to `testing` is
+refused without a `candidate_sha` that is the task worktree's HEAD, so an actor
+that edits and commits nothing spends the attempt and produces nothing to
+judge; `roles/implementer.role` has required exactly those three since it
+shipped, and a kernel-owned row weaker than the role carrying the same work
+would admit that actor through any custom role asking for nothing),
+`orchestrate` needs `shell`
 and `git` (the same implication `lib/conform.sh` already uses to decide which
-operations to probe a plugin for), `review` and `critique` need
+operations to probe a plugin for — for `implement` that file asks only whether
+a plugin may be PROBED for the envelope, which one atom answers, so the two
+tables differ there by asking different questions), `review` and `critique` need
 `structured_text` (both produce an envelope the kernel parses a verdict and
 `findings[]` out of; the built-in judging roles require the same atom, so the
 rows are defense in depth there and load bearing under a custom role),
@@ -1774,6 +1783,20 @@ work) while a *present* one settles nothing, so nothing built on it may read a
 clean answer as permission. `orchid drive` journals the refusal against the
 task and records this boundary; it never retries it, because unlike exit 14 no
 later pass makes the same actor able to do the same work.
+
+Where the CALLER NAMED the actor (`prepare --engine`), the step question is
+asked *before* the role-eligibility walk, because both gates can refuse one
+call while only one answer reaches the driver — and the driver reads 14 as a
+wait. The case that decides it is a reviewer slot: `review_routing`'s
+session-independent fallback hands slot 1 the engine that BUILT the candidate,
+skipping the reviewer eligibility check every chain entry passes, so the slot
+can be pinned to an implementer engine that declares no `structured_text`.
+Asked in the other order that comes back 14, the routing refusal never fires
+and no hand-off is journaled — the task simply stops moving. The ordering
+reports which fact is permanent; it grants nothing. Control falls through to
+the role gate whenever the step is covered, and an engine ineligible for a role
+over a capability the *step* does not need is still refused there, at 14, in
+that gate's own words.
 
 An actor is named two ways and resolved by both. Third-party engines carry
 qualified ids (`acme/foo`) while a binding names the directory a plugin is

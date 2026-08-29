@@ -109,11 +109,12 @@ assert_match "PATH_SET=<yes>" "$summary" "child sees PATH (always allowed)"
 # child (the ONLY way a non-base name may cross the boundary).
 mkdir -p "$WORK/eng/leaky2"
 cp "$WORK/eng/leaky/run" "$WORK/eng/leaky2/run"; chmod +x "$WORK/eng/leaky2/run"
-# `workspace_write` is here for INV-16, not for this assertion: the launch
-# below is an `implement` step, and lib/capability.sh refuses to route one to an
-# actor that does not declare it. `permissions=SECRET_LEAK` remains the only
-# thing this half is about.
-printf 'manifest_version=1\nid=orchid/leaky2\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text,workspace_write\nentrypoint=run\npermissions=SECRET_LEAK\n' \
+# `workspace_write,shell,git` are here for INV-16, not for this assertion: the
+# launch below is an `implement` step, and lib/capability.sh refuses to route one
+# to an actor that does not declare all three (edit the tree, deliver the commit,
+# run the repository's own gates first). `permissions=SECRET_LEAK` remains the
+# only thing this half is about.
+printf 'manifest_version=1\nid=orchid/leaky2\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text,workspace_write,shell,git\nentrypoint=run\npermissions=SECRET_LEAK\n' \
   > "$WORK/eng/leaky2/plugin.conf"
 printf 'role.leaktest2=leaky2\n' >> "$WORK/orchid.config"
 

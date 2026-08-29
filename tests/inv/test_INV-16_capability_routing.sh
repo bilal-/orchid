@@ -109,8 +109,8 @@ assert_eq "shell" "$(capability_step_requires mechanical)" \
   "INV-16: the mechanical step (a lint fix, a checksum re-pin, a mode bit) needs shell"
 assert_eq "$(printf 'shell\ngit')" "$(capability_step_requires orchestrate)" \
   "INV-16: orchestrate needs shell and git, mirroring lib/conform.sh's capability-implication table"
-assert_eq "workspace_write" "$(capability_step_requires implement)" \
-  "INV-16: implement needs workspace_write"
+assert_eq "$(printf 'workspace_write\nshell\ngit')" "$(capability_step_requires implement)" \
+  "INV-16: implement needs workspace_write to edit the tree, git to DELIVER it and shell to run the repository's own gates first — a round that commits nothing produces no candidate (entry to testing is refused without one), so pricing it at workspace_write alone would admit an actor that can edit files and never deliver them"
 assert_eq "structured_text" "$(capability_step_requires review)" \
   "INV-16: review needs structured_text — with this row empty, a capability-free actor reaching review through a custom role met no gate at all"
 assert_eq "structured_text" "$(capability_step_requires critique)" \
@@ -361,6 +361,70 @@ case "$err" in
   *"refusing to route"*) fail "INV-16: a mistyped operation must not be phrased as a routing refusal about the resolved actor" ;;
   *textonly*) fail "INV-16: and must not name the actor at all — it is not implicated in a step name that does not exist" ;;
 esac
+
+# ===========================================================================
+# 4c -- THE GATE THAT REFUSED FIRST AND SAID THE WRONG THING. Both gates can
+# refuse one call, and only one answer reaches the driver.
+#
+# `orchid jobs prepare --engine <name>` is how a REVIEWER SLOT is dispatched,
+# and review_routing's session-independent fallback hands slot 1 the engine that
+# BUILT the candidate -- an arm that skips the reviewer-eligibility check every
+# chain entry passes. So the slot can be pinned to an implementer-grade engine
+# (`workspace_write,shell,git`) that declares no `structured_text`: refused by
+# roles/reviewer.role AND by the `review` row here.
+#
+# Asked in the order this file used to be asked in, role eligibility answered
+# first and the driver was handed exit 14. 14 is a WAIT (drive_launch's header
+# says so: the usual cause is a ledger window that reopens by itself), so the
+# pass journaled nothing, raised no boundary, and came back next pass to wait
+# again. The routing refusal INV-16 exists to name never fired and the hand-off
+# it exists to produce was never recorded -- the task simply stopped moving,
+# which is the silent dead end this whole invariant is about. 19 is the answer
+# no later pass can change, and it is the one runners/orchid-drive turns into a
+# journaled `operator-handoff` (proved end to end through the real runner in
+# part 7, and handed the reviewer slot's own binding key in part 8a).
+#
+# THE ORDERING IS A REPORT, NEVER A WAIVER, which is what the GREEN twin below
+# is for: an actor that covers the STEP and is still ineligible for the ROLE is
+# refused by the role gate, at 14, in its own words.
+# ===========================================================================
+mk_engine builderonly "workspace_read,workspace_write,shell,git"
+rc=0; capability_routing_refusal review builderonly >/dev/null || rc=$?
+assert_eq 1 "$rc" \
+  "INV-16 fixture: the actor for this part must be short exactly for the review step, or the exit below says nothing about the ordering"
+if role_eligible reviewer "$WORK/eng/builderonly"; then
+  fail "INV-16 fixture: this actor must ALSO be refused by roles/reviewer.role — a part about which of two refusals is reported needs both of them to fire"
+fi
+
+jobs_before="$(list_dir_files "$crepo/.orchid/runtime/jobs" | wc -l | tr -d ' ')"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TC reviewer review --engine builderonly 2>&1 1>/dev/null)" || rc=$?
+assert_eq 19 "$rc" \
+  "INV-16: when the role gate and the step table both refuse a named actor, the answer is the capability refusal (19) — reported as 14 the driver reads it as a wait, journals nothing and raises no hand-off"
+assert_match "missing: structured_text" "$err" \
+  "INV-16: and names the atom the step needs, not merely that some engine was ineligible for some role"
+assert_eq "$jobs_before" "$(list_dir_files "$crepo/.orchid/runtime/jobs" | wc -l | tr -d ' ')" \
+  "INV-16: and mints no job manifest, exactly as the later gate did"
+red_case 'a reviewer slot pinned to an implementer-grade engine declaring no structured_text was refused with the capability answer (19, naming structured_text) that the driver turns into a journaled operator hand-off, instead of the exit 14 it reads as a wait'
+
+# GREEN twin: the role gate still refuses on its own terms. `textonly` declares
+# exactly what the `review` step needs, so the table has no objection at all --
+# and the custom role it is asked for here requires `network` on top, which is
+# a ROLE's requirement and no step's. That must still be 14, and must still say
+# which capability the ROLE asked for.
+printf 'id=netrunner\nrequires=structured_text,network\ndescription=a custom role asking for more than the step does\n' \
+  > "$WORK/roles/netrunner.role"
+rc=0; capability_routing_refusal review textonly >/dev/null 2>&1 || rc=$?
+assert_eq 0 "$rc" \
+  "INV-16 fixture: the step table must have NO objection to this actor, or the 14 below is not evidence that the role gate still runs"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TC netrunner review --engine textonly 2>&1 1>/dev/null)" || rc=$?
+assert_eq 14 "$rc" \
+  "INV-16: an actor that covers the STEP and not the ROLE is still refused by the role gate at 14 — asking the step table first orders two reports, it does not waive one of them"
+assert_match "network" "$err" \
+  "INV-16: and the role gate's own refusal names the capability the ROLE asked for, which no step prices"
+case "$err" in
+  *"refusing to route"*) fail "INV-16: a role-eligibility refusal must not be phrased as a routing refusal — the step table admitted this actor, and an operator sent to look for a missing step capability finds none" ;;
+esac
+green_case 'the same prepare with an actor covering the step but not the role was still refused at 14 by the role gate, naming the ROLE capability — so asking the step table first is an ordering of reports rather than a way past the role gate'
 
 # ===========================================================================
 # 5 -- THE DIRECTION THE RULE MAY NEVER RUN IN. A declaration is a claim, not

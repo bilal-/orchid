@@ -86,13 +86,31 @@ rc=0; err="$("$ORCHID_BIN" jobs prepare TB implementer implement --engine totall
 assert_eq 14 "$rc" "prepare --engine refuses an undiscovered engine with exit 14"
 assert_match "not found" "$err" "prepare --engine names the undiscovered engine in its error"
 
-# D -- a discovered but role-ineligible override (agy, structured_text only,
-# for the implementer role which requires workspace_write/shell/git) is
-# refused with exit 14 via the same role_eligibility_reason walk resolve_
-# role_checked/resolve_role_available already use.
+# D -- a discovered but ineligible override (agy, structured_text only, for the
+# implementer role which requires workspace_write/shell/git) is refused, never
+# silently accepted. It comes back 19 rather than 14 because the same three
+# atoms are what the `implement` STEP needs (INV-16, lib/capability.sh), and
+# where the caller named the actor that kernel-owned question is asked first:
+# both gates refuse this call, and 19 is the answer no later pass can change,
+# while runners/orchid-drive reads 14 as a wait. The role gate still refuses on
+# its own terms -- D2 is that case.
 rc=0; err="$("$ORCHID_BIN" jobs prepare TB implementer implement --engine agy 2>&1 1>/dev/null)" || rc=$?
-assert_eq 14 "$rc" "prepare --engine refuses an ineligible engine with exit 14"
-assert_match "missing required capability workspace_write" "$err" "prepare --engine names the missing capability"
+assert_eq 19 "$rc" "prepare --engine refuses an ineligible engine whose shortfall is also the step's, with exit 19"
+assert_match "missing: workspace_write" "$err" "prepare --engine names the missing capability"
+
+# D2 -- and the role gate is NOT bypassed by that ordering. `revonly` declares
+# exactly what the `review` step needs, so INV-16 has no objection; the custom
+# role it is bound to asks for `network` as well, and role_eligibility_reason
+# refuses it there with the exit 14 it always did.
+mk_custom_engine "$ORCHID_ENGINES_DIR" revonly "structured_text"
+mkdir -p "$WORK/rolesB"
+printf 'id=netreviewer\nrequires=structured_text,network\ndescription=fixture\n' \
+  > "$WORK/rolesB/netreviewer.role"
+export ORCHID_ROLES_DIR="$WORK/rolesB"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TB netreviewer review --engine revonly 2>&1 1>/dev/null)" || rc=$?
+unset ORCHID_ROLES_DIR
+assert_eq 14 "$rc" "prepare --engine still refuses a role-ineligible engine with exit 14 when the step itself is covered"
+assert_match "network" "$err" "and the role gate's own refusal names the capability the ROLE asked for"
 
 # E -- `orchid-launch <task> <role> <op> --engine <name>` forwards the flag
 # to prepare verbatim.
