@@ -1149,3 +1149,163 @@ outG="$(page_orchid answer "$qidG" request-changes 2>&1)" \
   || fail "orchid answer must ACCEPT the hyphenated choice the page declared (got: $outG)"
 assert_eq "request-changes" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidG.answer")" \
   "a declared choice is answerable end to end: minted, printed, given back and recorded"
+
+# ===========================================================================
+# 11 -- A REVIEW PAGE NAMES THE ANSWERS LEGAL FROM THE STATE IT WAS RAISED IN
+#       (T009).
+#
+# The declared set is a promise with two ends: the page NAMES the answers and
+# `orchid answer` refuses everything else. Which answers are honest is therefore
+# the same three-fact question the boundary's own ranking asks -- and one of
+# those facts is the TASK'S STATUS. `orchid task arbitrate` refuses any status
+# but `arbitrating` (libexec/orchid-task, exit 3), yet every `review-evidence`
+# boundary the reviewing walk raises fires while the task is still `reviewing`:
+# a review-plan pin that failed, a routing table with no unfilled slot, a
+# tier-complete set whose routed slot has no review of its own, a slot pinned to
+# an engine that cannot be dispatched. Those pages declared `approve |
+# request-changes | defer` -- three answers whose verb would have exited 3 --
+# while the gate refused the two `orchid jobs review-plan` modes the same pages'
+# reason texts told the operator to run. Not merely an unhelpful menu: the
+# operator who took the named remedy could not record that they had.
+#
+# BOTH EDGES ARE PROVEN HERE, and at the notify/answer level rather than through
+# a drive pass, because the two states reach a page by DIFFERENT producers. A
+# review boundary on a `reviewing` task is operator-only, so runners/orchid-drive
+# raises it through `orchid notify` itself (tests/test_drive.sh's slot fixture
+# pins that page end to end). On an `arbitrating` task the same kind is
+# arbitrable, so the driver wakes an orchestrator instead -- and the page then
+# comes from the woken model's own `notify --task <id> --choice ...` through the
+# brokered surface when it judges the decision a human's after all. One verb,
+# two producers; what both must agree about is the set, which is what this
+# section holds them to.
+# ===========================================================================
+# The driver's own argv assembly (runners/orchid-drive's drive_notify), status
+# included, so the pages asserted below are the pages that verb really composes.
+# Never a hand-copied list, for section 9b's reason.
+page_review_notify() {
+  local task="$1" status="$2" text="$3" choice
+  local -a nargs
+  nargs=(notify --task "$task")
+  while IFS= read -r choice; do
+    [ -n "$choice" ] || continue
+    nargs+=(--choice "$choice")
+  done <<< "$(drive_boundary_choices review-evidence "$status")"
+  nargs+=("$text")
+  page_orchid "${nargs[@]}"
+}
+
+page_orchid task create T904 "prove both review edges" >/dev/null \
+  || fail "fixture task for the review-page section must be creatable"
+# The status is set directly, exactly as section 8 sets `attempts` and section 9
+# sets `blocked`: what this section is about is the page raised FROM a status,
+# not the route the task took to reach it.
+fm_set "$PAGE_REPO/.orchid/tasks/T904.md" status reviewing
+assert_eq reviewing "$(fm_get "$PAGE_REPO/.orchid/tasks/T904.md" status)" \
+  "fixture witness: T904 really is reviewing, so the page below is the reviewing-state one"
+
+# THE FACT THE WHOLE SECTION RESTS ON, witnessed rather than assumed: the
+# arbitration verb is refused outright from `reviewing`. If this ever stopped
+# being true, `approve` would be a legal answer here and the RED below would be
+# guarding nothing.
+rc904=0
+err904="$(page_orchid task arbitrate T904 --result approve --reason "witness: is this legal from reviewing?" 2>&1 1>/dev/null)" || rc904=$?
+[ "$rc904" -eq 3 ] \
+  || fail "witness: 'orchid task arbitrate' must refuse a reviewing task with exit 3 (got $rc904: $err904)"
+assert_match "is not arbitrating" "$err904" \
+  "...and refuse it on the STATUS, which is why an arbitration result is not an answer a reviewing page may offer"
+
+# --- 11a: the reviewing edge -----------------------------------------------
+reviewing_reason="1 of 2 review envelope(s) bound to the current candidate, but slot(s) 2 have no review of their own — the tier's engine independence is unproven. Expected: 'orchid jobs review-plan T904 --adopt-evidence' when those envelopes were dispatched for the slots the plan has since re-routed, otherwise 'orchid task advance T904 blocked --reason ...' to hand it to a human"
+qidRV="$(page_review_notify T904 reviewing "$reviewing_reason")" \
+  || fail "fixture: a review-evidence page must be raisable from reviewing with its declared set"
+assert_eq "adopt-evidence,repin,block,defer" \
+  "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidRV.choices")" \
+  "the set recorded with a reviewing page is the recovery list legal from reviewing"
+assert_match "^choices: adopt-evidence \| repin \| block \| defer\$" \
+  "$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qidRV")" \
+  "...and that is what the operator reads on the page itself"
+if grep -q '^choices: approve' "$PAGE_REPO/.orchid/runtime/outbox/$qidRV"; then
+  fail "a reviewing page must not open its answer set with an arbitration result — that verb exits 3 from this status"
+fi
+
+# RED. `--adopt-evidence` and `--repin` are the verbs this page's own reason
+# text points at, so the gate must ACCEPT the answer that records taking one.
+# Under the arbitration set this call was refused: the page named a remedy and
+# then rejected the operator who took it.
+outRV="$(page_orchid answer "$qidRV" repin 2>&1)" \
+  || fail "orchid answer must ACCEPT 'repin' for a reviewing review page: it is a remedy the reason text names (got: $outRV)"
+assert_eq "repin" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidRV.answer")" \
+  "and records it verbatim, so the operator's decision survives as the verb they intend to run"
+
+# ...and the gate is still a gate here: the answers that are legal one
+# transition later are refused, and the refusal names the ones that are not.
+qidRV2="$(page_review_notify T904 reviewing "$reviewing_reason")" \
+  || fail "fixture: a second reviewing page must be raisable for the refusal case"
+rcRV=0
+errRV="$(page_orchid answer "$qidRV2" approve 2>&1 1>/dev/null)" || rcRV=$?
+[ "$rcRV" -ne 0 ] \
+  || fail "'approve' must be refused on a reviewing page — 'orchid task arbitrate' exits 3 from that status, so it names no decision anybody can carry out"
+assert_match "'approve' is not among $qidRV2's declared choices" "$errRV" \
+  "the refusal names the rejected value and the question"
+assert_match "adopt-evidence \| repin \| block \| defer" "$errRV" \
+  "and lists the answers that WOULD be accepted, which are the remedies the reason text points at (L028)"
+[ ! -f "$PAGE_REPO/.orchid/runtime/answers/$qidRV2.answer" ] \
+  || fail "a refused out-of-set answer must never be recorded as answered"
+
+# --- 11b: the arbitrating edge ---------------------------------------------
+# GREEN, and it is what keeps 11a from being a rename: one transition later the
+# very same kind names the arbitration results, because there the verb behind
+# them runs. Without this half, "state-correct" would be satisfied by a table
+# that had simply dropped `approve` everywhere.
+fm_set "$PAGE_REPO/.orchid/tasks/T904.md" status arbitrating
+assert_eq arbitrating "$(fm_get "$PAGE_REPO/.orchid/tasks/T904.md" status)" \
+  "fixture witness: the same task is now arbitrating, so the page below is the arbitrating-state one"
+qidAR="$(page_review_notify T904 arbitrating "incomplete review evidence: 1 of 2 required for risk_tier medium")" \
+  || fail "fixture: a review-evidence page must be raisable from arbitrating with its declared set"
+assert_eq "approve,request-changes,defer" \
+  "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidAR.choices")" \
+  "the set recorded with an arbitrating page is the arbitration truth table's own results"
+assert_match "^choices: approve \| request-changes \| defer\$" \
+  "$(cat "$PAGE_REPO/.orchid/runtime/outbox/$qidAR")" \
+  "...and the page names them where the operator reads it"
+outAR="$(page_orchid answer "$qidAR" approve 2>&1)" \
+  || fail "orchid answer must ACCEPT 'approve' for an arbitrating review page — 'orchid task arbitrate --result approve' is legal there (got: $outAR)"
+assert_eq "approve" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidAR.answer")" \
+  "and records the arbitration result verbatim"
+
+# ...and the mirror image of 11a's refusal, which is what proves the two sets
+# are keyed on the state rather than merged into one permissive union: the
+# reviewing remedies are refused HERE, where the routing they repair is already
+# settled and the decision on the table is the arbitration.
+qidAR2="$(page_review_notify T904 arbitrating "incomplete review evidence: 1 of 2 required for risk_tier medium")" \
+  || fail "fixture: a second arbitrating page must be raisable for the refusal case"
+rcAR=0
+errAR="$(page_orchid answer "$qidAR2" repin 2>&1 1>/dev/null)" || rcAR=$?
+[ "$rcAR" -ne 0 ] \
+  || fail "'repin' must be refused on an arbitrating page — the declared set is the state's own recovery list, not the union of every state's"
+assert_match "approve \| request-changes \| defer" "$errAR" \
+  "and that refusal names the arbitration results, so the operator is pointed at the decision this state is actually waiting on"
+
+# --- 11c: a state with no decided recovery list keeps free text -------------
+# The third arm, and the only one that falls back rather than choosing a set. A
+# review page on a status neither verb-set belongs to is a state nobody has
+# enumerated remedies for; naming either list there could refuse the one answer
+# that was correct, so the pre-choice free-text contract stands and the page
+# carries no `choices:` line at all.
+assert_eq "" "$(drive_boundary_choices review-evidence testing)" \
+  "a review boundary on an undecided status declares no set"
+fm_set "$PAGE_REPO/.orchid/tasks/T904.md" status testing
+assert_eq testing "$(fm_get "$PAGE_REPO/.orchid/tasks/T904.md" status)" \
+  "fixture witness: the task really is on the undecided status the page below is raised from"
+qidFT="$(page_review_notify T904 testing "a review boundary on a status nobody enumerated remedies for")" \
+  || fail "fixture: a review page on an undecided status must still be raisable"
+[ ! -f "$PAGE_REPO/.orchid/runtime/answers/$qidFT.choices" ] \
+  || fail "an undecided status must record no declared set — the sidecar's existence is what switches the gate on"
+if grep -q '^choices: ' "$PAGE_REPO/.orchid/runtime/outbox/$qidFT"; then
+  fail "a page with no declared set must not print a choices: line"
+fi
+outFT="$(page_orchid answer "$qidFT" "the routing table was hand-repaired after a restore" 2>&1)" \
+  || fail "with no set declared, free text is accepted exactly as it was before choice sets existed (got: $outFT)"
+assert_eq "the routing table was hand-repaired after a restore" \
+  "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidFT.answer")" \
+  "...and is recorded verbatim, so the fallback is a real contract rather than a silent drop"

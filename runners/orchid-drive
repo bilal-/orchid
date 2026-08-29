@@ -124,7 +124,12 @@ record, because runners/orchid-pump deliberately wakes no model for it. That
 blocker DECLARES ITS ANSWER SET where the kind has one (lib/drive.sh's
 drive_boundary_choices), so the page an operator reads names the answers
 `orchid answer` will accept instead of leaving `<choice>` to be guessed; kinds
-with no enumerable set declare none and keep the free-text contract.
+with no enumerable set declare none and keep the free-text contract. That set is
+computed from the SAME status the ranking used, for the same reason: from
+`reviewing` a review page names the review-plan remedies its reason text points
+at, and from `arbitrating` it names the arbitration results -- naming the
+arbitration results from `reviewing` would invite three answers whose verb
+exits 3 while refusing the two that would have worked.
 
 Between an implementer's envelope reconciling and `orchid verify` running,
 some candidates need execution-requiring mechanical work an engine profile
@@ -319,23 +324,30 @@ set_boundary() {
   return 0
 }
 
-# drive_notify <kind> <task|""> <text> -- raise the operator's page for a
-# boundary of that kind, DECLARING the answers `orchid answer` will accept for
-# it (lib/drive.sh's drive_boundary_choices). Every notify the driver sends
-# goes through here rather than calling the verb directly, because a page whose
-# `<choice>` placeholder is never filled in is exactly the page r-001 shipped
-# twenty-seven of: reachable, unanswerable, and silently accepting a typo as a
-# decision. A kind with no enumerable set passes no --choice at all and the
-# question keeps the free-text contract unchanged.
+# drive_notify <kind> <task|""> <task-status> <text> -- raise the operator's
+# page for a boundary of that kind, DECLARING the answers `orchid answer` will
+# accept for it (lib/drive.sh's drive_boundary_choices). Every notify the driver
+# sends goes through here rather than calling the verb directly, because a page
+# whose `<choice>` placeholder is never filled in is exactly the page r-001
+# shipped twenty-seven of: reachable, unanswerable, and silently accepting a
+# typo as a decision. A kind with no enumerable set passes no --choice at all
+# and the question keeps the free-text contract unchanged.
+#
+# THE STATUS IS AN ARGUMENT, not something read here, and it is the SAME status
+# the boundary's priority was ranked with. Which answers a review page may name
+# depends on which verb is legal out of the task's state (`orchid task
+# arbitrate` exits 3 anywhere but `arbitrating`), so a page that named its set
+# from a status re-read later would offer the answers of a state the boundary
+# was never classified in -- the two facts have to come from one reading.
 drive_notify() {
-  local kind="$1" task="$2" text="$3" choice
+  local kind="$1" task="$2" tstatus="$3" text="$4" choice
   local -a nargs
   nargs=(notify)
   [ -z "$task" ] || nargs+=(--task "$task")
   while IFS= read -r choice; do
     [ -n "$choice" ] || continue
     nargs+=(--choice "$choice")
-  done <<< "$(drive_boundary_choices "$kind")"
+  done <<< "$(drive_boundary_choices "$kind" "$tstatus")"
   nargs+=("$text")
   "$ORCHID_BIN" "${nargs[@]}" >/dev/null
 }
@@ -1894,8 +1906,10 @@ drive_testing() {
   budget="$(schedule_attempt_budget "$repo" "$id")"
   if [ "$attempts" -ge "$budget" ]; then
     # The page is for a task this line is about to block, so declare the
-    # blocked-task answers while retaining T026's task-specific budget.
-    drive_notify blocked-task "$id" "attempts exhausted ($attempts/$budget): see .orchid/reviews/$id-verify.log"
+    # blocked-task answers while retaining T026's task-specific budget -- and
+    # name `blocked` as the status it speaks for, which is the state the next
+    # line puts the task in rather than the `testing` it is still sitting in.
+    drive_notify blocked-task "$id" blocked "attempts exhausted ($attempts/$budget): see .orchid/reviews/$id-verify.log"
     "$ORCHID_BIN" task advance "$id" blocked --reason "attempts exhausted ($attempts/$budget)" >/dev/null
     drive_note "$id: verify FAIL, attempts exhausted ($attempts/$budget) — testing -> blocked"
     set_boundary operator-decision "$id" "attempts exhausted after $attempts of $budget rework round(s): see .orchid/reviews/$id-verify.log — orchid task retry $id --reason \"...\" [--attempts N] grants more; orchid task reverify $id --reason \"...\" re-runs verification alone"
@@ -2520,7 +2534,9 @@ if [ -n "$check_out" ]; then
     _btask="$(printf '%s' "$_line" | cut -f1)"
     [ -f "$state/tasks/$_btask.md" ] || continue
     [ "$(fm_get "$state/tasks/$_btask.md" status)" != blocked ] || continue
-    drive_notify blocked-task "$_btask" "task wallclock budget exceeded"
+    # Same as the exhaustion page above: the status this page speaks for is the
+    # `blocked` the very next line puts the task into.
+    drive_notify blocked-task "$_btask" blocked "task wallclock budget exceeded"
     "$ORCHID_BIN" task advance "$_btask" blocked --reason "wallclock budget exceeded" >/dev/null
     drive_note "$_btask: wallclock budget exceeded — blocked"
   done <<< "$check_out"
@@ -2791,7 +2807,7 @@ if [ -n "$merging_ids" ]; then
           fi
           # operator-decision: a config/CAS problem has no enumerable answer
           # set, so this page stays free text on purpose.
-          drive_notify operator-decision "$merge_id" \
+          drive_notify operator-decision "$merge_id" "$merge_status" \
             "merge left task in merging: $merge_evidence"
           set_boundary operator-decision "$merge_id" "merge left the task in merging (exit $merge_rc) — a config/CAS problem, not a candidate defect"
         fi ;;
@@ -2820,7 +2836,11 @@ if [ -n "$boundary_kind" ]; then
     prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
     if [ "$prev_kind" != "$boundary_kind" ] || [ "$prev_task" != "$boundary_task" ] || \
        [ "$prev_reason" != "$boundary_reason" ]; then
-      drive_notify "$boundary_kind" "$boundary_task" \
+      # `$boundary_status` -- the status read when this boundary was RAISED, the
+      # same one drive_boundary_priority ranked it with. The page's answer set
+      # and the ranking are two readings of one fact, so they come from one
+      # reading of it (lib/drive.sh's drive_boundary_choices).
+      drive_notify "$boundary_kind" "$boundary_task" "$boundary_status" \
         "judgment boundary [$boundary_kind] needs an operator: $boundary_reason"
       drive_note "notified: [$boundary_kind] is operator-only, so no orchestrator will be woken for it"
     fi

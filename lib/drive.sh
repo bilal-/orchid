@@ -350,11 +350,12 @@ drive_boundary_settling_verb() {
   esac
 }
 
-# drive_boundary_choices <kind> -- the answers `orchid answer` accepts for the
-# page THIS kind raises, one per line, or nothing when the kind has no
-# enumerable set. Declared with the question (`orchid notify --choice ...`),
-# printed on the page, and enforced by `orchid answer`, which refuses anything
-# outside the set and names the valid ones in the refusal.
+# drive_boundary_choices <kind> [<task-status>] -- the answers `orchid answer`
+# accepts for the page THIS kind raises ON A TASK IN THAT STATUS, one per line,
+# or nothing when there is no enumerable set. Declared with the question
+# (`orchid notify --choice ...`), printed on the page, and enforced by `orchid
+# answer`, which refuses anything outside the set and names the valid ones in
+# the refusal.
 #
 # WHY THIS TABLE EXISTS AT ALL. A boundary that reaches a human reaches them as
 # one channel message, and r-001 shipped twenty-seven of those whose only
@@ -368,7 +369,9 @@ drive_boundary_settling_verb() {
 # The vocabulary is DECISIONS, and each one names the operator verb that
 # carries it out -- `unblock`/`retry`/`reverify` (`orchid task
 # unblock|retry|reverify`), `approve`/`request-changes` (`orchid task arbitrate
-# --result`), `accept` (`orchid run accept --evidence`), `acknowledged`
+# --result`), `adopt-evidence`/`repin` (`orchid jobs review-plan <id>
+# --adopt-evidence|--repin`), `block` (`orchid task advance <id> blocked
+# --reason "..."`), `accept` (`orchid run accept --evidence`), `acknowledged`
 # (`orchid task handoff --ack` for a hand-off, `orchid task prereq-ack` for a
 # prerequisite).
 # Recording the answer is not running the verb: nothing consumes a
@@ -401,11 +404,12 @@ drive_boundary_settling_verb() {
 # legitimate prose.
 #
 # THOSE TWO LISTS PARTITION `_DRIVE_BOUNDARY_KINDS`, exhaustively, and
-# tests/test_drive.sh walks that variable to hold them to it. A kind that is in
-# neither is not a third policy -- it is a kind nobody decided about, which
-# resolves silently to the `*)` arm and ships the unanswerable page for exactly
-# the boundary whose paragraph was forgotten. So a new kind fails that walk
-# until it is named in one list or the other.
+# tests/test_drive.sh walks that variable to hold them to it -- each kind
+# probed in a status it is really raised in, since the review kinds' sets are
+# keyed on that. A kind that is in neither list is not a third policy -- it is a
+# kind nobody decided about, which resolves silently to the `*)` arm and ships
+# the unanswerable page for exactly the boundary whose paragraph was forgotten.
+# So a new kind fails that walk until it is named in one list or the other.
 #
 # THE SET IS THE KERNEL'S WHOLE RECOVERY LIST FOR THE STATE, not the subset
 # that happened to exist when the table was written. `blocked-task` declared
@@ -420,10 +424,65 @@ drive_boundary_settling_verb() {
 # bare `<choice>` placeholder this table replaced -- it is a page that
 # contradicts itself. A verb the kernel offers out of a state is a verb this
 # set names.
+#
+# ...AND IT IS THE RECOVERY LIST FOR THE STATE THE PAGE WAS RAISED IN, which is
+# why the two REVIEW kinds take the task's status and the others do not. That is
+# the same three-fact rule the resolvability block above states, applied to the
+# page instead of to the wakeup: `orchid task arbitrate` refuses any status but
+# `arbitrating` (libexec/orchid-task, exit 3), so `approve | request-changes` is
+# the honest set from `arbitrating` and NAMES NOTHING AN OPERATOR CAN DO from
+# `reviewing` -- yet every review-evidence boundary the reviewing walk raises
+# (a review-plan pin that failed, a routing table with no unfilled slot, a
+# tier-complete set whose routed slot has no review of its own, a slot pinned to
+# an engine that cannot be dispatched) is raised from exactly there, while the
+# task is still `reviewing`. Those pages offered three answers, all of which
+# would have exited 3, and refused the two verbs their own reason texts point
+# the operator at. The declared set is a promise with two ends, so that is not
+# merely an unhelpful menu: `orchid answer` refuses everything the set did not
+# name, so the operator who runs `orchid jobs review-plan <id> --repin` -- the
+# remedy the page told them to run -- cannot record that they did.
+#
+# So from `reviewing` the set is that walk's own remedies: `adopt-evidence` and
+# `repin` (the two `orchid jobs review-plan` modes those reason texts name),
+# `block` (`orchid task advance <id> blocked --reason "..."`, the hand-it-to-a-
+# human ending every one of them offers) and `defer`. From `arbitrating` it is
+# the arbitration truth table's own results, unchanged.
+#
+# THE TWO ARMS HAVE DIFFERENT PRODUCERS, which is why neither is dead code even
+# though runners/orchid-drive only ever reaches the `reviewing` one. A review
+# boundary on an `arbitrating` task is resolvable on every surface shipped
+# today, so the driver wakes an orchestrator for it instead of paging -- and the
+# page then comes from that model's own `orchid notify --task <id> --choice ...`
+# through the brokered surface, when it reads the evidence and judges the
+# decision a human's after all. This table is what PROTOCOL.md tells that model
+# to declare; the day a review boundary from `arbitrating` reaches the notify
+# path directly, it is already saying the same thing.
+#
+# That set covers every VERB the reviewing walk's reason texts point at, which is
+# the property the rule above actually demands. Two of those stops (a review-plan
+# pin whose durable write failed, a pin that returned no slots at all) name no
+# orchid verb to begin with -- their remedy is repairing the write path and
+# letting the next pass run -- and the answer to those is `defer` or `block`,
+# both of them in the set. What must never happen again is the reverse: a page
+# whose reason text names a verb the set refuses.
+#
+# ANY OTHER STATUS DECLARES NOTHING, deliberately, and this is the one arm that
+# fails toward free text rather than toward a set. A review page on a status
+# neither verb-set belongs to is a state nobody has decided the recovery list
+# for; naming either list there would refuse an answer that may well be the only
+# correct one, and the pre-choice free-text contract is exactly the behaviour
+# that can never do that. Declaring no set is how this table says "I do not know
+# what may be answered here", which is different from "anything may be".
 drive_boundary_choices() {
-  case "$1" in
+  local kind="$1" status="${2:-}"
+  case "$kind" in
     blocked-task) printf 'unblock\nretry\nreverify\ndefer\n' ;;
-    review-evidence|review-conflict) printf 'approve\nrequest-changes\ndefer\n' ;;
+    review-evidence|review-conflict)
+      case "$status" in
+        arbitrating) printf 'approve\nrequest-changes\ndefer\n' ;;
+        reviewing) printf 'adopt-evidence\nrepin\nblock\ndefer\n' ;;
+        *) return 0 ;;
+      esac ;;
     run-complete) printf 'accept\ndefer\n' ;;
     operator-handoff|task-prerequisite) printf 'acknowledged\ndefer\n' ;;
     *) return 0 ;;

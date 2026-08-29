@@ -348,7 +348,15 @@ this section false without touching a byte of it.
   all.
   `runners/orchid-drive` declares the set for every boundary kind that has
   one (`lib/drive.sh`'s `drive_boundary_choices`; PROTOCOL.md's boundary
-  table), and the kinds whose answer is genuinely prose declare none.
+  table), and the kinds whose answer is genuinely prose declare none. The set
+  is a property of the kind AND the task's status, not of the kind alone: a
+  `review-evidence`/`review-conflict` page names the arbitration results
+  (`approve | request-changes | defer`) only from `arbitrating`, where `orchid
+  task arbitrate` is legal, and names the review-plan remedies its own reason
+  text points at (`adopt-evidence | repin | block | defer`) from `reviewing`,
+  where that verb exits 3. Declaring one state's verbs on the other state's
+  page is the self-contradiction the gate makes worst: the page invites answers
+  that cannot be carried out and refuses the ones that can.
 - **v1-m4 channels — three explicit actors (round-4 topology fix) — SHIPPED:**
   (1) a kernel-launched OUTBOUND channel plugin (`send` only, no repo
   access) — `orchid notify` (tier-1) never spawns it directly; it only

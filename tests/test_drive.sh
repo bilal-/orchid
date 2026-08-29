@@ -177,14 +177,50 @@ retry
 reverify
 defer" "$(drive_boundary_choices blocked-task)" \
   "a blocked task's page names all three verbs that clear it — unblock, retry AND reverify — and the option to leave it parked"
+
+# THE REVIEW KINDS ARE KEYED ON THE TASK'S STATUS, and that is the same
+# three-fact rule the resolvability block at the top of this file pins, applied
+# to the page instead of to the wakeup. `orchid task arbitrate` exits 3 anywhere
+# but `arbitrating`, so the arbitration results are the honest set THERE...
 assert_eq "approve
 request-changes
-defer" "$(drive_boundary_choices review-evidence)" \
-  "a review boundary's page names the arbitration results"
+defer" "$(drive_boundary_choices review-evidence arbitrating)" \
+  "a review boundary raised on an ARBITRATING task names the arbitration results"
 assert_eq "approve
 request-changes
-defer" "$(drive_boundary_choices review-conflict)" \
+defer" "$(drive_boundary_choices review-conflict arbitrating)" \
   "...and a review CONFLICT names the same set, since the same verb records both"
+
+# ...and they are exactly the wrong answers one transition earlier. Every
+# review-evidence boundary the reviewing walk raises fires while the task is
+# still `reviewing`, and those pages offered `approve | request-changes | defer`
+# -- three answers whose verb would have exited 3 -- while `orchid answer`
+# refused the two verbs the same pages' reason texts told the operator to run.
+# A page that invites only illegal answers and rejects the legal ones is the
+# self-contradiction this whole table exists to retire, one state over.
+assert_eq "adopt-evidence
+repin
+block
+defer" "$(drive_boundary_choices review-evidence reviewing)" \
+  "the SAME kind on a REVIEWING task names the review-plan remedies its reason texts point at, never the arbitration results"
+assert_eq "adopt-evidence
+repin
+block
+defer" "$(drive_boundary_choices review-conflict reviewing)" \
+  "and a review conflict is keyed on the state the same way — the set follows the verb that is legal, not the kind"
+case "$(drive_boundary_choices review-evidence reviewing)" in
+  *approve*) fail "a reviewing page must not name an arbitration result: 'orchid task arbitrate' exits 3 from reviewing" ;;
+esac
+
+# THE THIRD ARM, and the only one in this table that falls back to free text:
+# a review page on a status neither verb-set belongs to is a state nobody has
+# decided a recovery list for. Naming either list there would refuse an answer
+# that may be the only correct one, so it declares none and keeps the contract
+# that can never do that.
+for _pstatus in testing implementing merging "" nosuchstatus; do
+  assert_eq "" "$(drive_boundary_choices review-evidence "$_pstatus")" \
+    "a review boundary on status '${_pstatus:-<none>}' declares no set — an undecided state falls back to free text, never to the other state's verbs"
+done
 assert_eq "accept
 defer" "$(drive_boundary_choices run-complete)" \
   "a finished run's page names the acceptance step"
@@ -214,8 +250,10 @@ defer" "$(drive_boundary_choices task-prerequisite)" \
 # into "declare a set everywhere", and the first page whose real answer is a
 # sentence would be refused.
 for kind in operator-decision hook-failure worktree-conflict planning nosuchkind; do
-  assert_eq "" "$(drive_boundary_choices "$kind")" \
-    "a $kind boundary has no enumerable answer set and must declare none"
+  for _pstatus in "" reviewing arbitrating blocked; do
+    assert_eq "" "$(drive_boundary_choices "$kind" "$_pstatus")" \
+      "a $kind boundary has no enumerable answer set and must declare none, on status '${_pstatus:-<none>}' as on any other"
+  done
 done
 
 # ...AND THE TWO LISTS ABOVE PARTITION THE KERNEL'S OWN SET OF KINDS. Walked
@@ -229,6 +267,16 @@ done
 # kind nobody decided about.
 choices_declared=" blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite "
 choices_none=" planning hook-failure worktree-conflict operator-decision "
+# A STATUS THE KIND IS REALLY RAISED IN, per kind, because the review kinds'
+# sets are keyed on it and probing them with the wrong one would read "declares
+# no set" off a state that is simply not theirs. The others ignore the argument
+# entirely, so any status answers for them.
+choices_probe_status() {
+  case "$1" in
+    review-evidence|review-conflict) printf 'reviewing\narbitrating\n' ;;
+    *) printf 'blocked\n' ;;
+  esac
+}
 # `read -ra` rather than an unquoted expansion: same split on the same IFS,
 # without asking shellcheck to accept a bare `$var` in a `for` list.
 read -ra kinds_all <<< "$_DRIVE_BOUNDARY_KINDS"
@@ -241,14 +289,20 @@ read -ra kinds_all <<< "$_DRIVE_BOUNDARY_KINDS"
 for kind in "${kinds_all[@]}"; do
   case "$choices_declared" in
     *" $kind "*)
-      [ -n "$(drive_boundary_choices "$kind")" ] \
-        || fail "$kind is listed as declaring an answer set but drive_boundary_choices returns none for it"
+      while IFS= read -r _pstatus; do
+        [ -n "$_pstatus" ] || continue
+        [ -n "$(drive_boundary_choices "$kind" "$_pstatus")" ] \
+          || fail "$kind is listed as declaring an answer set but drive_boundary_choices returns none for it on status $_pstatus"
+      done <<< "$(choices_probe_status "$kind")"
       continue ;;
   esac
   case "$choices_none" in
     *" $kind "*)
-      assert_eq "" "$(drive_boundary_choices "$kind")" \
-        "$kind is listed as declaring no answer set, and must declare none"
+      while IFS= read -r _pstatus; do
+        [ -n "$_pstatus" ] || continue
+        assert_eq "" "$(drive_boundary_choices "$kind" "$_pstatus")" \
+          "$kind is listed as declaring no answer set, and must declare none"
+      done <<< "$(choices_probe_status "$kind")"
       continue ;;
   esac
   fail "boundary kind '$kind' is in _DRIVE_BOUNDARY_KINDS but in neither T009 list — decide whether its page can name the answers 'orchid answer' will accept, add it to the right list in lib/drive.sh's drive_boundary_choices, and say so here"
@@ -259,12 +313,15 @@ done
 # also the shape runners/orchid-orchestrator-command admits — so a woken
 # orchestrator can declare the same sets from the brokered surface.
 for kind in blocked-task review-evidence review-conflict run-complete operator-handoff task-prerequisite; do
-  while IFS= read -r _choice; do
-    [ -n "$_choice" ] || continue
-    case "$_choice" in
-      *[!A-Za-z0-9_-]*) fail "$kind declares '$_choice', which is not a single [A-Za-z0-9_-] word — it could not survive as one argument to \`orchid answer\`" ;;
-    esac
-  done <<< "$(drive_boundary_choices "$kind")"
+  while IFS= read -r _pstatus; do
+    [ -n "$_pstatus" ] || continue
+    while IFS= read -r _choice; do
+      [ -n "$_choice" ] || continue
+      case "$_choice" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9_-]*) fail "$kind ($_pstatus) declares '$_choice', which is not a single [A-Za-z0-9_-] word starting alphanumeric — it could not survive as one argument to \`orchid answer\`" ;;
+      esac
+    done <<< "$(drive_boundary_choices "$kind" "$_pstatus")"
+  done <<< "$(choices_probe_status "$kind")"
 done
 
 # --- evidence arm ----------------------------------------------------------
@@ -1344,8 +1401,22 @@ assert_match "notified: \[review-evidence\] is operator-only" "$LDRIVE_OUT" \
 assert_match "judgment boundary \[review-evidence\] needs an operator" \
   "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
   "and the blocker really is recorded where an operator reads it"
-assert_match "^choices: approve \| request-changes \| defer\$" "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
-  "carrying the arbitration results as its declared answer set, not a bare <choice> placeholder"
+# ...and the answers it declares are the ones LEGAL FROM `reviewing`. This page
+# used to carry `approve | request-changes | defer` -- the arbitration results,
+# every one of which would have exited 3 out of this status -- while `orchid
+# answer` refused everything outside that set, including the two `orchid jobs
+# review-plan` modes this very boundary's reason text tells the operator to run.
+# The page and its own remedy sentence contradicted each other.
+assert_match "^choices: adopt-evidence \| repin \| block \| defer\$" "$(cat "$SLOTS/.orchid/BLOCKERS.md")" \
+  "the page declares the remedies legal from reviewing, not a bare <choice> placeholder and not the arbitration results"
+if grep -q '^choices: approve' "$SLOTS/.orchid/BLOCKERS.md"; then
+  fail "a page raised from reviewing must not offer an arbitration result: 'orchid task arbitrate' exits 3 there"
+fi
+# The set is the one this boundary's own reason text points at -- read from the
+# recorded reason rather than retyped, so a remedy sentence that stops naming
+# `--adopt-evidence` fails here instead of drifting away from the menu.
+assert_match "review-plan L010 [-][-]adopt-evidence" "$(lboundary | jq -r .reason)" \
+  "the boundary's reason names the verb its declared 'adopt-evidence' answer stands for"
 
 # One review per routed engine, and the same evidence set advances. (Both are
 # request-changes here so the walk stops at `arbitrating` instead of running

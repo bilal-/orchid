@@ -308,17 +308,26 @@ That blocker **declares its answer set** wherever the kind has one
 (`lib/drive.sh`'s `drive_boundary_choices`), so the page an operator reads
 names what `orchid answer` will accept instead of leaving `<choice>` to be
 guessed: `blocked-task` → `unblock | retry | reverify | defer`,
-`review-evidence` and `review-conflict` → `approve | request-changes | defer`,
-`run-complete` → `accept | defer`, `operator-handoff` and `task-prerequisite`
-→ `acknowledged | defer`. A kind's set is the WHOLE recovery list the table
-above names for it, never a subset: `orchid answer` refuses everything outside
-a declared set, so a verb the reason text points at and the set omits is an
-answer the page invites and then rejects — a page contradicting itself, which
-is worse than the bare placeholder this replaced. Each value names the operator
-verb that carries the decision out (`orchid task unblock|retry|reverify`,
-`orchid task arbitrate --result`,
-`orchid run accept --evidence`, `orchid task handoff --ack`, `orchid task
-prereq-ack`); recording the answer is not running the verb. Note that the last
+`review-evidence` and `review-conflict` → `approve | request-changes | defer`
+from `arbitrating` and `adopt-evidence | repin | block | defer` from
+`reviewing`, `run-complete` → `accept | defer`, `operator-handoff` and
+`task-prerequisite` → `acknowledged | defer`. A kind's set is the WHOLE recovery
+list the table above names for it **out of the state the page was raised in**,
+never a subset and never another state's: `orchid answer` refuses everything
+outside a declared set, so a verb the reason text points at and the set omits is
+an answer the page invites and then rejects — a page contradicting itself, which
+is worse than the bare placeholder this replaced. The two review kinds are keyed
+on that state for exactly the reason the three-fact rule above gives: `orchid
+task arbitrate` exits 3 anywhere but `arbitrating`, so a review page raised
+while the task is still `reviewing` — which is every boundary the reviewing walk
+raises — would otherwise offer three answers whose verb cannot run and refuse
+the two `orchid jobs review-plan` modes its own reason text tells the operator
+to take. Each value names the operator verb that carries the decision out
+(`orchid task unblock|retry|reverify`, `orchid task arbitrate --result`, `orchid
+jobs review-plan <id> --adopt-evidence|--repin`, `orchid task advance <id>
+blocked --reason "..."`, `orchid run accept --evidence`, `orchid task handoff
+--ack`, `orchid task prereq-ack`); recording the answer is not running the
+verb. Note that the last
 two declare a set even though no settling verb is named for them above:
 those are different questions. No MODEL may assert a hand-off or an
 out-of-sandbox prerequisite was performed, but the human the page reaches can,
@@ -330,7 +339,11 @@ catch-all, `hook-failure`, `worktree-conflict`, `planning` — have no set
 anybody could enumerate honestly, so they declare none and their pages keep
 the free-text contract in full. Those two lists together cover the boundary-kind
 table exhaustively: a kind in neither would fall through to no set at all and
-ship the unanswerable page by default, so a new kind must join one of them.
+ship the unanswerable page by default, so a new kind must join one of them. A
+review page raised on any status other than the two above falls back to free
+text in the same way and for a different reason: that is a state nobody has
+decided a recovery list for, and declaring one of the other two states' lists
+there could refuse the very answer that was correct.
 
 These two questions used to differ, and the gap was a defect rather than a
 nuance: `run-complete` was classed as orchestrator-resolvable even though the
