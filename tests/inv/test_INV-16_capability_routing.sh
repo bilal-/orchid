@@ -1102,7 +1102,7 @@ printf 'role.implementer=revshort\nrole.reviewer=revshort\nreview.low=revshort\n
 "$ORCHID_BIN" task set TRP candidate_sha "$phead" >/dev/null
 
 pinned="$("$ORCHID_BIN" jobs review-plan TRP --pin)"
-assert_eq "$(printf '1\trevshort\tsession-independent')" "$pinned" \
+assert_eq "$(printf '1\trevshort\tsession-independent\tworktree\ttest/revshort')" "$pinned" \
   "INV-16 fixture: slot 1 must fall back to the engine that built the candidate — that is the arm that skips the reviewer eligibility check, and without it nothing below is the refused case"
 prc=0; capability_routing_refusal review revshort >/dev/null || prc=$?
 assert_eq 1 "$prc" \
@@ -1110,14 +1110,14 @@ assert_eq 1 "$prc" \
 
 # The operator does exactly what the key half of the advice says, and ONLY that.
 printf 'role.implementer=revshort\nrole.reviewer=revshort\nreview.low=revfull\n' > "$prepo/orchid.config"
-assert_eq "$(printf '1\trevfull\tengine-independent')" "$(review_routing "$prepo" TRP)" \
+assert_eq "$(printf '1\trevfull\tengine-independent\tworktree')" "$(review_routing "$prepo" TRP)" \
   "INV-16 fixture: binding a capable engine at the named key really does move LIVE routing, so what follows is the pin outliving the edit rather than the edit failing"
 assert_eq "$pinned" "$("$ORCHID_BIN" jobs review-plan TRP)" \
   "INV-16: the config edit ALONE leaves the pinned row exactly as it was — this is the dead end, and advice that stopped at the key would end here with the boundary surviving unexplained"
 
 # ...and then the verb the advice names.
 repinned="$("$ORCHID_BIN" jobs review-plan TRP --repin)"
-assert_eq "$(printf '1\trevfull\tengine-independent')" "$repinned" \
+assert_eq "$(printf '1\trevfull\tengine-independent\tworktree\ttest/revfull')" "$repinned" \
   "INV-16: 'orchid jobs review-plan <task> --repin' rebinds the unfilled slot to the engine the operator bound — the advice names a step that actually reaches the pinned row"
 assert_eq "$repinned" "$("$ORCHID_BIN" jobs review-plan TRP)" \
   "INV-16: and the change is DURABLE — the next reader of the plan gets the rebound row, so the walk dispatches it"
@@ -1546,9 +1546,26 @@ stale_lease() {
   mkdir -p "$prepo/.orchid/runtime"
   jq -n '{epoch:1, refreshed_at:"2000-01-01T00:00:00Z"}' > "$prepo/.orchid/runtime/lease.json"
 }
+# pw_handoffs / pw_journaled -- the two DURABLE records one capability
+# hand-off leaves, counted by the refusal's own sentence rather than by the
+# token `INV-16`.
+#
+# Not a detail. Every pump pass hands the whole pass to runners/orchid-drive,
+# which finishes by printing `orchid status --explain`, whose `unattended:`
+# line quotes this repository's acknowledgement REASON back verbatim -- and
+# this fixture acknowledged with "INV-16 pump fixture". So the string `INV-16`
+# is in every pass's output from the first one onward, whatever the probe
+# decided. Anything searching for the bare token is reading the fixture's own
+# setup: it convicts the transient arm below on text the permanent case caused,
+# and it would report the permanent arm as correct even with the classifier
+# removed entirely.
 pw_handoffs() {
   grep -c "routed the 'orchestrate' step for role 'orchestrator'" \
     "$prepo/.orchid/BLOCKERS.md" 2>/dev/null || true
+}
+pw_journaled() {
+  grep -c "routed the 'orchestrate' step for role 'orchestrator'" \
+    "$prepo/.orchid/journal.md" 2>/dev/null || true
 }
 
 stale_lease
@@ -1561,8 +1578,8 @@ assert_eq review-conflict "$("$ORCHID_BIN" run boundary show 2>/dev/null | jq -r
   "INV-16 fixture: the pass must end at a boundary an orchestrator WOULD be woken for, or the probe below is never reached (out: $POUT)"
 assert_eq 0 "$PRC" \
   "INV-16: a hand-off recorded for a human is a normal poll outcome — the scheduled pump must not start failing over it (out: $POUT)"
-assert_match "INV-16" "$POUT" \
-  "INV-16: the pump names the routing refusal rather than reporting a chain nobody can be woken from as an ordinary poll result"
+assert_match "no actor can be routed the 'orchestrate' step for role 'orchestrator'" "$POUT" \
+  "INV-16: the pump names the routing refusal, in the sentence the record is written in — matching the bare token would be satisfied by the unattended-trust reason this fixture itself acknowledged with, which every pass reprints"
 assert_match "role.orchestrator" "$POUT" \
   "INV-16: and names the key that binds that chain, which is the one thing an operator can act on"
 case "$POUT" in
@@ -1620,15 +1637,30 @@ printf 'role.implementer=withshell\nrole.reviewer=textonly\nrole.orchestrator=wa
   > "$prepo/orchid.config"
 ledger_mark "$prepo" wakefull rate_limited 999999
 stale_lease
+# BEFORE AND AFTER, not a sweep of the pass's own text. What must be true here
+# is that this pass raises NO NEW hand-off, and "new" is a difference across
+# the pass -- so both durable records are sampled first and compared after. The
+# output is searched for the refusal's own sentence (see pw_handoffs' header
+# for why the bare token cannot be): the permanent case above deliberately left
+# one hand-off behind, and every surface that reports it goes on reporting it,
+# which is the correct behaviour and not something this arm may read as a
+# fresh refusal.
+pw_blockers_before="$(pw_handoffs)"
+pw_journal_before="$(pw_journaled)"
+assert_eq 1 "$pw_blockers_before" \
+  "INV-16 fixture: the permanent case's single hand-off must be the state carried in, or 'unchanged' below is both sides reading zero and would hold with the recording removed"
 PRC=0; POUT="$("$REPO_ROOT/runners/orchid-pump" 2>&1)" || PRC=$?
 assert_eq 0 "$PRC" "INV-16: an unavailable-but-capable orchestrator is still an ordinary poll outcome (out: $POUT)"
 assert_match "no capable orchestrator available" "$POUT" \
   "INV-16: and it still gets the come-back-later line, because coming back later is exactly what clears a ledger window"
 case "$POUT" in
-  *"INV-16"*) fail "INV-16: a rate-limited engine that declares everything the step needs must never be handed to an operator as a capability refusal" ;;
+  *"no actor can be routed the 'orchestrate' step"*)
+    fail "INV-16: a rate-limited engine that declares everything the step needs must never be handed to an operator as a capability refusal" ;;
 esac
-assert_eq 1 "$(pw_handoffs)" \
-  "INV-16: and raises no hand-off blocker at all — the count is the one the permanent case left behind"
+assert_eq "$pw_blockers_before" "$(pw_handoffs)" \
+  "INV-16: and raises no hand-off blocker at all — the operator surface is left exactly as this pass found it"
+assert_eq "$pw_journal_before" "$(pw_journaled)" \
+  "INV-16: nor a second journal line, which is the other half of the record orchid notify writes — a refusal deduped on BLOCKERS.md but journaled again is still a permanent hand-off filed for a transient wait"
 [ -e "$WORK/wake-marker-wakefull" ] \
   && fail "INV-16: a rate-limited engine must not be spawned either"
 green_case 'the same pump against a chain whose only entry declares everything orchestrate needs and is merely rate-limited printed the ordinary poll line and raised no hand-off, so the refusal above is a capability decision rather than the pump reporting every unavailability as permanent'
@@ -1668,9 +1700,26 @@ green_case 'the identical pump pass, with only the ledger mark cleared, woke the
 # a descriptor asking for LESS than the work costs. That descriptor is
 # kernel-shipped for this role, so the fixture must supply its own; it is
 # written LAST, after every part above has run against the real one.
+#
+# AND IT REPLACES THE BUILT-IN RATHER THAN SITTING BESIDE IT. `orchestrator` is
+# a CORE role, and `_role_file` searches the built-in root LAST precisely so
+# that nothing can outrank it: a second hit at ANY other root is not an
+# override, it is an INV-10 duplicate, refused by name ("duplicate role
+# 'orchestrator' (... vs ...)") with a nonzero return and nothing on stdout.
+# Dropping this descriptor into $ORCHID_ROLES_DIR beside the kernel's own
+# therefore does not weaken the gate -- it breaks `role_get` for the role
+# outright, so `role_eligible` fails for EVERY entry, the chain empties, and
+# `drive_orchestrator_surface` answers `brokered` from its no-engine arm. That
+# answer happens to equal the one this part asserts, so the RED case would have
+# gone on passing while proving nothing whatever about the prediction. INV-10 is
+# correct to refuse the duplicate; what this part needs is a root where the
+# weaker descriptor is the ONLY orchestrator descriptor there is.
 # ===========================================================================
+mkdir -p "$WORK/surfroot/roles"
 printf 'id=orchestrator\ndescription=INV-16: an operator descriptor asking for less than the orchestrate step costs\n' \
-  > "$WORK/roles/orchestrator.role"
+  > "$WORK/surfroot/roles/orchestrator.role"
+SURF_ROOT_REAL="$ORCHID_ROOT"
+export ORCHID_ROOT="$WORK/surfroot"
 
 # <name> <capabilities> <command_surface> -- mk_engine plus the one manifest
 # key this part reads. Nothing is spawned here either: drive_orchestrator_surface
@@ -1690,11 +1739,17 @@ mk_surface_engine surfcapable "shell,git" brokered
 srepo="$WORK/surfchain"; mkdir -p "$srepo"
 printf 'role.orchestrator=surfshort,surfcapable\n' > "$srepo/orchid.config"
 
-# The premises, asserted rather than assumed. The labels differ (so the two
-# readings are distinguishable at all), the role gate ADMITS the primary under
-# the descriptor just written (so only the step table can move past it), the
-# step table REFUSES it, and the fallback is capsuite-proven (so the wake really
-# does reach it rather than stopping at an unproven entry).
+# The premises, asserted rather than assumed. The descriptor under test is the
+# one and only orchestrator descriptor in scope (so the reads below are the
+# weaker gate rather than INV-10's duplicate refusal), the labels differ (so the
+# two readings are distinguishable at all), the role gate ADMITS the primary
+# under that descriptor (so only the step table can move past it), the step
+# table REFUSES it, and the fallback is capsuite-proven (so the wake really does
+# reach it rather than stopping at an unproven entry).
+assert_eq "$WORK/surfroot/roles/orchestrator.role" "$(_role_file orchestrator)" \
+  "INV-16 fixture: the weaker descriptor must be the ONLY one this resolver can see — a second hit is the INV-10 duplicate, whose empty chain answers 'brokered' for a reason that has nothing to do with the prediction"
+assert_eq "" "$(role_requires orchestrator)" \
+  "INV-16 fixture: and it must ask for LESS than the orchestrate step prices, or the role gate stops the primary and the two readings never come apart"
 assert_eq soft "$(manifest_get "$WORK/eng/surfshort" command_surface soft)" \
   "INV-16 fixture: the incapable primary declares the unrestricted label"
 assert_eq brokered "$(manifest_get "$WORK/eng/surfcapable" command_surface soft)" \
@@ -1707,6 +1762,8 @@ assert_eq 1 "$src" \
 capsuite_run surfcapable orchestrator >/dev/null \
   || fail "INV-16 fixture: capsuite_run must pass the fallback for the orchestrator role, or the wake stops at an unproven entry instead"
 
+assert_eq surfcapable "$(resolve_role_available "$srepo" orchestrator orchestrate 2>/dev/null)" \
+  "INV-16 fixture: the chain must RESOLVE to the capable fallback — 'brokered' below is also what the no-engine arm prints, so without this the assertion cannot tell a correct prediction from a chain that resolved nothing at all"
 assert_eq brokered "$(drive_orchestrator_surface "$srepo")" \
   "INV-16: the surface is read off the entry the wake will actually use — reporting the incapable primary's label decides a judgment boundary from the manifest of an adapter nobody will spawn"
 red_case 'the surface prediction the driver and the pump both consult followed the same operation-aware walk the wake does and reported the capable fallback command_surface, instead of the label of the role-eligible primary that cannot perform the orchestrate step'
@@ -1718,3 +1775,8 @@ printf 'role.orchestrator=surfsoft\n' > "$srepo/orchid.config"
 assert_eq soft "$(drive_orchestrator_surface "$srepo")" \
   "INV-16: a capable orchestrator's own label is still what is reported — the skip above is a failover decision, not the prediction collapsing to the narrowest answer"
 green_case 'the same prediction against a single capable entry declaring the unrestricted surface reported that label, so skipping an incapable entry narrows nothing on its own'
+
+# The weaker descriptor's root is scoped to this part alone: every part above
+# ran against the kernel's own roles/, and nothing may inherit a role root that
+# carries one hand-written descriptor and none of the other four.
+export ORCHID_ROOT="$SURF_ROOT_REAL"
