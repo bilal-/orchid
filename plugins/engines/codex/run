@@ -14,6 +14,16 @@ source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/heartbeat.sh"
 
+# The stale-root gate, fired explicitly (INV-15). An engine adapter lives
+# outside bin/, libexec/ and runners/, so lib/common.sh's source-time fire does
+# not cover this path: loading the library above ARMED the guard and left the
+# firing to this file. It is worth the line because an adapter executes
+# $ORCHID_ROOT's own libraries and role profiles, so a stale installation root
+# is precisely the stale-adapter shape lesson L018 records. Idempotent, and a
+# no-op for every root not parked on its configured integration branch, so an
+# ordinary run pays nothing for it.
+orchid_root_stale_gate
+
 req="${1:?usage: run <request.json>}"
 job_id="$(jq -r .job_id "$req")";         task="$(jq -r .task "$req")"
 operation="$(jq -r .operation "$req")";   worktree="$(jq -r .worktree "$req")"
