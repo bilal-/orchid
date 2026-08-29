@@ -238,8 +238,24 @@ runners/orchid-launch plan plan_critic critique
 orchid jobs reconcile
 # fold .orchid/reviews/plan-a1-plan_critic.json's findings back into your tasks,
 # repeat until nothing at/above medium severity remains, then:
+orchid plan crosscheck
 orchid plan apply --reason "initial plan"
 ```
+
+`orchid plan crosscheck` asks what the PREVIOUS run left behind — ledger
+items in its archived journal, and the active lessons carried across the
+rollover — and names every one your new plan does not appear to consider.
+On a repository's first run it says so and there is nothing to do. Once
+there is a previous run, `orchid plan apply` runs the same check itself and
+refuses while any carried item is neither covered by a task nor deferred
+with `orchid plan defer <item-id> --reason "..."`.
+`orchid run advance` applies the same refusal on every edge out of
+`planning`, so it cannot be sidestepped by leaving `planning` first. One
+journal entry often records several findings at once, so entries written as
+`(1) … (2) …` are listed as `r-001#57.1`, `r-001#57.2` and answered
+separately — covering one never closes its siblings. See PROTOCOL.md's
+PLANNING section for what counts as coverage and why it is deliberately
+cautious.
 
 ## 5. Start the orchestrator and walk away
 

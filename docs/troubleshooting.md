@@ -845,6 +845,148 @@ file, an in-memory DB the tests build — do that and leave
 `operator_prerequisite` empty. It is the better answer wherever it is
 available; this is for where it is not.
 
+## `plan apply` refuses: carried-forward items are unconsidered
+
+**Symptom:** `orchid plan apply` exits 3 without committing anything, listing
+items like `r-001#57` or `L016` as neither covered by a task nor deferred.
+`orchid run advance` out of `planning` exits 3 with the same list — the run
+leaving `planning` is gated as well as the verb, so taking that edge first
+does not open the door for the `plan apply` behind it.
+
+This is the planning cross-check. The previous run left findings behind —
+ledger entries in `.orchid/runs/<prev>/journal.md` and the active lessons
+`orchid run new` carried across — and no task in the new plan appears to
+consider the ones it names. It exists because a run once omitted a defect the
+previous run had already found and journaled, and paid for it hours in.
+
+```sh
+orchid plan crosscheck             # the same report, without committing
+```
+
+Two ways forward, per item. Cover it — add or extend a task whose text names
+the thing (a snake_case identifier, a source path, an `INV-nn`, the lesson
+id); matching is on those anchor terms only, and only in the task's body and
+its intent-bearing frontmatter (`title`, `acceptance_criteria`,
+`stop_condition`, `hook_guidance`, `resources`). A bare frontmatter key does
+not count, and neither does `verification_commands` — every task's chain
+names the same suite scripts, so a path in there would mark items covered
+across the whole plan at once. The task has to actually say it. Where an
+item does come back `covered`, the line names the anchor that earned it
+(`… (task T010 via started_at)`); if that term reads as incidental, treat
+the item as uncovered and cover or defer it properly. Or decide against it:
+
+```sh
+orchid plan defer r-001#57 --reason "owned by the follow-up PR, not this run"
+```
+
+Items are FINDINGS, not journal entries. One arbitration entry often records
+several defects at once, so an entry written as `(1) … (2) … (3) …` is split
+into `r-001#57.1`, `r-001#57.2`, `r-001#57.3` — cover or defer each on its
+own; the undivided `r-001#57` is refused, since deferring it would absolve
+all three in one command.
+
+An item that reports as
+
+```
+UNCOVERED [ledger] r-001#57 — CARRIED AS LEDGER ITEMS, not fixed here: …
+          ^ this entry records SEVERAL findings and cannot be split …
+```
+
+announces several findings that cannot be separated unambiguously — prose
+with no enumeration, an enumeration shorter than the count the entry claims,
+or one whose markers are scrambled (`1, 3, 2`), gapped (`1, 2, 4`) or
+repeated. No task text closes that one, by design: a wrong guess at where one
+finding ends would silently absolve the others. Read the entry, schedule what
+it needs, then defer it naming what you scheduled.
+
+A deferral journals the decision and satisfies the check for that item alone
+— there is no bulk override. Use the verb: what the check reads is the
+`plan_deferral` entry KIND, so a hand-written journal note whose text reads
+`deferred r-001#57: …` records nothing and the item stays uncovered. A
+deferral postpones rather than erases: the item reappears in the NEXT run's
+cross-check, still wanting a task or a fresh reason. Read the full item with
+`grep -n '^## ' .orchid/runs/<prev>/journal.md` and the entry at that
+ordinal.
+
+**The refusal does not lapse when the run leaves `planning`.** `plan apply`
+revises a committed plan too, and a revision that deletes the one task naming
+an item is exactly how an item becomes uncovered mid-run — so that revision is
+refused as well, and the integration branch does not move at all: nothing is
+committed, nothing journaled, and the edit stays sitting in your checkout
+until you answer for the item. Both remedies are open there, which is why the
+refusal can be a gate rather than a trap: `orchid plan defer` has no
+`run_status` precondition, so record the decision, or put the coverage back
+and re-run. A task is still the better answer once the run is moving — but
+that is advice, not the door being closed.
+
+## `plan apply` refuses: the cross-check cannot read the previous run
+
+**Symptom:** `orchid plan apply`, `orchid plan crosscheck` or `orchid run
+advance` out of `planning` exits **4** — not 3 — listing no items at all, and
+saying the carry-forward question cannot be answered.
+
+Exit 3 means *there are items and nobody considered them*. Exit 4 means *the
+previous run's record could not be read*, which is a different problem with a
+different repair: there is nothing to cover and nothing to defer, because
+nothing could be listed. The check is derived from the roadmap's own
+`run_id` — this is run `r-NNN`, so it carries from `r-(NNN-1)` — and one of
+four things is wrong with the state under `.orchid/`:
+
+- no archive for that run under `.orchid/runs/` (or no `runs/` at all);
+- the archive is there but its `journal.md`, which IS the ledger this check
+  reads, is missing or unreadable;
+- `run_id` in `.orchid/roadmap.md` is not the `r-NNN` shape, so the previous
+  run cannot be named;
+- an archive at or above the current `run_id` exists — a rollover archives
+  the OLD id and then increments, so the roadmap and the archive disagree
+  about how many runs there have been.
+
+It refuses rather than reporting because every one of those states produces
+an EMPTY item list, and an empty list is exactly what a previous run that
+genuinely left nothing produces. Reported, it printed `previous run r-001
+recorded no ledger items … (stated, not skipped)` and committed the plan over
+every finding in a record it never opened.
+
+All of `.orchid/` is durable state on the integration branch, so the repair
+is a restore:
+
+```sh
+git log --oneline -- .orchid/runs
+git checkout <sha> -- .orchid/runs/r-001
+```
+
+Then re-run `orchid plan crosscheck`, which will report the items in that
+record — usually as `UNCOVERED`, since nothing in the plan has answered for
+them yet.
+
+## `plan apply` refuses: the cross-check could not run at all
+
+**Symptom:** `orchid plan apply`, `orchid plan crosscheck` or `orchid run
+advance` out of `planning` exits **5**, saying no scratch directory could be
+created under whatever `TMPDIR` names, and listing no items.
+
+Nothing is wrong with `.orchid/` here. The archive is intact, the journal is
+readable, every carried item is still in it — the check simply has nowhere to
+write the list it would report, because it builds that list in a temporary
+directory. So the repair is neither a task, nor a deferral, nor a restore:
+
+```sh
+echo "$TMPDIR"                     # unset means /tmp
+mkdir -p "$TMPDIR" && df -h "${TMPDIR:-/tmp}"
+```
+
+An unusable `TMPDIR` is ordinary — a shell profile or a sandbox that exports
+a directory it never creates, a full disk, a read-only `/tmp`, a directory
+belonging to another user. Point it at a writable directory (or free space in
+the one it names) and re-run.
+
+It refuses rather than reporting for the same reason exit 4 does, and this is
+the sharper version of it: with no directory to write into, the item list came
+back empty, and an empty list is what a previous run that left nothing
+produces. The report printed `all carried-forward item(s) considered` and
+`plan apply` committed the plan — over findings that were sitting in a record
+it never had anywhere to read into.
+
 ## One task needs a decision and the whole run stopped
 
 **Symptom:** `orchid drive` exited 16 (or the pump printed `judgment boundary

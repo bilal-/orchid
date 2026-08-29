@@ -124,6 +124,14 @@ refuse "initializing a repo"            init
 refuse "one-command setup"              start "$WORK/requirements.md"
 refuse "running doctor"                 doctor
 refuse "applying a plan"                plan apply --reason x
+# T021: the verb that SATISFIES the planning cross-check. Refused here for the
+# same reason the `plan_deferral` journal kind is below -- deciding what a plan
+# will not carry is operator work, and an orchestrator that could defer a
+# carried-forward item could retire the previous run's findings without anyone
+# deciding to. Refused in every run_status, which is the whole set the verb is
+# now legal in for an operator: this arm runs against a fixture that has left
+# planning, so widening the verb's own precondition must never widen this.
+refuse "deferring a carried item"       plan defer L001 --reason x
 refuse "importing requirements"         requirements import "$WORK/requirements.md"
 refuse "answering a blocker"            answer q-1 "yes"
 refuse "merging"                        merge T001
@@ -182,6 +190,14 @@ refuse "extra arguments to task list"   task list --all
 refuse "a traversal-shaped task id"     task show ../../etc/passwd
 refuse "a command-shaped task id"       task show "T001; rm -rf /"
 refuse "a forged acceptance entry"      journal add --kind acceptance "the run is accepted"
+# T021, and the sharpest of the forged-kind refusals: `plan_deferral` is what
+# SATISFIES the planning cross-check for a carried-forward item. An
+# orchestrator able to write one free-standing could talk the next plan out of
+# a defect the previous run recorded -- without ever running `orchid plan
+# defer`, which refuses an unknown id, refuses a re-deferral, and refuses once
+# planning is over. Pinned, because a comment saying the kind is excluded is
+# not a mechanism that keeps it excluded (L016).
+refuse "a forged planning deferral"     journal add --kind plan_deferral "deferred L016: not this run"
 refuse "a journal entry with no text"   journal add --kind note
 refuse "a notify with no text"          notify --task T001
 refuse "a multi-line journal entry"     journal add --kind note "first line
@@ -209,12 +225,62 @@ admit 'journal add' journal add --task T001 --kind arbitration "weighed the find
 assert_match "weighed the finding; it is real" "$(cat .orchid/journal.md)" "an admitted journal entry really lands"
 
 admit 'journal add without a task' journal add --kind note "run-wide observation" >/dev/null
+# T021: the converse of the `plan_deferral` refusal above. Arbitration is
+# where a run decides a real defect is out of THIS task's scope, and the
+# orchestrator is the actor that decides it -- so the kind the NEXT run's
+# planning cross-check reads back out of the archived journal has to be
+# writable from here, or a finding this run knowingly does not close leaves
+# no trace for the next plan to be held to.
+admit 'journal add --kind ledger' journal add --task T001 --kind ledger \
+  "libexec/orchid-task stamps started_at only when empty; real, out of this task's scope" >/dev/null
+assert_match "stamps started_at only when empty" "$(cat .orchid/journal.md)" \
+  "an admitted ledger entry really lands, so the next run's cross-check has something to read"
+
 admit 'lessons add' lessons add --scope repo --invalidate-when "the fixture clock is pinned" \
   "fixture time drifts under parallel runs" >/dev/null
 assert_match "fixture time drifts" "$(cat .orchid/lessons.md)" "an admitted lesson really lands"
 
 admit 'notify' notify --task T001 "which behaviour is intended here?" >/dev/null
 assert_match "which behaviour is intended here" "$(cat .orchid/BLOCKERS.md)" "an admitted blocker really lands"
+
+# ===========================================================================
+# 3b -- T021: this surface and the orchestrate PROMPTS must agree.
+#
+# The two halves already proven above -- `ledger` admitted, `plan_deferral`
+# refused -- are only half a mechanism. What a woken orchestrator actually
+# runs is what its prompt asks for, and an admitted verb no prompt names is a
+# verb nobody runs: the ledger stays empty, and the next run's planning
+# cross-check reads that emptiness as "the previous run found nothing". The
+# mismatch was live in this tree -- both shipped orchestrate prompts named
+# only `--kind arbitration` -- and it is the L016 shape the cross-check itself
+# exists to close, one layer up: the surface permitted the recording, and
+# nothing asked for it.
+#
+# So each adapter's prompt is required to name the admitted form and to forbid
+# the refused one, here, beside the two runs that prove which is which.
+# tests/test_drive.sh's Part R sweeps the same clauses from the driver's side,
+# where the classification of what a surface can be relied on to run lives;
+# this end is what ties them to a broker that really answered 0 and 17.
+prompt_adapters=0
+for _prun in "$REPO_ROOT"/plugins/engines/*/run; do
+  [ -f "$_prun" ] || continue
+  grep -q 'operation" = orchestrate' "$_prun" || continue
+  _pname="$(basename "$(dirname "$_prun")")"
+  _pinstr="$(grep 'instructions=' "$_prun" || true)"
+  [ -n "$_pinstr" ] \
+    || fail "$_pname handles orchestrate but builds no instruction block this check can read"
+  prompt_adapters=$(( prompt_adapters + 1 ))
+  case "$_pinstr" in
+    *"--kind ledger"*) ;;
+    *) fail "$_pname's orchestrate prompt never asks for the ledger kind this surface admits — an out-of-scope finding it approves past would reach the next plan as silence" ;;
+  esac
+  case "$_pinstr" in
+    *"never journal add --kind plan_deferral"*) ;;
+    *) fail "$_pname's orchestrate prompt does not forbid the deferral kind this surface refuses — the two must say the same thing, and only the brokered adapter's list is enforced" ;;
+  esac
+done
+[ "$prompt_adapters" -ge 2 ] \
+  || fail "the prompt/surface agreement check swept $prompt_adapters orchestrate-capable adapter(s) — it is not looking at the shipped ones"
 
 # ===========================================================================
 # 4 -- the one judgment result, and releasing the boundary afterwards.

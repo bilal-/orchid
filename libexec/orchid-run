@@ -2,6 +2,10 @@
 set -euo pipefail
 source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/lessons.sh"; source "$ORCHID_ROOT/lib/drive.sh"
+# plancheck.sh after lessons.sh, whose _lessons_journal_start_date it uses:
+# `advance` is one of the two verbs that can take a run OUT of planning, and
+# T021's carry-forward cross-check gates both (see the advance arm below).
+source "$ORCHID_ROOT/lib/plancheck.sh"
 repo="${ORCHID_REPO:-$PWD}"; rt="$(orchid_runtime "$repo")"; state="$(orchid_state "$repo")"
 
 # run_status transition table (kernel.md's normative table, v0b2 ownership
@@ -219,6 +223,53 @@ case "$sub" in
     [ -f "$roadmap" ] || orchid_die "no roadmap in current checkout — run from the integration branch (or a worktree of it) after orchid init"
     from="$(fm_get "$roadmap" run_status)"
     legal_run "$from" "$to" || { echo "orchid: illegal run_status $from -> $to" >&2; exit 3; }
+
+    # T021: LEAVING PLANNING is what the carry-forward cross-check gates, and
+    # `plan apply` is not the only verb that does it. Gating apply alone left
+    # a bypass that needed no forgery and no flag: `run advance running`
+    # first, THEN `plan apply` -- the plan commits with the refusal already
+    # scoped out, and every carried-forward item leaves planning with no
+    # per-item record at all. A gate that is skipped by doing the same two
+    # things in the other order is not enforcing anything, so the check moves
+    # to the property it actually means: no run_status edge out of `planning`
+    # while a carried item is neither covered by a task nor deferred.
+    #
+    # `from = planning`, not `to = running`, because `planning -> blocked` is
+    # legal too and `blocked -> running` after it would reach the same place
+    # in two hops. Gating the EXIT edge closes both hops at the one point
+    # where the plan is still free: the run is still in planning here, so the
+    # operator can cover the item with a task or `orchid plan defer` it,
+    # exactly as at a refused `plan apply`. That is why this is not the dead
+    # end the brief rules out -- and both remedies stay open on the far side
+    # of the edge too, since `plan defer` carries no run_status precondition
+    # (libexec/orchid-plan's defer arm says why it was dropped).
+    #
+    # Read-only and placed before the journal write, so a refusal mutates
+    # nothing. Every mid-run edge (running->accepting, blocked->running,
+    # accepting->running) is deliberately untouched: those are not this
+    # gate's question, and re-litigating a plan there could strand a live
+    # run over a task file that has since been renamed.
+    if [ "$from" = planning ]; then
+      crosscheck_rc=0
+      plancheck_report "$state" || crosscheck_rc=$?
+      if [ "$crosscheck_rc" -ne 0 ]; then
+        # Exit 4 -- the cross-check could not read the previous run's record
+        # at all -- names the repair instead of the two remedies, which have
+        # nothing to act on when no item could be listed (libexec/orchid-plan's
+        # apply arm says why at length).
+        # Exit 5 -- no scratch directory, so the check could not run at all --
+        # names the temporary directory instead, for the same reason: an
+        # operator sent to restore an archive that is intact learns nothing.
+        if [ "$crosscheck_rc" -eq 5 ]; then
+          echo "orchid: run advance $from -> $to refused — the carry-forward cross-check could not run (above); give it a writable TMPDIR, then re-run" >&2
+        elif [ "$crosscheck_rc" -eq 4 ]; then
+          echo "orchid: run advance $from -> $to refused — the carry-forward cross-check could not be answered (above); repair the previous run's record, then re-run" >&2
+        else
+          echo "orchid: run advance $from -> $to refused — a carried-forward item may not leave planning unconsidered; cover it with a task or record the decision (orchid plan defer <id> --reason \"...\"), then re-run" >&2
+        fi
+        exit "$crosscheck_rc"
+      fi
+    fi
 
     # `->complete` is the acceptance gate closing; every other edge is a
     # plain operator intervention (kernel.md's journal-kind table).

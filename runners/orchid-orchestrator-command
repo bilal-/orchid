@@ -87,10 +87,23 @@ refuse() {
 }
 
 # The kernel's journal entry kinds this surface admits. `acceptance`,
-# `plan_revision`, `risk_change` and `attempt_waiver` are deliberately absent:
-# each is owned by a specific verb that writes it as part of its own
-# transaction, so a free-standing entry claiming one would be a forgery.
-_BROKER_KINDS=" note arbitration blocker blocker_resolved intervention lesson kill rebase_review "
+# `plan_revision`, `plan_deferral`, `risk_change` and `attempt_waiver` are
+# deliberately absent: each is owned by a specific verb that writes it as part
+# of its own transaction, so a free-standing entry claiming one would be a
+# forgery. `plan_deferral` is the sharpest case -- it is what SATISFIES the
+# planning cross-check for a carried-forward item, so an orchestrator able to
+# write one could talk itself out of a defect the previous run recorded.
+#
+# `ledger` is admitted, and the asymmetry with `plan_deferral` is the whole
+# point. A ledger entry only ever ADDS to what the next run's cross-check
+# must consider; a deferral REMOVES something from it. The orchestrator is
+# also the actor that meets these findings -- arbitration is where a run
+# decides a real defect is out of THIS task's scope -- so a surface that
+# refused the kind would leave the tick with no way to record what it just
+# chose not to close, and the cross-check reading the next run's journal
+# would find nothing to raise. A forged `ledger` entry costs one
+# `orchid plan defer`; a missing one costs what r-002 already paid.
+_BROKER_KINDS=" note arbitration blocker blocker_resolved intervention lesson kill rebase_review ledger "
 
 is_kind() {
   case "$_BROKER_KINDS" in

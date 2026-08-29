@@ -396,6 +396,22 @@ an operator and for the hand-executed walk below — but the driver and the
 brokered orchestrator surface only ever use `task arbitrate`, which is what
 makes "who decided this, and what did they decide" one greppable fact.
 
+**A finding you approve past is a finding you must record.** Arbitration is
+where a run decides that a real defect is out of THIS task's scope — the
+right call, often — and the entry that says so is what the NEXT run's
+planning cross-check reads back out of the archived journal. Record it as
+its own entry, `orchid journal add --task <id> --kind ledger "<what, and
+where it actually lives>"`, in the same breath as the approval, and name the
+thing precisely: the cross-check associates an item with a task through
+distinctive anchor terms (a snake_case identifier, a repo-relative source
+path, an `INV-nn`, a lesson id), so `started_at` and `libexec/orchid-task`
+earn it a hearing next run where "the budget bug" does not. `ledger` is
+admitted on the brokered orchestrator surface for exactly this; the
+`plan_deferral` kind that SATISFIES the cross-check is not, and is writable
+only by `orchid plan defer` (PLANNING below). A finding that never reaches
+the journal is one no future plan can be held to — and that, not the missing
+fix, is what cost r-002 a blocked task hours into the run.
+
 ## PLANNING (pre-run, before THE TICK ever runs)
 
 Before `run_status` leaves `planning`, there is no active task to walk — this
@@ -529,11 +545,168 @@ sequence in
    task file and so no `infra_failures` counter to spend; its failures are
    journaled and readable with `orchid journal show --task plan`. The pass
    never *relaunches* in this phase — deciding what to run next is yours.
+
+   **The carry-forward cross-check.** A run does not start from nothing:
+   `orchid run new` archived the previous run's journal under
+   `.orchid/runs/<prev>/` and carried its ACTIVE lessons into
+   `.orchid/lessons.md`. `orchid plan crosscheck` reports which of those
+   carried-forward items no task in the current draft appears to consider,
+   and exits 3 while any remains unconsidered. Two kinds count: **ledger
+   items** — entries in that archived journal recorded with the `ledger`
+   kind, or naming themselves a carried finding in prose, which is how every
+   pre-`ledger`-kind run wrote them — and **active lessons** carried across
+   the rollover. A lesson written during THIS run's own planning is neither:
+   nothing is carried forward out of the run you are still scoping, so it is
+   skipped. One dated at the rollover boundary itself is included, because
+   both timestamps are second-resolution and a tie resolves toward asking
+   the question. Run it here, inside the critique loop, where the plan is
+   still cheap to change; step 3 runs it again and REFUSES on the same
+   condition, so it is not a report anyone can skip.
+
+   *Which prose spellings count, and why it is a list rather than the word.*
+   The pre-`ledger`-kind spellings recognized are the noun compounds
+   `ledger item` and `ledger candidate`, the phrase `deferred ledger`, and
+   `the ledger` after a preposition — `for the ledger`, `worth the ledger`,
+   `to the ledger`, `in`/`into`/`on`/`onto the ledger`. The bare word is
+   deliberately NOT one of them, because a journal uses "ledger" for the
+   ENGINE HEALTH ledger too ("remains ledger-disqualified after three
+   exhausted-credit failures", "the one-hour ledger backoff has elapsed"),
+   and those entries record no finding at all: matching the word would open
+   every `plan apply` with a dozen items nobody can cover or act on, and a
+   refusal cleared by rote is a refusal that has stopped being read. If you
+   are recording a finding you knowingly are not closing, the reliable thing
+   to write is `orchid journal add --kind ledger` — the prose list exists for
+   journals written before that kind did, not as the supported way to say it.
+
+   **The unit is the FINDING, not the journal entry.** A single arbitration
+   entry routinely records several unrelated defects — "carried as ledger
+   items: (1) … (2) … (3) … (4) …" — and tracking those per entry would let
+   one task naming one of them close the entry and carry the rest out of
+   planning under a green `covered` line. So an entry written as an
+   ascending `(1) `/`(2) `/… enumeration is split on those markers into
+   findings that are covered and deferred one at a time, with ids
+   `<run>#<n>.<k>`; each is matched only against its own segment, never
+   against the shared preamble, whose terms would otherwise cover all of
+   them at once. The enumeration has to be a WHOLE one: every ordinal it
+   uses appearing exactly once, and no higher ordinal appearing at all, so
+   that a scrambled (`1, 3, 2`), gapped (`1, 2, 4`) or repeated list is not
+   split on the tidy prefix an ascending scan happens to reach — the
+   findings past the break would sit inside a segment attributed to a
+   neighbour, closeable by anything that matched it and never named on a
+   line of their own. An entry that announces SEVERAL findings — the plural
+   "ledger items"/"ledger candidates", or a count like "the four outstanding
+   findings" — but does not enumerate them, or enumerates fewer than it
+   states, cannot be split without guessing either. Any of these is reported
+   as one UNDECOMPOSED item that no task text can ever close: schedule its
+   findings and then `orchid plan defer` the entry, saying what you
+   scheduled. The operator states that these were considered; the check
+   never infers it from a keyword that happened to land in the same
+   paragraph.
+
+   Coverage is deliberately approximate and deliberately pessimistic: an
+   item is associated with a task only through a distinctive anchor term (a
+   snake_case identifier, a repo-relative source path, an `INV-nn`, a lesson
+   id) appearing in that task's **body**, or in the frontmatter fields that
+   carry an author's intent — `title`, `acceptance_criteria`,
+   `stop_condition`, `hook_guidance`, `resources`. Never through ordinary
+   prose; never through a frontmatter KEY, since every task file carries
+   `started_at:` and its siblings; and never through the MECHANICAL
+   frontmatter values, `verification_commands` above all — those are
+   boilerplate every task repeats, so a path inside one is a universal
+   anchor, and a task that merely runs the suite has not thereby considered
+   a finding about the suite. The question being asked is "did anyone look
+   at this?", not "is this scheduled correctly": no text match can answer
+   the second, and a spurious *covered* costs far more than a spurious
+   *uncovered*. Because it is approximate, every `covered` line names the
+   anchor that earned it — `covered [ledger] r-001#57 — … (task T010 via
+   started_at)` — so an incidental association can be spotted and turned
+   into a real task or a deferral instead of being taken on trust.
+
+   Where the honest answer is "not this run", record it:
+   `orchid plan defer <item-id> --reason "..."` journals the decision (kind
+   `plan_deferral`) and satisfies the check for that one item. It refuses an
+   id that is not on the carried-forward list and refuses to re-defer, but it
+   carries no `run_status` precondition: a plan can be revised after
+   `planning` (step 3), so an item can be uncovered after `planning`, so the
+   decision that answers for one has to be recordable then too. Once the run
+   is moving, a task is still the better answer than a deferral — that is
+   advice, not a refusal. There is no bulk override: a deferral names
+   one item and says why. What satisfies the check is an entry of that
+   KIND, not a line of that shape: `plan_deferral` is writable only by this
+   verb and is refused on the brokered orchestrator surface, so a `note`
+   (which is admitted there) reading `deferred <id>: …` counts for nothing
+   and the item stays uncovered. And it is a decision about ONE plan, not a
+   permanent silencing: `plan_deferral` is itself a ledger kind, so an item
+   deferred last run reappears in the next run's cross-check and needs
+   either a task or a fresh reason. An indefinitely postponed defect is
+   allowed to be indefinitely postponed; it is not allowed to disappear.
+
+   Both empty outcomes are STATED rather than passed over: a repository
+   whose first run has never rolled over, and a previous run that left
+   nothing. An unrun check and an empty one look identical otherwise, and
+   that is the failure this exists to prevent — r-002's requirements omitted
+   a defect r-001 had already found, recorded and journaled (the once-only
+   `started_at` anchor), with eighteen active lessons and the entire
+   previous journal available while scoping. The information existed and
+   nothing forced its use.
+
+   And a third outcome is neither of those: **the question could not be
+   answered at all**, which exits 4 and refuses. Which run this plan carries
+   from is read from the roadmap's own `run_id` — the previous run is
+   `r-NNN` minus one — and that run's archive must be present under
+   `.orchid/runs/` with its `journal.md` inside it. When it is not, or when
+   `run_id` names no run, or when an archive at or above the current run id
+   contradicts it, the two item generators return the empty list — which is
+   byte-for-byte the list a run that left nothing produces. Reported as
+   "nothing to cross-check" it committed a plan over every finding in an
+   unread record, so it is refused instead, naming what could not be read.
+   The repair is to restore that record (it is durable state on the
+   integration branch: `git log --oneline -- .orchid/runs`), not to cover or
+   defer anything — neither remedy applies to an item the check was never
+   able to list.
+
+   A fourth outcome is the same distinction drawn about the check's own
+   workspace: it builds its lists in a scratch directory under `TMPDIR`, and
+   when it cannot create one it exits **5** and refuses. Nothing is wrong
+   with `.orchid/` in that state — the archive is intact and the items are
+   all still in it — which is exactly why an empty report there was the
+   worst version of this: an unusable `TMPDIR` (one that does not exist, a
+   full or read-only `/tmp`, a sandbox exporting a directory it never
+   created) produced no list, and a report with no list said the plan had
+   been considered. The repair is a writable temporary directory, so it gets
+   a code of its own too: restoring an archive that was never missing would
+   teach an operator nothing.
 3. `orchid plan apply --reason "..."` — commits every current `.orchid/`
    change (roadmap, tasks, requirements) onto the integration branch in one
    transaction, from whatever checkout you're in, without ever switching the
    operator's branch; journals `plan_revision`; advances `run_status:
-   planning → running` once a plan actually exists.
+   planning → running` once a plan actually exists. It re-runs the
+   carry-forward cross-check above first and refuses (exit 3, nothing
+   committed, nothing journaled, the integration branch unmoved, the verb
+   lock released) as long as any carried item is neither covered by a task
+   nor explicitly deferred.
+
+   That refusal is on the VERB, in every `run_status` — not only while the
+   run is still `planning`. `plan apply` revises a committed plan too, so
+   scoping the refusal to `planning` meant the one edit that can UNCOVER an
+   item mid-run — a revision deleting the task that named it — committed
+   with a printed warning and exit 0. The remedy is what makes that
+   enforceable rather than a trap: `orchid plan defer` carries no
+   `run_status` precondition, so at every refusal both ways out are open —
+   cover the item with a task in the plan being applied, or record the
+   decision not to.
+
+   **The gate is on leaving `planning` as well as on this verb.** `orchid
+   run advance` can take a run out of `planning` too, so it applies the same
+   cross-check on every edge out of that status (`→ running` and `→ blocked`
+   alike, since `blocked → running` is legal after it) and refuses on the
+   same condition, before journaling or writing anything. Otherwise `run
+   advance running` followed by `plan apply` would commit exactly the plan
+   the refusal above exists to stop, with every carried item leaving
+   planning unrecorded — a gate that can be stepped around by reordering two
+   verbs is not enforcing anything. Both remedies are open at that refusal
+   (the run is still in `planning`), so it strands nothing; mid-run edges
+   are untouched.
 
 Once `run_status: running`, PLANNING is over — THE TICK below is the only
 procedure that touches task state from here on.
