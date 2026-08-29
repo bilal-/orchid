@@ -3476,6 +3476,29 @@ for _run in "$REPO_ROOT"/plugins/engines/*/run; do
     *"run boundary clear"*) ;;
     *) fail "$_name's orchestrate prompt must name the verb that releases the record" ;;
   esac
+  # T021, the surface/prompt half of the cross-check. The broker ADMITS
+  # `journal add --kind ledger` and refuses `--kind plan_deferral`
+  # (runners/orchid-orchestrator-command's _BROKER_KINDS, pinned both ways by
+  # tests/test_orchestrator_command.sh). An admitted verb no prompt asks for is
+  # a verb nobody runs: arbitration is exactly where a run decides a real
+  # defect is out of THIS task's scope, so an orchestrate prompt that never
+  # names the ledger kind leaves that finding recorded nowhere, and the next
+  # run's planning cross-check reads an empty ledger and raises nothing. That
+  # is r-002's own miss — the information existed and nothing forced its use.
+  case "$_instr" in
+    *"--kind ledger"*) ;;
+    *) fail "$_name's orchestrate prompt never names 'journal add --kind ledger' — a finding this run knowingly leaves open reaches the next plan's cross-check as silence" ;;
+  esac
+  # ...and the asymmetry, which is the whole point of admitting one kind and
+  # refusing the other: a ledger entry only ADDS to what the next plan must
+  # consider, a deferral REMOVES something from it. Only `orchid plan defer`,
+  # during PLANNING, may do the removing. Pinned as the exact clause both
+  # prompts carry so a rewrite that drops the prohibition fails here rather
+  # than at the next planning boundary.
+  case "$_instr" in
+    *"never journal add --kind plan_deferral"*) ;;
+    *) fail "$_name's orchestrate prompt must forbid 'journal add --kind plan_deferral' outright — a free-standing deferral talks the next plan out of a defect the previous run recorded" ;;
+  esac
 done
 [ "$orch_adapters" -ge 2 ] \
   || fail "Part R swept $orch_adapters orchestrate-capable adapter(s) — it is not looking at the shipped ones"

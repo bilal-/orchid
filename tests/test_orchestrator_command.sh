@@ -241,6 +241,45 @@ admit 'notify' notify --task T001 "which behaviour is intended here?" >/dev/null
 assert_match "which behaviour is intended here" "$(cat .orchid/BLOCKERS.md)" "an admitted blocker really lands"
 
 # ===========================================================================
+# 3b -- T021: this surface and the orchestrate PROMPTS must agree.
+#
+# The two halves already proven above -- `ledger` admitted, `plan_deferral`
+# refused -- are only half a mechanism. What a woken orchestrator actually
+# runs is what its prompt asks for, and an admitted verb no prompt names is a
+# verb nobody runs: the ledger stays empty, and the next run's planning
+# cross-check reads that emptiness as "the previous run found nothing". The
+# mismatch was live in this tree -- both shipped orchestrate prompts named
+# only `--kind arbitration` -- and it is the L016 shape the cross-check itself
+# exists to close, one layer up: the surface permitted the recording, and
+# nothing asked for it.
+#
+# So each adapter's prompt is required to name the admitted form and to forbid
+# the refused one, here, beside the two runs that prove which is which.
+# tests/test_drive.sh's Part R sweeps the same clauses from the driver's side,
+# where the classification of what a surface can be relied on to run lives;
+# this end is what ties them to a broker that really answered 0 and 17.
+prompt_adapters=0
+for _prun in "$REPO_ROOT"/plugins/engines/*/run; do
+  [ -f "$_prun" ] || continue
+  grep -q 'operation" = orchestrate' "$_prun" || continue
+  _pname="$(basename "$(dirname "$_prun")")"
+  _pinstr="$(grep 'instructions=' "$_prun" || true)"
+  [ -n "$_pinstr" ] \
+    || fail "$_pname handles orchestrate but builds no instruction block this check can read"
+  prompt_adapters=$(( prompt_adapters + 1 ))
+  case "$_pinstr" in
+    *"--kind ledger"*) ;;
+    *) fail "$_pname's orchestrate prompt never asks for the ledger kind this surface admits — an out-of-scope finding it approves past would reach the next plan as silence" ;;
+  esac
+  case "$_pinstr" in
+    *"never journal add --kind plan_deferral"*) ;;
+    *) fail "$_pname's orchestrate prompt does not forbid the deferral kind this surface refuses — the two must say the same thing, and only the brokered adapter's list is enforced" ;;
+  esac
+done
+[ "$prompt_adapters" -ge 2 ] \
+  || fail "the prompt/surface agreement check swept $prompt_adapters orchestrate-capable adapter(s) — it is not looking at the shipped ones"
+
+# ===========================================================================
 # 4 -- the one judgment result, and releasing the boundary afterwards.
 # ===========================================================================
 assert_eq arbitrating "$(status_of T001)" "T001 is still awaiting judgment"
