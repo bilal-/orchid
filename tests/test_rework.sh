@@ -28,12 +28,27 @@ source "$REPO_ROOT/lib/rework.sh"
 A="$WORK/sig"
 mkdir -p "$A"
 
-mk_log() {  # mk_log <file> <date> <sha> <cwd> <body> <exit>
+# mk_log <file> <date> <sha> <cwd> <body> <exit> [integration-head]
+#
+# The REAL header shape `orchid verify` writes, prestate block included --
+# not the five lines this feature's first draft assumed. libexec/orchid-verify
+# splices drive_verify_prestate_headers (lib/drive.sh) in between `command:`
+# and the bare `---`, and the witness below proves it still does. A fixture
+# that omits those lines cannot see the defect they cause, which is exactly
+# how the enumerated drop-list survived its own unit tests.
+mk_log() {
   { printf 'date: %s\n' "$2"
     printf 'sha: %s\n' "$3"
     printf 'candidate: %s\n' "$3"
     printf 'cwd: %s\n' "$4"
     printf 'command: /bin/bash tests/run.sh\n'
+    printf 'prestate: 1\n'
+    printf 'pre_base_sha: "%s"\n' "$3"
+    printf 'pre_exec_missing: ""\n'
+    printf 'pre_env_missing: ""\n'
+    printf 'pre_env_inventory: ""\n'
+    printf 'pre_pin_stale: ""\n'
+    printf 'pre_integration_head: "%s"\n' "${7:-integhead0000}"
     printf -- '---\n'
     printf '%s\n' "$5"
     printf 'exit: %s\n' "$6"
@@ -53,6 +68,63 @@ s4="$(rework_signature "$A/r4.log")"
 assert_eq "$s1" "$s2" "a re-run of the SAME failure has the same signature (date/sha/cwd are volatile, not evidence)"
 [ "$s1" != "$s3" ] || fail "a different failure output must produce a different signature"
 [ "$s1" != "$s4" ] || fail "the same output with a different exit code is a different failure"
+
+# THE ONE THAT MAKES THIS FEATURE WORK OUTSIDE A ONE-TASK FIXTURE. `orchid
+# verify` writes T019's prestate block into the same header, and
+# `pre_integration_head` is the integration checkout's HEAD -- it moves every
+# time ANY OTHER TASK MERGES, which on a real run is constantly and has
+# nothing whatever to do with what this task failed on. A signature that
+# enumerates the volatile keys it knows about (date/sha/candidate/cwd) rather
+# than keeping only the one it wants (`command:`) hands two byte-identical
+# failures two different digests, so `rework_signature_repeats` never reaches
+# 2: the brief tells the next attempt its failure is brand new when it is the
+# third copy of the same one, the failover never reroutes, and the
+# non-convergence stop never fires. The whole feature goes silently inert in
+# precisely the multi-task run F27 was recorded on -- and a single-task
+# fixture, where integration HEAD never moves, passes anyway.
+mk_log "$A/r7.log" 2026-08-04T00:00:00Z aaaa1111 /tmp/wt-a "FAIL: assertSame order differs" 1 integhead1111
+mk_log "$A/r8.log" 2026-08-05T10:00:00Z bbbb2222 /tmp/wt-b "FAIL: assertSame order differs" 1 integhead2222
+assert_eq "$(rework_signature "$A/r7.log")" "$(rework_signature "$A/r8.log")" \
+  "an unrelated task merging (pre_integration_head moves) must NOT make the same failure look like a different one"
+assert_eq "$s1" "$(rework_signature "$A/r7.log")" \
+  "and the whole header block is volatile alike -- prestate lines never reach the digest either"
+
+# Non-vacuity: the fixture header above must be the shape the verifier really
+# writes. If libexec/orchid-verify ever stops splicing the prestate block, the
+# assertions above would still pass while testing a header nobody produces.
+grep -q 'prestate_headers' "$REPO_ROOT/libexec/orchid-verify" \
+  || fail "witness: orchid-verify no longer writes a prestate header block — mk_log above is pinning a shape that does not exist"
+grep -q 'pre_integration_head' "$REPO_ROOT/lib/drive.sh" \
+  || fail "witness: drive_verify_prestate_headers no longer emits pre_integration_head — re-derive which header keys are volatile"
+
+# The keep-list is what keeps that true for header keys nobody has invented
+# yet: an UNRECOGNISED header line must be treated as volatile, not folded
+# into the digest on the strength of not being on a drop-list. Spliced into
+# the HEADER (before the bare `---`), which is where a new header key lands.
+{ printf 'date: 2026-08-06T00:00:00Z\n'
+  printf 'sha: dddd4444\n'
+  printf 'candidate: dddd4444\n'
+  printf 'cwd: /tmp/wt-d\n'
+  printf 'command: /bin/bash tests/run.sh\n'
+  printf 'pre_some_future_key: "moves every run"\n'
+  printf -- '---\n'
+  printf 'FAIL: assertSame order differs\n'
+  printf 'exit: 1\n'; } > "$A/r9.log"
+assert_eq "$(rework_signature "$A/r7.log")" "$(rework_signature "$A/r9.log")" \
+  "a header key added by some LATER task is volatile by default — the digest keeps 'command:' and nothing else"
+
+# `command:` itself is kept, and it is the one header line that must be: the
+# same output from a DIFFERENT command is a different failure.
+{ printf 'date: 2026-08-06T00:00:00Z\n'
+  printf 'sha: dddd4444\n'
+  printf 'candidate: dddd4444\n'
+  printf 'cwd: /tmp/wt-d\n'
+  printf 'command: /bin/bash tests/other_suite.sh\n'
+  printf -- '---\n'
+  printf 'FAIL: assertSame order differs\n'
+  printf 'exit: 1\n'; } > "$A/r10.log"
+[ "$(rework_signature "$A/r9.log")" != "$(rework_signature "$A/r10.log")" ] \
+  || fail "the 'command:' header is evidence and must reach the digest — a different command producing the same text is a different failure"
 
 # Header-scoped, not file-wide: output that happens to start a line with
 # "sha: " is real evidence and must still count.

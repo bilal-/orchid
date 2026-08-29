@@ -663,8 +663,14 @@ buying a fresh implementation pass to reach the same tree.
   a round-scoped path no evidence gate anywhere accepts (INV-11 reads a
   literal filename; every envelope glob keys on `-a<attempt>-*.json`), and
   records that round's `rework_signature`: a digest of the evidence with its
-  volatile header (`date`/`sha`/`candidate`/`cwd`) stripped and the command,
-  output and exit code kept. `rework_signature_repeats` counts CONSECUTIVE
+  whole header block dropped except the `command:` line, and the output body
+  and exit code kept. Dropping the header wholesale rather than enumerating
+  the keys known to move is deliberate — `orchid verify` also writes the
+  prestate block, whose `pre_integration_head` changes every time any OTHER
+  task merges, so an enumerated list would give two byte-identical failures
+  two different signatures and leave the streak permanently at 1. An
+  unrecognised header key is volatile until proven otherwise.
+  `rework_signature_repeats` counts CONSECUTIVE
   identical signatures. A rework with no failing evidence to capture (a
   rebase conflict, an operator advance) mints no file and leaves the streak
   alone — an absence of evidence about convergence, never a reset of it.

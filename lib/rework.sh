@@ -73,13 +73,28 @@ rework_latest_log() {
 #
 # Both evidence shapes this kernel writes (`orchid verify`'s
 # <id>-verify.log and `orchid merge`'s <id>-merge.log) share one header
-# format: `date:`/`sha:`/`candidate:`/`cwd:`/`command:` lines, a bare `---`,
-# the combined output, then `exit: <code>`. Four of those header lines move on
-# every run even when the failure is identical -- the timestamp always, the
-# shas whenever a candidate is rebuilt, and `cwd` on merge's own throwaway
-# temp worktree. They are dropped; `command:`, the whole output body and the
-# exit code are kept, because a change in ANY of those is a real change in
-# what failed.
+# format: a block of `key: value` lines, a bare `---`, the combined output,
+# then `exit: <code>`. The header is where the volatility lives, so the
+# header is dropped wholesale and exactly one line is KEPT out of it:
+# `command:`. The output body and the exit code are kept too, because a
+# change in any of those is a real change in what failed.
+#
+# A KEEP-LIST, not a drop-list, and that is the whole point. Written as
+# "drop date/sha/candidate/cwd" it silently goes stale the moment anything
+# adds a header line -- and something already has: `orchid verify` also
+# writes T019's prestate block (`prestate:`, `pre_base_sha:`,
+# `pre_exec_missing:`, `pre_env_missing:`, `pre_env_inventory:`,
+# `pre_pin_stale:`, `pre_integration_head:`; see drive_verify_prestate_headers
+# in lib/drive.sh). `pre_integration_head` is the integration checkout's HEAD,
+# which moves every time ANY OTHER TASK MERGES. An enumerated drop-list
+# therefore gives two byte-identical failures two different signatures for no
+# reason connected to the failure, on a busy run almost every time -- the
+# streak never reaches 2, the brief tells the next attempt this failure is
+# new when it is not, and neither the failover nor the non-convergence stop
+# can ever fire. That is this whole feature silently inert in exactly the
+# multi-task run it was written for (dogfood finding F27), so the safe
+# default has to be "an unrecognised header line is volatile until proven
+# otherwise" rather than the reverse.
 #
 # Header-scoped, not file-wide: the drop only applies before the first bare
 # `---`, so a test whose OUTPUT happens to print a line starting `sha: ` still
@@ -88,10 +103,8 @@ rework_signature() {
   [ -f "$1" ] || return 1
   awk '
     h==0 && $0=="---" { h=1; print; next }
-    h==0 && (index($0,"date: ")==1 ||
-             index($0,"sha: ")==1 ||
-             index($0,"candidate: ")==1 ||
-             index($0,"cwd: ")==1) { next }
+    h==0 && index($0,"command: ")==1 { print; next }
+    h==0 { next }
     { print }' "$1" | _orchid_stream_sha256
 }
 
