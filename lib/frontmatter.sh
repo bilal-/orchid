@@ -87,6 +87,80 @@ fm_write_task() {
   fi
 }
 
+# fm_render_task_template <template> <id> <title> <archetype> <engine> <date>
+# -- render a `templates/task*.md` to stdout with its five __PLACEHOLDER__
+# tokens replaced by the caller's values, LITERALLY. Pipe it into fm_write_task,
+# which is the writing half of the same contract.
+#
+# T034 rework (attempt-1 gap). `task create` used to render the template with
+#
+#     sed -e "s|__TITLE__|$title|g" ...
+#
+# and a sed REPLACEMENT string is not literal text -- it is a small language.
+# Three of its metacharacters are ordinary characters in a task title an
+# operator types, and two of the three fail SILENTLY: sed exits 0, the task file
+# is well-formed frontmatter, and only the title is wrong.
+#
+#   * `&` stands for the WHOLE MATCH. `orchid task create T1 'parser & lexer'`
+#     wrote `title: parser __TITLE__ lexer` -- the placeholder, reinstated into
+#     the value that was supposed to replace it.
+#   * `\` introduces an escape whose meaning is IMPLEMENTATION-DEFINED. The two
+#     characters `\` `n` -- what an operator writes when flattening prose onto
+#     one line, which is the same shape fm_set already had to close for values
+#     -- become a REAL newline under GNU sed (splitting `title:` across two
+#     lines and landing the remainder as a key-less frontmatter line) and the
+#     single letter `n` under BSD sed. Two platforms, two different wrong
+#     answers, neither of them what was typed.
+#   * `|` is the s-command delimiter itself. That one at least failed loudly.
+#
+# So the substitution is done in awk out of ENVIRON, for exactly the reason
+# fm_set reads its own operands that way: ENVIRON is a byte-for-byte read of the
+# environment with no escape processing anywhere in it.
+#
+# ONE LEFT-TO-RIGHT SCAN, never one pass per placeholder. A sequence of passes
+# rescans text that earlier passes already substituted, so a title of
+# `__DATE__` would be replaced again by the pass that follows it. A value has to
+# be INERT once placed, which a single scan gives for free: everything already
+# emitted is behind the cursor.
+#
+# ALL-OR-NOTHING OUTPUT. The document is accumulated and printed from END, so an
+# awk that dies partway emits nothing at all rather than a truncated document --
+# which, cut in the body, would still carry both `---` delimiters and would sail
+# through fm_write_task's shape check.
+fm_render_task_template() {
+  local tmpl="$1"
+  if [ ! -f "$tmpl" ]; then
+    echo "orchid: task template $tmpl is missing (or is not a regular file) — nothing was rendered and no task file was written" >&2
+    return 1
+  fi
+  ORCHID_TPL_ID="$2" ORCHID_TPL_TITLE="$3" ORCHID_TPL_ARCHETYPE="$4" \
+  ORCHID_TPL_ENGINE="$5" ORCHID_TPL_DATE="$6" awk '
+    function render(s,   out, at, hit, i, p) {
+      out = ""
+      while (1) {
+        at = 0; hit = 0
+        for (i = 1; i <= np; i++) {
+          p = index(s, ph[i])
+          if (p > 0 && (at == 0 || p < at)) { at = p; hit = i }
+        }
+        if (hit == 0) return out s
+        out = out substr(s, 1, at - 1) val[hit]
+        s = substr(s, at + length(ph[hit]))
+      }
+    }
+    BEGIN {
+      np = 5
+      ph[1] = "__ID__";        val[1] = ENVIRON["ORCHID_TPL_ID"]
+      ph[2] = "__TITLE__";     val[2] = ENVIRON["ORCHID_TPL_TITLE"]
+      ph[3] = "__ARCHETYPE__"; val[3] = ENVIRON["ORCHID_TPL_ARCHETYPE"]
+      ph[4] = "__ENGINE__";    val[4] = ENVIRON["ORCHID_TPL_ENGINE"]
+      ph[5] = "__DATE__";      val[5] = ENVIRON["ORCHID_TPL_DATE"]
+    }
+    { doc = doc render($0) "\n" }
+    END { printf "%s", doc }
+  ' "$tmpl"
+}
+
 # fm_set (v1-m3, m2 ledger F9): the second n==1 rule below catches a key
 # whose CURRENT line is bare "key:" (no trailing space, no value) --
 # templates/task.md seeds exactly that for base_sha, candidate_sha,

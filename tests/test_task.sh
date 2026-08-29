@@ -1417,14 +1417,101 @@ assert_eq "one line of criteria is fine" \
   "an accepted single-line value is stored verbatim"
 green_case 'task set with a single-line value: accepted and stored verbatim'
 
-# `task create` renders its template through `sed`, not `fm_set` -- a different
-# writer, the same destruction: sed rejects a replacement containing a newline
-# and the pipeline lands its empty output as a brand-new ZERO-BYTE task file.
+# `task create` renders its template through fm_render_task_template, not
+# `fm_set` -- a different writer, and one that (since T034's rework) stores what
+# it is handed byte-for-byte. That is why the newline has to be refused HERE, at
+# the door: nothing downstream would object to it any more, so an unguarded
+# newline would land a `title:` line split in two with the remainder sitting in
+# the frontmatter as a key-less line.
 rc=0; create_nl_out="$("$ORCHID_BIN" task create T012 "$(printf 'title\nwith a newline')" 2>&1)" || rc=$?
 [ "$rc" -ne 0 ] || fail "task create with a newline in the title must be refused"
 assert_match "newline" "$create_nl_out" "the create refusal names the constraint too"
 [ ! -e ".orchid/tasks/T012.md" ] \
   || fail "a refused create must not leave a task file behind at all, least of all an empty one"
+# The remedy has to fit the caller. `task set` can send an operator to the task
+# BODY of a file that exists; a refused CREATE has no file at all, so pointing
+# at one is advice they cannot act on.
+grep -qE 'No task file was created' <<<"$create_nl_out" \
+  || fail "the create refusal must say no task file was created, rather than reusing 'task set's remedy, which sends the operator to a path that does not exist"
+red_case 'task create with a newline in the title: refused, non-zero exit, no file written'
+
+# ---------------------------------------------------------------------------
+# THE RENDER END (T034 rework -- the attempt-1 gap). `task create` used to
+# render its template with `sed -e "s|__TITLE__|$title|g"`, and a sed
+# REPLACEMENT string is a small language rather than literal text. Two of its
+# metacharacters are ordinary characters in a title an operator types, and both
+# failed SILENTLY -- sed exits 0, the task file is well-formed frontmatter,
+# `task show` prints it happily, and only the title is wrong:
+#
+#   `&`  stands for the WHOLE MATCH, so `parser & lexer` was written out as
+#        `parser __TITLE__ lexer` -- the placeholder reinstated into the value
+#        that was supposed to replace it.
+#   `\n` (the two characters, which is what an operator types when flattening
+#        prose onto one line) is IMPLEMENTATION-DEFINED: GNU sed turns it into a
+#        REAL newline, splitting `title:` across two lines and landing the
+#        remainder as a key-less frontmatter line; BSD sed turns it into the
+#        single letter `n`.
+#
+# THE ASSERTIONS PIN THE ROUND TRIP -- the bytes back out equal the bytes in --
+# rather than either platform's particular wrong answer. That is deliberate:
+# pinning "GNU sed splits the line" would pass vacuously on BSD sed and pinning
+# "BSD sed eats the backslash" would pass vacuously on GNU, so a case written
+# either way is green on half the machines that run it while the defect is fully
+# present. Written as a round trip it is red on both, and stays red for whatever
+# escape a future sed invents.
+# ---------------------------------------------------------------------------
+amp_title='parser & lexer & 100% & rising'
+"$ORCHID_BIN" task create T014 "$amp_title" \
+  || fail "fixture: task create T014 must succeed (a metacharacter title is a legal title)"
+assert_eq "$amp_title" "$("$ORCHID_BIN" task show T014 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a title containing '&' is stored byte-for-byte, never expanded into the placeholder text it replaced"
+
+# The implementation-defined half, asserted as three facts rather than one,
+# because the two sed families break it in different places: the value round
+# trips (both), the file gained no line (GNU's real newline), and exactly one
+# title line remains (GNU's key-less remainder).
+esc_title='flatten it: a\nb, and a\ttab, and a lone \ on its own'
+lines_plain="$(grep -c '' ".orchid/tasks/T014.md")"
+"$ORCHID_BIN" task create T015 "$esc_title" \
+  || fail "fixture: task create T015 must succeed (a backslash is a legal character in a title)"
+assert_eq "$esc_title" "$("$ORCHID_BIN" task show T015 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a literal backslash-n in a title is stored as the two characters it is (GNU sed made it a real newline; BSD sed made it the letter n)"
+assert_eq "$lines_plain" "$(grep -c '' ".orchid/tasks/T015.md")" \
+  "and the rendered task has exactly as many lines as one rendered from the same template without escapes -- an expanded escape would have split the title line in two"
+assert_eq 1 "$(grep -c '^title: ' ".orchid/tasks/T015.md")" \
+  "exactly one title line, so no remainder was left behind as a key-less frontmatter line"
+
+# A substituted value must be INERT once placed. The old renderer was one sed
+# pass PER PLACEHOLDER, and each later pass rescanned text the earlier ones had
+# already written -- so a title naming a placeholder that sorts after __TITLE__
+# was itself substituted. `__DATE__` is the discriminating one: its pass ran
+# last.
+ph_title='why __DATE__ and __ID__ are spelled that way'
+"$ORCHID_BIN" task create T016 "$ph_title" \
+  || fail "fixture: task create T016 must succeed"
+assert_eq "$ph_title" "$("$ORCHID_BIN" task show T016 | grep '^title: ' | cut -d' ' -f2-)" \
+  "a title that names a placeholder is stored literally -- text already substituted is never rescanned"
+assert_eq T016 "$("$ORCHID_BIN" task show T016 | grep '^id: ' | cut -d' ' -f2)" \
+  "...while the template's OWN __ID__ placeholder was still substituted, so the single scan is a scan and not a skipped pass"
+assert_match '^created: [0-9]{4}-[0-9]{2}-[0-9]{2}T' "$("$ORCHID_BIN" task show T016)" \
+  "...and so was its __DATE__, which is the placeholder the title above impersonates"
+
+# THE OTHER READER. `task show` has read every one of these already -- each
+# assertion above went through it. The second reader is `orchid doctor`, whose
+# task-file check (the read end of this same T034 work, exercised against
+# DAMAGED files in tests/test_init_doctor.sh) parses the frontmatter of every
+# task on disk. A title carrying '&', a backslash escape or a placeholder name
+# has to read as an intact task there too, not as damage.
+# Asserted by LINE, never by doctor's exit code: that code is its global verdict
+# over a hand-built fixture repo, so coupling this case to it would go red for
+# reasons that have nothing to do with task files.
+create_doctor_out="$("$ORCHID_BIN" doctor 2>&1 || true)"
+grep -q '^FAIL: task file' <<<"$create_doctor_out" \
+  && fail "doctor must not report a task created with a metacharacter title as damaged (out: $create_doctor_out)"
+assert_match '^ok: task files: [0-9]+ present, each with parseable frontmatter and an id' \
+  "$create_doctor_out" \
+  "doctor parses the frontmatter of every task in this fixture, metacharacter titles included"
+green_case 'task create with & / backslash / placeholder-name titles: stored byte-for-byte, read back by both task show and doctor'
 
 # ---------------------------------------------------------------------------
 # ...AND THE READ END. A task file that has already been destroyed (by an

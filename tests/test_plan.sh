@@ -962,11 +962,16 @@ assert_eq "r-002" "$(fm_get .orchid/roadmap.md run_id)" "sanity: the archive fix
 echo "# Requirements v2" > .orchid/requirements.md
 "$ORCHID_BIN" requirements import .orchid/requirements.md >/dev/null
 
-# set_run_id <value> -- rewrite roadmap.md's run_id in place. Pure bash: this
-# suite does not source lib/common.sh, so fm_set's atomic_write is not
-# defined here and calling it would fail silently mid-pipeline (the roadmap
-# would keep its old value and every assertion below would pass for the wrong
-# reason).
+# set_run_id <value> -- rewrite roadmap.md's run_id in place. Pure bash, and
+# deliberately not fm_set: a fixture that drives roadmap.md through the same
+# writer the code under test uses cannot show that writer landing the value,
+# only that it agrees with itself. (It USED to be a hard constraint as well --
+# fm_set was `awk ... | atomic_write`, and this suite sources
+# lib/frontmatter.sh but not lib/common.sh, so atomic_write was undefined here
+# and the call failed silently mid-pipeline, leaving the roadmap at its old
+# value while every assertion below passed for the wrong reason. T034 replaced
+# that pipeline with mktemp+mv, so fm_set would work here now; the reason to
+# keep this independent is the first one.)
 set_run_id() {
   local v="$1" line tmp="$WORK/roadmap-rewrite"
   : > "$tmp"

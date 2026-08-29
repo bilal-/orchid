@@ -130,3 +130,86 @@ cmp -s "$WORK/T009.before" "$WORK/T009.md" \
 printf -- '---\nid: T009\nstatus: rework\n---\nbody\n\nrework brief appended\n' \
   | fm_write_task "$WORK/T009.md" || fail "fm_write_task must accept a complete replacement document"
 assert_match "rework brief appended" "$(cat "$WORK/T009.md")" "an accepted whole-document rewrite lands"
+
+# ===========================================================================
+# T034 rework -- fm_render_task_template: LITERAL substitution, at the library
+# level. This is the CREATE half of the same story the rest of this file tells
+# about rewrites, and it is a separate writer with a separate accident.
+#
+# `orchid task create` used to render templates/task*.md with
+# `sed -e "s|__TITLE__|$title|g"`, and a sed REPLACEMENT string is a small
+# language rather than literal text:
+#
+#   `&`  stands for the WHOLE MATCH, so a title of `parser & lexer` was written
+#        out as `parser __TITLE__ lexer` -- the placeholder reinstated into the
+#        value that was meant to replace it.
+#   `\`  introduces an escape whose meaning is IMPLEMENTATION-DEFINED. GNU sed
+#        renders `\n` as a real newline (splitting the title across two lines,
+#        the remainder landing as a key-less frontmatter line); BSD sed renders
+#        it as the single letter `n`.
+#   `|`  is the s-command delimiter, which at least failed loudly.
+#
+# THE CASES PIN THE ROUND TRIP -- the bytes back out equal the bytes in --
+# rather than either sed family's particular wrong answer. Pinning "GNU splits
+# the line" would pass vacuously on BSD and vice versa, so a case written either
+# way is green on half the machines that run it while the defect is fully
+# present. As a round trip it is red on both.
+# ===========================================================================
+printf -- '---\nid: __ID__\ntitle: __TITLE__\narchetype: __ARCHETYPE__\nbranch: task/__ID__\nengine: __ENGINE__\ncreated: __DATE__\nupdated: __DATE__\n---\nBody for __ID__.\n' \
+  > "$WORK/tmpl.md"
+render_title() { fm_render_task_template "$WORK/tmpl.md" TR1 "$1" feature claude 2026-01-01T00:00:00Z; }
+
+amp="$(render_title 'parser & lexer & 100% & rising')" \
+  || fail "fm_render_task_template must render a title containing '&'"
+assert_eq 'title: parser & lexer & 100% & rising' "$(grep '^title: ' <<<"$amp")" \
+  "'&' is stored byte-for-byte, never expanded into the placeholder text it replaced"
+
+esc="$(render_title 'a\nb, a\ttab, and a lone \ on its own')" \
+  || fail "fm_render_task_template must render a title containing backslash escapes"
+assert_eq 'title: a\nb, a\ttab, and a lone \ on its own' "$(grep '^title: ' <<<"$esc")" \
+  "a literal backslash-n is stored as the two characters it is (GNU sed made it a real newline, BSD sed the letter n)"
+assert_eq "$(grep -c '' <<<"$amp")" "$(grep -c '' <<<"$esc")" \
+  "and the escaped render has exactly as many lines as the plain one -- an expanded escape would have split the title line in two"
+assert_eq 1 "$(grep -c '^title: ' <<<"$esc")" \
+  "exactly one title line, so no remainder was left behind as a key-less frontmatter line"
+
+# A substituted value is INERT once placed. The old renderer was one sed pass
+# PER PLACEHOLDER, and each later pass rescanned text the earlier ones had
+# already written -- so a title naming a placeholder whose pass ran later was
+# itself substituted. `__DATE__` is the discriminating one; it went last.
+ph="$(render_title 'why __DATE__ and __ID__ are spelled that way')" \
+  || fail "fm_render_task_template must render a title that names a placeholder"
+assert_eq 'title: why __DATE__ and __ID__ are spelled that way' "$(grep '^title: ' <<<"$ph")" \
+  "text already substituted is never rescanned"
+assert_eq 'created: 2026-01-01T00:00:00Z' "$(grep '^created: ' <<<"$ph")" \
+  "...while the template's OWN __DATE__ was still substituted, so the single scan is a scan and not a skipped pass"
+assert_eq 'branch: task/TR1' "$(grep '^branch: ' <<<"$ph")" \
+  "...including the second occurrence of __ID__ on another line, so one scan still means every hit"
+
+# THE TOKEN LIST IS PART OF THE CONTRACT, and it lives in the library while the
+# templates live in templates/. A sixth placeholder added to a shipped template
+# would be rendered into live task files verbatim -- `updated: __UPDATED_BY__`,
+# forever -- and nothing above would notice, because these cases supply their
+# own template. So every SHIPPED task template is rendered here and checked for
+# a leftover token, and for being readable afterwards by the predicate `task
+# show` and `orchid doctor` both use.
+for shipped in "$REPO_ROOT"/templates/task*.md; do
+  shipped_name="${shipped##*/}"
+  rendered="$(fm_render_task_template "$shipped" TR2 'a & shipped \n template' feature claude 2026-01-01T00:00:00Z)" \
+    || fail "fm_render_task_template must render the shipped template $shipped_name"
+  leftover="$(grep -oE '__[A-Z_]+__' <<<"$rendered" | sort -u | tr '\n' ' ' || true)"
+  assert_eq "" "$leftover" \
+    "$shipped_name renders with no placeholder left over -- the renderer's token list must cover every __TOKEN__ a shipped template uses"
+  printf '%s' "$rendered" > "$WORK/rendered.md"
+  fm_check "$WORK/rendered.md" id >/dev/null \
+    || fail "$shipped_name must render into a document fm_check -- and therefore task show and doctor -- can read"
+  assert_eq 'title: a & shipped \n template' "$(grep '^title: ' "$WORK/rendered.md")" \
+    "$shipped_name stores a metacharacter title byte-for-byte too, not just the hand-built template above"
+done
+
+# A template that cannot be read is a REFUSAL, not an empty render: paired with
+# fm_write_task (which is how orchid-task's create arm spells it), an empty
+# render would otherwise be a brand-new zero-byte task file.
+rc=0; miss_err="$(fm_render_task_template "$WORK/no-such-template.md" TR3 t feature claude d 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "fm_render_task_template must refuse a missing template rather than render nothing and succeed"
+assert_match "missing" "$miss_err" "the refusal names the template it could not read"
