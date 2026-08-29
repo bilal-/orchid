@@ -95,11 +95,30 @@ EOF
 #     gate reached after the write guards only what follows it (lesson L036,
 #     and runners/orchid-pump's own correction).
 #
-# `show` fires nothing, deliberately and as the one declared exception: it
-# writes no durable record at all, and the unattended-trust contract requires
-# that inspection with no identity-keyed candidate invoke no Git whatever --
-# which is precisely what firing this gate would spend. There is no write for
-# it to sit in front of, so there is nothing for it to protect.
+# `show` fires it too, and there is no longer any exception here. It carried
+# one, on the reasoning that it writes nothing durable and so has nothing to
+# protect, and that reasoning weighed the wrong side effect. What `show`
+# produces is a REPORT -- the gate verdict, the record it resolved, the root
+# verification and the provenance an operator reads before deciding whether a
+# scheduled run may execute against this repository. Out of a stale checkout
+# that report is produced BY the pre-merge code, which is the whole of the
+# argument lib/common.sh makes for stopping `doctor` and `status` too: an
+# answer nobody has looked at is not cheaper than a refusal, because the
+# operator then acts on it. A verb exempted for being read-only was also
+# exactly how the advisory version of this guard failed.
+#
+# The contract that exemption was written for is a SOURCE-TIME one, and it is
+# untouched by firing the gate here. What the unattended-trust gate forbids is
+# Git spent on the repository under inspection before an acknowledgement for it
+# has been found (tests/test_unattended_trust.sh's fast-guard fence); what
+# lib/common.sh's guard may not spend before that lookup is a subprocess at
+# source time, which is why its content half was moved off source time and into
+# the firing sites (INV-15 section 3). This call is neither. It runs after the
+# library is loaded and the subcommand is validated, the only Git it can spend
+# is against $ORCHID_ROOT -- orchid's own installation, never the repository the
+# operator asked about -- and it spends even that only when the guard is already
+# ARMED. For every root not parked on its configured integration branch, which
+# is every ordinary checkout, it is a no-op that costs nothing.
 sub="${1:-}"; [ "$#" -gt 0 ] && shift
 case "$sub" in
   -h|--help|help|"")
@@ -129,6 +148,9 @@ case "$sub" in
   show)
     [ "$#" -le 1 ] || orchid_die "usage: orchid trust show [<repo>]"
     repo="${1:-${ORCHID_REPO:-$PWD}}"
+    # The decision is made and nothing has been reported yet. The side effect
+    # this arm must precede is the report itself.
+    orchid_root_stale_gate
     unattended_trust_show "$repo"
     ;;
   revoke)

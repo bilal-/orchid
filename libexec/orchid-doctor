@@ -40,6 +40,23 @@ repo="${ORCHID_REPO:-$PWD}"; fails=0
 ok()   { echo "ok: $*"; }
 bad()  { echo "FAIL: $*"; fails=$((fails+1)); }
 
+# THE STALE-ROOT GATE, FIRED ABOVE DOCTOR'S FIRST REPORTED LINE.
+#
+# This file defers the operator-PATH restore, so lib/common.sh ARMS the
+# stale-root guard and leaves the firing to the restore call below -- and that
+# call sits underneath the unattended-trust verdict and the provenance printed
+# with it. Doctor was therefore the one verb that REPORTED out of a stale
+# checkout before refusing over it, which inverts the reason lib/common.sh
+# stops `doctor` at all: a diagnosis read out of a pre-merge tree is produced BY
+# the code nobody has looked at, and it is the answer the operator then acts on.
+# Nothing above this line has printed anything or touched the target repository,
+# so this is the first moment at which there is a side effect to sit in front of.
+#
+# The gate is idempotent and a no-op when nothing is armed, so the restore below
+# keeps its own meaning for every root this call leaves alone, and the
+# fixed-PATH boundary drawn underneath it is unchanged.
+orchid_root_stale_gate
+
 # Inspect and render the gate before making the operator PATH executable
 # again. Later readiness checks intentionally use that PATH (for example,
 # capsuite required-binary discovery), but cannot retroactively alter this
