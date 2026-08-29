@@ -410,8 +410,9 @@ hermes gateway status                         # what the probe asks
 
 **Which lines get judged**, most specific evidence first. When the output
 names the configured `notify.channel` at all, those rows are the *only*
-evidence considered — judging the whole output instead would let one
-unrelated platform's row condemn a healthy return leg. When it does not, the
+evidence that may report **health** — judging the whole output instead would
+let one unrelated platform's row condemn a healthy return leg. When it does
+not, the
 rows naming the gateway itself are judged, then the rows whose **label** is a
 status word (`Active:`, `Status:`, `State:`, `Health:`, `Service:`,
 `Gateway:`), then — only when it names no subject of its own — the first
@@ -448,8 +449,8 @@ vocabulary is still waiting to be validated against a live gateway.
 
 **The exclusivity is one-way**, and that is the third step of the ranking. An
 unreadable channel row may not be rounded *up* by weaker evidence, but neither
-may it hide weaker evidence pointing *down*: when the channel rows decide
-nothing, the gateway and label rows are consulted for a **NOT REACHABLE**
+may it hide weaker evidence pointing *down*: when no channel row reports the
+outage, the gateway and label rows are consulted for a **NOT REACHABLE**
 determination only. So
 
 ```
@@ -458,8 +459,36 @@ platforms: whatsapp, telegram
 ```
 
 reports **NOT REACHABLE** on the gateway row, while the same shape with
-`Gateway: running` still reports UNDETERMINED. The second pass convicts and
-never acquits.
+`Gateway: running` still reports UNDETERMINED. The weaker tiers convict and
+never acquit.
+
+**And the outage is looked for first — in every row, and in every tier —
+before anything is read as health.** Inside one line the word tests already
+run negatives-first, because `not running` contains `running`. The same
+sentence can arrive spread over two *rows*:
+
+```
+Gateway: not running
+telegram: connected
+```
+
+Your channel's row says the one word that reads as health, so an ordering
+that asked "is anything up?" before "is anything down?" answered
+**REACHABLE** here and never looked at the line above it. A per-platform
+`connected` is a fact about that platform's own attachment — the same kind of
+stored fact as `paired`, which this probe already refuses to read as health —
+and it says nothing about the process your reply is actually delivered to.
+The gateway row says exactly that, and it says no. The same thing happens
+inside a single tier when a build prints more than one row about your channel
+(`telegram: connected` above `telegram inbound: not listening`): the row
+printed first is not the highest-ranked row.
+
+So every admitted row is scanned for the outage — your channel's rows, then
+the gateway and label rows — and only if none of them convicts is your
+channel's tier read again for health. Nothing else moves: REACHABLE still
+comes only from the most specific tier that exists, the weaker tiers still
+may only convict, and an undetermined verdict still quotes the most specific
+line the probe was looking at.
 
 That last part is what a **service-managed** gateway needs. A gateway run
 under launchd or systemd reports through its supervisor, which puts a unit

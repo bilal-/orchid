@@ -293,8 +293,9 @@ if [ "${1:-}" = --inbound-probe ]; then
   #      LABEL is a status word, then -- only if it names no subject of its
   #      own -- the first line, judged in that order until one of them
   #      determines something
-  #   3. and when step 1 found rows but read no verdict in them, step 2's rows
-  #      are still consulted for a DOWN determination, never for health
+  #   3. and EVERY tier is scanned for a DOWN determination before ANY tier is
+  #      allowed to report health -- step 2's rows included, and every row of
+  #      step 1's rather than only the first one of them that decides
   #
   # STEP 1 IS EXCLUSIVE FOR HEALTH, NOT FOR THE OTHER DIRECTION, and that
   # one-way ranking is a correction of a real misread rather than a refinement.
@@ -444,13 +445,19 @@ if [ "${1:-}" = --inbound-probe ]; then
     probe_weaker=""
   fi
 
-  # THE VERDICT PASS. It is a function because it now runs TWICE over two
-  # different tiers with two different mandates:
-  #   probe_verdict "$probe_rows"   both   -- the most specific tier there is,
-  #                                          judged in both directions
+  # THE VERDICT PASS. It is a function because it runs THREE TIMES over two
+  # tiers, and the mandates are ordered by DIRECTION before they are ordered
+  # by tier -- see the block below the function for why that is the whole
+  # ranking rule rather than an implementation detail:
+  #   probe_verdict "$probe_rows"   down   -- the most specific tier there is,
+  #                                          scanned for the outage first, in
+  #                                          full: every row, not just the
+  #                                          first one that decides anything
   #   probe_verdict "$probe_weaker" down   -- the gateway/label/last-resort
-  #                                          rows, and ONLY if the tier above
-  #                                          decided nothing
+  #                                          rows, and ONLY if nothing above
+  #                                          convicted
+  #   probe_verdict "$probe_rows"   both   -- and only now may health be read,
+  #                                          and only from the specific tier
   # $1 is the candidate rows, one per line; $2 is `both` or `down`. It exits
   # the script on a verdict and returns normally when it found none.
   probe_verdict() {
@@ -796,11 +803,18 @@ if [ "${1:-}" = --inbound-probe ]; then
       echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
       exit 1
     fi
-    # WHERE THE SECOND PASS STOPS. In `down` mode this row belongs to a tier
-    # the channel rows outrank, so it may CONVICT but never acquit: everything
-    # below this line can only produce REACHABLE, which is precisely what a
-    # weaker tier is not allowed to invent. Falling through here leaves the
-    # verdict undetermined, exactly as it was before the second pass existed.
+    # WHERE A `down` PASS STOPS. Everything below this line can only produce
+    # REACHABLE, and both of the `down` passes are forbidden it, for two
+    # different reasons that arrive at the same rule:
+    #   * over the WEAKER tiers, this row belongs to a tier the channel rows
+    #     outrank, and inventing health out of it is precisely what a weaker
+    #     tier is not allowed to do;
+    #   * over the CHANNEL tier, the pass is the outage scan that must finish
+    #     before ANY row is read as health, so acquitting here would be the
+    #     first row of the tier deciding for all of them -- the very ordering
+    #     that scan exists to remove.
+    # Falling through leaves the verdict undetermined, and the `both` pass that
+    # runs last is what reads health once no row anywhere has said no.
     [ "$probe_mode" = both ] || continue
     # Deliberately NARROW, in both directions. No bare `*ok*`/`*fail*`/`*error*`
     # substring tests: `*ok*` matches "broken" (and "token expired"), and a
@@ -944,8 +958,55 @@ if [ "${1:-}" = --inbound-probe ]; then
   }
 
   probe_judged=""
-  probe_verdict "$probe_rows" both
-  # THE SECOND PASS, AND WHY IT IS ONE-WAY. Step 1 stays exclusive for health:
+  # NEGATIVES COME FIRST ACROSS ROWS TOO, and this ordering is the row-level
+  # twin of the rule the loop above is built on rather than a new one. Inside a
+  # row the word tests run negatives-first because `not running` contains
+  # `running`, so a positive-first order reads a stopped gateway as up. The very
+  # same sentence arrives spread over two ROWS --
+  #     Gateway: not running
+  #     telegram: connected
+  # -- and the PASSES were ordered positives-first. The channel tier is the only
+  # tier that may report health, so `telegram: connected` was read, the probe
+  # exited 0, and the gateway row one line above it, naming the outage in the
+  # plainest words this file knows, was never consulted at all: the weaker tiers
+  # were reached only when the channel tier decided NOTHING, and it had decided.
+  # Doctor then printed the inbound line INVERTED -- an operator told their
+  # replies are getting through, on output whose first line says the process
+  # those replies are delivered to is not running. That is the false REACHABLE
+  # this whole file is ordered against, arrived at through the one ordering that
+  # was never given the same rule as the words.
+  #
+  # A CHANNEL ROW IS NOT A STATEMENT ABOUT THE GATEWAY, which is why the gateway
+  # row is the STRONGER evidence in that example and not merely the other one.
+  # This file already rules exactly that way about `paired`: it is a stored fact
+  # about what the operator once attached, reported whether or not the gateway
+  # is currently running, so it is a negation-only word and never health. A
+  # per-platform `connected` is the same kind of fact about the same subject --
+  # that platform's credential is attached -- and it says nothing about the
+  # process holding the update stream. The gateway row says exactly that, and it
+  # says no. Step 1 being exclusive for HEALTH was always about not rounding an
+  # unreadable row UP; it was never a licence to read one row's health over
+  # another row's outage.
+  #
+  # AND THE SAME MISREAD FITS INSIDE ONE TIER, which is the half that needs no
+  # second tier to go wrong: the loop returns on the FIRST row that decides
+  # anything, so a CLI printing more than one row about the configured channel
+  #     telegram: connected
+  #     telegram inbound: not listening
+  # had its outage hidden by a healthy row that merely happened to be printed
+  # first. Order of printing is not rank, and nothing in this file ever claimed
+  # it was.
+  #
+  # So the tiers are walked for a DOWN determination first -- the channel rows
+  # in full, then the weaker named tiers -- and only when none of them convicts
+  # is the channel tier walked again for health. Nothing else moves: health
+  # still comes only from the most specific tier that exists (the third pass is
+  # the only `both` pass), the weaker tiers still may only convict, and an
+  # undetermined verdict still quotes the first, most specific candidate. What
+  # changes is that a row saying "no" is now read before any row saying "yes",
+  # wherever in the output it was printed.
+  probe_verdict "$probe_rows" down
+  # THE WEAKER TIERS, AND WHY THEY ARE ONE-WAY. Step 1 stays exclusive for health:
   # a channel row this probe could not read is still weak evidence that the CLI
   # reports per-channel state and that this channel's state is not one of the
   # healthy words, so borrowing REACHABLE from the gateway row above it would
@@ -962,14 +1023,25 @@ if [ "${1:-}" = --inbound-probe ]; then
   # output on the channel row alone; this pass is what makes the class safe,
   # for every hermes phrasing of "not attached" nobody here has seen yet.)
   #
-  # So the weaker tiers are consulted after the channel tier comes up empty,
-  # and they may only return exit 1. Undetermined stays undetermined; REACHABLE
+  # So the weaker tiers are consulted once the channel tier's own down scan has
+  # convicted nothing, and they may only return exit 1. (That is a WEAKER
+  # precondition than "the channel tier decided nothing", which is what it used
+  # to be: a channel row that reads as HEALTH no longer stops this pass from
+  # running, because a healthy channel row is not a statement about the gateway.
+  # See the block above the first pass.) Undetermined stays undetermined; REACHABLE
   # remains reachable only from the most specific tier that exists. That keeps
   # the ordering of the two errors this whole file is built around: a wrong
   # "undetermined" costs an operator one manual check, a wrong "reachable"
   # tells them their answers are landing while every one is dropped -- and a
   # gateway that plainly says it is not running is not a shrug.
   [ -z "$probe_weaker" ] || probe_verdict "$probe_weaker" down
+  # ...and ONLY NOW may anything report health, from the most specific tier
+  # alone. The negatives inside this pass are redundant after the scan above --
+  # it has already walked these same rows for the outage and found none -- and
+  # they are left in place deliberately: `probe_verdict` stays one function that
+  # judges a row in rank order, and a `both` mode that could only acquit would
+  # be a second, weaker judge to keep correct alongside it.
+  probe_verdict "$probe_rows" both
   # `${probe_judged:-$probe_first}`: when NOTHING was judgeable -- the tiers
   # above admitted no row at all, because the only thing printed named some
   # other subject -- the operator is still owed the line this probe was

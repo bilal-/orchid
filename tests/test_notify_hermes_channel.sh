@@ -884,6 +884,61 @@ assert_match "discord: disconnected" "$probe_out" "and still quotes the line it 
 probe telegram "discord: connected" 0
 assert_eq "2" "$probe_rc" "and the worse error is refused the same way: a sibling platform being up is not this channel's return leg being up"
 
+# NEGATIVES COME FIRST ACROSS ROWS TOO, which is the row-level twin of the rule
+# every word test above is ordered by -- and the family that showed the PASSES
+# were not obeying it. `not running` contains `running`, so the words are judged
+# negatives-first. The identical sentence spread over two ROWS was judged
+# positives-first: the channel tier is the only tier that may report health, and
+# it was consulted for health before anything at all was consulted for the
+# outage.
+#
+# RED -- the two-line shape whose gateway half an installed hermes is already
+# known to print (`Gateway: not running`, pinned byte-for-byte further up), with
+# a channel row beside it saying the one word that reads as health. The gateway
+# row names the outage in the plainest words this file knows, one line up, and
+# was never looked at: exit 0, and doctor telling an operator their replies are
+# landing on a channel whose gateway is not running. That is "Answers sent on
+# this channel are being lost" INVERTED, which is the worse of the two errors.
+probe telegram "$(printf 'Gateway: not running\ntelegram: connected\n')" 0
+assert_eq "1" "$probe_rc" "a gateway row reporting the outage outranks a channel row that says 'connected' -- a platform's own attachment is not the process a reply is delivered to"
+assert_match "NOT up" "$probe_out" "the probe says which way it decided"
+assert_match "Gateway: not running" "$probe_out" "and quotes the row it convicted on, not the healthy row it declined to believe"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "a healthy channel row must never hide a gateway row reporting the outage -- that is the false REACHABLE this case exists to prevent"
+# ...and the same ranking through the supervisor's own spelling of a dead
+# gateway, so what is fixed is the order of the tiers rather than one phrase.
+probe whatsapp "$(printf '* hermes-gateway.service - Hermes Gateway\n   Active: inactive (dead)\n   whatsapp: connected\n')" 0
+assert_eq "1" "$probe_rc" "a unit reported inactive is the outage, whatever the platform row below it says about its own attachment"
+grep -q "carrying channel 'whatsapp' up:" <<<"$probe_out" \
+  && fail "a dead unit must not be acquitted by a channel row printed under it"
+#
+# RED -- and the same misread with no second tier involved at all. The loop
+# returns on the FIRST row that decides, so a CLI printing more than one row
+# about the configured channel had its outage hidden by whichever row happened
+# to be printed first. Order of printing is not rank.
+probe telegram "$(printf 'telegram: connected\ntelegram inbound: not listening\n')" 0
+assert_eq "1" "$probe_rc" "a later row about the SAME channel saying it is not listening is the outage -- an earlier healthy row must not decide for the whole tier"
+assert_match "telegram inbound: not listening" "$probe_out" "the probe quotes the row it convicted on"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "a health verdict must not be returned before every admitted row has been scanned for the outage"
+probe whatsapp "$(printf 'whatsapp: connected\nwhatsapp: not paired\n')" 0
+assert_eq "1" "$probe_rc" "...and an unpaired channel carries no reply, whichever of its two rows hermes prints first"
+#
+# GREEN -- and these are what keep all four of those from passing on a probe
+# that had simply stopped reporting health. The scan convicts on evidence, so
+# the same shapes with nothing reporting an outage still read as REACHABLE...
+probe telegram "$(printf 'Gateway: running\ntelegram: connected\n')" 0
+assert_eq "0" "$probe_rc" "with no row anywhere naming the outage, the channel row still reports health"
+assert_match "up: telegram: connected" "$probe_out" "and health still comes from the most specific tier, quoting its own row"
+probe telegram "$(printf 'telegram: connected\ntelegram inbound: listening\n')" 0
+assert_eq "0" "$probe_rc" "two rows about one channel, neither of them an outage, are still one healthy channel"
+# ...and the down-first ordering gives the weaker tiers no way to ACQUIT, which
+# is the property the whole tier ranking exists for: an unreadable channel row
+# under a healthy gateway row is still undetermined, exactly as it was.
+probe whatsapp "$(printf 'Gateway: running\nplatforms: whatsapp, telegram\n')" 0
+assert_eq "2" "$probe_rc" "scanning for the outage first must not turn the weaker tiers into a source of health"
+assert_match "platforms: whatsapp, telegram" "$probe_out" "and the quoted line is still the most specific candidate"
+
 # No channel configured, and no CLI at all: both undetermined, both saying so.
 probe_rc=0
 probe_out="$(PATH="$PROBEBIN:$PATH" ORCHID_NOTIFY_CHANNEL="" "$SEND" --inbound-probe 2>&1)" || probe_rc=$?
