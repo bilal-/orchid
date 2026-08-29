@@ -1607,11 +1607,13 @@ ones its archetype never declares.
       When the archetype declares no `testing -> rework` edge, or that advance
       is refused before it charges, the driver takes the universal blocked edge
       through `orchid task advance <id> blocked --charge-attempt --reason
-      "..."`. That flag is legal only for `testing -> blocked`, cannot be
-      combined with `--waive-attempt`, and journals and consumes exactly the
-      candidate attempt it blocks. The boundary names `task retry` and `task
-      reverify`; an absent or refused rework edge is never a free candidate
-      failure.
+      "..."`. That flag is admitted on a closed set of three edges and no
+      others: `testing -> blocked` here, plus `merging -> rework` and `merging
+      -> blocked`, which exist for `orchid merge`'s `gate_failed` arm alone
+      (see the merging bullet). It cannot be combined with `--waive-attempt`,
+      and journals and consumes exactly the candidate attempt it charges. The
+      boundary names `task retry` and `task reverify`; an absent or refused
+      rework edge is never a free candidate failure.
 
     **Either advance carries the failing gate's exact locations into the brief,
     automatically.** Before it deletes the verify log, `orchid task advance

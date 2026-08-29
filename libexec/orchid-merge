@@ -775,8 +775,20 @@ if [ "$gate_status" = ran ] && [ "$gate_rc" -ne 0 ]; then
   # The attempt this failure IS, i.e. the value `task advance` is about to
   # write. Compared with `-ge` so the block lands on the round that spends the
   # last one rather than a round later: with the default budget of 3 the gate
-  # gets three red rounds and the third stops the run, which is the same
-  # arithmetic `runners/orchid-drive` applies to a verify failure.
+  # gets three red rounds and the third stops the run.
+  #
+  # THE SAME CAP, ONE ROUND EARLIER THAN THE DRIVER, and the difference is
+  # deliberate rather than a slip. `runners/orchid-drive` compares the count
+  # BEFORE charging (`attempts -ge budget`), so a verify failure blocks on the
+  # pass AFTER the budget is spent and that last failure is free; this compares
+  # the count the charge is about to write. Both give the task exactly `budget`
+  # charged rounds and both end at `attempts == budget` -- what differs is only
+  # whether one further failure is observed first. Mirroring the driver here
+  # would buy that extra observation with a whole dispatch, implement, verify
+  # and review cycle whose merge re-runs the same gate against the same
+  # repository for the same colour, and would need a `rework` edge taken at
+  # `attempts == budget`, which the driver would re-dispatch on its very next
+  # pass because nothing outside `drive_testing` consults the budget at all.
   gate_charged=$(( gate_attempts + 1 ))
   gate_reason="gate_failed: repo-wide merge_gate exited $gate_rc — see reviews/$id-merge.log"
   if [ "$gate_charged" -ge "$gate_budget" ]; then

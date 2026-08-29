@@ -576,12 +576,15 @@ buying a fresh implementation pass to reach the same tree.
   per-task wall-clock budget is the unconditional backstop.
   A candidate failure for which `testing -> rework` is unavailable or is
   refused before it charges takes the single narrow fallback `task advance
-  <id> blocked --charge-attempt --reason "..."`. The flag is legal only on
-  `testing -> blocked`, is mutually exclusive with `--waive-attempt`, derives
-  the next attempt number itself, journals before mutation, clears any
-  deferred-failure receipt, and increments exactly once. This keeps the
-  canonical candidate-FAIL rule true without making `attempts` generally
-  writable.
+  <id> blocked --charge-attempt --reason "..."`. The flag is admitted on a
+  closed set of three edges and no others: `testing -> blocked` here, plus
+  `merging -> rework` and `merging -> blocked`, which serve `orchid merge`'s
+  `gate_failed` arm alone (the merge-gate paragraph above says why that one
+  merge failure opts out of the `merging` exemption). It is mutually exclusive
+  with `--waive-attempt`, derives the next attempt number itself, journals
+  before mutation, clears any deferred-failure receipt, and increments exactly
+  once. This keeps the canonical candidate-FAIL rule true without making
+  `attempts` generally writable.
   `infra_failures` NEVER consume attempts, and neither does `task reverify`.
 - **The cap is `rework_max` (config, default 3), and an operator can raise
   it for ONE task:** `orchid task retry <id> --reason "..." [--attempts N]`
@@ -894,9 +897,14 @@ the two stages disagree about one condition: the same unapplied migration
 would be forgiven at verify and charged at merge, where the nonzero-suite arm
 advances the task to `rework` with `validation_failed` — the environment
 problem wearing the candidate's clothes, now costing a full rework round on a
-candidate that is not defective. The `merging`→`rework` edge charges no
-attempt (that exemption is deliberate: the candidate was independently
-verified once already), so the round is not even recorded as one.
+candidate that is not defective. On that arm the `merging`→`rework` edge
+charges no attempt (that exemption is deliberate: the candidate was
+independently verified once already), so the round is not even recorded as
+one. "On that arm", not "on the edge": `gate_failed` takes the same edge and
+does charge, by passing `--charge-attempt` — see the merge-gate paragraph
+above for why a red repo-wide gate is the one merge failure the exemption
+fails for. `validation_failed`, which is what this paragraph is about, keeps
+it.
 The gate sits AFTER the rebase-reset in that verb, not before it: the rebase
 path runs no suite and is itself the route that expires a stale ack (back to
 `testing` on a new candidate), so refusing ahead of it would park the run on
