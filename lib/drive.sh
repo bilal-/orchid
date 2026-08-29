@@ -572,11 +572,12 @@ drive_envelope_has_blocking_finding() {
 # join to the left -- an uninstalled or rebound name stops resolving to the id
 # its own filed envelope reports -- which is why the pin records the name and
 # the id together. The pin is bound to (task, attempt, candidate) and moves
-# only when the evidence it judges does. An envelope that names no engine, and one whose engine the
-# plan never routed to, are both credited no depth -- depth is a positive
-# claim about what a reviewer could see, and neither supports one. `orchid
-# jobs review-plan <id> --adopt-evidence` is the recorded verb for the second
-# case: it re-pins the plan onto the engines that actually reviewed.
+# only when the evidence it judges does. An envelope that names no engine, and
+# one whose engine the plan never routed to, are both credited no depth --
+# depth is a positive claim about what a reviewer could see, and neither
+# supports one. `orchid jobs review-plan <id> --adopt-evidence` is the recorded
+# verb for the second case: it re-pins the plan onto the engines that actually
+# reviewed.
 drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool

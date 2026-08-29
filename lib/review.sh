@@ -629,7 +629,7 @@ review_plan_pin_rows() {
   # is the moment the round is dispatched under it.
   rows="$(_review_rows_qualify "$(review_routing "$repo" "$id")")"
   [ -n "$rows" ] || return 1
-  printf '%s' "$rows"
+  printf '%s\n' "$rows"
 }
 
 # _review_pool_take <pool> <want> -- prints <pool> minus the FIRST line equal
@@ -901,9 +901,15 @@ review_plan_repin_rows() {
   # Only the rows this pass BUILT were given a key above; a frozen row keeps
   # the key it was pinned with (that is the whole point of freezing it), and a
   # kept row copied out of a not-yet-pinned live table gets one here.
+  #
+  # `printf '%s\n'`, not `'%s'`: the command substitution above eats the
+  # terminating newline `_review_rows_qualify` emits, and every other producer
+  # in this file returns rows that are terminated. A last row without one is
+  # still read correctly by every caller (they all use `<<<` or `$(...)`), but
+  # the asymmetry is exactly the kind a later `cat`-style consumer trips on.
   rows="$(_review_rows_qualify "$rows")"
   [ -n "$rows" ] || return 1
-  printf '%s' "$rows"
+  printf '%s\n' "$rows"
 }
 
 # _review_engine_name_for_qid <repo> <task> <qualified-id> -- the plugin NAME
@@ -1032,7 +1038,7 @@ review_plan_adopt_evidence_rows() {
   done <<< "$pool"
 
   impl="$(review_implementer_engine "$repo" "$id")"
-  local eng label used=" " qid
+  local eng label used=" "
   rows=""; i=0
   while IFS= read -r line; do
     [ -n "$line" ] || continue

@@ -952,10 +952,10 @@ that name resolved to at the write — the key a filed envelope is recognized
 by. Freezing the name alone would leave the join to the live plugin registry:
 uninstall the plugin or rebind the name to another publisher's engine and a
 completed review matches no slot, which is the same moving table one column
-earlier. `--repin` (rebind the unfilled slots to live
-routing, freezing the covered ones) and `--adopt-evidence` (re-pin onto the
-engines that actually reviewed, refused when it would name fewer distinct
-engines than the plan it replaces) are the recorded exits, and the
+earlier. `--repin` (rebind the unfilled slots to live routing, freezing the
+covered ones) and `--adopt-evidence` (re-pin onto the engines that actually
+reviewed, refused when it would name fewer distinct engines than the plan it
+replaces) are the recorded exits, and the
 `review-evidence` boundary names whichever one it expects.
 **Inline-review blind-spot guard:** inline prompts include the pack
 manifest AND the changed-symbol list; routing upgrades to a
@@ -1004,10 +1004,10 @@ rejected. The inline slot did this four times in one run.
    filing — matched against the qualified engine id the pin froze for that
    slot, using the same matching that decides which slot a review COVERS, so
    the two answers cannot drift apart and neither depends on what is
-   installed at judging time. The DEPTH claim itself is then
-   read off that slot's fourth column. Asking the engine's manifest instead
-   ("can it open a checkout right now") re-opens, one column to the right,
-   the dead end pinning the plan closed: an uninstall, a rebind, or an edit
+   installed at judging time. The DEPTH claim itself is then read off that
+   slot's fourth column. Asking the engine's manifest instead ("can it open a
+   checkout right now") re-opens, one column to the right, the dead end
+   pinning the plan closed: an uninstall, a rebind, or an edit
    to one `capabilities=` line between filing and judging would silently
    withdraw a filed review's depth, and a task would lose its deterministic
    approval over a change that is not evidence. Two cases are credited no

@@ -367,11 +367,10 @@ of approving on its own authority. The slot is read from the attempt's
 pinned plan, which records both the depth and the engine identity it was
 dispatched to, so what a review is credited never changes after it is filed —
 not when an engine is uninstalled, and not when a name is rebound to another
-publisher's engine. No slot is ever refused
-for being inline — an install whose only reviewers are inline still reviews
-every task; what it does not get is an approval no human read. (The
-decision, and the alternatives rejected with it, are recorded in
-`docs/specs/kernel.md`, "Review depth".)
+publisher's engine. No slot is ever refused for being inline — an install
+whose only reviewers are inline still reviews every task; what it does not
+get is an approval no human read. (The decision, and the alternatives
+rejected with it, are recorded in `docs/specs/kernel.md`, "Review depth".)
 
 **Worked example — swapping the implementer:**
 

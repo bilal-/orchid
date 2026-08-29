@@ -346,8 +346,9 @@ mk_review_eng() {
 # carry DIFFERENT depths on purpose. Attribution reads the engine and nothing
 # else, so every case below runs against a row shape `orchid jobs review-plan`
 # actually emits, and a walk that ever keyed on the row's width or on its depth
-# label would fail here rather than in production. P34 is the sharp end of it: with only the
-# `inline` slot's review filed, the `worktree` slot must come back unfilled.
+# label would fail here rather than in production. P34 is the sharp end of it:
+# with only the `inline` slot's review filed, the `worktree` slot must come
+# back unfilled.
 TWO_SLOTS="$(printf '1\talpha\tengine-independent\tworktree\n2\tbeta\tengine-independent\tinline\n')"
 
 mk_policy_task P30 medium high
