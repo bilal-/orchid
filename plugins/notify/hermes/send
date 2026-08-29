@@ -435,7 +435,8 @@ if [ "${1:-}" = --inbound-probe ]; then
     probe_lower="$(printf '%s' "$probe_line" | tr '[:upper:]' '[:lower:]')"
     # Negatives FIRST: "not running" contains "running", so a positive-first
     # order would read a stopped gateway as up -- the one mistake this probe
-    # must never make.
+    # must never make. That precedence holds over the row's CURRENT state only;
+    # see "A RECORD IS NOT A STATE" below for the one thing it may not outrank.
     #
     # But each negative is matched as a WHOLE WORD, and against the row with
     # the channel's OWN NAME elided, because these run against an entire status
@@ -446,6 +447,10 @@ if [ "${1:-}" = --inbound-probe ]; then
     # "Answers sent on this channel are being lost" about a row that says
     # connected -- the false alarm that teaches an operator to ignore this
     # line, on the one check whose whole job is to be believed.
+    # Whole words answer the SUBSTRING half of that second example only. Spell
+    # the same row `(last disconnected 2d ago)` and the word is genuinely
+    # there, in a row whose state is `connected` -- which is the precedence the
+    # record rule below is for.
     #
     # Each negated form is spelled out here rather than left to the positive
     # test: "not ready" contains the whole word "ready", so a row hermes writes
@@ -520,8 +525,60 @@ if [ "${1:-}" = --inbound-probe ]; then
     # word can be unambiguous in one direction and not in the other, which is
     # the shape of this entire list.
     probe_status="${probe_lower//"$probe_channel_lower"/ }"
+    # A RECORD IS NOT A STATE, and that is a PRECEDENCE rule rather than
+    # another word. The two tests below are ordered negatives-first, and that
+    # order is right for the sentence they were written for (`not running`
+    # contains `running`). But it is applied to the whole row unconditionally,
+    # so ANY negative word anywhere outranks a positive one -- including a
+    # negative that is not the row's state at all:
+    #     telegram: connected (last disconnected 2026-08-27, 4 reconnects)
+    #     hermes-gateway: running (pid 4242, last down 2d ago)
+    # Both rows say outright that the return leg is up, and both were read as
+    # NOT up, so doctor printed "Answers sent on this channel are being lost"
+    # about a channel carrying answers fine. That is the false alarm this file
+    # spends its whole length refusing, arrived at through the one thing that
+    # was never ranked -- and it is the commonest healthy shape a supervised
+    # gateway has, because reporting the last outage beside the current state
+    # is what a supervisor row is FOR.
+    #
+    # The whole-word discipline does not reach it. Whole words are what stops
+    # `shutdown` from reading as `down` and a channel named `downtime-alerts`
+    # from being condemned by its own name (both pinned); `last disconnected`
+    # IS the whole word, in a row whose state word is `connected`.
+    #
+    # THE RULE IS ALREADY IN THIS FILE, one tier down: the live-pid positive
+    # refuses `last pid`, `exited pid`, `was pid`, because a record of a
+    # process that is GONE is not evidence about the process now. The word
+    # tests never learned it. So the same qualifiers elide the state word they
+    # introduce -- the same elision, and for the same reason, as the channel's
+    # own name above: text that is not a statement about the current state may
+    # not be read as one.
+    #
+    # ELISION CAN ONLY REMOVE EVIDENCE, never invent it, which is what makes
+    # this safe in the direction this file cares about most. The removed span
+    # is replaced by a space, so no two fragments can join into a word that was
+    # not printed, and a row that carries an UNQUALIFIED negative still has it:
+    # `disconnected (last connected ...)` is still the outage. A row left with
+    # nothing but history -- `gateway: last stopped 2d ago` -- decides nothing
+    # and is quoted as unread, which is the honest answer for a line that never
+    # said what is true now.
+    #
+    # It is applied in BOTH directions on purpose. A qualified POSITIVE is a
+    # record too: `was running` says the gateway ran, not that it runs, and
+    # reading it as health would be the false REACHABLE the rest of this file
+    # refuses. Elided, it answers undetermined instead.
+    #
+    # The live-pid tier below is deliberately left reading the UNELIDED row, so
+    # this cannot loosen the weakest evidence this probe accepts as health: a
+    # `was not responding (pid 4242)` reaches it with its negation particle
+    # still attached, and is refused there exactly as before.
+    probe_record_re='(^|[^a-z0-9_-])(last|previous|prior|former|old|stale|exit(ed)?|was)[[:space:]]+((not|never|no[[:space:]]+longer)[[:space:]]+)?(running|started|connected|online|ready|active|reachable|healthy|loaded|paired|linked|authenticated|registered|responding|listening|alive|up|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unauthenticated|unpaired|unlinked|unregistered|unhealthy|unresponsive|expired|down|unreachable|dead|crashed)([^a-z0-9_-]|$)'
+    probe_state="$probe_status"
+    while [[ "$probe_state" =~ $probe_record_re ]]; do
+      probe_state="${probe_state/"${BASH_REMATCH[0]}"/ }"
+    done
     if grep -qE -e '(^|[^a-z0-9_-])((not|never|no[[:space:]]+longer)[[:space:]]+(running|started|connected|online|ready|active|reachable|healthy|loaded|paired|linked|authenticated|registered|responding|listening|alive|up)|stopped|disconnect(ed|ing)?|inactive|offline|unauthor[a-z]*|unauthenticated|unpaired|unlinked|unregistered|unhealthy|unresponsive|expired|down|unreachable|dead|crashed)([^a-z0-9_-]|$)' \
-         <<<"$probe_status"; then
+         <<<"$probe_state"; then
       echo "hermes reports the gateway carrying channel '$probe_channel' as NOT up: $probe_line"
       exit 1
     fi
@@ -556,7 +613,7 @@ if [ "${1:-}" = --inbound-probe ]; then
     # their answers are getting through on a channel that is dropping every one
     # of them.
     if grep -qE -e '(^|[^a-z0-9_-])(running|connected|online|ready|active|healthy)([^a-z0-9_-]|$)' \
-         <<<"$probe_status"; then
+         <<<"$probe_state"; then
       echo "hermes reports the gateway carrying channel '$probe_channel' up: $probe_line"
       exit 0
     fi
@@ -607,6 +664,12 @@ if [ "${1:-}" = --inbound-probe ]; then
     # there would answer undetermined for `running (not paused)` -- reading a
     # gateway that says it is up as unknown, which is the misread the
     # service-managed tiers above exist to have fixed.
+    # AND THIS TIER READS THE UNELIDED ROW ($probe_status, not $probe_state),
+    # which is the one place the record rule above is deliberately not applied.
+    # Eliding `was not responding` would hand this tier a row with a live pid
+    # and nothing left saying "no", which is the exact false REACHABLE the
+    # particle guard was added to close. The two word tests may be given the
+    # benefit of a record; the weakest evidence here may not.
     # The value is matched with an optional quote and separator so the plist
     # spelling a supervisor query prints (`"PID" = 4242;`) reads the same as
     # `pid 4242`, `pid=4242` and `pid: 4242`.

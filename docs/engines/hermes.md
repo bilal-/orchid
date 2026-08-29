@@ -469,6 +469,29 @@ negations for the same reason: they are the words a supervisor spells
 deadness with on a row that may still quote a process id. A bare `loaded` is
 not a positive — launchd and systemd both call a *stopped* job loaded.
 
+**A record is not a state**, and that rule now governs the words as well as
+the pid. Negatives are judged before positives (`not running` contains
+`running`), but a supervised row reports the *last* outage beside the
+*current* state, so applying that order to every word in the row read
+
+```
+telegram: connected (last disconnected 2026-08-27, 4 reconnects)
+hermes-gateway: running (pid 4242, last down 2d ago)
+```
+
+as NOT REACHABLE — the outage message about a channel carrying answers fine.
+Whole-word matching does not reach it: `last shutdown` is a substring, while
+`last disconnected` genuinely is the word. So a state word introduced by
+`last`, `previous`, `prior`, `former`, `old`, `stale`, `exited` or `was` —
+the same qualifiers that already disqualify `last pid` — is elided before
+either direction is judged. It cuts both ways: an *unqualified* negative
+still decides (`disconnected (last connected …)` is the outage), a
+qualified *positive* is not health (`was running` is undetermined, never
+REACHABLE), and a row carrying nothing but history has not said what is true
+now and decides neither way. The live-pid tier deliberately keeps reading the
+unelided row, so `was not responding (pid 4242)` still stops short of health
+on its negation particle.
+
 One deliberate difference from openclaw's probe: `openclaw channels status`
 is documented to *enumerate* channels, so a channel missing from it is a
 determination there (exit 1). Nothing establishes that `hermes gateway

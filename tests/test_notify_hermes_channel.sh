@@ -295,6 +295,53 @@ assert_eq "1" "$probe_rc" "a stopped gateway is NOT reachable"
 probe telegram "gateway: not ready (starting)" 0
 assert_eq "1" "$probe_rc" "'not ready' is a negation -- the whole word 'ready' inside it must not read as up"
 assert_match "NOT up" "$probe_out" "the probe says which way it decided"
+
+# ...BUT THAT PRECEDENCE RANKS THE ROW'S STATE, NOT EVERY WORD IN IT, and
+# applying it to the whole row unconditionally was a false-alarm defect of
+# exactly the kind the whole-word rule above exists to prevent -- one word
+# further out. A supervised gateway reports the LAST outage beside the
+# CURRENT state, because that is what a status row is for; a negative-first
+# order with no notion of history reads every one of those healthy rows as
+# the outage, and doctor prints "Answers sent on this channel are being lost"
+# about a channel that is carrying answers fine. Whole words do not reach it:
+# `last shutdown` (pinned above) is a substring, while `last disconnected` is
+# genuinely the word, sitting in a row whose state word is `connected`.
+#
+# RED -- the two shapes that were read as NOT up while saying outright they
+# were up. The record qualifiers are the ones the live-pid tier already
+# refuses a `last pid`/`was pid` on; the word tests simply never learned them.
+probe telegram "telegram: connected (last disconnected 2026-08-27, 4 reconnects)" 0
+assert_eq "0" "$probe_rc" "a healthy row that also reports its LAST outage is reachable -- a record is not the current state"
+grep -q "NOT up" <<<"$probe_out" \
+  && fail "a past disconnection must not outrank the 'connected' the same row states -- that is the false alarm this case exists to prevent"
+assert_match "up: telegram: connected" "$probe_out" "the probe quotes the row verbatim, elision notwithstanding"
+probe telegram "hermes-gateway: running (pid 4242, last down 2d ago)" 0
+assert_eq "0" "$probe_rc" "'last down' in a running supervisor row is history, not the gateway's state"
+# GREEN -- and it is not a blanket softening in either direction. An
+# UNQUALIFIED negative still convicts even when the row's history is the
+# healthy half, which is the mirror image of the two cases above.
+probe telegram "telegram: disconnected (last connected 2026-08-27)" 0
+assert_eq "1" "$probe_rc" "the outage still decides when it is the row's state and the healthy word is the record"
+assert_match "NOT up" "$probe_out" "the probe says which way it decided"
+probe telegram "hermes-gateway: down (last running 2d ago)" 0
+assert_eq "1" "$probe_rc" "a gateway that is down now is down, whatever it was running 2d ago"
+# ...and a row carrying NOTHING BUT history has not said what is true now, so
+# it decides neither way. Undetermined costs an operator one manual check;
+# either verdict invented from a record would be a claim the row never made.
+probe telegram "gateway: last stopped 2d ago" 0
+assert_eq "2" "$probe_rc" "a row that reports only a past outage has not reported the present one"
+assert_match "not one this probe recognizes" "$probe_out" "the probe admits it could not read the row rather than convicting on the record"
+probe telegram "hermes-gateway: was running" 0
+assert_eq "2" "$probe_rc" "...and the same rule in the direction that matters more: 'was running' is not running, and must never read as health"
+grep -q "carrying channel 'telegram' up:" <<<"$probe_out" \
+  && fail "a historical positive must not be read as a live return leg -- that is the worse of the two errors"
+# ...and the live-pid tier is deliberately NOT given the benefit of the
+# record rule, because it is the weakest evidence this probe accepts as
+# health: eliding the negation would leave it a bare live pid and nothing
+# saying "no", which is the exact false REACHABLE the particle guard closed.
+probe telegram "hermes-gateway: com.hermes.gateway (pid 4242, was not responding)" 0
+assert_eq "2" "$probe_rc" "the pid tier reads the unelided row, so a negation it cannot rank still stops it short of health"
+
 # ...and the positive side is held to the same two disciplines.
 probe ready-queue "ready-queue   flapping" 0
 assert_eq "2" "$probe_rc" "a channel whose NAME contains 'ready' must not invent a REACHABLE verdict out of its own name"
