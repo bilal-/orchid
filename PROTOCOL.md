@@ -1691,9 +1691,14 @@ ones its archetype never declares.
     --reason "attempts exhausted (<attempts>/<budget>)"`. The budget is
     `rework_max` (config, default 3), or the task's own `attempt_budget` when
     an operator has granted it one (`orchid task retry <id> --reason "..."
-    --attempts N`). It is orchestrator-enforced, not a kernel-verb gate; a
+    --attempts N`). It is orchestrator-enforced HERE, not a kernel-verb gate; a
     classified non-candidate failure uses a waived rework edge and never
-    reaches this budget check, which is the point of classifying first.
+    reaches this budget check, which is the point of classifying first. One
+    exception, and only one: `orchid merge` applies the same budget itself on
+    a `gate_failed` merge (T007), because it owns both the charge and the edge
+    that follows it and cannot hand the decision back mid-transaction. It
+    reads the number from the same place — the task's `attempt_budget`, else
+    `rework_max` — so there is still one cap, not two.
 
 - **reviewing** (`awaiting-review-envelopes`): apply the risk-tiered review
   policy from the Preamble — `orchid jobs review-plan <id> --pin`, then
@@ -1775,6 +1780,20 @@ ones its archetype never declares.
     the repo-wide `merge_gate` failed rather than the candidate's own suite —
     same routing, but a failure the task was never asked about and frequently
     not its author's doing, so say which one when you brief the rework.
+    `gate_failed` is also the ONE merge failure that consumes an attempt:
+    `merging → rework` is otherwise exempt (the candidate was independently
+    verified once already), but a red repo-wide gate is red again next round,
+    so leaving it uncharged makes the loop unbounded. Merge conflicts, rebase
+    conflicts and `validation_failed` stay exempt — read the reason, not the
+    edge.
+  - status `blocked` (exit was `1`, `gate_failed` with the attempt budget
+    spent; verb already charged the round, journaled and advanced it): the
+    repo-wide `merge_gate` was red for every rework round the task had, and
+    another round would re-run the same gate against the same repository. Do
+    not dispatch one — raise it for a human, naming the gate rather than the
+    candidate. The recoveries are `orchid task reverify <id> --reason "..."`
+    (re-runs verification, consumes no attempt) once the repository is green,
+    or `orchid task retry <id> --reason "..." --attempts N` for more rounds.
   - status `testing`, with a fresh `base_sha`/`candidate_sha` and invalidated
     evidence (exit was `5`, `rebase_rereview_required`; verb already
     journaled this with kind `rebase_review`): classifying the coming

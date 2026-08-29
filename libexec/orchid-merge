@@ -4,6 +4,12 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"; source "$ORCHID_ROOT/lib/envelope.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
+# schedule.sh for schedule_attempt_budget alone: the merge_gate accounting at
+# the bottom of this file needs the task's rework cap, and that function is the
+# single home for that number (its own header says why). Read, never
+# re-derived here -- a second copy of `rework_max` is how a configurable cap
+# stops being configurable.
+source "$ORCHID_ROOT/lib/schedule.sh"
 repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"
 epoch_require "$repo"
 # task set/advance below run as child processes of THIS verb; ORCHID_EPOCH
@@ -273,11 +279,18 @@ fi
 # with `validation_failed` and a merge log full of "prepare() returned
 # false". That is precisely the environment problem wearing the candidate's
 # clothes F26 exists to remove — and it lands a whole rework round on a
-# candidate with nothing wrong with it. The `merging`->`rework` edge charges
-# no attempt (`task advance` exempts it deliberately: this candidate was
-# independently verified once already), so the counter does not even record
-# that the round happened. One predicate (handoff_prereq_unmet), both
-# stages.
+# candidate with nothing wrong with it. The `validation_failed` arm's
+# `merging`->`rework` edge charges no attempt (`task advance` exempts it
+# deliberately: this candidate was independently verified once already), so
+# the counter does not even record that the round happened. One predicate
+# (handoff_prereq_unmet), both stages.
+#
+# "The `validation_failed` arm's", not "the edge": T007's `gate_failed` arm
+# takes the same edge and DOES charge, by passing `--charge-attempt`. The
+# reasoning is unchanged for the arm this comment is about -- an unapplied
+# migration is not a fresh round of the implementer's work either -- and the
+# gate arm's own note says why a red repo-wide gate is the one merge failure
+# for which it does not hold.
 #
 # Deliberately BELOW the rebase-reset above rather than beside the status
 # gate at the top of this verb. The rebase path runs no suite, so it has
@@ -419,10 +432,62 @@ cmd="$(fm_get "$tf" verification_commands)"
 # log and said on stderr, because a marker left set in some ambient environment
 # would otherwise disable this gate everywhere while every merge went on
 # reporting a pass — L016 again, this time wearing its own fix's clothes.
+#
+# AND WHY A RED GATE COSTS A ROUND. `merging -> rework` charges no attempt:
+# libexec/orchid-task exempts it because this candidate was independently
+# verified once already, so a conflict or a revalidation failure is not a
+# fresh round of the implementer's work. That reasoning holds for every merge
+# failure except this one. A red repo-wide gate is a statement about the
+# REPOSITORY, and a repository nobody has touched is red again on the next
+# round — so the loop it makes is dispatch, implement, verify, review, merge,
+# red gate, rework, dispatch, with the counter that exists to stop exactly
+# that never moving. Uncharged, it does not terminate; it just spends
+# engine budget until an operator happens to look.
+#
+# So this arm, and only this arm, passes `--charge-attempt`, and when the
+# charge exhausts the task's budget it takes `merging -> blocked` instead of
+# `merging -> rework`. Both halves are needed: charging alone makes the loop
+# countable, and the cap is what turns the count into a stop. The number is
+# `schedule_attempt_budget`'s — the same cap `orchid verify`'s failures are
+# measured against, per task, raisable by `orchid task retry --attempts N` —
+# never a literal here.
+#
+# THAT THE CANDIDATE IS OFTEN INNOCENT IS THE REASON FOR THE CAP, NOT AN
+# ARGUMENT AGAINST IT. A gate failure may well be nothing the task author did;
+# that is said plainly in the reason and again at the boundary. But the
+# alternative to charging is not "the task is treated fairly" — it is an
+# unbounded loop that re-dispatches an implementer against a fault no
+# implementer round can clear. Charging bounds it, and the block is what puts
+# it in front of the human who can actually fix the repository. Where the
+# candidate really was innocent, `orchid task reverify` re-runs verification
+# with no attempt consumed once the repository is green again, and `orchid
+# task retry --attempts N` grants back the rounds — both already exist, and
+# both are named in the reason this arm records.
+#
+# NOTHING ELSE ON THIS VERB'S FAILURE PATHS CHARGES. The merge-conflict arm,
+# the rebase-conflict arm and `validation_failed` all keep the exemption
+# untouched, because none of them repeats identically: a conflict is resolved
+# by the next rebase, and a red suite is the candidate's own defect already
+# counted where it was found.
 gate_cmd="$(config_get "$repo" merge_gate)"
 gate_status=none
 gate_rc=0
 [ -z "$gate_cmd" ] || gate_status=configured
+
+# Resolved HERE — before the suite, the gate, the log or any advance — and
+# only when a gate is actually configured. schedule_attempt_budget is
+# fail-closed: it dies on a `rework_max` or an `attempt_budget` that is not a
+# positive integer. The one place the number is USED is the failure arm at the
+# very bottom of this file, and asking for it there would put that die between
+# the evidence log and the `task advance`, leaving the task in `merging`
+# behind a merge that had already done every expensive thing it does. Asked
+# now, the same misconfiguration costs nothing and says what it is; asked at
+# all only when a gate exists, so a repository with no `merge_gate` is not
+# newly refused for a cap it never consults.
+gate_budget=""
+if [ "$gate_status" = configured ]; then
+  gate_budget="$(schedule_attempt_budget "$repo" "$id")"
+fi
 
 mkdir -p "$state/reviews"
 log="$state/reviews/$id-merge.log"
@@ -698,8 +763,34 @@ fi
 # everything and that the task was never asked about. An operator reading the
 # journal should not have to open the log to tell which of those happened —
 # the second one is frequently not the task author's doing at all.
+#
+# It is also the ONE failure here that costs the task a round — see the long
+# note beside `gate_budget` above for why, and for why none of the others do.
+# The charge is asked for explicitly (`--charge-attempt`, which the kernel
+# admits on this edge and validates); the attempt NUMBER is derived by the
+# kernel, so what is computed here is only whether this charge would be the
+# last one the budget allows.
 if [ "$gate_status" = ran ] && [ "$gate_rc" -ne 0 ]; then
-  "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "gate_failed: repo-wide merge_gate exited $gate_rc — see reviews/$id-merge.log"
+  gate_attempts="$(fm_get "$tf" attempts)"; [ -n "$gate_attempts" ] || gate_attempts=0
+  # The attempt this failure IS, i.e. the value `task advance` is about to
+  # write. Compared with `-ge` so the block lands on the round that spends the
+  # last one rather than a round later: with the default budget of 3 the gate
+  # gets three red rounds and the third stops the run, which is the same
+  # arithmetic `runners/orchid-drive` applies to a verify failure.
+  gate_charged=$(( gate_attempts + 1 ))
+  gate_reason="gate_failed: repo-wide merge_gate exited $gate_rc — see reviews/$id-merge.log"
+  if [ "$gate_charged" -ge "$gate_budget" ]; then
+    # BLOCKED, not another rework round. Every remaining round would re-run
+    # the same gate against the same repository and produce the same colour,
+    # so what is left to do is not another attempt — it is a person. The
+    # reason carries both recoveries, because which one applies depends on
+    # something this verb cannot see: whether the gate is red because of this
+    # candidate or in spite of it.
+    "$ORCHID_ROOT/bin/orchid" task advance "$id" blocked --charge-attempt \
+      --reason "$gate_reason — the repository's own gate has now been red for every rework round this task had ($gate_charged/$gate_budget), and a gate failure is frequently not this task's doing at all, so the next round would repeat it rather than resolve it. Fix the repository (or this candidate, if the gate is naming it), then: orchid task reverify $id --reason \"...\" re-runs verification with no attempt consumed, or orchid task retry $id --reason \"...\" --attempts N grants further rounds"
+    exit 1
+  fi
+  "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --charge-attempt --reason "$gate_reason (round $gate_charged/$gate_budget)"
   exit 1
 fi
 "$ORCHID_ROOT/bin/orchid" task advance "$id" rework --reason "validation_failed: see reviews/$id-merge.log"

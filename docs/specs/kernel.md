@@ -283,7 +283,8 @@ across prose sections is normative HERE):**
 | arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
 | merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite AND `merge_gate` green | integration ref, evidence, frontmatter | done |
 | merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
-| merging | `merge` exit 1 (`gate_failed`) → `task advance` | repo-wide `merge_gate` red; integration ref untouched | evidence, frontmatter | rework |
+| merging | `merge` exit 1 (`gate_failed`) → `task advance --charge-attempt` | repo-wide `merge_gate` red; integration ref untouched; attempts++ (the ONE merge failure that charges — a red repo-wide gate repeats identically, so an uncharged edge never terminates) | evidence, frontmatter, journal | rework |
+| merging | `merge` exit 1 (`gate_failed`, budget spent) → `task advance --charge-attempt` | as above, and the charge reaches `attempt_budget` — further rounds would re-run the same gate against the same repository | evidence, frontmatter, journal | blocked |
 | merging | `merge` exit 5 (`rebase_rereview_required`) | rebase done, SHAs updated; reviews invalidated | frontmatter, journal(`rebase_review`) | testing |
 | rework | `task advance` | rework spec written into task body | frontmatter | implementing |
 | any | `task advance --reason` | attempts exhausted (`rework_max`, default 3) / budget / operator | frontmatter, journal | blocked |
@@ -381,6 +382,25 @@ buying a fresh implementation pass to reach the same tree.
   rework brief quotes only the failing command's half — a green suite followed
   by a red gate is the ordinary shape here, and the trailing `exit:` line
   alone cannot tell the two apart.
+  **And a red gate is bounded.** `merging → rework` charges no attempt — the
+  candidate was independently verified once already, so a conflict or a
+  revalidation failure is not a fresh round of the implementer's work. That
+  reasoning fails for exactly one merge failure: a red repo-wide gate is a
+  statement about the repository, and a repository nobody has touched is red
+  again next round, so the uncharged edge gives dispatch → implement → verify
+  → review → merge → red gate → rework with no counter moving. So
+  `gate_failed`, and only `gate_failed`, takes `task advance --charge-attempt`
+  (a kernel-validated opt-in admitted on `merging → rework` and `merging →
+  blocked`, never a rule inferred from the reason text — a counter driven by
+  string matching is one rewording away from charging a merge conflict), and
+  when that charge reaches `schedule_attempt_budget`'s cap the edge is
+  `merging → blocked` instead. Merge conflicts, rebase conflicts and
+  `validation_failed` keep the exemption untouched. That the candidate is
+  often innocent of a gate failure is the reason for the *cap*, not an
+  argument against the charge: the alternative is not fairness but an
+  unbounded loop re-dispatching implementers against a fault no implementer
+  round can clear. `orchid task reverify` (no attempt consumed) and `orchid
+  task retry --attempts N` are the recoveries, and the block names both.
   **Consequences of the ref-only advance (m3 ledger, found live):** the
   integration-ref advance above is a bare `git update-ref` — it never touches
   any OTHER checkout of that branch, by design, since it must not write into

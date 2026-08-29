@@ -130,6 +130,31 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     being zero — so a red gate returns the task to `rework` (journaled
     `gate_failed`, distinct from `validation_failed`) with the integration ref
     untouched.
+  - **A red gate is bounded, and it is the only merge failure that is.**
+    `merging → rework` normally charges no attempt: the candidate was
+    independently verified once already, so a merge conflict, a rebase
+    conflict or a `validation_failed` is not a fresh round of the
+    implementer's work. That reasoning does not survive contact with this key.
+    A gate failure is a statement about the *repository*, and a repository
+    nobody has touched is red again on the next round — so an uncharged edge
+    turns a persistently red gate into an endless loop: dispatch, implement,
+    verify, review, merge, red gate, rework, dispatch, with the counter that
+    exists to stop it never moving. So `gate_failed` charges the round, and
+    when the charge reaches the task's cap (`attempt_budget`, else
+    `rework_max`, default 3) the task goes to **`blocked`** instead of
+    `rework`. Nothing else about merge changed: conflicts and
+    `validation_failed` are still exempt.
+
+    Yes, this charges a task for a fault that is often not its own — that is
+    precisely why the cap exists rather than an argument against the charge.
+    The alternative is not that the task is treated fairly; it is that
+    implementers are re-dispatched forever against something no implementer
+    round can clear. When the gate really was naming the repository rather
+    than the candidate, `orchid task reverify <id> --reason "..."` re-runs
+    verification with **no attempt consumed** once the repository is green
+    again, and `orchid task retry <id> --reason "..." --attempts N` grants the
+    rounds back. Both are named in the reason the block records and in the
+    boundary the driver raises.
   - **What it costs, and how to keep that small.** `orchid merge` runs the
     task's `verification_commands` on the merged tree *first*, so a gate that
     repeats the test suite pays for that suite twice per merge and learns

@@ -49,6 +49,12 @@ source "$ORCHID_ROOT/lib/capsuite.sh"; source "$ORCHID_ROOT/lib/ledger.sh"
 source "$ORCHID_ROOT/lib/review.sh"; source "$ORCHID_ROOT/lib/archetype.sh"
 source "$ORCHID_ROOT/lib/schedule.sh"; source "$ORCHID_ROOT/lib/hooks.sh"
 source "$ORCHID_ROOT/lib/drive.sh"; source "$ORCHID_ROOT/lib/handoff.sh"
+# findings.sh for findings_log_gate_failed alone: the merging arm at the
+# bottom of this file has to tell a `gate_failed` merge from a
+# `validation_failed` one, and that answer is a field in the merge log's
+# header. Read through the file that owns reading those headers rather than
+# re-parsed here.
+source "$ORCHID_ROOT/lib/findings.sh"
 
 # T035: name the automation that owns this pass, so every job launched from it
 # records who started it (`orchid jobs ls`'s LAUNCHER column). `:-` because
@@ -1630,6 +1636,15 @@ drive_testing() {
   # first. T026 made the budget configurable per repository and grantable per
   # task through `orchid task retry --attempts N`; preserve that recovery path
   # here instead of restoring the old literal-three dead end.
+  #
+  # ONE VERB DOES ASK THE SAME QUESTION, and this sentence exists so the claim
+  # above is not read as more than it is: `orchid merge` compares against this
+  # same budget on a `gate_failed` merge (T007). It has to, because there the
+  # charge and the edge that follows it are one transaction inside the verb --
+  # there is no moment between them for this runner to intervene, and a task
+  # left in `rework` over budget would be re-dispatched by the very next pass.
+  # It reads the number through schedule_attempt_budget, exactly as the line
+  # below does, so what is duplicated is the comparison and never the cap.
   attempts="$(fm_get "$tf" attempts)"; [ -n "$attempts" ] || attempts=0
   budget="$(schedule_attempt_budget "$repo" "$id")"
   if [ "$attempts" -ge "$budget" ]; then
@@ -2309,11 +2324,51 @@ if [ -n "$merging_ids" ]; then
     # ambiguous between two genuinely different outcomes (PROTOCOL.md's
     # merging bullet).
     merge_status="$(fm_get "$merge_tf" status)"
+    # WHICH failure it was, read from the evidence header `orchid merge` wrote
+    # rather than inferred from anything here (T007). The status cannot say:
+    # `rework` is equally a merge conflict, a rebase conflict, a red task
+    # suite and a red repo-wide `merge_gate`, and the exit code is 1 for all
+    # four. The distinction is not cosmetic — a `gate_failed` is a statement
+    # about the REPOSITORY, is frequently nothing the task author did, and is
+    # the only one of the four that charges the task a round. Collapsing it
+    # into "merge validation failed" reports a repository condition as this
+    # candidate's defect, in the one line an operator watching a pass reads.
+    #
+    # An `if`, never `cmd && var=1`: this runner is `set -e`, where the
+    # chained form is a bare failing command on the ordinary path (no gate,
+    # or a green one) and kills the pass between the merge and its reporting.
+    merge_gate_red=0
+    if findings_log_gate_failed "$state/reviews/$merge_id-merge.log"; then
+      merge_gate_red=1
+    fi
     case "$merge_status" in
       done)
         drive_note "$merge_id: merged" ;;
       rework)
-        drive_note "$merge_id: merge validation failed — back to rework for the next pass" ;;
+        if [ "$merge_gate_red" -eq 1 ]; then
+          drive_note "$merge_id: repo-wide merge_gate FAILED (gate_failed, attempt charged) — back to rework for the next pass; the candidate's own suite is not what went red"
+        else
+          drive_note "$merge_id: merge validation failed — back to rework for the next pass"
+        fi ;;
+      blocked)
+        # `orchid merge` takes `merging -> blocked` on exactly one condition:
+        # a red `merge_gate` whose charge just spent the task's last rework
+        # round. Every further round would re-run the same gate against the
+        # same repository for the same colour, so the pass stops here for a
+        # human instead of dispatching one. Reported through the same
+        # operator-decision boundary an exhausted verify budget uses, because
+        # it is the same kind of fact and the same two remedies.
+        if [ "$merge_gate_red" -eq 1 ]; then
+          "$ORCHID_BIN" notify --task "$merge_id" \
+            "repo-wide merge_gate red with the rework budget spent: see .orchid/reviews/$merge_id-merge.log" >/dev/null
+          set_boundary operator-decision "$merge_id" "the repository's own merge_gate has been red for every rework round this task had, so merge charged the last one and stopped: see .orchid/reviews/$merge_id-merge.log — a gate failure is frequently not the task's own doing, and another implementer round cannot clear one. Fix the repository (or this candidate, if the gate names it), then: orchid task reverify $merge_id --reason \"...\" re-runs verification with no attempt consumed, or orchid task retry $merge_id --reason \"...\" --attempts N grants further rounds"
+        else
+          # No arm of `orchid merge` blocks for any other reason today. Kept
+          # distinct from the catch-all below so that if one ever does, the
+          # boundary names the state honestly instead of asserting a gate
+          # failure the log does not record.
+          set_boundary operator-decision "$merge_id" "merge left the task blocked (exit $merge_rc) with no failing merge_gate recorded in .orchid/reviews/$merge_id-merge.log — read that log before retrying"
+        fi ;;
       testing)
         "$ORCHID_BIN" journal add --task "$merge_id" \
           "re-review scope: full — the rebase minted a new candidate, so prior evidence is invalid" >/dev/null

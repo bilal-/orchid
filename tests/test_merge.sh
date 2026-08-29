@@ -937,3 +937,186 @@ assert_match "tests/task-suite\.sh:1: SC9999: $noise_pat" "$body15" \
   "the RED suite's own locations are carried — the filter keys on the recorded status, not on being above the banner"
 assert_match "further diagnostic line\(s\)" "$body15" \
   "and the cap still applies to them, still announced rather than silently truncated"
+
+# ---------------------------------------------------------------------------
+# (G) A PERSISTENTLY RED GATE IS BOUNDED.
+#
+# Everything above proves the gate BLOCKS. This proves it TERMINATES, which is
+# a different property and was missing: `merging -> rework` charges no
+# attempt, deliberately, because the candidate was independently verified once
+# already and a conflict or a revalidation failure is not a fresh round of the
+# implementer's work. That reasoning holds for every merge failure except this
+# one. A red repo-wide gate is a statement about the REPOSITORY, and a
+# repository nobody has touched is red again next round -- so the uncharged
+# edge gives dispatch -> implement -> verify -> review -> merge -> red gate ->
+# rework -> dispatch, forever, with the counter that exists to stop it never
+# moving. Uncharged it does not terminate; it spends engine budget until an
+# operator happens to look.
+#
+# So the assertion is arithmetic, and it is made round by round rather than
+# only at the end: the SAME red gate, on an unchanged repository, must cost
+# one attempt each time and stop at the cap. `rework_max` is unset in this
+# fixture's config, so the budget is the documented default of 3.
+# ---------------------------------------------------------------------------
+attempts_of() { "$ORCHID_BIN" task show "$1" | grep '^attempts: ' | cut -d' ' -f2; }
+
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T016 "a red gate must not loop forever"
+git checkout -q -b task/T016 "$integ"
+echo sixteen > feature16.txt && git add feature16.txt && git commit -q -m "feature 16"
+cand16="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base16="$(git rev-parse "$integ")"
+pre_integ16="$(git rev-parse "$integ")"
+
+assert_eq 0 "$(attempts_of T016)" "the task starts the scenario having spent nothing"
+
+# --- round 1 and round 2: charged, and still sent back for another go ------
+for round in 1 2; do
+  walk_to_merging T016 task/T016 "$base16" "$cand16" "test -f feature16.txt"
+  rc=0; "$ORCHID_BIN" merge T016 >/dev/null 2>&1 || rc=$?
+  assert_eq 1 "$rc" "round $round: red gate -> merge exits 1"
+  assert_eq rework "$("$ORCHID_BIN" task show T016 | grep '^status: ' | cut -d' ' -f2)" \
+    "round $round: with rounds still left, a red gate routes to rework exactly as before"
+  assert_eq "$round" "$(attempts_of T016)" \
+    "round $round: ...and it COSTS one -- an uncharged edge is what makes a red gate loop forever"
+done
+
+# --- round 3: the charge reaches the cap, so the edge changes --------------
+walk_to_merging T016 task/T016 "$base16" "$cand16" "test -f feature16.txt"
+rc=0; "$ORCHID_BIN" merge T016 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "round 3: merge still exits 1 -- the exit code is not what carries this"
+assert_eq blocked "$("$ORCHID_BIN" task show T016 | grep '^status: ' | cut -d' ' -f2)" \
+  "round 3: the charge spends the last round, so merge stops the task instead of sending it round again"
+assert_eq 3 "$(attempts_of T016)" "round 3: the round that blocked is itself charged, not skipped"
+assert_eq "$pre_integ16" "$(git rev-parse "$integ")" \
+  "three red rounds moved the integration ref not one commit"
+git show "$integ:feature16.txt" >/dev/null 2>&1 \
+  && fail "and the candidate never reached the integration branch"
+
+journal16="$("$ORCHID_BIN" journal show --task T016)"
+assert_match "gate_failed" "$journal16" "every round journals the gate as the cause"
+assert_match "candidate attempt #3 charged while blocking" "$journal16" \
+  "the blocking round records the kernel-derived attempt number it charged"
+assert_match "orchid task reverify T016" "$journal16" \
+  "and names the recovery that costs no attempt -- the gate is frequently not this task's doing"
+assert_match "orchid task retry T016" "$journal16" \
+  "...alongside the one that grants rounds back"
+
+# The evidence has to survive the block, because the block is not the end of
+# the story: the operator's route back out of `blocked` is what lifts the
+# rework brief, and the gate's locations exist in this log and nowhere the
+# implementer can reach. This is the load-bearing half of the pair below —
+# `merging -> blocked` runs none of the `to = rework` invalidation, so the
+# question is whether the block introduced a rm of its own.
+[ -f .orchid/reviews/T016-merge.log ] \
+  || fail "blocking must not discard the merge evidence -- it is the only copy of the gate's own output"
+
+"$ORCHID_BIN" task unblock T016 --reason "gate fixed in the repository" >/dev/null
+[ -f .orchid/reviews/T016-merge.log ] \
+  && fail "unblock must consume that log the way every other entry to rework does -- a log left behind outlives the candidate it describes"
+body16="$(cat .orchid/tasks/T016.md)"
+# NOT a proof on its own that the unblock carried it: the charged rounds above
+# each appended their own brief for this same candidate, so the location is
+# already in the body. It is here as the end-to-end guard that the route out
+# of `blocked` leaves the next implementer holding the gate's locations rather
+# than a pointer to a log that has just been deleted.
+assert_match "$gate_diag" "$body16" \
+  "the RED GATE's location is in the body the next implementer is handed, after the log carrying it is gone"
+
+# ---------------------------------------------------------------------------
+# (G2) THE EXEMPTION IS INTACT FOR EVERY OTHER MERGE FAILURE.
+#
+# (G) is only half the claim. The charge is scoped to `gate_failed` because
+# that is the failure that repeats identically; a merge conflict is resolved
+# by the next rebase and a red suite is the candidate's own defect, already
+# counted where it was found. Charging those would quietly halve every task's
+# rework budget, and nothing above would notice -- the counter is not read
+# again until the driver blocks on it, several rounds later and somewhere
+# else.
+# ---------------------------------------------------------------------------
+# --- (G2a) a red task suite: `validation_failed`, and no charge ------------
+set_gate "$gate_fail"
+
+suite_red3="$WORK/suite3-goes-red.flag"
+"$ORCHID_BIN" task create T017 "validation_failed charges nothing"
+git checkout -q -b task/T017 "$integ"
+echo seventeen > feature17.txt && git add feature17.txt && git commit -q -m "feature 17"
+cand17="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base17="$(git rev-parse "$integ")"
+
+walk_to_merging T017 task/T017 "$base17" "$cand17" "test ! -f $suite_red3"
+: > "$suite_red3"
+assert_eq 0 "$(attempts_of T017)" "T017 has spent nothing going in"
+rc=0; "$ORCHID_BIN" merge T017 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "red suite -> merge exits 1"
+assert_eq rework "$("$ORCHID_BIN" task show T017 | grep '^status: ' | cut -d' ' -f2)" "red suite -> rework"
+assert_eq 0 "$(attempts_of T017)" \
+  "a red SUITE still charges nothing at merge -- the exemption survives; only gate_failed opts out of it"
+journal17="$("$ORCHID_BIN" journal show --task T017)"
+assert_match "validation_failed" "$journal17" "and it is journaled as the validation failure it is"
+grep -q "gate_failed" <<<"$journal17" \
+  && fail "the gate never ran here, so nothing may attribute this round to it"
+grep -q "candidate attempt #" <<<"$journal17" \
+  && fail "and no attempt-charge line may appear for an edge that charged no attempt"
+
+# --- (G2b) a merge conflict: no charge either -----------------------------
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T018 "a merge conflict charges nothing"
+git checkout -q -b task/T018 "$integ"
+echo "task version" > clash18.txt && git add clash18.txt && git commit -q -m "clash 18 from task"
+cand18="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base18="$(git rev-parse "$integ")"
+echo "integ version" > clash18.txt && git add clash18.txt && git commit -q -m "clash 18 from integ"
+
+walk_to_merging T018 task/T018 "$base18" "$cand18" "true"
+# Same device the T003 conflict scenario uses: force base_sha current so this
+# takes the conflict arm rather than the rebase-reset arm.
+"$ORCHID_BIN" task set T018 base_sha "$(git rev-parse "$integ")"
+assert_eq 0 "$(attempts_of T018)" "T018 has spent nothing going in"
+marker_before18="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T018 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "merge conflict -> exit 1"
+assert_eq rework "$("$ORCHID_BIN" task show T018 | grep '^status: ' | cut -d' ' -f2)" "merge conflict -> rework"
+assert_eq 0 "$(attempts_of T018)" \
+  "a merge conflict charges nothing -- it is resolved by the next rebase, not by spending the implementer's rounds"
+assert_eq "$marker_before18" "$(wc -l < "$gate_marker" | tr -d ' ')" \
+  "and the gate never even executed: a conflict aborts before any command runs"
+
+# ---------------------------------------------------------------------------
+# (G3) THE OPT-IN IS A WHITELIST, NOT A GENERAL COUNTER-WRITING OPTION.
+#
+# `--charge-attempt` is how `orchid merge` gets past the `merging -> rework`
+# exemption, and the danger in widening it is that it becomes a way for any
+# caller to write the kernel-owned counter from any edge. It stays validated
+# against a closed set of edges, and `testing -> rework` in particular is NOT
+# in it: that edge already charges through its own accounting, so admitting
+# the flag there would charge the same round twice.
+# ---------------------------------------------------------------------------
+# T018 is idle in `rework` after the conflict above; walk it into `testing` so
+# the probe is made on the edge that actually matters, rather than on some
+# arbitrary illegal one.
+"$ORCHID_BIN" task advance T018 implementing >/dev/null
+"$ORCHID_BIN" task advance T018 testing >/dev/null
+
+rc=0
+charge_err="$("$ORCHID_BIN" task advance T018 rework --charge-attempt 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "--charge-attempt must be refused on testing -> rework, which already charges through its own accounting"
+assert_match "only valid for" "$charge_err" "and refused by naming the edges it IS valid for"
+assert_eq testing "$("$ORCHID_BIN" task show T018 | grep '^status: ' | cut -d' ' -f2)" \
+  "the refusal is made before any write -- the task did not move"
+assert_eq 0 "$(attempts_of T018)" "...and the counter it was trying to write did not move either"
+
+# The reason the flag is refused there, made concrete: this edge charges on
+# its own. Admitting `--charge-attempt` would have charged the round twice,
+# and nothing downstream would have shown it -- `attempts` is not read again
+# until the driver blocks on it, rounds later and somewhere else. Also leaves
+# the fixture idle, so a scenario appended after this one is not starved of a
+# concurrency slot.
+"$ORCHID_BIN" task advance T018 rework --reason "probe complete" >/dev/null
+assert_eq 1 "$(attempts_of T018)" \
+  "the plain testing -> rework edge charges exactly one on its own -- which is why the flag has no business there"

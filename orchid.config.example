@@ -9,6 +9,15 @@ verify=npm test
 # `rework` and leaves the integration ref exactly where it was. Unset (the
 # default) means no gate and no cost.
 #
+# A red gate COSTS the task a rework round, and blocks it once the rounds run
+# out (`rework_max`, or a per-task grant from `orchid task retry --attempts
+# N`). Merge conflicts and a failing task suite still cost nothing at merge --
+# this one failure does, because a gate is a statement about the repository
+# and a repository nobody has touched is red again next round, so an uncharged
+# edge would re-dispatch implementers against it forever. See
+# docs/configuration.md for the recoveries when the gate was not the task's
+# fault.
+#
 # Name the part of your checks that a task's own suite does NOT already
 # cover -- lint, formatting, a licence scan. `orchid merge` has already run
 # the task's `verification_commands` on this very tree by the time the gate

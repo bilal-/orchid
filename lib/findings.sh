@@ -258,6 +258,51 @@ findings_log_failed() {
   esac
 }
 
+# findings_log_gate_failed <log> -- 0 iff this log records that the repo-wide
+# `merge_gate` RAN and exited non-zero.
+#
+# THE CLASSIFICATION IS READ, NEVER INFERRED, exactly as it is in
+# findings_failing_output above. `orchid merge` writes `gate_status:` and
+# `gate_exit:` into the log HEADER, above the `---` every reader in this file
+# stops at, so what this answers is what the process that ran both commands
+# recorded. It is deliberately NOT derivable from findings_log_failed: that
+# reads the trailing `exit:` line, which is the MERGE's status and is equally
+# non-zero when the task's own suite is what went red.
+#
+# WHY A CALLER WANTS IT. `runners/orchid-drive` has to tell a `gate_failed`
+# merge from a `validation_failed` one, and after the verb they are hard to
+# tell apart: same edge, same exit 1, same resulting status. The difference is
+# the whole of what the operator needs -- one says this candidate's own suite
+# is red, the other says the candidate is red against a floor the repository
+# applies to everything and the task was never asked about, which is
+# frequently not the author's doing and is what makes a persistently red gate
+# a repository condition rather than a rework loop.
+#
+# FAILS CLOSED, which is the opposite of findings_failing_output and for the
+# opposite reason. That function decides which evidence to KEEP, where an
+# unsure parse costs an implementer the only actionable lines in the log, so
+# it keeps everything it cannot classify. This one decides whether to tell a
+# human "the repository's own gate is red" -- so a log that does not say so in
+# the header (no `gate_status: ran`, no `gate_exit:`, a non-numeric or zero
+# one, or no log at all) is not evidence that it is. Every merge log written
+# before these fields existed therefore answers no, and reads as the
+# validation failure it was.
+findings_log_gate_failed() {
+  local log="$1" ran gate_exit
+  [ -f "$log" ] || return 1
+  ran="$(awk '/^---$/ { exit } /^gate_status: / { sub(/^gate_status: /, ""); print; exit }' "$log")"
+  [ "$ran" = ran ] || return 1
+  gate_exit="$(awk '/^---$/ { exit } /^gate_exit: / { sub(/^gate_exit: /, ""); print; exit }' "$log")"
+  # Guarded before the numeric compare, not after: `[ "$x" -ne 0 ]` on a
+  # non-numeric value is a shell ERROR, not a false, and this predicate is
+  # called from a `set -e` driver where that is a dead pass rather than a
+  # "no".
+  case "$gate_exit" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  [ "$gate_exit" -ne 0 ]
+}
+
 # findings_log_candidate <log> -- the candidate_sha this log's own header
 # claims it was produced against, or the empty string if it makes no claim.
 #

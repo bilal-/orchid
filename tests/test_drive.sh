@@ -7634,3 +7634,117 @@ assert_eq "" "$(pfield handoff_ack)" "rework clears the hand-off acknowledgement
 assert_eq "" "$(pfield prerequisite_ack)" "and the prerequisite acknowledgement beside it"
 assert_eq "$PSTEP" "$(pfield operator_prerequisite)" \
   "while the DECLARATION survives, so the next candidate is asked about again"
+
+# ===========================================================================
+# Part Z (T007) -- a red repo-wide `merge_gate`, as the DRIVER reports it.
+#
+# Two claims, and they are about the same three lines of the merging arm.
+#
+# (1) The pass must not call a repo-wide gate failure "merge validation
+#     failed". `rework` after a merge is equally a merge conflict, a rebase
+#     conflict, a red task suite and a red `merge_gate`, and exit 1 for all
+#     four -- so the status cannot say which, and the arm has to read the
+#     classification `orchid merge` wrote into the evidence header. The
+#     difference is not cosmetic: `gate_failed` is a statement about the
+#     REPOSITORY, is frequently nothing the task author did, and is the only
+#     one of the four that charges the task a round. Reported as a validation
+#     failure it sends whoever is watching to read the candidate's diff.
+#
+# (2) A gate that stays red must reach a human. Charging bounds the loop;
+#     `merging -> blocked` at the cap is what turns the bound into a stop, and
+#     this is the arm that has to notice a merge came back `blocked` rather
+#     than filing it under "unexpected status".
+#
+# tests/test_merge.sh drives the verb's own accounting against a real
+# repository -- round by round, and the exemption that still holds for
+# conflicts and `validation_failed`. What is proven here is only the driver's
+# reading of the result.
+# ===========================================================================
+#
+# `unset`, not `export ...=`: this file runs inside `scripts/ci-local.sh` in
+# CI, which sets the recursion marker so that a test's `orchid merge` cannot
+# open a second gate level underneath the gate running the suite. Inherited
+# here, every merge below would correctly SKIP its gate, both scenarios would
+# merge clean, and the whole part would assert nothing while staying green --
+# the vacuity tests/test_merge.sh's own gate block unsets it for. The `ran`
+# assertion on the evidence header just after the first pass is the witness
+# that this actually took.
+unset ORCHID_MERGE_GATE_ACTIVE
+
+GATEREPO="$WORK/mergegate"
+mkdir -p "$GATEREPO"
+cd "$GATEREPO" || exit 1
+git init -q .
+# The gate prints ONE location-shaped line and exits non-zero. `merge_gate` is
+# read from repo config and nothing in the task can switch it off, which is
+# the property that makes this fixture's task -- whose own
+# `verification_commands` is a bare `true` -- gated at all.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nmerge_gate=echo "lib/example.sh:12: SC2086: Double quote"; exit 3\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$GATEREPO" "$ORCHID_BIN" init >/dev/null || fail "orchid init (merge_gate fixture)"
+git checkout -q orchid/integration
+GEPOCH="$(ORCHID_REPO="$GATEREPO" "$ORCHID_BIN" run start | sed 's/epoch: //')"
+gorchid() { ORCHID_REPO="$GATEREPO" ORCHID_EPOCH="$GEPOCH" "$ORCHID_BIN" "$@"; }
+gfield() { fm_get "$GATEREPO/.orchid/tasks/G010.md" "$1"; }
+gorchid requirements import "$WORK/requirements.md" >/dev/null
+gorchid task create G010 "a task whose own suite is green" >/dev/null
+# GREEN, deliberately: anything that stops this merge is the gate and nothing
+# else, so `gate_failed` is the only classification the log can carry.
+gorchid task set G010 verification_commands "true" >/dev/null
+gorchid plan apply --reason "initial plan" >/dev/null
+
+git checkout -q -b task/G010
+echo gated > feature-g.txt && git add feature-g.txt && git commit -q -m "candidate"
+GCAND="$(git rev-parse HEAD)"
+git checkout -q orchid/integration
+GBASE="$(git rev-parse HEAD)"
+gorchid task set G010 branch task/G010 >/dev/null
+gorchid task set G010 base_sha "$GBASE" >/dev/null
+gorchid task set G010 candidate_sha "$GCAND" >/dev/null
+fm_set "$GATEREPO/.orchid/tasks/G010.md" status merging
+
+# --- (Z1) rounds are left, so the pass carries on -- but says WHICH failure
+GDRIVE_RC=0
+GDRIVE_OUT="$(ORCHID_REPO="$GATEREPO" ORCHID_EPOCH="$GEPOCH" "$DRIVE" 2>&1)" || GDRIVE_RC=$?
+assert_eq rework "$(gfield status)" "a red gate returns the task to rework (out: $GDRIVE_OUT)"
+# The witness for the `unset` above: had the marker been inherited, the header
+# would read `skipped-nested`, the merge would have gone clean through, and
+# every assertion below would be about a gate that never executed.
+assert_match "^gate_status: ran$" "$(cat "$GATEREPO/.orchid/reviews/G010-merge.log")" \
+  "the gate actually EXECUTED -- this part is not riding on an inherited recursion marker"
+assert_eq "$GBASE" "$(git -C "$GATEREPO" rev-parse orchid/integration)" \
+  "and the integration ref is exactly where it was"
+assert_eq 1 "$(gfield attempts)" "the round is charged, so a gate that stays red cannot loop forever"
+assert_match "merge_gate FAILED" "$GDRIVE_OUT" \
+  "the pass names the REPO-WIDE GATE as what went red"
+grep -q "merge validation failed" <<<"$GDRIVE_OUT" \
+  && fail "a gate failure reported as 'merge validation failed' sends the reader to the candidate's diff for a repository condition"
+grep -q "boundary \[operator-decision\] G010" <<<"$GDRIVE_OUT" \
+  && fail "with rounds still left a red gate is an ordinary rework round (rc=$GDRIVE_RC), not a stop for a human"
+
+# --- (Z2) the cap: the same gate, with nothing left to spend ---------------
+# `rework_max` is dropped to 1, so the next charge is over the cap. Nothing
+# else about the fixture changes -- same candidate, same gate, same green
+# suite -- which is what makes the different outcome attributable to the
+# budget rather than to anything about the merge.
+printf 'role.implementer=stubimpl\nrole.reviewer=stubreview\nrework_max=1\nmerge_gate=echo "lib/example.sh:12: SC2086: Double quote"; exit 3\n' > "$GATEREPO/orchid.config"
+fm_set "$GATEREPO/.orchid/tasks/G010.md" status merging
+
+GDRIVE_RC=0
+GDRIVE_OUT="$(ORCHID_REPO="$GATEREPO" ORCHID_EPOCH="$GEPOCH" "$DRIVE" 2>&1)" || GDRIVE_RC=$?
+assert_eq blocked "$(gfield status)" \
+  "over the cap, merge stops the task instead of sending it round again (out: $GDRIVE_OUT)"
+assert_eq 2 "$(gfield attempts)" "and the round that blocked is itself charged"
+assert_eq 16 "$GDRIVE_RC" "the pass stops at a judgment boundary"
+assert_match "boundary \[operator-decision\] G010" "$GDRIVE_OUT" \
+  "raised as a boundary a human is expected to clear"
+assert_match "merge_gate" "$GDRIVE_OUT" \
+  "...naming the gate rather than the candidate -- a blocked merge filed as an 'unexpected status' tells nobody anything"
+assert_match "orchid task reverify G010" "$GDRIVE_OUT" \
+  "and carrying the recovery that costs no attempt, since the gate is frequently not this task's doing"
+assert_match "orchid task retry G010" "$GDRIVE_OUT" "...beside the one that grants rounds back"
+grep -q "unexpected status" <<<"$GDRIVE_OUT" \
+  && fail "the merging arm must recognise the blocked outcome its own verb produces"
+assert_eq "$GBASE" "$(git -C "$GATEREPO" rev-parse orchid/integration)" \
+  "and after both rounds the integration ref has still never moved"
