@@ -283,6 +283,17 @@ ORCHID_STALE_CHECKOUT_REMEDY
 # operator's working document, edited uncommitted for long stretches, and
 # dogfood finding F31 is what happens when a refresh reaches one path further
 # than it must.
+#
+# `orchid.config`'s exclusion from THIS list is not the same statement as "no
+# code ever writes it" (T007). It is READ by every verb -- `merge_gate` lives
+# in it -- so a self-hosted merge that lands a config change leaves this
+# checkout resolving pre-merge values, and orchid_refresh_config below exists
+# for exactly that. What keeps the exclusion honest is its precondition: that
+# function writes only where the file is byte-equal to HEAD in both the tree
+# and the index, so an operator's pending edit still refuses it and is still
+# reported rather than restored. Membership HERE would mean something this
+# file must never mean -- that a pending config edit makes the checkout stale
+# and refuses every verb.
 ORCHID_KERNEL_PATHS=(bin lib libexec runners plugins roles skills templates PROTOCOL.md)
 
 # _orchid_head_branch_ondisk <dir> -- the short branch name <dir>'s HEAD points
@@ -713,7 +724,10 @@ orchid_kernel_clean() {
 # to the commit HEAD has just moved off, so nothing uncommitted exists for it
 # to destroy. Nothing outside ORCHID_KERNEL_PATHS is read or written at all --
 # `.orchid/` run state and a pending `orchid.config` edit are not merely
-# preserved, they are never named.
+# preserved, they are never named. (orchid_refresh_config is a separate
+# function, asked a separate question by the same caller, and reaches
+# `orchid.config` only under its own precondition; this one still names
+# nothing outside the list.)
 #
 # THE ORDER IS THE SAFETY PROPERTY, and it is why this is not three lines of
 # `git`. orchid_root_stale reads the INDEX, so the index is the thing that
@@ -847,26 +861,7 @@ orchid_refresh_kernel() {
   # being reported as "refreshed".
   if [ "${#kernel_drift[@]}" -gt 0 ]; then
     for p in "${kernel_drift[@]}"; do
-      if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
-        # _orchid_restore_kernel_file asks _orchid_kernel_writable itself,
-        # immediately before its rename, so nothing about this path is decided
-        # here at a distance from the write it decides.
-        _orchid_restore_kernel_file "$root" "$p" "$base" || { rc=1; continue; }
-      else
-        # HEAD has dropped this path. The FILE goes first here too, and for the
-        # same reason: a verb or library still on disk after the branch removed
-        # it is pre-merge code that still executes, and an index entry dropped
-        # ahead of it would tell the guard otherwise. Nothing is lost so long
-        # as these bytes are still the ones orchid_kernel_clean saw, which is
-        # exactly what the line below re-establishes at the moment of the
-        # removal rather than inheriting from a check made before the advance.
-        _orchid_kernel_writable "$root" "$p" "$base" || { rc=1; continue; }
-        rm -f "$root/$p" || { rc=1; continue; }
-        [ ! -e "$root/$p" ] || { rc=1; continue; }
-      fi
-      # Only now: this path's working tree matches HEAD, so the index may say
-      # so.
-      git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || rc=1
+      _orchid_refresh_one_path "$root" "$p" "$base" || rc=1
     done
   fi
   # Success has to mean the thing its caller announces. A per-path failure
@@ -887,6 +882,86 @@ orchid_refresh_kernel() {
     rc=1
   fi
   return "$rc"
+}
+
+# _orchid_refresh_one_path <root> <path> [<base>] -- bring ONE path to HEAD:
+# its WORKING TREE first, verified, and its index entry only afterwards.
+#
+# This is the body of the walk above, in a function because there is now a
+# SECOND caller (orchid_refresh_config below) and that order is the safety
+# property rather than an implementation detail. Two copies of an order are how
+# two copies come to disagree, and the copy that drifts is the one that leaves
+# a current index over a pre-merge file -- precisely the state the stale-root
+# guard reads as healthy and lets a run execute.
+#
+# The `kernel` in the two helpers it calls names the family, not a restriction:
+# both take a path and neither consults ORCHID_KERNEL_PATHS. WHICH paths may be
+# written, and on what evidence, is the caller's question; this one answers only
+# how.
+_orchid_refresh_one_path() {
+  local root="$1" p="$2" base="${3:-}"
+  if git -C "$root" cat-file -e "HEAD:$p" 2>/dev/null; then
+    # _orchid_restore_kernel_file asks _orchid_kernel_writable itself,
+    # immediately before its rename, so nothing about this path is decided
+    # here at a distance from the write it decides.
+    _orchid_restore_kernel_file "$root" "$p" "$base" || return 1
+  else
+    # HEAD has dropped this path. The FILE goes first here too, and for the
+    # same reason: a verb or library still on disk after the branch removed
+    # it is pre-merge code that still executes, and an index entry dropped
+    # ahead of it would tell the guard otherwise. Nothing is lost so long
+    # as these bytes are still the ones the caller's precondition saw, which is
+    # exactly what the line below re-establishes at the moment of the
+    # removal rather than inheriting from a check made before the advance.
+    _orchid_kernel_writable "$root" "$p" "$base" || return 1
+    rm -f "$root/$p" || return 1
+    [ ! -e "$root/$p" ] || return 1
+  fi
+  # Only now: this path's working tree matches HEAD, so the index may say so.
+  git -C "$root" reset -q HEAD -- "$p" >/dev/null 2>&1 || return 1
+}
+
+# orchid_config_committed_clean <root> -- true when <root>/orchid.config holds
+# exactly what HEAD carries, in the WORKING TREE and the INDEX both, with no
+# untracked file sitting at that path.
+#
+# `orchid.config` is deliberately NOT in ORCHID_KERNEL_PATHS and must not
+# become a member of it: an edit awaiting `orchid config commit` is legitimate
+# and uncommitted by definition, so a checkout carrying one may neither be
+# refused nor have that edit restored out from under it. What this answers is
+# the narrower question `orchid merge` asks before it writes -- is there any
+# edit here at all to lose -- so that the committed configuration can be made
+# live in the one case where making it live costs nobody anything.
+#
+# Fails CLOSED, like orchid_kernel_clean and by the same `|| echo '?'`: a git
+# that cannot answer reports an edit, so "cannot tell" keeps the operator's
+# file and the caller says so instead of overwriting it.
+#
+# `--others` WITHOUT `--exclude-standard`, on purpose. An ignored orchid.config
+# is still somebody's file; the cost of treating it as one is a warning nobody
+# needed, and the cost of the other reading is their only copy.
+orchid_config_committed_clean() {
+  local root="$1"
+  [ -z "$(git -C "$root" diff --name-only HEAD -- orchid.config 2>/dev/null || echo '?')" ] || return 1
+  [ -z "$(git -C "$root" diff --cached --name-only HEAD -- orchid.config 2>/dev/null || echo '?')" ] || return 1
+  [ -z "$(git -C "$root" ls-files --others -- orchid.config 2>/dev/null || echo '?')" ] || return 1
+}
+
+# orchid_refresh_config <root> [<base>] -- make the committed orchid.config the
+# LIVE one in <root>: HEAD's bytes into the working tree, then the index, by
+# exactly the same write order the kernel refresh uses.
+#
+# Callers MUST have established orchid_config_committed_clean BEFORE the ref
+# advance that made this necessary (see `orchid merge`, which is the only
+# caller and asks it beside its own kernel question). Under that precondition
+# every byte replaced here is already in the object store. The per-write check
+# inside _orchid_refresh_one_path is re-asked against <base> regardless, so an
+# operator who saves this file inside the window is DECLINED rather than
+# overwritten, and the caller reports a refresh that did not happen as one that
+# did not happen.
+orchid_refresh_config() {
+  local root="$1" base="${2:-}"
+  _orchid_refresh_one_path "$root" orchid.config "$base"
 }
 
 # _orchid_file_is_commit_blob <root> <rev> <path> -- true when the file on disk

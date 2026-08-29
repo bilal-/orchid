@@ -1120,3 +1120,186 @@ assert_eq 0 "$(attempts_of T018)" "...and the counter it was trying to write did
 "$ORCHID_BIN" task advance T018 rework --reason "probe complete" >/dev/null
 assert_eq 1 "$(attempts_of T018)" \
   "the plain testing -> rework edge charges exactly one on its own -- which is why the flag has no business there"
+
+# ---------------------------------------------------------------------------
+# (H) A MERGE THAT FAILS BEFORE IT WRITES EVIDENCE IS NOT JUDGED BY THE LAST
+# MERGE'S LOG.
+#
+# `<id>-merge.log` outlives the merge that wrote it deliberately: the
+# `merging` arm of `task advance rework` exempts it from its rm so the failure
+# it is journaling keeps the evidence the next brief quotes. Every merge
+# failure that happens BEFORE that log is written -- the conflict used here,
+# and equally a rebase conflict, an unapplied operator prerequisite or a CAS
+# lost to a concurrent merge -- then ends with a merge that produced no
+# evidence at all and a file on disk that reads exactly like evidence it
+# produced.
+#
+# That file is what `runners/orchid-drive` classifies a failed merge from
+# (findings_log_gate_failed, over the `gate_status:`/`gate_exit:` header it
+# reads and never infers). Left alone, the previous round's red gate is
+# inherited by a conflict and announced as a repository condition -- with an
+# attempt charge attributed to it that nothing ever made, and, once the count
+# gets there, an operator boundary raised over a gate that did not run. The
+# sha binding cannot catch it, which is why this scenario is one candidate
+# twice: a conflicted candidate is re-merged UNCHANGED, so the stale header
+# names the very candidate under work.
+# ---------------------------------------------------------------------------
+set_gate "$gate_fail"
+
+"$ORCHID_BIN" task create T019 "a conflict must not inherit the last round's gate failure"
+git checkout -q -b task/T019 "$integ"
+echo "task version" > clash19.txt && git add clash19.txt && git commit -q -m "clash 19 from task"
+cand19="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base19="$(git rev-parse "$integ")"
+
+# --- round 1: a red gate, which writes the log the next round must not use --
+walk_to_merging T019 task/T019 "$base19" "$cand19" "true"
+rc=0; "$ORCHID_BIN" merge T019 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "round 1: the red gate fails the merge"
+log19=".orchid/reviews/T019-merge.log"
+assert_match "^gate_status: ran$" "$(cat "$log19")" "round 1 leaves a log that records a gate that RAN"
+assert_match "^gate_exit: 3$" "$(cat "$log19")" "...and the non-zero status it ran to"
+# Kept, so the classification below can be shown to be capable of saying yes.
+# A negative assertion whose predicate answers no to everything proves nothing.
+stale19="$WORK/T019-round1-merge.log"
+cp "$log19" "$stale19"
+
+# --- round 2: a conflict on the SAME candidate, which writes nothing -------
+# The conflicting side lands on the integration branch, and `base_sha` is
+# forced current afterwards for the reason the T003 and T018 scenarios force
+# it: otherwise this takes the rebase-reset arm instead of the conflict arm.
+echo "integ version" > clash19.txt && git add clash19.txt && git commit -q -m "clash 19 from integ"
+walk_to_merging T019 task/T019 "$base19" "$cand19" "true"
+"$ORCHID_BIN" task set T019 base_sha "$(git rev-parse "$integ")"
+
+# The fixture's own premise, asserted rather than assumed: the round-1 log has
+# to still be here when round 2 begins, or this scenario reproduces nothing.
+[ -f "$log19" ] \
+  || fail "fixture invariant broken: the round-1 merge log is already gone before round 2 starts, so nothing below is testing what it says it tests"
+
+pre_integ19="$(git rev-parse "$integ")"
+attempts_before19="$(attempts_of T019)"
+marker_before19="$(wc -l < "$gate_marker" | tr -d ' ')"
+rc=0; "$ORCHID_BIN" merge T019 >/dev/null 2>&1 || rc=$?
+assert_eq 1 "$rc" "round 2: a merge conflict exits 1, like every other merge failure"
+assert_eq rework "$("$ORCHID_BIN" task show T019 | grep '^status: ' | cut -d' ' -f2)" \
+  "round 2: a conflict routes to rework"
+assert_eq "$pre_integ19" "$(git rev-parse "$integ")" "round 2: the integration ref did not move"
+assert_eq "$attempts_before19" "$(attempts_of T019)" \
+  "round 2: a conflict charges nothing -- the exemption is intact for the failure that actually happened"
+assert_eq "$marker_before19" "$(wc -l < "$gate_marker" | tr -d ' ')" \
+  "round 2: the gate never executed, so there is nothing for a gate_failed reading to be about"
+
+# THE DEFECT, asked through the very predicate `runners/orchid-drive` calls
+# rather than through a re-implementation of it here.
+if ( source "$REPO_ROOT/lib/findings.sh"; findings_log_gate_failed "$log19" ); then
+  fail "a merge that ran no gate is still classified as a gate failure -- the previous round's evidence outlived the merge that wrote it, and every reader downstream reads it as this round's"
+fi
+# ...and the same predicate, over the same bytes, saying yes. Without this the
+# check above passes just as well against a predicate that is broken outright.
+if ! ( source "$REPO_ROOT/lib/findings.sh"; findings_log_gate_failed "$stale19" ); then
+  fail "test bug, not a merge failure: round 1's log does not read as a gate failure even when handed to the predicate directly, so the negative check above is vacuous"
+fi
+[ -f "$log19" ] \
+  && fail "this merge wrote no evidence, so no evidence may be on disk under its name: a log that survives a merge which produced none is a claim about a round that never made one"
+
+journal19="$("$ORCHID_BIN" journal show --task T019)"
+assert_match "merge conflict" "$journal19" "the round is journaled as the conflict it was"
+
+# ---------------------------------------------------------------------------
+# (I) THE CONFIG PRECONDITION, BOTH ANSWERS.
+#
+# `merge_gate` is read from `$repo/orchid.config`, so a self-hosted merge that
+# LANDS a gate and leaves its own checkout resolving the pre-merge file makes
+# the floor inert in the repository that just adopted it — L016 wearing the
+# clothes of its own fix. So `orchid merge` brings that file to the branch
+# when it moved it. What decides whether it may is `orchid.config`'s own
+# bytes, since an edit awaiting `orchid config commit` is legitimate and
+# uncommitted by definition and may not be restored out from under whoever
+# made it (the r-001 journal-loss hazard, one file over).
+#
+# tests/test_stale_root.sh drives the whole of that through a real
+# self-hosted `orchid merge` (checks 10c and 10d), where the fixture is an
+# entire orchid root. What is pinned HERE is the decision itself, in every
+# shape that answers it — because a precondition that quietly answers "clean"
+# to everything is a silent overwrite, and one that answers "dirty" to
+# everything is a gate that never activates and never says why.
+# ---------------------------------------------------------------------------
+cfg_clean() {  # the precondition, asked exactly as `orchid merge` asks it
+  ( export HOME="$WORK/home" ORCHID_ALLOW_STALE_ROOT=1
+    source "$REPO_ROOT/lib/common.sh"
+    orchid_config_committed_clean "$1" )
+}
+cfg_refresh() {
+  ( export HOME="$WORK/home" ORCHID_ALLOW_STALE_ROOT=1
+    source "$REPO_ROOT/lib/common.sh"
+    orchid_refresh_config "$1" "$2" )
+}
+
+cfgroot="$WORK/cfg-probe"
+mkdir -p "$cfgroot"
+printf 'integration_branch=orchid/integration\n' > "$cfgroot/orchid.config"
+git init -q "$cfgroot"
+git -C "$cfgroot" symbolic-ref HEAD refs/heads/orchid/integration
+git -C "$cfgroot" add orchid.config
+git -C "$cfgroot" commit -q -m "cfg probe: v1"
+cfg_base="$(git -C "$cfgroot" rev-parse HEAD)"
+
+# The landing this stands in for: a commit that changes the committed config,
+# made somewhere else and published by a ref advance that never touches this
+# checkout's tree or index — which is exactly what merge's CAS does, and is
+# why this checkout goes on resolving the old values until something acts.
+cfg_side="$WORK/cfg-probe-side"
+git -C "$cfgroot" worktree add -q --detach "$cfg_side" orchid/integration
+printf 'integration_branch=orchid/integration\nmerge_gate=true\n' > "$cfg_side/orchid.config"
+git -C "$cfg_side" add orchid.config
+git -C "$cfg_side" commit -q -m "cfg probe: the repository adopts a merge_gate"
+cfg_head="$(git -C "$cfg_side" rev-parse HEAD)"
+
+# --- (I1) nothing to lose: the answer is yes, and the write lands ----------
+cfg_clean "$cfgroot" \
+  || fail "a checkout with no config edit at all must read as clean -- a precondition that answers no to everything is a gate that never activates and never says why"
+git -C "$cfgroot" update-ref refs/heads/orchid/integration "$cfg_head" "$cfg_base"
+rc=0; cfg_refresh "$cfgroot" "$cfg_base" || rc=$?
+assert_eq 0 "$rc" "the refresh reports success"
+grep -q '^merge_gate=true$' "$cfgroot/orchid.config" \
+  || fail "the committed gate is still not the live one here, so the repository that just adopted it would go on not running it"
+assert_eq "" "$(git -C "$cfgroot" diff --name-only HEAD -- orchid.config)" \
+  "the working tree carries the branch's bytes"
+assert_eq "" "$(git -C "$cfgroot" diff --cached --name-only HEAD -- orchid.config)" \
+  "and the index does too -- written last, after the tree, the same order the kernel refresh holds to"
+
+# --- (I2) an unstaged edit: the answer is no ------------------------------
+printf '# operator edit awaiting orchid config commit\n' >> "$cfgroot/orchid.config"
+if cfg_clean "$cfgroot"; then
+  fail "an uncommitted config edit read as clean -- the next self-hosted merge would restore over the operator's only copy"
+fi
+
+# --- (I3) ...and no when it is STAGED, which a working-tree diff cannot see -
+git -C "$cfgroot" add orchid.config
+if cfg_clean "$cfgroot"; then
+  fail "a STAGED config edit read as clean: staging moves the file and its index entry together, so a check that asks only one of them is blind to exactly the edit an operator has been most careful with"
+fi
+
+# --- (I4) the green twin: with the edit gone the same check says yes again -
+git -C "$cfgroot" reset -q HEAD -- orchid.config
+git -C "$cfgroot" checkout -q HEAD -- orchid.config
+cfg_clean "$cfgroot" \
+  || fail "once the edit is dealt with the same checkout must read clean again -- a check that never recovers is a permanent refusal, not a precondition"
+
+# --- (I5) an UNTRACKED orchid.config is somebody's file too ----------------
+# The one shape `git diff` says nothing about: HEAD carries no orchid.config,
+# so both diffs are empty and a check built on them alone would call this
+# clean and let a merge that ADDS the file write straight over it.
+cfgnew="$WORK/cfg-untracked"
+mkdir -p "$cfgnew"
+git init -q "$cfgnew"
+git -C "$cfgnew" symbolic-ref HEAD refs/heads/orchid/integration
+git -C "$cfgnew" commit -q --allow-empty -m "cfg probe: a repository with no committed config"
+cfg_clean "$cfgnew" \
+  || fail "test fixture: a repository with no orchid.config at all, tracked or on disk, must read clean -- otherwise I5 below proves nothing about the untracked file"
+printf 'integration_branch=orchid/integration\n' > "$cfgnew/orchid.config"
+if cfg_clean "$cfgnew"; then
+  fail "an untracked orchid.config read as clean -- git diff is silent about a path HEAD does not carry, and the merge that adds one would overwrite the only copy of it"
+fi

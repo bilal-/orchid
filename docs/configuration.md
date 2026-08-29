@@ -122,9 +122,21 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
     worktree holding the merged tree. Only the second half sees the candidate.
     So a candidate that commits an `orchid.config` of its own naming a gentler
     gate is still judged by the one configured here — its version of the key
-    takes effect from the *next* merge, once it has landed and an operator has
-    it. Frontmatter is not the only way a change could otherwise lower the
-    floor it is being measured against; this is the other one.
+    takes effect from the *next* merge, once it has landed and the checkout
+    orchid runs from carries it. Frontmatter is not the only way a change
+    could otherwise lower the floor it is being measured against; this is the
+    other one.
+    - **When orchid runs from the checkout being merged into**, the merge
+      brings that last step with it: a merge that moved the committed
+      `orchid.config` refreshes this checkout's copy so the key it just landed
+      is live for the next merge — but *only* where that copy had no
+      uncommitted edit of its own in either the working tree or the index. If
+      it had one, nothing is overwritten, the merge says so on stderr, and the
+      values this checkout resolves stay yours until you reconcile the two.
+      `docs/troubleshooting.md`, "`orchid.config` after a merge", has both
+      sides and the order to do them in. Otherwise this is the one adoption
+      step a merge cannot take for you: the branch carries the key and each
+      checkout picks it up when it next pulls.
   - **It blocks, it does not merely run.** Its exit status joins the task
     suite's, and the integration-ref advance is already conditional on that
     being zero — so a red gate returns the task to `rework` (journaled

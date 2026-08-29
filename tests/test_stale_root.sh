@@ -746,6 +746,141 @@ assert_eq 0 "$rc" \
 assert_eq "$worktree_before3" "$(cat "$selfroot/templates/probe-mutable.txt")" \
   "the operator's kernel edit is exactly as they left it"
 
+# The walk checks 9, 10 and 10b each spell out in full. In a function from
+# here on because 10c and 10d are its fourth and fifth users and neither has
+# anything to add to it: same steps, same order, same INV-11 verify in the
+# middle. `$selfroot` and `$ORCHID_BIN` are the ones those checks set up.
+self_walk_to_merging() {
+  local id="$1" base="$2" cand="$3"
+  "$ORCHID_BIN" task set "$id" base_sha "$base"
+  "$ORCHID_BIN" task set "$id" candidate_sha "$cand"
+  "$ORCHID_BIN" task set "$id" verification_commands "true"
+  "$ORCHID_BIN" task advance "$id" implementing
+  "$ORCHID_BIN" task advance "$id" testing
+  git -C "$selfroot" checkout -q "task/$id"
+  "$ORCHID_BIN" verify "$id" >/dev/null
+  git -C "$selfroot" checkout -q orchid/integration
+  "$ORCHID_BIN" task advance "$id" reviewing
+  plant_reviewer_envelope "$id"
+  "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved"
+  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
+}
+
+# ===========================================================================
+# 10c -- a merge that lands a CONFIG change makes it live in the checkout it
+# runs from
+# ===========================================================================
+# `orchid.config` is outside ORCHID_KERNEL_PATHS on purpose (check 9 pins the
+# other side of that: an operator's pending edit survives the kernel refresh
+# untouched). What the exclusion must NOT mean is that a committed config
+# change never reaches the checkout orchid runs from, because that file is
+# READ by every verb: `merge_gate` lives in it, so a self-hosted merge landing
+# a repo-wide gate would otherwise leave the repository that just adopted it
+# still not running it, with every later merge going on reporting a pass.
+# That is lesson L016 -- a gate whose reach depends on somebody remembering it
+# -- wearing the clothes of its own fix.
+#
+# The condition for writing is this file's OWN bytes, not the kernel's: there
+# must be nothing here to lose. So 10c starts by putting the file back to
+# HEAD, which discards check 9's `# probe marker kept` -- an edit this file
+# made itself and whose survival check 9 has already asserted. 10d is the
+# other case.
+git -C "$selfroot" checkout -q HEAD -- orchid.config
+grep -q '^merge_gate=' "$selfroot/orchid.config" \
+  && fail "fixture invariant broken: this checkout already resolves a merge_gate, so nothing below can show that the MERGE is what made one live"
+
+self_base4="$(git -C "$selfroot" rev-parse orchid/integration)"
+git -C "$selfroot" checkout -q -b task/TS4
+printf 'merge_gate=true\n' >> "$selfroot/orchid.config"
+# A targeted `add` for check 10's reason: durable `.orchid/` run state exists
+# in this fixture by now and must never be swept into a candidate branch.
+git -C "$selfroot" add orchid.config
+git -C "$selfroot" commit -q -m "self-hosted fixture: the repository adopts a merge_gate"
+self_cand4="$(git -C "$selfroot" rev-parse HEAD)"
+git -C "$selfroot" checkout -q orchid/integration
+
+"$ORCHID_BIN" task create TS4 "self-hosted merge that lands a config change" >/dev/null
+self_walk_to_merging TS4 "$self_base4" "$self_cand4"
+
+config_before4="$(cat "$selfroot/orchid.config")"
+rc=0
+out="$("$ORCHID_BIN" merge TS4 2>&1)" || rc=$?
+assert_eq 0 "$rc" "a self-hosted merge that lands a config change completes"
+assert_match "^merged TS4: orchid/integration -> " "$out" "it reports the merge"
+assert_match "^refreshed .*orchid\.config to orchid/integration" "$out" \
+  "and says plainly that the merged configuration is the live one here now"
+grep -q '^merge_gate=true$' "$selfroot/orchid.config" \
+  || fail "the branch now carries a merge_gate and this checkout still resolves the pre-merge config — the gate the repository just adopted would never fire, and every merge would go on reporting a pass"
+[ "$config_before4" = "$(cat "$selfroot/orchid.config")" ] \
+  && fail "test fixture: orchid.config is byte-identical before and after, so the merge changed nothing and the assertion above is about the fixture rather than about the merge"
+assert_eq "" "$(git -C "$selfroot" diff --name-only HEAD -- orchid.config)" \
+  "the working tree carries exactly what the branch does"
+assert_eq "" "$(git -C "$selfroot" diff --cached --name-only HEAD -- orchid.config)" \
+  "and so does the index — the tree is written first and the index only after it, the same order the kernel refresh holds to"
+# The two owners stay separate: this merge moved no kernel file and had no
+# business with the operator's kernel edit from 10b.
+assert_eq "$worktree_before3" "$(cat "$selfroot/templates/probe-mutable.txt")" \
+  "the operator's unrelated kernel edit is untouched by a config refresh"
+assert_eq 'done' "$("$ORCHID_BIN" task show TS4 | grep '^status: ' | cut -d' ' -f2)" \
+  "and the merge's own bookkeeping still reached done"
+
+# ===========================================================================
+# 10d -- ...and an operator's PENDING config edit is preserved, and reported
+# ===========================================================================
+# The condition failing, which is the half that matters: an edit awaiting
+# `orchid config commit` is legitimate and uncommitted by definition, so it
+# may not be restored out from under the operator who made it — the r-001
+# journal-loss hazard, one file over. The merge still advances the branch, so
+# this checkout is left resolving values the branch no longer carries, and the
+# merge is the only process that saw both sides. If it says nothing, nobody
+# does: no verb downstream compares a working config against its branch.
+#
+# The candidate is built and walked BEFORE the operator's edit is made, for
+# check 10's reason — `git checkout` refuses to move across a change to a file
+# whose content differs between the two branches.
+self_base5="$(git -C "$selfroot" rev-parse orchid/integration)"
+git -C "$selfroot" checkout -q -b task/TS5
+printf 'integration_branch=orchid/integration\nmerge_gate=false\n' > "$selfroot/orchid.config"
+git -C "$selfroot" add orchid.config
+git -C "$selfroot" commit -q -m "self-hosted fixture: the repository changes its gate again"
+self_cand5="$(git -C "$selfroot" rev-parse HEAD)"
+git -C "$selfroot" checkout -q orchid/integration
+
+"$ORCHID_BIN" task create TS5 "self-hosted merge over a pending config edit" >/dev/null
+self_walk_to_merging TS5 "$self_base5" "$self_cand5"
+
+printf '# operator config edit, awaiting orchid config commit\n' >> "$selfroot/orchid.config"
+config_before5="$(cat "$selfroot/orchid.config")"
+
+rc=0
+out="$("$ORCHID_BIN" merge TS5 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the merge still completes when it may not touch this checkout's config"
+assert_match "^merged TS5: orchid/integration -> " "$out" "it reports the merge"
+assert_eq "$config_before5" "$(cat "$selfroot/orchid.config")" \
+  "the operator's pending config edit is byte-for-byte as they left it — the merge discarded nothing"
+if grep -q "orchid\.config to orchid/integration" <<<"$out"; then
+  fail "the merge claimed a config refresh it must not have performed"
+fi
+assert_match "already carried an uncommitted config edit" "$out" \
+  "and it SAYS the merged configuration was not made live, at the one moment the cause is still known"
+assert_match "Pending:.*orchid\.config" "$out" \
+  "naming what is pending, read from git status before the advance mixed the merge's own drift into every comparison — and in a shorthand that names an UNTRACKED config as plainly as a modified one, which a diff never would"
+assert_no_lossy_command "the merge's preserved-config warning"
+# Non-vacuity: the branch really did move this file, so "preserved" is a
+# choice the merge made and not an absence of anything to do.
+grep -q '^merge_gate=false$' <<<"$(git -C "$selfroot" show orchid/integration:orchid.config)" \
+  || fail "test fixture: the merge did not change the committed orchid.config, so there was never a pending edit to preserve it against"
+grep -q '^merge_gate=false$' "$selfroot/orchid.config" \
+  && fail "the branch's config was written into this checkout over an operator's pending edit"
+
+# THE END-TO-END HALF of 10c, and the reason the activation is worth doing at
+# all: THIS merge read `merge_gate` from the file 10c refreshed. Asserted on
+# the `gate:` header line, which `orchid merge` writes whenever a gate is
+# CONFIGURED — so it holds whether the gate ran or was skipped as nested,
+# which is what the whole suite running under one is.
+assert_match "^gate: true$" "$(cat "$selfroot/.orchid/reviews/TS5-merge.log")" \
+  "the gate 10c made live is the one this merge resolved — the activation reached the code that reads the file, not merely the file"
+
 # ===========================================================================
 # 11 -- the guard runs FIRST of everything, so it may not spend a subprocess
 # ===========================================================================

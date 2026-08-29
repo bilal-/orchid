@@ -508,6 +508,25 @@ buying a fresh implementation pass to reach the same tree.
   for `.` : that would restore a pending `orchid.config` along with the
   kernel, and without `':(exclude).orchid'` it clobbers uncommitted
   `.orchid/` run state too.
+  **`orchid.config` is a separate step with a separate precondition, not a
+  member of that list** (T007). It is not executed but it is READ by every
+  verb — `merge_gate` lives in it — so a self-hosted merge that lands a config
+  change and leaves this checkout resolving pre-merge values makes the
+  repository's own floor inert in the repository that just adopted it, which
+  is lesson L016 wearing the clothes of its own fix. So a merge that MOVED
+  `orchid.config` between `$integ_head` and the merged commit brings this
+  checkout's copy to it — by the same write-tree-then-index order, through the
+  same per-write check against the pre-advance base — but **only when that
+  copy was byte-equal to HEAD in the working tree and the index both, with no
+  untracked file at that path**, established before the advance. Where it was
+  not, the operator's edit is left exactly as it is and the merge says so on
+  stderr, naming what is pending and that the merged configuration is not the
+  live one here; it prescribes no restoring command, and it warns that
+  `orchid config commit` lands the bytes on disk, so running it over an
+  unreconciled file would drop what the merge just landed. Membership in
+  `ORCHID_KERNEL_PATHS` would mean something else entirely and must not be
+  confused with this: that a pending config edit makes the checkout stale and
+  refuses every verb.
   **The refresh writes the working tree first and the index last**, one path
   at a time, and that order is a safety property rather than an internal
   detail. The guard reads the INDEX, so the index is what makes this checkout

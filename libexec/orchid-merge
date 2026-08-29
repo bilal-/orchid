@@ -149,6 +149,42 @@ merge_cleanup() {
 }
 trap merge_cleanup EXIT
 
+# --- THE LAST MERGE'S EVIDENCE IS NOT THIS MERGE'S (T007) ------------------
+# `<id>-merge.log` outlives the merge that wrote it ON PURPOSE: the `merging`
+# arm of `task advance rework` exempts it from its rm so the failure it is
+# about to journal keeps the evidence the next brief quotes. That exemption is
+# right, and it is also what leaves the LAST merge's log sitting here while
+# this one starts.
+#
+# Every failure this verb can take BEFORE it writes the log below -- a merge
+# conflict, a rebase conflict, an unapplied operator prerequisite, a CAS lost
+# to a concurrent merge, a temp worktree it could not create -- then ends with
+# a merge that produced no evidence and a file that reads exactly like
+# evidence it produced. `runners/orchid-drive` classifies a failed merge from
+# that header (`gate_status:`/`gate_exit:`, via findings_log_gate_failed), so
+# a conflict inherits the previous round's red gate and is reported as a
+# repository condition, with an attempt charge attributed to it that nothing
+# ever made. The sha binding does not save it: the re-merge of a conflicted or
+# CAS-raced candidate is the SAME candidate, so the stale header's
+# `candidate:` line still matches.
+#
+# So the log is invalidated HERE, ahead of the first branch that can fail,
+# rather than each failure arm being trusted to remember. This verb writes its
+# own log below on every path that gets that far; a path that does not get
+# that far now leaves NO log, which every reader already treats as "no claim"
+# -- findings_log_gate_failed fails closed on a missing file, and
+# findings_brief simply has nothing to quote.
+#
+# Nothing is lost with it. The brief the round that DID write this log
+# produced was appended to the task body at that round's own `rework` edge and
+# is kept there, by candidate, for as long as that candidate is current -- so
+# the locations survive in the place the implementer actually reads, while the
+# classification stops being answerable by a merge that never ran a gate.
+#
+# AFTER lock_acquire, deliberately: the lock is what makes this file this
+# process's to delete rather than one a concurrent merge is mid-write on.
+rm -f "$state/reviews/$id-merge.log"
+
 integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 
 if [ "$integ_head" != "$base_sha" ]; then
@@ -227,7 +263,10 @@ if [ "$integ_head" != "$base_sha" ]; then
   # now evidence about a candidate that no longer exists. merge is the one
   # actor that invalidates it this way, so merge must delete it here — this
   # makes INV-07 kernel-enforced via the INV-11 gate (no log => advance to
-  # reviewing dies, forcing an unconditional re-verify).
+  # reviewing dies, forcing an unconditional re-verify). The VERIFY log is
+  # what this line is now for: the merge log went at the top of the verb,
+  # where it goes on every path rather than only on this one, and naming it
+  # again here costs nothing and keeps the pair of them stated together.
   rm -f "$state/reviews/$id-verify.log" "$state/reviews/$id-merge.log"
   # T010, the same invalidation applied to the OPERATOR HAND-OFF. An
   # acknowledgement records that a human performed this candidate's
@@ -625,6 +664,12 @@ if [ "$rc" -eq 0 ]; then
   self_checkout=0
   refresh_self=0
   dirty_before=""
+  # A THIRD flag, about a file the other two never name: the committed
+  # `orchid.config`. Same shape as `refresh_self` -- may this verb write --
+  # asked on that file's own bytes, and initialised out here so `set -u` is
+  # satisfied on every path below whether or not this is a self-hosted merge.
+  config_refresh=0
+  config_dirty_before=""
   repo_phys=""; root_phys=""
   if [ -n "$repo" ]; then repo_phys="$(cd "$repo" 2>/dev/null && pwd -P || true)"; fi
   if [ -n "${ORCHID_ROOT:-}" ]; then root_phys="$(cd "$ORCHID_ROOT" 2>/dev/null && pwd -P || true)"; fi
@@ -645,6 +690,36 @@ if [ "$rc" -eq 0 ]; then
       # someone's uncommitted work here and nothing else.
       dirty_before="$(git -C "$repo" diff --name-only HEAD -- \
         "${ORCHID_KERNEL_PATHS[@]}" 2>/dev/null | tr '\n' ' ' || true)"
+    fi
+    # THE COMMITTED CONFIGURATION, asked separately because it answers to a
+    # different owner (T007). `orchid.config` is outside ORCHID_KERNEL_PATHS
+    # and stays outside it -- an edit awaiting `orchid config commit` is
+    # legitimate, so it may neither refuse a verb nor be restored out from
+    # under the operator who made it. But the ref advance leaves this checkout
+    # RESOLVING pre-merge values for as long as nobody reconciles it, and that
+    # is not cosmetic here of all places: `merge_gate` is read from exactly
+    # this file, so a merge that LANDS a repo-wide gate would leave the
+    # repository that just adopted it still not running it, and every later
+    # merge would go on reporting a pass. That is L016 wearing the clothes of
+    # its own fix.
+    #
+    # So: the same rule as the kernel, on this file's own evidence. Refresh it
+    # only where there is provably nothing here to lose; where there is
+    # something, keep the operator's bytes and say so at the end of the merge.
+    # Asked BEFORE the CAS for the reason the kernel question is asked before
+    # it -- afterwards "this checkout fell behind" and "somebody edited this
+    # file" are the same diff.
+    if orchid_config_committed_clean "$repo"; then
+      config_refresh=1
+    else
+      # Their edit, in `git status` shorthand so an UNTRACKED orchid.config
+      # (`??`) is reported as plainly as a modified one; both are edits this
+      # merge must not touch, and only one of them appears in a `git diff`.
+      # Fails CLOSED to a literal `?` rather than to an empty string: a git
+      # that cannot answer must still leave the operator a warning that names
+      # something.
+      config_dirty_before="$(git -C "$repo" status --porcelain -- orchid.config 2>/dev/null | tr '\n' ' ')" \
+        || config_dirty_before="? "
     fi
     # Open the advance-then-refresh window BEFORE the CAS, so no instant
     # exists in which this checkout's index is behind its HEAD and nothing
@@ -733,6 +808,51 @@ if [ "$rc" -eq 0 ]; then
       # overwrites that untracked file, which is the only copy of it. Whatever
       # stopped the refresh is a file the operator has to look at first.
       echo "orchid: warning: $integ advanced but this checkout could not be fully refreshed — run 'git -C $repo status' and look for an untracked file at a path the branch now carries; restoring over it would destroy it, so nothing further was done and nothing further is prescribed here. Move or keep that file as you decide, then bring this checkout to $integ yourself (docs/troubleshooting.md 'Stale orchid itself')" >&2
+    fi
+  fi
+
+  # --- the committed configuration, made live (T007) -------------------------
+  # The block above restores what the launcher EXECUTES. This one deals with
+  # what it READS, under its own condition and with its own report, because
+  # `orchid.config` is the one path in this checkout that may be carrying
+  # somebody's pending edit at the moment a merge lands a change to it.
+  #
+  # Only when THIS merge moved the committed file, exactly as the warning above
+  # is conditional on `kernel_moved` and for the same reason: a message that
+  # fires when nothing happened is the message that gets filtered out, and this
+  # is the only place the cause is still known. Fails CLOSED to the literal
+  # `?`, which is non-empty and so still acts -- a git that cannot answer must
+  # not be what silently decides this checkout keeps a pre-merge configuration.
+  if [ "$self_checkout" -eq 1 ]; then
+    config_moved="$(git -C "$repo" diff --name-only "$integ_head" "$merged_sha" -- \
+      orchid.config 2>/dev/null || echo '?')"
+    if [ -n "$config_moved" ]; then
+      if [ "$config_refresh" -eq 0 ]; then
+        # PRESERVED, and said out loud. The operator's edit is untouched, so
+        # what this checkout resolves is still their file and not the one the
+        # branch now carries -- which is a fact about every subsequent verb in
+        # this run, not about this merge, and is invisible everywhere else:
+        # nothing downstream compares a working config against its branch.
+        #
+        # It prescribes no restoring command, for the reason the kernel warning
+        # gives, and it warns about `orchid config commit` rather than
+        # recommending it blind: that verb commits the bytes ON DISK here, so
+        # running it over an unreconciled file would land a config that drops
+        # what this merge just added.
+        echo "orchid: warning: $integ advanced with a change to orchid.config and orchid runs from this checkout ($repo), but this checkout already carried an uncommitted config edit — so that edit was left exactly as it is and the merged configuration was NOT made live here. Pending: ${config_dirty_before}— until you reconcile the two, every verb run from here resolves the values in your working copy, not the ones $integ now carries (compare: 'git -C $repo diff HEAD -- orchid.config' for yours, 'git -C $repo show $integ:orchid.config' for the branch's). Keep whichever parts you want kept; note that 'orchid config commit' lands the bytes that are on disk here, so running it before you have merged in the branch's change would drop that change" >&2
+      elif orchid_refresh_config "$repo" "$integ_head"; then
+        # Announced on stdout beside the kernel's own line, and worth a line:
+        # this is the moment a `merge_gate`, a `verify` command or a role
+        # binding that the branch has just adopted starts applying to the run
+        # reading it from here.
+        echo "refreshed $repo/orchid.config to $integ (the merged configuration is live in this checkout)"
+      else
+        # The refresh was permitted and did not complete -- the file was saved
+        # inside the window and the per-write check declined it, or git could
+        # not answer. Reported rather than retried, and the operator's bytes
+        # are on disk either way.
+        echo "orchid: warning: $integ advanced with a change to orchid.config, but this checkout's copy could not be brought to it — run 'git -C $repo status' and look at orchid.config: it was written between this merge's own check and its write, so nothing was overwritten. Until you reconcile it, every verb run from here resolves your copy rather than the one $integ now carries" >&2
+      fi
     fi
   fi
   # The window is over: either this checkout now matches the branch, or it

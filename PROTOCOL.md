@@ -563,6 +563,14 @@ uncommitted `.orchid/` run state — and note that the exclude protects run
 state *only*: the checkout still overwrites any uncommitted edit of your own
 outside `.orchid/` (a `requirements.md` at the repository root is the one
 that has actually been lost this way), so commit or stash those first.
+One thing to check before running that verb, when orchid runs from the
+checkout you are editing in: a merge that landed a change to `orchid.config`
+will have brought this copy to it — but only if you had no pending edit here,
+and it warns on stderr when you did and it therefore left yours alone. In that
+second case your file does not yet carry what the branch just landed, and
+`orchid config commit` commits the bytes on disk, so committing before you
+reconcile the two drops the merge's change. `docs/troubleshooting.md`,
+"`orchid.config` after a merge", has the comparison to run.
 
 ## THE TICK
 
