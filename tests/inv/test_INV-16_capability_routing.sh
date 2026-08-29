@@ -58,7 +58,17 @@ source "$(dirname "$0")/../helpers.sh"
 #      operator who binds a capable engine and stops there moves live routing
 #      while the walk keeps dispatching the pinned row, which is the "edit a
 #      key, nothing happens" dead end the key half exists to prevent, reached
-#      one step later.
+#      one step later. An eighth is the arm where NO ACTOR IS NAMED AT ALL --
+#      the ordinary dispatch, which resolves a role's failover chain. When that
+#      walk yields nobody it exits 14, and 14 is a wait; where every entry in
+#      the chain is short an atom the step needs, no window reopens and the
+#      wait is forever, so it must come back 19 instead -- at `jobs prepare`,
+#      and through the real driver on the DISPATCH walk (the other launch path
+#      from the sixth case's relaunch), where it must journal the refusal, raise
+#      the named boundary and leave the task where it stood. That arm is where
+#      most shortfalls actually arrive: a built-in role's `requires=` and its
+#      step's price are the same atoms, so the role gate refuses before any
+#      actor exists to ask about.
 # GREEN: the SAME step, the SAME call, the SAME role and the SAME task, with
 #      one atom added to the actor's manifest, must be admitted -- silently at
 #      the gate and with a real job manifest through `jobs prepare`; likewise
@@ -86,7 +96,14 @@ source "$(dirname "$0")/../helpers.sh"
 #      holds an engine `review` refuses -- it must rebind that slot to the
 #      engine the operator bound, durably and journaled, leaving the step
 #      routable. Advice that names a remedy proves nothing until the remedy is
-#      run. Without those
+#      run. And the chain arm must keep every OTHER reason a chain comes up
+#      empty exactly as it was: one entry the table does not refuse, an entry
+#      no manifest can be read for, and a mistyped operation must all leave the
+#      answer 14 (or the caller's own error), because each has a different
+#      remedy and re-reporting one as a capability hand-off sends an operator
+#      to audit a manifest that is fine or absent -- while the identical call
+#      against a chain naming a capable actor must resolve and mint, at the
+#      verb and through the driver alike. Without those
 #      the refusals above would be evidence only that something rejects things,
 #      which is exactly the shape this repository keeps producing.
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
@@ -1095,3 +1112,227 @@ assert_match "review plan pinned for attempt 1 \(repin\)" \
   "$("$ORCHID_BIN" journal show --task TRP 2>/dev/null || true)" \
   "INV-16: and it is a RECORDED verb, journaled with the table it landed — the remedy for a routing refusal must not be an operator editing durable state by hand"
 green_case 'running the advised orchid jobs review-plan --repin against a pinned slot whose engine review refuses rebound it to the capable engine the operator had bound, journaled the new table, and left the step routable — while the config edit alone had left the pinned row untouched'
+
+# ===========================================================================
+# 11 -- THE ARM WITH NO ACTOR TO ASK ABOUT: the NORMAL ROLE CHAIN.
+#
+# Parts 4c and 7 cover the dispatch where the CALLER named the engine. Every
+# other dispatch names none: `orchid jobs prepare <task> <role> <op>` hands the
+# role to resolve_role_available, which walks the chain and prints the first
+# entry that is discovered, role-eligible, ledger-available and (past the
+# primary) capsuite-passed. Until that walk succeeds there is no manifest for
+# the step table to be asked about, so the gate parts 4 and 4b exercise sits
+# BEHIND a resolution that has already failed.
+#
+# AND WHEN IT FAILS IT EXITS 14, WHICH IS A WAIT. That reading is right for the
+# reasons the walk usually fails: a ledger window that reopens by itself, a
+# fallback one `orchid plugins test` away, a plugin not installed yet. It is
+# exactly wrong when every entry in the chain is short an atom the STEP's work
+# needs. Nothing reopens, so runners/orchid-drive waits, journals nothing,
+# raises no boundary, and the walk meets the same task again every pass
+# forever — the silent dead end this whole invariant exists to end, arriving
+# one gate EARLIER than the gate built to end it.
+#
+# THE OVERLAP IS NOT A CORNER CASE, which is why this arm had to be closed
+# rather than argued away. A built-in role's `requires=` and its step's price
+# are drawn from the same facts about the same work: roles/reviewer.role wants
+# `structured_text` and the `review` step prices exactly that, and
+# roles/implementer.role wants `workspace_write,shell,git` — the implement
+# row, atom for atom. So for the two roles the driver actually dispatches,
+# EVERY capability shortfall in the shipped tree is refused by the role gate
+# first and reaches the caller as this 14, never as the post-resolution 19.
+# ===========================================================================
+nrepo="$WORK/nrepo"; mkdir -p "$nrepo/.orchid/tasks" "$nrepo/.orchid/reviews"
+cd "$nrepo" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+export ORCHID_REPO="$nrepo"
+NEPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$NEPOCH"
+"$ORCHID_BIN" task create TN "a chain with nobody in it who can do the work" >/dev/null
+
+# `builderonly` (part 4c) declares workspace_read, workspace_write, shell and
+# git — everything except the one atom `review` prices.
+printf 'verify=true\nrole.reviewer=builderonly\n' > "$nrepo/orchid.config"
+
+# THE PREMISE, asserted rather than assumed: resolution really does come up
+# empty, and it comes up empty at 14. Without this the exit 19 below could be
+# the post-resolution gate firing on an actor that resolved fine, which is
+# parts 4 and 4b and proves nothing about this arm.
+nrc=0; nerr="$(resolve_role_available "$nrepo" reviewer 2>&1 1>/dev/null)" || nrc=$?
+assert_eq 14 "$nrc" \
+  "INV-16 fixture: the chain must yield NO actor at all — this part is about the refusal that has to arrive before one exists"
+assert_match "no eligible engine available for role reviewer" "$nerr" \
+  "INV-16 fixture: and it must be the generic chain-walk failure, the exit 14 runners/orchid-drive reads as a ledger wait"
+
+jobs_before="$(list_dir_files "$nrepo/.orchid/runtime/jobs" | wc -l | tr -d ' ')"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TN reviewer review 2>&1 1>/dev/null)" || rc=$?
+assert_eq 19 "$rc" \
+  "INV-16: a chain EVERY entry of which is short an atom the step needs is a permanent refusal (19), not the wait (14) the driver journals nothing for"
+assert_match "refusing to route" "$err" "INV-16: the refusal names itself as a routing decision"
+assert_match "missing: structured_text" "$err" \
+  "INV-16: and names the atom, so an operator is not sent to watch a ledger window over a fact no window reopens"
+assert_eq "$jobs_before" "$(list_dir_files "$nrepo/.orchid/runtime/jobs" | wc -l | tr -d ' ')" \
+  "INV-16: and mints NO job manifest, exactly as the named-actor arm does"
+red_case 'a role chain whose only entry declares no structured_text was refused a review step at orchid jobs prepare with the permanent answer (19, naming the atom) instead of the exit 14 the driver reads as a ledger wait, with no job minted'
+
+# GREEN TWIN 1 — EVERY ENTRY, NEVER ANY. `textonly` declares exactly what
+# `review` prices, so one entry in this chain is one the step table has no
+# objection to and a later pass can route the step there. Resolution still
+# fails, because a fallback is used only once `orchid plugins test` has proved
+# it for this role — and that is a wait an operator clears by running one
+# command, not a capability fact. Refusing here would hand them a hand-off
+# about a manifest that is perfectly adequate.
+printf 'verify=true\nrole.reviewer=builderonly,textonly\n' > "$nrepo/orchid.config"
+if capsuite_passed textonly reviewer; then
+  fail "INV-16 fixture: textonly must have NO capsuite record for reviewer, or the chain below resolves and this twin tests nothing"
+fi
+nrc=0; resolve_role_available "$nrepo" reviewer >/dev/null 2>&1 || nrc=$?
+assert_eq 14 "$nrc" \
+  "INV-16 fixture: the chain must STILL yield no actor, or the 14 below is a successful dispatch rather than a preserved wait"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TN reviewer review 2>&1 1>/dev/null)" || rc=$?
+assert_eq 14 "$rc" \
+  "INV-16: one entry the step table does not refuse leaves the chain a WAIT — this gate re-reports a refusal only when it holds for the whole chain"
+case "$err" in
+  *"refusing to route"*) fail "INV-16: an unproven fallback is not a capability shortfall, and phrasing it as a routing refusal sends an operator to audit a manifest that covers the step" ;;
+esac
+green_case 'the same chain with one capable entry appended stayed the exit-14 wait it always was, so the refusal above is about the whole chain being short rather than about resolution having failed'
+
+# GREEN TWIN 2 — AN ENTRY THIS GATE CANNOT ANSWER FOR IS NOT A REFUSAL, and it
+# is the DELIBERATE opposite of what part 6 requires of the single-actor gate.
+# There, an unresolvable actor (2) must never be read as permission, because a
+# routing was about to happen and a gate that shrugged would waive itself.
+# Here nothing is about to happen — resolution has already refused — and the
+# only question is whether to RE-REPORT that as permanent. An uninstalled
+# plugin is an install, and reported as a capability hand-off it sends an
+# operator to read a manifest that is not on the disk.
+printf 'verify=true\nrole.reviewer=zzz/ghost\n' > "$nrepo/orchid.config"
+nrc=0; capability_routing_refusal review zzz/ghost >/dev/null 2>&1 || nrc=$?
+assert_eq 2 "$nrc" \
+  "INV-16 fixture: the single-actor gate must call this entry UNDETERMINED, or the two answers below are not the contrast this twin is about"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TN reviewer review 2>&1 1>/dev/null)" || rc=$?
+assert_eq 14 "$rc" \
+  "INV-16: a chain entry no manifest can be read for stays the wait it was — the chain gate re-reports only the one fact no later pass changes"
+case "$err" in
+  *"refusing to route"*) fail "INV-16: an uninstalled plugin must not be reported as a capability the plugin lacks — the remedy is an install, and no hand-off about a capability names it" ;;
+esac
+green_case 'a chain naming only an uninstalled qualified id stayed at exit 14, so the chain gate re-reports a missing atom and not every reason a chain comes up empty'
+
+# AND THE CALLER-ERROR ARM IS STILL THE CALLER'S, on this arm too. Reported as
+# 19 a mistyped operation becomes a journaled hand-off about a plugin behaving
+# perfectly, with the typo — the one thing an operator could fix — nowhere in
+# the message.
+printf 'verify=true\nrole.reviewer=builderonly\n' > "$nrepo/orchid.config"
+rc=0; err="$("$ORCHID_BIN" jobs prepare TN reviewer revieww 2>&1 1>/dev/null)" || rc=$?
+[ "$rc" -ne 0 ] || fail "INV-16: an unknown operation must not mint a job on the chain arm either"
+[ "$rc" -ne 19 ] \
+  || fail "INV-16: an unknown operation must NOT be reported as a capability refusal — the fault is the request's, and the chain gate must blame it exactly as the named-actor gate does"
+assert_match "unknown operation" "$err" \
+  "INV-16: the chain gate says the operation is unknown, in the same words the named-actor gate uses"
+case "$err" in
+  *"refusing to route"*) fail "INV-16: a mistyped operation must not be phrased as a routing refusal about a chain that was never asked for a capability" ;;
+esac
+
+# GREEN TWIN 3 — the verb still works on this arm. Only the binding changes.
+printf 'verify=true\nrole.reviewer=textonly\n' > "$nrepo/orchid.config"
+rc=0; nmf="$("$ORCHID_BIN" jobs prepare TN reviewer review)" || rc=$?
+assert_eq 0 "$rc" "INV-16: the identical call must resolve and mint when the chain names an actor that declares what review needs"
+[ -f "$nmf" ] || fail "INV-16: an admitted chain routing mints the job manifest it always did"
+green_case 'the identical prepare, with only the chain rebound to an actor declaring structured_text, resolved and minted its job — so the exit 19 above is a capability decision and not a verb that had stopped working'
+
+# ===========================================================================
+# 11b -- AND THROUGH THE REAL DRIVER, on the ORDINARY DISPATCH WALK. Part 7
+# proved the hand-off end to end on the escalation ladder's relaunch, which is
+# the path that reaches `--engine`-shaped launches. This is the other one, and
+# it is the one every pending task takes: drive_role_for_status hands
+# `implementing` to the implementer role, drive_launch runs the launcher with
+# NO --engine at all, and the chain is what picks the actor.
+#
+# Reported as the wait it used to be, this pass printed "no eligible engine —
+# waiting for the ledger window to reopen", took no transition, recorded
+# nothing, and did the identical thing on every pass after it. What has to
+# come out instead is the pair that makes a hand-off actionable: the JOURNAL
+# line, which is the durable record that the step was refused rather than
+# merely never attempted, and the `operator-handoff` BOUNDARY, which names no
+# settling verb so a human is notified and no model is woken to make a
+# decision it has no verb to make.
+# ===========================================================================
+ndrepo="$WORK/nchain"
+mkdir -p "$ndrepo"
+cd "$ndrepo" || exit 1
+git init -q .
+# `textonly` declares structured_text and nothing else, so it is short every
+# atom the implement row prices. roles/implementer.role refuses it first, which
+# is the whole point: that refusal is a 14, and a 14 is a wait.
+printf 'role.implementer=textonly\nrole.reviewer=textonly\ninfra_max=9\nconcurrency=10\n' > orchid.config
+git add -A
+git commit -q -m "fixture: config"
+ORCHID_REPO="$ndrepo" "$ORCHID_BIN" init >/dev/null \
+  || fail "INV-16 fixture: orchid init (chain-dispatch repo)"
+git checkout -q orchid/integration
+export ORCHID_REPO="$ndrepo"
+NDEPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$NDEPOCH"
+cat > "$WORK/requirements-nchain.md" <<'EOF'
+# Requirements
+- REQ-1: a chain nobody in it can do the work is handed over, not waited on.
+EOF
+"$ORCHID_BIN" requirements import "$WORK/requirements-nchain.md" >/dev/null
+"$ORCHID_BIN" task create NCH1 "its dispatch resolves to nobody who can implement" >/dev/null
+"$ORCHID_BIN" task set NCH1 verification_commands "true" >/dev/null
+"$ORCHID_BIN" plan apply --reason "initial plan" >/dev/null
+
+NDRIVE_RC=0; NDRIVE_OUT=""
+run_ndrive() {
+  NDRIVE_RC=0
+  NDRIVE_OUT="$("$REPO_ROOT/runners/orchid-drive" 2>&1)" || NDRIVE_RC=$?
+}
+ndboundary() { "$ORCHID_BIN" run boundary show 2>/dev/null || true; }
+ndstatus() { "$ORCHID_BIN" task show "$1" | grep '^status: ' | cut -d' ' -f2; }
+ndrefusals() {
+  "$ORCHID_BIN" journal show --task "$1" 2>/dev/null \
+    | grep -c "was not routed to role 'implementer'" || true
+}
+
+run_ndrive
+assert_eq 16 "$NDRIVE_RC" \
+  "INV-16: a pass that ends at a judgment boundary exits 16 — reported as the wait it used to be it would have exited 0 with nothing recorded (out: $NDRIVE_OUT)"
+assert_eq operator-handoff "$(ndboundary | jq -r .kind)" \
+  "INV-16: a dispatch whose whole role chain is short what the step needs raises the operator hand-off boundary (out: $NDRIVE_OUT)"
+assert_eq NCH1 "$(ndboundary | jq -r .task)" \
+  "INV-16: and names the task whose step was refused"
+assert_eq 1 "$(ndrefusals NCH1)" \
+  "INV-16: with the refusal JOURNALED, so the task's history says the step was refused rather than showing a status that simply stopped moving"
+assert_match "role.implementer" "$(ndboundary | jq -r .reason)" \
+  "INV-16: and the advice names the key that binds this chain, which is the one thing an operator can act on"
+assert_eq pending "$(ndstatus NCH1)" \
+  "INV-16: the task stays in its prior status — nothing was spawned, so no envelope is awaited and no attempt is spent"
+[ -z "$(list_dir_files "$ndrepo/.orchid/runtime/jobs")" ] \
+  || fail "INV-16: a refused dispatch must leave no job manifest behind"
+case "$NDRIVE_OUT" in
+  *"waiting for the ledger window to reopen"*)
+    fail "INV-16: a chain that is short a capability must not be reported as a ledger wait — no window reopens, and the pass that says so comes back and says it again forever" ;;
+esac
+red_case 'the real driver, dispatching a pending task through an ordinary role chain whose only entry declares none of what implement needs, journaled the refusal and raised the named operator-handoff boundary instead of printing a ledger wait and coming back next pass'
+
+# GREEN twin, through the same runner and against the same task: only the
+# binding changes. `withshell` declares workspace_write, shell and git, so the
+# chain resolves, the step is routable and the dispatch happens as it always
+# did.
+#
+# THE ADVANCE IS WHAT PROVES IT, not the journal count, and the difference
+# matters. This task's journal already carries the refusal the pass above
+# wrote, and it stays there -- a hand-off that has been recorded is not
+# un-recorded by the operator acting on it. So the count below is asserted
+# UNCHANGED (no SECOND refusal), and the evidence that the routing was
+# actually admitted is the pair a refusal makes impossible: the task advancing
+# out of `pending`, and a manifest for the job that carried it there.
+printf 'role.implementer=withshell\nrole.reviewer=textonly\ninfra_max=9\nconcurrency=10\n' > "$ndrepo/orchid.config"
+run_ndrive
+assert_eq implementing "$(ndstatus NCH1)" \
+  "INV-16: the identical dispatch advances once the chain names an actor declaring what implement needs — a refusal returns before the advance, so this is unreachable while the step is being refused (out: $NDRIVE_OUT)"
+[ -n "$(list_dir_files "$ndrepo/.orchid/runtime/jobs")" ] \
+  || fail "INV-16: the advance into implementing must be backed by a job that really spawned"
+assert_eq 1 "$(ndrefusals NCH1)" \
+  "INV-16: and no SECOND refusal was journaled — the one line above is the record of a hand-off that has since been acted on, not a refusal still firing"
+green_case 'the same driver pass, with only role.implementer rebound to an engine declaring workspace_write, shell and git, dispatched the task and journaled no refusal — so the hand-off above is about the chain and not about the walk'

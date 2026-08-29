@@ -2353,6 +2353,17 @@ one-pass driver could otherwise stop progressing in silence:
   says so in words), **and** `orchid jobs review-plan <id> --repin`, because
   the attempt's plan is pinned and binding a capable engine does not by itself
   move a pinned row.
+  Where NO actor was named — the ordinary dispatch, which resolves the role's
+  failover chain — the same question is asked of every entry in that chain,
+  and only after resolution has already failed. A chain that yields nobody
+  normally exits 14, and waiting is right when it emptied over a rate limit,
+  an unproven fallback or a plugin not installed yet; it is wrong when every
+  entry is short an atom the step needs, because no window reopens and the
+  walk would meet that task every pass forever. So that case answers 19 too,
+  and only that case: one entry the table does not refuse leaves the chain the
+  wait it was. This is the arm most shortfalls actually take — a built-in
+  role's `requires=` and its step's price are the same atoms, so the role gate
+  refuses before any actor resolves.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
   Where `handoff_before_verify` is `required`, or where the engine that built
   the candidate cannot be routed its mechanical steps at all — in a running

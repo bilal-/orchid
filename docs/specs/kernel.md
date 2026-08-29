@@ -1798,6 +1798,28 @@ the role gate whenever the step is covered, and an engine ineligible for a role
 over a capability the *step* does not need is still refused there, at 14, in
 that gate's own words.
 
+Where NO actor was named — the ordinary dispatch, which resolves the role's
+failover chain — the same question is asked of EVERY ENTRY IN THAT CHAIN, and
+only once resolution has already failed. `resolve_role_available` exits 14 when
+no entry is discovered, role-eligible, ledger-available and capsuite-passed,
+and 14 is a wait; that is the right reading for the reasons a chain usually
+comes up empty, all of which clear on their own or with one command. It is
+exactly wrong when every entry is short an atom the step's work needs: no
+window reopens, so the driver waits, journals nothing, raises no boundary and
+meets the same task every pass forever. That arm therefore answers 19 as well,
+for that one case. The overlap is not exotic — for the two roles the driver
+dispatches, the role's `requires=` and the step's price are the same atoms
+(`roles/reviewer.role` wants `structured_text` and `review` prices it;
+`roles/implementer.role` wants `workspace_write,shell,git` and `implement`
+prices exactly those), so the role gate refuses first and EVERY shipped-tree
+shortfall reaches the caller this way rather than as the post-resolution 19.
+Only a missing atom counts, and only at every entry: a rate limit, an unproven
+fallback, an uninstalled plugin, an id two plugins claim, and a ROLE
+requirement no step prices all stay the wait they were, reported by
+`resolve_role_available` in its own words — each has a different remedy, and
+one entry the table does not refuse means a later pass can route the step
+somewhere.
+
 That same slot is also why the boundary names a VERB and not only a key. The
 advice for a refused step is "perform it, or bind an actor whose manifest
 covers it at <key>", and for a reviewer slot the key alone cannot reach the
