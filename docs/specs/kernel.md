@@ -1780,9 +1780,19 @@ to it — a capability is a **claim by the plugin, never a grant**, and a claim
 must not be able to vote itself past a gate. The rule therefore only ever
 REFUSES: a *missing* atom is decisive (the profile certainly cannot do the
 work) while a *present* one settles nothing, so nothing built on it may read a
-clean answer as permission. `orchid drive` journals the refusal against the
-task and records this boundary; it never retries it, because unlike exit 14 no
-later pass makes the same actor able to do the same work.
+clean answer as permission. The refusal is journaled against the task by
+`runners/orchid-launch`, the moment prepare answers 19, and `orchid drive`
+records this boundary; neither retries it, because unlike exit 14 no later pass
+makes the same actor able to do the same work. **The journal half belongs to the
+launcher because not every launch has a driver behind it.** `PLANNING` runs
+`runners/orchid-launch plan plan_critic critique` and its hook points from the
+orchestrator itself, and a session may drive THE TICK's launcher calls by hand;
+on those paths a 19 that only printed to stderr left the loop stopped with
+nothing in the run's history saying why. Both writers use one sentence and one
+once-per-distinct-line rule, so a driver pass finds the launcher's line already
+there and adds only the boundary. The reserved `plan` id has no task file and so
+no boundary of its own: like every other planning launch failure, its record is
+the journal, read with `orchid journal show --task plan`.
 
 Where the CALLER NAMED the actor (`prepare --engine`), the step question is
 asked *before* the role-eligibility walk, because both gates can refuse one
@@ -1856,10 +1866,16 @@ poll this invariant exists to end: one line per staleness window, forever,
 nothing journaled, no human told, and the judgment boundary the driver raised on
 that very pass left for an orchestrator that is never coming. Both runners now
 classify that chain before the wake. The tick reports it as exit 19 in place of
-14. The pump records ONE operator hand-off through `orchid notify` — journalled
-first, then BLOCKERS.md, deduped against that blocker so a condition lasting a
-hundred passes raises one — and prints only the refusal, never the poll line
-beside it. It deliberately does not touch the boundary RECORD: `orchid drive` is
+14. BOTH runners then record ONE operator hand-off through `orchid notify` —
+journalled first, then BLOCKERS.md, deduped against that blocker so a condition
+lasting a hundred passes raises one — and print only the refusal, never the poll
+line beside it. The tick records it too because it is an unattended entry point
+in its own right, not merely a pump implementation detail: a scheduler pointed
+straight at it gets a 19 and nothing else, and a 19 into a crontab is a silence.
+Two writers of one fact is closed by that dedup rather than by leaving one of
+them mute — they share the sentence and the receipt, so whichever runs first
+records it and the other finds it. Neither touches the boundary RECORD:
+`orchid drive` is
 that record's single routine writer, and a pump overwriting it would destroy the
 record naming the task actually waiting while the two writers alternated one
 journal line per pass.

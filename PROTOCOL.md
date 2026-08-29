@@ -534,6 +534,15 @@ sequence in
    --older-than-s 0` clears it immediately. Fix the launch failure first — the
    launcher's stderr names it.
 
+   *Exit 19 is the one that no reap and no re-run clears.* It means the engine
+   bound to `role.plan_critic` does not declare what a `critique` step needs
+   (INV-16), and nothing about a later attempt changes that: relaunching it
+   loops this step forever. The launcher journals it against the reserved `plan`
+   id as it goes, so `orchid journal show --task plan` carries the record, but
+   the remedy is an operator's — bind an engine whose manifest covers the step
+   at `role.plan_critic`, or perform the critique by hand. Do not fold it into
+   the relaunch ladder above.
+
    *That reap is preceded by an account, and the ordering is the point.* You
    are the one running these launchers — there is no `orchid drive` wrapping
    them in this phase — so nothing reports a launch failure synchronously, and
@@ -2382,11 +2391,24 @@ one-pass driver could otherwise stop progressing in silence:
   then it is one line per staleness window forever, with the judgment boundary
   the driver just raised left for an orchestrator that is never coming. Both
   runners classify the chain before the wake: the tick exits 19 instead of 14,
-  and the pump records ONE operator hand-off (`orchid notify` — journalled,
+  and both record ONE operator hand-off (`orchid notify` — journalled,
   then `BLOCKERS.md`, deduped against that blocker so a hundred passes raise
-  one) and prints the refusal without the poll line. It does not overwrite the
-  boundary record; `orchid drive` owns that, and the record names the task
-  actually waiting.
+  one) and print the refusal without the poll line. The tick records it too
+  because a scheduler may be pointed straight at it, and a 19 into a crontab is
+  a silence; the two share the sentence and the receipt, so whichever runs
+  first records the fact and the other finds it rather than restating it.
+  Neither overwrites the boundary record; `orchid drive` owns that, and the
+  record names the task actually waiting.
+- **A refused launch is journaled by the launcher, wrapped or not.**
+  `runners/orchid-launch` writes the hand-off sentence against the task the
+  moment `orchid jobs prepare` answers 19, because not every launch has a
+  driver behind it: `PLANNING` runs `runners/orchid-launch plan plan_critic
+  critique` and its hook points from the orchestrator itself, and you may drive
+  THE TICK's launcher calls by hand. `orchid drive` still records the
+  `operator-handoff` boundary on the passes it ran the launcher, and finds that
+  same line already journaled rather than writing a second one. The reserved
+  `plan` id has no task file and so no counter and no boundary — its record is
+  the journal, read with `orchid journal show --task plan`.
 - **The operator hand-off is a named stop, not a habit — and it resumes.**
   Where `handoff_before_verify` is `required`, or where the engine that built
   the candidate cannot be routed its mechanical steps at all — in a running

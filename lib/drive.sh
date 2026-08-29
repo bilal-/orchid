@@ -186,13 +186,27 @@ drive_boundary_kind_valid() {  # kind -> 0 iff kernel-owned
 # today; drive_capability_refusal always knows the task) degrades to the
 # literal `<task>` placeholder rather than emitting a command with a blank
 # argument, which is worse advice than none.
+#
+# THE JOURNAL HALF IS NOT WRITTEN HERE, and that is load bearing rather than
+# delegation for its own sake. `runners/orchid-launch` records the same refusal
+# the moment `orchid jobs prepare` answers 19 -- it has to, because on the paths
+# nobody wraps (PROTOCOL.md's PLANNING critique loop, any session driving the
+# launcher by hand) it is the only writer there will ever be -- and both writers
+# dedup by comparing the sentence against the task's own journal. A second copy
+# of it here would drift by a word and the two would stop recognising each
+# other's record, appending one duplicate line per pass. So the sentence has one
+# author, lib/capability.sh's capability_step_handoff_line, and this function
+# supplies only the BOUNDARY half, which is the half that names a config key and
+# so is the half only a caller that knows the binding can write.
+# Callers must have lib/capability.sh sourced -- the same call-time requirement
+# drive_orchestrator_surface already carries, and every caller of this function
+# is a caller of that one.
 drive_capability_handoff_text() {
   local role="$1" op="$2" point="${3:-}" binding="${4:-}" task="${5:-}"
   if [ -n "$point" ]; then
     printf "step '%s' for hook point '%s' needs a capability the resolved handler does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds a handler at hook.%s whose manifest covers it\t" \
       "$op" "$point" "$point"
-    printf "step '%s' was not routed to hook point '%s': the resolved handler's manifest does not declare what that work needs (INV-16) — an operator performs it\n" \
-      "$op" "$point"
+    capability_step_handoff_line "$role" "$op" "$point"
     return 0
   fi
   [ -n "$binding" ] || binding="role.$role"
@@ -203,8 +217,7 @@ drive_capability_handoff_text() {
     printf "step '%s' for role '%s' needs a capability the resolved actor does not declare, so it was not dispatched (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s\t" \
       "$op" "$role" "$binding"
   fi
-  printf "step '%s' was not routed to role '%s': the resolved actor's manifest does not declare what that work needs (INV-16) — an operator performs it\n" \
-    "$op" "$role"
+  capability_step_handoff_line "$role" "$op" ""
 }
 
 # -- boundary resolvability -------------------------------------------------

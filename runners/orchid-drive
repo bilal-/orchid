@@ -788,17 +788,26 @@ drive_stranded_launch_job() {
 # the attempt's plan is pinned and a config edit does not move a pinned row.
 # The id is right here at every call site, and advice that named the verb
 # without the task it applies to would be one more thing to look up.
+#
+# AND THE JOURNAL WRITE ITSELF IS NOT THIS FILE'S OWN. The launcher this pass
+# just ran records the same sentence synchronously, on `orchid jobs prepare`'s
+# exit 19 -- it has to, because on the paths no driver wraps (PROTOCOL.md's
+# PLANNING critique loop, a session driving the launcher by hand) it is the only
+# writer there is. So on a driver pass the line is normally already there and
+# this call finds it and adds nothing; what this function still owns, and what
+# nothing outside the driver can write, is the BOUNDARY. Both writers share one
+# sentence (lib/capability.sh's capability_step_handoff_line) and one
+# once-per-distinct-line rule (orchid_journal_once), because the dedup is a
+# string comparison and two copies that drifted would stop seeing each other's
+# record -- appending one duplicate line per pass, which is exactly what the
+# paragraph above says must not happen.
 drive_capability_refusal() {
   local id="$1" role="$2" op="$3" point="${4:-}" binding="${5:-}"
-  local text reason line prior
+  local text reason line
   text="$(drive_capability_handoff_text "$role" "$op" "$point" "$binding" "$id")"
   reason="$(printf '%s' "$text" | cut -f1)"
   line="$(printf '%s' "$text" | cut -f2-)"
-  prior="$("$ORCHID_BIN" journal show --task "$id" 2>/dev/null || true)"
-  case "$prior" in
-    *"$line"*) ;;
-    *) "$ORCHID_BIN" journal add --task "$id" "$line" >/dev/null ;;
-  esac
+  orchid_journal_once "$repo" "$id" "$line"
   set_boundary operator-handoff "$id" "$reason"
   return 0
 }

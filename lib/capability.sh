@@ -649,3 +649,47 @@ capability_chain_handoff_line() {
   printf "no actor can be routed the '%s' step for role '%s': %s. Every engine in that chain is short an atom the work needs, so no ledger window, capsuite run or later pass changes it (INV-16) — an operator performs this step, or binds an engine whose manifest covers it at %s\n" \
     "$step" "$role" "$detail" "$binding"
 }
+
+# capability_step_handoff_line <role> <step> [hook-point] -- the ONE sentence a
+# TASK-SCOPED capability refusal is journaled as: which step, which binding it
+# was refused for, and that the work is now an operator's.
+#
+# THE RUN-LEVEL LINE ABOVE AND THIS ONE ARE DIFFERENT FACTS, which is why there
+# are two composers rather than one with a mode flag. That one belongs to no
+# task -- it is the wake the pump and the tick perform on behalf of the whole
+# run -- and it names the config key that binds the chain. This one is filed
+# against a task's own history, and deliberately names NO key: the key an
+# operator should edit depends on how the actor was bound (`role.<role>`, a
+# `review.<tier>` chain, the fallback to the engine that built the candidate),
+# and only the caller raising the BOUNDARY knows which -- lib/drive.sh's
+# drive_capability_handoff_text is where that choice is made, and it takes this
+# sentence as the journal half of its pair.
+#
+# IT IS A FUNCTION, AND THE REASON IS THE DEDUP RATHER THAN TIDINESS. Two
+# writers record this one refusal: `runners/orchid-launch`, synchronously, the
+# moment `orchid jobs prepare` answers 19 -- which is the ONLY writer on the
+# paths nobody wraps, the PLANNING critique loop and any session driving the
+# launcher by hand (PROTOCOL.md's THE TICK) -- and runners/orchid-drive's
+# drive_capability_refusal, on the passes where the driver is what ran that
+# launcher. Both write ONCE PER DISTINCT LINE, comparing against the task's own
+# journal, so the second writer finds the first one's line and adds nothing.
+# That dedup is a string comparison: two copies of this sentence that drifted by
+# one word would stop matching, and the record would grow one duplicate entry
+# per pass for as long as the refusal stood -- which is precisely the "one
+# unchanging fact buries the run's history" failure the dedup exists to prevent,
+# arriving through the words instead of through the logic.
+#
+# THE HOOK ARM EXISTS FOR THE SAME REASON THE BOUNDARY'S DOES: a hook job's
+# `role` positional is the literal word `hook` and carries no meaning (handlers
+# are bound by NAME from `hook.<point>` config), so the point is the only thing
+# that identifies which binding was refused.
+capability_step_handoff_line() {
+  local role="$1" step="$2" point="${3:-}"
+  if [ -n "$point" ]; then
+    printf "step '%s' was not routed to hook point '%s': the resolved handler's manifest does not declare what that work needs (INV-16) — an operator performs it\n" \
+      "$step" "$point"
+    return 0
+  fi
+  printf "step '%s' was not routed to role '%s': the resolved actor's manifest does not declare what that work needs (INV-16) — an operator performs it\n" \
+    "$step" "$role"
+}

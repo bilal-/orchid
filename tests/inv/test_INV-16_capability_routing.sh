@@ -68,7 +68,15 @@ source "$(dirname "$0")/../helpers.sh"
 #      the named boundary and leave the task where it stood. That arm is where
 #      most shortfalls actually arrive: a built-in role's `requires=` and its
 #      step's price are the same atoms, so the role gate refuses before any
-#      actor exists to ask about.
+#      actor exists to ask about. A ninth is the pair of launches NOBODY WRAPS:
+#      `runners/orchid-launch plan plan_critic critique`, which PROTOCOL.md's
+#      PLANNING procedure has the ORCHESTRATOR run itself, and
+#      `runners/orchid-tick` in a repository the pump has never polled. Every
+#      other case here is recorded by a caller that was watching -- the driver
+#      journals and raises the boundary, the pump raises the blocker -- and on
+#      these two a 19 printed to stderr and died with the process, leaving the
+#      loop stopped with nothing in the run's history saying why. Both must
+#      record the hand-off themselves.
 # GREEN: the SAME step, the SAME call, the SAME role and the SAME task, with
 #      one atom added to the actor's manifest, must be admitted -- silently at
 #      the gate and with a real job manifest through `jobs prepare`; likewise
@@ -103,7 +111,14 @@ source "$(dirname "$0")/../helpers.sh"
 #      remedy and re-reporting one as a capability hand-off sends an operator
 #      to audit a manifest that is fine or absent -- while the identical call
 #      against a chain naming a capable actor must resolve and mint, at the
-#      verb and through the driver alike. Without those
+#      verb and through the driver alike. The two unwrapped entry points are
+#      held to that standard three times over: a REPEATED refused launch and a
+#      REPEATED direct tick must each add no second record (the condition
+#      persists until a human acts, and a line per attempt buries the run's
+#      history under one unchanging fact), the same planning-critique launch
+#      must mint and spawn once its plan_critic declares `structured_text`, and
+#      a direct tick against a capable but merely RATE-LIMITED chain must stay
+#      the exit-14 wait it has always been and record nothing at all. Without those
 #      the refusals above would be evidence only that something rejects things,
 #      which is exactly the shape this repository keeps producing.
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
@@ -1782,24 +1797,28 @@ assert_eq 1 "$(pw_handoffs)" \
   "INV-16: and raises no SECOND blocker for a fact that has not changed"
 green_case 'a second pump pass over the same permanently-refused chain raised no second blocker, so the hand-off is recorded once per distinct fact rather than once per staleness window'
 
-# ...AND THE OTHER ENTRY POINT SAYS THE SAME THING. runners/orchid-tick is an
-# unattended entry in its own right (its own trust gate says so), so a
-# scheduler pointed straight at it must not get the wait either. It reports
-# through its EXIT CODE and its message and journals nothing: a direct tick is
-# one shot with a caller watching it, and the durable record for the scheduled
-# loop is the pump's, raised exactly once above. Two writers of one fact is how
-# a run's history ends up with the same line on every pass.
+# ...AND THE OTHER ENTRY POINT SAYS THE SAME THING, WITHOUT SAYING IT TWICE.
+# runners/orchid-tick is an unattended entry in its own right (its own trust
+# gate says so), so a scheduler pointed straight at it must not get the wait
+# either -- and, as part 14 proves, must not get silence either. Here it is run
+# BEHIND a pump pass that has already recorded the fact, which is the half this
+# arm is about: the two writers share one sentence and one dedup, so the second
+# one finds the first one's receipt and adds nothing. Two writers of one fact is
+# otherwise how a run's history ends up with the same line on every pass.
 handoffs_before_tick="$(pw_handoffs)"
+journal_before_tick="$(pw_journaled)"
 TRC=0; TOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TRC=$?
 assert_eq 19 "$TRC" \
   "INV-16: the headless tick reports a chain nobody in it can orchestrate as the permanent refusal, not as the exit-14 wait a scheduler retries forever (out: $TOUT)"
 assert_match "routed the 'orchestrate' step for role 'orchestrator'" "$TOUT" \
   "INV-16: and says so in the same words the pump records, so the two entry points cannot describe one fact differently"
 assert_eq "$handoffs_before_tick" "$(pw_handoffs)" \
-  "INV-16: and files no blocker of its own — the pump already recorded this fact, and a second writer would re-raise it on every pass"
+  "INV-16: and files no SECOND blocker — the pump already recorded this fact, and a writer that could not see the other's receipt would re-raise it on every pass"
+assert_eq "$journal_before_tick" "$(pw_journaled)" \
+  "INV-16: nor a second journal line, which is the other half of the record orchid notify writes — a hand-off deduped on BLOCKERS.md but journaled again is still one unchanging fact recorded once per pass"
 [ -e "$WORK/wake-marker-wakeshort" ] \
   && fail "INV-16: the tick must refuse before it spawns, not after"
-green_case 'the headless tick, run directly against the same refused chain, exited 19 with the same sentence and filed no second record, so the classification belongs to both pre-wake entry points rather than to the pump alone'
+green_case 'the headless tick, run directly behind a pump pass that had already recorded the same refused chain, exited 19 with the same sentence and filed no second blocker and no second journal line, so the two entry points share one record rather than each keeping their own'
 
 # GREEN twin 2 -- AND THE TRANSIENT CASE IS STILL TRANSIENT, which is the whole
 # distinction this part turns on. `wakefull` declares exactly what the
@@ -1962,3 +1981,211 @@ green_case 'the same prediction against a single capable entry declaring the unr
 # ran against the kernel's own roles/, and nothing may inherit a role root that
 # carries one hand-written descriptor and none of the other four.
 export ORCHID_ROOT="$SURF_ROOT_REAL"
+
+# ===========================================================================
+# 14 -- THE LAUNCHES NOBODY WRAPS.
+#
+# Every part above records its refusal through a caller that was watching: the
+# real driver (parts 7 and 11b) journals it and raises the boundary, the
+# scheduled pump (part 12) raises the blocker. Both of those are wrappers, and
+# the kernel has two entry points that have none.
+#
+#   THE PLANNING CRITIQUE. PROTOCOL.md's PLANNING procedure has the
+#   ORCHESTRATOR run `runners/orchid-launch plan plan_critic critique` itself,
+#   and docs/specs/kernel.md calls PLANNING "the one phase whose launchers
+#   nobody wraps" in as many words. A 19 there printed prepare's stderr and died
+#   with the process: the critique loop cannot advance, no later pass changes
+#   that, and the run's own history showed a phase that simply stopped.
+#
+#   THE DIRECT TICK. runners/orchid-tick's own header says it is an unattended
+#   entry point in its own right and not merely a pump implementation detail --
+#   its trust gate is there precisely because a scheduler may be pointed
+#   straight at it. It used to report through its exit code alone, on the
+#   reasoning that the durable record belonged to the pump. It does, on the
+#   passes the pump ran; on the entry point the pump never touches, a 19 into a
+#   crontab is a silence.
+#
+# Both are the same silent dead end INV-16 exists to end, surviving on the paths
+# the wrapper-shaped fix could not reach. The two halves below drive the REAL
+# launcher and the REAL tick, and each is paired with the twin that proves the
+# record is a capability decision rather than something either entry point now
+# files for every failure.
+# ===========================================================================
+mk_engine nocritique "workspace_write,shell,git"
+# A runnable critique stub for the GREEN twin: "the launcher got past the gate"
+# is only credible if a job is really minted and spawned. Its pack assertions
+# are lib/pack.sh's plan branch, the same contract tests/test_launch.sh pins.
+mk_critic_engine() {
+  local name="$1" dir="$WORK/eng/$1"
+  mkdir -p "$dir"
+  printf 'manifest_version=1\nid=test/%s\nversion=0.1.0\nkind=engine\napi_version=1\ncapabilities=structured_text\nrequires_binaries=jq\nentrypoint=run\n' \
+    "$name" > "$dir/plugin.conf"
+  cat > "$dir/run" <<'CRITICEOF'
+#!/usr/bin/env bash
+set -eu
+req="$1"; out="$(jq -r .output "$req")"
+jid="$(jq -r .job_id "$req")"; task="$(jq -r .task "$req")"
+printf '{"contract":1,"job_id":"%s","task":"%s","operation":"critique","status":"ok","verdict":"approve","scope_complete":true,"findings":[]}' \
+  "$jid" "$task" > "$out"
+CRITICEOF
+  chmod +x "$dir/run"
+}
+mk_critic_engine cancritique
+
+lrepo="$WORK/planlaunch"; mkdir -p "$lrepo/.orchid/tasks"
+cd "$lrepo" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+# role.orchestrator is bound away from both critique engines on purpose: a
+# plan_critic entry equal to the orchestrator's engine is skipped by
+# resolve_role_available ("cannot critique its own plan"), and the GREEN twin
+# below has to reach the launch rather than that skip.
+printf 'role.orchestrator=wakefull\nrole.plan_critic=nocritique\n' > "$lrepo/orchid.config"
+export ORCHID_REPO="$lrepo"
+LEPOCH="$("$ORCHID_BIN" run start | sed 's/epoch: //')"
+export ORCHID_EPOCH="$LEPOCH"
+echo "# Requirements" > "$lrepo/.orchid/requirements.md"
+printf -- '---\nrun_status: planning\n---\n# Roadmap\nDraft body.\n' > "$lrepo/.orchid/roadmap.md"
+
+# The reserved `plan` id's own journal, counted by the refusal's SENTENCE. The
+# id has no task file and therefore no infra_failures counter, so this index is
+# the whole of the durable record the kernel already documents for a plan launch
+# failure (docs/specs/kernel.md: "journaled and readable with orchid journal
+# show --task plan").
+plan_refusals() {
+  "$ORCHID_BIN" journal show --task plan 2>/dev/null \
+    | grep -c "was not routed to role 'plan_critic'" || true
+}
+plan_jobs() { list_dir_files "$lrepo/.orchid/runtime/jobs" | grep -c . || true; }
+
+assert_eq 0 "$(plan_refusals)" \
+  "INV-16 fixture: nothing may be on the plan journal before the launch, or the count below cannot tell a record this launch wrote from one that was already there"
+PLRC=0; PLOUT="$("$REPO_ROOT/runners/orchid-launch" plan plan_critic critique 2>&1)" || PLRC=$?
+assert_eq 19 "$PLRC" \
+  "INV-16: the plan critique launch is refused permanently, not as the exit-14 wait a planning loop would re-run forever (out: $PLOUT)"
+assert_match "refusing to route" "$PLOUT" \
+  "INV-16 fixture: and it is prepare's routing gate that refused it, not some other launch failure that happens to exit 19 (out: $PLOUT)"
+assert_eq 1 "$(plan_refusals)" \
+  "INV-16: the launcher journals the refusal itself — PLANNING is the one phase whose launchers nobody wraps, so a 19 that only printed to stderr left the critique loop stopped with nothing in the run's history saying why"
+assert_eq 0 "$(plan_jobs)" \
+  "INV-16: and mints no manifest — the refusal happens at the gate, before a job identity exists"
+red_case 'the direct planning-critique launcher, refused a step the bound plan_critic chain cannot perform, journaled the named operator hand-off against the reserved plan id instead of printing to a stderr nobody was reading and exiting'
+
+# ONCE PER DISTINCT RECORD, not once per launch. A planning loop re-runs this
+# launcher (PROTOCOL.md tells the orchestrator to), and the refusal stands until
+# an operator acts, so a line per attempt would bury the plan journal under one
+# unchanging fact.
+PLRC=0; PLOUT="$("$REPO_ROOT/runners/orchid-launch" plan plan_critic critique 2>&1)" || PLRC=$?
+assert_eq 19 "$PLRC" \
+  "INV-16 fixture: the second launch must really be refused too, or the unchanged count below proves only that nothing happened (out: $PLOUT)"
+assert_eq 1 "$(plan_refusals)" \
+  "INV-16: and it adds no second journal line — the record is keyed on the sentence, so a re-run of the same refused launch restates nothing"
+green_case 'a second identical planning-critique launch against the same refused chain journaled no second line, so the hand-off is recorded once per distinct fact rather than once per attempt'
+
+# GREEN twin -- only the bound engine changes. Same repository, same reserved
+# id, same operation, an engine declaring exactly what `critique` prices.
+printf 'role.orchestrator=wakefull\nrole.plan_critic=cancritique\n' > "$lrepo/orchid.config"
+PLRC=0; PLOUT="$("$REPO_ROOT/runners/orchid-launch" plan plan_critic critique 2>&1)" || PLRC=$?
+assert_eq 0 "$PLRC" \
+  "INV-16: the identical launch is admitted once the bound actor declares structured_text (out: $PLOUT)"
+assert_match "launched j-" "$PLOUT" \
+  "INV-16: and really spawns — so the refusals above are capability decisions, not a launcher that had stopped launching"
+assert_eq 1 "$(plan_refusals)" \
+  "INV-16: and journals no refusal of its own, leaving the one already on record untouched"
+green_case 'the same planning-critique launch, with only role.plan_critic rebound to an engine declaring structured_text, minted and spawned its job and journaled no refusal'
+
+# ---------------------------------------------------------------------------
+# 14b -- THE DIRECT TICK, WITH NO PUMP ANYWHERE.
+#
+# Part 12 already runs the tick, but BEHIND a pump pass that had recorded the
+# fact -- which proves the dedup and says nothing about the entry point on its
+# own. This repository has never seen the pump: if the tick is not a writer, the
+# refusal here is recorded by nobody at all.
+# ---------------------------------------------------------------------------
+trepo="$WORK/ticksolo"; mkdir -p "$trepo/.orchid/tasks"
+cd "$trepo" || exit 1
+git init -q .
+git commit -q --allow-empty -m root
+printf 'role.orchestrator=wakeshort,wakeshort2\n' > "$trepo/orchid.config"
+printf -- '---\nrun_status: running\nrun_id: r-inv16-ticksolo\n---\n# Roadmap\n' > "$trepo/.orchid/roadmap.md"
+export ORCHID_REPO="$trepo"
+"$ORCHID_BIN" run start >/dev/null
+# The tick fences its OWN epoch through `orchid run resume`, so nothing here
+# needs one -- and a stale ORCHID_EPOCH left exported from the fixture above
+# would be a fence this repository has never issued.
+unset ORCHID_EPOCH
+"$ORCHID_BIN" trust unattended "$trepo" --reason "INV-16 direct tick fixture" >/dev/null \
+  || fail "INV-16 fixture: the tick refuses an unacknowledged repository, so its capability classification would never be reached"
+
+# Counted by the refusal's own SENTENCE, never by the bare token `INV-16`: this
+# fixture acknowledged unattended trust with a reason carrying that token, and
+# `orchid status --explain` quotes an acknowledgement reason back verbatim.
+#
+# The missing-file arm is EXPLICIT, unlike part 12's twin, and it has to be:
+# this repository has never been notified, so both files are genuinely absent
+# for the first assertion below -- and `grep -c` on a file that does not exist
+# prints NOTHING at all (exit 2), where on an existing file with no match it
+# prints `0` (exit 1). Left to `|| true`, the "nothing recorded yet" check would
+# be comparing `0` against an empty string and would fail on a correct tree.
+tw_handoffs() {
+  [ -f "$trepo/.orchid/BLOCKERS.md" ] || { echo 0; return 0; }
+  grep -c "routed the 'orchestrate' step for role 'orchestrator'" \
+    "$trepo/.orchid/BLOCKERS.md" || true
+}
+tw_journaled() {
+  [ -f "$trepo/.orchid/journal.md" ] || { echo 0; return 0; }
+  grep -c "routed the 'orchestrate' step for role 'orchestrator'" \
+    "$trepo/.orchid/journal.md" || true
+}
+assert_eq 0 "$(tw_handoffs)" \
+  "INV-16 fixture: no blocker may exist before the tick runs, or the count below cannot tell a record the tick wrote from one that was already there"
+
+TSRC=0; TSOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TSRC=$?
+assert_eq 19 "$TSRC" \
+  "INV-16: a scheduler pointed straight at the tick still gets the permanent refusal rather than the exit-14 wait (out: $TSOUT)"
+assert_match "no actor can be routed the 'orchestrate' step for role 'orchestrator'" "$TSOUT" \
+  "INV-16: and the refusal's own sentence, in the words the record is written in (out: $TSOUT)"
+assert_eq 1 "$(tw_handoffs)" \
+  "INV-16: the tick records the hand-off itself when no pump has — a 19 into a crontab is a silence, and this is the entry point the pump never touches"
+assert_eq 1 "$(tw_journaled)" \
+  "INV-16: and the journal half orchid notify writes ahead of BLOCKERS.md, so the run's history says the wake was refused rather than showing a run that stopped being ticked"
+[ -e "$WORK/wake-marker-wakeshort" ] \
+  && fail "INV-16: and it refuses BEFORE it spawns, not after"
+red_case 'the headless tick, run directly against a permanently refused orchestrator chain in a repository no pump has ever polled, recorded one journaled operator hand-off instead of exiting 19 into a scheduler with the fact written down nowhere'
+
+# ONCE PER DISTINCT RECORD here too: a crontab re-runs this every interval.
+TSRC=0; TSOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TSRC=$?
+assert_eq 19 "$TSRC" \
+  "INV-16 fixture: the second direct tick must still be refused, or the unchanged counts below prove only that nothing ran (out: $TSOUT)"
+assert_eq 1 "$(tw_handoffs)" \
+  "INV-16: and raises no second blocker for a fact that has not changed"
+assert_eq 1 "$(tw_journaled)" \
+  "INV-16: nor a second journal line — a hand-off deduped on BLOCKERS.md but journaled again is still one unchanging fact recorded once per tick"
+green_case 'a second direct tick over the same refused chain raised no second blocker and no second journal line, so the tick records once per distinct fact rather than once per scheduler interval'
+
+# GREEN twin -- and the transient case is still transient. `wakefull` declares
+# exactly what orchestrate needs and is merely rate-limited: nothing about that
+# is permanent, 14 is the correct report, and a hand-off here would send an
+# operator to audit a manifest that covers the work.
+printf 'role.orchestrator=wakefull\n' > "$trepo/orchid.config"
+ledger_mark "$trepo" wakefull rate_limited 999999
+tw_blockers_before="$(tw_handoffs)"
+tw_journal_before="$(tw_journaled)"
+TSRC=0; TSOUT="$("$REPO_ROOT/runners/orchid-tick" 2>&1)" || TSRC=$?
+assert_eq 14 "$TSRC" \
+  "INV-16: a capable but rate-limited chain is the wait it has always been, propagated verbatim (out: $TSOUT)"
+case "$TSOUT" in
+  *"no actor can be routed the 'orchestrate' step"*)
+    fail "INV-16: a rate-limited engine that declares everything the step needs must never be handed to an operator as a capability refusal (out: $TSOUT)" ;;
+esac
+assert_eq "$tw_blockers_before" "$(tw_handoffs)" \
+  "INV-16: and raises no hand-off blocker at all — the operator surface is left exactly as this tick found it"
+assert_eq "$tw_journal_before" "$(tw_journaled)" \
+  "INV-16: nor a second journal line, which is the other half of the record the permanent case writes"
+# No `wake-marker-wakefull` check here, unlike the permanent arm's marker
+# assertions: part 12's last twin deliberately WOKE that same stub, so the
+# marker is already on disk and an existence test would convict this arm of a
+# spawn another part made. Exit 14 is what proves nothing was spawned -- it is
+# resolve_role_available's own status, raised before this runner reaches its
+# request document at all.
+green_case 'the same direct tick against a chain whose only entry declares everything orchestrate needs and is merely rate-limited exited 14 and recorded nothing, so the tick records a capability decision rather than every unavailability'

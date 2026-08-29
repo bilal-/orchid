@@ -394,19 +394,17 @@ _pump_drain_outbox() {
 # the silent dead end INV-16 exists to end, reached through the one dispatch
 # path that never goes near `orchid jobs prepare`.
 #
-# ONE VERB, WHICH IS BOTH HALVES. `orchid notify` journals the text (kind
-# `blocker`) BEFORE it appends to BLOCKERS.md, so a single call produces the
-# durable journal record AND the operator surface, in that order, epoch-fenced
-# and verb-locked like every other durable write. Nothing here writes state
-# directly.
-#
-# DEDUPED ON BLOCKERS.md, which is the RECEIPT that call leaves rather than a
-# mark made ahead of it: if the entry is there, the notify happened; if the
-# notify died before it, the entry is absent and the next pass re-raises. The
-# whole file is searched, not a bounded tail, because this condition persists
-# across arbitrarily many passes and a window that scrolled past would start
-# one blocker per pass -- which is precisely what the driver's own notify path
-# at the foot of runners/orchid-drive guards against by comparing records.
+# ONE VERB, WHICH IS BOTH HALVES, RAISED ONCE PER DISTINCT FACT. Both of those
+# are lib/common.sh's orchid_blocker_once, and they are shared rather than
+# open-coded here because runners/orchid-tick is a SECOND writer of this exact
+# line: it is an unattended entry point in its own right, so a scheduler pointed
+# straight at it must record the same hand-off, and two copies of a dedup rule
+# is two places for it to drift into a writer that cannot see the other's
+# record. That helper's header carries the reasoning; the short version is that
+# `orchid notify` journals the text before it appends to BLOCKERS.md, so one
+# call produces both the durable journal record and the operator surface, and
+# the dedup asks BLOCKERS.md because that entry is the RECEIPT the call leaves
+# rather than a mark made ahead of it. Nothing here writes state directly.
 #
 # THE JUDGMENT BOUNDARY RECORD IS LEFT ALONE. `runners/orchid-drive` is its
 # single routine writer and this pass has just READ it; overwriting it with an
@@ -428,18 +426,14 @@ _pump_drain_outbox() {
 # exactly what the refusal below reports.
 _pump_capability_handoff() {
   local repo="$1" detail="$2" epoch="$3"
-  local line blockers
+  local line rc=0
   line="$(capability_chain_handoff_line orchestrator orchestrate role.orchestrator "$detail")"
   echo "pump: $line"
-  blockers="$(orchid_state "$repo")/BLOCKERS.md"
-  if [ -f "$blockers" ] && grep -qF "$line" "$blockers"; then
-    echo "pump: already recorded for an operator — not raising a second blocker for a fact that has not changed"
-    return 0
-  fi
-  if ! ORCHID_REPO="$repo" ORCHID_EPOCH="$epoch" \
-       "$ORCHID_ROOT/bin/orchid" notify "$line" >/dev/null 2>&1; then
-    echo "pump: could not record the capability hand-off as a blocker (epoch $epoch) — the line above is the only report of it" >&2
-  fi
+  orchid_blocker_once "$repo" "$epoch" "$line" || rc=$?
+  case "$rc" in
+    1) echo "pump: already recorded for an operator — not raising a second blocker for a fact that has not changed" ;;
+    2) echo "pump: could not record the capability hand-off as a blocker (epoch $epoch) — the line above is the only report of it" >&2 ;;
+  esac
   return 0
 }
 

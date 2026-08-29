@@ -13,6 +13,12 @@ source "$ORCHID_ROOT/lib/common.sh"; source "$ORCHID_ROOT/lib/frontmatter.sh"
 source "$ORCHID_ROOT/lib/resolver.sh"; source "$ORCHID_ROOT/lib/pack.sh"
 source "$ORCHID_ROOT/lib/manifest.sh"; source "$ORCHID_ROOT/lib/spawn.sh"
 source "$ORCHID_ROOT/lib/hooks.sh"
+# capability.sh for ONE sentence: the words a refused step is journaled as
+# (INV-16). This launcher decides nothing about routing -- `orchid jobs prepare`
+# owns that gate and has already refused by the time the sentence is needed --
+# but it is the only process that sees the refusal on the paths nobody wraps.
+# See the exit-19 arm below.
+source "$ORCHID_ROOT/lib/capability.sh"
 
 task="${1:-}"; role="${2:-}"; operation="${3:-}"
 [ -n "$task" ] && [ -n "$role" ] && [ -n "$operation" ] \
@@ -41,7 +47,53 @@ repo="${ORCHID_REPO:-$PWD}"; state="$(orchid_state "$repo")"; rt="$(orchid_runti
 prepare_args=("$task" "$role" "$operation")
 [ -z "$override_engine" ] || prepare_args+=(--engine "$override_engine")
 [ -z "$hook_point_arg" ] || prepare_args+=(--hook "$hook_point_arg")
-manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "${prepare_args[@]}")"
+prepare_rc=0
+manifest="$("$ORCHID_ROOT/bin/orchid" jobs prepare "${prepare_args[@]}")" || prepare_rc=$?
+
+# EXIT 19 IS THE ONE PREPARE FAILURE THIS LAUNCHER RECORDS (INV-16), and it
+# records it HERE because on the paths nobody wraps this process is the only
+# thing that will ever see it.
+#
+# WHICH PATHS THOSE ARE. runners/orchid-drive wraps its own launches and turns a
+# 19 into a journaled hand-off and an `operator-handoff` boundary
+# (drive_capability_refusal). Nothing wraps the rest: PROTOCOL.md's PLANNING
+# procedure has the ORCHESTRATOR run `runners/orchid-launch plan plan_critic
+# critique` and the plan hook points itself -- docs/specs/kernel.md calls
+# PLANNING "the one phase whose launchers nobody wraps" in as many words -- and
+# THE TICK is a procedure a session may drive by hand, launcher call included.
+# A refusal on one of those printed prepare's stderr and vanished with the
+# process: the critique loop cannot advance, no later pass changes that, and the
+# run's own history showed a phase that simply stopped. That is the silent dead
+# end INV-16 exists to end, surviving on the one dispatch path this task had not
+# reached.
+#
+# THE JOURNAL IS THE RECORD, NOT A BOUNDARY. The judgment-boundary record has
+# exactly one writer in the kernel (`orchid run boundary`, driven by
+# runners/orchid-drive; INV-13 pins that), and a launcher raising one would be a
+# second writer of a record somebody else owns. For the reserved `plan` id the
+# journal is also the surface the kernel already documents for exactly this
+# class -- it has no task file and so no `infra_failures` counter, and its launch
+# failures are "journaled and readable with `orchid journal show --task plan`"
+# (docs/specs/kernel.md; runners/orchid-drive's escalation ladder writes the same
+# way for the same reason). So this arm files the incident where every other
+# `plan` launch failure is already filed.
+#
+# ONCE PER DISTINCT LINE, sharing both the sentence and the dedup rule with the
+# driver's own writer -- see lib/capability.sh's capability_step_handoff_line for
+# why a second copy of either would append one duplicate entry per pass.
+#
+# BEST EFFORT, ALWAYS: a launch failure must never be turned into a DIFFERENT
+# launch failure, so a journal write that cannot land (an unfenced epoch, a lock
+# held elsewhere) degrades to a note on stderr and the original 19 still
+# propagates verbatim.
+if [ "$prepare_rc" -ne 0 ]; then
+  if [ "$prepare_rc" -eq 19 ]; then
+    cap_line="$(capability_step_handoff_line "$role" "$operation" "$hook_point_arg")"
+    orchid_journal_once "$repo" "$task" "$cap_line" \
+      || echo "orchid-launch: could not journal the capability refusal for '$task' — prepare's message above is the only report of it" >&2
+  fi
+  exit "$prepare_rc"
+fi
 
 # T027 rework: RECORD, ON THE MANIFEST ITSELF, that this launcher exited
 # without spawning. Everything between here and the spawn line can fail --

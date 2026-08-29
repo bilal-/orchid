@@ -94,16 +94,42 @@ export ORCHID_EPOCH="$epoch" ORCHID_REPO="$repo"
 # first and the permanent case exits 19, the code the rest of the kernel
 # already reads as "a capability refusal an operator owns".
 #
-# THE MESSAGE IS THE WHOLE OF THIS RUNNER'S REPORT, deliberately: nothing is
-# journaled here. A direct tick is one shot with a caller watching its exit
-# status, and the durable hand-off for the SCHEDULED loop belongs to the pump,
-# which reaches this same classification before it ever execs this file and
-# records it exactly once (runners/orchid-pump's pre-wake probe). Journaling in
-# both places would file the same fact twice for every pass that ran the pump.
+# AND IT IS RECORDED HERE TOO, not only reported. This used to print the line
+# and exit, on the reasoning that a direct tick is one shot with a caller
+# watching its exit status while the durable hand-off belonged to the pump,
+# which reaches the same classification before it ever execs this file. The
+# second half of that is true and the first half is not: the header of this file
+# says plainly that the direct tick is an unattended entry point in its own
+# right and not merely a pump implementation detail, and the caller a scheduler
+# points straight at this script is a crontab. A 19 into a crontab is a silence,
+# so on the entry point the pump never touches the refusal produced no journal
+# line, no blocker and no boundary -- exactly the dead end this classification
+# was added to end, surviving on the path that skipped the classifier's only
+# recorder.
+#
+# TWO WRITERS OF ONE FACT IS STILL THE HAZARD, and it is closed by the dedup
+# rather than by leaving one of them mute. Both go through lib/common.sh's
+# orchid_blocker_once, which asks BLOCKERS.md for the receipt the previous
+# `orchid notify` left: a pump pass that already recorded this line makes the
+# tick behind it find that entry and add nothing, and a tick run with no pump
+# anywhere records it once and every later tick finds its own. The line itself
+# comes from the same composer the pump uses, so the two cannot describe one
+# fact in words the other's dedup fails to recognise.
+#
+# AFTER `run resume`, which is where the epoch this write must carry comes from:
+# `orchid notify` is epoch-fenced (INV-02), and this pass is inside the epoch
+# fenced above.
 tick_cap_rc=0
 tick_cap_why="$(capability_role_chain_refusal "$repo" orchestrator orchestrate)" || tick_cap_rc=$?
 if [ "$tick_cap_rc" -eq 1 ]; then
-  capability_chain_handoff_line orchestrator orchestrate role.orchestrator "$tick_cap_why" >&2
+  tick_cap_line="$(capability_chain_handoff_line orchestrator orchestrate role.orchestrator "$tick_cap_why")"
+  echo "tick: $tick_cap_line" >&2
+  tick_rec_rc=0
+  orchid_blocker_once "$repo" "$epoch" "$tick_cap_line" || tick_rec_rc=$?
+  case "$tick_rec_rc" in
+    1) echo "tick: already recorded for an operator — not raising a second blocker for a fact that has not changed" >&2 ;;
+    2) echo "tick: could not record the capability hand-off as a blocker (epoch $epoch) — the line above is the only report of it" >&2 ;;
+  esac
   exit 19
 fi
 
