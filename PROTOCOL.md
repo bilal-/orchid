@@ -2133,7 +2133,12 @@ ones its archetype never declares.
       than a weaker true one. Nor is a log that is byte-for-byte the round
       already captured: on an unchanged candidate the binding cannot tell a
       surviving log from a fresh one, and counting one run twice would reach
-      every judgment below on a single verification;
+      every judgment below on a single verification. Nor a round the candidate
+      has since PASSED: `testing -> reviewing` RETIRES the captured rounds
+      (renaming them `-rework.retired.log`, outside every reader's glob, so the
+      bytes survive for a human), because a `task reverify` with no implementer
+      cycle leaves the candidate exactly where it was — the round binds, and
+      only the pass knows better;
     - at `rework_signature_repeats` ≥ 2, dispatch that rework to a DIFFERENT
       engine in `role.implementer`'s chain — `runners/orchid-launch <id>
       implementer implement --engine <next-eligible>`, excluding the task's

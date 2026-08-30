@@ -150,6 +150,27 @@ rc=0; rework_latest_log "$B" T001 4 >/dev/null 2>&1 || rc=$?
 rc=0; rework_latest_log "$B" T999 0 >/dev/null 2>&1 || rc=$?
 [ "$rc" -ne 0 ] || fail "a task with no captured rounds has no latest log"
 
+# --- retiring a round a PASS has disproved -----------------------------------
+# The unit half of Part E. lib/rework.sh only NAMES the retired path -- INV-13
+# audits it as read-only policy, so the `testing -> reviewing` arm of `task
+# advance` does the renaming -- and what has to hold here is that the name it
+# chooses falls OUTSIDE the glob every reader above is indexed off. A suffix
+# that still ended in `-rework.log` would leave a disproved round exactly where
+# the next brief reads it, with nothing but its spelling changed.
+RT="$WORK/retire/.orchid"
+mkdir -p "$RT/reviews"
+assert_eq "$RT/reviews/T001-r2-rework.retired.log" "$(rework_retired_log_path "$RT" T001 2)" \
+  "the retired name is derived in ONE place, so the verb that renames and the readers that must not see it cannot disagree"
+echo "round 1" > "$RT/reviews/T001-r1-rework.log"
+echo "round 2, retired" > "$(rework_retired_log_path "$RT" T001 2)"
+echo "round 3, retired" > "$(rework_retired_log_path "$RT" T001 3)"
+assert_eq "1" "$(rework_rounds_present "$RT" T001 | tr '\n' ' ' | sed 's/ $//')" \
+  "a retired round leaves the round index — rounds 2 and 3 are on disk, and neither may be counted"
+assert_eq "$RT/reviews/T001-r1-rework.log" "$(rework_latest_log "$RT" T001 0)" \
+  "...and leaves the reader every brief is built through: the newest LIVE round is 1, not the higher-numbered retired 3"
+assert_eq "round 3, retired" "$(cat "$RT/reviews/T001-r3-rework.retired.log")" \
+  "while the bytes stay readable — this copy is the only one left, the kernel deleted the producer's own log on the capture edge"
+
 # --- which log documents which rework ---------------------------------------
 C="$WORK/src/.orchid"
 mkdir -p "$C/reviews"
@@ -605,3 +626,96 @@ assert_match "no diff to show" "$brief" \
 # (rework.md's budgeting — priority ahead of lessons.md/context.md, and its
 # tail-kept trim — is tests/test_pack.sh's subject, exercised there against
 # pack_build directly rather than duplicated through the verbs here.)
+
+# ===========================================================================
+# Part E -- the lifecycle end. A candidate that has PASSED must never be
+# handed its own disproved failure on a later rework.
+# ===========================================================================
+# The route is the one that actually happened to this task on 2026-08-29:
+# `orchid verify` failed for a reason OUTSIDE the candidate (a supervisor's
+# environment override), the round was captured, and the operator re-ran
+# verification with NO implementer cycle -- `rework -> testing -> reviewing` on
+# an unchanged candidate_sha. Every binding check in this file says yes to that
+# captured round, because the candidate it names is still the one under work;
+# only the PASS knows better. Resetting `rework_signature_repeats` alone (Part C)
+# leaves it on disk, so the NEXT entry to rework -- a request-changes round,
+# which captures nothing of its own -- ships it to the next attempt under the
+# brief's own sentence, "the verbatim output of the run that FAILED is
+# reproduced below", about a tree this run has since verified green. That is
+# F27's claim inverted into a false one, inside F27's own remedy.
+"$ORCHID_BIN" task create T006 "a pass retires the captured failure" >/dev/null
+"$ORCHID_BIN" task set T006 base_sha "$(git rev-parse HEAD)" >/dev/null
+"$ORCHID_BIN" task set T006 candidate_sha "$(git rev-parse HEAD)" >/dev/null
+# `branch` is what `reverify`'s lineage gate reads: the task template names
+# `task/T006`, which does not exist in this fixture repo, and the operator edge
+# below refuses a candidate it cannot place on the task's own line of work.
+"$ORCHID_BIN" task set T006 branch "$(git rev-parse --abbrev-ref HEAD)" >/dev/null
+"$ORCHID_BIN" task advance T006 implementing --reason "first round" >/dev/null
+"$ORCHID_BIN" task advance T006 testing --reason "first round" >/dev/null
+mk_log "$STATE/reviews/T006-verify.log" 2026-08-12T09:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: DISPROVEDBYALATERPASS the bound it hit is infra_max" 1
+"$ORCHID_BIN" task advance T006 rework --reason "verify failed" >/dev/null
+[ -f "$STATE/reviews/T006-r1-rework.log" ] || fail "fixture: the failing round is captured"
+assert_eq "1" "$(fm T006 rework_rounds)" "fixture: one captured round"
+
+# The operator re-runs verification against the SAME candidate: `task reverify`,
+# the verb that exists for exactly this (no attempt consumed, no implementer
+# cycle). It re-stamps candidate_sha from the worktree HEAD, which is the
+# commit already recorded -- so nothing about the tree changes, which is
+# precisely why the candidate binding cannot see what is about to happen.
+"$ORCHID_BIN" task reverify T006 --reason "the failing suite was the environment, not the candidate" >/dev/null
+assert_eq testing "$(fm T006 status)" "fixture: reverify takes rework -> testing with no implementer cycle"
+assert_eq "$(git rev-parse HEAD)" "$(fm T006 candidate_sha)" \
+  "fixture: and leaves the candidate exactly where it was — the one shape the binding cannot refuse"
+mk_log "$STATE/reviews/T006-verify.log" 2026-08-12T10:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "all good" 0
+"$ORCHID_BIN" task advance T006 reviewing --reason "green evidence for the same candidate" >/dev/null
+
+[ ! -f "$STATE/reviews/T006-r1-rework.log" ] \
+  || fail "a captured round the candidate has since PASSED must be retired, not left where the next brief reads it"
+[ -f "$STATE/reviews/T006-r1-rework.retired.log" ] \
+  || fail "retired, not deleted: this copy is the only surviving record of what that round failed on"
+grep -q "DISPROVEDBYALATERPASS" "$STATE/reviews/T006-r1-rework.retired.log" \
+  || fail "the retired copy keeps the failing output verbatim"
+assert_eq "1" "$(fm T006 rework_rounds)" \
+  "the round COUNTER is not rewound — a retired round is a round that happened, and the next capture must not collide with its name"
+assert_match "rework evidence retired after successful verification" "$(cat "$STATE/journal.md")" \
+  "the retirement is journalled: 'why is there no previous-failure brief' must be answerable without an ls of a directory nothing points at"
+
+# A review that requests changes. It has no failing evidence of its own (the
+# verify log on disk is the PASS), so it captures nothing -- and without the
+# retirement above it would dispatch the next attempt with the pre-pass failure.
+printf '{"status":"ok","candidate_sha":"%s"}\n' "$(git rev-parse HEAD)" \
+  > "$STATE/reviews/T006-a2-reviewer.json"
+"$ORCHID_BIN" task advance T006 arbitrating --reason "review fixture" >/dev/null
+"$ORCHID_BIN" task advance T006 rework --reason "review requested changes" >/dev/null
+assert_eq "1" "$(fm T006 rework_rounds)" \
+  "fixture: a request-changes round captures nothing, so the brief can only come from an earlier round"
+
+pack_build "$REPO" T006 implement "$WORK/pack-retired" || fail "post-pass implementer pack build"
+[ ! -f "$WORK/pack-retired/rework.md" ] \
+  || fail "no previous failure applies: the only captured round was disproved by a passing verification of the very same candidate"
+rc=0; grep -rq "DISPROVEDBYALATERPASS" "$WORK/pack-retired" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "the disproved failure must reach the next attempt by NO route — not rework.md, not the task body's briefs"
+
+# ...and the feature is not switched off by that: a genuine failure of the
+# candidate the implementer then produces is captured as round TWO, over a
+# retired round one, and IS fed forward.
+"$ORCHID_BIN" task advance T006 implementing --reason "post-green round" >/dev/null
+"$ORCHID_BIN" task advance T006 testing --reason "post-green round" >/dev/null
+mk_log "$STATE/reviews/T006-verify.log" 2026-08-13T09:00:00Z "$(git rev-parse HEAD)" "$REPO" \
+  "FAIL tests/OrderTest: A GENUINE POST-PASS FAILURE" 1
+"$ORCHID_BIN" task advance T006 rework --reason "a real failure after the green round" >/dev/null
+assert_eq "2" "$(fm T006 rework_rounds)" "the next capture is round two, not a re-used round one"
+[ -f "$STATE/reviews/T006-r2-rework.log" ] || fail "and it is filed under that number"
+[ -f "$STATE/reviews/T006-r1-rework.retired.log" ] \
+  || fail "the retired round is still on disk — retirement removes it from the readers, never from the record"
+pack_build "$REPO" T006 implement "$WORK/pack-post" || fail "post-pass failure pack build"
+grep -q "A GENUINE POST-PASS FAILURE" "$WORK/pack-post/rework.md" \
+  || fail "a real failure after the pass is still fed forward — the retirement must not make the feature inert"
+rc=0; grep -q "DISPROVEDBYALATERPASS" "$WORK/pack-post/rework.md" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "and the retired round is not resurrected as the baseline it is diffed against"
+assert_eq "1" "$(fm T006 rework_signature_repeats)" \
+  "a post-pass failure is a first sighting, whatever the pre-pass rounds said"

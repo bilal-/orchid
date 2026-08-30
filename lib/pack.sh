@@ -76,6 +76,17 @@ _pack_fm_field() {
 # evidence in ordinary operation (the reworking implementer commits, `orchid
 # merge`'s rebase arm mints a new sha, an operator re-derives the branch), so
 # this is a routine state, not a corner.
+#
+# NOTHING AT ALL, likewise, once the candidate has PASSED — and the binding
+# cannot see that one. On a reverify with no implementer cycle the candidate
+# never moves, so the captured round names the tree still under work and binds
+# every time, while `testing -> reviewing` has since proved that tree green.
+# The kernel RETIRES the captured rounds on that edge instead (the
+# `testing -> reviewing` arm of `task advance`, renaming each past
+# rework_retired_log_path), and this function reads them through
+# `rework_latest_log`, which no longer finds them. There is nothing to
+# special-case here, and that is the point: one edge owns the lifecycle and
+# every reader inherits it.
 _pack_rework_brief() {
   local state="$1" task="$2"
   local section="${3:-all}"

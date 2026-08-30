@@ -847,6 +847,14 @@ ls .orchid/reviews/<id>-r*-rework.log   # one per captured round, oldest first
 orchid task show <id>                   # rework_signature, rework_signature_repeats
 ```
 
+Rounds a later verification PASSED are renamed `<id>-r<n>-rework.retired.log`
+and stop being fed forward — the candidate went green after they were captured,
+so "you already tried this and got exactly this" is no longer true about them.
+They are kept, not deleted: that copy is the only surviving record of what the
+task was red on before it went green, since the rework edge that captured it
+deleted the verifier's own log. List them the same way when you want the whole
+history rather than what the next attempt is being told.
+
 **First check whose wall it is.** If the boundary goes on to say the repeated
 failure is the repository's own `merge_gate`, the candidate is not what is
 red: a gate is a check the repository applies to everything, the task was

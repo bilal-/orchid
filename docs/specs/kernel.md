@@ -682,6 +682,23 @@ buying a fresh implementation pass to reach the same tree.
   invalidating delete, so an unbound capture would file a superseded
   candidate's output as this round's failure and then block the task for not
   converging on it.
+- **A passing verification retires the captured rounds, not just the streak
+  (v1.1).** `testing → reviewing` restarts `rework_signature_repeats` at zero;
+  it also renames every `reviews/<id>-r<n>-rework.log` to
+  `reviews/<id>-r<n>-rework.retired.log`, a name outside the glob every reader
+  of that record uses. The candidate binding cannot close this one: on a
+  `task reverify` with no implementer cycle the candidate never MOVES, so the
+  captured round names the tree still under work and binds every time, while
+  the PASS has just proved that tree green. Without the retirement the next
+  entry to `rework` — a request-changes round, a rebase conflict, neither of
+  which captures anything of its own — feeds the next attempt a failure of a
+  candidate that has since verified, under a brief whose own sentences claim
+  the recipient's code produces it. `rework_rounds` is NOT rewound (a retired
+  round is a round that happened), so the next capture is round n+1 and can
+  never collide with a retired name; and the retirement is a rename rather
+  than a delete, because the capture is the only surviving copy of that
+  failure and an operator asking what the task was red on before it went green
+  has nowhere else to look. The retirement is journalled.
   Bound is not the same as FRESH, and the second guard only matters when the
   candidate does NOT move — which is exactly when the binding cannot help. A
   source that is byte-for-byte the log already filed as the newest round is

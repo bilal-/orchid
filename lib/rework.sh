@@ -84,6 +84,48 @@ rework_latest_log() {
   printf '%s\n' "$path"
 }
 
+# rework_retired_log_path <state> <id> <round> -- where a captured round goes
+# once a PASSING verification has disproved it.
+#
+# WHAT A PASS DOES TO THE EVIDENCE, and it is the other half of the streak
+# reset in the `testing -> reviewing` arm of `task advance`. That arm already
+# ends the CONSECUTIVE-failure count on a verification that passed; the
+# captured logs behind the count stayed on disk, and on the one path where the
+# candidate does not move they stayed BOUND to it. So the next entry to
+# `rework` fed the next attempt a failure of the very tree that had since
+# verified green, under the brief's own sentence "the verbatim output of the
+# run that FAILED is reproduced below" -- F27's claim inverted into a false
+# one, which is the failure mode this whole feature exists to end rather than
+# to reproduce one layer along.
+#
+# The route is the ordinary one, not a corner: `orchid verify` fails for a
+# reason outside the candidate (a supervisor's environment override, a flake, a
+# gate somebody else cleared), the round is captured, and the operator re-runs
+# verification with NO implementer cycle -- `rework -> testing -> reviewing` on
+# an unchanged `candidate_sha`. `task reverify` exists for precisely that move
+# and consumes no attempt, so it is the cheap answer an operator reaches for
+# first. The captured round names the candidate that is still under work, so
+# every binding check above says yes, and only the PASS knows better.
+#
+# RENAMED, NOT DELETED. The bytes are the only surviving copy of that failure
+# -- the kernel deleted the producer's own log on the rework edge that captured
+# them -- and an operator asking "what was it failing on before it went green"
+# has nowhere else to look. So the retirement is the same trick the capture
+# itself plays on the evidence gates, one turn further on: keep the evidence,
+# move it where no automatic reader accepts it. Deliberately NOT a name that
+# still ends in `-rework.log` -- `rework_rounds_present` globs exactly that
+# ending, and every reader above is indexed off it, so a retired round has to
+# fall OUTSIDE the glob rather than merely decorate it.
+#
+# THIS FILE ONLY NAMES THE PATH; the kernel verb does the renaming. lib/rework.sh
+# is one of the policy libraries INV-13 audits as read-only (it decides whether
+# evidence is current and whether a streak has crossed the non-convergence
+# threshold, verdicts that reroute an engine and raise a boundary), so a
+# mutation living here would be a state write hidden behind a function call the
+# driver's own audit cannot see. The rule for what a retired round is CALLED
+# still belongs in one place, which is this one.
+rework_retired_log_path() { printf '%s/reviews/%s-r%s-rework.retired.log\n' "$1" "$2" "$3"; }
+
 # rework_signature <evidence-file> -- a stable digest of WHAT FAILED, so two
 # rounds can be compared for "did anything at all change".
 #

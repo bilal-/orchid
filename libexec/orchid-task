@@ -1009,6 +1009,48 @@ case "$sub" in
       # signature for comparison, but restart its consecutive count at zero;
       # if that old failure returns it is a first post-success sighting, not
       # evidence that every round in between was identical.
+      #
+      # AND THE CAPTURED LOGS GO WITH THE COUNT. Resetting the streak alone
+      # leaves every `reviews/<id>-r<n>-rework.log` on disk, and on the one
+      # path where the candidate does NOT move -- a verify failure outside the
+      # candidate, then `task reverify` with no implementer cycle -- those
+      # rounds stay bound to the candidate that has just PASSED. The next entry
+      # to `rework` (a request-changes round, a merge conflict: neither of them
+      # captures anything of its own) would then ship that round to the next
+      # attempt under the brief's own sentence, "the verbatim output of the run
+      # that FAILED is reproduced below", about a tree this edge has just
+      # verified green. Retirement moves the bytes outside every reader that
+      # feeds an attempt while keeping them for a human (the destination is
+      # rework_retired_log_path); the ROUND COUNTER is deliberately not
+      # rewound, so the next capture is n+1 and no retired name can be
+      # collided with.
+      #
+      # ALL of them, not only the rounds bound to the passing candidate. A round
+      # is only ever fed forward as the NEWEST one, so a superseded round is
+      # already refused there -- but it is still the baseline lib/pack.sh diffs
+      # the next failure against, under a heading promising "what changed since
+      # the round before it", and a comparison that silently spans a green
+      # verification is not that. The whole record ends together, exactly as the
+      # counter does.
+      #
+      # The rename is HERE and not in lib/rework.sh because that file is one of
+      # the read-only policy libraries INV-13 audits; it owns what a retired
+      # round is called (rework_retired_log_path) and nothing else.
+      #
+      # Journal-first, like the reset below it: what was retired is the fact,
+      # and "why is there no previous-failure brief" has to be answerable from
+      # the journal rather than from an `ls` of a directory nothing points at.
+      rw_retire_rounds="$(rework_rounds_present "$state" "$id")"
+      if [ -n "$rw_retire_rounds" ]; then
+        rw_retire="${rw_retire_rounds//$'\n'/, }"
+        journal --task "$id" --kind intervention \
+          "rework evidence retired after successful verification: captured round(s) $rw_retire describe candidate $fcand, which has now PASSED — renamed to reviews/$id-r<n>-rework.retired.log so no later rework can feed a disproved failure forward"
+        while IFS= read -r rw_n; do
+          [ -n "$rw_n" ] || continue
+          mv -f "$(rework_log_path "$state" "$id" "$rw_n")" \
+                "$(rework_retired_log_path "$state" "$id" "$rw_n")"
+        done <<< "$rw_retire_rounds"
+      fi
       rw_reps="$(fm_get "$f" rework_signature_repeats)"
       case "$rw_reps" in ''|*[!0-9]*) rw_reps=0 ;; esac
       if [ "$rw_reps" -gt 0 ]; then
