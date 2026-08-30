@@ -138,14 +138,35 @@ source "$(dirname "$0")/../helpers.sh"
 #     harness with no `.sh` suffix, is inside the set that looks on the day it
 #     lands rather than on the day somebody widens a glob. Both discoveries
 #     are driven against a fixture that carries exactly those two shapes.
+#     And the source-time probe is now run ONCE PER FAMILY the walk finds a
+#     loader in, with the two sets compared: three probes was a list, and a
+#     list of probes carries the defect a list of directories does one level
+#     up, so a loader arriving in a family nobody probed fails the comparison
+#     instead of inheriting the answer established next door.
+#   * section 10 turns the sections above into a CONTRACT, because until it
+#     existed they were proofs nothing required. Sections 6, 8 and 9 each run
+#     an entry point somebody thought to run; an entry point growing its first
+#     trust decision tomorrow would be enrolled in none of them, and section
+#     4's line-order reading -- the reading that passed the pump, the trust
+#     lookup and the service runner while each skipped the gate on a real
+#     route -- would pass it. So the requirement is stated over the set
+#     section 4 DERIVES (a machine-local trust decision plus a stale-root
+#     firing site, the pair no reading of a file can settle), and enrolment is
+#     read off a ledger the RUNS wrote: a record is earned only by executing a
+#     file byte-identical to the shipped one, only when the run produced
+#     output, and it counts as a proof only when that output was the refusal,
+#     so the not-stale twin every section pairs its proof with cannot stand in
+#     for it.
 #   * section 2 also refuses a gate file whose recorded LABEL the shell
 #     executes. A backtick inside a double-quoted label is a command
 #     substitution, so the case is counted with the words that said what it
 #     proved deleted from the record -- and the fixture that demonstrates it
 #     is RUN, so the deletion is observed rather than asserted about a shell.
 #
-# RED: thirty-one, each fed to the SAME derivation or the same shipped verb the
-#      section runs over the real tree. A ci-local-shaped file whose static
+# RED: every one of them fed to the SAME derivation, or to the same shipped
+#      verb, that the section runs over the real tree -- and counted by the
+#      harness rather than by a number written here, which is the same
+#      correction the not-tested claims below carry. A ci-local-shaped file whose static
 #      section sits BELOW the `--no-tests` cut (so it is outside the merge
 #      floor and only reaches tasks that opted into the full suite), and a
 #      second one that differs from it only by NAMING a test script in its
@@ -214,6 +235,17 @@ source "$(dirname "$0")/../helpers.sh"
 #      prefix, no per-user plugin directory -- since the only kernel check that
 #      file ever carried is its closing doctor run, and that one is skipped in
 #      exactly the self-hosted shape where its source checkout can be stale.
+#      The shipped runners/orchid-service entered DIRECTLY at its own path out
+#      of that same stale root -- the way in a launchd agent or a crontab line
+#      takes, and the one an enrolment can be OBSERVED through, since a run
+#      dispatched through bin/orchid proves a handoff rather than a file --
+#      which must refuse with its status report absent.
+#      The enrolment contract itself, driven through all four ways a proof
+#      fails to be earned: a derived candidate nobody ran, a run of a MODIFIED
+#      copy of a shipped entry point, a run that produced no output, and a run
+#      made only out of a root where the gate could never fire -- each of which
+#      must be reported, the last of them as its own kind, since every proof in
+#      this file is paired with a twin that cannot refuse.
 #      And a gate file whose recorded label carries
 #      backticked prose the shell executes, which must be refused -- with the
 #      fixture run first, so the words really are seen to go missing.
@@ -230,9 +262,13 @@ source "$(dirname "$0")/../helpers.sh"
 #      that really fires the gate at the path it ships at; the Markdown
 #      document and the tests/ file carrying the identical source line, which
 #      that walk must leave outside the inventory, by both of its discoveries,
-#      each returning the identical set for the identical tree; the same stub libexec/
-#      refuses, left to RUN under scripts/ and under plugins/, which is the
-#      shadow the narrow universe could not see into; a deferring entry point
+#      each returning the identical set for the identical tree; the same stub
+#      libexec/ and runners/ refuse, left to RUN at the TOP LEVEL, under
+#      scripts/ and under plugins/, which is the
+#      shadow the narrow universe could not see into -- with the set of
+#      families probed compared against the set the walk found a loader in, so
+#      that shadow is bounded by the tree rather than by whoever wrote the
+#      probes; a deferring entry point
 #      that does reach its restore where restoring fires, an ordinary verb that
 #      defers nothing, an off-path harness that calls the gate itself, and a
 #      file that names lib/common.sh without ever loading it, all four left
@@ -279,7 +315,13 @@ source "$(dirname "$0")/../helpers.sh"
 #      measured by; both verbs' usage arms out of the stale root, which must
 #      be answered with their own usage text rather than a refusal, since the
 #      one route this gate does not sit on has to be the same route in both
-#      files; and the identical sentence
+#      files; the whole derived candidate set, every member of which must carry
+#      a ledger record earned by executing the shipped file out of a stale root
+#      and seeing it refuse, with every name in that ledger required to be a
+#      shipped loader; the same fixture ledger that reported four gaps, which
+#      must go SILENT once the one run it was missing is supplied, so the
+#      contract is a measurement rather than a check that reports everything;
+#      and the identical sentence
 #      single-quoted, in a comment and in a trailing comment, which the label
 #      scan must leave alone.
 
@@ -1508,6 +1550,13 @@ entry_scripts=0
 entry_plugins=0
 entry_inventory_seen=0
 entry_family_lines=""
+# The families of the LOADERS, kept apart from the families of the inventory:
+# the inventory's families answer "is this walk still reaching a tree", and
+# these answer "which families does the source-time partition below have to
+# hold for". The probe coverage further down is compared against exactly this
+# set, so a loader landing in a family nobody has probed is a partition applied
+# where nothing established it holds.
+entry_loader_family_lines=""
 entry_unfired=""
 # The same universe, kept as repo-relative names so the gate-ORDER derivation
 # below reads exactly the set this loop discovered rather than re-deriving one
@@ -1531,6 +1580,10 @@ while IFS= read -r entry_rel; do
   entry_loads_common "$entry_file_code" || continue
   entry_scanned=$((entry_scanned + 1))
   ENTRY_UNIVERSE+=("$entry_rel")
+  case "$entry_rel" in
+    */*) entry_loader_family_lines="$entry_loader_family_lines${entry_rel%%/*}"$'\n' ;;
+    *)   entry_loader_family_lines="${entry_loader_family_lines}(top level)"$'\n' ;;
+  esac
   if grep -q '__orchid_entry_defer_restore=1' <<<"$entry_file_code"; then
     entry_deferring=$((entry_deferring + 1))
   fi
@@ -1553,6 +1606,12 @@ while IFS= read -r entry_family; do
   entry_family_names="$entry_family_names $entry_family"
 done < <(printf '%s' "$entry_family_lines" | LC_ALL=C sort -u)
 entry_family_names="${entry_family_names# }"
+entry_loader_families=""
+while IFS= read -r entry_family; do
+  [ -n "$entry_family" ] || continue
+  entry_loader_families="$entry_loader_families $entry_family"
+done < <(printf '%s' "$entry_loader_family_lines" | LC_ALL=C sort -u)
+entry_loader_families="${entry_loader_families# }"
 entry_inventory_mode="$(shipped_inventory_mode "$REPO_ROOT")"
 
 # THE DENOMINATOR OF THE WALK ITSELF, asserted before anything is concluded
@@ -1655,18 +1714,53 @@ assert_eq "$ENTRY_INV_EXPECT" "$(shipped_inventory_line "$ENTRY_INV_FIX")" \
 green_case "the Markdown document and the tests/ file carrying the identical source line were left outside the inventory by both discoveries, and both discoveries returned the identical set for the identical tree — so the walk is bounded by the two exclusions this file declares rather than by nothing, and the archive fallback is not a second answer nobody has watched"
 
 # The blind spot itself, made observable, because everything above depends on
-# it being real: the SAME library, the SAME stale root, three paths, and the
-# answer changes with the directory. Without this pair the widening is an
-# assertion about lib/common.sh rather than an observation of it.
-assert_eq fires "$(entry_source_time_answer libexec/orchid-inv15-probe)" \
-  "INV-15: a stub under libexec/ must be refused at source time out of a stale root — that is the coverage the three executable roots have, and if it is absent the partition above is judging every file by a fire that never happens"
-red_case "a stub under libexec/ was refused the moment it loaded lib/common.sh out of a genuinely stale root, so the source-time fire this section partitions on is real and observed rather than assumed"
+# it being real: the SAME library, the SAME stale root, one path per family the
+# walk found a loader in, and the answer changes with the directory. Without
+# these the widening is an assertion about lib/common.sh rather than an
+# observation of it.
+#
+# AND ONE PROBE PER FAMILY RATHER THAN PER OPINION, with the two sets compared
+# below instead of trusted to have stayed in step. Three probes was a list, and
+# a list of probes carries the same defect as a list of directories one level
+# up: the day a loader lands in a family nobody probed, the partition is
+# applied to it on the strength of an answer established somewhere else.
+entry_probe_family_lines=""
+entry_probe_record() {
+  case "$1" in
+    */*) entry_probe_family_lines="$entry_probe_family_lines${1%%/*}"$'\n' ;;
+    *)   entry_probe_family_lines="${entry_probe_family_lines}(top level)"$'\n' ;;
+  esac
+}
 
-for entry_shadow in scripts/inv15-probe.sh plugins/engines/inv15-probe/run; do
-  assert_eq armed "$(entry_source_time_answer "$entry_shadow")" \
-    "INV-15: a stub at $entry_shadow, loading the identical library out of the identical stale root, must NOT be refused — if it were, there would be no shadow here, and the explicit orchid_root_stale_gate calls this section requires of scripts/ and plugins/ would be guarding nothing"
+for entry_fire_probe in libexec/orchid-inv15-probe runners/orchid-inv15-probe; do
+  assert_eq fires "$(entry_source_time_answer "$entry_fire_probe")" \
+    "INV-15: a stub at $entry_fire_probe must be refused at source time out of a stale root — that is the coverage the executable roots have, and if it is absent the partition above is judging every file under that root by a fire that never happens"
+  entry_probe_record "$entry_fire_probe"
 done
-green_case "the identical stub, loading the identical lib/common.sh out of the identical stale root, was left to run under scripts/ and under plugins/ while being refused under libexec/ — so the source-time fire really is conditional on the directory, and a derivation that walked only the three executable roots really would share the implementation blind spot it exists to find"
+red_case "a stub under libexec/ and a stub under runners/ were each refused the moment they loaded lib/common.sh out of a genuinely stale root, so the source-time fire this section partitions on is real and observed rather than assumed, in both of the executable roots the shipped loaders live in"
+
+for entry_shadow in inv15-probe plugins/engines/inv15-probe/run scripts/inv15-probe.sh; do
+  assert_eq armed "$(entry_source_time_answer "$entry_shadow")" \
+    "INV-15: a stub at $entry_shadow, loading the identical library out of the identical stale root, must NOT be refused — if it were, there would be no shadow here, and the explicit orchid_root_stale_gate calls this section requires of the top level, of scripts/ and of plugins/ would be guarding nothing"
+  entry_probe_record "$entry_shadow"
+done
+green_case "the identical stub, loading the identical lib/common.sh out of the identical stale root, was left to run at the TOP LEVEL — install.sh's own family, the one whose member wires the operator orchid — and under scripts/ and under plugins/, while being refused under libexec/ and under runners/, so the source-time fire really is conditional on the directory and a derivation that walked only the executable roots really would share the implementation blind spot it exists to find"
+
+# AND EVERY FAMILY THE WALK FOUND A LOADER IN WAS ASKED. Without this the
+# probes above are answers about the directories whoever wrote them was
+# thinking of; with it they are the partition established once per family this
+# tree actually has,
+# and a loader family arriving tomorrow fails here until its own stub has been
+# run rather than quietly inheriting the family beside it.
+entry_probe_families=""
+while IFS= read -r entry_family; do
+  [ -n "$entry_family" ] || continue
+  entry_probe_families="$entry_probe_families $entry_family"
+done < <(printf '%s' "$entry_probe_family_lines" | LC_ALL=C sort -u)
+entry_probe_families="${entry_probe_families# }"
+assert_eq "$entry_loader_families" "$entry_probe_families" \
+  "INV-15: every top-level family the walk found a lib/common.sh loader in must have been ASKED whether the source-time fire reaches that far, by running a stub at that family's own depth out of a genuinely stale root. A family with no probe is a partition applied where nothing established it holds, and a probe for a family the walk no longer reaches is a coverage claim about a directory that is gone"
+green_case "the set of top-level families the shipped-file walk found a lib/common.sh loader in was compared against the set this section ran a source-time probe in, and the two are the same set ($entry_loader_families) — so which families are covered has stopped being a question anybody has to keep answering, in the same way the walk stopped 'which directories does this look in' being one"
 
 # THE ORDER OF THE TWO PRE-REPORT GATES, DERIVED RATHER THAN LISTED.
 #
@@ -1762,6 +1856,11 @@ GATE_ORDER_EXEMPT="libexec/orchid-trust"
 gate_order_candidates=0
 gate_order_reported=""
 gate_order_detail=""
+# The candidates by NAME as well as by count, because section 10 holds exactly
+# this set to a contract: an entry point that carries both halves is one whose
+# gate placement a line-order reading cannot settle, so it is the set that has
+# to be RUN. Derived here rather than re-derived there, so the two cannot drift.
+GATE_ORDER_CANDIDATES=()
 # The `+` guard is not decoration: this suite runs under `set -u`, and expanding
 # an EMPTY array with "${a[@]}" aborts the whole file on the Bash 3.2 that ships
 # as /bin/bash on macOS. An empty universe is already reported by the counters
@@ -1770,6 +1869,7 @@ for gate_order_rel in ${ENTRY_UNIVERSE[@]+"${ENTRY_UNIVERSE[@]}"}; do
   gate_order_out="$(gate_order_violations "$REPO_ROOT/$gate_order_rel" "$gate_order_rel")"
   [ "$gate_order_out" != skip ] || continue
   gate_order_candidates=$((gate_order_candidates + 1))
+  GATE_ORDER_CANDIDATES+=("$gate_order_rel")
   [ "$gate_order_out" != ok ] || continue
   gate_order_reported="$gate_order_reported $gate_order_rel"
   gate_order_detail="$gate_order_detail$gate_order_out"
@@ -1951,6 +2051,84 @@ green_case 'a deferring entry point that reaches its restore at a path where res
 # ---------------------------------------------------------------------------
 # THE INSTALLER, RUN, because the derivation above can only say it is WIRED.
 #
+# ---------------------------------------------------------------------------
+# THE RECORD OF WHICH SHIPPED ENTRY POINTS THIS FILE ACTUALLY RAN.
+#
+# Section 10 holds the derived candidate set above to a contract -- an entry
+# point whose gate placement only a RUN can settle must have been run here --
+# and the fact that contract turns on is which entry points were run. That fact
+# may not be read out of this file's text. "The file names it" is precisely the
+# evidence this whole invariant refuses: an enrolment satisfied by a line
+# nothing executes reads, in a log, exactly like an enrolment satisfied for
+# real, which is the defect carried over from T017's arbitration and the reason
+# section 2 probes its own gate files by running them.
+#
+# So a record is written by the code that does the running, at the moment it has
+# a result in its hands, and only when three things hold together: the file is
+# there, the run produced OUTPUT, and the file that ran is byte-identical to the
+# one this repository ships at that path. Delete a run and its record goes with
+# it; point a run at a doctored copy and nothing is recorded, because what
+# section 10 needs is not that something ran but that the SHIPPED entry point
+# did.
+#
+# Nothing here decides a verdict, and the silence is deliberately worth nothing:
+# a missing record is a failure in section 10 rather than an absence nobody
+# notices, which is the direction a gate about gates has to fail in.
+ENROL_LEDGER="$WORK/entry-points-run.ledger"
+: > "$ENROL_LEDGER"
+
+# enrol_observe <ledger> <root> <relpath> <evidence> -- record that the SHIPPED
+# entry point <relpath> was just executed out of <root>, <evidence> being what
+# that run produced.
+enrol_observe() {
+  local ledger="$1" root="$2" rel="$3" evidence="$4" mark=ran
+  [ -n "$evidence" ] || return 0
+  [ -f "$root/$rel" ] || return 0
+  cmp -s "$root/$rel" "$REPO_ROOT/$rel" || return 0
+  # WHICH KIND of run, recorded off the run's own output rather than off which
+  # root the caller passed: what makes a run a proof is that the gate had
+  # something to find, and the refusal is the only thing that says it did.
+  case "$evidence" in
+    *'refusing to run: the checkout orchid itself runs from'*) mark=refused ;;
+  esac
+  printf '%s %s\n' "$rel" "$mark" >> "$ledger"
+}
+
+# enrol_record_present <ledger> <line> -- is <line> in <ledger>, verbatim?
+# Read line by line rather than piped into a matcher, for section 5's reason: a
+# pipeline whose right-hand side stops reading first hands pipefail the
+# producer's death where a verdict belongs.
+enrol_record_present() {
+  local ledger="$1" want="$2" line
+  [ -f "$ledger" ] || return 1
+  while IFS= read -r line; do
+    if [ "$line" = "$want" ]; then return 0; fi
+  done < "$ledger"
+  return 1
+}
+
+# enrolment_gaps <ledger> <relpath>... -- one line per entry point the contract
+# requires a proof for and <ledger> holds none for. Silent when the contract is
+# met, so the shipped set and a fixture set are judged by the same function.
+#
+# THREE OUTCOMES RATHER THAN TWO, because "it was run" and "it was run where the
+# gate could fire" are different claims and only the second is a proof. Every
+# entry point in this file is also run out of a root that is NOT stale, as the
+# twin that keeps an absence from being inherited; a contract that counted those
+# would be satisfied by the half of each pair that can never refuse.
+enrolment_gaps() {
+  local ledger="$1" rel
+  shift
+  for rel in "$@"; do
+    if enrol_record_present "$ledger" "$rel refused"; then continue; fi
+    if enrol_record_present "$ledger" "$rel ran"; then
+      printf 'gate-run-but-never-refused: %s (this file ran it, and never out of a root that was genuinely stale -- so what was observed is the twin rather than the proof. A run that cannot refuse establishes that the side effect happens; it says nothing whatever about where the gate sits relative to it)\n' "$rel"
+      continue
+    fi
+    printf 'gate-proved-only-in-text: %s (it carries both a machine-local trust decision and a stale-root firing site, so where its gate lands is a fact about its ROUTES and not about its line order -- and no section of this file ran it. A scan is satisfied by a call the file contains; what it cannot see is a route that reaches this entry points own work first, which is how the pump, the tick, the trust lookup and the service runner each satisfied a scan while skipping the gate on a real route)\n' "$rel"
+  done
+}
+
 # install.sh is the top-level family, and it is the one entry point whose
 # product is not a verb but a machine-scoped WIRING: the operator's own `orchid`
 # becomes a symlink into whatever checkout it was run from, and ~/.orchid is
@@ -2004,6 +2182,7 @@ run_installer() {
   install_rc=0
   install_out="$(HOME="$install_home" ORCHID_ALLOW_STALE_ROOT='' \
     /bin/bash "$root/install.sh" --prefix "$install_prefix" 2>&1)" || install_rc=$?
+  enrol_observe "$ENROL_LEDGER" "$root" install.sh "$install_out"
 }
 
 run_installer "$INSTALL_OK_ROOT" fresh
@@ -2323,6 +2502,7 @@ pump_probe() {
   pump_rc=0
   pump_out="$(HOME="$MACHINE_HOME" ORCHID_REPO="$PUMP_REPO" ORCHID_ALLOW_STALE_ROOT='' \
     "$1/runners/orchid-pump" 2>&1)" || pump_rc=$?
+  enrol_observe "$ENROL_LEDGER" "$1" runners/orchid-pump "$pump_out"
 }
 
 [ ! -e "$PUMP_REPO/.orchid/runtime" ] \
@@ -2410,6 +2590,7 @@ early_probe() {
   early_rc=0
   early_out="$(HOME="$MACHINE_HOME" ORCHID_REPO="$3" ORCHID_ALLOW_STALE_ROOT='' \
     "$1/runners/$2" 2>&1)" || early_rc=$?
+  enrol_observe "$ENROL_LEDGER" "$1" "runners/$2" "$early_out"
 }
 
 early_probe "$REPO_ROOT" orchid-pump "$PUMP_BARE"
@@ -2895,6 +3076,35 @@ case "$svc_out" in
 esac
 red_case "the acting arm of 'orchid service', out of the same stale installation root whose usage arm was answered above, refused before its report — so the usage exemption the two verbs share is bounded to the arm that resolves no target, and the gate really does fire on the arm that does"
 
+# THE SAME ARM, REACHED THE OTHER WAY IN.
+#
+# Everything above went through bin/orchid, which is how an operator types it
+# and which is why the runs above are shaped that way. But a direct entry is a
+# documented way into this file rather than a hypothetical one -- the header of
+# runners/orchid-service says so, it captures the operator PATH for exactly that
+# case, and what a launchd agent or a crontab line names is a path, so the
+# entry a scheduler takes is the one nobody is standing in front of.
+#
+# It is also what section 10 can OBSERVE. A dispatched run executes bin/orchid,
+# and reading "so runners/orchid-service ran" off that is an inference about a
+# handoff rather than a fact about a file -- and this file may not settle an
+# enrolment by inference, which is the whole of its subject. So the runner is
+# entered directly, out of the same stale root, and must give the same answer.
+svc_direct_rc=0
+svc_direct_out="$(env -u ORCHID_REPO -u ORCHID_EPOCH \
+  HOME="$TRUST_HOME" ORCHID_ALLOW_STALE_ROOT='' \
+  "$TRUST_ROOT/runners/orchid-service" status --repo "$TRUST_REPO" 2>&1)" || svc_direct_rc=$?
+enrol_observe "$ENROL_LEDGER" "$TRUST_ROOT" runners/orchid-service "$svc_direct_out"
+assert_eq 1 "$svc_direct_rc" \
+  "INV-15: the service runner entered DIRECTLY out of a stale installation root must refuse, exactly as it does through bin/orchid (got rc=$svc_direct_rc: $svc_direct_out)"
+assert_match 'refusing to run: the checkout orchid itself runs from' "$svc_direct_out" \
+  "INV-15: ...and it must be the stale-root refusal, not a usage error or some other failure of the fixture"
+case "$svc_direct_out" in
+  *'orchid service status:'*)
+    fail "INV-15: the directly entered service runner printed its status report anyway. The dispatched entry refuses and the direct one answers, which means the gate is placed where the dispatcher happens to arrive rather than above this file's own dispatch — and the entry a scheduler takes is the direct one" ;;
+esac
+red_case "the service runner entered directly at its own path, out of the same stale installation root, refused with its report absent — so the correction that moved this gate above the dispatch holds for the way in that a launchd agent or a crontab line takes, and not only for the way an operator types"
+
 # ===========================================================================
 # 9 -- THE SELF-HOSTED ENTRY POINTS, RUN: THE DENIAL COSTS NO TARGET-REPOSITORY
 # GIT, AND A REFUSED RUN REPORTS NOTHING AT ALL.
@@ -3153,6 +3363,7 @@ doctor_traced_run "$DOCTOR_STREAM1" \
   "$DOCTOR_ROOT/libexec/orchid-doctor"
 doctor_rc="$DOCTOR_RUN_RC"
 doctor_out="$(cat "$DOCTOR_STREAM1")"
+enrol_observe "$ENROL_LEDGER" "$DOCTOR_ROOT" libexec/orchid-doctor "$doctor_out"
 assert_eq 1 "$doctor_rc" \
   "INV-15: 'orchid doctor' run out of a stale self-hosted checkout, with that same checkout as its target, must refuse (got rc=$doctor_rc: $doctor_out)"
 assert_match 'refusing to run: the checkout orchid itself runs from' "$doctor_out" \
@@ -3337,6 +3548,7 @@ doctor_traced_run "$TRUST_SELFHOST_STREAM" \
   "$DOCTOR_ROOT/libexec/orchid-trust" show "$DOCTOR_ROOT"
 trust_selfhost_rc="$DOCTOR_RUN_RC"
 trust_selfhost_out="$(cat "$TRUST_SELFHOST_STREAM")"
+enrol_observe "$ENROL_LEDGER" "$DOCTOR_ROOT" libexec/orchid-trust "$trust_selfhost_out"
 assert_eq 1 "$trust_selfhost_rc" \
   "INV-15: 'orchid trust show' asked about the very checkout it is running from, that checkout being stale, must refuse (got rc=$trust_selfhost_rc: $trust_selfhost_out)"
 assert_match 'refusing to run: the checkout orchid itself runs from' "$trust_selfhost_out" \
@@ -3726,6 +3938,7 @@ doctor_traced_run "$STATUS_PLAIN_ARMED" \
   "$STATUS_ARM"
 status_plain_rc="$DOCTOR_RUN_RC"
 status_plain_out="$(cat "$STATUS_PLAIN_ARMED")"
+enrol_observe "$ENROL_LEDGER" "$DOCTOR_ROOT" libexec/orchid-status "$status_plain_out"
 assert_eq 1 "$status_plain_rc" \
   "INV-15: plain 'orchid status', run out of a stale self-hosted checkout with that same checkout as its target, must refuse (got rc=$status_plain_rc: $status_plain_out)"
 assert_match 'refusing to run: the checkout orchid itself runs from' "$status_plain_out" \
@@ -3849,14 +4062,162 @@ esac
 red_case "the same explain-arm ordering with the gate moved above the lookup, run in the identical environment against the identical acknowledged self-hosted target, spent the gate's index comparison as its first Git — so the shipped arm's result is a position being measured rather than a trace that looks the same whatever the file says"
 
 # ===========================================================================
-# 10 -- the boundaries of what any of this proves.
+# 10 -- THE ENROLMENT CONTRACT: THE SET THAT MUST BE PROVED BY RUNNING IS
+# DERIVED, AND A PROOF THAT IS ONLY TEXT IS NOT A PROOF.
+#
+# Sections 6, 8 and 9 are the strongest evidence in this file and, until this
+# section, its weakest MEMBERSHIP. Each of them runs an entry point somebody
+# thought to run. Nothing required any of them to exist, nothing notices when
+# one is deleted, and an entry point that grows its first trust decision
+# tomorrow is enrolled in none of them: section 4's line-order scan would read
+# its two calls, find them in the right order, and pass -- which is exactly the
+# reading that passed runners/orchid-pump while its gate sat below a write,
+# passed libexec/orchid-trust while its lookup arm reported out of a stale
+# checkout, and passed runners/orchid-service while three of its arms answered
+# above the call. A proof that exists and that nothing requires is r-001's
+# defect wearing this file's own clothes.
+#
+# So the requirement is stated over a DERIVED set rather than a written one.
+# Section 4 already discovers it: a shipped entry point that carries both a
+# machine-local trust DECISION and a stale-root firing site is one whose gate
+# placement no reading of the file can settle, because what a reading cannot
+# see is which routes reach the call and what has already happened when they
+# do. That set -- and not a list of the ones this file happens to run today --
+# is what must be proved by execution, and it grows on its own.
+#
+# AND ENROLMENT IS SETTLED BY THE RUNS, NOT BY THIS FILE'S TEXT. The ledger
+# above is written by the code that does the running, only for a file
+# byte-identical to the shipped one, only when the run produced output, and
+# marked with whether that output was the refusal. This section reads it. That
+# is the same correction section 2 made for the gate files it enrols: a claim
+# satisfied by a line nothing executes is indistinguishable, in a log, from one
+# satisfied for real.
 # ===========================================================================
-not_tested "gate-omission-beyond-the-four-families" \
-  "enforcement gates outside the four this file derives — the static sections of scripts/ci-local.sh, the files tests/helpers.sh enrols in the red-case rule (by location under tests/inv/ and by name in PROOF_ENROLLED_FILES), the stale-root guard's reach across every shipped file that loads lib/common.sh, and the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the four checkable is that each has a DISCOVERABLE membership: a banner, a glob plus the array beside it, a source line, a syntactic shape. Two of the four are now derived over an inventory that is WALKED rather than listed, so 'which directories does this look in' has stopped being a question anybody has to keep answering; the other two are bounded by tests/inv/ and by scripts/ci-local.sh, which are the files those gates live in. A new gate family belongs here the moment its membership becomes derivable"
+
+# THE DENOMINATOR FIRST, before anything is concluded from an empty ledger. A
+# contract over an empty required set is met by a file that runs nothing at all.
+[ "${#GATE_ORDER_CANDIDATES[@]}" -ge 5 ] \
+  || fail "INV-15: section 4 derived only ${#GATE_ORDER_CANDIDATES[@]} entry point(s) carrying both a machine-local trust decision and a stale-root firing site, so the contract below is being applied to almost nothing"
+
+enrol_records=0
+enrol_names=""
+while IFS= read -r enrol_line; do
+  [ -n "$enrol_line" ] || continue
+  enrol_records=$((enrol_records + 1))
+done < "$ENROL_LEDGER"
+while IFS= read -r enrol_line; do
+  [ -n "$enrol_line" ] || continue
+  enrol_names="$enrol_names ${enrol_line%% *}"
+done < <(LC_ALL=C sort -u "$ENROL_LEDGER")
+enrol_names="${enrol_names# }"
+[ "$enrol_records" -ge 10 ] \
+  || fail "INV-15: the run ledger holds only $enrol_records record(s) ($enrol_names). Sections 4, 6, 8 and 9 between them execute a shipped entry point many more times than that, so the recording has stopped happening and the contract below would be reading a silence rather than a set of runs"
+
+# EVERY RECORD NAMES A SHIPPED LOADER, so a record cannot be satisfied by a
+# path that is not in the universe the requirement is derived from -- a typo, a
+# fixture, a file that has since moved.
+enrol_foreign=""
+while IFS= read -r enrol_line; do
+  [ -n "$enrol_line" ] || continue
+  enrol_rel="${enrol_line%% *}"
+  enrol_known=0
+  for enrol_universe_rel in ${ENTRY_UNIVERSE[@]+"${ENTRY_UNIVERSE[@]}"}; do
+    if [ "$enrol_universe_rel" = "$enrol_rel" ]; then enrol_known=1; break; fi
+  done
+  [ "$enrol_known" = 1 ] || enrol_foreign="$enrol_foreign $enrol_rel"
+done < <(LC_ALL=C sort -u "$ENROL_LEDGER")
+enrol_foreign="${enrol_foreign# }"
+assert_eq "" "$enrol_foreign" \
+  "INV-15: the run ledger names something outside the shipped inventory of files that load lib/common.sh, so a record here would not be evidence about any entry point this invariant derives"
+
+# AND THE ONE MEMBER THAT IS NOT IN THE DERIVED CLASS, held here rather than
+# left as a sentence in a label. install.sh makes no machine-local trust
+# decision, so the derivation above cannot reach it; what it does instead is
+# wire the operator's own orchid out of whatever checkout it was run from, and
+# section 4 runs it for exactly that reason. Naming it in a green case and
+# checking nothing would be this file's own subject, one more time.
+if ! enrol_record_present "$ENROL_LEDGER" "install.sh refused"; then
+  fail "INV-15: the ledger holds no record of the shipped install.sh having been run out of a genuinely stale root and refused. It is the one entry point this file proves from outside the derived class -- the top-level family, whose only prior kernel check is a doctor run skipped in exactly the self-hosted shape -- so its proof is required here rather than left to whoever remembers section 4 contains one"
+fi
+
+# THE CONTRACT.
+enrol_missing=""
+if [ "${#GATE_ORDER_CANDIDATES[@]}" -gt 0 ]; then
+  enrol_missing="$(enrolment_gaps "$ENROL_LEDGER" "${GATE_ORDER_CANDIDATES[@]}")"
+fi
+assert_eq "" "$enrol_missing" \
+  "INV-15: every shipped entry point that carries both a machine-local trust decision and a stale-root firing site must have been RUN by this file, out of a root that was genuinely stale, and observed to refuse. Where such an entry point's gate lands is a fact about its routes; a scan of its text reads the call and cannot see what runs before it. What is missing: $enrol_missing"
+green_case "all ${#GATE_ORDER_CANDIDATES[@]} shipped entry points that carry both a machine-local unattended-trust decision and a stale-root firing site — the set section 4 DERIVES from the walked inventory rather than a list of the ones this file happens to run — were each executed by this file out of a genuinely stale root and observed to refuse, and the enrolment was read off a ledger the runs themselves wrote rather than off anything this file says about them; the ledger holds $enrol_records records across $enrol_names, install.sh among them, and every name in it is a shipped file that loads the library"
+
+# THE CONTRACT'S OWN EDGES, asked of the same function over a fixture ledger.
+# Everything above is a set that PASSES, so on its own it cannot show that
+# anything would ever be reported -- which is this file's subject applied to
+# this file, and the reason the four ways a record can fail to be earned are
+# each driven rather than described.
+ENROL_FIX_LEDGER="$WORK/enrolment-fixture.ledger"
+: > "$ENROL_FIX_LEDGER"
+
+# ONE: the newcomer. A derived candidate with no run at all.
+enrol_observe "$ENROL_FIX_LEDGER" "$DOCTOR_ROOT" libexec/orchid-doctor \
+  "refusing to run: the checkout orchid itself runs from a stale tree"
+enrol_fix_out="$(enrolment_gaps "$ENROL_FIX_LEDGER" libexec/orchid-doctor libexec/orchid-status)"
+assert_match 'gate-proved-only-in-text: libexec/orchid-status' "$enrol_fix_out" \
+  "INV-15: a derived candidate with no observed run must be reported — that is the whole contract, and an entry point growing its first trust decision tomorrow is exactly this case"
+case "$enrol_fix_out" in
+  *'libexec/orchid-doctor'*)
+    fail "INV-15: the contract reported an entry point that WAS run and observed to refuse, so it does not discriminate between a proved gate and an unproved one and the clean result over the shipped set above means nothing" ;;
+esac
+
+# TWO: a run of something that is not the shipped file. The bytes that ran are
+# what the record is about; a local edit makes it a different file, and a proof
+# about a different file is not a proof about this one.
+ENROL_FIX_ROOT="$WORK/enrolment-fixture-root"
+mkdir -p "$ENROL_FIX_ROOT/libexec"
+cp "$REPO_ROOT/libexec/orchid-status" "$ENROL_FIX_ROOT/libexec/orchid-status"
+printf '\n# a local edit the shipped file does not carry\n' >> "$ENROL_FIX_ROOT/libexec/orchid-status"
+enrol_observe "$ENROL_FIX_LEDGER" "$ENROL_FIX_ROOT" libexec/orchid-status \
+  "refusing to run: the checkout orchid itself runs from a stale tree"
+assert_match 'gate-proved-only-in-text: libexec/orchid-status' \
+  "$(enrolment_gaps "$ENROL_FIX_LEDGER" libexec/orchid-status)" \
+  "INV-15: a run of a MODIFIED copy must not enrol the shipped path — otherwise a fixture shaped like an entry point could stand in for the entry point, which is the substitution this whole file exists to refuse"
+
+# THREE: a run that produced nothing. An entry point that printed not one
+# character either did not execute or is not something this file can weigh a
+# refusal against, and either way it has proved nothing.
+enrol_observe "$ENROL_FIX_LEDGER" "$DOCTOR_ROOT" libexec/orchid-status ""
+assert_match 'gate-proved-only-in-text: libexec/orchid-status' \
+  "$(enrolment_gaps "$ENROL_FIX_LEDGER" libexec/orchid-status)" \
+  "INV-15: a run that produced no output must not enrol anything either"
+
+# FOUR: run, honestly, and never anywhere the gate could fire. This is the
+# subtle one and the reason the ledger marks its records: every entry point
+# here is also run out of a root that is not stale, and a contract that counted
+# those would be met by the twin instead of the proof.
+enrol_observe "$ENROL_FIX_LEDGER" "$DOCTOR_ROOT" libexec/orchid-status \
+  "run_status: planning"
+assert_match 'gate-run-but-never-refused: libexec/orchid-status' \
+  "$(enrolment_gaps "$ENROL_FIX_LEDGER" libexec/orchid-status)" \
+  "INV-15: an entry point this file ran only where the gate could never fire must be reported as unproved rather than counted, or the contract is satisfied by the half of each pair that establishes the side effect instead of the half that establishes the ordering"
+red_case "the enrolment contract was driven through all four ways a proof fails to be earned — a derived candidate nobody ran, a run of a MODIFIED copy of the shipped file, a run that produced no output, and a run made only out of a root where the gate could never fire — and reported every one of them, while leaving alone the one entry point that really was executed out of a stale root and observed to refuse"
+
+# The twin: the identical fixture ledger, with the one thing that was missing
+# supplied, must go quiet. Without it the four cases above are equally true of
+# a contract that reports everything forever.
+enrol_observe "$ENROL_FIX_LEDGER" "$DOCTOR_ROOT" libexec/orchid-status \
+  "refusing to run: the checkout orchid itself runs from a stale tree"
+assert_eq "" "$(enrolment_gaps "$ENROL_FIX_LEDGER" libexec/orchid-doctor libexec/orchid-status)" \
+  "INV-15: with a real run of the shipped file out of a stale root recorded for both, the contract must go quiet — otherwise it reports every entry point whatever happened, and the clean result over the shipped set above is not a measurement"
+green_case "the same fixture ledger, once a run of the SHIPPED file that really did refuse was recorded for the entry point that was missing one, reported nothing at all — so the contract distinguishes a proved gate from an unproved one rather than refusing everything, and the shipped set passing it is a result rather than a shape"
+
+# ===========================================================================
+# 11 -- the boundaries of what any of this proves.
+# ===========================================================================
+not_tested "gate-omission-beyond-the-five-families" \
+  "enforcement gates outside the five this file derives — the static sections of scripts/ci-local.sh, the files tests/helpers.sh enrols in the red-case rule (by location under tests/inv/ and by name in PROOF_ENROLLED_FILES), the stale-root guard's reach across every shipped file that loads lib/common.sh, the early-exit matcher shape across the shipped kernel, the bundled plugins and those same gate files, and the enrolment contract of section 10 — the requirement that every shipped entry point whose gate placement only a run can settle has been run here, out of a genuinely stale root, and observed to refuse. A gate that is none of those (a check living only inside one verb, a hook a plugin installs) is held to the same rule by review. What makes the five checkable is that each has a DISCOVERABLE membership: a banner, a glob plus the array beside it, a source line, a syntactic shape, and — for the fifth — a machine-local trust decision paired with a firing site, derived from the same walked inventory as the third. Three of the five are now derived over an inventory that is WALKED rather than listed, so 'which directories does this look in' has stopped being a question anybody has to keep answering; the other two are bounded by tests/inv/ and by scripts/ci-local.sh, which are the files those gates live in. A new gate family belongs here the moment its membership becomes derivable"
 not_tested "gate-reach-into-code-that-arms-nothing" \
   "shipped code that executes out of \$ORCHID_ROOT without loading lib/common.sh at all. Section 4's universe is every file in the shipped inventory that SOURCES the library — and that inventory is now a WALK of the tree (Git's tracked-plus-untracked set in a checkout, a filesystem walk in an extracted archive) rather than a list of directory families, with tests/ and Markdown the two declared exclusions, so a loader under a directory nobody has thought of is inside it — because sourcing the library is what arms the guard and the question this file asks is whether what was armed is fired. A helper that runs kernel code some other way — a plugin's notify sender that shells to the orchid dispatcher rather than sourcing it, a hook script, anything reached through a subprocess — arms nothing here, so it is neither reported nor cleared. The subprocess case is the benign half: whatever it invokes is itself in the universe and fires the gate on its own account. The case that is not covered is a file that reads and acts on \$ORCHID_ROOT's contents directly without loading the library, which no shipped file does today and which this derivation would not notice arriving"
 not_tested "firing-site-reachability-within-an-entry-point" \
-  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the six sections 4, 6, 8 and 9 execute. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor and for libexec/orchid-status — the latter on BOTH its arms, because its lookup runs only under --explain and plain status reaches the identical firing site having decided nothing, which is the one place a line-order reading of a file and a reading of its runs come apart — each by running the entry point and weighing its refusal against a side effect — a write, a report, or a verdict — that really does happen otherwise; that is six entry points out of the deferring set, and section 4 executes a sixth from OUTSIDE that set — install.sh, the top-level installer, run out of a genuinely stale root with the prefix symlink and the per-user plugin directory as the witnesses, because the only kernel check that file ever carried is its closing doctor run and that one is skipped in exactly the self-hosted shape this refusal is for. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. All four of those verdicts are RUN, each on its own target: an uninitialised directory, a split-brain checkout built to trip a different predicate from the other two, and a finished run put to both runners. Three routes clearing a gate says nothing about a fourth, so none of them is argued from the others. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. An entry point that guards its call, or that acts before it, belongs to review, and the two questions to put to it are the ones sections 4, 6, 8 and 9 put to those five: on which route is your gate not reached, and what have you already done by the time it is"
+  "whether a firing site an entry point CONTAINS is actually REACHED on every route through that file, for every entry point but the ones sections 4, 6, 8 and 9 execute — which, since section 10, is every member of the derived candidate set plus install.sh, stated as a contract rather than as a count that goes stale the day the set grows. Section 4 is textual in that one respect by construction: it asks whether the file calls _orchid_entry_restore_operator_path or orchid_root_stale_gate, which a scan can answer, and not whether every path to that file's own work runs past the call -- or runs past it BEFORE that work -- which it cannot. (What section 4 no longer takes on trust is the OTHER half of that question, whether a call it found fires anything where the file lives: that is answered by running a stub at the file's own path out of a genuinely stale root, so a firing site that is inert at that location is reported rather than counted.) Section 6 answers both questions for runners/orchid-pump and runners/orchid-tick, section 8 for libexec/orchid-trust and for runners/orchid-service, and section 9 for libexec/orchid-doctor and for libexec/orchid-status — the latter on BOTH its arms, because its lookup runs only under --explain and plain status reaches the identical firing site having decided nothing, which is the one place a line-order reading of a file and a reading of its runs come apart — each by running the entry point and weighing its refusal against a side effect — a write, a report, or a verdict — that really does happen otherwise; that is every member of the set section 4 derives, which section 10 is what makes true rather than a coincidence of who ran what, and section 4 executes one more from OUTSIDE that set — install.sh, the top-level installer, run out of a genuinely stale root with the prefix symlink and the per-user plugin directory as the witnesses, because the only kernel check that file ever carried is its closing doctor run and that one is skipped in exactly the self-hosted shape this refusal is for. Section 6 is also where the ROUTE half of the question is put rather than only the file half: both scheduled runners answer an uninitialised, split-brain or finished repository above their trust gate and leave, and those routes had no fire on them at all, which no scan of either file could have said, because the call is in the text. All four of those verdicts are RUN, each on its own target: an uninitialised directory, a split-brain checkout built to trip a different predicate from the other two, and a finished run put to both runners. Three routes clearing a gate says nothing about a fourth, so none of them is argued from the others. For the rest it is answered structurally: every shipped deferring entry point calls its firing site unconditionally on the route to its own work, and runners/orchid-service -- the one that fires the gate itself rather than through the PATH restore, and the one that shipped this per-arm and had to be corrected -- now calls it on the straight-line path above its dispatch, so it has no ACTING arm that could forget; section 8 runs its status arm out of a stale root and requires the refusal to land ahead of the report, which is the half a scan of that file cannot answer. libexec/orchid-trust is the one that fires PER SUBCOMMAND, because what the gate must precede is per subcommand, and no ACTING arm of it is exempt any longer: the lookup arm carried an exemption for writing nothing durable, that exemption is gone, and section 8 executes both the acknowledgement, whose side effect is the record it writes, and the lookup, whose side effect is the report an operator acts on. What both files DO have above the call is the usage arm -- -h, --help, help, a bare invocation -- and that is the one route through either of them on which this gate does not fire. It is not left as an omission in one and a decision in the other: section 8 runs both verbs' usage arms out of the same stale root that refuses their acting arms, so the exemption is measured, bounded to the arm that resolves no target and reads no record, and identical in the two files. What is not tested is the claim UNDER it -- that a usage text can never carry anything an operator acts on about a repository -- which is an argument about the content of two here-documents rather than about an ordering, and belongs to review. Section 8 does not run the third arm, revocation; section 9 does, on the self-hosted target, and what is left untested there is narrower than the arm. Its ordering cannot be read off a trace: revocation walks no history by design, so its machine-local half — the bounded identity derivation that decides which record would be unlinked — spends no Git in any environment, and there is no position for an observer to measure. Section 9 measures the two halves that can be: the arm spends no target query of its own at all, so the gate's comparison is the only Git in a refused run and nothing precedes it; and the ORDER is pinned on the report edge instead, since an underivable identity is a diagnosis about the target and out of a stale root it must not be produced. What that leaves untested is the ordering between the derivation and the gate on the route where the derivation SUCCEEDS, which no instrumentation in this file can see. So a trust subcommand added tomorrow that acts and forgets the call is caught by nothing: section 4 sees the file's other call sites and is satisfied, and sections 8 and 9 only ever asked about the arms they run. The ARM is where that loss is now, and it is worth being exact about what section 10 did and did not close. A new ENTRY POINT in the derived class is no longer a proof nobody thought to write: the contract requires that this file ran it out of a genuinely stale root and saw it refuse, so it cannot be enrolled on paper and enforced nowhere. What the contract does not do is decide WHICH route was taken or what had already happened when the refusal landed — that is the per-route weighing sections 6, 8 and 9 do, against a write, a report or a verdict that really happens otherwise, and it is authored per entry point because the side effect worth measuring is different in each. So the contract makes the omission impossible and leaves the ROUTE to the author and to review; the two questions to put to a new one are the ones sections 4, 6, 8 and 9 put to the set they cover: on which route is your gate not reached, and what have you already done by the time it is"
 not_tested "early-exit-matchers-outside-the-kernel-and-the-invariant-gates" \
   "the rest of tests/. Section 5's glob is the repository top level, the shipped kernel, the bundled plugins and tests/inv/test_*.sh, and the last of those was added because an invariant gate deciding its verdict by a race is the same defect the section scans the kernel for. The other test files carry the shape too, in the hundreds, and they are not covered here: converting them is a mechanical sweep of a different size, and the argument for taking the gates first is that a wrong answer there is a wrong answer about the kernel, whereas a wrong answer in a feature test is a flaky test somebody re-runs. The tell is unchanged wherever it appears, and the direction that costs is the negative assertion: a producer piped into an early-exiting grep, then '&& fail', is skipped exactly when the pattern is present. Spelled in words rather than in code, here and in the failure message above, because these two lines are not comments: this file is inside the glob it runs, so a literal instance of the shape on a line of its own prose is a violation of this invariant reported against this file — which is the right answer, and the reason the wording works around it"
 not_tested "early-exit-matchers-other-than-grep-q" \

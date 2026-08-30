@@ -2061,7 +2061,17 @@ semantic correctness beyond declared verification commands.
   line — which out of a stale root must refuse with none of those verdicts
   produced, beside the runs out of a healthy root that must produce all four
   — and a task whose `verification_commands` names nothing but `true` is still
-  gated by `merge_gate` before its ref can advance
+  gated by `merge_gate` before its ref can advance. Which entry points those
+  executable claims have to cover is itself derived rather than chosen: every
+  shipped entry point carrying both a machine-local trust decision and a
+  stale-root firing site — the pair no reading of a file can settle, since a
+  reading cannot see which routes reach the call or what has already happened
+  when they do — must have been run out of a genuinely stale root and observed
+  to refuse, and that enrolment is read off a record the runs themselves write
+  (a file byte-identical to the shipped one, a run that produced output, and an
+  output that was the refusal) rather than off anything the proof says about
+  itself. So an entry point that grows its first trust decision tomorrow is
+  proved by execution rather than enrolled on paper
 - INV-16 a step is never dispatched to an actor whose manifest does not
   declare what that step's work needs; it becomes an operator hand-off with a
   named, journaled boundary instead
