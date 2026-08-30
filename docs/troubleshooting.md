@@ -84,6 +84,454 @@ readable. Revocation still needs a usable `.git` marker to know which record
 applies; if a linked worktree's own marker or registration is broken, revoke
 from the main checkout, which shares the same record.
 
+## The run is finished but the service is still firing
+
+**Symptom:** every task is `done`, the work is merged, `orchid status` shows
+`run_status: accepting` (or `complete`) — and the launchd agent or crontab line
+is still waking every `pump_interval_s`.
+
+`accepting` is where a finished run stops on its own. The driver takes the
+mechanical half of completion itself — the pass that finds every task `done`
+advances `running -> accepting` — and then stops, because the acceptance checks
+and `orchid run accept --reason ... --evidence ...` are judgment work no verb
+decides. Nothing advances it from there, so a schedule left running against an
+`accepting` run repeats one pass for as long as it is installed. The pump, the
+`orchid service status` binding block and `orchid doctor` all name that state
+and the accept verb; none of them calls it finished, because `accepting ->
+running` is legal and you may still be about to add work rather than accept:
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
+  whose run is accepting — every task is done and only an operator can accept
+  the run, so no wake of this schedule can move it:
+  cd /path/to/repo && orchid run accept --reason "<why>" --evidence <acceptance evidence file>
+```
+
+That is expected, and it is yours to stop. Nothing ties a schedule's lifetime
+to the run it serves: not the last task merging, not `orchid run accept`, not
+`run_status: complete`. Each wake after completion is a certain no-op, but it
+is a no-op that runs forever. The pump says so on every one of them, as long as
+a schedule really is bound to that checkout:
+
+```
+pump: run complete
+pump: nothing will change here again — every further wake is a no-op; uninstall
+  the schedule, THEN remove the checkout, as one operation:
+  orchid service teardown --repo <path>
+```
+
+Those two lines are printed before the pump opens `.orchid/runtime/pump.log`
+(nothing may open a path inside the target before the unattended trust gate
+passes), so a scheduled wake sends them to the scheduler's `/dev/null` and
+`pump.log` stays empty — you will see them by running `runners/orchid-pump`
+from a terminal, not by reading the log. The finished-run finding therefore
+also has a surface that does not depend on catching an invocation's output:
+`orchid doctor`, from anywhere on this machine, reports every binding whose run
+has already reached a terminal state.
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
+  whose run is complete — a run never leaves that state on its own, so every
+  further wake is a certain no-op; uninstall the schedule, THEN remove the
+  checkout, as one operation: orchid service teardown --repo /path/to/repo
+```
+
+```sh
+orchid service status --repo "$PWD"      # names the binding and this ordering
+orchid service teardown --repo "$PWD"    # uninstall, then remove this worktree
+```
+
+**The removal must not be a separate command.** `orchid service teardown`
+removes the worktree only if the uninstall succeeded — and the uninstall
+refuses whenever it cannot prove the scheduler let the job go (the three
+refusals documented further down this section). Run as two lines, that refusal
+scrolls past above
+a removal that goes ahead anyway, taking the checkout, the binding record inside
+it and the last path anything had to the still-loaded agent. If you would rather
+run the pair yourself, chain it so the second cannot run without the first, and
+run the chain from your **main** checkout (`git worktree remove` needs a
+repository to run in) — orchid can refuse only the removals it performs itself,
+never a `git worktree remove` you type:
+
+```sh
+cd /path/to/main-checkout
+orchid service uninstall --repo /path/to/repo \
+  && git worktree remove /path/to/repo
+```
+
+Reversed, the scheduler
+keeps firing against a directory that is no longer there, and the record
+naming the leftover schedule was inside the directory you deleted. If that
+already happened, `orchid doctor` — from anywhere on this machine, not just
+from the repository — reports it from the machine-local copy under
+`~/.orchid/services/`:
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for
+  /path/that/is/gone, which no longer exists — the scheduler is waking against
+  a deleted path; remove it with: orchid service uninstall --repo /path/that/is/gone
+```
+
+`orchid service uninstall` works on a path that no longer exists — it is the
+one subverb that does. It resolves the path from the machine-local binding
+record (the canonical spelling `orchid doctor` printed above, which is what the
+schedule's label was derived from), then removes the launchd plist, or the
+marker-guarded crontab line, neither of which lived in the repository either.
+`install` and `status` still refuse a missing `--repo`: there is nothing to
+install for, and nothing to report on.
+
+A checkout can also lose its repository while the directory survives — a
+`git worktree remove` or `prune` that took the registration, a main checkout
+that was deleted. The pump refuses that shape as loudly as a missing directory,
+and `orchid doctor` reports it the same way (`whose repository is gone`).
+Either way the refusal itself goes to the scheduler's `/dev/null`, so the pump
+also records it beside the machine-local binding and doctor prints it back:
+
+```
+WARN: pump service com.orchid.pump.<hash> is still installed for /path/to/repo,
+  whose repository is gone ...
+  the schedule last woke and refused: <timestamp>  refusing to run: ...
+```
+
+That line is the difference between a schedule that was installed and never
+fired and one that is failing on its interval right now.
+
+It describes the schedule's **last** wake, so it is retired as soon as something
+disproves it: a wake that finds the target healthy and completes, a real (not
+`--dry-run`) `orchid service install` that replaces the schedule, and
+`orchid service uninstall`, which removes it. A wake that refuses or fails again
+leaves the current note alone, so what doctor prints is always the most recent
+thing that went wrong. Repair the checkout — restore the directory, put back its
+`.git`, `git worktree repair` the registration — and the next scheduled wake
+clears the note by itself; you never have to delete it by hand, and doctor never
+prints a refusal beside a service it is reporting as healthy.
+
+**A checkout that MOVED keeps its schedule.** `install` derives the label by
+hashing the checkout's canonical path, but `uninstall` and `teardown` never
+re-derive it — they read it out of the binding records `install` wrote. The
+repo-local half travels inside the worktree and the machine-local half never
+moves at all, so after a `git worktree move` both verbs still end the schedule
+that is genuinely installed. Re-hashed from the new path they would ask about a
+label nothing ever installed, report `no service installed`, and leave the agent
+firing every interval with no verb able to name it.
+
+**And it must not be given a second one.** `install` is the verb that still
+hashes the current path, because installing is where a label comes from. Run in
+a checkout that has moved, it used to derive a *second* label, render and load a
+second plist, write a second machine-local record, and overwrite the repo-local
+half that was the first schedule's last name inside that checkout — two agents
+waking on the same interval against one run, the older of them reachable only
+through a machine-local record no verb resolves by path. `install` now resolves
+the binding the checkout is carrying before it writes anything, and refuses
+rather than stacking:
+
+```
+orchid: refusing to install a schedule for /new/path: this checkout already
+  carries one, under a different name
+orchid: it is bound to com.orchid.pump.<12 hex>, installed against /old/path --
+  a path this checkout has since left, so installing from here would derive
+  com.orchid.pump.<other 12 hex> and leave ... scheduled with nothing in this
+  checkout still naming it
+orchid: ... end the schedule this checkout has before it is given another, as
+  ONE operation -- the install runs only if the uninstall succeeded: orchid
+  service uninstall --repo /new/path && orchid service install --repo /new/path
+  --interval-s 240
+```
+
+Run that chain and the checkout is left with exactly one schedule, under the
+label its current path derives — the `uninstall` half resolves the original from
+the binding, exactly as above. Re-installing **in place** is untouched: a
+checkout that has not moved resolves the same label it would derive, so
+`install` replaces its own schedule as it always has. And a `cp -R` copy of a
+bound checkout carries that record too while the original is still standing —
+the schedule it names is not the copy's to end and `uninstall` there would
+refuse, so the copy is not held to this and simply gets a schedule of its own.
+
+The two records have to agree about which schedule that is. A repo-local record
+and its machine-local twin naming different labels, platforms, repositories or
+artifacts are refused with nothing removed and no scheduler call made — that
+shape is a record edited by hand, and acting on either half alone would unload
+another checkout's agent or clear the last name this one has:
+
+```
+orchid: refusing to remove anything for /path/to/repo: its two binding records
+  do not name the same schedule
+orchid: <repo>/.orchid/runtime/service.json and its machine-local copy must agree
+  on label, platform, repository and artifact ...
+orchid: ... reconcile or delete the wrong record, then re-run: orchid service
+  teardown --repo /path/to/repo
+```
+
+**And the record is read as untrusted input.** It lives inside the checkout the
+run is driven in — under `runtime/`, which every engine the run spawns can write
+— while what a removal takes out of it are paths, not descriptions: the label is
+joined into `~/.orchid/services/<label>.json` and
+`~/Library/LaunchAgents/<label>.plist` as a path *component*, and the artifact is
+handed to `launchctl unload` and then deleted exactly as written. So both are
+checked against what `orchid service install` could have produced **for the
+checkout that same record names** — the label must be `com.orchid.pump.` plus
+the first twelve hex characters of that path's sha256, and the artifact must be
+that label's plist (macOS) or that path's own `.orchid/runtime/pump.cron`
+(elsewhere) — and anything else is refused before any path built from it is
+opened, probed or removed:
+
+```
+orchid: refusing to remove anything for /path/to/repo: its binding record does
+  not name a schedule orchid could have installed
+orchid: the label recorded in <repo>/.orchid/runtime/service.json ('../../x') is
+  not one 'orchid service install' derives for the checkout that same record
+  names ('/path/to/repo') ...
+orchid: ... repair or delete that record, then re-run: orchid service teardown
+  --repo /path/to/repo
+```
+
+Note that the right *shape* is not enough. Every checkout on this machine has a
+`com.orchid.pump.<12 hex>` label and a `.orchid/runtime/pump.cron`, so a record
+that swapped in a **neighbour's** label or a neighbour's cron record would pass
+a shape test and then have the removal unload that neighbour's agent, or delete
+the file its own `uninstall` and `status` read. One checkout, one label, one
+artifact; everything else is refused whether or not it looks invented.
+
+Unlike a disagreement between the two halves, there is nothing to reconcile
+here: a value orchid does not derive has no honest counterpart to be checked
+against. Delete `.orchid/runtime/service.json` (it is runtime state, never
+committed) and re-run from the checkout the schedule was installed against — the
+machine-local half is untouched, and a removal run there resolves the label from
+it. `orchid doctor` prints that label and the path it is bound to.
+
+**Both of those findings stop an `install` too, not only a removal.** A binding
+that cannot be read is not an absent one — the plist and the machine-local record
+it was describing are still sitting there, possibly still loaded — so an install
+that treated "no schedule was named" as "no schedule exists" would derive the
+current path's label and hand the checkout a second schedule beside the one it
+could not name. That is the stacking above, reached through the very state that
+hides it. So `install` refuses on the same two findings, before it renders
+anything or writes either binding half, and names a re-run of itself:
+
+```
+orchid: refusing to install a schedule for /path/to/repo: its two binding records
+  do not name the same schedule
+orchid: ... reconcile or delete the wrong record, then re-run: orchid service
+  install --repo /path/to/repo --interval-s 240
+```
+
+Installing over it would not have repaired anything: both halves would be
+rewritten to agree about the *new* schedule while the one they used to describe
+kept firing under a name nothing on disk mentioned any more. Repair or delete the
+record the refusal names, then re-run — the install either lands, or meets the
+moved-checkout refusal above with a binding it can finally read.
+
+**Another checkout holding that record does not inherit the schedule.**
+Agreement between the two records says which schedule they are about; it says
+nothing about who is entitled to end it. A `cp -R` of a bound checkout — a
+backup, a snapshot restored beside the original — copies
+`.orchid/runtime/service.json` with everything else, so the duplicate's records
+agree with the machine-local half exactly as the original's do; a *second linked
+worktree* of the same repository can end up with the same file, copied in or
+written there by a run's own engines. Run in either, a removal would unload the
+agent the checkout that record names is still being driven by, delete both
+records, and leave that checkout bound to a schedule nothing on the machine can
+name. So `uninstall` and `teardown` require `--repo` to be the checkout the
+record names, or a path that checkout has **left**: the fact that decides it is
+whether anybody is still standing there to be harmed. `git worktree move` and a
+plain rename leave nothing behind; a copy leaves the original exactly where the
+record says it is. The refusal comes before any `launchctl`/`crontab` call,
+before either record is touched, and before any worktree is removed:
+
+```
+orchid: refusing to remove anything for /path/to/other: this is not the checkout
+  that binding was installed against (/path/to/original)
+orchid: the records here match, and matching records are not ownership —
+  /path/to/other/.orchid/runtime/service.json names a checkout that is STILL
+  THERE, and a record naming another checkout is what a copy of the bound one
+  carries and what a separately added worktree can be given ...
+```
+
+Run the command against the checkout it names. The refusal applies only while
+that checkout is **still there**: once it is gone — torn down, moved, or plainly
+renamed — there is no other checkout left for a removal to harm, so the record
+naming it becomes the caller's to clear. That is deliberate: a directory left
+holding a record for a path that no longer exists would otherwise be guarded
+against removal by a file no verb could take.
+
+Git's worktree registration is asked as well, in the one direction it can answer:
+a checkout git registers as *some other* existing checkout is a copy of it and is
+refused outright, even where the recorded path has since gone. It cannot answer
+the other way round — every linked worktree is registered at its own path, so
+"git registers me" is equally true of a worktree added five minutes ago that was
+never bound to anything.
+
+**`--dry-run` previews an uninstall without performing it.** It prints the
+`launchctl`/`crontab` command it would run and names the plist (or `pump.cron`
+record) and the binding record it would remove — and removes none of them. The
+schedule is still installed when it returns, and those records are the only
+things naming it, so deleting them for a preview would leave exactly the
+leftover this page is about. Re-run without `--dry-run` to actually end it.
+
+**`uninstall` can refuse because the unload failed.** On macOS it removes the
+plist and clears the binding only once launchd has actually let go of the job.
+If `launchctl unload` fails and `launchctl list` still reports the label,
+nothing is removed and the verb refuses:
+
+```
+orchid: refusing to remove anything for /path/to/repo (label com.orchid.pump.<hash>):
+  'launchctl unload' failed and launchd still reports that job as loaded
+orchid: ... both are left exactly as they were
+orchid: unload it by hand, then re-run: launchctl unload <plist> && orchid service uninstall --repo /path/to/repo
+```
+
+Removing them anyway would be the same leftover reached from the other end: the
+plist is the only path an unload can name that agent by, and the binding is the
+only thing that names the schedule at all. Do what the last line says, then
+re-run the uninstall — it is idempotent. A failed unload with **no** job behind
+it (a plist `install` placed but never loaded) is not this case: uninstall
+clears it normally.
+
+**It refuses the same way when the plist is already gone.** Deleting a plist
+unloads nothing — launchd keeps the job it loaded until something unloads it or
+the machine reboots. So if you removed the plist by hand (tidying
+`~/Library/LaunchAgents`, restoring a backup, a cleanup script), `uninstall`
+asks launchd before clearing the binding record, and refuses if the job is
+still there:
+
+```
+orchid: refusing to remove anything for /path/to/repo (label com.orchid.pump.<hash>):
+  its plist is already gone and launchd still reports that job as loaded
+orchid: ... it is left exactly as it was
+orchid: unload it by hand, then re-run: launchctl remove <label> && orchid service uninstall --repo /path/to/repo
+```
+
+`launchctl remove <label>`, not an unload: there is no plist left to name the
+job by path. This is the worse half of the same hazard — with the plist gone,
+the binding record is the *only* thing on the machine that still names that
+agent, so clearing it would leave a schedule still firing that nothing reports
+and nothing can find. Once launchd has let the job go, re-run the same
+uninstall and it clears normally.
+
+**And it refuses when launchd could not be asked at all.** `launchctl list`
+exits nonzero for two different facts: launchd answering that it holds no such
+job (status 113, `Could not find service`), and every way of failing to ask —
+launchctl missing from `PATH`, denied, unable to reach your launchd session.
+Only the first clears anything. A query that never got an answer is treated
+exactly like a loaded job, because on a machine where launchctl is malfunctioning
+the agent is very likely still firing:
+
+```
+orchid: launchctl: Operation not permitted
+orchid: launchctl: launchctl list com.orchid.pump.<hash> exited 1: Operation not permitted
+orchid: refusing to remove anything for /path/to/repo (label com.orchid.pump.<hash>):
+  'launchctl unload' failed and launchd could not be asked whether it still holds that job
+orchid: an unanswered query is not an absence ... both are left exactly as they were
+orchid: ask launchd yourself, then re-run: launchctl list <label> && orchid service uninstall --repo /path/to/repo
+```
+
+The second `orchid: launchctl:` line is the point: it names the query that went
+unanswered, its exit status and whatever it printed, so you can fix the query
+rather than guess (the first line is the unload's own error). Run that
+`launchctl list` yourself; once it answers — either way — re-run the uninstall
+and it will act on the answer. The plist-already-gone case above refuses the
+same way and for the same reason, with `its plist is already gone` in place of
+the failed unload.
+
+**Every one of those refusals also stops `teardown`.** `orchid service
+teardown` is the same uninstall with `git worktree remove` as its success
+branch, so any of the three refusals above exits nonzero having removed
+nothing at all — no plist, no binding record, and no worktree. Each one's
+`then re-run:` line names the command you actually ran, so a refusal reached
+through `teardown` sends you back to `teardown` rather than to the uninstall
+alone (which would end the schedule and hand you back the worktree — the two
+separate steps again). Two other things it refuses,
+both *before* touching the schedule, so a refusal never leaves you with a
+checkout and no way to name what was scheduling it:
+
+```
+orchid: refusing to tear down /path/to/repo: it is not a linked worktree, so
+  there is nothing 'git worktree remove' can take
+orchid: nothing was uninstalled and nothing was removed — end the schedule
+  alone with: orchid service uninstall --repo /path/to/repo
+```
+
+— `git worktree remove` applies only to a linked worktree (which is what
+`orchid start` creates); against your own main checkout, the uninstall is the
+whole of what orchid is owed. The second is a `--repo` whose worktree
+registration or repository git can no longer read.
+
+That leaves exactly one failure that fires with the uninstall *already done* —
+a worktree git considers unclean, which it refuses after the schedule is
+already gone. The ordering is satisfied at that point (nothing is waking
+against that path any more), and the verb says so rather than leaving you with
+git's message, which names no schedule at all:
+
+```
+orchid: the schedule for /path/to/repo is uninstalled — it will not fire again,
+  and nothing is waking against this path
+orchid: only the checkout is left, and 'git worktree remove' refused it (status
+  1) — do NOT re-run teardown, there is no schedule left for it to end; finish
+  with:
+orchid:   git -C /path/to/project worktree remove --force /path/to/repo
+```
+
+Re-running `teardown` there reports `no service installed` and removes nothing,
+which is why it says not to: run that last line, or remove the directory by
+hand.
+
+## The pump woke an orchestrator over and over and nothing moved
+
+**Symptom:** `pump.log` shows repeated hand-offs to an orchestrator for the
+same judgment boundary, pass after pass, with the boundary unchanged.
+
+Each pass records the boundary through `orchid run boundary set`, which bumps
+the record's `passes` counter whenever the record is unchanged by content. Once
+`passes` exceeds `pump_wake_max` (config, default 3) the pump stops waking a
+model for it:
+
+```
+pump: judgment boundary [review-conflict] has survived 4 passes unchanged
+  (pump_wake_max=3) — not waking an orchestrator again; an operator has been
+  notified
+```
+
+What the counter charges is a WAKEUP, not merely a pass. A pass that could not
+wake anyone is recorded but not counted, so neither an engine outage nor your
+own debugging quietly spends the budget on your behalf. Three ways a pass
+cannot wake anyone: it was not a scheduled pass at all (a hand-run `orchid
+drive` never hands off to a tick), the boundary is operator-only, or no
+orchestrator engine resolves — rate-limited, ledger-disabled, none configured,
+or one the `orchestrate` step refuses outright.
+
+The driver raises the blocker on the same pass, exactly once. Read it in
+`.orchid/BLOCKERS.md`, or with `orchid run boundary show`, and act on the
+boundary yourself — a `review-conflict` boundary wants `orchid task arbitrate`.
+A boundary that genuinely changes starts a fresh count; one that is merely
+displaced for a pass by a higher-ranked stop and comes back does not, because
+the counts are kept per boundary (`counters` in the record) rather than in its
+single slot — otherwise two boundaries taking turns would each be woken for
+forever.
+
+**A spent boundary does not park the rest of the run.** Once its budget is
+gone it stops outranking boundaries a wakeup will still be spent on, so the
+next pass records the live one and hands that to the pump instead — even
+though the spent one sorts first by task id. The spent boundary keeps its own
+count and comes back to the record as soon as nothing live outranks it, so it
+is still what `orchid run boundary show` reports on a run with nothing else
+outstanding. If you see the record moving between tasks from pass to pass,
+that is this: one decision is waiting on you while the others are still being
+driven.
+
+A **finished** run never gets this far and has its own line. No command surface
+admits `orchid run accept`, so a `run-complete` boundary is operator-only and
+the pump declines it before the budget applies at all:
+
+```
+pump: judgment boundary [run-complete] is operator-only — not waking an
+  orchestrator
+```
+
+That one wants the acceptance checks and `orchid run accept --reason ...
+--evidence ...`, which no orchestrator can perform on your behalf. It is also
+why a completed run stops costing wakeups but does **not** stop the schedule —
+see [Tearing it down](./quickstart.md#tearing-it-down).
+
 ## An installed service runs on schedule but nothing happens
 
 **Symptom:** `orchid service status` looks healthy, the scheduler fires, and

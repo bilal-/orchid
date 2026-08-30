@@ -3,7 +3,10 @@
 # whether an abandoned run is worth waking. It never builds a prompt or reads
 # an envelope; it only checks init state, run_status, lease staleness, and
 # (dry-check only) whether an orchestrator engine is currently resolvable,
-# then `exec`s runners/orchid-tick (Task 7) to do the real work.
+# then hands off to runners/orchid-tick (Task 7) to do the real work, taking its
+# exit code as its own. (That hand-off runs the tick as a CHILD rather than
+# `exec`ing it, so the pump's EXIT trap still fires on a failed tick -- T036,
+# tests/test_service.sh K15b; nothing here changes either way.)
 source "$(dirname "$0")/helpers.sh"
 source "$REPO_ROOT/lib/common.sh"; source "$REPO_ROOT/lib/frontmatter.sh"
 source "$REPO_ROOT/lib/manifest.sh"
@@ -295,6 +298,20 @@ jq -n --arg cand "$PUMP_CAND" \
     verdict:"request-changes", scope_complete:true, summary:"fixture review",
     candidate_sha:$cand, findings:[]}' > "$WORK/.orchid/reviews/T001-a1-reviewer.json"
 
+# From here to the end of this file, EVERY arm re-drives that same unchanged
+# review-conflict boundary, because each one is about something else entirely
+# (lease freshness, a released lease, failover, engine eligibility) and reuses
+# one fixture to get there. That is more consecutive passes over one unmoved
+# boundary than the wake budget allows: `pump_wake_max` (config, default 3)
+# exists precisely so a boundary nothing is moving stops waking a model, and
+# under the default these arms would stop asserting what they were written to
+# assert -- a declined wake would look like a failover bug.
+#
+# So every `orchid.config` written below raises it out of the way. The budget's
+# own RED/GREEN pair lives in tests/test_run.sh, against a fixture built for
+# it; suppressing it here keeps these arms testing the one thing each is for.
+PUMP_NO_BUDGET='pump_wake_max=99'
+
 # Sanity: the driver really does stop on it, with the dedicated exit code.
 rc=0; drive_out="$(ORCHID_REPO="$WORK" "$REPO_ROOT/runners/orchid-drive" 2>&1)" || rc=$?
 assert_eq 16 "$rc" "a contested review parks the deterministic driver at a judgment boundary"
@@ -308,7 +325,7 @@ assert_match "boundary \[blocked-task\] T000" "$drive_out" \
 # ===========================================================================
 printf -- '---\nrun_status: running\nrun_id: r-pump\n---\n# Roadmap\n' > .orchid/roadmap.md
 mk_stub_engine stubfresh
-printf 'role.orchestrator=stubfresh\n' > orchid.config
+printf 'role.orchestrator=stubfresh\n%s\n' "$PUMP_NO_BUDGET" > orchid.config
 write_lease 5
 rm -f "$WORK/marker-stubfresh"
 
@@ -326,7 +343,7 @@ assert_match '^pump: lease fresh \([0-9]+s\)$' "$out" "pump prints the lease-fre
 # though the session itself had already cleanly signaled it was done.
 # ===========================================================================
 mk_stub_engine stubreleased
-printf 'role.orchestrator=stubreleased\n' > orchid.config
+printf 'role.orchestrator=stubreleased\n%s\n' "$PUMP_NO_BUDGET" > orchid.config
 write_released_lease 5   # fresh by age alone -- released must override that
 rm -f "$WORK/marker-stubreleased"
 epoch_before="$(cur_epoch)"
@@ -343,7 +360,7 @@ assert_eq 0 "$rc" "pump exits 0 on a healthy ok tick when the lease is released"
 # (marker present, epoch bumped, tick's own exit code propagates as pump's).
 # ===========================================================================
 mk_stub_engine stubhealthy
-printf 'role.orchestrator=stubhealthy\n' > orchid.config
+printf 'role.orchestrator=stubhealthy\n%s\n' "$PUMP_NO_BUDGET" > orchid.config
 write_lease 1000   # > default pump_stale_s (900)
 epoch_before="$(cur_epoch)"
 
@@ -351,9 +368,9 @@ out="$("$PUMP" 2>&1)"; rc=$?
 epoch_after="$(cur_epoch)"
 
 assert_eq 0 "$rc" "pump exits 0 (the tick's own exit code) on a healthy ok tick"
-[ -f "$WORK/marker-stubhealthy" ] || fail "pump execs the tick, which must spawn the healthy primary orchestrator"
+[ -f "$WORK/marker-stubhealthy" ] || fail "pump hands off to the tick, which must spawn the healthy primary orchestrator"
 [ "$epoch_after" -gt "$epoch_before" ] || fail "pump's tick fences a fresh epoch ($epoch_before -> $epoch_after)"
-assert_match "tick: stubhealthy ok" "$out" "pump's output is the tick's own output (exec, not a wrapper)"
+assert_match "tick: stubhealthy ok" "$out" "pump's output is the tick's own output, passed through rather than summarized"
 
 # ===========================================================================
 # D2 -- run_status running + NO lease.json at all (crashed before its first
@@ -361,7 +378,7 @@ assert_match "tick: stubhealthy ok" "$out" "pump's output is the tick's own outp
 # lease is stale-by-policy ONLY under `running` -- the tick fires.
 # ===========================================================================
 mk_stub_engine stubcrashed
-printf 'role.orchestrator=stubcrashed\n' > orchid.config
+printf 'role.orchestrator=stubcrashed\n%s\n' "$PUMP_NO_BUDGET" > orchid.config
 rm -f .orchid/runtime/lease.json "$WORK/marker-stubcrashed"
 epoch_before="$(cur_epoch)"
 
@@ -380,7 +397,7 @@ assert_eq 0 "$rc" "pump exits 0 on a healthy ok tick when run_status running had
 # ===========================================================================
 mk_stub_engine stubprime
 mk_stub_engine stubfallback
-printf 'role.orchestrator=stubprime,stubfallback\n' > orchid.config
+printf 'role.orchestrator=stubprime,stubfallback\n%s\n' "$PUMP_NO_BUDGET" > orchid.config
 ledger_mark "$WORK" stubprime rate_limited 999999
 capsuite_run stubfallback orchestrator >/dev/null \
   || fail "sanity: capsuite_run should pass stubfallback for the orchestrator role (no dryrun op; static checks only)"
@@ -401,7 +418,7 @@ assert_match "tick: stubfallback ok" "$out" "tick output names the fallback engi
 # ===========================================================================
 mk_stub_engine stubprime2
 mk_stub_engine stubfallback2
-printf 'role.orchestrator=stubprime2,stubfallback2\n' > orchid.config
+printf 'role.orchestrator=stubprime2,stubfallback2\n%s\n' "$PUMP_NO_BUDGET" > orchid.config
 ledger_mark "$WORK" stubprime2 rate_limited 999999
 write_lease 1000
 rm -f "$WORK/marker-stubprime2" "$WORK/marker-stubfallback2"

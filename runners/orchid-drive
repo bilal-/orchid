@@ -317,15 +317,16 @@ export ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"
 # walk always continues: a task parked on a judgment call must never stall
 # the tasks beside it.
 #
-# WHICH one, when a pass meets several: the highest-priority kind
-# (drive_boundary_priority -- could a woken orchestrator settle THIS boundary,
-# on THIS task, right now?), and within one priority the first encountered, so
-# task-id order still decides among equals. Without that ranking a `blocked`
-# task -- which raises the same operator-only boundary on EVERY pass until a
-# human runs `task unblock`/`task retry`, verbs the broker refuses -- would
-# permanently mask a later task's arbitrable review boundary, burning one LLM
-# wakeup per pump cycle on a decision the model has no verb to make. Every
-# boundary the walk meets is still NOTED, so the pass output never hides one.
+# WHICH one, when a pass meets several: the highest-ranked kind
+# (drive_boundary_rank -- will a woken orchestrator actually be spent on THIS
+# boundary, on THIS task, right now?), and within one rank the first
+# encountered, so task-id order still decides among equals. Without that
+# ranking a `blocked` task -- which raises the same operator-only boundary on
+# EVERY pass until a human runs `task unblock`/`task retry`, verbs the broker
+# refuses -- would permanently mask a later task's arbitrable review boundary,
+# burning one LLM wakeup per pump cycle on a decision the model has no verb to
+# make. Every boundary the walk meets is still NOTED, so the pass output never
+# hides one.
 #
 # The ranking reads the task's status AT THE MOMENT the boundary is raised,
 # together with the command surface of the adapter the pump would actually
@@ -334,8 +335,33 @@ export ORCHID_ACTOR="${ORCHID_ACTOR:-drive}"
 # review-evidence condition is arbitrable from `arbitrating` and operator-only
 # from `reviewing`, and a boundary whose settling verb the surface refuses at
 # all (a finished run's `orchid run accept`) is operator-only everywhere.
+#
+# AND IT READS THE WAKE BUDGET EACH BOUNDARY HAS ALREADY SPENT, which is the
+# difference between "a wakeup could settle this" and "a wakeup will be spent
+# on this". Once a boundary has outlived `pump_wake_max`, runners/orchid-pump
+# declines to wake anyone for it at its step 6c -- so ranked as resolvable it
+# would go on winning the single record slot from live, arbitrable boundaries
+# it merely happens to precede in task-id order, and the pump would decline
+# every pass forever while the live one behind it was never even recorded. A
+# spent boundary therefore ranks with the operator-only ones (lib/drive.sh's
+# drive_boundary_rank), which is exactly what it has become.
 # ---------------------------------------------------------------------------
 boundary_kind=""; boundary_task=""; boundary_reason=""; boundary_status=""
+# The winner's own spent-wakeup count, carried alongside it so the rank an
+# incumbent is defended with is recomputed from the same number the challenger
+# is measured against, without re-reading the counters map per comparison.
+boundary_spent=0
+
+# The wake budget the ranking measures against, and the `counters` map of the
+# record as it stood BEFORE this pass. Both are resolved once, beside the
+# orchestrator surface below, because every set_boundary call in the walk ranks
+# against them and a ranking that changed its mind mid-pass would be no ranking
+# at all. The map is a pre-write snapshot for the same reason the de-dup at the
+# foot of this file uses one: this pass has not charged its own wakeup yet, so
+# a boundary must be ranked on the wakeups already spent on it, not on the one
+# recording it is about to spend.
+boundary_counters='{}'
+wake_max=3
 
 # EVERY boundary the pass MEETS, not just the one it records: one line per
 # distinct stop, holding `<kind>`, `<task>`, `<status>` and `<reason>`
@@ -380,6 +406,7 @@ drive_task_status() {
 optional_hooks_died=" "
 set_boundary() {
   local kind="$1" task="$2" reason="$3" note tstatus met_row flat
+  local spent cand_rank held_rank held_why
   local nl=$'\n' sep=$'\037'
   if [ -n "$task" ]; then
     note="boundary [$kind] $task: $reason"
@@ -417,19 +444,39 @@ set_boundary() {
   if ! grep -qxF -e "$met_row" <<<"$boundaries_met"; then
     boundaries_met="${boundaries_met:+$boundaries_met$nl}$met_row"
   fi
-  if [ -n "$boundary_kind" ] && \
-     [ "$(drive_boundary_priority "$kind" "$tstatus" "$orchestrator_surface")" -le \
-       "$(drive_boundary_priority "$boundary_kind" "$boundary_status" "$orchestrator_surface")" ]; then
-    drive_note "$note (held: [$boundary_kind] is already this pass's recorded boundary)"
-    return 0
-  fi
+  # The wakeups already spent on THIS boundary, read off the pre-write
+  # counters snapshot under the same identity the record files it under
+  # (lib/drive.sh's drive_boundary_counter_key, the writer's own spelling).
+  # It is half the ranking key, and it is carried onto `boundary_spent` when
+  # this boundary wins so the incumbent's rank below is recomputed from the
+  # number it was measured with rather than from a second lookup.
+  spent="$(drive_boundary_spent "$boundary_counters" "$kind" "$task" "$reason")"
+  cand_rank="$(drive_boundary_rank "$kind" "$tstatus" "$orchestrator_surface" \
+    "$spent" "$wake_max")"
   if [ -n "$boundary_kind" ]; then
-    drive_note "$note (supersedes [$boundary_kind]: no admitted verb resolves that one)"
+    held_rank="$(drive_boundary_rank "$boundary_kind" "$boundary_status" \
+      "$orchestrator_surface" "$boundary_spent" "$wake_max")"
+    if [ "$cand_rank" -le "$held_rank" ]; then
+      drive_note "$note (held: [$boundary_kind] is already this pass's recorded boundary)"
+      return 0
+    fi
+    # The incumbent ranked below this one, so no wakeup will be spent on it.
+    # Two different reasons for that, and they are two different operator
+    # problems -- nobody can act on it at all, or a model has already been
+    # asked `pump_wake_max` times and changed nothing -- so the note names
+    # which, rather than reporting the widened rule under the older one's
+    # sentence.
+    if drive_boundary_resolvable "$boundary_kind" "$boundary_status" "$orchestrator_surface"; then
+      held_why="its wake budget is spent ($boundary_spent pass(es), pump_wake_max=$wake_max)"
+    else
+      held_why="no admitted verb resolves that one"
+    fi
+    drive_note "$note (supersedes [$boundary_kind]: $held_why)"
   else
     drive_note "$note"
   fi
   boundary_kind="$kind"; boundary_task="$task"; boundary_reason="$reason"
-  boundary_status="$tstatus"
+  boundary_status="$tstatus"; boundary_spent="$spent"
   return 0
 }
 
@@ -472,26 +519,34 @@ set_boundary() {
 # loop pages each of them; the ranking still decides only which one is RECORDED.
 #
 # THE COUNT IS THE GUARD, in both spellings. tests/test_notify_hermes_channel.sh
-# holds this file to ONE drive_notify call site AND to zero lines that run the
-# `notify` verb straight off the binary, because the second spelling is how the
-# blocked-merge arm kept its duplicate page through the rounds that repaired the
-# first three: writing the verb out by hand reads as ordinary verb use, leaves a
-# count of drive_notify sites sitting at one, and is a page nothing compares all
-# the same. A fifth arm in either spelling fails a test rather than a human's
-# evening.
+# holds this file to an ENUMERATED set of drive_notify call sites AND to zero
+# lines that run the `notify` verb straight off the binary, because the second
+# spelling is how the blocked-merge arm kept its duplicate page through the
+# rounds that repaired the first three: writing the verb out by hand reads as
+# ordinary verb use, leaves the count of drive_notify sites where it was, and is
+# a page nothing compares all the same. An unenumerated arm in either spelling
+# fails a test rather than a human's evening.
 #
-# AND IT IS WHERE `--objection` IS PASSED, for the same one-site reason. An
-# operator's standing objection stops on a boundary only they may settle, and
-# their answer to THIS page is what lets a later woken orchestrator carry the
-# decision they already made (lib/objection.sh, lib/review.sh's
-# review_operator_relay). That flag is what mints the durable authority record
-# beside the question, and the brokered surface refuses it -- so this call site,
-# inside the deterministic driver, is the only producer of one in the system. It
-# is decided HERE from the task's own state rather than passed down through the
-# boundary row: the predicate reads the objection and its recorded arbiter class
-# off the task file, so a page for some other `operator-decision` stop -- a
-# refused advance, an archetype with no edge -- cannot pick up an authority it
-# was never about.
+# TWO SITES ARE ENUMERATED, and the second is not a loosening. The wake budget
+# pages for a stop this loop CANNOT raise: a boundary that stayed orchestrator-
+# resolvable through every pass it was polled over is exactly what the loop
+# skips, so the arm that reads the spent budget is the only place its page can
+# come from. It carries a de-dup of its own instead of the loop's -- an equality
+# test on the counter, so it fires on the single pass the budget ran out, and
+# the `charged` test, so an unscheduled `orchid drive` cannot re-fire it -- and
+# that suite pins both halves.
+#
+# AND THIS COMPOSER IS WHERE `--objection` IS PASSED. An operator's standing
+# objection stops on a boundary only they may settle, and their answer to THIS
+# page is what lets a later woken orchestrator carry the decision they already
+# made (lib/objection.sh, lib/review.sh's review_operator_relay). That flag mints
+# the durable authority record beside the question, and the brokered surface
+# refuses it -- so every enumerated caller reaches this one producer rather than
+# minting authority on its own. It is decided HERE from the task's state rather
+# than passed down through the boundary row: the predicate reads the objection
+# and its recorded arbiter class off the task file, so a page for some other
+# `operator-decision` stop -- a refused advance, an archetype with no edge --
+# cannot pick up an authority it was never about.
 drive_notify() {
   local kind="$1" task="$2" tstatus="$3" text="$4" choice
   local -a nargs
@@ -515,6 +570,20 @@ drive_notify() {
 "$ORCHID_BIN" run refresh-lease
 
 orchestrator_surface="$(drive_orchestrator_surface "$repo")"
+
+# The other two halves of the ranking key. `run boundary show` exits 16 when a
+# boundary IS recorded, which is a normal answer here and not a failure, so it
+# is read through `|| true` under this file's `set -e`. A run with no record
+# yet, or one whose record predates the `counters` map, leaves the `{}` set
+# above -- every boundary then reads as having spent nothing, which is the
+# right answer for a run that has spent nothing.
+wake_max="$(drive_wake_budget_max "$repo")"
+boundary_counters="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+boundary_counters="$(printf '%s' "$boundary_counters" \
+  | jq -c 'if (.counters|type) == "object" then .counters else {} end' 2>/dev/null || echo '{}')"
+case "$boundary_counters" in
+  ''|null) boundary_counters='{}' ;;
+esac
 
 if [ "$run_status" = planning ]; then
   # PLANNING runs no reconcile and no check (below): plan drafting is judgment
@@ -3549,6 +3618,79 @@ fi
 # boundary show` instead of inspecting a file.
 # ---------------------------------------------------------------------------
 if [ -n "$boundary_kind" ]; then
+  # The record is read BEFORE it is written, and written before the notify
+  # decision below, because that decision now needs both halves: which record
+  # was there a moment ago (the dedup), and what the `passes` counter reads
+  # after this pass has been accounted for (the wake budget).
+  prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+  prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
+  prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
+  prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
+
+  # WILL THIS PASS ACTUALLY SPEND A WAKEUP? The counter the wake budget reads
+  # is charged here, so it is charged only when the answer is yes. Three ways
+  # of answering no, and all three are quiet, ordinary states that must not
+  # consume budget: nothing here can wake anybody at all (this pass is not a
+  # pump pass -- see just below), the boundary is operator-only (the pump exits
+  # at its step 5c), or no orchestrator engine resolves at all -- rate-limited,
+  # ledger-disabled, none configured -- and the pump exits one step later at
+  # its step 6. None of the three asks a model anything, so none of them is
+  # evidence that asking one does not work.
+  #
+  # ONLY A PUMP PASS CAN SPEND A WAKEUP. This driver is a VERB (`orchid
+  # drive`): an operator runs it by hand, a test harness runs it to reach one
+  # arm, and neither of those wakes an orchestrator -- runners/orchid-pump is
+  # the sole caller that goes on to hand off to a tick. Charging a hand-run
+  # `orchid drive` would let a few debugging invocations exhaust a budget
+  # denominated in wakeups and park a live boundary on a human, having asked
+  # no model at all. So the pump says, in its own environment, that this pass
+  # is one of its; an invocation that did not come from the pump is `charged`
+  # 0 and reads the counter without moving it.
+  #
+  # `__orchid_pump_pass` rather than an `ORCHID_*` name on purpose: lib/spawn.sh
+  # forwards every ORCHID_* variable into an adapter's `env -i` allowlist, and
+  # a brokered adapter inheriting "you are the pump" would be able to charge
+  # the budget from inside a job. This spelling is not on that allowlist, so it
+  # reaches the driver the pump execs and stops there.
+  #
+  # ONE CASE IS DELIBERATELY CHARGED WITHOUT A WAKEUP, and it is the pass after
+  # the budget has already run out: from there on the pump declines the wake
+  # itself, so no model is asked, yet the two tests above still both hold and
+  # this pass is counted. That is not a hole in the rule -- it is what keeps
+  # the blocker below a once-only fact. The counter has to keep climbing past
+  # `pump_wake_max` for `-eq wake_max + 1` to name exactly the pass the budget
+  # ran out on; frozen at that value it would re-page a human every pass
+  # forever, since the record is unchanged by content from here on and the
+  # dedup above therefore never fires for it. The rule the `--no-count` arms
+  # protect is "a boundary must not be parked by passes that never asked a
+  # model", and a budget already spent cannot be parked twice.
+  bset_args=(--kind "$boundary_kind")
+  [ -z "$boundary_task" ] || bset_args+=(--task "$boundary_task")
+  bset_args+=(--reason "$boundary_reason")
+  # `! { a && b; }` rather than an empty `then` branch: this file runs under
+  # `set -e`, where a bare `a && b` statement whose left side fails would abort
+  # the pass outright.
+  charged=1
+  if [ "${__orchid_pump_pass:-0}" != 1 ]; then
+    charged=0
+  elif ! { drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" \
+             "$orchestrator_surface" && drive_orchestrator_available "$repo"; }; then
+    charged=0
+  fi
+  [ "$charged" -eq 1 ] || bset_args+=(--no-count)
+  "$ORCHID_BIN" run boundary set "${bset_args[@]}" >/dev/null
+
+  now_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
+  boundary_passes="$(printf '%s' "$now_boundary" | jq -r '.passes // 1' 2>/dev/null || echo 1)"
+  case "$boundary_passes" in
+    ''|*[!0-9]*) boundary_passes=1 ;;
+  esac
+  # `wake_max` is NOT re-read here. It was resolved before the walk, because the
+  # ranking that chose this boundary measures against it too, and one pass must
+  # decide with one budget: a value re-read after the walk could differ from the
+  # one the ranking used (a config edit landing mid-pass) and then report a
+  # budget nothing was actually ranked by.
+
   # A boundary no orchestrator procedure resolves is one runners/orchid-pump
   # deliberately will NOT wake a model for, so the only way it reaches a human
   # is a notification. Sent exactly once per distinct STOP -- every operator-only
@@ -3584,10 +3726,11 @@ if [ -n "$boundary_kind" ]; then
   # `orchid answer` began refusing it, and the record went on reporting the stop
   # as announced. That is the one case the oracle exists to re-raise, so a STALE
   # answer (exit 2) overrides the record outright.
-  prev_boundary="$("$ORCHID_BIN" run boundary show 2>/dev/null || true)"
-  prev_kind="$(printf '%s' "$prev_boundary" | jq -r '.kind // ""' 2>/dev/null || echo "")"
-  prev_task="$(printf '%s' "$prev_boundary" | jq -r '.task // ""' 2>/dev/null || echo "")"
-  prev_reason="$(printf '%s' "$prev_boundary" | jq -r '.reason // ""' 2>/dev/null || echo "")"
+  # Use that PRE-WRITE snapshot here. Re-reading after boundary set would make
+  # a first-seen operator stop equal its own newly written record and suppress
+  # the page that announces it. T009's per-stop de-dup and T036's wake counter
+  # therefore share one ordering: old record, new record, notification
+  # decisions.
   # Flattened by the SAME three expansions set_boundary applies to the reason it
   # puts in a row -- see there for why this may not go through `tr`. Comparing a
   # recorded multi-line reason against its flattened row would never match, and
@@ -3623,11 +3766,34 @@ if [ -n "$boundary_kind" ]; then
     drive_notify "$page_kind" "$page_task" "$page_status" "$page_text"
     drive_note "notified: [$page_kind] is operator-only, so no orchestrator will be woken for it"
   done <<< "$boundaries_met"
-  if [ -n "$boundary_task" ]; then
-    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --task "$boundary_task" \
-      --reason "$boundary_reason" >/dev/null
-  else
-    "$ORCHID_BIN" run boundary set --kind "$boundary_kind" --reason "$boundary_reason" >/dev/null
+
+  if drive_boundary_wakes_orchestrator "$boundary_kind" "$boundary_status" "$orchestrator_surface" && \
+     drive_wake_budget_exhausted "$boundary_passes" "$wake_max"; then
+    # The mirror image, and the same predicate the pump declines on: this
+    # boundary WAS orchestrator-resolvable on paper, and pump_wake_max wakeups
+    # have now been spent on it without the record changing by so much as a
+    # character. The pump stops waking a model for it from here on, which
+    # means the notify path is the only one left -- and it was suppressed for
+    # every one of those passes precisely BECAUSE the boundary looked
+    # resolvable, which is how a finished run polled a model forever with
+    # nobody told.
+    #
+    # Exactly once, on the pass where the budget first runs out: the record is
+    # unchanged by content from here on, so the dedup above would suppress
+    # this forever, and an equality test on the counter is what makes "the
+    # moment it ran out" a distinct, once-only fact.
+    #
+    # `charged` is half of what makes it once-only. An equality test alone is
+    # a once-only fact only while every pass moves the counter, and since an
+    # uncharged pass leaves it exactly where it was, a hand-run `orchid drive`
+    # against an already-spent budget would re-page a human on every
+    # invocation. The pass that charges the counter INTO this value is the one
+    # that reports it.
+    if [ "$charged" -eq 1 ] && [ "$boundary_passes" -eq $(( wake_max + 1 )) ]; then
+      drive_notify "$boundary_kind" "$boundary_task" "$boundary_status" \
+        "judgment boundary [$boundary_kind] has survived $wake_max orchestrator wakeup(s) unchanged and now needs an operator: $boundary_reason"
+      drive_note "notified: [$boundary_kind] outlasted its wake budget (pump_wake_max=$wake_max) — no further orchestrator will be woken for it"
+    fi
   fi
 else
   "$ORCHID_BIN" run boundary clear --reason "deterministic drive resolved every step this pass" >/dev/null

@@ -302,7 +302,9 @@ Installs a launchd agent (macOS) or a crontab line (Linux) that runs
 `240`) — a no-op most passes, and a single headless tick whenever the
 interactive session's lease has gone stale. `orchid service status` reports
 whether it's loaded and when it last ran; `orchid service uninstall`
-reverses it.
+reverses it, and `orchid service teardown` does that and removes the
+integration worktree in one conditional operation — see
+[tearing it down](#tearing-it-down).
 
 The pump and direct `runners/orchid-tick` entry point re-check trust on every
 invocation, before creating runtime state, draining the notification outbox,
@@ -394,6 +396,70 @@ approved as tooling. Decide which you want before you take the work across:
 [troubleshooting.md](./troubleshooting.md) — "Run state in your product's
 history" — has both answers, and describes the two guards that will tell you
 when it is happening (a warning from `orchid merge`, and a refused `git push`).
+
+### Tearing it down
+
+A finished run does not stop a schedule. Nothing does — not the last task
+merging, not `orchid run accept`, not `run_status: complete`. And a run does
+not finish by itself either: the pass that finds every task `done` advances it
+to `run_status: accepting` and stops there, because accepting a run is your
+judgment and takes an evidence file. So the ordinary end state of an unattended
+run is a schedule waking every `pump_interval_s` against a run only you can
+move — the pump, `orchid service status` and `orchid doctor` all say so, and
+name `orchid run accept` rather than pretending the run is over.
+
+If you installed the service in step 6, the launchd agent or crontab line is
+still firing every `pump_interval_s`, and once you accept the run every one of
+those wakes is a certain no-op. The
+pump says so on each of them and names the command below — but it says it
+before it has opened its own `pump.log`, so a scheduled wake reports it to the
+scheduler's `/dev/null` rather than to a log you can read afterwards.
+`orchid doctor` is the surface that does not depend on catching an invocation.
+
+So when you are done with the working checkout, the order matters — and it is
+one command, not two:
+
+```sh
+orchid service teardown --repo "$PWD"    # uninstall, then remove this worktree
+```
+
+`orchid service teardown` uninstalls the schedule and removes that worktree
+**only if the uninstall succeeded**. The uninstall refuses whenever it cannot
+prove the scheduler let the job go, and the removal is that refusal's opposite
+branch rather than the next line in your terminal — so a refusal cannot be
+followed by a removal that goes ahead anyway. It exits nonzero with the
+checkout untouched, and `--dry-run` removes neither half.
+
+If you would rather run the two commands yourself, chain them so the second
+cannot run without the first — and run the chain from your **main** checkout,
+because `git worktree remove` needs a repository to run in and the one you are
+removing is about to stop being one:
+
+```sh
+cd /path/to/your-project                                        # the main checkout
+orchid service uninstall --repo /path/to/your-project-orchid \
+  && git worktree remove /path/to/your-project-orchid
+```
+
+Orchid cannot refuse a `git worktree remove` or an `rm -rf` you type on its own
+— that reaches no orchid code at all. The `&&` is what makes the ordering hold
+there, and `orchid service teardown` is that same `&&` in a command you cannot
+half-run — and it finds the main checkout for you, so it works from anywhere.
+
+Reversed, you leave a scheduler waking on a timer against a directory that is
+no longer there, and the record naming that leftover schedule was inside the
+directory you just deleted. `orchid service status` names this ordering next
+to the schedule it applies to, and `orchid doctor` — run from anywhere on the
+machine, not just from the repository — warns about both ends of this: a
+binding whose repository is gone, and a binding whose run has already reached
+a terminal state, each with the teardown command that ends
+it. The pump itself refuses to run, loudly, rather than waking against a
+deleted path.
+
+`orchid service uninstall` is safe to run blind: it refuses cleanly, touching
+nothing, when no schedule is installed for that path. Add `--dry-run` to see
+exactly what it would run and remove without removing any of it — the schedule
+stays installed, and so do the records that name it.
 
 ## Before you hand this to someone else
 

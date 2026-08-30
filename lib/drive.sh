@@ -588,6 +588,12 @@ drive_boundary_resolvable() {
 # woken model has no verb to make. Ranking, not suppression: PROTOCOL.md
 # requires a blocked task to be a boundary (it is how an operator learns the
 # run is parked), so it is still recorded whenever nothing outranks it.
+#
+# It is the STATIC half of that key. runners/orchid-drive ranks through
+# drive_boundary_rank below, which asks this same question and then one more --
+# whether this boundary's wake budget still has a wakeup in it -- because a
+# boundary a wakeup could settle in principle and a boundary a wakeup will
+# actually be spent on stop being the same thing once the budget runs out.
 drive_boundary_priority() {
   if drive_boundary_resolvable "$@"; then echo 1; else echo 0; fi
 }
@@ -603,6 +609,200 @@ drive_boundary_priority() {
 # routed to `orchid notify` instead, so it reaches a human.
 drive_boundary_wakes_orchestrator() {
   drive_boundary_resolvable "$@"
+}
+
+# -- the wake budget --------------------------------------------------------
+# "Could an orchestrator settle this?" and "has waking one actually settled
+# it?" are different questions, and the second is the one the live-run finding
+# is about: a pump woke an orchestrator EIGHT consecutive times over a boundary
+# no wakeup moved, and because the boundary was classified as orchestrator-
+# resolvable the notify path that reaches a human stayed suppressed the whole
+# time. Resolvability is a static property of (kind, status, surface); it
+# cannot notice that three passes have gone by with the record byte-identical.
+#
+# The counter itself is the boundary record's own `passes` field, bumped by
+# `orchid run boundary set` (libexec/orchid-run) whenever the record it is
+# handed is unchanged by content, and kept per boundary IDENTITY in that
+# record's `counters` map rather than in its single slot -- a pass meets as
+# many boundaries as it meets and only the highest-ranked is recorded, so a
+# boundary displaced for one pass and recorded again on the next resumes its
+# own count instead of restarting. Without that, two boundaries taking turns
+# are both immortal. That is deliberately NOT a new file: the driver re-derives
+# the boundary once per pump pass and records it through that one verb, so "how
+# many passes has this exact boundary survived" is already a fact the single
+# writer of the record is in a position to state, and the pump already reads
+# that record back through `run boundary show`. A second piece of runtime state
+# would need its own writer, its own reset rule, and its own way of going
+# stale.
+#
+# Both callers read this file, neither owns it: runners/orchid-pump declines
+# the wake, runners/orchid-drive routes the boundary to `orchid notify`
+# instead. They must agree exactly, or the run either polls a model forever
+# (pump lenient) or tells the human twice (driver lenient) -- so it is one
+# predicate here, exactly as drive_boundary_wakes_orchestrator is.
+#
+# This file stays PURE: it reads and prints, it never mutates. The pump sources
+# it on that promise (see its own header), and the counter's single writer is
+# the verb, not this library.
+
+# drive_wake_budget_max <repo> -- how many passes an orchestrator-resolvable
+# boundary may survive before waking a model over it is treated as spent.
+# `pump_wake_max` (config, default 3). A malformed or zero value falls back to
+# the default rather than to "never wake" or "wake forever": both extremes are
+# worse failure modes than the documented number.
+drive_wake_budget_max() {
+  local n
+  n="$(config_get "$1" pump_wake_max 3)"
+  case "$n" in
+    ''|*[!0-9]*) n=3 ;;
+  esac
+  [ "$n" -gt 0 ] || n=3
+  printf '%s\n' "$n"
+}
+
+# drive_orchestrator_available <repo> -- 0 iff an orchestrator engine resolves
+# right now. This is the SAME question runners/orchid-pump asks at its step 6,
+# and it is asked here for the budget's sake: a pass on which the pump will
+# exit at that step spends no wakeup, so it must not spend budget either.
+#
+# Without it the counter would measure wall passes rather than wakeups, and a
+# rate-limited or ledger-disabled orchestrator would exhaust the budget over
+# four quiet passes without a single model having been asked -- permanently
+# declining to wake one for a boundary it could have settled the moment the
+# outage lifted, under a blocker naming wakeups that never happened. That is a
+# worse failure than the unbounded polling this budget exists to stop, because
+# it stops a run that was still making progress.
+#
+# `brokered` is deliberately NOT the same answer: drive_orchestrator_surface
+# reports an unavailable orchestrator as `brokered` because that is the
+# narrowest honest SURFACE, and a brokered surface still admits `orchid task
+# arbitrate` -- so an arbitration boundary reads as orchestrator-resolvable
+# while nobody can actually be woken for it. Availability is its own fact.
+#
+# THE `orchestrate` STEP IS PASSED, and it is not decoration. Without it this
+# walk answers "who may hold the orchestrator ROLE" while the pump's probe
+# answers "who may hold it AND perform `orchestrate`" (lib/resolver.sh's
+# <step> argument, INV-16) -- two different questions whose answers differ for
+# exactly the chain the step gate refuses. Drifted, this function calls a
+# wakeup available that the pump then declines one gate later, and the budget
+# is charged for a model nobody asked. The two calls must be the same call;
+# drive_orchestrator_surface below already passes it for the same reason.
+#
+# An exit 3 (a caller that passed a step without lib/capability.sh sourced)
+# lands on `return 1` with everything else that cannot answer yes. That is the
+# conservative direction: an unanswerable availability question spends no
+# budget, exactly as an unavailable engine does.
+drive_orchestrator_available() {
+  local engine
+  engine="$(resolve_role_available "$1" orchestrator orchestrate 2>/dev/null)" || return 1
+  [ -n "$engine" ]
+}
+
+# drive_wake_budget_exhausted <passes> <max> -- 0 iff this boundary has now
+# survived MORE passes than the budget allows, i.e. <max> wakeups have already
+# been spent on it and changed nothing. Strictly greater-than: on the pass
+# where `passes` equals `max` the last permitted wakeup has not happened yet.
+# Fail-open (return 1, "budget remains") on any unparseable input -- a
+# malformed counter must never be what silently stops a run from being driven.
+drive_wake_budget_exhausted() {
+  local passes="${1:-}" max="${2:-}"
+  case "$passes" in ''|*[!0-9]*) return 1 ;; esac
+  case "$max" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$passes" -gt "$max" ]
+}
+
+# drive_boundary_counter_key <kind> <task> <reason> -- the identity a boundary's
+# spent-wakeup count is filed under in the record's `counters` map. ONE
+# spelling, shared by the writer that files the count (`orchid run boundary
+# set`, libexec/orchid-run) and by the reader that spends it
+# (drive_boundary_spent below, for runners/orchid-drive's ranking), because the
+# two agreeing about what "this exact boundary" means is the whole basis of the
+# count: keyed on the same three fields the record's own content comparison
+# uses, so a boundary that reads as unchanged there can never read as a
+# different entry here.
+#
+# US (\037) joins them, exactly as runners/orchid-drive's accumulator rows do
+# and for the same reason: it is not an IFS whitespace character, so a
+# run-level boundary's empty task field stays a field instead of collapsing
+# into its neighbours and colliding with a task-scoped boundary of the same
+# kind.
+#
+# Both sides read this back through `$( )`, which strips trailing newlines --
+# so both strip identically. Reasons reach here single-line by construction
+# anyway (see runners/orchid-drive's set_boundary).
+#
+# The separator is spelled `$'\037'` rather than as a `printf` format escape,
+# matching every other US in this codebase: `\037` inside a format string is a
+# one-to-three-digit octal escape in bash and an implementation detail
+# elsewhere, and this key has to be the same bytes under every shell that runs
+# the verb and the driver.
+drive_boundary_counter_key() {
+  local sep=$'\037'
+  printf '%s%s%s%s%s' "${1:-}" "$sep" "${2:-}" "$sep" "${3:-}"
+}
+
+# drive_boundary_spent <counters-json> <kind> <task> <reason> -- how many
+# orchestrator wakeups this run has already spent on this exact boundary,
+# read out of the `counters` object of the record `orchid run boundary show`
+# prints. The caller reads that record ONCE per pass and hands the map in,
+# rather than this file reading it: lib/drive.sh stays pure, and a ranking that
+# re-read a file per boundary would be answering from a different snapshot for
+# each one.
+#
+# 0 for a boundary with no entry, an absent or unparseable map, or a
+# non-numeric entry. That is the same fail-open direction
+# drive_wake_budget_exhausted takes: an unreadable counter must read as "budget
+# untouched", never as a budget already spent, so a corrupt record can never be
+# what silently stops a boundary being driven.
+drive_boundary_spent() {
+  local counters="${1:-}" key n
+  key="$(drive_boundary_counter_key "${2:-}" "${3:-}" "${4:-}")"
+  n="$(printf '%s' "$counters" | jq -r --arg k "$key" '.[$k] // 0' 2>/dev/null || echo 0)"
+  case "$n" in
+    ''|*[!0-9]*) n=0 ;;
+  esac
+  printf '%s\n' "$n"
+}
+
+# drive_boundary_rank <kind> <task-status> <command_surface> <spent> <max> --
+# the ranking key runners/orchid-drive chooses a pass's ONE recorded boundary
+# by. 1 for a boundary a woken orchestrator can settle now AND still has wake
+# budget left for; 0 for one no wakeup can move -- whether because no admitted
+# verb settles it (drive_boundary_priority's question) or because every wakeup
+# it was allowed has already been spent on it without changing it.
+#
+# WHY THE BUDGET BELONGS IN THE RANKING AND NOT ONLY IN THE WAKE DECISION.
+# drive_boundary_priority ranks by what a wakeup COULD do, which stops being
+# true the moment the budget runs out: from that pass on runners/orchid-pump
+# declines the wake at its step 6c and nothing about this boundary will change
+# again without a human. Ranked as resolvable all the same, it still wins the
+# single record slot -- and it wins it against boundaries that ARE still live,
+# because equal priority is broken by task-id order, not by which of them a
+# wakeup could still move. The pump then reads that spent record, declines,
+# and exits 0; the live arbitrable boundary sitting behind it in the very same
+# pass is never recorded, never handed to the pump, and never spends the
+# wakeups its own budget still holds. One exhausted task parks every other
+# task's arbitration for the rest of the run -- the same starvation the
+# priority ranking exists to end, one tier down.
+#
+# So a spent boundary drops to the operator-only tier, which is what it now is.
+# Dropped, not suppressed: with nothing live to outrank it, it is still the
+# pass's recorded boundary and still reports through exit 16, exactly as a
+# blocked task's boundary does. And its own page is unaffected -- that fires
+# once, on the pass the budget ran out, from the arm in runners/orchid-drive
+# that reads drive_wake_budget_exhausted directly.
+drive_boundary_rank() {
+  local kind="${1:-}" status="${2:-}" surface="${3:-brokered}"
+  local spent="${4:-0}" max="${5:-}"
+  if ! drive_boundary_resolvable "$kind" "$status" "$surface"; then
+    echo 0
+    return 0
+  fi
+  if drive_wake_budget_exhausted "$spent" "$max"; then
+    echo 0
+    return 0
+  fi
+  echo 1
 }
 
 # drive_orchestrator_surface <repo> -- the `command_surface` label of the

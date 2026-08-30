@@ -65,7 +65,7 @@ merge_cleanup() {
   # be — `git worktree prune` (here, and available to an operator directly,
   # or via `orchid doctor` once it grows a check for this) — and the leaked
   # directory under $TMPDIR is ordinary temp-file litter.
-  if [ -n "$wt" ]; then
+  if [ -n "$wt" ] && orchid_service_removal_guard "$wt"; then
     git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
     rm -rf "$wt" 2>/dev/null || true
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
@@ -219,7 +219,6 @@ if [ -n "$hook_bindings" ]; then
     fi
   done <<< "$hook_bindings"
 fi
-
 
 integ_head="$(git -C "$repo" rev-parse "refs/heads/$integ")"
 

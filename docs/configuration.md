@@ -87,6 +87,7 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 | `engine_fail_threshold` | `3` | repo | v1-m2 |
 | `pump_stale_s` | `900` | repo | v1-m2 |
 | `pump_interval_s` | `240` | repo | v1-m4 |
+| `pump_wake_max` | `3` | repo | v1.1 |
 | `arbiter_wait_s` | `14400` | repo | v1-m2 |
 | `handoff_before_verify` | `off` | repo | v1.1 |
 | `hook.after_plan_draft` | *(unbound — no handler)* | repo | v1-m3 |
@@ -345,6 +346,29 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   not get is an approval no human read. See
   [specs/kernel.md](./specs/kernel.md), "Review depth", for the decision and
   the rejected alternatives.
+- **`pump_wake_max`** bounds how many pump passes ONE unchanged judgment
+  boundary may wake an orchestrator for before the pump stops waking a model
+  over it and the driver hands it to a human instead. "An orchestrator could
+  settle this" is a static property of the boundary's kind, the named task's
+  status and the resolved adapter's `command_surface`; it is satisfied
+  identically on the hundredth pass as on the first, and cannot notice that the
+  record has not changed by a character in between. The boundary record's own
+  `passes` counter can, and this is what it is compared against. It counts
+  WAKEUPS: a pass on which nobody could be woken — the pass was not a scheduled
+  one at all (`orchid drive` is also a verb you can run by hand, and only the
+  pump goes on to hand off to a tick), or the boundary is operator-only, or no
+  orchestrator engine resolves (rate-limited, ledger-disabled, none configured,
+  or refused the `orchestrate` step) — is recorded but not charged, so neither
+  an engine outage nor your own debugging can spend the budget without a model
+  ever being asked. In practice
+  the boundaries this bounds are `review-conflict`/`review-evidence` over an
+  `arbitrating` task — the only shape any surface admits a settling verb for. A
+  finished run is handled one gate earlier and never reaches the budget: no
+  surface admits `orchid run accept`, so `run-complete` is operator-only and
+  the pump declines it without spending a wakeup at all. Raise
+  it if your orchestrator legitimately needs more passes to settle a boundary;
+  a value of `0` or a malformed one falls back to the default rather than to
+  either extreme.
 - **`hook.<point>`** — an ordered, comma-separated list of plugin **names**
   (not qualified ids); append `:required` to a handler to make its failure
   block the edge (exit 15). No built-in defaults — an unbound point runs no

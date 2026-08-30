@@ -1739,23 +1739,38 @@ outY="$(page_orchid answer "$qidY" defer 2>&1)" \
 assert_eq "defer" "$(cat "$PAGE_REPO/.orchid/runtime/answers/$qidY.answer")" \
   "which is the whole cost of a duplicate page — two answers recorded for one stop, and nothing on either page saying which one the run reads"
 
-# --- 12c: RED — the driver has exactly one page producer --------------------
+# --- 12c: RED — the driver's page producers are counted and enumerated ------
 # The assertion the shipped defect fails. `drive_notify` is the only thing in
-# runners/orchid-drive that raises a page, and it is called from exactly one
-# place: the boundary record at the foot of the file, the one site the
-# field-by-field de-dup covers. Four arms used to page beside their record --
+# runners/orchid-drive that raises a page, and every place it is called from
+# must carry a de-dup of its own. Four arms used to page beside their record --
 # two paging a task they were about to block, two paging a boundary they
 # recorded in the same breath -- so those pages were compared against nothing.
-# Counting the call sites is what keeps a fifth from being added: the count is
-# the invariant, and it fails on the addition rather than on the duplicate page
-# an operator would have had to notice in a channel.
+# Counting the call sites is what keeps an undeduplicated one from being added:
+# the count is the invariant, and it fails on the addition rather than on the
+# duplicate page an operator would have had to notice in a channel.
+#
+# TWO SITES, NOT ONE, and the second is not a relaxation. The wake budget added
+# a page for a stop the first site cannot raise: a boundary that stayed
+# orchestrator-RESOLVABLE for every pass it was polled over, which is exactly
+# the condition the operator-only loop skips, and whose page therefore has to
+# come from the arm that reads the spent budget. It is de-duplicated by its own
+# means rather than by the loop's -- an equality test on the counter, so it
+# fires on the one pass the budget ran out and never again, plus the `charged`
+# test, so an unscheduled `orchid drive` cannot re-fire it -- and BOTH halves
+# are pinned below. A third site, or either half of that guard going missing,
+# still fails here.
 drive_src="$REPO_ROOT/runners/orchid-drive"
 [ -f "$drive_src" ] || fail "fixture: runners/orchid-drive must be readable for the producer count below"
 drive_notify_calls="$(grep -cE '^[[:space:]]*drive_notify ' "$drive_src" || true)"
-assert_eq "1" "$drive_notify_calls" \
-  "runners/orchid-drive must raise its pages from exactly ONE call site — every other one is a page nothing de-duplicates (found $drive_notify_calls)"
+assert_eq "2" "$drive_notify_calls" \
+  "runners/orchid-drive must raise its pages from exactly the two enumerated call sites — any other one is a page nothing de-duplicates (found $drive_notify_calls)"
 assert_match "boundaries_met" "$(grep -E -A 3 '^[[:space:]]*drive_notify ' "$drive_src" || true)" \
-  "...and that site is fed by the list of boundaries the pass MET, so every stop it met is a stop it can page"
+  "...and the operator-only site is fed by the list of boundaries the pass MET, so every stop it met is a stop it can page"
+drive_wake_page_arm="$(grep -E -B 4 '^[[:space:]]*drive_notify "[$]boundary_kind"' "$drive_src" || true)"
+assert_match 'boundary_passes" -eq [$][(][(] wake_max [+] 1' "$drive_wake_page_arm" \
+  "the spent-budget page fires on an EQUALITY with the counter — the one pass the budget ran out on, never every pass after it"
+assert_match 'charged" -eq 1' "$drive_wake_page_arm" \
+  "...and only on a pass that charged the counter, or a hand-run drive against an already-spent budget would re-page a human on every invocation"
 if grep -qE '^[[:space:]]*drive_notify blocked-task' "$drive_src"; then
   fail "no arm may page a task it is blocking: the page for that stop belongs to the blocked-task boundary the block produces, which is the only thing that de-dups it against the next pass"
 fi

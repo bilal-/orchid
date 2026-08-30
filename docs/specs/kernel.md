@@ -2447,7 +2447,11 @@ prints the resolved engine's label.
 `orchid drive` executes THE TICK's mechanical steps deterministically and
 stops at a named boundary rather than making a free-form judgment. The record
 is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
-`task`, `reason`, `epoch`, `at`), and 16 is the dedicated judgment-boundary
+`task`, `reason`, `epoch`, `at`, `passes` — how many passes this exact boundary
+has survived unchanged by content, which `set --no-count` records without
+charging — and `counters`, the bounded map holding that count per boundary
+identity so a boundary displaced from the single record slot for a pass
+resumes rather than restarts), and 16 is the dedicated judgment-boundary
 exit code — returned by `drive` when a pass stopped at one, and by `run
 boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,
@@ -2578,7 +2582,7 @@ somewhere.
 
 **The orchestrate step reaches none of that, and needed its own site.** A wake
 is not a job: `runners/orchid-tick` builds its own request document and never
-calls `orchid jobs prepare`, and `runners/orchid-pump` decides whether to exec
+calls `orchid jobs prepare`, and `runners/orchid-pump` decides whether to run
 it from a dry `resolve_role_available` probe whose failure it reports as
 "no capable orchestrator available" and exits 0 on — cron-friendly, and correct
 for every reason that probe usually fails. Where every engine in

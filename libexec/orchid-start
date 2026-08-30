@@ -762,8 +762,26 @@ if [ "$have_worktree_opt" -eq 1 ]; then
     # `.git` is a file); offering it for a branch checked out in the MAIN
     # working tree would be nonsense advice. The --worktree alternative works
     # either way, so it is what the main-worktree case leads with.
+    # THE ONE PLACE THIS FILE TELLS AN OPERATOR TO REMOVE A CHECKOUT, so the
+    # ordering has to be in the command it hands over rather than appended to it
+    # as a note. A pump service installed against that checkout keeps waking on
+    # its interval against a path that is about to stop existing, and the record
+    # naming it lives inside the directory being removed — and a bare `git
+    # worktree remove` offered here plus a separate "uninstall it first" caption
+    # is exactly the two-step shape that made the ordering unenforceable
+    # everywhere else: the operator has already been handed the removal, so a
+    # refused uninstall does not stop it. When a schedule is bound, the command
+    # named is the one whose removal is the uninstall's success branch
+    # (orchid_service_teardown_command, lib/common.sh).
     if [ -d "$existing_wt/.git" ]; then
       wt_hint="re-run with --worktree $existing_wt (that checkout is this repository's main working tree, so 'git worktree remove' does not apply to it — to free the branch, check out another branch there yourself)"
+      # Still worth saying: a schedule bound to the main checkout is not ended
+      # by anything suggested above, and nothing here is removing it either.
+      if orchid_service_bound "$existing_wt"; then
+        wt_hint="$wt_hint. NOTE: a pump service is installed against $existing_wt and nothing above ends it: $(orchid_service_uninstall_command "$existing_wt")"
+      fi
+    elif orchid_service_bound "$existing_wt"; then
+      wt_hint="re-run with --worktree $existing_wt (or end that checkout first — a pump service is installed against it, and removing it while that schedule is live leaves a scheduler firing at a deleted path, so uninstall and removal are ONE operation: $(orchid_service_teardown_command "$existing_wt"))"
     else
       wt_hint="re-run with --worktree $existing_wt (or 'git worktree remove $existing_wt' first)"
     fi

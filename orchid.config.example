@@ -238,6 +238,24 @@ pack_budget_bytes=65536
 # `orchid service install` to take effect; editing this key alone does not
 # touch an already-installed schedule.
 # pump_interval_s=240
+# How many pump passes one unchanged judgment boundary may wake an
+# orchestrator for before the pump stops waking a model over it and the
+# driver hands it to a human instead. "An orchestrator could settle this"
+# is a static property of the boundary's kind, the task's status and the
+# adapter's command surface; it cannot notice that the record has not moved
+# in three passes. What it bounds is the `review-conflict`/`review-evidence`
+# shape over an `arbitrating` task -- the only one any surface admits a
+# settling verb (`orchid task arbitrate`) for, and so the only one an
+# unbounded wake loop is possible over at all. What it counts is WAKEUPS: a
+# pass on which nobody could be woken is recorded but not charged, so an
+# engine outage cannot spend the budget without a model ever being asked. A
+# run whose tasks are all `done` is NOT what this bounds and never reaches
+# it: no surface admits `orchid run accept`, so `run-complete` is
+# operator-only and the pump declines it one gate earlier without spending a
+# wakeup at all. Raise this if your orchestrator legitimately needs more
+# passes to settle a boundary; `0` or a malformed value falls back to the
+# default rather than to "never wake" or "wake forever".
+# pump_wake_max=3
 # v1-m2: high-risk arbitration's wait (seconds) for the preferred
 # role.arbiter engine before a fallback arbiter may decide (PROTOCOL.md,
 # HEADLESS OPERATION).

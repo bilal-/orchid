@@ -84,6 +84,44 @@ if [ "$#" -ne 0 ]; then
 fi
 
 repo="${ORCHID_REPO:-$PWD}"
+
+# 0. THE TARGET ITSELF STILL EXISTS. A schedule outlives the run it serves and
+# outlives the checkout it points at: `orchid service install` binds a launchd
+# agent / crontab line to ONE path, and `git worktree remove` (or a plain rm)
+# on the integration worktree leaves that agent waking, on the same interval,
+# against a directory that is no longer there.
+#
+# Every check below this line asks a question ABOUT a checkout, and every one
+# of them answers "nothing to do here, exit 0" for a directory that does not
+# exist -- so a deleted target polls forever as a silent, successful no-op.
+# That silence is the whole defect: the operator has no signal at all, and the
+# schedule's own record went into the bin with the directory.
+#
+# This is the ONE pump outcome that is a loud failure rather than a cron-
+# friendly wait state, and deliberately so: a wait state is a condition that
+# the next pass might find resolved, and nothing about a removed checkout gets
+# better on the next pass. It exits nonzero so a scheduler that keeps failure
+# accounting of its own (launchd's LastExitStatus) sees it, and it names the
+# command that ends it.
+#
+# AND IT LEAVES A RECORD OF HAVING REFUSED. Loud is relative to who is
+# listening: the plist and cron line this schedule was installed from send both
+# streams to /dev/null (nothing may open a target-controlled path ahead of the
+# trust gate), and cron reports no exit status at all, so under the very
+# configuration this arm exists for the refusal below is heard by nobody.
+# orchid_service_refusal_record writes it once, machine-locally, beside the
+# binding that named this schedule -- the one place that outlives the checkout
+# -- and `orchid doctor` reads it back. A hand-run pump, which has an operator
+# reading its stderr, is told the same thing and records nothing (no binding
+# names its repo).
+if [ ! -d "$repo" ]; then
+  pump_refusal="refusing to run: $repo does not exist -- the checkout this schedule was installed against is gone"
+  orchid_service_refusal_record "$repo" "$pump_refusal"
+  echo "pump: $pump_refusal" >&2
+  echo "pump: no later pass will find it again; remove the schedule with: $(orchid_service_uninstall_command "$repo")" >&2
+  exit 1
+fi
+
 state="$(orchid_state "$repo")"
 
 # THE MACHINE-LOCAL TRUST LOOKUP, THEN THE STALE-ROOT GATE, ABOVE THE THREE
@@ -120,7 +158,7 @@ orchid_root_stale_gate
 # alone, BEFORE calling `orchid_runtime` (which `mkdir -p`s
 # `.orchid/runtime` as a side effect): an uninitialized directory should be
 # left untouched, not seeded with a runtime dir it never asked for. This is
-# also the reason the pump cannot simply `exec` the tick unconditionally --
+# also the reason the pump cannot simply hand off to the tick unconditionally --
 # the tick's own uninitialized guard (via `orchid run resume`) DIES with
 # exit 1, whereas a cron-invoked pump polling a not-yet-`orchid init`'d
 # directory is a normal, silent no-op, not a failure.
@@ -152,13 +190,148 @@ if orchid_split_brain "$repo"; then
   exit 0
 fi
 
+# 2b. The other half of step 0's question. The DIRECTORY survived, but the
+# repository behind it did not: a linked worktree whose main checkout was
+# deleted, a `.git` file pointing at a pruned/removed registration, a common
+# directory that moved. Reaching here means this really is an orchid checkout
+# (roadmap.md is present, step 2 proved it), so a checkout with nothing behind
+# it is a broken target, not an uninitialized one -- and the very first thing
+# the deterministic driver does is read a ref. Same reasoning as step 0: no
+# later pass repairs it, so it is a loud failure rather than exit 0.
+#
+# ORDERING. It sits AFTER the not-an-orchid-repo and split-brain arms: both are
+# legitimate quiet no-ops that must stay quiet, and this question is meaningless
+# for a directory that was never an orchid checkout. It sits BEFORE the
+# `complete` arm below, which is NOT the same kind of no-op and where an
+# earlier revision of this file wrongly put it. A run reaching `complete` is
+# the single likeliest moment for its checkout to be torn down -- that is what
+# the live finding's cleanup step was -- so "the run is finished" and "the
+# repository behind this directory is gone" are the two facts most likely to be
+# true at once. Asked in the other order, the one arm that returns a cheerful
+# `exit 0` for a completed run swallows the refusal, and a schedule firing
+# against a dead checkout reports "pump: run complete" every interval forever.
+# The broken target is the more urgent fact and is answered first.
+#
+# orchid_checkout_git_alive (lib/common.sh) answers it from the FILESYSTEM
+# alone -- no `git` is run, because this arm sits BEFORE the unattended trust
+# gate below and nothing target-controlled may execute ahead of that gate. It
+# lives in the kernel library rather than here so that `orchid doctor` and
+# `orchid service status`, the two surfaces that make this refusal readable
+# once the scheduler has sent it to /dev/null, call a dead target dead on
+# exactly the same evidence this does.
+#
+# Same machine-local record as step 0, for the same reason, with its own text:
+# an operator reading `orchid doctor` has to be able to tell a directory that
+# was deleted from one whose repository was.
+if ! orchid_checkout_git_alive "$repo"; then
+  pump_refusal="refusing to run: $repo is no longer a git checkout -- its repository or worktree registration is gone"
+  orchid_service_refusal_record "$repo" "$pump_refusal"
+  echo "pump: $pump_refusal" >&2
+  echo "pump: no later pass will repair it; remove the schedule with: $(orchid_service_uninstall_command "$repo")" >&2
+  exit 1
+fi
+
+# 2c. AND THE OTHER DIRECTION OF THE SAME RECORD. The two arms above write a
+# machine-local note saying this schedule woke and refused, because their stderr
+# goes to the scheduler's /dev/null and `orchid doctor` is the only place an
+# operator can read it. Nothing but `uninstall` used to retire that note, so it
+# outlived the condition: a checkout restored, a `.git` repaired, a worktree
+# re-registered, and doctor went on printing `the schedule last woke and refused:
+# ... does not exist` indented under its own `ok:` line for a service that was
+# demonstrably healthy. Two contradictory sentences about one binding is worse
+# than neither -- it is how an operator learns to discount the surface that
+# carries the real finding.
+#
+# REACHING THIS LINE IS THE DISPROOF, AND IT IS ONLY HALF OF THE CONDITION. Both
+# recorded refusals are about a target that cannot be driven, and both are false
+# of a pass that got here: the directory is there (step 0) and the repository
+# behind it is (step 2b). But a wake that goes on to REFUSE or FAIL -- an
+# unattended acknowledgement that is missing or revoked, a service log that
+# cannot be opened safely, a deterministic drive that errored -- has not proved
+# the schedule healthy, and the operator is entitled to the most recent thing
+# that went wrong. So the flag is set here and the clearance is taken at EXIT,
+# by a handler that runs only for a zero status.
+#
+# ONE HANDLER, AND IT COVERS THE SCHEDULED WAKE'S LAST STATEMENT TOO. The tick
+# hand-off at the bottom of this file used to be an `exec`, which no EXIT trap
+# survives, so that one path cleared the note UP FRONT on the pump's own success
+# -- and a wake whose orchestrator then failed reported a clean binding to
+# `orchid doctor` while the schedule went on failing. The tick now runs as a
+# child and its status is this process's, so that exit reaches this handler like
+# every other: a failing tick is a failing wake, and a failing wake retires
+# nothing.
+#
+# NEVER `|| true` AROUND A CLEARANCE THAT MATTERS: orchid_service_refusal_clear
+# is best-effort and always 0 by contract, and this handler adds nothing that
+# can fail, because an EXIT trap that dies under `set -e` takes the pass's real
+# exit code with it.
+pump_target_healthy=1
+_pump_clear_refusal_on_success() {
+  local rc="$1" label
+  [ "$rc" -eq 0 ] || return 0
+  [ "${pump_target_healthy:-0}" -eq 1 ] || return 0
+  # No binding names this repo -- a hand-run pump against a stale ORCHID_REPO --
+  # and there is nothing recorded to clear, exactly as the write side decides.
+  label="$(orchid_service_binding_label_for "$repo")" || return 0
+  orchid_service_refusal_clear "$label"
+}
+trap '_pump_clear_refusal_on_success "$?"' EXIT
+
 # 3. run_status complete -- never spend quota / spawn anything for a run
 # that has nothing left to do. roadmap.md is guaranteed present here (step
 # 2 above already exited on its absence).
+#
+# THE SECOND LINE IS THE WHOLE OF THE LIVE FINDING'S FIRST HALF. A complete run
+# has nothing left for any pass to do, ever: `run_status` never leaves a
+# terminal state on its own, so every wake from here on is a certain no-op, and
+# the schedule that keeps producing them is the only thing still costing
+# anything. Exit 0 stays -- a finished run is not a failure, and a scheduler
+# that starts erroring after a successful run is worse than one that is quiet
+# -- but silence is what let an agent fire every 240s against a finished run
+# for a whole afternoon. So when a binding says a schedule really is installed
+# against this checkout, the no-op names the command that ends it. No binding,
+# no line: a hand-run pump against a complete run is told nothing it did not
+# already know.
+#
+# AND A SCHEDULED WAKE PRINTS IT WHERE NOBODY IS LOOKING. The repo-local
+# service log is not opened until after the unattended trust gate further down
+# (nothing may open a target-controlled path ahead of that gate), so under a
+# real launchd agent or cron line both lines below go to the scheduler's
+# /dev/null, and this arm exits 0 so not even a failure status survives. That
+# is why `orchid doctor` asks the SAME question about every machine-local
+# binding it can see, through the orchid_run_status_terminal predicate both
+# read: the certain-waste half of the finding needs a surface that does not
+# depend on anyone reading THIS invocation's stdout.
 rs="$(fm_get "$state/roadmap.md" run_status 2>/dev/null || true)"
-if [ "$rs" = complete ]; then
+if orchid_run_status_terminal "$rs"; then
   echo "pump: run complete"
+  if orchid_service_bound "$repo"; then
+    echo "pump: nothing will change here again — every further wake is a no-op; uninstall the schedule, THEN remove the checkout, as one operation: $(orchid_service_teardown_command "$repo")"
+  fi
   exit 0
+fi
+
+# 3b. ...AND THE STATE THE FINDING WAS ACTUALLY IN. `complete` is not what a
+# finished run reaches on its own: the driver takes the mechanical half of
+# COMPLETION itself (`run advance accepting` on the pass that finds every task
+# done) and then stops at a `run-complete` boundary, because the acceptance
+# evidence behind `orchid run accept` is judgment work no verb decides. So the
+# run the live finding describes -- six tasks done, merged, released, an agent
+# still firing every 240s -- was sitting in `accepting`, and a report that only
+# knew `complete` said nothing about it at all.
+#
+# NOT AN EXIT, unlike the arm above, and the difference is the whole reason
+# these are two predicates. `accepting -> running` is a legal edge, an operator
+# may add work rather than accept, and the pass below is what would move it --
+# so this is a diagnosis, not a stop. What it must not do is stay silent: from
+# here on every wake re-derives the same operator-only boundary and hands it to
+# nobody, and the one command that ends it is one no scheduler can type.
+if orchid_run_status_awaits_operator "$rs"; then
+  echo "pump: run $rs — every task is done and the run is waiting for an operator's acceptance"
+  echo "pump: no scheduled wake can perform it: $(orchid_run_accept_command "$repo")"
+  if orchid_service_bound "$repo"; then
+    echo "pump: until that happens this schedule can only repeat this pass; if the run is over, uninstall it, THEN remove the checkout, as one operation: $(orchid_service_teardown_command "$repo")"
+  fi
 fi
 
 # The first potentially effectful operation below is orchid_runtime (which
@@ -289,7 +462,7 @@ _pump_iso_to_epoch() {
 # channel is configured. The pump (tier-2, this file) is what actually
 # LAUNCHES the channel plugin's `send`, on every pass -- called from the
 # main body below right after the lease-gate decision (age computed) but
-# BEFORE the stale/fresh branch, and thus BEFORE any exec of the tick: a
+# BEFORE the stale/fresh branch, and thus BEFORE any hand-off to the tick: a
 # fresh lease still drains the outbox (channel-send must never wait for a
 # tick; draining is cheap -- a handful of file stats and, at most, one
 # `send` spawn per queued question).
@@ -566,7 +739,13 @@ fi
 # tick's.
 export ORCHID_REPO="$repo"
 drive_rc=0
-"$ORCHID_ROOT/runners/orchid-drive" || drive_rc=$?
+# `__orchid_pump_pass=1` tells the driver that this pass can end in a wakeup,
+# which is the only kind of pass the wake budget below is allowed to charge.
+# `orchid drive` is also a verb an operator or a test runs by hand, and those
+# invocations wake nobody -- the hand-off at step 7 is what does, and only this
+# file reaches it. A command-prefix assignment rather than an `export`: it is
+# true of exactly this one call, and nothing downstream of it.
+__orchid_pump_pass=1 "$ORCHID_ROOT/runners/orchid-drive" || drive_rc=$?
 # The epoch this pass is running under, read the instant the drive that fenced
 # it returns. Nothing below writes durable state except the capability hand-off
 # at step 6b, and that write has to carry THIS pass's epoch rather than
@@ -702,9 +881,84 @@ else
   exit 0
 fi
 
+# 6c. THE WAKE BUDGET, and the last thing asked before the hand-off. Even a
+# boundary an orchestrator CAN settle gets a BOUNDED number of tries at it.
+# "Could settle" is static -- a kind, a task status, a manifest label -- so it
+# is satisfied identically on the hundredth pass as on the first, and it cannot
+# notice that the record has not changed by a character in between. The
+# live-run finding is exactly that: eight consecutive wakeups with no legal
+# transition available, the interval shrinking rather than the polling
+# stopping.
+#
+# The boundary that reaches here is a `review-conflict`/`review-evidence` one
+# over an `arbitrating` task -- the only shape any surface admits a settling
+# verb for. A finished run does NOT reach here: no surface admits `orchid run
+# accept`, so `run-complete` is operator-only and 5c above declines it without
+# ever spending a wakeup. Two mechanisms, one required outcome; this one bounds
+# the case where a model genuinely could act and repeatedly did not.
+#
+# `passes` is the boundary record's own counter -- `orchid run boundary set`
+# bumps it whenever the record it is handed is unchanged by content, and keeps
+# it per boundary identity (the record's `counters` map) so that a boundary
+# displaced from the single record slot for a pass resumes rather than
+# restarts -- so it counts passes THIS EXACT boundary has survived, however
+# many other stops took the record in between. What it charges is a WAKEUP:
+# runners/orchid-drive passes
+# `--no-count` on any pass that cannot spend one, which is exactly the two
+# steps above (5c's operator-only boundary, and step 6's unresolvable
+# orchestrator). Otherwise a rate-limited engine would exhaust this budget over
+# four quiet passes without a model ever having been asked, and the refusal
+# below would be reporting wakeups that never happened.
+#
+# Once it exceeds pump_wake_max, the wakeups already spent on it
+# demonstrably changed nothing, and runners/orchid-drive has raised the blocker
+# that reaches a human on the same pass (it reads this same predicate, from
+# lib/drive.sh, for the mirror-image decision). So the pump stops waking a
+# model for it -- permanently, until the boundary itself changes.
+#
+# Asked HERE rather than beside 5b/5c on purpose: an unavailable orchestrator
+# (step 6) is a genuine wait state that the next pass may find resolved, and it
+# is the more immediate reason of the two. Reporting a spent budget over it
+# would name the wrong cause for the same no-op. Exit 0 either way: a run
+# parked on a human is a wait state, not a failure.
+boundary_passes="$(printf '%s' "$boundary_json" | jq -r '.passes // 1' 2>/dev/null || echo 1)"
+case "$boundary_passes" in
+  ''|*[!0-9]*) boundary_passes=1 ;;
+esac
+wake_max="$(drive_wake_budget_max "$repo")"
+if drive_wake_budget_exhausted "$boundary_passes" "$wake_max"; then
+  echo "pump: judgment boundary [${boundary_kind:-unknown}] has survived $boundary_passes passes unchanged (pump_wake_max=$wake_max) — not waking an orchestrator again; an operator has been notified"
+  exit 0
+fi
+
 # 7. Hand off. The tick does its own `run resume` (fencing a fresh epoch and
 # refreshing the lease), engine pick, adapter spawn, and ledger marking --
-# the pump's job ends here. `exec`, not a plain call: no pump-side work
-# remains afterward, so the tick simply replaces this process and its exit
-# code becomes the pump's own, verbatim.
-exec "$ORCHID_ROOT/runners/orchid-tick"
+# the pump's job ends here, and the tick's exit code becomes this invocation's
+# own, verbatim.
+#
+# A CHILD AND AN EXPLICIT `exit`, NOT `exec`, AND THE REASON IS THE REFUSAL
+# RECORD. `exec` replaces this process image, so no EXIT trap of ours can run
+# past that line -- which left exactly one way to retire the note here: taking
+# the clearance unconditionally, before the hand-off, on the reasoning that the
+# PUMP's own pass had succeeded. It had; the WAKE had not. A wake is one thing to
+# everybody who reads its outcome (launchd records its exit status, `orchid
+# doctor` reads the refusal note beside its binding), and this one goes on to run
+# an orchestrator and can end nonzero -- an adapter that wrote no envelope, an
+# engine that failed. Cleared ahead of that, a schedule whose every wake ends in
+# a failing tick reports a clean binding to the one surface an operator can read,
+# with the last thing that actually went wrong deleted by the pass that was about
+# to go wrong again.
+#
+# So the tick runs as a child, its status is this process's, and the ONE handler
+# at the EXIT trap decides -- the same handler, on the same rule, as every other
+# exit from this file: cleared only when the wake as a whole ended zero, with the
+# target having been found healthy. Nothing pump-side runs between the tick's
+# return and that trap, so the hand-off is still the last thing this file does.
+#
+# `|| tick_rc=$?` disables errexit for the command it guards, which is what is
+# wanted here: the tick is an external program whose nonzero status is a value to
+# propagate, not an abort -- and nothing of the pump's runs inside that
+# suppression.
+tick_rc=0
+"$ORCHID_ROOT/runners/orchid-tick" || tick_rc=$?
+exit "$tick_rc"

@@ -335,8 +335,94 @@ this section false without touching a byte of it.
    line elsewhere) so ticks continue without a terminal open —
    `orchid service status`/`orchid service uninstall` report/reverse it.
 5. Run ends at `run_status: complete` (acceptance evidence in
-   `reviews/acceptance.log`) or surfaces a blocker. Integration branch holds
-   the product; pushing/deploying is yours.
+   `reviews/acceptance.log`) or surfaces a blocker. A run does not reach that
+   state on its own: the pass that finds every task `done` advances it to
+   `accepting` and stops at a `run-complete` boundary, so an unattended run
+   parks in `accepting` until an operator runs `orchid run accept`. Integration
+   branch holds the product; pushing/deploying is yours. A schedule installed
+   in step 4 does NOT end with it — nothing ties one to a run's lifetime, so
+   every wake from `accepting` onward can only repeat one pass, and every wake
+   after completion is a certain no-op that runs forever. Tearing the checkout
+   down is therefore ordered, not interchangeable — and is one command rather
+   than two: `orchid service teardown --repo <path>` uninstalls the schedule
+   and removes that worktree only if the uninstall succeeded, so a refusal
+   cannot be followed by a removal that runs anyway. Run raw, the pair must be
+   chained (`orchid service uninstall --repo <path> && git worktree remove
+   <path>`, from the MAIN checkout — `git worktree remove` needs a repository
+   to run in, which `teardown` resolves for itself); orchid can refuse only the
+   removals it performs itself, never a
+   `git worktree remove` an operator types. Reversed, the
+   scheduler keeps firing against a directory that is gone and the binding
+   record naming the leftover schedule went into the bin with it — `orchid
+   doctor` reads the machine-local copy under `~/.orchid/services/` and names
+   what is still owed an uninstall: a binding whose checkout is gone, one whose
+   repository is gone under a surviving directory, one whose run has already
+   reached a terminal state, and one whose run is parked in `accepting`. A
+   schedule that has actually woken and refused says so there too, from a note
+   the pump leaves beside that same record — a note about that schedule's LAST
+   wake, retired by a wake that finds the target healthy and succeeds, by a real
+   `orchid service install` replacing the schedule, and by `uninstall` removing
+   it, so doctor never reports a schedule as failing beside its own line calling
+   that schedule healthy. A wake ends where the TICK it hands off to ends: a
+   pass that woke an orchestrator which then failed has not disproved anything,
+   so it leaves the note standing for the operator who reads doctor next. Which schedule those verbs act on comes from the
+   binding records rather than from re-hashing `--repo`, so a checkout MOVED
+   with `git worktree move` still ends the schedule it really has; and `--repo`
+   must be the checkout that record NAMES, or a path that checkout has left, so
+   a `cp -R` duplicate and a second worktree given the same record — whose
+   copied record agrees with the machine-local half exactly — are refused before
+   any scheduler call, record removal or worktree removal rather than ending the
+   bound checkout's schedule. A move takes the checkout away from the recorded
+   path and a copy leaves the original standing there, which is the fact that
+   separates them; git's worktree registration is asked as well, in the one
+   direction it can answer, refusing a checkout it registers as some OTHER
+   existing one (every linked worktree is registered at its own path, so "git
+   registers me" says nothing about which record is mine). Those records are read as UNTRUSTED INPUT: the
+   repo-local half sits inside the checkout a run's engines write to, and its
+   label is joined into `~/.orchid/services/<label>.json` and the plist path as
+   a path COMPONENT while its artifact is unloaded and then deleted exactly as
+   written, so both are checked against what `install` could have derived FOR
+   THE CHECKOUT THAT SAME RECORD NAMES — the label must be exactly
+   `com.orchid.pump.` plus the first twelve hex characters of that path's
+   sha256, and the artifact must be exactly that label's plist (macOS) or that
+   path's own `.orchid/runtime/pump.cron` (elsewhere) — and anything else is
+   refused before any path built from it is opened, probed, cleared or removed.
+   A label of the right SHAPE is not enough: every checkout on the machine has
+   one, so a record that borrowed a neighbour's label or a neighbour's
+   `pump.cron` would otherwise have a removal unload that neighbour's agent or
+   delete the file its own `uninstall` and `status` read. Deriving against the
+   RECORDED path rather than against `--repo` is also what keeps a moved
+   checkout removable: after `git worktree move` the record is still honest
+   about where the schedule was installed.
+   `uninstall` removes the scheduler
+   artifact and clears the binding only once the scheduler has let the job go:
+   a macOS unload that fails while `launchctl list` still reports the label
+   removes nothing and refuses, since the artifact and the record are the only
+   things that could name the still-loaded agent afterwards. An artifact that
+   is already gone is not the answer to that question either — removing a plist
+   unloads nothing — so that case asks launchd too, and refuses on the same
+   fact, holding the record that is by then the agent's last name. Only launchd
+   ANSWERING that it holds no such job clears those records: `launchctl list`
+   exits nonzero both for that answer and for every way of failing to ask, and a
+   query that never reached launchd is treated as a loaded job, not as an
+   absence — it refuses, names the failing command and its status, and keeps
+   both binding records and the checkout guard. Every one of those refusals is
+   what `teardown` makes load-bearing: it is the same uninstall, and the
+   worktree removal is its success branch, so a refusal that used to print
+   above a removal an operator ran anyway now stops the removal outright and
+   exits nonzero with the checkout untouched. `teardown` refuses up front,
+   uninstalling nothing, when `--repo` is not a linked worktree, and removes
+   neither half under `--dry-run`. Exactly one of its failures fires with the
+   uninstall already done — `git worktree remove` declining a worktree it
+   considers unclean — and that one names both halves: the schedule is ended
+   and will not fire again, only the checkout is left, and the `--force`
+   removal that finishes it is printed, because re-running `teardown` there
+   would report `no service installed` and remove nothing. Doctor is the
+   surface that reaches an operator here: the pump says the same thing on every
+   wake, but it says it before the repo-local service log is opened (nothing
+   may open a path inside the target ahead of the unattended trust gate), so a
+   scheduled wake reports it to the scheduler's `/dev/null`. See PROTOCOL.md's
+   COMPLETION.
 
 ## Remote interaction
 

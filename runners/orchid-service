@@ -9,16 +9,40 @@ set -euo pipefail
 # libexec/orchid-service is a bare handoff, nothing more.
 #
 # Every subverb accepts --dry-run: the exact launchctl/crontab command(s)
-# are PRINTED, prefixed "DRY-RUN:", instead of run. File rendering +
-# placement (the plist under ~/Library/LaunchAgents, and the local
-# .orchid/runtime/pump.cron record kept as the linux-side install record --
-# see _svc_install_linux below for why that record exists) still happens
-# for REAL under --dry-run: that part is plain, safe, repo/HOME-local file
-# I/O, never a system scheduler mutation. Only the launchctl/crontab call
-# itself is gated. This is deliberate: the test suite runs EVERY subverb
-# under --dry-run (never touches a real launchctl/crontab), and still needs
-# to assert real template rendering, real file placement, and real
-# install/uninstall/status bookkeeping against that placement.
+# are PRINTED, prefixed "DRY-RUN:", instead of run. What else it skips is
+# not symmetric between install and uninstall, and the asymmetry is the
+# point rather than an oversight:
+#
+#   INSTALL renders and PLACES for real (the plist under
+#     ~/Library/LaunchAgents, the local .orchid/runtime/pump.cron record kept
+#     as the linux-side install record -- see _svc_install_linux below for why
+#     that record exists -- and both halves of the binding record described
+#     under TEARDOWN ORDERING). Everything it creates is INERT without the
+#     scheduler call that was skipped: a plist nobody loaded, a record whose
+#     only effect is to make the removal guard conservative and `orchid
+#     doctor` mention a schedule, and `uninstall` reverses all of it. The test
+#     suite depends on that: it asserts real template rendering and real
+#     placement without ever touching a live launchctl/crontab.
+#
+#   UNINSTALL removes NOTHING under --dry-run. Its file work is not placement,
+#     it is the destruction of the only records that name a schedule the dry
+#     run has deliberately left running -- the plist `launchctl unload` needs
+#     the path of, and the binding record that is the sole thing tying that
+#     schedule to a checkout. Performed for a schedule still loaded, a
+#     "preview" would manufacture exactly the invisible leftover this file's
+#     TEARDOWN ORDERING exists to prevent, and would do it in the one mode an
+#     operator runs expecting no consequences.
+#
+#   TEARDOWN inherits that and extends it to the worktree: it is the uninstall
+#     with `git worktree remove` as its SUCCESS BRANCH (see the teardown
+#     section further down for why the ordering could not stay a pair of
+#     commands), so under --dry-run neither half happens -- a preview that took
+#     the checkout while only PRINTING the launchctl call would perform the
+#     reversed ordering under the flag that promises no consequences.
+#
+# The removal path stays covered: ORCHID_SERVICE_DEBUG_SCHEDULER_LOG (see
+# _svc_scheduler_exec) is a test-only seam that stubs the one system call and
+# leaves every removal real.
 
 # Service installation is itself an unattended trust boundary. Preserve the
 # installing operator's PATH only as data for the scheduler artifact, capturing
@@ -51,12 +75,16 @@ ORCHID_ROOT="$(cd "$(command dirname "$self")/.." && pwd -P)"
 __orchid_entry_defer_restore=1
 source "$ORCHID_ROOT/lib/common.sh"
 source "$ORCHID_ROOT/lib/trust.sh"
+# For `status` alone: reading the bound run's own run_status, so an operator
+# asking "is this schedule still doing anything?" is answered rather than
+# merely told a schedule exists. Function definitions only, no side effects.
+source "$ORCHID_ROOT/lib/frontmatter.sh"
 
 PUMP_LOG_TAIL_LINES=20
 
 _svc_usage() {
   cat <<'EOF'
-usage: orchid service <install|uninstall|status> [options]
+usage: orchid service <install|uninstall|status|teardown> [options]
 
 Schedules the orchid pump (runners/orchid-pump -- one-shot, lease-gated) to
 run on a fixed interval via the host's own scheduler, so a run proceeds on a
@@ -71,38 +99,375 @@ a crontab line.
                idempotent: re-running install for the same repo REPLACES
                its existing schedule (same label/marker) in place -- it
                never stacks a second launchd job or a second crontab line.
+               that idempotence is about the SAME path. a checkout MOVED
+               since it was installed (`git worktree move`) still carries
+               the binding for the schedule it really has, while hashing
+               where it now sits would name a different one -- so install
+               refuses there rather than stacking a second schedule beside
+               the first, and names the one operation that resolves it:
+               uninstall (which resolves the original from the binding),
+               and only if that succeeded, install again.
   uninstall  remove exactly what install created for --repo (the plist
                file + its launchctl load, or the marker-guarded crontab
-               line). idempotent: refuses cleanly (a plain message, no
-               launchctl/crontab touched) when nothing is installed for
-               --repo -- safe to call blind.
-  status     report installed/loaded state plus the tail of --repo's
-               .orchid/runtime/pump.log. Always exits 0 -- a status query
-               is never a failure, even when nothing is installed.
+               line), and clear the binding record. which schedule that is
+               comes from the binding records install wrote, not from
+               hashing --repo's path, so a checkout MOVED since it was
+               installed (`git worktree move`) still ends the schedule it
+               really has. those records are read as untrusted input: a
+               label or an artifact orchid could not have derived is
+               refused before any path built from it is opened, unloaded
+               or deleted. the two records must also agree about it, and
+               --repo must be the checkout they name: a record edited by
+               hand is refused, and so is a COPY of the bound checkout, which
+               carries an identical record but is not the worktree git has
+               registered. either way nothing is removed. idempotent: refuses
+               cleanly (a plain message, no launchctl/crontab touched) when
+               nothing is installed for --repo -- safe to call blind.
+               removes nothing, and refuses, when the scheduler could not
+               unload an agent it still reports as loaded: the plist and
+               the binding are all that could ever name it again. same
+               refusal when the plist is ALREADY gone and launchd still
+               reports the job -- removing a plist unloads nothing, so
+               the binding is then the last name that agent has.
+               under --dry-run it removes NOTHING and prints what it would
+               remove: the schedule is still running, and the records it
+               would delete are the only things that name it.
+  status     report installed/loaded state, the binding record, whether the
+               bound run has already finished (every wake after that is a
+               certain no-op), the teardown ordering, and the tail of --repo's
+               .orchid/runtime/pump.log. Always exits 0 -- a status query is
+               never a failure, even when nothing is installed.
+  teardown   the whole ending, as ONE conditional operation: uninstall the
+               schedule for --repo and, only if that succeeded, remove that
+               integration worktree. The removal is the SUCCESS BRANCH of the
+               uninstall, never a step after it -- an uninstall that refuses,
+               or that cannot prove the scheduler let the job go, removes
+               nothing and this exits nonzero with the checkout untouched.
+               refuses up front (uninstalling nothing) when --repo is not a
+               LINKED worktree, since `git worktree remove` has nothing to
+               take there; run `uninstall` on such a checkout instead.
+               --force is passed through to `git worktree remove` for a
+               worktree git considers unclean. under --dry-run it removes
+               nothing at all and prints both halves.
+
+TEARDOWN ORDERING. A schedule outlives the run it serves: nothing removes it
+when the last task merges. `install` records what it bound itself to (a
+binding record inside the repo, and a machine-local copy under
+~/.orchid/services/ that survives the repo's removal), and the rule that
+record exists to keep is:
+
+    uninstall the service FIRST, then remove the integration worktree.
+
+That is one operation, not two lines, and `teardown` is how it is spelled:
+
+    orchid service teardown --repo /path/to/project-orchid
+
+Written as two independent commands they are RUN independently, and the
+uninstall's refusals are the whole point of it: it refuses whenever it cannot
+prove the scheduler let the job go. A refusal followed by a removal that runs
+anyway deletes the checkout, the binding record inside it, and every path the
+still-loaded agent could be found by -- the exact leftover this ordering
+exists to prevent, reached by obeying the ordering. If you would rather run
+the two commands yourself, chain them so the second cannot run without the
+first, run the chain from the MAIN checkout (`git worktree remove` needs a
+repository to run in, and `teardown` resolves that for itself), and note that
+orchid can refuse only the removals it performs itself -- a `git worktree
+remove` or `rm -rf` you type is not one of them:
+
+    orchid service uninstall --repo <path> && git worktree remove <path>
+
+Reversed, a launchd agent / crontab line keeps waking on a schedule against a
+deleted directory, and the record naming the leftover schedule went into the
+bin with it. `orchid doctor` warns about any binding whose repository is gone,
+and about any whose run has already reached a terminal state -- the certain
+waste the pump can only report to a scheduler's /dev/null; a pump whose target
+is gone refuses loudly instead of polling forever; and every checkout removal
+orchid itself performs refuses while a binding is live.
 
 options:
   --repo <path>    target repo (default: $ORCHID_REPO, else the cwd)
   --interval-s N   install only: override pump_interval_s (config default
                      240) for this install
+  --force          teardown only: passed through to `git worktree remove`,
+                     for a worktree git refuses as unclean. It never weakens
+                     the uninstall half -- a refused uninstall still removes
+                     nothing, with or without this
   --dry-run        print the exact launchctl/crontab commands instead of
-                     running them (file rendering + placement still
-                     happens for real -- only the scheduler mutation/query
-                     itself is skipped)
+                     running them. install still renders + places its
+                     (inert) files for real; uninstall removes nothing at
+                     all -- it would be deleting the records naming a
+                     schedule this run has left installed; teardown removes
+                     neither the schedule nor the worktree
 EOF
 }
 
-# _svc_hash12 <string> -- first 12 hex chars of the string's sha256, used
-# to derive a repo's launchd label / cron marker deterministically. Prefers
-# sha256sum (near-universal on Linux); falls back to shasum -a 256 (macOS's
-# always-available Perl-based tool, which typically lacks sha256sum).
-_svc_hash12() {
-  if command -v sha256sum >/dev/null 2>&1; then
-    printf '%s' "$1" | sha256sum | cut -c1-12
+# THE LABEL DERIVATION LIVES IN lib/common.sh, and this file installs with it
+# rather than owning it. It used to be a local `_svc_hash12`/`_svc_label` pair,
+# with the readers in lib/common.sh recognising the SHAPE of what it produced --
+# and a shape is not an identity: every checkout on the machine produces a label
+# of that shape, so a record naming any of the others passed the readers' test
+# and pointed a removal at a schedule that was really there. Validating against
+# the derivation instead of against its shape means the validator has to compute
+# it, and the writer and the validator computing it separately is the one thing
+# that could make the rule and the reality drift apart. One function, called
+# from both: orchid_service_derive_label.
+
+# ---------------------------------------------------------------------------
+# WHICH SCHEDULE A REMOVAL ACTS ON
+# ---------------------------------------------------------------------------
+# `install` hashes the label from the canonical repo path, and while a checkout
+# stays where it is that is the same thing as "the schedule bound here". A
+# REMOVAL cannot assume it: `git worktree move` changes the path while both
+# binding records keep naming the schedule that was installed, so the hash of
+# the CURRENT path names one that never existed. Derived from it, `uninstall`
+# found no plist and no binding, said `no service installed` for an agent still
+# firing every interval, and left both records behind with no verb able to name
+# them -- this task's own leftover, reached through a rename.
+#
+# So every removing subverb resolves its identity from what INSTALL RECORDED,
+# through orchid_service_identity (lib/common.sh): the repo-local record names
+# the label, its machine-local twin is looked up BY THAT LABEL rather than by
+# path, and the two must agree. Disagreement is refused, not guessed at.
+#
+# AND THEN THE OTHER HALF OF THE SAME QUESTION: whether the caller is the
+# checkout those records name. Agreement proves what schedule they are about; it
+# proves nothing about who is asking, because a checkout copied with `cp -R`
+# carries the repo-local half inside it unchanged. That is the mirror image of
+# the rename above -- one path with two schedules' worth of claims on it instead
+# of one schedule with two paths -- and it fails the other way: the resolution
+# succeeds, names the ORIGINAL checkout's label, and the removal ends a schedule
+# that is still driving somebody else's tree. orchid_service_binding_owned
+# settles it on whether the checkout that record names is STILL STANDING -- a
+# move leaves nothing behind, a copy leaves the original exactly where the
+# record says it is -- with git's worktree registration refusing a duplicate
+# that sits beside its original.
+#
+# AND BEFORE EITHER QUESTION, WHETHER THE RECORD IS SAYING ANYTHING ORCHID COULD
+# HAVE WRITTEN. `.orchid/runtime/service.json` is inside the checkout the run's
+# engines write to, and what a removal takes from it are not descriptions but
+# PATHS: the label is joined into `$HOME/.orchid/services/<label>.json` and
+# `~/Library/LaunchAgents/<label>.plist` as a component, and the artifact is
+# unloaded and then `rm -f`'d exactly as recorded. Believed, `../../..` and an
+# operator's own plist are both reachable that way. So both fields are held to
+# install's own derivation first (lib/common.sh, orchid_service_label_derived /
+# orchid_service_artifact_valid), and nothing below opens, probes, clears or
+# deletes a path until they have passed.
+#
+# HELD TO THE DERIVATION, NOT TO ITS SHAPE, and the difference is the whole of
+# what the check is worth. A traversal-free `com.orchid.pump.<12 hex>` and an
+# absolute path ending `/.orchid/runtime/pump.cron` are what EVERY checkout on
+# this machine produces, so a record that swapped in a NEIGHBOUR'S label or a
+# neighbour's cron record passed a shape test untouched -- and the removal then
+# unloaded that neighbour's agent, or deleted the file its own `uninstall` and
+# `status` read. Both fields are therefore checked against what install would
+# have produced FOR THE CHECKOUT THE RECORD ITSELF NAMES: one label, one
+# artifact, and every other spelling refused whether or not it looks invented.
+#
+# Set by _svc_identity and read for the rest of the call. THE REMOVING SUBVERBS
+# ARE THE CALLERS, and `status` is deliberately not one. This resolution fails
+# CLOSED -- records that disagree end the process rather than being guessed at
+# -- and `status` promises the opposite (it always exits 0; a query about a
+# checkout is never a failure), so wiring it in would trade a report that names
+# a stale label for one that refuses to report at all. What is at stake differs
+# too: a label reported wrongly costs a confusing line, while a label REMOVED
+# wrongly unloads another checkout's agent or orphans this one's.
+SVC_LABEL=""
+SVC_ARTIFACT=""
+SVC_ARTIFACT_PLATFORM=""
+
+# _svc_identity <repo> -- resolve SVC_LABEL/SVC_ARTIFACT/SVC_ARTIFACT_PLATFORM,
+# or refuse. Falls back to the path hash only when NO record names a schedule
+# here at all (an install predating the binding record); that is a different
+# answer from "the records disagree" and from "this record says something install
+# could not have written", each of which exits with its own diagnosis.
+#
+# THREE REFUSALS, ANSWERING THREE QUESTIONS, AND THEY ARE NOT INTERCHANGEABLE.
+# The first is about the RECORD ITSELF -- is what it says something install could
+# have written; the second is about the RECORDS TOGETHER -- do they name one
+# schedule; the third is about the CALLER -- is this the checkout they were
+# written for. A copied checkout passes the first two and is caught only by the
+# third, so no refusal may be worded as if it covered another's case.
+#
+# AND THE FIRST IS FIRST BECAUSE IT IS THE ONE ABOUT UNTRUSTED INPUT.
+# `.orchid/runtime/service.json` sits inside the checkout a run's engines write
+# to, and the label and artifact it carries become the paths this file opens,
+# unloads and deletes. Nothing below may act on either until they have been held
+# to what `orchid service install` could have produced FOR THE CHECKOUT THAT
+# RECORD NAMES -- see _orchid_service_record_usable in lib/common.sh, and
+# orchid_service_identity's own third answer.
+_svc_identity() {
+  local repo="$1" id_rc=0
+  orchid_service_identity "$repo" || id_rc=$?
+  if [ "$id_rc" -eq 2 ]; then
+    echo "orchid: refusing to remove anything for $repo: its binding record does not name a schedule orchid could have installed" >&2
+    echo "orchid: $ORCHID_SERVICE_ID_REJECTED" >&2
+    orchid_die "a label or artifact orchid did not derive is not a schedule to act on — it is a path this verb would unload and delete on a record's say-so; repair or delete that record, then re-run: $(_svc_rerun_command "$repo")"
+  fi
+  if [ "$id_rc" -ne 0 ]; then
+    echo "orchid: refusing to remove anything for $repo: its two binding records do not name the same schedule" >&2
+    echo "orchid: $(orchid_service_repo_record "$repo") and its machine-local copy must agree on label, platform, repository and artifact — one of them has been edited" >&2
+    orchid_die "acting on either half alone would unload another checkout's agent or clear the last name this one has; reconcile or delete the wrong record, then re-run: $(_svc_rerun_command "$repo")"
+  fi
+  # AND THE RECORDS AGREEING IS NOT THIS CHECKOUT OWNING THEM. `cp -R` of a
+  # bound checkout copies `.orchid/runtime/service.json` with everything else, so
+  # the duplicate's repo-local half is byte-identical to the machine-local one
+  # and the resolution above succeeds for it exactly as it does for the original.
+  # Acted on, a removal inside the copy unloads the agent the ORIGINAL checkout
+  # is still being driven by, deletes both records, and leaves that checkout
+  # bound to a schedule nothing can name -- this task's leftover, minted by
+  # tearing down a backup. A record naming another checkout is equally what a
+  # SEPARATELY ADDED worktree holds when the run's own engines write one into
+  # it, and it must not be able to answer for that checkout either. The move it
+  # must not be confused with is the one K13 exists for, and what tells them
+  # apart is whether the recorded checkout is still standing: see
+  # orchid_service_binding_owned.
+  #
+  # TWO FACTS CAN REFUSE HERE AND THEY ARE NOT THE SAME SENTENCE. Ordinarily
+  # the recorded checkout is still standing, and that is what is said. But a
+  # caller git registers as ANOTHER existing checkout is refused even when the
+  # recorded path is gone (a copy of a checkout that had itself been moved), and
+  # in that state "it is still there" would be a false diagnosis and the
+  # recorded path a dead end to send an operator to. So the second sentence and
+  # the checkout the re-run names are chosen from which fact actually refused.
+  if ! orchid_service_binding_owned "$repo" "$ORCHID_SERVICE_ID_REPO"; then
+    local owner="$ORCHID_SERVICE_ID_REPO"
+    local why=""
+    if [ -e "$ORCHID_SERVICE_ID_REPO" ]; then
+      why="$(orchid_service_repo_record "$repo") names a checkout that is STILL THERE, and a record naming another checkout is what a copy of the bound one carries and what a separately added worktree can be given"
+    else
+      owner="$(orchid_checkout_registered_path "$repo")" || owner="$ORCHID_SERVICE_ID_REPO"
+      why="git's worktree registration names $owner for this path, so this is a COPY of that checkout rather than that checkout"
+    fi
+    echo "orchid: refusing to remove anything for $repo: this is not the checkout that binding was installed against ($ORCHID_SERVICE_ID_REPO)" >&2
+    echo "orchid: the records here match, and matching records are not ownership — $why (a checkout MOVED — with 'git worktree move', or a plain rename — leaves nothing behind at the recorded path and is accepted here)" >&2
+    orchid_die "ending the schedule from here would unload an agent this checkout does not own and clear the only records naming it; run it against $owner instead: $(_svc_rerun_command "$owner")"
+  fi
+  SVC_LABEL="$ORCHID_SERVICE_ID_LABEL"
+  SVC_ARTIFACT="$ORCHID_SERVICE_ID_ARTIFACT"
+  SVC_ARTIFACT_PLATFORM="$ORCHID_SERVICE_ID_PLATFORM"
+  [ -n "$SVC_LABEL" ] || SVC_LABEL="$(orchid_service_derive_label "$repo")"
+}
+
+# _svc_artifact <platform> <derived> -- the artifact a removal acts on: the one
+# INSTALL RECORDED where that record belongs to this platform and is still
+# there, and this file's own derivation otherwise.
+#
+# THE TWO PLATFORMS' ARTIFACTS LIVE IN DIFFERENT PLACES, which is why this is a
+# preference rather than a substitution. The launchd plist is machine-local: a
+# moved checkout does not move it, so the recorded path is exactly right. The
+# cron record is repo-local -- it travels INSIDE the checkout -- so after a move
+# the recorded path names a directory that is gone while the file itself is
+# right here under the new one. Preferring the record only while it is still a
+# file gives both.
+_svc_artifact() {
+  local plat="$1" derived="$2"
+  if [ "$SVC_ARTIFACT_PLATFORM" = "$plat" ] && [ -n "$SVC_ARTIFACT" ] && [ -f "$SVC_ARTIFACT" ]; then
+    printf '%s\n' "$SVC_ARTIFACT"
   else
-    printf '%s' "$1" | shasum -a 256 | cut -c1-12
+    printf '%s\n' "$derived"
   fi
 }
-_svc_label() { echo "com.orchid.pump.$(_svc_hash12 "$1")"; }
+
+# _svc_install_one_schedule <repo> <interval_s> -- refuse an install that would
+# give this checkout a SECOND schedule beside one it is already carrying.
+#
+# INSTALL NAMES ITS SCHEDULE BY HASHING THE CURRENT PATH, and that is right:
+# install is where a label comes FROM. For a checkout that has never moved it is
+# also the label already written in the binding, so a re-install replaces its own
+# plist or its own crontab line and rewrites its own two records -- the
+# idempotence both branches document, and nothing here disturbs it.
+#
+# `git worktree move` separates the two, exactly as it does for a removal -- see
+# _svc_identity, which is why every REMOVING arm stopped re-hashing. Nothing on
+# the install side asked. Re-run from the new path, this file derived a SECOND
+# label, rendered and loaded a second plist, wrote a second machine-local record,
+# and overwrote the repo-local half -- the one name the FIRST schedule still had
+# from inside this checkout -- with the new one. Two agents then woke on the same
+# interval against the same run, and the older of the two could be reached only
+# through a machine-local record that no verb resolves by path. That is this
+# task's own leftover minted a third way, by the verb whose whole documented
+# promise is that it never stacks a second job.
+#
+# REFUSING RATHER THAN ADOPTING THE RECORDED IDENTITY, and the reason is
+# structural rather than a preference. "Reuse the original schedule" means
+# writing a binding that says repo=<here> and label=<the hash of where this
+# checkout used to be> -- and _orchid_service_record_usable holds every recorded
+# label to the derivation of the path that record itself names, so such a record
+# is rejected by every reader the moment it lands, including the `uninstall`
+# that would afterwards have to clear it. A schedule installed under an identity
+# no removal can validate is a worse leftover than the one this guard prevents.
+#
+# ONLY AGAINST A BINDING THIS CHECKOUT MAY END, which is what makes the recovery
+# it names a true one. A record naming a checkout that is STILL STANDING belongs
+# to that checkout (orchid_service_binding_owned): this is then a COPY carrying
+# the original's record, the schedule it names is not this directory's to end,
+# and `uninstall` run here refuses -- so a refusal naming that recovery would
+# send an operator to a command that cannot succeed. Installing is the honest
+# answer there: the schedule this path gets is its own, nothing of the
+# original's is touched, and the borrowed record is replaced by an honest one.
+#
+# AND A BINDING THAT DOES NOT RESOLVE REFUSES TOO, which is the opposite of what
+# this guard first did with it. orchid_service_identity's two nonzero answers are
+# findings about the RECORD -- twins that disagree, or a record naming something
+# install could not have written -- and neither of them NAMES a schedule. Read as
+# permission to continue, "no schedule was named" became "no schedule exists":
+# a moved checkout whose halves had come apart got the whole stacking hazard
+# above straight back, since the guard fell through, install derived the
+# new-path label, and the old plist and machine-local record -- either of which
+# may still be a loaded agent -- stayed exactly where they were with the
+# repo-local half overwritten from under them. An unreadable binding is not an
+# absent one, and it is the one state where what this checkout already has
+# cannot be established at all.
+#
+# THE REPAIR ARGUMENT WAS THE WRONG WAY ROUND. orchid_service_binding_write does
+# rewrite both halves from one staged file, so an install DOES leave the two
+# records agreeing again -- agreeing about the new schedule, while the schedule
+# the old halves were describing is still loaded under a name nothing on disk
+# mentions any more. That is not a repair; it is this task's leftover written by
+# the verb that was supposed to be reconciling it. The recovery is the operator's
+# and it is named in the refusal: repair or delete the record that is wrong --
+# both paths are printed -- and re-run the install, which then either lands or
+# meets the moved-checkout refusal above with a binding it can finally read.
+#
+# BOTH FINDINGS REFUSE, AND THEY REFUSE SEPARATELY, for the reason
+# orchid_service_identity's own header gives: 1 is about the two halves TOGETHER
+# and is fixed by reconciling them against each other, 2 is about one record's
+# own contents and has nothing to reconcile with. Collapsed into one sentence
+# here, an operator whose halves agree perfectly would be sent hunting for a
+# disagreement.
+#
+# ASKED FOR --dry-run TOO. A preview of an install is not a preview of its
+# artifacts: install renders and places the plist, writes the cron record and
+# commits BOTH binding halves for real either way, and only the launchctl/crontab
+# call is printed. So --dry-run stacks everything this guard is about except the
+# one system call, and a guard it skipped would be a guard the flag walks past.
+_svc_install_one_schedule() {
+  local repo="$1" interval_s="$2" derived bound id_rc=0 rerun
+  derived="$(orchid_service_derive_label "$repo")"
+  # The command this refusal sends the operator back to, composed once: all
+  # three arms below name a re-run of THIS install, with the interval it was
+  # asked for, and three spellings of one command is where one of them drops the
+  # flag an operator would then have to remember.
+  rerun="$(_svc_quote_cmd orchid service install --repo "$repo" --interval-s "$interval_s")"
+  orchid_service_identity "$repo" || id_rc=$?
+  if [ "$id_rc" -eq 2 ]; then
+    echo "orchid: refusing to install a schedule for $repo: the binding record it carries does not name a schedule orchid could have installed" >&2
+    echo "orchid: $ORCHID_SERVICE_ID_REJECTED" >&2
+    orchid_die "a record that cannot be read is not an absence of one — the schedule it was written for may still be loaded under a name this install would not derive, and installing over it would leave that one firing with nothing naming it; repair or delete that record, then re-run: $rerun"
+  fi
+  if [ "$id_rc" -ne 0 ]; then
+    echo "orchid: refusing to install a schedule for $repo: its two binding records do not name the same schedule" >&2
+    echo "orchid: $(orchid_service_repo_record "$repo") and its machine-local copy must agree on label, platform, repository and artifact — one of them has been edited" >&2
+    orchid_die "while they disagree there is no answer to which schedule this checkout already has, and installing would write a third name over both halves — leaving a schedule that may still be loaded with nothing on disk naming it; reconcile or delete the wrong record, then re-run: $rerun"
+  fi
+  bound="$ORCHID_SERVICE_ID_LABEL"
+  [ -n "$bound" ] || return 0
+  [ "$bound" != "$derived" ] || return 0
+  orchid_service_binding_owned "$repo" "$ORCHID_SERVICE_ID_REPO" || return 0
+  echo "orchid: refusing to install a schedule for $repo: this checkout already carries one, under a different name" >&2
+  echo "orchid: it is bound to $bound, installed against $ORCHID_SERVICE_ID_REPO -- a path this checkout has since left, so installing from here would derive $derived and leave $bound scheduled with nothing in this checkout still naming it" >&2
+  orchid_die "end the schedule this checkout has before it is given another, as ONE operation -- the install runs only if the uninstall succeeded: $(orchid_service_uninstall_command "$repo") && $rerun"
+}
 
 # _svc_platform -- "darwin" (launchd) or "linux" (cron fallback, the
 # default for anything that isn't Darwin). ORCHID_SERVICE_OS is a TEST-ONLY
@@ -118,14 +483,91 @@ _svc_platform() {
   esac
 }
 
-# _svc_dryprint <cmd...> -- prints "DRY-RUN: <cmd>" with every argument
-# shell-quoted (printf %q) so the line is exactly re-runnable/copy-pastable,
+# _svc_quote_cmd <cmd...> -- the command as ONE line with every argument
+# shell-quoted (printf %q), so it is exactly re-runnable/copy-pastable and
 # never a lossy plain join (an argument containing a space would otherwise
 # print ambiguously).
-_svc_dryprint() {
-  local out="DRY-RUN:" a
-  for a in "$@"; do out="$out $(printf '%q' "$a")"; done
-  echo "$out"
+_svc_quote_cmd() {
+  local out="" a
+  for a in "$@"; do out="${out:+$out }$(printf '%q' "$a")"; done
+  printf '%s\n' "$out"
+}
+_svc_dryprint() { echo "DRY-RUN: $(_svc_quote_cmd "$@")"; }
+
+# _svc_scheduler_exec <cmd...> / _svc_scheduler_eval <pipeline> -- the two
+# forms every scheduler MUTATION in this file goes through: `launchctl
+# load`/`unload` and both crontab pipelines. `status`'s two read-only queries
+# (`launchctl list`, `crontab -l | grep`) stay direct -- they change nothing,
+# so there is nothing for a stub to protect, and status is asked under
+# --dry-run wherever a test asks it at all.
+#
+# ORCHID_SERVICE_DEBUG_SCHEDULER_LOG is a TEST-ONLY seam (never documented in
+# --help, not an operator-facing knob), the same kind as ORCHID_SERVICE_OS and
+# ORCHID_SERVICE_DEBUG_CRON_CMD_FILE above: when set, the command is APPENDED
+# to that file instead of run, and everything else takes the real,
+# non-`--dry-run` path.
+#
+# It exists because `--dry-run` and "the real path" are no longer the same
+# code below. A dry run must not remove the plist, the cron record or the
+# binding (see _svc_uninstall_darwin's own header for why), so a suite that can
+# only ever invoke `--dry-run` -- and this one can only ever do that, since a
+# real uninstall talks to the host's own launchd or rewrites the operator's
+# real crontab -- would have no way left to exercise removal at all. This seam
+# stubs exactly one system call and leaves every removal, record and refusal it
+# is guarding real.
+#
+# ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL is the second half of the same seam, and
+# it exists because a stub that can only SUCCEED cannot reach the arm that
+# matters most: what a real uninstall does when `launchctl unload` FAILS (see
+# _svc_unload_darwin). It is an ERE matched against the quoted command line; a
+# stubbed call that matches fails instead of succeeding, and is still logged, so
+# a test can fail the unload alone (launchd still reports the job -- the
+# dangerous case) or the unload and the `list` together (the case whose meaning
+# depends entirely on HOW the list failed). Ignored entirely unless the log seam
+# above is set.
+#
+# ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_RC / _FAIL_ERR are the third half, and
+# they exist because "nonzero" is no longer one fact. `launchctl list` answers
+# _svc_launchd_probe in three ways, and two of them are nonzero: launchd's own
+# "no job by that name" and every malfunction that could not answer at all. A
+# stub that could only ever return 1 with nothing on stderr could stage exactly
+# one of those, so the distinction the probe exists to draw would be half
+# untestable -- and it is the half that decides whether a binding record is
+# cleared or kept. _FAIL_RC is the exit status a matching call returns (default
+# 1); _FAIL_ERR is text it writes to stderr (default none), which is where
+# launchd's own not-found sentence lives.
+#
+# A herestring, not `_svc_quote_cmd "$@" | grep -q`: this file runs under
+# `pipefail`, and `grep -q` exits the moment it matches, so a producer still
+# writing could take a SIGPIPE and hand the pipeline a nonzero status on the
+# very input that MATCHED -- inverting the answer.
+_svc_scheduler_stub_fails() {
+  [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL:-}" ] || return 1
+  local cmd; cmd="$(_svc_quote_cmd "$@")"
+  grep -qE "$ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL" <<<"$cmd"
+}
+_svc_scheduler_exec() {
+  local rc=0
+  if [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_LOG:-}" ]; then
+    _svc_quote_cmd "$@" >> "$ORCHID_SERVICE_DEBUG_SCHEDULER_LOG"
+    if _svc_scheduler_stub_fails "$@"; then
+      rc="${ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_RC:-1}"
+      [ -z "${ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_ERR:-}" ] \
+        || printf '%s\n' "$ORCHID_SERVICE_DEBUG_SCHEDULER_FAIL_ERR" >&2
+    fi
+    return "$rc"
+  fi
+  "$@"
+}
+_svc_scheduler_eval() {
+  if [ -n "${ORCHID_SERVICE_DEBUG_SCHEDULER_LOG:-}" ]; then
+    printf '%s\n' "$1" >> "$ORCHID_SERVICE_DEBUG_SCHEDULER_LOG"
+    return 0
+  fi
+  # eval is safe here: $1 is entirely this script's own fixed pipeline syntax
+  # plus values _svc_cron_pipeline_* already ran through `printf %q` -- see
+  # those functions' own header.
+  eval "$1"
 }
 
 # _svc_sed_escape <string> -- escapes sed REPLACEMENT metacharacters for the
@@ -209,7 +651,10 @@ _svc_cron_minutes() {
   echo "$m"
 }
 
-_svc_cron_record_path() { echo "$1/.orchid/runtime/pump.cron"; }
+# The cron record's location is orchid_service_cron_record_path (lib/common.sh),
+# for the same reason the label derivation is: the artifact validation holds a
+# RECORDED cron path to exactly what this branch writes, so the two have to be
+# one statement rather than two that happen to agree.
 
 # _svc_cron_escape <string> -- escapes the target FORMAT's own metacharacter
 # for a crontab command field: an unescaped `%` is cron's line-continuation/
@@ -244,6 +689,90 @@ _svc_render_cron_line() {
   echo "*/$mins * * * * ORCHID_REPO=$repo_e TMPDIR=$parent_e PATH=$path_e $pump_e --service-log >> /dev/null 2>&1 # orchid-service:$label"
 }
 
+# _svc_print_binding <repo> -- the teardown half of `status`. An operator
+# asking "what is installed here?" is usually one step away from tearing the
+# checkout down, and the ordering that must hold (uninstall, THEN remove) is
+# exactly the thing the live-run finding says is written down nowhere. So it
+# is printed here, next to the schedule it constrains, rather than left to a
+# doc page.
+#
+# It also answers the question an operator is really asking, which is not "is a
+# schedule installed" but "is it still doing anything". A run never leaves a
+# terminal state on its own, so from the last merge onward every wake of this
+# schedule is a certain no-op -- and the pump's own report of that is printed
+# before it opens the repo-local service log, so under a real launchd agent or
+# cron line it goes to /dev/null. Said here, and by `orchid doctor` for every
+# binding on the machine, through the one shared predicate.
+_svc_print_binding() {
+  local repo="$1" rec rs
+  rec="$(orchid_service_repo_record "$repo")"
+  if [ -f "$rec" ]; then
+    echo "  binding:  $rec"
+    # The target's own liveness first, on the same shared predicate the pump
+    # refuses with and `orchid doctor` warns on: a schedule whose repository is
+    # gone has nothing to say about run_status, and reporting the run's state
+    # for a checkout that cannot be driven at all names the wrong problem.
+    if ! orchid_checkout_git_alive "$repo"; then
+      echo "  target:   $repo is no longer a git checkout -- the pump refuses every wake against it"
+    fi
+    rs="$(fm_get "$repo/.orchid/roadmap.md" run_status 2>/dev/null || true)"
+    if orchid_run_status_terminal "$rs"; then
+      echo "  run:      $rs -- this run is over; every further wake of this schedule is a certain no-op"
+    elif orchid_run_status_awaits_operator "$rs"; then
+      # Not "over" and deliberately not worded as if it were: every task is
+      # done, but `accepting -> running` is a legal edge and this run may still
+      # be accepted. What no wake of this schedule can do is accept it.
+      echo "  run:      $rs -- every task is done and only an operator can accept the run; no wake of this schedule can:"
+      echo "              $(orchid_run_accept_command "$repo")"
+    fi
+    # ONE command, through orchid_service_teardown_command: an operator handed
+    # two lines here runs the second one whether or not the first was refused,
+    # and the first refuses precisely when the removal must not happen.
+    echo "  teardown: this checkout is bound to a live schedule -- uninstall it BEFORE removing $repo, as one operation:"
+    echo "              $(orchid_service_teardown_command "$repo")"
+  fi
+}
+
+# _svc_print_uninstalled <repo> <label> -- the one wording both platform
+# branches report a successful uninstall with. The second line is the whole
+# point of the teardown ordering: this is the moment the checkout becomes safe
+# to delete, so it is said here rather than left for the operator to infer.
+# Omitted when the checkout is already gone (an uninstall reaching a removed
+# repository is the reversed ordering being cleaned up after, and telling
+# somebody a deleted directory is safe to delete reads as a bug).
+_svc_print_uninstalled() {
+  local repo="$1" label="$2"
+  echo "orchid: service uninstalled for $repo (label $label)"
+  [ -d "$repo" ] || return 0
+  echo "  $repo is now safe to remove"
+}
+
+# _svc_print_dry_uninstall <repo> <label> <artifact> -- what a --dry-run
+# uninstall says INSTEAD of removing anything. It names each thing a real run
+# would delete, which is the preview an operator asked for, and then says
+# plainly that the schedule is still installed -- because the one thing a
+# preview must never leave behind is a belief that the teardown has happened.
+# Only artifacts that are actually there are named: a binding whose plist never
+# landed would otherwise be told its plist is about to go.
+#
+# Deliberately NOT prefixed "DRY-RUN:", which in this file means one thing and
+# one thing only: a command line the real path would have RUN -- the
+# launchctl/crontab call, or `teardown`'s `git worktree remove` -- printed
+# verbatim so it can be pasted or compared byte-for-byte against the string the
+# real path uses (tests/test_service.sh asserts exactly that). These lines
+# describe removals, not commands, and adding them to that prefix would quietly
+# turn a shared spelling into two.
+_svc_print_dry_uninstall() {
+  local repo="$1" label="$2" artifact="$3" rec
+  echo "orchid: --dry-run: nothing was removed — the schedule for $repo (label $label) is still installed"
+  [ ! -e "$artifact" ] || echo "  would remove: $artifact"
+  if orchid_service_binding_present "$repo" "$label"; then
+    rec="$(orchid_service_repo_record "$repo")"
+    echo "  would clear:  the service binding for $repo ($rec, and its machine-local copy)"
+  fi
+  echo "  re-run without --dry-run to actually end it; until then $repo must not be removed"
+}
+
 _svc_print_log_tail() {
   local log="$1"
   echo "  log: $log"
@@ -259,9 +788,232 @@ _svc_print_log_tail() {
 # darwin (launchd)
 # ---------------------------------------------------------------------------
 
+# The one nonzero exit status this file reads as an ANSWER rather than as a
+# malfunction: launchd's own "no job by that name", which launchctl reports as
+# `113: Could not find specified service`. Its message is matched too, because
+# the status is the contract of one launchctl generation and the sentence is the
+# contract of another -- either one, on its own, is launchd saying the job is
+# not there. NOTHING ELSE IS: see _svc_launchd_probe.
+SVC_LAUNCHD_NOT_FOUND_RC=113
+SVC_LAUNCHD_NOT_FOUND_RE='Could not find service'
+
+# The last probe's exit status and stderr, for the refusal that has to name what
+# went wrong. Globals rather than a return value because the return value is
+# already carrying the three-way answer.
+_svc_launchd_probe_rc=0
+_svc_launchd_probe_err=""
+
+# _svc_launchd_probe <label> -- ask launchd whether it currently holds a job
+# under this label. THE ONLY WITNESS EITHER REFUSAL BELOW IS ALLOWED TO USE:
+# whether an agent is still loaded is a fact about launchd, and every filesystem
+# proxy for it (an unload's exit status, the presence of a plist) answers a
+# different question and answers it wrongly in exactly the state that matters.
+#
+# THREE ANSWERS, NOT TWO, and the third is why this is no longer a predicate:
+#
+#   0  launchd holds the job.
+#   1  launchd says it holds no such job -- a DEFINITIVE absence, the only
+#      answer that may clear a binding record.
+#   2  the query did not answer: launchctl could not run, could not reach
+#      launchd, was denied, was killed. Nothing is known.
+#
+# Read as a boolean, the third collapses into the second -- and that collapse is
+# this task's own finding wearing a different hat. `launchctl list` exits
+# nonzero for "no such job" AND for every way of failing to ask, so a broken or
+# unreachable launchctl on a machine whose agent is very much still loaded
+# answered "nothing is loaded", and the caller went on to delete the plist and
+# both binding records: a live schedule, no name for it anywhere, and a removal
+# guard waving the checkout through, reported as success. An unanswered question
+# is not a no.
+#
+# Routed through _svc_scheduler_exec, not called directly, so the suite's seam
+# can answer it in all three ways -- a `list` that could only ever succeed would
+# make both refusals unreachable and both clearances untestable.
+#
+# stderr is captured (`2>&1 >/dev/null` -- stderr onto the substitution's pipe
+# FIRST, then stdout to /dev/null, so the listing itself is discarded and only
+# the diagnostic survives), because a refusal on answer 2 has to name what
+# actually failed or it is indistinguishable from a refusal on answer 0.
+_svc_launchd_probe() {
+  local label="$1" rc=0
+  _svc_launchd_probe_rc=0
+  _svc_launchd_probe_err=""
+  _svc_launchd_probe_err="$(_svc_scheduler_exec launchctl list "$label" 2>&1 >/dev/null)" || rc=$?
+  _svc_launchd_probe_rc="$rc"
+  if [ "$rc" -eq 0 ]; then return 0; fi
+  if [ "$rc" -eq "$SVC_LAUNCHD_NOT_FOUND_RC" ]; then return 1; fi
+  case "$_svc_launchd_probe_err" in
+    *"$SVC_LAUNCHD_NOT_FOUND_RE"*) return 1 ;;
+  esac
+  return 2
+}
+
+# _svc_name_launchd_failure <label> -- print what the probe's third answer knows.
+# A refusal that cannot be acted on is a wedge, and "launchd could not be asked"
+# is only actionable if the operator is told which call failed, with what status,
+# and what it said.
+#
+# ONE line carrying all three, not a line per fact: the unload path prints the
+# unload's own error immediately before this, and two bare `orchid: launchctl:`
+# messages -- often the same text twice, when one launchctl is failing both
+# calls -- read as a repeat rather than as two different commands failing.
+_svc_name_launchd_failure() {
+  local msg
+  msg="$(_svc_quote_cmd launchctl list "$1") exited $_svc_launchd_probe_rc"
+  [ -z "$_svc_launchd_probe_err" ] || msg="$msg: $_svc_launchd_probe_err"
+  echo "orchid: launchctl: $msg" >&2
+}
+
+# _SVC_RERUN_SUB / _svc_rerun_command <repo> -- which command a refusal below
+# tells the operator to run AGAIN once they have cleared what it named.
+#
+# Not always `uninstall`, and that is the point. Every refusal here is reached
+# from two doors now: `uninstall`, and `teardown` (which is that same uninstall
+# with the worktree removal as its success branch). Told to re-run the uninstall
+# after a teardown, an operator ends the schedule and is left holding the
+# worktree -- back at the two independent steps this verb exists to replace,
+# reached through the recovery path of the very refusal that was protecting the
+# ordering. So the refusal names the command they actually ran.
+#
+# One variable set at the entry of the arm that owns it, read by the one refusal
+# composer, rather than a sixth parameter threaded through four call sites: the
+# refusals must all name the same verb as each other, and a per-arm parameter is
+# where one of them would eventually name the other.
+_SVC_RERUN_SUB=uninstall
+_svc_rerun_command() {
+  if [ "$_SVC_RERUN_SUB" = teardown ]; then
+    orchid_service_teardown_command "$1"
+  else
+    orchid_service_uninstall_command "$1"
+  fi
+}
+
+# _svc_refuse_darwin <repo> <label> <why> <survives> <lead> <hand> -- the ONE
+# composer for "nothing here gets removed". Four arms reach it (a failed unload
+# and a plist already gone, each for a job launchd still holds and again for a
+# launchd that could not be asked); they refuse with the same shape and must be
+# told apart only by <why>/<survives> and the step they name. Written out per
+# arm they would drift, and an operator comparing near-identical refusals would
+# have to guess which difference was meaningful.
+_svc_refuse_darwin() {
+  local repo="$1" label="$2" why="$3" survives="$4" lead="$5" hand="$6"
+  echo "orchid: refusing to remove anything for $repo (label $label): $why" >&2
+  echo "orchid: $survives" >&2
+  orchid_die "$lead, then re-run: $hand && $(_svc_rerun_command "$repo")"
+}
+
+# _svc_orphan_darwin <repo> <label> -- the plist is GONE and the binding record
+# is about to be cleared. Answer whether that clearance may proceed.
+#
+# A MISSING PLIST IS NOT THE SAME FACT AS AN UNLOADED AGENT, and this arm used
+# to treat it as one. Deleting a plist does not unload anything: launchd holds
+# the job it loaded until something unloads it or the machine reboots, so a
+# plist an operator (or a stray cleanup, or a restore) removed by hand leaves a
+# live agent whose only remaining name on this machine is the binding record --
+# the very thing this arm goes on to clear. Cleared blind, this verb
+# reported success while minting precisely the invisible leftover it exists to
+# prevent: an agent still firing on its interval, no plist to unload it by, no
+# record for `orchid doctor` to warn from, and a removal guard that now waves
+# the checkout through.
+#
+# The ordinary reading of a missing plist is still the common one -- install
+# writes the binding BEFORE it renders anything, so a failure in between leaves
+# a record whose artifact was never written, and so was never loaded for a
+# moment -- and that state must stay clearable (K6), or the guard is wedged by a
+# record no verb can remove. The two states are identical on disk and different
+# to launchd, so launchd is the one asked -- and only an answer, never a failure
+# to obtain one, is allowed to stand in for "nothing is loaded".
+_svc_orphan_darwin() {
+  local repo="$1" label="$2" answer=0
+  _svc_launchd_probe "$label" || answer=$?
+  # Only a DEFINITIVE absence clears. A query that could not answer is not an
+  # absence: read as one it would clear the last name a still-loaded agent has,
+  # which is the whole of this arm's header reached through a broken launchctl
+  # instead of through a deleted plist.
+  case "$answer" in
+    1) return 0 ;;
+    0)
+      _svc_refuse_darwin "$repo" "$label" \
+        "its plist is already gone and launchd still reports that job as loaded" \
+        "removing a plist does not unload the job it loaded, and the binding record is the only thing left on this machine that names that agent — it is left exactly as it was" \
+        "unload it by hand" \
+        "launchctl remove $(printf '%q' "$label")"
+      ;;
+    *)
+      _svc_name_launchd_failure "$label"
+      _svc_refuse_darwin "$repo" "$label" \
+        "its plist is already gone and launchd could not be asked whether it still holds that job" \
+        "an unanswered query is not an absence, and with the plist gone the binding record is the only thing left on this machine that names that agent — it is left exactly as it was" \
+        "ask launchd yourself" \
+        "launchctl list $(printf '%q' "$label")"
+      ;;
+  esac
+}
+
+# _svc_unload_darwin <repo> <label> <plist> -- run the unload a real uninstall
+# needs, and answer whether the removals after it may proceed. Returns 0 to
+# proceed; refuses, changing nothing, otherwise.
+#
+# WHY THIS IS NOT `|| true`. An earlier revision swallowed a failed `launchctl
+# unload` and went straight on to `rm -f` the plist and clear the binding. That
+# is this task's own finding arrived at from the other side: with the unload
+# having failed the agent is STILL LOADED, and the two things removed next are
+# the only path an unload can name it by and the only record on this machine
+# that names the schedule at all. What is left behind is a live launchd job, a
+# removal guard that now waves the checkout through, and an `orchid doctor`
+# with nothing to report -- the invisible leftover, minted by the verb whose
+# entire purpose is to prevent it, and reported to the operator as success.
+#
+# BUT A FAILED UNLOAD IS NOT THE SAME FACT AS A LOADED AGENT, and refusing on
+# the exit status alone would wedge an ordinary state. `install` writes the
+# plist BEFORE it loads it, so anything that failed in between leaves a plist
+# launchd never knew about, and `launchctl unload` fails for exactly that too
+# -- the state `uninstall` most needs to be able to clear. The two are told
+# apart by asking launchd itself, through _svc_launchd_probe -- which answers in
+# three, not two: only a definitive "no such job" clears, and a query that could
+# not answer refuses exactly as a loaded job does. Asked ONLY after a failure,
+# so the ordinary path makes no extra system call and behaves precisely as it
+# did before.
+#
+# THE LINUX BRANCH NEEDS NO EQUIVALENT: `_svc_uninstall_linux` runs its crontab
+# pipeline without `|| true`, so under this file's `set -e` a failed rewrite
+# aborts before the record and the binding are touched -- the same conservative
+# residue, reached by the shell rather than by hand.
+_svc_unload_darwin() {
+  local repo="$1" label="$2" plist="$3" err="" answer=0
+  err="$(_svc_scheduler_exec launchctl unload "$plist" 2>&1)" && return 0
+  _svc_launchd_probe "$label" || answer=$?
+  # A DEFINITIVE "no such job" means the failure above was the never-loaded case
+  # and the removals after it are safe. A `list` that could not answer means
+  # nothing at all -- and a failed unload plus an unanswerable query is, if
+  # anything, the likelier shape of a launchctl that is malfunctioning while the
+  # agent it loaded keeps firing.
+  if [ "$answer" -eq 1 ]; then return 0; fi
+  # Said once, ahead of both refusals: whichever one follows, the unload's own
+  # message is the first thing that went wrong and the operator needs it.
+  [ -z "$err" ] || echo "orchid: launchctl: $err" >&2
+  case "$answer" in
+    0)
+      _svc_refuse_darwin "$repo" "$label" \
+        "'launchctl unload' failed and launchd still reports that job as loaded" \
+        "the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" \
+        "unload it by hand" \
+        "launchctl unload $(printf '%q' "$plist")"
+      ;;
+    *)
+      _svc_name_launchd_failure "$label"
+      _svc_refuse_darwin "$repo" "$label" \
+        "'launchctl unload' failed and launchd could not be asked whether it still holds that job" \
+        "an unanswered query is not an absence — the plist is the only path an unload can name that agent by, and the binding record is the only thing that names the schedule at all — both are left exactly as they were" \
+        "ask launchd yourself" \
+        "launchctl list $(printf '%q' "$label")"
+      ;;
+  esac
+}
+
 _svc_install_darwin() {
   local repo="$1" interval_s="$2" dry="$3"
-  local label; label="$(_svc_label "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
   local agents_dir="$HOME/Library/LaunchAgents"
   local plist_path="$agents_dir/$label.plist"
   local parent; parent="$(cd "$repo/.." && pwd -P)"
@@ -271,6 +1023,22 @@ _svc_install_darwin() {
   pump_exe="$ORCHID_ROOT/runners/orchid-pump"
   path_val="$(_svc_install_path)"
   [ -f "$plist_path" ] && existed=1
+
+  # RECORD WHAT THIS SCHEDULE IS BOUND TO, BEFORE THERE IS A SCHEDULE. The
+  # ordering is the point (see lib/common.sh's own header): a binding record
+  # with no schedule behind it is harmless and self-correcting -- the removal
+  # guard is merely conservative about this checkout, `orchid doctor` names the
+  # binding, and `uninstall` clears it -- while a schedule with no record is
+  # exactly the invisible leftover this whole mechanism exists to prevent.
+  # Written the other way round, every failure between the two (a plist that
+  # renders but will not move, a `launchctl load` that errors out under this
+  # file's `set -e`) leaves the agent installed and unnameable.
+  #
+  # Fatal, unlike the warning an earlier revision printed here: nothing has
+  # been installed at this point, so refusing costs the operator a retry rather
+  # than a live schedule nothing can find.
+  orchid_service_binding_write "$repo" "$label" darwin "$plist_path" "$interval_s" \
+    || orchid_die "could not record the service binding for $repo — refusing to install a schedule nothing would be able to name"
 
   mkdir -p "$agents_dir"
   local tmp="$plist_path.tmp.$$"
@@ -282,41 +1050,114 @@ _svc_install_darwin() {
   # an error) before loading the freshly-rendered file, so a second `install`
   # for the same repo replaces the running schedule in place rather than
   # erroring "already loaded" or silently leaving the old copy active.
+  #
+  # `|| true` is right HERE and wrong in uninstall, and the asymmetry is the
+  # whole of _svc_unload_darwin's header: this path removes nothing and ends
+  # with a `launchctl load` of a plist that is still on disk under a binding
+  # that still names it, so a swallowed failure leaves the schedule findable.
+  # Uninstall's next two statements delete exactly those two things.
   if [ "$existed" -eq 1 ]; then
     if [ "$dry" -eq 1 ]; then _svc_dryprint launchctl unload "$plist_path"
-    else launchctl unload "$plist_path" >/dev/null 2>&1 || true
+    else _svc_scheduler_exec launchctl unload "$plist_path" >/dev/null 2>&1 || true
     fi
   fi
   if [ "$dry" -eq 1 ]; then
     _svc_dryprint launchctl load "$plist_path"
   else
-    launchctl load "$plist_path"
+    _svc_scheduler_exec launchctl load "$plist_path"
   fi
+
+  # THE PREVIOUS SCHEDULE'S REFUSAL IS NOW ABOUT A SCHEDULE THAT IS NOT RUNNING.
+  # A pump that woke against a deleted or de-gitted checkout records why, machine-
+  # locally, because its own stderr went to the scheduler's /dev/null -- and
+  # `orchid doctor` reads it back. Nothing used to retire that note but removal,
+  # so an operator who restored the checkout and re-installed kept meeting `the
+  # schedule last woke and refused: ... does not exist` indented under doctor's
+  # own `ok:` line for the service that had just been loaded. The line above
+  # unloaded whatever was there and loaded a fresh agent, so the wake that note
+  # describes belongs to neither.
+  #
+  # ONLY ON A REAL INSTALL. `--dry-run` prints the launchctl call instead of
+  # making it, so the schedule that refused is still exactly the schedule that is
+  # loaded -- and this file's rule for a preview is that it destroys nothing (see
+  # the header, and _svc_print_dry_uninstall). Evidence about a live schedule is
+  # the last thing a no-consequences flag may take.
+  [ "$dry" -eq 1 ] || orchid_service_refusal_clear "$label"
 
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  plist:      $plist_path"
   echo "  interval_s: $interval_s"
   echo "  log:        $log"
+  echo "  binding:    $(orchid_service_repo_record "$repo")"
+  echo "  teardown:   uninstall this schedule BEFORE removing $repo, as one operation -- $(orchid_service_teardown_command "$repo")"
 }
 
 _svc_uninstall_darwin() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
-  local plist_path="$HOME/Library/LaunchAgents/$label.plist"
-  [ -f "$plist_path" ] || orchid_die "no service installed for $repo (label $label)"
-  if [ "$dry" -eq 1 ]; then
+  # The recorded identity, never the current path's hash -- see _svc_identity.
+  # A checkout that has been moved keeps its schedule, and everything below
+  # (the plist to unload, the launchd job asked about, the binding records
+  # cleared afterwards) has to be the one install created rather than the one
+  # this path would hash to now.
+  _svc_identity "$repo"
+  local label="$SVC_LABEL"
+  local plist_path
+  plist_path="$(_svc_artifact darwin "$HOME/Library/LaunchAgents/$label.plist")"
+  # A binding record with no plist behind it is a REACHABLE state, not a
+  # contradiction: install writes the record first, so anything that fails
+  # between the two leaves one. That record makes the removal guard refuse the
+  # checkout, so the verb the guard names has to be able to clear it -- refusing
+  # here on the artifact alone would wedge a checkout that has no schedule at
+  # all. Nothing is installed only when NEITHER is there.
+  #
+  # This arm asks launchd nothing, deliberately: with no plist AND no binding
+  # there is no removal to guard, so the refusal below is already the whole
+  # truth orchid has -- and the ordinary "nothing installed" call, which an
+  # operator is invited to make blind, would otherwise pay for a system call to
+  # learn something it could not act on either way.
+  if [ ! -f "$plist_path" ] && ! orchid_service_binding_present "$repo" "$label"; then
+    orchid_die "no service installed for $repo (label $label)"
+  fi
+  if [ ! -f "$plist_path" ]; then
+    if [ "$dry" -eq 1 ]; then
+      # Printed, not run, like every other scheduler call under --dry-run: the
+      # preview makes no system call at all, so it can promise the clearance
+      # only conditionally -- a real run asks launchd first. See _svc_orphan_darwin.
+      _svc_dryprint launchctl list "$label"
+      echo "orchid: no launchd agent plist for $repo (label $label) — a real uninstall would ask launchd whether it still holds that job, and would clear the binding record it left behind only if launchd answered that it does not" >&2
+    else
+      # Not an unconditional clearance: a plist can be gone while its agent is
+      # still loaded, and this record is then the only thing naming it.
+      _svc_orphan_darwin "$repo" "$label"
+      echo "orchid: no launchd agent for $repo (label $label) — clearing the binding record it left behind" >&2
+    fi
+  elif [ "$dry" -eq 1 ]; then
     _svc_dryprint launchctl unload "$plist_path"
   else
-    launchctl unload "$plist_path" >/dev/null 2>&1 || true
+    # Not `|| true`: a failed unload may mean the agent is still loaded, and
+    # the two removals below are the only things that can ever name it again.
+    # See _svc_unload_darwin's own header.
+    _svc_unload_darwin "$repo" "$label" "$plist_path"
+  fi
+  # THE DRY RUN STOPS HERE, holding everything. `launchctl unload` was printed
+  # rather than run, so the agent is still loaded -- and the plist below is the
+  # path a real unload needs, while the binding is the only record naming the
+  # schedule at all. Removing either now would leave a live agent that nothing
+  # can name and nothing can unload by path: the invisible leftover, minted by
+  # the flag an operator runs precisely to avoid consequences.
+  if [ "$dry" -eq 1 ]; then
+    _svc_print_dry_uninstall "$repo" "$label" "$plist_path"
+    return 0
   fi
   rm -f "$plist_path"
-  echo "orchid: service uninstalled for $repo (label $label)"
+  orchid_service_binding_remove "$repo" "$label"
+  _svc_print_uninstalled "$repo" "$label"
 }
 
 _svc_status_darwin() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
   local plist_path="$HOME/Library/LaunchAgents/$label.plist"
   echo "orchid service status: $repo"
   echo "  platform: darwin"
@@ -340,6 +1181,7 @@ _svc_status_darwin() {
       fi
     fi
   fi
+  _svc_print_binding "$repo"
   _svc_print_log_tail "$repo/.orchid/runtime/pump.log"
 }
 
@@ -394,16 +1236,23 @@ _svc_emit_cron_seam() {
 
 _svc_install_linux() {
   local repo="$1" interval_s="$2" dry="$3"
-  local label; label="$(_svc_label "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
   local parent; parent="$(cd "$repo/.." && pwd -P)"
   local rt log pump_exe path_val record line marker
   rt="$(orchid_runtime "$repo")"
   log="$rt/pump.log"
   pump_exe="$ORCHID_ROOT/runners/orchid-pump"
   path_val="$(_svc_install_path)"
-  record="$(_svc_cron_record_path "$repo")"
+  record="$(orchid_service_cron_record_path "$repo")"
   line="$(_svc_render_cron_line "$label" "$repo" "$parent" "$interval_s" "$pump_exe" "$path_val")"
   marker="# orchid-service:$label"
+
+  # Same binding record as the darwin branch, written for the same reason and
+  # in the same place in the sequence: BEFORE the scheduler artifact exists.
+  # The `artifact` here is the local pump.cron record rather than the crontab
+  # itself, matching what uninstall/status already reason from on this branch.
+  orchid_service_binding_write "$repo" "$label" linux "$record" "$interval_s" \
+    || orchid_die "could not record the service binding for $repo — refusing to install a schedule nothing would be able to name"
 
   printf '%s\n' "$line" > "$record"
 
@@ -417,44 +1266,66 @@ _svc_install_linux() {
   if [ "$dry" -eq 1 ]; then
     echo "DRY-RUN: $pipeline"
   else
-    # eval is safe here: $pipeline is entirely THIS script's own fixed
-    # pipeline syntax plus two values ($marker, $line) that
-    # _svc_cron_pipeline_install already ran through `printf %q` --
-    # shell-quoted, so an embedded space/quote/$/backtick in a repo path
-    # can't break out of its argument position. Nothing reaches eval here
-    # that didn't originate from this same script's own computed values.
-    eval "$pipeline"
+    # _svc_scheduler_eval, not a bare `eval`: it carries the eval-safety
+    # reasoning ($pipeline is this script's own fixed syntax plus two
+    # `printf %q`-quoted values) and the test-only stub seam in one place.
+    _svc_scheduler_eval "$pipeline"
   fi
+
+  # Same retirement, same rule about `--dry-run`, as the darwin branch above --
+  # see its own note. The crontab rewrite has just replaced this label's line, so
+  # a refusal recorded against the schedule it replaced describes nothing that
+  # is still scheduled.
+  [ "$dry" -eq 1 ] || orchid_service_refusal_clear "$label"
 
   echo "orchid: service installed for $repo"
   echo "  label:      $label"
   echo "  crontab:    $line"
   echo "  interval_s: $interval_s (floored to $(_svc_cron_minutes "$interval_s") min for cron)"
   echo "  log:        $log"
+  echo "  binding:    $(orchid_service_repo_record "$repo")"
+  echo "  teardown:   uninstall this schedule BEFORE removing $repo, as one operation -- $(orchid_service_teardown_command "$repo")"
 }
 
 _svc_uninstall_linux() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
-  local record; record="$(_svc_cron_record_path "$repo")"
-  [ -f "$record" ] || orchid_die "no service installed for $repo (label $label)"
+  # Same resolution as the darwin branch, and it matters here for the MARKER:
+  # the crontab line this rewrite strips is matched by `# orchid-service:
+  # <label>`, so a re-hashed path leaves the operator's real crontab exactly as
+  # it was while reporting the schedule removed.
+  _svc_identity "$repo"
+  local label="$SVC_LABEL"
+  local record; record="$(_svc_artifact linux "$(orchid_service_cron_record_path "$repo")")"
+  # The cron record lives INSIDE the checkout, so a schedule that outlived its
+  # repository has none left to reason from -- and that is precisely the case
+  # an operator most needs uninstall for. Either half of the binding is enough
+  # to proceed: the machine-local copy is the one that survives the checkout,
+  # and the repo-local one is what an install that failed before it wrote the
+  # cron record leaves behind. With either, the marker is still removable from
+  # the real crontab, which is where the leftover schedule actually lives.
+  if [ ! -f "$record" ] && ! orchid_service_binding_present "$repo" "$label"; then
+    orchid_die "no service installed for $repo (label $label)"
+  fi
   local marker="# orchid-service:$label"
   local pipeline; pipeline="$(_svc_cron_pipeline_uninstall "$marker")"
   _svc_emit_cron_seam "$pipeline"
   if [ "$dry" -eq 1 ]; then
     echo "DRY-RUN: $pipeline"
-  else
-    # Same eval-safety reasoning as the install branch above.
-    eval "$pipeline"
+    # Same stop, same reason, as the darwin branch above: the crontab line is
+    # still there, and the pump.cron record plus the binding are what name it.
+    _svc_print_dry_uninstall "$repo" "$label" "$record"
+    return 0
   fi
+  _svc_scheduler_eval "$pipeline"
   rm -f "$record"
-  echo "orchid: service uninstalled for $repo (label $label)"
+  orchid_service_binding_remove "$repo" "$label"
+  _svc_print_uninstalled "$repo" "$label"
 }
 
 _svc_status_linux() {
   local repo="$1" dry="$2"
-  local label; label="$(_svc_label "$repo")"
-  local record; record="$(_svc_cron_record_path "$repo")"
+  local label; label="$(orchid_service_derive_label "$repo")"
+  local record; record="$(orchid_service_cron_record_path "$repo")"
   echo "orchid service status: $repo"
   echo "  platform: linux"
   echo "  label:    $label"
@@ -485,7 +1356,170 @@ _svc_status_linux() {
       fi
     fi
   fi
+  _svc_print_binding "$repo"
   _svc_print_log_tail "$repo/.orchid/runtime/pump.log"
+}
+
+# ---------------------------------------------------------------------------
+# teardown (uninstall + the worktree removal it gates, as one operation)
+# ---------------------------------------------------------------------------
+# THE ORDERING WAS DOCUMENTED AND UNENFORCEABLE. Uninstall-then-remove was
+# stated by this usage text, by `install`, by `status`, by the pump and by
+# `orchid doctor`, always as a pair of commands -- and a pair of commands is
+# run as a pair of commands. Every refusal the uninstall path grew (a failed
+# `launchctl unload` with the job still loaded; a plist already gone with the
+# job still loaded; a `launchctl list` that never reached launchd) exists to
+# stop exactly one thing from happening next, and none of them could: the
+# refusal printed, and the operator's second line removed the worktree anyway.
+# What that removes is the checkout, the repo-local binding inside it, and the
+# last path anything had to the still-loaded agent -- the leftover the refusal
+# was protecting against, minted by following the documented ordering.
+#
+# So the removal is expressed as the success branch of the uninstall. See
+# lib/common.sh's orchid_service_teardown_command, which is what every surface
+# now names, and which deliberately does NOT claim orchid can refuse a raw
+# `git worktree remove` an operator types: it cannot, and this verb is the
+# command they are given instead.
+
+# _svc_teardown_main_worktree <linked-worktree> -- the working tree to run `git
+# worktree remove` FROM. `git worktree list --porcelain` lists the main
+# worktree first, always (git-worktree(1)), and that entry is the one place a
+# removal can be issued from that is guaranteed not to be the thing being
+# removed. It is also the half an operator running the pair by hand has to get
+# right themselves -- `git worktree remove` needs a repository to run in, and
+# the checkout being removed is about to stop being one -- which is one more
+# thing this verb does not leave to them.
+#
+# Captured whole and then walked, never `| head -n1`: this file runs
+# under `pipefail`, and a reader exiting at the first line SIGPIPEs git, whose
+# kill-by-signal status would become the pipeline's on exactly the successful
+# listings -- reporting "this checkout has no repository" for a healthy one.
+_svc_teardown_main_worktree() {
+  local repo="$1" out line
+  out="$(git -C "$repo" worktree list --porcelain 2>/dev/null)" || return 1
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) printf '%s\n' "${line#worktree }"; return 0 ;;
+    esac
+  done <<<"$out"
+  return 1
+}
+
+_svc_teardown() {
+  local repo="$1" plat="$2" dry="$3" force="$4" main_wt
+
+  # Every refusal the uninstall half raises is now being raised inside a
+  # teardown, so the command it tells the operator to re-run is this one. See
+  # _svc_rerun_command: named the uninstall instead, the recovery path ends the
+  # schedule and hands back the worktree, which is the two-step ordering again.
+  _SVC_RERUN_SUB=teardown
+
+  # WHICH SCHEDULE THIS IS, AND WHETHER THIS CHECKOUT OWNS IT, BEFORE ANYTHING
+  # ELSE IS ASKED -- ahead even of the removal-half refusals below. A checkout
+  # that is a COPY of the bound one, or a sibling worktree holding its record
+  # (see _svc_identity), has no teardown to perform at all: it is not the tree
+  # the schedule drives, so every question after this one would be answered
+  # about the wrong checkout, and the refusal it earns must be the one that
+  # names the real one. Resolution is pure -- it reads two records and, only
+  # when they name another path, that path's own existence and git's worktree
+  # registration -- so asking it here costs a refusal
+  # nothing and leaves both records exactly where `uninstall` can still find
+  # them. `_svc_uninstall_*` resolves again for itself below; it is the same
+  # reads over the same files, and an arm that trusted a caller to have resolved
+  # for it is an arm that stops being safe to call directly.
+  _svc_identity "$repo"
+
+  # EVERY REFUSAL THAT BELONGS TO THE REMOVAL HALF IS ASKED FIRST, with the
+  # schedule still installed. A teardown that uninstalled and only then
+  # discovered it had nothing it could remove would leave the operator in the
+  # one state neither command names: no schedule, a checkout still there, and a
+  # verb that reported failure. Refusing up front costs nothing and leaves the
+  # binding exactly where `uninstall` can still find it.
+  if [ ! -f "$repo/.git" ]; then
+    echo "orchid: refusing to tear down $repo: it is not a linked worktree, so there is nothing 'git worktree remove' can take" >&2
+    echo "orchid: nothing was uninstalled and nothing was removed — end the schedule alone with: $(orchid_service_uninstall_command "$repo")" >&2
+    orchid_die "teardown applies to the integration worktree a run was driven in"
+  fi
+  main_wt="$(_svc_teardown_main_worktree "$repo")" \
+    || orchid_die "cannot read the worktree list for $repo — its repository or worktree registration is gone; nothing was uninstalled and nothing was removed, end the schedule alone with: $(orchid_service_uninstall_command "$repo")"
+  [ "$main_wt" != "$repo" ] \
+    || orchid_die "$repo is this repository's MAIN working tree — 'git worktree remove' does not apply to it; nothing was uninstalled and nothing was removed, end the schedule alone with: $(orchid_service_uninstall_command "$repo")"
+
+  # THE UNINSTALL, AS A BARE SEQUENTIAL STATEMENT -- never `... || orchid_die`
+  # and never `if ! ...`. Both spellings put the call in a context where bash
+  # suppresses `set -e` for it AND for everything it calls, and the linux branch
+  # depends on errexit for its own fail-closed residue: `_svc_uninstall_linux`
+  # runs its crontab rewrite without `|| true` precisely so a failed rewrite
+  # aborts before the cron record and the binding are removed (its header says
+  # so). Guarded by an `||`, that abort would not happen, the failure would be
+  # swallowed as this function's own return value, and the removal below would
+  # take the worktree while the schedule was still in the operator's crontab --
+  # the guard inverted into the leak it exists to prevent. Every refusal on both
+  # branches calls orchid_die, which exits the process here, so nothing after
+  # this line can be reached by a teardown that did not end the schedule.
+  if [ "$plat" = darwin ]; then
+    _svc_uninstall_darwin "$repo" "$dry"
+  else
+    _svc_uninstall_linux "$repo" "$dry"
+  fi
+
+  if [ "$dry" -eq 1 ]; then
+    # The uninstall half removed nothing (see its own header), so this half must
+    # not either: a preview that deleted the worktree while only PRINTING the
+    # launchctl call would leave the schedule loaded and its target gone, which
+    # is the reversed ordering performed by the flag an operator runs to avoid
+    # consequences.
+    if [ "$force" -eq 1 ]; then
+      _svc_dryprint git -C "$main_wt" worktree remove --force "$repo"
+    else
+      _svc_dryprint git -C "$main_wt" worktree remove "$repo"
+    fi
+    echo "orchid: --dry-run: $repo was NOT removed — and neither was the schedule bound to it; re-run without --dry-run to end both"
+    return 0
+  fi
+
+  # Reached only on a successful uninstall. Spelled as two whole command lines
+  # rather than one with an interpolated `${force:+--force}`: an unquoted
+  # expansion is the only way that flag reaches git as a flag, and an unquoted
+  # expansion in a command that removes a directory is not a thing to leave in
+  # this file for the next reader to re-derive as safe.
+  #
+  # `|| rm_rc=$?` DISABLES errexit for the command it guards, which is exactly
+  # what is wanted here and nowhere else in this function: `git` is an external
+  # program, so nothing of orchid's runs inside that suppression -- unlike the
+  # uninstall call above, which is deliberately left bare because the linux
+  # branch depends on errexit to abort its own removals.
+  local rm_rc=0
+  if [ "$force" -eq 1 ]; then
+    git -C "$main_wt" worktree remove --force "$repo" || rm_rc=$?
+  else
+    git -C "$main_wt" worktree remove "$repo" || rm_rc=$?
+  fi
+  # THE ONE MID-STATE THIS VERB CAN LEAVE, so it is the one state it must name.
+  # The refusals above all fire with nothing done; this failure fires with the
+  # uninstall already succeeded -- git declines a worktree it considers unclean,
+  # and the schedule is gone by then. The ordering is satisfied at that point
+  # (there is no scheduler left to fire at this path), but git's own message
+  # says nothing about a schedule, so an operator reading it cannot tell whether
+  # the half that mattered ran. Worse, the obvious recovery -- re-run the
+  # command that failed -- reports `no service installed for <repo>` and removes
+  # nothing, because the uninstall half is already done. So this names both what
+  # succeeded and the removal command to finish by hand, and never sends them
+  # back to `teardown`.
+  if [ "$rm_rc" -ne 0 ]; then
+    echo "orchid: the schedule for $repo is uninstalled — it will not fire again, and nothing is waking against this path" >&2
+    echo "orchid: only the checkout is left, and 'git worktree remove' refused it (status $rm_rc) — do NOT re-run teardown, there is no schedule left for it to end; finish with:" >&2
+    echo "orchid:   $(_svc_quote_cmd git -C "$main_wt" worktree remove --force "$repo")" >&2
+    orchid_die "the schedule for $repo is uninstalled but the checkout could not be removed"
+  fi
+  # The reader's own predicate, not the exit status: `git worktree remove`
+  # answering 0 is what git did, and this verb's postcondition is that the
+  # checkout is gone. A 0 with the directory still standing (a removal that took
+  # the registration and left the tree) would otherwise be reported as a
+  # completed teardown.
+  [ ! -e "$repo" ] \
+    || orchid_die "the schedule for $repo is uninstalled, but $repo is still there — 'git worktree remove' reported success without removing it; remove it by hand"
+  echo "orchid: removed the integration worktree $repo"
 }
 
 # ---------------------------------------------------------------------------
@@ -495,11 +1529,11 @@ _svc_status_linux() {
 sub="${1:-}"; shift || true
 case "$sub" in
   -h|--help|help|"") _svc_usage; exit 0 ;;
-  install|uninstall|status) ;;
-  *) orchid_die "usage: orchid service <install|uninstall|status> [--repo <path>] [--interval-s N] [--dry-run]" ;;
+  install|uninstall|status|teardown) ;;
+  *) orchid_die "usage: orchid service <install|uninstall|status|teardown> [--repo <path>] [--interval-s N] [--force] [--dry-run]" ;;
 esac
 
-repo_arg=""; interval_arg=""; dry_run=0
+repo_arg=""; interval_arg=""; dry_run=0; force=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo)
@@ -508,25 +1542,66 @@ while [ $# -gt 0 ]; do
     --interval-s)
       [ -n "${2:-}" ] || orchid_die "--interval-s requires a value"
       interval_arg="$2"; shift 2 ;;
+    --force) force=1; shift ;;
     --dry-run) dry_run=1; shift ;;
     *) orchid_die "orchid service $sub: unknown argument '$1'" ;;
   esac
 done
 [ "$sub" = install ] || [ -z "$interval_arg" ] \
   || orchid_die "--interval-s is only valid with 'install'"
+# --force reaches exactly one command, `git worktree remove`, and nothing on the
+# uninstall side reads it: an operator who has been refused by the launchd
+# liveness check must not find a flag on this verb that looks like the way past
+# it. Refused on every other subverb rather than ignored, so that expectation is
+# answered instead of silently disappointed.
+[ "$sub" = teardown ] || [ "$force" -eq 0 ] \
+  || orchid_die "--force is only valid with 'teardown' (it is passed to 'git worktree remove'; nothing about the schedule can be forced)"
+
+# _svc_bound_repo_by_path <path> -- the CANONICAL repo path a machine-local
+# binding was installed against, when <path> names one exactly. The label every
+# subverb derives is a hash of the canonical path, and `pwd -P` cannot resolve
+# a directory that no longer exists -- so for a checkout that is gone, the
+# binding record is the only thing left that can name the path the schedule was
+# hashed from. Exact string match against the recorded value, which is what
+# `orchid doctor` prints back at the operator.
+_svc_bound_repo_by_path() {
+  local want="$1" label repo
+  while IFS="$(printf '\t')" read -r label repo; do
+    [ -n "$label" ] || continue
+    [ -n "$repo" ] || continue
+    if [ "$repo" = "$want" ]; then
+      printf '%s\n' "$repo"
+      return 0
+    fi
+  done < <(orchid_service_bindings)
+  return 1
+}
 
 repo_in="${repo_arg:-${ORCHID_REPO:-$PWD}}"
-[ -d "$repo_in" ] || orchid_die "no such repo directory: $repo_in"
-repo="$(cd "$repo_in" && pwd -P)"
+if [ -d "$repo_in" ]; then
+  repo="$(cd "$repo_in" && pwd -P)"
+elif [ "$sub" = uninstall ] && repo="$(_svc_bound_repo_by_path "$repo_in")"; then
+  # A schedule outlives what it points at, so uninstall -- and ONLY uninstall
+  # -- must work against a repository that is already gone. Refusing here would
+  # make the leftover launchd agent / crontab line unremovable by the very
+  # command `orchid doctor` names for it. `install` still refuses (there is
+  # nothing to install for), and so does `status` (it reports on a checkout) and
+  # `teardown` (its second half removes a worktree that is already gone -- what
+  # is left owed there is the uninstall alone, which is this branch).
+  echo "orchid: $repo no longer exists — removing its leftover schedule from the machine-local binding record" >&2
+else
+  orchid_die "no such repo directory: $repo_in"
+fi
 plat="$(_svc_platform)"
 
 # `install` is the only arm that crosses the unattended boundary, and the
 # stale-root gate below may not sit ahead of it -- so that boundary is crossed
 # HERE, before the dispatch, rather than inside the arm it belongs to.
 # Dry-run still renders and places scheduler artifacts, so it crosses the same
-# boundary as a real install and is gated identically. Status/uninstall remain
-# available after revocation so an operator can always inspect or remove an
-# existing schedule.
+# boundary as a real install and is gated identically. Status/uninstall/teardown
+# remain available after revocation so an operator can always inspect or remove
+# an existing schedule -- a revoked acknowledgement is a reason to END a
+# schedule, so gating the verb that ends it would be exactly backwards.
 if [ "$sub" = install ]; then
   [ -d "$repo/.orchid" ] \
     || orchid_die "cannot install service for uninitialized repo (no .orchid/ found): $repo -- run 'orchid init' first"
@@ -571,6 +1646,15 @@ case "$sub" in
       ''|*[!0-9]*) orchid_die "--interval-s must be a positive integer (got '$interval_s')" ;;
     esac
     [ "$interval_s" -gt 0 ] || orchid_die "--interval-s must be a positive integer (got '$interval_s')"
+    # AHEAD OF THE PLATFORM BRANCH, not inside either arm, and for the same
+    # reason orchid_root_stale_gate sits above this whole dispatch: the question
+    # "does this checkout already carry a schedule" is about the checkout, not
+    # about which daemon holds the job, and written once per arm it is a check a
+    # third scheduler added tomorrow would silently not have. It is also the last
+    # line before either arm's first WRITE -- both begin by committing the
+    # binding record, so nothing after this point can refuse without leaving
+    # residue.
+    _svc_install_one_schedule "$repo" "$interval_s"
     if [ "$plat" = darwin ]; then
       _svc_install_darwin "$repo" "$interval_s" "$dry_run"
     else
@@ -590,5 +1674,12 @@ case "$sub" in
     else
       _svc_status_linux "$repo" "$dry_run"
     fi
+    ;;
+  teardown)
+    # The platform branch is chosen INSIDE _svc_teardown rather than here, so
+    # the removal half is written once instead of once per scheduler: which
+    # daemon holds the job says nothing about how a worktree is removed, and two
+    # copies of that half is where one of them stops asking the postcondition.
+    _svc_teardown "$repo" "$plat" "$dry_run" "$force"
     ;;
 esac
