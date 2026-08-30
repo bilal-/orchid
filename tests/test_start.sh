@@ -1609,6 +1609,54 @@ assert_match "in the HISTORY this push publishes" "$recontam37" \
   "and it is the history half speaking, since this tip is clean too"
 green_case 'a cleanup allowance is not a ref-wide exemption: re-added run state is refused again'
 
+# ---------------------------------------------------------------------------
+# T037 -- THE WHOLE-HISTORY ANSWER IS BATCHED, NOT ONE GIT FORK PER COMMIT.
+#
+# Correctness requires inspecting every newly reachable commit tree, including
+# commits that inherit `.orchid/` without touching it. A literal loop around
+# `git ls-tree` gets the right answer and makes a new-branch push fork once for
+# every commit in the repository. The hook is installed by default, so that is
+# user-visible push latency rather than an offline verifier cost.
+#
+# Run the real rendered hook with a PATH shim that counts only `git ls-tree`.
+# The clean tip must still take the one explicit tip-tree check; the historical
+# query must add zero more because it is one rev-list -> cat-file batch. This is
+# non-vacuous against the pre-optimization implementation: feature/clean-history
+# has ancestors, and that implementation called ls-tree once for each of them.
+# ---------------------------------------------------------------------------
+batch_git37="$W/r37-counting-git"
+mkdir -p "$batch_git37"
+batch_count_file37="$W/r37-ls-tree-count"
+: > "$batch_count_file37"
+real_git37="$(command -v git)"
+cat > "$batch_git37/git" <<'COUNTING_GIT'
+#!/usr/bin/env bash
+if [ "${1:-}" = ls-tree ]; then
+  printf 'ls-tree\n' >> "$ORCHID_TEST_GIT_COUNT"
+fi
+exec "$ORCHID_TEST_REAL_GIT" "$@"
+COUNTING_GIT
+chmod +x "$batch_git37/git"
+
+batch_hook37="$(git -C "$r37_g" rev-parse --git-path hooks/pre-push)"
+case "$batch_hook37" in /*) ;; *) batch_hook37="$r37_g/$batch_hook37" ;; esac
+[ -x "$batch_hook37" ] || fail "fixture: the rendered pre-push hook must be executable for the batch query check"
+batch_tip37="$(git -C "$r37_g" rev-parse feature/clean-history)"
+rc=0
+batch_out37="$(
+  cd "$r37_g"
+  printf 'refs/heads/feature/batch-clean %s refs/heads/feature/batch-clean 0000000000000000000000000000000000000000\n' "$batch_tip37" \
+    | PATH="$batch_git37:$PATH" \
+      ORCHID_TEST_GIT_COUNT="$batch_count_file37" \
+      ORCHID_TEST_REAL_GIT="$real_git37" \
+      "$batch_hook37" origin "$remote37_g" 2>&1
+)" || rc=$?
+[ "$rc" -eq 0 ] || fail "a truly clean new-branch history must pass the batched guard (got: $batch_out37)"
+batch_count37="$(wc -l < "$batch_count_file37" | tr -d '[:space:]')"
+assert_eq "1" "$batch_count37" \
+  "the clean-tip check is the only ls-tree fork; history is resolved by one batch rather than one fork per commit"
+red_case 'the all-commit history check is batched instead of forking ls-tree per commit'
+
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
 # checkout, never adopt or overwrite anything else.

@@ -187,24 +187,46 @@ carries_run_state() {
 # reachable and the commit that added or inherited the files is among them.
 #
 # The walk is not capped at one commit -- the first candidate may be a
-# deletion -- but it stops at the first candidate whose tree carries state.
-# `rev-list` hands commits over newest-first, so an immediate cleanup suffix
-# costs one `ls-tree`; a longer clean suffix costs one per newly reachable
-# commit, which is the price of proving none inherited run state unchanged.
+# deletion -- but it must not fork one `git ls-tree` per candidate either. A
+# brand-new branch has no baseline and can make the whole product history newly
+# reachable; one process per commit would turn this default-installed pre-push
+# hook into minutes of startup latency on an ordinary large repository.
+# `rev-list` therefore emits each commit's tree as a `<tree>:.orchid` object
+# expression and ONE `cat-file --batch-check` process resolves the whole set.
+# A resolved object of any type means the commit carries the path; only an
+# explicit `missing` answer means it does not.
+#
+# The batch is allowed to finish before its output is inspected. Besides
+# preserving either git process's failure status through `pipefail`, this
+# avoids the early-reader/SIGPIPE ambiguity that a `... | grep -q` shortcut
+# would introduce: every query is consumed, then the shell decides.
 #
 # `--not` is emitted only when there is something to exclude -- a bare `--not`
 # with an empty list is a nonsense command line, and this must never be the
 # reason a push dies.
 history_carries_run_state() {
-  local tip="$1" c
+  local tip="$1" batch kind
   shift
   local -a range
   range=("$tip")
   [ "$#" -gt 0 ] && range+=(--not "$@")
-  while IFS= read -r c; do
-    [ -n "$c" ] || continue
-    carries_run_state "$c" && return 0
-  done < <(git rev-list "${range[@]}" 2>/dev/null)
+  if ! batch="$(
+    set -o pipefail
+    git rev-list --no-commit-header --format='%T:.orchid' "${range[@]}" 2>/dev/null \
+      | git cat-file --batch-check='%(objecttype)' 2>/dev/null
+  )"; then
+    # A history/object query that cannot answer is not evidence of absence.
+    # Fail closed at the push boundary rather than publish on an unreadable
+    # range.
+    return 0
+  fi
+  while IFS= read -r kind; do
+    [ -n "$kind" ] || continue
+    case "$kind" in
+      *" missing") ;;
+      *) return 0 ;;
+    esac
+  done <<<"$batch"
   return 1
 }
 
