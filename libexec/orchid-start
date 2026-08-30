@@ -86,14 +86,17 @@ requirements file:
 
   --refresh-push-guard re-install this repository's `pre-push` guard from the
                        current template, at the path git itself will run it
-                       from (`core.hooksPath` included), and do nothing else:
-                       no branch moves, no commit, no run state written, no
-                       lock taken. Supported at ANY run_status, which is the
-                       point -- setup refuses a run that has left planning, so
-                       without this an already-running repository could never
-                       pick up a newer guard. Idempotent, and a hook orchid
-                       did not write is still never overwritten. Takes no
-                       other option.
+                       from (an absolute `core.hooksPath` included), and do
+                       nothing else: no branch moves, no commit, no run state
+                       written, no lock taken. Supported at ANY run_status,
+                       which is the point -- setup refuses a run that has left
+                       planning, so without this an already-running repository
+                       could never pick up a newer guard. Idempotent, and a
+                       hook orchid did not write is still never overwritten. A
+                       repository whose `core.hooksPath` is RELATIVE cannot be
+                       guarded repository-wide -- git resolves that value per
+                       worktree -- so this refuses, installs nothing, and says
+                       what to change. Takes no other option.
 
 Every step is a lower-level verb; none of them is replaced. Repositories with
 no commits yet are out of scope: use `orchid init --greenfield` and
@@ -667,7 +670,17 @@ if [ "$refresh_guard" -eq 1 ]; then
   guard_path="$(orchid_push_guard_path "$repo" 2>/dev/null || true)"
   orchid_install_push_guard "$repo" "$integ"
   case "$(orchid_push_guard_action)" in
-    installed|upgraded) exit 0 ;;
+    installed|upgraded|repaired) exit 0 ;;
+    unsupported-hookspath)
+      # A relative `core.hooksPath` is one file PER CHECKOUT, so there is no
+      # repository-wide guard to install and this command cannot do what it
+      # was asked. Non-zero, and deliberately without a resolved path in the
+      # message: naming `<toplevel>/<value>/pre-push` here would answer for
+      # this one worktree and read as an answer for the repository, which is
+      # the exact confusion the classification exists to end. The installer
+      # has already printed the per-worktree explanation and both recoveries
+      # on stderr.
+      orchid_die "the pre-push guard was NOT installed in $repo — core.hooksPath is relative, so no single hook file covers this repository (the message above says what to change). Until it is absolute or unset, pushes of task branches, of $integ, and of run state are NOT guarded here" ;;
     current)
       # The one outcome the installer reports by staying silent, because for
       # init and for setup that silence is right. Here it is the answer.

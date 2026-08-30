@@ -1935,6 +1935,12 @@ ORCHID_PUSH_GUARD_MARKER='# orchid pre-push guard'
 # where git runs hooks for a bare repository, and $repo the last one, so this
 # is total: every caller gets a path, and the callers that cannot fail (a hook
 # install must never take a verb down) get one without a special case.
+#
+# THAT ANCHORING IS PER-WORKTREE, AND IT IS WHY THE SECOND KIND IS NOT
+# INSTALLABLE. See orchid_push_guard_hooks_mode below: this function answers
+# for the ONE checkout it was handed, which for a relative `core.hooksPath` is
+# not the same file as the answer for any other checkout of the same
+# repository. Callers that install must classify first; this one only resolves.
 orchid_push_guard_path() {
   local repo="$1" p anchor
   p="$(cd "$repo" 2>/dev/null && git rev-parse --git-path hooks/pre-push 2>/dev/null)" || return 1
@@ -1947,11 +1953,90 @@ orchid_push_guard_path() {
   printf '%s/%s\n' "${anchor%/}" "$p"
 }
 
+# orchid_push_guard_hooks_mode <repo> -- how `core.hooksPath` is configured for
+# <repo>, as one word: `default` (the key is unset), `absolute`, or `relative`.
+# Never fails; an unreadable repository answers `default`, which is the shape
+# every other caller already handles.
+#
+# THE DISTINCTION EXISTS BECAUSE ONLY ONE OF THE THREE CAN BE GUARDED
+# REPOSITORY-WIDE, and getting that wrong is the failure this whole guard is
+# supposed to prevent -- a file that reads like protection and is not.
+#
+# git's rule for the key, from githooks(5) and config's `core.hooksPath`: a
+# relative value is resolved against the directory hooks are RUN from, which is
+# the top level of the working tree (or `$GIT_DIR` for a bare repository). The
+# key itself lives in the SHARED config, so every worktree of the repository
+# reads the same string -- and then resolves it against its OWN top level. One
+# `core.hooksPath=.githooks` is therefore N different files: `<main>/.githooks/
+# pre-push` for the main checkout, `<wt>/.githooks/pre-push` for each linked
+# worktree. Orchid creates a linked worktree per task and one for the
+# integration branch, so those are the checkouts an operator actually pushes
+# from, and not one of them is covered by a hook written into the main
+# checkout's copy.
+#
+# Installing into the one path this process can see and reporting `installed`
+# would be precisely the lie this task removed from the derived-`.git/hooks`
+# case: repository-wide protection claimed from a per-worktree file. So a
+# relative `core.hooksPath` is UNSUPPORTED for the repository-wide guard and is
+# reported as such, loudly, at every door -- rather than half-installed.
+#
+# The alternative was to install into every existing worktree and every future
+# orchid-created one, with a doctor check for the uncovered ones. That is a
+# real design, and it is a lifecycle promise this bounded change cannot keep:
+# nothing here can cover a worktree an operator adds by hand tomorrow, and a
+# guard that covers all-but-one checkout is read as covering the repository.
+# Say "not supported, here is how to make it supportable" instead.
+#
+# ORCHID NEVER REWRITES THE KEY. It is the operator's configuration, on the
+# same principle libexec/orchid-start applies to an ignored `orchid.config`:
+# force-overriding a setting its owner chose is not a fix. The warning names
+# both recoveries and stops there.
+#
+# Tilde is expanded through git's own `--path` reader, because git reads this
+# key as a path type -- `~/hooks` IS absolute once git has it, and classifying
+# it `relative` would refuse a repository that is perfectly guardable.
+orchid_push_guard_hooks_mode() {
+  local repo="$1" raw expanded
+  raw="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+  [ -n "$raw" ] || { printf 'default\n'; return 0; }
+  expanded="$(git -C "$repo" config --get --path core.hooksPath 2>/dev/null || true)"
+  [ -n "$expanded" ] || expanded="$raw"
+  case "$expanded" in
+    /*) printf 'absolute\n' ;;
+    *) printf 'relative\n' ;;
+  esac
+}
+
+# The ONE text for that case, composed here so init, `orchid start` and
+# `orchid doctor` cannot drift into saying three different things about the
+# same repository. Prints the body only; each caller adds its own prefix
+# (`orchid: `, `WARN: push guard: `) in its own convention.
+#
+# What it must contain, and each clause is load-bearing:
+#   * that nothing was installed, said as a negative and never as a claim of
+#     protection -- no caller may print "guard installed" or "already current"
+#     about a repository in this state;
+#   * the per-worktree risk, in the terms an operator can check;
+#   * BOTH recoveries, absolute and unset, as commands;
+#   * the command to run afterwards, so the fix has an end.
+orchid_push_guard_hookspath_warning() {
+  local repo="$1" raw
+  raw="$(git -C "$repo" config --get core.hooksPath 2>/dev/null || true)"
+  printf '%s\n' "core.hooksPath is set to the RELATIVE path '$raw', which git resolves against EACH worktree's own top level -- so it names a different file in every checkout of this repository, and orchid's task and integration worktrees would each need their own copy. No single file can guard the repository, so the pre-push guard was NOT installed here and nothing local refuses a push of run state. Fix it by pointing the key at an absolute directory (git -C '$repo' config core.hooksPath /absolute/path/to/hooks) or by dropping it for git's default (git -C '$repo' config --unset core.hooksPath), then run 'orchid start --refresh-push-guard'. orchid does not change this setting for you."
+}
+
 # What the last orchid_install_push_guard call actually did, for a caller that
 # has to REPORT the outcome rather than merely cause it: `disabled`,
-# `unresolved`, `no-template`, `foreign`, `current`, `upgraded`, `installed`,
-# `failed`. Read it with orchid_push_guard_action, never by grepping the
-# printed line -- prose is for people.
+# `unsupported-hookspath`, `unresolved`, `no-template`, `foreign`, `current`,
+# `repaired`, `upgraded`, `installed`, `failed`. Read it with
+# orchid_push_guard_action, never by grepping the printed line -- prose is for
+# people.
+#
+# Four of them mean an EXECUTABLE guard is in place at the path git runs:
+# `current`, `repaired`, `upgraded`, `installed`. Every other value means it is
+# not, and `repaired` is split out of `current` precisely so that "the bytes
+# were already right" and "the bytes were right but the file was inert" are not
+# the same answer.
 #
 # Every incidental caller (init, `orchid start`'s setup path) can and does
 # ignore this and let the printed line speak: for them, a hook that is already
@@ -1968,6 +2053,17 @@ orchid_install_push_guard() {
   ORCHID_PUSH_GUARD_ACTION=disabled
   guard="$(config_get "$repo" push_guard true)"
   case "$guard" in false|0|no) return 0 ;; esac
+
+  # A relative `core.hooksPath` is not one file, it is one per checkout -- see
+  # orchid_push_guard_hooks_mode. Refuse the whole install rather than write a
+  # file that guards the checkout this process happens to be looking at and
+  # call the repository protected. Nothing is written, nothing is reported as
+  # installed or current, and the operator is told exactly what to change.
+  if [ "$(orchid_push_guard_hooks_mode "$repo")" = relative ]; then
+    ORCHID_PUSH_GUARD_ACTION=unsupported-hookspath
+    echo "orchid: $(orchid_push_guard_hookspath_warning "$repo")" >&2
+    return 0
+  fi
 
   # Hooks live under the git dir, never inside a commit -- and at the ONE path
   # git will execute, which orchid_push_guard_path asks git for rather than
@@ -2020,8 +2116,34 @@ orchid_install_push_guard() {
     # `$(cat)` strips trailing newlines from BOTH sides of this comparison
     # (the render above lost its own to the same rule), so the two are compared
     # on equal terms and a hook that is already current is left alone.
+    #
+    # BYTES ARE ONLY HALF OF "CURRENT". git runs a hook by exec'ing it, and
+    # silently runs nothing at all when the file is not executable -- no error,
+    # no output, the push simply proceeds. So a byte-identical guard with the
+    # execute bit off is the same inert-file-that-reads-like-protection this
+    # function refuses to create anywhere else, and it is a shape that happens
+    # for ordinary reasons: a hook copied with `cp` from a template directory, a
+    # restore from an archive that dropped the mode, a `umask` that stripped it,
+    # or an orchid install whose own chmod failed. Repair it and SAY SO -- the
+    # bytes did not change, but the repository's protection did, and an
+    # operator who is told "already current" learns nothing about the minute in
+    # which they were unguarded.
     if [ "$rendered" = "$(cat "$hook" 2>/dev/null)" ]; then
-      ORCHID_PUSH_GUARD_ACTION=current
+      if [ -x "$hook" ]; then
+        ORCHID_PUSH_GUARD_ACTION=current
+        return 0
+      fi
+      # A failed chmod is NOT `current` and NOT success: the end state is a
+      # file git will not run. Report it as a failure so the explicit refresh
+      # route exits non-zero, rather than telling an operator their guard is
+      # fine because its contents are.
+      if ! chmod +x "$hook" 2>/dev/null || [ ! -x "$hook" ]; then
+        ORCHID_PUSH_GUARD_ACTION=failed
+        echo "orchid: the pre-push guard at $hook holds the current template but is NOT executable, and it could not be made executable -- git silently runs nothing in that state, so pushes of task branches, of $integ, and of run state are NOT guarded here (fix: chmod +x $hook)" >&2
+        return 0
+      fi
+      ORCHID_PUSH_GUARD_ACTION=repaired
+      echo "pre-push guard repaired: $hook was not executable and git would have run nothing -- execute bit restored (integration branch: $integ)"
       return 0
     fi
     ORCHID_PUSH_GUARD_ACTION=failed
@@ -2035,14 +2157,17 @@ orchid_install_push_guard() {
       return 0
     fi
     # An unexecutable hook is not a guard, so a failed chmod is `failed` even
-    # though the file WAS replaced: the line below still reports the
-    # replacement, truthfully, and the outcome above it is what a caller
-    # deciding whether this repository is protected has to read.
-    if chmod +x "$hook" 2>/dev/null; then
-      ORCHID_PUSH_GUARD_ACTION=upgraded
-    else
-      echo "orchid: could not make $hook executable -- git runs only an executable hook, so the guard it holds is inert" >&2
+    # though the file WAS replaced -- and the success line is NOT printed in
+    # that case. "pre-push guard upgraded" beside "could not make it
+    # executable" is two claims an operator has to reconcile, and the one they
+    # remember is the first; the stderr line below carries the whole truth,
+    # replacement included.
+    if ! chmod +x "$hook" 2>/dev/null || [ ! -x "$hook" ]; then
+      ORCHID_PUSH_GUARD_ACTION=failed
+      echo "orchid: replaced the pre-push guard at $hook but could not make it executable -- git silently runs nothing in that state, so pushes of task branches, of $integ, and of run state are NOT guarded here (fix: chmod +x $hook)" >&2
+      return 0
     fi
+    ORCHID_PUSH_GUARD_ACTION=upgraded
     echo "pre-push guard upgraded: $hook (integration branch: $integ)"
     return 0
   fi
@@ -2052,11 +2177,11 @@ orchid_install_push_guard() {
     echo "orchid: could not install the pre-push guard at $hook -- pushes of task branches, of $integ, and of run state are NOT guarded in this repository" >&2
     return 0
   fi
-  if chmod +x "$hook" 2>/dev/null; then
-    ORCHID_PUSH_GUARD_ACTION=installed
-  else
-    echo "orchid: could not make $hook executable -- git runs only an executable hook, so the guard it holds is inert" >&2
+  if ! chmod +x "$hook" 2>/dev/null || [ ! -x "$hook" ]; then
+    echo "orchid: wrote the pre-push guard to $hook but could not make it executable -- git silently runs nothing in that state, so pushes of task branches, of $integ, and of run state are NOT guarded here (fix: chmod +x $hook)" >&2
+    return 0
   fi
+  ORCHID_PUSH_GUARD_ACTION=installed
   echo "pre-push guard installed: $hook (integration branch: $integ)"
 }
 

@@ -685,13 +685,29 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
   instead: `orchid start --refresh-push-guard` re-installs it from the current
   template at any `run_status`, takes no other argument, moves no branch,
   writes no run state and takes no lock, and is idempotent. Wherever it is
-  installed from, the hook goes at the path **git** will run it from —
-  `core.hooksPath` is honored (absolute or relative), and a linked worktree
-  gets the main checkout's shared hooks directory — so it is never written to
-  a `.git/hooks/` git has been configured to ignore. A hook orchid did not write is never
+  installed from, the hook goes at the path **git** will run it from — an
+  absolute `core.hooksPath` is honored, and a linked worktree gets the main
+  checkout's shared hooks directory — so it is never written to
+  a `.git/hooks/` git has been configured to ignore. A **relative**
+  `core.hooksPath` (`.githooks`, `hooks/`, anything not starting with `/`) is
+  the one layout orchid does not guard, and it says so instead of pretending
+  otherwise: git resolves a relative value against *each worktree's own top
+  level*, so one setting names a different file in the main checkout, in the
+  integration worktree and in every task worktree, and no single file installed
+  by orchid covers the repository. `orchid init`, `orchid start` and `orchid
+  doctor` warn, naming the per-worktree risk; `orchid start
+  --refresh-push-guard` exits non-zero; nothing is written and nothing is
+  reported as installed or current. Make the value absolute (`git config
+  core.hooksPath /absolute/path/to/hooks`) or drop it (`git config --unset
+  core.hooksPath`) and re-run the refresh. Orchid never edits that setting for
+  you — it is yours, like `orchid.config`. A hook orchid did not write is never
   overwritten by either verb — it is left alone and reported — and one that
-  already matches the current template is left byte-for-byte alone and
-  reported not at all. Changing `integration_branch` is picked up the same
+  already matches the current template *and is executable* is left
+  byte-for-byte alone and reported not at all. Executability is not a detail:
+  git silently runs nothing when a hook is not executable, so a byte-current
+  guard with the execute bit missing is `chmod +x`'d in place and reported as
+  repaired (its contents untouched), and a `chmod` that fails is reported as a
+  failure rather than as a guard. Changing `integration_branch` is picked up the same
   way, since the branch name is baked into the hook at install time. Orchid
   recognizes its own hook only by the file's **second line starting with**
   `# orchid pre-push guard`, so if you have edited that file in place, your

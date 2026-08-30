@@ -140,6 +140,28 @@ else
 fi
 git -C "$repo" worktree list >/dev/null 2>&1 && ok "worktree support" || bad "worktree support"
 
+# The one repository shape the pre-push guard cannot cover (T037). A RELATIVE
+# `core.hooksPath` is resolved by git against each worktree's own top level, so
+# it names a different file in the main checkout, the integration worktree and
+# every task worktree -- and orchid's answer is to install nothing rather than
+# guard one checkout and let that read as guarding the repository (the
+# reasoning is on lib/common.sh's orchid_push_guard_hooks_mode).
+#
+# Doctor is where an operator finds that out without having run a verb that
+# happens to install hooks, so it is said here too, in the same words the
+# installer uses -- one composer, no drift. WARN and never `bad`: an
+# unguardable hooks layout is a real risk and is not a broken repository, and
+# failing doctor over it would take `orchid start`'s own preflight down with
+# it. Silent when `push_guard` is off, because then the operator has already
+# decided and there is nothing to warn about.
+case "$(config_get "$repo" push_guard true)" in
+  false|0|no) : ;;
+  *)
+    if [ "$(orchid_push_guard_hooks_mode "$repo")" = relative ]; then
+      echo "WARN: push guard: $(orchid_push_guard_hookspath_warning "$repo")"
+    fi ;;
+esac
+
 if [ "$greenfield" -eq 1 ]; then
   echo "note: greenfield: verify command deferred to scaffold task"
 else

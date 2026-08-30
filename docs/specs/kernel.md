@@ -2076,10 +2076,24 @@ branch, writes no run state and takes no lock, and it is a distinct
 invocation rather than a side effect of a setup call that then refuses — a
 mutation nobody can name is a mutation nobody can audit. All three callers
 install, inspect and report the hook at the path **git** resolves (`git
-rev-parse --git-path hooks/pre-push`: `core.hooksPath`, absolute or
-relative, and a linked worktree's shared hooks directory), never at a
+rev-parse --git-path hooks/pre-push`: an absolute `core.hooksPath`, and a
+linked worktree's shared hooks directory), never at a
 derived `.git/hooks`, because an inert file at a path git does not read is
-worse than no file — it reads as protection.
+worse than no file — it reads as protection. By the same rule a **relative**
+`core.hooksPath` is UNSUPPORTED for this guard rather than half-installed:
+git resolves a relative value against each worktree's own top level, so one
+setting names a different file in every checkout, and orchid gives the
+integration branch and each task a linked worktree of its own. Installing
+into the one checkout a process can see and reporting it would be the same
+false protection in a new place. All three doors warn (naming the
+per-worktree risk and both recoveries, absolute or unset), the explicit
+refresh exits non-zero, nothing is written, and no output says `installed`
+or `current`. The setting is the operator's and is never rewritten, on the
+same principle that refuses to force-commit an ignored `orchid.config`.
+Executability is part of "installed", not a detail of it: git silently runs
+nothing when a hook is not executable, so a byte-current guard with the
+execute bit off is repaired in place and reported as `repaired`, and a
+`chmod` that fails is reported as a failure rather than as an install.
 
 **Run-state containment (T037 — SHIPPED):** committing `.orchid/` is what
 makes a run durable, and it is also what lets a run's bookkeeping ride the
