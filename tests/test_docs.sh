@@ -563,27 +563,41 @@ assert_match "weighed against it" "$drive_help_one_line" \
 
 # THE SAME CLAIM IS WRITTEN DOWN IN FIVE PLACES (PROTOCOL.md, architecture.md,
 # docs/engines/claude.md, lib/drive.sh, the driver's own help), so qualifying
-# it in one is how
-# it went stale the last two times (the L006 sweep above is the scar). "An
+# it in one place is how it went stale the last two times (the L006 sweep above
+# is the scar). "An
 # empty findings[] blocks nothing" is now true only of an APPROVING review, so
 # every live surface that states it must carry that word within the same
 # sentence -- and a NEW site written a year from now must not be able to state
 # the old, unqualified version. This is the sweep, not another per-file pin: it
 # reads whatever files carry the phrase rather than a list someone has to
-# remember to extend. Folded first, because every one of these sentences
-# straddles a hard wrap (a line-oriented grep for the qualifier would report
-# the wrap, not the claim). docs/plans/ and docs/dogfood-notes.md are excluded
-# by construction: they are dated records of what was true when written, and
-# rewriting them would falsify the history the rest of this suite cites.
+# remember to extend. Folded first, and folded at BOTH ends of the sweep:
+# every one of these sentences straddles a hard wrap, so a line-oriented step
+# anywhere in the path silently drops the files the sweep exists for.
+# docs/architecture.md is the live proof -- it writes the claim as "blocks\n
+# nothing", so `grep -rl "blocks nothing"` does not list it at all, and a
+# discovery step built that way would hand the matcher four of the five files
+# and call the repo clean. Discovery therefore ENUMERATES the surface and folds
+# each file, rather than pre-filtering it with a line-oriented grep.
+# docs/plans/ and docs/dogfood-notes.md are excluded by construction: they are
+# dated records of what was true when written, and rewriting them would falsify
+# the history the rest of this suite cites.
 #
 # unqualified_blocks_nothing <file> -- prints " <file>" once per occurrence of
 # the claim that does NOT carry its qualifier within the 120 folded characters
-# before it. Silent when the file is clean, which is what makes it usable as
-# both the sweep and its own RED case below.
+# before it. Silent when the file is clean AND when it carries no claim at all,
+# which is what lets sweep_unqualified_claims below hand it the whole surface
+# instead of a pre-filtered shortlist.
 unqualified_blocks_nothing() {
   local cf="$1"
   local cf_one_line hit out
-  cf_one_line="$(tr '\n' ' ' < "$cf" | tr -s '[:space:]' ' ')"
+  # Silenced because the sweep now hands this every regular file on the
+  # surface, not a grep-filtered shortlist: an unreadable file is simply a file
+  # that carries no claim, and its complaint would otherwise land in the run's
+  # stderr and read there as a failed assertion. `2>/dev/null` comes BEFORE the
+  # input redirect on purpose -- redirections are applied left to right, so the
+  # other order leaves fd 2 still pointing at the terminal when `< "$cf"` is the
+  # thing that fails.
+  cf_one_line="$(tr '\n' ' ' 2>/dev/null < "$cf" | tr -s '[:space:]' ' ')"
   out=""
   while IFS= read -r hit; do
     [ -n "$hit" ] || continue
@@ -598,32 +612,101 @@ unqualified_blocks_nothing() {
   printf '%s' "$out"
 }
 
-stale_claim=""
-while IFS= read -r cf; do
-  [ -n "$cf" ] || continue
-  stale_claim="$stale_claim$(unqualified_blocks_nothing "$cf")"
-done < <(grep -rl "blocks nothing" \
-  "$REPO_ROOT/PROTOCOL.md" "$REPO_ROOT/README.md" "$REPO_ROOT/docs/architecture.md" \
-  "$REPO_ROOT/docs/specs" "$REPO_ROOT/docs/engines" "$REPO_ROOT/lib" \
-  "$REPO_ROOT/libexec" "$REPO_ROOT/runners" "$REPO_ROOT/plugins" 2>/dev/null || true)
+# sweep_claim_sites <path>... -- DISCOVERY, and the half the finding was about.
+# Walks every regular file under the given paths, folds each one, and emits the
+# ones that carry the claim at all (qualified or not). Folding here rather than
+# pre-filtering with `grep -rl` is the whole point: a wrapped occurrence is
+# invisible to any line-oriented step, so the enumeration costs one read per
+# file on the surface and buys back the files that step drops. NUL-delimited at
+# both ends because a path may legally contain a newline, and a `find`-to-`read`
+# handoff on newlines would split one such path into two that do not exist.
+sweep_claim_sites() {
+  local sweep_file sweep_folded
+  while IFS= read -r -d '' sweep_file; do
+    # Silenced, and ordered, for the same reason unqualified_blocks_nothing is:
+    # the walk reaches every regular file, and an unreadable one is a file
+    # carrying no claim, not a failure to report.
+    sweep_folded="$(tr '\n' ' ' 2>/dev/null < "$sweep_file" | tr -s '[:space:]' ' ')"
+    case "$sweep_folded" in
+      *"blocks nothing"*) printf '%s\0' "$sweep_file" ;;
+    esac
+  done < <(find "$@" -type f -print0 2>/dev/null)
+}
+
+# sweep_claim_site_count <path>... -- how many files discovery reached, counted
+# off the NUL delimiters rather than lines so a path containing a newline counts
+# once. The stream itself is never captured in a command substitution: bash
+# drops NUL bytes there (and says so on stderr), so the count is taken inside
+# the pipeline and only the digit crosses out.
+sweep_claim_site_count() {
+  sweep_claim_sites "$@" | tr -dc '\000' | wc -c | tr -d '[:space:]'
+}
+
+# sweep_unqualified_claims <path>... -- the whole sweep, discovery included, so
+# the RED case below can drive the same entry point production does rather than
+# the matcher on its own.
+sweep_unqualified_claims() {
+  local sweep_file sweep_out
+  sweep_out=""
+  while IFS= read -r -d '' sweep_file; do
+    sweep_out="$sweep_out$(unqualified_blocks_nothing "$sweep_file")"
+  done < <(sweep_claim_sites "$@")
+  printf '%s' "$sweep_out"
+}
+
+sweep_roots=(
+  "$REPO_ROOT/PROTOCOL.md" "$REPO_ROOT/README.md" "$REPO_ROOT/docs/architecture.md"
+  "$REPO_ROOT/docs/specs" "$REPO_ROOT/docs/engines" "$REPO_ROOT/lib"
+  "$REPO_ROOT/libexec" "$REPO_ROOT/runners" "$REPO_ROOT/plugins"
+)
+stale_claim="$(sweep_unqualified_claims "${sweep_roots[@]}")"
 [ -z "$stale_claim" ] || fail "unqualified 'an empty findings[] blocks nothing' claim — true only of an APPROVING review since reconcile synthesizes one for a withheld verdict — still shipped in:$stale_claim"
 
-# ...and the sweep is fed both answers, because a matcher that never fires
-# would pass this repo in exactly the state the finding describes. Both
-# fixtures WRAP the claim mid-phrase: that is how it is actually written in
-# every file above, and a scan that forgot to fold would miss both.
-sweep_red="$WORK/stale-claim-red.md"
+# The sweep goes green two ways and only one of them is good news: nothing
+# unqualified, or nothing FOUND. A mistyped root, a directory that has moved,
+# or a rewording that carried the sentence off this surface all read as clean
+# and would keep reading as clean forever. So discovery is required to still be
+# looking at something: at least one file under the roots above must carry the
+# claim.
+claim_site_count="$(sweep_claim_site_count "${sweep_roots[@]}")"
+[ "${claim_site_count:-0}" -gt 0 ] \
+  || fail "the empty-findings sweep found the claim on no file at all — its roots no longer reach the surface that states it, so it would pass whatever the docs said"
+
+# ...and the sweep is fed both answers through its own front door, because a
+# sweep that never fires would pass this repo in exactly the state the finding
+# describes -- and one that fires only when HANDED the file cannot say it would
+# have found it. So the fixture is a directory, with the claim nested a level
+# below the root the sweep is pointed at, and both cases go in through
+# sweep_unqualified_claims: what is under test is discovery + fold + qualifier,
+# not the matcher alone. The fixture WRAPS the claim mid-phrase, which is how
+# docs/architecture.md actually writes it, so this is exactly the shape a
+# line-oriented discovery step drops on the floor.
+sweep_root="$WORK/stale-claim-sweep"
+mkdir -p "$sweep_root/nested"
+sweep_doc="$sweep_root/nested/claim.md"
 printf 'the gate cuts both ways: an empty findings[] blocks\nnothing, and one finding at or above the threshold halts the pass.\n' \
-  > "$sweep_red"
-[ -n "$(unqualified_blocks_nothing "$sweep_red")" ] \
-  || fail "the stale-claim sweep does not detect the unqualified sentence it exists for — it would accept whatever it is pointed at"
-red_case "the empty-findings sweep rejects a wrapped, unqualified 'blocks nothing' claim"
-sweep_green="$WORK/stale-claim-green.md"
+  > "$sweep_doc"
+# The witness for the finding this fixture encodes: the discarded line-oriented
+# discovery step, run against the very same tree, comes back empty. Without it
+# the RED case below passes just as well with a `grep -rl` pre-filter restored,
+# and the regression walks straight back in.
+[ -z "$(grep -rl "blocks nothing" "$sweep_root" 2>/dev/null || true)" ] \
+  || fail "the wrapped-claim fixture is discoverable by a line-oriented grep — it no longer stands for the wrapped shape the sweep must fold to reach"
+[ "$(sweep_claim_site_count "$sweep_root")" -gt 0 ] \
+  || fail "the sweep's discovery step does not find a wrapped claim a line-oriented grep also misses — no step in the path would ever reach it"
+[ -n "$(sweep_unqualified_claims "$sweep_root")" ] \
+  || fail "the stale-claim sweep does not report the unqualified sentence it exists for — it would accept whatever it is pointed at"
+red_case "the empty-findings sweep DISCOVERS and reports a wrapped, unqualified 'blocks nothing' claim that a line-oriented grep never lists"
 printf 'on an approving review an empty findings[] blocks\nnothing, and one finding at or above the threshold halts the pass.\n' \
-  > "$sweep_green"
-[ -z "$(unqualified_blocks_nothing "$sweep_green")" ] \
+  > "$sweep_doc"
+# Still discovered -- only the qualifier arm changes verdict. Pinning both keeps
+# the GREEN case honest: a discovery step that had quietly stopped finding the
+# file would otherwise look identical to a qualifier that correctly passed it.
+[ "$(sweep_claim_site_count "$sweep_root")" -gt 0 ] \
+  || fail "the qualified fixture is no longer discovered at all — the GREEN case below would pass for the wrong reason"
+[ -z "$(sweep_unqualified_claims "$sweep_root")" ] \
   || fail "the stale-claim sweep flags a correctly qualified sentence — it would force the stale wording back into the docs"
-green_case "the same sweep accepts the same sentence once it names the approving review"
+green_case "the same sweep still discovers the wrapped sentence but accepts it once it names the approving review"
 
 # The two doc sites that carry the claim in prose say what happens INSTEAD, not
 # merely that the old sentence was narrowed: an operator who meets a `high`
