@@ -142,6 +142,13 @@ install whose only reviewers are inline is slowed to a human decision per
 medium-tier task, never blocked. `low` asks for no depth at all, and no
 reviewer slot is ever withheld for being inline.
 
+An approval is also never deterministic while the task carries an unresolved
+objection from an earlier arbitration. A new review round does not answer the
+objection. An orchestrator-raised objection stops at an arbitrable boundary;
+an operator-raised objection stays operator-only unless the task has a recorded
+operator answer authorizing a model to relay the approval for that exact
+objection sequence, round, candidate, and evidence set.
+
 At most one judgment boundary is recorded per pass. A boundary a woken
 orchestrator could actually settle outranks one only an operator can, and
 task-id order decides among equals. That ranking decides which stop is RECORDED
@@ -236,11 +243,26 @@ is a per-task declaration about the world OUTSIDE it. The hand-off is raised
 first, and that order matters: acknowledging it advances candidate_sha, which
 would expire a prerequisite acknowledgement taken before it.
 
+An `ok` implementer envelope is not itself a candidate. After the job has
+really exited, the pass reads the worktree: a clean HEAD still at base_sha with
+no recorded candidate is refused, infra-charged, marked so that envelope cannot
+be selected again, and relaunched; reaching infra_max blocks. A clean HEAD
+already at a recorded candidate ahead of base_sha may advance without a new
+commit. A dirty tree is an operator boundary, and an unreadable tree is a
+worktree conflict. None of those uncertain shapes is waved into testing.
+
+Likewise, `orchid verify` exit 20 is REFUSED, not FAIL: the checkout was not at
+the recorded candidate before the suite, or moved while it ran. The pass leaves
+the task in testing, records a worktree-conflict boundary, spends no attempt,
+and never treats a log ending in `refused:` as passing evidence.
+
 A pass that reads every task as `done` takes COMPLETION's mechanical first
 step (`orchid run advance accepting`) and stops at a `run-complete` boundary,
 so a finished headless run hands off instead of polling forever. Against a
 brokered orchestrator that boundary is a blocker for a human: the broker
-refuses `orchid run accept`, so no model can close the run.
+refuses `orchid run accept`, so no model can close the run. Completing the run
+does not remove an installed schedule; the operator must uninstall it, or use
+`orchid service teardown` when the checkout is also being removed.
 
 Exit codes:
   0   the pass completed; nothing is waiting on a human judgment call

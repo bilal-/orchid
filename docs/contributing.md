@@ -159,6 +159,43 @@ Its run-level counterpart is in [PROTOCOL.md](../PROTOCOL.md)'s COMPLETION
 step 2: "the full suite is green" has to name **where** it was green, and one
 of those places must be a checkout parked on the integration branch itself.
 
+## One ordered procedure needs one run-level owner
+
+PROTOCOL.md is the file every future orchestrator is handed, and its numbered
+state-machine walk is a single algorithm even when Git presents it as lines.
+During r-002, independent tasks edited the `implementing` and testing-FAIL arms
+in parallel. Each task's insertion was locally reasonable; after merge, one arm
+was numbered out of order with a superseded advance still first, and the other
+kept a pre-classification advance, duplicated its closing text, and joined a
+new block in the middle of a sentence.
+
+That class of defect is invisible to isolated diff review. No contributor can
+review ordering against edits that do not exist in its branch, and four clean
+paragraph diffs do not prove one clean procedure. The rule is therefore
+run-level: after parallel work changes any ordered prose procedure, one owning
+task reads the complete procedure from its first step to its last against the
+merged behavior. Do not assign independent fragments of one numbered process
+to independent final editors without that reconciliation pass.
+
+## Run acceptance is a matrix of locations
+
+The candidate, the merged integration branch, and hosted CI are three different
+observations. Record all three separately:
+
+1. Run the canonical local command in the candidate checkout, including the
+   PATH-restricted hermetic proof.
+2. After merge, run it again from a checkout actually parked on the configured
+   integration branch. This is the only ambient run that exercises code gated
+   on that branch identity.
+3. After an operator pushes, watch hosted CI. A run that contacts no remote
+   records this as not observed and supplies the operator command; it cannot
+   inherit a green result from step 1 or 2.
+
+A candidate evidence file necessarily leaves step 2 open because it cannot see
+the commit that will contain itself after merge. The r-002 hand-off is recorded
+without filling that blank in
+[r-002-acceptance-evidence.md](./r-002-acceptance-evidence.md).
+
 ## Portability
 
 Shipped scripts run under whatever `find(1)` the host provides, so the gate

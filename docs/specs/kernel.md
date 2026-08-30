@@ -1697,6 +1697,19 @@ requirement→task coverage map; run-level status lives in roadmap frontmatter
 (`run_status: planning|running|accepting|complete|blocked`); the final
 acceptance gate (coverage check + end-to-end acceptance tests) writes an
 evidence record to `reviews/acceptance.log` before `run_status: complete`.
+That record is not one undifferentiated “suite green” bit. It identifies the
+candidate-local run, the required post-merge run from a checkout actually
+parked on `integration_branch`, and any hosted-CI observation separately. A
+task/merge temp worktree cannot substitute for the integration-branch run:
+code conditioned on the checked-out branch, install-root identity, or another
+property those worktrees cannot possess needs a test that constructs that
+condition, plus the ambient integration-branch run that proves the assembled
+tree. Because a candidate evidence file cannot observe the merge that will
+contain it, that row remains an explicit operator step until after merge.
+Unrun local checks and unobserved remote checks are written as such, never
+inferred from another row. `run accept` receives only the completed evidence;
+copying a candidate draft with those rows open would make `complete` claim a
+tree the run never saw.
 `orchid status` shows task table, jobs, open questions, AND run-level state.
 `orchid status --html` (v1-m4 — SHIPPED) is a separate output MODE, not an
 addition to that text report: it writes a self-contained static page (run

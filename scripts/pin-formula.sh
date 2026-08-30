@@ -24,6 +24,9 @@ from the repository's current content (tracked plus untracked, non-ignored
 files, snapshotted through a disposable isolated Git repository) and pins it
 into Formula/orchid.rb.
 
+This is an integration/release-branch operation, once the tree to ship is
+assembled. Task candidates must not re-pin a whole-tree checksum independently.
+
 --check verifies the pinned value instead of rewriting it, exiting nonzero
 and printing both checksums when the formula is stale.
 EOF

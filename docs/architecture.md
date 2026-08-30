@@ -23,7 +23,9 @@ flowchart TD
     OP["Operator<br/>terminal + phone"]
     PUMP["runners/orchid-pump<br/>launchd/cron heartbeat, short-lived"]
     TICK["runners/orchid-tick<br/>one bounded tick"]
-    ORCH["Orchestrator engine - claude by default<br/>one power: run orchid verbs in a bash shell"]
+    DRIVE["orchid drive<br/>one deterministic full-task pass"]
+    BOUNDARY{"named judgment boundary<br/>settleable by admitted verb?"}
+    ORCH["Orchestrator engine - claude by default<br/>judgment only when the boundary is settleable"]
     VERBS["Tier-1 verbs - libexec/<br/>orchid task / run / jobs / verify / merge / notify"]
     LAUNCH["runners/orchid-launch<br/>tier 2 - the ONE engine spawner"]
     subgraph ENGINES["Engine adapters - siblings, one role per job, launched per job"]
@@ -41,7 +43,12 @@ flowchart TD
     OP -->|"orchid run start - interactive session"| ORCH
     OP -->|"orchid service install"| PUMP
     PUMP -->|"lease stale? wake the run"| TICK
-    TICK -->|"orchestrate request"| ORCH
+    TICK -->|"always run mechanics first"| DRIVE
+    DRIVE -->|"exit 16 after walking every task"| BOUNDARY
+    BOUNDARY -->|"yes - one bounded orchestrate request"| ORCH
+    BOUNDARY -->|"no - one durable blocker"| OUTBOX
+    DRIVE -->|"structured fields only"| VERBS
+    DRIVE -->|"dispatch eligible jobs"| LAUNCH
     ORCH -->|"verbs only - never hand-edits state"| VERBS
     ORCH -->|"asks the kernel to launch"| LAUNCH
     LAUNCH -->|"request document"| COD
@@ -54,6 +61,7 @@ flowchart TD
     CLA -->|"result envelope"| SPOOL
     SPOOL -->|"orchid jobs reconcile"| VERBS
     VERBS -->|"epoch-fenced git commits"| STATE
+    STATE -.->|"accepting/complete leaves an installed schedule firing"| PUMP
     VERBS -->|"orchid notify writes the question"| OUTBOX
     OUTBOX -->|"pump drains, spawns send"| CHAN
     CHAN --> PHONE
@@ -126,17 +134,23 @@ so on every tick.
 
 <!-- Source of truth: PROTOCOL.md "THE TICK - 3. State-machine walk" (the
      feature archetype's walk) and docs/specs/kernel.md "Task lifecycle"
-     (the canonical transition table). Every state and edge below appears
-     in that table; none is invented here. -->
+     (the canonical transition table). State-changing edges come from that
+     table; self-edges below show driver refusals/boundaries that intentionally
+     leave the state unchanged. -->
 ```mermaid
 stateDiagram-v2
     [*] --> pending
     pending --> implementing: deps done - worktree created, base_sha recorded
-    implementing --> testing: implementer envelope ok AND a candidate exists - the worktree HEAD moved, or it is already the candidate_sha ahead of base_sha; no commit touches .orchid/
+    implementing --> testing: ok envelope AND a candidate exists - new HEAD, or recorded candidate ahead of base
+    implementing --> implementing: ok envelope + clean unchanged base - refuse, infra-fail, mark, relaunch
+    implementing --> blocked: repeated no-candidate delivery reaches infra_max
+    implementing --> implementing: dirty tree - operator boundary; unreadable - conflict; no attempt
     testing --> reviewing: orchid verify PASS - the evidence log is the only gate (INV-11)
+    testing --> testing: verify REFUSED - HEAD differs from candidate or moves; no attempt
     testing --> rework: verify FAIL - consumes an attempt
     reviewing --> arbitrating: every required review envelope reconciled for this candidate
     arbitrating --> merging: approve - journaled reason required
+    arbitrating --> arbitrating: unresolved objection persists until equal authority clears it
     arbitrating --> rework: request-changes - journaled reason required
     merging --> done: orchid merge re-runs the suite in a temp worktree, then advances the ref
     merging --> rework: validation failed
@@ -145,6 +159,11 @@ stateDiagram-v2
     testing --> blocked: attempts exhausted - a human is pinged
     blocked --> rework: answer arrives - orchid task unblock or retry, reason recorded
     done --> [*]
+    note left of done
+        task done is not run accepted;
+        candidate-local, post-merge integration-branch,
+        and remote-CI evidence are separate facts
+    end note
     note right of blocked
         blocked is legal from any status
         (infra failures, budget, operator call).
@@ -152,6 +171,12 @@ stateDiagram-v2
         orchid notify - see diagram 3.
     end note
 ```
+
+The picture deliberately collapses the infrastructure ladder,
+verify-failure classification, and review-slot routing into their resulting
+edges; PROTOCOL.md is the ordered procedure. It keeps the r-002 refusal paths
+explicit because those are precisely the cases where an `ok` envelope or a
+suite invocation establishes nothing and the state must not advance.
 
 **What this proves: every transition is evidence-gated, and the state IS
 the git branch.** `testing → reviewing` is refused without a passing
@@ -173,7 +198,11 @@ reason-bearing transition journals its why before the state change (INV-08),
 and the state itself is `tasks/<id>.md` frontmatter committed on the
 `orchid/integration` branch — which is why a crash anywhere loses at most
 the current uncommitted tick
-([specs/kernel.md](./specs/kernel.md), "Kernel guarantees").
+([specs/kernel.md](./specs/kernel.md), "Kernel guarantees"). The self-edges
+are load-bearing refusals rather than hidden transitions: a no-candidate
+delivery is retried on the infrastructure ladder, a dirty or unreadable tree
+stops for an operator, and a verify run whose checkout differs from or moves
+off `candidate_sha` establishes nothing and spends no attempt.
 
 ## 3. The blocker round trip
 
@@ -224,6 +253,7 @@ flowchart LR
         IMP["implementer<br/>codex - fresh worktree"]
     end
     CAND["candidate<br/>base_sha..candidate_sha<br/>reviews bind to exactly this range"]
+    VERIFY{"orchid verify evidence<br/>sha = head_after = candidate?"}
     subgraph SB["Session B - vendor B, zero shared context"]
         R1["reviewer slot 1<br/>agy - engine-independent"]
     end
@@ -232,12 +262,14 @@ flowchart LR
     end
     ARB["arbiter - claude by default<br/>inline judgment on disagreement, journaled"]
     IMP -->|"adapter commits the edits"| CAND
-    CAND -->|"input pack: diff + acceptance criteria"| R1
-    CAND -->|"input pack"| R2
+    CAND -->|"suite starts and ends on recorded SHA"| VERIFY
+    VERIFY -->|"PASS: bound evidence"| R1
+    VERIFY -->|"PASS: bound evidence"| R2
+    VERIFY -->|"REFUSED: tree differs or moves; no attempt"| CAND
     R1 -->|"verdict envelope"| ARB
     R2 -->|"verdict envelope"| ARB
-    ARB -->|"approve"| MERGE["merging"]
-    ARB -->|"reject"| REWORK["rework"]
+    ARB -->|"approve only with no standing objection, or equal authority clears it"| MERGE["merging"]
+    ARB -->|"request changes - objection persists into later rounds"| REWORK["rework"]
 ```
 
 **What this proves: structural independence, not politeness.** The
@@ -258,6 +290,14 @@ allocated — see the depth paragraph below, and
 the routing end was rejected. LLM evaluators measurably favor their own
 generations ([research.md](./research.md)); this topology is the
 countermeasure.
+
+**Candidate binding begins before review.** The verifier records the starting
+HEAD, ending HEAD, and task `candidate_sha`; only equality across all three can
+produce evidence usable by INV-11. A checkout that starts elsewhere or moves
+during the suite returns a refusal rather than laundering results from a
+different tree into this candidate. The arbiter's approval is bound to the
+same candidate and evidence set, and a request-changes decision leaves a
+standing objection that a later round of reviews cannot silently overwrite.
 
 **And the slot table is pinned for the life of an attempt.** Routing reads
 engine health, so it is a moving table; a review is judged against the one

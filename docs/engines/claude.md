@@ -3,6 +3,14 @@
 Status: **default orchestrator and arbiter**; fallback implementer/reviewer.
 This is the adapter this guide covers: `plugins/engines/claude/run`.
 
+## What the repository acceptance run proves
+
+Orchid's local CI deliberately proves the suite with vendor CLIs unavailable
+on `PATH`; it does not spend quota or launch a live Claude session. Thus a
+green run proves the kernel and this adapter's stubbed contract do not depend
+on an ambient vendor install. The live claims below come from their named
+manual/dogfood probes, not from r-002's local acceptance run.
+
 ## Install
 
 ```sh

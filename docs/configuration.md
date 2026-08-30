@@ -107,6 +107,13 @@ trust show <repo>`; remove it with `orchid trust revoke <repo>`.
 
 ## Notes on individual keys
 
+- **`integration_branch`** names more than the ref merge advances. Run-level
+  acceptance executes the canonical local-CI command once from a checkout
+  actually parked on this branch after the final candidate merges. Task
+  worktrees and merge temp worktrees cannot stand in for that run: any guard
+  conditioned on the checked-out branch is false in both. Record branch and
+  HEAD in the acceptance evidence; a candidate leaves this as a post-merge
+  operator step.
 - **`verify`** has no default on purpose: `orchid doctor` FAILs preflight
   until it's set (`orchid.config`), except `--greenfield` mode, which skips
   this check pre-scaffold (nothing to verify yet).

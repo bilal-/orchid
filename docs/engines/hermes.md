@@ -4,6 +4,14 @@ Status: **review/critique only** (v1-m4 Task 6, build-only). `implement` is
 NOT wired up yet — see "Why no `implement` yet" below. This is the adapter
 this guide covers: `plugins/engines/hermes/run`.
 
+## What the repository acceptance run proves
+
+Orchid's local CI deliberately proves the suite with vendor CLIs unavailable
+on `PATH`; it does not spend quota, launch a live Hermes review, or exercise a
+real notify return leg. Thus a green run proves the stubbed contracts do not
+depend on an ambient vendor install. The version/live claims below come from
+their named probes, not from r-002's local acceptance run.
+
 ## Install
 
 ```sh

@@ -2653,6 +2653,28 @@ suite that has to reach back for gitignored state at test time (rather than
 once at setup time) can do it portably instead of hardcoding an absolute
 path into committed config.
 
+## The suite fails only on the integration branch
+
+**Symptom:** task verification and merge revalidation are green, but the
+identical commit fails when checked out on the configured integration branch.
+
+This is not contradictory evidence. Task worktrees and merge temp worktrees
+are, by construction, never parked on that branch. A guard that returns early
+unless the current checkout is the integration branch therefore goes entirely
+unexercised in both gates. Run r-002 proved the shape with commit `416fcc9`:
+five unattended-trust tests failed on `orchid/integration`, while the same
+commit on a differently named branch returned zero.
+
+Fix the test at the condition boundary. Any kernel path conditioned on the
+checked-out branch, being the install root, or another property a temp
+worktree cannot possess needs a fixture that constructs that property instead
+of inheriting the ambient checkout. Then keep one run of the canonical local-CI
+command on an actual integration-branch checkout in the run acceptance
+checklist. Record its branch and HEAD; “the full suite is green” without where
+it ran is incomplete evidence. The candidate cannot perform this post-merge
+observation for itself, so its evidence file must leave an operator step rather
+than pre-marking it passed.
+
 ## Scheduled pump can't find jq / engine CLIs
 
 **Symptom:** `orchid service install` succeeds and `orchid service status`

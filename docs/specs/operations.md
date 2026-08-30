@@ -314,6 +314,31 @@ carrying the mitigation is printing to nobody. That one is held by
 `runners/` so much as names the harness — a change that would otherwise leave
 this section false without touching a byte of it.
 
+## Run-level acceptance names where every check ran
+
+Task verification and merge revalidation are necessary but do not cover every
+deployment condition. Both execute in worktrees that are deliberately not
+checked out on the configured integration branch. A kernel path guarded on
+that branch — or on being the install root, or on any property a temp worktree
+cannot inherit — is therefore outside their ambient environment even when both
+run the whole suite honestly.
+
+The acceptance evidence has three rows rather than one claim:
+
+1. the canonical local-CI command in the candidate checkout, including its
+   PATH-restricted no-vendor-CLI proof;
+2. after merge, the same command in a checkout actually parked on the
+   configured integration branch at the commit being accepted;
+3. hosted CI after an operator pushes, named by its workflow/run and watch
+   command, or explicitly recorded as not observed.
+
+The candidate writes the file but cannot mark row 2 passed: the commit that
+contains the file has not merged yet. Remote CI is likewise operator-owned.
+This is an honesty constraint, not a weaker gate — the operator completes both
+observations before handing the file to `orchid run accept`. The r-002 draft
+shows the exact boundary in
+[r-002-acceptance-evidence.md](../r-002-acceptance-evidence.md).
+
 ## Operator walkthrough (the human's seat)
 
 1. `orchid doctor` — readiness + plugin/trust report.
@@ -334,7 +359,7 @@ this section false without touching a byte of it.
    host's own scheduler (a launchd agent on macOS, a marker-guarded crontab
    line elsewhere) so ticks continue without a terminal open —
    `orchid service status`/`orchid service uninstall` report/reverse it.
-5. Run ends at `run_status: complete` (acceptance evidence in
+5. Run ends at `run_status: complete` (completed post-merge acceptance evidence in
    `reviews/acceptance.log`) or surfaces a blocker. A run does not reach that
    state on its own: the pass that finds every task `done` advances it to
    `accepting` and stops at a `run-complete` boundary, so an unattended run

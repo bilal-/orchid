@@ -75,6 +75,14 @@ from the source archive, avoiding a checksum self-reference.
 
 ### Release-day steps (operator, not automated)
 
+These steps begin only after run acceptance is complete: candidate-local CI
+has been recorded, the assembled tree has run the canonical suite from a
+checkout actually parked on the configured integration branch, and any
+required hosted CI has been observed after the operator pushed. A candidate
+cannot pre-claim either post-merge observation. Release-day formula pinning is
+later still and remains an integration/release operation, never a candidate
+hand-off.
+
 1. Update `release/metadata.conf`, `ORCHID_VERSION` in `lib/common.sh`, the
    two `ORCHID_INSTALL_*` assignments in `install.sh`, and the formula's
    version and URL. Commit the release payload while the tree is clean.

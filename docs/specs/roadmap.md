@@ -246,7 +246,11 @@
   - **Release checklist (binary, no judgment calls at the gate):** all
     m1–m3 conformance suites green; m4 core complete; docs suite passes the
     15-minute clean-machine rehearsal; screenshots from real dogfood runs;
-    works-with claims match actually-shipped adapters; THEN public release.
+    works-with claims match actually-shipped adapters; the canonical suite is
+    green once on the assembled integration-branch checkout (not only task or
+    merge worktrees); hosted CI is observed after the operator pushes; THEN
+    public release. Candidate evidence leaves those post-merge/remote rows open
+    rather than claiming a tree or workflow it could not see.
 
 ## Distribution (public GitHub repo)
 
