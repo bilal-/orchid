@@ -6,15 +6,17 @@ source "$(dirname "$0")/helpers.sh"
 # approach (grep-only, no prose heuristics) so this suite carries zero
 # false-positive risk from trying to parse free text:
 #
-#   1. every `orchid <word>` CODE-SPAN, and every fenced-shell-block line
-#      STARTING with "orchid <word>", in README.md/the two quickstarts
+#   1. every `orchid <word>` CODE-SPAN, and every line INSIDE A FENCED BLOCK
+#      that starts with "orchid <word>", in README.md/the two quickstarts
 #      names a real tier-1 verb (a libexec/orchid-<word> file actually on
 #      disk) -- catches a renamed/typo'd verb before a reader ever hits it.
-#      (Scoped to just these three files deliberately: a prose sentence
-#      elsewhere -- e.g. docs/engines/hermes.md's "orchid never manages
-#      this..." -- would false-positive against the start-of-line half of
-#      this pattern; README/the quickstarts never open a line with prose
-#      starting in lowercase "orchid ", only with real fenced commands.)
+#      Both spellings are MARKED: a code span and a fence are structural
+#      facts about the document, so a bare word after "orchid" in ordinary
+#      prose ("at dispatch orchid creates a worktree") is never read as an
+#      invocation. That reading is what failed r-002/T023 against correct
+#      documentation, and section 1 below has the full account plus the
+#      RED and GREEN cases that hold both halves in place. (Still scoped to
+#      these three files: they are the pages this suite owns.)
 #   2. every RELATIVE markdown link across this task's docs surface
 #      (`docs_suite_files` below -- README + quickstarts + configuration/
 #      troubleshooting/research + docs/engines/* + docs/extending/*;
@@ -99,14 +101,68 @@ done <<< "$required_files"
 # ===========================================================================
 # 1 -- every `orchid <word>` code-span in README.md + the two quickstarts
 # names a real tier-1 verb.
+#
+# THE EXTRACTOR IS ANCHORED TO HOW A VERB IS WRITTEN, NEVER TO THE BARE WORD
+# AFTER "orchid", and that is r-002/T023's finding rather than a refinement.
+# An earlier form of this gate took every `orchid <word>` it could see and
+# demanded a matching libexec file, so the ordinary English sentence "orchid
+# creates a worktree for the task" failed a task with
+#
+#     PROTOCOL.md names orchid creates but libexec/orchid-creates does not exist
+#
+# against documentation that was correct. It is the same defect as INV-13's
+# purity scan reading `git worktree add` inside a printf as an operation (see
+# tests/inv/test_INV-13_driver_verb_only.sh), and it has the same natural
+# workaround -- reword the prose -- which degrades the documentation to
+# satisfy a linter. The gate is worth keeping; reading English as a command is
+# not, so a name counts only where the page has MARKED it as a command:
+#
+#   * inside a code span -- `orchid <word>` -- anywhere on the page; or
+#   * as the first word of a line INSIDE A FENCED BLOCK, which is how these
+#     three pages spell a command an operator types.
+#
+# The fenced-block half is what closes the prose hole. The check used to take
+# any line merely STARTING with "orchid ", so a paragraph that happened to
+# begin with a lowercase "orchid handles ..." was read as an invocation, and
+# the only thing standing between that and a red suite was a comment asking
+# future authors not to write one. A fence is a structural fact about the
+# document, so nothing about the sentence has to be promised.
 # ===========================================================================
+
+# doc_verb_names <file> -- the verb names <file> documents as invocations, one
+# per line, in both marked spellings. Named once so the loop below and the
+# RED/GREEN probes beside it are judged by the SAME extractor: a probe aimed
+# at a private copy of the pattern proves that copy works and says nothing
+# about the gate.
+doc_verb_names() {
+  awk '
+    /^[[:space:]]*```/ { infence = 1 - infence; next }
+    {
+      line = $0
+      if (infence && match(line, /^orchid [a-zA-Z][a-zA-Z-]*/))
+        print substr(line, 8, RLENGTH - 7)
+      while (match(line, /`orchid [a-zA-Z][a-zA-Z-]*/)) {
+        print substr(line, RSTART + 8, RLENGTH - 8)
+        line = substr(line, RSTART + RLENGTH)
+      }
+    }
+  ' "$1"
+}
+
 verb_check_files="README.md docs/quickstart.md docs/quickstart-greenfield.md"
 verb_words=""
 for rel in $verb_check_files; do
   f="$REPO_ROOT/$rel"
   [ -f "$f" ] || continue
-  words="$( { grep -oE '`orchid [a-zA-Z][a-zA-Z-]*' "$f" | sed -E 's/`orchid //'
-             grep -oE '^orchid [a-zA-Z][a-zA-Z-]*' "$f" | sed -E 's/^orchid //'; } || true)"
+  # An UNCLOSED fence inverts "inside a fence" for the whole rest of the page,
+  # which would either read every later paragraph as commands or stop reading
+  # every later command block -- silently, and in a file nobody would think to
+  # re-lint. The anchor is only worth what its delimiters are worth, so the
+  # delimiters are counted.
+  fences="$(grep -cE '^[[:space:]]*```' "$f" || true)"
+  [ $((fences % 2)) -eq 0 ] \
+    || fail "$rel has an odd number of code-fence delimiters ($fences) -- the verb extractor below decides what is a command by whether it sits inside a fence, and an unclosed one flips that decision for every line after it"
+  words="$(doc_verb_names "$f" || true)"
   verb_words="$verb_words
 $words"
 done
@@ -114,9 +170,44 @@ verb_count=0
 while IFS= read -r v; do
   [ -n "$v" ] || continue
   verb_count=$((verb_count + 1))
-  [ -x "$REPO_ROOT/libexec/orchid-$v" ] || fail "a code-span names 'orchid $v' but libexec/orchid-$v doesn't exist (or isn't executable)"
+  [ -x "$REPO_ROOT/libexec/orchid-$v" ] || fail "a documented invocation names 'orchid $v' but libexec/orchid-$v doesn't exist (or isn't executable)"
 done < <(printf '%s\n' "$verb_words" | sort -u)
-[ "$verb_count" -gt 0 ] || fail "verb-name extraction from README/quickstarts found nothing -- files missing, or the regex broke"
+[ "$verb_count" -gt 0 ] || fail "verb-name extraction from README/quickstarts found nothing -- files missing, or the extractor broke"
+
+# RED: a page that documents an invocation of a verb this repository does not
+#      have must still be CAUGHT. Both marked spellings are fed in, because
+#      anchoring the gate is exactly the change that could have narrowed it
+#      into uselessness, and a gate that finds nothing passes silently.
+# GREEN: the same extractor, fed the English that failed r-002/T023 -- the
+#      word after "orchid" in ordinary prose, both mid-sentence and opening a
+#      line outside any fence -- must yield NOTHING. Without this the RED case
+#      above is satisfied by a matcher that fires on every mention of the
+#      word, which is the gate that cost the attempt.
+verb_probe_red="$WORK/docs-verb-probe-red.md"
+printf '%s\n' \
+  'Run `orchid frobnicate --now` to do the thing.' \
+  '' \
+  '```sh' \
+  'orchid quuxify --all' \
+  '```' \
+  > "$verb_probe_red"
+verb_probe_red_out="$(doc_verb_names "$verb_probe_red")"
+assert_match 'frobnicate' "$verb_probe_red_out" \
+  "docs verb gate: a code span naming a nonexistent verb must be extracted -- anchoring the extractor to marked commands has narrowed it past the failure it exists to catch"
+assert_match 'quuxify' "$verb_probe_red_out" \
+  "docs verb gate: a fenced command line naming a nonexistent verb must be extracted -- the fenced half of the extractor is not reading fences"
+red_case "the documentation verb gate extracted 'frobnicate' from a code span and 'quuxify' from a fenced command line, neither of which has a libexec verb, so it still catches an undocumented or renamed verb"
+
+verb_probe_green="$WORK/docs-verb-probe-green.md"
+printf '%s\n' \
+  'At dispatch orchid creates a worktree and records its base sha.' \
+  'orchid handles the rest of the walk without an operator.' \
+  'A sentence may also say orchid merge in passing without meaning the verb.' \
+  > "$verb_probe_green"
+verb_probe_green_out="$(doc_verb_names "$verb_probe_green")"
+[ -z "$verb_probe_green_out" ] \
+  || fail "docs verb gate: ordinary prose was read as a verb invocation (extracted: $verb_probe_green_out) -- this is the shape that failed r-002/T023 with 'PROTOCOL.md names orchid creates but libexec/orchid-creates does not exist' against correct documentation"
+green_case "the same extractor read three prose sentences naming orchid -- mid-sentence, opening a line, and one naming a real verb in passing -- and extracted nothing, so the gate reads marked commands rather than English"
 
 # ===========================================================================
 # 2 -- every relative markdown link across this task's docs surface

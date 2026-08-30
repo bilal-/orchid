@@ -71,6 +71,78 @@ done
 # hazards they are forbidden from open-coding.
 code_of() { grep -vE '^[[:space:]]*#' "$1"; }
 
+# operations_of <file> -- code_of, with the CONTENTS of inert string literals
+# elided as well. A comment is not the only place a shipped file writes an
+# operation's name without performing it: a diagnostic does too, and a scan
+# that cannot tell the two apart charges an attempt against correct code.
+#
+# THIS COST r-002/T019 A WHOLE ATTEMPT. The `worktree[[:space:]]+(add|remove)`
+# term below matched the words inside a human-readable printf --
+#     printf 'git worktree add cannot reproduce it\n'
+# -- and the arm it flagged mutates nothing. It is the same shape as the
+# documentation gate in tests/test_docs.sh reading the prose "orchid creates"
+# as a verb invocation, and the natural workaround for both is to reword the
+# message, which makes diagnostics worse to satisfy a linter. Neither gate is
+# worth losing; what has to go is their inability to see a quote.
+#
+# The elision is deliberately narrow and deliberately LINE-LOCAL, because a
+# scan that goes vacuous is worse than one that over-matches:
+#
+#   - the scan walks each line left to right and tracks which quote it is
+#     inside, rather than matching quoted runs with a regex. A regex cannot
+#     tell a closing quote from an opening one, so it pairs the END of one
+#     quoted word with the START of the next and eats the live code between
+#     them -- on `git -C "$repo" worktree add "$path"` it would elide exactly
+#     the two words the term is looking for. That is a silently disabled gate,
+#     which is the failure this whole file exists to prevent.
+#   - a line whose quotes do not BALANCE is emitted untouched. A multi-line
+#     format string, an apostrophe in a trailing comment, a backslash-escaped
+#     quote: unreadable to this pass means scanned in full, never skipped. The
+#     quote characters themselves are always kept, so eliding a word can never
+#     splice its neighbours into a match that was not there.
+#   - a single-quoted run's contents are always dropped: nothing expands
+#     inside one, so they can never be an operation.
+#   - a double-quoted run's contents are dropped only when they contain no
+#     `$` and no backtick, i.e. when the run is inert text rather than an
+#     expansion. That exception is what keeps the scan's teeth: every real
+#     reach for a verb or a state path in these files is written
+#     "$ORCHID_BIN", "$state/...", "$f" -- all carry a `$`, all survive.
+#
+# It is applied ONLY to the scans whose subject is a shell OPERATION (a
+# command word, which can never be performed from inside a quoted argument).
+# The two scans whose subject is DATA -- the redirection targets in section 2
+# and the `.summary`/`.actions` prose read in section 4 -- keep reading
+# code_of, because those tokens live inside quotes by construction: `jq -r
+# '.summary'` is exactly the line section 4 exists to catch, and eliding it
+# would turn that gate off. Which view a check takes is therefore a statement
+# about what it is looking for, and each one below says which it uses.
+operations_of() {
+  code_of "$1" | awk -v sq="'" '
+    function elide(line,   n, i, c, st, out, buf) {
+      n = length(line); out = ""; st = 0; buf = ""
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if (st == 0) {
+          out = out c
+          if (c == sq) { st = 1; buf = "" }
+          else if (c == "\"") { st = 2; buf = "" }
+        } else if (st == 1) {
+          if (c == sq) { st = 0; out = out c } else buf = buf c
+        } else {
+          if (c == "\"") {
+            st = 0
+            if (index(buf, "$") > 0 || index(buf, "`") > 0) out = out buf
+            out = out c
+          } else buf = buf c
+        }
+      }
+      if (st != 0) return line
+      return out
+    }
+    { print elide($0) }
+  '
+}
+
 # THE PURITY SCAN ITSELF, named once so the shipped libraries and this file's
 # own RED/GREEN probes are judged by the SAME pattern. An earlier round aimed
 # the two cases at `code_of` instead -- so the RED case demonstrated a helper
@@ -84,7 +156,11 @@ POLICY_IMPURE='fm_set|atomic_write|update-ref|ORCHID_BIN|bin/orchid|worktree[[:s
 # than read-only policy: a mutation, or a reach for a verb. Silent for a pure
 # library. `grep -n` reads its input to EOF, so this pipeline has never been
 # exposed to the SIGPIPE race the capture below section 1 exists for.
-policy_impurity() { code_of "$1" | grep -nE "$POLICY_IMPURE" || true; }
+#
+# Reads operations_of, not code_of: every term in POLICY_IMPURE names a
+# COMMAND WORD, and a command word inside a quoted argument is text. See that
+# helper for what is elided and what is deliberately not.
+policy_impurity() { operations_of "$1" | grep -nE "$POLICY_IMPURE" || true; }
 
 # RED: a synthetic policy library containing a real `fm_set` line must be
 #      FLAGGED by policy_impurity -- the gate's own scan, fed the exact input
@@ -110,6 +186,31 @@ policy_probe_ok_out="$(policy_impurity "$policy_probe_ok")"
 [ -z "$policy_probe_ok_out" ] \
   || fail "INV-13 self-check: the purity scan flagged a COMMENTED fm_set ($policy_probe_ok_out) -- the exclusion that lets both files document the hazards they are forbidden from open-coding is gone, so the gate would flag its own prose and the RED case above would be a matcher that rejects everything"
 green_case "the same purity scan ACCEPTED a library whose only fm_set is in a comment, so the flag above is mutation detection rather than a pattern that hits every mention"
+
+# RED: the elision in operations_of must not blunt the term it was written
+#      for. A policy library that REALLY adds a worktree -- the operation
+#      spelled the only way it can be spelled, as a command word with its
+#      arguments quoted -- must still be FLAGGED. Without this the pair below
+#      would demonstrate only that a scan can be turned off.
+# GREEN: the identical words inside a printf's format string must be
+#      ACCEPTED. That exact line cost r-002/T019 an attempt against an arm
+#      that mutates nothing, and rewording the diagnostic to appease the scan
+#      is the outcome this case exists to make unnecessary.
+literal_probe_red="$WORK/inv13-operation-probe.sh"
+printf '%s\n' 'git -C "$repo" worktree add "$path" "$branch"' > "$literal_probe_red"
+assert_match 'worktree' "$(policy_impurity "$literal_probe_red")" \
+  "INV-13 self-check: the purity scan must FLAG a policy library that actually adds a git worktree -- the string-literal elision in operations_of has gone too far and the term no longer detects the operation it names"
+red_case "INV-13's purity scan flagged a policy library performing a real git worktree add, so eliding string literals has not disarmed the operation half of the scan"
+
+literal_probe_green="$WORK/inv13-diagnostic-probe.sh"
+printf '%s\n' \
+  'printf %s "git worktree add cannot reproduce it"' \
+  "printf 'git worktree add cannot reproduce it\\n'" \
+  > "$literal_probe_green"
+literal_probe_green_out="$(policy_impurity "$literal_probe_green")"
+[ -z "$literal_probe_green_out" ] \
+  || fail "INV-13 self-check: the purity scan flagged a DIAGNOSTIC that merely quotes the words of an operation ($literal_probe_green_out) -- a gate that cannot tell an operation from a string describing one charges attempts against correct code and pushes authors to reword error messages to satisfy a linter (r-002/T019)"
+green_case "the same purity scan ACCEPTED both spellings of a printf whose text names git worktree add, so the operation terms read what the file DOES rather than what it says"
 
 # Every POSITIVE assertion below matches against this capture, never against a
 # live `code_of ... | grep -q` pipeline. Under helpers.sh's `set -uo pipefail`,
@@ -142,19 +243,28 @@ done
 # removal, rename or frontmatter write against those roots would be a
 # durable/cross-process mutation outside a verb.
 # ===========================================================================
+# The redirection scan reads code_of, NOT operations_of: its subject is the
+# redirection TARGET, and a target is a path. `> "$state/..."` survives the
+# elision on its own (it carries a `$`), but the scan is left on the raw view
+# deliberately, because widening it later to an unexpanded path would make it
+# silently depend on a rule about quoting that has nothing to do with what it
+# is asking.
 if code_of "$DRIVER" | grep -nE '>[[:space:]]*"?\$(state|rt)|>>[[:space:]]*"?\$(state|rt)'; then
   fail "INV-13: the driver redirects output into .orchid state or runtime"
 fi
-if code_of "$DRIVER" | grep -nE '^[[:space:]]*(rm|mv|cp|mkdir|touch|ln)[[:space:]]'; then
+# The four below name COMMAND WORDS and read operations_of, so a diagnostic
+# that quotes one -- naming the verb an operator should run, or the record it
+# should look at -- is text rather than a violation.
+if operations_of "$DRIVER" | grep -nE '^[[:space:]]*(rm|mv|cp|mkdir|touch|ln)[[:space:]]'; then
   fail "INV-13: the driver creates, moves or removes files directly"
 fi
-if code_of "$DRIVER" | grep -nE 'fm_set|atomic_write|update-ref'; then
+if operations_of "$DRIVER" | grep -nE 'fm_set|atomic_write|update-ref'; then
   fail "INV-13: the driver writes frontmatter, files or refs directly instead of through a verb"
 fi
-if code_of "$DRIVER" | grep -nE 'boundary\.json'; then
+if operations_of "$DRIVER" | grep -nE 'boundary\.json'; then
   fail "INV-13: the driver touches the boundary record directly instead of through orchid run boundary"
 fi
-if code_of "$DRIVER" | grep -nE '(^|[^_[:alnum:]])eval([^_[:alnum:]]|$)'; then
+if operations_of "$DRIVER" | grep -nE '(^|[^_[:alnum:]])eval([^_[:alnum:]]|$)'; then
   fail "INV-13: the driver evaluates a constructed string"
 fi
 
@@ -220,6 +330,12 @@ fi
 # a literal in its own printf format, so no arm can compute one from anything
 # an envelope said in prose.
 # ===========================================================================
+# EVERY scan in this section reads code_of, and that is not an oversight left
+# over from the elision above. A jq field selector IS a string literal --
+# `jq -r '.summary'` is precisely the line this section exists to catch -- so
+# running these through operations_of would elide the only spelling the
+# violation has and leave four checks that can never fire. The elision applies
+# to command words, never to data.
 if code_of "$DRIVER" | grep -nE '\.summary|\.actions'; then
   fail "INV-13: the driver reads an engine's prose summary"
 fi

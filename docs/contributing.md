@@ -72,6 +72,93 @@ repository-parent and user/global `.shellcheckrc` files cannot suppress the
 warnings enforced by CI; the audited inline directives above are the only
 exceptions. Test files and generated templates are not exempt from lint.
 
+## Gates that read text, and the four that cost r-002 three attempts
+
+A gate that greps a shipped file for a forbidden token cannot, on its own,
+tell an operation from a sentence describing one. Run r-002 hit that four
+times. Three of them charged an attempt against code that was not defective,
+and the fourth took a task's entire budget:
+
+| Where | What it read | What it flagged |
+|---|---|---|
+| `tests/test_docs.sh`, verb gate (T023) | any bare word after `orchid` | the prose *"orchid creates a worktree"*, as a missing `libexec/orchid-creates` |
+| `tests/inv/test_INV-13_driver_verb_only.sh`, purity scan (T019) | `worktree[[:space:]]+(add\|remove)` | those words inside `printf 'git worktree add cannot reproduce it\n'` |
+| ShellCheck (T017) | a backtick in a `green_case` label | prose in a double-quoted string, parsed as command substitution |
+| ShellCheck (T006) | `assert_eq done "$(...)"` | the bare word `done`, parsed as the loop keyword (SC1010) |
+
+The natural workaround for every one of them makes the tree worse: reword the
+diagnostic, drop the backticks from the annotation, avoid the word. **A gate
+that pushes authors to degrade a message in order to pass is a gate with a
+defect, not a style rule** — so the first question about a surprising gate
+failure is whether the gate can see what it is looking at.
+
+**The two gates Orchid owns are fixed.** Both now read *marked* structure
+rather than raw text, and both ship a RED case proving they still catch a real
+violation next to a case proving prose no longer trips them:
+
+- the documentation verb gate counts a name only inside a code span or as the
+  first word of a line inside a fenced block, and asserts each page's fences
+  balance, so an unclosed one cannot silently invert the decision;
+- INV-13's operation scans read through `operations_of`, which elides the
+  contents of inert string literals — single-quoted runs always, double-quoted
+  runs only when they hold no `$` and no backtick, so `"$ORCHID_BIN"` and
+  `"$state/..."` survive. It walks each line tracking the quote it is inside
+  rather than regex-matching quoted runs (a regex pairs one word's closing
+  quote with the next word's opening quote and eats the live code between
+  them), and it leaves a line whose quotes do not balance completely alone.
+  Its scans over *data* — redirection targets, and the `.summary`/`.actions`
+  read that proves the driver never decides on prose — deliberately keep
+  reading the raw text, because a jq selector **is** a string literal and
+  eliding it would switch that check off.
+
+**The two that are ShellCheck's cannot be fixed here**, so they are written
+out instead. Both are parse errors rather than lint opinions, which is why the
+message points somewhere unhelpful:
+
+- **A bare shell keyword as a command argument (SC1010).** `assert_eq done
+  "$(some_command)"` reads `done` as the loop keyword and the file stops
+  parsing there. Quote the literal: `assert_eq "done" "$(some_command)"`. The
+  same applies to `do`, `then`, `fi`, `esac`, `in` and `case` — task statuses,
+  frontmatter values and CLI tokens are exactly where they turn up as data.
+- **Backticks in a double-quoted string.** A `red_case`/`green_case` label or
+  a `fail` message written as `"... the \`orchid task\` verb ..."` is command
+  substitution: ShellCheck reports a parse error, and a shell would *run* it.
+  Use single quotes for the label, or drop the backticks. Angle-bracket
+  placeholders are the neighbouring trap — `<engine>` in a double-quoted
+  string is a redirection to ShellCheck — so write those without brackets too.
+
+When a gate does fire on correct code, fix the gate or record the idiom here.
+Rewording the code to satisfy a text scan hides the defect and leaves the next
+author to pay for it again.
+
+## A condition the ambient environment never has needs a test that builds it
+
+Proven on 2026-08-12 (lesson L036): commit `416fcc9` checked out on branch
+`orchid/integration` failed `tests/test_unattended_trust.sh` with five FAILs;
+the identical commit on a branch called anything else passed with `rc=0`. The
+cause was a kernel guard in `lib/common.sh` that returns early for every root
+not parked on the configured `integration_branch`, and only then shells out to
+`git` — so it ran in exactly one checkout on the machine and in none of the
+places that verify.
+
+Note *which* checks missed it. The task's own `orchid verify` and the merge
+revalidation both ran the whole suite honestly and both reported CI PASS with
+zero FAILs. Re-running either would never have caught it, because a task
+worktree and `orchid merge`'s temp worktree are by construction never parked
+on the integration branch.
+
+**The rule to take from it:** any kernel path conditioned on the checked-out
+branch, on being the install root, or on any other property a temp worktree
+cannot have, needs a test that **constructs** that condition rather than
+inheriting it from the ambient environment — because the ambient environment
+of every gate Orchid runs is the one where the condition is false. A
+revalidation environment that differs from the deployed one in the single
+dimension under test converts a real failure into a silent pass.
+
+Its run-level counterpart is in [PROTOCOL.md](../PROTOCOL.md)'s COMPLETION
+step 2: "the full suite is green" has to name **where** it was green, and one
+of those places must be a checkout parked on the integration branch itself.
+
 ## Portability
 
 Shipped scripts run under whatever `find(1)` the host provides, so the gate
