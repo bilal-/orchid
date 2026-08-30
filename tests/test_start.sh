@@ -836,7 +836,72 @@ assert_match "push blocked" "$push37_hpa" \
 rc=0; push37_hpa_ok="$(git -C "$r37_hpa" push origin hpa-linked 2>&1)" || rc=$?
 [ "$rc" -eq 0 ] \
   || fail "the relocated guard must still let an unmanaged branch through (got: $push37_hpa_ok)"
+
+# And doctor is SILENT about a repository it can guard -- the twin of the WARN
+# asserted on the relative fixture above, and the half that makes that WARN
+# evidence of detection rather than of a classifier that answers `relative` for
+# everything. Both guardable spellings are asked: the absolute value here, and
+# the unset default on the r37-hook repository set up earlier in this file.
+doc37_hpa="$(ORCHID_REPO="$r37_hpa" "$ORCHID_BIN" doctor 2>&1 || true)"
+grep -q "RELATIVE path" <<<"$doc37_hpa" \
+  && fail "doctor must not warn about an absolute core.hooksPath -- that layout IS guarded"
+doc37_def="$(ORCHID_REPO="$r37_hook" "$ORCHID_BIN" doctor 2>&1 || true)"
+grep -q "RELATIVE path" <<<"$doc37_def" \
+  && fail "and must not warn about git's own default, where core.hooksPath is unset entirely"
 green_case 'an absolute core.hooksPath keeps normal behavior and guards every worktree of the repository'
+
+# ---------------------------------------------------------------------------
+# T037 -- the THIRD door onto a relative `core.hooksPath`: `orchid start`'s
+# existing-repository path.
+#
+# `orchid init` is covered above and `--refresh-push-guard` below, but the door
+# an operator actually walks through on a repository that is already
+# initialized and still in `planning` is a plain `orchid start` -- and it is
+# the door that carries the hook UPGRADE, so it is the one most likely to write
+# a per-worktree file and call the repository protected.
+#
+# It must warn, install nothing, claim nothing, and STILL SET THE RUN UP: a
+# hooks layout orchid cannot guard is a risk to report, never a reason to
+# refuse a run. Both prefixes are pinned because both legs have to be there --
+# `WARN: push guard:` is the doctor preflight, `orchid:` is start's own install
+# call further down, and a fix that only reached one of them would leave the
+# other silently claiming or silently skipping.
+#
+# RED (before this fix): start writes `ci-hooks/pre-push` in the main checkout
+# and prints "pre-push guard upgraded", which is a repository-wide claim made
+# from a file that covers exactly one of this repository's checkouts.
+# ---------------------------------------------------------------------------
+r37_hps="$W/r37-hookspath-start"; mk_repo "$r37_hps" 'verify=true'
+git -C "$r37_hps" config core.hooksPath ci-hooks
+ORCHID_REPO="$r37_hps" "$ORCHID_BIN" init >/dev/null 2>&1 \
+  || fail "fixture: init must succeed under a relative core.hooksPath"
+out37_hps="$(ORCHID_REPO="$r37_hps" "$ORCHID_BIN" start "$REQ" 2>&1)" \
+  || fail "a hooks layout orchid cannot guard must not stop a run being set up: $out37_hps"
+assert_match "orchid: core.hooksPath is set to the RELATIVE path .ci-hooks." "$out37_hps" \
+  "start's own install call names the condition, not just its doctor preflight"
+assert_match "WARN: push guard: core.hooksPath is set to the RELATIVE path" "$out37_hps" \
+  "and the preflight names it too -- every door, or an operator meets it at none"
+assert_match "config core.hooksPath /absolute/path/to/hooks" "$out37_hps" \
+  "with the absolute recovery"
+assert_match "config --unset core.hooksPath" "$out37_hps" \
+  "and the unset recovery, as commands"
+grep -q "guard installed" <<<"$out37_hps" \
+  && fail "start may not claim an install it did not perform"
+grep -q "guard upgraded" <<<"$out37_hps" \
+  && fail "nor an upgrade -- this is the door that carries the upgrade, so it is the one that must not"
+grep -q "already current" <<<"$out37_hps" \
+  && fail "nor that a repository nothing guards is current"
+[ -e "$r37_hps/ci-hooks/pre-push" ] \
+  && fail "and nothing is written to the one checkout this process happens to see"
+[ -e "$r37_hps/.git/hooks/pre-push" ] \
+  && fail "nor to the .git/hooks git is configured not to read"
+assert_eq "ci-hooks" "$(git -C "$r37_hps" config --get core.hooksPath)" \
+  "start never rewrites the operator's git configuration to make orchid installable"
+# Non-vacuity: the run really was set up, so the assertions above are about a
+# start that RAN rather than one that died early for some unrelated reason.
+[ -f "$W/r37-hookspath-start-orchid/.orchid/roadmap.md" ] \
+  || fail "the run must still have been set up: an unguardable hooks layout is reported, never fatal"
+red_case 'orchid start warns and installs nothing under a relative core.hooksPath, and still sets the run up'
 
 # ---------------------------------------------------------------------------
 # T037 -- `orchid start --refresh-push-guard`: the route into a repository
@@ -1082,6 +1147,8 @@ assert_match "pre-push guard already current: $hook37_x" "$out37_x2" \
   "an executable, byte-current guard is current -- both halves, or neither"
 grep -q "guard repaired" <<<"$out37_x2" \
   && fail "and no repair may be claimed once there is nothing to repair"
+[ -x "$hook37_x" ] || fail "and the bit the previous run restored is still set"
+green_case 'an executable, byte-current guard is reported current and repaired never'
 
 # ===========================================================================
 # 5 -- worktrees: create at an explicit path, reuse only an EXACT integration
