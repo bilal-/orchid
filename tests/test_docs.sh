@@ -974,6 +974,13 @@ grep -qF 'never as a pass' "$BETA_MD" \
   || fail "docs/beta-qualification.md must state that an unperformed check is recorded as not-tested, never as a pass"
 grep -qF 'Still operator-owned, and not claimed anywhere in this repository' "$BETA_MD" \
   || fail "docs/beta-qualification.md must keep its operator-owned section heading"
+beta_doc_one_line="$(tr '\n' ' ' < "$BETA_MD" | tr -s '[:space:]' ' ')"
+grep -qF 'Completed rows are an operator acceptance policy, not a condition enforced by the verb.' <<<"$beta_doc_one_line" \
+  || fail "docs/beta-qualification.md must distinguish the operator policy requiring completed rows from what orchid run accept enforces"
+grep -qF '`orchid run accept` checks that `run_status` is `accepting` and that `--evidence` names an existing file; it does not parse or validate checklist row content.' <<<"$beta_doc_one_line" \
+  || fail "docs/beta-qualification.md must state the acceptance verb's actual status/file checks and its advisory checklist boundary"
+grep -qF 'blocks `orchid run accept` until filled' <<<"$beta_doc_one_line" \
+  && fail "docs/beta-qualification.md must not claim orchid run accept parses open checklist rows"
 grep -qF 'genuine third-party beta run' "$BETA_MD" \
   || fail "docs/beta-qualification.md must name a genuine third-party beta run as operator-owned"
 grep -qF 'no file in this repository records' "$BETA_MD" \

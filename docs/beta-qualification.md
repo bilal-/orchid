@@ -306,8 +306,13 @@ Run it directly:
   profile.
 - **The post-merge integration-branch suite and hosted CI.** A candidate may
   supply the commands and leave explicit open rows, but only the operator can
-  run the assembled tree, push it, and observe the workflow. An open row is
-  not a pass and blocks `orchid run accept` until filled.
+  run the assembled tree, push it, and observe the workflow. Completed rows
+  are an operator acceptance policy, not a condition enforced by the verb.
+  `orchid run accept` checks that `run_status` is `accepting` and that
+  `--evidence` names an existing file; it does not parse or validate checklist
+  row content. The operator must therefore complete every required row before
+  invoking it. An open row is not a pass; operator policy treats it as
+  blocking even though the verb cannot detect it.
 
 ## See also
 

@@ -126,9 +126,12 @@ message points somewhere unhelpful:
 - **Backticks in a double-quoted string.** A `red_case`/`green_case` label or
   a `fail` message written as `"... the \`orchid task\` verb ..."` is command
   substitution: ShellCheck reports a parse error, and a shell would *run* it.
-  Use single quotes for the label, or drop the backticks. Angle-bracket
-  placeholders are the neighbouring trap — `<engine>` in a double-quoted
-  string is a redirection to ShellCheck — so write those without brackets too.
+  Use single quotes for the label, or drop the backticks. The `<engine>` token
+  becomes redirection only when it is inside backtick command substitution
+  nested in a double-quoted annotation, such as
+  `"... \`orchid <engine>\` ..."`; there the command substitution parses it as
+  shell syntax. A plain `<engine>` inside an ordinary double-quoted argument is
+  literal and safe.
 
 When a gate does fire on correct code, fix the gate or record the idiom here.
 Rewording the code to satisfy a text scan hides the defect and leaves the next
