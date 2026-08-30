@@ -987,8 +987,14 @@ assert_match "orchid: core.hooksPath is set to the RELATIVE path .ci-hooks." "$o
   "start's own install call names the condition, not just its doctor preflight"
 assert_match "WARN: push guard: core.hooksPath is set to the RELATIVE path" "$out37_hps" \
   "and the preflight names it too -- every door, or an operator meets it at none"
-assert_match "config core.hooksPath /absolute/path/to/hooks" "$out37_hps" \
-  "with the absolute recovery"
+# Both recoveries, in the same spelling the init door pins further up: the
+# absolute one names a REAL directory inside this repository's git dir rather
+# than a placeholder, because an absolute path OUTSIDE it is unsupported too
+# and a placeholder would send the operator from this refusal straight into
+# that one. Pinned at this door as well as at init's, or the two doors can
+# drift back apart -- which is exactly what they had done.
+assert_match "config core.hooksPath '$r37_hps/.git/hooks'" "$out37_hps" \
+  "with the absolute recovery, naming a directory this repository owns"
 assert_match "config --unset core.hooksPath" "$out37_hps" \
   "and the unset recovery, as commands"
 grep -q "guard installed" <<<"$out37_hps" \
