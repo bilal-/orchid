@@ -2083,10 +2083,13 @@ because the kernel never performs the merge that leaks it and never may:
   deliberately self-hosted repository is asked once and never again.
 - `orchid merge` **warns** (stderr, never refuses) when any local branch
   outside the run — not the integration branch, not a branch recorded on a
-  task — carries `.orchid/`, naming the branch. It does not refuse because
-  the condition is created by an operator's own merge, on branches the
-  kernel does not own and cannot undo; freezing a task in `merging` behind a
-  report would be worse than reporting.
+  task, including an **archived** run's tasks under `runs/<run_id>/tasks/`,
+  since `orchid run new` retires a task record but never deletes its branch
+  — carries `.orchid/`, naming the branch. Membership is read from those
+  records, never from the branch's name. It does not refuse because the
+  condition is created by an operator's own merge, on branches the kernel
+  does not own and cannot undo; freezing a task in `merging` behind a report
+  would be worse than reporting.
 
 The staging side of the same finding: `orchid init`, `orchid plan apply`
 (via `orchid_commit_durable`) and `orchid run new` stage run state with `git

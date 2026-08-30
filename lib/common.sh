@@ -1792,11 +1792,23 @@ orchid_qid_reserve() {
 # task branch is whatever that task's frontmatter `branch:` says. Guessing
 # `task/*` would miss a renamed one and, worse, would silently exempt an
 # operator branch that happened to match.
+#
+# ARCHIVED runs count, and that is not a nicety. `orchid run new` moves
+# `tasks/` wholesale to `runs/<old_run_id>/tasks/` and starts a fresh empty
+# `tasks/` (libexec/orchid-run), but nothing in the kernel ever deletes a
+# branch -- `git branch -D` appears exactly once in the whole tree, in
+# orchid-init's own failure cleanup. So on a repository's second run every
+# previous run's task branch is still sitting there, and each one carries
+# `.orchid/` because it was cut from the integration branch. Reading only the
+# live `tasks/` would class all of them as "outside the run" and the one
+# warning that is supposed to name a product leak would instead recite
+# orchid's own history -- which is how an operator learns to stop reading it,
+# and how the real leak goes past unnoticed among the noise.
 _orchid_in_run_branches() {
   local repo="$1" integ="$2" state tf
   state="$(orchid_state "$repo")"
   printf '%s\n' "$integ"
-  for tf in "$state"/tasks/*.md; do
+  for tf in "$state"/tasks/*.md "$state"/runs/*/tasks/*.md; do
     [ -f "$tf" ] || continue
     grep -m1 '^branch: ' "$tf" 2>/dev/null | cut -d' ' -f2- || true
   done

@@ -1947,3 +1947,48 @@ grep -q "run state" "$out8" \
 grep -q "task/T00" "$err8" \
   && fail "a task's own branch is inside the run and must never be reported as a leak"
 red_case 'a branch outside the run carrying .orchid/ is named by orchid merge'
+
+# The twin that keeps that report worth reading: an ARCHIVED run's task branch
+# is still orchid's own, not a product leak.
+#
+# `orchid run new` moves tasks/ wholesale to runs/<old_run_id>/tasks/ and
+# starts a fresh, empty tasks/ -- but nothing in the kernel ever deletes a
+# branch. So a repository on its second run still has every previous run's
+# task branch sitting there, each carrying .orchid/ because it was cut from
+# the integration branch. Asking only the LIVE tasks/ makes every one of them
+# "outside the run", and a warning that recites orchid's own history on every
+# merge is a warning an operator stops reading -- which is how the real leak,
+# named in the same breath, goes past.
+#
+# The branch is deliberately NOT named `task/*`: the exemption must come from
+# the archived RECORD, exactly as it does for a live task, never from the
+# shape of the name.
+#
+# RED (before this fix): the warning names retired/T900-work as well.
+mkdir -p .orchid/runs/r-000/tasks
+printf -- '---\nid: T900\nbranch: retired/T900-work\n---\n# T900\n' \
+  > .orchid/runs/r-000/tasks/T900.md
+git branch retired/T900-work "$integ"
+[ -n "$(git ls-tree retired/T900-work -- .orchid)" ] \
+  || fail "fixture: the archived run's branch must carry .orchid/ for this case to mean anything"
+
+"$ORCHID_BIN" task create T044 "archived-run containment"
+git checkout -q -b task/T044 "$integ"
+echo archived > containment-archived.txt && git add containment-archived.txt \
+  && git commit -q -m "containment archived-run candidate"
+cand9="$(git rev-parse HEAD)"
+git checkout -q "$integ"
+base9="$(git rev-parse "$integ")"
+walk_to_merging T044 task/T044 "$base9" "$cand9" "test -f containment-archived.txt"
+
+err9="$WORK/merge9.err"; rc=0
+"$ORCHID_BIN" merge T044 >/dev/null 2>"$err9" || rc=$?
+assert_eq 0 "$rc" "containment: the archived-run case still merges clean (exit 0)"
+grep -q "retired/T900-work" "$err9" \
+  && fail "a branch recorded by an ARCHIVED run's task is inside the run, not a product leak"
+# Non-vacuous: the very same merge must still name the branch that IS a leak,
+# so this case cannot pass by the containment check having silently stopped
+# running at all.
+assert_match "product/main" "$(cat "$err9")" \
+  "containment: and the real leak is still named in the same warning"
+green_case 'an archived run task branch carrying .orchid/ is not reported as a leak'

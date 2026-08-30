@@ -2253,7 +2253,11 @@ want:
 
 - `orchid merge` warns — to stderr, never refusing — when any local branch
   outside the run (not the integration branch, not a branch recorded on a
-  task) carries `.orchid/`. It names the branch. It prescribes nothing and
+  task, and an *archived* run's tasks count: `orchid run new` retires the
+  record but never deletes the branch) carries `.orchid/`. Membership comes
+  from those records, not from the branch's name, so renaming a task branch
+  does not turn it into a leak and naming your own branch `task/…` does not
+  hide one. It names the branch. It prescribes nothing and
   undoes nothing: the merge that put it there is yours, on branches orchid
   does not own, and a run frozen behind a report would be worse than a run
   that reports.
