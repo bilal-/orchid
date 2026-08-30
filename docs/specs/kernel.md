@@ -1178,6 +1178,32 @@ falling back to the role's first-of-chain baseline and to a withheld reroute.
 A task hand-walked with NO envelope at all keeps whatever it recorded; the
 clear is about an envelope that is present and silent, not about an absent
 one. The drop is journalled.
+`unresolved_objection` (v1.1, T032 — dogfood F33): kernel-owned and no part of
+the schema-1 list above — absent from a task file until an arbiter rejects a
+round, and present until one explicitly approves. `orchid task arbitrate <id>
+--result request-changes` writes `a<attempt>: <reason>` (the round that was
+rejected, then the `--reason` folded to one line, capped at
+`REVIEW_OBJECTION_MAX`); `orchid task arbitrate <id> --result approve` is the
+ONLY thing that clears it, and journals the clear under the `arbitration` kind.
+`orchid task set` refuses the key by name. It is deliberately bound to neither
+the attempt nor the candidate: a rework round moves both, and an objection that
+expired on either would expire on precisely the event it exists to survive — so
+`unblock`, `retry` and `reverify` all leave it standing, none of them being an
+answer to "was this defect fixed". Two readers act on it. The deterministic
+driver refuses to make an approval while one stands: `drive_review_decision`
+short-circuits to `conflict` ahead of all three arms of the arbitration truth
+table, so the task stops at a `review-conflict` boundary that only `orchid task
+arbitrate` settles — the driver's one call to `task arbitrate --result approve`
+sits behind that return, which is what makes it structurally unable to clear
+its own path. And every shipped `review` adapter appends the objection to the
+reviewer's prompt (the pack copies `task.md` whole, so no new pack item is
+needed), narrowing the next round's question to "was the arbiter's objection
+addressed" rather than leaving the reviewer to re-form an opinion from the diff
+alone. F33 is why both halves exist: an operator rejected the same concurrency
+hole twice, naming the constants and the line range the second time; round 3's
+reviewers, judging the diff cold, both returned `approve`; and the
+deterministic path merged it as "unanimous scope-complete approval from 2
+review(s), no finding at or above medium".
 `hook_guidance` (v1-m3):
 written by the orchestrator from a bound `hook.on_verify_fail` handler's
 `.artifact.guidance` string, via `orchid task set <id> hook_guidance

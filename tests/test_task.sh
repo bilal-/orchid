@@ -1674,3 +1674,153 @@ green_case 'task show against an intact task file: printed in full, exit 0'
 cp "$T034_KEEP/T011.before" ".orchid/tasks/T011.md"
 "$ORCHID_BIN" task show T011 >/dev/null \
   || fail "the fixture teardown must leave T011 readable again"
+
+# ============================================================================
+# AN ARBITRATION IS DURABLE STATE, NOT JUST A JOURNAL ENTRY (T032, dogfood
+# F33).
+#
+# F33 was the most serious finding of its run and was confirmed live on r-002:
+# a defect the operator rejected TWICE was merged, and nothing in the run state
+# recorded that the concern was never addressed. `orchid task arbitrate
+# --result request-changes` moved the task to `rework` and journaled the
+# decision -- and that was all. The next attempt was judged entirely on its own
+# reviews, no verb ever asked whether the arbiter's objection had been met, and
+# round 3's deterministic approval merged the hole the task existed to close.
+#
+# So a rejection now writes `unresolved_objection` onto the task, and ONLY
+# `--result approve` clears it. This block walks the F33 sequence through the
+# real verbs: reject, rework, reject again, and finally approve -- asserting at
+# each step that the objection is still there, because "still there three
+# rounds later" is the entire property. The policy half (a standing objection
+# refusing deterministic approval, and the reviewer being shown it) is
+# tests/test_drive.sh's Part AF.
+#
+# A FRESH id, and a CHECKED create, for the reason the T034 block above gives:
+# this file runs under `set -uo pipefail` with no `-e`, so a create against a
+# taken id neither aborts nor reports and every assertion below would silently
+# read some earlier case's task.
+#
+# RED: a `request-changes` arbitration that leaves no durable marker on the
+#      task; a marker that does not survive the rework round it was raised
+#      before; and a marker `orchid task set` can quietly write away.
+# GREEN: `--result approve` clears it, journals the clear, and a task nobody
+#      has ever rejected carries no such field at all -- otherwise this would
+#      be a field that appears on everything and means nothing.
+# ============================================================================
+t32_sha="$(git rev-parse HEAD)"
+"$ORCHID_BIN" task create T040 "an arbitration that has to outlive its round" \
+  || fail "fixture: task create T040 must succeed (a taken id would make every assertion below read another case's task)"
+"$ORCHID_BIN" task set T040 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T040 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set T040 verification_commands true >/dev/null
+
+t40_status()    { "$ORCHID_BIN" task show T040 | grep '^status: ' | cut -d' ' -f2; }
+t40_attempts()  { "$ORCHID_BIN" task show T040 | grep '^attempts: ' | cut -d' ' -f2; }
+# `cut -f2-`, so a value containing spaces (which every objection does) comes
+# back whole. Empty when the key is absent AND when it is present-but-empty --
+# both are "no objection standing", which is the only distinction any reader
+# makes.
+t40_objection() { "$ORCHID_BIN" task show T040 | grep '^unresolved_objection: ' | cut -d' ' -f2-; }
+
+# The light-weight walk tests/test_task_arbitrate.sh uses: base and candidate
+# both pinned to the fixture's own HEAD (an empty `base..candidate` range, so
+# INV-04's .orchid/ scan never trips), `verification_commands=true` so `orchid
+# verify` always PASSes, and a planted reviewer envelope for the kernel's own
+# reviewing->arbitrating count gate. plant_reviewer_envelope derives the
+# attempt from the task itself, so it plants against whichever round is
+# current -- which is what lets this walk run twice with an attempt consumed
+# in between.
+t40_to_arbitrating() {
+  "$ORCHID_BIN" task advance T040 implementing --reason "dispatch" >/dev/null
+  "$ORCHID_BIN" task advance T040 testing --reason "implemented" >/dev/null
+  "$ORCHID_BIN" verify T040 >/dev/null
+  "$ORCHID_BIN" task advance T040 reviewing --reason "verify passed" >/dev/null
+  plant_reviewer_envelope T040
+  "$ORCHID_BIN" task advance T040 arbitrating --reason "reviews reconciled" >/dev/null
+}
+
+t40_to_arbitrating
+assert_eq arbitrating "$(t40_status)" "fixture: T040 reaches arbitrating for its first round"
+
+# THE GREEN TWIN COMES FIRST, and it is about ABSENCE. `fm_set` on a key a file
+# does not carry APPENDS it, so a clear written unconditionally would give an
+# `unresolved_objection:` line to every task in every repository that never
+# carried one -- a field on everything, meaning nothing. A task nobody has
+# rejected must not have the key at all.
+grep -q '^unresolved_objection' <<<"$("$ORCHID_BIN" task show T040)" \
+  && fail "T032: a task no arbiter has rejected must not carry an unresolved_objection line at all"
+green_case 'a task nobody has ever arbitrated request-changes on: no unresolved_objection field is written'
+
+# --- round 1: the rejection is recorded ON THE TASK ------------------------
+T40_OBJ1='the write at lib/foo.sh:120 races the reader; guard it and add a concurrent-writer test'
+"$ORCHID_BIN" task arbitrate T040 --result request-changes --reason "$T40_OBJ1" >/dev/null \
+  || fail "fixture: the first request-changes arbitration must succeed"
+assert_eq rework "$(t40_status)" "a request-changes arbitration still lands in rework"
+assert_eq 1 "$(t40_attempts)" "...and still consumes an attempt, exactly as it did before"
+assert_eq "a1: $T40_OBJ1" "$(t40_objection)" \
+  "T032: the arbitration is recorded on the task, naming the round it rejected and quoting the reason — not journaled and forgotten"
+red_case 'an operator request-changes: the objection is written onto the task, not left as a journal entry nobody rereads'
+
+# --- it survives the rework round ------------------------------------------
+# The whole property. A new attempt, a fresh verify, a fresh reviewer envelope
+# -- everything about the round is new, and the objection is not part of the
+# round. It names a defect, not a commit.
+t40_to_arbitrating
+assert_eq arbitrating "$(t40_status)" "fixture: T040 reaches arbitrating again for its second round"
+assert_eq 1 "$(t40_attempts)" \
+  "fixture: exactly one attempt was consumed getting here, so this round really is a second one"
+assert_eq "a1: $T40_OBJ1" "$(t40_objection)" \
+  "T032: the objection survives the rework round it was raised before — nothing about a fresh attempt answers it"
+red_case 'an objection across a full rework round (new attempt, new verify, new review): still standing'
+
+# --- a second rejection supersedes it, and says so -------------------------
+# F33's actual sequence: the operator rejected twice, the second time naming
+# the exact constants and line range. One frontmatter line cannot hold a list,
+# so the arbiter's latest word replaces the earlier one -- and a value replaced
+# in silence reads as an objection nobody withdrew and nobody kept, which is
+# why the supersession is journaled before it happens.
+#
+# `--waive-attempt` here so `attempts` holds at 1 and the reviewer envelope
+# planted for this round stays valid for the next reviewing->arbitrating,
+# exactly as the archetype-edge walk earlier in this file does it. It also
+# keeps this fixture clear of `rework_max` (default 3), which would otherwise
+# block the task and turn a decided assertion into a mystery.
+T40_OBJ2='still unguarded on the retry path: RETRY_MAX and BACKOFF_MS at lib/foo.sh:118-140, reuse the response shape from bar()'
+"$ORCHID_BIN" task arbitrate T040 --result request-changes --waive-attempt --reason "$T40_OBJ2" >/dev/null \
+  || fail "fixture: the second request-changes arbitration must succeed"
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" \
+  "T032: a second rejection replaces the first — the arbiter's latest word is the operative statement of what is unresolved"
+# One PATTERN across both facts, not two assertions that could be satisfied by
+# two unrelated lines: the entry must name the supersession AND carry the text
+# it superseded. `assert_match` is line-oriented, and the journal already
+# contains T40_OBJ1 in the round-1 arbitration entry — so a second assertion
+# looking for that text alone would pass with no supersession entry at all.
+assert_match 'objection superseded by this arbitration.*concurrent-writer test' "$(cat .orchid/journal.md)" \
+  "...and the replacement is journaled with the text it replaced, so an objection is never silently dropped"
+
+# --- `task set` cannot write it away ---------------------------------------
+# The field exists to stop an APPROVAL, and the actor most able to reach `task
+# set` is the deterministic driver, which acts only through verbs (INV-13).
+# A verb that deletes the one thing standing between it and a merge is not a
+# gate. Asserted from `rework`, where the driver would meet it.
+rc=0; t40_set_out="$("$ORCHID_BIN" task set T040 unresolved_objection "" 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] || fail "T032: task set unresolved_objection must be refused (kernel-owned)"
+assert_match "kernel-owned" "$t40_set_out" "the refusal says the key is kernel-owned"
+assert_match "task arbitrate" "$t40_set_out" "...and names the verb that does clear it"
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" "and the refused write left the objection exactly as it was"
+red_case 'task set on unresolved_objection: refused, and the objection still stands afterwards'
+
+# --- and an explicit approval clears it ------------------------------------
+t40_to_arbitrating
+assert_eq "a2: $T40_OBJ2" "$(t40_objection)" "fixture: the objection is still standing on entry to the third round"
+"$ORCHID_BIN" task arbitrate T040 --result approve --reason "the retry path is guarded and the concurrent-writer test is in" >/dev/null \
+  || fail "fixture: the approving arbitration must succeed"
+assert_eq merging "$(t40_status)" "an approving arbitration still derives merging on an outcome=code archetype"
+assert_eq "" "$(t40_objection)" \
+  "T032: an explicit arbitration approval — and nothing else — clears the objection"
+# Both facts on ONE line, for the reason the supersession assertion above
+# gives: T40_OBJ2 is already in the journal from the arbitration that raised
+# it, so a bare search for that text proves nothing about the clear.
+assert_match 'objection cleared by an explicit arbitration approval.*RETRY_MAX and BACKOFF_MS' "$(cat .orchid/journal.md)" \
+  "...and journals the clear, naming what was cleared — the field does not simply disappear from the record"
+green_case 'orchid task arbitrate --result approve: the standing objection is cleared, and the clear is journaled'

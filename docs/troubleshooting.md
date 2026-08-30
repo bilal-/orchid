@@ -1179,6 +1179,48 @@ moving, `while orchid drive; do ...` stops at the first decision. A pump that
 stops at the first arbitrable disagreement is attended operation wearing an
 unattended label.
 
+## `review-conflict`, and every review on the task says `approve`
+
+**Symptom:** the boundary is `review-conflict`, `orchid jobs ls` shows a
+complete, unanimous, scope-complete review set with no findings, and nothing in
+the envelopes disagrees with anything. The reason text quotes a sentence you
+wrote yourself, some rounds ago.
+
+That is arm 0 of the arbitration truth table, and the sentence is your own
+`orchid task arbitrate --result request-changes --reason "..."`. A rejection is
+recorded on the task as `unresolved_objection` and stands until an arbitration
+approves — deliberately outliving the round it was raised in, because the round
+after it is judged on its own reviews and nothing else in the run would ever ask
+whether your objection was met. Dogfood F33 is the run where nothing did: the
+same concurrency hole was rejected twice, round 3's reviewers returned
+`approve`, and the deterministic path merged it.
+
+```sh
+orchid task show <id> | grep unresolved_objection   # the objection, as recorded
+orchid journal show --task <id>                     # every arbitration, in full
+git diff <base_sha>..<candidate_sha>                # what this round actually changed
+```
+
+Then settle it, whichever way the diff says:
+
+```sh
+orchid task arbitrate <id> --result approve --reason "the raced write is now behind the lock at lib/foo.sh:120"
+orchid task arbitrate <id> --result request-changes --reason "still unguarded on the retry path — same two constants"
+```
+
+An approval clears the field and journals the clear; anything else leaves it
+standing. There is no other door — `unblock`, `retry` and `reverify` do not
+clear it, and `orchid task set` refuses the key by name, because none of them
+is an answer to "was this defect fixed". If the objection is genuinely obsolete
+(the task was re-scoped, the code it named is gone), that is still an
+arbitration: approve it and say so in the reason, so the record shows a decision
+rather than a field that quietly disappeared.
+
+The reviewers see it too. Every shipped `review` adapter appends the objection
+to the next round's prompt, so a reviewer that flips to `approve` with the
+defect untouched is doing it having been shown your words — which is worth
+knowing before you take its verdict as a second opinion.
+
 ## Answers sent on a channel never arrive
 
 **Symptom:** blockers reach your phone, you answer them there, and the run

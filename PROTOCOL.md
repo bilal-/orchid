@@ -300,7 +300,7 @@ The kernel-owned boundary kinds:
 | `planning` | `run_status` is `planning` — drafting and critiquing a roadmap is judgment work (PLANNING below) |
 | `blocked-task` | a task sits in `blocked`; only `orchid task unblock`/`orchid task retry`/`orchid task reverify` resolves it. The reason text names the CAUSE recorded when the task was blocked (read back out of the journal, which is where `task advance ... blocked --reason` and `task infra-fail`'s cap arm both put it), because those three remedies differ by exactly that — and says so plainly when the journal records none. This is also the kind raised by the pass that DOES the blocking — attempts exhausted, wallclock budget exceeded — and in the same words, so the record it writes is the record every later pass over that task recomputes rather than a different one that pages again. The one block filed under a different kind is a repo-wide `merge_gate` red at the rework cap (`operator-decision` below); it is filed that way by BOTH passes, from the same journaled cause, so that record too is recomputed rather than replaced |
 | `review-evidence` | fewer valid, `ok`, current-`candidate_sha` reviews are on hand than the task's `risk_tier` requires — or the tier's count is met while a routed reviewer slot still has no review of its own |
-| `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` |
+| `review-conflict` | at least one `request-changes` verdict, a finding at or above the task's `blocking_severity`, mixed verdicts, or a review reporting `scope_complete: false` — or, ahead of all of those and before any envelope is read, an `unresolved_objection` on the task: an arbiter's own `request-changes` that no arbitration has cleared (the arbitration truth table's arm 0) |
 | `hook-failure` | a `:required` hook binding has no `ok` envelope for the current candidate |
 | `worktree-conflict` | a dispatch worktree cannot be proven to belong to this task, this branch and this repository — or its state cannot be read at all, which is refused in the same direction rather than taken for a clean tree |
 | `operator-handoff` | work no actor in the loop declares the capability for: a step whose requirements the resolved actor's manifest does not cover, so it was never dispatched (INV-16, `orchid jobs prepare` exit 19) — or this candidate's execution-requiring mechanical steps are not acknowledged for it, because `handoff_before_verify` is on, or because its implementer is installed under neither name it is looked up by — the directory a binding names, or the qualified `id=` a manifest claims. See "The operator hand-off" below |
@@ -379,6 +379,40 @@ acceptance step at all. They are now one function.
 **The arbitration truth table.** At `arbitrating`, exactly one of three arms
 applies — they are mutually exclusive and evaluated in this order, so an
 incomplete review set is never also reported as a conflict, and vice versa:
+
+0. **A standing objection, ahead of all three** (T032, dogfood F33) — the task
+   carries an `unresolved_objection`, meaning an arbiter recorded
+   `request-changes` on an earlier round and no arbitration has recorded that
+   it was answered. → boundary `review-conflict`, **no transition**, before a
+   single envelope is read. Every arm below is a reading of the ROUND's
+   evidence; this is a reading of the TASK, and it is the one fact no quantity
+   of fresh reviews can settle — which is why it is not folded into arm 3's
+   record, where an evidence shortfall would be reported ahead of it and send
+   you to fetch more reviews for a decision no review can make. F33 is the run
+   that bought this: the operator arbitrated `request-changes` twice on the
+   same concurrency hole, naming the exact constants and line range the second
+   time; round 3's reviewers, handed the diff with no memory of either
+   rejection, both returned `approve`; and arm 2 merged it as "unanimous
+   scope-complete approval from 2 review(s), no finding at or above medium".
+   `orchid task arbitrate <id> --result approve --reason "..."` is the only
+   thing that clears the field, so the remedy is the verb this boundary already
+   routes to — and the driver, whose single call to that verb is arm 2's, is
+   structurally unable to clear its own path. The next round's reviewers are
+   told too: every shipped `review` adapter appends the objection to its
+   prompt, so the question put to them is "was the arbiter's objection
+   addressed", not "form an opinion". A reviewer flipping `request-changes` to
+   `approve` with the defect untouched is what a reviewer that never saw its
+   own prior objection does.
+
+   **Who may settle it is the ordinary boundary rule, deliberately.** This is
+   `review-conflict` on an `arbitrating` task, so a woken orchestrator can
+   settle it wherever its surface admits `task arbitrate` — the same as every
+   other arbitration. What changes is that it cannot be settled *by accident*:
+   the decision is a recorded judgment with a `--reason`, and whoever makes it
+   reads the objection first, because `run boundary show` is where the
+   arbiter's own sentence is quoted back. `orchid answer approve` does not
+   clear the field either — `answer` records an answer, it does not run a
+   verb.
 
 1. **Evidence** — the evidence set is EXACTLY the one the kernel's own
    `reviewing`→`arbitrating` gate counts, and this arm mirrors that gate
@@ -496,8 +530,19 @@ approval takes `arbitrating:merging` when the archetype declares it, else
 `arbitrating:done`; a request-changes takes `arbitrating:rework`. It performs
 the move through `task advance`, so every existing gate (reason requirement,
 attempt accounting, evidence invalidation, the `arbitration` journal kind)
-applies unchanged. `orchid task advance` from `arbitrating` remains legal for
-an operator and for the hand-executed walk below — but the driver and the
+applies unchanged.
+**And an arbitration is remembered until another one answers it** (T032,
+dogfood F33). `--result request-changes` writes the decision onto the task as
+`unresolved_objection` — `a<attempt>: <your reason, folded to one line>` — and
+`--result approve` is the only thing that clears it, journaling the clear. Say
+in `--reason` what must change, not merely that something must: that sentence
+is what the boundary quotes back, what the next round's reviewers are shown,
+and what someone three rounds later reads to decide whether it was met. Nothing
+else clears it — not `unblock`, not `retry`, not `reverify`, and `orchid task
+set` refuses the key by name — because none of those is an answer to "was this
+defect fixed". `orchid task advance` from `arbitrating` remains legal for
+an operator and for the hand-executed walk below — but it records no
+arbitration result, so it neither raises an objection nor clears one; and the driver and the
 brokered orchestrator surface only ever use `task arbitrate`, which is what
 makes "who decided this, and what did they decide" one greppable fact.
 

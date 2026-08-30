@@ -9958,3 +9958,161 @@ assert_eq implementing "$(dgfield status)" \
 if grep -q "dispatch withheld" <<<"$DGDRIVE_OUT"; then
   fail "the guard fired below the threshold — it must read the streak and nothing else (out: $DGDRIVE_OUT)"
 fi
+# ===========================================================================
+# Part AF (T032, dogfood F33) -- AN ARBITER'S REJECTION OUTLIVES ITS ROUND.
+#
+# F33, reported as the most serious finding of its run and confirmed live on
+# r-002: a defect the operator rejected TWICE was merged, and nothing in the
+# run state recorded that the concern was never addressed. Round 1 and round 2
+# were both arbitrated `request-changes` -- the second naming the exact
+# constants, the exact line range, the response shape to reuse and the test to
+# add. Round 3's reviewers were handed the diff with no memory of either
+# rejection, both returned `approve`, and the arbitration truth table's
+# approval arm merged it: "unanimous scope-complete approval from 2 review(s),
+# no finding at or above medium". The concurrency hole the task existed to
+# close shipped to the integration branch, and the operator found it by reading
+# the merged source AFTER `status` said done.
+#
+# The arbitration was journaled and nothing else remembered it. So it is now
+# durable state on the task -- `unresolved_objection`, written by `orchid task
+# arbitrate --result request-changes` and cleared ONLY by `--result approve`
+# (tests/test_task.sh's T040 walk covers the verb end of that) -- and this Part
+# pins the half that mattered: the policy function may not return `approve`
+# while one stands, however clean the round's reviews are.
+#
+# "MUST NOT REACH `merging`" IS THIS PLUS PART C, and it is worth saying which
+# half is where. `drive_arbitrating` (runners/orchid-drive) takes exactly one
+# arm per decision word: `approve` runs `task arbitrate --result approve`,
+# `conflict` raises a `review-conflict` boundary and takes NO transition --
+# which Part C above already proves end to end against real stub engines. So
+# what remains to be shown, and is shown here, is that a standing objection
+# yields `conflict` rather than `approve` on the one input that would otherwise
+# have merged.
+#
+# THE FIXTURES ARE THE SHAPE THAT SHIPPED IT. A complete, unanimous,
+# scope-complete, finding-free review set is the input that produced F33's
+# merge, so each case asserts the deterministic approval FIRST -- as a
+# premise -- and then the same task refusing it with the objection recorded.
+# Without that premise a `conflict` here would prove nothing: it is what every
+# malformed fixture returns too.
+#
+# RED: a task carrying an uncleared operator objection, whose reviews are
+#      otherwise a textbook deterministic approval, must NOT be approved --
+#      including after a rework round has moved both `attempts` and
+#      `candidate_sha` past the round the objection names, which is the exact
+#      passage of time F33 died of. And a review adapter that could not tell
+#      the next round's reviewer what the arbiter said must be named.
+# GREEN: the same reviews, with no objection recorded and again with one
+#      cleared, must still approve -- otherwise this gate is refusing
+#      everything and proving nothing.
+# ===========================================================================
+OBJ_TEXT='the write at lib/foo.sh:120 is still unguarded; reuse the response shape from bar() and add a concurrent-writer test'
+OBJ_TASK="$POLICY/.orchid/tasks/P50.md"
+
+mk_policy_task P50 low high
+mk_review P50 "" approve true '[]'
+assert_eq approve "$(decision_of P50)" \
+  "Part AF premise: with no objection recorded, this exact review set IS the deterministic approval F33 shipped"
+green_case 'a unanimous, scope-complete, finding-free review set on a task carrying no objection: deterministic approval'
+
+fm_set "$OBJ_TASK" unresolved_objection "a1: $OBJ_TEXT" \
+  || fail "fixture: P50's objection must be recordable (the whole Part is vacuous otherwise)"
+assert_eq conflict "$(decision_of P50)" \
+  "T032: an uncleared operator objection refuses deterministic approval on the SAME review set that approved one line ago"
+red_case 'a task carrying an uncleared operator objection: conflict, never a deterministic approval'
+
+# THE BOUNDARY CARRIES THE OBJECTION, not merely its existence -- the same
+# complaint F32 made about a bare `verdict=request-changes`, in the arm that
+# now fires ahead of it. An operator reading this record must not have to go
+# and find what they themselves once said.
+p50_detail="$(detail_of P50)"
+assert_match "reuse the response shape from bar" "$p50_detail" \
+  "the detail quotes the arbiter's own words, not just the fact that an objection exists"
+assert_match "task arbitrate P50 --result approve" "$p50_detail" \
+  "...and names the one verb that clears it, on this task, since that is the whole remedy"
+
+fm_set "$OBJ_TASK" unresolved_objection "" \
+  || fail "fixture: P50's objection must be clearable"
+assert_eq approve "$(decision_of P50)" \
+  "and with the objection cleared the very same reviews approve again — the gate is the field, not the reviews"
+green_case 'the same task and the same reviews with the objection cleared: deterministic approval restored'
+
+# --- it survives the rework round, which is the whole point ----------------
+# A new attempt, a new candidate, and a review filed against both. The
+# objection names a DEFECT, not a commit, so neither move expires it -- an
+# objection that did expire on either would expire on precisely the event it
+# exists to survive.
+CAND_A2=2222222222222222222222222222222222222222
+mk_policy_task P51 low high "$CAND_A2"
+mk_review P51 "" approve true '[]' "$CAND_A2"
+mv "$POLICY/.orchid/reviews/P51-a1-reviewer.json" "$POLICY/.orchid/reviews/P51-a2-reviewer.json" \
+  || fail "fixture: P51's review must be re-filed against the second round"
+fm_set "$POLICY/.orchid/tasks/P51.md" attempts 1 \
+  || fail "fixture: P51 must be on its second attempt"
+assert_eq approve "$(decision_of P51)" \
+  "Part AF premise: a second round, on its own candidate, with its own unanimous review, approves"
+fm_set "$POLICY/.orchid/tasks/P51.md" unresolved_objection "a1: $OBJ_TEXT" \
+  || fail "fixture: P51's objection must be recordable"
+assert_eq conflict "$(decision_of P51)" \
+  "T032: an objection raised at a1 still refuses approval at a2 on a candidate it never saw — that passage of time is what F33 died of"
+red_case 'an operator objection from an earlier round, after a rework round moved both attempt and candidate: still refused'
+
+# --- the record stays two fields ------------------------------------------
+# The decision line is TAB-separated and read with `cut -f1`/`cut -f2-`, and
+# this value is free text a human typed. The write end folds it (`orchid task
+# arbitrate`) and `task set` refuses the key by name, so a tab cannot reach the
+# field through any shipped door -- which is exactly why the READER folds it
+# too rather than trusting a rule enforced somewhere else. Fed a tab, the
+# record must still be one decision word and one detail.
+mk_policy_task P52 low high
+mk_review P52 "" approve true '[]'
+fm_set "$POLICY/.orchid/tasks/P52.md" unresolved_objection "$(printf 'a1: first clause\tsecond clause')" \
+  || fail "fixture: P52's tab-bearing objection must be recordable"
+p52_line="$(drive_review_decision "$POLICY" P52)"
+p52_tabs="$(printf '%s' "$p52_line" | tr -cd '\t' | wc -c | tr -d ' ')"
+assert_eq 1 "$p52_tabs" \
+  "T032: a tab inside the objection is folded out — the decision record is two TAB-separated fields, not three"
+red_case 'an objection carrying a raw tab: folded at the read end, so the decision record keeps its field count'
+assert_match "second clause" "$p52_line" \
+  "...and nothing after the tab is dropped: folding is a fold, not a truncation"
+
+# --- and the next round's reviewer is told ---------------------------------
+# Refusing the approval is half of it. The other half is that the reviewer who
+# judges the NEXT round sees the arbitration, because a reviewer handed the
+# same diff and no memory of its own prior objection is what round 3 of F33
+# was: both reviewers had said `request-changes` twice and both said `approve`
+# the third time, with the defect untouched.
+#
+# lib/pack.sh copies the pack's task.md whole, frontmatter included, so the
+# field reaches every adapter with no new pack item -- but reaching the pack is
+# not reaching the model, and it is each adapter's own prompt that decides. A
+# rule policed on the one adapter that happens to be routed is a rule the other
+# three walk past, so this sweeps every shipped adapter that builds a review
+# prompt at all.
+#
+# STATIC, and for the reason Part R gives about the same class of check:
+# reading the prompt an adapter really composes means spawning its vendor CLI.
+# The BEHAVIOURAL proof -- a captured prompt, the objection in it, and its
+# absence when no objection is recorded -- is in tests/test_engine_claude.sh;
+# this is the sweep that says the other adapters carry the same thing.
+obj_adapters=0
+for _run in "$REPO_ROOT"/plugins/engines/*/run; do
+  [ -f "$_run" ] || continue
+  _name="$(basename "$(dirname "$_run")")"
+  # Only adapters that build a review prompt of their own: the shipped
+  # `codex-review` is a four-line exec shim onto codex/run and composes
+  # nothing, so requiring the field of it would be requiring it twice of codex.
+  grep -qF 'Stop condition: $stop' "$_run" || continue
+  obj_adapters=$(( obj_adapters + 1 ))
+  # Comment-stripped, per this suite's own rule for source-shape checks: a
+  # field NAMED in a doc-comment must not satisfy a pin for a prompt that no
+  # longer carries it.
+  _code="$(grep -v '^[[:space:]]*#' "$_run")"
+  grep -qF 'task.md" unresolved_objection' <<<"$_code" \
+    || fail "T032: $_name builds a review prompt but never reads the task's unresolved_objection — a reviewer it dispatches re-forms an opinion with no idea an arbiter already rejected this"
+  grep -qE '^[[:space:]]*\$objection[[:space:]]*$' <<<"$_code" \
+    || fail "T032: $_name reads unresolved_objection but never renders it into the prompt text — the field reaches the pack and stops there"
+done
+[ "$obj_adapters" -ge 3 ] \
+  || fail "T032: this sweep matched only $obj_adapters review adapters — its selector has gone stale and it is now proving nothing"
+green_case 'every shipped adapter that builds a review prompt reads the standing objection and renders it into that prompt'

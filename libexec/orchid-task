@@ -870,6 +870,16 @@ case "$sub" in
       # these fields.
       rework_rounds|rework_signature|rework_signature_repeats)
         orchid_die "'$key' is kernel-owned — it records captured rework evidence (task advance <id> rework, task unblock, task retry)" ;;
+      # T032 (dogfood F33). This one is on the deny-list for a reason none of
+      # the others share: the field exists to stop an APPROVAL, and the actor
+      # most able to reach `task set` is the deterministic driver, which acts
+      # only through verbs (INV-13) and would otherwise have a verb that
+      # deletes the one thing standing between it and a merge. Deciding that an
+      # objection has been answered is the judgment `task arbitrate` records;
+      # a bare frontmatter write records nothing, and a cleared objection with
+      # no journal entry behind it is indistinguishable from one that was met.
+      unresolved_objection)
+        orchid_die "'unresolved_objection' is kernel-owned — 'task arbitrate <id> --result request-changes' writes it and 'task arbitrate <id> --result approve --reason \"...\"' is the ONLY thing that clears it. It is what keeps a deterministic approval from firing on a defect an arbiter already rejected, so it is cleared by a recorded judgment or not at all." ;;
     esac
     # depends_on ids are checked HERE, at write time (dogfood F30). The
     # scheduler can only ever report an id it cannot satisfy as
@@ -1616,9 +1626,68 @@ case "$sub" in
       echo "orchid: archetype '$arch' declares no arbitrating edge for result '$result'" >&2
       exit 3
     fi
+    # THE OBJECTION OUTLIVES THE ROUND IT WAS RAISED IN (T032, dogfood F33).
+    #
+    # Before this, a `request-changes` arbitration left the run state saying
+    # nothing at all: the task moved to `rework`, the journal recorded the
+    # decision, and the NEXT attempt was judged entirely on its own reviews.
+    # Nothing ever asked whether the arbiter's objection had been met. F33 is
+    # what that costs -- the operator rejected the same concurrency hole
+    # twice, naming the constants and the line range the second time; round 3's
+    # reviewers, judging the diff cold, both returned `approve`; and the
+    # deterministic path merged it with "unanimous scope-complete approval from
+    # 2 review(s), no finding at or above medium". The defect shipped, and the
+    # operator found it by reading the merged source after `status` said done.
+    #
+    # So a rejection writes the objection down, on the task, where the two
+    # actors who need it can read it: lib/drive.sh's `drive_review_decision`
+    # refuses a deterministic approval while the field stands, and every
+    # shipped `review` adapter carries it into the next round's prompt (the
+    # pack copies task.md whole, frontmatter included).
+    #
+    # WRITTEN BEFORE THE ADVANCE, CLEARED AFTER IT, and the asymmetry is the
+    # whole safety argument. A write that failed here dies under `set -e` with
+    # the task still `arbitrating` -- nothing moved, nothing recorded. A clear
+    # placed before the advance would delete the objection and then leave it
+    # deleted if the advance were refused, handing the very next `orchid drive`
+    # pass a task it may now approve deterministically. Each half fails in the
+    # direction that keeps the objection standing.
+    #
+    # THE ROUND IS NAMED, and the field is not bound to it. `a<attempt>` says
+    # which round was rejected, which is what makes a standing objection legible
+    # three rounds later; it is not a binding, because a rework round moves
+    # `attempts` and `candidate_sha` and an objection that expired on either
+    # would expire on precisely the event it exists to survive. Only an explicit
+    # `--result approve` clears it -- not `unblock`, not `retry`, not
+    # `reverify`, none of which is an answer to "was this defect fixed".
+    obj_prev="$(fm_get "$f" unresolved_objection)"
+    if [ "$result" = request-changes ]; then
+      # SUPERSEDED, NOT ACCUMULATED: the arbiter's latest word is the operative
+      # statement of what is still unresolved, and one frontmatter line cannot
+      # grow a list. The journal keeps every rejection in full, so the history
+      # is not lost -- but a value silently replaced is the shape that reads as
+      # an objection nobody withdrew and nobody kept, so the replacement says
+      # so before it happens.
+      if [ -n "$obj_prev" ]; then
+        journal --task "$id" --kind arbitration \
+          "objection superseded by this arbitration — previous: \"$obj_prev\""
+      fi
+      fm_set "$f" unresolved_objection \
+        "a$(( $(fm_get "$f" attempts) + 1 )): $(review_objection_line "$reason")"
+    fi
     adv_args=("$id" "$to" --reason "arbitrate($result): $reason")
     [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
     ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
+    if [ "$result" = approve ] && [ -n "$obj_prev" ]; then
+      # Journal-first (INV-08), and guarded on a NON-EMPTY previous value for
+      # the reason the `operator_prerequisite` clear a few hundred lines up is:
+      # `fm_set` on an absent key APPENDS it, so an unguarded clear would give
+      # an `unresolved_objection:` line to every task in every repository that
+      # never carried one. An approval that clears nothing has nothing to say.
+      journal --task "$id" --kind arbitration \
+        "objection cleared by an explicit arbitration approval — was: \"$obj_prev\""
+      fm_set "$f" unresolved_objection ""
+    fi
     echo "arbitrated $id: result=$result from=$from to=$to" ;;
   handoff)
     # T010: the verb that ACKNOWLEDGES a hand-off, and the only place a

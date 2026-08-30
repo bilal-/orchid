@@ -225,7 +225,10 @@ The same walk, in verbs:
 5. Agreement → `orchid task advance T001 merging` → `orchid merge T001`
    re-verifies in a temp worktree and advances the integration branch.
    Disagreement → the orchestrator (inline, ≤10 lines of judgment) reads
-   the diff and arbitrates.
+   the diff and arbitrates. An arbitration that asks for changes is recorded
+   on the task and stands until an arbitration approves it: no later round
+   is approved deterministically past it, and the next round's reviewers are
+   shown what the arbiter said.
 6. `done`. Repeat, up to `concurrency` tasks in flight at once, until the
    roadmap is complete.
 

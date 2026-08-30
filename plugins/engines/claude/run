@@ -319,6 +319,13 @@ if [ -f "$input_pack/task.md" ]; then
   # lib/drive.sh's own gate applies when the key is absent, so the prompt and
   # the gate can never state different thresholds.
   bsev="$(fm_get "$input_pack/task.md" blocking_severity)"; [ -n "$bsev" ] || bsev=medium
+  # THE ARBITER'S STANDING OBJECTION (T032, dogfood F33), read from the same
+  # pack task.md as everything above -- lib/pack.sh copies the file whole, so
+  # a field the kernel writes reaches every adapter without a new pack item.
+  # Empty on the overwhelming majority of reviews, and the whole block below
+  # is omitted then; a task only carries one after a human arbitrated
+  # `request-changes` on it and no arbitration has cleared it.
+  objection="$(fm_get "$input_pack/task.md" unresolved_objection)"
   diff="$(cat "$input_pack/diff.patch" 2>/dev/null || true)"
   # Reply contract (v1-m4 T006): VERDICT **plus** the same `FINDING:
   # <low|medium|high>: <title>` line shape the critique prompt below already
@@ -385,6 +392,26 @@ read findings[] and nothing else, so an objection written only as prose is
 weighed by nothing: if you withhold approval without one, the kernel composes
 a high-severity finding from your REASON line on your behalf. Reporting the
 finding yourself is how the severity stays your call."
+  # WHY THE REVIEWER IS TOLD (T032, dogfood F33). On the run this comes from,
+  # a reviewer that had itself said `request-changes` twice returned `approve`
+  # on the third round with the objected-to defect untouched -- which is what a
+  # reviewer handed the same diff and no memory will do. The arbitration is the
+  # one thing it could not re-derive from the pack, so it is handed over
+  # explicitly, and the question is narrowed to it: "was this addressed", not
+  # "form an opinion". Appended LAST, after the reply contract, deliberately --
+  # it is the first thing this round must answer, and it must not read as one
+  # more consideration buried above the instructions.
+  [ -z "$objection" ] || prompt="$prompt
+
+A HUMAN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is
+still recorded as unresolved:
+  $objection
+Judge this round on whether that objection was addressed, before anything
+else, and say which in your REASON line. If it was not addressed, withhold
+approval and file it as a FINDING -- do not re-form an opinion from scratch
+and do not approve around it because the rest of the diff looks right. A
+reviewer approving here with that defect untouched is the exact failure this
+paragraph exists to stop."
 else
   # v1-m3: a PLAN pack (task id `plan`, role.plan_critic) has no task.md/
   # diff.patch at all -- lib/pack.sh's _pack_build_plan builds

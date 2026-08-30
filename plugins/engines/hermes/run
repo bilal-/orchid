@@ -146,6 +146,12 @@ if [ -f "$input_pack/task.md" ]; then
 
   ac="$(fm_get "$input_pack/task.md" acceptance_criteria)"
   stop="$(fm_get "$input_pack/task.md" stop_condition)"
+  # T032, dogfood F33: an arbitration the reviewer cannot re-derive from the
+  # pack. Read from the pack's own task.md (lib/pack.sh copies it whole), empty
+  # on any task no arbiter has rejected, and appended below only when set. See
+  # plugins/engines/claude/run's own note, and lib/review.sh, for why every
+  # review adapter carries it rather than the one that happens to be routed.
+  objection="$(fm_get "$input_pack/task.md" unresolved_objection)"
   manifest_line="$(jq -r '"pack manifest: " +
     ([.items[] | .name + "(" + (.bytes|tostring) + "b,truncated:" + (.truncated|tostring) + ")"] | join(" "))' \
     "$input_pack/pack.json")"
@@ -161,6 +167,15 @@ Do not use any tools. Do not run any commands. Judge from the diff text alone.
 Reply with exactly two lines:
 VERDICT: approve OR request-changes
 REASON: one sentence"
+  [ -z "$objection" ] || prompt="$prompt
+
+A HUMAN ARBITER REJECTED AN EARLIER ROUND OF THIS TASK and that objection is
+still recorded as unresolved:
+  $objection
+Judge this round on whether that objection was addressed, before anything
+else, and say which in your REASON line. If it was not addressed, withhold
+approval -- do not re-form an opinion from scratch and do not approve around
+it because the rest of the diff looks right."
 else
   # Plan pack: requirements.md + roadmap.md (non-truncatable) + tasks.md,
   # plus lessons.md when present -- same fields lib/pack.sh's

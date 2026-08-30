@@ -58,6 +58,52 @@ review_depth_required() {
   esac
 }
 
+# ---------------------------------------------------------------------------
+# THE ARBITER'S STANDING OBJECTION (T032, dogfood F33).
+#
+# An operator who arbitrates `request-changes` sends the task back to `rework`
+# and the decision is journaled -- and NOTHING else about the run remembers it.
+# The next attempt is judged entirely on its own reviews, so the round after
+# that can approve deterministically with the objected-to defect untouched, and
+# every record along the way reads like a clean pass. F33 is that exact run:
+# two operator rejections naming the same concurrency hole, a third round where
+# both reviewers flipped to `approve`, and a deterministic merge whose detail
+# said "unanimous scope-complete approval from 2 review(s), no finding at or
+# above medium". The hole shipped to the integration branch.
+#
+# So the objection becomes DURABLE STATE on the task -- `unresolved_objection`,
+# written by `orchid task arbitrate --result request-changes` and cleared ONLY
+# by an explicit `orchid task arbitrate --result approve`. Two readers act on
+# it: lib/drive.sh's `drive_review_decision` refuses to make a deterministic
+# approval while one stands, and every shipped `review` adapter puts it in the
+# reviewer's prompt so the next round is judged on "was the arbiter's objection
+# met" rather than re-formed from scratch.
+#
+# ONE COMPOSER FOR BOTH ENDS. The value is stored in frontmatter, which is
+# strictly one `key: value` per line (lib/frontmatter.sh's fm_set refuses a
+# newline outright), and it is read back into lib/drive.sh's TAB-separated
+# decision record, where a raw tab would shift every field after it. Folding at
+# the write end alone would leave the reader trusting a rule enforced somewhere
+# else; capping at each end with its own literal would let the two disagree the
+# day one of them is edited. So both call this, and the cap is a single
+# constant.
+#
+# 400, not ENVELOPE_EXCERPT_MAX's 160: an excerpt is a pointer to an envelope
+# the reader can go open, and this is the whole of what the arbiter said --
+# F33's second rejection named the exact constants, the exact line range, the
+# response shape to reuse and the test to add, and an objection truncated
+# before the specifics is the bare `request-changes` this field exists to
+# replace.
+REVIEW_OBJECTION_MAX=400
+
+# review_objection_line <text> -- <text> folded to the single line the
+# `unresolved_objection` field stores and every reader quotes back. Empty in,
+# empty out (envelope_fold_line's own contract), so a caller can test the
+# result for emptiness without a second rule about what "no objection" is.
+review_objection_line() {
+  envelope_fold_line "$1" "$REVIEW_OBJECTION_MAX"
+}
+
 # review_implementer_engine <repo> <task> -- the task's recorded
 # `implementer_engine_id` frontmatter if set (kernel-derived, single-writer:
 # `task advance implementing->testing` is the only writer of that field),

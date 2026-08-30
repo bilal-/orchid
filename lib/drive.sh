@@ -76,7 +76,9 @@ drive_threshold_rank() {
 #                        than the risk_tier requires; or the tier's count is
 #                        met while a routed reviewer slot has none of its own
 #   review-conflict   -- request-changes, blocking finding, mixed verdicts,
-#                        or a review that did not cover the whole scope
+#                        a review that did not cover the whole scope, or an
+#                        uncleared operator objection from an earlier
+#                        arbitration of the same task
 #   hook-failure      -- a `:required` hook binding has no ok, current envelope
 #   worktree-conflict -- a dispatch worktree cannot be proven to belong to
 #                        this task/repo/branch, or its state cannot be READ at
@@ -821,12 +823,17 @@ drive_blocking_finding_title() {
 #                           medium/high tier only) enough of them, but not
 #                           one credited to a `worktree` slot of the plan.
 #   conflict<TAB><detail>   a request-changes verdict, a finding at or above
-#                           blocking_severity, mixed verdicts, or a review
-#                           that reports scope_complete false.
+#                           blocking_severity, mixed verdicts, a review that
+#                           reports scope_complete false -- or an operator
+#                           objection from a previous arbitration of this task
+#                           that no arbitration has cleared (below).
 #
 # The three arms are mutually exclusive and evaluated in that order, so an
 # incomplete review set is never also reported as a conflict (and vice
-# versa). No prose is parsed anywhere: every input to the DECISION is a
+# versa). AHEAD of all three sits one precondition -- an uncleared
+# `unresolved_objection` on the task -- which short-circuits to `conflict`
+# before any envelope is read; see its own note in the body. No prose is
+# parsed anywhere: every input to the DECISION is a
 # structured envelope field the kernel already validates. The conflict arm
 # QUOTES engine-written text into its detail (F32, below) in all three of the
 # entries it can emit -- a rejecting review's `summary`, that same `summary` on
@@ -974,6 +981,7 @@ drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
   local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note sum_carried
+  local objection
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -985,6 +993,39 @@ drive_review_decision() {
   need="$(review_required_count "$tier")"
   cand="$(fm_get "$tf" candidate_sha)"
   blocking="$(fm_get "$tf" blocking_severity)"; [ -n "$blocking" ] || blocking=medium
+
+  # THE PRECONDITION, AHEAD OF ALL THREE ARMS (T032, dogfood F33). Everything
+  # below this point is a reading of the ROUND's evidence; this is a reading of
+  # the TASK, and it is the one fact no quantity of fresh reviews can settle.
+  # An arbiter recorded `request-changes` and no arbitration has recorded that
+  # the objection was answered, so the reviews on this attempt are being asked
+  # a question they were never told about -- which is exactly how F33 merged a
+  # defect the operator had rejected twice: round 3's reviewers, judging the
+  # diff cold, both said `approve`, and the approve arm below duly said so.
+  #
+  # Reported as `conflict`, deliberately, because that is what it is: a
+  # standing disagreement about the candidate. It lands on a `review-conflict`
+  # boundary, which `drive_boundary_priority` already ranks arbitrable from
+  # `arbitrating` and `drive_boundary_settling_verb` already answers with
+  # `orchid task arbitrate` -- and that verb, with `--result approve`, is the
+  # single act that clears the field. So the remedy is the verb the boundary
+  # already routes to, and the driver is left structurally unable to clear its
+  # own way past this: the only call it ever makes to `task arbitrate --result
+  # approve` is the one the approve arm below makes, and this return is in
+  # front of it.
+  #
+  # FIRST, not merged into the `conflicts` record below, for the reason the
+  # ordering of the other arms is already argued from: an evidence shortfall
+  # would otherwise be reported ahead of it, sending an operator to fetch more
+  # reviews for a decision no review can make. It is also independent of the
+  # candidate -- a rework round moves `candidate_sha` and `attempts`, and the
+  # objection survives both, since what it names is a defect and not a commit.
+  objection="$(review_objection_line "$(fm_get "$tf" unresolved_objection)")"
+  if [ -n "$objection" ]; then
+    printf 'conflict\tan operator objection recorded by a previous arbitration of this task is still uncleared: "%s" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter. Expected: read the diff, decide whether the objection was met, and settle it with orchid task arbitrate %s --result approve|request-changes --reason "..." — an explicit arbitration approval is the only thing that clears it\n' \
+      "$objection" "$id"
+    return 0
+  fi
 
   if [ -z "$cand" ]; then
     printf 'evidence\tno candidate_sha recorded, so no review can be bound to it\n'
