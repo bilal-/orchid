@@ -2447,7 +2447,9 @@ prints the resolved engine's label.
 `orchid drive` executes THE TICK's mechanical steps deterministically and
 stops at a named boundary rather than making a free-form judgment. The record
 is owned solely by `orchid run boundary set|clear|show` (schema 1: `kind`,
-`task`, `reason`, `epoch`, `at`), and 16 is the dedicated judgment-boundary
+`task`, `reason`, `epoch`, `at`, `passes` — how many passes this exact boundary
+has survived unchanged by content, which `set --no-count` records without
+charging), and 16 is the dedicated judgment-boundary
 exit code — returned by `drive` when a pass stopped at one, and by `run
 boundary show` when one is recorded. Kinds: `planning`, `blocked-task`,
 `review-evidence`, `review-conflict`, `hook-failure`, `worktree-conflict`,

@@ -213,6 +213,13 @@ case "$sub" in
             mv "$btmp" "$bfile"
           else
             rm -f "$btmp" 2>/dev/null || true
+            # The bump did not land, so the pass number is NOT the one below.
+            # Fail-open on the counter is right -- a jq that cannot rewrite the
+            # record must never be what stops a run being driven -- but the
+            # line printed here is the only surface an operator debugging a
+            # stuck budget reads, and naming a pass the record does not hold
+            # would send them looking for a wakeup that was never counted.
+            bnext_passes="$bprev_passes"
           fi
           echo "boundary unchanged: $bkind${btask:+ ($btask)} (pass $bnext_passes)"
           exit 0

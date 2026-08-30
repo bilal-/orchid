@@ -193,12 +193,19 @@ part of the architecture; this file never changes to suit one.*
 A **judgment boundary** is the one thing deterministic policy is allowed to
 do instead of deciding: stop, name why, and hand the decision to someone who
 may make it. `orchid drive` records at most one per pass through its own
-verb — `orchid run boundary set --kind <kind> [--task <id>] --reason "..."` —
-and exits 16, the dedicated judgment-boundary exit code. `orchid run boundary
-show` prints the record (schema 1: `kind`, `task`, `reason`, `epoch`, `at`)
-and itself exits 16 when one is recorded, 0 when none is. `orchid run boundary
-clear --reason "..."` releases it. That verb is the record's single writer;
-nothing else may create, edit or delete it.
+verb — `orchid run boundary set --kind <kind> [--task <id>] --reason "..."
+[--no-count]` — and exits 16, the dedicated judgment-boundary exit code.
+`orchid run boundary show` prints the record (schema 1: `kind`, `task`,
+`reason`, `epoch`, `at`, `passes`) and itself exits 16 when one is recorded, 0
+when none is. `orchid run boundary clear --reason "..."` releases it. That verb
+is the record's single writer; nothing else may create, edit or delete it.
+
+`passes` counts how many passes this EXACT boundary has survived: an identical
+re-set bumps it, any change of content resets it to 1. It is the counter the
+wake budget reads (HEADLESS OPERATION below), and what it counts is orchestrator
+WAKEUPS rather than wall passes — `--no-count` records the boundary without
+charging one, which is what a caller passes for a pass on which nobody could
+have been woken at all.
 
 **Exit 16 says a decision is outstanding SOMEWHERE — never that the run is
 stuck.** A pass that meets a boundary still walks every other task and takes

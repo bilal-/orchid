@@ -1382,7 +1382,13 @@ orchid_service_binding_present() {
 # asked from EXIT traps and from refusal paths, where anything that could
 # itself fail (a git call, a jq parse) would be a worse answer than the one
 # bit being asked for.
-orchid_service_bound() { [ -f "$1/.orchid/runtime/service.json" ]; }
+#
+# The path comes from orchid_service_repo_record rather than being spelled out
+# again here. That accessor is an `echo` and cannot fail, so it costs the
+# paragraph above nothing -- and a second literal spelling of the record's
+# location would be a place for the guard to go quietly blind the day the
+# record moves, which is the one failure this predicate must not have.
+orchid_service_bound() { [ -f "$(orchid_service_repo_record "$1")" ]; }
 
 # orchid_service_removal_guard <path> -- 0 when <path> is safe to remove, 1
 # (naming the uninstall command on stderr) when a pump service is still
