@@ -1264,6 +1264,14 @@ orchid_service_uninstall_command() {
 # there, which is the state `uninstall` exists to clear and the removal guard
 # is deliberately strict about.
 #
+# THE INVARIANT IS STATED IN THE READERS' TERMS, NOT THIS FUNCTION'S: a 0 from
+# here means orchid_service_bound will answer yes for <repo>. Returning 0 while
+# that predicate answers no is the one outcome the whole binding exists to
+# prevent -- it is a live schedule the removal guard waves the checkout through
+# -- so both the obstruction check before the first byte and the postcondition
+# after the commit ask that exact predicate rather than trusting a syscall's
+# exit status to imply it.
+#
 # WHY BOTH ARE REQUIRED. An earlier revision made the machine-local copy best
 # effort, on the reasoning that the schedule is installed either way. That has
 # the priority backwards: the copy inside the checkout dies WITH the checkout,
@@ -1291,6 +1299,32 @@ orchid_service_binding_write() {
   stamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || return 1
   rec="$(orchid_service_repo_record "$repo")"
   mkdir -p "$(dirname "$rec")" || return 1
+  # FAIL CLOSED WHEN THE RECORD PATH IS OBSTRUCTED BY A NON-REGULAR FILE, and
+  # a DIRECTORY there is the case that matters. `mv file dir` does not fail --
+  # it deposits the file INSIDE, exits 0, and leaves the record path still a
+  # directory. Every commit check below would pass, this function would return
+  # 0, and the caller would go on to install a live schedule -- while
+  # orchid_service_bound, whose whole test is `[ -f ]`, reports false. That is
+  # the one combination the binding exists to make impossible: a schedule
+  # firing on its interval and a removal guard waving the checkout through, so
+  # the operator deletes the target out from under a live agent and the only
+  # record naming it goes with the directory.
+  #
+  # Tested with the SAME `-f` the readers use, so this cannot drift away from
+  # them: anything orchid_service_bound would refuse to call a record is
+  # refused here, before a single byte is written and long before the
+  # scheduler is touched. A path that does not exist at all is the normal case
+  # and passes; so does a symlink to a regular file, which `mv` replaces
+  # outright rather than following.
+  #
+  # It says WHICH path, on stderr, before the caller's own refusal. This is the
+  # one failure here an operator can fix in a second and cannot otherwise
+  # diagnose: the caller's message names the repo and the obligation, and an
+  # obstruction inside `.orchid/runtime/` is invisible from it.
+  if [ -e "$rec" ] && [ ! -f "$rec" ]; then
+    echo "orchid: $rec is not a regular file — a binding recorded there would be invisible to every removal guard" >&2
+    return 1
+  fi
   # Temp-then-rename by hand rather than `jq ... | atomic_write`: a producer
   # that dies mid-pipe still lands its (empty) output through a pipeline, and
   # a zero-byte service.json reads to every consumer below as "a service IS
@@ -1334,6 +1368,23 @@ orchid_service_binding_write() {
   # one -- see the rollback's own note below.
   if ! mv "$rtmp" "$rec" 2>/dev/null; then
     rm -f "$rtmp" 2>/dev/null || true
+    [ -z "$mtmp" ] || rm -f "$mtmp" 2>/dev/null || true
+    return 1
+  fi
+  # AND THE RENAME'S OWN 0 IS NOT THE POSTCONDITION. The guard above rejects
+  # the obstruction this function can see coming; this asks the readers'
+  # question directly, of the file that actually landed, so a rename that
+  # "succeeded" into anything orchid_service_bound will not recognise is
+  # reported as the failure it is rather than as an install. It is the same
+  # predicate, called -- not a third spelling of `[ -f ]` to keep in step.
+  #
+  # The stray this recovers is the deposit a directory at $rec would have
+  # swallowed; naming it from $rtmp rather than re-deriving it means the
+  # cleanup cannot delete something this call did not write. Returning nonzero
+  # here costs the caller a refused install with no schedule behind it (the
+  # write happens BEFORE the scheduler is touched), which is the cheap side.
+  if ! orchid_service_bound "$repo"; then
+    [ ! -d "$rec" ] || rm -f "$rec/${rtmp##*/}" 2>/dev/null || true
     [ -z "$mtmp" ] || rm -f "$mtmp" 2>/dev/null || true
     return 1
   fi

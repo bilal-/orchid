@@ -615,6 +615,10 @@ rm -rf "$WORK2"
 #   K8  RED/GREEN: the same distinction where there is no unload to try --
 #       a plist already gone is not evidence of an unloaded agent, and the
 #       binding is then the last name that agent has.
+#   K9  RED/GREEN: the record path itself obstructed -- an install that would
+#       report a binding orchid_service_bound cannot see must install no
+#       schedule, since that pairing is a live agent behind a guard that
+#       waves the checkout through.
 # ===========================================================================
 source "$REPO_ROOT/lib/common.sh"
 
@@ -1066,9 +1070,11 @@ green_case "a checkout whose schedule has been uninstalled passes the removal gu
 #
 # The store is made unwritable by putting a regular FILE where the directory
 # belongs, which is the one injection that fails at the STAGING step, before
-# anything at all has been committed. (A directory at the record's own path
-# would not: `mv file dir` moves the file INTO it and succeeds.) Moved aside
-# rather than removed -- other sections' bindings live in there.
+# anything at all has been committed. (A directory at the record's OWN path
+# fails somewhere else entirely -- `mv file dir` moves the file INTO it and
+# succeeds -- so it is refused before staging rather than by it, and K9 is
+# where that arm is proved.) Moved aside rather than removed -- other
+# sections' bindings live in there.
 mv "$HOME/.orchid/services" "$HOME/.orchid/services.saved" \
   || fail "fixture: could not set the machine-local binding store aside"
 printf 'not a directory\n' > "$HOME/.orchid/services"
@@ -1255,6 +1261,85 @@ rc=0
 orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
 assert_eq 0 "$rc" "and the checkout is removable again -- the refusal above cost the operator a step, not the verb"
 green_case "the missing-plist refusal clears on a re-run once launchd has let the job go"
+
+# -- K9: a recorded binding the guard cannot see --------------------------
+# K5 injects its failure at the machine-local store because that is the one
+# that fails at the STAGING step, and its own note says why it could not use
+# the record's own path: `mv file dir` moves the file INTO the directory and
+# exits 0. That is not a reason to leave the case alone -- it is the case.
+#
+# THE COMBINATION THIS FORBIDS. With a directory sitting where the repo-local
+# record belongs, every check the write performs passes: jq produces its temp,
+# the machine-local copy stages and commits, and the rename that was supposed
+# to place the record deposits it inside the directory and reports success. So
+# install goes on to render the plist and hand launchd a schedule that fires on
+# its interval -- while orchid_service_bound, whose entire test is `[ -f ]`,
+# says NO for that checkout, and so the removal guard waves it through. That is
+# this task's finding rebuilt from the inside: a live agent, and every path in
+# the kernel that removes a worktree cheerfully deleting the directory it wakes
+# against. Worse than an unrecorded install, because `install` reported success
+# and the machine-local copy says a binding exists.
+#
+# So the pairing is asserted, not the mechanism: an install that cannot leave a
+# record the guard can SEE must install no schedule at all.
+mkdir -p "$bind_rec" \
+  || fail "fixture: could not put a directory where the repo-local record belongs"
+rc=0
+obstructed_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "an install whose record path is obstructed must refuse: it cannot report a binding that orchid_service_bound will not see (out: $obstructed_out)"
+assert_match 'could not record the service binding' "$obstructed_out" \
+  "and refuses on the binding, the same way K5's install does -- the obstruction is a failure to record, not a scheduler problem"
+assert_match '/\.orchid/runtime/service\.json is not a regular file' "$obstructed_out" \
+  "and names the obstructed path: the refusal above names the repo and the obligation, and an operator cannot see inside .orchid/runtime/ from that alone"
+[ -f "$bind_plist" ] \
+  && fail "and no plist may be placed: the record is written BEFORE the scheduler is touched precisely so this failure schedules nothing"
+[ -f "$bind_mrec" ] \
+  && fail "and no machine-local copy either -- a copy claiming a binding whose repo-local half is invisible is the leftover doctor would report and the guard would not enforce"
+rmdir "$bind_rec" \
+  || fail "the obstruction must be left EMPTY: a write that had staged its record first would have deposited it INSIDE the directory, which is exactly the rename that silently succeeds"
+
+# The invariant itself, at the library boundary rather than through the verb:
+# a 0 from the writer is a promise about what the READERS will say. Asserted
+# here as well because every caller acts on that return value alone -- the
+# service runner installs a schedule on it -- and a writer that returns 0 while
+# orchid_service_bound returns false makes the guard blind for every one of
+# them at once, not only for `service install`.
+mkdir -p "$bind_rec" || fail "fixture: could not re-obstruct the record path"
+rc=0
+write_out="$(orchid_service_binding_write "$BIND_REPO" "$bind_label" darwin "/nonexistent.plist" 240 2>&1)" || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "orchid_service_binding_write must fail closed on a non-regular record path, not report a binding no reader can find"
+assert_match 'invisible to every removal guard' "$write_out" \
+  "and says why, in the terms that matter -- the record is refused for what the READERS would make of it, not for a filesystem error"
+orchid_service_bound "$BIND_REPO" \
+  && fail "fixture check: orchid_service_bound must indeed be false here -- if it were true the writer's 0 would have been honest and this case would prove nothing"
+rmdir "$bind_rec" || fail "and the failed write must have left nothing behind in the obstruction"
+red_case "an install that cannot leave a record the removal guard can see installs no schedule"
+
+# GREEN: with the obstruction gone the same install records a binding the guard
+# actually reads, and the checkout is refused for removal while it stands. The
+# two halves together are the property: bound-and-refused, or unbound-and-
+# unscheduled, and never a schedule on one side of the guard's answer.
+rc=0
+clear_out="$("$SERVICE" install --repo "$BIND_REPO" --interval-s 240 --dry-run 2>&1)" || rc=$?
+assert_eq 0 "$rc" "the same install succeeds once the record path is a place a record can go (out: $clear_out)"
+[ -f "$bind_plist" ] \
+  || fail "fixture check: this arm must really have placed a schedule -- with no plist there is no live agent for the guard below to be protecting, and the assertion would prove nothing"
+[ -f "$bind_rec" ] || fail "and the record is a regular file -- the thing orchid_service_bound tests for"
+orchid_service_bound "$BIND_REPO" \
+  || fail "so the predicate every removal path consults says the checkout is bound"
+rc=0
+orchid_service_removal_guard "$BIND_REPO" >/dev/null 2>&1 || rc=$?
+[ "$rc" -ne 0 ] \
+  || fail "and the checkout carrying that live schedule is refused for removal"
+green_case "a schedule installed over a usable record path is one the removal guard can still refuse"
+# Hand the fixture back in the state K9 found it: the green arm above really
+# installed a schedule, and a binding left standing here would be a leftover of
+# exactly the kind this section is about. `launchctl list` is failed because
+# nothing was ever loaded under the stub, which is the never-loaded answer
+# uninstall needs (see K6's note).
+svc_uninstall_failing 'launchctl list' --repo "$BIND_REPO" >/dev/null 2>&1
 
 # The linux/cron branch keeps its own binding record too -- the record is not
 # a launchd-only affordance, and the cron record it points at lives inside the
