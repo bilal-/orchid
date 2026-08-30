@@ -10282,3 +10282,111 @@ fm_set "$POLICY/.orchid/tasks/P53.md" unresolved_objection "" \
 assert_eq approve "$(decision_of P53)" \
   "T032: a class with no objection behind it decides nothing — the same reviews approve again"
 green_case 'an arbiter class left behind an empty objection: inert, and the deterministic approval is restored'
+
+# ===========================================================================
+# Part AH (T032 convergence, after the attempt-3 arbitration) -- THE STANDING
+# OBJECTION OUTRANKS THE ROUND WITHOUT THROWING IT AWAY.
+#
+# Parts AF and AG settle WHICH stop a standing objection raises. Neither says
+# anything about the round it was raised over, and until now the policy said
+# nothing either: it returned before a single envelope was opened, so a round
+# whose OWN reviews rejected came back as "an objection is standing" and not one
+# word more.
+#
+# That is the commonest round there is on a task in this state -- the pass after
+# a `request-changes` is the one most likely to be rejected again -- and it is
+# the reading that costs the most. The arbiter opens the boundary, sees one
+# sentence they wrote three rounds ago, reads the diff against it, decides it
+# was met, and approves. The reviewers' own live rejection is settled by an
+# arbitration that was never shown it. That is F33's shape wearing this gate's
+# clothes: an approval made without the evidence that contradicted it.
+#
+# So the decision WORD is still the objection's -- the precedence in AF/AG is
+# untouched, and asserted here again, because composing the round in is exactly
+# the change that could have demoted an operator's stop to a `conflict` -- and
+# the DETAIL now carries both. When the round rejects, the conflict record it
+# would have produced travels beside the objection, quoted summaries and all.
+# When it does not, the counts are named, because "the reviewers agreed" and
+# "there were no reviews" must not be one silence.
+#
+# RED: an objection standing over a round whose own reviews reject, reported
+#      without a word about that rejection -- for an operator's stop and the
+#      orchestrator's alike; and a round that raised nothing reported in a way
+#      that cannot be told from a round that never happened.
+# GREEN: the decision word, the boundary routing and the record's field count
+#      are all exactly what Parts AF and AG pinned.
+# ===========================================================================
+OBJ_TEXT_COMPOSE='the two writes at lib/foo.sh:118-140 are still not ordered'
+
+# --- an operator's objection over a round that ALSO rejects ----------------
+mk_policy_task P55 low high
+# A rejecting review whose substance is in its `summary`, which is the shape
+# F32 is about and the one the conflict arm quotes: if the composition dropped
+# the entry, this text is what an arbiter would never see.
+mk_review P55 "" request-changes true '[]'
+p55_conflict="$(detail_of P55)"
+assert_eq conflict "$(decision_of P55)" \
+  "Part AH premise: with no objection recorded this round is a plain conflict, and that record is what must survive the composition"
+assert_match "verdict=request-changes" "$p55_conflict" \
+  "Part AH premise: ...naming the rejecting envelope"
+
+fm_set "$POLICY/.orchid/tasks/P55.md" unresolved_objection "a1: $OBJ_TEXT_COMPOSE" \
+  || fail "fixture: P55's objection must be recordable"
+p55_detail="$(detail_of P55)"
+assert_eq objection "$(decision_of P55)" \
+  "T032: the standing objection still decides the word — an operator's stop is not demoted to an arbitrable one by the round rejecting too"
+assert_match "lib/foo.sh:118-140" "$p55_detail" \
+  "...and the objection's own words are still carried"
+assert_match "verdict=request-changes" "$p55_detail" \
+  "T032: and this round's OWN rejection is composed beside it — an arbiter told only the objection settles a live rejection it was never shown"
+assert_match 'P55-a1-reviewer\.json' "$p55_detail" \
+  "...naming the envelope that rejected, exactly as the conflict arm would have"
+assert_match "policy fixture" "$p55_detail" \
+  "...including the summary the reviewer wrote, which is where a prose-only objection lives (F32)"
+red_case "a standing objection over a round whose own reviews reject: both facts in the record, not just the older one"
+
+# The record is still TWO fields. Composition is where a second tab would most
+# easily arrive: `conflicts` is built from engine-written text and is spliced
+# into a line read with `cut -f1`/`cut -f2-`.
+p55_tabs="$(drive_review_decision "$POLICY" P55 | tr -cd '\t' | wc -c | tr -d ' ')"
+assert_eq 1 "$p55_tabs" \
+  "T032: the composed record is still one decision word and one detail"
+
+# --- the same composition for the orchestrator's own objection -------------
+# One composer, both classes: a rule applied in the operator arm and forgotten
+# in the other is the shape this task has already paid for twice.
+fm_set "$POLICY/.orchid/tasks/P55.md" unresolved_objection_by orchestrator \
+  || fail "fixture: P55's arbiter class must be recordable"
+p55_brokered="$(detail_of P55)"
+assert_eq conflict "$(decision_of P55)" \
+  "T032: an orchestrator's objection over a rejecting round is still the arbitrable stop — AG's routing is unchanged"
+assert_match "lib/foo.sh:118-140" "$p55_brokered" "...still quoting the objection"
+assert_match "verdict=request-changes" "$p55_brokered" \
+  "T032: ...and still composing this round's rejection, since both classes go through one composer"
+red_case "an orchestrator's standing objection over a rejecting round: the round's rejection is composed for it too"
+
+# --- and a round that raises nothing says so, with its counts --------------
+# The other half of the same complaint. Silence about the round is two
+# different facts -- reviewers who looked and agreed, and no reviews at all --
+# and an arbiter deciding whether an objection was met is entitled to know
+# which one they are being handed.
+mk_policy_task P56 low high
+mk_review P56 "" approve true '[]'
+fm_set "$POLICY/.orchid/tasks/P56.md" unresolved_objection "a1: $OBJ_TEXT_COMPOSE" \
+  || fail "fixture: P56's objection must be recordable"
+p56_detail="$(detail_of P56)"
+assert_eq objection "$(decision_of P56)" "fixture: P56 stops on its operator objection"
+assert_match "raise nothing beside it" "$p56_detail" \
+  "T032: a round that rejected nothing is SAID to have rejected nothing, rather than left as a silence"
+assert_match "1 of 1 review" "$p56_detail" \
+  "...with the counts, so 'the reviewers agreed' is distinguishable from 'there were no reviews'"
+
+# The same task with its evidence taken away: the counts must move, or the
+# sentence above is a constant and proves nothing.
+rm -f "$POLICY/.orchid/reviews/P56-a1-reviewer.json"
+p56_bare="$(detail_of P56)"
+assert_eq objection "$(decision_of P56)" \
+  "T032: an evidence shortfall is still not reported ahead of the objection — no arbiter is sent to fetch reviews for a decision no review can make"
+assert_match "0 of 1 review" "$p56_bare" \
+  "T032: ...but the shortfall is disclosed in the objection's own record, where the arbiter can see the round was never complete"
+red_case "a standing objection over an incomplete round: still the objection, and the shortfall is named in its record rather than implied"

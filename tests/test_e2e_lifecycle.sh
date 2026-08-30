@@ -201,9 +201,13 @@ run_ok "advance arbitrating" "$ORCHID_BIN" task advance T001 arbitrating \
 
 # ---------------------------------------------------------------------------
 # arbitrating -> merging: inline judgment (approve), journaled with kind
-# `arbitration` by the kernel itself (from=arbitrating).
+# `arbitration` by the kernel itself (from=arbitrating). Recorded through
+# `orchid task arbitrate`, which since T032 is the only public verb that
+# reaches a non-`blocked` edge out of `arbitrating`; it derives `merging` from
+# the archetype and still takes the edge through `task advance`, so the journal
+# kind below is the same one.
 # ---------------------------------------------------------------------------
-run_ok "advance merging" "$ORCHID_BIN" task advance T001 merging \
+run_ok "arbitrate approve" "$ORCHID_BIN" task arbitrate T001 --result approve \
   --reason "approved for merge" >/dev/null
 assert_match "T001 arbitration" "$(cat .orchid/journal.md)" "journal records the arbitration entry"
 

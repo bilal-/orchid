@@ -347,7 +347,14 @@ assert_eq arbitrating "$(t007_status)" "archetype edge reviewing:arbitrating"
 # edge: arbitrating:rework (--waive-attempt: attempts stays at 1, so the
 # reviewer envelope already planted -- bound to attempts+1 -- stays valid
 # for every subsequent reviewing:arbitrating below without replanting)
-"$ORCHID_BIN" task advance T007 rework --waive-attempt --reason "sent back for rework"
+#
+# Taken through `orchid task arbitrate`, which since T032 is the only public
+# verb that reaches a non-`blocked` edge out of `arbitrating` (the refusal, and
+# the RED case for it, are further down this file). The destination is derived
+# from this archetype's declared transitions and the move still goes through
+# `task advance`, so the edge, the waived accounting and the evidence
+# invalidation asserted here are all unchanged.
+"$ORCHID_BIN" task arbitrate T007 --result request-changes --waive-attempt --reason "sent back for rework"
 assert_eq rework "$(t007_status)" "archetype edge arbitrating:rework"
 assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2)" "--waive-attempt left attempts at 1"
 
@@ -359,8 +366,8 @@ assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep '^attempts: ' | cut -d' ' -f2
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
 
-# edge: arbitrating:merging
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+# edge: arbitrating:merging (through `task arbitrate`, per the note above)
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 assert_eq merging "$(t007_status)" "archetype edge arbitrating:merging"
 
 # edge: merging:testing (does NOT invalidate verify evidence -- only a
@@ -373,7 +380,7 @@ assert_eq testing "$(t007_status)" "archetype edge merging:testing"
 # still-bound reviewer envelope) -> reviewing:arbitrating -> arbitrating:merging
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed after merging:testing, approved"
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 
 # edge: merging:rework
 #
@@ -433,7 +440,7 @@ assert_eq 1 "$("$ORCHID_BIN" task show T007 | grep -c 'lib/merged\.sh:11: SC2115
 "$ORCHID_BIN" verify T007 >/dev/null
 "$ORCHID_BIN" task advance T007 reviewing
 "$ORCHID_BIN" task advance T007 arbitrating --reason "re-reviewed, approved"
-"$ORCHID_BIN" task advance T007 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate T007 --result approve --reason "approved for merge"
 
 # edge: merging:done
 "$ORCHID_BIN" task advance T007 "done"
@@ -1975,3 +1982,124 @@ assert_eq "" "$(t4x_objection_by T042)" "...and its class with it"
 assert_match 'objection cleared by an explicit arbitration approval.*early return at lib/foo.sh:140.*raised by: operator, cleared by: operator' "$(cat .orchid/journal.md)" \
   "...and the journal records both actors, so who overrode whom is answerable from the record alone"
 green_case "an operator's own objection: settled by the operator, cleared, and both arbiters named in the journal"
+
+# ============================================================================
+# `orchid task arbitrate` IS THE ONLY PUBLIC ARBITRATING OUTCOME VERB (T032
+# convergence, after the attempt-3 arbitration).
+#
+# Everything above guards the verb that RECORDS an arbitration. None of it
+# guards the other door. Every edge out of `arbitrating` except the universal
+# `blocked` escape is an arbitration result — approve is `arbitrating:merging`
+# (or `arbitrating:done` on an outcome=report archetype), request-changes is
+# `arbitrating:rework` — and `orchid task advance` could take any of them by
+# hand while recording none of it: no result, no journal entry saying who
+# decided, no objection raised, and, on `arbitrating:merging`, a live
+# `unresolved_objection` walked straight into the merge queue. That is F33's
+# outcome reached by typing the other command, and every guarantee the blocks
+# above assert is only as good as this door being shut.
+#
+# So `task advance` refuses those edges unless `task arbitrate` is the caller.
+# `arbitrating:blocked` is untouched, because stopping a task is not deciding
+# it — and that twin is asserted here rather than assumed, since a refusal that
+# also killed the escape hatch would leave an operator with no move at all.
+#
+# RED: a hand-walked `arbitrating` outcome of any shape — merging, rework, and
+#      the report archetype's `done` — and, the F33 case itself, one taken
+#      while an operator's objection is standing.
+# GREEN: `task arbitrate` still takes every one of those edges, and `task
+#      advance <id> blocked --reason` still stops the task.
+# ============================================================================
+# This file parks tasks in ACTIVE statuses as it goes and raised the cap once
+# already for exactly that reason (see its note beside `ORCHID_CONCURRENCY=8`
+# above); the three blocks between there and here leave three more sitting in
+# `merging`. Raised again rather than counted, since a starved dispatch here
+# would surface as this block's own fixture assertion failing for a reason that
+# has nothing to do with what it tests.
+export ORCHID_CONCURRENCY=16
+
+t4x_new_task T043 "an arbitration outcome nobody may take by hand"
+t4x_to_arbitrating T043
+assert_eq arbitrating "$(t4x_status T043)" "fixture: T043 reaches arbitrating"
+
+# `--reason` supplied throughout, so a refusal can never be INV-08's rather
+# than this one's: these calls are complete and would have been taken.
+for _dest in merging rework; do
+  rc=0
+  t43_out="$("$ORCHID_BIN" task advance T043 "$_dest" --reason "hand-walked, deciding nothing" 2>&1)" || rc=$?
+  assert_eq 3 "$rc" \
+    "T032: task advance T043 $_dest out of arbitrating must be refused — it is an arbitration RESULT and this verb records none"
+  assert_match "arbitration RESULT" "$t43_out" "the refusal says what the edge is (dest: $_dest)"
+  # Single-quoted: the `\|` is a LITERAL pipe for `grep -E`, and the pattern
+  # needs no interpolation of its own.
+  assert_match 'orchid task arbitrate T043 --result approve\|request-changes' "$t43_out" \
+    "...and names the verb that records one, on this task (dest: $_dest)"
+  assert_match "task advance T043 blocked" "$t43_out" \
+    "...and names the move that IS still available: stopping the task (dest: $_dest)"
+  assert_eq arbitrating "$(t4x_status T043)" "and the task did not move (dest: $_dest)"
+done
+grep -q "hand-walked, deciding nothing" .orchid/journal.md \
+  && fail "T032: a refused arbitrating advance must journal nothing — the refusal is ahead of the journal-first write, so a reason on record for a transition that never happened is a decision nobody made"
+red_case 'a hand-walked arbitration outcome (task advance out of arbitrating): refused, nothing moved, nothing journaled'
+
+# The same edge through the verb that DOES record a result: still legal, and it
+# is what raises the objection the next case is about.
+T43_OBJ='the two writes at lib/foo.sh:118-140 are still not ordered'
+"$ORCHID_BIN" task arbitrate T043 --result request-changes --reason "$T43_OBJ" >/dev/null \
+  || fail "T032: the refusal must be scoped to the verb, not to the edge — task arbitrate still takes arbitrating:rework"
+assert_eq rework "$(t4x_status T043)" "and it lands exactly where the hand-walk was trying to go"
+green_case 'the same arbitrating:rework edge through task arbitrate: taken, and the result recorded'
+
+# THE F33 SHAPE, at this door. An objection is standing; a hand-walk to
+# `merging` would carry it into the merge queue with nothing having answered
+# it, which is precisely what the driver-side gate exists to prevent and
+# precisely what it cannot see.
+t4x_to_arbitrating T043
+assert_eq "a1: $T43_OBJ" "$(t4x_objection T043)" "fixture: the objection is standing on entry to the second round"
+rc=0
+t43_obj_out="$("$ORCHID_BIN" task advance T043 merging --reason "looks fine to me" 2>&1)" || rc=$?
+assert_eq 3 "$rc" \
+  "T032: a task carrying a standing objection cannot be hand-walked into merging — the gate that refuses the deterministic approval is worth nothing if the other verb walks past it"
+assert_match 'orchid task arbitrate T043 --result approve\|request-changes' "$t43_obj_out" \
+  "...naming the verb that would have had to decide whether the objection was met"
+assert_eq arbitrating "$(t4x_status T043)" "the task did not move"
+assert_eq "a1: $T43_OBJ" "$(t4x_objection T043)" "...and the objection is exactly where it was"
+red_case 'a hand-walked merging on a task carrying an uncleared objection: refused, and the objection still stands'
+
+# ...and the escape hatch is untouched, which is what keeps the refusal from
+# being a task nobody can move. Left idle deliberately: a task parked in an
+# ACTIVE status eats a concurrency slot every later case has to dispatch
+# against.
+"$ORCHID_BIN" task advance T043 blocked --reason "stopping it, not deciding it" >/dev/null \
+  || fail "T032: arbitrating -> blocked is the universal escape hatch and must stay open — an operator whose only move is refused has no move"
+assert_eq blocked "$(t4x_status T043)" "arbitrating -> blocked still works by hand"
+green_case 'task advance blocked out of arbitrating: still legal, because stopping a task is not deciding it'
+
+# --- and the report archetype's own outcome edge -----------------------------
+# `arbitrating:done` is the outcome=report archetype's approval, and it is a
+# DIFFERENT destination string. A refusal written as a list of the two edges a
+# feature task has would let this one through, and nothing above would notice.
+"$ORCHID_BIN" task create R040 "a report outcome nobody may take by hand" --archetype review \
+  || fail "fixture: task create R040 must succeed (a taken id would make every assertion below read another case's task)"
+# base_sha/candidate_sha by plain `task set`, the way tests/test_archetype.sh's
+# own review walk does it: a review-archetype task never traverses `testing`,
+# and the reviewing->arbitrating envelope gate is sha-bound, so the candidate
+# has to be set before a planted envelope can satisfy it.
+"$ORCHID_BIN" task set R040 base_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task set R040 candidate_sha "$t32_sha" >/dev/null
+"$ORCHID_BIN" task advance R040 reviewing --reason "report dispatch" >/dev/null
+plant_reviewer_envelope R040
+"$ORCHID_BIN" task advance R040 arbitrating --reason "reviews reconciled" >/dev/null
+assert_eq arbitrating "$(t4x_status R040)" "fixture: R040 reaches arbitrating on the review archetype"
+
+rc=0; r40_out="$("$ORCHID_BIN" task advance R040 "done" --reason "accepted by hand" 2>&1)" || rc=$?
+assert_eq 3 "$rc" \
+  "T032: arbitrating -> done is the report archetype's approval and is refused by task advance for the same reason arbitrating -> merging is"
+assert_match "orchid task arbitrate R040 --result approve" "$r40_out" "...naming the verb that records it"
+assert_eq arbitrating "$(t4x_status R040)" "and R040 did not move"
+red_case "a hand-walked arbitrating:done on an outcome=report archetype: refused too, not just the feature archetype's two edges"
+
+"$ORCHID_BIN" task arbitrate R040 --result approve --reason "the report is accepted" >/dev/null \
+  || fail "fixture: the report archetype's approving arbitration must succeed"
+assert_eq "done" "$(t4x_status R040)" \
+  "and task arbitrate derives done from the archetype that declares no arbitrating:merging"
+green_case 'the report archetype: task arbitrate --result approve still reaches done, deriving it from the declared transitions'

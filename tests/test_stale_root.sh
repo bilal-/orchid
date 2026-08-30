@@ -553,7 +553,7 @@ git -C "$selfroot" checkout -q orchid/integration
 "$ORCHID_BIN" task advance TS1 reviewing
 plant_reviewer_envelope TS1
 "$ORCHID_BIN" task advance TS1 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance TS1 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate TS1 --result approve --reason "approved for merge"
 
 rc=0
 out="$("$ORCHID_BIN" merge TS1 2>&1)" || rc=$?
@@ -644,7 +644,7 @@ assert_eq 0 "$rc" \
 "$ORCHID_BIN" task advance TS2 reviewing
 plant_reviewer_envelope TS2
 "$ORCHID_BIN" task advance TS2 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance TS2 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate TS2 --result approve --reason "approved for merge"
 
 rc=0
 out="$("$ORCHID_BIN" merge TS2 2>&1)" || rc=$?
@@ -721,7 +721,7 @@ git -C "$selfroot" checkout -q orchid/integration
 "$ORCHID_BIN" task advance TS3 reviewing
 plant_reviewer_envelope TS3
 "$ORCHID_BIN" task advance TS3 arbitrating --reason "single reviewer approved"
-"$ORCHID_BIN" task advance TS3 merging --reason "approved for merge"
+"$ORCHID_BIN" task arbitrate TS3 --result approve --reason "approved for merge"
 
 # The operator's kernel edit, made after the branch round-trips for the reason
 # check 10 gives: `git checkout` refuses to move across a change to the file.
@@ -763,7 +763,9 @@ self_walk_to_merging() {
   "$ORCHID_BIN" task advance "$id" reviewing
   plant_reviewer_envelope "$id"
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved"
-  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge"
+  # `task arbitrate`: since T032 it is the only public verb that reaches a
+  # non-`blocked` edge out of `arbitrating`.
+  "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge"
 }
 
 # ===========================================================================

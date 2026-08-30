@@ -395,7 +395,11 @@ _hg_walk_to_merging() {
   "$ORCHID_BIN" task advance "$id" reviewing >/dev/null
   plant_reviewer_envelope "$id"
   "$ORCHID_BIN" task advance "$id" arbitrating --reason "single reviewer approved" >/dev/null
-  "$ORCHID_BIN" task advance "$id" merging --reason "approved for merge" >/dev/null
+  # `task arbitrate`, not `task advance <id> merging`: every non-`blocked` edge
+  # out of `arbitrating` is an arbitration RESULT, and since T032 the only
+  # public verb that records one is this (libexec/orchid-task's `advance` arm
+  # refuses the rest).
+  "$ORCHID_BIN" task arbitrate "$id" --result approve --reason "approved for merge" >/dev/null
 }
 
 # _hg_new_candidate <id> -- creates the task + a one-commit branch off

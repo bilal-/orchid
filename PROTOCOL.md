@@ -41,7 +41,8 @@ part of the architecture; this file never changes to suit one.*
 - **Every judgment carries `--reason`.** The kernel only hard-requires
   `--reason` on a subset of edges (`orchid run advance`/`run accept` always;
   `orchid task advance` on `*→merging`, `*→blocked`, and `arbitrating→rework`
-  specifically). This protocol requires it everywhere a human or a future
+  specifically; `orchid task arbitrate` always, and it is the verb that now
+  takes the two `arbitrating` edges in that list). This protocol requires it everywhere a human or a future
   resumer would otherwise have to guess *why*: every `task advance`, `task
   unblock`, `task retry`, `task reverify`, and `notify` call in the walk
   below carries one, whether or not the verb itself would accept the
@@ -385,12 +386,22 @@ incomplete review set is never also reported as a conflict, and vice versa:
    `request-changes` on an earlier round and no arbitration has recorded that
    it was answered. → boundary `operator-decision` when an OPERATOR raised it,
    `review-conflict` when the run's own orchestrator did (see "who may settle
-   it" below), **no transition** either way, before a
-   single envelope is read. Every arm below is a reading of the ROUND's
+   it" below), **no transition** either way, ahead of
+   every arm below. Every arm below is a reading of the ROUND's
    evidence; this is a reading of the TASK, and it is the one fact no quantity
    of fresh reviews can settle — which is why it is not folded into arm 3's
    record, where an evidence shortfall would be reported ahead of it and send
-   you to fetch more reviews for a decision no review can make. F33 is the run
+   you to fetch more reviews for a decision no review can make.
+   **It outranks the round without ignoring it** (T032 convergence): the
+   round's envelopes are still read, and if this round's own reviews reject —
+   the likeliest shape there is, since the round after a `request-changes` is
+   the one most likely to be rejected again — that rejection is composed into
+   the same detail, entries and quoted summaries and all. The arbiter is owed
+   both facts. Told only the objection, they read the diff against it, decide
+   it was met, approve, and settle a live rejection they were never shown; when
+   the round raises nothing, the detail says so and gives the review counts, so
+   "the reviewers agreed" and "there were no reviews" are not one silence.
+   F33 is the run
    that bought this: the operator arbitrated `request-changes` twice on the
    same concurrency hole, naming the exact constants and line range the second
    time; round 3's reviewers, handed the diff with no memory of either
@@ -590,11 +601,18 @@ outright, either result, on a task carrying an operator's standing objection —
 approving would clear their objection from the same diff that produced it, and
 requesting changes would replace their words with the model's own. A woken
 orchestrator's move there is `orchid notify`.
-`orchid task advance` from `arbitrating` remains legal for
-an operator and for the hand-executed walk below — but it records no
-arbitration result, so it neither raises an objection nor clears one; and the driver and the
-brokered orchestrator surface only ever use `task arbitrate`, which is what
-makes "who decided this, and what did they decide" one greppable fact.
+**And it is the only public door onto those edges** (T032 convergence). It used
+to be one of two: `orchid task advance <id> merging` out of `arbitrating` was
+legal for an operator and for the hand-executed walk, and it records no
+arbitration result — so it neither raises an objection nor clears one, and a
+task carrying a live `unresolved_objection` could be walked straight into the
+merge queue by typing the other command. Every non-`blocked` edge out of
+`arbitrating` is therefore refused by `orchid task advance` now, naming this
+verb; `orchid task advance <id> blocked --reason "..."` is untouched, because
+stopping a task is not deciding it. The driver and the brokered orchestrator
+surface used only `task arbitrate` already, which is what makes "who decided
+this, and what did they decide" one greppable fact — the refusal is what makes
+it a complete one.
 
 **A finding you approve past is a finding you must record.** Arbitration is
 where a run decides that a real defect is out of THIS task's scope — the
@@ -2364,8 +2382,14 @@ ones its archetype never declares.
   lesson-birth moment (docs/specs/kernel.md, Cross-run lessons) — record it
   now, before deciding: `orchid lessons add --scope repo --invalidate-when
   "..." "..."`. Then:
-  - approve: `orchid task advance <id> merging --reason "..."`.
-  - reject: `orchid task advance <id> rework --reason "..."` (add
+  Both outcomes are recorded with the SAME verb, `orchid task arbitrate`,
+  which derives the destination from the archetype and is the only public
+  route onto a non-`blocked` edge out of `arbitrating` (`orchid task advance`
+  refuses them: it records no result, so a round settled through it says
+  nothing about who decided it or whether a standing objection was answered):
+  - approve: `orchid task arbitrate <id> --result approve --reason "..."`.
+  - reject: `orchid task arbitrate <id> --result request-changes --reason
+    "..."` (add
     `--waive-attempt` when the rejection reflects an infra/tooling gap
     rather than an actual defect in the candidate). When this rejection was
     itself driven by something `context.md` failed to state, that is the

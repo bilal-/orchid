@@ -538,7 +538,11 @@ assert_match "convergence streak reset after successful verification" "$(tail -n
 printf '{"status":"ok","candidate_sha":"%s"}\n' "$(git rev-parse HEAD)" \
   > "$STATE/reviews/T004-a3-reviewer.json"
 "$ORCHID_BIN" task advance T004 arbitrating --reason "review fixture" >/dev/null
-"$ORCHID_BIN" task advance T004 rework --reason "review requested changes" >/dev/null
+# `task arbitrate`, not `task advance T004 rework`: since T032 every
+# non-`blocked` edge out of `arbitrating` is an arbitration RESULT and only this
+# verb records one. It takes the same `arbitrating:rework` edge and charges the
+# same attempt.
+"$ORCHID_BIN" task arbitrate T004 --result request-changes --reason "review requested changes" >/dev/null
 "$ORCHID_BIN" task advance T004 implementing --reason "post-green red round" >/dev/null
 "$ORCHID_BIN" task advance T004 testing --reason "post-green red round" >/dev/null
 mk_log "$STATE/reviews/T004-verify.log" 2026-08-09T11:00:00Z "$(git rev-parse HEAD)" "$REPO" \
@@ -724,7 +728,8 @@ assert_match "rework evidence retired after successful verification" "$(cat "$ST
 printf '{"status":"ok","candidate_sha":"%s"}\n' "$(git rev-parse HEAD)" \
   > "$STATE/reviews/T006-a2-reviewer.json"
 "$ORCHID_BIN" task advance T006 arbitrating --reason "review fixture" >/dev/null
-"$ORCHID_BIN" task advance T006 rework --reason "review requested changes" >/dev/null
+# `task arbitrate`, per the note on T004's request-changes round above.
+"$ORCHID_BIN" task arbitrate T006 --result request-changes --reason "review requested changes" >/dev/null
 assert_eq "1" "$(fm T006 rework_rounds)" \
   "fixture: a request-changes round captures nothing, so the brief can only come from an earlier round"
 
@@ -998,7 +1003,7 @@ gate_walk() {
   printf '{"status":"ok","candidate_sha":"%s"}\n' "$ghead" \
     > "$STATE/reviews/$gid-a1-reviewer.json"
   "$ORCHID_BIN" task advance "$gid" arbitrating --reason "approved" >/dev/null
-  "$ORCHID_BIN" task advance "$gid" merging --reason "approved" >/dev/null
+  "$ORCHID_BIN" task arbitrate "$gid" --result approve --reason "approved" >/dev/null
   # `orchid merge`'s own log, and then its exhaustion arm's advance, spelled
   # the way that verb spells them.
   mk_gate_log "$STATE/reviews/$gid-merge.log" 2026-08-20T10:00:00Z "$ghead" "$REPO" \

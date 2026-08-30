@@ -282,8 +282,8 @@ across prose sections is normative HERE):**
 | testing | `verify` PASS → `task advance` | evidence recorded | evidence log, frontmatter | reviewing |
 | testing | `verify` FAIL → `task advance` | failure classified first: candidate → attempts++; handoff/environment/flaky → `task infra-fail` + `--waive-attempt --reason`. If a candidate failure cannot take `testing → rework` because the archetype omits that edge or the edge is refused before charging, `task advance blocked --charge-attempt --reason` preserves the strict charge in one locked transition while stopping for an operator. | frontmatter, journal | rework, or blocked on the charge fallback |
 | reviewing | all required review envelopes reconciled → `task advance` | fail-closed envelope checks | frontmatter | arbitrating |
-| arbitrating | `task advance --reason` (approve) | findings ≥ blocking_severity resolved | frontmatter, journal | merging |
-| arbitrating | `task advance --reason` (reject) | attempts++ unless waived | frontmatter, journal | rework |
+| arbitrating | `task arbitrate --result approve --reason` | findings ≥ blocking_severity resolved; no `unresolved_objection` this arbiter lacks the authority to settle | frontmatter (clears `unresolved_objection`), journal | merging (or `done` on an outcome=report archetype) |
+| arbitrating | `task arbitrate --result request-changes --reason` | attempts++ unless waived | frontmatter (writes `unresolved_objection`, `unresolved_objection_by`), journal | rework |
 | merging | `merge` exit 0 → `task advance` | serialized; base current; temp-worktree suite AND `merge_gate` green | integration ref, evidence, frontmatter | done |
 | merging | `merge` exit 1 (`validation_failed`) → `task advance` | — | evidence, frontmatter | rework |
 | merging | `merge` exit 1 (`gate_failed`) → `task advance --charge-attempt` | repo-wide `merge_gate` red; integration ref untouched; attempts++ (the ONE merge failure that charges — a red repo-wide gate repeats identically, so an uncharged edge never terminates) | evidence, frontmatter, journal | rework |
@@ -1191,11 +1191,19 @@ expired on either would expire on precisely the event it exists to survive — s
 `unblock`, `retry` and `reverify` all leave it standing, none of them being an
 answer to "was this defect fixed". Two readers act on it. The deterministic
 driver refuses to make an approval while one stands: `drive_review_decision`
-short-circuits ahead of all three arms of the arbitration truth table, and the
+answers ahead of all three arms of the arbitration truth table, and the
 driver takes no transition on the word it returns — the driver's one call to
 `task arbitrate --result approve` sits behind that return, which is what makes
-it structurally unable to clear its own path. WHICH stop it raises is
-`unresolved_objection_by`'s answer, below. And every shipped `review` adapter
+it structurally unable to clear its own path. It outranks those arms without
+skipping them: the round's own envelopes are still read, and a rejection among
+them is COMPOSED into the objection's detail rather than discarded, so the
+arbiter is told both what stands against the task and what the reviewers in
+front of them said. WHICH stop it raises is
+`unresolved_objection_by`'s answer, below. The verb surface is closed the same
+way: every non-`blocked` edge out of `arbitrating` is refused by `orchid task
+advance` (which records no arbitration result), so `orchid task arbitrate` is
+the only public route past a standing objection and not merely the driver's
+one. And every shipped `review` adapter
 appends the objection to the
 reviewer's prompt (the pack copies `task.md` whole, so no new pack item is
 needed), narrowing the next round's question to "was the arbiter's objection
@@ -1646,7 +1654,7 @@ sequenceDiagram
   O->>K: jobs reconcile (bind manifest<->envelope)
   O->>K: task advance testing
   O->>K: verify (evidence)
-  O->>K: task advance reviewing ... arbitrating --reason ... merging
+  O->>K: task advance reviewing ... arbitrating; task arbitrate --result approve --reason
   O->>K: merge (temp worktree, suite, ref advance)
   O->>K: task advance done
 ```
@@ -1714,8 +1722,10 @@ Approved over agy's request-changes: the flagged race is unreachable — ...
   text would hand that satisfaction back through any admitted kind.
 - **Enforcement is a complete decision matrix, kernel-level:** every
   judgment-bearing verb refuses to run without `--reason`, which it journals
-  BEFORE writing the state change — `task advance` to `merging`, `blocked`,
-  and `rework`-from-`arbitrating` (both arbitration outcomes recorded);
+  BEFORE writing the state change — `task advance` to `blocked`, and `task
+  arbitrate` on either result (both arbitration outcomes recorded; `task
+  advance` refuses every non-`blocked` edge out of `arbitrating` outright,
+  since a result recorded by no verb is a decision nobody signed);
   `task set risk_tier` (monotonicity enforced separately from prose);
   `--waive-attempt`; `task unblock/retry/reverify`; `run accept`;
   `lessons retire`. Sequential atomic writes (journal first, state second) mean

@@ -222,7 +222,9 @@ The same walk, in verbs:
 4. `orchid task advance T001 reviewing` launches the resolved reviewer
    chain (one or two engines, by risk tier); each writes a verdict envelope
    nobody hand-edits.
-5. Agreement → `orchid task advance T001 merging` → `orchid merge T001`
+5. Agreement → `orchid task arbitrate T001 --result approve --reason "..."`
+   (the one verb that records an arbitration result, and the only public route
+   out of `arbitrating`) → `orchid merge T001`
    re-verifies in a temp worktree and advances the integration branch.
    Disagreement → the orchestrator (inline, ≤10 lines of judgment) reads
    the diff and arbitrates. An arbitration that asks for changes is recorded

@@ -869,9 +869,13 @@ drive_blocking_finding_title() {
 # The three review arms are mutually exclusive and evaluated in that order, so
 # an incomplete review set is never also reported as a conflict (and vice
 # versa). AHEAD of all three sits one precondition -- an uncleared
-# `unresolved_objection` on the task -- which short-circuits before any envelope
-# is read, to `objection` or to `conflict` according to the class of arbiter
-# recorded with it; see its own note in the body. No prose is
+# `unresolved_objection` on the task -- which OUTRANKS every one of them, to
+# `objection` or to `conflict` according to the class of arbiter recorded with
+# it; see its own note in the body. Outranks, not short-circuits: the round's
+# own envelopes are read first and this round's rejection is COMPOSED into the
+# objection's detail, so an arbiter reading the stop is told both what is
+# standing against the task and what the reviewers in front of them said. No
+# prose is
 # parsed anywhere: every input to the DECISION is a
 # structured envelope field the kernel already validates. The conflict arm
 # QUOTES engine-written text into its detail (F32, below) in all three of the
@@ -1020,7 +1024,7 @@ drive_review_decision() {
   local repo="$1" id="$2" state tf attempt tier need cand blocking
   local f n approve_n depth_n conflicts base verdict scope status ecand eengine pool
   local plan pin_state entry nfind excerpt ftitle weighed_n weighed_note sum_carried
-  local objection obj_by
+  local objection obj_by obj_who obj_settler obj_round obj_detail
   state="$(orchid_state "$repo")"
   tf="$state/tasks/$id.md"
   if [ ! -f "$tf" ]; then
@@ -1106,20 +1110,35 @@ drive_review_decision() {
   # The branch is on the recorded CLASS, never on the objection text -- which
   # stays what it has always been here, a display string this function quotes
   # and does not read (INV-13's own sweep pins that).
+  #
+  # OUTRANKS THE ROUND, BUT DOES NOT SKIP READING IT (T032 convergence, after
+  # the attempt-3 arbitration). The two facts an arbiter opening this stop needs
+  # are what is standing against the task and what the reviewers in front of
+  # them said, and until now the second was thrown away: this returned before a
+  # single envelope was opened, so a round whose OWN reviews rejected -- the
+  # commonest shape by far, since the round after a `request-changes` is the one
+  # most likely to be rejected again -- was reported as "an objection is
+  # standing" and nothing else. The arbiter then reads the diff against the
+  # objection alone, decides it was met, approves, and the round's own live
+  # rejection is settled by an arbitration that was never told about it. That is
+  # F33's shape wearing this gate's clothes.
+  #
+  # So the decision WORD is still the objection's, and the detail carries both.
+  # The precedence argument is untouched and is why it is composed here rather
+  # than reported by the arms below: an evidence shortfall reported ahead of the
+  # objection would send an operator to fetch more reviews for a decision no
+  # review can make, and a `conflict` reported ahead of an OPERATOR's objection
+  # would route a stop only they may settle to a woken model. What changes is
+  # only that neither fact is now silent.
   objection="$(review_objection_line "$(fm_get "$tf" unresolved_objection)")"
   obj_by="$(review_objection_arbiter "$objection" "$(fm_get "$tf" unresolved_objection_by)")"
-  if [ "$obj_by" = orchestrator ]; then
-    printf 'conflict\tan objection recorded by the run orchestrator in a previous arbitration of this task is still uncleared: "%s" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter. Expected: whoever arbitrates reads the diff, decides whether that objection was met, and settles it with orchid task arbitrate %s --result approve|request-changes --reason "..." — an explicit arbitration approval is the only thing that clears it\n' \
-      "$objection" "$id"
-    return 0
-  fi
-  if [ -n "$objection" ]; then
-    printf 'objection\tan operator objection recorded by a previous arbitration of this task is still uncleared: "%s" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter. Expected: the operator who raised it reads the diff, decides whether the objection was met, and settles it with orchid task arbitrate %s --result approve|request-changes --reason "..." — an explicit arbitration approval is the only thing that clears it\n' \
-      "$objection" "$id"
-    return 0
-  fi
 
-  if [ -z "$cand" ]; then
+  # The candidate arm is the one thing the composition has to step around: with
+  # an objection standing it must not pre-empt the stop, and with none standing
+  # it reports exactly what it always did. The walk below is safe either way --
+  # an empty `cand` matches no envelope's `candidate_sha`, so the round reads as
+  # zero reviews, which is what a task with no candidate has.
+  if [ -z "$objection" ] && [ -z "$cand" ]; then
     printf 'evidence\tno candidate_sha recorded, so no review can be bound to it\n'
     return 0
   fi
@@ -1241,6 +1260,52 @@ drive_review_decision() {
       conflicts="$conflicts $entry"
     fi
   done
+
+  # THE STANDING OBJECTION, COMPOSED WITH THE ROUND IT OUTRANKS. Placed after
+  # the walk and ahead of every arm the walk feeds, so the precedence argued for
+  # it above is exactly what it was -- no evidence shortfall and no conflict is
+  # reported in its place -- while the round's own rejection travels WITH it
+  # instead of being discarded.
+  #
+  # ONE COMPOSER FOR BOTH CLASSES. The two decision words differ in who may
+  # settle the stop and in nothing else, so the sentence they carry is built
+  # once: a second copy would be one edit away from telling an operator and an
+  # orchestrator different things about the same field.
+  #
+  # The round's half is stated in both directions, because "the reviews said
+  # nothing" and "there were no reviews" are the two readings a silent detail
+  # would leave open, and they are not the same fact. `conflicts` is this
+  # round's own record, built by the walk above from the same envelopes the
+  # arms below would have judged; when it is empty the counts are named
+  # instead, so an arbiter can see whether the round was even complete before
+  # deciding that only the objection stands.
+  if [ -n "$objection" ]; then
+    if [ -n "$conflicts" ]; then
+      obj_round="and this round's own reviews reject it as well:${conflicts} — the arbitration owes an answer to both, and an approval here settles this round's rejection too"
+    else
+      obj_round="and this round's own reviews raise nothing beside it ($n of $need review(s) for risk_tier $tier bound to candidate ${cand:-none recorded}, none of them rejecting), so the objection is the whole of what stands"
+    fi
+    if [ "$obj_by" = orchestrator ]; then
+      obj_who="recorded by the run orchestrator"
+      obj_settler="whoever arbitrates"
+    else
+      obj_who="recorded by an operator"
+      obj_settler="the operator who raised it"
+    fi
+    obj_detail="an objection $obj_who in a previous arbitration of this task is still uncleared: \"$objection\" — this pass may not approve on the reviews alone, and a reviewer that flipped to approve without addressing it has not answered the arbiter; $obj_round. Expected: $obj_settler reads the diff, decides whether the objection was met, and settles it with orchid task arbitrate $id --result approve|request-changes --reason \"...\" — an explicit arbitration approval is the only thing that clears it"
+    # THE DETAIL IS SHARED; THE DECISION WORD IS NOT. Two literal `printf`s,
+    # never one fed a computed word -- INV-13 pins every arm of this function to
+    # a literal for the reason this arm illustrates best: the word chosen here
+    # decides WHICH BOUNDARY KIND the driver raises, and the two kinds differ by
+    # whether a woken model may settle the stop. A computed word would not
+    # merely mislabel a decision, it would re-route an operator-only one.
+    if [ "$obj_by" = orchestrator ]; then
+      printf 'conflict\t%s\n' "$obj_detail"
+    else
+      printf 'objection\t%s\n' "$obj_detail"
+    fi
+    return 0
+  fi
 
   if [ "$n" -lt "$need" ]; then
     printf 'evidence\tincomplete review evidence: %s of %s required for risk_tier %s bound to candidate %s\n' \

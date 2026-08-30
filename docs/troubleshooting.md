@@ -1221,7 +1221,12 @@ orchid task arbitrate <id> --result request-changes --reason "still unguarded on
 An approval clears the field and journals the clear; anything else leaves it
 standing. There is no other door — `unblock`, `retry` and `reverify` do not
 clear it, and `orchid task set` refuses the key by name, because none of them
-is an answer to "was this defect fixed".
+is an answer to "was this defect fixed". Nor is there a way around it: `orchid
+task advance <id> merging` is refused out of `arbitrating` (as is every other
+non-`blocked` edge), because it records no arbitration result and would carry
+the objection into the merge queue with nothing having answered it. `orchid
+task advance <id> blocked --reason "..."` is still there if what you want is to
+stop the task rather than decide it.
 
 **It is filed as `operator-decision` rather than `review-conflict` so that it
 reaches you.** A `review-conflict` on an `arbitrating` task is arbitrable: the

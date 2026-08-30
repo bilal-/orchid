@@ -982,6 +982,49 @@ case "$sub" in
       exit 13
     fi
     legal "$from" "$to" "$arch" || { echo "orchid: illegal $from -> $to" >&2; exit 3; }
+    # AN ARBITRATION OUTCOME IS RECORDED BY ONE VERB (T032, dogfood F33).
+    #
+    # Every edge out of `arbitrating` except the universal `blocked` escape IS
+    # an arbitration result: approve is `arbitrating:merging` (or
+    # `arbitrating:done` on an outcome=report archetype), request-changes is
+    # `arbitrating:rework`. `task arbitrate` derives which from the archetype,
+    # journals the result, and -- since T032 -- raises and clears the standing
+    # objection that keeps a later round from being approved past a defect an
+    # arbiter already rejected. `task advance` does NONE of that. Taken by hand
+    # it settles the round with nothing in the state saying who decided it, what
+    # they decided, or whether the objection standing on the task was ever
+    # answered -- and on `arbitrating:merging` it walks a live
+    # `unresolved_objection` straight to the merge queue, which is F33's exact
+    # outcome through the one door the gate was not on.
+    #
+    # So the edges are refused HERE rather than removed from the archetypes:
+    # they are real transitions, `task arbitrate` takes them a few lines below
+    # through this same verb, and every gate on this path (the reason
+    # requirement, attempt accounting, evidence invalidation, the `arbitration`
+    # journal kind) has to keep applying to them exactly as it did.
+    #
+    # THE MARKER CARRIES THE ID, not a bare flag. It is set as a prefix on that
+    # one child invocation, so it exists for the length of a single `task
+    # advance` and for no other process; binding it to the id means a value that
+    # somehow outlived its call cannot admit a hand-typed advance on a DIFFERENT
+    # task. It is a private kernel handshake, not an option: nothing documents
+    # it, and an operator reaching for it has the verb the refusal names.
+    #
+    # `arbitrating:blocked` is NOT one of them, and is matched out first: it is
+    # the universal escape hatch every status has, it decides nothing about the
+    # candidate, and it is the move this refusal itself sends an operator to.
+    # Written as "everything else out of `arbitrating`" rather than as a list of
+    # three destinations so an archetype that declares some further arbitrating
+    # edge cannot quietly land outside the rule.
+    case "$from:$to" in
+      arbitrating:blocked) ;;
+      arbitrating:*)
+        if [ "${ORCHID_ARBITRATION_ID:-}" != "$id" ]; then
+          echo "orchid: $from -> $to is an arbitration RESULT, and 'orchid task advance' records none — refused" >&2
+          echo "orchid: use 'orchid task arbitrate $id --result approve|request-changes --reason \"...\"', which derives this destination from the archetype, journals the decision, and is the only thing that raises or clears the standing objection a later round is judged against (T032, dogfood F33). To stop the task instead of deciding it: 'orchid task advance $id blocked --reason \"...\"'." >&2
+          exit 3
+        fi ;;
+    esac
     # A candidate failure normally charges through `testing -> rework`, whose
     # existing accounting below increments `attempts`. Some valid code
     # archetypes deliberately have no such edge, however, and a verb can also
@@ -1584,8 +1627,18 @@ case "$sub" in
     # existing gate (reason requirement, attempt accounting, evidence
     # invalidation, the arbitration journal kind) applies unchanged -- this
     # verb adds a judgment vocabulary on top of that machinery, it does not
-    # fork it. `task advance` remains available for operators and for the
-    # pre-existing documented walk; backward compatibility is untouched.
+    # fork it.
+    #
+    # AND IT IS THE ONLY PUBLIC DOOR ONTO THOSE EDGES (T032, dogfood F33). It
+    # used to be one of two: `task advance <id> merging` out of `arbitrating`
+    # was legal for an operator and for the hand-executed walk, which meant the
+    # objection this verb raises and clears could be walked past by typing the
+    # other command -- an approval with nothing recording who made it and a live
+    # `unresolved_objection` riding into the merge queue underneath it. That
+    # edge, and every other non-`blocked` edge out of `arbitrating`, is now
+    # refused unless this verb is the caller (see the refusal's own note in the
+    # `advance` arm above). `task advance <id> blocked` is untouched: stopping a
+    # task is not deciding it.
     verb_lock_guard "$repo"
     epoch_require "$repo"; export ORCHID_EPOCH
     id="${1:-}"; shift || true
@@ -1725,7 +1778,13 @@ case "$sub" in
     fi
     adv_args=("$id" "$to" --reason "arbitrate($result): $reason")
     [ "$waive" -eq 0 ] || adv_args+=(--waive-attempt)
-    ORCHID_REPO="$repo" "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
+    # `ORCHID_ARBITRATION_ID` is the private handshake `task advance`'s
+    # arbitrating-edge refusal reads (see its note there). A prefix assignment,
+    # so it is set for this one child and for nothing else in this process --
+    # and carrying the id, so it can only ever admit the edge this arbitration
+    # is actually taking.
+    ORCHID_ARBITRATION_ID="$id" ORCHID_REPO="$repo" \
+      "$ORCHID_ROOT/bin/orchid" task advance "${adv_args[@]}" >/dev/null
     if [ "$result" = approve ] && [ -n "$obj_prev" ]; then
       # Journal-first (INV-08), and guarded on a NON-EMPTY previous value for
       # the reason the `operator_prerequisite` clear a few hundred lines up is:

@@ -161,7 +161,11 @@ plant_reviewer_envelope T004
 
 [ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before rework"
 
-"$ORCHID_BIN" task advance T004 rework --reason "found an issue in review" >/dev/null
+# `task arbitrate`, not `task advance T004 rework`: since T032 every
+# non-`blocked` edge out of `arbitrating` is an arbitration RESULT and only this
+# verb records one. It takes the same `arbitrating:rework` edge, so the evidence
+# invalidation asserted below is the same one.
+"$ORCHID_BIN" task arbitrate T004 --result request-changes --reason "found an issue in review" >/dev/null
 
 [ ! -f .orchid/reviews/T004-verify.log ] || fail "rework: stale verify evidence must be invalidated on entry to rework (INV-07 symmetry)"
 [ ! -f .orchid/reviews/T004-merge.log ] || fail "rework: stale merge evidence must be invalidated on entry to rework (INV-07 symmetry)"
@@ -208,7 +212,7 @@ plant_reviewer_envelope T004
 # semantically-differing merged tree.
 vcmd_merge='test "$(git rev-parse --abbrev-ref HEAD)" != HEAD'
 "$ORCHID_BIN" task set T004 verification_commands "$vcmd_merge"
-"$ORCHID_BIN" task advance T004 merging --reason "approved for merge" >/dev/null
+"$ORCHID_BIN" task arbitrate T004 --result approve --reason "approved for merge" >/dev/null
 
 [ -f .orchid/reviews/T004-verify.log ] || fail "sanity: verify evidence exists before the merge attempt"
 
